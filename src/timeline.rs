@@ -22,15 +22,6 @@ pub fn remove_chunk(config: &mut QrecConfig, index: usize) -> Option<String> {
     }
 }
 
-pub fn remove_last_chunk(config: &mut QrecConfig) -> Option<String> {
-    if config.chunks.is_empty() {
-        return None;
-    }
-    let last_idx = config.chunks.len() - 1;
-    let chunk = config.chunks.remove(last_idx);
-    Some(chunk.file.clone())
-}
-
 pub fn move_chunk_left(config: &mut QrecConfig, index: usize) -> bool {
     if index == 0 || index >= config.chunks.len() {
         return false;
@@ -95,19 +86,4 @@ pub fn chunk_start_col(
     col
 }
 
-pub fn find_chunk_at_col(
-    config: &QrecConfig,
-    col: usize,
-    fps: f64,
-    frames_per_char: usize,
-) -> Option<usize> {
-    let mut current_col = 0;
-    for (i, chunk) in config.chunks.iter().enumerate() {
-        let w = chunk_char_width(chunk.duration_secs, fps, frames_per_char);
-        if col >= current_col && col < current_col + w {
-            return Some(i);
-        }
-        current_col += w;
-    }
-    None
-}
+
