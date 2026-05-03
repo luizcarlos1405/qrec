@@ -15,19 +15,19 @@ pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(4),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
         .split(f.area());
 
-    draw_header(f, chunks[0]);
+    draw_header(f, app, chunks[0]);
     draw_body(f, app, chunks[1]);
     draw_status_bar(f, app, chunks[2]);
 }
 
-fn draw_header(f: &mut Frame, area: Rect) {
-    let title = Paragraph::new(Line::from(vec![
+fn draw_header(f: &mut Frame, app: &App, area: Rect) {
+    let title_line = Line::from(vec![
         Span::styled(
             " qrec",
             Style::default()
@@ -35,10 +35,79 @@ fn draw_header(f: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" — Quick Recording"),
-    ]))
-    .block(Block::default().borders(Borders::BOTTOM));
+    ]);
 
-    f.render_widget(title, area);
+    let dim = Style::default().fg(Color::DarkGray);
+    let key_style = Style::default().fg(Color::Yellow);
+    let sep = Span::styled("  │  ", dim);
+
+    let shortcuts_line = match app.state {
+        AppState::Recording => Line::from(vec![
+            Span::styled(" Enter", key_style),
+            Span::styled(" Stop", dim),
+            sep.clone(),
+            Span::styled(" q", key_style),
+            Span::styled(" Quit", dim),
+        ]),
+        AppState::Rendering => Line::from(vec![Span::styled(
+            " Rendering in progress…",
+            dim,
+        )]),
+        AppState::Ready => match app.focus {
+            FocusRegion::Controls => Line::from(vec![
+                Span::styled(" j/k", key_style),
+                Span::styled(" Navigate", dim),
+                sep.clone(),
+                Span::styled(" h/l", key_style),
+                Span::styled(" Change", dim),
+                sep.clone(),
+                Span::styled(" Enter", key_style),
+                Span::styled(" Record", dim),
+                sep.clone(),
+                Span::styled(" d", key_style),
+                Span::styled(" Discard", dim),
+                sep.clone(),
+                Span::styled(" r", key_style),
+                Span::styled(" Render", dim),
+                sep.clone(),
+                Span::styled(" P", key_style),
+                Span::styled(" Preview", dim),
+                sep.clone(),
+                Span::styled(" Tab", key_style),
+                Span::styled(" Timeline", dim),
+            ]),
+            FocusRegion::Timeline => Line::from(vec![
+                Span::styled(" h/l", key_style),
+                Span::styled(" Select", dim),
+                sep.clone(),
+                Span::styled(" H/L", key_style),
+                Span::styled(" Reorder", dim),
+                sep.clone(),
+                Span::styled(" i/o", key_style),
+                Span::styled(" Zoom", dim),
+                sep.clone(),
+                Span::styled(" d", key_style),
+                Span::styled(" Delete", dim),
+                sep.clone(),
+                Span::styled(" p", key_style),
+                Span::styled(" Preview", dim),
+                sep.clone(),
+                Span::styled(" r", key_style),
+                Span::styled(" Render", dim),
+                sep.clone(),
+                Span::styled(" P", key_style),
+                Span::styled(" Preview All", dim),
+                sep.clone(),
+                Span::styled(" Tab", key_style),
+                Span::styled(" Controls", dim),
+            ]),
+        },
+    };
+
+    let header = Paragraph::new(vec![title_line, shortcuts_line])
+        .block(Block::default().borders(Borders::BOTTOM));
+
+    f.render_widget(header, area);
 }
 
 fn draw_body(f: &mut Frame, app: &App, area: Rect) {
