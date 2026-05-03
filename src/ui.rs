@@ -285,6 +285,13 @@ fn draw_timeline_section(f: &mut Frame, app: &App, area: Rect) {
             "█"
         };
 
+        if i > 0 {
+            spans.push(Span::styled(
+                "│",
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+
         spans.push(Span::styled(ch.repeat(vis_width), style));
         col += w;
     }
