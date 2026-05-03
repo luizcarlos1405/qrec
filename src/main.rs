@@ -265,6 +265,10 @@ fn preview_chunk(app: &mut App, idx: usize, terminal: &mut Terminal<CrosstermBac
         return;
     }
     if let Some(chunk) = app.config.chunks.get(idx) {
+        if !std::path::Path::new(&chunk.file).exists() {
+            app.status_message = format!("File not found: {}", chunk.file);
+            return;
+        }
         suspend_terminal_and(terminal, || effects::preview_file(&chunk.file));
         app.status_message = format!("Previewed {}", chunk.file);
     }
@@ -278,7 +282,17 @@ fn preview_all(app: &mut App, terminal: &mut Terminal<CrosstermBackend<io::Stdou
         app.status_message = "No chunks to preview".to_string();
         return;
     }
-    let files: Vec<String> = app.config.chunks.iter().map(|c| c.file.clone()).collect();
+    let files: Vec<String> = app
+        .config
+        .chunks
+        .iter()
+        .map(|c| c.file.clone())
+        .filter(|f| std::path::Path::new(f).exists())
+        .collect();
+    if files.is_empty() {
+        app.status_message = "No chunk files found on disk".to_string();
+        return;
+    }
     suspend_terminal_and(terminal, || effects::preview_files(&files));
     app.status_message = "Previewed all chunks".to_string();
 }
