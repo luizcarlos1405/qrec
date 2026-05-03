@@ -1,0 +1,178 @@
+use std::io::Write;
+use std::path::Path;
+use std::process::{Command, Stdio};
+
+use crate::{command, config::QrecConfig};
+
+const QREC_JSON: &str = "qrec.json";
+
+pub fn load_config() -> anyhow::Result<QrecConfig> {
+    if Path::new(QREC_JSON).exists() {
+        let content = std::fs::read_to_string(QREC_JSON)?;
+        crate::config::load_or_default(&content)
+    } else {
+        Ok(QrecConfig::default())
+    }
+}
+
+pub fn save_config(config: &QrecConfig) -> anyhow::Result<()> {
+    let content = crate::config::serialize_config(config)?;
+    std::fs::write(QREC_JSON, content)?;
+    Ok(())
+}
+
+pub fn ensure_config_exists(config: &QrecConfig) -> anyhow::Result<()> {
+    if !Path::new(QREC_JSON).exists() {
+        save_config(config)?;
+    }
+    Ok(())
+}
+
+pub fn discover_screens() -> anyhow::Result<Vec<String>> {
+    let cmd = command::wf_recorder_list_command();
+    let output = Command::new(&cmd.program)
+        .args(&cmd.args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let combined = format!("{}\n{}", stdout, stderr);
+
+    let mut screens = Vec::new();
+    for line in combined.lines() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            screens.push(trimmed.to_string());
+        }
+    }
+
+    Ok(screens)
+}
+
+pub fn discover_microphones() -> anyhow::Result<Vec<String>> {
+    let mut mics = vec!["No microphone".to_string()];
+
+    let cmd = command::pactl_list_sources_command();
+    let output = match Command::new(&cmd.program)
+        .args(&cmd.args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return Ok(mics),
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            mics.push(parts[1].to_string());
+        }
+    }
+
+    Ok(mics)
+}
+
+pub fn start_recording(
+    output: &str,
+    audio_device: Option<&str>,
+    filename: &str,
+) -> anyhow::Result<std::process::Child> {
+    let cmd = command::wf_recorder_command(output, audio_device, filename);
+    let child = Command::new(&cmd.program)
+        .args(&cmd.args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    Ok(child)
+}
+
+pub fn stop_recording(child: &mut std::process::Child) -> anyhow::Result<()> {
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGINT);
+    }
+    child.wait()?;
+    Ok(())
+}
+
+pub fn get_video_duration(file: &str) -> anyhow::Result<f64> {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            file,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+
+    let duration_str = String::from_utf8_lossy(&output.stdout);
+    let duration: f64 = duration_str.trim().parse().unwrap_or(0.0);
+    Ok(duration)
+}
+
+pub fn render_concat(chunk_files: &[String], output_file: &str) -> anyhow::Result<()> {
+    let list_content = command::concat_list_content(chunk_files);
+
+    let mut temp_file = tempfile::NamedTempFile::new()?;
+    write!(temp_file, "{}", list_content)?;
+    temp_file.flush()?;
+
+    let list_path = temp_file.path().to_string_lossy().to_string();
+    let cmd = command::ffmpeg_concat_command(chunk_files, output_file, &list_path);
+    let output = Command::new(&cmd.program)
+        .args(&cmd.args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("ffmpeg failed: {}", stderr);
+    }
+
+    Ok(())
+}
+
+pub fn preview_file(file: &str) -> anyhow::Result<()> {
+    let cmd = command::mpv_preview_command(file);
+    let status = Command::new(&cmd.program)
+        .args(&cmd.args)
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("mpv exited with status: {}", status);
+    }
+    Ok(())
+}
+
+pub fn preview_files(files: &[String]) -> anyhow::Result<()> {
+    let cmd = command::mpv_preview_all_command(files);
+    let status = Command::new(&cmd.program)
+        .args(&cmd.args)
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("mpv exited with status: {}", status);
+    }
+    Ok(())
+}
+
+pub fn delete_file(file: &str) -> anyhow::Result<()> {
+    if Path::new(file).exists() {
+        std::fs::remove_file(file)?;
+    }
+    Ok(())
+}
+
+pub fn file_exists(file: &str) -> bool {
+    Path::new(file).exists()
+}
+
+
