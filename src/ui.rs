@@ -49,10 +49,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(" q", key_style),
             Span::styled(" Quit", dim),
         ]),
-        AppState::Rendering => Line::from(vec![Span::styled(
-            " Rendering in progress…",
-            dim,
-        )]),
+        AppState::Rendering => Line::from(vec![Span::styled(" Rendering in progress…", dim)]),
         AppState::Ready => match app.focus {
             FocusRegion::Controls => Line::from(vec![
                 Span::styled(" j/k", key_style),
@@ -125,7 +122,7 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     } else {
         " "
     };
-    let screen_value = app.selected_screen().unwrap_or("(none)");
+    let screen_value = app.selected_screen_display();
     let screen_arrows = if app.controls_row == ControlsRow::Screen && controls_focus {
         " ◄ ►"
     } else {

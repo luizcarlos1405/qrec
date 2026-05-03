@@ -1,4 +1,5 @@
 use crate::config::QrecConfig;
+use crate::effects::ScreenInfo;
 use crate::timeline;
 
 const FPS: f64 = 30.0;
@@ -33,7 +34,7 @@ pub struct App {
     pub frames_per_char: usize,
     pub viewport_scroll: usize,
     pub viewport_width: usize,
-    pub screens: Vec<String>,
+    pub screens: Vec<ScreenInfo>,
     pub screen_index: usize,
     pub microphones: Vec<String>,
     pub mic_index: usize,
@@ -45,7 +46,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(config: QrecConfig, screens: Vec<String>, microphones: Vec<String>) -> Self {
+    pub fn new(config: QrecConfig, screens: Vec<ScreenInfo>, microphones: Vec<String>) -> Self {
         let screen_index = 0;
         let mic_index = 0;
 
@@ -73,7 +74,14 @@ impl App {
     }
 
     pub fn selected_screen(&self) -> Option<&str> {
-        self.screens.get(self.screen_index).map(|s| s.as_str())
+        self.screens.get(self.screen_index).map(|s| s.name.as_str())
+    }
+
+    pub fn selected_screen_display(&self) -> &str {
+        self.screens
+            .get(self.screen_index)
+            .map(|s| s.label.as_str())
+            .unwrap_or("(none)")
     }
 
     pub fn selected_microphone(&self) -> Option<&str> {

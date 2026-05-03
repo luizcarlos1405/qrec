@@ -33,7 +33,7 @@ fn main() -> anyhow::Result<()> {
     let screen_index = config
         .selected_screen
         .as_ref()
-        .and_then(|s| screens.iter().position(|sc| sc == s))
+        .and_then(|s| screens.iter().position(|sc| &sc.name == s))
         .unwrap_or(0);
 
     let mic_index = config

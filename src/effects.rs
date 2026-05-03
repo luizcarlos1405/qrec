@@ -49,7 +49,13 @@ pub fn ensure_config_exists(config: &QrecConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn discover_screens() -> anyhow::Result<Vec<String>> {
+#[derive(Debug, Clone)]
+pub struct ScreenInfo {
+    pub name: String,
+    pub label: String,
+}
+
+pub fn discover_screens() -> anyhow::Result<Vec<ScreenInfo>> {
     let cmd = command::wf_recorder_list_command();
     let output = Command::new(&cmd.program)
         .args(&cmd.args)
@@ -69,7 +75,10 @@ pub fn discover_screens() -> anyhow::Result<Vec<String>> {
             continue;
         }
         if let Some(name) = extract_output_name(trimmed) {
-            screens.push(name.to_string());
+            screens.push(ScreenInfo {
+                name: name.to_string(),
+                label: trimmed.to_string(),
+            });
         }
     }
 
