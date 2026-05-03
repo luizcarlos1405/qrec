@@ -5,6 +5,17 @@ use std::process::{Command, Stdio};
 use crate::{command, config::QrecConfig};
 
 const QREC_JSON: &str = "qrec.json";
+const LOG_FILE: &str = "logs.txt";
+
+fn log_error(msg: &str) {
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    let entry = format!("[{}] {}\n", timestamp, msg);
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(LOG_FILE)
+        .and_then(|mut f| f.write_all(entry.as_bytes()));
+}
 
 pub fn load_config() -> anyhow::Result<QrecConfig> {
     if Path::new(QREC_JSON).exists() {
@@ -83,11 +94,19 @@ pub fn start_recording(
     filename: &str,
 ) -> anyhow::Result<std::process::Child> {
     let cmd = command::wf_recorder_command(output, audio_device, filename);
-    let child = Command::new(&cmd.program)
+    let child = match Command::new(&cmd.program)
         .args(&cmd.args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()?;
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!("Failed to start wf-recorder: {}", e);
+            log_error(&msg);
+            return Err(e.into());
+        }
+    };
     Ok(child)
 }
 
@@ -100,7 +119,7 @@ pub fn stop_recording(child: &mut std::process::Child) -> anyhow::Result<()> {
 }
 
 pub fn get_video_duration(file: &str) -> anyhow::Result<f64> {
-    let output = Command::new("ffprobe")
+    let output = match Command::new("ffprobe")
         .args([
             "-v",
             "error",
@@ -112,10 +131,27 @@ pub fn get_video_duration(file: &str) -> anyhow::Result<f64> {
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()?;
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            let msg = format!("Failed to run ffprobe on '{}': {}", file, e);
+            log_error(&msg);
+            return Err(e.into());
+        }
+    };
 
     let duration_str = String::from_utf8_lossy(&output.stdout);
     let duration: f64 = duration_str.trim().parse().unwrap_or(0.0);
+    if duration == 0.0 {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let msg = format!(
+            "ffprobe returned 0 duration for '{}': {}",
+            file,
+            stderr.trim()
+        );
+        log_error(&msg);
+    }
     Ok(duration)
 }
 
@@ -136,7 +172,15 @@ pub fn render_concat(chunk_files: &[String], output_file: &str) -> anyhow::Resul
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("ffmpeg failed: {}", stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let msg = format!(
+            "ffmpeg failed (exit {}):\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            output.status.code().unwrap_or(-1),
+            stdout.trim(),
+            stderr.trim()
+        );
+        log_error(&msg);
+        anyhow::bail!("{}", msg);
     }
 
     Ok(())
@@ -144,22 +188,36 @@ pub fn render_concat(chunk_files: &[String], output_file: &str) -> anyhow::Resul
 
 pub fn preview_file(file: &str) -> anyhow::Result<()> {
     let cmd = command::mpv_preview_command(file);
-    let status = Command::new(&cmd.program)
-        .args(&cmd.args)
-        .status()?;
+    let status = match Command::new(&cmd.program).args(&cmd.args).status() {
+        Ok(s) => s,
+        Err(e) => {
+            let msg = format!("Failed to launch mpv for '{}': {}", file, e);
+            log_error(&msg);
+            return Err(e.into());
+        }
+    };
     if !status.success() {
-        anyhow::bail!("mpv exited with status: {}", status);
+        let msg = format!("mpv exited with status {} for '{}'", status, file);
+        log_error(&msg);
+        anyhow::bail!("{}", msg);
     }
     Ok(())
 }
 
 pub fn preview_files(files: &[String]) -> anyhow::Result<()> {
     let cmd = command::mpv_preview_all_command(files);
-    let status = Command::new(&cmd.program)
-        .args(&cmd.args)
-        .status()?;
+    let status = match Command::new(&cmd.program).args(&cmd.args).status() {
+        Ok(s) => s,
+        Err(e) => {
+            let msg = format!("Failed to launch mpv: {}", e);
+            log_error(&msg);
+            return Err(e.into());
+        }
+    };
     if !status.success() {
-        anyhow::bail!("mpv exited with status: {}", status);
+        let msg = format!("mpv exited with status {}", status);
+        log_error(&msg);
+        anyhow::bail!("{}", msg);
     }
     Ok(())
 }
