@@ -85,5 +85,3 @@ pub fn chunk_start_col(
     }
     col
 }
-
-

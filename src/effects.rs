@@ -7,6 +7,16 @@ use crate::{command, config::QrecConfig};
 const QREC_JSON: &str = "qrec.json";
 const LOG_FILE: &str = "logs.txt";
 
+fn extract_output_name(line: &str) -> Option<&str> {
+    let line = line
+        .strip_prefix(|c: char| c.is_ascii_digit())?
+        .trim_start();
+    let line = line.strip_prefix('.')?.trim_start();
+    let after = line.strip_prefix("Name:")?.trim_start();
+    let end = after.find(" Description:").unwrap_or(after.len());
+    Some(&after[..end])
+}
+
 fn log_error(msg: &str) {
     let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
     let entry = format!("[{}] {}\n", timestamp, msg);
@@ -55,8 +65,11 @@ pub fn discover_screens() -> anyhow::Result<Vec<String>> {
     let mut screens = Vec::new();
     for line in combined.lines() {
         let trimmed = line.trim();
-        if !trimmed.is_empty() {
-            screens.push(trimmed.to_string());
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(name) = extract_output_name(trimmed) {
+            screens.push(name.to_string());
         }
     }
 
@@ -94,13 +107,20 @@ pub fn start_recording(
     filename: &str,
 ) -> anyhow::Result<std::process::Child> {
     let cmd = command::wf_recorder_command(output, audio_device, filename);
+    log_error(&format!(
+        "Starting wf-recorder: program={} args={:?} output={} audio={:?} filename={}",
+        cmd.program, cmd.args, output, audio_device, filename
+    ));
     let child = match Command::new(&cmd.program)
         .args(&cmd.args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
     {
-        Ok(c) => c,
+        Ok(c) => {
+            log_error(&format!("wf-recorder spawned with PID {}", c.id()));
+            c
+        }
         Err(e) => {
             let msg = format!("Failed to start wf-recorder: {}", e);
             log_error(&msg);
@@ -111,14 +131,39 @@ pub fn start_recording(
 }
 
 pub fn stop_recording(child: &mut std::process::Child) -> anyhow::Result<()> {
+    let pid = child.id();
+    log_error(&format!("Stopping wf-recorder PID {}", pid));
     unsafe {
-        libc::kill(child.id() as i32, libc::SIGINT);
+        libc::kill(pid as i32, libc::SIGINT);
     }
-    child.wait()?;
+    match child.wait() {
+        Ok(status) => {
+            log_error(&format!(
+                "wf-recorder PID {} exited with status: {}",
+                pid, status
+            ));
+        }
+        Err(e) => {
+            log_error(&format!("wf-recorder PID {} wait failed: {}", pid, e));
+            return Err(e.into());
+        }
+    }
     Ok(())
 }
 
 pub fn get_video_duration(file: &str) -> anyhow::Result<f64> {
+    let exists = Path::new(file).exists();
+    log_error(&format!(
+        "get_video_duration called for '{}' (exists={})",
+        file, exists
+    ));
+    if !exists {
+        log_error(&format!(
+            "File '{}' does not exist, returning duration 0.0",
+            file
+        ));
+        return Ok(0.0);
+    }
     let output = match Command::new("ffprobe")
         .args([
             "-v",
@@ -232,5 +277,3 @@ pub fn delete_file(file: &str) -> anyhow::Result<()> {
 pub fn file_exists(file: &str) -> bool {
     Path::new(file).exists()
 }
-
-

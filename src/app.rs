@@ -84,7 +84,10 @@ impl App {
     }
 
     pub fn selected_microphone_display(&self) -> &str {
-        self.microphones.get(self.mic_index).map(|s| s.as_str()).unwrap_or("No microphone")
+        self.microphones
+            .get(self.mic_index)
+            .map(|s| s.as_str())
+            .unwrap_or("No microphone")
     }
 
     pub fn recalc_zoom(&mut self) {
@@ -92,11 +95,8 @@ impl App {
             self.frames_per_char = 1;
             return;
         }
-        self.frames_per_char = timeline::default_frames_per_char(
-            &self.config.chunks,
-            FPS,
-            self.viewport_width,
-        );
+        self.frames_per_char =
+            timeline::default_frames_per_char(&self.config.chunks, FPS, self.viewport_width);
     }
 
     pub fn auto_pan_to_selected(&mut self) {
@@ -133,7 +133,8 @@ impl App {
                     }
                     actions.push(AppAction::Quit);
                 }
-                crossterm::event::KeyCode::Char('n') | crossterm::event::KeyCode::Char('N')
+                crossterm::event::KeyCode::Char('n')
+                | crossterm::event::KeyCode::Char('N')
                 | crossterm::event::KeyCode::Esc => {
                     self.pending_quit = false;
                     self.status_message = "Ready".to_string();
@@ -149,7 +150,8 @@ impl App {
                     self.pending_overwrite = false;
                     actions.push(AppAction::Render);
                 }
-                crossterm::event::KeyCode::Char('n') | crossterm::event::KeyCode::Char('N')
+                crossterm::event::KeyCode::Char('n')
+                | crossterm::event::KeyCode::Char('N')
                 | crossterm::event::KeyCode::Esc => {
                     self.pending_overwrite = false;
                     self.status_message = "Cancelled".to_string();
@@ -174,26 +176,22 @@ impl App {
                     FocusRegion::Timeline => FocusRegion::Controls,
                 };
             }
-            _ => {
-                match self.state {
-                    AppState::Recording => {
-                        if key.code == crossterm::event::KeyCode::Enter {
-                            actions.push(AppAction::StopRecording);
-                        }
-                    }
-                    AppState::Rendering => {}
-                    AppState::Ready => {
-                        match self.focus {
-                            FocusRegion::Controls => {
-                                self.handle_controls_key(key, &mut actions);
-                            }
-                            FocusRegion::Timeline => {
-                                self.handle_timeline_key(key, &mut actions);
-                            }
-                        }
+            _ => match self.state {
+                AppState::Recording => {
+                    if key.code == crossterm::event::KeyCode::Enter {
+                        actions.push(AppAction::StopRecording);
                     }
                 }
-            }
+                AppState::Rendering => {}
+                AppState::Ready => match self.focus {
+                    FocusRegion::Controls => {
+                        self.handle_controls_key(key, &mut actions);
+                    }
+                    FocusRegion::Timeline => {
+                        self.handle_timeline_key(key, &mut actions);
+                    }
+                },
+            },
         }
 
         actions
@@ -359,7 +357,8 @@ impl App {
     fn update_chunk_status(&mut self) {
         if let Some(chunk) = self.config.chunks.get(self.selected_chunk) {
             let time = chunk.recorded_at.format("%H:%M:%S").to_string();
-            self.status_message = format!("{} — {:.1}s — {}", chunk.file, chunk.duration_secs, time);
+            self.status_message =
+                format!("{} — {:.1}s — {}", chunk.file, chunk.duration_secs, time);
         }
     }
 

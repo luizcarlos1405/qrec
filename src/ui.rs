@@ -1,9 +1,9 @@
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
+    Frame,
 };
 
 use crate::app::{App, AppState, ControlsRow, FocusRegion};
@@ -44,7 +44,9 @@ fn draw_header(f: &mut Frame, area: Rect) {
 fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     let controls_focus = app.focus == FocusRegion::Controls;
     let controls_highlight = if controls_focus {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -80,7 +82,11 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     };
     let rec_label = match app.state {
         AppState::Recording => {
-            format!("{}● REC  Recording... {:.1}s", rec_prefix, app.recording_elapsed_secs())
+            format!(
+                "{}● REC  Recording... {:.1}s",
+                rec_prefix,
+                app.recording_elapsed_secs()
+            )
         }
         AppState::Rendering => format!("{} ⏳ Rendering...", rec_prefix),
         AppState::Ready => format!("{} [Start Recording]", rec_prefix),
@@ -116,18 +122,21 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
                 format!("{} Screen:     ", screen_prefix),
                 controls_highlight,
             ),
-            Span::styled(format!("{:<30}", screen_value), Style::default().fg(Color::White)),
+            Span::styled(
+                format!("{:<30}", screen_value),
+                Style::default().fg(Color::White),
+            ),
             Span::styled(screen_arrows, Style::default().fg(Color::DarkGray)),
         ])),
         inner_chunks[0],
     );
     f.render_widget(
         Paragraph::new(Line::from(vec![
+            Span::styled(format!("{} Microphone: ", mic_prefix), controls_highlight),
             Span::styled(
-                format!("{} Microphone: ", mic_prefix),
-                controls_highlight,
+                format!("{:<30}", mic_value),
+                Style::default().fg(Color::White),
             ),
-            Span::styled(format!("{:<30}", mic_value), Style::default().fg(Color::White)),
             Span::styled(mic_arrows, Style::default().fg(Color::DarkGray)),
         ])),
         inner_chunks[1],
@@ -206,7 +215,11 @@ fn draw_timeline_section(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD)
         };
 
-        let ch = if i == app.selected_chunk { "▓" } else { "█" };
+        let ch = if i == app.selected_chunk {
+            "▓"
+        } else {
+            "█"
+        };
 
         spans.push(Span::styled(ch.repeat(vis_width), style));
         col += w;

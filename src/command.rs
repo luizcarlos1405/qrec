@@ -4,11 +4,7 @@ pub struct Command {
     pub args: Vec<String>,
 }
 
-pub fn wf_recorder_command(
-    output: &str,
-    audio_device: Option<&str>,
-    filename: &str,
-) -> Command {
+pub fn wf_recorder_command(output: &str, audio_device: Option<&str>, filename: &str) -> Command {
     let mut args = vec![
         "--output".to_string(),
         output.to_string(),

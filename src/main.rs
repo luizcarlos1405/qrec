@@ -167,6 +167,16 @@ fn stop_recording(app: &mut App, recorder_child: &mut Option<std::process::Child
 
     let chunk_file = app.recording_chunk_file.take().unwrap_or_default();
 
+    if !effects::file_exists(&chunk_file) {
+        app.status_message = format!(
+            "Recording failed: {} was not created by wf-recorder. Check logs.txt",
+            chunk_file
+        );
+        app.state = AppState::Ready;
+        app.recording_start_time = None;
+        return;
+    }
+
     let duration = effects::get_video_duration(&chunk_file).unwrap_or(0.0);
 
     timeline::add_chunk(&mut app.config, chunk_file.clone(), duration);
@@ -250,11 +260,7 @@ fn do_render(app: &mut App) {
     app.state = AppState::Ready;
 }
 
-fn preview_chunk(
-    app: &mut App,
-    idx: usize,
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-) {
+fn preview_chunk(app: &mut App, idx: usize, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) {
     if app.state == AppState::Recording {
         return;
     }
