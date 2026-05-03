@@ -43,11 +43,8 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 
     let shortcuts_line = match app.state {
         AppState::Recording => Line::from(vec![
-            Span::styled(" Enter", key_style),
+            Span::styled(" r", key_style),
             Span::styled(" Stop", dim),
-            sep.clone(),
-            Span::styled(" q", key_style),
-            Span::styled(" Quit", dim),
         ]),
         AppState::Rendering => Line::from(vec![Span::styled(" Rendering in progress…", dim)]),
         AppState::Ready => match app.focus {
@@ -58,13 +55,13 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" h/l", key_style),
                 Span::styled(" Change", dim),
                 sep.clone(),
-                Span::styled(" Enter", key_style),
+                Span::styled(" r", key_style),
                 Span::styled(" Record", dim),
                 sep.clone(),
                 Span::styled(" d", key_style),
                 Span::styled(" Discard", dim),
                 sep.clone(),
-                Span::styled(" r", key_style),
+                Span::styled(" e", key_style),
                 Span::styled(" Render", dim),
                 sep.clone(),
                 Span::styled(" P", key_style),
@@ -90,6 +87,9 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" Preview", dim),
                 sep.clone(),
                 Span::styled(" r", key_style),
+                Span::styled(" Record", dim),
+                sep.clone(),
+                Span::styled(" e", key_style),
                 Span::styled(" Render", dim),
                 sep.clone(),
                 Span::styled(" P", key_style),
@@ -141,26 +141,18 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
         ""
     };
 
-    let rec_prefix = if app.controls_row == ControlsRow::Record && controls_focus {
-        "▸"
-    } else {
-        " "
-    };
-    let rec_label = match app.state {
+    let rec_indicator = match app.state {
         AppState::Recording => {
-            format!(
-                "{}● REC  Recording... {:.1}s",
-                rec_prefix,
-                app.recording_elapsed_secs()
-            )
+            Some(Line::from(Span::styled(
+                format!("  ● REC  Recording... {:.1}s", app.recording_elapsed_secs()),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )))
         }
-        AppState::Rendering => format!("{} ⏳ Rendering...", rec_prefix),
-        AppState::Ready => format!("{} [Start Recording]", rec_prefix),
-    };
-    let rec_style = if app.state == AppState::Recording {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
+        AppState::Rendering => Some(Line::from(Span::styled(
+            "  ⏳ Rendering...",
+            Style::default(),
+        ))),
+        AppState::Ready => None,
     };
 
     let controls_block = Block::default()
@@ -176,7 +168,6 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     let inner_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
@@ -207,10 +198,17 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
         ])),
         inner_chunks[1],
     );
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(rec_label, rec_style))),
-        inner_chunks[2],
-    );
+
+    if let Some(rec_line) = rec_indicator {
+        let indicator_area = Rect {
+            x: area.x,
+            y: area.y + 3,
+            width: area.width,
+            height: 1,
+        };
+        f.render_widget(Paragraph::new(rec_line), indicator_area);
+    }
+
     f.render_widget(controls_block, area);
 
     let timeline_area = Rect {

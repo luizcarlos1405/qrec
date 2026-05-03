@@ -14,7 +14,6 @@ pub enum FocusRegion {
 pub enum ControlsRow {
     Screen,
     Microphone,
-    Record,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,13 +170,17 @@ impl App {
 
         match key.code {
             crossterm::event::KeyCode::Char('q') => {
-                if self.state == AppState::Recording {
-                    self.pending_quit = true;
-                    self.status_message = "Recording in progress. Stop and quit? (y/n)".to_string();
-                } else {
-                    actions.push(AppAction::Quit);
-                }
+                actions.push(AppAction::Quit);
             }
+            crossterm::event::KeyCode::Char('r') => match self.state {
+                AppState::Recording => {
+                    actions.push(AppAction::StopRecording);
+                }
+                AppState::Rendering => {}
+                AppState::Ready => {
+                    actions.push(AppAction::StartRecording);
+                }
+            },
             crossterm::event::KeyCode::Tab => {
                 self.focus = match self.focus {
                     FocusRegion::Controls => FocusRegion::Timeline,
@@ -185,11 +188,7 @@ impl App {
                 };
             }
             _ => match self.state {
-                AppState::Recording => {
-                    if key.code == crossterm::event::KeyCode::Enter {
-                        actions.push(AppAction::StopRecording);
-                    }
-                }
+                AppState::Recording => {}
                 AppState::Rendering => {}
                 AppState::Ready => match self.focus {
                     FocusRegion::Controls => {
@@ -214,15 +213,13 @@ impl App {
             crossterm::event::KeyCode::Char('j') | crossterm::event::KeyCode::Down => {
                 self.controls_row = match self.controls_row {
                     ControlsRow::Screen => ControlsRow::Microphone,
-                    ControlsRow::Microphone => ControlsRow::Record,
-                    ControlsRow::Record => ControlsRow::Screen,
+                    ControlsRow::Microphone => ControlsRow::Screen,
                 };
             }
             crossterm::event::KeyCode::Char('k') | crossterm::event::KeyCode::Up => {
                 self.controls_row = match self.controls_row {
-                    ControlsRow::Screen => ControlsRow::Record,
+                    ControlsRow::Screen => ControlsRow::Microphone,
                     ControlsRow::Microphone => ControlsRow::Screen,
-                    ControlsRow::Record => ControlsRow::Microphone,
                 };
             }
             crossterm::event::KeyCode::Char('h') | crossterm::event::KeyCode::Left => {
@@ -242,7 +239,6 @@ impl App {
                             self.selected_microphone().map(|s| s.to_string());
                         actions.push(AppAction::SaveConfig);
                     }
-                    ControlsRow::Record => {}
                 }
             }
             crossterm::event::KeyCode::Char('l') | crossterm::event::KeyCode::Right => {
@@ -262,12 +258,6 @@ impl App {
                             self.selected_microphone().map(|s| s.to_string());
                         actions.push(AppAction::SaveConfig);
                     }
-                    ControlsRow::Record => {}
-                }
-            }
-            crossterm::event::KeyCode::Enter => {
-                if self.controls_row == ControlsRow::Record {
-                    actions.push(AppAction::StartRecording);
                 }
             }
             crossterm::event::KeyCode::Char('d') => {
@@ -277,7 +267,7 @@ impl App {
                     self.status_message = "No chunk to remove".to_string();
                 }
             }
-            crossterm::event::KeyCode::Char('r') => {
+            crossterm::event::KeyCode::Char('e') => {
                 actions.push(AppAction::RequestRender);
             }
             crossterm::event::KeyCode::Char('P') => {
@@ -294,7 +284,7 @@ impl App {
     ) {
         if self.config.chunks.is_empty() {
             match key.code {
-                crossterm::event::KeyCode::Char('r') => {
+                crossterm::event::KeyCode::Char('e') => {
                     actions.push(AppAction::RequestRender);
                 }
                 crossterm::event::KeyCode::Char('P') => {
@@ -352,7 +342,7 @@ impl App {
             crossterm::event::KeyCode::Char('p') => {
                 actions.push(AppAction::PreviewChunk(self.selected_chunk));
             }
-            crossterm::event::KeyCode::Char('r') => {
+            crossterm::event::KeyCode::Char('e') => {
                 actions.push(AppAction::RequestRender);
             }
             crossterm::event::KeyCode::Char('P') => {
