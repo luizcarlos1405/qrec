@@ -43,7 +43,8 @@ pub fn chunk_char_width(duration_secs: f64, fps: f64, frames_per_char: usize) ->
         return 1;
     }
     let frames = duration_secs * fps;
-    (frames / frames_per_char as f64).ceil() as usize
+    let width = (frames / frames_per_char as f64).ceil() as usize;
+    width.max(1)
 }
 
 pub fn total_frames(chunks: &[Chunk], fps: f64) -> f64 {
