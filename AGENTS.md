@@ -6,6 +6,7 @@
 nix-shell            # enter dev shell (provides rustc, cargo, clippy, rustfmt, wf-recorder, ffmpeg, mpv, pulseaudio)
 cargo build          # debug build
 cargo build --release
+cargo install --path . --root ~/.local   # installs binary to ~/.local/bin/qrec
 cargo clippy         # lint
 cargo fmt --check    # format check
 cargo run            # run the TUI (requires wf-recorder, ffmpeg, mpv, pactl at runtime)

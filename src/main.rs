@@ -18,6 +18,15 @@ use ratatui::Terminal;
 use app::{App, AppAction, AppState};
 
 fn main() -> anyhow::Result<()> {
+    let missing = effects::check_dependencies();
+    if !missing.is_empty() {
+        eprintln!("Missing dependencies. Please install them:");
+        for dep in &missing {
+            eprintln!("  - {}", dep);
+        }
+        std::process::exit(1);
+    }
+
     let config = effects::load_config()?;
 
     let screens = effects::discover_screens().unwrap_or_else(|e| {

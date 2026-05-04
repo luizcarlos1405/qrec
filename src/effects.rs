@@ -7,6 +7,29 @@ use crate::{command, config::QrecConfig};
 const QREC_JSON: &str = "qrec.json";
 const LOG_FILE: &str = "logs.txt";
 
+const REQUIRED_DEPS: &[&str] = &["wf-recorder", "ffmpeg", "ffprobe", "mpv", "pactl"];
+
+pub fn check_dependencies() -> Vec<String> {
+    REQUIRED_DEPS
+        .iter()
+        .filter(|dep| which(dep).is_none())
+        .map(|dep| dep.to_string())
+        .collect()
+}
+
+fn which(program: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths).find_map(|dir| {
+            let candidate = dir.join(program);
+            if candidate.is_file() {
+                Some(candidate)
+            } else {
+                None
+            }
+        })
+    })
+}
+
 fn extract_output_name(line: &str) -> Option<&str> {
     let line = line
         .strip_prefix(|c: char| c.is_ascii_digit())?
