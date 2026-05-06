@@ -280,9 +280,9 @@ fn draw_timeline_section(f: &mut Frame, app: &App, area: Rect) {
         };
 
         let ch = if i == app.selected_chunk {
-            "▓"
-        } else {
             "█"
+        } else {
+            "▓"
         };
 
         if i > 0 {
