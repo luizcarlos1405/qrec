@@ -333,7 +333,9 @@ impl App {
                 self.auto_pan_to_selected();
             }
             crossterm::event::KeyCode::Char('o') => {
-                self.frames_per_char = timeline::zoom_out(self.frames_per_char);
+                if timeline::can_zoom_out(&self.config.chunks, FPS, self.frames_per_char) {
+                    self.frames_per_char = timeline::zoom_out(self.frames_per_char);
+                }
                 self.auto_pan_to_selected();
             }
             crossterm::event::KeyCode::Char('d') => {
