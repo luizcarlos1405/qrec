@@ -87,7 +87,7 @@ Files are saved in the current working directory as `chunk-{n}.mp4` where `n` is
 │  ● REC  [Start/Stop]                                 │
 │                                                      │
 │  ── Timeline ─────────────────────────────────────── │
-│  ████████ ██ ████████████████                        │
+│  ▓▓▓▓▓▓▓▓ ██ ▓▓▓▓▓▓▓▓▓▓▓▓▓▓                        │
 │                                                      │
 ├──────────────────────────────────────────────────────┤
 │  Ready                                               │
@@ -96,10 +96,10 @@ Files are saved in the current working directory as `chunk-{n}.mp4` where `n` is
 
 ### Timeline Strip
 
-The timeline is a single-row horizontal strip that renders chunks as contiguous solid blocks (`█`) side by side. No labels or numbers are drawn inside the blocks.
+The timeline is a single-row horizontal strip that renders chunks as contiguous solid blocks (`▓`) side by side. No labels or numbers are drawn inside the blocks.
 
 - **Width calculation** — each chunk's character width is `ceil(chunk_frames / frames_per_char)`, where `chunk_frames = duration_secs * fps` (fps defaulting to 30). The `frames_per_char` value is controlled by the zoom level.
-- **Selected chunk** — the selected chunk is visually distinguished (e.g., inverted foreground/background or a different character like `▓`). When a chunk is selected, the status bar shows its full details: filename, duration, and timestamp.
+- **Selected chunk** — the selected chunk is visually distinguished (e.g., inverted foreground/background or a different character like `█`). When a chunk is selected, the status bar shows its full details: filename, duration, and timestamp.
 - **Empty state** — when no chunks exist, the strip displays a dim placeholder message (e.g., "No chunks recorded").
 - **Recording indicator** — while recording, a pulsing block (`▒`) grows at the end of the strip to represent the in-progress chunk.
 
