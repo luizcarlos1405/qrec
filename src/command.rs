@@ -45,7 +45,17 @@ pub fn ffmpeg_concat_command(
 pub fn concat_list_content(chunk_files: &[String]) -> String {
     chunk_files
         .iter()
-        .map(|f| format!("file '{}'", f))
+        .map(|f| {
+            let path = std::path::Path::new(f);
+            let abs = if path.is_absolute() {
+                f.clone()
+            } else {
+                std::fs::canonicalize(f)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| f.clone())
+            };
+            format!("file '{}'", abs)
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
