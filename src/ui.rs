@@ -269,14 +269,9 @@ fn draw_timeline_section(f: &mut Frame, app: &App, area: Rect) {
         }
 
         let style = if i == app.selected_chunk {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
+            Style::default().add_modifier(Modifier::BOLD)
         } else {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
         };
 
         let ch = if i == app.selected_chunk {
