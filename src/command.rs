@@ -92,6 +92,52 @@ pub fn pactl_list_sources_command() -> Command {
     }
 }
 
+pub fn ffmpeg_silence_detect_command(file: &str, threshold_db: f64) -> Command {
+    Command {
+        program: "ffmpeg".to_string(),
+        args: vec![
+            "-i".to_string(),
+            file.to_string(),
+            "-af".to_string(),
+            format!("silencedetect=noise={}dB:d=0", threshold_db),
+            "-f".to_string(),
+            "null".to_string(),
+            "-".to_string(),
+        ],
+    }
+}
+
+pub fn ffmpeg_trim_command(input: &str, output: &str, start: f64, end: f64) -> Command {
+    Command {
+        program: "ffmpeg".to_string(),
+        args: vec![
+            "-y".to_string(),
+            "-i".to_string(),
+            input.to_string(),
+            "-ss".to_string(),
+            format!("{}", start),
+            "-to".to_string(),
+            format!("{}", end),
+            "-c:v".to_string(),
+            "libx264".to_string(),
+            "-c:a".to_string(),
+            "aac".to_string(),
+            output.to_string(),
+        ],
+    }
+}
+
+pub fn mpv_preview_segment_command(file: &str, start: f64, end: f64) -> Command {
+    Command {
+        program: "mpv".to_string(),
+        args: vec![
+            format!("--start={}", start),
+            format!("--end={}", end),
+            file.to_string(),
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +200,44 @@ mod tests {
         let cmd = pactl_list_sources_command();
         assert_eq!(cmd.program, "pactl");
         assert_eq!(cmd.args, vec!["list", "short", "sources"]);
+    }
+
+    #[test]
+    fn ffmpeg_silence_detect_command_structure() {
+        let cmd = ffmpeg_silence_detect_command("chunk-1.mp4", -40.0);
+        assert_eq!(cmd.program, "ffmpeg");
+        assert!(cmd.args.contains(&"-af".to_string()));
+        assert!(cmd
+            .args
+            .iter()
+            .any(|a| a.contains("silencedetect=noise=-40dB")));
+        assert!(cmd.args.contains(&"-f".to_string()));
+        assert!(cmd.args.contains(&"null".to_string()));
+        assert!(cmd.args.contains(&"chunk-1.mp4".to_string()));
+    }
+
+    #[test]
+    fn ffmpeg_trim_command_structure() {
+        let cmd = ffmpeg_trim_command("in.mp4", "out.mp4", 3.2, 27.0);
+        assert_eq!(cmd.program, "ffmpeg");
+        assert!(cmd.args.contains(&"-y".to_string()));
+        assert!(cmd.args.contains(&"-ss".to_string()));
+        assert!(cmd.args.contains(&"3.2".to_string()));
+        assert!(cmd.args.contains(&"-to".to_string()));
+        assert!(cmd.args.contains(&"27".to_string()));
+        assert!(cmd.args.contains(&"-c:v".to_string()));
+        assert!(cmd.args.contains(&"libx264".to_string()));
+        assert!(cmd.args.contains(&"-c:a".to_string()));
+        assert!(cmd.args.contains(&"aac".to_string()));
+        assert!(cmd.args.contains(&"out.mp4".to_string()));
+    }
+
+    #[test]
+    fn mpv_preview_segment_command_structure() {
+        let cmd = mpv_preview_segment_command("chunk-1.mp4", 3.2, 27.0);
+        assert_eq!(cmd.program, "mpv");
+        assert!(cmd.args.iter().any(|a| a == "--start=3.2"));
+        assert!(cmd.args.iter().any(|a| a == "--end=27"));
+        assert!(cmd.args.contains(&"chunk-1.mp4".to_string()));
     }
 }
