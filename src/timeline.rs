@@ -1,7 +1,7 @@
 use crate::config::{Chunk, QrecConfig};
 use chrono::Utc;
 
-pub fn add_chunk(config: &mut QrecConfig, file: String, duration_secs: f64) {
+pub fn add_chunk(mut config: QrecConfig, file: String, duration_secs: f64) -> QrecConfig {
     let id = config.generate_chunk_id();
     let chunk = Chunk {
         id,
@@ -11,31 +11,32 @@ pub fn add_chunk(config: &mut QrecConfig, file: String, duration_secs: f64) {
     };
     config.chunks.push(chunk);
     config.next_chunk_number += 1;
+    config
 }
 
-pub fn remove_chunk(config: &mut QrecConfig, index: usize) -> Option<String> {
+pub fn remove_chunk(mut config: QrecConfig, index: usize) -> (QrecConfig, Option<String>) {
     if index < config.chunks.len() {
         let chunk = config.chunks.remove(index);
-        Some(chunk.file.clone())
+        (config, Some(chunk.file.clone()))
     } else {
-        None
+        (config, None)
     }
 }
 
-pub fn move_chunk_left(config: &mut QrecConfig, index: usize) -> bool {
+pub fn move_chunk_left(mut config: QrecConfig, index: usize) -> (QrecConfig, bool) {
     if index == 0 || index >= config.chunks.len() {
-        return false;
+        return (config, false);
     }
     config.chunks.swap(index, index - 1);
-    true
+    (config, true)
 }
 
-pub fn move_chunk_right(config: &mut QrecConfig, index: usize) -> bool {
+pub fn move_chunk_right(mut config: QrecConfig, index: usize) -> (QrecConfig, bool) {
     if index + 1 >= config.chunks.len() {
-        return false;
+        return (config, false);
     }
     config.chunks.swap(index, index + 1);
-    true
+    (config, true)
 }
 
 pub fn chunk_char_width(duration_secs: f64, fps: f64, frames_per_char: usize) -> usize {

@@ -198,7 +198,7 @@ fn stop_recording(app: &mut App, recorder_child: &mut Option<std::process::Child
 
     let duration = effects::get_video_duration(&chunk_file).unwrap_or(0.0);
 
-    timeline::add_chunk(&mut app.config, chunk_file.clone(), duration);
+    app.config = timeline::add_chunk(std::mem::take(&mut app.config), chunk_file.clone(), duration);
 
     if let Err(e) = effects::save_config(&app.config) {
         app.status_message = format!("Error saving config: {}", e);
@@ -218,7 +218,9 @@ fn stop_recording(app: &mut App, recorder_child: &mut Option<std::process::Child
 }
 
 fn delete_chunk(app: &mut App, idx: usize) {
-    if let Some(file) = timeline::remove_chunk(&mut app.config, idx) {
+    let (new_config, removed_file) = timeline::remove_chunk(std::mem::take(&mut app.config), idx);
+    app.config = new_config;
+    if let Some(file) = removed_file {
         let _ = effects::delete_file(&file);
         let _ = effects::save_config(&app.config);
         app.status_message = format!("Deleted {}", file);

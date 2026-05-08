@@ -324,7 +324,9 @@ impl App {
                 self.update_chunk_status();
             }
             Key::Char('H') => {
-                if timeline::move_chunk_left(&mut self.config, self.selected_chunk) {
+                let (new_config, moved) = timeline::move_chunk_left(std::mem::take(&mut self.config), self.selected_chunk);
+                self.config = new_config;
+                if moved {
                     if self.selected_chunk > 0 {
                         self.selected_chunk -= 1;
                     }
@@ -333,7 +335,9 @@ impl App {
                 self.auto_pan_to_selected();
             }
             Key::Char('L') => {
-                if timeline::move_chunk_right(&mut self.config, self.selected_chunk) {
+                let (new_config, moved) = timeline::move_chunk_right(std::mem::take(&mut self.config), self.selected_chunk);
+                self.config = new_config;
+                if moved {
                     if self.selected_chunk + 1 < self.config.chunks.len() {
                         self.selected_chunk += 1;
                     }
