@@ -19,28 +19,25 @@ pub enum FocusRegion {
 pub enum ControlsRow {
     Screen,
     Microphone,
-    AutocutSilence,
-    SilenceLength,
-    SilenceThreshold,
+    Autotrim,
+    AutotrimThreshold,
 }
 
 fn next_controls_row(row: ControlsRow) -> ControlsRow {
     match row {
         ControlsRow::Screen => ControlsRow::Microphone,
-        ControlsRow::Microphone => ControlsRow::AutocutSilence,
-        ControlsRow::AutocutSilence => ControlsRow::SilenceLength,
-        ControlsRow::SilenceLength => ControlsRow::SilenceThreshold,
-        ControlsRow::SilenceThreshold => ControlsRow::Screen,
+        ControlsRow::Microphone => ControlsRow::Autotrim,
+        ControlsRow::Autotrim => ControlsRow::AutotrimThreshold,
+        ControlsRow::AutotrimThreshold => ControlsRow::Screen,
     }
 }
 
 fn prev_controls_row(row: ControlsRow) -> ControlsRow {
     match row {
-        ControlsRow::Screen => ControlsRow::SilenceThreshold,
+        ControlsRow::Screen => ControlsRow::AutotrimThreshold,
         ControlsRow::Microphone => ControlsRow::Screen,
-        ControlsRow::AutocutSilence => ControlsRow::Microphone,
-        ControlsRow::SilenceLength => ControlsRow::AutocutSilence,
-        ControlsRow::SilenceThreshold => ControlsRow::SilenceLength,
+        ControlsRow::Autotrim => ControlsRow::Microphone,
+        ControlsRow::AutotrimThreshold => ControlsRow::Autotrim,
     }
 }
 
@@ -288,17 +285,13 @@ fn handle_controls_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) 
                 app.config.selected_microphone = app.selected_microphone().map(|s| s.to_string());
                 commands.push(AppCommand::SaveConfig);
             }
-            ControlsRow::AutocutSilence => {
-                app.config.autocut_silence_enabled = false;
+            ControlsRow::Autotrim => {
+                app.config.autotrim_enabled = false;
                 commands.push(AppCommand::SaveConfig);
             }
-            ControlsRow::SilenceLength => {
-                app.config.silence_length_secs = (app.config.silence_length_secs - 0.5).max(0.5);
-                commands.push(AppCommand::SaveConfig);
-            }
-            ControlsRow::SilenceThreshold => {
-                app.config.silence_threshold_db =
-                    (app.config.silence_threshold_db - 1.0).max(-60.0);
+            ControlsRow::AutotrimThreshold => {
+                app.config.autotrim_threshold_db =
+                    (app.config.autotrim_threshold_db - 1.0).max(-60.0);
                 commands.push(AppCommand::SaveConfig);
             }
         },
@@ -317,16 +310,13 @@ fn handle_controls_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) 
                 app.config.selected_microphone = app.selected_microphone().map(|s| s.to_string());
                 commands.push(AppCommand::SaveConfig);
             }
-            ControlsRow::AutocutSilence => {
-                app.config.autocut_silence_enabled = true;
+            ControlsRow::Autotrim => {
+                app.config.autotrim_enabled = true;
                 commands.push(AppCommand::SaveConfig);
             }
-            ControlsRow::SilenceLength => {
-                app.config.silence_length_secs = (app.config.silence_length_secs + 0.5).min(10.0);
-                commands.push(AppCommand::SaveConfig);
-            }
-            ControlsRow::SilenceThreshold => {
-                app.config.silence_threshold_db = (app.config.silence_threshold_db + 1.0).min(-5.0);
+            ControlsRow::AutotrimThreshold => {
+                app.config.autotrim_threshold_db =
+                    (app.config.autotrim_threshold_db + 1.0).min(-5.0);
                 commands.push(AppCommand::SaveConfig);
             }
         },
@@ -678,31 +668,25 @@ mod tests {
         assert_eq!(app2.controls_row, ControlsRow::Microphone);
 
         let (app3, _) = handle_key(&app2, Key::Char('j'));
-        assert_eq!(app3.controls_row, ControlsRow::AutocutSilence);
+        assert_eq!(app3.controls_row, ControlsRow::Autotrim);
 
         let (app4, _) = handle_key(&app3, Key::Char('j'));
-        assert_eq!(app4.controls_row, ControlsRow::SilenceLength);
+        assert_eq!(app4.controls_row, ControlsRow::AutotrimThreshold);
 
         let (app5, _) = handle_key(&app4, Key::Char('j'));
-        assert_eq!(app5.controls_row, ControlsRow::SilenceThreshold);
+        assert_eq!(app5.controls_row, ControlsRow::Screen);
 
-        let (app6, _) = handle_key(&app5, Key::Char('j'));
-        assert_eq!(app6.controls_row, ControlsRow::Screen);
+        let (app6, _) = handle_key(&app5, Key::Char('k'));
+        assert_eq!(app6.controls_row, ControlsRow::AutotrimThreshold);
 
         let (app7, _) = handle_key(&app6, Key::Char('k'));
-        assert_eq!(app7.controls_row, ControlsRow::SilenceThreshold);
+        assert_eq!(app7.controls_row, ControlsRow::Autotrim);
 
         let (app8, _) = handle_key(&app7, Key::Char('k'));
-        assert_eq!(app8.controls_row, ControlsRow::SilenceLength);
+        assert_eq!(app8.controls_row, ControlsRow::Microphone);
 
         let (app9, _) = handle_key(&app8, Key::Char('k'));
-        assert_eq!(app9.controls_row, ControlsRow::AutocutSilence);
-
-        let (app10, _) = handle_key(&app9, Key::Char('k'));
-        assert_eq!(app10.controls_row, ControlsRow::Microphone);
-
-        let (app11, _) = handle_key(&app10, Key::Char('k'));
-        assert_eq!(app11.controls_row, ControlsRow::Screen);
+        assert_eq!(app9.controls_row, ControlsRow::Screen);
     }
 
     #[test]
@@ -946,86 +930,53 @@ mod tests {
     }
 
     #[test]
-    fn autocut_silence_toggle() {
+    fn autotrim_toggle() {
         let mut app = app_ready();
-        app.controls_row = ControlsRow::AutocutSilence;
-        assert!(!app.config.autocut_silence_enabled);
+        app.controls_row = ControlsRow::Autotrim;
+        assert!(!app.config.autotrim_enabled);
 
         let (app2, cmds) = handle_key(&app, Key::Char('l'));
-        assert!(app2.config.autocut_silence_enabled);
+        assert!(app2.config.autotrim_enabled);
         assert!(cmds.iter().any(|c| matches!(c, AppCommand::SaveConfig)));
 
         let (app3, cmds) = handle_key(&app2, Key::Char('h'));
-        assert!(!app3.config.autocut_silence_enabled);
+        assert!(!app3.config.autotrim_enabled);
         assert!(cmds.iter().any(|c| matches!(c, AppCommand::SaveConfig)));
     }
 
     #[test]
-    fn silence_length_adjusts_by_half_second() {
+    fn autotrim_threshold_adjusts_by_1db() {
         let mut app = app_ready();
-        app.controls_row = ControlsRow::SilenceLength;
-        assert_eq!(app.config.silence_length_secs, 1.0);
+        app.controls_row = ControlsRow::AutotrimThreshold;
+        assert_eq!(app.config.autotrim_threshold_db, -40.0);
 
         let (app2, cmds) = handle_key(&app, Key::Char('l'));
-        assert_eq!(app2.config.silence_length_secs, 1.5);
+        assert_eq!(app2.config.autotrim_threshold_db, -39.0);
         assert!(cmds.iter().any(|c| matches!(c, AppCommand::SaveConfig)));
 
         let (app3, _) = handle_key(&app2, Key::Char('h'));
-        assert_eq!(app3.config.silence_length_secs, 1.0);
-
-        let (app4, _) = handle_key(&app3, Key::Char('h'));
-        assert_eq!(app4.config.silence_length_secs, 0.5);
+        assert_eq!(app3.config.autotrim_threshold_db, -40.0);
     }
 
     #[test]
-    fn silence_length_clamps_at_bounds() {
+    fn autotrim_threshold_clamps_at_bounds() {
         let mut app = app_ready();
-        app.controls_row = ControlsRow::SilenceLength;
-        app.config.silence_length_secs = 0.5;
+        app.controls_row = ControlsRow::AutotrimThreshold;
+        app.config.autotrim_threshold_db = -60.0;
 
         let (app2, _) = handle_key(&app, Key::Char('h'));
-        assert_eq!(app2.config.silence_length_secs, 0.5);
+        assert_eq!(app2.config.autotrim_threshold_db, -60.0);
 
         let mut app2 = app2;
-        app2.config.silence_length_secs = 10.0;
+        app2.config.autotrim_threshold_db = -5.0;
         let (app3, _) = handle_key(&app2, Key::Char('l'));
-        assert_eq!(app3.config.silence_length_secs, 10.0);
+        assert_eq!(app3.config.autotrim_threshold_db, -5.0);
     }
 
     #[test]
-    fn silence_threshold_adjusts_by_1db() {
-        let mut app = app_ready();
-        app.controls_row = ControlsRow::SilenceThreshold;
-        assert_eq!(app.config.silence_threshold_db, -40.0);
-
-        let (app2, cmds) = handle_key(&app, Key::Char('l'));
-        assert_eq!(app2.config.silence_threshold_db, -39.0);
-        assert!(cmds.iter().any(|c| matches!(c, AppCommand::SaveConfig)));
-
-        let (app3, _) = handle_key(&app2, Key::Char('h'));
-        assert_eq!(app3.config.silence_threshold_db, -40.0);
-    }
-
-    #[test]
-    fn silence_threshold_clamps_at_bounds() {
-        let mut app = app_ready();
-        app.controls_row = ControlsRow::SilenceThreshold;
-        app.config.silence_threshold_db = -60.0;
-
-        let (app2, _) = handle_key(&app, Key::Char('h'));
-        assert_eq!(app2.config.silence_threshold_db, -60.0);
-
-        let mut app2 = app2;
-        app2.config.silence_threshold_db = -5.0;
-        let (app3, _) = handle_key(&app2, Key::Char('l'));
-        assert_eq!(app3.config.silence_threshold_db, -5.0);
-    }
-
-    #[test]
-    fn silence_settings_default_values() {
+    fn autotrim_default_values() {
         let config = QrecConfig::default();
-        assert!(!config.autocut_silence_enabled);
-        assert_eq!(config.silence_length_secs, 1.0);
-        assert_eq!(config.silence_threshold_db, -40.0);
+        assert!(!config.autotrim_enabled);
+        assert_eq!(config.autotrim_threshold_db, -40.0);
     }
 }

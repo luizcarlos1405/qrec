@@ -9,11 +9,7 @@ pub struct Chunk {
     pub recorded_at: DateTime<Utc>,
 }
 
-fn default_silence_length() -> f64 {
-    1.0
-}
-
-fn default_silence_threshold() -> f64 {
+fn default_autotrim_threshold() -> f64 {
     -40.0
 }
 
@@ -24,11 +20,9 @@ pub struct QrecConfig {
     pub selected_microphone: Option<String>,
     pub next_chunk_number: u64,
     #[serde(default)]
-    pub autocut_silence_enabled: bool,
-    #[serde(default = "default_silence_length")]
-    pub silence_length_secs: f64,
-    #[serde(default = "default_silence_threshold")]
-    pub silence_threshold_db: f64,
+    pub autotrim_enabled: bool,
+    #[serde(default = "default_autotrim_threshold")]
+    pub autotrim_threshold_db: f64,
 }
 
 impl Default for QrecConfig {
@@ -38,9 +32,8 @@ impl Default for QrecConfig {
             selected_screen: None,
             selected_microphone: None,
             next_chunk_number: 1,
-            autocut_silence_enabled: false,
-            silence_length_secs: 1.0,
-            silence_threshold_db: -40.0,
+            autotrim_enabled: false,
+            autotrim_threshold_db: -40.0,
         }
     }
 }

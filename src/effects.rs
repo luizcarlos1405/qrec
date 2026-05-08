@@ -360,10 +360,7 @@ pub fn detect_silence(file: &str, threshold_db: f64) -> anyhow::Result<Vec<(f64,
     Ok(intervals)
 }
 
-pub fn compute_trim_points(
-    duration: f64,
-    silence_intervals: &[(f64, Option<f64>)],
-) -> (f64, f64) {
+pub fn compute_trim_points(duration: f64, silence_intervals: &[(f64, Option<f64>)]) -> (f64, f64) {
     let mut trim_start = 0.0;
     let mut trim_end = duration;
 
@@ -394,13 +391,13 @@ pub fn compute_trim_points(
     (trim_start, trim_end)
 }
 
-pub fn preview_file_autocut(file: &str, threshold_db: f64) -> anyhow::Result<()> {
+pub fn preview_file_autotrim(file: &str, threshold_db: f64) -> anyhow::Result<()> {
     let duration = get_video_duration(file)?;
     let silence = detect_silence(file, threshold_db)?;
     let (trim_start, trim_end) = compute_trim_points(duration, &silence);
 
     log_error(&format!(
-        "autocut preview '{}': trim {:.3} - {:.3} (of {:.3})",
+        "autotrim preview '{}': trim {:.3} - {:.3} (of {:.3})",
         file, trim_start, trim_end, duration
     ));
 
@@ -421,7 +418,7 @@ pub fn preview_file_autocut(file: &str, threshold_db: f64) -> anyhow::Result<()>
     Ok(())
 }
 
-pub fn preview_files_autocut(files: &[String], threshold_db: f64) -> anyhow::Result<()> {
+pub fn preview_files_autotrim(files: &[String], threshold_db: f64) -> anyhow::Result<()> {
     let mut edl_lines = Vec::new();
 
     for file in files {
@@ -450,7 +447,10 @@ pub fn preview_files_autocut(files: &[String], threshold_db: f64) -> anyhow::Res
     temp_file.flush()?;
 
     let edl_path = temp_file.path().to_string_lossy().to_string();
-    log_error(&format!("autocut preview EDL: {}", edl_content.replace('\n', " | ")));
+    log_error(&format!(
+        "autotrim preview EDL: {}",
+        edl_content.replace('\n', " | ")
+    ));
 
     let status = match Command::new("mpv").arg(&edl_path).status() {
         Ok(s) => s,
@@ -470,7 +470,7 @@ pub fn preview_files_autocut(files: &[String], threshold_db: f64) -> anyhow::Res
 
 const RAW_RENDER_TEMP: &str = "qrec-render-raw.mp4";
 
-pub fn render_concat_autocut(
+pub fn render_concat_autotrim(
     chunk_files: &[String],
     output_file: &str,
     threshold_db: f64,
@@ -482,16 +482,14 @@ pub fn render_concat_autocut(
     let (trim_start, trim_end) = compute_trim_points(duration, &silence);
 
     log_error(&format!(
-        "autocut render: trim {:.3} - {:.3} (of {:.3})",
+        "autotrim render: trim {:.3} - {:.3} (of {:.3})",
         trim_start, trim_end, duration
     ));
 
-    let needs_trim =
-        (trim_start - 0.0).abs() > 0.01 || (trim_end - duration).abs() > 0.01;
+    let needs_trim = (trim_start - 0.0).abs() > 0.01 || (trim_end - duration).abs() > 0.01;
 
     if needs_trim {
-        let cmd =
-            command::ffmpeg_trim_command(RAW_RENDER_TEMP, output_file, trim_start, trim_end);
+        let cmd = command::ffmpeg_trim_command(RAW_RENDER_TEMP, output_file, trim_start, trim_end);
         let output = Command::new(&cmd.program)
             .args(&cmd.args)
             .stdout(Stdio::piped())

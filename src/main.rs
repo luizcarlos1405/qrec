@@ -234,11 +234,11 @@ fn execute_command(
             } else {
                 app.state = AppState::Rendering;
                 app.status_message = "Rendering...".to_string();
-                let result = if app.config.autocut_silence_enabled {
-                    effects::render_concat_autocut(
+                let result = if app.config.autotrim_enabled {
+                    effects::render_concat_autotrim(
                         &files,
                         &output,
-                        app.config.silence_threshold_db,
+                        app.config.autotrim_threshold_db,
                     )
                 } else {
                     effects::render_concat(&files, &output)
@@ -252,12 +252,8 @@ fn execute_command(
         AppCommand::Render { files, output } => {
             app.state = AppState::Rendering;
             app.status_message = "Rendering...".to_string();
-            let result = if app.config.autocut_silence_enabled {
-                effects::render_concat_autocut(
-                    &files,
-                    &output,
-                    app.config.silence_threshold_db,
-                )
+            let result = if app.config.autotrim_enabled {
+                effects::render_concat_autotrim(&files, &output, app.config.autotrim_threshold_db)
             } else {
                 effects::render_concat(&files, &output)
             };
@@ -278,10 +274,10 @@ fn execute_command(
                     ))];
                 }
                 let file = chunk.file.clone();
-                if app.config.autocut_silence_enabled {
-                    let threshold = app.config.silence_threshold_db;
+                if app.config.autotrim_enabled {
+                    let threshold = app.config.autotrim_threshold_db;
                     suspend_terminal_and(terminal, || {
-                        effects::preview_file_autocut(&file, threshold)
+                        effects::preview_file_autotrim(&file, threshold)
                     });
                 } else {
                     suspend_terminal_and(terminal, || effects::preview_file(&file));
@@ -310,10 +306,10 @@ fn execute_command(
                     "No chunk files found on disk".to_string(),
                 )];
             }
-            if app.config.autocut_silence_enabled {
-                let threshold = app.config.silence_threshold_db;
+            if app.config.autotrim_enabled {
+                let threshold = app.config.autotrim_threshold_db;
                 suspend_terminal_and(terminal, || {
-                    effects::preview_files_autocut(&files, threshold)
+                    effects::preview_files_autotrim(&files, threshold)
                 });
             } else {
                 suspend_terminal_and(terminal, || effects::preview_files(&files));

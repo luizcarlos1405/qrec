@@ -117,11 +117,11 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
-    let autocut_on = app.config.autocut_silence_enabled;
+    let autotrim_on = app.config.autotrim_enabled;
 
     let row_active = |row: ControlsRow| -> bool {
         match row {
-            ControlsRow::SilenceLength | ControlsRow::SilenceThreshold => autocut_on,
+            ControlsRow::AutotrimThreshold => autotrim_on,
             _ => true,
         }
     };
@@ -162,9 +162,8 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
 
     let screen_value = app.selected_screen_display();
     let mic_value = app.selected_microphone_display();
-    let autocut_value = if autocut_on { "on" } else { "off" };
-    let length_value = format!("{:.1}s", app.config.silence_length_secs);
-    let threshold_value = format!("{:.0}dB", app.config.silence_threshold_db);
+    let autotrim_value = if autotrim_on { "on" } else { "off" };
+    let threshold_value = format!("{:.0}dB", app.config.autotrim_threshold_db);
 
     let rec_indicator = match app.state {
         AppState::Recording => Some(Line::from(Span::styled(
@@ -191,7 +190,6 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     let inner_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -236,16 +234,16 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                format!("{} Autocut:    ", prefix(ControlsRow::AutocutSilence)),
-                row_style(ControlsRow::AutocutSilence),
+                format!("{} Autotrim:    ", prefix(ControlsRow::Autotrim)),
+                row_style(ControlsRow::Autotrim),
             ),
             Span::styled(
-                format!("{:<30}", autocut_value),
-                value_style(ControlsRow::AutocutSilence),
+                format!("{:<30}", autotrim_value),
+                value_style(ControlsRow::Autotrim),
             ),
             Span::styled(
-                arrows(ControlsRow::AutocutSilence),
-                arrow_style(ControlsRow::AutocutSilence),
+                arrows(ControlsRow::Autotrim),
+                arrow_style(ControlsRow::Autotrim),
             ),
         ])),
         inner_chunks[2],
@@ -253,36 +251,22 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                format!("{} Silent len: ", prefix(ControlsRow::SilenceLength)),
-                row_style(ControlsRow::SilenceLength),
+                format!(
+                    "{} Autotrim threshold: ",
+                    prefix(ControlsRow::AutotrimThreshold)
+                ),
+                row_style(ControlsRow::AutotrimThreshold),
             ),
             Span::styled(
-                format!("{:<30}", length_value),
-                value_style(ControlsRow::SilenceLength),
+                format!("{:<22}", threshold_value),
+                value_style(ControlsRow::AutotrimThreshold),
             ),
             Span::styled(
-                arrows(ControlsRow::SilenceLength),
-                arrow_style(ControlsRow::SilenceLength),
+                arrows(ControlsRow::AutotrimThreshold),
+                arrow_style(ControlsRow::AutotrimThreshold),
             ),
         ])),
         inner_chunks[3],
-    );
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!("{} Threshold:  ", prefix(ControlsRow::SilenceThreshold)),
-                row_style(ControlsRow::SilenceThreshold),
-            ),
-            Span::styled(
-                format!("{:<30}", threshold_value),
-                value_style(ControlsRow::SilenceThreshold),
-            ),
-            Span::styled(
-                arrows(ControlsRow::SilenceThreshold),
-                arrow_style(ControlsRow::SilenceThreshold),
-            ),
-        ])),
-        inner_chunks[4],
     );
 
     if let Some(rec_line) = rec_indicator {
