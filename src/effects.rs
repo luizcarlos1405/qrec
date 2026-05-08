@@ -441,7 +441,7 @@ pub fn preview_files_autotrim(files: &[String], threshold_db: f64) -> anyhow::Re
         anyhow::bail!("No content after silence removal");
     }
 
-    let edl_content = edl_lines.join("\n");
+    let edl_content = format!("# mpv EDL v0\n{}", edl_lines.join("\n"));
     let mut temp_file = tempfile::Builder::new().suffix(".edl").tempfile()?;
     write!(temp_file, "{}", edl_content)?;
     temp_file.flush()?;
@@ -463,7 +463,9 @@ pub fn preview_files_autotrim(files: &[String], threshold_db: f64) -> anyhow::Re
     drop(temp_file);
 
     if !status.success() {
-        anyhow::bail!("mpv exited with status {}", status);
+        let msg = format!("mpv exited with status {} for EDL preview", status);
+        log_error(&msg);
+        anyhow::bail!("{}", msg);
     }
     Ok(())
 }
