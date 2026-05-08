@@ -66,8 +66,9 @@ fn main() -> anyhow::Result<()> {
     crossterm::execute!(terminal.backend_mut(), EnterAlternateScreen)?;
 
     let mut recorder_child: Option<std::process::Child> = None;
+    let mut recording_start: Option<std::time::Instant> = None;
 
-    let result = run_app(&mut terminal, &mut app, &mut recorder_child);
+    let result = run_app(&mut terminal, &mut app, &mut recorder_child, &mut recording_start);
 
     if let Some(ref mut child) = recorder_child {
         let _ = effects::stop_recording(child);
@@ -84,8 +85,15 @@ fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     recorder_child: &mut Option<std::process::Child>,
+    recording_start: &mut Option<std::time::Instant>,
 ) -> anyhow::Result<()> {
     loop {
+        if app.state == AppState::Recording {
+            app.recording_elapsed_secs = recording_start
+                .map(|t| t.elapsed().as_secs_f64())
+                .unwrap_or(0.0);
+        }
+
         terminal.draw(|f| ui::draw(f, app))?;
 
         let viewport_width = terminal.size()?.width.saturating_sub(2) as usize;
@@ -107,10 +115,10 @@ fn run_app(
                             }
                         }
                         AppAction::StartRecording => {
-                            start_recording(app, recorder_child);
+                            start_recording(app, recorder_child, recording_start);
                         }
                         AppAction::StopRecording => {
-                            stop_recording(app, recorder_child);
+                            stop_recording(app, recorder_child, recording_start);
                         }
                         AppAction::DeleteChunk(idx) => {
                             delete_chunk(app, idx);
@@ -137,7 +145,7 @@ fn run_app(
     }
 }
 
-fn start_recording(app: &mut App, recorder_child: &mut Option<std::process::Child>) {
+fn start_recording(app: &mut App, recorder_child: &mut Option<std::process::Child>, recording_start: &mut Option<std::time::Instant>) {
     let screen = match app.selected_screen() {
         Some(s) => s.to_string(),
         None => {
@@ -157,7 +165,7 @@ fn start_recording(app: &mut App, recorder_child: &mut Option<std::process::Chil
             *recorder_child = Some(child);
             app.state = AppState::Recording;
             app.recording_chunk_file = Some(filename);
-            app.recording_start_time = Some(std::time::Instant::now());
+            *recording_start = Some(std::time::Instant::now());
             app.status_message = "Recording...".to_string();
         }
         Err(e) => {
@@ -167,7 +175,7 @@ fn start_recording(app: &mut App, recorder_child: &mut Option<std::process::Chil
     }
 }
 
-fn stop_recording(app: &mut App, recorder_child: &mut Option<std::process::Child>) {
+fn stop_recording(app: &mut App, recorder_child: &mut Option<std::process::Child>, recording_start: &mut Option<std::time::Instant>) {
     if let Some(ref mut child) = recorder_child {
         if let Err(e) = effects::stop_recording(child) {
             app.status_message = format!("Error stopping recording: {}", e);
@@ -183,7 +191,8 @@ fn stop_recording(app: &mut App, recorder_child: &mut Option<std::process::Child
             chunk_file
         );
         app.state = AppState::Ready;
-        app.recording_start_time = None;
+        *recording_start = None;
+        app.recording_elapsed_secs = 0.0;
         return;
     }
 
@@ -198,7 +207,8 @@ fn stop_recording(app: &mut App, recorder_child: &mut Option<std::process::Child
     }
 
     app.state = AppState::Ready;
-    app.recording_start_time = None;
+    *recording_start = None;
+    app.recording_elapsed_secs = 0.0;
     app.recalc_zoom();
 
     if !app.config.chunks.is_empty() {

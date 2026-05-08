@@ -56,7 +56,7 @@ pub struct App {
     pub mic_index: usize,
     pub status_message: String,
     pub recording_chunk_file: Option<String>,
-    pub recording_start_time: Option<std::time::Instant>,
+    pub recording_elapsed_secs: f64,
     pub pending_quit: bool,
     pub pending_overwrite: bool,
 }
@@ -81,7 +81,7 @@ impl App {
             mic_index,
             status_message: "Ready".to_string(),
             recording_chunk_file: None,
-            recording_start_time: None,
+            recording_elapsed_secs: 0.0,
             pending_quit: false,
             pending_overwrite: false,
         };
@@ -371,12 +371,6 @@ impl App {
             self.status_message =
                 format!("{} — {:.1}s — {}", chunk.file, chunk.duration_secs, time);
         }
-    }
-
-    pub fn recording_elapsed_secs(&self) -> f64 {
-        self.recording_start_time
-            .map(|t| t.elapsed().as_secs_f64())
-            .unwrap_or(0.0)
     }
 }
 

@@ -144,7 +144,7 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     let rec_indicator = match app.state {
         AppState::Recording => {
             Some(Line::from(Span::styled(
-                format!("  ● REC  Recording... {:.1}s", app.recording_elapsed_secs()),
+                format!("  ● REC  Recording... {:.1}s", app.recording_elapsed_secs),
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             )))
         }
@@ -292,7 +292,7 @@ fn draw_timeline_section(f: &mut Frame, app: &App, area: Rect) {
     }
 
     if app.state == AppState::Recording {
-        let elapsed = app.recording_elapsed_secs();
+        let elapsed = app.recording_elapsed_secs;
         let rec_width = timeline::chunk_char_width(elapsed, FPS, app.frames_per_char).max(1);
         let pulse = "▒".repeat(rec_width);
         spans.push(Span::styled(
@@ -316,7 +316,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let msg = if app.state == AppState::Recording {
-        let elapsed = app.recording_elapsed_secs();
+        let elapsed = app.recording_elapsed_secs;
         format!(" ● REC {:.1}s — {}", elapsed, app.status_message)
     } else {
         format!(" {}", app.status_message)
