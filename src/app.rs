@@ -146,6 +146,9 @@ pub enum AppEvent {
         trim_start: f64,
         trim_end: f64,
     },
+    TrimCacheComplete {
+        epoch: u64,
+    },
 }
 
 impl App {
@@ -155,6 +158,16 @@ impl App {
         } else {
             timeline::default_frames_per_char(&config.chunks, FPS, 80)
         };
+
+        let trim_cache: HashMap<String, (f64, f64)> = config
+            .chunks
+            .iter()
+            .filter_map(|c| {
+                c.trim_start
+                    .zip(c.trim_end)
+                    .map(|(ts, te)| (c.id.clone(), (ts, te)))
+            })
+            .collect();
 
         Self {
             config,
@@ -173,7 +186,7 @@ impl App {
             recording_chunk_file: None,
             recording_elapsed_secs: 0.0,
             pending_overwrite: false,
-            trim_cache: HashMap::new(),
+            trim_cache,
             trim_cache_epoch: 0,
         }
     }
@@ -303,6 +316,10 @@ fn handle_controls_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) 
             ControlsRow::Autotrim => {
                 app.config.autotrim_enabled = false;
                 app.trim_cache.clear();
+                for chunk in &mut app.config.chunks {
+                    chunk.trim_start = None;
+                    chunk.trim_end = None;
+                }
                 app.trim_cache_epoch += 1;
                 commands.push(AppCommand::SaveConfig);
             }
@@ -312,7 +329,6 @@ fn handle_controls_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) 
                 commands.push(AppCommand::SaveConfig);
                 if app.config.autotrim_enabled && !app.config.chunks.is_empty() {
                     app.trim_cache_epoch += 1;
-                    app.trim_cache.clear();
                     commands.push(AppCommand::RefreshTrimCache);
                 }
             }
@@ -337,7 +353,6 @@ fn handle_controls_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) 
                 commands.push(AppCommand::SaveConfig);
                 if !app.config.chunks.is_empty() {
                     app.trim_cache_epoch += 1;
-                    app.trim_cache.clear();
                     commands.push(AppCommand::RefreshTrimCache);
                 }
             }
@@ -347,7 +362,6 @@ fn handle_controls_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) 
                 commands.push(AppCommand::SaveConfig);
                 if app.config.autotrim_enabled && !app.config.chunks.is_empty() {
                     app.trim_cache_epoch += 1;
-                    app.trim_cache.clear();
                     commands.push(AppCommand::RefreshTrimCache);
                 }
             }
@@ -496,8 +510,9 @@ fn update_chunk_status(app: &mut App) {
     }
 }
 
-pub fn apply_event(app: &App, event: AppEvent) -> App {
+pub fn apply_event(app: &App, event: AppEvent) -> (App, Vec<AppCommand>) {
     let mut new = app.clone();
+    let mut commands = Vec::new();
 
     match event {
         AppEvent::RecordingStarted { filename } => {
@@ -528,7 +543,6 @@ pub fn apply_event(app: &App, event: AppEvent) -> App {
             }
             if new.config.autotrim_enabled {
                 new.trim_cache_epoch += 1;
-                new.trim_cache.clear();
             }
         }
         AppEvent::RecordingFileMissing { chunk_file } => {
@@ -590,9 +604,20 @@ pub fn apply_event(app: &App, event: AppEvent) -> App {
                 new.trim_cache.insert(chunk_id, (trim_start, trim_end));
             }
         }
+        AppEvent::TrimCacheComplete { epoch } => {
+            if epoch == new.trim_cache_epoch {
+                for chunk in &mut new.config.chunks {
+                    if let Some(&(ts, te)) = new.trim_cache.get(&chunk.id) {
+                        chunk.trim_start = Some(ts);
+                        chunk.trim_end = Some(te);
+                    }
+                }
+                commands.push(AppCommand::SaveConfig);
+            }
+        }
     }
 
-    new
+    (new, commands)
 }
 
 fn fix_selected_chunk(app: &mut App) {
@@ -629,6 +654,8 @@ mod tests {
                 file: format!("chunk-{}.mp4", i),
                 duration_secs: 5.0,
                 recorded_at: Utc::now(),
+                trim_start: None,
+                trim_end: None,
             });
         }
         config.next_chunk_number = (n + 1) as u64;
@@ -847,7 +874,7 @@ mod tests {
     #[test]
     fn apply_event_recording_started() {
         let app = app_ready();
-        let app2 = apply_event(
+        let (app2, cmds) = apply_event(
             &app,
             AppEvent::RecordingStarted {
                 filename: "chunk-1.mp4".to_string(),
@@ -856,13 +883,14 @@ mod tests {
         assert_eq!(app2.state, AppState::Recording);
         assert_eq!(app2.recording_chunk_file, Some("chunk-1.mp4".to_string()));
         assert_eq!(app2.status_message, "Recording...");
+        assert!(cmds.is_empty());
     }
 
     #[test]
     fn apply_event_recording_failed_rolls_back() {
         let mut app = app_ready();
         app.config.next_chunk_number = 5;
-        let app2 = apply_event(
+        let (app2, cmds) = apply_event(
             &app,
             AppEvent::RecordingFailed {
                 filename: "chunk-5.mp4".to_string(),
@@ -872,12 +900,13 @@ mod tests {
         assert_eq!(app2.state, AppState::Ready);
         assert_eq!(app2.config.next_chunk_number, 4);
         assert!(app2.status_message.contains("boom"));
+        assert!(cmds.is_empty());
     }
 
     #[test]
     fn apply_event_recording_stopped_adds_chunk() {
         let app = app_recording();
-        let app2 = apply_event(
+        let (app2, cmds) = apply_event(
             &app,
             AppEvent::RecordingStopped {
                 chunk_file: "chunk-1.mp4".to_string(),
@@ -888,6 +917,7 @@ mod tests {
         assert_eq!(app2.config.chunks.len(), 1);
         assert_eq!(app2.config.chunks[0].file, "chunk-1.mp4");
         assert_eq!(app2.selected_chunk, 0);
+        assert!(cmds.is_empty());
     }
 
     #[test]
@@ -897,32 +927,35 @@ mod tests {
         let (new_config, _) = crate::timeline::remove_chunk(app.config.clone(), 2);
         app.config = new_config;
 
-        let app2 = apply_event(&app, AppEvent::FileDeleted("chunk-3.mp4".to_string()));
+        let (app2, cmds) = apply_event(&app, AppEvent::FileDeleted("chunk-3.mp4".to_string()));
         assert_eq!(app2.selected_chunk, 1);
+        assert!(cmds.is_empty());
     }
 
     #[test]
     fn apply_event_render_succeeded() {
         let mut app = app_ready();
         app.state = AppState::Rendering;
-        let app2 = apply_event(&app, AppEvent::RenderSucceeded("output.mp4".to_string()));
+        let (app2, cmds) = apply_event(&app, AppEvent::RenderSucceeded("output.mp4".to_string()));
         assert_eq!(app2.state, AppState::Ready);
         assert_eq!(app2.status_message, "Rendered output.mp4");
+        assert!(cmds.is_empty());
     }
 
     #[test]
     fn apply_event_render_failed() {
         let mut app = app_ready();
         app.state = AppState::Rendering;
-        let app2 = apply_event(&app, AppEvent::RenderFailed("bad".to_string()));
+        let (app2, cmds) = apply_event(&app, AppEvent::RenderFailed("bad".to_string()));
         assert_eq!(app2.state, AppState::Ready);
         assert!(app2.status_message.contains("bad"));
+        assert!(cmds.is_empty());
     }
 
     #[test]
     fn apply_event_overwrite_check_sets_pending() {
         let app = app_ready_with_chunks(1);
-        let app2 = apply_event(
+        let (app2, cmds) = apply_event(
             &app,
             AppEvent::OverwriteCheckResult {
                 exists: true,
@@ -932,12 +965,13 @@ mod tests {
         );
         assert!(app2.pending_overwrite);
         assert!(app2.status_message.contains("Overwrite?"));
+        assert!(cmds.is_empty());
     }
 
     #[test]
     fn apply_event_overwrite_check_not_exists_sets_rendering() {
         let app = app_ready_with_chunks(1);
-        let app2 = apply_event(
+        let (app2, cmds) = apply_event(
             &app,
             AppEvent::OverwriteCheckResult {
                 exists: false,
@@ -947,6 +981,7 @@ mod tests {
         );
         assert!(!app2.pending_overwrite);
         assert_eq!(app2.state, AppState::Rendering);
+        assert!(cmds.is_empty());
     }
 
     #[test]
@@ -1031,7 +1066,7 @@ mod tests {
     fn trim_cache_entry_applied_when_epoch_matches() {
         let mut app = app_ready_with_chunks(2);
         app.trim_cache_epoch = 1;
-        let app2 = apply_event(
+        let (app2, cmds) = apply_event(
             &app,
             AppEvent::TrimCacheEntry {
                 epoch: 1,
@@ -1041,13 +1076,14 @@ mod tests {
             },
         );
         assert_eq!(app2.trim_cache.get("chunk-1"), Some(&(3.0, 5.0)));
+        assert!(cmds.is_empty());
     }
 
     #[test]
     fn trim_cache_entry_discarded_when_epoch_mismatches() {
         let mut app = app_ready_with_chunks(2);
         app.trim_cache_epoch = 2;
-        let app2 = apply_event(
+        let (app2, cmds) = apply_event(
             &app,
             AppEvent::TrimCacheEntry {
                 epoch: 1,
@@ -1057,6 +1093,7 @@ mod tests {
             },
         );
         assert!(app2.trim_cache.is_empty());
+        assert!(cmds.is_empty());
     }
 
     #[test]
@@ -1076,11 +1113,15 @@ mod tests {
         app.config.autotrim_enabled = true;
         app.controls_row = ControlsRow::Autotrim;
         app.trim_cache.insert("chunk-1".to_string(), (0.0, 5.0));
+        app.config.chunks[0].trim_start = Some(0.0);
+        app.config.chunks[0].trim_end = Some(5.0);
         app.trim_cache_epoch = 1;
         let (app2, _cmds) = handle_key(&app, Key::Char('h'));
         assert!(!app2.config.autotrim_enabled);
         assert!(app2.trim_cache.is_empty());
         assert_eq!(app2.trim_cache_epoch, 2);
+        assert_eq!(app2.config.chunks[0].trim_start, None);
+        assert_eq!(app2.config.chunks[0].trim_end, None);
     }
 
     #[test]
@@ -1111,7 +1152,7 @@ mod tests {
         let mut app = app_recording();
         app.config.autotrim_enabled = true;
         app.trim_cache_epoch = 5;
-        let app2 = apply_event(
+        let (app2, cmds) = apply_event(
             &app,
             AppEvent::RecordingStopped {
                 chunk_file: "chunk-1.mp4".to_string(),
@@ -1120,5 +1161,56 @@ mod tests {
         );
         assert_eq!(app2.trim_cache_epoch, 6);
         assert!(app2.trim_cache.is_empty());
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn trim_cache_prepopulated_from_chunk_data() {
+        let mut config = QrecConfig::default();
+        config.chunks.push(Chunk {
+            id: "chunk-1".to_string(),
+            file: "chunk-1.mp4".to_string(),
+            duration_secs: 10.0,
+            recorded_at: Utc::now(),
+            trim_start: Some(2.0),
+            trim_end: Some(8.0),
+        });
+        config.chunks.push(Chunk {
+            id: "chunk-2".to_string(),
+            file: "chunk-2.mp4".to_string(),
+            duration_secs: 5.0,
+            recorded_at: Utc::now(),
+            trim_start: None,
+            trim_end: None,
+        });
+        let app = App::new(config, vec![], vec![]);
+        assert_eq!(app.trim_cache.get("chunk-1"), Some(&(2.0, 8.0)));
+        assert!(app.trim_cache.get("chunk-2").is_none());
+    }
+
+    #[test]
+    fn trim_cache_complete_persists_to_chunks_and_saves() {
+        let mut app = app_ready_with_chunks(2);
+        app.config.chunks[0].trim_start = None;
+        app.config.chunks[0].trim_end = None;
+        app.trim_cache_epoch = 1;
+        app.trim_cache.insert("chunk-1".to_string(), (1.5, 4.5));
+        app.trim_cache.insert("chunk-2".to_string(), (0.0, 5.0));
+        let (app2, cmds) = apply_event(&app, AppEvent::TrimCacheComplete { epoch: 1 });
+        assert_eq!(app2.config.chunks[0].trim_start, Some(1.5));
+        assert_eq!(app2.config.chunks[0].trim_end, Some(4.5));
+        assert_eq!(app2.config.chunks[1].trim_start, Some(0.0));
+        assert_eq!(app2.config.chunks[1].trim_end, Some(5.0));
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::SaveConfig)));
+    }
+
+    #[test]
+    fn trim_cache_complete_discarded_on_epoch_mismatch() {
+        let mut app = app_ready_with_chunks(1);
+        app.trim_cache_epoch = 2;
+        app.trim_cache.insert("chunk-1".to_string(), (1.0, 4.0));
+        let (app2, cmds) = apply_event(&app, AppEvent::TrimCacheComplete { epoch: 1 });
+        assert_eq!(app2.config.chunks[0].trim_start, None);
+        assert!(cmds.is_empty());
     }
 }

@@ -345,9 +345,13 @@ fn draw_timeline_section(f: &mut Frame, app: &App, area: Rect) {
         let skip = scroll.saturating_sub(chunk_start);
 
         let mask = if app.config.autotrim_enabled {
-            app.trim_cache.get(&chunk.id).map(|&(ts, te)| {
-                timeline::chunk_cut_mask(chunk.duration_secs, ts, te, FPS, app.frames_per_char)
-            })
+            app.trim_cache
+                .get(&chunk.id)
+                .map(|&(ts, te)| (ts, te))
+                .or_else(|| chunk.trim_start.zip(chunk.trim_end))
+                .map(|(ts, te)| {
+                    timeline::chunk_cut_mask(chunk.duration_secs, ts, te, FPS, app.frames_per_char)
+                })
         } else {
             None
         };

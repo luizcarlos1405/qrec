@@ -7,6 +7,10 @@ pub struct Chunk {
     pub file: String,
     pub duration_secs: f64,
     pub recorded_at: DateTime<Utc>,
+    #[serde(default)]
+    pub trim_start: Option<f64>,
+    #[serde(default)]
+    pub trim_end: Option<f64>,
 }
 
 fn default_autotrim_threshold() -> f64 {

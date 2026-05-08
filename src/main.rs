@@ -18,6 +18,18 @@ use ratatui::Terminal;
 
 use app::{App, AppCommand, AppEvent, AppState, Key};
 
+enum TrimMsg {
+    Entry {
+        epoch: u64,
+        chunk_id: String,
+        trim_start: f64,
+        trim_end: f64,
+    },
+    Complete {
+        epoch: u64,
+    },
+}
+
 fn main() -> anyhow::Result<()> {
     let missing = effects::check_dependencies();
     if !missing.is_empty() {
@@ -97,19 +109,36 @@ fn run_app(
     recorder_child: &mut Option<std::process::Child>,
     recording_start: &mut Option<std::time::Instant>,
 ) -> anyhow::Result<()> {
-    let mut trim_rx: Option<mpsc::Receiver<(u64, String, f64, f64)>> = None;
+    let mut trim_rx: Option<mpsc::Receiver<TrimMsg>> = None;
     let mut last_trim_epoch: u64 = 0;
 
     loop {
         if let Some(ref rx) = trim_rx {
-            while let Ok((epoch, chunk_id, trim_start, trim_end)) = rx.try_recv() {
-                let event = AppEvent::TrimCacheEntry {
-                    epoch,
-                    chunk_id,
-                    trim_start,
-                    trim_end,
+            while let Ok(msg) = rx.try_recv() {
+                let event = match msg {
+                    TrimMsg::Entry {
+                        epoch,
+                        chunk_id,
+                        trim_start,
+                        trim_end,
+                    } => AppEvent::TrimCacheEntry {
+                        epoch,
+                        chunk_id,
+                        trim_start,
+                        trim_end,
+                    },
+                    TrimMsg::Complete { epoch } => AppEvent::TrimCacheComplete { epoch },
                 };
-                *app = app::apply_event(app, event);
+                let (new_app, event_cmds) = app::apply_event(app, event);
+                *app = new_app;
+                for ec in event_cmds {
+                    let sub_events =
+                        execute_command(ec, app, recorder_child, recording_start, terminal);
+                    for se in sub_events {
+                        let (new_app, _) = app::apply_event(app, se);
+                        *app = new_app;
+                    }
+                }
             }
         }
 
@@ -134,7 +163,16 @@ fn run_app(
                     let events =
                         execute_command(cmd, app, recorder_child, recording_start, terminal);
                     for ev in events {
-                        *app = app::apply_event(app, ev);
+                        let (new_app, event_cmds) = app::apply_event(app, ev);
+                        *app = new_app;
+                        for ec in event_cmds {
+                            let sub_events =
+                                execute_command(ec, app, recorder_child, recording_start, terminal);
+                            for se in sub_events {
+                                let (new_app, _) = app::apply_event(app, se);
+                                *app = new_app;
+                            }
+                        }
                     }
                 }
 
@@ -162,7 +200,7 @@ fn spawn_trim_computation(
     chunks: &[config::Chunk],
     threshold_db: f64,
     epoch: u64,
-) -> mpsc::Receiver<(u64, String, f64, f64)> {
+) -> mpsc::Receiver<TrimMsg> {
     let (tx, rx) = mpsc::channel();
     let chunks: Vec<_> = chunks.to_vec();
     std::thread::spawn(move || {
@@ -180,12 +218,18 @@ fn spawn_trim_computation(
             };
             let (trim_start, trim_end) = effects::compute_trim_points(duration, &silence);
             if tx
-                .send((epoch, chunk.id.clone(), trim_start, trim_end))
+                .send(TrimMsg::Entry {
+                    epoch,
+                    chunk_id: chunk.id.clone(),
+                    trim_start,
+                    trim_end,
+                })
                 .is_err()
             {
                 break;
             }
         }
+        let _ = tx.send(TrimMsg::Complete { epoch });
     });
     rx
 }

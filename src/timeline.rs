@@ -8,6 +8,8 @@ pub fn add_chunk(mut config: QrecConfig, file: String, duration_secs: f64) -> Qr
         file,
         duration_secs,
         recorded_at: Utc::now(),
+        trim_start: None,
+        trim_end: None,
     };
     config.chunks.push(chunk);
     config.next_chunk_number += 1;
@@ -122,6 +124,8 @@ mod tests {
             file: file.to_string(),
             duration_secs: duration,
             recorded_at: Utc::now(),
+            trim_start: None,
+            trim_end: None,
         }
     }
 
