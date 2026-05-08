@@ -111,6 +111,8 @@ fn run_app(
 ) -> anyhow::Result<()> {
     let mut trim_rx: Option<mpsc::Receiver<TrimMsg>> = None;
     let mut last_trim_epoch: u64 = 0;
+    let mut trim_pending_since: Option<std::time::Instant> = None;
+    const TRIM_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(500);
 
     loop {
         if let Some(ref rx) = trim_rx {
@@ -186,12 +188,23 @@ fn run_app(
             && app.config.autotrim_enabled
             && !app.config.chunks.is_empty()
         {
-            last_trim_epoch = app.trim_cache_epoch;
-            trim_rx = Some(spawn_trim_computation(
-                &app.config.chunks,
-                app.config.autotrim_threshold_db,
-                app.trim_cache_epoch,
-            ));
+            if trim_pending_since.is_none() {
+                trim_pending_since = Some(std::time::Instant::now());
+            }
+        } else {
+            trim_pending_since = None;
+        }
+
+        if let Some(since) = trim_pending_since {
+            if since.elapsed() >= TRIM_DEBOUNCE {
+                last_trim_epoch = app.trim_cache_epoch;
+                trim_pending_since = None;
+                trim_rx = Some(spawn_trim_computation(
+                    &app.config.chunks,
+                    app.config.autotrim_threshold_db,
+                    app.trim_cache_epoch,
+                ));
+            }
         }
     }
 }
