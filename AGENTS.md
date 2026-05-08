@@ -9,20 +9,63 @@ cargo build --release
 cargo install --path . --root ~/.local   # installs binary to ~/.local/bin/qrec
 cargo clippy         # lint
 cargo fmt --check    # format check
+cargo test           # run 52 unit tests (pure core only)
 cargo run            # run the TUI (requires wf-recorder, ffmpeg, mpv, pactl at runtime)
 ```
 
-No test suite exists yet. Pure-layer unit tests are planned for `timeline.rs`, `command.rs`, `config.rs`, and `app.rs`.
-
 ## Architecture
 
-Three-layer design, strictly separated:
+Functional Core / Imperative Shell (FCIS) — strictly enforced.
 
-- **Pure layer** (`config.rs`, `timeline.rs`, `command.rs`, `app.rs`) — zero side effects. All business logic. `app.rs` is the state machine; key events return `Vec<AppAction>` that the main loop dispatches.
-- **Side-effect boundary** (`effects.rs`) — all process spawning (`wf-recorder`, `ffmpeg`, `mpv`, `ffprobe`, `pactl`), file I/O, and config persistence. Errors are logged to `logs.txt` via `log_error()`.
-- **TUI layer** (`ui.rs`) — ratatui rendering only. Reads `App` state, draws to terminal.
+### Dependency graph
 
-`main.rs` owns the event loop: polls crossterm events → `app.handle_key()` → dispatches `AppAction`s → loops.
+```
+config.rs ← timeline.rs ← app.rs → command.rs
+    ↑                          ↑
+    └────── (core boundary) ───┘
+               ↑
+     ┌─────────┼─────────┐
+     │         │         │
+  main.rs   effects.rs  ui.rs
+  (shell)   (shell)    (view)
+```
+
+**Arrows point from importer to importee. The core never imports from the shell. Ever.**
+
+### Core layer — zero side effects, zero I/O types
+
+Files: `config.rs`, `timeline.rs`, `command.rs`, `app.rs`
+
+- No `crossterm`, `std::process`, `std::fs`, `std::time::Instant`, or any I/O type.
+- `app.rs` defines domain types: `Key` (not crossterm's), `ScreenInfo`, `AppState`, `AppCommand`, `AppEvent`.
+- `handle_key(app: &App, key: Key) -> (App, Vec<AppCommand>)` — pure function. Takes immutable app, returns new app + commands for the shell.
+- `apply_event(app: &App, event: AppEvent) -> App` — pure function. Shell feeds results back; core decides new state.
+- `timeline.rs` functions take owned `QrecConfig` and return it (no `&mut`).
+- `command.rs` builds `Command` structs (data only, no process spawning).
+- `config.rs` has pure serialization/deserialization on string input/output.
+
+### Shell layer — all side effects
+
+Files: `main.rs`, `effects.rs`
+
+- `main.rs` owns the event loop: poll crossterm → `translate_key()` → `handle_key()` → `execute_command()` → `apply_event()` → loop.
+- `translate_key()` maps `crossterm::event::KeyEvent` → domain `Key` at the boundary.
+- `execute_command()` maps `AppCommand` → side effects → returns `Vec<AppEvent>`.
+- Shell owns `std::time::Instant` for recording timing; passes `f64` elapsed to core.
+- `effects.rs` handles all process spawning, file I/O, filesystem checks.
+
+### Two-phase protocol
+
+1. **Core emits `AppCommand`** — what it wants the shell to do (start recording, save config, render, etc.)
+2. **Shell executes side effect** — spawns processes, writes files, checks filesystem
+3. **Shell feeds `AppEvent` back to core** — result of the side effect (success, failure, data)
+4. **Core decides new state via `apply_event`** — all state transitions happen here, never in the shell
+
+### TUI layer — rendering only
+
+Files: `ui.rs`
+
+- Ratatui rendering. Reads `App` state, draws to terminal. No mutation, no I/O.
 
 ## Runtime files (in CWD)
 
@@ -41,3 +84,11 @@ Three-layer design, strictly separated:
 - `pactl` (pulseaudio CLI) is used for microphone discovery; the first entry in the mic list is always "No microphone" (mute)
 - Chunk numbers never reset, even after deletion
 - Config is written after every mutation (add/delete/reorder/device change/recording start)
+
+## Rules for modifying code
+
+1. **Never import I/O types into core modules.** If you need `crossterm`, `std::fs`, `std::process`, or `std::time::Instant` in `app.rs`, `timeline.rs`, `command.rs`, or `config.rs`, you are violating the architecture. Put it in `main.rs` or `effects.rs` instead.
+2. **Never mutate `App` in the shell.** State transitions go through `apply_event()`. The shell does not set `app.state`, `app.status_message`, etc. directly — it emits events and the core handles them.
+3. **New user actions go through the two-phase protocol.** Add a variant to `AppCommand` (core intent) and `AppEvent` (shell result). Wire `execute_command()` in `main.rs` to bridge them.
+4. **`handle_key` must stay pure.** It takes `&App` and returns `(App, Vec<AppCommand>)`. No side effects inside it.
+5. **Timeline functions take and return owned `QrecConfig`.** No `&mut QrecConfig` parameters. Use `std::mem::take` + reassign at call sites.
