@@ -338,23 +338,73 @@ fn draw_timeline_section(f: &mut Frame, app: &App, area: Rect) {
             continue;
         }
 
-        let style = if i == app.selected_chunk {
-            Style::default().add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
-        };
-
-        let ch = if i == app.selected_chunk {
-            "█"
-        } else {
-            "▓"
-        };
-
         if i > 0 {
             spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
         }
 
-        spans.push(Span::styled(ch.repeat(vis_width), style));
+        let skip = scroll.saturating_sub(chunk_start);
+
+        let mask = if app.config.autotrim_enabled {
+            app.trim_cache.get(&chunk.id).map(|&(ts, te)| {
+                timeline::chunk_cut_mask(chunk.duration_secs, ts, te, FPS, app.frames_per_char)
+            })
+        } else {
+            None
+        };
+
+        if let Some(ref mask) = mask {
+            let mut j = 0;
+            while j < vis_width {
+                let idx = skip + j;
+                let is_cut = idx < mask.len() && mask[idx];
+                let run_start = j;
+                while j < vis_width {
+                    let idx2 = skip + j;
+                    let cur_cut = idx2 < mask.len() && mask[idx2];
+                    if cur_cut != is_cut {
+                        break;
+                    }
+                    j += 1;
+                }
+                let run_len = j - run_start;
+
+                let (ch, style) = if is_cut {
+                    (
+                        "░",
+                        if i == app.selected_chunk {
+                            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::REVERSED | Modifier::BOLD)
+                        },
+                    )
+                } else if i == app.selected_chunk {
+                    ("█", Style::default().add_modifier(Modifier::BOLD))
+                } else {
+                    (
+                        "▓",
+                        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+                    )
+                };
+
+                spans.push(Span::styled(ch.repeat(run_len), style));
+            }
+        } else {
+            let style = if i == app.selected_chunk {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+            };
+
+            let ch = if i == app.selected_chunk {
+                "█"
+            } else {
+                "▓"
+            };
+
+            spans.push(Span::styled(ch.repeat(vis_width), style));
+        }
         col += w;
     }
 
