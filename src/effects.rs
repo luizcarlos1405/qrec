@@ -352,9 +352,10 @@ pub fn detect_silence(file: &str, threshold_db: f64) -> anyhow::Result<Vec<(f64,
         .collect();
 
     log_error(&format!(
-        "detected {} silence intervals in '{}'",
+        "detected {} silence intervals in '{}': {:?}",
         intervals.len(),
-        file
+        file,
+        intervals
     ));
 
     Ok(intervals)
@@ -365,7 +366,7 @@ pub fn compute_trim_points(duration: f64, silence_intervals: &[(f64, Option<f64>
     let mut trim_end = duration;
 
     if let Some(&(start, end)) = silence_intervals.first() {
-        if start < 0.01 {
+        if start < 0.5 {
             if let Some(e) = end {
                 trim_start = e;
             }
@@ -374,7 +375,7 @@ pub fn compute_trim_points(duration: f64, silence_intervals: &[(f64, Option<f64>
 
     if let Some(&(start, end)) = silence_intervals.last() {
         match end {
-            Some(e) if e >= duration - 0.01 => {
+            Some(e) if e >= duration - 0.5 => {
                 trim_end = start;
             }
             None => {
@@ -615,5 +616,21 @@ mod tests {
         let (start, end) = compute_trim_points(30.0, &intervals);
         assert!((start - 2.0).abs() < 0.001);
         assert!((end - 30.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn trim_trailing_silence_with_duration_mismatch() {
+        let intervals = vec![(0.0, Some(3.0)), (6.0, Some(8.95))];
+        let (start, end) = compute_trim_points(9.05, &intervals);
+        assert!((start - 3.0).abs() < 0.001);
+        assert!((end - 6.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn trim_both_with_duration_mismatch() {
+        let intervals = vec![(0.0, Some(2.0)), (5.0, Some(7.92))];
+        let (start, end) = compute_trim_points(8.01, &intervals);
+        assert!((start - 2.0).abs() < 0.001);
+        assert!((end - 5.0).abs() < 0.001);
     }
 }

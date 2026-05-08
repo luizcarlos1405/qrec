@@ -99,7 +99,7 @@ pub fn ffmpeg_silence_detect_command(file: &str, threshold_db: f64) -> Command {
             "-i".to_string(),
             file.to_string(),
             "-af".to_string(),
-            format!("silencedetect=noise={}dB:d=0", threshold_db),
+            format!("silencedetect=noise={}dB:d=0.1", threshold_db),
             "-f".to_string(),
             "null".to_string(),
             "-".to_string(),
