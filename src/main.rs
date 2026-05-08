@@ -6,6 +6,7 @@ mod timeline;
 mod ui;
 
 use std::io;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use crossterm::event::{self, Event};
@@ -55,6 +56,10 @@ fn main() -> anyhow::Result<()> {
     app.screen_index = screen_index;
     app.mic_index = mic_index;
 
+    if app.config.autotrim_enabled && !app.config.chunks.is_empty() {
+        app.trim_cache_epoch += 1;
+    }
+
     effects::ensure_config_exists(&app.config)?;
 
     enable_raw_mode()?;
@@ -92,7 +97,22 @@ fn run_app(
     recorder_child: &mut Option<std::process::Child>,
     recording_start: &mut Option<std::time::Instant>,
 ) -> anyhow::Result<()> {
+    let mut trim_rx: Option<mpsc::Receiver<(u64, String, f64, f64)>> = None;
+    let mut last_trim_epoch: u64 = 0;
+
     loop {
+        if let Some(ref rx) = trim_rx {
+            while let Ok((epoch, chunk_id, trim_start, trim_end)) = rx.try_recv() {
+                let event = AppEvent::TrimCacheEntry {
+                    epoch,
+                    chunk_id,
+                    trim_start,
+                    trim_end,
+                };
+                *app = app::apply_event(app, event);
+            }
+        }
+
         if app.state == AppState::Recording {
             app.recording_elapsed_secs = recording_start
                 .map(|t| t.elapsed().as_secs_f64())
@@ -123,7 +143,51 @@ fn run_app(
                 }
             }
         }
+
+        if app.trim_cache_epoch != last_trim_epoch
+            && app.config.autotrim_enabled
+            && !app.config.chunks.is_empty()
+        {
+            last_trim_epoch = app.trim_cache_epoch;
+            trim_rx = Some(spawn_trim_computation(
+                &app.config.chunks,
+                app.config.autotrim_threshold_db,
+                app.trim_cache_epoch,
+            ));
+        }
     }
+}
+
+fn spawn_trim_computation(
+    chunks: &[config::Chunk],
+    threshold_db: f64,
+    epoch: u64,
+) -> mpsc::Receiver<(u64, String, f64, f64)> {
+    let (tx, rx) = mpsc::channel();
+    let chunks: Vec<_> = chunks.to_vec();
+    std::thread::spawn(move || {
+        for chunk in chunks {
+            if !std::path::Path::new(&chunk.file).exists() {
+                continue;
+            }
+            let duration = match effects::get_video_duration(&chunk.file) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            let silence = match effects::detect_silence(&chunk.file, threshold_db) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let (trim_start, trim_end) = effects::compute_trim_points(duration, &silence);
+            if tx
+                .send((epoch, chunk.id.clone(), trim_start, trim_end))
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    rx
 }
 
 fn execute_command(
