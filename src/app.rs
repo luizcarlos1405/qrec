@@ -58,7 +58,6 @@ pub struct App {
     pub status_message: String,
     pub recording_chunk_file: Option<String>,
     pub recording_elapsed_secs: f64,
-    pub pending_quit: bool,
     pub pending_overwrite: bool,
 }
 
@@ -140,7 +139,6 @@ impl App {
             status_message: "Ready".to_string(),
             recording_chunk_file: None,
             recording_elapsed_secs: 0.0,
-            pending_quit: false,
             pending_overwrite: false,
         }
     }
@@ -175,24 +173,6 @@ pub fn handle_key(app: &App, key: Key) -> (App, Vec<AppCommand>) {
     let mut new = app.clone();
     let mut commands = Vec::new();
 
-    if new.pending_quit {
-        match key {
-            Key::Char('y') | Key::Char('Y') => {
-                new.pending_quit = false;
-                if new.state == AppState::Recording {
-                    commands.push(AppCommand::StopRecording);
-                }
-                new.state = AppState::Exited;
-            }
-            Key::Char('n') | Key::Char('N') | Key::Esc => {
-                new.pending_quit = false;
-                new.status_message = "Ready".to_string();
-            }
-            _ => {}
-        }
-        return (new, commands);
-    }
-
     if new.pending_overwrite {
         match key {
             Key::Char('y') | Key::Char('Y') => {
@@ -214,8 +194,10 @@ pub fn handle_key(app: &App, key: Key) -> (App, Vec<AppCommand>) {
 
     match key {
         Key::Char('q') => {
-            new.pending_quit = true;
-            new.status_message = "Quit? (y/n)".to_string();
+            if new.state == AppState::Recording {
+                commands.push(AppCommand::StopRecording);
+            }
+            new.state = AppState::Exited;
         }
         Key::Char('r') => match new.state {
             AppState::Recording => {
@@ -607,38 +589,17 @@ mod tests {
     }
 
     #[test]
-    fn q_sets_pending_quit() {
+    fn q_quits_immediately() {
         let app = app_ready();
         let (app2, cmds) = handle_key(&app, Key::Char('q'));
         assert!(cmds.is_empty());
-        assert!(app2.pending_quit);
-        assert_eq!(app2.status_message, "Quit? (y/n)");
-    }
-
-    #[test]
-    fn quit_confirm_y() {
-        let mut app = app_ready();
-        app.pending_quit = true;
-        let (app2, _cmds) = handle_key(&app, Key::Char('y'));
-        assert!(!app2.pending_quit);
         assert_eq!(app2.state, AppState::Exited);
     }
 
     #[test]
-    fn quit_confirm_n_cancels() {
-        let mut app = app_ready();
-        app.pending_quit = true;
-        let (app2, _cmds) = handle_key(&app, Key::Char('n'));
-        assert!(!app2.pending_quit);
-        assert_eq!(app2.state, AppState::Ready);
-        assert_eq!(app2.status_message, "Ready");
-    }
-
-    #[test]
-    fn quit_while_recording_stops_first() {
-        let mut app = app_recording();
-        app.pending_quit = true;
-        let (_app2, cmds) = handle_key(&app, Key::Char('y'));
+    fn q_while_recording_stops_first() {
+        let app = app_recording();
+        let (_app2, cmds) = handle_key(&app, Key::Char('q'));
         assert!(cmds.iter().any(|c| matches!(c, AppCommand::StopRecording)));
     }
 
