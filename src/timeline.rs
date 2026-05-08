@@ -88,6 +88,28 @@ pub fn chunk_start_col(
     col
 }
 
+pub fn chunk_cut_mask(
+    duration_secs: f64,
+    trim_start: f64,
+    trim_end: f64,
+    fps: f64,
+    frames_per_char: usize,
+) -> Vec<bool> {
+    let w = chunk_char_width(duration_secs, fps, frames_per_char);
+    let has_trim = trim_start > 0.01 || (duration_secs - trim_end).abs() > 0.01;
+    if !has_trim {
+        return vec![false; w];
+    }
+    let mut mask = Vec::with_capacity(w);
+    for i in 0..w {
+        let char_start = i as f64 * frames_per_char as f64 / fps;
+        let char_end = ((i + 1) as f64 * frames_per_char as f64 / fps).min(duration_secs);
+        let cut = char_start < trim_start || char_end > trim_end;
+        mask.push(cut);
+    }
+    mask
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,5 +234,68 @@ mod tests {
         config.chunks.push(make_chunk("b.mp4", 2.0));
         assert_eq!(chunk_start_col(&config, 0, 30.0, 10), 0);
         assert_eq!(chunk_start_col(&config, 1, 30.0, 10), 3);
+    }
+
+    #[test]
+    fn cut_mask_no_trimming() {
+        let mask = chunk_cut_mask(10.0, 0.0, 10.0, 30.0, 30);
+        assert!(mask.iter().all(|&c| !c));
+    }
+
+    #[test]
+    fn cut_mask_leading_trim_only() {
+        // 10s, 30fps, 30 frames_per_char = 10 chars total
+        // trim_start=3.0s means first 3 chars (0..3s) are cut
+        let mask = chunk_cut_mask(10.0, 3.0, 10.0, 30.0, 30);
+        assert_eq!(mask.len(), 10);
+        assert!(mask[0] && mask[1] && mask[2]);
+        assert!(!mask[3] && !mask[9]);
+    }
+
+    #[test]
+    fn cut_mask_trailing_trim_only() {
+        // 10s, 30fps, 30 frames_per_char = 10 chars
+        // trim_end=7.0s means chars covering 7..10s are cut
+        let mask = chunk_cut_mask(10.0, 0.0, 7.0, 30.0, 30);
+        assert_eq!(mask.len(), 10);
+        assert!(!mask[0] && !mask[5] && !mask[6]);
+        assert!(mask[7] && mask[8] && mask[9]);
+    }
+
+    #[test]
+    fn cut_mask_both_leading_and_trailing() {
+        // 10s, trim 0..3s and 7..10s
+        let mask = chunk_cut_mask(10.0, 3.0, 7.0, 30.0, 30);
+        assert_eq!(mask.len(), 10);
+        assert!(mask[0] && mask[1] && mask[2]);
+        assert!(!mask[3] && !mask[4] && !mask[5] && !mask[6]);
+        assert!(mask[7] && mask[8] && mask[9]);
+    }
+
+    #[test]
+    fn cut_mask_single_char_with_trim() {
+        let mask = chunk_cut_mask(0.5, 0.0, 0.3, 30.0, 30);
+        assert_eq!(mask.len(), 1);
+        assert!(mask[0]);
+    }
+
+    #[test]
+    fn cut_mask_high_zoom_frames_per_char_1() {
+        // 1s at 30fps, frames_per_char=1 => 30 chars
+        // trim_start=0.5s means first 15 chars are cut
+        let mask = chunk_cut_mask(1.0, 0.5, 1.0, 30.0, 1);
+        assert_eq!(mask.len(), 30);
+        for i in 0..15 {
+            assert!(mask[i], "char {} should be cut", i);
+        }
+        for i in 15..30 {
+            assert!(!mask[i], "char {} should not be cut", i);
+        }
+    }
+
+    #[test]
+    fn cut_mask_tiny_trim_treated_as_no_trim() {
+        let mask = chunk_cut_mask(10.0, 0.005, 10.0, 30.0, 30);
+        assert!(mask.iter().all(|&c| !c));
     }
 }
