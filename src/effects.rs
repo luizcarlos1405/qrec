@@ -470,48 +470,65 @@ pub fn preview_files_autotrim(files: &[String], threshold_db: f64) -> anyhow::Re
     Ok(())
 }
 
-const RAW_RENDER_TEMP: &str = "qrec-render-raw.mp4";
-
 pub fn render_concat_autotrim(
     chunk_files: &[String],
     output_file: &str,
     threshold_db: f64,
 ) -> anyhow::Result<()> {
-    render_concat(chunk_files, RAW_RENDER_TEMP)?;
+    let mut trimmed_files = Vec::with_capacity(chunk_files.len());
+    let mut temp_paths = Vec::new();
 
-    let duration = get_video_duration(RAW_RENDER_TEMP)?;
-    let silence = detect_silence(RAW_RENDER_TEMP, threshold_db)?;
-    let (trim_start, trim_end) = compute_trim_points(duration, &silence);
+    for (i, chunk_file) in chunk_files.iter().enumerate() {
+        let duration = get_video_duration(chunk_file)?;
+        let silence = detect_silence(chunk_file, threshold_db)?;
+        let (trim_start, trim_end) = compute_trim_points(duration, &silence);
 
-    log_error(&format!(
-        "autotrim render: trim {:.3} - {:.3} (of {:.3})",
-        trim_start, trim_end, duration
-    ));
+        let needs_trim = (trim_start - 0.0).abs() > 0.01 || (trim_end - duration).abs() > 0.01;
 
-    let needs_trim = (trim_start - 0.0).abs() > 0.01 || (trim_end - duration).abs() > 0.01;
+        log_error(&format!(
+            "autotrim per-chunk '{}': trim {:.3} - {:.3} (of {:.3}) needs_trim={}",
+            chunk_file, trim_start, trim_end, duration, needs_trim
+        ));
 
-    if needs_trim {
-        let cmd = command::ffmpeg_trim_command(RAW_RENDER_TEMP, output_file, trim_start, trim_end);
-        let output = Command::new(&cmd.program)
-            .args(&cmd.args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()?;
+        if needs_trim && (trim_end - trim_start) > 0.01 {
+            let temp_file = format!("qrec-trim-{}.mp4", i);
+            let cmd = command::ffmpeg_trim_command(chunk_file, &temp_file, trim_start, trim_end);
+            let output = Command::new(&cmd.program)
+                .args(&cmd.args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()?;
 
-        let _ = std::fs::remove_file(RAW_RENDER_TEMP);
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let msg = format!(
+                    "ffmpeg per-chunk trim failed for '{}' (exit {}): {}",
+                    chunk_file,
+                    output.status.code().unwrap_or(-1),
+                    stderr.trim()
+                );
+                log_error(&msg);
+                for temp in &temp_paths {
+                    let _ = std::fs::remove_file(temp);
+                }
+                anyhow::bail!("{}", msg);
+            }
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let msg = format!(
-                "ffmpeg trim failed (exit {}): {}",
-                output.status.code().unwrap_or(-1),
-                stderr.trim()
-            );
-            log_error(&msg);
-            anyhow::bail!("{}", msg);
+            trimmed_files.push(temp_file.clone());
+            temp_paths.push(temp_file);
+        } else {
+            trimmed_files.push(chunk_file.clone());
         }
-    } else {
-        std::fs::rename(RAW_RENDER_TEMP, output_file)?;
+    }
+
+    if trimmed_files.is_empty() {
+        anyhow::bail!("No content after silence removal");
+    }
+
+    render_concat(&trimmed_files, output_file)?;
+
+    for temp in &temp_paths {
+        let _ = std::fs::remove_file(temp);
     }
 
     Ok(())
