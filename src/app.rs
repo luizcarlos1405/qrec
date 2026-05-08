@@ -543,3 +543,355 @@ fn fix_selected_chunk(app: &mut App) {
         app.selected_chunk = 0;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Chunk, QrecConfig};
+    use chrono::Utc;
+
+    fn app_ready() -> App {
+        let config = QrecConfig::default();
+        let screens = vec![ScreenInfo {
+            name: "HDMI-1".to_string(),
+            label: "HDMI-1 (test)".to_string(),
+        }];
+        let mics = vec!["No microphone".to_string()];
+        App::new(config, screens, mics)
+    }
+
+    fn app_ready_with_chunks(n: usize) -> App {
+        let mut config = QrecConfig::default();
+        for i in 1..=n {
+            config.chunks.push(Chunk {
+                id: format!("chunk-{}", i),
+                file: format!("chunk-{}.mp4", i),
+                duration_secs: 5.0,
+                recorded_at: Utc::now(),
+            });
+        }
+        config.next_chunk_number = (n + 1) as u64;
+        let screens = vec![ScreenInfo {
+            name: "HDMI-1".to_string(),
+            label: "HDMI-1 (test)".to_string(),
+        }];
+        let mics = vec!["No microphone".to_string()];
+        App::new(config, screens, mics)
+    }
+
+    fn app_recording() -> App {
+        let mut app = app_ready();
+        app.state = AppState::Recording;
+        app.recording_chunk_file = Some("chunk-1.mp4".to_string());
+        app
+    }
+
+    #[test]
+    fn new_app_is_ready() {
+        let app = app_ready();
+        assert_eq!(app.state, AppState::Ready);
+        assert_eq!(app.focus, FocusRegion::Controls);
+        assert_eq!(app.frames_per_char, 1);
+    }
+
+    #[test]
+    fn tab_toggles_focus() {
+        let app = app_ready();
+        let (app2, cmds) = handle_key(&app, Key::Tab);
+        assert!(cmds.is_empty());
+        assert_eq!(app2.focus, FocusRegion::Timeline);
+
+        let (app3, cmds) = handle_key(&app2, Key::Tab);
+        assert!(cmds.is_empty());
+        assert_eq!(app3.focus, FocusRegion::Controls);
+    }
+
+    #[test]
+    fn q_sets_pending_quit() {
+        let app = app_ready();
+        let (app2, cmds) = handle_key(&app, Key::Char('q'));
+        assert!(cmds.is_empty());
+        assert!(app2.pending_quit);
+        assert_eq!(app2.status_message, "Quit? (y/n)");
+    }
+
+    #[test]
+    fn quit_confirm_y() {
+        let mut app = app_ready();
+        app.pending_quit = true;
+        let (app2, _cmds) = handle_key(&app, Key::Char('y'));
+        assert!(!app2.pending_quit);
+        assert_eq!(app2.state, AppState::Exited);
+    }
+
+    #[test]
+    fn quit_confirm_n_cancels() {
+        let mut app = app_ready();
+        app.pending_quit = true;
+        let (app2, _cmds) = handle_key(&app, Key::Char('n'));
+        assert!(!app2.pending_quit);
+        assert_eq!(app2.state, AppState::Ready);
+        assert_eq!(app2.status_message, "Ready");
+    }
+
+    #[test]
+    fn quit_while_recording_stops_first() {
+        let mut app = app_recording();
+        app.pending_quit = true;
+        let (_app2, cmds) = handle_key(&app, Key::Char('y'));
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::StopRecording)));
+    }
+
+    #[test]
+    fn r_when_ready_starts_recording() {
+        let app = app_ready();
+        let (_app2, cmds) = handle_key(&app, Key::Char('r'));
+        assert!(cmds
+            .iter()
+            .any(|c| matches!(c, AppCommand::StartRecording { .. })));
+    }
+
+    #[test]
+    fn r_when_recording_stops() {
+        let app = app_recording();
+        let (_app2, cmds) = handle_key(&app, Key::Char('r'));
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::StopRecording)));
+    }
+
+    #[test]
+    fn r_when_rendering_does_nothing() {
+        let mut app = app_ready();
+        app.state = AppState::Rendering;
+        let (_app2, cmds) = handle_key(&app, Key::Char('r'));
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn j_k_toggle_controls_row() {
+        let app = app_ready();
+        assert_eq!(app.controls_row, ControlsRow::Screen);
+
+        let (app2, _) = handle_key(&app, Key::Char('j'));
+        assert_eq!(app2.controls_row, ControlsRow::Microphone);
+
+        let (app3, _) = handle_key(&app2, Key::Char('k'));
+        assert_eq!(app3.controls_row, ControlsRow::Screen);
+    }
+
+    #[test]
+    fn h_l_change_screen_index() {
+        let screens = vec![
+            ScreenInfo { name: "s1".to_string(), label: "Screen 1".to_string() },
+            ScreenInfo { name: "s2".to_string(), label: "Screen 2".to_string() },
+        ];
+        let config = QrecConfig::default();
+        let app = App::new(config, screens, vec!["No microphone".to_string()]);
+
+        let (app2, cmds) = handle_key(&app, Key::Char('l'));
+        assert_eq!(app2.screen_index, 1);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::SaveConfig)));
+
+        let (app3, _) = handle_key(&app2, Key::Char('h'));
+        assert_eq!(app3.screen_index, 0);
+    }
+
+    #[test]
+    fn h_at_zero_does_not_underflow() {
+        let app = app_ready();
+        let (app2, _) = handle_key(&app, Key::Char('h'));
+        assert_eq!(app2.screen_index, 0);
+    }
+
+    #[test]
+    fn l_at_max_does_not_overflow() {
+        let app = app_ready();
+        let (app2, _) = handle_key(&app, Key::Char('l'));
+        assert_eq!(app2.screen_index, 0);
+    }
+
+    #[test]
+    fn d_with_chunks_emits_discard() {
+        let app = app_ready_with_chunks(2);
+        let (app2, cmds) = handle_key(&app, Key::Char('d'));
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::DiscardLastChunk)));
+        let _ = app2;
+    }
+
+    #[test]
+    fn d_without_chunks_shows_message() {
+        let app = app_ready();
+        let (app2, cmds) = handle_key(&app, Key::Char('d'));
+        assert!(cmds.is_empty());
+        assert_eq!(app2.status_message, "No chunk to remove");
+    }
+
+    #[test]
+    fn timeline_h_l_navigate_chunks() {
+        let mut app = app_ready_with_chunks(3);
+        app.focus = FocusRegion::Timeline;
+        app.selected_chunk = 1;
+
+        let (app2, _) = handle_key(&app, Key::Char('l'));
+        assert_eq!(app2.selected_chunk, 2);
+
+        let (app3, _) = handle_key(&app2, Key::Char('h'));
+        assert_eq!(app3.selected_chunk, 1);
+    }
+
+    #[test]
+    fn timeline_reorder_chunks_with_shift_keys() {
+        let mut app = app_ready_with_chunks(3);
+        app.focus = FocusRegion::Timeline;
+        app.selected_chunk = 1;
+
+        let (app2, cmds) = handle_key(&app, Key::Char('H'));
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::SaveConfig)));
+        assert_eq!(app2.selected_chunk, 0);
+        assert_eq!(app2.config.chunks[0].file, "chunk-2.mp4");
+
+        let (app3, cmds) = handle_key(&app2, Key::Char('L'));
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::SaveConfig)));
+        assert_eq!(app3.selected_chunk, 1);
+        assert_eq!(app3.config.chunks[1].file, "chunk-2.mp4");
+    }
+
+    #[test]
+    fn timeline_i_o_zoom() {
+        let mut app = app_ready_with_chunks(5);
+        app.focus = FocusRegion::Timeline;
+        app.frames_per_char = 4;
+
+        let (app2, _) = handle_key(&app, Key::Char('i'));
+        assert_eq!(app2.frames_per_char, 2);
+
+        let (app3, _) = handle_key(&app2, Key::Char('o'));
+        assert_eq!(app3.frames_per_char, 4);
+    }
+
+    #[test]
+    fn timeline_d_emits_delete() {
+        let mut app = app_ready_with_chunks(2);
+        app.focus = FocusRegion::Timeline;
+        app.selected_chunk = 1;
+
+        let (_, cmds) = handle_key(&app, Key::Char('d'));
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::DeleteChunk(1))));
+    }
+
+    #[test]
+    fn apply_event_recording_started() {
+        let app = app_ready();
+        let app2 = apply_event(&app, AppEvent::RecordingStarted {
+            filename: "chunk-1.mp4".to_string(),
+        });
+        assert_eq!(app2.state, AppState::Recording);
+        assert_eq!(app2.recording_chunk_file, Some("chunk-1.mp4".to_string()));
+        assert_eq!(app2.status_message, "Recording...");
+    }
+
+    #[test]
+    fn apply_event_recording_failed_rolls_back() {
+        let mut app = app_ready();
+        app.config.next_chunk_number = 5;
+        let app2 = apply_event(&app, AppEvent::RecordingFailed {
+            filename: "chunk-5.mp4".to_string(),
+            reason: "boom".to_string(),
+        });
+        assert_eq!(app2.state, AppState::Ready);
+        assert_eq!(app2.config.next_chunk_number, 4);
+        assert!(app2.status_message.contains("boom"));
+    }
+
+    #[test]
+    fn apply_event_recording_stopped_adds_chunk() {
+        let app = app_recording();
+        let app2 = apply_event(&app, AppEvent::RecordingStopped {
+            chunk_file: "chunk-1.mp4".to_string(),
+            duration_secs: 5.0,
+        });
+        assert_eq!(app2.state, AppState::Ready);
+        assert_eq!(app2.config.chunks.len(), 1);
+        assert_eq!(app2.config.chunks[0].file, "chunk-1.mp4");
+        assert_eq!(app2.selected_chunk, 0);
+    }
+
+    #[test]
+    fn apply_event_file_deleted_fixes_selected() {
+        let mut app = app_ready_with_chunks(3);
+        app.selected_chunk = 2;
+        let (new_config, _) = crate::timeline::remove_chunk(app.config.clone(), 2);
+        app.config = new_config;
+
+        let app2 = apply_event(&app, AppEvent::FileDeleted("chunk-3.mp4".to_string()));
+        assert_eq!(app2.selected_chunk, 1);
+    }
+
+    #[test]
+    fn apply_event_render_succeeded() {
+        let mut app = app_ready();
+        app.state = AppState::Rendering;
+        let app2 = apply_event(&app, AppEvent::RenderSucceeded("output.mp4".to_string()));
+        assert_eq!(app2.state, AppState::Ready);
+        assert_eq!(app2.status_message, "Rendered output.mp4");
+    }
+
+    #[test]
+    fn apply_event_render_failed() {
+        let mut app = app_ready();
+        app.state = AppState::Rendering;
+        let app2 = apply_event(&app, AppEvent::RenderFailed("bad".to_string()));
+        assert_eq!(app2.state, AppState::Ready);
+        assert!(app2.status_message.contains("bad"));
+    }
+
+    #[test]
+    fn apply_event_overwrite_check_sets_pending() {
+        let app = app_ready_with_chunks(1);
+        let app2 = apply_event(&app, AppEvent::OverwriteCheckResult {
+            exists: true,
+            files: vec!["chunk-1.mp4".to_string()],
+            output: "output.mp4".to_string(),
+        });
+        assert!(app2.pending_overwrite);
+        assert!(app2.status_message.contains("Overwrite?"));
+    }
+
+    #[test]
+    fn apply_event_overwrite_check_not_exists_sets_rendering() {
+        let app = app_ready_with_chunks(1);
+        let app2 = apply_event(&app, AppEvent::OverwriteCheckResult {
+            exists: false,
+            files: vec!["chunk-1.mp4".to_string()],
+            output: "output.mp4".to_string(),
+        });
+        assert!(!app2.pending_overwrite);
+        assert_eq!(app2.state, AppState::Rendering);
+    }
+
+    #[test]
+    fn overwrite_confirm_y_emits_render() {
+        let mut app = app_ready_with_chunks(2);
+        app.pending_overwrite = true;
+        let (_, cmds) = handle_key(&app, Key::Char('y'));
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::Render { .. })));
+    }
+
+    #[test]
+    fn overwrite_confirm_n_cancels() {
+        let mut app = app_ready_with_chunks(2);
+        app.pending_overwrite = true;
+        let (app2, cmds) = handle_key(&app, Key::Char('n'));
+        assert!(cmds.is_empty());
+        assert!(!app2.pending_overwrite);
+        assert_eq!(app2.status_message, "Cancelled");
+    }
+
+    #[test]
+    fn no_screen_shows_error_on_record() {
+        let config = QrecConfig::default();
+        let app = App::new(config, vec![], vec!["No microphone".to_string()]);
+        let (app2, cmds) = handle_key(&app, Key::Char('r'));
+        assert!(cmds.is_empty());
+        assert_eq!(app2.status_message, "No screen selected");
+    }
+}

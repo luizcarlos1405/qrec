@@ -91,3 +91,65 @@ pub fn pactl_list_sources_command() -> Command {
         ],
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wf_recorder_command_no_audio() {
+        let cmd = wf_recorder_command("HDMI-1", None, "chunk-1.mp4");
+        assert_eq!(cmd.program, "wf-recorder");
+        assert_eq!(cmd.args, vec!["--output", "HDMI-1", "--file", "chunk-1.mp4"]);
+    }
+
+    #[test]
+    fn wf_recorder_command_with_audio() {
+        let cmd = wf_recorder_command("HDMI-1", Some("alsa_input.pci"), "chunk-1.mp4");
+        assert!(cmd.args.contains(&"--audio".to_string()));
+        assert!(cmd.args.contains(&"alsa_input.pci".to_string()));
+    }
+
+    #[test]
+    fn ffmpeg_concat_command_structure() {
+        let cmd = ffmpeg_concat_command(&[], "output.mp4", "/tmp/list.txt");
+        assert_eq!(cmd.program, "ffmpeg");
+        assert!(cmd.args.contains(&"-f".to_string()));
+        assert!(cmd.args.contains(&"concat".to_string()));
+        assert!(cmd.args.contains(&"/tmp/list.txt".to_string()));
+        assert!(cmd.args.contains(&"output.mp4".to_string()));
+    }
+
+    #[test]
+    fn concat_list_content_format() {
+        let content = concat_list_content(&["a.mp4".to_string(), "b.mp4".to_string()]);
+        assert_eq!(content, "file 'a.mp4'\nfile 'b.mp4'");
+    }
+
+    #[test]
+    fn mpv_preview_command_single_file() {
+        let cmd = mpv_preview_command("test.mp4");
+        assert_eq!(cmd.program, "mpv");
+        assert_eq!(cmd.args, vec!["test.mp4"]);
+    }
+
+    #[test]
+    fn mpv_preview_all_command_files() {
+        let cmd = super::mpv_preview_all_command(&["a.mp4".to_string(), "b.mp4".to_string()]);
+        assert_eq!(cmd.args, vec!["a.mp4", "b.mp4"]);
+    }
+
+    #[test]
+    fn wf_recorder_list_command_args() {
+        let cmd = super::wf_recorder_list_command();
+        assert_eq!(cmd.program, "wf-recorder");
+        assert_eq!(cmd.args, vec!["-L"]);
+    }
+
+    #[test]
+    fn pactl_list_sources_command_structure() {
+        let cmd = pactl_list_sources_command();
+        assert_eq!(cmd.program, "pactl");
+        assert_eq!(cmd.args, vec!["list", "short", "sources"]);
+    }
+}
