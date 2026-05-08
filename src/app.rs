@@ -19,6 +19,29 @@ pub enum FocusRegion {
 pub enum ControlsRow {
     Screen,
     Microphone,
+    AutocutSilence,
+    SilenceLength,
+    SilenceThreshold,
+}
+
+fn next_controls_row(row: ControlsRow) -> ControlsRow {
+    match row {
+        ControlsRow::Screen => ControlsRow::Microphone,
+        ControlsRow::Microphone => ControlsRow::AutocutSilence,
+        ControlsRow::AutocutSilence => ControlsRow::SilenceLength,
+        ControlsRow::SilenceLength => ControlsRow::SilenceThreshold,
+        ControlsRow::SilenceThreshold => ControlsRow::Screen,
+    }
+}
+
+fn prev_controls_row(row: ControlsRow) -> ControlsRow {
+    match row {
+        ControlsRow::Screen => ControlsRow::SilenceThreshold,
+        ControlsRow::Microphone => ControlsRow::Screen,
+        ControlsRow::AutocutSilence => ControlsRow::Microphone,
+        ControlsRow::SilenceLength => ControlsRow::AutocutSilence,
+        ControlsRow::SilenceThreshold => ControlsRow::SilenceLength,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,16 +268,10 @@ pub fn handle_key(app: &App, key: Key) -> (App, Vec<AppCommand>) {
 fn handle_controls_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) {
     match key {
         Key::Char('j') | Key::Down => {
-            app.controls_row = match app.controls_row {
-                ControlsRow::Screen => ControlsRow::Microphone,
-                ControlsRow::Microphone => ControlsRow::Screen,
-            };
+            app.controls_row = next_controls_row(app.controls_row);
         }
         Key::Char('k') | Key::Up => {
-            app.controls_row = match app.controls_row {
-                ControlsRow::Screen => ControlsRow::Microphone,
-                ControlsRow::Microphone => ControlsRow::Screen,
-            };
+            app.controls_row = prev_controls_row(app.controls_row);
         }
         Key::Char('h') | Key::Left => match app.controls_row {
             ControlsRow::Screen => {
@@ -271,6 +288,19 @@ fn handle_controls_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) 
                 app.config.selected_microphone = app.selected_microphone().map(|s| s.to_string());
                 commands.push(AppCommand::SaveConfig);
             }
+            ControlsRow::AutocutSilence => {
+                app.config.autocut_silence_enabled = false;
+                commands.push(AppCommand::SaveConfig);
+            }
+            ControlsRow::SilenceLength => {
+                app.config.silence_length_secs = (app.config.silence_length_secs - 0.5).max(0.5);
+                commands.push(AppCommand::SaveConfig);
+            }
+            ControlsRow::SilenceThreshold => {
+                app.config.silence_threshold_db =
+                    (app.config.silence_threshold_db - 1.0).max(-60.0);
+                commands.push(AppCommand::SaveConfig);
+            }
         },
         Key::Char('l') | Key::Right => match app.controls_row {
             ControlsRow::Screen => {
@@ -285,6 +315,18 @@ fn handle_controls_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) 
                     app.mic_index += 1;
                 }
                 app.config.selected_microphone = app.selected_microphone().map(|s| s.to_string());
+                commands.push(AppCommand::SaveConfig);
+            }
+            ControlsRow::AutocutSilence => {
+                app.config.autocut_silence_enabled = true;
+                commands.push(AppCommand::SaveConfig);
+            }
+            ControlsRow::SilenceLength => {
+                app.config.silence_length_secs = (app.config.silence_length_secs + 0.5).min(10.0);
+                commands.push(AppCommand::SaveConfig);
+            }
+            ControlsRow::SilenceThreshold => {
+                app.config.silence_threshold_db = (app.config.silence_threshold_db + 1.0).min(-5.0);
                 commands.push(AppCommand::SaveConfig);
             }
         },
@@ -628,22 +670,52 @@ mod tests {
     }
 
     #[test]
-    fn j_k_toggle_controls_row() {
+    fn j_k_navigate_controls_rows() {
         let app = app_ready();
         assert_eq!(app.controls_row, ControlsRow::Screen);
 
         let (app2, _) = handle_key(&app, Key::Char('j'));
         assert_eq!(app2.controls_row, ControlsRow::Microphone);
 
-        let (app3, _) = handle_key(&app2, Key::Char('k'));
-        assert_eq!(app3.controls_row, ControlsRow::Screen);
+        let (app3, _) = handle_key(&app2, Key::Char('j'));
+        assert_eq!(app3.controls_row, ControlsRow::AutocutSilence);
+
+        let (app4, _) = handle_key(&app3, Key::Char('j'));
+        assert_eq!(app4.controls_row, ControlsRow::SilenceLength);
+
+        let (app5, _) = handle_key(&app4, Key::Char('j'));
+        assert_eq!(app5.controls_row, ControlsRow::SilenceThreshold);
+
+        let (app6, _) = handle_key(&app5, Key::Char('j'));
+        assert_eq!(app6.controls_row, ControlsRow::Screen);
+
+        let (app7, _) = handle_key(&app6, Key::Char('k'));
+        assert_eq!(app7.controls_row, ControlsRow::SilenceThreshold);
+
+        let (app8, _) = handle_key(&app7, Key::Char('k'));
+        assert_eq!(app8.controls_row, ControlsRow::SilenceLength);
+
+        let (app9, _) = handle_key(&app8, Key::Char('k'));
+        assert_eq!(app9.controls_row, ControlsRow::AutocutSilence);
+
+        let (app10, _) = handle_key(&app9, Key::Char('k'));
+        assert_eq!(app10.controls_row, ControlsRow::Microphone);
+
+        let (app11, _) = handle_key(&app10, Key::Char('k'));
+        assert_eq!(app11.controls_row, ControlsRow::Screen);
     }
 
     #[test]
     fn h_l_change_screen_index() {
         let screens = vec![
-            ScreenInfo { name: "s1".to_string(), label: "Screen 1".to_string() },
-            ScreenInfo { name: "s2".to_string(), label: "Screen 2".to_string() },
+            ScreenInfo {
+                name: "s1".to_string(),
+                label: "Screen 1".to_string(),
+            },
+            ScreenInfo {
+                name: "s2".to_string(),
+                label: "Screen 2".to_string(),
+            },
         ];
         let config = QrecConfig::default();
         let app = App::new(config, screens, vec!["No microphone".to_string()]);
@@ -674,7 +746,9 @@ mod tests {
     fn d_with_chunks_emits_discard() {
         let app = app_ready_with_chunks(2);
         let (app2, cmds) = handle_key(&app, Key::Char('d'));
-        assert!(cmds.iter().any(|c| matches!(c, AppCommand::DiscardLastChunk)));
+        assert!(cmds
+            .iter()
+            .any(|c| matches!(c, AppCommand::DiscardLastChunk)));
         let _ = app2;
     }
 
@@ -742,9 +816,12 @@ mod tests {
     #[test]
     fn apply_event_recording_started() {
         let app = app_ready();
-        let app2 = apply_event(&app, AppEvent::RecordingStarted {
-            filename: "chunk-1.mp4".to_string(),
-        });
+        let app2 = apply_event(
+            &app,
+            AppEvent::RecordingStarted {
+                filename: "chunk-1.mp4".to_string(),
+            },
+        );
         assert_eq!(app2.state, AppState::Recording);
         assert_eq!(app2.recording_chunk_file, Some("chunk-1.mp4".to_string()));
         assert_eq!(app2.status_message, "Recording...");
@@ -754,10 +831,13 @@ mod tests {
     fn apply_event_recording_failed_rolls_back() {
         let mut app = app_ready();
         app.config.next_chunk_number = 5;
-        let app2 = apply_event(&app, AppEvent::RecordingFailed {
-            filename: "chunk-5.mp4".to_string(),
-            reason: "boom".to_string(),
-        });
+        let app2 = apply_event(
+            &app,
+            AppEvent::RecordingFailed {
+                filename: "chunk-5.mp4".to_string(),
+                reason: "boom".to_string(),
+            },
+        );
         assert_eq!(app2.state, AppState::Ready);
         assert_eq!(app2.config.next_chunk_number, 4);
         assert!(app2.status_message.contains("boom"));
@@ -766,10 +846,13 @@ mod tests {
     #[test]
     fn apply_event_recording_stopped_adds_chunk() {
         let app = app_recording();
-        let app2 = apply_event(&app, AppEvent::RecordingStopped {
-            chunk_file: "chunk-1.mp4".to_string(),
-            duration_secs: 5.0,
-        });
+        let app2 = apply_event(
+            &app,
+            AppEvent::RecordingStopped {
+                chunk_file: "chunk-1.mp4".to_string(),
+                duration_secs: 5.0,
+            },
+        );
         assert_eq!(app2.state, AppState::Ready);
         assert_eq!(app2.config.chunks.len(), 1);
         assert_eq!(app2.config.chunks[0].file, "chunk-1.mp4");
@@ -808,11 +891,14 @@ mod tests {
     #[test]
     fn apply_event_overwrite_check_sets_pending() {
         let app = app_ready_with_chunks(1);
-        let app2 = apply_event(&app, AppEvent::OverwriteCheckResult {
-            exists: true,
-            files: vec!["chunk-1.mp4".to_string()],
-            output: "output.mp4".to_string(),
-        });
+        let app2 = apply_event(
+            &app,
+            AppEvent::OverwriteCheckResult {
+                exists: true,
+                files: vec!["chunk-1.mp4".to_string()],
+                output: "output.mp4".to_string(),
+            },
+        );
         assert!(app2.pending_overwrite);
         assert!(app2.status_message.contains("Overwrite?"));
     }
@@ -820,11 +906,14 @@ mod tests {
     #[test]
     fn apply_event_overwrite_check_not_exists_sets_rendering() {
         let app = app_ready_with_chunks(1);
-        let app2 = apply_event(&app, AppEvent::OverwriteCheckResult {
-            exists: false,
-            files: vec!["chunk-1.mp4".to_string()],
-            output: "output.mp4".to_string(),
-        });
+        let app2 = apply_event(
+            &app,
+            AppEvent::OverwriteCheckResult {
+                exists: false,
+                files: vec!["chunk-1.mp4".to_string()],
+                output: "output.mp4".to_string(),
+            },
+        );
         assert!(!app2.pending_overwrite);
         assert_eq!(app2.state, AppState::Rendering);
     }
@@ -854,5 +943,89 @@ mod tests {
         let (app2, cmds) = handle_key(&app, Key::Char('r'));
         assert!(cmds.is_empty());
         assert_eq!(app2.status_message, "No screen selected");
+    }
+
+    #[test]
+    fn autocut_silence_toggle() {
+        let mut app = app_ready();
+        app.controls_row = ControlsRow::AutocutSilence;
+        assert!(!app.config.autocut_silence_enabled);
+
+        let (app2, cmds) = handle_key(&app, Key::Char('l'));
+        assert!(app2.config.autocut_silence_enabled);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::SaveConfig)));
+
+        let (app3, cmds) = handle_key(&app2, Key::Char('h'));
+        assert!(!app3.config.autocut_silence_enabled);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::SaveConfig)));
+    }
+
+    #[test]
+    fn silence_length_adjusts_by_half_second() {
+        let mut app = app_ready();
+        app.controls_row = ControlsRow::SilenceLength;
+        assert_eq!(app.config.silence_length_secs, 1.0);
+
+        let (app2, cmds) = handle_key(&app, Key::Char('l'));
+        assert_eq!(app2.config.silence_length_secs, 1.5);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::SaveConfig)));
+
+        let (app3, _) = handle_key(&app2, Key::Char('h'));
+        assert_eq!(app3.config.silence_length_secs, 1.0);
+
+        let (app4, _) = handle_key(&app3, Key::Char('h'));
+        assert_eq!(app4.config.silence_length_secs, 0.5);
+    }
+
+    #[test]
+    fn silence_length_clamps_at_bounds() {
+        let mut app = app_ready();
+        app.controls_row = ControlsRow::SilenceLength;
+        app.config.silence_length_secs = 0.5;
+
+        let (app2, _) = handle_key(&app, Key::Char('h'));
+        assert_eq!(app2.config.silence_length_secs, 0.5);
+
+        let mut app2 = app2;
+        app2.config.silence_length_secs = 10.0;
+        let (app3, _) = handle_key(&app2, Key::Char('l'));
+        assert_eq!(app3.config.silence_length_secs, 10.0);
+    }
+
+    #[test]
+    fn silence_threshold_adjusts_by_1db() {
+        let mut app = app_ready();
+        app.controls_row = ControlsRow::SilenceThreshold;
+        assert_eq!(app.config.silence_threshold_db, -40.0);
+
+        let (app2, cmds) = handle_key(&app, Key::Char('l'));
+        assert_eq!(app2.config.silence_threshold_db, -39.0);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::SaveConfig)));
+
+        let (app3, _) = handle_key(&app2, Key::Char('h'));
+        assert_eq!(app3.config.silence_threshold_db, -40.0);
+    }
+
+    #[test]
+    fn silence_threshold_clamps_at_bounds() {
+        let mut app = app_ready();
+        app.controls_row = ControlsRow::SilenceThreshold;
+        app.config.silence_threshold_db = -60.0;
+
+        let (app2, _) = handle_key(&app, Key::Char('h'));
+        assert_eq!(app2.config.silence_threshold_db, -60.0);
+
+        let mut app2 = app2;
+        app2.config.silence_threshold_db = -5.0;
+        let (app3, _) = handle_key(&app2, Key::Char('l'));
+        assert_eq!(app3.config.silence_threshold_db, -5.0);
+    }
+
+    #[test]
+    fn silence_settings_default_values() {
+        let config = QrecConfig::default();
+        assert!(!config.autocut_silence_enabled);
+        assert_eq!(config.silence_length_secs, 1.0);
+        assert_eq!(config.silence_threshold_db, -40.0);
     }
 }

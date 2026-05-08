@@ -100,7 +100,10 @@ mod tests {
     fn wf_recorder_command_no_audio() {
         let cmd = wf_recorder_command("HDMI-1", None, "chunk-1.mp4");
         assert_eq!(cmd.program, "wf-recorder");
-        assert_eq!(cmd.args, vec!["--output", "HDMI-1", "--file", "chunk-1.mp4"]);
+        assert_eq!(
+            cmd.args,
+            vec!["--output", "HDMI-1", "--file", "chunk-1.mp4"]
+        );
     }
 
     #[test]

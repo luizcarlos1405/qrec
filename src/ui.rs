@@ -117,29 +117,54 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
-    let screen_prefix = if app.controls_row == ControlsRow::Screen && controls_focus {
-        "▸"
-    } else {
-        " "
-    };
-    let screen_value = app.selected_screen_display();
-    let screen_arrows = if app.controls_row == ControlsRow::Screen && controls_focus {
-        " ◄ ►"
-    } else {
-        ""
+    let autocut_on = app.config.autocut_silence_enabled;
+
+    let row_active = |row: ControlsRow| -> bool {
+        match row {
+            ControlsRow::SilenceLength | ControlsRow::SilenceThreshold => autocut_on,
+            _ => true,
+        }
     };
 
-    let mic_prefix = if app.controls_row == ControlsRow::Microphone && controls_focus {
-        "▸"
-    } else {
-        " "
+    let prefix = |row: ControlsRow| -> &str {
+        if app.controls_row == row && controls_focus {
+            "▸"
+        } else {
+            " "
+        }
     };
+
+    let arrows = |row: ControlsRow| -> &str {
+        if app.controls_row == row && controls_focus {
+            " ◄ ►"
+        } else {
+            ""
+        }
+    };
+
+    let row_style = |row: ControlsRow| -> Style {
+        if row_active(row) {
+            controls_highlight
+        } else {
+            Style::default().fg(Color::DarkGray)
+        }
+    };
+
+    let value_style = |row: ControlsRow| -> Style {
+        if row_active(row) {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        }
+    };
+
+    let arrow_style = |_row: ControlsRow| -> Style { Style::default().fg(Color::DarkGray) };
+
+    let screen_value = app.selected_screen_display();
     let mic_value = app.selected_microphone_display();
-    let mic_arrows = if app.controls_row == ControlsRow::Microphone && controls_focus {
-        " ◄ ►"
-    } else {
-        ""
-    };
+    let autocut_value = if autocut_on { "on" } else { "off" };
+    let length_value = format!("{:.1}s", app.config.silence_length_secs);
+    let threshold_value = format!("{:.0}dB", app.config.silence_threshold_db);
 
     let rec_indicator = match app.state {
         AppState::Recording => Some(Line::from(Span::styled(
@@ -165,39 +190,105 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     let inner = controls_block.inner(area);
     let inner_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
         .split(inner);
 
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                format!("{} Screen:     ", screen_prefix),
-                controls_highlight,
+                format!("{} Screen:     ", prefix(ControlsRow::Screen)),
+                row_style(ControlsRow::Screen),
             ),
             Span::styled(
                 format!("{:<30}", screen_value),
-                Style::default().fg(Color::White),
+                value_style(ControlsRow::Screen),
             ),
-            Span::styled(screen_arrows, Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                arrows(ControlsRow::Screen),
+                arrow_style(ControlsRow::Screen),
+            ),
         ])),
         inner_chunks[0],
     );
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(format!("{} Microphone: ", mic_prefix), controls_highlight),
+            Span::styled(
+                format!("{} Microphone: ", prefix(ControlsRow::Microphone)),
+                row_style(ControlsRow::Microphone),
+            ),
             Span::styled(
                 format!("{:<30}", mic_value),
-                Style::default().fg(Color::White),
+                value_style(ControlsRow::Microphone),
             ),
-            Span::styled(mic_arrows, Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                arrows(ControlsRow::Microphone),
+                arrow_style(ControlsRow::Microphone),
+            ),
         ])),
         inner_chunks[1],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{} Autocut:    ", prefix(ControlsRow::AutocutSilence)),
+                row_style(ControlsRow::AutocutSilence),
+            ),
+            Span::styled(
+                format!("{:<30}", autocut_value),
+                value_style(ControlsRow::AutocutSilence),
+            ),
+            Span::styled(
+                arrows(ControlsRow::AutocutSilence),
+                arrow_style(ControlsRow::AutocutSilence),
+            ),
+        ])),
+        inner_chunks[2],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{} Silent len: ", prefix(ControlsRow::SilenceLength)),
+                row_style(ControlsRow::SilenceLength),
+            ),
+            Span::styled(
+                format!("{:<30}", length_value),
+                value_style(ControlsRow::SilenceLength),
+            ),
+            Span::styled(
+                arrows(ControlsRow::SilenceLength),
+                arrow_style(ControlsRow::SilenceLength),
+            ),
+        ])),
+        inner_chunks[3],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{} Threshold:  ", prefix(ControlsRow::SilenceThreshold)),
+                row_style(ControlsRow::SilenceThreshold),
+            ),
+            Span::styled(
+                format!("{:<30}", threshold_value),
+                value_style(ControlsRow::SilenceThreshold),
+            ),
+            Span::styled(
+                arrows(ControlsRow::SilenceThreshold),
+                arrow_style(ControlsRow::SilenceThreshold),
+            ),
+        ])),
+        inner_chunks[4],
     );
 
     if let Some(rec_line) = rec_indicator {
         let indicator_area = Rect {
             x: area.x,
-            y: area.y + 3,
+            y: area.y + 6,
             width: area.width,
             height: 1,
         };
@@ -208,9 +299,9 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
 
     let timeline_area = Rect {
         x: area.x,
-        y: area.y + 4,
+        y: area.y + 7,
         width: area.width,
-        height: area.height.saturating_sub(4),
+        height: area.height.saturating_sub(7),
     };
 
     draw_timeline_section(f, app, timeline_area);
