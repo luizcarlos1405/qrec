@@ -244,6 +244,34 @@ fn spawn_trim_computation(
     rx
 }
 
+fn build_cached_trim_entries(app: &App) -> Option<Vec<(String, f64, f64, f64)>> {
+    if !app.config.autotrim_enabled || app.config.chunks.is_empty() {
+        return None;
+    }
+    let mut entries = Vec::with_capacity(app.config.chunks.len());
+    for chunk in &app.config.chunks {
+        let (ts, te) = app.trim_cache.get(&chunk.id)?;
+        entries.push((chunk.file.clone(), chunk.duration_secs, *ts, *te));
+    }
+    Some(entries)
+}
+
+fn do_render(app: &mut App, files: &[String], output: &str) -> Vec<AppEvent> {
+    app.state = AppState::Rendering;
+    app.status_message = "Rendering...".to_string();
+    let result = if let Some(entries) = build_cached_trim_entries(app) {
+        effects::render_concat_with_trims(&entries, output)
+    } else if app.config.autotrim_enabled {
+        effects::render_concat_autotrim(files, output, app.config.autotrim_threshold_db)
+    } else {
+        effects::render_concat(files, output)
+    };
+    match result {
+        Ok(()) => vec![AppEvent::RenderSucceeded(output.to_string())],
+        Err(e) => vec![AppEvent::RenderFailed(e.to_string())],
+    }
+}
+
 fn execute_command(
     cmd: AppCommand,
     app: &mut App,
@@ -350,36 +378,10 @@ fn execute_command(
                     output,
                 }]
             } else {
-                app.state = AppState::Rendering;
-                app.status_message = "Rendering...".to_string();
-                let result = if app.config.autotrim_enabled {
-                    effects::render_concat_autotrim(
-                        &files,
-                        &output,
-                        app.config.autotrim_threshold_db,
-                    )
-                } else {
-                    effects::render_concat(&files, &output)
-                };
-                match result {
-                    Ok(()) => vec![AppEvent::RenderSucceeded(output)],
-                    Err(e) => vec![AppEvent::RenderFailed(e.to_string())],
-                }
+                do_render(app, &files, &output)
             }
         }
-        AppCommand::Render { files, output } => {
-            app.state = AppState::Rendering;
-            app.status_message = "Rendering...".to_string();
-            let result = if app.config.autotrim_enabled {
-                effects::render_concat_autotrim(&files, &output, app.config.autotrim_threshold_db)
-            } else {
-                effects::render_concat(&files, &output)
-            };
-            match result {
-                Ok(()) => vec![AppEvent::RenderSucceeded(output)],
-                Err(e) => vec![AppEvent::RenderFailed(e.to_string())],
-            }
-        }
+        AppCommand::Render { files, output } => do_render(app, &files, &output),
         AppCommand::PreviewChunk(idx) => {
             if app.state == AppState::Recording {
                 return vec![];
