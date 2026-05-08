@@ -376,7 +376,7 @@ fn draw_timeline_section(f: &mut Frame, app: &App, area: Rect) {
                     (
                         "░",
                         if i == app.selected_chunk {
-                            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+                            Style::default().add_modifier(Modifier::BOLD)
                         } else {
                             Style::default()
                                 .fg(Color::DarkGray)
