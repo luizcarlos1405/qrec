@@ -208,10 +208,7 @@ fn spawn_trim_computation(
             if !std::path::Path::new(&chunk.file).exists() {
                 continue;
             }
-            let duration = match effects::get_video_duration(&chunk.file) {
-                Ok(d) => d,
-                Err(_) => continue,
-            };
+            let duration = chunk.duration_secs;
             let silence = match effects::detect_silence(&chunk.file, threshold_db) {
                 Ok(s) => s,
                 Err(_) => continue,
