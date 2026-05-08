@@ -3,6 +3,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::{command, config::QrecConfig};
+use crate::app::ScreenInfo;
 
 const QREC_JSON: &str = "qrec.json";
 const LOG_FILE: &str = "logs.txt";
@@ -70,12 +71,6 @@ pub fn ensure_config_exists(config: &QrecConfig) -> anyhow::Result<()> {
         save_config(config)?;
     }
     Ok(())
-}
-
-#[derive(Debug, Clone)]
-pub struct ScreenInfo {
-    pub name: String,
-    pub label: String,
 }
 
 pub fn discover_screens() -> anyhow::Result<Vec<ScreenInfo>> {

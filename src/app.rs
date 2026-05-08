@@ -1,8 +1,13 @@
 use crate::config::QrecConfig;
-use crate::effects::ScreenInfo;
 use crate::timeline;
 
 const FPS: f64 = 30.0;
+
+#[derive(Debug, Clone)]
+pub struct ScreenInfo {
+    pub name: String,
+    pub label: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusRegion {
