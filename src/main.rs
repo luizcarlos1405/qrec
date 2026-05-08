@@ -15,7 +15,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use app::{App, AppAction, AppState};
+use app::{App, AppAction, AppState, Key};
 
 fn main() -> anyhow::Result<()> {
     let missing = effects::check_dependencies();
@@ -93,6 +93,7 @@ fn run_app(
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
+                let key = translate_key(key);
                 let actions = app.handle_key(key);
 
                 for action in actions {
@@ -320,4 +321,19 @@ fn suspend_terminal_and<F: FnOnce() -> anyhow::Result<()>>(
     let _ = crossterm::execute!(terminal.backend_mut(), EnterAlternateScreen);
     let _ = enable_raw_mode();
     let _ = terminal.clear();
+}
+
+fn translate_key(key: crossterm::event::KeyEvent) -> Key {
+    use crossterm::event::KeyCode;
+    match key.code {
+        KeyCode::Char(c) => Key::Char(c),
+        KeyCode::Up => Key::Up,
+        KeyCode::Down => Key::Down,
+        KeyCode::Left => Key::Left,
+        KeyCode::Right => Key::Right,
+        KeyCode::Tab => Key::Tab,
+        KeyCode::Esc => Key::Esc,
+        KeyCode::Enter => Key::Enter,
+        _ => Key::Esc,
+    }
 }

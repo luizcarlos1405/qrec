@@ -23,6 +23,18 @@ pub enum AppState {
     Rendering,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    Char(char),
+    Up,
+    Down,
+    Left,
+    Right,
+    Tab,
+    Esc,
+    Enter,
+}
+
 #[derive(Debug, Clone)]
 pub struct App {
     pub config: QrecConfig,
@@ -128,21 +140,19 @@ impl App {
         }
     }
 
-    pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Vec<AppAction> {
+    pub fn handle_key(&mut self, key: Key) -> Vec<AppAction> {
         let mut actions = Vec::new();
 
         if self.pending_quit {
-            match key.code {
-                crossterm::event::KeyCode::Char('y') | crossterm::event::KeyCode::Char('Y') => {
+            match key {
+                Key::Char('y') | Key::Char('Y') => {
                     self.pending_quit = false;
                     if self.state == AppState::Recording {
                         actions.push(AppAction::StopRecording);
                     }
                     actions.push(AppAction::Quit);
                 }
-                crossterm::event::KeyCode::Char('n')
-                | crossterm::event::KeyCode::Char('N')
-                | crossterm::event::KeyCode::Esc => {
+                Key::Char('n') | Key::Char('N') | Key::Esc => {
                     self.pending_quit = false;
                     self.status_message = "Ready".to_string();
                 }
@@ -152,14 +162,12 @@ impl App {
         }
 
         if self.pending_overwrite {
-            match key.code {
-                crossterm::event::KeyCode::Char('y') | crossterm::event::KeyCode::Char('Y') => {
+            match key {
+                Key::Char('y') | Key::Char('Y') => {
                     self.pending_overwrite = false;
                     actions.push(AppAction::Render);
                 }
-                crossterm::event::KeyCode::Char('n')
-                | crossterm::event::KeyCode::Char('N')
-                | crossterm::event::KeyCode::Esc => {
+                Key::Char('n') | Key::Char('N') | Key::Esc => {
                     self.pending_overwrite = false;
                     self.status_message = "Cancelled".to_string();
                 }
@@ -168,11 +176,11 @@ impl App {
             return actions;
         }
 
-        match key.code {
-            crossterm::event::KeyCode::Char('q') => {
+        match key {
+            Key::Char('q') => {
                 actions.push(AppAction::Quit);
             }
-            crossterm::event::KeyCode::Char('r') => match self.state {
+            Key::Char('r') => match self.state {
                 AppState::Recording => {
                     actions.push(AppAction::StopRecording);
                 }
@@ -181,7 +189,7 @@ impl App {
                     actions.push(AppAction::StartRecording);
                 }
             },
-            crossterm::event::KeyCode::Tab => {
+            Key::Tab => {
                 self.focus = match self.focus {
                     FocusRegion::Controls => FocusRegion::Timeline,
                     FocusRegion::Timeline => FocusRegion::Controls,
@@ -206,23 +214,23 @@ impl App {
 
     fn handle_controls_key(
         &mut self,
-        key: crossterm::event::KeyEvent,
+        key: Key,
         actions: &mut Vec<AppAction>,
     ) {
-        match key.code {
-            crossterm::event::KeyCode::Char('j') | crossterm::event::KeyCode::Down => {
+        match key {
+            Key::Char('j') | Key::Down => {
                 self.controls_row = match self.controls_row {
                     ControlsRow::Screen => ControlsRow::Microphone,
                     ControlsRow::Microphone => ControlsRow::Screen,
                 };
             }
-            crossterm::event::KeyCode::Char('k') | crossterm::event::KeyCode::Up => {
+            Key::Char('k') | Key::Up => {
                 self.controls_row = match self.controls_row {
                     ControlsRow::Screen => ControlsRow::Microphone,
                     ControlsRow::Microphone => ControlsRow::Screen,
                 };
             }
-            crossterm::event::KeyCode::Char('h') | crossterm::event::KeyCode::Left => {
+            Key::Char('h') | Key::Left => {
                 match self.controls_row {
                     ControlsRow::Screen => {
                         if self.screen_index > 0 {
@@ -241,7 +249,7 @@ impl App {
                     }
                 }
             }
-            crossterm::event::KeyCode::Char('l') | crossterm::event::KeyCode::Right => {
+            Key::Char('l') | Key::Right => {
                 match self.controls_row {
                     ControlsRow::Screen => {
                         if self.screen_index + 1 < self.screens.len() {
@@ -260,17 +268,17 @@ impl App {
                     }
                 }
             }
-            crossterm::event::KeyCode::Char('d') => {
+            Key::Char('d') => {
                 if !self.config.chunks.is_empty() {
                     actions.push(AppAction::DiscardLastChunk);
                 } else {
                     self.status_message = "No chunk to remove".to_string();
                 }
             }
-            crossterm::event::KeyCode::Char('e') => {
+            Key::Char('e') => {
                 actions.push(AppAction::RequestRender);
             }
-            crossterm::event::KeyCode::Char('P') => {
+            Key::Char('P') => {
                 actions.push(AppAction::PreviewAll);
             }
             _ => {}
@@ -279,15 +287,15 @@ impl App {
 
     fn handle_timeline_key(
         &mut self,
-        key: crossterm::event::KeyEvent,
+        key: Key,
         actions: &mut Vec<AppAction>,
     ) {
         if self.config.chunks.is_empty() {
-            match key.code {
-                crossterm::event::KeyCode::Char('e') => {
+            match key {
+                Key::Char('e') => {
                     actions.push(AppAction::RequestRender);
                 }
-                crossterm::event::KeyCode::Char('P') => {
+                Key::Char('P') => {
                     actions.push(AppAction::PreviewAll);
                 }
                 _ => {}
@@ -295,22 +303,22 @@ impl App {
             return;
         }
 
-        match key.code {
-            crossterm::event::KeyCode::Char('h') | crossterm::event::KeyCode::Left => {
+        match key {
+            Key::Char('h') | Key::Left => {
                 if self.selected_chunk > 0 {
                     self.selected_chunk -= 1;
                 }
                 self.auto_pan_to_selected();
                 self.update_chunk_status();
             }
-            crossterm::event::KeyCode::Char('l') | crossterm::event::KeyCode::Right => {
+            Key::Char('l') | Key::Right => {
                 if self.selected_chunk + 1 < self.config.chunks.len() {
                     self.selected_chunk += 1;
                 }
                 self.auto_pan_to_selected();
                 self.update_chunk_status();
             }
-            crossterm::event::KeyCode::Char('H') => {
+            Key::Char('H') => {
                 if timeline::move_chunk_left(&mut self.config, self.selected_chunk) {
                     if self.selected_chunk > 0 {
                         self.selected_chunk -= 1;
@@ -319,7 +327,7 @@ impl App {
                 }
                 self.auto_pan_to_selected();
             }
-            crossterm::event::KeyCode::Char('L') => {
+            Key::Char('L') => {
                 if timeline::move_chunk_right(&mut self.config, self.selected_chunk) {
                     if self.selected_chunk + 1 < self.config.chunks.len() {
                         self.selected_chunk += 1;
@@ -328,26 +336,24 @@ impl App {
                 }
                 self.auto_pan_to_selected();
             }
-            crossterm::event::KeyCode::Char('i') => {
+            Key::Char('i') => {
                 self.frames_per_char = timeline::zoom_in(self.frames_per_char);
                 self.auto_pan_to_selected();
             }
-            crossterm::event::KeyCode::Char('o') => {
-                if timeline::can_zoom_out(&self.config.chunks, FPS, self.frames_per_char) {
-                    self.frames_per_char = timeline::zoom_out(self.frames_per_char);
-                }
+            Key::Char('o') => {
+                self.frames_per_char = timeline::zoom_out(self.frames_per_char);
                 self.auto_pan_to_selected();
             }
-            crossterm::event::KeyCode::Char('d') => {
+            Key::Char('d') => {
                 actions.push(AppAction::DeleteChunk(self.selected_chunk));
             }
-            crossterm::event::KeyCode::Char('p') => {
+            Key::Char('p') => {
                 actions.push(AppAction::PreviewChunk(self.selected_chunk));
             }
-            crossterm::event::KeyCode::Char('e') => {
+            Key::Char('e') => {
                 actions.push(AppAction::RequestRender);
             }
-            crossterm::event::KeyCode::Char('P') => {
+            Key::Char('P') => {
                 actions.push(AppAction::PreviewAll);
             }
             _ => {}
