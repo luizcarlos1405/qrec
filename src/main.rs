@@ -316,6 +316,7 @@ fn execute_command(
             }
             vec![AppEvent::PreviewDone("Previewed all chunks".to_string())]
         }
+        AppCommand::RefreshTrimCache => vec![],
     }
 }
 

@@ -1,7 +1,11 @@
+use std::collections::HashMap;
+
 use crate::config::QrecConfig;
 use crate::timeline;
 
 const FPS: f64 = 30.0;
+
+pub type TrimCache = HashMap<String, (f64, f64)>;
 
 #[derive(Debug, Clone)]
 pub struct ScreenInfo {
@@ -79,6 +83,8 @@ pub struct App {
     pub recording_chunk_file: Option<String>,
     pub recording_elapsed_secs: f64,
     pub pending_overwrite: bool,
+    pub trim_cache: TrimCache,
+    pub trim_cache_epoch: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +108,7 @@ pub enum AppCommand {
     },
     PreviewChunk(usize),
     PreviewAll,
+    RefreshTrimCache,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +140,12 @@ pub enum AppEvent {
         output: String,
     },
     PreviewDone(String),
+    TrimCacheEntry {
+        epoch: u64,
+        chunk_id: String,
+        trim_start: f64,
+        trim_end: f64,
+    },
 }
 
 impl App {
@@ -160,6 +173,8 @@ impl App {
             recording_chunk_file: None,
             recording_elapsed_secs: 0.0,
             pending_overwrite: false,
+            trim_cache: HashMap::new(),
+            trim_cache_epoch: 0,
         }
     }
 
@@ -287,12 +302,19 @@ fn handle_controls_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) 
             }
             ControlsRow::Autotrim => {
                 app.config.autotrim_enabled = false;
+                app.trim_cache.clear();
+                app.trim_cache_epoch += 1;
                 commands.push(AppCommand::SaveConfig);
             }
             ControlsRow::AutotrimThreshold => {
                 app.config.autotrim_threshold_db =
                     (app.config.autotrim_threshold_db - 1.0).max(-60.0);
                 commands.push(AppCommand::SaveConfig);
+                if app.config.autotrim_enabled && !app.config.chunks.is_empty() {
+                    app.trim_cache_epoch += 1;
+                    app.trim_cache.clear();
+                    commands.push(AppCommand::RefreshTrimCache);
+                }
             }
         },
         Key::Char('l') | Key::Right => match app.controls_row {
@@ -313,11 +335,21 @@ fn handle_controls_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) 
             ControlsRow::Autotrim => {
                 app.config.autotrim_enabled = true;
                 commands.push(AppCommand::SaveConfig);
+                if !app.config.chunks.is_empty() {
+                    app.trim_cache_epoch += 1;
+                    app.trim_cache.clear();
+                    commands.push(AppCommand::RefreshTrimCache);
+                }
             }
             ControlsRow::AutotrimThreshold => {
                 app.config.autotrim_threshold_db =
                     (app.config.autotrim_threshold_db + 1.0).min(-5.0);
                 commands.push(AppCommand::SaveConfig);
+                if app.config.autotrim_enabled && !app.config.chunks.is_empty() {
+                    app.trim_cache_epoch += 1;
+                    app.trim_cache.clear();
+                    commands.push(AppCommand::RefreshTrimCache);
+                }
             }
         },
         Key::Char('d') => {
@@ -494,6 +526,10 @@ pub fn apply_event(app: &App, event: AppEvent) -> App {
                 new.selected_chunk = new.config.chunks.len() - 1;
                 auto_pan_to_selected(&mut new);
             }
+            if new.config.autotrim_enabled {
+                new.trim_cache_epoch += 1;
+                new.trim_cache.clear();
+            }
         }
         AppEvent::RecordingFileMissing { chunk_file } => {
             new.state = AppState::Ready;
@@ -510,6 +546,7 @@ pub fn apply_event(app: &App, event: AppEvent) -> App {
         }
         AppEvent::FileDeleted(file) => {
             new.status_message = format!("Deleted {}", file);
+            new.trim_cache.retain(|_, _| true);
             fix_selected_chunk(&mut new);
             recalc_zoom(&mut new);
             auto_pan_to_selected(&mut new);
@@ -542,6 +579,16 @@ pub fn apply_event(app: &App, event: AppEvent) -> App {
         }
         AppEvent::PreviewDone(msg) => {
             new.status_message = msg;
+        }
+        AppEvent::TrimCacheEntry {
+            epoch,
+            chunk_id,
+            trim_start,
+            trim_end,
+        } => {
+            if epoch == new.trim_cache_epoch {
+                new.trim_cache.insert(chunk_id, (trim_start, trim_end));
+            }
         }
     }
 
@@ -978,5 +1025,100 @@ mod tests {
         let config = QrecConfig::default();
         assert!(!config.autotrim_enabled);
         assert_eq!(config.autotrim_threshold_db, -40.0);
+    }
+
+    #[test]
+    fn trim_cache_entry_applied_when_epoch_matches() {
+        let mut app = app_ready_with_chunks(2);
+        app.trim_cache_epoch = 1;
+        let app2 = apply_event(
+            &app,
+            AppEvent::TrimCacheEntry {
+                epoch: 1,
+                chunk_id: "chunk-1".to_string(),
+                trim_start: 3.0,
+                trim_end: 5.0,
+            },
+        );
+        assert_eq!(app2.trim_cache.get("chunk-1"), Some(&(3.0, 5.0)));
+    }
+
+    #[test]
+    fn trim_cache_entry_discarded_when_epoch_mismatches() {
+        let mut app = app_ready_with_chunks(2);
+        app.trim_cache_epoch = 2;
+        let app2 = apply_event(
+            &app,
+            AppEvent::TrimCacheEntry {
+                epoch: 1,
+                chunk_id: "chunk-1".to_string(),
+                trim_start: 3.0,
+                trim_end: 5.0,
+            },
+        );
+        assert!(app2.trim_cache.is_empty());
+    }
+
+    #[test]
+    fn autotrim_toggle_on_emits_refresh_trim_cache() {
+        let mut app = app_ready_with_chunks(2);
+        app.controls_row = ControlsRow::Autotrim;
+        let (app2, cmds) = handle_key(&app, Key::Char('l'));
+        assert!(app2.config.autotrim_enabled);
+        assert!(cmds
+            .iter()
+            .any(|c| matches!(c, AppCommand::RefreshTrimCache)));
+    }
+
+    #[test]
+    fn autotrim_toggle_off_clears_cache() {
+        let mut app = app_ready_with_chunks(2);
+        app.config.autotrim_enabled = true;
+        app.controls_row = ControlsRow::Autotrim;
+        app.trim_cache.insert("chunk-1".to_string(), (0.0, 5.0));
+        app.trim_cache_epoch = 1;
+        let (app2, _cmds) = handle_key(&app, Key::Char('h'));
+        assert!(!app2.config.autotrim_enabled);
+        assert!(app2.trim_cache.is_empty());
+        assert_eq!(app2.trim_cache_epoch, 2);
+    }
+
+    #[test]
+    fn threshold_change_emits_refresh_when_autotrim_on() {
+        let mut app = app_ready_with_chunks(2);
+        app.config.autotrim_enabled = true;
+        app.controls_row = ControlsRow::AutotrimThreshold;
+        let (app2, cmds) = handle_key(&app, Key::Char('l'));
+        assert!(cmds
+            .iter()
+            .any(|c| matches!(c, AppCommand::RefreshTrimCache)));
+        assert_eq!(app2.trim_cache_epoch, 1);
+    }
+
+    #[test]
+    fn threshold_change_no_refresh_when_autotrim_off() {
+        let mut app = app_ready_with_chunks(2);
+        app.config.autotrim_enabled = false;
+        app.controls_row = ControlsRow::AutotrimThreshold;
+        let (_, cmds) = handle_key(&app, Key::Char('l'));
+        assert!(!cmds
+            .iter()
+            .any(|c| matches!(c, AppCommand::RefreshTrimCache)));
+    }
+
+    #[test]
+    fn recording_stopped_increments_epoch_when_autotrim_on() {
+        let mut app = app_recording();
+        app.config.autotrim_enabled = true;
+        app.trim_cache_epoch = 5;
+        let app2 = apply_event(
+            &app,
+            AppEvent::RecordingStopped {
+                chunk_file: "chunk-1.mp4".to_string(),
+                duration_secs: 5.0,
+            },
+        );
+        assert_eq!(app2.trim_cache_epoch, 6);
+        assert!(app2.trim_cache.is_empty());
     }
 }
