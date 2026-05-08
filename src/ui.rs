@@ -47,7 +47,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(" Stop", dim),
         ]),
         AppState::Rendering => Line::from(vec![Span::styled(" Rendering in progress…", dim)]),
-        AppState::Ready => match app.focus {
+        AppState::Ready | AppState::Exited => match app.focus {
             FocusRegion::Controls => Line::from(vec![
                 Span::styled(" j/k", key_style),
                 Span::styled(" Navigate", dim),
@@ -142,17 +142,15 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let rec_indicator = match app.state {
-        AppState::Recording => {
-            Some(Line::from(Span::styled(
-                format!("  ● REC  Recording... {:.1}s", app.recording_elapsed_secs),
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            )))
-        }
+        AppState::Recording => Some(Line::from(Span::styled(
+            format!("  ● REC  Recording... {:.1}s", app.recording_elapsed_secs),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ))),
         AppState::Rendering => Some(Line::from(Span::styled(
             "  ⏳ Rendering...",
             Style::default(),
         ))),
-        AppState::Ready => None,
+        AppState::Ready | AppState::Exited => None,
     };
 
     let controls_block = Block::default()
@@ -167,10 +165,7 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     let inner = controls_block.inner(area);
     let inner_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
         .split(inner);
 
     f.render_widget(
@@ -281,10 +276,7 @@ fn draw_timeline_section(f: &mut Frame, app: &App, area: Rect) {
         };
 
         if i > 0 {
-            spans.push(Span::styled(
-                "│",
-                Style::default().fg(Color::DarkGray),
-            ));
+            spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
         }
 
         spans.push(Span::styled(ch.repeat(vis_width), style));
@@ -312,7 +304,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             .bg(Color::Red)
             .add_modifier(Modifier::BOLD),
         AppState::Rendering => Style::default().fg(Color::Black).bg(Color::Yellow),
-        AppState::Ready => Style::default().fg(Color::White).bg(Color::DarkGray),
+        AppState::Ready | AppState::Exited => Style::default().fg(Color::White).bg(Color::DarkGray),
     };
 
     let msg = if app.state == AppState::Recording {

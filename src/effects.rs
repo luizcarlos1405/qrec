@@ -2,8 +2,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::{command, config::QrecConfig};
 use crate::app::ScreenInfo;
+use crate::{command, config::QrecConfig};
 
 const QREC_JSON: &str = "qrec.json";
 const LOG_FILE: &str = "logs.txt";

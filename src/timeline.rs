@@ -73,7 +73,9 @@ pub fn zoom_out(frames_per_char: usize) -> usize {
 }
 
 pub fn can_zoom_out(chunks: &[Chunk], fps: f64, frames_per_char: usize) -> bool {
-    !chunks.iter().all(|c| chunk_char_width(c.duration_secs, fps, frames_per_char) == 1)
+    !chunks
+        .iter()
+        .all(|c| chunk_char_width(c.duration_secs, fps, frames_per_char) == 1)
 }
 
 pub fn chunk_start_col(

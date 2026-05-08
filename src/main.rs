@@ -15,7 +15,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use app::{App, AppAction, AppState, Key};
+use app::{App, AppCommand, AppEvent, AppState, Key};
 
 fn main() -> anyhow::Result<()> {
     let missing = effects::check_dependencies();
@@ -68,7 +68,12 @@ fn main() -> anyhow::Result<()> {
     let mut recorder_child: Option<std::process::Child> = None;
     let mut recording_start: Option<std::time::Instant> = None;
 
-    let result = run_app(&mut terminal, &mut app, &mut recorder_child, &mut recording_start);
+    let result = run_app(
+        &mut terminal,
+        &mut app,
+        &mut recorder_child,
+        &mut recording_start,
+    );
 
     if let Some(ref mut child) = recorder_child {
         let _ = effects::stop_recording(child);
@@ -100,223 +105,192 @@ fn run_app(
         app.viewport_width = viewport_width;
 
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                let key = translate_key(key);
-                let actions = app.handle_key(key);
+            if let Event::Key(key_event) = event::read()? {
+                let key = translate_key(key_event);
+                let (new_app, commands) = app::handle_key(app, key);
+                *app = new_app;
 
-                for action in actions {
-                    match action {
-                        AppAction::Quit => {
-                            return Ok(());
-                        }
-                        AppAction::SaveConfig => {
-                            if let Err(e) = effects::save_config(&app.config) {
-                                app.status_message = format!("Error: {}", e);
-                            }
-                        }
-                        AppAction::StartRecording => {
-                            start_recording(app, recorder_child, recording_start);
-                        }
-                        AppAction::StopRecording => {
-                            stop_recording(app, recorder_child, recording_start);
-                        }
-                        AppAction::DeleteChunk(idx) => {
-                            delete_chunk(app, idx);
-                        }
-                        AppAction::DiscardLastChunk => {
-                            discard_last_chunk(app);
-                        }
-                        AppAction::RequestRender => {
-                            request_render(app);
-                        }
-                        AppAction::Render => {
-                            do_render(app);
-                        }
-                        AppAction::PreviewChunk(idx) => {
-                            preview_chunk(app, idx, terminal);
-                        }
-                        AppAction::PreviewAll => {
-                            preview_all(app, terminal);
-                        }
+                for cmd in commands {
+                    let events =
+                        execute_command(cmd, app, recorder_child, recording_start, terminal);
+                    for ev in events {
+                        *app = app::apply_event(app, ev);
                     }
+                }
+
+                if app.state == AppState::Exited {
+                    return Ok(());
                 }
             }
         }
     }
 }
 
-fn start_recording(app: &mut App, recorder_child: &mut Option<std::process::Child>, recording_start: &mut Option<std::time::Instant>) {
-    let screen = match app.selected_screen() {
-        Some(s) => s.to_string(),
-        None => {
-            app.status_message = "No screen selected".to_string();
-            return;
-        }
-    };
-
-    let filename = app.config.generate_chunk_filename();
-    let audio = app.selected_microphone().map(|s| s.to_string());
-
-    app.config.next_chunk_number += 1;
-    let _ = effects::save_config(&app.config);
-
-    match effects::start_recording(&screen, audio.as_deref(), &filename) {
-        Ok(child) => {
-            *recorder_child = Some(child);
-            app.state = AppState::Recording;
-            app.recording_chunk_file = Some(filename);
-            *recording_start = Some(std::time::Instant::now());
-            app.status_message = "Recording...".to_string();
-        }
-        Err(e) => {
-            app.config.next_chunk_number -= 1;
-            app.status_message = format!("Error starting recording: {}", e);
-        }
-    }
-}
-
-fn stop_recording(app: &mut App, recorder_child: &mut Option<std::process::Child>, recording_start: &mut Option<std::time::Instant>) {
-    if let Some(ref mut child) = recorder_child {
-        if let Err(e) = effects::stop_recording(child) {
-            app.status_message = format!("Error stopping recording: {}", e);
-        }
-        *recorder_child = None;
-    }
-
-    let chunk_file = app.recording_chunk_file.take().unwrap_or_default();
-
-    if !effects::file_exists(&chunk_file) {
-        app.status_message = format!(
-            "Recording failed: {} was not created by wf-recorder. Check logs.txt",
-            chunk_file
-        );
-        app.state = AppState::Ready;
-        *recording_start = None;
-        app.recording_elapsed_secs = 0.0;
-        return;
-    }
-
-    let duration = effects::get_video_duration(&chunk_file).unwrap_or(0.0);
-
-    app.config = timeline::add_chunk(std::mem::take(&mut app.config), chunk_file.clone(), duration);
-
-    if let Err(e) = effects::save_config(&app.config) {
-        app.status_message = format!("Error saving config: {}", e);
-    } else {
-        app.status_message = format!("Recorded {}", chunk_file);
-    }
-
-    app.state = AppState::Ready;
-    *recording_start = None;
-    app.recording_elapsed_secs = 0.0;
-    app.recalc_zoom();
-
-    if !app.config.chunks.is_empty() {
-        app.selected_chunk = app.config.chunks.len() - 1;
-        app.auto_pan_to_selected();
-    }
-}
-
-fn delete_chunk(app: &mut App, idx: usize) {
-    let (new_config, removed_file) = timeline::remove_chunk(std::mem::take(&mut app.config), idx);
-    app.config = new_config;
-    if let Some(file) = removed_file {
-        let _ = effects::delete_file(&file);
-        let _ = effects::save_config(&app.config);
-        app.status_message = format!("Deleted {}", file);
-
-        if !app.config.chunks.is_empty() {
-            if app.selected_chunk >= app.config.chunks.len() {
-                app.selected_chunk = app.config.chunks.len() - 1;
+fn execute_command(
+    cmd: AppCommand,
+    app: &mut App,
+    recorder_child: &mut Option<std::process::Child>,
+    recording_start: &mut Option<std::time::Instant>,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+) -> Vec<AppEvent> {
+    match cmd {
+        AppCommand::SaveConfig => {
+            let config_to_save = app.config.clone();
+            match effects::save_config(&config_to_save) {
+                Ok(()) => vec![AppEvent::ConfigSaved],
+                Err(e) => vec![AppEvent::ConfigSaveFailed(e.to_string())],
             }
-        } else {
-            app.selected_chunk = 0;
         }
-        app.recalc_zoom();
-        app.auto_pan_to_selected();
-    } else {
-        app.status_message = "No chunk to remove".to_string();
-    }
-}
-
-fn discard_last_chunk(app: &mut App) {
-    if app.config.chunks.is_empty() {
-        app.status_message = "No chunk to remove".to_string();
-        return;
-    }
-    let last_idx = app.config.chunks.len() - 1;
-    delete_chunk(app, last_idx);
-}
-
-fn request_render(app: &mut App) {
-    if app.config.chunks.is_empty() {
-        app.status_message = "No chunks to render".to_string();
-        return;
-    }
-    if effects::file_exists("output.mp4") {
-        app.pending_overwrite = true;
-        app.status_message = "output.mp4 exists. Overwrite? (y/n)".to_string();
-    } else {
-        do_render(app);
-    }
-}
-
-fn do_render(app: &mut App) {
-    if app.config.chunks.is_empty() {
-        app.status_message = "No chunks to render".to_string();
-        return;
-    }
-
-    app.state = AppState::Rendering;
-    app.status_message = "Rendering...".to_string();
-
-    let files: Vec<String> = app.config.chunks.iter().map(|c| c.file.clone()).collect();
-    match effects::render_concat(&files, "output.mp4") {
-        Ok(()) => {
-            app.status_message = "Rendered output.mp4".to_string();
+        AppCommand::StartRecording {
+            screen,
+            mic,
+            filename,
+        } => {
+            let config_to_save = app.config.clone();
+            let _ = effects::save_config(&config_to_save);
+            match effects::start_recording(&screen, mic.as_deref(), &filename) {
+                Ok(child) => {
+                    *recorder_child = Some(child);
+                    *recording_start = Some(std::time::Instant::now());
+                    vec![AppEvent::RecordingStarted { filename }]
+                }
+                Err(e) => {
+                    vec![AppEvent::RecordingFailed {
+                        filename,
+                        reason: e.to_string(),
+                    }]
+                }
+            }
         }
-        Err(e) => {
-            app.status_message = format!("Render error: {}", e);
+        AppCommand::StopRecording => {
+            if let Some(ref mut child) = recorder_child {
+                let _ = effects::stop_recording(child);
+                *recorder_child = None;
+            }
+            let chunk_file = app.recording_chunk_file.clone().unwrap_or_default();
+            if !effects::file_exists(&chunk_file) {
+                *recording_start = None;
+                return vec![AppEvent::RecordingFileMissing { chunk_file }];
+            }
+            let duration = effects::get_video_duration(&chunk_file).unwrap_or(0.0);
+            *recording_start = None;
+            vec![AppEvent::RecordingStopped {
+                chunk_file,
+                duration_secs: duration,
+            }]
+        }
+        AppCommand::DeleteChunk(idx) => {
+            let (new_config, removed_file) = timeline::remove_chunk(app.config.clone(), idx);
+            app.config = new_config;
+            match removed_file {
+                Some(file) => {
+                    let _ = effects::delete_file(&file);
+                    let _ = effects::save_config(&app.config);
+                    vec![AppEvent::FileDeleted(file)]
+                }
+                None => vec![AppEvent::FileDeleteFailed(
+                    idx,
+                    "No chunk to remove".to_string(),
+                )],
+            }
+        }
+        AppCommand::DiscardLastChunk => {
+            if app.config.chunks.is_empty() {
+                return vec![AppEvent::FileDeleteFailed(
+                    0,
+                    "No chunk to remove".to_string(),
+                )];
+            }
+            let last_idx = app.config.chunks.len() - 1;
+            let (new_config, removed_file) = timeline::remove_chunk(app.config.clone(), last_idx);
+            app.config = new_config;
+            match removed_file {
+                Some(file) => {
+                    let _ = effects::delete_file(&file);
+                    let _ = effects::save_config(&app.config);
+                    vec![AppEvent::FileDeleted(file)]
+                }
+                None => vec![AppEvent::FileDeleteFailed(
+                    last_idx,
+                    "No chunk to remove".to_string(),
+                )],
+            }
+        }
+        AppCommand::CheckOverwriteThenRender { files, output } => {
+            if files.is_empty() {
+                return vec![AppEvent::OverwriteCheckResult {
+                    exists: false,
+                    files,
+                    output,
+                }];
+            }
+            let exists = effects::file_exists(&output);
+            if exists {
+                vec![AppEvent::OverwriteCheckResult {
+                    exists: true,
+                    files,
+                    output,
+                }]
+            } else {
+                app.state = AppState::Rendering;
+                app.status_message = "Rendering...".to_string();
+                let result = effects::render_concat(&files, &output);
+                match result {
+                    Ok(()) => vec![AppEvent::RenderSucceeded(output)],
+                    Err(e) => vec![AppEvent::RenderFailed(e.to_string())],
+                }
+            }
+        }
+        AppCommand::Render { files, output } => {
+            app.state = AppState::Rendering;
+            app.status_message = "Rendering...".to_string();
+            let result = effects::render_concat(&files, &output);
+            match result {
+                Ok(()) => vec![AppEvent::RenderSucceeded(output)],
+                Err(e) => vec![AppEvent::RenderFailed(e.to_string())],
+            }
+        }
+        AppCommand::PreviewChunk(idx) => {
+            if app.state == AppState::Recording {
+                return vec![];
+            }
+            if let Some(chunk) = app.config.chunks.get(idx) {
+                if !std::path::Path::new(&chunk.file).exists() {
+                    return vec![AppEvent::PreviewDone(format!(
+                        "File not found: {}",
+                        chunk.file
+                    ))];
+                }
+                let file = chunk.file.clone();
+                suspend_terminal_and(terminal, || effects::preview_file(&file));
+                vec![AppEvent::PreviewDone(format!("Previewed {}", chunk.file))]
+            } else {
+                vec![]
+            }
+        }
+        AppCommand::PreviewAll => {
+            if app.state == AppState::Recording {
+                return vec![];
+            }
+            if app.config.chunks.is_empty() {
+                return vec![AppEvent::PreviewDone("No chunks to preview".to_string())];
+            }
+            let files: Vec<String> = app
+                .config
+                .chunks
+                .iter()
+                .map(|c| c.file.clone())
+                .filter(|f| std::path::Path::new(f).exists())
+                .collect();
+            if files.is_empty() {
+                return vec![AppEvent::PreviewDone(
+                    "No chunk files found on disk".to_string(),
+                )];
+            }
+            suspend_terminal_and(terminal, || effects::preview_files(&files));
+            vec![AppEvent::PreviewDone("Previewed all chunks".to_string())]
         }
     }
-    app.state = AppState::Ready;
-}
-
-fn preview_chunk(app: &mut App, idx: usize, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) {
-    if app.state == AppState::Recording {
-        return;
-    }
-    if let Some(chunk) = app.config.chunks.get(idx) {
-        if !std::path::Path::new(&chunk.file).exists() {
-            app.status_message = format!("File not found: {}", chunk.file);
-            return;
-        }
-        suspend_terminal_and(terminal, || effects::preview_file(&chunk.file));
-        app.status_message = format!("Previewed {}", chunk.file);
-    }
-}
-
-fn preview_all(app: &mut App, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) {
-    if app.state == AppState::Recording {
-        return;
-    }
-    if app.config.chunks.is_empty() {
-        app.status_message = "No chunks to preview".to_string();
-        return;
-    }
-    let files: Vec<String> = app
-        .config
-        .chunks
-        .iter()
-        .map(|c| c.file.clone())
-        .filter(|f| std::path::Path::new(f).exists())
-        .collect();
-    if files.is_empty() {
-        app.status_message = "No chunk files found on disk".to_string();
-        return;
-    }
-    suspend_terminal_and(terminal, || effects::preview_files(&files));
-    app.status_message = "Previewed all chunks".to_string();
 }
 
 fn suspend_terminal_and<F: FnOnce() -> anyhow::Result<()>>(
