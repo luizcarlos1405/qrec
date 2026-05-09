@@ -16,7 +16,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
-            Constraint::Length(9),
+            Constraint::Length(10),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
@@ -47,6 +47,9 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         AppState::Recording => Line::from(vec![
             Span::styled(" r", key_style),
             Span::styled(" Stop", dim),
+            sep.clone(),
+            Span::styled(" q", key_style),
+            Span::styled(" Quit", dim),
         ]),
         AppState::Exporting => Line::from(vec![Span::styled(" Exporting in progress…", dim)]),
         AppState::Ready | AppState::Exited => {
@@ -75,6 +78,12 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
                     sep.clone(),
                     Span::styled(" r", key_style),
                     Span::styled(" Record", dim),
+                    sep.clone(),
+                    Span::styled(" P", key_style),
+                    Span::styled(" Play All", dim),
+                    sep.clone(),
+                    Span::styled(" q", key_style),
+                    Span::styled(" Quit", dim),
                 ])
             } else {
                 Line::from(vec![
@@ -98,6 +107,9 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
                     sep.clone(),
                     Span::styled(" P", key_style),
                     Span::styled(" Play All", dim),
+                    sep.clone(),
+                    Span::styled(" q", key_style),
+                    Span::styled(" Quit", dim),
                 ])
             }
         }
@@ -178,6 +190,7 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
     let inner_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -299,7 +312,16 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
         inner_chunks[5],
     );
 
-    let timeline_spans = build_timeline_spans(app, inner_chunks[6].width as usize);
+    let sep_width = inner_chunks[6].width as usize;
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "─".repeat(sep_width),
+            Style::default().fg(Color::DarkGray),
+        ))),
+        inner_chunks[6],
+    );
+
+    let timeline_spans = build_timeline_spans(app, inner_chunks[7].width as usize);
     let cursor = Span::styled(
         format!("{} ", prefix(ControlsRow::Timeline)),
         row_style(ControlsRow::Timeline),
@@ -311,10 +333,10 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
                     .chain(timeline_spans)
                     .collect::<Vec<_>>(),
             )),
-            inner_chunks[6],
+            inner_chunks[7],
         );
     } else if active_row == ControlsRow::Timeline {
-        f.render_widget(Paragraph::new(Line::from(cursor)), inner_chunks[6]);
+        f.render_widget(Paragraph::new(Line::from(cursor)), inner_chunks[7]);
     }
 
     f.render_widget(controls_block, area);
