@@ -31,20 +31,20 @@ pub enum ControlsRow {
 fn next_controls_row(row: ControlsRow) -> ControlsRow {
     match row {
         ControlsRow::Screen => ControlsRow::Microphone,
-        ControlsRow::Microphone => ControlsRow::Autotrim,
+        ControlsRow::Microphone => ControlsRow::AudioDelay,
+        ControlsRow::AudioDelay => ControlsRow::Autotrim,
         ControlsRow::Autotrim => ControlsRow::AutotrimThreshold,
-        ControlsRow::AutotrimThreshold => ControlsRow::AudioDelay,
-        ControlsRow::AudioDelay => ControlsRow::Screen,
+        ControlsRow::AutotrimThreshold => ControlsRow::Screen,
     }
 }
 
 fn prev_controls_row(row: ControlsRow) -> ControlsRow {
     match row {
-        ControlsRow::Screen => ControlsRow::AudioDelay,
+        ControlsRow::Screen => ControlsRow::AutotrimThreshold,
         ControlsRow::Microphone => ControlsRow::Screen,
-        ControlsRow::Autotrim => ControlsRow::Microphone,
+        ControlsRow::AudioDelay => ControlsRow::Microphone,
+        ControlsRow::Autotrim => ControlsRow::AudioDelay,
         ControlsRow::AutotrimThreshold => ControlsRow::Autotrim,
-        ControlsRow::AudioDelay => ControlsRow::AutotrimThreshold,
     }
 }
 
@@ -757,25 +757,25 @@ mod tests {
         assert_eq!(app2.controls_row, ControlsRow::Microphone);
 
         let (app3, _) = handle_key(&app2, Key::Char('j'));
-        assert_eq!(app3.controls_row, ControlsRow::Autotrim);
+        assert_eq!(app3.controls_row, ControlsRow::AudioDelay);
 
         let (app4, _) = handle_key(&app3, Key::Char('j'));
-        assert_eq!(app4.controls_row, ControlsRow::AutotrimThreshold);
+        assert_eq!(app4.controls_row, ControlsRow::Autotrim);
 
         let (app5, _) = handle_key(&app4, Key::Char('j'));
-        assert_eq!(app5.controls_row, ControlsRow::AudioDelay);
+        assert_eq!(app5.controls_row, ControlsRow::AutotrimThreshold);
 
         let (app6, _) = handle_key(&app5, Key::Char('j'));
         assert_eq!(app6.controls_row, ControlsRow::Screen);
 
         let (app7, _) = handle_key(&app6, Key::Char('k'));
-        assert_eq!(app7.controls_row, ControlsRow::AudioDelay);
+        assert_eq!(app7.controls_row, ControlsRow::AutotrimThreshold);
 
         let (app8, _) = handle_key(&app7, Key::Char('k'));
-        assert_eq!(app8.controls_row, ControlsRow::AutotrimThreshold);
+        assert_eq!(app8.controls_row, ControlsRow::Autotrim);
 
         let (app9, _) = handle_key(&app8, Key::Char('k'));
-        assert_eq!(app9.controls_row, ControlsRow::Autotrim);
+        assert_eq!(app9.controls_row, ControlsRow::AudioDelay);
 
         let (app10, _) = handle_key(&app9, Key::Char('k'));
         assert_eq!(app10.controls_row, ControlsRow::Microphone);

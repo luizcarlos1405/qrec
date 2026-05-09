@@ -237,6 +237,23 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
+                format!("{} Audio delay:  ", prefix(ControlsRow::AudioDelay)),
+                row_style(ControlsRow::AudioDelay),
+            ),
+            Span::styled(
+                format!("{:<30}", audio_delay_value),
+                value_style(ControlsRow::AudioDelay),
+            ),
+            Span::styled(
+                arrows(ControlsRow::AudioDelay),
+                arrow_style(ControlsRow::AudioDelay),
+            ),
+        ])),
+        inner_chunks[2],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
                 format!("{} Autotrim:    ", prefix(ControlsRow::Autotrim)),
                 row_style(ControlsRow::Autotrim),
             ),
@@ -249,7 +266,7 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
                 arrow_style(ControlsRow::Autotrim),
             ),
         ])),
-        inner_chunks[2],
+        inner_chunks[3],
     );
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -267,23 +284,6 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(
                 arrows(ControlsRow::AutotrimThreshold),
                 arrow_style(ControlsRow::AutotrimThreshold),
-            ),
-        ])),
-        inner_chunks[3],
-    );
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!("{} Audio delay:  ", prefix(ControlsRow::AudioDelay)),
-                row_style(ControlsRow::AudioDelay),
-            ),
-            Span::styled(
-                format!("{:<30}", audio_delay_value),
-                value_style(ControlsRow::AudioDelay),
-            ),
-            Span::styled(
-                arrows(ControlsRow::AudioDelay),
-                arrow_style(ControlsRow::AudioDelay),
             ),
         ])),
         inner_chunks[4],
