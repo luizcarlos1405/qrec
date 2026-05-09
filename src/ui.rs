@@ -365,38 +365,27 @@ fn build_timeline_spans(app: &App, _available_width: usize) -> Vec<Span<'static>
                     (
                         "░",
                         if i == app.selected_chunk {
-                            Style::default().add_modifier(Modifier::BOLD)
+                            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
                         } else {
-                            Style::default()
-                                .fg(Color::DarkGray)
-                                .add_modifier(Modifier::REVERSED | Modifier::BOLD)
+                            Style::default().fg(Color::DarkGray)
                         },
                     )
                 } else if i == app.selected_chunk {
-                    ("█", Style::default().add_modifier(Modifier::BOLD))
+                    ("█", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
                 } else {
-                    (
-                        "▓",
-                        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
-                    )
+                    ("█", Style::default().fg(Color::DarkGray))
                 };
 
                 spans.push(Span::styled(ch.repeat(run_len), style));
             }
         } else {
             let style = if i == app.selected_chunk {
-                Style::default().add_modifier(Modifier::BOLD)
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
             } else {
-                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+                Style::default().fg(Color::DarkGray)
             };
 
-            let ch = if i == app.selected_chunk {
-                "█"
-            } else {
-                "▓"
-            };
-
-            spans.push(Span::styled(ch.repeat(vis_width), style));
+            spans.push(Span::styled("█".repeat(vis_width), style));
         }
         col += w;
     }
