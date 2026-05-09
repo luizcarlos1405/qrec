@@ -37,12 +37,68 @@ pub fn ffmpeg_concat_command(
             list_file.to_string(),
             "-c".to_string(),
             "copy".to_string(),
-            "-avoid_negative_ts".to_string(),
-            "make_zero".to_string(),
-            "-fflags".to_string(),
-            "+genpts".to_string(),
             output_file.to_string(),
         ],
+    }
+}
+
+pub fn ffmpeg_concat_with_audio_delay_command(
+    _chunk_files: &[String],
+    output_file: &str,
+    list_file: &str,
+    audio_delay_secs: f64,
+) -> Command {
+    let delay_ms = (audio_delay_secs * 1000.0).round() as i64;
+    let trim_secs = (-audio_delay_secs).abs();
+
+    if audio_delay_secs >= 0.0 {
+        Command {
+            program: "ffmpeg".to_string(),
+            args: vec![
+                "-y".to_string(),
+                "-f".to_string(),
+                "concat".to_string(),
+                "-safe".to_string(),
+                "0".to_string(),
+                "-i".to_string(),
+                list_file.to_string(),
+                "-map".to_string(),
+                "0:v".to_string(),
+                "-map".to_string(),
+                "0:a".to_string(),
+                "-c:v".to_string(),
+                "copy".to_string(),
+                "-af".to_string(),
+                format!("adelay={}|{}", delay_ms, delay_ms),
+                "-c:a".to_string(),
+                "aac".to_string(),
+                output_file.to_string(),
+            ],
+        }
+    } else {
+        Command {
+            program: "ffmpeg".to_string(),
+            args: vec![
+                "-y".to_string(),
+                "-f".to_string(),
+                "concat".to_string(),
+                "-safe".to_string(),
+                "0".to_string(),
+                "-i".to_string(),
+                list_file.to_string(),
+                "-map".to_string(),
+                "0:v".to_string(),
+                "-map".to_string(),
+                "0:a".to_string(),
+                "-c:v".to_string(),
+                "copy".to_string(),
+                "-af".to_string(),
+                format!("atrim={},asetpts=PTS-STARTPTS", trim_secs),
+                "-c:a".to_string(),
+                "aac".to_string(),
+                output_file.to_string(),
+            ],
+        }
     }
 }
 
@@ -243,5 +299,31 @@ mod tests {
         assert!(cmd.args.iter().any(|a| a == "--start=3.2"));
         assert!(cmd.args.iter().any(|a| a == "--end=27"));
         assert!(cmd.args.contains(&"chunk-1.mp4".to_string()));
+    }
+
+    #[test]
+    fn concat_with_positive_delay_has_adelay() {
+        let cmd = ffmpeg_concat_with_audio_delay_command(&[], "output.mp4", "/tmp/list.txt", 0.10);
+        assert_eq!(cmd.program, "ffmpeg");
+        assert!(cmd.args.contains(&"-map".to_string()));
+        assert!(cmd.args.contains(&"0:v".to_string()));
+        assert!(cmd.args.contains(&"0:a".to_string()));
+        assert!(cmd.args.contains(&"-c:v".to_string()));
+        assert!(cmd.args.contains(&"copy".to_string()));
+        assert!(cmd.args.contains(&"-c:a".to_string()));
+        assert!(cmd.args.contains(&"aac".to_string()));
+        assert!(cmd.args.iter().any(|a| a.starts_with("adelay=")));
+    }
+
+    #[test]
+    fn concat_with_negative_delay_has_atrim() {
+        let cmd = ffmpeg_concat_with_audio_delay_command(&[], "output.mp4", "/tmp/list.txt", -0.05);
+        assert_eq!(cmd.program, "ffmpeg");
+        assert!(cmd.args.contains(&"-c:v".to_string()));
+        assert!(cmd.args.contains(&"copy".to_string()));
+        assert!(cmd.args.contains(&"-c:a".to_string()));
+        assert!(cmd.args.contains(&"aac".to_string()));
+        assert!(cmd.args.iter().any(|a| a.contains("atrim=")));
+        assert!(cmd.args.iter().any(|a| a.contains("asetpts=PTS-STARTPTS")));
     }
 }

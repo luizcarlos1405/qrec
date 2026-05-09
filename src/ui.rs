@@ -119,6 +119,8 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
 
     let autotrim_on = app.config.autotrim_enabled;
 
+    let audio_delay_value = format!("{:+.2}s", app.config.audio_delay_secs);
+
     let row_active = |row: ControlsRow| -> bool {
         match row {
             ControlsRow::AutotrimThreshold => autotrim_on,
@@ -190,6 +192,7 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     let inner_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -268,11 +271,28 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
         ])),
         inner_chunks[3],
     );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{} Audio delay:  ", prefix(ControlsRow::AudioDelay)),
+                row_style(ControlsRow::AudioDelay),
+            ),
+            Span::styled(
+                format!("{:<30}", audio_delay_value),
+                value_style(ControlsRow::AudioDelay),
+            ),
+            Span::styled(
+                arrows(ControlsRow::AudioDelay),
+                arrow_style(ControlsRow::AudioDelay),
+            ),
+        ])),
+        inner_chunks[4],
+    );
 
     if let Some(rec_line) = rec_indicator {
         let indicator_area = Rect {
             x: area.x,
-            y: area.y + 6,
+            y: area.y + 7,
             width: area.width,
             height: 1,
         };
@@ -283,9 +303,9 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
 
     let timeline_area = Rect {
         x: area.x,
-        y: area.y + 7,
+        y: area.y + 8,
         width: area.width,
-        height: area.height.saturating_sub(7),
+        height: area.height.saturating_sub(8),
     };
 
     draw_timeline_section(f, app, timeline_area);

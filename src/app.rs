@@ -25,6 +25,7 @@ pub enum ControlsRow {
     Microphone,
     Autotrim,
     AutotrimThreshold,
+    AudioDelay,
 }
 
 fn next_controls_row(row: ControlsRow) -> ControlsRow {
@@ -32,16 +33,18 @@ fn next_controls_row(row: ControlsRow) -> ControlsRow {
         ControlsRow::Screen => ControlsRow::Microphone,
         ControlsRow::Microphone => ControlsRow::Autotrim,
         ControlsRow::Autotrim => ControlsRow::AutotrimThreshold,
-        ControlsRow::AutotrimThreshold => ControlsRow::Screen,
+        ControlsRow::AutotrimThreshold => ControlsRow::AudioDelay,
+        ControlsRow::AudioDelay => ControlsRow::Screen,
     }
 }
 
 fn prev_controls_row(row: ControlsRow) -> ControlsRow {
     match row {
-        ControlsRow::Screen => ControlsRow::AutotrimThreshold,
+        ControlsRow::Screen => ControlsRow::AudioDelay,
         ControlsRow::Microphone => ControlsRow::Screen,
         ControlsRow::Autotrim => ControlsRow::Microphone,
         ControlsRow::AutotrimThreshold => ControlsRow::Autotrim,
+        ControlsRow::AudioDelay => ControlsRow::AutotrimThreshold,
     }
 }
 
@@ -332,6 +335,12 @@ fn handle_controls_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) 
                     commands.push(AppCommand::RefreshTrimCache);
                 }
             }
+            ControlsRow::AudioDelay => {
+                app.config.audio_delay_secs =
+                    ((app.config.audio_delay_secs - 0.01) * 100.0).round() / 100.0;
+                app.config.audio_delay_secs = app.config.audio_delay_secs.max(-5.0);
+                commands.push(AppCommand::SaveConfig);
+            }
         },
         Key::Char('l') | Key::Right => match app.controls_row {
             ControlsRow::Screen => {
@@ -364,6 +373,12 @@ fn handle_controls_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) 
                     app.trim_cache_epoch += 1;
                     commands.push(AppCommand::RefreshTrimCache);
                 }
+            }
+            ControlsRow::AudioDelay => {
+                app.config.audio_delay_secs =
+                    ((app.config.audio_delay_secs + 0.01) * 100.0).round() / 100.0;
+                app.config.audio_delay_secs = app.config.audio_delay_secs.min(5.0);
+                commands.push(AppCommand::SaveConfig);
             }
         },
         Key::Char('d') => {
@@ -748,19 +763,25 @@ mod tests {
         assert_eq!(app4.controls_row, ControlsRow::AutotrimThreshold);
 
         let (app5, _) = handle_key(&app4, Key::Char('j'));
-        assert_eq!(app5.controls_row, ControlsRow::Screen);
+        assert_eq!(app5.controls_row, ControlsRow::AudioDelay);
 
-        let (app6, _) = handle_key(&app5, Key::Char('k'));
-        assert_eq!(app6.controls_row, ControlsRow::AutotrimThreshold);
+        let (app6, _) = handle_key(&app5, Key::Char('j'));
+        assert_eq!(app6.controls_row, ControlsRow::Screen);
 
         let (app7, _) = handle_key(&app6, Key::Char('k'));
-        assert_eq!(app7.controls_row, ControlsRow::Autotrim);
+        assert_eq!(app7.controls_row, ControlsRow::AudioDelay);
 
         let (app8, _) = handle_key(&app7, Key::Char('k'));
-        assert_eq!(app8.controls_row, ControlsRow::Microphone);
+        assert_eq!(app8.controls_row, ControlsRow::AutotrimThreshold);
 
         let (app9, _) = handle_key(&app8, Key::Char('k'));
-        assert_eq!(app9.controls_row, ControlsRow::Screen);
+        assert_eq!(app9.controls_row, ControlsRow::Autotrim);
+
+        let (app10, _) = handle_key(&app9, Key::Char('k'));
+        assert_eq!(app10.controls_row, ControlsRow::Microphone);
+
+        let (app11, _) = handle_key(&app10, Key::Char('k'));
+        assert_eq!(app11.controls_row, ControlsRow::Screen);
     }
 
     #[test]
@@ -1060,6 +1081,7 @@ mod tests {
         let config = QrecConfig::default();
         assert!(!config.autotrim_enabled);
         assert_eq!(config.autotrim_threshold_db, -40.0);
+        assert_eq!(config.audio_delay_secs, 0.0);
     }
 
     #[test]
@@ -1212,5 +1234,67 @@ mod tests {
         let (app2, cmds) = apply_event(&app, AppEvent::TrimCacheComplete { epoch: 1 });
         assert_eq!(app2.config.chunks[0].trim_start, None);
         assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn audio_delay_default_is_zero() {
+        let config = QrecConfig::default();
+        assert!((config.audio_delay_secs - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn audio_delay_l_increases_by_0_01() {
+        let mut app = app_ready();
+        app.controls_row = ControlsRow::AudioDelay;
+        let (app2, cmds) = handle_key(&app, Key::Char('l'));
+        assert!((app2.config.audio_delay_secs - 0.01).abs() < f64::EPSILON);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::SaveConfig)));
+    }
+
+    #[test]
+    fn audio_delay_h_decreases_by_0_01() {
+        let mut app = app_ready();
+        app.controls_row = ControlsRow::AudioDelay;
+        app.config.audio_delay_secs = 0.05;
+        let (app2, cmds) = handle_key(&app, Key::Char('h'));
+        assert!((app2.config.audio_delay_secs - 0.04).abs() < f64::EPSILON);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::SaveConfig)));
+    }
+
+    #[test]
+    fn audio_delay_h_goes_negative() {
+        let mut app = app_ready();
+        app.controls_row = ControlsRow::AudioDelay;
+        let (app2, _) = handle_key(&app, Key::Char('h'));
+        assert!((app2.config.audio_delay_secs - (-0.01)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn audio_delay_clamps_at_max() {
+        let mut app = app_ready();
+        app.controls_row = ControlsRow::AudioDelay;
+        app.config.audio_delay_secs = 5.0;
+        let (app2, _) = handle_key(&app, Key::Char('l'));
+        assert!((app2.config.audio_delay_secs - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn audio_delay_clamps_at_min() {
+        let mut app = app_ready();
+        app.controls_row = ControlsRow::AudioDelay;
+        app.config.audio_delay_secs = -5.0;
+        let (app2, _) = handle_key(&app, Key::Char('h'));
+        assert!((app2.config.audio_delay_secs - (-5.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn audio_delay_no_floating_point_drift() {
+        let mut app = app_ready();
+        app.controls_row = ControlsRow::AudioDelay;
+        for _ in 0..100 {
+            let (app2, _) = handle_key(&app, Key::Char('l'));
+            app = app2;
+        }
+        assert!((app.config.audio_delay_secs - 1.0).abs() < f64::EPSILON);
     }
 }

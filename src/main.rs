@@ -259,12 +259,13 @@ fn build_cached_trim_entries(app: &App) -> Option<Vec<(String, f64, f64, f64)>> 
 fn do_render(app: &mut App, files: &[String], output: &str) -> Vec<AppEvent> {
     app.state = AppState::Rendering;
     app.status_message = "Rendering...".to_string();
+    let delay = app.config.audio_delay_secs;
     let result = if let Some(entries) = build_cached_trim_entries(app) {
-        effects::render_concat_with_trims(&entries, output)
+        effects::render_concat_with_trims(&entries, output, delay)
     } else if app.config.autotrim_enabled {
-        effects::render_concat_autotrim(files, output, app.config.autotrim_threshold_db)
+        effects::render_concat_autotrim(files, output, app.config.autotrim_threshold_db, delay)
     } else {
-        effects::render_concat(files, output)
+        effects::render_concat(files, output, delay)
     };
     match result {
         Ok(()) => vec![AppEvent::RenderSucceeded(output.to_string())],

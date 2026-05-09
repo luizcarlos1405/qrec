@@ -227,7 +227,11 @@ pub fn get_video_duration(file: &str) -> anyhow::Result<f64> {
     Ok(duration)
 }
 
-pub fn render_concat(chunk_files: &[String], output_file: &str) -> anyhow::Result<()> {
+pub fn render_concat(
+    chunk_files: &[String],
+    output_file: &str,
+    audio_delay_secs: f64,
+) -> anyhow::Result<()> {
     let list_content = command::concat_list_content(chunk_files);
 
     let mut temp_file = tempfile::NamedTempFile::new()?;
@@ -235,7 +239,16 @@ pub fn render_concat(chunk_files: &[String], output_file: &str) -> anyhow::Resul
     temp_file.flush()?;
 
     let list_path = temp_file.path().to_string_lossy().to_string();
-    let cmd = command::ffmpeg_concat_command(chunk_files, output_file, &list_path);
+    let cmd = if audio_delay_secs == 0.0 {
+        command::ffmpeg_concat_command(chunk_files, output_file, &list_path)
+    } else {
+        command::ffmpeg_concat_with_audio_delay_command(
+            chunk_files,
+            output_file,
+            &list_path,
+            audio_delay_secs,
+        )
+    };
     let output = Command::new(&cmd.program)
         .args(&cmd.args)
         .stdout(Stdio::piped())
@@ -475,6 +488,7 @@ pub fn render_concat_autotrim(
     chunk_files: &[String],
     output_file: &str,
     threshold_db: f64,
+    audio_delay_secs: f64,
 ) -> anyhow::Result<()> {
     let mut trimmed_files = Vec::with_capacity(chunk_files.len());
     let mut temp_paths = Vec::new();
@@ -526,7 +540,7 @@ pub fn render_concat_autotrim(
         anyhow::bail!("No content after silence removal");
     }
 
-    render_concat(&trimmed_files, output_file)?;
+    render_concat(&trimmed_files, output_file, audio_delay_secs)?;
 
     for temp in &temp_paths {
         let _ = std::fs::remove_file(temp);
@@ -538,6 +552,7 @@ pub fn render_concat_autotrim(
 pub fn render_concat_with_trims(
     entries: &[(String, f64, f64, f64)],
     output_file: &str,
+    audio_delay_secs: f64,
 ) -> anyhow::Result<()> {
     let mut trimmed_files = Vec::with_capacity(entries.len());
     let mut temp_paths = Vec::new();
@@ -585,7 +600,7 @@ pub fn render_concat_with_trims(
         anyhow::bail!("No content after silence removal");
     }
 
-    render_concat(&trimmed_files, output_file)?;
+    render_concat(&trimmed_files, output_file, audio_delay_secs)?;
 
     for temp in &temp_paths {
         let _ = std::fs::remove_file(temp);
