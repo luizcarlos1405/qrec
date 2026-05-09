@@ -195,7 +195,7 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
                 row_style(ControlsRow::Screen),
             ),
             Span::styled(
-                format!("{:<30}", screen_value),
+                format!("{}", screen_value),
                 value_style(ControlsRow::Screen),
             ),
             Span::styled(
@@ -212,7 +212,7 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
                 row_style(ControlsRow::Microphone),
             ),
             Span::styled(
-                format!("{:<30}", mic_value),
+                format!("{}", mic_value),
                 value_style(ControlsRow::Microphone),
             ),
             Span::styled(
@@ -229,7 +229,7 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
                 row_style(ControlsRow::AudioDelay),
             ),
             Span::styled(
-                format!("{:<30}", audio_delay_value),
+                format!("{}", audio_delay_value),
                 value_style(ControlsRow::AudioDelay),
             ),
             Span::styled(
@@ -246,7 +246,7 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
                 row_style(ControlsRow::Autotrim),
             ),
             Span::styled(
-                format!("{:<30}", autotrim_value),
+                format!("{}", autotrim_value),
                 value_style(ControlsRow::Autotrim),
             ),
             Span::styled(
@@ -266,7 +266,7 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
                 row_style(ControlsRow::AutotrimThreshold),
             ),
             Span::styled(
-                format!("{:<22}", threshold_value),
+                format!("{}", threshold_value),
                 value_style(ControlsRow::AutotrimThreshold),
             ),
             Span::styled(
@@ -288,7 +288,7 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
                 row_style(ControlsRow::AutotrimPadding),
             ),
             Span::styled(
-                format!("{:<22}", padding_value),
+                format!("{}", padding_value),
                 value_style(ControlsRow::AutotrimPadding),
             ),
             Span::styled(
