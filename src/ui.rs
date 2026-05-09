@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AppState, ControlsRow, FocusRegion};
+use crate::app::{App, AppState, ControlsRow};
 use crate::timeline;
 
 const FPS: f64 = 30.0;
@@ -15,15 +15,17 @@ pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
+            Constraint::Length(3),
+            Constraint::Length(8),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
         .split(f.area());
 
     draw_header(f, app, chunks[0]);
-    draw_body(f, app, chunks[1]);
-    draw_status_bar(f, app, chunks[2]);
+    draw_controls(f, app, chunks[1]);
+    draw_logs(f, app, chunks[2]);
+    draw_status_bar(f, app, chunks[3]);
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
@@ -46,59 +48,59 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(" r", key_style),
             Span::styled(" Stop", dim),
         ]),
-        AppState::Rendering => Line::from(vec![Span::styled(" Rendering in progress…", dim)]),
-        AppState::Ready | AppState::Exited => match app.focus {
-            FocusRegion::Controls => Line::from(vec![
-                Span::styled(" j/k", key_style),
-                Span::styled(" Navigate", dim),
-                sep.clone(),
-                Span::styled(" h/l", key_style),
-                Span::styled(" Change", dim),
-                sep.clone(),
-                Span::styled(" r", key_style),
-                Span::styled(" Record", dim),
-                sep.clone(),
-                Span::styled(" d", key_style),
-                Span::styled(" Discard", dim),
-                sep.clone(),
-                Span::styled(" e", key_style),
-                Span::styled(" Render", dim),
-                sep.clone(),
-                Span::styled(" P", key_style),
-                Span::styled(" Preview", dim),
-                sep.clone(),
-                Span::styled(" Tab", key_style),
-                Span::styled(" Timeline", dim),
-            ]),
-            FocusRegion::Timeline => Line::from(vec![
-                Span::styled(" h/l", key_style),
-                Span::styled(" Select", dim),
-                sep.clone(),
-                Span::styled(" H/L", key_style),
-                Span::styled(" Reorder", dim),
-                sep.clone(),
-                Span::styled(" i/o", key_style),
-                Span::styled(" Zoom", dim),
-                sep.clone(),
-                Span::styled(" d", key_style),
-                Span::styled(" Delete", dim),
-                sep.clone(),
-                Span::styled(" p", key_style),
-                Span::styled(" Preview", dim),
-                sep.clone(),
-                Span::styled(" r", key_style),
-                Span::styled(" Record", dim),
-                sep.clone(),
-                Span::styled(" e", key_style),
-                Span::styled(" Render", dim),
-                sep.clone(),
-                Span::styled(" P", key_style),
-                Span::styled(" Preview All", dim),
-                sep.clone(),
-                Span::styled(" Tab", key_style),
-                Span::styled(" Controls", dim),
-            ]),
-        },
+        AppState::Exporting => Line::from(vec![Span::styled(" Exporting in progress…", dim)]),
+        AppState::Ready | AppState::Exited => {
+            if app.controls_row == ControlsRow::Timeline {
+                Line::from(vec![
+                    Span::styled(" j/k", key_style),
+                    Span::styled(" Navigate", dim),
+                    sep.clone(),
+                    Span::styled(" h/l", key_style),
+                    Span::styled(" Select", dim),
+                    sep.clone(),
+                    Span::styled(" H/L", key_style),
+                    Span::styled(" Reorder", dim),
+                    sep.clone(),
+                    Span::styled(" i/o", key_style),
+                    Span::styled(" Zoom", dim),
+                    sep.clone(),
+                    Span::styled(" d", key_style),
+                    Span::styled(" Delete", dim),
+                    sep.clone(),
+                    Span::styled(" p", key_style),
+                    Span::styled(" Play", dim),
+                    sep.clone(),
+                    Span::styled(" e", key_style),
+                    Span::styled(" Export", dim),
+                    sep.clone(),
+                    Span::styled(" r", key_style),
+                    Span::styled(" Record", dim),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled(" j/k", key_style),
+                    Span::styled(" Navigate", dim),
+                    sep.clone(),
+                    Span::styled(" h/l", key_style),
+                    Span::styled(" Change", dim),
+                    sep.clone(),
+                    Span::styled(" d", key_style),
+                    Span::styled(" Delete", dim),
+                    sep.clone(),
+                    Span::styled(" p", key_style),
+                    Span::styled(" Play", dim),
+                    sep.clone(),
+                    Span::styled(" e", key_style),
+                    Span::styled(" Export", dim),
+                    sep.clone(),
+                    Span::styled(" r", key_style),
+                    Span::styled(" Record", dim),
+                    sep.clone(),
+                    Span::styled(" P", key_style),
+                    Span::styled(" Play All", dim),
+                ])
+            }
+        }
     };
 
     let header = Paragraph::new(vec![title_line, shortcuts_line])
@@ -107,15 +109,12 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(header, area);
 }
 
-fn draw_body(f: &mut Frame, app: &App, area: Rect) {
-    let controls_focus = app.focus == FocusRegion::Controls;
-    let controls_highlight = if controls_focus {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
+    let active_row = app.controls_row;
+
+    let controls_highlight = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
 
     let autotrim_on = app.config.autotrim_enabled;
 
@@ -124,12 +123,14 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     let row_active = |row: ControlsRow| -> bool {
         match row {
             ControlsRow::AutotrimThreshold => autotrim_on,
+            ControlsRow::Timeline => !app.config.chunks.is_empty()
+                || app.state == AppState::Recording,
             _ => true,
         }
     };
 
     let prefix = |row: ControlsRow| -> &str {
-        if app.controls_row == row && controls_focus {
+        if active_row == row {
             "▸"
         } else {
             " "
@@ -137,7 +138,7 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let arrows = |row: ControlsRow| -> &str {
-        if app.controls_row == row && controls_focus {
+        if active_row == row {
             " ◄ ►"
         } else {
             ""
@@ -167,31 +168,16 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     let autotrim_value = if autotrim_on { "on" } else { "off" };
     let threshold_value = format!("{:.0}dB", app.config.autotrim_threshold_db);
 
-    let rec_indicator = match app.state {
-        AppState::Recording => Some(Line::from(Span::styled(
-            format!("  ● REC  Recording... {:.1}s", app.recording_elapsed_secs),
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        ))),
-        AppState::Rendering => Some(Line::from(Span::styled(
-            "  ⏳ Rendering...",
-            Style::default(),
-        ))),
-        AppState::Ready | AppState::Exited => None,
-    };
-
     let controls_block = Block::default()
         .title(" Controls ")
         .borders(Borders::ALL)
-        .border_style(if controls_focus {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        });
+        .border_style(Style::default().fg(Color::Yellow));
 
     let inner = controls_block.inner(area);
     let inner_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -289,55 +275,49 @@ fn draw_body(f: &mut Frame, app: &App, area: Rect) {
         inner_chunks[4],
     );
 
-    if let Some(rec_line) = rec_indicator {
-        let indicator_area = Rect {
-            x: area.x,
-            y: area.y + 7,
-            width: area.width,
+    let timeline_spans = build_timeline_spans(app, inner_chunks[5].width as usize);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{} Timeline    ", prefix(ControlsRow::Timeline)),
+                row_style(ControlsRow::Timeline),
+            ),
+            Span::styled(
+                arrows(ControlsRow::Timeline),
+                arrow_style(ControlsRow::Timeline),
+            ),
+        ])),
+        inner_chunks[5],
+    );
+    if !timeline_spans.is_empty() {
+        let timeline_line_area = Rect {
+            x: inner_chunks[5].x + 15,
+            y: inner_chunks[5].y,
+            width: inner_chunks[5].width.saturating_sub(15),
             height: 1,
         };
-        f.render_widget(Paragraph::new(rec_line), indicator_area);
+        f.render_widget(
+            Paragraph::new(Line::from(timeline_spans)),
+            timeline_line_area,
+        );
     }
 
     f.render_widget(controls_block, area);
-
-    let timeline_area = Rect {
-        x: area.x,
-        y: area.y + 8,
-        width: area.width,
-        height: area.height.saturating_sub(8),
-    };
-
-    draw_timeline_section(f, app, timeline_area);
 }
 
-fn draw_timeline_section(f: &mut Frame, app: &App, area: Rect) {
-    let timeline_focus = app.focus == FocusRegion::Timeline;
-
-    let block = Block::default()
-        .title(" Timeline ")
-        .borders(Borders::ALL)
-        .border_style(if timeline_focus {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        });
-
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
+fn build_timeline_spans(app: &App, _available_width: usize) -> Vec<Span<'static>> {
     if app.config.chunks.is_empty() && app.state != AppState::Recording {
-        let empty = Paragraph::new("No chunks recorded")
-            .style(Style::default().fg(Color::DarkGray))
-            .wrap(Wrap { trim: false });
-        f.render_widget(empty, inner);
-        return;
+        return Vec::new();
     }
 
-    let mut spans = Vec::new();
+    let mut spans: Vec<Span<'static>> = Vec::new();
     let mut col = 0;
     let scroll = app.viewport_scroll;
-    let view_w = inner.width as usize;
+    let view_w = if app.viewport_width > 15 {
+        app.viewport_width - 15
+    } else {
+        app.viewport_width
+    };
 
     for (i, chunk) in app.config.chunks.iter().enumerate() {
         let w = timeline::chunk_char_width(chunk.duration_secs, FPS, app.frames_per_char);
@@ -442,8 +422,27 @@ fn draw_timeline_section(f: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
-    let line = Line::from(spans);
-    f.render_widget(Paragraph::new(line), inner);
+    spans
+}
+
+fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .title(" Logs ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray));
+
+    let inner = block.inner(area);
+
+    let lines: Vec<Line> = app
+        .log_lines
+        .iter()
+        .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(Color::DarkGray))))
+        .collect();
+
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+
+    f.render_widget(paragraph, inner);
+    f.render_widget(block, area);
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
@@ -452,7 +451,7 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
             .fg(Color::Black)
             .bg(Color::Red)
             .add_modifier(Modifier::BOLD),
-        AppState::Rendering => Style::default().fg(Color::Black).bg(Color::Yellow),
+        AppState::Exporting => Style::default().fg(Color::Black).bg(Color::Yellow),
         AppState::Ready | AppState::Exited => Style::default().fg(Color::White).bg(Color::DarkGray),
     };
 

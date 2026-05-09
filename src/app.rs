@@ -170,11 +170,13 @@ impl App {
             })
             .collect();
 
+        let selected_chunk = if config.chunks.is_empty() { 0 } else { config.chunks.len() - 1 };
+
         Self {
             config,
             state: AppState::Ready,
             controls_row: ControlsRow::Screen,
-            selected_chunk: if config.chunks.is_empty() { 0 } else { config.chunks.len() - 1 },
+            selected_chunk,
             frames_per_char,
             viewport_scroll: 0,
             viewport_width: 80,
