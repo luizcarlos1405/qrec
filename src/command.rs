@@ -37,6 +37,10 @@ pub fn ffmpeg_concat_command(
             list_file.to_string(),
             "-c".to_string(),
             "copy".to_string(),
+            "-avoid_negative_ts".to_string(),
+            "make_zero".to_string(),
+            "-fflags".to_string(),
+            "+genpts".to_string(),
             output_file.to_string(),
         ],
     }
