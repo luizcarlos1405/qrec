@@ -14,18 +14,13 @@ pub struct ScreenInfo {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FocusRegion {
-    Controls,
-    Timeline,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlsRow {
     Screen,
     Microphone,
     Autotrim,
     AutotrimThreshold,
     AudioDelay,
+    Timeline,
 }
 
 fn next_controls_row(row: ControlsRow) -> ControlsRow {
@@ -34,17 +29,19 @@ fn next_controls_row(row: ControlsRow) -> ControlsRow {
         ControlsRow::Microphone => ControlsRow::AudioDelay,
         ControlsRow::AudioDelay => ControlsRow::Autotrim,
         ControlsRow::Autotrim => ControlsRow::AutotrimThreshold,
-        ControlsRow::AutotrimThreshold => ControlsRow::Screen,
+        ControlsRow::AutotrimThreshold => ControlsRow::Timeline,
+        ControlsRow::Timeline => ControlsRow::Screen,
     }
 }
 
 fn prev_controls_row(row: ControlsRow) -> ControlsRow {
     match row {
-        ControlsRow::Screen => ControlsRow::AutotrimThreshold,
+        ControlsRow::Screen => ControlsRow::Timeline,
         ControlsRow::Microphone => ControlsRow::Screen,
         ControlsRow::AudioDelay => ControlsRow::Microphone,
         ControlsRow::Autotrim => ControlsRow::AudioDelay,
         ControlsRow::AutotrimThreshold => ControlsRow::Autotrim,
+        ControlsRow::Timeline => ControlsRow::AutotrimThreshold,
     }
 }
 
@@ -52,7 +49,7 @@ fn prev_controls_row(row: ControlsRow) -> ControlsRow {
 pub enum AppState {
     Ready,
     Recording,
-    Rendering,
+    Exporting,
     Exited,
 }
 
@@ -63,7 +60,6 @@ pub enum Key {
     Down,
     Left,
     Right,
-    Tab,
     Esc,
     Enter,
 }
@@ -72,7 +68,6 @@ pub enum Key {
 pub struct App {
     pub config: QrecConfig,
     pub state: AppState,
-    pub focus: FocusRegion,
     pub controls_row: ControlsRow,
     pub selected_chunk: usize,
     pub frames_per_char: usize,
@@ -88,6 +83,7 @@ pub struct App {
     pub pending_overwrite: bool,
     pub trim_cache: TrimCache,
     pub trim_cache_epoch: u64,
+    pub log_lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,12 +96,11 @@ pub enum AppCommand {
     },
     StopRecording,
     DeleteChunk(usize),
-    DiscardLastChunk,
-    CheckOverwriteThenRender {
+    CheckOverwriteThenExport {
         files: Vec<String>,
         output: String,
     },
-    Render {
+    Export {
         files: Vec<String>,
         output: String,
     },
@@ -152,6 +147,9 @@ pub enum AppEvent {
     TrimCacheComplete {
         epoch: u64,
     },
+    LogContentUpdated {
+        lines: Vec<String>,
+    },
 }
 
 impl App {
@@ -175,9 +173,8 @@ impl App {
         Self {
             config,
             state: AppState::Ready,
-            focus: FocusRegion::Controls,
             controls_row: ControlsRow::Screen,
-            selected_chunk: 0,
+            selected_chunk: if config.chunks.is_empty() { 0 } else { config.chunks.len() - 1 },
             frames_per_char,
             viewport_scroll: 0,
             viewport_width: 80,
@@ -191,6 +188,7 @@ impl App {
             pending_overwrite: false,
             trim_cache,
             trim_cache_epoch: 0,
+            log_lines: Vec::new(),
         }
     }
 
@@ -229,7 +227,7 @@ pub fn handle_key(app: &App, key: Key) -> (App, Vec<AppCommand>) {
             Key::Char('y') | Key::Char('Y') => {
                 new.pending_overwrite = false;
                 let files: Vec<String> = new.config.chunks.iter().map(|c| c.file.clone()).collect();
-                commands.push(AppCommand::Render {
+                commands.push(AppCommand::Export {
                     files,
                     output: "output.mp4".to_string(),
                 });
@@ -254,7 +252,7 @@ pub fn handle_key(app: &App, key: Key) -> (App, Vec<AppCommand>) {
             AppState::Recording => {
                 commands.push(AppCommand::StopRecording);
             }
-            AppState::Rendering => {}
+            AppState::Exporting => {}
             AppState::Ready | AppState::Exited => {
                 if let Some(screen) = new.selected_screen() {
                     let screen = screen.to_string();
@@ -271,22 +269,11 @@ pub fn handle_key(app: &App, key: Key) -> (App, Vec<AppCommand>) {
                 }
             }
         },
-        Key::Tab => {
-            new.focus = match new.focus {
-                FocusRegion::Controls => FocusRegion::Timeline,
-                FocusRegion::Timeline => FocusRegion::Controls,
-            };
-        }
         _ => match new.state {
-            AppState::Recording | AppState::Rendering | AppState::Exited => {}
-            AppState::Ready => match new.focus {
-                FocusRegion::Controls => {
-                    handle_controls_key(&mut new, key, &mut commands);
-                }
-                FocusRegion::Timeline => {
-                    handle_timeline_key(&mut new, key, &mut commands);
-                }
-            },
+            AppState::Recording | AppState::Exporting | AppState::Exited => {}
+            AppState::Ready => {
+                handle_controls_key(&mut new, key, &mut commands);
+            }
         },
     }
 
@@ -341,6 +328,15 @@ fn handle_controls_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) 
                 app.config.audio_delay_secs = app.config.audio_delay_secs.max(-5.0);
                 commands.push(AppCommand::SaveConfig);
             }
+            ControlsRow::Timeline => {
+                if !app.config.chunks.is_empty() {
+                    if app.selected_chunk > 0 {
+                        app.selected_chunk -= 1;
+                    }
+                    auto_pan_to_selected(app);
+                    update_chunk_status(app);
+                }
+            }
         },
         Key::Char('l') | Key::Right => match app.controls_row {
             ControlsRow::Screen => {
@@ -380,102 +376,71 @@ fn handle_controls_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) 
                 app.config.audio_delay_secs = app.config.audio_delay_secs.min(5.0);
                 commands.push(AppCommand::SaveConfig);
             }
-        },
-        Key::Char('d') => {
-            if !app.config.chunks.is_empty() {
-                commands.push(AppCommand::DiscardLastChunk);
-            } else {
-                app.status_message = "No chunk to remove".to_string();
-            }
-        }
-        Key::Char('e') => {
-            let files: Vec<String> = app.config.chunks.iter().map(|c| c.file.clone()).collect();
-            commands.push(AppCommand::CheckOverwriteThenRender {
-                files,
-                output: "output.mp4".to_string(),
-            });
-        }
-        Key::Char('P') => {
-            commands.push(AppCommand::PreviewAll);
-        }
-        _ => {}
-    }
-}
-
-fn handle_timeline_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) {
-    if app.config.chunks.is_empty() {
-        match key {
-            Key::Char('e') => {
-                let files: Vec<String> = app.config.chunks.iter().map(|c| c.file.clone()).collect();
-                commands.push(AppCommand::CheckOverwriteThenRender {
-                    files,
-                    output: "output.mp4".to_string(),
-                });
-            }
-            Key::Char('P') => {
-                commands.push(AppCommand::PreviewAll);
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    match key {
-        Key::Char('h') | Key::Left => {
-            if app.selected_chunk > 0 {
-                app.selected_chunk -= 1;
-            }
-            auto_pan_to_selected(app);
-            update_chunk_status(app);
-        }
-        Key::Char('l') | Key::Right => {
-            if app.selected_chunk + 1 < app.config.chunks.len() {
-                app.selected_chunk += 1;
-            }
-            auto_pan_to_selected(app);
-            update_chunk_status(app);
-        }
-        Key::Char('H') => {
-            let (new_config, moved) =
-                timeline::move_chunk_left(std::mem::take(&mut app.config), app.selected_chunk);
-            app.config = new_config;
-            if moved {
-                if app.selected_chunk > 0 {
-                    app.selected_chunk -= 1;
+            ControlsRow::Timeline => {
+                if !app.config.chunks.is_empty() {
+                    if app.selected_chunk + 1 < app.config.chunks.len() {
+                        app.selected_chunk += 1;
+                    }
+                    auto_pan_to_selected(app);
+                    update_chunk_status(app);
                 }
-                commands.push(AppCommand::SaveConfig);
             }
-            auto_pan_to_selected(app);
+        },
+        Key::Char('H') => {
+            if app.controls_row == ControlsRow::Timeline && !app.config.chunks.is_empty() {
+                let (new_config, moved) =
+                    timeline::move_chunk_left(std::mem::take(&mut app.config), app.selected_chunk);
+                app.config = new_config;
+                if moved {
+                    if app.selected_chunk > 0 {
+                        app.selected_chunk -= 1;
+                    }
+                    commands.push(AppCommand::SaveConfig);
+                }
+                auto_pan_to_selected(app);
+            }
         }
         Key::Char('L') => {
-            let (new_config, moved) =
-                timeline::move_chunk_right(std::mem::take(&mut app.config), app.selected_chunk);
-            app.config = new_config;
-            if moved {
-                if app.selected_chunk + 1 < app.config.chunks.len() {
-                    app.selected_chunk += 1;
+            if app.controls_row == ControlsRow::Timeline && !app.config.chunks.is_empty() {
+                let (new_config, moved) =
+                    timeline::move_chunk_right(std::mem::take(&mut app.config), app.selected_chunk);
+                app.config = new_config;
+                if moved {
+                    if app.selected_chunk + 1 < app.config.chunks.len() {
+                        app.selected_chunk += 1;
+                    }
+                    commands.push(AppCommand::SaveConfig);
                 }
-                commands.push(AppCommand::SaveConfig);
+                auto_pan_to_selected(app);
             }
-            auto_pan_to_selected(app);
         }
         Key::Char('i') => {
-            app.frames_per_char = timeline::zoom_in(app.frames_per_char);
-            auto_pan_to_selected(app);
+            if app.controls_row == ControlsRow::Timeline {
+                app.frames_per_char = timeline::zoom_in(app.frames_per_char);
+                auto_pan_to_selected(app);
+            }
         }
         Key::Char('o') => {
-            app.frames_per_char = timeline::zoom_out(app.frames_per_char);
-            auto_pan_to_selected(app);
+            if app.controls_row == ControlsRow::Timeline {
+                app.frames_per_char = timeline::zoom_out(app.frames_per_char);
+                auto_pan_to_selected(app);
+            }
         }
         Key::Char('d') => {
-            commands.push(AppCommand::DeleteChunk(app.selected_chunk));
+            if app.config.chunks.is_empty() {
+                app.status_message = "No chunk to delete".to_string();
+            } else {
+                commands.push(AppCommand::DeleteChunk(app.selected_chunk));
+            }
         }
         Key::Char('p') => {
-            commands.push(AppCommand::PreviewChunk(app.selected_chunk));
+            if !app.config.chunks.is_empty() {
+                commands.push(AppCommand::PreviewChunk(app.selected_chunk));
+            }
         }
         Key::Char('e') => {
             let files: Vec<String> = app.config.chunks.iter().map(|c| c.file.clone()).collect();
-            commands.push(AppCommand::CheckOverwriteThenRender {
+            commands.push(AppCommand::CheckOverwriteThenExport {
                 files,
                 output: "output.mp4".to_string(),
             });
@@ -585,11 +550,11 @@ pub fn apply_event(app: &App, event: AppEvent) -> (App, Vec<AppCommand>) {
         }
         AppEvent::RenderSucceeded(output) => {
             new.state = AppState::Ready;
-            new.status_message = format!("Rendered {}", output);
+            new.status_message = format!("Exported {}", output);
         }
         AppEvent::RenderFailed(msg) => {
             new.state = AppState::Ready;
-            new.status_message = format!("Render error: {}", msg);
+            new.status_message = format!("Export error: {}", msg);
         }
         AppEvent::OverwriteCheckResult {
             exists,
@@ -600,10 +565,10 @@ pub fn apply_event(app: &App, event: AppEvent) -> (App, Vec<AppCommand>) {
                 new.pending_overwrite = true;
                 new.status_message = "output.mp4 exists. Overwrite? (y/n)".to_string();
             } else if files.is_empty() {
-                new.status_message = "No chunks to render".to_string();
+                new.status_message = "No chunks to export".to_string();
             } else {
-                new.state = AppState::Rendering;
-                new.status_message = "Rendering...".to_string();
+                new.state = AppState::Exporting;
+                new.status_message = "Exporting...".to_string();
             }
         }
         AppEvent::PreviewDone(msg) => {
@@ -629,6 +594,9 @@ pub fn apply_event(app: &App, event: AppEvent) -> (App, Vec<AppCommand>) {
                 }
                 commands.push(AppCommand::SaveConfig);
             }
+        }
+        AppEvent::LogContentUpdated { lines } => {
+            new.log_lines = lines;
         }
     }
 
