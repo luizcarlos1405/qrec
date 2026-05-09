@@ -17,7 +17,6 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use app::{App, AppCommand, AppEvent, AppState, Key};
-
 enum TrimMsg {
     Entry {
         epoch: u64,
@@ -112,7 +111,9 @@ fn run_app(
     let mut trim_rx: Option<mpsc::Receiver<TrimMsg>> = None;
     let mut last_trim_epoch: u64 = 0;
     let mut trim_pending_since: Option<std::time::Instant> = None;
+    let mut last_log_read: std::time::Instant = std::time::Instant::now();
     const TRIM_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(500);
+    const LOG_READ_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
     loop {
         if let Some(ref rx) = trim_rx {
@@ -206,6 +207,13 @@ fn run_app(
                 ));
             }
         }
+
+        if last_log_read.elapsed() >= LOG_READ_INTERVAL {
+            last_log_read = std::time::Instant::now();
+            let log_lines = effects::read_log_tail(100);
+            let (new_app, _) = app::apply_event(app, AppEvent::LogContentUpdated { lines: log_lines });
+            *app = new_app;
+        }
     }
 }
 
@@ -256,9 +264,9 @@ fn build_cached_trim_entries(app: &App) -> Option<Vec<(String, f64, f64, f64)>> 
     Some(entries)
 }
 
-fn do_render(app: &mut App, files: &[String], output: &str) -> Vec<AppEvent> {
-    app.state = AppState::Rendering;
-    app.status_message = "Rendering...".to_string();
+fn do_export(app: &mut App, files: &[String], output: &str) -> Vec<AppEvent> {
+    app.state = AppState::Exporting;
+    app.status_message = "Exporting...".to_string();
     let delay = app.config.audio_delay_secs;
     let result = if let Some(entries) = build_cached_trim_entries(app) {
         effects::render_concat_with_trims(&entries, output, delay)
@@ -341,29 +349,7 @@ fn execute_command(
                 )],
             }
         }
-        AppCommand::DiscardLastChunk => {
-            if app.config.chunks.is_empty() {
-                return vec![AppEvent::FileDeleteFailed(
-                    0,
-                    "No chunk to remove".to_string(),
-                )];
-            }
-            let last_idx = app.config.chunks.len() - 1;
-            let (new_config, removed_file) = timeline::remove_chunk(app.config.clone(), last_idx);
-            app.config = new_config;
-            match removed_file {
-                Some(file) => {
-                    let _ = effects::delete_file(&file);
-                    let _ = effects::save_config(&app.config);
-                    vec![AppEvent::FileDeleted(file)]
-                }
-                None => vec![AppEvent::FileDeleteFailed(
-                    last_idx,
-                    "No chunk to remove".to_string(),
-                )],
-            }
-        }
-        AppCommand::CheckOverwriteThenRender { files, output } => {
+        AppCommand::CheckOverwriteThenExport { files, output } => {
             if files.is_empty() {
                 return vec![AppEvent::OverwriteCheckResult {
                     exists: false,
@@ -379,10 +365,10 @@ fn execute_command(
                     output,
                 }]
             } else {
-                do_render(app, &files, &output)
+                do_export(app, &files, &output)
             }
         }
-        AppCommand::Render { files, output } => do_render(app, &files, &output),
+        AppCommand::Export { files, output } => do_export(app, &files, &output),
         AppCommand::PreviewChunk(idx) => {
             if app.state == AppState::Recording {
                 return vec![];
@@ -467,7 +453,6 @@ fn translate_key(key: crossterm::event::KeyEvent) -> Key {
         KeyCode::Down => Key::Down,
         KeyCode::Left => Key::Left,
         KeyCode::Right => Key::Right,
-        KeyCode::Tab => Key::Tab,
         KeyCode::Esc => Key::Esc,
         KeyCode::Enter => Key::Enter,
         _ => Key::Esc,
