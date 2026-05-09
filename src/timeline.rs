@@ -74,6 +74,16 @@ pub fn zoom_out(frames_per_char: usize) -> usize {
     (frames_per_char * 2).max(1)
 }
 
+pub fn can_zoom_out(chunks: &[Chunk], fps: f64, frames_per_char: usize) -> bool {
+    if chunks.is_empty() {
+        return true;
+    }
+    let proposed = frames_per_char * 2;
+    let total = total_frames(chunks, fps);
+    let total_chars = (total / proposed as f64).ceil() as usize;
+    total_chars > 1
+}
+
 pub fn chunk_start_col(
     config: &QrecConfig,
     index: usize,
@@ -206,6 +216,22 @@ mod tests {
     fn zoom_out_doubles() {
         assert_eq!(zoom_out(2), 4);
         assert_eq!(zoom_out(1), 2);
+    }
+
+    #[test]
+    fn can_zoom_out_prevents_single_char() {
+        assert!(can_zoom_out(&[make_chunk("a.mp4", 1.0)], 30.0, 8));
+        assert!(!can_zoom_out(&[make_chunk("a.mp4", 1.0)], 30.0, 16));
+    }
+
+    #[test]
+    fn can_zoom_out_allows_when_multiple_chars() {
+        assert!(can_zoom_out(&[make_chunk("a.mp4", 10.0)], 30.0, 64));
+    }
+
+    #[test]
+    fn can_zoom_out_empty_chunks_always_true() {
+        assert!(can_zoom_out(&[], 30.0, 4));
     }
 
     #[test]

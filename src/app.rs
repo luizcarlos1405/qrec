@@ -427,7 +427,9 @@ fn handle_controls_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) 
             }
         }
         Key::Char('o') => {
-            if app.controls_row == ControlsRow::Timeline {
+            if app.controls_row == ControlsRow::Timeline
+                && timeline::can_zoom_out(&app.config.chunks, FPS, app.frames_per_char)
+            {
                 app.frames_per_char = timeline::zoom_out(app.frames_per_char);
                 auto_pan_to_selected(app);
             }
