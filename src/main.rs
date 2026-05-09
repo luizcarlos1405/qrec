@@ -211,7 +211,8 @@ fn run_app(
         if last_log_read.elapsed() >= LOG_READ_INTERVAL {
             last_log_read = std::time::Instant::now();
             let log_lines = effects::read_log_tail(100);
-            let (new_app, _) = app::apply_event(app, AppEvent::LogContentUpdated { lines: log_lines });
+            let (new_app, _) =
+                app::apply_event(app, AppEvent::LogContentUpdated { lines: log_lines });
             *app = new_app;
         }
     }

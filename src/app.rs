@@ -170,7 +170,11 @@ impl App {
             })
             .collect();
 
-        let selected_chunk = if config.chunks.is_empty() { 0 } else { config.chunks.len() - 1 };
+        let selected_chunk = if config.chunks.is_empty() {
+            0
+        } else {
+            config.chunks.len() - 1
+        };
 
         Self {
             config,
@@ -663,20 +667,8 @@ mod tests {
     fn new_app_is_ready() {
         let app = app_ready();
         assert_eq!(app.state, AppState::Ready);
-        assert_eq!(app.focus, FocusRegion::Controls);
+        assert_eq!(app.controls_row, ControlsRow::Screen);
         assert_eq!(app.frames_per_char, 1);
-    }
-
-    #[test]
-    fn tab_toggles_focus() {
-        let app = app_ready();
-        let (app2, cmds) = handle_key(&app, Key::Tab);
-        assert!(cmds.is_empty());
-        assert_eq!(app2.focus, FocusRegion::Timeline);
-
-        let (app3, cmds) = handle_key(&app2, Key::Tab);
-        assert!(cmds.is_empty());
-        assert_eq!(app3.focus, FocusRegion::Controls);
     }
 
     #[test]
@@ -711,9 +703,9 @@ mod tests {
     }
 
     #[test]
-    fn r_when_rendering_does_nothing() {
+    fn r_when_exporting_does_nothing() {
         let mut app = app_ready();
-        app.state = AppState::Rendering;
+        app.state = AppState::Exporting;
         let (_app2, cmds) = handle_key(&app, Key::Char('r'));
         assert!(cmds.is_empty());
     }
@@ -736,22 +728,28 @@ mod tests {
         assert_eq!(app5.controls_row, ControlsRow::AutotrimThreshold);
 
         let (app6, _) = handle_key(&app5, Key::Char('j'));
-        assert_eq!(app6.controls_row, ControlsRow::Screen);
+        assert_eq!(app6.controls_row, ControlsRow::Timeline);
 
-        let (app7, _) = handle_key(&app6, Key::Char('k'));
-        assert_eq!(app7.controls_row, ControlsRow::AutotrimThreshold);
+        let (app7, _) = handle_key(&app6, Key::Char('j'));
+        assert_eq!(app7.controls_row, ControlsRow::Screen);
 
         let (app8, _) = handle_key(&app7, Key::Char('k'));
-        assert_eq!(app8.controls_row, ControlsRow::Autotrim);
+        assert_eq!(app8.controls_row, ControlsRow::Timeline);
 
         let (app9, _) = handle_key(&app8, Key::Char('k'));
-        assert_eq!(app9.controls_row, ControlsRow::AudioDelay);
+        assert_eq!(app9.controls_row, ControlsRow::AutotrimThreshold);
 
         let (app10, _) = handle_key(&app9, Key::Char('k'));
-        assert_eq!(app10.controls_row, ControlsRow::Microphone);
+        assert_eq!(app10.controls_row, ControlsRow::Autotrim);
 
         let (app11, _) = handle_key(&app10, Key::Char('k'));
-        assert_eq!(app11.controls_row, ControlsRow::Screen);
+        assert_eq!(app11.controls_row, ControlsRow::AudioDelay);
+
+        let (app12, _) = handle_key(&app11, Key::Char('k'));
+        assert_eq!(app12.controls_row, ControlsRow::Microphone);
+
+        let (app13, _) = handle_key(&app12, Key::Char('k'));
+        assert_eq!(app13.controls_row, ControlsRow::Screen);
     }
 
     #[test]
@@ -792,13 +790,11 @@ mod tests {
     }
 
     #[test]
-    fn d_with_chunks_emits_discard() {
-        let app = app_ready_with_chunks(2);
-        let (app2, cmds) = handle_key(&app, Key::Char('d'));
-        assert!(cmds
-            .iter()
-            .any(|c| matches!(c, AppCommand::DiscardLastChunk)));
-        let _ = app2;
+    fn d_deletes_selected_chunk() {
+        let mut app = app_ready_with_chunks(3);
+        app.selected_chunk = 1;
+        let (_, cmds) = handle_key(&app, Key::Char('d'));
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::DeleteChunk(1))));
     }
 
     #[test]
@@ -806,13 +802,13 @@ mod tests {
         let app = app_ready();
         let (app2, cmds) = handle_key(&app, Key::Char('d'));
         assert!(cmds.is_empty());
-        assert_eq!(app2.status_message, "No chunk to remove");
+        assert_eq!(app2.status_message, "No chunk to delete");
     }
 
     #[test]
     fn timeline_h_l_navigate_chunks() {
         let mut app = app_ready_with_chunks(3);
-        app.focus = FocusRegion::Timeline;
+        app.controls_row = ControlsRow::Timeline;
         app.selected_chunk = 1;
 
         let (app2, _) = handle_key(&app, Key::Char('l'));
@@ -825,7 +821,7 @@ mod tests {
     #[test]
     fn timeline_reorder_chunks_with_shift_keys() {
         let mut app = app_ready_with_chunks(3);
-        app.focus = FocusRegion::Timeline;
+        app.controls_row = ControlsRow::Timeline;
         app.selected_chunk = 1;
 
         let (app2, cmds) = handle_key(&app, Key::Char('H'));
@@ -842,7 +838,7 @@ mod tests {
     #[test]
     fn timeline_i_o_zoom() {
         let mut app = app_ready_with_chunks(5);
-        app.focus = FocusRegion::Timeline;
+        app.controls_row = ControlsRow::Timeline;
         app.frames_per_char = 4;
 
         let (app2, _) = handle_key(&app, Key::Char('i'));
@@ -855,7 +851,7 @@ mod tests {
     #[test]
     fn timeline_d_emits_delete() {
         let mut app = app_ready_with_chunks(2);
-        app.focus = FocusRegion::Timeline;
+        app.controls_row = ControlsRow::Timeline;
         app.selected_chunk = 1;
 
         let (_, cmds) = handle_key(&app, Key::Char('d'));
@@ -924,19 +920,19 @@ mod tests {
     }
 
     #[test]
-    fn apply_event_render_succeeded() {
+    fn apply_event_export_succeeded() {
         let mut app = app_ready();
-        app.state = AppState::Rendering;
+        app.state = AppState::Exporting;
         let (app2, cmds) = apply_event(&app, AppEvent::RenderSucceeded("output.mp4".to_string()));
         assert_eq!(app2.state, AppState::Ready);
-        assert_eq!(app2.status_message, "Rendered output.mp4");
+        assert_eq!(app2.status_message, "Exported output.mp4");
         assert!(cmds.is_empty());
     }
 
     #[test]
-    fn apply_event_render_failed() {
+    fn apply_event_export_failed() {
         let mut app = app_ready();
-        app.state = AppState::Rendering;
+        app.state = AppState::Exporting;
         let (app2, cmds) = apply_event(&app, AppEvent::RenderFailed("bad".to_string()));
         assert_eq!(app2.state, AppState::Ready);
         assert!(app2.status_message.contains("bad"));
@@ -960,7 +956,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_event_overwrite_check_not_exists_sets_rendering() {
+    fn apply_event_overwrite_check_not_exists_sets_exporting() {
         let app = app_ready_with_chunks(1);
         let (app2, cmds) = apply_event(
             &app,
@@ -971,16 +967,16 @@ mod tests {
             },
         );
         assert!(!app2.pending_overwrite);
-        assert_eq!(app2.state, AppState::Rendering);
+        assert_eq!(app2.state, AppState::Exporting);
         assert!(cmds.is_empty());
     }
 
     #[test]
-    fn overwrite_confirm_y_emits_render() {
+    fn overwrite_confirm_y_emits_export() {
         let mut app = app_ready_with_chunks(2);
         app.pending_overwrite = true;
         let (_, cmds) = handle_key(&app, Key::Char('y'));
-        assert!(cmds.iter().any(|c| matches!(c, AppCommand::Render { .. })));
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::Export { .. })));
     }
 
     #[test]
@@ -1266,5 +1262,48 @@ mod tests {
             app = app2;
         }
         assert!((app.config.audio_delay_secs - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn timeline_is_always_last_controls_row() {
+        let mut row = ControlsRow::Screen;
+        let mut order = vec![row];
+        loop {
+            row = next_controls_row(row);
+            if row == ControlsRow::Screen {
+                break;
+            }
+            order.push(row);
+        }
+        assert!(
+            order.contains(&ControlsRow::Timeline),
+            "Timeline must be in the row cycle"
+        );
+        assert_eq!(
+            order.last(),
+            Some(&ControlsRow::Timeline),
+            "Timeline must always be the last row before wrapping to Screen"
+        );
+        assert_eq!(
+            prev_controls_row(ControlsRow::Screen),
+            ControlsRow::Timeline,
+            "Going up from Screen should wrap to Timeline"
+        );
+    }
+
+    #[test]
+    fn p_previews_selected_chunk() {
+        let mut app = app_ready_with_chunks(3);
+        app.selected_chunk = 2;
+        let (_, cmds) = handle_key(&app, Key::Char('p'));
+        assert!(cmds
+            .iter()
+            .any(|c| matches!(c, AppCommand::PreviewChunk(2))));
+    }
+
+    #[test]
+    fn selected_chunk_defaults_to_latest() {
+        let app = app_ready_with_chunks(5);
+        assert_eq!(app.selected_chunk, 4);
     }
 }

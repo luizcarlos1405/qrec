@@ -123,8 +123,9 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
     let row_active = |row: ControlsRow| -> bool {
         match row {
             ControlsRow::AutotrimThreshold => autotrim_on,
-            ControlsRow::Timeline => !app.config.chunks.is_empty()
-                || app.state == AppState::Recording,
+            ControlsRow::Timeline => {
+                !app.config.chunks.is_empty() || app.state == AppState::Recording
+            }
             _ => true,
         }
     };
@@ -436,7 +437,12 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
     let lines: Vec<Line> = app
         .log_lines
         .iter()
-        .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(Color::DarkGray))))
+        .map(|l| {
+            Line::from(Span::styled(
+                l.clone(),
+                Style::default().fg(Color::DarkGray),
+            ))
+        })
         .collect();
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
