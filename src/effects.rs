@@ -318,6 +318,25 @@ pub fn file_exists(file: &str) -> bool {
     Path::new(file).exists()
 }
 
+pub fn read_log_tail(max_lines: usize) -> Vec<String> {
+    if !Path::new(LOG_FILE).exists() {
+        return Vec::new();
+    }
+    let content = match std::fs::read_to_string(LOG_FILE) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    content
+        .lines()
+        .rev()
+        .take(max_lines)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(String::from)
+        .collect()
+}
+
 pub fn detect_silence(file: &str, threshold_db: f64) -> anyhow::Result<Vec<(f64, Option<f64>)>> {
     let cmd = command::ffmpeg_silence_detect_command(file, threshold_db);
     let output = match Command::new(&cmd.program)
