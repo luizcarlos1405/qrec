@@ -190,7 +190,7 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                format!("{} Screen:     ", prefix(ControlsRow::Screen)),
+                format!("{} Screen:             ", prefix(ControlsRow::Screen)),
                 row_style(ControlsRow::Screen),
             ),
             Span::styled(
@@ -207,7 +207,7 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                format!("{} Microphone: ", prefix(ControlsRow::Microphone)),
+                format!("{} Microphone:         ", prefix(ControlsRow::Microphone)),
                 row_style(ControlsRow::Microphone),
             ),
             Span::styled(
@@ -224,7 +224,7 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                format!("{} Audio delay:  ", prefix(ControlsRow::AudioDelay)),
+                format!("{} Audio delay:        ", prefix(ControlsRow::AudioDelay)),
                 row_style(ControlsRow::AudioDelay),
             ),
             Span::styled(
@@ -241,7 +241,7 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                format!("{} Autotrim:    ", prefix(ControlsRow::Autotrim)),
+                format!("{} Autotrim:           ", prefix(ControlsRow::Autotrim)),
                 row_style(ControlsRow::Autotrim),
             ),
             Span::styled(
@@ -277,29 +277,21 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
     );
 
     let timeline_spans = build_timeline_spans(app, inner_chunks[5].width as usize);
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!("{} Timeline    ", prefix(ControlsRow::Timeline)),
-                row_style(ControlsRow::Timeline),
-            ),
-            Span::styled(
-                arrows(ControlsRow::Timeline),
-                arrow_style(ControlsRow::Timeline),
-            ),
-        ])),
-        inner_chunks[5],
+    let cursor = Span::styled(
+        format!("{} ", prefix(ControlsRow::Timeline)),
+        row_style(ControlsRow::Timeline),
     );
     if !timeline_spans.is_empty() {
-        let timeline_line_area = Rect {
-            x: inner_chunks[5].x + 15,
-            y: inner_chunks[5].y,
-            width: inner_chunks[5].width.saturating_sub(15),
-            height: 1,
-        };
         f.render_widget(
-            Paragraph::new(Line::from(timeline_spans)),
-            timeline_line_area,
+            Paragraph::new(Line::from(
+                std::iter::once(cursor).chain(timeline_spans).collect::<Vec<_>>(),
+            )),
+            inner_chunks[5],
+        );
+    } else if active_row == ControlsRow::Timeline {
+        f.render_widget(
+            Paragraph::new(Line::from(cursor)),
+            inner_chunks[5],
         );
     }
 
@@ -314,11 +306,7 @@ fn build_timeline_spans(app: &App, _available_width: usize) -> Vec<Span<'static>
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut col = 0;
     let scroll = app.viewport_scroll;
-    let view_w = if app.viewport_width > 15 {
-        app.viewport_width - 15
-    } else {
-        app.viewport_width
-    };
+    let view_w = app.viewport_width.saturating_sub(2);
 
     for (i, chunk) in app.config.chunks.iter().enumerate() {
         let w = timeline::chunk_char_width(chunk.duration_secs, FPS, app.frames_per_char);
