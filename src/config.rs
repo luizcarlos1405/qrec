@@ -29,6 +29,8 @@ pub struct QrecConfig {
     pub autotrim_threshold_db: f64,
     #[serde(default)]
     pub audio_delay_secs: f64,
+    #[serde(default)]
+    pub autotrim_padding_secs: f64,
 }
 
 impl Default for QrecConfig {
@@ -41,6 +43,7 @@ impl Default for QrecConfig {
             autotrim_enabled: false,
             autotrim_threshold_db: -40.0,
             audio_delay_secs: 0.0,
+            autotrim_padding_secs: 0.0,
         }
     }
 }

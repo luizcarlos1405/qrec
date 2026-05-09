@@ -19,6 +19,7 @@ pub enum ControlsRow {
     Microphone,
     Autotrim,
     AutotrimThreshold,
+    AutotrimPadding,
     AudioDelay,
     Timeline,
 }
@@ -29,7 +30,8 @@ fn next_controls_row(row: ControlsRow) -> ControlsRow {
         ControlsRow::Microphone => ControlsRow::AudioDelay,
         ControlsRow::AudioDelay => ControlsRow::Autotrim,
         ControlsRow::Autotrim => ControlsRow::AutotrimThreshold,
-        ControlsRow::AutotrimThreshold => ControlsRow::Timeline,
+        ControlsRow::AutotrimThreshold => ControlsRow::AutotrimPadding,
+        ControlsRow::AutotrimPadding => ControlsRow::Timeline,
         ControlsRow::Timeline => ControlsRow::Screen,
     }
 }
@@ -41,7 +43,8 @@ fn prev_controls_row(row: ControlsRow) -> ControlsRow {
         ControlsRow::AudioDelay => ControlsRow::Microphone,
         ControlsRow::Autotrim => ControlsRow::AudioDelay,
         ControlsRow::AutotrimThreshold => ControlsRow::Autotrim,
-        ControlsRow::Timeline => ControlsRow::AutotrimThreshold,
+        ControlsRow::AutotrimPadding => ControlsRow::AutotrimThreshold,
+        ControlsRow::Timeline => ControlsRow::AutotrimPadding,
     }
 }
 
@@ -328,6 +331,16 @@ fn handle_controls_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) 
                     commands.push(AppCommand::RefreshTrimCache);
                 }
             }
+            ControlsRow::AutotrimPadding => {
+                app.config.autotrim_padding_secs =
+                    ((app.config.autotrim_padding_secs - 0.1) * 10.0).round() / 10.0;
+                app.config.autotrim_padding_secs = app.config.autotrim_padding_secs.max(0.0);
+                commands.push(AppCommand::SaveConfig);
+                if app.config.autotrim_enabled && !app.config.chunks.is_empty() {
+                    app.trim_cache_epoch += 1;
+                    commands.push(AppCommand::RefreshTrimCache);
+                }
+            }
             ControlsRow::AudioDelay => {
                 app.config.audio_delay_secs =
                     ((app.config.audio_delay_secs - 0.01) * 100.0).round() / 100.0;
@@ -370,6 +383,16 @@ fn handle_controls_key(app: &mut App, key: Key, commands: &mut Vec<AppCommand>) 
             ControlsRow::AutotrimThreshold => {
                 app.config.autotrim_threshold_db =
                     (app.config.autotrim_threshold_db + 1.0).min(-5.0);
+                commands.push(AppCommand::SaveConfig);
+                if app.config.autotrim_enabled && !app.config.chunks.is_empty() {
+                    app.trim_cache_epoch += 1;
+                    commands.push(AppCommand::RefreshTrimCache);
+                }
+            }
+            ControlsRow::AutotrimPadding => {
+                app.config.autotrim_padding_secs =
+                    ((app.config.autotrim_padding_secs + 0.1) * 10.0).round() / 10.0;
+                app.config.autotrim_padding_secs = app.config.autotrim_padding_secs.min(5.0);
                 commands.push(AppCommand::SaveConfig);
                 if app.config.autotrim_enabled && !app.config.chunks.is_empty() {
                     app.trim_cache_epoch += 1;
@@ -730,28 +753,34 @@ mod tests {
         assert_eq!(app5.controls_row, ControlsRow::AutotrimThreshold);
 
         let (app6, _) = handle_key(&app5, Key::Char('j'));
-        assert_eq!(app6.controls_row, ControlsRow::Timeline);
+        assert_eq!(app6.controls_row, ControlsRow::AutotrimPadding);
 
         let (app7, _) = handle_key(&app6, Key::Char('j'));
-        assert_eq!(app7.controls_row, ControlsRow::Screen);
+        assert_eq!(app7.controls_row, ControlsRow::Timeline);
 
-        let (app8, _) = handle_key(&app7, Key::Char('k'));
-        assert_eq!(app8.controls_row, ControlsRow::Timeline);
+        let (app8, _) = handle_key(&app7, Key::Char('j'));
+        assert_eq!(app8.controls_row, ControlsRow::Screen);
 
         let (app9, _) = handle_key(&app8, Key::Char('k'));
-        assert_eq!(app9.controls_row, ControlsRow::AutotrimThreshold);
+        assert_eq!(app9.controls_row, ControlsRow::Timeline);
 
         let (app10, _) = handle_key(&app9, Key::Char('k'));
-        assert_eq!(app10.controls_row, ControlsRow::Autotrim);
+        assert_eq!(app10.controls_row, ControlsRow::AutotrimPadding);
 
         let (app11, _) = handle_key(&app10, Key::Char('k'));
-        assert_eq!(app11.controls_row, ControlsRow::AudioDelay);
+        assert_eq!(app11.controls_row, ControlsRow::AutotrimThreshold);
 
         let (app12, _) = handle_key(&app11, Key::Char('k'));
-        assert_eq!(app12.controls_row, ControlsRow::Microphone);
+        assert_eq!(app12.controls_row, ControlsRow::Autotrim);
 
         let (app13, _) = handle_key(&app12, Key::Char('k'));
-        assert_eq!(app13.controls_row, ControlsRow::Screen);
+        assert_eq!(app13.controls_row, ControlsRow::AudioDelay);
+
+        let (app14, _) = handle_key(&app13, Key::Char('k'));
+        assert_eq!(app14.controls_row, ControlsRow::Microphone);
+
+        let (app15, _) = handle_key(&app14, Key::Char('k'));
+        assert_eq!(app15.controls_row, ControlsRow::Screen);
     }
 
     #[test]
@@ -1050,6 +1079,7 @@ mod tests {
         assert!(!config.autotrim_enabled);
         assert_eq!(config.autotrim_threshold_db, -40.0);
         assert_eq!(config.audio_delay_secs, 0.0);
+        assert_eq!(config.autotrim_padding_secs, 0.0);
     }
 
     #[test]
@@ -1307,5 +1337,81 @@ mod tests {
     fn selected_chunk_defaults_to_latest() {
         let app = app_ready_with_chunks(5);
         assert_eq!(app.selected_chunk, 4);
+    }
+
+    #[test]
+    fn autotrim_padding_default_is_zero() {
+        let config = QrecConfig::default();
+        assert!((config.autotrim_padding_secs - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn autotrim_padding_l_increases_by_0_1() {
+        let mut app = app_ready();
+        app.controls_row = ControlsRow::AutotrimPadding;
+        let (app2, cmds) = handle_key(&app, Key::Char('l'));
+        assert!((app2.config.autotrim_padding_secs - 0.1).abs() < f64::EPSILON);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::SaveConfig)));
+    }
+
+    #[test]
+    fn autotrim_padding_h_decreases_by_0_1() {
+        let mut app = app_ready();
+        app.controls_row = ControlsRow::AutotrimPadding;
+        app.config.autotrim_padding_secs = 0.5;
+        let (app2, cmds) = handle_key(&app, Key::Char('h'));
+        assert!((app2.config.autotrim_padding_secs - 0.4).abs() < f64::EPSILON);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::SaveConfig)));
+    }
+
+    #[test]
+    fn autotrim_padding_clamps_at_zero() {
+        let mut app = app_ready();
+        app.controls_row = ControlsRow::AutotrimPadding;
+        let (app2, _) = handle_key(&app, Key::Char('h'));
+        assert!((app2.config.autotrim_padding_secs - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn autotrim_padding_clamps_at_5() {
+        let mut app = app_ready();
+        app.controls_row = ControlsRow::AutotrimPadding;
+        app.config.autotrim_padding_secs = 5.0;
+        let (app2, _) = handle_key(&app, Key::Char('l'));
+        assert!((app2.config.autotrim_padding_secs - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn autotrim_padding_no_floating_point_drift() {
+        let mut app = app_ready();
+        app.controls_row = ControlsRow::AutotrimPadding;
+        for _ in 0..10 {
+            let (app2, _) = handle_key(&app, Key::Char('l'));
+            app = app2;
+        }
+        assert!((app.config.autotrim_padding_secs - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn autotrim_padding_change_emits_refresh_when_autotrim_on() {
+        let mut app = app_ready_with_chunks(2);
+        app.config.autotrim_enabled = true;
+        app.controls_row = ControlsRow::AutotrimPadding;
+        let (app2, cmds) = handle_key(&app, Key::Char('l'));
+        assert!(cmds
+            .iter()
+            .any(|c| matches!(c, AppCommand::RefreshTrimCache)));
+        assert_eq!(app2.trim_cache_epoch, 1);
+    }
+
+    #[test]
+    fn autotrim_padding_no_refresh_when_autotrim_off() {
+        let mut app = app_ready_with_chunks(2);
+        app.config.autotrim_enabled = false;
+        app.controls_row = ControlsRow::AutotrimPadding;
+        let (_, cmds) = handle_key(&app, Key::Char('l'));
+        assert!(!cmds
+            .iter()
+            .any(|c| matches!(c, AppCommand::RefreshTrimCache)));
     }
 }

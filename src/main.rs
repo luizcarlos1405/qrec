@@ -203,6 +203,7 @@ fn run_app(
                 trim_rx = Some(spawn_trim_computation(
                     &app.config.chunks,
                     app.config.autotrim_threshold_db,
+                    app.config.autotrim_padding_secs,
                     app.trim_cache_epoch,
                 ));
             }
@@ -221,6 +222,7 @@ fn run_app(
 fn spawn_trim_computation(
     chunks: &[config::Chunk],
     threshold_db: f64,
+    padding_secs: f64,
     epoch: u64,
 ) -> mpsc::Receiver<TrimMsg> {
     let (tx, rx) = mpsc::channel();
@@ -235,7 +237,8 @@ fn spawn_trim_computation(
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            let (trim_start, trim_end) = effects::compute_trim_points(duration, &silence);
+            let (trim_start, trim_end) =
+                effects::compute_trim_points(duration, &silence, padding_secs);
             if tx
                 .send(TrimMsg::Entry {
                     epoch,
@@ -272,7 +275,13 @@ fn do_export(app: &mut App, files: &[String], output: &str) -> Vec<AppEvent> {
     let result = if let Some(entries) = build_cached_trim_entries(app) {
         effects::render_concat_with_trims(&entries, output, delay)
     } else if app.config.autotrim_enabled {
-        effects::render_concat_autotrim(files, output, app.config.autotrim_threshold_db, delay)
+        effects::render_concat_autotrim(
+            files,
+            output,
+            app.config.autotrim_threshold_db,
+            delay,
+            app.config.autotrim_padding_secs,
+        )
     } else {
         effects::render_concat(files, output, delay)
     };
@@ -385,8 +394,9 @@ fn execute_command(
                 let delay = app.config.audio_delay_secs;
                 if app.config.autotrim_enabled {
                     let threshold = app.config.autotrim_threshold_db;
+                    let padding = app.config.autotrim_padding_secs;
                     suspend_terminal_and(terminal, || {
-                        effects::preview_file_autotrim(&file, threshold, delay)
+                        effects::preview_file_autotrim(&file, threshold, delay, padding)
                     });
                 } else {
                     suspend_terminal_and(terminal, || effects::preview_file(&file, delay));
@@ -418,8 +428,9 @@ fn execute_command(
             let delay = app.config.audio_delay_secs;
             if app.config.autotrim_enabled {
                 let threshold = app.config.autotrim_threshold_db;
+                let padding = app.config.autotrim_padding_secs;
                 suspend_terminal_and(terminal, || {
-                    effects::preview_files_autotrim(&files, threshold, delay)
+                    effects::preview_files_autotrim(&files, threshold, delay, padding)
                 });
             } else {
                 suspend_terminal_and(terminal, || effects::preview_files(&files, delay));

@@ -393,7 +393,11 @@ pub fn detect_silence(file: &str, threshold_db: f64) -> anyhow::Result<Vec<(f64,
     Ok(intervals)
 }
 
-pub fn compute_trim_points(duration: f64, silence_intervals: &[(f64, Option<f64>)]) -> (f64, f64) {
+pub fn compute_trim_points(
+    duration: f64,
+    silence_intervals: &[(f64, Option<f64>)],
+    padding_secs: f64,
+) -> (f64, f64) {
     let mut trim_start = 0.0;
     let mut trim_end = duration;
 
@@ -417,6 +421,9 @@ pub fn compute_trim_points(duration: f64, silence_intervals: &[(f64, Option<f64>
         }
     }
 
+    trim_start = (trim_start - padding_secs).max(0.0);
+    trim_end = (trim_end + padding_secs).min(duration);
+
     if trim_end <= trim_start {
         return (0.0, duration);
     }
@@ -428,10 +435,11 @@ pub fn preview_file_autotrim(
     file: &str,
     threshold_db: f64,
     audio_delay_secs: f64,
+    padding_secs: f64,
 ) -> anyhow::Result<()> {
     let duration = get_video_duration(file)?;
     let silence = detect_silence(file, threshold_db)?;
-    let (trim_start, trim_end) = compute_trim_points(duration, &silence);
+    let (trim_start, trim_end) = compute_trim_points(duration, &silence, padding_secs);
 
     log_error(&format!(
         "autotrim preview '{}': trim {:.3} - {:.3} (of {:.3})",
@@ -459,13 +467,14 @@ pub fn preview_files_autotrim(
     files: &[String],
     threshold_db: f64,
     audio_delay_secs: f64,
+    padding_secs: f64,
 ) -> anyhow::Result<()> {
     let mut edl_lines = Vec::new();
 
     for file in files {
         let duration = get_video_duration(file)?;
         let silence = detect_silence(file, threshold_db)?;
-        let (trim_start, trim_end) = compute_trim_points(duration, &silence);
+        let (trim_start, trim_end) = compute_trim_points(duration, &silence, padding_secs);
 
         let abs_path = std::path::Path::new(file)
             .canonicalize()
@@ -520,6 +529,7 @@ pub fn render_concat_autotrim(
     output_file: &str,
     threshold_db: f64,
     audio_delay_secs: f64,
+    padding_secs: f64,
 ) -> anyhow::Result<()> {
     let mut trimmed_files = Vec::with_capacity(chunk_files.len());
     let mut temp_paths = Vec::new();
@@ -527,7 +537,7 @@ pub fn render_concat_autotrim(
     for (i, chunk_file) in chunk_files.iter().enumerate() {
         let duration = get_video_duration(chunk_file)?;
         let silence = detect_silence(chunk_file, threshold_db)?;
-        let (trim_start, trim_end) = compute_trim_points(duration, &silence);
+        let (trim_start, trim_end) = compute_trim_points(duration, &silence, padding_secs);
 
         let needs_trim = (trim_start - 0.0).abs() > 0.01 || (trim_end - duration).abs() > 0.01;
 
@@ -646,7 +656,7 @@ mod tests {
 
     #[test]
     fn trim_no_silence() {
-        let (start, end) = compute_trim_points(30.0, &[]);
+        let (start, end) = compute_trim_points(30.0, &[], 0.0);
         assert_eq!(start, 0.0);
         assert_eq!(end, 30.0);
     }
@@ -654,7 +664,7 @@ mod tests {
     #[test]
     fn trim_leading_silence() {
         let intervals = vec![(0.0, Some(3.2)), (15.0, Some(16.0))];
-        let (start, end) = compute_trim_points(30.0, &intervals);
+        let (start, end) = compute_trim_points(30.0, &intervals, 0.0);
         assert!((start - 3.2).abs() < 0.001);
         assert!((end - 30.0).abs() < 0.001);
     }
@@ -662,7 +672,7 @@ mod tests {
     #[test]
     fn trim_trailing_silence() {
         let intervals = vec![(10.0, Some(11.0)), (27.0, Some(30.0))];
-        let (start, end) = compute_trim_points(30.0, &intervals);
+        let (start, end) = compute_trim_points(30.0, &intervals, 0.0);
         assert!((start - 0.0).abs() < 0.001);
         assert!((end - 27.0).abs() < 0.001);
     }
@@ -670,7 +680,7 @@ mod tests {
     #[test]
     fn trim_both_leading_and_trailing() {
         let intervals = vec![(0.0, Some(3.2)), (27.0, Some(30.0))];
-        let (start, end) = compute_trim_points(30.0, &intervals);
+        let (start, end) = compute_trim_points(30.0, &intervals, 0.0);
         assert!((start - 3.2).abs() < 0.001);
         assert!((end - 27.0).abs() < 0.001);
     }
@@ -678,7 +688,7 @@ mod tests {
     #[test]
     fn trim_trailing_silence_without_end() {
         let intervals: Vec<(f64, Option<f64>)> = vec![(0.0, Some(3.2)), (27.0, None)];
-        let (start, end) = compute_trim_points(30.0, &intervals);
+        let (start, end) = compute_trim_points(30.0, &intervals, 0.0);
         assert!((start - 3.2).abs() < 0.001);
         assert!((end - 27.0).abs() < 0.001);
     }
@@ -686,7 +696,7 @@ mod tests {
     #[test]
     fn trim_middle_silence_only_does_not_trim() {
         let intervals = vec![(10.0, Some(12.0))];
-        let (start, end) = compute_trim_points(30.0, &intervals);
+        let (start, end) = compute_trim_points(30.0, &intervals, 0.0);
         assert!((start - 0.0).abs() < 0.001);
         assert!((end - 30.0).abs() < 0.001);
     }
@@ -694,7 +704,7 @@ mod tests {
     #[test]
     fn trim_entire_file_silent_falls_back() {
         let intervals = vec![(0.0, Some(30.0))];
-        let (start, end) = compute_trim_points(30.0, &intervals);
+        let (start, end) = compute_trim_points(30.0, &intervals, 0.0);
         assert!((start - 0.0).abs() < 0.001);
         assert!((end - 30.0).abs() < 0.001);
     }
@@ -702,7 +712,7 @@ mod tests {
     #[test]
     fn trim_entire_file_silent_no_end_falls_back() {
         let intervals: Vec<(f64, Option<f64>)> = vec![(0.0, None)];
-        let (start, end) = compute_trim_points(30.0, &intervals);
+        let (start, end) = compute_trim_points(30.0, &intervals, 0.0);
         assert!((start - 0.0).abs() < 0.001);
         assert!((end - 30.0).abs() < 0.001);
     }
@@ -710,7 +720,7 @@ mod tests {
     #[test]
     fn trim_very_short_leading_silence() {
         let intervals = vec![(0.0, Some(0.05)), (15.0, Some(15.5))];
-        let (start, end) = compute_trim_points(30.0, &intervals);
+        let (start, end) = compute_trim_points(30.0, &intervals, 0.0);
         assert!((start - 0.05).abs() < 0.001);
         assert!((end - 30.0).abs() < 0.001);
     }
@@ -718,7 +728,7 @@ mod tests {
     #[test]
     fn trim_silence_near_zero_is_treated_as_leading() {
         let intervals = vec![(0.005, Some(2.0))];
-        let (start, end) = compute_trim_points(30.0, &intervals);
+        let (start, end) = compute_trim_points(30.0, &intervals, 0.0);
         assert!((start - 2.0).abs() < 0.001);
         assert!((end - 30.0).abs() < 0.001);
     }
@@ -726,7 +736,7 @@ mod tests {
     #[test]
     fn trim_trailing_silence_with_duration_mismatch() {
         let intervals = vec![(0.0, Some(3.0)), (6.0, Some(8.95))];
-        let (start, end) = compute_trim_points(9.05, &intervals);
+        let (start, end) = compute_trim_points(9.05, &intervals, 0.0);
         assert!((start - 3.0).abs() < 0.001);
         assert!((end - 6.0).abs() < 0.001);
     }
@@ -734,8 +744,39 @@ mod tests {
     #[test]
     fn trim_both_with_duration_mismatch() {
         let intervals = vec![(0.0, Some(2.0)), (5.0, Some(7.92))];
-        let (start, end) = compute_trim_points(8.01, &intervals);
+        let (start, end) = compute_trim_points(8.01, &intervals, 0.0);
         assert!((start - 2.0).abs() < 0.001);
         assert!((end - 5.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn padding_expands_kept_region() {
+        let intervals = vec![(0.0, Some(3.0)), (27.0, Some(30.0))];
+        let (start, end) = compute_trim_points(30.0, &intervals, 0.5);
+        assert!((start - 2.5).abs() < 0.001);
+        assert!((end - 27.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn padding_clamps_at_zero_start() {
+        let intervals = vec![(0.0, Some(1.0)), (27.0, Some(30.0))];
+        let (start, end) = compute_trim_points(30.0, &intervals, 2.0);
+        assert!((start - 0.0).abs() < 0.001);
+        assert!((end - 29.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn padding_clamps_at_duration_end() {
+        let intervals = vec![(0.0, Some(3.0)), (29.0, Some(30.0))];
+        let (start, end) = compute_trim_points(30.0, &intervals, 2.0);
+        assert!((start - 1.0).abs() < 0.001);
+        assert!((end - 30.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn padding_with_no_silence_does_nothing() {
+        let (start, end) = compute_trim_points(30.0, &[], 1.0);
+        assert!((start - 0.0).abs() < 0.001);
+        assert!((end - 30.0).abs() < 0.001);
     }
 }

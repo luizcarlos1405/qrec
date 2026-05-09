@@ -16,7 +16,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
-            Constraint::Length(8),
+            Constraint::Length(9),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
@@ -122,7 +122,7 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
 
     let row_active = |row: ControlsRow| -> bool {
         match row {
-            ControlsRow::AutotrimThreshold => autotrim_on,
+            ControlsRow::AutotrimThreshold | ControlsRow::AutotrimPadding => autotrim_on,
             ControlsRow::Timeline => {
                 !app.config.chunks.is_empty() || app.state == AppState::Recording
             }
@@ -178,6 +178,7 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
     let inner_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -276,7 +277,29 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
         inner_chunks[4],
     );
 
-    let timeline_spans = build_timeline_spans(app, inner_chunks[5].width as usize);
+    let padding_value = format!("{:.1}s", app.config.autotrim_padding_secs);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(
+                    "{} Autotrim padding:    ",
+                    prefix(ControlsRow::AutotrimPadding)
+                ),
+                row_style(ControlsRow::AutotrimPadding),
+            ),
+            Span::styled(
+                format!("{:<22}", padding_value),
+                value_style(ControlsRow::AutotrimPadding),
+            ),
+            Span::styled(
+                arrows(ControlsRow::AutotrimPadding),
+                arrow_style(ControlsRow::AutotrimPadding),
+            ),
+        ])),
+        inner_chunks[5],
+    );
+
+    let timeline_spans = build_timeline_spans(app, inner_chunks[6].width as usize);
     let cursor = Span::styled(
         format!("{} ", prefix(ControlsRow::Timeline)),
         row_style(ControlsRow::Timeline),
@@ -284,15 +307,14 @@ fn draw_controls(f: &mut Frame, app: &App, area: Rect) {
     if !timeline_spans.is_empty() {
         f.render_widget(
             Paragraph::new(Line::from(
-                std::iter::once(cursor).chain(timeline_spans).collect::<Vec<_>>(),
+                std::iter::once(cursor)
+                    .chain(timeline_spans)
+                    .collect::<Vec<_>>(),
             )),
-            inner_chunks[5],
+            inner_chunks[6],
         );
     } else if active_row == ControlsRow::Timeline {
-        f.render_widget(
-            Paragraph::new(Line::from(cursor)),
-            inner_chunks[5],
-        );
+        f.render_widget(Paragraph::new(Line::from(cursor)), inner_chunks[6]);
     }
 
     f.render_widget(controls_block, area);
@@ -365,13 +387,20 @@ fn build_timeline_spans(app: &App, _available_width: usize) -> Vec<Span<'static>
                     (
                         "░",
                         if i == app.selected_chunk {
-                            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                            Style::default()
+                                .fg(Color::Green)
+                                .add_modifier(Modifier::BOLD)
                         } else {
                             Style::default().fg(Color::DarkGray)
                         },
                     )
                 } else if i == app.selected_chunk {
-                    ("█", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+                    (
+                        "█",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    )
                 } else {
                     ("█", Style::default().fg(Color::DarkGray))
                 };
@@ -380,7 +409,9 @@ fn build_timeline_spans(app: &App, _available_width: usize) -> Vec<Span<'static>
             }
         } else {
             let style = if i == app.selected_chunk {
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::DarkGray)
             };
