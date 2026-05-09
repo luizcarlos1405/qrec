@@ -120,17 +120,27 @@ pub fn concat_list_content(chunk_files: &[String]) -> String {
         .join("\n")
 }
 
-pub fn mpv_preview_command(file: &str) -> Command {
+pub fn mpv_preview_command(file: &str, audio_delay_secs: f64) -> Command {
+    let mut args = Vec::new();
+    if audio_delay_secs != 0.0 {
+        args.push(format!("--audio-delay={}", audio_delay_secs));
+    }
+    args.push(file.to_string());
     Command {
         program: "mpv".to_string(),
-        args: vec![file.to_string()],
+        args,
     }
 }
 
-pub fn mpv_preview_all_command(files: &[String]) -> Command {
+pub fn mpv_preview_all_command(files: &[String], audio_delay_secs: f64) -> Command {
+    let mut args = Vec::new();
+    if audio_delay_secs != 0.0 {
+        args.push(format!("--audio-delay={}", audio_delay_secs));
+    }
+    args.extend(files.iter().cloned());
     Command {
         program: "mpv".to_string(),
-        args: files.to_vec(),
+        args,
     }
 }
 
@@ -187,14 +197,20 @@ pub fn ffmpeg_trim_command(input: &str, output: &str, start: f64, end: f64) -> C
     }
 }
 
-pub fn mpv_preview_segment_command(file: &str, start: f64, end: f64) -> Command {
+pub fn mpv_preview_segment_command(
+    file: &str,
+    start: f64,
+    end: f64,
+    audio_delay_secs: f64,
+) -> Command {
+    let mut args = vec![format!("--start={}", start), format!("--end={}", end)];
+    if audio_delay_secs != 0.0 {
+        args.push(format!("--audio-delay={}", audio_delay_secs));
+    }
+    args.push(file.to_string());
     Command {
         program: "mpv".to_string(),
-        args: vec![
-            format!("--start={}", start),
-            format!("--end={}", end),
-            file.to_string(),
-        ],
+        args,
     }
 }
 
@@ -237,15 +253,38 @@ mod tests {
 
     #[test]
     fn mpv_preview_command_single_file() {
-        let cmd = mpv_preview_command("test.mp4");
+        let cmd = mpv_preview_command("test.mp4", 0.0);
         assert_eq!(cmd.program, "mpv");
         assert_eq!(cmd.args, vec!["test.mp4"]);
     }
 
     #[test]
+    fn mpv_preview_command_with_audio_delay() {
+        let cmd = mpv_preview_command("test.mp4", 0.15);
+        assert_eq!(cmd.program, "mpv");
+        assert!(cmd.args.iter().any(|a| a == "--audio-delay=0.15"));
+        assert!(cmd.args.contains(&"test.mp4".to_string()));
+    }
+
+    #[test]
+    fn mpv_preview_command_zero_delay_no_flag() {
+        let cmd = mpv_preview_command("test.mp4", 0.0);
+        assert!(!cmd.args.iter().any(|a| a.contains("audio-delay")));
+    }
+
+    #[test]
     fn mpv_preview_all_command_files() {
-        let cmd = super::mpv_preview_all_command(&["a.mp4".to_string(), "b.mp4".to_string()]);
+        let cmd = super::mpv_preview_all_command(&["a.mp4".to_string(), "b.mp4".to_string()], 0.0);
         assert_eq!(cmd.args, vec!["a.mp4", "b.mp4"]);
+    }
+
+    #[test]
+    fn mpv_preview_all_command_with_audio_delay() {
+        let cmd =
+            super::mpv_preview_all_command(&["a.mp4".to_string(), "b.mp4".to_string()], -0.05);
+        assert!(cmd.args.iter().any(|a| a == "--audio-delay=-0.05"));
+        assert!(cmd.args.contains(&"a.mp4".to_string()));
+        assert!(cmd.args.contains(&"b.mp4".to_string()));
     }
 
     #[test]
@@ -294,10 +333,18 @@ mod tests {
 
     #[test]
     fn mpv_preview_segment_command_structure() {
-        let cmd = mpv_preview_segment_command("chunk-1.mp4", 3.2, 27.0);
+        let cmd = mpv_preview_segment_command("chunk-1.mp4", 3.2, 27.0, 0.0);
         assert_eq!(cmd.program, "mpv");
         assert!(cmd.args.iter().any(|a| a == "--start=3.2"));
         assert!(cmd.args.iter().any(|a| a == "--end=27"));
+        assert!(cmd.args.contains(&"chunk-1.mp4".to_string()));
+    }
+
+    #[test]
+    fn mpv_preview_segment_command_with_audio_delay() {
+        let cmd = mpv_preview_segment_command("chunk-1.mp4", 3.2, 27.0, 0.25);
+        assert!(cmd.args.iter().any(|a| a == "--audio-delay=0.25"));
+        assert!(cmd.args.iter().any(|a| a == "--start=3.2"));
         assert!(cmd.args.contains(&"chunk-1.mp4".to_string()));
     }
 

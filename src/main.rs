@@ -395,13 +395,14 @@ fn execute_command(
                     ))];
                 }
                 let file = chunk.file.clone();
+                let delay = app.config.audio_delay_secs;
                 if app.config.autotrim_enabled {
                     let threshold = app.config.autotrim_threshold_db;
                     suspend_terminal_and(terminal, || {
-                        effects::preview_file_autotrim(&file, threshold)
+                        effects::preview_file_autotrim(&file, threshold, delay)
                     });
                 } else {
-                    suspend_terminal_and(terminal, || effects::preview_file(&file));
+                    suspend_terminal_and(terminal, || effects::preview_file(&file, delay));
                 }
                 vec![AppEvent::PreviewDone(format!("Previewed {}", chunk.file))]
             } else {
@@ -427,13 +428,14 @@ fn execute_command(
                     "No chunk files found on disk".to_string(),
                 )];
             }
+            let delay = app.config.audio_delay_secs;
             if app.config.autotrim_enabled {
                 let threshold = app.config.autotrim_threshold_db;
                 suspend_terminal_and(terminal, || {
-                    effects::preview_files_autotrim(&files, threshold)
+                    effects::preview_files_autotrim(&files, threshold, delay)
                 });
             } else {
-                suspend_terminal_and(terminal, || effects::preview_files(&files));
+                suspend_terminal_and(terminal, || effects::preview_files(&files, delay));
             }
             vec![AppEvent::PreviewDone("Previewed all chunks".to_string())]
         }

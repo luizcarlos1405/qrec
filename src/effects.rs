@@ -271,8 +271,8 @@ pub fn render_concat(
     Ok(())
 }
 
-pub fn preview_file(file: &str) -> anyhow::Result<()> {
-    let cmd = command::mpv_preview_command(file);
+pub fn preview_file(file: &str, audio_delay_secs: f64) -> anyhow::Result<()> {
+    let cmd = command::mpv_preview_command(file, audio_delay_secs);
     let status = match Command::new(&cmd.program).args(&cmd.args).status() {
         Ok(s) => s,
         Err(e) => {
@@ -289,8 +289,8 @@ pub fn preview_file(file: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn preview_files(files: &[String]) -> anyhow::Result<()> {
-    let cmd = command::mpv_preview_all_command(files);
+pub fn preview_files(files: &[String], audio_delay_secs: f64) -> anyhow::Result<()> {
+    let cmd = command::mpv_preview_all_command(files, audio_delay_secs);
     let status = match Command::new(&cmd.program).args(&cmd.args).status() {
         Ok(s) => s,
         Err(e) => {
@@ -405,7 +405,11 @@ pub fn compute_trim_points(duration: f64, silence_intervals: &[(f64, Option<f64>
     (trim_start, trim_end)
 }
 
-pub fn preview_file_autotrim(file: &str, threshold_db: f64) -> anyhow::Result<()> {
+pub fn preview_file_autotrim(
+    file: &str,
+    threshold_db: f64,
+    audio_delay_secs: f64,
+) -> anyhow::Result<()> {
     let duration = get_video_duration(file)?;
     let silence = detect_silence(file, threshold_db)?;
     let (trim_start, trim_end) = compute_trim_points(duration, &silence);
@@ -415,7 +419,7 @@ pub fn preview_file_autotrim(file: &str, threshold_db: f64) -> anyhow::Result<()
         file, trim_start, trim_end, duration
     ));
 
-    let cmd = command::mpv_preview_segment_command(file, trim_start, trim_end);
+    let cmd = command::mpv_preview_segment_command(file, trim_start, trim_end, audio_delay_secs);
     let status = match Command::new(&cmd.program).args(&cmd.args).status() {
         Ok(s) => s,
         Err(e) => {
@@ -432,7 +436,11 @@ pub fn preview_file_autotrim(file: &str, threshold_db: f64) -> anyhow::Result<()
     Ok(())
 }
 
-pub fn preview_files_autotrim(files: &[String], threshold_db: f64) -> anyhow::Result<()> {
+pub fn preview_files_autotrim(
+    files: &[String],
+    threshold_db: f64,
+    audio_delay_secs: f64,
+) -> anyhow::Result<()> {
     let mut edl_lines = Vec::new();
 
     for file in files {
@@ -466,7 +474,11 @@ pub fn preview_files_autotrim(files: &[String], threshold_db: f64) -> anyhow::Re
         edl_content.replace('\n', " | ")
     ));
 
-    let status = match Command::new("mpv").arg(&edl_path).status() {
+    let mut mpv_cmd = Command::new("mpv");
+    if audio_delay_secs != 0.0 {
+        mpv_cmd.arg(format!("--audio-delay={}", audio_delay_secs));
+    }
+    let status = match mpv_cmd.arg(&edl_path).status() {
         Ok(s) => s,
         Err(e) => {
             log_error(&format!("Failed to launch mpv: {}", e));
