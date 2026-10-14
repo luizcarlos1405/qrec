@@ -140,17 +140,21 @@ impl SystemSources {
         }
     }
 
-    fn pactl(&self, args: &[&str]) -> Result<String, String> {
+    /// One log for the `pactl` runs of one discovery.
+    fn log(&self) -> Option<fs::File> {
+        let dir = self.log_dir.as_ref()?;
+        let stamp = proc::log_stamp(chrono::Local::now());
+        proc::create_log(dir, &format!("{stamp}-{}-pactl", std::process::id()))
+            .ok()
+            .map(|(file, _)| file)
+    }
+
+    fn pactl(log: Option<&fs::File>, args: &[&str]) -> Result<String, String> {
         let mut spec = Spec::new("pactl", Limit::Timeout(PACTL_TIMEOUT))
             .args(args)
             .capture_stdout(8 << 20);
-        if let Some(dir) = &self.log_dir {
-            let stamp = proc::log_stamp(chrono::Local::now());
-            if let Ok((log, _)) =
-                proc::create_log(dir, &format!("{stamp}-{}-pactl", std::process::id()))
-            {
-                spec = spec.stderr_to(log);
-            }
+        if let Some(file) = log.and_then(|f| f.try_clone().ok()) {
+            spec = spec.stderr_to(file);
         }
         let out = spec.run().map_err(|e| e.to_string())?;
         if !out.success() {
@@ -162,8 +166,9 @@ impl SystemSources {
 
 impl Sources for SystemSources {
     fn audio(&mut self) -> Result<AudioInventory, String> {
-        let info = self.pactl(&["--format=json", "info"])?;
-        let sources = self.pactl(&["--format=json", "list", "sources"])?;
+        let log = self.log();
+        let info = Self::pactl(log.as_ref(), &["--format=json", "info"])?;
+        let sources = Self::pactl(log.as_ref(), &["--format=json", "list", "sources"])?;
         parse_pactl(&info, &sources)
     }
 
