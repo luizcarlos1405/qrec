@@ -53,6 +53,31 @@ colors:
   take-ginger: "#DF8326"
   take-dragon: "#FD84B0"
   take-fairy: "#448CE1"
+  take-moss-tint: "#718A551F"
+  take-donkey-tint: "#C4CADD1F"
+  take-onion-tint: "#E1CE6F1F"
+  take-mud-tint: "#8270671F"
+  take-lily-tint: "#07BDB21F"
+  take-ginger-tint: "#DF83261F"
+  take-dragon-tint: "#FD84B01F"
+  take-fairy-tint: "#448CE11F"
+  shadow-e1: "#00000066"
+  shadow-e2: "#0000008C"
+  shadow-e2-contact: "#00000059"
+  shadow-e3: "#000000A6"
+  record-glow: "#E5483B73"
+  project-canvas: "#000000"
+  warning-20: "#D98A2B33"
+  warning-16: "#D98A2B29"
+  accent-2-20: "#E3B23C33"
+  video-text-20: "#F5F2DF33"
+  text-35: "#E8E6C859"
+  bg-55: "#12170F8C"
+  record-25: "#E5483B40"
+  muted-40: "#9BA58266"
+  muted-20: "#9BA58233"
+  text-on-record-45: "#12170F73"
+  text-on-accent-45: "#12170F73"
   # Swamp Day (prefix "day-")
   day-bg: "#F1EEDA"
   day-surface: "#E6E3C6"
@@ -104,6 +129,31 @@ colors:
   day-take-ginger: "#AC580D"
   day-take-dragon: "#A3406E"
   day-take-fairy: "#014984"
+  day-take-moss-tint: "#2C592A1F"
+  day-take-donkey-tint: "#7880921F"
+  day-take-onion-tint: "#9B86001F"
+  day-take-mud-tint: "#52453A1F"
+  day-take-lily-tint: "#1495811F"
+  day-take-ginger-tint: "#AC580D1F"
+  day-take-dragon-tint: "#A3406E1F"
+  day-take-fairy-tint: "#0149841F"
+  day-shadow-e1: "#2A2A1829"
+  day-shadow-e2: "#2A2A1833"
+  day-shadow-e2-contact: "#2A2A181F"
+  day-shadow-e3: "#2A2A1840"
+  day-record-glow: "#CF3B3C73"
+  day-project-canvas: "#000000"
+  day-warning-20: "#B8661A33"
+  day-warning-16: "#B8661A29"
+  day-accent-2-20: "#A8781133"
+  day-video-text-20: "#F5F2DF33"
+  day-text-35: "#2A2A1859"
+  day-bg-55: "#F1EEDA8C"
+  day-record-25: "#CF3B3C40"
+  day-muted-40: "#635F4166"
+  day-muted-20: "#635F4133"
+  day-text-on-record-45: "#FAF8EA73"
+  day-text-on-accent-45: "#FAF8EA73"
   # Dragon's Keep (prefix "keep-")
   keep-bg: "#151316"
   keep-surface: "#201D22"
@@ -155,6 +205,31 @@ colors:
   keep-take-ginger: "#DD8F66"
   keep-take-dragon: "#F599E5"
   keep-take-fairy: "#4989D2"
+  keep-take-moss-tint: "#6A93201F"
+  keep-take-donkey-tint: "#C8CAD11F"
+  keep-take-onion-tint: "#EDC6581F"
+  keep-take-mud-tint: "#7F72661F"
+  keep-take-lily-tint: "#20BEA11F"
+  keep-take-ginger-tint: "#DD8F661F"
+  keep-take-dragon-tint: "#F599E51F"
+  keep-take-fairy-tint: "#4989D21F"
+  keep-shadow-e1: "#00000066"
+  keep-shadow-e2: "#0000008C"
+  keep-shadow-e2-contact: "#00000059"
+  keep-shadow-e3: "#000000A6"
+  keep-record-glow: "#FF3B3073"
+  keep-project-canvas: "#000000"
+  keep-warning-20: "#F28C2833"
+  keep-warning-16: "#F28C2829"
+  keep-accent-2-20: "#F28C2833"
+  keep-video-text-20: "#F5F2DF33"
+  keep-text-35: "#EDE6E859"
+  keep-bg-55: "#1513168C"
+  keep-record-25: "#FF3B3040"
+  keep-muted-40: "#A49AA566"
+  keep-muted-20: "#A49AA533"
+  keep-text-on-record-45: "#15131673"
+  keep-text-on-accent-45: "#15131673"
   # Ogre Mode (prefix "ogre-")
   ogre-bg: "#1E2A0E"
   ogre-surface: "#2E4214"
@@ -206,6 +281,31 @@ colors:
   ogre-take-ginger: "#F59442"
   ogre-take-dragon: "#F88BB0"
   ogre-take-fairy: "#4B90D5"
+  ogre-take-moss-tint: "#7B955F1F"
+  ogre-take-donkey-tint: "#CED6E91F"
+  ogre-take-onion-tint: "#FFDE5C1F"
+  ogre-take-mud-tint: "#8D7A711F"
+  ogre-take-lily-tint: "#0FC9BE1F"
+  ogre-take-ginger-tint: "#F594421F"
+  ogre-take-dragon-tint: "#F88BB01F"
+  ogre-take-fairy-tint: "#4B90D51F"
+  ogre-shadow-e1: "#00000066"
+  ogre-shadow-e2: "#0000008C"
+  ogre-shadow-e2-contact: "#00000059"
+  ogre-shadow-e3: "#000000A6"
+  ogre-record-glow: "#E8432F73"
+  ogre-project-canvas: "#000000"
+  ogre-warning-20: "#D98A2B33"
+  ogre-warning-16: "#D98A2B29"
+  ogre-accent-2-20: "#E7C86A33"
+  ogre-video-text-20: "#F5F2DF33"
+  ogre-text-35: "#F4EDD059"
+  ogre-bg-55: "#1E2A0E8C"
+  ogre-record-25: "#E8432F40"
+  ogre-muted-40: "#CFC69B66"
+  ogre-muted-20: "#CFC69B33"
+  ogre-text-on-record-45: "#09100373"
+  ogre-text-on-accent-45: "#1E2A0E73"
 typography:
   wordmark:
     fontFamily: "Fraunces, 'Noto Serif', serif"
@@ -583,6 +683,23 @@ Derived tokens are computed from the base tokens, never picked by eye. Alpha tok
 | `mud-bubble` | Bubbles rising in the mud (decorative) | mud, +0.14 OKLCH lightness | `#A68669` | `#A27F5F` | `#9B8777` | `#BC906F` |
 | `video-scrim` | Plate under badges and text drawn over video (theme-independent) | black @ 62% | `#0000009E` | `#0000009E` | `#0000009E` | `#0000009E` |
 | `video-text` | Text drawn on video-scrim (theme-independent) | constant | `#F5F2DF` | `#F5F2DF` | `#F5F2DF` | `#F5F2DF` |
+| `shadow-e1` | Shadow of e1 Lifted (`0 2px 6px`): tooltips, a clip or layer row being dragged | shadow @ 40% (Day 16%) | `#00000066` | `#2A2A1829` | `#00000066` | `#00000066` |
+| `shadow-e2` | Main shadow of e2 Floating (`0 8px 24px`): popovers, menus, toasts, palette, export panel | shadow @ 55% (Day 20%) | `#0000008C` | `#2A2A1833` | `#0000008C` | `#0000008C` |
+| `shadow-e2-contact` | Contact shadow of e2 Floating (`0 1px 2px`), drawn with `shadow-e2` | shadow @ 35% (Day 12%) | `#00000059` | `#2A2A181F` | `#00000059` | `#00000059` |
+| `shadow-e3` | Shadow of e3 Modal (`0 20px 48px`): modals, settings, the cheat sheet | shadow @ 65% (Day 25%) | `#000000A6` | `#2A2A1840` | `#000000A6` | `#000000A6` |
+| `record-glow` | REC torch glow (`0 0 12px`); follows the flicker curve, off under reduced motion | record @ 45% | `#E5483B73` | `#CF3B3C73` | `#FF3B3073` | `#E8432F73` |
+| `project-canvas` | Preview fill: the project's canvas background from `qrec.json` (theme-independent, like video) | project data; `#000000` for the sample project | `#000000` | `#000000` | `#000000` | `#000000` |
+| `warning-20` | `M` (mute) toggle fill when on: track toggle, lane header | warning @ 20% | `#D98A2B33` | `#B8661A33` | `#F28C2833` | `#D98A2B33` |
+| `warning-16` | Keybinding conflict banner fill (Settings, Keyboard) | warning @ 16% | `#D98A2B29` | `#B8661A29` | `#F28C2829` | `#D98A2B29` |
+| `accent-2-20` | `S` (solo) toggle fill when on; current-frame band at frame zoom | accent-2 @ 20% | `#E3B23C33` | `#A8781133` | `#F28C2833` | `#E7C86A33` |
+| `video-text-20` | Countdown ring track over video | video-text @ 20% | `#F5F2DF33` | `#F5F2DF33` | `#F5F2DF33` | `#F5F2DF33` |
+| `text-35` | Clip hover stroke; the 1 px edge marker of sliver clips | text @ 35% | `#E8E6C859` | `#2A2A1859` | `#EDE6E859` | `#F4EDD059` |
+| `bg-55` | Autocut preview dim over the video row and the other lanes | bg @ 55% | `#12170F8C` | `#F1EEDA8C` | `#1513168C` | `#1E2A0E8C` |
+| `record-25` | Finalizing ghost stripes ("Saving…") | record @ 25% | `#E5483B40` | `#CF3B3C40` | `#FF3B3040` | `#E8432F40` |
+| `muted-40` | Hatch over a clip being replaced (record over) | muted @ 40% | `#9BA58266` | `#635F4166` | `#A49AA566` | `#CFC69B66` |
+| `muted-20` | Light hatch (C19 Hatch/Muted 20) | muted @ 20% | `#9BA58233` | `#635F4133` | `#A49AA533` | `#CFC69B33` |
+| `text-on-record-45` | On-fill key cap stroke inside Record and destructive buttons | text-on-record @ 45% | `#12170F73` | `#FAF8EA73` | `#15131673` | `#09100373` |
+| `text-on-accent-45` | On-fill key cap stroke inside primary buttons | text-on-accent @ 45% | `#12170F73` | `#FAF8EA73` | `#15131673` | `#1E2A0E73` |
 
 ### Take colors
 
@@ -605,6 +722,19 @@ Eight categorical colors per theme. They are tuned to stay distinguishable on th
 | — | — | **min ΔE00 to `record` / to `accent`** | 22.9 / 17.1 | 19.9 / 11.8 | 18.1 / 22.8 | 23.0 / 15.5 |
 
 Where take colors appear: the 4 px stripe on top of video clips; the audio segment tint (take color at 12% over `bg`, which is `#RRGGBB1F`); the bin row thumbnail stripe; the ghost clip's stripe. Nowhere else.
+
+**Take tints** (`take-<name>-tint`) fill the audio lane segments: the take color @ 12% (alpha `1F`).
+
+| Token | Swamp Night | Swamp Day | Dragon's Keep | Ogre Mode |
+| --- | --- | --- | --- | --- |
+| `take-moss-tint` | `#718A551F` | `#2C592A1F` | `#6A93201F` | `#7B955F1F` |
+| `take-donkey-tint` | `#C4CADD1F` | `#7880921F` | `#C8CAD11F` | `#CED6E91F` |
+| `take-onion-tint` | `#E1CE6F1F` | `#9B86001F` | `#EDC6581F` | `#FFDE5C1F` |
+| `take-mud-tint` | `#8270671F` | `#52453A1F` | `#7F72661F` | `#8D7A711F` |
+| `take-lily-tint` | `#07BDB21F` | `#1495811F` | `#20BEA11F` | `#0FC9BE1F` |
+| `take-ginger-tint` | `#DF83261F` | `#AC580D1F` | `#DD8F661F` | `#F594421F` |
+| `take-dragon-tint` | `#FD84B01F` | `#A3406E1F` | `#F599E51F` | `#F88BB01F` |
+| `take-fairy-tint` | `#448CE11F` | `#0149841F` | `#4989D21F` | `#4B90D51F` |
 
 ### Contrast audit
 
@@ -762,6 +892,8 @@ Depth comes from **tonal layering**: `bg` (deepest) → `surface` (working chrom
 
 Every floating layer also gets a 1 px `border` stroke, so it separates from same-tone surfaces in dark themes.
 
+The shadow alphas are tokens, so the GTK CSS export carries them: `shadow-e1`, `shadow-e2` plus `shadow-e2-contact`, `shadow-e3`, and `record-glow` for the REC torch (values in Colors → Derived tokens).
+
 ### Named Rules
 
 **The Flat-at-Rest Rule.** If it doesn't float, it doesn't cast a shadow. Lift is a state (dragging, open), never a style.
@@ -788,7 +920,7 @@ Each component lists its states. Every interactive one has default, hover, press
 
 - **Shape and size:** `md` radius (6). Medium is 32 px tall with 0 12 padding; large is 40 px with 0 16. Label is `body-strong`. A 16 px icon sits 8 px before the label.
 - **Primary** (`accent` fill, `text-on-accent`): one per region at most (Export in the export panel, Apply autocut, Add sources, Check again).
-- **Record** (`record` fill, `text-on-record`; header only):
+- **Record** (`record` fill, `text-on-record`; header only). It is a fixed 120×32 at (1240, 8) in every state, with its content centered, so it never moves or resizes:
   - Idle: `● Record [R]`.
   - Countdown: `Cancel [R]`, outlined (no fill, 1 px `record` stroke, `record-text` label).
   - Recording: `■ Stop [R]`.
@@ -836,13 +968,13 @@ All overlays sit inside the preview, inset 12 px, on `video-scrim` with `video-t
   - **Torch flicker:** 1600 ms loop. The badge opacity steps irregularly through 1.00 → 0.82 → 0.97 → 0.74 → 1.00 → 0.86 → 0.95 → 0.80 → 1.00 at 0/9/17/31/46/63/78/90/100%, with linear segments. A `record` glow (`0 0 12px` at 45%) follows the same curve.
   - **Reduced motion:** static badge, no glow; the timer still counts.
 - **Saving badge** (Finalizing): replaces REC. A `video-scrim` pill with a 14 px spinner and "Saving take 10…".
-- **Countdown:** the preview dims under `video-scrim` at 40%. A 200 px ring is centered: a 6 px track in `video-text` at 20% with a `record` sweep that empties over each second (linear, 1000 ms). The digit is in `countdown` type, `video-text`. Below it, "Take 10" (`body-strong`) and "Esc or R cancels" (`caption`).
+- **Countdown:** the preview dims under `video-scrim` at 40%. A 200 px ring is centered: a 6 px track in `video-text` at 20% with a `record` sweep that empties over each second (linear, 1000 ms). The digit is in `countdown` type, `video-text`. Below it, "Take 10" (`body-strong`) and "Esc or R cancels" (`caption`) sit on one `video-scrim` plate (`md` radius, 4/12 padding) that belongs to the overlay. The overlay is transparent over the live canvas; it carries no preview image of its own.
   - **Reduced motion:** a static full ring; the digit swaps without scaling.
 - **Layer selection box:** a 1.5 px `accent` stroke with eight 8×8 handles (`accent` fill, 1 px `bg` stroke). Holding `Alt` turns the edge handles into crop brackets. Snap guides are 1 px dashed (4/4) in `snap-guide`, running edge to edge across the preview, with a `caption` tag ("Right third").
 
 ### Onion layers panel
 
-- **Panel header** (48 px): `title` "Onion layers" plus a `caption` `muted` subtitle ("Project scene · new takes use this" in Live; "Take 5 layout · edits this take only" in Program), and an `Add layer` icon button.
+- **Panel header** (48 px): `title` "Onion layers" plus a `caption` `muted` subtitle ("Project scene · new takes use this" in Live; in Program, "Take 5 layout · edits this take only" with a clip selected, and "Select a clip to edit its take layout" with nothing selected), and an `Add layer` icon button. The take banner and the 8 px gap below it appear only with a clip selected.
 - **Section header** (32 px): `heading` text plus a `caption` count.
 - **Layer row** (44 px): grip, visibility toggle, 16 px source icon, name (`body`) over source (`caption` `muted`, for example "Camera · Logitech C920"), lock toggle and overflow menu.
   - **States:** hover; selected (R1); hidden (name `muted`, `eye-off`); locked (lock icon in `text`); renaming (the name becomes a `field`); dragging (e1 plus a 2 px `accent` drop line); error (a `record-text` icon and subtitle "Access denied by the desktop portal"); missing media (a `warning-text` icon and subtitle "Missing in this take").
@@ -867,12 +999,13 @@ All overlays sit inside the preview, inset 12 px, on `video-scrim` with `video-t
     - Trimming: the active edge becomes a 6 px `accent` bar. Media beyond the edge shows as a dimmed filmstrip (40%) inside a 1 px dashed `accent` outline, up to the take bounds.
     - Dragging: a lifted copy at 85% opacity with e1, 4 px up.
     - Analyzing: a spinner in the label plate.
-    - Recording ghost: `ghost-fill`, a 1.5 px dashed `record` stroke (6/4), its take stripe, and the label "● Take 10 · recording".
+    - Recording ghost: `ghost-fill`, a 1.5 px dashed `record` stroke (6/4), its take stripe, and the label "● Take 10 · recording". Record over keeps one plate: "● Take 10 · recording" with "over c2d0 (take 5)" as its second line; the replaced clip shows only its `muted-40` hatch.
     - Finalizing ghost: animated `record` stripes at 25%, "Saving…".
     - Missing media: thumbnails replaced by hatch plus a warning icon.
 - **Waveform lane** (56 px, `bg`): each clip segment is tinted with its take color at 12%, with the waveform mirrored on the centre line in `wave` (max ±22 px).
   - **States:** muted or not soloed (`wave-dim`); selected (`selected` tint); silence regions (hatch, on the autocut track's lane only); autocut preview (hatch at full strength, plus the same time ranges dimmed with `bg` at 55% across the video row and other lanes, plus a `caption` `warning-text` "−1.6 s" above each region).
 - **Lane header** (176 px column, `surface`): icon, name (`body-sm` 600), id chip, and `M` and `S` toggle buttons (24×24, `caption-strong`). When on, `M` is `warning` at 20% with a 1 px `warning` stroke, and `S` is `accent-2` at 20% with a 1 px `accent-2` stroke. Letters stay `text`.
+- **Fit zoom** keeps an 8 px end inset: px/frame = (time-area width − 8) ÷ total frames, so the playhead parked at the timeline end (13 px head) is never clipped by the panel edge. The ruler draws every tick and label and lets the time area clip the last one.
 - **Playhead:** a 2 px `playhead` line from the ruler to the last lane. The head is a 13×12 downward pentagon at the top of the ruler. While scrubbing, a timecode flag shows `mono-sm` `text` on `raised` with a 1 px `playhead` stroke (R4).
 - **Insertion caret:** a 2 px `caret` line across all rows, with 8×6 triangles pointing inward at the top and bottom.
 

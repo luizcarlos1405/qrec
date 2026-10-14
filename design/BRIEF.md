@@ -147,6 +147,8 @@ With no layer selected, the inspector shows one `caption` `muted` line: "Select 
 | Seconds | 1.6 (48 px/s) | 00:01:05:00 → 00:01:26:20 | Every 2 s | Major 1 s (48 px), minor 10 frames (16 px) | Filmstrip of 128×72 thumbnails |
 | Frame | 32 (≥ 24 required) | Frames 3160 → 3192 (00:01:45:10 → 00:01:46:12) | Each frame's `FF` centered in its 32 px cell; full timecode at second boundaries | A tick at every frame boundary, taller at seconds | One thumbnail per frame, a 32×72 center crop |
 
+**Fit inset (DESIGN.md → Timeline wins).** The build uses an 8 px end inset at fit zoom: (1040 − 8) / 7391 = 0.1396 px/frame, so the playhead parked at the end is never half clipped. The mocks and the "x at fit" column in §3.3 still draw 1040 / 7391. Re-lay every fit-zoom frame in one pass, with x′ = 176 + (x − 176) × 1032 / 1040, and update the C15 Ruler/Fit ticks with it.
+
 ### 2.7 Hint bar
 
 The left side holds the hints, from x 12. Each item is a key cap, a 6 px gap and a label, with 20 px between items. The first label is in `text`, the others `muted`. The right side holds the status, right-aligned at x 1588: `Snapping on · 1920×1080 · 30 fps` (`caption` `muted`). Each state's hints are listed with its screen in §5.
@@ -341,7 +343,8 @@ These are Swamp Night frames unless noted. "Base" names the frame to duplicate. 
 - **S01b, sources added, no takes.**
   - **Canvas:** Live preview of L1 + L2 with the `LIVE` badge. The panel lists L2 and L1, with A1 and A2 meters idle at about −48 dBFS.
   - **Timeline:** the toolbar is shown, but the ruler and rows are replaced by the empty state, centered in the time area. The quiet swamp illustration (120 px) sits above the `display` line "This swamp is quiet." and the `body` line "Press [R] and make some noise.", with an lg key cap. Together they are the pinned string "This swamp is quiet. Press **R** and make some noise."
-- **Hint bar:** `[R] Record` · `[Tab] Program` · `[Ctrl][K] Commands` · `[?] All keys`. In S01a, `R` is disabled; its tooltip reads "Add a layer or audio track first".
+- **Hint bar:** `[R] Record` · `[Tab] Program` · `[Ctrl][K] Commands` · `[?] All keys`. In S01a the bar leads with `[Enter] Add 4 sources` (the focused primary button) and shows `R` disabled. The disabled header Record button carries the explanation as a tooltip 8 px under it: "Add a layer or audio track first". The hint bar is not focusable, so it never anchors a tooltip.
+- **Timeline toolbar:** the C14 Empty variant: Bin without a count, Autocut, its settings and the zoom cluster disabled, "No clips yet" in place of the clip summary.
 - **Visual details:** Fraunces appears only in the empty-state title. No other decoration.
 
 ### S02 · Main window, Live mode, idle
@@ -353,7 +356,7 @@ These are Swamp Night frames unless noted. "Base" names the frame to duplicate. 
   - **Panel:** project scene; L2 and L1 unselected; A1 meter at about −22 dBFS with the peak at −16 (room tone and breathing); A2 at about −52; inspector empty-state line.
   - **Timeline:** fit zoom, 10 clips (§3.3), nothing selected, playhead at the end (00:04:06:11).
   - **Toolbar:** Bin `5`, Snap on.
-- **Hint bar:** `[R] Record` · `[D] Discard last take` · `[Space] Play` · `[Tab] Program` · `[C] Autocut all` · `[B] Bin` · `[Ctrl][K] Commands` · `[?] All keys`.
+- **Hint bar:** `[R] Record` · `[D] Discard last take` · `[Space] Play` (disabled: Live has no playback, Q2) · `[Tab] Program` · `[C] Autocut all` · `[B] Bin` · `[Ctrl][K] Commands` · `[?] All keys`. This is the default content of the C03 Hint bar component.
 - **Visual details:** the Record button is the only red on screen. Take stripes read in order: moss ×2, onion ×5, lily ×2, fairy ×1.
 
 ### S03 · Countdown
@@ -381,8 +384,8 @@ These are Swamp Night frames unless noted. "Base" names the frame to duplicate. 
 - **Hint bar:** `[R] Stop` · `[Esc] Cancel take (files kept)` · `[Tab] Switch view` · `[=][−] Zoom` · `[\] Fit`.
 - **Frames:** REC flicker frame A (bright, with glow) and frame B (dim). Add a note frame with the flicker keyframes and the reduced-motion static badge.
 - **Variant S04b, Record over** (`O` with c2d0 selected):
-  - **Ghost:** occupies c2d0's slot (x 469.2) at its current length (`00:00:31:02`). The replaced clip c2d0 sits behind it, hatched with muted stripes at 40%, labeled "Replacing c2d0 (take 5)".
-  - **Ghost label:** "● Take 10 · recording over c2d0".
+  - **Ghost:** occupies c2d0's slot (x 469.2) at its current length (`00:00:31:02`). The replaced clip c2d0 sits behind it, hatched with muted stripes at 40%.
+  - **Ghost label:** one plate reading "● Take 10 · recording over c2d0 (take 5)". At 131 px it wraps to "● Take 10 · recording" over "over c2d0 (take 5)". It names the replaced clip, so the hatch needs no plate of its own; never stack a second plate in the ghost.
   - **Hint bar:** as in S04.
 
 ### S05 · Finalizing
@@ -393,8 +396,8 @@ These are Swamp Night frames unless noted. "Base" names the frame to duplicate. 
   - **Header:** the button shows `Saving…` with a spinner, disabled.
   - **Ghost:** animated `record` stripes at 25%, labeled "Take 10 · saving…".
 - **Hint bar:** the label-only item "Finalizing take 10. Waiting for every file to close (up to 10 s)." followed by `[Tab] Switch view` · `[=][−] Zoom`.
-- **S05b, the take lands** (optional frame, recommended):
-  - **Timeline:** the ghost becomes a solid clip with a donkey-grey stripe at the end of the timeline. Its label is "Take 10", plus 00:02:41:12 in the hover tooltip. The torch is out.
+- **S05b, the take lands** (drawn; it sits between S05 and S06 on the canvas):
+  - **Timeline:** the ghost becomes a solid clip with a donkey-grey stripe at the end of the timeline (x 804.4 → 1216 at the same fit zoom, 12,233 frames). Its label is "Take 10", plus 00:02:41:12 in the hover tooltip. Clips return to full opacity, and the toolbar and header read "11 clips · 00:06:47:23". The torch is out.
   - **Header and hint bar:** the 2 px line is gone, and the hint bar is back to S02 with `[D] Discard last take` emphasized (label in `text`).
 
 ### S06 · Program mode with a selection
