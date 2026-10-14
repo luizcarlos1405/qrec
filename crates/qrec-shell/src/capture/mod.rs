@@ -11,6 +11,20 @@
 //! `set_live`/`start`; level meters and preview frames go to the optional
 //! [`SideEvent`] channel, never through `on_event`.
 //!
+//! The contract with the core (A§5.3, A§8.11):
+//! - `SetLive` arrives whenever the wanted live scene changes, before
+//!   `StartCapture`: the pipeline is built then and the take attaches to it
+//!   (a plan source the pipeline lacks rebuilds it first). An equal scene
+//!   with a healthy pipeline changes nothing; a new layout only moves
+//!   preview layers; `None` tears the pipeline down once no take runs.
+//! - `StartCapture` ⇒ `CaptureStarted` (every file got data and the health
+//!   window passed) or `CaptureFailed { source }`. Afterwards, a failure of
+//!   one branch is `StreamLost` for each stream it fed; RecordClock ~4 Hz.
+//! - A take that is stopped gets one `CaptureStopped` (a repeated stop is
+//!   absorbed; a take that failed or was never seen gets an empty one),
+//!   with `timed_out` when EOS missed its deadline. A teardown that misses
+//!   its deadline is `EngineWedged`.
+//!
 //! Hosts build the engine with [`new_engine`]:
 //!
 //! ```ignore

@@ -17,16 +17,22 @@
 //! frame stamped up to 0.5 ms *after* its exact time would leave the
 //! previous frame overlapping the start of the output frame by that much,
 //! and the compositor would show it. Video in-points are therefore moved
-//! [`MKV_INPOINT_NUDGE_NS`] later, like the export's `-ss … − 2 ms` the
-//! other way round (*measured* by the frame-ID test below).
+//! [`MKV_INPOINT_NUDGE_NS`] later (and `max-duration` by as much, so a clip
+//! may end with its file), like the export's `-ss … − 2 ms` the other way
+//! round (*measured*: without it, GES shows the previous source frame for
+//! one frame in three of the frame-ID test at 30 fps).
 //!
-//! [`FrameRenderer`] runs the timeline in a `ges::Pipeline` (video preview
-//! mode, appsink) and renders chosen timeline frames to RGB or PNG with
-//! accurate seeks. Every wait has a deadline; GStreamer is initialized
-//! through [`crate::gst_init`]. GES decodes in software only: hardware
-//! decoders are demoted the first time GES is initialized, so VA-API never
-//! picks a device on its own (A§8.10). Use it from a worker thread: building
-//! a timeline discovers every file and rendering blocks while it seeks.
+//! [`preview_pipeline`] wraps a timeline in a `ges::Pipeline` whose
+//! compositor scales bilinearly, like the export ([`bilinear_compositors`]);
+//! the GUI adds its sinks. [`FrameRenderer`] uses one (video preview mode,
+//! appsink) to render chosen timeline frames to RGB or PNG with accurate
+//! seeks. Every wait has a deadline; GStreamer is initialized through
+//! [`crate::gst_init`]. GES stays in software ([`init`]): hardware decoders
+//! are demoted and every compositor but `compositor` is hidden before GES
+//! starts, so neither decoding nor GES's mixer probing loads the VA plugin
+//! (which opens every render node, A§8.10). Use all of it from a worker
+//! thread: building a timeline discovers every file and rendering blocks
+//! while it seeks.
 
 use std::collections::BTreeMap;
 use std::ffi::c_void;
