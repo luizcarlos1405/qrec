@@ -292,14 +292,16 @@ fn id_changes(prev: &Project, next: &Project) -> (Vec<String>, Vec<String>) {
         clips.chain(layers).chain(tracks).collect()
     }
     let (before, after) = (ids(prev), ids(next));
+    let (in_before, in_after): (BTreeSet<&String>, BTreeSet<&String>) =
+        (before.iter().collect(), after.iter().collect());
     let created = after
         .iter()
-        .filter(|id| !before.contains(id))
+        .filter(|id| !in_before.contains(id))
         .cloned()
         .collect();
     let removed = before
         .iter()
-        .filter(|id| !after.contains(id))
+        .filter(|id| !in_after.contains(id))
         .cloned()
         .collect();
     (created, removed)
