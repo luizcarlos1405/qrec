@@ -486,14 +486,16 @@ const DEFAULTS: &[Def] = &[
     def("shuttle.reverse", "Playback", "Shuttle reverse (again: 2×, 4×)", &["j"], None, &[Global]),
     def("shuttle.stop", "Playback", "Shuttle stop", &["k"], None, &[Global]),
     def("shuttle.forward", "Playback", "Shuttle forward (again: 2×, 4×)", &["l"], None, &[Global]),
-    def("seek.prev-frame", "Playback", "Previous frame", &["Left"], Some("qrec seek --by -1f"), &[Timeline]),
-    def("seek.next-frame", "Playback", "Next frame", &["Right"], Some("qrec seek --by +1f"), &[Timeline]),
-    def("seek.back", "Playback", "Back 1 s", &["shift+Left"], Some("qrec seek --by -1s"), &[Timeline]),
-    def("seek.forward", "Playback", "Forward 1 s", &["shift+Right"], Some("qrec seek --by +1s"), &[Timeline]),
-    def("seek.prev-edit", "Playback", "Previous edit point", &["Up"], Some("qrec seek --edit prev"), &[Timeline]),
-    def("seek.next-edit", "Playback", "Next edit point", &["Down"], Some("qrec seek --edit next"), &[Timeline]),
-    def("seek.start", "Playback", "Timeline start", &["Home"], Some("qrec seek --to start"), &[Global]),
-    def("seek.end", "Playback", "Timeline end", &["End"], Some("qrec seek --to end"), &[Global]),
+    // Seeking is allowed while recording (A§4.4 R); the arrows belong to the
+    // canvas (layer nudges) when it has focus.
+    def("seek.prev-frame", "Playback", "Previous frame", &["Left"], Some("qrec seek --by -1f"), &[Timeline, Recording]),
+    def("seek.next-frame", "Playback", "Next frame", &["Right"], Some("qrec seek --by +1f"), &[Timeline, Recording]),
+    def("seek.back", "Playback", "Back 1 s", &["shift+Left"], Some("qrec seek --by -1s"), &[Timeline, Recording]),
+    def("seek.forward", "Playback", "Forward 1 s", &["shift+Right"], Some("qrec seek --by +1s"), &[Timeline, Recording]),
+    def("seek.prev-edit", "Playback", "Previous edit point", &["Up"], Some("qrec seek --edit prev"), &[Timeline, Recording]),
+    def("seek.next-edit", "Playback", "Next edit point", &["Down"], Some("qrec seek --edit next"), &[Timeline, Recording]),
+    def("seek.start", "Playback", "Timeline start", &["Home"], Some("qrec seek --to start"), &[Global, Recording]),
+    def("seek.end", "Playback", "Timeline end", &["End"], Some("qrec seek --to end"), &[Global, Recording]),
     // Edit
     def("select.prev", "Edit", "Select previous clip", &["comma"], None, &[Global, Recording]),
     def("select.next", "Edit", "Select next clip", &["period"], None, &[Global, Recording]),
@@ -1871,7 +1873,13 @@ mod tests {
             lookup(&map, &chord("Left"), KeyContext::Canvas).unwrap().id,
             "layer.nudge-left"
         );
-        assert_eq!(lookup(&map, &chord("Left"), KeyContext::Recording), None);
+        assert_eq!(
+            lookup(&map, &chord("Left"), KeyContext::Recording)
+                .unwrap()
+                .id,
+            "seek.prev-frame",
+            "seeking works while recording; layer edits don't"
+        );
         assert_eq!(
             lookup(&map, &chord("r"), KeyContext::Recording).unwrap().id,
             "record.toggle"

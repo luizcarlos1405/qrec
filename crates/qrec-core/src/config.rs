@@ -733,6 +733,29 @@ vaapi_device = \"/dev/dri/renderD129\"
     }
 
     #[test]
+    fn set_works_with_dotted_keys() {
+        // `ui.scale = 1.5` at the top level is the same table as `[ui]`.
+        let mut d = doc("theme = \"swamp-day\"\nui.scale = 1.5 # big screen\n");
+        set(&mut d, "ui.scale", "2").unwrap();
+        set(&mut d, "ui.sounds", "true").unwrap();
+        let text = d.to_string();
+        assert_eq!(
+            text,
+            "theme = \"swamp-day\"\nui.scale = 2.0 # big screen\nui.sounds = true\n"
+        );
+        let cfg = parse(&text).unwrap();
+        assert_eq!((cfg.ui.scale, cfg.ui.sounds), (2.0, true));
+    }
+
+    #[test]
+    fn whole_numbers_work_for_decimal_settings() {
+        let cfg = parse("[autocut]\nthreshold_db = -40\n[ui]\nscale = 2\n").unwrap();
+        assert_eq!(cfg.autocut.threshold_db, -40.0);
+        assert_eq!(cfg.ui.scale, 2.0);
+        assert_eq!(get_json(&cfg, "ui.scale").unwrap(), json!(2.0));
+    }
+
+    #[test]
     fn parse_reports_every_problem() {
         let cfg = parse("theme = \"ogre-mode\"\n[recording]\ncountdown_secs = 3\n").unwrap();
         assert_eq!(cfg.recording.countdown_secs, 3);

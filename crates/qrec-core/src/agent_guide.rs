@@ -82,11 +82,11 @@ the same commands, and every edit is undoable. Always pass `--json`.
   the current directory, which must hold `qrec.json` or be strictly empty
   (hidden files such as `.git` count). An empty folder becomes a project with
   `qrec init` or on the first change.
-- Without `--project`, a folder that is neither falls back to the single
-  running Qrec (so compositor key binds work from `$HOME`; several running
-  ones are a usage error that lists them). Otherwise the command exits 3
-  (`not_project`): inside a project's subfolder it names the project, and
-  elsewhere it says
+- Inside a project's subfolder, commands exit 3 (`not_project`) and name the
+  project: pass `--project DIR` or run them there.
+- Elsewhere, without `--project`, commands use the single running Qrec (so
+  compositor key binds work from `$HOME`; several running ones are a usage
+  error that lists them). With none running they exit 3 with
 ";
 
 const OUTPUT: &str = "\

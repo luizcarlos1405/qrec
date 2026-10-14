@@ -113,7 +113,8 @@ expression: "keys_view(&resolve(\"\"))"
     ],
     "cli": "qrec seek --by -1f",
     "contexts": [
-      "timeline"
+      "timeline",
+      "recording"
     ]
   },
   {
@@ -125,7 +126,8 @@ expression: "keys_view(&resolve(\"\"))"
     ],
     "cli": "qrec seek --by +1f",
     "contexts": [
-      "timeline"
+      "timeline",
+      "recording"
     ]
   },
   {
@@ -137,7 +139,8 @@ expression: "keys_view(&resolve(\"\"))"
     ],
     "cli": "qrec seek --by -1s",
     "contexts": [
-      "timeline"
+      "timeline",
+      "recording"
     ]
   },
   {
@@ -149,7 +152,8 @@ expression: "keys_view(&resolve(\"\"))"
     ],
     "cli": "qrec seek --by +1s",
     "contexts": [
-      "timeline"
+      "timeline",
+      "recording"
     ]
   },
   {
@@ -161,7 +165,8 @@ expression: "keys_view(&resolve(\"\"))"
     ],
     "cli": "qrec seek --edit prev",
     "contexts": [
-      "timeline"
+      "timeline",
+      "recording"
     ]
   },
   {
@@ -173,7 +178,8 @@ expression: "keys_view(&resolve(\"\"))"
     ],
     "cli": "qrec seek --edit next",
     "contexts": [
-      "timeline"
+      "timeline",
+      "recording"
     ]
   },
   {
@@ -185,7 +191,8 @@ expression: "keys_view(&resolve(\"\"))"
     ],
     "cli": "qrec seek --to start",
     "contexts": [
-      "global"
+      "global",
+      "recording"
     ]
   },
   {
@@ -197,7 +204,8 @@ expression: "keys_view(&resolve(\"\"))"
     ],
     "cli": "qrec seek --to end",
     "contexts": [
-      "global"
+      "global",
+      "recording"
     ]
   },
   {
