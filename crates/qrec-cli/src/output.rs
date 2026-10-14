@@ -189,6 +189,8 @@ pub(crate) struct Ui<'a> {
     /// stderr is a terminal: the progress bar updates in place.
     err_tty: bool,
     bar: Bar,
+    /// The last progress line printed under `--json` (repeats are dropped).
+    last_progress: Option<String>,
 }
 
 impl<'a> Ui<'a> {
@@ -208,6 +210,7 @@ impl<'a> Ui<'a> {
             verbose,
             err_tty,
             bar: Bar::default(),
+            last_progress: None,
         }
     }
 
@@ -281,7 +284,13 @@ impl<'a> Ui<'a> {
             return;
         }
         if self.json {
-            self.out.line(&progress_line(progress));
+            // ffmpeg reports the same frame count a few times while its
+            // encoder fills up: one line per change is enough.
+            let line = progress_line(progress);
+            if self.last_progress.as_deref() != Some(line.as_str()) {
+                self.out.line(&line);
+                self.last_progress = Some(line);
+            }
             return;
         }
         if let Some(text) = self.bar.update(progress, self.err_tty) {

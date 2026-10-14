@@ -664,7 +664,11 @@ fn only_streaming_commands_print_progress_lines() {
     let project = tmp.project("p");
     let finalizing = || Script {
         routed: None,
-        progress: vec![progress(ProgressPhase::Finalize, 0, 0, "Finalizing take 1")],
+        // Repeated progress (an encoder filling up) prints once.
+        progress: vec![
+            progress(ProgressPhase::Finalize, 0, 0, "Finalizing take 1"),
+            progress(ProgressPhase::Finalize, 0, 0, "Finalizing take 1"),
+        ],
         notices: vec![],
         finish: Finish::Reply(Ok(result("Recorded take 1 (2.0 s)", Some(1), &[], json!(null)))),
     };

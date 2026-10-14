@@ -966,7 +966,11 @@ mod gst_impl {
         std::thread::Builder::new()
             .name("qrec-ges-init".into())
             .spawn(move || {
-                let _ = tx.send(ges::init().map_err(|e| e.to_string()));
+                // The renderer's own init: GES picks its mixer by loading
+                // every compositor factory, and loading the VA plugin opens
+                // every render node (A§8.10), so GES is set up in software
+                // only, exactly as the preview renderer will use it.
+                let _ = tx.send(crate::ges_render::init().map_err(|e| e.to_string()));
             })
             .map_err(|e| format!("can't start the GES init thread: {e}"))?;
         rx.recv_timeout(Duration::from_secs(10))
