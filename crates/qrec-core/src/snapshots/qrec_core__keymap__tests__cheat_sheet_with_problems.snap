@@ -1,0 +1,72 @@
+---
+source: crates/qrec-core/src/keymap.rs
+expression: cheat_sheet(&map)
+---
+Record
+  r                     Start / stop recording                     record.toggle
+  o                     Record over the selection                  record.over
+  d                     Discard the last take (to the bin)         take.discard-last
+  Esc                   Cancel recording, deselect, close overlay  cancel
+
+Playback
+  Space                 Play / pause                               play.toggle
+  j                     Shuttle reverse (again: 2×, 4×)            shuttle.reverse
+  k                     Shuttle stop                               shuttle.stop
+  l                     Shuttle forward (again: 2×, 4×)            shuttle.forward
+  ←                     Previous frame                             seek.prev-frame
+  →                     Next frame                                 seek.next-frame
+  Shift+←               Back 1 s                                   seek.back
+  Shift+→               Forward 1 s                                seek.forward
+  ↑                     Previous edit point                        seek.prev-edit
+  ↓                     Next edit point                            seek.next-edit
+  Home                  Timeline start                             seek.start
+  End                   Timeline end                               seek.end
+
+Edit
+  ,                     Select previous clip                       select.prev
+  .                     Select next clip                           select.next
+  <                     Move selection left one slot               clip.move-left
+  >                     Move selection right one slot              clip.move-right
+  s                     Split clip at the playhead                 clip.split
+  [                     Trim start to the playhead                 clip.trim-start
+  ]                     Trim end to the playhead                   clip.trim-end
+  Alt+[                 Trim 1 frame off the start                 clip.nudge-start
+  Alt+]                 Trim 1 frame off the end                   clip.nudge-end
+  Alt+{                 Trim 10 frames off the start               clip.nudge-start-10
+  Alt+}                 Trim 10 frames off the end                 clip.nudge-end-10
+  Del  x  Backspace     Remove selected clips (to the bin)         clip.remove
+  x                     Autocut the selection, or every clip       autocut.run
+  Shift+C               Autocut settings and preview               autocut.preview
+  Ctrl+Z                Undo                                       history.undo
+  Ctrl+Shift+Z  Ctrl+Y  Redo                                       history.redo
+  Ctrl+A                Select all clips                           select.all
+
+Output
+  f                     Save the frame at the playhead (PNG)       frame.save
+  Ctrl+E                Export…                                    export
+
+View
+  =                     Zoom timeline in                           zoom.in
+  -                     Zoom timeline out                          zoom.out
+  \                     Zoom to fit                                zoom.fit
+  z                     Zoom to the selection                      zoom.selection
+  n                     Toggle snapping                            snapping.toggle
+  Tab                   Switch canvas Live / Program               canvas.mode
+  b                     Toggle the bin                             bin.toggle
+  ?                     Cheat sheet                                keys.help
+  Ctrl+K  :             Command palette                            palette.open
+  Ctrl+,                Settings                                   settings.open
+
+Canvas
+  ←                     Nudge layer left 1 px                      layer.nudge-left
+  →                     Nudge layer right 1 px                     layer.nudge-right
+  ↑                     Nudge layer up 1 px                        layer.nudge-up
+  ↓                     Nudge layer down 1 px                      layer.nudge-down
+  Shift+←               Nudge layer left 10 px                     layer.nudge-left-10
+  Shift+→               Nudge layer right 10 px                    layer.nudge-right-10
+  Shift+↑               Nudge layer up 10 px                       layer.nudge-up-10
+  Shift+↓               Nudge layer down 10 px                     layer.nudge-down-10
+
+Problems
+  x is bound to clip.remove and autocut.run in global; neither runs until keys.toml changes one
+  keys.toml: unknown binding `nope` (`qrec keys` lists the ids)
