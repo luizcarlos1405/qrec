@@ -1231,9 +1231,10 @@ mod tests {
         assert_eq!(r.seq, Some(1));
         assert_eq!(r.created, ["L1"]);
         assert_eq!(r.result["id"], "L1");
+        // A GUI host in Live mode also gets the live pipeline update.
         assert!(matches!(
             out.effects[..],
-            [Effect::History(_), Effect::WriteProject]
+            [Effect::History(_), Effect::WriteProject, Effect::SetLive(Some(_))]
         ));
         assert_eq!(
             out.state.history.entries[0].label,

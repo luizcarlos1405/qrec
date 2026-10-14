@@ -13,6 +13,7 @@ use crate::hash::json_hash;
 use crate::history::{HistoryEntry, diff, ops};
 use crate::protocol::effect::{Effect, HistoryOp};
 use crate::state::State;
+use crate::apply::ui::live_effect;
 use crate::ui_normalize::ui_normalize;
 
 /// The result of [`commit`] or [`persist`].
@@ -72,6 +73,7 @@ pub fn commit(prev: &State, ctx: &Ctx, label: String, cmd: Value, mut next: Stat
     if next.ui != prev.ui {
         effects.push(Effect::WriteUi);
     }
+    effects.extend(live_effect(prev, &next));
     Committed {
         state: next,
         effects,
@@ -91,6 +93,10 @@ pub fn persist(prev: &State, mut next: State) -> Committed {
     }
 }
 
+/// The writes for what changed, then the `SetLive` the change implies.
+/// `SetLive` is emitted here and only here, so the live pipeline follows
+/// scene edits, undo/redo, canvas-mode switches and record phases alike;
+/// handlers add `StartCapture`/`StopCapture` after it.
 fn writes(prev: &State, next: &State) -> Vec<Effect> {
     let mut effects = Vec::new();
     if next.project != prev.project {
@@ -99,6 +105,7 @@ fn writes(prev: &State, next: &State) -> Vec<Effect> {
     if next.ui != prev.ui {
         effects.push(Effect::WriteUi);
     }
+    effects.extend(live_effect(prev, next));
     effects
 }
 

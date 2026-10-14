@@ -322,13 +322,10 @@ pub fn live_effect(prev: &State, next: &State) -> Option<Effect> {
     (live_scene(prev) != wanted).then_some(Effect::SetLive(wanted))
 }
 
-/// Persists a UI change, adds the `SetLive` it implies and replies with
-/// what `reply` says about the persisted state.
+/// Persists a UI change (which also emits the `SetLive` it implies) and
+/// replies with what `reply` says about the persisted state.
 fn finish(prev: &State, next: State, reply: impl FnOnce(&State) -> CmdResult) -> Outcome {
-    let mut committed = persist(prev, next);
-    if let Some(effect) = live_effect(prev, &committed.state) {
-        committed.effects.push(effect);
-    }
+    let committed = persist(prev, next);
     let result = reply(&committed.state);
     Outcome::done(committed, result)
 }
