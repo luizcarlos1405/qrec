@@ -21,7 +21,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use qrec_core::Fps;
 use qrec_core::ctx::{AudioDeviceInfo, CameraInfo, CameraMode, ScreenInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -136,49 +135,15 @@ impl SourceInventory {
     /// The fake backend's devices (A§8.11): two 1280×720 screens side by
     /// side, one camera, one mic and one system-audio monitor.
     pub fn fake() -> Self {
-        let (width, height) = (1280, 720);
-        let screens = ["FAKE-1", "FAKE-2"]
-            .iter()
-            .enumerate()
-            .map(|(i, output)| ScreenInfo {
-                output: (*output).to_owned(),
-                description: format!("Fake screen {}", i + 1),
-                x: i as i32 * width as i32,
-                y: 0,
-                width,
-                height,
-                scale: 1.0,
-            })
-            .collect();
-        let mode = |width, height, fps, format: &str| CameraMode {
-            width,
-            height,
-            fps: Fps::new(fps, 1),
-            format: format.to_owned(),
-        };
+        // One definition, shared with the fake capture engine.
+        let fake = crate::capture::fake_inventory();
         SourceInventory {
-            screens,
-            cameras: vec![CameraInfo {
-                device: "/dev/fake0".to_owned(),
-                label: "Fake camera".to_owned(),
-                modes: vec![
-                    mode(640, 480, 30, "YUY2"),
-                    mode(640, 480, 60, "YUY2"),
-                    mode(1280, 720, 30, "image/jpeg"),
-                ],
-            }],
-            mics: vec![AudioDeviceInfo {
-                name: "alsa_input.fake".to_owned(),
-                description: "Fake mic".to_owned(),
-                is_monitor: false,
-            }],
-            monitors: vec![AudioDeviceInfo {
-                name: "alsa_output.fake.monitor".to_owned(),
-                description: "Fake system audio".to_owned(),
-                is_monitor: true,
-            }],
-            default_mic: Some("alsa_input.fake".to_owned()),
-            default_monitor: Some("alsa_output.fake.monitor".to_owned()),
+            screens: fake.screens,
+            cameras: fake.cameras,
+            mics: fake.mics,
+            monitors: fake.monitors,
+            default_mic: fake.default_mic,
+            default_monitor: fake.default_monitor,
             warnings: Vec::new(),
         }
     }
@@ -198,6 +163,11 @@ impl SourceInventory {
             self.default_monitor = None;
         }
         self
+    }
+
+    /// The inventory as JSON (camelCase), e.g. for `qrec sources list --json`.
+    pub fn to_json(&self) -> Value {
+        serde_json::to_value(self).expect("a source inventory serializes")
     }
 
     /// `Facts::default_mic`.
@@ -228,6 +198,40 @@ impl SourceInventory {
             .find(|c| c.device == device)
             .map(|c| c.modes.clone())
             .unwrap_or_default()
+    }
+}
+
+/// The capture engine's device facts from a discovery snapshot.
+impl crate::capture::DeviceInfo for SourceInventory {
+    fn screens(&self) -> Vec<ScreenInfo> {
+        self.screens.clone()
+    }
+
+    fn camera_modes(&self, device: &str) -> Vec<CameraMode> {
+        SourceInventory::camera_modes(self, device)
+    }
+}
+
+/// The capture engine's device facts, discovered when asked (screens can
+/// come and go between takes); the fake inventory under the fake backend.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LiveDevices;
+
+impl crate::capture::DeviceInfo for LiveDevices {
+    fn screens(&self) -> Vec<ScreenInfo> {
+        let what = Discover {
+            screens: true,
+            ..Discover::default()
+        };
+        SourceInventory::discover(what).screens
+    }
+
+    fn camera_modes(&self, device: &str) -> Vec<CameraMode> {
+        let what = Discover {
+            cameras: true,
+            ..Discover::default()
+        };
+        SourceInventory::discover(what).camera_modes(device)
     }
 }
 
@@ -715,7 +719,7 @@ fn caps_modes(caps: &gst::Caps) -> Vec<CameraMode> {
                 modes.push(CameraMode {
                     width: width as u32,
                     height: height as u32,
-                    fps: Fps::new(num as u32, den as u32),
+                    fps: qrec_core::Fps::new(num as u32, den as u32),
                     format: format.clone(),
                 });
             }
@@ -732,59 +736,15 @@ fn caps_modes(caps: &gst::Caps) -> Vec<CameraMode> {
     modes
 }
 
-/// `gst::init()` on a helper thread, waiting at most `timeout` (A§8.10).
-/// A stuck plugin scan (a hung GPU driver) can't be cancelled; later calls
-/// wait for the same attempt.
+/// `gst::init()` under the shared init watchdog (`gst_init`, A§8.10): at
+/// most `timeout`, then [`GST_STUCK`].
 #[cfg(feature = "gst")]
 pub fn init_gstreamer(timeout: Duration) -> Result<(), String> {
-    use std::sync::{Condvar, Mutex, PoisonError};
-    use std::time::Instant;
-
-    enum InitState {
-        NotStarted,
-        Running,
-        Done(Result<(), String>),
-    }
-    static STATE: Mutex<InitState> = Mutex::new(InitState::NotStarted);
-    static DONE: Condvar = Condvar::new();
-
-    let deadline = Instant::now() + timeout;
-    let mut state = STATE.lock().unwrap_or_else(PoisonError::into_inner);
-    loop {
-        match &*state {
-            InitState::Done(result) => return result.clone(),
-            InitState::NotStarted => {
-                *state = InitState::Running;
-                let spawned = std::thread::Builder::new()
-                    .name("qrec-gst-init".into())
-                    .spawn(|| {
-                        let result =
-                            gst::init().map_err(|e| format!("GStreamer failed to initialize: {e}"));
-                        *STATE.lock().unwrap_or_else(PoisonError::into_inner) =
-                            InitState::Done(result);
-                        DONE.notify_all();
-                    });
-                if let Err(e) = spawned {
-                    let message = format!("can't start the GStreamer init thread: {e}");
-                    *state = InitState::Done(Err(message.clone()));
-                    return Err(message);
-                }
-            }
-            InitState::Running => {
-                let now = Instant::now();
-                if now >= deadline {
-                    return Err(GST_STUCK.to_owned());
-                }
-                state = DONE
-                    .wait_timeout(state, deadline - now)
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .0;
-            }
-        }
-    }
+    crate::gst_init::init_with_timeout(timeout).map_err(|e| e.to_string())
 }
 
-/// What a stuck `gst::init()` means (A§8.10).
+/// What a stuck `gst::init()` means (A§8.10; `gst_init::STUCK_MESSAGE`,
+/// also available without the `gst` feature).
 pub const GST_STUCK: &str =
     "GStreamer is stuck scanning plugins (a GPU driver is probably hung); see `qrec doctor`";
 
@@ -931,6 +891,10 @@ mod tests {
         let fake = SourceInventory::fake();
         let outputs: Vec<&str> = fake.screens.iter().map(|s| s.output.as_str()).collect();
         assert_eq!(outputs, ["FAKE-1", "FAKE-2"]);
+        // What the capture engine sees through `DeviceInfo`.
+        let devices: &dyn crate::capture::DeviceInfo = &fake;
+        assert_eq!(devices.screens(), fake.screens);
+        assert_eq!(devices.camera_modes("/dev/fake0").len(), 3);
         assert!(
             fake.screens
                 .iter()
@@ -961,7 +925,7 @@ mod tests {
     fn the_inventory_serializes_in_camel_case() {
         let fake = SourceInventory::fake().only(Discover::ALL);
         assert_eq!(fake, SourceInventory::fake());
-        let json = serde_json::to_value(&fake).unwrap();
+        let json = fake.to_json();
         assert_eq!(json["screens"][0]["output"], "FAKE-1");
         assert_eq!(json["defaultMic"], "alsa_input.fake");
         assert!(json.get("warnings").is_none(), "no warnings key when empty");
@@ -1125,6 +1089,13 @@ mod tests {
         );
         assert!(cameras.iter().all(|c| c.modes.is_empty()));
         assert!(scan_video4linux(&sys.path().join("missing"), Path::new("/dev")).is_empty());
+    }
+
+    #[test]
+    fn the_stuck_message_is_gst_inits() {
+        #[cfg(feature = "gst")]
+        assert_eq!(GST_STUCK, crate::gst_init::STUCK_MESSAGE);
+        assert!(GST_STUCK.contains("stuck scanning plugins"));
     }
 
     #[test]

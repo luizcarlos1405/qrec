@@ -15,14 +15,17 @@
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use qrec_core::media_argv::vaapi_check_argv;
 use qrec_core::{CoreError, ErrorCode};
 use serde::{Deserialize, Serialize};
 
+use crate::gpu::{
+    self, DeviceOrigin, VENDOR_AMD as PCI_AMD, VENDOR_INTEL as PCI_INTEL,
+    VENDOR_NVIDIA as PCI_NVIDIA, libva_driver_for, vendor_name,
+};
 use crate::sources;
 
 /// The exit code when a required check fails (`missing_dependency`).
@@ -41,10 +44,6 @@ pub const NIRI_SNIPPET: &str = r#"binds {
     Mod+Shift+D { spawn "qrec" "take" "discard-last"; }
 }
 "#;
-
-const PCI_INTEL: u16 = 0x8086;
-const PCI_AMD: u16 = 0x1002;
-const PCI_NVIDIA: u16 = 0x10de;
 
 /// What `qrec doctor` found.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -89,16 +88,32 @@ pub struct VaReport {
     pub ffmpeg_h264: Option<bool>,
     /// `va*h264enc` GStreamer encoders.
     pub gst_encoders: Vec<String>,
+    /// What `main()` changed in the GPU environment at startup (A§8.10).
+    pub startup: Vec<String>,
     pub note: Option<String>,
 }
 
-/// A DRM render node.
+/// A DRM render node (`gpu::RenderNode` with its vendor's name).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RenderNode {
     pub path: String,
-    pub vendor: u16,
-    pub vendor_name: String,
+    /// PCI vendor id from sysfs; `None` when unreadable.
+    pub vendor: Option<u16>,
+    pub vendor_name: Option<String>,
+    /// Kernel driver (`i915`, `xe`, `amdgpu`, `nvidia`).
+    pub driver: Option<String>,
+}
+
+impl From<&gpu::RenderNode> for RenderNode {
+    fn from(node: &gpu::RenderNode) -> Self {
+        Self {
+            path: node.path.clone(),
+            vendor: node.vendor,
+            vendor_name: node.vendor.map(vendor_name),
+            driver: node.driver.clone(),
+        }
+    }
 }
 
 /// The ScreenCast portal as seen over D-Bus.
@@ -154,17 +169,13 @@ pub trait Probe {
     fn portal(&self) -> Result<PortalInfo, String>;
     /// `pactl --format=json info` → `server_name`.
     fn pulse_server(&self) -> Result<String, String>;
-    fn render_nodes(&self) -> Vec<RenderNode>;
+    /// `/sys/class/drm/renderD*` (sysfs only; nodes are never opened).
+    fn render_nodes(&self) -> Vec<gpu::RenderNode>;
     fn env(&self, key: &str) -> Option<String>;
     /// The h264_vaapi export chain on `device` (two frames to the null muxer).
     fn vaapi_h264(&self, device: &str, driver: Option<&str>) -> Result<(), String>;
-    /// `path` with symlinks resolved (`/dev/dri/by-path/…-render` →
-    /// `/dev/dri/renderD129`); stats it, never opens it.
-    fn canonicalize(&self, path: &str) -> Option<String> {
-        fs::canonicalize(path)
-            .ok()
-            .map(|p| p.to_string_lossy().into_owned())
-    }
+    /// What `gpu::prepare_gpu_env` changed and noted at startup.
+    fn gpu_startup(&self) -> Vec<String>;
 }
 
 /// Runs every check against this machine.
@@ -541,45 +552,31 @@ fn source_types(bits: u32) -> String {
     }
 }
 
-pub fn vendor_name(vendor: u16) -> String {
+/// Whether a `LIBVA_DRIVER_NAME` fits the vendor (the legacy `i965` and
+/// `r600` drivers count, like `gpu::prepare_gpu_env` treats them).
+fn driver_fits(driver: &str, vendor: u16) -> bool {
     match vendor {
-        PCI_INTEL => "Intel".to_owned(),
-        PCI_AMD => "AMD".to_owned(),
-        PCI_NVIDIA => "NVIDIA".to_owned(),
-        other => format!("vendor 0x{other:04x}"),
-    }
-}
-
-/// `iHD` for Intel, `radeonsi` for AMD (A§8.10).
-pub fn libva_driver_for(vendor: u16) -> Option<&'static str> {
-    match vendor {
-        PCI_INTEL => Some("iHD"),
-        PCI_AMD => Some("radeonsi"),
-        _ => None,
+        PCI_INTEL => matches!(driver, "iHD" | "i965"),
+        PCI_AMD => matches!(driver, "radeonsi" | "r600"),
+        _ => false,
     }
 }
 
 fn va_report(probe: &dyn Probe, opts: &DoctorOptions, gst_encoders: Vec<String>) -> VaReport {
     let nodes = probe.render_nodes();
-    let (device, origin) = if let Some(d) = &opts.project_vaapi_device {
-        (Some(d.clone()), Some("project"))
-    } else if let Some(d) = &opts.config_vaapi_device {
-        (Some(d.clone()), Some("config"))
-    } else {
-        let auto = nodes
-            .iter()
-            .find(|n| matches!(n.vendor, PCI_INTEL | PCI_AMD))
-            .map(|n| n.path.clone());
-        let origin = auto.as_ref().map(|_| "auto");
-        (auto, origin)
-    };
-    let vendor = device.as_ref().and_then(|d| {
-        let canonical = probe.canonicalize(d);
-        nodes
-            .iter()
-            .find(|n| &n.path == d || canonical.as_deref() == Some(n.path.as_str()))
-            .map(|n| n.vendor)
+    // The same resolution as main()'s (A§2.1): project, config, first Intel/AMD.
+    let choice = gpu::effective_va_device(
+        opts.project_vaapi_device.as_deref(),
+        opts.config_vaapi_device.as_deref(),
+        &nodes,
+    );
+    let device = choice.as_ref().map(|c| c.device.clone());
+    let origin = choice.as_ref().map(|c| match c.origin {
+        DeviceOrigin::Project => "project",
+        DeviceOrigin::Config => "config",
+        DeviceOrigin::Auto => "auto",
     });
+    let vendor = choice.as_ref().and_then(|c| c.vendor);
     let expected_driver = vendor.and_then(libva_driver_for).map(str::to_owned);
     let mut note = None;
     let ffmpeg_h264 = match (&device, vendor) {
@@ -603,7 +600,7 @@ fn va_report(probe: &dyn Probe, opts: &DoctorOptions, gst_encoders: Vec<String>)
         _ => None,
     };
     VaReport {
-        nodes,
+        nodes: nodes.iter().map(RenderNode::from).collect(),
         device,
         origin: origin.map(str::to_owned),
         vendor,
@@ -611,6 +608,7 @@ fn va_report(probe: &dyn Probe, opts: &DoctorOptions, gst_encoders: Vec<String>)
         libva_driver_name: probe.env("LIBVA_DRIVER_NAME"),
         ffmpeg_h264,
         gst_encoders,
+        startup: probe.gpu_startup(),
         note,
     }
 }
@@ -637,8 +635,10 @@ fn va_check(va: &VaReport) -> Check {
         Some(false) => detail.push_str(" · ffmpeg h264_vaapi failed"),
         None => {}
     }
-    if let (Some(expected), Some(actual)) = (va.expected_driver.as_deref(), env) {
-        if expected != actual {
+    if let (Some(expected), Some(actual), Some(vendor)) =
+        (va.expected_driver.as_deref(), env, va.vendor)
+    {
+        if !driver_fits(actual, vendor) {
             return fail(
                 "vaapi",
                 false,
@@ -668,6 +668,11 @@ fn va_check(va: &VaReport) -> Check {
 }
 
 impl DoctorReport {
+    /// The report as JSON (camelCase), e.g. for `qrec doctor --json`.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).expect("a doctor report serializes")
+    }
+
     /// Every required check passed.
     pub fn ok(&self) -> bool {
         self.checks.iter().all(|c| c.ok || !c.required)
@@ -727,13 +732,16 @@ impl DoctorReport {
                 let nodes: Vec<String> = va
                     .nodes
                     .iter()
-                    .map(|n| format!("{} ({})", n.path, n.vendor_name))
+                    .map(|n| {
+                        let vendor = n.vendor_name.as_deref().unwrap_or("unknown vendor");
+                        format!("{} ({vendor})", n.path)
+                    })
                     .collect();
                 out.push_str(&nodes.join(", "));
             }
             out.push('\n');
-            if let Some(note) = &va.note {
-                let _ = writeln!(out, "  {note}");
+            for line in va.startup.iter().chain(&va.note) {
+                let _ = writeln!(out, "  {line}");
             }
         }
         let _ = write!(
@@ -819,12 +827,28 @@ impl Probe for SystemProbe {
         sources::pulse_server_name(&json).ok_or_else(|| "pactl info has no server_name".to_owned())
     }
 
-    fn render_nodes(&self) -> Vec<RenderNode> {
-        scan_render_nodes(Path::new("/sys/class/drm"), Path::new("/dev/dri"))
+    fn render_nodes(&self) -> Vec<gpu::RenderNode> {
+        gpu::render_nodes()
     }
 
     fn env(&self, key: &str) -> Option<String> {
         std::env::var(key).ok().filter(|v| !v.is_empty())
+    }
+
+    fn gpu_startup(&self) -> Vec<String> {
+        let Some(report) = gpu::startup_report() else {
+            return Vec::new();
+        };
+        let changes = report.changes.iter().map(|c| match &c.previous {
+            Some(previous) => format!("set {}={} (was {previous})", c.key, c.value),
+            None => format!("set {}={}", c.key, c.value),
+        });
+        let mut lines: Vec<String> = changes.collect();
+        if !report.applied && !report.changes.is_empty() {
+            lines.push("those changes were not applied (more than one thread)".to_owned());
+        }
+        lines.extend(report.notes.iter().cloned());
+        lines
     }
 
     fn vaapi_h264(&self, device: &str, driver: Option<&str>) -> Result<(), String> {
@@ -901,30 +925,6 @@ fn portal_property(interface: &str, property: &str) -> Result<u32, String> {
         Err(e) => return Err(e),
     };
     parse_dbus_u32(&text).ok_or_else(|| format!("unexpected D-Bus answer {:?}", text.trim()))
-}
-
-/// `/sys/class/drm/renderD*` and their PCI vendors. Only sysfs is read: the
-/// device nodes are never opened (an NVIDIA node can hang VA-API).
-pub fn scan_render_nodes(sys_drm: &Path, dev_dri: &Path) -> Vec<RenderNode> {
-    let Ok(entries) = fs::read_dir(sys_drm) else {
-        return Vec::new();
-    };
-    let mut nodes: Vec<RenderNode> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            name.strip_prefix("renderD")?.parse::<u32>().ok()?;
-            let vendor = fs::read_to_string(entry.path().join("device/vendor")).ok()?;
-            let vendor = u16::from_str_radix(vendor.trim().trim_start_matches("0x"), 16).ok()?;
-            Some(RenderNode {
-                path: dev_dri.join(&name).to_string_lossy().into_owned(),
-                vendor,
-                vendor_name: vendor_name(vendor),
-            })
-        })
-        .collect();
-    nodes.sort_by(|a, b| a.path.cmp(&b.path));
-    nodes
 }
 
 #[cfg(feature = "gst")]
@@ -1010,17 +1010,17 @@ mod tests {
         encoders: BTreeSet<String>,
         portal: Result<PortalInfo, String>,
         pulse: Result<String, String>,
-        nodes: Vec<RenderNode>,
+        nodes: Vec<gpu::RenderNode>,
         env: BTreeMap<&'static str, &'static str>,
         vaapi: Result<(), String>,
         vaapi_probed: std::cell::Cell<u32>,
     }
 
-    fn node(path: &str, vendor: u16) -> RenderNode {
-        RenderNode {
+    fn node(path: &str, vendor: u16) -> gpu::RenderNode {
+        gpu::RenderNode {
             path: path.to_owned(),
-            vendor,
-            vendor_name: vendor_name(vendor),
+            vendor: Some(vendor),
+            driver: None,
         }
     }
 
@@ -1088,38 +1088,54 @@ mod tests {
         fn pulse_server(&self) -> Result<String, String> {
             self.pulse.clone()
         }
-        fn render_nodes(&self) -> Vec<RenderNode> {
+        fn render_nodes(&self) -> Vec<gpu::RenderNode> {
             self.nodes.clone()
         }
         fn env(&self, key: &str) -> Option<String> {
             self.env.get(key).map(|v| (*v).to_owned())
         }
         fn vaapi_h264(&self, device: &str, driver: Option<&str>) -> Result<(), String> {
-            assert_ne!(device, "/dev/dri/renderD128", "NVIDIA must never be probed");
+            assert!(
+                !device.ends_with("renderD128"),
+                "NVIDIA must never be probed"
+            );
             assert_eq!(driver, Some("iHD"));
             self.vaapi_probed.set(self.vaapi_probed.get() + 1);
             self.vaapi.clone()
         }
-        fn canonicalize(&self, path: &str) -> Option<String> {
-            (path == "/dev/dri/by-path/pci-0000:00:02.0-render")
-                .then(|| "/dev/dri/renderD129".to_owned())
+        fn gpu_startup(&self) -> Vec<String> {
+            vec!["set LIBVA_DRIVER_NAME=iHD (was nvidia)".to_owned()]
         }
     }
 
     #[test]
     fn configured_symlinks_resolve_to_their_node() {
-        let fake = Fake::healthy();
+        // Stand-ins for /dev/dri: a node file and a by-path symlink to it.
+        let dir = tempfile::tempdir().unwrap();
+        let node_path = dir.path().join("renderD129");
+        std::fs::write(&node_path, "").unwrap();
+        let link = dir.path().join("pci-0000:00:02.0-render");
+        std::os::unix::fs::symlink(&node_path, &link).unwrap();
+        let mut fake = Fake::healthy();
+        fake.nodes = vec![node(node_path.to_str().unwrap(), PCI_INTEL)];
         let report = run_with(
             &fake,
             &DoctorOptions {
-                config_vaapi_device: Some("/dev/dri/by-path/pci-0000:00:02.0-render".to_owned()),
+                config_vaapi_device: Some(link.to_string_lossy().into_owned()),
                 ..opts()
             },
         );
         let va = report.va.as_ref().unwrap();
+        assert_eq!(va.origin.as_deref(), Some("config"));
         assert_eq!(va.vendor, Some(PCI_INTEL));
         assert_eq!(va.ffmpeg_h264, Some(true));
         assert!(check(&report, "vaapi").ok);
+        assert_eq!(va.startup, ["set LIBVA_DRIVER_NAME=iHD (was nvidia)"]);
+        assert!(
+            report
+                .to_text()
+                .contains("set LIBVA_DRIVER_NAME=iHD (was nvidia)")
+        );
     }
 
     fn opts() -> DoctorOptions {
@@ -1197,7 +1213,7 @@ mod tests {
             "{text}"
         );
         assert!(text.ends_with("Everything Qrec needs is here.\n"), "{text}");
-        let json = serde_json::to_value(&report).unwrap();
+        let json = report.to_json();
         assert_eq!(json["checks"][0]["id"], "gstreamer");
         assert!(json["niriSnippet"].as_str().unwrap().starts_with("binds {"));
         assert_eq!(json["va"]["expectedDriver"], "iHD");
@@ -1402,27 +1418,10 @@ mod tests {
         assert_eq!(parse_dbus_u32("(<uint32 7>,)\n"), Some(7));
         assert_eq!(parse_dbus_u32("nothing"), None);
 
-        let sys = tempfile::tempdir().unwrap();
-        for (name, vendor) in [
-            ("renderD129", "0x8086\n"),
-            ("renderD128", "0x10de\n"),
-            ("card1", "0x8086\n"),
-        ] {
-            let dir = sys.path().join(name).join("device");
-            fs::create_dir_all(&dir).unwrap();
-            fs::write(dir.join("vendor"), vendor).unwrap();
-        }
-        let nodes = scan_render_nodes(sys.path(), Path::new("/dev/dri"));
-        assert_eq!(
-            nodes,
-            [
-                node("/dev/dri/renderD128", PCI_NVIDIA),
-                node("/dev/dri/renderD129", PCI_INTEL)
-            ]
-        );
-        assert_eq!(libva_driver_for(PCI_AMD), Some("radeonsi"));
-        assert_eq!(libva_driver_for(PCI_NVIDIA), None);
-        assert_eq!(vendor_name(0x1234), "vendor 0x1234");
+        let report_node = RenderNode::from(&node("/dev/dri/renderD129", PCI_INTEL));
+        assert_eq!(report_node.vendor_name.as_deref(), Some("Intel"));
+        assert!(driver_fits("i965", PCI_INTEL) && driver_fits("radeonsi", PCI_AMD));
+        assert!(!driver_fits("nvidia", PCI_INTEL) && !driver_fits("iHD", PCI_NVIDIA));
 
         let argv = vaapi_check_argv("/dev/dri/renderD129");
         assert!(argv.contains(&"vaapi=va:/dev/dri/renderD129".to_owned()));
@@ -1462,7 +1461,7 @@ mod tests {
         fn pulse_server(&self) -> Result<String, String> {
             SystemProbe.pulse_server()
         }
-        fn render_nodes(&self) -> Vec<RenderNode> {
+        fn render_nodes(&self) -> Vec<gpu::RenderNode> {
             SystemProbe.render_nodes()
         }
         fn env(&self, key: &str) -> Option<String> {
@@ -1474,6 +1473,9 @@ mod tests {
                 "never probe the NVIDIA node"
             );
             SystemProbe.vaapi_h264(device, driver)
+        }
+        fn gpu_startup(&self) -> Vec<String> {
+            SystemProbe.gpu_startup()
         }
     }
 
