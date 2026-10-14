@@ -1,4 +1,5 @@
-//! Autocut commands (A§5.7). Owner: autocut.
+//! The `Autocut` command (A§5.7). Owner: autocut. (`AutocutSettings`, which
+//! edits `project.autocut`, belongs to the scene owner: `apply::project`.)
 //!
 //! `Autocut` snapshots its parameters and targets (`AutocutTarget`: the
 //! clip as a `ClipRef`, the track, the `SilenceKey` of its audio file from
@@ -20,14 +21,13 @@ use crate::apply::Outcome;
 use crate::autocut::{analysis_source, db_label};
 use crate::ctx::Ctx;
 use crate::error::CoreError;
-use crate::history::commit;
 use crate::ids::{ClipId, ReqId, TrackId};
 use crate::media_argv::silence_argv;
 use crate::model::{AutocutSettings, Clip, Project, Take};
 use crate::on_event::autocut::{self as events, Snapshot};
-use crate::protocol::command::{AutocutOverrides, AutocutPatch, ClipScope, Command, Nullable};
+use crate::protocol::command::{AutocutOverrides, ClipScope, Command};
 use crate::protocol::effect::{Effect, LogLevel};
-use crate::protocol::reply::{AutocutSkipView, CmdResult};
+use crate::protocol::reply::AutocutSkipView;
 use crate::state::{AutocutParams, AutocutTarget, ClipRef, Job, JobKind, SilenceKey, State};
 
 pub use crate::on_event::autocut::apply_ready_autocuts;
@@ -129,68 +129,6 @@ pub fn start_auto_run(state: &State, ctx: &Ctx, clip: &ClipId) -> Outcome {
         }
         Started::Pending { state, effects } => Outcome::new(state, effects, None),
     }
-}
-
-/// `qrec autocut settings …`: edits `project.autocut` (undoable).
-pub fn autocut_settings(
-    state: &State,
-    ctx: &Ctx,
-    patch: AutocutPatch,
-) -> Result<Outcome, CoreError> {
-    let empty = patch.auto_run_after_take.is_none()
-        && patch.track.is_keep()
-        && patch.threshold_db.is_none()
-        && patch.min_silence_ms.is_none()
-        && patch.padding_ms.is_none()
-        && patch.min_keep_ms.is_none();
-    if empty {
-        return Err(CoreError::usage("nothing to change in the autocut settings").with_hint(
-            "pass --auto-run, --track, --threshold-db, --min-silence-ms, --padding-ms or --min-keep-ms",
-        ));
-    }
-    if let Nullable::Set(track) = &patch.track {
-        // Any take may use the setting later: the track must exist somewhere.
-        ensure_track_known(&state.project, track, state.project.takes.values())?;
-    }
-    let mut next = state.clone();
-    let settings = &mut next.project.autocut;
-    if let Some(on) = patch.auto_run_after_take {
-        settings.auto_run_after_take = on;
-    }
-    settings.track = patch.track.clone().apply(settings.track.take());
-    if let Some(db) = patch.threshold_db {
-        settings.threshold_db = db;
-    }
-    if let Some(ms) = patch.min_silence_ms {
-        settings.min_silence_ms = ms;
-    }
-    if let Some(ms) = patch.padding_ms {
-        settings.padding_ms = ms;
-    }
-    if let Some(ms) = patch.min_keep_ms {
-        settings.min_keep_ms = ms;
-    }
-    check_params(&params_of(settings))?;
-
-    let changes = settings_changes(&state.project.autocut, &next.project.autocut);
-    let label = format!("Autocut settings: {}", changes.join(", "));
-    let view = next.project.autocut.clone();
-    let committed = commit(
-        state,
-        ctx,
-        label.clone(),
-        Command::AutocutSettings { patch }.to_json(),
-        next,
-    );
-    let message = if committed.seq.is_some() {
-        label
-    } else {
-        "Autocut settings unchanged".to_owned()
-    };
-    Ok(Outcome::done(
-        committed,
-        CmdResult::new(message).with_result(&view),
-    ))
 }
 
 // ------------------------------------------------------------- the job
@@ -413,38 +351,6 @@ fn ensure_track_known<'a>(
     }
 }
 
-/// "auto-run on", "track A2", "threshold −30 dB", … for the history label.
-fn settings_changes(old: &AutocutSettings, new: &AutocutSettings) -> Vec<String> {
-    let mut changes = Vec::new();
-    if old.auto_run_after_take != new.auto_run_after_take {
-        let on = if new.auto_run_after_take { "on" } else { "off" };
-        changes.push(format!("auto-run {on}"));
-    }
-    if old.track != new.track {
-        changes.push(match &new.track {
-            Some(track) => format!("track {track}"),
-            None => "track: first mic".to_owned(),
-        });
-    }
-    if old.threshold_db.to_bits() != new.threshold_db.to_bits() {
-        changes.push(format!("threshold {}", db_label(new.threshold_db)));
-    }
-    let ms = [
-        ("min silence", old.min_silence_ms, new.min_silence_ms),
-        ("padding", old.padding_ms, new.padding_ms),
-        ("min keep", old.min_keep_ms, new.min_keep_ms),
-    ];
-    for (what, before, after) in ms {
-        if before != after {
-            changes.push(format!("{what} {after} ms"));
-        }
-    }
-    if changes.is_empty() {
-        changes.push("unchanged".to_owned());
-    }
-    changes
-}
-
 fn log(level: LogLevel, message: String) -> Effect {
     Effect::Log { level, message }
 }
@@ -598,7 +504,7 @@ mod tests {
     use crate::error::ErrorCode;
     use crate::ids::JobId;
     use crate::protocol::effect::HistoryOp;
-    use crate::protocol::reply::AutocutPlanView;
+    use crate::protocol::reply::{AutocutPlanView, CmdResult};
     use crate::state::RecordPhase;
     use crate::testkit::{self, ProjectBuilder};
 
@@ -1196,109 +1102,6 @@ mod tests {
             "completedAtOnce": fixtures::digest(&at_once),
             "dryRun": fixtures::digest(&dry),
         }));
-    }
-
-    #[test]
-    fn settings_are_one_undoable_entry() {
-        let project = fixtures::project();
-        let ctx = fixtures::ctx(&project);
-        let state = testkit::state(project);
-        let patch = AutocutPatch {
-            auto_run_after_take: Some(true),
-            track: Nullable::Set("A2".parse().unwrap()),
-            threshold_db: Some(-30.0),
-            min_silence_ms: Some(500),
-            padding_ms: Some(150),
-            min_keep_ms: None,
-        };
-        let out = autocut_settings(&state, &ctx, patch.clone()).unwrap();
-        let reply = out.reply.clone().unwrap().unwrap();
-        let label = "Autocut settings: auto-run on, track A2, threshold \u{2212}30 dB, \
-                     min silence 500 ms, padding 150 ms";
-        assert_eq!(reply.message, label);
-        assert_eq!(reply.seq, Some(1));
-        let settings = &out.state.project.autocut;
-        assert_eq!(serde_json::to_value(settings).unwrap(), reply.result);
-        assert!(settings.auto_run_after_take);
-        assert_eq!(settings.track.as_ref().map(TrackId::as_str), Some("A2"));
-        assert_eq!(
-            (
-                settings.threshold_db,
-                settings.min_silence_ms,
-                settings.padding_ms,
-                settings.min_keep_ms
-            ),
-            (-30.0, 500, 150, 200)
-        );
-        let entry = &out.state.history.entries[0];
-        assert_eq!(entry.label, label);
-        assert_eq!(
-            entry.cmd,
-            Command::AutocutSettings {
-                patch: patch.clone()
-            }
-            .to_json()
-        );
-
-        // The same values again: no entry.
-        let again = autocut_settings(&out.state, &ctx, patch).unwrap();
-        let reply = again.reply.unwrap().unwrap();
-        assert_eq!(
-            (reply.seq, reply.message.as_str()),
-            (None, "Autocut settings unchanged")
-        );
-        assert!(again.effects.is_empty());
-
-        // Clearing the track falls back to the first mic.
-        let clear = AutocutPatch {
-            track: Nullable::Clear,
-            ..Default::default()
-        };
-        let out = autocut_settings(&out.state, &ctx, clear).unwrap();
-        assert_eq!(out.state.project.autocut.track, None);
-        assert_eq!(
-            out.reply.unwrap().unwrap().message,
-            "Autocut settings: track: first mic"
-        );
-    }
-
-    #[test]
-    fn bad_settings_change_nothing() {
-        let project = fixtures::project();
-        let ctx = fixtures::ctx(&project);
-        let state = testkit::state(project);
-        let settings = |patch| autocut_settings(&state, &ctx, patch);
-        assert_eq!(
-            settings(AutocutPatch::default()).unwrap_err().code,
-            ErrorCode::Usage
-        );
-        let hot = AutocutPatch {
-            threshold_db: Some(1.0),
-            ..Default::default()
-        };
-        assert_eq!(settings(hot).unwrap_err().code, ErrorCode::Usage);
-        let long = AutocutPatch {
-            min_keep_ms: Some(60_001),
-            ..Default::default()
-        };
-        assert_eq!(settings(long).unwrap_err().code, ErrorCode::Usage);
-        let unknown = AutocutPatch {
-            track: Nullable::Set("A7".parse().unwrap()),
-            ..Default::default()
-        };
-        let err = settings(unknown).unwrap_err();
-        assert_eq!(
-            (err.code, err.message.as_str()),
-            (ErrorCode::NotFound, "no audio track A7")
-        );
-        // A track that only an old take has is fine (takes lacking it are skipped).
-        let mut old = state.clone();
-        old.project.scene.audio.retain(|t| t.id.as_str() != "A2");
-        let a2 = AutocutPatch {
-            track: Nullable::Set("A2".parse().unwrap()),
-            ..Default::default()
-        };
-        assert!(autocut_settings(&old, &ctx, a2).is_ok());
     }
 
     #[test]

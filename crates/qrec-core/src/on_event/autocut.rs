@@ -33,6 +33,7 @@ use crate::protocol::progress::{Progress, ProgressPhase};
 use crate::protocol::reply::{AutocutClipView, AutocutPlanView, AutocutSkipView, CmdResult};
 use crate::protocol::toast::{Toast, ToastLevel};
 use crate::state::{AutocutParams, AutocutTarget, Job, JobKind, SilenceKey, State};
+use crate::timeline;
 
 pub use crate::apply::autocut::start_auto_run;
 
@@ -342,32 +343,45 @@ pub(crate) fn finish(state: &State, ctx: &Ctx, job: Snapshot) -> Finished {
         return unchanged(state, Err(err), toast);
     }
 
+    // Each cut clip becomes its fragments in place (`replace_run(clips, i, 1,
+    // fragments)`): the first keeps the id, the others follow in order with
+    // new ids, which `ui_normalize` relies on to pass a selection on to them.
+    // Ids are allocated in timeline order; the runs are replaced last to
+    // first so the indices still to replace don't move.
     let mut ids = IdGen::for_state(state, ctx.entropy);
     let mut created = Vec::new();
-    let mut timeline = Vec::with_capacity(project.timeline.clips.len() + cuts.len());
-    for clip in &project.timeline.clips {
+    let mut runs: Vec<(usize, Vec<Clip>)> = Vec::with_capacity(cuts.len());
+    for (index, clip) in project.timeline.clips.iter().enumerate() {
         let Some(cut) = cuts.get(&clip.id) else {
-            timeline.push(clip.clone());
             continue;
         };
-        for (i, &[in_, out]) in cut.kept.iter().enumerate() {
-            let id = if i == 0 {
-                clip.id.clone()
-            } else {
-                let id = ids.next_clip_id();
-                created.push(id.clone());
-                id
-            };
-            timeline.push(Clip {
-                id,
-                take: clip.take.clone(),
-                in_,
-                out,
-            });
-        }
+        let fragments = cut
+            .kept
+            .iter()
+            .enumerate()
+            .map(|(i, &[in_, out])| {
+                let id = if i == 0 {
+                    clip.id.clone()
+                } else {
+                    let id = ids.next_clip_id();
+                    created.push(id.clone());
+                    id
+                };
+                Clip {
+                    id,
+                    take: clip.take.clone(),
+                    in_,
+                    out,
+                }
+            })
+            .collect();
+        runs.push((index, fragments));
     }
     let mut next = state.clone();
-    next.project.timeline.clips = timeline;
+    for (index, fragments) in runs.into_iter().rev() {
+        next.project.timeline.clips =
+            timeline::replace_run(&next.project.timeline.clips, index, 1, fragments);
+    }
     let label = run_label(&takes, silences, removed_ns);
     let committed = commit(state, ctx, label.clone(), job.cmd, next);
     let message = with_note(label.clone(), &note);
