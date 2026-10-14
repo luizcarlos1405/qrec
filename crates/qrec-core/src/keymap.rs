@@ -1,15 +1,53 @@
-//! Keyboard shortcuts (A§9.7, SPEC §10). Owner: meta. Types are final; the
-//! functions are signatures only.
+//! Keyboard shortcuts (A§9.7, SPEC §10). Owner: meta.
 //!
-//! Grammar `ctrl+shift+z`; shift is recorded only for letters and named
-//! keys (`<` is `less`). The default table is SPEC §10.2 plus Backspace for
-//! remove. `keys.toml`: `[bindings]` id → string or array of strings.
-#![allow(clippy::todo, unused_variables)]
+//! [`resolve`] builds the effective [`Keymap`]: the default table (SPEC
+//! §10.2, plus Backspace for remove and the canvas nudges of SPEC §12)
+//! with the `keys.toml` overrides applied and the conflicts found.
+//! [`hints`] picks the status-bar hints for a [`HintContext`];
+//! [`action_for`] / [`command_for`] turn a binding into the `Command` it runs
+//! in a state (shared by the GUI and the palette); [`palette`] lists every
+//! binding with its keys, CLI form and availability; [`cheat_sheet`] and
+//! [`keys_view`] are the human and JSON forms of `qrec keys`.
+//!
+//! **Chord grammar** (`keys.toml`, `qrec keys --json`): modifiers `ctrl`,
+//! `alt`, `shift`, `super` joined with `+`, then a GDK keyval name:
+//! `ctrl+shift+z`, `less`, `alt+bracketleft`, `Escape`, `shift+Left`. The
+//! parser also takes the typed character (`<`, `[`, `?`) and common aliases
+//! (`esc`, `del`, `enter`, `pgup`); case doesn't matter. Shift is recorded
+//! only for letters and named keys: `<` is `less`, and `shift+comma` is an
+//! error because shift changes the character a punctuation key types.
+//!
+//! **Contexts:** `global` bindings work whatever has focus (timeline or
+//! canvas); `timeline` and `canvas` bindings only with that focus; while a
+//! countdown, recording or finalization runs only `recording` bindings are
+//! active; an open overlay (cheat sheet, palette, modal) sees only `overlay`
+//! bindings. A chord used by two bindings that are active together is a
+//! [`Conflict`], and neither of them runs ([`lookup`]).
+//!
+//! **`keys.toml`** (`~/.config/qrec/keys.toml`):
+//! ```toml
+//! [bindings]
+//! frame.save = "f"                # replaces the default keys
+//! clip.remove = ["Delete", "x"]   # several keys
+//! record.over = []                # unbound
+//! ```
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::command::Command;
-use crate::state::State;
+use crate::error::CoreError;
+use crate::ids::{ClipId, Frame};
+use crate::model::{Clip, Rect, Scene};
+use crate::protocol::command::{
+    AutocutOverrides, ClipScope, Command, ExportFormat, LayerPatch, MoveTo, Nullable, Quality,
+    RecordModeArg, SceneTarget, SeekTarget, SelectOp, ShuttleDir, UiPatch,
+};
+use crate::state::{CanvasMode, HostKind, JobKind, RecordPhase, State};
+use crate::time::{NS_PER_SEC, Sign, TimeArg, TimeValue};
+use crate::timeline::{clip_at, position_of, total_frames};
 
 /// One key combination.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -35,6 +73,27 @@ pub enum KeyContext {
     Overlay,
 }
 
+impl KeyContext {
+    pub const ALL: [KeyContext; 5] = [
+        KeyContext::Global,
+        KeyContext::Timeline,
+        KeyContext::Canvas,
+        KeyContext::Recording,
+        KeyContext::Overlay,
+    ];
+
+    /// `global`, `timeline`, …
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KeyContext::Global => "global",
+            KeyContext::Timeline => "timeline",
+            KeyContext::Canvas => "canvas",
+            KeyContext::Recording => "recording",
+            KeyContext::Overlay => "overlay",
+        }
+    }
+}
+
 /// Which hints the status bar shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +104,17 @@ pub enum HintContext {
     Finalizing,
     ClipSelected,
     Dragging,
+}
+
+impl HintContext {
+    pub const ALL: [HintContext; 6] = [
+        HintContext::Idle,
+        HintContext::Countdown,
+        HintContext::Recording,
+        HintContext::Finalizing,
+        HintContext::ClipSelected,
+        HintContext::Dragging,
+    ];
 }
 
 /// One bindable action. `qrec keys --json` prints
@@ -61,6 +131,16 @@ pub struct Binding {
     pub contexts: Vec<KeyContext>,
 }
 
+impl Binding {
+    /// Whether the binding is active in `ctx`. `global` bindings are also
+    /// active when the timeline or the canvas has focus.
+    pub fn active_in(&self, ctx: KeyContext) -> bool {
+        self.contexts.contains(&ctx)
+            || (matches!(ctx, KeyContext::Timeline | KeyContext::Canvas)
+                && self.contexts.contains(&KeyContext::Global))
+    }
+}
+
 /// The effective keymap after applying `keys.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,6 +149,13 @@ pub struct Keymap {
     pub conflicts: Vec<Conflict>,
     /// Unparsable chords, unknown ids, …
     pub errors: Vec<String>,
+}
+
+impl Keymap {
+    /// The binding with this id.
+    pub fn binding(&self, id: &str) -> Option<&Binding> {
+        self.bindings.iter().find(|b| b.id == id)
+    }
 }
 
 /// Two or more bindings on one chord in one context.
@@ -84,22 +171,1988 @@ pub struct Conflict {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Hint {
-    /// The key as shown ("r", "Ctrl+Z").
+    /// The key as shown ("r", "Ctrl+Z"); several keys are separated by a
+    /// space ("[ ]"); empty for a label-only hint ("release to apply").
     pub keys: String,
     pub label: String,
 }
 
+// ----------------------------------------------------------------- chords
+
+/// How a key behaves with shift and how it is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyKind {
+    /// `a`–`z`: shift is recorded.
+    Letter,
+    /// Esc, Tab, arrows, F-keys, …: shift is recorded.
+    Named,
+    /// Digits and punctuation: shift picks another character, so it isn't recorded.
+    Char,
+}
+
+/// Keys that type a character: GDK keyval name and character.
+const CHAR_KEYS: &[(&str, char)] = &[
+    ("exclam", '!'),
+    ("quotedbl", '"'),
+    ("numbersign", '#'),
+    ("dollar", '$'),
+    ("percent", '%'),
+    ("ampersand", '&'),
+    ("apostrophe", '\''),
+    ("parenleft", '('),
+    ("parenright", ')'),
+    ("asterisk", '*'),
+    ("plus", '+'),
+    ("comma", ','),
+    ("minus", '-'),
+    ("period", '.'),
+    ("slash", '/'),
+    ("colon", ':'),
+    ("semicolon", ';'),
+    ("less", '<'),
+    ("equal", '='),
+    ("greater", '>'),
+    ("question", '?'),
+    ("at", '@'),
+    ("bracketleft", '['),
+    ("backslash", '\\'),
+    ("bracketright", ']'),
+    ("asciicircum", '^'),
+    ("underscore", '_'),
+    ("grave", '`'),
+    ("braceleft", '{'),
+    ("bar", '|'),
+    ("braceright", '}'),
+    ("asciitilde", '~'),
+];
+
+/// Named keys: GDK keyval name, how it is shown, and extra spellings.
+const NAMED_KEYS: &[(&str, &str, &[&str])] = &[
+    ("Escape", "Esc", &["esc"]),
+    ("Tab", "Tab", &[]),
+    ("space", "Space", &[" "]),
+    ("Return", "Enter", &["enter"]),
+    ("BackSpace", "Backspace", &["bksp"]),
+    ("Delete", "Del", &["del"]),
+    ("Insert", "Ins", &["ins"]),
+    ("Home", "Home", &[]),
+    ("End", "End", &[]),
+    ("Page_Up", "PgUp", &["pgup", "pageup", "prior"]),
+    ("Page_Down", "PgDn", &["pgdn", "pagedown", "next"]),
+    ("Left", "←", &["←"]),
+    ("Right", "→", &["→"]),
+    ("Up", "↑", &["↑"]),
+    ("Down", "↓", &["↓"]),
+    ("Menu", "Menu", &[]),
+    ("Print", "Print", &[]),
+    ("Pause", "Pause", &[]),
+];
+
+/// Finds the GDK name and kind of a key written as a name, an alias or the
+/// character it types. Letters and names are case-insensitive.
+fn normalize_key(text: &str) -> Option<(String, KeyKind)> {
+    let mut chars = text.chars();
+    let first = chars.next()?;
+    if chars.next().is_none() {
+        if first.is_ascii_alphabetic() {
+            return Some((first.to_ascii_lowercase().to_string(), KeyKind::Letter));
+        }
+        if first.is_ascii_digit() {
+            return Some((first.to_string(), KeyKind::Char));
+        }
+        if let Some((name, _)) = CHAR_KEYS.iter().find(|(_, ch)| *ch == first) {
+            return Some(((*name).to_owned(), KeyKind::Char));
+        }
+    }
+    let lower = text.to_lowercase();
+    for (name, _, aliases) in NAMED_KEYS {
+        if name.to_lowercase() == lower || aliases.contains(&lower.as_str()) {
+            return Some(((*name).to_owned(), KeyKind::Named));
+        }
+    }
+    if let Some((name, _)) = CHAR_KEYS.iter().find(|(name, _)| *name == lower) {
+        return Some(((*name).to_owned(), KeyKind::Char));
+    }
+    // F1 … F24 (no leading zero).
+    let number = lower.strip_prefix('f').filter(|n| !n.starts_with('0'));
+    match number.and_then(|n| n.parse::<u8>().ok()) {
+        Some(n) if (1..=24).contains(&n) => Some((format!("F{n}"), KeyKind::Named)),
+        _ => None,
+    }
+}
+
+fn key_kind(key: &str) -> KeyKind {
+    normalize_key(key).map_or(KeyKind::Named, |(_, kind)| kind)
+}
+
+impl KeyChord {
+    /// A chord without modifiers. `key` must already be a GDK keyval name.
+    pub fn key(key: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            ctrl: false,
+            alt: false,
+            shift: false,
+            super_: false,
+        }
+    }
+
+    /// Parses the chord grammar (`ctrl+shift+z`, `less`, `alt+[`, `Esc`).
+    pub fn parse(text: &str) -> Result<KeyChord, String> {
+        let s = text.trim();
+        if s.is_empty() {
+            return Err("empty key".to_owned());
+        }
+        // The key itself may be `+`: "+", "ctrl++".
+        let (mods, key): (Option<&str>, &str) = if s == "+" {
+            (None, "+")
+        } else if let Some(rest) = s.strip_suffix("++") {
+            (Some(rest), "+")
+        } else {
+            match s.rsplit_once('+') {
+                Some((mods, key)) => (Some(mods), key),
+                None => (None, s),
+            }
+        };
+        let mut chord = KeyChord::key("");
+        for m in mods.map(|m| m.split('+').collect::<Vec<_>>()).unwrap_or_default() {
+            let flag = match m.trim().to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => &mut chord.ctrl,
+                "alt" => &mut chord.alt,
+                "shift" => &mut chord.shift,
+                "super" => &mut chord.super_,
+                "" => return Err(format!("{s:?}: empty modifier")),
+                other => {
+                    return Err(format!(
+                        "{s:?}: unknown modifier {other:?} (use ctrl, alt, shift or super)"
+                    ));
+                }
+            };
+            if *flag {
+                return Err(format!("{s:?}: {} is given twice", m.trim()));
+            }
+            *flag = true;
+        }
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(format!("{s:?}: a key is missing after the modifiers"));
+        }
+        let (name, kind) = normalize_key(key).ok_or_else(|| {
+            format!("{s:?}: unknown key {key:?} (use a GDK key name such as s, less, bracketleft, Escape or Left)")
+        })?;
+        if chord.shift && kind == KeyKind::Char {
+            return Err(format!(
+                "{s:?}: shift can't be combined with {key:?} because it types another character; bind that character instead"
+            ));
+        }
+        chord.key = name;
+        Ok(chord)
+    }
+
+    /// A chord from a GDK key event: the keyval's name (`gdk::Key::name`) and
+    /// the modifier state. Letters are lowercased and shift is dropped for
+    /// keys that type a character (Shift+, arrives as `less`). `None` for
+    /// keys Qrec can't bind (modifier keys alone, dead keys, non-ASCII letters).
+    pub fn from_gdk(keyval: &str, ctrl: bool, alt: bool, shift: bool, super_: bool) -> Option<Self> {
+        let (key, kind, shift) = if keyval == "ISO_Left_Tab" {
+            ("Tab".to_owned(), KeyKind::Named, true)
+        } else {
+            let (key, kind) = normalize_key(keyval)?;
+            (key, kind, shift)
+        };
+        Some(Self {
+            key,
+            ctrl,
+            alt,
+            shift: shift && kind != KeyKind::Char,
+            super_,
+        })
+    }
+
+    /// How the chord is shown to people: `r`, `Ctrl+Z`, `Shift+←`, `Esc`, `Alt+[`.
+    pub fn display(&self) -> String {
+        let mut out = String::new();
+        for (on, name) in [
+            (self.ctrl, "Ctrl+"),
+            (self.alt, "Alt+"),
+            (self.shift, "Shift+"),
+            (self.super_, "Super+"),
+        ] {
+            if on {
+                out.push_str(name);
+            }
+        }
+        let modified = !out.is_empty();
+        match key_kind(&self.key) {
+            KeyKind::Letter if modified => out.push_str(&self.key.to_ascii_uppercase()),
+            KeyKind::Letter => out.push_str(&self.key),
+            KeyKind::Char => match CHAR_KEYS.iter().find(|(name, _)| *name == self.key) {
+                Some((_, c)) => out.push(*c),
+                None => out.push_str(&self.key),
+            },
+            KeyKind::Named => match NAMED_KEYS.iter().find(|(name, _, _)| *name == self.key) {
+                Some((_, shown, _)) => out.push_str(shown),
+                None => out.push_str(&self.key),
+            },
+        }
+        out
+    }
+}
+
+impl fmt::Display for KeyChord {
+    /// The chord grammar: `ctrl+alt+shift+super+<keyval>`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (on, name) in [
+            (self.ctrl, "ctrl+"),
+            (self.alt, "alt+"),
+            (self.shift, "shift+"),
+            (self.super_, "super+"),
+        ] {
+            if on {
+                f.write_str(name)?;
+            }
+        }
+        f.write_str(&self.key)
+    }
+}
+
+impl FromStr for KeyChord {
+    type Err = CoreError;
+
+    fn from_str(s: &str) -> Result<Self, CoreError> {
+        KeyChord::parse(s).map_err(CoreError::usage)
+    }
+}
+
+// ---------------------------------------------------------- default table
+
+use KeyContext::{Canvas, Global, Overlay, Recording, Timeline};
+
+/// One row of the default table.
+struct Def {
+    id: &'static str,
+    group: &'static str,
+    label: &'static str,
+    /// Chords in the grammar.
+    keys: &'static [&'static str],
+    cli: Option<&'static str>,
+    contexts: &'static [KeyContext],
+}
+
+const fn def(
+    id: &'static str,
+    group: &'static str,
+    label: &'static str,
+    keys: &'static [&'static str],
+    cli: Option<&'static str>,
+    contexts: &'static [KeyContext],
+) -> Def {
+    Def {
+        id,
+        group,
+        label,
+        keys,
+        cli,
+        contexts,
+    }
+}
+
+/// The groups in cheat-sheet order.
+pub const GROUPS: [&str; 6] = ["Record", "Playback", "Edit", "Output", "View", "Canvas"];
+
+const CLI_NUDGE_LAYER: Option<&str> = Some("qrec scene layer set <layer> --rect X,Y,W,H");
+
+/// SPEC §10.2, plus Backspace for remove (A§9.7) and the canvas nudges of
+/// SPEC §12 (arrow keys with the canvas focused; Shift = 10 px).
+const DEFAULTS: &[Def] = &[
+    // Record
+    def("record.toggle", "Record", "Start / stop recording", &["r"], Some("qrec record toggle"), &[Global, Recording]),
+    def("record.over", "Record", "Record over the selection", &["o"], Some("qrec record start --over <clip>…"), &[Global]),
+    def("take.discard-last", "Record", "Discard the last take (to the bin)", &["d"], Some("qrec take discard-last"), &[Global, Recording]),
+    def("cancel", "Record", "Cancel recording, deselect, close overlay", &["Escape"], Some("qrec record cancel"), &[Global, Recording, Overlay]),
+    // Playback
+    def("play.toggle", "Playback", "Play / pause", &["space"], Some("qrec play"), &[Global, Recording]),
+    def("shuttle.reverse", "Playback", "Shuttle reverse (again: 2×, 4×)", &["j"], None, &[Global]),
+    def("shuttle.stop", "Playback", "Shuttle stop", &["k"], None, &[Global]),
+    def("shuttle.forward", "Playback", "Shuttle forward (again: 2×, 4×)", &["l"], None, &[Global]),
+    def("seek.prev-frame", "Playback", "Previous frame", &["Left"], Some("qrec seek --by -1f"), &[Timeline]),
+    def("seek.next-frame", "Playback", "Next frame", &["Right"], Some("qrec seek --by +1f"), &[Timeline]),
+    def("seek.back", "Playback", "Back 1 s", &["shift+Left"], Some("qrec seek --by -1s"), &[Timeline]),
+    def("seek.forward", "Playback", "Forward 1 s", &["shift+Right"], Some("qrec seek --by +1s"), &[Timeline]),
+    def("seek.prev-edit", "Playback", "Previous edit point", &["Up"], Some("qrec seek --edit prev"), &[Timeline]),
+    def("seek.next-edit", "Playback", "Next edit point", &["Down"], Some("qrec seek --edit next"), &[Timeline]),
+    def("seek.start", "Playback", "Timeline start", &["Home"], Some("qrec seek --to start"), &[Global]),
+    def("seek.end", "Playback", "Timeline end", &["End"], Some("qrec seek --to end"), &[Global]),
+    // Edit
+    def("select.prev", "Edit", "Select previous clip", &["comma"], None, &[Global, Recording]),
+    def("select.next", "Edit", "Select next clip", &["period"], None, &[Global, Recording]),
+    def("clip.move-left", "Edit", "Move selection left one slot", &["less"], Some("qrec clip move <clip>… --by -1"), &[Global]),
+    def("clip.move-right", "Edit", "Move selection right one slot", &["greater"], Some("qrec clip move <clip>… --by 1"), &[Global]),
+    def("clip.split", "Edit", "Split clip at the playhead", &["s"], Some("qrec clip split <clip> --at <t>"), &[Global]),
+    def("clip.trim-start", "Edit", "Trim start to the playhead", &["bracketleft"], Some("qrec clip trim <clip> --start <t>"), &[Global]),
+    def("clip.trim-end", "Edit", "Trim end to the playhead", &["bracketright"], Some("qrec clip trim <clip> --end <t>"), &[Global]),
+    def("clip.nudge-start", "Edit", "Trim 1 frame off the start", &["alt+bracketleft"], Some("qrec clip trim <clip> --start +1f"), &[Global]),
+    def("clip.nudge-end", "Edit", "Trim 1 frame off the end", &["alt+bracketright"], Some("qrec clip trim <clip> --end -1f"), &[Global]),
+    def("clip.nudge-start-10", "Edit", "Trim 10 frames off the start", &["alt+braceleft"], Some("qrec clip trim <clip> --start +10f"), &[Global]),
+    def("clip.nudge-end-10", "Edit", "Trim 10 frames off the end", &["alt+braceright"], Some("qrec clip trim <clip> --end -10f"), &[Global]),
+    def("clip.remove", "Edit", "Remove selected clips (to the bin)", &["Delete", "x", "BackSpace"], Some("qrec clip remove <clip>…"), &[Global]),
+    def("autocut.run", "Edit", "Autocut the selection, or every clip", &["c"], Some("qrec autocut [--clips <clip>…]"), &[Global]),
+    def("autocut.preview", "Edit", "Autocut settings and preview", &["shift+c"], Some("qrec autocut --dry-run"), &[Global]),
+    def("history.undo", "Edit", "Undo", &["ctrl+z"], Some("qrec undo"), &[Global]),
+    def("history.redo", "Edit", "Redo", &["ctrl+shift+z", "ctrl+y"], Some("qrec redo"), &[Global]),
+    def("select.all", "Edit", "Select all clips", &["ctrl+a"], None, &[Global, Recording]),
+    // Output
+    def("frame.save", "Output", "Save the frame at the playhead (PNG)", &["p"], Some("qrec frame save --at <t>"), &[Global]),
+    def("export", "Output", "Export…", &["ctrl+e"], Some("qrec export"), &[Global]),
+    // View
+    def("zoom.in", "View", "Zoom timeline in", &["equal"], None, &[Global, Recording]),
+    def("zoom.out", "View", "Zoom timeline out", &["minus"], None, &[Global, Recording]),
+    def("zoom.fit", "View", "Zoom to fit", &["backslash"], None, &[Global, Recording]),
+    def("zoom.selection", "View", "Zoom to the selection", &["z"], None, &[Global, Recording]),
+    def("snapping.toggle", "View", "Toggle snapping", &["n"], None, &[Global, Recording]),
+    def("canvas.mode", "View", "Switch canvas Live / Program", &["Tab"], None, &[Global, Recording]),
+    def("bin.toggle", "View", "Toggle the bin", &["b"], Some("qrec take list --unused"), &[Global, Recording]),
+    def("keys.help", "View", "Cheat sheet", &["question"], Some("qrec keys"), &[Global, Recording]),
+    def("palette.open", "View", "Command palette", &["ctrl+k", "colon"], None, &[Global, Recording]),
+    def("settings.open", "View", "Settings", &["ctrl+comma"], Some("qrec config"), &[Global]),
+    // Canvas (SPEC §12)
+    def("layer.nudge-left", "Canvas", "Nudge layer left 1 px", &["Left"], CLI_NUDGE_LAYER, &[Canvas]),
+    def("layer.nudge-right", "Canvas", "Nudge layer right 1 px", &["Right"], CLI_NUDGE_LAYER, &[Canvas]),
+    def("layer.nudge-up", "Canvas", "Nudge layer up 1 px", &["Up"], CLI_NUDGE_LAYER, &[Canvas]),
+    def("layer.nudge-down", "Canvas", "Nudge layer down 1 px", &["Down"], CLI_NUDGE_LAYER, &[Canvas]),
+    def("layer.nudge-left-10", "Canvas", "Nudge layer left 10 px", &["shift+Left"], CLI_NUDGE_LAYER, &[Canvas]),
+    def("layer.nudge-right-10", "Canvas", "Nudge layer right 10 px", &["shift+Right"], CLI_NUDGE_LAYER, &[Canvas]),
+    def("layer.nudge-up-10", "Canvas", "Nudge layer up 10 px", &["shift+Up"], CLI_NUDGE_LAYER, &[Canvas]),
+    def("layer.nudge-down-10", "Canvas", "Nudge layer down 10 px", &["shift+Down"], CLI_NUDGE_LAYER, &[Canvas]),
+];
+
+/// The niri key binds for recording while another app has focus (SPEC
+/// §10.2); `qrec doctor` and the agent guide print it.
+pub const NIRI_SNIPPET: &str = "binds {
+    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }
+    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }
+    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }
+}";
+
+fn default_bindings(errors: &mut Vec<String>) -> Vec<Binding> {
+    DEFAULTS
+        .iter()
+        .map(|d| Binding {
+            id: d.id,
+            group: d.group,
+            label: d.label,
+            keys: d
+                .keys
+                .iter()
+                .filter_map(|k| {
+                    KeyChord::parse(k)
+                        .map_err(|e| errors.push(format!("default binding {}: {e}", d.id)))
+                        .ok()
+                })
+                .collect(),
+            cli: d.cli,
+            contexts: d.contexts.to_vec(),
+        })
+        .collect()
+}
+
+// --------------------------------------------------------------- resolve
+
 /// The default bindings overridden by `keys_toml` (may be empty).
 pub fn resolve(keys_toml: &str) -> Keymap {
-    todo!("meta: keymap::resolve")
+    let mut errors = Vec::new();
+    let mut bindings = default_bindings(&mut errors);
+    if !keys_toml.trim().is_empty() {
+        match toml::from_str::<toml::Table>(keys_toml) {
+            Ok(table) => apply_overrides(&mut bindings, &table, &mut errors),
+            Err(e) => errors.push(toml_error("keys.toml", keys_toml, &e)),
+        }
+    }
+    let conflicts = find_conflicts(&bindings);
+    Keymap {
+        bindings,
+        conflicts,
+        errors,
+    }
 }
 
-/// "r record · o record over · s split · c autocut · ? all keys".
+/// `"<file> line N: message"` for a TOML parse error.
+pub(crate) fn toml_error(file: &str, text: &str, e: &toml::de::Error) -> String {
+    match e.span() {
+        Some(span) => {
+            let line = 1 + text[..span.start.min(text.len())].matches('\n').count();
+            format!("{file} line {line}: {}", e.message())
+        }
+        None => format!("{file}: {}", e.message()),
+    }
+}
+
+fn apply_overrides(bindings: &mut [Binding], table: &toml::Table, errors: &mut Vec<String>) {
+    for (section, value) in table {
+        if section != "bindings" {
+            errors.push(format!(
+                "keys.toml: unknown section `{section}` (only [bindings] is read)"
+            ));
+            continue;
+        }
+        let Some(map) = value.as_table() else {
+            errors.push("keys.toml: `bindings` must be a table".to_owned());
+            continue;
+        };
+        let mut entries = Vec::new();
+        flatten("", map, &mut entries);
+        let mut seen = BTreeSet::new();
+        for (id, value) in entries {
+            let Some(binding) = bindings.iter_mut().find(|b| b.id == id) else {
+                errors.push(format!(
+                    "keys.toml: unknown binding `{id}` (`qrec keys` lists the ids)"
+                ));
+                continue;
+            };
+            if !seen.insert(id.clone()) {
+                errors.push(format!("keys.toml: `{id}` is set twice; the first one is used"));
+                continue;
+            }
+            match override_keys(value) {
+                Ok(keys) => binding.keys = keys,
+                Err(e) => errors.push(format!("keys.toml: `{id}`: {e}; keeping the default keys")),
+            }
+        }
+    }
+}
+
+/// Dotted TOML keys (`clip.split = "s"`) nest tables; they name ids again.
+fn flatten<'a>(prefix: &str, table: &'a toml::Table, out: &mut Vec<(String, &'a toml::Value)>) {
+    for (key, value) in table {
+        let id = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        match value.as_table() {
+            Some(inner) => flatten(&id, inner, out),
+            None => out.push((id, value)),
+        }
+    }
+}
+
+fn override_keys(value: &toml::Value) -> Result<Vec<KeyChord>, String> {
+    let texts: Vec<&str> = match value {
+        toml::Value::String(s) => vec![s.as_str()],
+        toml::Value::Array(items) => items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .ok_or_else(|| format!("expected key strings, found {item}"))
+            })
+            .collect::<Result<_, _>>()?,
+        other => return Err(format!("expected a key or a list of keys, found {other}")),
+    };
+    let mut keys: Vec<KeyChord> = Vec::new();
+    for text in texts {
+        let chord = KeyChord::parse(text)?;
+        if !keys.contains(&chord) {
+            keys.push(chord);
+        }
+    }
+    Ok(keys)
+}
+
+fn find_conflicts(bindings: &[Binding]) -> Vec<Conflict> {
+    let mut out = Vec::new();
+    for ctx in KeyContext::ALL {
+        let mut by_chord: BTreeMap<&KeyChord, Vec<&Binding>> = BTreeMap::new();
+        for binding in bindings.iter().filter(|b| b.active_in(ctx)) {
+            let unique: BTreeSet<&KeyChord> = binding.keys.iter().collect();
+            for chord in unique {
+                by_chord.entry(chord).or_default().push(binding);
+            }
+        }
+        for (chord, users) in by_chord {
+            if users.len() < 2 {
+                continue;
+            }
+            // Global bindings clashing with each other are reported once, under global.
+            let all_global = users.iter().all(|b| b.contexts.contains(&KeyContext::Global));
+            if matches!(ctx, KeyContext::Timeline | KeyContext::Canvas) && all_global {
+                continue;
+            }
+            out.push(Conflict {
+                chord: chord.clone(),
+                ids: users.iter().map(|b| b.id.to_owned()).collect(),
+                context: ctx,
+            });
+        }
+    }
+    out
+}
+
+/// The binding a key press runs with `ctx` focused (`timeline`, `canvas`,
+/// `recording` or `overlay`); `None` when nothing or more than one binding
+/// uses the chord there (conflicting bindings never run).
+pub fn lookup<'a>(map: &'a Keymap, chord: &KeyChord, ctx: KeyContext) -> Option<&'a Binding> {
+    let mut found = map
+        .bindings
+        .iter()
+        .filter(|b| b.active_in(ctx) && b.keys.contains(chord));
+    let first = found.next()?;
+    match found.next() {
+        Some(_) => None,
+        None => Some(first),
+    }
+}
+
+/// The chords of `binding` that aren't part of a conflict.
+fn usable_keys<'a>(map: &Keymap, binding: &'a Binding) -> Vec<&'a KeyChord> {
+    let conflicted: Vec<&KeyChord> = map
+        .conflicts
+        .iter()
+        .filter(|c| c.ids.iter().any(|id| id == binding.id))
+        .map(|c| &c.chord)
+        .collect();
+    binding
+        .keys
+        .iter()
+        .filter(|k| !conflicted.contains(k))
+        .collect()
+}
+
+// ----------------------------------------------------------------- views
+
+/// `qrec keys --json`: the bindings in the chord grammar, the conflicts and
+/// the `keys.toml` errors.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KeysView {
+    pub bindings: Vec<BindingView>,
+    pub conflicts: Vec<ConflictView>,
+    pub errors: Vec<String>,
+}
+
+/// One binding: `{"id","group","label","keys":[..],"cli","contexts"}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BindingView {
+    pub id: String,
+    pub group: String,
+    pub label: String,
+    /// Chords in the `keys.toml` grammar (`ctrl+shift+z`).
+    pub keys: Vec<String>,
+    pub cli: Option<String>,
+    pub contexts: Vec<KeyContext>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConflictView {
+    pub chord: String,
+    pub ids: Vec<String>,
+    pub context: KeyContext,
+}
+
+/// The JSON form of a keymap.
+pub fn keys_view(map: &Keymap) -> KeysView {
+    KeysView {
+        bindings: map
+            .bindings
+            .iter()
+            .map(|b| BindingView {
+                id: b.id.to_owned(),
+                group: b.group.to_owned(),
+                label: b.label.to_owned(),
+                keys: b.keys.iter().map(KeyChord::to_string).collect(),
+                cli: b.cli.map(str::to_owned),
+                contexts: b.contexts.clone(),
+            })
+            .collect(),
+        conflicts: map
+            .conflicts
+            .iter()
+            .map(|c| ConflictView {
+                chord: c.chord.to_string(),
+                ids: c.ids.clone(),
+                context: c.context,
+            })
+            .collect(),
+        errors: map.errors.clone(),
+    }
+}
+
+/// The human form of `qrec keys` (the cheat sheet): per group, each
+/// binding's keys, label and id (the name `keys.toml` uses), then the
+/// conflicts and the `keys.toml` errors. CLI forms are in [`keys_view`].
+pub fn cheat_sheet(map: &Keymap) -> String {
+    let keys_of = |b: &Binding| {
+        if b.keys.is_empty() {
+            "(unbound)".to_owned()
+        } else {
+            b.keys.iter().map(KeyChord::display).collect::<Vec<_>>().join("  ")
+        }
+    };
+    let width = |text: &str| text.chars().count();
+    let key_width = map.bindings.iter().map(|b| width(&keys_of(b))).max().unwrap_or(0);
+    let label_width = map.bindings.iter().map(|b| width(b.label)).max().unwrap_or(0);
+    let mut out = String::new();
+    for group in GROUPS {
+        let rows: Vec<&Binding> = map.bindings.iter().filter(|b| b.group == group).collect();
+        if rows.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(group);
+        out.push('\n');
+        for b in rows {
+            let keys = keys_of(b);
+            out.push_str(&format!(
+                "  {keys}{}  {}{}  {}\n",
+                " ".repeat(key_width - width(&keys)),
+                b.label,
+                " ".repeat(label_width - width(b.label)),
+                b.id,
+            ));
+        }
+    }
+    if !map.conflicts.is_empty() {
+        out.push_str("\nConflicts (neither binding runs until one is changed in keys.toml)\n");
+        for c in &map.conflicts {
+            out.push_str(&format!(
+                "  {} ({}): {}\n",
+                c.chord.display(),
+                c.context.as_str(),
+                c.ids.join(", ")
+            ));
+        }
+    }
+    if !map.errors.is_empty() {
+        out.push_str("\nErrors in keys.toml\n");
+        for e in &map.errors {
+            out.push_str(&format!("  {e}\n"));
+        }
+    }
+    out
+}
+
+// ----------------------------------------------------------------- hints
+
+/// One hint of a status-bar line.
+struct HintDef {
+    /// Bindings whose keys are shown, in order; none for a label-only hint.
+    ids: &'static [&'static str],
+    /// The chord shown when the binding still has it (`x` rather than `Del`).
+    prefer: Option<&'static str>,
+    label: &'static str,
+}
+
+const fn hint(ids: &'static [&'static str], label: &'static str) -> HintDef {
+    HintDef {
+        ids,
+        prefer: None,
+        label,
+    }
+}
+
+/// SPEC §10.1, verbatim.
+const IDLE_HINTS: &[HintDef] = &[
+    hint(&["record.toggle"], "record"),
+    hint(&["record.over"], "record over"),
+    hint(&["clip.split"], "split"),
+    hint(&["autocut.run"], "autocut"),
+    hint(&["keys.help"], "all keys"),
+];
+
+const COUNTDOWN_HINTS: &[HintDef] = &[hint(&["cancel"], "cancel"), hint(&["record.toggle"], "cancel")];
+
+const RECORDING_HINTS: &[HintDef] = &[
+    hint(&["record.toggle"], "stop"),
+    hint(&["cancel"], "cancel take (files kept)"),
+    hint(&["canvas.mode"], "switch view"),
+    hint(&["zoom.in", "zoom.out"], "zoom"),
+    hint(&["zoom.fit"], "fit"),
+];
+
+const FINALIZING_HINTS: &[HintDef] = &[
+    hint(&[], "finalizing the take, waiting for every file to close (up to 10 s)"),
+    hint(&["take.discard-last"], "discard it"),
+    hint(&["canvas.mode"], "switch view"),
+    hint(&["zoom.in", "zoom.out"], "zoom"),
+];
+
+const CLIP_SELECTED_HINTS: &[HintDef] = &[
+    hint(&["clip.split"], "split"),
+    hint(&["clip.trim-start", "clip.trim-end"], "trim to playhead"),
+    hint(&["clip.move-left", "clip.move-right"], "move"),
+    HintDef {
+        ids: &["clip.remove"],
+        prefer: Some("x"),
+        label: "remove",
+    },
+    hint(&["autocut.run"], "autocut"),
+    hint(&["record.over"], "record over"),
+    hint(&["zoom.selection"], "zoom to clip"),
+    hint(&["keys.help"], "all keys"),
+];
+
+const DRAGGING_HINTS: &[HintDef] = &[
+    hint(&[], "release to apply"),
+    hint(&["cancel"], "cancel drag"),
+    hint(&["snapping.toggle"], "snapping on/off"),
+];
+
+fn hint_defs(ctx: HintContext) -> &'static [HintDef] {
+    match ctx {
+        HintContext::Idle => IDLE_HINTS,
+        HintContext::Countdown => COUNTDOWN_HINTS,
+        HintContext::Recording => RECORDING_HINTS,
+        HintContext::Finalizing => FINALIZING_HINTS,
+        HintContext::ClipSelected => CLIP_SELECTED_HINTS,
+        HintContext::Dragging => DRAGGING_HINTS,
+    }
+}
+
+/// "r record · o record over · s split · c autocut · ? all keys": the
+/// status-bar hints for `ctx`, with the keys of `map` (rebound keys show;
+/// unbound or conflicting ones drop out).
 pub fn hints(ctx: HintContext, map: &Keymap) -> Vec<Hint> {
-    todo!("meta: keymap::hints")
+    let mut out = Vec::new();
+    for def in hint_defs(ctx) {
+        let keys: Vec<String> = def
+            .ids
+            .iter()
+            .filter_map(|id| {
+                let binding = map.binding(id)?;
+                let usable = usable_keys(map, binding);
+                let preferred = def
+                    .prefer
+                    .and_then(|p| KeyChord::parse(p).ok())
+                    .and_then(|p| usable.iter().find(|k| ***k == p).copied());
+                preferred.or(usable.first().copied()).map(KeyChord::display)
+            })
+            .collect();
+        if !def.ids.is_empty() && keys.is_empty() {
+            continue;
+        }
+        out.push(Hint {
+            keys: keys.join(" "),
+            label: def.label.to_owned(),
+        });
+    }
+    out
 }
 
-/// The command a binding runs in `state` (shared by the GUI and the palette).
+/// The hints as one line: `r record · o record over · …`.
+pub fn format_hints(hints: &[Hint]) -> String {
+    hints
+        .iter()
+        .map(|h| {
+            if h.keys.is_empty() {
+                h.label.clone()
+            } else {
+                format!("{} {}", h.keys, h.label)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// Which hints fit `state`: the record phase first, then a drag in
+/// progress (GUI-only knowledge), then whether clips are selected.
+pub fn hint_context(state: &State, dragging: bool) -> HintContext {
+    match &state.runtime.record {
+        RecordPhase::Countdown { .. } => HintContext::Countdown,
+        RecordPhase::Starting { .. } | RecordPhase::Recording { .. } => HintContext::Recording,
+        RecordPhase::Finalizing { .. } => HintContext::Finalizing,
+        RecordPhase::Idle if dragging => HintContext::Dragging,
+        RecordPhase::Idle if !state.ui.selection.is_empty() => HintContext::ClipSelected,
+        RecordPhase::Idle => HintContext::Idle,
+    }
+}
+
+// --------------------------------------------------------------- actions
+
+/// What a binding does in a state.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Action {
+    /// Dispatch this command.
+    Run(Command),
+    /// The GUI does it itself: overlays, settings, and zooms that need the
+    /// viewport width.
+    Gui,
+    /// Not possible right now; the reason is shown in the palette.
+    Unavailable(String),
+}
+
+/// The command a binding runs in `state` (shared by the GUI and the
+/// palette). `None` for unknown ids, actions the GUI performs itself
+/// ([`Action::Gui`]) and actions that aren't available now.
 pub fn command_for(id: &str, state: &State) -> Option<Command> {
-    todo!("meta: keymap::command_for")
+    match action_for(id, state)? {
+        Action::Run(cmd) => Some(cmd),
+        Action::Gui | Action::Unavailable(_) => None,
+    }
+}
+
+/// What binding `id` does in `state`; `None` for an unknown id.
+///
+/// The command mirrors the key: `s` splits the clip under the playhead
+/// (`clipSplit` with `timeline`), `[`/`]` trim the selected clip or the clip
+/// under the playhead to it, `Alt+[`/`Alt+]` nudge the start edge later and
+/// the end edge earlier by one frame (`Alt+{`/`Alt+}`: 10), `o` records over
+/// the contiguous selection, `Esc` cancels a countdown or recording, else
+/// clears the selection, else deselects the layer. The gates of `apply`
+/// (recording, GUI host, invalid `qrec.json`) make a command unavailable
+/// here too, so the palette can say why.
+pub fn action_for(id: &str, state: &State) -> Option<Action> {
+    let action = match id {
+        "record.toggle" => record_toggle(state),
+        "record.over" => record_over(state),
+        "take.discard-last" => discard_last(state),
+        "cancel" => cancel(state),
+        "play.toggle" => play_toggle(state),
+        "shuttle.reverse" => needs_clips(state, || Command::Shuttle { dir: ShuttleDir::Reverse }),
+        "shuttle.stop" => run(Command::Shuttle { dir: ShuttleDir::Stop }),
+        "shuttle.forward" => needs_clips(state, || Command::Shuttle { dir: ShuttleDir::Forward }),
+        "seek.prev-frame" => seek_by(Sign::Minus, TimeValue::Frames(1)),
+        "seek.next-frame" => seek_by(Sign::Plus, TimeValue::Frames(1)),
+        "seek.back" => seek_by(Sign::Minus, TimeValue::Seconds(NS_PER_SEC as u64)),
+        "seek.forward" => seek_by(Sign::Plus, TimeValue::Seconds(NS_PER_SEC as u64)),
+        "seek.prev-edit" => run(Command::Seek { to: SeekTarget::EditPrev }),
+        "seek.next-edit" => run(Command::Seek { to: SeekTarget::EditNext }),
+        "seek.start" => run(Command::Seek { to: SeekTarget::Start }),
+        "seek.end" => run(Command::Seek { to: SeekTarget::End }),
+        "select.prev" => needs_clips(state, || Command::Select { op: SelectOp::Prev }),
+        "select.next" => needs_clips(state, || Command::Select { op: SelectOp::Next }),
+        "select.all" => needs_clips(state, || Command::Select { op: SelectOp::All }),
+        "clip.move-left" => move_selection(state, -1),
+        "clip.move-right" => move_selection(state, 1),
+        "clip.split" => split(state),
+        "clip.trim-start" => trim_to_playhead(state, Edge::Start),
+        "clip.trim-end" => trim_to_playhead(state, Edge::End),
+        "clip.nudge-start" => nudge_edge(state, Edge::Start, 1),
+        "clip.nudge-end" => nudge_edge(state, Edge::End, 1),
+        "clip.nudge-start-10" => nudge_edge(state, Edge::Start, 10),
+        "clip.nudge-end-10" => nudge_edge(state, Edge::End, 10),
+        "clip.remove" => {
+            let selection = selected(state);
+            if selection.is_empty() {
+                Action::Unavailable("Select the clips to remove".to_owned())
+            } else {
+                run(Command::ClipRemove { clips: selection })
+            }
+        }
+        "autocut.run" => autocut(state, false),
+        "autocut.preview" => autocut(state, true),
+        "history.undo" => {
+            let h = &state.history;
+            if h.entries.iter().any(|e| e.seq == h.cursor) {
+                run(Command::Undo { steps: 1 })
+            } else {
+                Action::Unavailable("Nothing to undo".to_owned())
+            }
+        }
+        "history.redo" => {
+            let h = &state.history;
+            if h.entries.iter().any(|e| e.seq > h.cursor) {
+                run(Command::Redo { steps: 1 })
+            } else {
+                Action::Unavailable("Nothing to redo".to_owned())
+            }
+        }
+        "frame.save" => {
+            let total = total_frames(&state.project.timeline.clips);
+            if total == 0 {
+                Action::Unavailable("The timeline is empty".to_owned())
+            } else {
+                run(Command::FrameSave {
+                    at: TimeArg::frames(state.ui.playhead.min(total - 1)),
+                    layer: None,
+                    out: None,
+                })
+            }
+        }
+        "export" => {
+            if state.project.timeline.clips.is_empty() {
+                Action::Unavailable("The timeline is empty".to_owned())
+            } else if export_running(state) {
+                Action::Unavailable("An export is already running".to_owned())
+            } else {
+                run(Command::Export {
+                    format: ExportFormat::Mp4,
+                    quality: Quality::Standard,
+                    codec: None,
+                    out: None,
+                })
+            }
+        }
+        "zoom.fit" => run(Command::SetUi {
+            patch: UiPatch {
+                zoom: Nullable::Clear,
+                ..UiPatch::default()
+            },
+        }),
+        "snapping.toggle" => run(Command::SetUi {
+            patch: UiPatch {
+                snapping: Some(!state.ui.snapping),
+                ..UiPatch::default()
+            },
+        }),
+        "bin.toggle" => run(Command::SetUi {
+            patch: UiPatch {
+                bin_open: Some(!state.ui.bin_open),
+                ..UiPatch::default()
+            },
+        }),
+        "canvas.mode" => run(Command::SetCanvasMode {
+            mode: match state.ui.canvas_mode {
+                CanvasMode::Live => CanvasMode::Program,
+                CanvasMode::Program => CanvasMode::Live,
+            },
+        }),
+        "zoom.in" | "zoom.out" | "zoom.selection" | "keys.help" | "palette.open"
+        | "settings.open" => Action::Gui,
+        "layer.nudge-left" => nudge_layer(state, -1, 0),
+        "layer.nudge-right" => nudge_layer(state, 1, 0),
+        "layer.nudge-up" => nudge_layer(state, 0, -1),
+        "layer.nudge-down" => nudge_layer(state, 0, 1),
+        "layer.nudge-left-10" => nudge_layer(state, -10, 0),
+        "layer.nudge-right-10" => nudge_layer(state, 10, 0),
+        "layer.nudge-up-10" => nudge_layer(state, 0, -10),
+        "layer.nudge-down-10" => nudge_layer(state, 0, 10),
+        _ => return None,
+    };
+    Some(match action {
+        Action::Run(cmd) => gate(state, cmd),
+        other => other,
+    })
+}
+
+fn run(cmd: Command) -> Action {
+    Action::Run(cmd)
+}
+
+/// The gates `apply` enforces for every command (A§5.3, A§8.5, A§7.7).
+fn gate(state: &State, cmd: Command) -> Action {
+    let phase = &state.runtime.record;
+    if !phase.is_idle() && !cmd.allowed_while_recording(phase) {
+        return Action::Unavailable(match phase {
+            RecordPhase::Countdown { .. } => "Not during the countdown".to_owned(),
+            RecordPhase::Finalizing { take, .. } => {
+                format!("Not while take {} is finalizing", take.number())
+            }
+            _ => "Not while recording".to_owned(),
+        });
+    }
+    if cmd.gui_only() && state.runtime.host != HostKind::Gui {
+        return Action::Unavailable("Needs the Qrec window".to_owned());
+    }
+    if state.runtime.disk_invalid.is_some() && cmd.edits_project() {
+        return Action::Unavailable("qrec.json on disk is invalid".to_owned());
+    }
+    Action::Run(cmd)
+}
+
+fn needs_clips(state: &State, cmd: impl FnOnce() -> Command) -> Action {
+    if state.project.timeline.clips.is_empty() {
+        Action::Unavailable("The timeline is empty".to_owned())
+    } else {
+        run(cmd())
+    }
+}
+
+fn seek_by(sign: Sign, value: TimeValue) -> Action {
+    run(Command::Seek {
+        to: SeekTarget::By(TimeArg { sign, value }),
+    })
+}
+
+fn export_running(state: &State) -> bool {
+    state
+        .runtime
+        .jobs
+        .values()
+        .any(|j| matches!(j.kind, JobKind::Export { .. }))
+}
+
+/// Why a take can't start now, if it can't (A§5.3).
+fn start_blocker(state: &State) -> Option<String> {
+    if state.project.scene.is_empty() {
+        Some("Add a layer or audio track first".to_owned())
+    } else if export_running(state) {
+        Some("Wait for the export to finish".to_owned())
+    } else {
+        None
+    }
+}
+
+fn record_toggle(state: &State) -> Action {
+    match &state.runtime.record {
+        RecordPhase::Idle => match start_blocker(state) {
+            Some(why) => Action::Unavailable(why),
+            None => run(Command::RecordToggle { wait: false }),
+        },
+        RecordPhase::Finalizing { take, .. } => {
+            Action::Unavailable(format!("Take {} is finalizing", take.number()))
+        }
+        // Countdown: cancels it; Starting/Recording: stops.
+        _ => run(Command::RecordToggle { wait: false }),
+    }
+}
+
+fn record_over(state: &State) -> Action {
+    let selection = selected(state);
+    if selection.is_empty() {
+        return Action::Unavailable("Select the clips to record over".to_owned());
+    }
+    if !contiguous(&state.project.timeline.clips, &selection) {
+        return Action::Unavailable("Needs a contiguous selection".to_owned());
+    }
+    if let Some(why) = start_blocker(state).filter(|_| state.runtime.record.is_idle()) {
+        return Action::Unavailable(why);
+    }
+    run(Command::RecordStart {
+        mode: RecordModeArg::Over(selection),
+        countdown: None,
+        wait: false,
+    })
+}
+
+fn discard_last(state: &State) -> Action {
+    if state.runtime.record.is_idle() {
+        // A§5.5: the newest placed take, and only while its clips are on the timeline.
+        let newest = state
+            .project
+            .takes
+            .iter()
+            .filter(|(_, t)| t.placed)
+            .max_by_key(|(id, _)| id.number());
+        match newest {
+            None => return Action::Unavailable("No take to discard yet".to_owned()),
+            Some((id, _)) if !state.project.timeline.clips.iter().any(|c| &c.take == id) => {
+                return Action::Unavailable(format!("Take {} is already in the bin", id.number()));
+            }
+            Some(_) => {}
+        }
+    }
+    run(Command::TakeDiscardLast)
+}
+
+fn cancel(state: &State) -> Action {
+    match &state.runtime.record {
+        RecordPhase::Countdown { .. } | RecordPhase::Starting { .. } | RecordPhase::Recording { .. } => {
+            run(Command::RecordCancel)
+        }
+        RecordPhase::Finalizing { take, .. } => {
+            Action::Unavailable(format!("Take {} is finalizing", take.number()))
+        }
+        RecordPhase::Idle if !state.ui.selection.is_empty() => {
+            run(Command::Select { op: SelectOp::Clear })
+        }
+        RecordPhase::Idle if state.ui.selected_layer.is_some() => run(Command::SetUi {
+            patch: UiPatch {
+                selected_layer: Nullable::Clear,
+                ..UiPatch::default()
+            },
+        }),
+        RecordPhase::Idle => Action::Unavailable("Nothing to cancel".to_owned()),
+    }
+}
+
+fn play_toggle(state: &State) -> Action {
+    if state.runtime.playing {
+        run(Command::Pause)
+    } else {
+        needs_clips(state, || Command::Play)
+    }
+}
+
+/// The selected clips that are on the timeline, in timeline order.
+fn selected(state: &State) -> Vec<ClipId> {
+    state
+        .project
+        .timeline
+        .clips
+        .iter()
+        .filter(|c| state.ui.selection.contains(&c.id))
+        .map(|c| c.id.clone())
+        .collect()
+}
+
+/// The clips `ids` sit next to each other (all of them on the timeline).
+fn contiguous(clips: &[Clip], ids: &[ClipId]) -> bool {
+    let mut indices: Vec<usize> = Vec::new();
+    for id in ids {
+        match clips.iter().position(|c| &c.id == id) {
+            Some(i) => indices.push(i),
+            None => return false,
+        }
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    !indices.is_empty() && indices.windows(2).all(|w| w[1] == w[0] + 1)
+}
+
+fn move_selection(state: &State, by: i64) -> Action {
+    let selection = selected(state);
+    if selection.is_empty() {
+        Action::Unavailable("Select the clips to move".to_owned())
+    } else {
+        run(Command::ClipMove {
+            clips: selection,
+            to: MoveTo::By(by),
+        })
+    }
+}
+
+fn split(state: &State) -> Action {
+    let clips = &state.project.timeline.clips;
+    match clip_at(clips, state.ui.playhead) {
+        None => Action::Unavailable("Move the playhead onto a clip".to_owned()),
+        Some((_, 0)) => Action::Unavailable("The playhead is on a cut".to_owned()),
+        Some(_) => run(Command::ClipSplit {
+            clip: None,
+            at: TimeArg::frames(state.ui.playhead),
+            timeline: true,
+        }),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Edge {
+    Start,
+    End,
+}
+
+/// The single selected clip, with its index and timeline start.
+fn single_selected(state: &State) -> Option<(usize, Frame, &Clip)> {
+    let clips = &state.project.timeline.clips;
+    let mut selected = clips
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| state.ui.selection.contains(&c.id));
+    let (i, clip) = selected.next()?;
+    if selected.next().is_some() {
+        return None;
+    }
+    Some((i, position_of(clips, i), clip))
+}
+
+/// `[`/`]` act on the selected clip when the playhead is on it, else on the
+/// clip under the playhead (for `]`, the clip that ends at or contains it).
+fn trim_to_playhead(state: &State, edge: Edge) -> Action {
+    let clips = &state.project.timeline.clips;
+    let p = state.ui.playhead;
+    let on_selected = single_selected(state).filter(|(_, start, clip)| match edge {
+        Edge::Start => *start <= p && p < start + clip.len(),
+        Edge::End => *start < p && p <= start + clip.len(),
+    });
+    let target = match on_selected {
+        Some((i, _, _)) => Some(i),
+        None => match edge {
+            Edge::Start => clip_at(clips, p).map(|(i, _)| i),
+            Edge::End => p.checked_sub(1).and_then(|q| clip_at(clips, q)).map(|(i, _)| i),
+        },
+    };
+    let Some(i) = target else {
+        return Action::Unavailable("Move the playhead onto a clip".to_owned());
+    };
+    let at = Some(TimeArg::frames(p));
+    run(Command::ClipTrim {
+        clip: clips[i].id.clone(),
+        start: if edge == Edge::Start { at } else { None },
+        end: if edge == Edge::End { at } else { None },
+        timeline: true,
+    })
+}
+
+/// `Alt+[` moves the start edge `frames` later, `Alt+]` the end edge
+/// `frames` earlier, on the selected clip (else the clip under the playhead).
+fn nudge_edge(state: &State, edge: Edge, frames: u64) -> Action {
+    let clips = &state.project.timeline.clips;
+    let clip = if state.ui.selection.is_empty() {
+        clip_at(clips, state.ui.playhead).map(|(i, _)| &clips[i])
+    } else if let Some((_, _, clip)) = single_selected(state) {
+        Some(clip)
+    } else {
+        return Action::Unavailable("Select one clip".to_owned());
+    };
+    let Some(clip) = clip else {
+        return Action::Unavailable("Select a clip or move the playhead onto one".to_owned());
+    };
+    if clip.len() <= frames {
+        return Action::Unavailable("The clip is too short".to_owned());
+    }
+    run(Command::ClipTrim {
+        clip: clip.id.clone(),
+        start: (edge == Edge::Start).then_some(TimeArg::plus_frames(frames)),
+        end: (edge == Edge::End).then_some(TimeArg::minus_frames(frames)),
+        timeline: false,
+    })
+}
+
+fn autocut(state: &State, dry_run: bool) -> Action {
+    if state.project.timeline.clips.is_empty() {
+        return Action::Unavailable("The timeline is empty".to_owned());
+    }
+    let selection = selected(state);
+    run(Command::Autocut {
+        scope: if selection.is_empty() {
+            ClipScope::All
+        } else {
+            ClipScope::Clips(selection)
+        },
+        overrides: AutocutOverrides::default(),
+        dry_run,
+    })
+}
+
+/// The scene the canvas edits: the project scene in Live mode; in Program
+/// mode the take scene of the selected clip (else the clip under the playhead).
+fn canvas_scene(state: &State) -> Option<(SceneTarget, &Scene)> {
+    let project = &state.project;
+    match state.ui.canvas_mode {
+        CanvasMode::Live => Some((SceneTarget::Project, &project.scene)),
+        CanvasMode::Program => {
+            let clips = &project.timeline.clips;
+            let clip = clips
+                .iter()
+                .find(|c| state.ui.selection.contains(&c.id))
+                .or_else(|| clip_at(clips, state.ui.playhead).map(|(i, _)| &clips[i]))?;
+            let take = project.take(&clip.take)?;
+            Some((SceneTarget::Take(clip.take.clone()), &take.scene))
+        }
+    }
+}
+
+fn nudge_layer(state: &State, dx: i32, dy: i32) -> Action {
+    let Some(layer_id) = &state.ui.selected_layer else {
+        return Action::Unavailable("Select a layer on the canvas".to_owned());
+    };
+    let Some((target, scene)) = canvas_scene(state) else {
+        return Action::Unavailable("Select a clip to edit its take's layout".to_owned());
+    };
+    let Some(layer) = scene.layer(layer_id) else {
+        return Action::Unavailable(format!("Layer {layer_id} isn't in this scene"));
+    };
+    if layer.locked {
+        return Action::Unavailable(format!("Layer {layer_id} is locked"));
+    }
+    let rect = Rect {
+        x: layer.rect.x.saturating_add(dx),
+        y: layer.rect.y.saturating_add(dy),
+        ..layer.rect
+    };
+    run(Command::LayerSet {
+        target,
+        layer: layer_id.clone(),
+        patch: LayerPatch {
+            rect: Some(rect),
+            ..LayerPatch::default()
+        },
+    })
+}
+
+// --------------------------------------------------------------- palette
+
+/// One row of the command palette: `Split clip at the playhead — s — qrec clip split <clip> --at <t>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PaletteRow {
+    pub id: String,
+    pub group: String,
+    pub label: String,
+    /// The keys as shown (`Ctrl+K`, `:`); conflicting keys are left out.
+    pub keys: Vec<String>,
+    pub cli: Option<String>,
+    pub enabled: bool,
+    /// Why the row is disabled ("Needs a contiguous selection").
+    pub reason: Option<String>,
+}
+
+impl PaletteRow {
+    /// `label — keys — cli`, with `—` for a missing part.
+    pub fn line(&self) -> String {
+        let keys = if self.keys.is_empty() {
+            "—".to_owned()
+        } else {
+            self.keys.join(" ")
+        };
+        format!("{} — {} — {}", self.label, keys, self.cli.as_deref().unwrap_or("—"))
+    }
+}
+
+/// Every binding as a palette row, in cheat-sheet order, enabled when it
+/// can run in `state` (GUI-only actions are always enabled).
+pub fn palette(map: &Keymap, state: &State) -> Vec<PaletteRow> {
+    let mut rows = Vec::new();
+    for group in GROUPS {
+        for b in map.bindings.iter().filter(|b| b.group == group) {
+            let action = action_for(b.id, state);
+            let reason = match &action {
+                Some(Action::Unavailable(why)) => Some(why.clone()),
+                _ => None,
+            };
+            rows.push(PaletteRow {
+                id: b.id.to_owned(),
+                group: b.group.to_owned(),
+                label: b.label.to_owned(),
+                keys: usable_keys(map, b).into_iter().map(KeyChord::display).collect(),
+                cli: b.cli.map(str::to_owned),
+                enabled: reason.is_none(),
+                reason,
+            });
+        }
+    }
+    rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ids::{LayerId, TakeId};
+    use crate::state::{Job, RecordMode};
+    use crate::testkit::{self, ProjectBuilder};
+
+    fn chord(s: &str) -> KeyChord {
+        KeyChord::parse(s).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    #[test]
+    fn chord_grammar() {
+        let z = chord("ctrl+shift+z");
+        assert_eq!(
+            z,
+            KeyChord {
+                key: "z".into(),
+                ctrl: true,
+                alt: false,
+                shift: true,
+                super_: false
+            }
+        );
+        assert_eq!(z.to_string(), "ctrl+shift+z");
+        assert_eq!(z.display(), "Ctrl+Shift+Z");
+        assert_eq!(chord("Ctrl+Shift+Z"), z, "case doesn't matter");
+        assert_eq!(chord(" ctrl + shift + z "), z, "spaces don't matter");
+        assert_eq!(chord("shift+ctrl+z"), z, "modifier order doesn't matter");
+        assert_eq!(chord("control+shift+Z"), z);
+
+        assert_eq!(chord("<"), chord("less"));
+        assert_eq!(chord("less").display(), "<");
+        assert_eq!(chord("alt+[").to_string(), "alt+bracketleft");
+        assert_eq!(chord("alt+bracketleft").display(), "Alt+[");
+        assert_eq!(chord("?").to_string(), "question");
+        assert_eq!(chord("esc").to_string(), "Escape");
+        assert_eq!(chord("Escape").display(), "Esc");
+        assert_eq!(chord("shift+left").to_string(), "shift+Left");
+        assert_eq!(chord("shift+Left").display(), "Shift+←");
+        assert_eq!(chord("space").display(), "Space");
+        assert_eq!(chord("del").to_string(), "Delete");
+        assert_eq!(chord("backspace").to_string(), "BackSpace");
+        assert_eq!(chord("pgup").to_string(), "Page_Up");
+        assert_eq!(chord("f5").to_string(), "F5");
+        assert_eq!(chord("F12").display(), "F12");
+        assert_eq!(chord("r").display(), "r", "bare letters stay lowercase");
+        assert_eq!(chord("shift+c").display(), "Shift+C");
+        assert_eq!(chord("C"), chord("c"), "an uppercase letter isn't shift");
+        assert_eq!(chord("ctrl+,").to_string(), "ctrl+comma");
+        assert_eq!(chord("ctrl+,").display(), "Ctrl+,");
+        assert_eq!(chord("+").to_string(), "plus");
+        assert_eq!(chord("ctrl++").to_string(), "ctrl+plus");
+        assert_eq!(chord("ctrl+plus").display(), "Ctrl++");
+        assert_eq!(chord("1").to_string(), "1");
+        assert_eq!(chord("super+r").to_string(), "super+r");
+        assert_eq!(chord("shift+Tab").to_string(), "shift+Tab");
+
+        for bad in [
+            "", "ctrl+", "+a", "hyper+a", "ctrl+ctrl+a", "bogus", "ctrl+bogus", "shift+comma",
+            "shift+<", "shift+1", "f0", "f25", "f01", "ctrl++a",
+        ] {
+            assert!(KeyChord::parse(bad).is_err(), "{bad:?} should not parse");
+        }
+        let err = "shift+,".parse::<KeyChord>().unwrap_err();
+        assert_eq!(err.code, crate::ErrorCode::Usage);
+        assert!(err.message.contains("bind that character instead"), "{}", err.message);
+    }
+
+    #[test]
+    fn chords_from_gdk_events() {
+        assert_eq!(KeyChord::from_gdk("C", false, false, true, false), Some(chord("shift+c")));
+        assert_eq!(KeyChord::from_gdk("less", false, false, true, false), Some(chord("less")));
+        assert_eq!(KeyChord::from_gdk("braceleft", false, true, true, false), Some(chord("alt+braceleft")));
+        assert_eq!(KeyChord::from_gdk("ISO_Left_Tab", false, false, true, false), Some(chord("shift+Tab")));
+        assert_eq!(KeyChord::from_gdk("Left", false, false, true, false), Some(chord("shift+Left")));
+        assert_eq!(KeyChord::from_gdk("Z", true, false, false, false), Some(chord("ctrl+z")), "caps lock");
+        assert_eq!(KeyChord::from_gdk("Shift_L", false, false, true, false), None);
+        assert_eq!(KeyChord::from_gdk("eacute", false, false, false, false), None);
+    }
+
+    #[test]
+    fn defaults_have_no_errors_or_conflicts() {
+        let map = resolve("");
+        assert!(map.errors.is_empty(), "{:?}", map.errors);
+        assert!(map.conflicts.is_empty(), "{:?}", map.conflicts);
+        assert_eq!(map.bindings.len(), DEFAULTS.len());
+        let ids: BTreeSet<&str> = map.bindings.iter().map(|b| b.id).collect();
+        assert_eq!(ids.len(), map.bindings.len(), "ids are unique");
+        for b in &map.bindings {
+            assert!(!b.keys.is_empty(), "{} has a default key", b.id);
+            assert!(GROUPS.contains(&b.group), "{} has a known group", b.id);
+            assert!(!b.contexts.is_empty(), "{} has a context", b.id);
+            assert!(action_for(b.id, &testkit::state(ProjectBuilder::new().build())).is_some());
+            if let Some(cli) = b.cli {
+                assert!(cli.starts_with("qrec "), "{cli}");
+            }
+        }
+        assert_eq!(
+            map.binding("clip.remove").unwrap().keys,
+            vec![chord("Delete"), chord("x"), chord("BackSpace")],
+            "SPEC §10.2 plus Backspace"
+        );
+        assert_eq!(action_for("bogus", &testkit::state(ProjectBuilder::new().build())), None);
+    }
+
+    #[test]
+    fn spec_table_keys() {
+        // SPEC §10.2, row by row.
+        let map = resolve("");
+        let keys = |id: &str| -> Vec<String> {
+            map.binding(id).unwrap().keys.iter().map(KeyChord::display).collect()
+        };
+        assert_eq!(keys("record.toggle"), ["r"]);
+        assert_eq!(keys("record.over"), ["o"]);
+        assert_eq!(keys("take.discard-last"), ["d"]);
+        assert_eq!(keys("cancel"), ["Esc"]);
+        assert_eq!(keys("play.toggle"), ["Space"]);
+        assert_eq!([keys("shuttle.reverse"), keys("shuttle.stop"), keys("shuttle.forward")].concat(), ["j", "k", "l"]);
+        assert_eq!([keys("seek.prev-frame"), keys("seek.next-frame")].concat(), ["←", "→"]);
+        assert_eq!([keys("seek.back"), keys("seek.forward")].concat(), ["Shift+←", "Shift+→"]);
+        assert_eq!([keys("seek.prev-edit"), keys("seek.next-edit")].concat(), ["↑", "↓"]);
+        assert_eq!([keys("seek.start"), keys("seek.end")].concat(), ["Home", "End"]);
+        assert_eq!([keys("select.prev"), keys("select.next")].concat(), [",", "."]);
+        assert_eq!([keys("clip.move-left"), keys("clip.move-right")].concat(), ["<", ">"]);
+        assert_eq!(keys("clip.split"), ["s"]);
+        assert_eq!([keys("clip.trim-start"), keys("clip.trim-end")].concat(), ["[", "]"]);
+        assert_eq!([keys("clip.nudge-start"), keys("clip.nudge-end")].concat(), ["Alt+[", "Alt+]"]);
+        assert_eq!([keys("clip.nudge-start-10"), keys("clip.nudge-end-10")].concat(), ["Alt+{", "Alt+}"]);
+        assert_eq!(keys("clip.remove"), ["Del", "x", "Backspace"]);
+        assert_eq!(keys("autocut.run"), ["c"]);
+        assert_eq!(keys("autocut.preview"), ["Shift+C"]);
+        assert_eq!(keys("history.undo"), ["Ctrl+Z"]);
+        assert_eq!(keys("history.redo"), ["Ctrl+Shift+Z", "Ctrl+Y"]);
+        assert_eq!(keys("select.all"), ["Ctrl+A"]);
+        assert_eq!(keys("frame.save"), ["p"]);
+        assert_eq!(keys("export"), ["Ctrl+E"]);
+        assert_eq!([keys("zoom.in"), keys("zoom.out")].concat(), ["=", "-"]);
+        assert_eq!(keys("zoom.fit"), ["\\"]);
+        assert_eq!(keys("zoom.selection"), ["z"]);
+        assert_eq!(keys("snapping.toggle"), ["n"]);
+        assert_eq!(keys("canvas.mode"), ["Tab"]);
+        assert_eq!(keys("bin.toggle"), ["b"]);
+        assert_eq!(keys("keys.help"), ["?"]);
+        assert_eq!(keys("palette.open"), ["Ctrl+K", ":"]);
+        assert_eq!(keys("settings.open"), ["Ctrl+,"]);
+    }
+
+    #[test]
+    fn overrides_conflicts_and_errors() {
+        let map = resolve(
+            "# my keys\n[bindings]\nframe.save = \"f\"\n\"autocut.run\" = [\"x\", \"ctrl+shift+a\"]\nrecord.over = []\n",
+        );
+        assert!(map.errors.is_empty(), "{:?}", map.errors);
+        assert_eq!(map.binding("frame.save").unwrap().keys, vec![chord("f")]);
+        assert_eq!(
+            map.binding("autocut.run").unwrap().keys,
+            vec![chord("x"), chord("ctrl+shift+a")]
+        );
+        assert!(map.binding("record.over").unwrap().keys.is_empty());
+        // `x` is still a default of clip.remove: neither runs (SPEC §10.1, settings S22).
+        assert_eq!(
+            map.conflicts,
+            vec![Conflict {
+                chord: chord("x"),
+                ids: vec!["clip.remove".into(), "autocut.run".into()],
+                context: KeyContext::Global,
+            }]
+        );
+        assert_eq!(lookup(&map, &chord("x"), KeyContext::Timeline), None);
+        assert_eq!(lookup(&map, &chord("Delete"), KeyContext::Timeline).unwrap().id, "clip.remove");
+        assert_eq!(lookup(&map, &chord("f"), KeyContext::Canvas).unwrap().id, "frame.save");
+        assert_eq!(lookup(&map, &chord("p"), KeyContext::Timeline), None, "p is unbound now");
+
+        // Errors keep the defaults and are reported one per problem.
+        let map = resolve(
+            "[bindings]\nclip.split = \"ctrl+bogus\"\nnope = \"q\"\nexport = 5\nundo = \"u\"\n[extra]\na = 1\n",
+        );
+        assert_eq!(map.binding("clip.split").unwrap().keys, vec![chord("s")]);
+        assert_eq!(map.errors.len(), 5, "{:#?}", map.errors);
+        assert!(map.errors.iter().any(|e| e.contains("`clip.split`") && e.contains("bogus")));
+        assert!(map.errors.iter().any(|e| e.contains("unknown binding `nope`")));
+        assert!(map.errors.iter().any(|e| e.contains("unknown binding `undo`")));
+        assert!(map.errors.iter().any(|e| e.contains("`export`") && e.contains("found 5")));
+        assert!(map.errors.iter().any(|e| e.contains("unknown section `extra`")));
+
+        let map = resolve("[bindings\n");
+        assert_eq!(map.errors.len(), 1);
+        assert!(map.errors[0].starts_with("keys.toml line 1:"), "{}", map.errors[0]);
+        assert_eq!(map.bindings, resolve("").bindings, "a broken file keeps the defaults");
+    }
+
+    #[test]
+    fn conflicts_follow_contexts() {
+        // Left seeks on the timeline and nudges layers on the canvas: no conflict.
+        let map = resolve("");
+        assert_eq!(lookup(&map, &chord("Left"), KeyContext::Timeline).unwrap().id, "seek.prev-frame");
+        assert_eq!(lookup(&map, &chord("Left"), KeyContext::Canvas).unwrap().id, "layer.nudge-left");
+        assert_eq!(lookup(&map, &chord("Left"), KeyContext::Recording), None);
+        assert_eq!(lookup(&map, &chord("r"), KeyContext::Recording).unwrap().id, "record.toggle");
+        assert_eq!(lookup(&map, &chord("s"), KeyContext::Recording), None, "editing stops while recording");
+        assert_eq!(lookup(&map, &chord("Escape"), KeyContext::Overlay).unwrap().id, "cancel");
+        assert_eq!(lookup(&map, &chord("r"), KeyContext::Overlay), None);
+
+        // A global key reused for a timeline-only binding clashes on the timeline only.
+        let map = resolve("[bindings]\nseek.prev-frame = \"s\"\n");
+        assert_eq!(
+            map.conflicts,
+            vec![Conflict {
+                chord: chord("s"),
+                ids: vec!["seek.prev-frame".into(), "clip.split".into()],
+                context: KeyContext::Timeline,
+            }]
+        );
+        assert_eq!(lookup(&map, &chord("s"), KeyContext::Canvas).unwrap().id, "clip.split");
+        // Two globals clash once, under global.
+        let map = resolve("[bindings]\nzoom.selection = \"r\"\n");
+        let contexts: Vec<KeyContext> = map.conflicts.iter().map(|c| c.context).collect();
+        assert_eq!(contexts, [KeyContext::Global, KeyContext::Recording]);
+    }
+
+    #[test]
+    fn hints_follow_the_keymap() {
+        let map = resolve("");
+        assert_eq!(
+            format_hints(&hints(HintContext::Idle, &map)),
+            "r record · o record over · s split · c autocut · ? all keys",
+            "SPEC §10.1"
+        );
+        assert_eq!(
+            format_hints(&hints(HintContext::ClipSelected, &map)),
+            "s split · [ ] trim to playhead · < > move · x remove · c autocut · o record over · z zoom to clip · ? all keys"
+        );
+        let map = resolve("[bindings]\nrecord.toggle = \"F9\"\nrecord.over = []\nclip.remove = \"Delete\"\n");
+        assert_eq!(
+            format_hints(&hints(HintContext::Idle, &map)),
+            "F9 record · s split · c autocut · ? all keys"
+        );
+        assert!(format_hints(&hints(HintContext::ClipSelected, &map)).contains("Del remove"));
+        // A conflicting key isn't advertised.
+        let map = resolve("[bindings]\nautocut.run = \"s\"\n");
+        assert_eq!(
+            format_hints(&hints(HintContext::Idle, &map)),
+            "r record · o record over · ? all keys"
+        );
+    }
+
+    fn editing_state() -> State {
+        let project = ProjectBuilder::new()
+            .screen_layer("L1", "DP-1")
+            .mic("A1", "alsa_input.mic")
+            .take("take-0001", 300)
+            .take("take-0002", 200)
+            .clip("c001", "take-0001", 0, 100)
+            .clip("c002", "take-0001", 150, 300)
+            .clip("c003", "take-0002", 0, 200)
+            .build();
+        testkit::state(project)
+    }
+
+    fn ids(list: &[&str]) -> Vec<ClipId> {
+        list.iter().map(|s| ClipId::from_raw(*s)).collect()
+    }
+
+    #[test]
+    fn commands_for_the_hot_loop() {
+        let mut state = editing_state();
+        assert_eq!(command_for("record.toggle", &state), Some(Command::RecordToggle { wait: false }));
+        assert_eq!(
+            action_for("record.over", &state),
+            Some(Action::Unavailable("Select the clips to record over".into()))
+        );
+        state.ui.selection = ids(&["c003", "c001"]);
+        assert_eq!(
+            action_for("record.over", &state),
+            Some(Action::Unavailable("Needs a contiguous selection".into()))
+        );
+        state.ui.selection = ids(&["c002", "c001"]);
+        assert_eq!(
+            command_for("record.over", &state),
+            Some(Command::RecordStart {
+                mode: RecordModeArg::Over(ids(&["c001", "c002"])),
+                countdown: None,
+                wait: false
+            }),
+            "the selection in timeline order"
+        );
+        assert_eq!(command_for("cancel", &state), Some(Command::Select { op: SelectOp::Clear }));
+
+        // Discard needs a placed take with clips on the timeline (A§5.5).
+        assert_eq!(
+            action_for("take.discard-last", &state),
+            Some(Action::Unavailable("No take to discard yet".into()))
+        );
+        state.project.takes.get_mut(&TakeId::numbered(2)).unwrap().placed = true;
+        assert_eq!(command_for("take.discard-last", &state), Some(Command::TakeDiscardLast));
+        state.project.timeline.clips.retain(|c| c.take != TakeId::numbered(2));
+        assert_eq!(
+            action_for("take.discard-last", &state),
+            Some(Action::Unavailable("Take 2 is already in the bin".into()))
+        );
+
+        // While recording: r stops, Esc cancels, editing is unavailable.
+        state.runtime.record = RecordPhase::Recording {
+            take: TakeId::numbered(3),
+            mode: RecordMode::Append,
+            elapsed_ns: 0,
+            waiters: vec![],
+        };
+        assert_eq!(command_for("record.toggle", &state), Some(Command::RecordToggle { wait: false }));
+        assert_eq!(command_for("cancel", &state), Some(Command::RecordCancel));
+        assert_eq!(
+            action_for("clip.remove", &state),
+            Some(Action::Unavailable("Not while recording".into()))
+        );
+        assert_eq!(
+            action_for("take.discard-last", &state),
+            Some(Action::Unavailable("Not while recording".into()))
+        );
+        assert!(matches!(command_for("canvas.mode", &state), Some(Command::SetCanvasMode { .. })));
+
+        // Finalizing: d is remembered, r and Esc wait.
+        state.runtime.record = RecordPhase::Finalizing {
+            take: TakeId::numbered(3),
+            mode: RecordMode::Append,
+            cancelled: false,
+            stop_reqs: vec![],
+            waiters: vec![],
+            discard: None,
+        };
+        assert_eq!(command_for("take.discard-last", &state), Some(Command::TakeDiscardLast));
+        assert_eq!(
+            action_for("record.toggle", &state),
+            Some(Action::Unavailable("Take 3 is finalizing".into()))
+        );
+    }
+
+    #[test]
+    fn record_needs_a_scene_and_no_export() {
+        let mut state = testkit::state(ProjectBuilder::new().build());
+        assert_eq!(
+            action_for("record.toggle", &state),
+            Some(Action::Unavailable("Add a layer or audio track first".into()))
+        );
+        state = editing_state();
+        state.runtime.jobs.insert(
+            crate::ids::JobId(1),
+            Job {
+                id: crate::ids::JobId(1),
+                kind: JobKind::FrameSave {
+                    out: "/tmp/x.png".into(),
+                    files: Default::default(),
+                },
+                req: None,
+                started: state.project.created_at,
+            },
+        );
+        assert!(command_for("record.toggle", &state).is_some(), "a frame save doesn't block");
+        state.runtime.jobs.insert(
+            crate::ids::JobId(2),
+            Job {
+                id: crate::ids::JobId(2),
+                kind: JobKind::Export {
+                    out: "/tmp/x.mp4".into(),
+                    files: Default::default(),
+                    total_frames: 1,
+                    seg_frames: vec![],
+                    seg_done: vec![],
+                    stitch_total_ns: 0,
+                    stitch_done_ns: 0,
+                    stitching: false,
+                },
+                req: None,
+                started: state.project.created_at,
+            },
+        );
+        assert_eq!(
+            action_for("record.toggle", &state),
+            Some(Action::Unavailable("Wait for the export to finish".into()))
+        );
+        assert_eq!(
+            action_for("export", &state),
+            Some(Action::Unavailable("An export is already running".into()))
+        );
+    }
+
+    #[test]
+    fn commands_for_editing() {
+        let mut state = editing_state();
+        // Clips: c001 [0,100) at 0, c002 [150,300) at 100, c003 [0,200) at 250.
+        state.ui.playhead = 130;
+        assert_eq!(
+            command_for("clip.split", &state),
+            Some(Command::ClipSplit { clip: None, at: TimeArg::frames(130), timeline: true })
+        );
+        state.ui.playhead = 100;
+        assert_eq!(
+            action_for("clip.split", &state),
+            Some(Action::Unavailable("The playhead is on a cut".into()))
+        );
+        // `]` at a cut trims the clip that ends there; `[` the one that starts there.
+        let trim = |clip: &str, start: Option<u64>, end: Option<u64>| Command::ClipTrim {
+            clip: ClipId::from_raw(clip),
+            start: start.map(TimeArg::frames),
+            end: end.map(TimeArg::frames),
+            timeline: true,
+        };
+        assert_eq!(command_for("clip.trim-end", &state), Some(trim("c001", None, Some(100))));
+        assert_eq!(command_for("clip.trim-start", &state), Some(trim("c002", Some(100), None)));
+        // The selected clip wins when the playhead is on it.
+        state.ui.playhead = 250;
+        state.ui.selection = ids(&["c002"]);
+        assert_eq!(command_for("clip.trim-end", &state), Some(trim("c002", None, Some(250))));
+        assert_eq!(command_for("clip.trim-start", &state), Some(trim("c003", Some(250), None)));
+        state.ui.playhead = 450;
+        assert_eq!(
+            action_for("clip.split", &state),
+            Some(Action::Unavailable("Move the playhead onto a clip".into()))
+        );
+        assert_eq!(command_for("clip.trim-end", &state), Some(trim("c003", None, Some(450))));
+
+        // Nudges: start later, end earlier, on the selected clip.
+        assert_eq!(
+            command_for("clip.nudge-start", &state),
+            Some(Command::ClipTrim {
+                clip: ClipId::from_raw("c002"),
+                start: Some(TimeArg::plus_frames(1)),
+                end: None,
+                timeline: false
+            })
+        );
+        assert_eq!(
+            command_for("clip.nudge-end-10", &state),
+            Some(Command::ClipTrim {
+                clip: ClipId::from_raw("c002"),
+                start: None,
+                end: Some(TimeArg::minus_frames(10)),
+                timeline: false
+            })
+        );
+        state.ui.selection = ids(&["c001", "c002"]);
+        assert_eq!(
+            action_for("clip.nudge-start", &state),
+            Some(Action::Unavailable("Select one clip".into()))
+        );
+        assert_eq!(
+            command_for("clip.move-left", &state),
+            Some(Command::ClipMove { clips: ids(&["c001", "c002"]), to: MoveTo::By(-1) })
+        );
+        assert_eq!(
+            command_for("clip.remove", &state),
+            Some(Command::ClipRemove { clips: ids(&["c001", "c002"]) })
+        );
+        assert_eq!(
+            command_for("autocut.run", &state),
+            Some(Command::Autocut {
+                scope: ClipScope::Clips(ids(&["c001", "c002"])),
+                overrides: AutocutOverrides::default(),
+                dry_run: false
+            })
+        );
+        state.ui.selection.clear();
+        assert_eq!(
+            command_for("autocut.preview", &state),
+            Some(Command::Autocut {
+                scope: ClipScope::All,
+                overrides: AutocutOverrides::default(),
+                dry_run: true
+            })
+        );
+        assert_eq!(
+            command_for("frame.save", &state),
+            Some(Command::FrameSave { at: TimeArg::frames(449), layer: None, out: None }),
+            "the last frame when the playhead is at the end"
+        );
+        assert_eq!(command_for("history.undo", &state), None, "nothing to undo");
+        assert_eq!(
+            action_for("cancel", &state),
+            Some(Action::Unavailable("Nothing to cancel".into()))
+        );
+    }
+
+    #[test]
+    fn commands_for_view_and_playback() {
+        let mut state = editing_state();
+        assert_eq!(command_for("play.toggle", &state), Some(Command::Play));
+        state.runtime.playing = true;
+        assert_eq!(command_for("play.toggle", &state), Some(Command::Pause));
+        assert_eq!(
+            command_for("seek.back", &state),
+            Some(Command::Seek { to: SeekTarget::By("-1s".parse().unwrap()) })
+        );
+        assert_eq!(
+            command_for("seek.next-frame", &state),
+            Some(Command::Seek { to: SeekTarget::By("+1f".parse().unwrap()) })
+        );
+        assert_eq!(
+            command_for("canvas.mode", &state),
+            Some(Command::SetCanvasMode { mode: CanvasMode::Program })
+        );
+        assert_eq!(
+            command_for("snapping.toggle", &state),
+            Some(Command::SetUi { patch: UiPatch { snapping: Some(false), ..UiPatch::default() } })
+        );
+        assert_eq!(action_for("zoom.in", &state), Some(Action::Gui));
+        assert_eq!(command_for("zoom.in", &state), None);
+        // Playback commands need the GUI host.
+        state.runtime.host = HostKind::Headless;
+        assert_eq!(
+            action_for("play.toggle", &state),
+            Some(Action::Unavailable("Needs the Qrec window".into()))
+        );
+        // Edits wait for a valid qrec.json; view changes don't.
+        state.runtime.disk_invalid = Some("bad".into());
+        state.ui.selection = ids(&["c001"]);
+        assert_eq!(
+            action_for("clip.remove", &state),
+            Some(Action::Unavailable("qrec.json on disk is invalid".into()))
+        );
+        assert!(command_for("bin.toggle", &state).is_some());
+    }
+
+    #[test]
+    fn layer_nudges_edit_the_canvas_scene() {
+        let mut state = editing_state();
+        assert_eq!(
+            action_for("layer.nudge-left", &state),
+            Some(Action::Unavailable("Select a layer on the canvas".into()))
+        );
+        state.ui.selected_layer = Some(LayerId::numbered(1));
+        let rect = |x: i32, y: i32| Rect::new(x, y, 1920, 1080);
+        assert_eq!(
+            command_for("layer.nudge-left-10", &state),
+            Some(Command::LayerSet {
+                target: SceneTarget::Project,
+                layer: LayerId::numbered(1),
+                patch: LayerPatch { rect: Some(rect(-10, 0)), ..LayerPatch::default() },
+            })
+        );
+        state.ui.canvas_mode = CanvasMode::Program;
+        state.ui.playhead = 260;
+        assert_eq!(
+            command_for("layer.nudge-down", &state),
+            Some(Command::LayerSet {
+                target: SceneTarget::Take(TakeId::numbered(2)),
+                layer: LayerId::numbered(1),
+                patch: LayerPatch { rect: Some(rect(0, 1)), ..LayerPatch::default() },
+            }),
+            "Program mode edits the take under the playhead"
+        );
+        state.project.takes.get_mut(&TakeId::numbered(2)).unwrap().scene.layers[0].locked = true;
+        assert_eq!(
+            action_for("layer.nudge-down", &state),
+            Some(Action::Unavailable("Layer L1 is locked".into()))
+        );
+    }
+
+    #[test]
+    fn hint_context_from_state() {
+        let mut state = editing_state();
+        assert_eq!(hint_context(&state, false), HintContext::Idle);
+        assert_eq!(hint_context(&state, true), HintContext::Dragging);
+        state.ui.selection = ids(&["c001"]);
+        assert_eq!(hint_context(&state, false), HintContext::ClipSelected);
+        state.runtime.record = RecordPhase::Countdown {
+            remaining: 3,
+            mode: RecordMode::Append,
+            timer: crate::ids::TimerId(1),
+            start_req: None,
+            wait: false,
+        };
+        assert_eq!(hint_context(&state, true), HintContext::Countdown);
+    }
+
+    #[test]
+    fn palette_rows() {
+        let mut state = editing_state();
+        state.ui.selection = ids(&["c001", "c003"]);
+        let map = resolve("");
+        let rows = palette(&map, &state);
+        assert_eq!(rows.len(), map.bindings.len());
+        let row = |id: &str| rows.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(
+            row("clip.split").line(),
+            "Split clip at the playhead — s — qrec clip split <clip> --at <t>"
+        );
+        assert_eq!(row("snapping.toggle").line(), "Toggle snapping — n — —");
+        let over = row("record.over");
+        assert!(!over.enabled);
+        assert_eq!(over.reason.as_deref(), Some("Needs a contiguous selection"));
+        assert!(row("palette.open").enabled, "GUI actions are always enabled");
+        assert_eq!(row("palette.open").keys, ["Ctrl+K", ":"]);
+    }
+
+    #[test]
+    fn keys_view_json_shape() {
+        let view = keys_view(&resolve(""));
+        let json = serde_json::to_value(&view).unwrap();
+        let redo = json["bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["id"] == "history.redo")
+            .unwrap();
+        assert_eq!(
+            redo,
+            &serde_json::json!({
+                "id": "history.redo",
+                "group": "Edit",
+                "label": "Redo",
+                "keys": ["ctrl+shift+z", "ctrl+y"],
+                "cli": "qrec redo",
+                "contexts": ["global"]
+            })
+        );
+        assert_eq!(serde_json::from_value::<KeysView>(json).unwrap(), view);
+    }
+
+    #[test]
+    fn snapshot_keymap_table() {
+        insta::assert_snapshot!("keymap_table", cheat_sheet(&resolve("")));
+    }
+
+    #[test]
+    fn snapshot_keymap_json() {
+        insta::assert_json_snapshot!("keymap_json", keys_view(&resolve("")));
+    }
+
+    #[test]
+    fn snapshot_hints() {
+        let map = resolve("");
+        let text: String = HintContext::ALL
+            .iter()
+            .map(|ctx| format!("{ctx:?}: {}\n", format_hints(&hints(*ctx, &map))))
+            .collect();
+        insta::assert_snapshot!("hints", text);
+    }
+
+    #[test]
+    fn snapshot_cheat_sheet_with_problems() {
+        let map = resolve("[bindings]\nautocut.run = \"x\"\nframe.save = \"f\"\nnope = \"q\"\n");
+        insta::assert_snapshot!("cheat_sheet_with_problems", cheat_sheet(&map));
+    }
+
+    #[test]
+    fn total_frames_helper_is_consistent() {
+        let state = editing_state();
+        assert_eq!(total_frames(&state.project.timeline.clips), 450);
+    }
 }
