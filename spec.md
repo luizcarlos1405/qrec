@@ -10,6 +10,7 @@
 |---|---|
 | Status | Draft v1, written 2026-10-14 from an interview with the product owner |
 | Target | Linux, Wayland (developed on NixOS + niri) |
+| App ID | `com.rsensato.qrec` (GApplication id, `.desktop` file, icon name, D-Bus name) |
 | Related docs | `docs/RECORDING.md` covers wf-recorder lessons from `qrec-tui` |
 | Prior attempts | `qrec-tui` (Rust, FCIS, solid), `qrec-electron` (fragile browser playback), `qrec-sky` (never compiled), `qrec-glm` (scaffold) |
 
@@ -43,7 +44,9 @@
 - Project management (recent projects, project browser). You launch Qrec in
   the right folder.
 - Multi-track editing, B-roll, transitions, titles, effects, color grading.
-- Capturing a single window. Regions are deferred too (see §14).
+- Capturing a single window, and drawing a screen region. A layer's `crop`
+  can still trim a monitor numerically (§12), but there is no "draw a region"
+  gesture.
 - Windows and macOS. GNOME and KDE should work through the portal but aren't
   tested.
 
@@ -194,9 +197,10 @@ When the GUI or any project-scoped CLI command starts, the working directory,
 or the directory given with `--project <dir>`, must be one of:
 
 1. **A directory containing `qrec.json`.** That project is used.
-2. **An empty directory.** A new project is initialized there (`qrec.json`,
-   `takes/`, `.qrec/`). The CLI does this lazily on the first mutating
-   command, or explicitly with `qrec init`.
+2. **A strictly empty directory.** Any entry counts, including hidden files
+   and folders such as `.git` or `.envrc`. A new project is initialized there
+   (`qrec.json`, `takes/`, `.qrec/`). The CLI does this lazily on the first
+   mutating command, or explicitly with `qrec init`.
 
 Anything else is rejected with the message *"Not my swamp: this folder isn't
 empty and has no qrec.json"* and exit code 3. Commands that don't use a
@@ -1082,9 +1086,9 @@ verbs ("Record", "Export"), so the app stays usable.
 3. **GES vs ffmpeg parity** in scaling filters and color range. wf-recorder's
    output was full-range `yuvj420p`. All recording and export is normalized
    to limited-range BT.709, and the parity test from §12 guards it.
-4. **App ID and icon name.** For example `dev.qrec.Qrec`. To be decided.
-5. **Regions** (a crop of a monitor) are easy to add later as `crop` on a
-   screen layer, which the schema already supports. Is a "draw region"
-   gesture wanted in v1?
-6. **Folder rule strictness.** Should dotfiles such as `.git` or `.envrc`
-   count as "empty"? The current spec says strictly empty.
+
+### Resolved
+
+- **App ID:** `com.rsensato.qrec`.
+- **Draw screen region:** not in v1. Numeric `crop` on a screen layer stays.
+- **Folder rule:** strictly empty. Hidden files and folders count as content.
