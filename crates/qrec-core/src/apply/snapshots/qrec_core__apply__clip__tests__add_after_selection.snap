@@ -1,0 +1,57 @@
+---
+source: crates/qrec-core/src/apply/clip.rs
+expression: summary(&out)
+---
+{
+  "effects": [
+    "history.append#1",
+    "writeProject"
+  ],
+  "entry": {
+    "cmd": {
+      "at": "afterSelection",
+      "cmd": "clipAdd",
+      "take": "take-0002"
+    },
+    "label": "Insert take 2 after c001",
+    "seq": 1
+  },
+  "reply": {
+    "Ok": {
+      "created": [
+        "ce8d"
+      ],
+      "message": "Inserted take 2 as clip ce8d at 00:00:03:10",
+      "removed": [],
+      "result": {
+        "duration": 200,
+        "id": "ce8d",
+        "in": 0,
+        "out": 200,
+        "start": 100,
+        "take": "take-0002"
+      },
+      "seq": 1
+    }
+  },
+  "timeline": [
+    "c001 take-0001 [0, 100)",
+    "ce8d take-0002 [0, 200)",
+    "c002 take-0001 [150, 300)",
+    "c003 take-0002 [0, 200)"
+  ],
+  "ui": {
+    "binOpen": false,
+    "canvasMode": "live",
+    "panels": {},
+    "playhead": 0,
+    "scrollPx": 0.0,
+    "selectedLayer": null,
+    "selection": [
+      "c001"
+    ],
+    "snapping": true,
+    "solo": null,
+    "zoom": null
+  }
+}

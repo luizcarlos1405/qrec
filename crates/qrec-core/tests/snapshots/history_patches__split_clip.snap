@@ -1,0 +1,13 @@
+---
+source: crates/qrec-core/tests/history_patches.rs
+expression: render(&e)
+---
+forward:
+test    /timeline/clips/0/out 410
+replace /timeline/clips/0/out 300
+add     /timeline/clips/1 {"id":"c9b2","in":300,"out":410,"take":"take-0001"}
+inverse:
+test    /timeline/clips/1 {"id":"c9b2","in":300,"out":410,"take":"take-0001"}
+remove  /timeline/clips/1
+test    /timeline/clips/0/out 300
+replace /timeline/clips/0/out 410
