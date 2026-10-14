@@ -113,7 +113,7 @@ impl SourceInventory {
             }
         }
         if what.cameras {
-            let (cameras, warning) = discover_cameras();
+            let (cameras, warning) = cameras_and_warning();
             inventory.cameras = cameras;
             inventory
                 .warnings
@@ -561,10 +561,21 @@ mod wayland {
 
 // -------------------------------------------------------------- cameras
 
+/// The cameras (GStreamer's DeviceMonitor with modes, else sysfs without
+/// them). Shaped like the facts' discovery hooks: never `Err` in practice,
+/// since sysfs always answers; a GStreamer problem is logged.
+pub fn discover_cameras() -> Result<Vec<CameraInfo>, String> {
+    let (cameras, warning) = cameras_and_warning();
+    if let Some(warning) = warning {
+        tracing::warn!("cameras: {warning}");
+    }
+    Ok(cameras)
+}
+
 /// GStreamer's DeviceMonitor (with modes), else sysfs. Returns the cameras
 /// and, when something failed, why.
 #[cfg(feature = "gst")]
-pub fn discover_cameras() -> (Vec<CameraInfo>, Option<String>) {
+fn cameras_and_warning() -> (Vec<CameraInfo>, Option<String>) {
     match gst_cameras(CAMERA_TIMEOUT) {
         Ok(cameras) => (cameras, None),
         Err(e) => (sysfs_cameras(), Some(format!("{e}; listed without modes"))),
@@ -573,7 +584,7 @@ pub fn discover_cameras() -> (Vec<CameraInfo>, Option<String>) {
 
 /// Without GStreamer: the `video4linux` capture nodes, without modes.
 #[cfg(not(feature = "gst"))]
-pub fn discover_cameras() -> (Vec<CameraInfo>, Option<String>) {
+fn cameras_and_warning() -> (Vec<CameraInfo>, Option<String>) {
     (sysfs_cameras(), None)
 }
 

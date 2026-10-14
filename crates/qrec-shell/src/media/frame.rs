@@ -35,6 +35,11 @@ pub(crate) fn run(ctx: &Ctx, ctl: &JobCtl, job: JobId, plan: &FramePlan) -> Even
             let (message, log) = match failure {
                 Failure::Cancelled | Failure::Aborted => ("cancelled".to_owned(), log_path),
                 Failure::Failed { message, log, .. } => (message, log),
+                // Frame saves have no segments; a VA failure can't happen.
+                Failure::VaSegment(inner) => match *inner {
+                    Failure::Failed { message, log, .. } => (message, log),
+                    _ => ("cancelled".to_owned(), log_path),
+                },
             };
             Event::FrameFailed { job, message, log }
         }

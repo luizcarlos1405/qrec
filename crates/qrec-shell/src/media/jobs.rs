@@ -38,6 +38,16 @@ impl JobCtl {
         self.stop.set();
     }
 
+    /// Undoes [`JobCtl::abort`] before a retry, but never a cancel: `cancel`
+    /// sets `cancelled` before `stop`, so a cancel racing this still ends
+    /// with `stop` set.
+    pub(crate) fn resume(&self) {
+        self.stop.clear();
+        if self.is_cancelled() {
+            self.stop.set();
+        }
+    }
+
     /// Remembers a temp file to delete if the job doesn't finish.
     pub(crate) fn add_temp(&self, path: PathBuf) {
         self.temps
@@ -174,5 +184,10 @@ mod tests {
         assert!(kept.exists() && !gone.exists());
         ctl.abort();
         assert!(ctl.stop.is_set() && !ctl.is_cancelled());
+        ctl.resume();
+        assert!(!ctl.stop.is_set(), "an abort can be undone");
+        ctl.cancel();
+        ctl.resume();
+        assert!(ctl.stop.is_set(), "a cancel can't");
     }
 }

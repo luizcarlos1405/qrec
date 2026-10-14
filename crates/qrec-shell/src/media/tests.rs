@@ -1,10 +1,8 @@
-//! End-to-end tests of the media runner with real ffmpeg and fixture media
-//! (`crate::testkit`). Every test works in a `TestEnv` temp project.
-//!
-//! The core's planners and parsers (`export_plan`, `frame_plan`,
-//! `parse::{ffprobe, progress, silencedetect}`) are being finished by their
-//! owners; tests that need them are `#[ignore]`d with the reason. Until then
-//! the export tests use plans built here by hand from the A§9.3 rules.
+//! End-to-end tests of the media runner: fixture projects (`crate::testkit`)
+//! planned by the core (`export_plan`, `frame_plan`, `media_argv`), run with
+//! real ffmpeg through `FfmpegRunner`, and checked frame by frame and sample
+//! by sample. Every test works in a `TestEnv` temp project. A few tests run
+//! hand-written command lines to reach failure paths a planner never takes.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -12,21 +10,25 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
+use qrec_core::export_plan::{ExportOptions, plan_export};
+use qrec_core::frame_plan::plan_frame;
 use qrec_core::hash::sha256_hex;
-use qrec_core::layout::place;
-use qrec_core::media_argv::{ffmpeg_prelude, file_arg, probe_argv, silence_argv};
-use qrec_core::model::{Project, StreamKind};
+use qrec_core::media_argv::{
+    ffmpeg_prelude, file_arg, probe_argv, segment_check_argv, silence_argv,
+};
+use qrec_core::model::{Clip, Project, StreamKind};
+use qrec_core::parse::ffprobe::parse_segment_check;
 use qrec_core::plans::{ExportPlan, FramePlan, SegmentPlan, StitchPlan};
-use qrec_core::protocol::{Interval, ProbeJob, ProbePurpose};
-use qrec_core::state::SilenceKey;
-use qrec_core::time::{NS_PER_MS, NS_PER_SEC, frame_ns, ns_to_frame_round};
-use qrec_core::{ClipId, Event, JobId, TakeId};
+use qrec_core::protocol::{ExportFormat, Interval, ProbeJob, ProbePurpose, Quality, VideoCodec};
+use qrec_core::state::{Capabilities, FfmpegCaps, SilenceKey, VaapiCaps};
+use qrec_core::time::NS_PER_SEC;
+use qrec_core::{ClipId, Event, JobId, LayerId, TakeId};
 use serde_json::{Value, json};
 
 use super::{FfmpegRunner, MediaOptions, PART_MARKER, housekeeping};
 use crate::deps::MediaRunner;
 use crate::msg::{Inbox, Msg};
-use crate::testkit::{MediaSpec, TestEnv, ffprobe, fixture_project, write_project};
+use crate::testkit::{MediaSpec, TestEnv, ffprobe, fixture_project, run_tool, write_project};
 
 const SEGMENTS: &str = ".qrec/cache/segments";
 const WAIT: Duration = Duration::from_secs(180);
@@ -74,6 +76,10 @@ fn export_ended(ev: &Event) -> bool {
     )
 }
 
+fn frame_ended(ev: &Event) -> bool {
+    matches!(ev, Event::FrameSaved { .. } | Event::FrameFailed { .. })
+}
+
 fn names_in(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = match fs::read_dir(dir) {
         Ok(entries) => entries
@@ -103,289 +109,110 @@ fn strings(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| (*s).to_owned()).collect()
 }
 
-/// `1.233333` (µs precision, like ffmpeg's time options).
-fn seconds(ns: i64) -> String {
-    let us = (ns + 500) / 1000;
-    format!("{}.{:06}", us / 1_000_000, us % 1_000_000)
-}
-
 fn samples_of(frames: u64, num: u32, den: u32) -> u64 {
     let n = u128::from(frames) * 48_000 * u128::from(den);
     let d = u128::from(num);
     ((2 * n + d) / (2 * d)) as u64
 }
 
-// ------------------------------------------------------- a hand planner
-
-/// A maximal run of continuous clips (same take, `out == next.in`).
-struct Unit {
-    clips: Vec<ClipId>,
-    take: TakeId,
-    in_: u64,
-    out: u64,
-}
-
-fn units(project: &Project) -> Vec<Unit> {
-    let mut units: Vec<Unit> = Vec::new();
-    for clip in &project.timeline.clips {
-        match units.last_mut() {
-            Some(u) if u.take == clip.take && u.out == clip.in_ => {
-                u.out = clip.out;
-                u.clips.push(clip.id.clone());
-            }
-            _ => units.push(Unit {
-                clips: vec![clip.id.clone()],
-                take: clip.take.clone(),
-                in_: clip.in_,
-                out: clip.out,
-            }),
-        }
-    }
-    units
-}
-
-/// The A§9.3 export plan for projects whose videos run at the canvas rate
-/// (libx264 draft, MP4), built by hand while `export_plan` is a stub.
-fn hand_plan(project: &Project, out: &str) -> ExportPlan {
-    let canvas = &project.canvas;
-    let (num, den) = (canvas.fps.num, canvas.fps.den);
-    let mut segments = Vec::new();
-    let mut files = BTreeSet::new();
-    for unit in units(project) {
-        let take = project.take(&unit.take).expect("the clip's take");
-        let n = unit.out - unit.in_;
-        let samples = samples_of(n, num, den);
-        let mut argv = ffmpeg_prelude(true);
-        let mut chains = vec![format!(
-            "color=c={}:s={}x{}:r={num}/{den}[base]",
-            canvas.background.ffmpeg_hex(),
-            canvas.width,
-            canvas.height
-        )];
-        let mut label = "base".to_owned();
-        let mut input = 0;
-        for layer in take.scene.layers.iter().filter(|l| l.visible && !l.missing) {
-            let Some(stream) = take.stream(layer.id.as_str()) else {
-                continue;
-            };
-            let p = place(
-                stream.width.unwrap(),
-                stream.height.unwrap(),
-                layer.crop,
-                layer.rect,
-                layer.fit,
-            )
-            .unwrap();
-            let k = unit.in_ as i64 - ns_to_frame_round(stream.start_offset_ns, canvas.fps);
-            let (k0, lead) = (k.max(0), (-k).max(0));
-            let seek = frame_ns(k0, canvas.fps) - 2 * NS_PER_MS;
-            if seek > 0 {
-                argv.extend(["-ss".to_owned(), seconds(seek)]);
-            }
-            argv.extend(["-i".to_owned(), file_arg(&stream.file)]);
-            files.insert(stream.file.clone());
-            let lead = if lead > 0 {
-                format!("+{lead}")
-            } else {
-                String::new()
-            };
-            chains.push(format!(
-                "[{input}:v]fps={num}/{den},setpts=PTS-STARTPTS{lead},crop={}:{}:{}:{},scale={}:{}:flags=bilinear,format=yuva420p[l{input}]",
-                p.src.w, p.src.h, p.src.x, p.src.y, p.dst.w, p.dst.h
-            ));
-            chains.push(format!(
-                "[{label}][l{input}]overlay=x={}:y={}:eof_action=pass[o{input}]",
-                p.dst.x, p.dst.y
-            ));
-            label = format!("o{input}");
-            input += 1;
-        }
-        chains.push(format!(
-            "[{label}]trim=end_frame={n},setsar=1,format=yuv420p[v]"
-        ));
-        let tracks: Vec<_> = take
-            .scene
-            .audio
-            .iter()
-            .filter(|t| !t.muted && !t.missing)
-            .filter_map(|t| take.stream(t.id.as_str()).map(|s| (t, s)))
-            .collect();
-        if tracks.is_empty() {
-            chains.push(format!(
-                "anullsrc=r=48000:cl=stereo,atrim=end_sample={samples}[a]"
-            ));
-        } else {
-            let mut mix = String::new();
-            for (j, (track, stream)) in tracks.iter().enumerate() {
-                let t = frame_ns(unit.in_ as i64, canvas.fps)
-                    - stream.start_offset_ns
-                    - i64::from(track.sync_offset_ms) * NS_PER_MS;
-                if t > 0 {
-                    argv.extend(["-ss".to_owned(), seconds(t)]);
-                }
-                argv.extend(["-i".to_owned(), file_arg(&stream.file)]);
-                files.insert(stream.file.clone());
-                let up = if stream.channels == Some(1) {
-                    "pan=stereo|c0=c0|c1=c0"
-                } else {
-                    "aformat=channel_layouts=stereo"
-                };
-                let mut chain =
-                    format!("[{input}:a]aresample=48000,{up},volume={}dB", track.gain_db);
-                if t < 0 {
-                    let delay =
-                        ((-t) as u128 * 48_000 + NS_PER_SEC as u128 / 2) / NS_PER_SEC as u128;
-                    chain.push_str(&format!(",adelay={delay}S:all=1"));
-                }
-                chain.push_str(&format!("[a{j}]"));
-                chains.push(chain);
-                mix.push_str(&format!("[a{j}]"));
-                input += 1;
-            }
-            if tracks.len() >= 2 {
-                mix.push_str(&format!(
-                    "amix=inputs={}:normalize=0:duration=longest,",
-                    tracks.len()
-                ));
-            }
-            mix.push_str(&format!("apad,atrim=end_sample={samples}"));
-            if unit.in_ != 0 {
-                mix.push_str(",afade=t=in:ns=240");
-            }
-            if unit.out < take.duration_frames {
-                mix.push_str(&format!(",afade=t=out:ss={}:ns=240", samples - 240));
-            }
-            mix.push_str("[a]");
-            chains.push(mix);
-        }
-        argv.extend([
-            "-filter_complex".to_owned(),
-            chains.join(";"),
-            "-map".to_owned(),
-            "[v]".to_owned(),
-            "-map".to_owned(),
-            "[a]".to_owned(),
-        ]);
-        argv.extend(strings(&[
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "23",
-            "-pix_fmt",
-            "yuv420p",
-            "-profile:v",
-            "high",
-            "-color_range",
-            "tv",
-            "-colorspace",
-            "bt709",
-            "-color_primaries",
-            "bt709",
-            "-color_trc",
-            "bt709",
-            "-c:a",
-            "pcm_s16le",
-            "-f",
-            "mov",
-        ]));
-        let key = sha256_hex(format!("media-test\0{}", argv.join("\0")).as_bytes());
-        let path = format!("{SEGMENTS}/{key}.mov");
-        argv.push(file_arg(&path));
-        segments.push(SegmentPlan {
-            clips: unit.clips,
-            take: unit.take,
-            in_: unit.in_,
-            out: unit.out,
-            frames: n,
-            samples,
-            key,
-            path,
-            argv,
-        });
-    }
-    let total_frames = segments.iter().map(|s| s.frames).sum();
-    let stitch = stitch_plan(&segments, out);
-    ExportPlan {
-        out: out.to_owned(),
-        tmp_ext: "mp4".to_owned(),
-        segments,
-        stitch,
-        total_frames,
-        files,
-    }
-}
-
-fn stitch_plan(segments: &[SegmentPlan], out: &str) -> StitchPlan {
-    let mut list_content = "ffconcat version 1.0\n".to_owned();
-    for s in segments {
-        list_content.push_str(&format!("file '{}.mov'\n", s.key));
-    }
-    let list_path = format!(
-        "{SEGMENTS}/stitch-{}.ffconcat",
-        &sha256_hex(list_content.as_bytes())[..16]
+/// Runs a tool and returns its stdout.
+fn tool(argv: &[String]) -> String {
+    let out = run_tool(
+        std::process::Command::new(&argv[0]).args(&argv[1..]),
+        Duration::from_secs(60),
     );
-    let mut argv = ffmpeg_prelude(true);
-    argv.extend(strings(&["-f", "concat", "-i"]));
-    argv.push(file_arg(&list_path));
-    argv.extend(strings(&[
-        "-map",
-        "0:v:0",
-        "-map",
-        "0:a:0",
-        "-c:v",
-        "copy",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-movflags",
-        "+faststart",
-        "-f",
-        "mp4",
-    ]));
-    argv.push(file_arg(out));
-    StitchPlan {
-        list_path,
-        list_content,
-        argv,
+    assert!(out.status.success(), "{argv:?}: {}", out.stderr);
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// A segment's video packets and PCM samples, checked like the runner does.
+fn segment_counts(file: &Path) -> (u64, u64) {
+    let counts = parse_segment_check(&tool(&segment_check_argv(&file.to_string_lossy()))).unwrap();
+    (counts.video_packets, counts.audio_samples)
+}
+
+/// An export's video packets and decoded audio samples.
+fn output_counts(file: &Path) -> (u64, u64) {
+    let probe = ffprobe(file);
+    let video = probe["streams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["codec_type"] == "video")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let packets = video["nb_read_packets"].as_str().unwrap().parse().unwrap();
+    let samples = tool(&strings(&[
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "frame=nb_samples",
+        "-of",
+        "csv=p=0",
+        &file_arg(&file.to_string_lossy()),
+    ]))
+    .lines()
+    .filter_map(|l| l.trim().trim_end_matches(',').parse::<u64>().ok())
+    .sum();
+    (packets, samples)
+}
+
+fn duration_secs(file: &Path) -> f64 {
+    ffprobe(file)["format"]["duration"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+// ------------------------------------------------------------ planning
+
+/// The ffmpeg on PATH, canonicalized: what capability detection reports.
+fn ffmpeg_identity() -> String {
+    let found = which::which("ffmpeg").expect("ffmpeg on PATH");
+    fs::canonicalize(&found)
+        .unwrap_or(found)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// ffmpeg detected (no encoder list: the planner doesn't check it), and a
+/// VA-API node if given.
+fn caps(vaapi_device: Option<&str>) -> Capabilities {
+    Capabilities {
+        ffmpeg: Some(FfmpegCaps {
+            version: "8.1.2".to_owned(),
+            identity: ffmpeg_identity(),
+            encoders: BTreeSet::new(),
+        }),
+        vaapi: vaapi_device.map(|device| VaapiCaps {
+            device: device.to_owned(),
+            vendor: 0x8086,
+            ffmpeg_h264: true,
+            gst_h264_factory: None,
+        }),
+        cores: 4,
     }
 }
 
-/// A segment from a raw ffmpeg command line (no planner involved).
-fn raw_segment(body: &[&str], frames: u64) -> SegmentPlan {
-    let mut argv = ffmpeg_prelude(true);
-    argv.extend(strings(body));
-    let key = sha256_hex(argv.join("\0").as_bytes());
-    let path = format!("{SEGMENTS}/{key}.mov");
-    argv.extend(["-f".to_owned(), "mov".to_owned(), file_arg(&path)]);
-    SegmentPlan {
-        clips: vec![ClipId::from_raw("c001")],
-        take: TakeId::numbered(1),
-        in_: 0,
-        out: frames,
-        frames,
-        samples: samples_of(frames, 30, 1),
-        key,
-        path,
-        argv,
-    }
-}
-
-fn raw_plan(segment: SegmentPlan, out: &str) -> ExportPlan {
-    let stitch = stitch_plan(std::slice::from_ref(&segment), out);
-    ExportPlan {
+/// A draft MP4 export plan from the core.
+fn export_plan(project: &Project, out: &str, vaapi_device: Option<&str>) -> ExportPlan {
+    let opts = ExportOptions {
+        format: ExportFormat::Mp4,
+        quality: Quality::Draft,
+        codec: VideoCodec::H264,
         out: out.to_owned(),
-        tmp_ext: "mp4".to_owned(),
-        total_frames: segment.frames,
-        files: BTreeSet::new(),
-        segments: vec![segment],
-        stitch,
-    }
+        allow_vaapi: vaapi_device.is_some(),
+    };
+    plan_export(project, &caps(vaapi_device), &opts).expect("a plan")
 }
 
-// ------------------------------------------------------------- fixtures
+fn load(dir: &Path) -> Project {
+    serde_json::from_str(&fs::read_to_string(dir.join("qrec.json")).unwrap()).unwrap()
+}
 
 /// Three takes: video + mono mic; system audio only; video + stereo audio
 /// that started 100 ms and 50 ms after T0. Timeline: take 1 split in two
@@ -412,51 +239,14 @@ fn three_take_project(dir: &Path) -> Project {
     serde_json::from_value(json).expect("a valid project")
 }
 
-fn video_packets(file: &Path) -> u64 {
-    let probe = ffprobe(file);
-    let video = probe["streams"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|s| s["codec_type"] == "video")
-        .cloned()
-        .unwrap_or(Value::Null);
-    video["nb_read_packets"].as_str().unwrap().parse().unwrap()
-}
-
-fn duration_secs(file: &Path) -> f64 {
-    ffprobe(file)["format"]["duration"]
-        .as_str()
-        .unwrap()
-        .parse()
-        .unwrap()
-}
-
-/// Video packets and decoded audio samples, counted like the runner does.
-fn counts(file: &Path) -> (u64, u64) {
-    let run = |argv: Vec<String>| {
-        let out = crate::testkit::run_tool(
-            std::process::Command::new(&argv[0]).args(&argv[1..]),
-            Duration::from_secs(60),
-        );
-        assert!(out.status.success(), "{argv:?}: {}", out.stderr);
-        String::from_utf8(out.stdout).unwrap()
-    };
-    (
-        super::verify::parse_packets(&run(super::verify::packets_argv(file))).unwrap(),
-        super::verify::parse_samples(&run(super::verify::samples_argv(file))).unwrap(),
-    )
-}
-
 // ---------------------------------------------------------------- export
 
 #[test]
-#[ignore = "needs core output (parse::progress)"]
 fn exports_three_takes_with_splits_offsets_and_a_repeat() {
     let env = TestEnv::new();
     let dir = env.empty_dir("swamp");
     let project = three_take_project(&dir);
-    let plan = hand_plan(&project, "exports/swamp-20261014-120000.mp4");
+    let plan = export_plan(&project, "exports/swamp-20261014-120000.mp4", None);
     assert_eq!(plan.segments.len(), 4, "the split clips render as one unit");
     assert_eq!(plan.total_frames, 60 + 45 + 30 + 45);
     assert_eq!(plan.segments[1].key, plan.segments[3].key, "take 2 twice");
@@ -476,7 +266,7 @@ fn exports_three_takes_with_splits_offsets_and_a_repeat() {
 
     // Frame-exact output: every unit's frames, 6 s of audio (the AAC
     // encoder's padding is at most one frame) and video.
-    let (frames, samples) = counts(&out);
+    let (frames, samples) = output_counts(&out);
     assert_eq!(frames, 180);
     assert!(samples.abs_diff(288_000) <= 1024, "{samples} samples");
     let duration = duration_secs(&out);
@@ -505,20 +295,19 @@ fn exports_three_takes_with_splits_offsets_and_a_repeat() {
         "segment progress after the stitch started"
     );
 
-    // Three unique segments cached, verified, nothing temporary left.
+    // Three unique segments cached with exactly their frames and samples;
+    // nothing temporary left anywhere.
     let cached = names_in(&dir.join(SEGMENTS));
     assert_eq!(cached.len(), 3, "{cached:?}");
     for segment in &plan.segments {
-        assert!(cached.contains(&format!("{}.mov", segment.key)));
         assert_eq!(
-            counts(&dir.join(&segment.path)),
+            segment_counts(&dir.join(&segment.path)),
             (segment.frames, segment.samples),
             "{}",
             segment.path
         );
     }
-    // 30 frames at 30 fps: 48 000 samples; the take-3 unit starts mid-take.
-    assert_eq!(plan.segments[2].samples, 48_000);
+    assert_eq!(plan.segments[2].samples, 48_000, "30 frames at 30 fps");
     let seg_logs = logs_matching(&dir, "-j1-seg");
     assert_eq!(
         seg_logs.len(),
@@ -549,7 +338,7 @@ fn exports_three_takes_with_splits_offsets_and_a_repeat() {
         logs_matching(&dir, "-j2-seg").is_empty(),
         "nothing re-rendered"
     );
-    assert_eq!(video_packets(Path::new(path)), 180);
+    assert_eq!(output_counts(Path::new(path)).0, 180);
 
     // Losing one cache file re-renders only that unit.
     fs::remove_file(dir.join(&plan.segments[2].path)).unwrap();
@@ -574,7 +363,83 @@ fn exports_three_takes_with_splits_offsets_and_a_repeat() {
 }
 
 #[test]
-#[ignore = "needs core output (parse::progress)"]
+fn a_split_renders_nothing_new() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("swamp");
+    let project = three_take_project(&dir);
+    let plan = export_plan(&project, "exports/a.mp4", None);
+    let mut runner = runner(&dir);
+    let (inbox, rx) = Inbox::channel();
+    runner.render_export(JobId(1), plan.clone(), inbox.clone());
+    let events = events_until(&rx, WAIT, export_ended);
+    assert!(
+        matches!(events.last(), Some(Event::ExportFinished { .. })),
+        "{events:#?}"
+    );
+
+    // Split c004 at take frame 40: the same render units, the same keys.
+    let mut split = project.clone();
+    let clip = split.timeline.clips[1].clone();
+    split.timeline.clips[1].out = 40;
+    split.timeline.clips.insert(
+        2,
+        Clip {
+            id: ClipId::from_raw("c0ff"),
+            in_: 40,
+            ..clip
+        },
+    );
+    let split_plan = export_plan(&split, "exports/a.mp4", None);
+    let keys = |p: &ExportPlan| p.segments.iter().map(|s| s.key.clone()).collect::<Vec<_>>();
+    assert_eq!(keys(&split_plan), keys(&plan));
+    runner.render_export(JobId(2), split_plan, inbox);
+    let events = events_until(&rx, WAIT, export_ended);
+    let Some(Event::ExportFinished { path, .. }) = events.last() else {
+        panic!("{events:#?}");
+    };
+    assert!(logs_matching(&dir, "-j2-seg").is_empty());
+    assert_eq!(Path::new(path), dir.join("exports/a-2.mp4"));
+}
+
+#[test]
+fn a_failed_va_segment_falls_back_to_libx264() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("swamp");
+    fixture_project(
+        &dir,
+        &[MediaSpec::video(320, 180, 30, 30).with_audio(48_000, 1, &[(0, 1000)])],
+    );
+    // A node that doesn't exist: the VA chain fails at once and no real
+    // device is ever opened.
+    let device = "/dev/dri/qrec-no-such-node";
+    let plan = export_plan(&load(&dir), "exports/va.mp4", Some(device));
+    assert!(
+        plan.segments[0]
+            .argv
+            .contains(&format!("vaapi=va:{device}")),
+        "a VA plan"
+    );
+    let mut runner = runner(&dir);
+    let (inbox, rx) = Inbox::channel();
+    runner.render_export(JobId(4), plan.clone(), inbox);
+    let events = events_until(&rx, WAIT, export_ended);
+    let Some(Event::ExportFinished { path, .. }) = events.last() else {
+        panic!("{events:#?}");
+    };
+    assert_eq!(Path::new(path), dir.join("exports/va.mp4"));
+    assert_eq!(output_counts(Path::new(path)).0, 30);
+    // The VA render failed and was thrown away; libx264 rendered it again
+    // under another key. Nothing VA-made was cached.
+    let cached = names_in(&dir.join(SEGMENTS));
+    assert_eq!(cached.len(), 1, "{cached:?}");
+    assert_ne!(cached[0], format!("{}.mov", plan.segments[0].key));
+    assert_eq!(logs_matching(&dir, "-j4-seg0").len(), 2, "VA, then libx264");
+    assert_eq!(logs_matching(&dir, "-j4-export").len(), 2);
+    assert!(temps_in(&dir.join(SEGMENTS)).is_empty());
+    assert!(temps_in(&dir.join("exports")).is_empty());
+}
+
+#[test]
 fn hand_picked_outputs_are_replaced_only_when_they_existed() {
     let env = TestEnv::new();
     let dir = env.empty_dir("swamp");
@@ -582,10 +447,8 @@ fn hand_picked_outputs_are_replaced_only_when_they_existed() {
         &dir,
         &[MediaSpec::video(320, 180, 30, 30).with_audio(48_000, 1, &[])],
     );
-    let project: Project =
-        serde_json::from_str(&fs::read_to_string(dir.join("qrec.json")).unwrap()).unwrap();
     let out = env.root().join("mine.mp4");
-    let plan = hand_plan(&project, out.to_str().unwrap());
+    let plan = export_plan(&load(&dir), out.to_str().unwrap(), None);
     let mut runner = runner(&dir);
     let (inbox, rx) = Inbox::channel();
 
@@ -603,8 +466,54 @@ fn hand_picked_outputs_are_replaced_only_when_they_existed() {
         matches!(events.last(), Some(Event::ExportFinished { path, .. }) if Path::new(path) == out),
         "{events:#?}"
     );
-    assert_eq!(video_packets(&out), 30);
+    assert_eq!(output_counts(&out).0, 30);
     assert!(temps_in(env.root()).is_empty());
+}
+
+/// A segment from a raw ffmpeg command line (no planner involved).
+fn raw_segment(body: &[&str], frames: u64) -> SegmentPlan {
+    let mut argv = ffmpeg_prelude(true);
+    argv.extend(strings(body));
+    let key = sha256_hex(argv.join("\0").as_bytes());
+    let path = format!("{SEGMENTS}/{key}.mov");
+    argv.extend(["-f".to_owned(), "mov".to_owned(), file_arg(&path)]);
+    SegmentPlan {
+        clips: vec![ClipId::from_raw("c001")],
+        take: TakeId::numbered(1),
+        in_: 0,
+        out: frames,
+        frames,
+        samples: samples_of(frames, 30, 1),
+        key,
+        path,
+        argv,
+    }
+}
+
+fn raw_plan(segment: SegmentPlan, out: &str) -> ExportPlan {
+    let mut list_content = "ffconcat version 1.0\n".to_owned();
+    list_content.push_str(&format!("file '{}.mov'\n", segment.key));
+    let list_path = format!(
+        "{SEGMENTS}/stitch-{}.ffconcat",
+        &sha256_hex(list_content.as_bytes())[..16]
+    );
+    let mut argv = ffmpeg_prelude(true);
+    argv.extend(strings(&["-f", "concat", "-i"]));
+    argv.push(file_arg(&list_path));
+    argv.extend(strings(&["-c", "copy", "-f", "mp4"]));
+    argv.push(file_arg(out));
+    ExportPlan {
+        out: out.to_owned(),
+        tmp_ext: "mp4".to_owned(),
+        total_frames: segment.frames,
+        files: BTreeSet::new(),
+        segments: vec![segment],
+        stitch: StitchPlan {
+            list_path,
+            list_content,
+            argv,
+        },
+    }
 }
 
 #[test]
@@ -642,16 +551,16 @@ fn cancel_stops_ffmpeg_and_deletes_temp_files() {
     let (inbox, rx) = Inbox::channel();
     runner.render_export(JobId(7), plan, inbox);
 
-    // Wait for ffmpeg to write its temp segment, then cancel.
+    // Wait until ffmpeg reports progress (it writes its temp segment), then cancel.
+    let first = events_until(&rx, WAIT, |e| {
+        matches!(e, Event::ExportProgress { .. }) || export_ended(e)
+    });
+    assert!(
+        matches!(first.last(), Some(Event::ExportProgress { segment: 0, .. })),
+        "{first:#?}"
+    );
     let segments = dir.join(SEGMENTS);
-    let started = Instant::now();
-    while temps_in(&segments).is_empty() {
-        assert!(
-            started.elapsed() < Duration::from_secs(30),
-            "no temp segment appeared"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert_eq!(temps_in(&segments).len(), 1, "{:?}", names_in(&segments));
     assert!(runner.is_running(JobId(7)));
     let cancelled_at = Instant::now();
     runner.cancel(JobId(7));
@@ -724,6 +633,55 @@ fn a_failing_segment_reports_the_ffmpeg_error_and_its_log() {
 }
 
 #[test]
+fn a_segment_with_the_wrong_counts_fails_the_export() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("swamp");
+    // 30 frames rendered where the plan expects 31.
+    let mut segment = raw_segment(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=64x36:rate=30:duration=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=48000:cl=stereo",
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-t",
+            "1",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-c:a",
+            "pcm_s16le",
+        ],
+        30,
+    );
+    segment.frames = 31;
+    let mut runner = runner(&dir);
+    let (inbox, rx) = Inbox::channel();
+    runner.render_export(JobId(5), raw_plan(segment.clone(), "exports/x.mp4"), inbox);
+    let events = events_until(&rx, WAIT, export_ended);
+    let Some(Event::ExportFailed { message, .. }) = events.last() else {
+        panic!("{events:#?}");
+    };
+    assert!(
+        message.contains("30 video frames instead of 31"),
+        "{message}"
+    );
+    assert!(
+        !dir.join(&segment.path).exists(),
+        "a bad segment was cached"
+    );
+    assert!(temps_in(&dir.join(SEGMENTS)).is_empty());
+}
+
+#[test]
 fn missing_sources_and_programs_fail_cleanly() {
     let env = TestEnv::new();
     let dir = env.empty_dir("swamp");
@@ -749,7 +707,7 @@ fn missing_sources_and_programs_fail_cleanly() {
         "{events:#?}"
     );
 
-    // A plan that would write outside an existing folder.
+    // A plan that would write into a folder that doesn't exist.
     let segment = raw_segment(&["-f", "lavfi", "-i", "testsrc2"], 30);
     runner.render_export(
         JobId(3),
@@ -764,114 +722,24 @@ fn missing_sources_and_programs_fail_cleanly() {
     );
 }
 
-#[test]
-#[ignore = "needs core output (export_plan, frame_plan, parse::progress)"]
-fn exports_with_the_core_planner_and_split_identity() {
-    use qrec_core::export_plan::{ExportOptions, plan_export};
-    use qrec_core::protocol::{ExportFormat, Quality, VideoCodec};
-    use qrec_core::state::{Capabilities, FfmpegCaps};
-
-    let env = TestEnv::new();
-    let dir = env.empty_dir("swamp");
-    let project = three_take_project(&dir);
-    let encoders: BTreeSet<String> = ["libx264", "aac", "pcm_s16le", "libopus", "libvpx-vp9"]
-        .map(String::from)
-        .into();
-    let caps = Capabilities {
-        ffmpeg: Some(FfmpegCaps {
-            version: "8.1.2".into(),
-            identity: "ffmpeg".into(),
-            encoders,
-        }),
-        vaapi: None,
-        cores: 4,
-    };
-    let opts = ExportOptions {
-        format: ExportFormat::Mp4,
-        quality: Quality::Draft,
-        codec: VideoCodec::H264,
-        out: "exports/core.mp4".to_owned(),
-        allow_vaapi: false,
-    };
-    let plan = plan_export(&project, &caps, &opts).unwrap();
-    let mut runner = runner(&dir);
-    let (inbox, rx) = Inbox::channel();
-    runner.render_export(JobId(1), plan.clone(), inbox.clone());
-    let events = events_until(&rx, WAIT, export_ended);
-    let Some(Event::ExportFinished { path, .. }) = events.last() else {
-        panic!("{events:#?}");
-    };
-    assert_eq!(video_packets(Path::new(path)), plan.total_frames);
-
-    // Splitting a clip changes no segment: re-exporting renders nothing.
-    let mut split = project.clone();
-    let clip = split.timeline.clips[1].clone();
-    split.timeline.clips[1].out = 40;
-    split.timeline.clips.insert(
-        2,
-        qrec_core::model::Clip {
-            id: ClipId::from_raw("c0ff"),
-            in_: 40,
-            ..clip
-        },
-    );
-    let split_plan = plan_export(&split, &caps, &opts).unwrap();
-    let keys = |p: &ExportPlan| p.segments.iter().map(|s| s.key.clone()).collect::<Vec<_>>();
-    assert_eq!(keys(&split_plan), keys(&plan));
-    runner.render_export(JobId(2), split_plan, inbox);
-    let events = events_until(&rx, WAIT, export_ended);
-    assert!(
-        matches!(events.last(), Some(Event::ExportFinished { .. })),
-        "{events:#?}"
-    );
-    assert!(logs_matching(&dir, "-j2-seg").is_empty());
-}
-
 // ----------------------------------------------------------------- frames
 
-fn frame_plan(out: &str) -> FramePlan {
-    let mut argv = ffmpeg_prelude(true);
-    argv.extend(strings(&[
-        "-ss",
-        "0.031333",
-        "-i",
-        "file:takes/take-0001/L1-screen-FAKE-1.mkv",
-        "-filter_complex",
-        "[0:v]scale=out_color_matrix=bt709:out_range=pc,format=rgb24[v]",
-        "-map",
-        "[v]",
-        "-frames:v",
-        "1",
-        "-f",
-        "image2",
-        "-update",
-        "1",
-    ]));
-    argv.push(file_arg(out));
-    FramePlan {
-        out: out.to_owned(),
-        tmp_ext: "png".to_owned(),
-        argv,
-        files: ["takes/take-0001/L1-screen-FAKE-1.mkv".to_owned()].into(),
-    }
-}
-
 #[test]
-#[ignore = "needs core output (parse::progress)"]
 fn frames_get_new_names_and_are_pngs() {
     let env = TestEnv::new();
     let dir = env.empty_dir("swamp");
     fixture_project(&dir, &[MediaSpec::video(320, 180, 30, 30)]);
+    let project = load(&dir);
     let mut runner = runner(&dir);
     let (inbox, rx) = Inbox::channel();
-    let done = |e: &Event| matches!(e, Event::FrameSaved { .. } | Event::FrameFailed { .. });
     let out = "frames/swamp-take-0001-00000001.png";
     for (job, expected) in [
         (1, "swamp-take-0001-00000001.png"),
         (2, "swamp-take-0001-00000001-2.png"),
     ] {
-        runner.save_frame(JobId(job), frame_plan(out), inbox.clone());
-        let events = events_until(&rx, WAIT, done);
+        let plan = plan_frame(&project, 1, None, out).unwrap();
+        runner.save_frame(JobId(job), plan, inbox.clone());
+        let events = events_until(&rx, WAIT, frame_ended);
         assert_eq!(
             events.last(),
             Some(&Event::FrameSaved {
@@ -884,20 +752,62 @@ fn frames_get_new_names_and_are_pngs() {
             })
         );
     }
-    let probe = ffprobe(&dir.join("frames/swamp-take-0001-00000001.png"));
-    assert_eq!(probe["streams"][0]["codec_name"], "png");
-    assert_eq!(probe["streams"][0]["width"], 320);
+    // The raw frame of one layer, to a hand-picked path.
+    let raw = env.root().join("raw.png");
+    let plan = plan_frame(
+        &project,
+        1,
+        Some(&LayerId::numbered(1)),
+        raw.to_str().unwrap(),
+    )
+    .unwrap();
+    runner.save_frame(JobId(3), plan, inbox);
+    let events = events_until(&rx, WAIT, frame_ended);
+    assert!(
+        matches!(events.last(), Some(Event::FrameSaved { path, .. }) if Path::new(path) == raw),
+        "{events:#?}"
+    );
+    for png in [dir.join("frames").join("swamp-take-0001-00000001.png"), raw] {
+        let probe = ffprobe(&png);
+        assert_eq!(probe["streams"][0]["codec_name"], "png");
+        assert_eq!(
+            (
+                probe["streams"][0]["width"].as_u64(),
+                probe["streams"][0]["height"].as_u64()
+            ),
+            (Some(320), Some(180))
+        );
+    }
     assert!(temps_in(&dir.join("frames")).is_empty());
+    assert!(temps_in(env.root()).is_empty());
 }
 
 #[test]
 fn a_failed_frame_save_reports_its_log() {
     let env = TestEnv::new();
     let dir = env.empty_dir("swamp");
+    let mut argv = ffmpeg_prelude(true);
+    argv.extend(strings(&[
+        "-i",
+        "file:takes/take-0001/L1-screen-FAKE-1.mkv",
+        "-frames:v",
+        "1",
+        "-f",
+        "image2",
+        "-update",
+        "1",
+    ]));
+    argv.push(file_arg("frames/x.png"));
+    let plan = FramePlan {
+        out: "frames/x.png".to_owned(),
+        tmp_ext: "png".to_owned(),
+        argv,
+        files: BTreeSet::new(),
+    };
     let mut runner = runner(&dir);
     let (inbox, rx) = Inbox::channel();
-    runner.save_frame(JobId(4), frame_plan("frames/x.png"), inbox);
-    let events = events_until(&rx, WAIT, |e| matches!(e, Event::FrameFailed { .. }));
+    runner.save_frame(JobId(4), plan, inbox);
+    let events = events_until(&rx, WAIT, frame_ended);
     let Some(Event::FrameFailed { message, log, .. }) = events.last() else {
         panic!("{events:#?}");
     };
@@ -944,7 +854,6 @@ fn probing_a_missing_file_is_an_error_result() {
 }
 
 #[test]
-#[ignore = "needs core output (parse::ffprobe)"]
 fn probes_fixture_media() {
     let env = TestEnv::new();
     let dir = env.empty_dir("swamp");
@@ -974,6 +883,8 @@ fn probes_fixture_media() {
     let Some(Event::TakeProbed { results, .. }) = events.last() else {
         panic!("{events:#?}");
     };
+    let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(ids, ["L1", "A1", "L2"], "in the jobs' order");
     let video = results[0].info.as_ref().unwrap();
     assert_eq!(
         (video.frames, video.width, video.height),
@@ -982,6 +893,7 @@ fn probes_fixture_media() {
     let audio = results[1].info.as_ref().unwrap();
     assert_eq!((audio.sample_rate, audio.channels), (Some(48_000), Some(1)));
     assert!(results[2].info.is_err());
+    assert_eq!(logs_matching(&dir, "-probe-take-0001-").len(), 2);
 }
 
 // ---------------------------------------------------------------- silence
@@ -1035,9 +947,9 @@ fn cached_silences_are_reused_without_ffmpeg() {
     );
     assert!(logs_matching(&dir, "-j5-").is_empty(), "ffmpeg didn't run");
 
-    // A cache file for another key (or corrupt) is ignored: ffmpeg runs and fails.
-    fs::write(cache_dir.join(format!("{}.json", "cd".repeat(32))), "{oops").unwrap();
+    // A corrupt cache file (or another key's) is ignored: ffmpeg runs and fails.
     let other = SilenceKey("cd".repeat(32));
+    fs::write(cache_dir.join(format!("{}.json", other.0)), "{oops").unwrap();
     runner.detect_silence(
         JobId(6),
         other.clone(),
@@ -1054,11 +966,10 @@ fn cached_silences_are_reused_without_ffmpeg() {
 }
 
 #[test]
-#[ignore = "needs core autocut (parse::silencedetect)"]
 fn silence_detection_finds_the_fixture_gaps_and_caches_them() {
     let env = TestEnv::new();
     let dir = env.empty_dir("swamp");
-    // Speech 0–0.5 s and 1.5–2 s: one silence in between.
+    // Speech 0–0.5 s and 1.5–2 s of 2.5 s: a gap, then a trailing silence.
     fixture_project(
         &dir,
         &[MediaSpec::audio(48_000, 1, 2500, &[(0, 500), (1500, 2000)])],
@@ -1096,6 +1007,43 @@ fn silence_detection_finds_the_fixture_gaps_and_caches_them() {
     let again = events_until(&rx, WAIT, |_| true);
     assert!(matches!(&again[0], Event::SilenceDetected { silences: s, .. } if s == silences));
     assert!(logs_matching(&dir, "-j2-").is_empty());
+}
+
+#[test]
+fn a_cancelled_analysis_reports_cancelled() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("swamp");
+    // An endless analysis: only a cancel ends it.
+    let mut argv = ffmpeg_prelude(false);
+    argv.extend(strings(&[
+        "-re",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440",
+        "-af",
+        "silencedetect=noise=-35dB:d=0.4",
+        "-f",
+        "null",
+        "-",
+    ]));
+    let key = SilenceKey("ef".repeat(32));
+    let mut runner = runner(&dir);
+    let (inbox, rx) = Inbox::channel();
+    runner.detect_silence(JobId(8), key.clone(), argv, inbox);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(runner.is_running(JobId(8)));
+    runner.cancel(JobId(8));
+    let events = events_until(&rx, Duration::from_secs(20), |_| true);
+    assert_eq!(
+        events,
+        [Event::SilenceFailed {
+            job: JobId(8),
+            key,
+            message: "cancelled".to_owned(),
+        }]
+    );
+    assert!(!runner.is_running(JobId(8)));
 }
 
 // ------------------------------------------------------------ purge, misc

@@ -52,6 +52,10 @@ impl StopFlag {
     pub(crate) fn is_set(&self) -> bool {
         self.0.load(Ordering::SeqCst)
     }
+
+    pub(crate) fn clear(&self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 /// Where the child's stdout goes.
@@ -674,9 +678,7 @@ mod tests {
         assert_eq!(human(Duration::from_millis(250)), "250 ms");
     }
 
-    /// Needs the real `parse::progress` (owner: output).
     #[test]
-    #[ignore = "needs core output"]
     fn progress_blocks_feed_the_callback_and_the_watchdog() {
         let script = "printf 'frame=1\\nout_time_us=1000\\nprogress=continue\\n'; \
                       printf 'frame=2\\nout_time_us=2000\\nprogress=end\\n'";

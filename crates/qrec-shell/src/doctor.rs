@@ -19,6 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use qrec_core::media_argv::vaapi_check_argv;
 use qrec_core::{CoreError, ErrorCode};
 use serde::{Deserialize, Serialize};
 
@@ -906,44 +907,6 @@ pub fn scan_render_nodes(sys_drm: &Path, dev_dri: &Path) -> Vec<RenderNode> {
         .collect();
     nodes.sort_by(|a, b| a.path.cmp(&b.path));
     nodes
-}
-
-/// Two frames through the VA export chain (A§9.3) to the null muxer. Built
-/// here until the core's `media_argv` has the VA check argv.
-pub fn vaapi_check_argv(device: &str) -> Vec<String> {
-    [
-        "ffmpeg",
-        "-hide_banner",
-        "-nostdin",
-        "-nostats",
-        "-loglevel",
-        "error",
-        "-y",
-        "-init_hw_device",
-        &format!("vaapi=va:{device}"),
-        "-filter_hw_device",
-        "va",
-        "-f",
-        "lavfi",
-        "-i",
-        "color=c=0x000000:s=256x144:r=30/1",
-        "-filter_complex",
-        "[0:v]trim=end_frame=2,format=nv12,hwupload[vv]",
-        "-map",
-        "[vv]",
-        "-c:v",
-        "h264_vaapi",
-        "-rc_mode",
-        "CQP",
-        "-qp",
-        "22",
-        "-f",
-        "null",
-        "-",
-    ]
-    .iter()
-    .map(|s| (*s).to_owned())
-    .collect()
 }
 
 #[cfg(feature = "gst")]

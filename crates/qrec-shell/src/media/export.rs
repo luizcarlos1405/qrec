@@ -13,9 +13,11 @@
 //!    renamed into place without replacing anything (A§8.8).
 //!
 //! A failure stops the other segments; a cancel stops everything. Either way
-//! the job's temp files are deleted (finished segments stay cached).
+//! the job's temp files are deleted (finished segments stay cached). A
+//! failed segment of a VA-API plan re-runs the whole export once with
+//! `export_plan::without_vaapi` (libx264, other keys: nothing mixes).
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::{self, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -23,8 +25,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
+use qrec_core::export_plan::without_vaapi;
 use qrec_core::parse::progress::ProgressBlock;
 use qrec_core::plans::{ExportPlan, SegmentPlan};
+use qrec_core::state::{Capabilities, FfmpegCaps};
 use qrec_core::{Event, JobId};
 
 use super::Ctx;
@@ -47,6 +51,9 @@ pub(crate) enum Failure {
         stderr_tail: Vec<String>,
         log: String,
     },
+    /// A segment of a VA-API plan failed (a `Failed`): the export can be
+    /// re-planned with libx264.
+    VaSegment(Box<Failure>),
 }
 
 impl Failure {
@@ -77,7 +84,10 @@ pub(crate) fn run(
     plan: &ExportPlan,
     out: &Inbox,
 ) -> Event {
-    let result = export(ctx, ctl, job, plan, out);
+    let result = match export(ctx, ctl, job, plan, out) {
+        Err(Failure::VaSegment(va)) => retry_without_vaapi(ctx, ctl, job, plan, out, *va),
+        other => other,
+    };
     match result {
         Ok((path, bytes)) => Event::ExportFinished {
             job,
@@ -98,9 +108,84 @@ pub(crate) fn run(
                     stderr_tail,
                     log,
                 },
+                Failure::VaSegment(_) => Event::ExportFailed {
+                    job,
+                    message: "internal error: an unhandled VA-API failure".to_owned(),
+                    stderr_tail: Vec::new(),
+                    log: String::new(),
+                },
             }
         }
     }
+}
+
+/// A§9.3 "one encoder per export": after a VA segment failed, the whole
+/// export runs again with `without_vaapi`'s libx264 plan. Without one (no
+/// ffmpeg identity, not a VA plan) the VA failure stands.
+fn retry_without_vaapi(
+    ctx: &Arc<Ctx>,
+    ctl: &JobCtl,
+    job: JobId,
+    plan: &ExportPlan,
+    out: &Inbox,
+    va: Failure,
+) -> Result<(PathBuf, u64), Failure> {
+    let va_message = match &va {
+        Failure::Failed { message, .. } => message.clone(),
+        _ => return Err(va),
+    };
+    let fallback =
+        ffmpeg_identity().and_then(|identity| without_vaapi(plan, &identity_caps(identity)));
+    let Some(x264) = fallback else {
+        return Err(va);
+    };
+    if ctl.is_cancelled() {
+        return Err(Failure::Cancelled);
+    }
+    ctl.remove_temps();
+    ctl.resume();
+    tracing::warn!("{job}: h264_vaapi failed ({va_message}); exporting with libx264");
+    match export(ctx, ctl, job, &x264, out) {
+        Err(Failure::Failed {
+            message,
+            stderr_tail,
+            log,
+        }) => Err(Failure::Failed {
+            message: format!("{message} (libx264, after h264_vaapi failed: {va_message})"),
+            stderr_tail,
+            log,
+        }),
+        Err(Failure::VaSegment(inner)) => Err(*inner),
+        other => other,
+    }
+}
+
+/// The ffmpeg that runs the plans, resolved like `exec` does and
+/// canonicalized: the identity in export cache keys (A§9.3).
+fn ffmpeg_identity() -> Option<String> {
+    let found = which::which("ffmpeg").ok()?;
+    let path = fs::canonicalize(&found).unwrap_or(found);
+    Some(path.to_string_lossy().into_owned())
+}
+
+/// What `without_vaapi` reads: the ffmpeg identity.
+fn identity_caps(identity: String) -> Capabilities {
+    Capabilities {
+        ffmpeg: Some(FfmpegCaps {
+            version: String::new(),
+            identity,
+            encoders: BTreeSet::new(),
+        }),
+        vaapi: None,
+        cores: 0,
+    }
+}
+
+/// Whether the plan uses the VA-API export chain.
+fn is_vaapi(plan: &ExportPlan) -> bool {
+    plan.segments
+        .iter()
+        .any(|s| s.argv.iter().any(|a| a == "-init_hw_device"))
 }
 
 /// One cache key to render: the first segment with it and every index
@@ -182,7 +267,10 @@ fn export(
                 &log,
             )
         })?;
-        render_all(ctx, ctl, job, plan.segments.len(), pending, out)?;
+        render_all(ctx, ctl, job, plan.segments.len(), pending, out).map_err(|f| match f {
+            f @ Failure::Failed { .. } if is_vaapi(plan) => Failure::VaSegment(Box::new(f)),
+            other => other,
+        })?;
     }
     if ctl.is_cancelled() {
         return Err(Failure::Cancelled);
@@ -366,22 +454,9 @@ fn render_unit(
             Failure::step(format!("{label}: {m}"), &log)
         }
     })?;
-    let expected = verify::Counts {
-        video_packets: segment.frames,
-        audio_samples: segment.samples,
-    };
-    if counts != expected {
-        return Err(Failure::step(
-            format!(
-                "{label} has {} video frames and {} audio samples; expected {} and {}",
-                counts.video_packets,
-                counts.audio_samples,
-                expected.video_packets,
-                expected.audio_samples
-            ),
-            &log,
-        ));
-    }
+    counts
+        .check(segment.frames, segment.samples)
+        .map_err(|why| Failure::step(format!("{label}: {why}"), &log))?;
     fs::File::open(&tmp)
         .and_then(|f| f.sync_all())
         .map_err(|e| Failure::plain(format!("{label}: can't sync the segment: {e}"), &log))?;
