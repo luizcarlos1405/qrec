@@ -165,7 +165,7 @@ pub fn select_frames(stream: &Stream, canvas_fps: Fps, in_: Frame) -> FrameSelec
     let recorded = stream.fps.unwrap_or(canvas_fps);
     let offset = stream.start_offset_ns;
     let in_ = in_ as i64;
-    if recorded == canvas_fps {
+    if same_rate(recorded, canvas_fps) {
         let k = in_ - ns_to_frame_round(offset, canvas_fps);
         return FrameSelection {
             k0: k.max(0) as u64,
@@ -188,6 +188,12 @@ pub fn select_frames(stream: &Stream, canvas_fps: Fps, in_: Frame) -> FrameSelec
         k0: nearest(first).max(0) as u64,
         lead: (first - in_) as u64,
     }
+}
+
+/// `a` and `b` are the same rate (`60/2` is `30/1`; ffprobe reduces its
+/// rates, a canvas rate may not be).
+fn same_rate(a: Fps, b: Fps) -> bool {
+    u64::from(a.num) * u64::from(b.den) == u64::from(b.num) * u64::from(a.den)
 }
 
 // ----------------------------------------------------------------- inputs
@@ -990,6 +996,13 @@ pub(crate) mod tests {
         // 16 ms rounds to frame 0.
         s.start_offset_ns = 16_000_000;
         assert_eq!(select_frames(&s, F30, 0), FrameSelection { k0: 0, lead: 0 });
+        // An unreduced rate is the same rate, even at an exact half frame.
+        s.start_offset_ns = 16_666_667;
+        let reduced = select_frames(&s, F30, 0);
+        assert_eq!(reduced, FrameSelection { k0: 0, lead: 1 });
+        s.fps = Some(Fps::new(60, 2));
+        assert_eq!(select_frames(&s, F30, 0), reduced);
+        assert!(same_rate(Fps::new(60, 2), F30) && !same_rate(Fps::new(60, 1), F30));
         let sel = FrameSelection { k0: 37, lead: 0 };
         assert_eq!(sel.seek_ns(F30), Some(1_233_333_333 - 2_000_000));
         assert_eq!(FrameSelection { k0: 0, lead: 3 }.seek_ns(F30), None);
