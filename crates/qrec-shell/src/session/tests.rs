@@ -707,6 +707,30 @@ fn a_crash_after_writing_qrec_json_is_merged_as_an_external_edit() {
 
 #[test]
 #[ignore = "needs core meta: merging an external edit validates the project"]
+fn a_hand_edit_found_at_open_survives_the_repairs() {
+    let h = Harness::with_sample("edit-and-torn");
+    {
+        let mut s = h.open(true).unwrap();
+        send(&mut s, Command::ClipRemove { clips: vec![clip("c001")] }, false).unwrap();
+    }
+    // A torn line from a crash, and a hand edit of qrec.json while no host ran.
+    let mut history = fs::read(h.paths().history_file()).unwrap();
+    history.extend_from_slice(b"{\"seq\":2,\"ts\"");
+    fs::write(h.paths().history_file(), history).unwrap();
+    let mut json: Value = serde_json::from_slice(&fs::read(h.dir.join("qrec.json")).unwrap()).unwrap();
+    json["name"] = "edited while closed".into();
+    write_project(&h.dir, &json);
+
+    let s = h.open(true).unwrap();
+    assert_eq!(s.state().project.name, "edited while closed");
+    let labels: Vec<&str> = s.state().history.entries.iter().map(|e| e.label.as_str()).collect();
+    assert_eq!(labels.last().copied(), Some("External edit"));
+    assert_eq!(h.head().project.name, "edited while closed");
+    assert_eq!(h.history_seqs(), s.state().history.entries.iter().map(|e| e.seq).collect::<Vec<_>>());
+}
+
+#[test]
+#[ignore = "needs core meta: merging an external edit validates the project"]
 fn external_edits_are_merged_and_undoable() {
     let h = Harness::with_sample("external");
     let mut s = h.open(true).unwrap();
@@ -771,16 +795,19 @@ fn undo_and_redo_move_the_cursor_on_disk() {
     assert_eq!(s.state().history.cursor, 0);
     let redone = send(&mut s, Command::Redo { steps: 1 }, false).unwrap();
     assert_eq!(redone["seq"], 1);
-    send(
+    let split = send(
         &mut s,
-        Command::ClipMove {
-            clips: vec![clip("c002")],
-            to: MoveTo::Index(0),
+        Command::ClipSplit {
+            clip: Some(clip("c002")),
+            at: "10f".parse().unwrap(),
+            timeline: false,
         },
         false,
     )
     .unwrap();
+    assert_eq!(split["seq"], 3, "seqs are never reused");
     assert_eq!(h.history_seqs(), [1, 3], "a new command drops the redo tail");
+    assert_eq!(h.head().cursor, 3);
 }
 
 #[test]

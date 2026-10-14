@@ -178,14 +178,6 @@ pub(super) fn open(dir: &Path, opts: OpenOpts, deps: Deps, cfg: SessionConfig) -
     if let Some(loaded) = &loaded {
         session.report_load(loaded);
     }
-    let initialized = is_initialized(&session.state.project);
-    // A consistent commit record from the start. Recovery mode leaves the
-    // files alone until its first write (the restore) rewrites them all.
-    if writable && initialized && !opts.recovery && session.store.is_dirty() {
-        if let Err(e) = session.store.write_all(&session.state) {
-            session.notify_error("Couldn't repair the project files", &e.to_string());
-        }
-    }
     if writable {
         let logs = proc::prune_logs(&session.paths.logs_dir(), proc::KEEP_LOGS);
         let parts = proc::prune_temp_outputs(&session.paths, proc::TEMP_MAX_AGE);
@@ -197,9 +189,18 @@ pub(super) fn open(dir: &Path, opts: OpenOpts, deps: Deps, cfg: SessionConfig) -
     session.detect_capabilities(&env);
 
     // An external edit (or a crash between writing qrec.json and the
-    // commit record) is merged before anything else (A§7.6).
+    // commit record) is merged before anything else (A§7.6). Its commit
+    // also rewrites whatever the load found to repair.
     if let Some(external) = loaded.as_ref().and_then(|l| l.external.clone()) {
         session.run_event(Event::ProjectChangedOnDisk { project: external });
+    }
+    // A consistent commit record from the start. Recovery mode leaves the
+    // files alone until its first write (the restore) rewrites them all.
+    let initialized = is_initialized(&session.state.project);
+    if writable && initialized && !opts.recovery && session.store.is_dirty() {
+        if let Err(e) = session.store.write_all(&session.state) {
+            session.notify_error("Couldn't repair the project files", &e.to_string());
+        }
     }
     if writable && is_initialized(&session.state.project) {
         session.start_recovery_probes();

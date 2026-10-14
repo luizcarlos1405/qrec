@@ -148,14 +148,15 @@ impl Session {
             self.run_event(Event::ProjectChangedOnDisk { project });
         }
 
-        // The reply waits for the commit (A§7.6 step 4); a late reply needs
-        // the requester registered before the effects that answer it run.
+        // The reply waits for the commit (A§7.6 step 4). The requester is
+        // registered first, so progress and late replies among the effects
+        // reach it.
         let reply = match reply {
             Some(Ok(_)) if !committed => Some(Err(self.save_error())),
             other => other,
         };
-        if reply.is_none()
-            && let (Some(id), Some(responder)) = (req, to.take())
+        if let Some(id) = req
+            && let Some(responder) = to.take()
         {
             self.pending.insert(id.clone(), responder);
         }
@@ -164,7 +165,11 @@ impl Session {
         }
         if let Some(reply) = reply {
             let reply = reply.map(|result| serde_json::to_value(result).unwrap_or(Value::Null));
-            self.reply_now(req, to, reply);
+            let mut responder = match req {
+                Some(id) => self.pending.remove(id),
+                None => to.take(),
+            };
+            self.reply_now(req, &mut responder, reply);
         }
         Ran::Done
     }
