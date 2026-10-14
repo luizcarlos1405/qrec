@@ -1,21 +1,36 @@
 //! The `qrec` command line (SPEC §14, A§10).
 //!
-//! [`args`] is the clap command tree. [`run`] parses the process arguments
-//! and, for now, answers help, version and completions itself; every other
-//! command reports that it isn't implemented yet. The real dispatch (clap
-//! args → `Request` → `Session`) replaces that fallback in `execute`.
+//! - [`args`]: the clap command tree.
+//! - `plan`: a parsed command line → a request for the project's host
+//!   (`Command`/`Query`, A§4.4) or a project-less action.
+//! - `resolve`: the folder rule (SPEC §4.4, A§8.4) picks the project; a
+//!   [`Backend`] routes the request to its host or runs it in-process
+//!   (A§8.3–A§8.6). The binary implements it over `qrec-shell`;
+//!   [`Standalone`] is the backend of a build without the shell.
+//! - Replies are printed for people (short lines, aligned tables, a
+//!   progress line on stderr) or, with `--json`, as exactly one
+//!   `{"ok":…}` object, after `{"event":"progress",…}` lines for streaming
+//!   commands and with notices as JSON lines on stderr (A§4.9).
 //!
-//! Exit codes follow SPEC §14: clap errors are usage errors (exit 2), and
-//! under `--json` they print `{"ok":false,"error":{"code":"usage",…}}`.
+//! Exit codes follow SPEC §14 / A§4.8: clap errors are usage errors
+//! (exit 2), core errors map through `CoreError::exit_code`, Ctrl+C is 130.
 
 #![forbid(unsafe_code)]
 
 pub mod args;
+pub mod backend;
+mod config;
+mod exec;
+mod human;
 mod output;
+mod plan;
+mod resolve;
+mod standalone;
+mod table;
 mod values;
 
 use std::ffi::OsString;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 
 use clap::parser::ValueSource;
@@ -23,6 +38,9 @@ use clap::{ArgMatches, CommandFactory, FromArgMatches};
 use qrec_core::{CoreError, ErrorCode};
 
 pub use args::*;
+pub use backend::*;
+pub use exec::{EXIT_INTERRUPTED, RunEnv};
+pub use standalone::Standalone;
 
 /// Printed to stderr by `qrec` without a command until the GUI exists.
 pub const GUI_NOT_BUILT: &str = "The Qrec GUI is not built yet: the screen designs are waiting for \
@@ -33,23 +51,33 @@ pub const GUI_NOT_BUILT: &str = "The Qrec GUI is not built yet: the screen desig
 /// Besides clap's own checks, it rejects a command's options combined with
 /// one of its subcommands (`qrec export --format webm cancel`).
 pub fn parse_args<I: IntoIterator<Item = OsString>>(args: I) -> Result<Cli, clap::Error> {
-    parse(args.into_iter().collect()).map(|(cli, _)| cli)
+    parse(args.into_iter().collect())
 }
 
-/// Runs `qrec` with the process arguments and standard streams.
+/// Runs `qrec` with the process arguments, standard streams and current
+/// directory, without the shell ([`Standalone`]): project-less commands
+/// work, the others report that they're unavailable in this build.
 pub fn run() -> ExitCode {
+    run_process(&mut Standalone::from_env())
+}
+
+/// Runs `qrec` with the process arguments, standard streams and current
+/// directory over `backend`. Help and clap errors are colored like clap
+/// does; stdout and stderr are written unlocked, so the backend's threads
+/// can log meanwhile.
+pub fn run_process(backend: &mut dyn Backend) -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().collect();
+    let env = RunEnv {
+        cwd: std::env::current_dir().ok(),
+        err_tty: io::stderr().is_terminal(),
+    };
     let json = wants_json(&args);
     let code = match parse(args.clone()) {
-        Ok((cli, path)) => execute(
-            &cli,
-            &path,
-            &mut io::stdout().lock(),
-            &mut io::stderr().lock(),
-        ),
-        Err(err) if json && err.use_stderr() => usage_json(&err, &args, &mut io::stdout().lock()),
+        Ok(cli) => exec::execute(&cli, backend, &env, &mut io::stdout(), &mut io::stderr()),
+        Err(err) if json && err.use_stderr() => usage_json(&err, &args, &mut io::stdout()),
         Err(err) => {
-            // Help and version go to stdout, errors to stderr, colored like clap does.
+            // Help and version go to stdout, errors to stderr. A closed
+            // stdout (`qrec --help | head -1`) is not an error.
             let _ = err.print();
             clap_exit_code(&err)
         }
@@ -57,17 +85,34 @@ pub fn run() -> ExitCode {
     ExitCode::from(code)
 }
 
-/// [`run`] with explicit arguments and streams; returns the exit code.
+/// [`run_process`] with explicit arguments and streams and the process's
+/// current directory, without the shell ([`Standalone::from_env`]).
 /// Help and errors are written without colors.
 pub fn run_with<I: IntoIterator<Item = OsString>>(
     args: I,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> u8 {
+    let env = RunEnv {
+        cwd: std::env::current_dir().ok(),
+        err_tty: false,
+    };
+    run_with_backend(args, &mut Standalone::from_env(), &env, out, err)
+}
+
+/// Runs a command line over `backend` in `env`, writing to `out` and
+/// `err`; returns the exit code. Help and errors are written without colors.
+pub fn run_with_backend<I: IntoIterator<Item = OsString>>(
+    args: I,
+    backend: &mut dyn Backend,
+    env: &RunEnv,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> u8 {
     let args: Vec<OsString> = args.into_iter().collect();
     let json = wants_json(&args);
     match parse(args.clone()) {
-        Ok((cli, path)) => execute(&cli, &path, out, err),
+        Ok(cli) => exec::execute(&cli, backend, env, out, err),
         Err(e) if json && e.use_stderr() => usage_json(&e, &args, out),
         Err(e) => {
             let text = e.render().to_string();
@@ -81,19 +126,12 @@ pub fn run_with<I: IntoIterator<Item = OsString>>(
     }
 }
 
-/// Parses `args` and returns the subcommand path (`["clip", "split"]`).
-fn parse(args: Vec<OsString>) -> Result<(Cli, Vec<String>), clap::Error> {
+/// Parses `args` with the extra subcommand-conflict check.
+fn parse(args: Vec<OsString>) -> Result<Cli, clap::Error> {
     let mut command = Cli::command();
     let mut matches = command.try_get_matches_from_mut(args)?;
     check_subcommand_conflicts(&mut command, &matches)?;
-    let mut path = Vec::new();
-    let mut level = &matches;
-    while let Some((name, sub)) = level.subcommand() {
-        path.push(name.to_owned());
-        level = sub;
-    }
-    let cli = Cli::from_arg_matches_mut(&mut matches).map_err(|e| e.format(&mut command))?;
-    Ok((cli, path))
+    Cli::from_arg_matches_mut(&mut matches).map_err(|e| e.format(&mut command))
 }
 
 /// `autocut`, `history` and `export` take options and also have
@@ -175,49 +213,4 @@ fn missing_subcommand_message(args: &[OsString]) -> String {
         path.join(" "),
         names.join(", ")
     )
-}
-
-/// Runs a parsed command line; returns the exit code.
-fn execute(cli: &Cli, path: &[String], out: &mut dyn Write, err: &mut dyn Write) -> u8 {
-    let json = cli.global.json;
-    match &cli.command {
-        None => fail(CoreError::unavailable(GUI_NOT_BUILT), json, out, err),
-        Some(Cmd::Version) => {
-            let version = env!("CARGO_PKG_VERSION");
-            let _ = if json {
-                output::write_ok(out, &serde_json::json!({ "version": version }))
-            } else {
-                writeln!(out, "qrec {version}")
-            };
-            0
-        }
-        Some(Cmd::Completions(args)) => {
-            let mut script = Vec::new();
-            clap_complete::generate(args.shell, &mut Cli::command(), "qrec", &mut script);
-            let _ = if json {
-                let script = String::from_utf8_lossy(&script);
-                output::write_ok(
-                    out,
-                    &serde_json::json!({ "shell": args.shell.to_string(), "script": script }),
-                )
-            } else {
-                out.write_all(&script)
-            };
-            0
-        }
-        Some(_) => {
-            let message = format!("qrec {}: not implemented yet", path.join(" "));
-            fail(CoreError::unavailable(message), json, out, err)
-        }
-    }
-}
-
-/// Reports `error`: always as a line on stderr, plus the JSON envelope on
-/// stdout under `--json`.
-fn fail(error: CoreError, json: bool, out: &mut dyn Write, err: &mut dyn Write) -> u8 {
-    let _ = writeln!(err, "{}", error.message);
-    if json {
-        let _ = output::write_err(out, &error);
-    }
-    error.exit_code()
 }
