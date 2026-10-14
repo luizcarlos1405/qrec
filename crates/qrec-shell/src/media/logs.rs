@@ -176,15 +176,10 @@ mod tests {
     fn logs_are_exclusive_and_keep_a_header() {
         let dir = tempfile::tempdir().unwrap();
         let logs = dir.path().join("logs");
-        let argv: Vec<String> = ["ffmpeg", "-i", "file:a b.mkv"]
-            .map(String::from)
-            .to_vec();
+        let argv: Vec<String> = ["ffmpeg", "-i", "file:a b.mkv"].map(String::from).to_vec();
         let a = LogFile::create(&logs, "20261014-120000-1-j3-seg0", &argv, dir.path()).unwrap();
         let b = LogFile::create(&logs, "20261014-120000-1-j3-seg0", &argv, dir.path()).unwrap();
-        assert_eq!(
-            a.path.file_name().unwrap(),
-            "20261014-120000-1-j3-seg0.log"
-        );
+        assert_eq!(a.path.file_name().unwrap(), "20261014-120000-1-j3-seg0.log");
         assert_eq!(
             b.path.file_name().unwrap(),
             "20261014-120000-1-j3-seg0-2.log"
@@ -200,7 +195,11 @@ mod tests {
         assert!(a.body().starts_with("line 1"));
         assert_eq!(a.tail(2), ["line 2", "line 3"]);
         assert_eq!(a.tail(30).len(), 3);
-        assert!(fs::read_to_string(&a.path).unwrap().contains("# qrec: a note"));
+        assert!(
+            fs::read_to_string(&a.path)
+                .unwrap()
+                .contains("# qrec: a note")
+        );
     }
 
     #[test]

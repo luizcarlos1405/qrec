@@ -60,7 +60,10 @@ impl Destination {
 pub(crate) enum PlaceError {
     /// A hand-picked path appeared while the job ran; the output was kept
     /// at `kept`.
-    Appeared { out: PathBuf, kept: PathBuf },
+    Appeared {
+        out: PathBuf,
+        kept: PathBuf,
+    },
     Io(String),
 }
 
@@ -86,9 +89,9 @@ pub(crate) fn place(tmp: &Path, dest: &Destination) -> Result<PathBuf, PlaceErro
         Destination::Chosen {
             path,
             replace: true,
-        } => fs::rename(tmp, path)
-            .map(|()| path.clone())
-            .map_err(|e| PlaceError::Io(format!("can't move the output to {}: {e}", path.display()))),
+        } => fs::rename(tmp, path).map(|()| path.clone()).map_err(|e| {
+            PlaceError::Io(format!("can't move the output to {}: {e}", path.display()))
+        }),
         Destination::Chosen {
             path,
             replace: false,
@@ -193,12 +196,20 @@ mod tests {
 
     #[test]
     fn temp_names_live_next_to_the_output() {
-        let tmp = temp_path(Path::new("/p/exports"), "my-video-20261014-120000", JobId(7), "mp4");
+        let tmp = temp_path(
+            Path::new("/p/exports"),
+            "my-video-20261014-120000",
+            JobId(7),
+            "mp4",
+        );
         let name = tmp.file_name().unwrap().to_str().unwrap().to_owned();
         assert_eq!(tmp.parent().unwrap(), Path::new("/p/exports"));
         assert_eq!(
             name,
-            format!(".my-video-20261014-120000.qrec-part-{}-7.mp4", std::process::id())
+            format!(
+                ".my-video-20261014-120000.qrec-part-{}-7.mp4",
+                std::process::id()
+            )
         );
         assert!(name.contains(PART_MARKER));
         assert_eq!(file_stem(Path::new("/p/exports/a.b.mp4")), "a.b");
@@ -209,7 +220,10 @@ mod tests {
     fn numbered_names() {
         assert_eq!(numbered(Path::new("/e/a.mp4"), 1), Path::new("/e/a.mp4"));
         assert_eq!(numbered(Path::new("/e/a.mp4"), 2), Path::new("/e/a-2.mp4"));
-        assert_eq!(numbered(Path::new("/e/a.b.png"), 3), Path::new("/e/a.b-3.png"));
+        assert_eq!(
+            numbered(Path::new("/e/a.b.png"), 3),
+            Path::new("/e/a.b-3.png")
+        );
         assert_eq!(numbered(Path::new("/e/noext"), 2), Path::new("/e/noext-2"));
     }
 
@@ -256,14 +270,21 @@ mod tests {
         };
         match place(&tmp, &dest) {
             Err(PlaceError::Appeared { out: o, kept }) => {
-                assert_eq!((o.as_path(), kept.as_path()), (out.as_path(), tmp.as_path()));
+                assert_eq!(
+                    (o.as_path(), kept.as_path()),
+                    (out.as_path(), tmp.as_path())
+                );
                 let message = PlaceError::Appeared { out: o, kept }.to_string();
                 assert!(message.starts_with("confirmation required: "), "{message}");
             }
             other => panic!("{other:?}"),
         }
         assert_eq!(fs::read_to_string(&out).unwrap(), "someone else's");
-        assert_eq!(fs::read_to_string(&tmp).unwrap(), "new", "the render is kept");
+        assert_eq!(
+            fs::read_to_string(&tmp).unwrap(),
+            "new",
+            "the render is kept"
+        );
 
         let dest = Destination::Chosen {
             path: out.clone(),

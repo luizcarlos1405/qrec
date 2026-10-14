@@ -34,7 +34,9 @@ pub(crate) fn delete_take_dirs(project: &Path, takes: &[TakeId]) -> (Vec<String>
     for take in takes {
         let name = take.as_str();
         if !is_take_name(name) {
-            errors.push(format!("{name:?} is not a take folder name; nothing deleted"));
+            errors.push(format!(
+                "{name:?} is not a take folder name; nothing deleted"
+            ));
             continue;
         }
         delete_one(&takes_dir, name, &mut deleted, &mut errors);
@@ -48,7 +50,12 @@ fn is_take_name(name: &str) -> bool {
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
-fn delete_one(takes_dir: &OwnedFd, name: &str, deleted: &mut Vec<String>, errors: &mut Vec<String>) {
+fn delete_one(
+    takes_dir: &OwnedFd,
+    name: &str,
+    deleted: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
     let rel = format!("takes/{name}/");
     let dir = match open_dir(Some(takes_dir), Path::new(name)) {
         Ok(fd) => fd,
@@ -58,7 +65,10 @@ fn delete_one(takes_dir: &OwnedFd, name: &str, deleted: &mut Vec<String>, errors
                 file_type_at(takes_dir, OsStr::new(name)),
                 Ok(FileType::Other("a symlink"))
             );
-            errors.push(format!("{rel}: {}; left alone", describe_open_error(&e, link)));
+            errors.push(format!(
+                "{rel}: {}; left alone",
+                describe_open_error(&e, link)
+            ));
             return;
         }
     };
@@ -87,7 +97,9 @@ fn delete_one(takes_dir: &OwnedFd, name: &str, deleted: &mut Vec<String>, errors
     match unlink_at(takes_dir, OsStr::new(name), libc::AT_REMOVEDIR) {
         Ok(()) => deleted.push(rel),
         Err(e) if e.raw_os_error() == Some(libc::ENOTEMPTY) => {
-            errors.push(format!("{rel} still has other entries; the folder was kept"));
+            errors.push(format!(
+                "{rel} still has other entries; the folder was kept"
+            ));
         }
         Err(e) => errors.push(format!("{rel}: can't remove the folder: {e}")),
     }
@@ -261,7 +273,11 @@ mod tests {
         fs::create_dir_all(takes.join("take-0001/sub")).unwrap();
         fs::write(takes.join("take-0001/A1-mic.mka"), "audio").unwrap();
         fs::write(takes.join("take-0001/sub/nested.txt"), "nested").unwrap();
-        symlink(outside.join("precious.mkv"), takes.join("take-0001/link.mkv")).unwrap();
+        symlink(
+            outside.join("precious.mkv"),
+            takes.join("take-0001/link.mkv"),
+        )
+        .unwrap();
         // A take folder that is a symlink to somewhere else.
         symlink(&outside, takes.join("take-0002")).unwrap();
 
@@ -272,7 +288,10 @@ mod tests {
         assert!(errors[1].contains("sub is a folder"), "{errors:?}");
         assert!(errors[2].contains("still has other entries"), "{errors:?}");
         assert!(errors[3].contains("take-0002/: is a symlink"), "{errors:?}");
-        assert_eq!(fs::read_to_string(outside.join("precious.mkv")).unwrap(), "keep me");
+        assert_eq!(
+            fs::read_to_string(outside.join("precious.mkv")).unwrap(),
+            "keep me"
+        );
         assert!(takes.join("take-0001/sub/nested.txt").exists());
         assert!(takes.join("take-0001/link.mkv").is_symlink());
 

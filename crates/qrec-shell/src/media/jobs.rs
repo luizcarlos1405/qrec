@@ -150,7 +150,10 @@ mod tests {
         assert!(registry.is_running(JobId(1)));
         drop(b);
         assert!(!registry.is_running(JobId(1)));
-        assert!(!registry.cancel(JobId(1)), "a finished job can't be cancelled");
+        assert!(
+            !registry.cancel(JobId(1)),
+            "a finished job can't be cancelled"
+        );
         // A new run starts fresh.
         let c = registry.enter(JobId(1));
         assert!(!c.ctl.is_cancelled());

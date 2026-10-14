@@ -616,14 +616,22 @@ mod tests {
             .kill_grace(Duration::from_millis(500)))
         .unwrap();
         assert_eq!(done.ended, Ended::TimedOut(Duration::from_millis(200)));
-        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
         assert_eq!(done.status.unwrap().signal(), Some(libc::SIGTERM));
         assert_eq!(done.describe("sleep"), "sleep timed out after 200 ms");
     }
 
     #[test]
     fn sigterm_is_followed_by_sigkill() {
-        let cmd = argv(&["sh", "-c", "trap '' TERM; echo ready; while :; do sleep 0.05; done"]);
+        let cmd = argv(&[
+            "sh",
+            "-c",
+            "trap '' TERM; echo ready; while :; do sleep 0.05; done",
+        ]);
         let stop = StopFlag::default();
         let started = Instant::now();
         let done = thread::scope(|scope| {
@@ -686,7 +694,10 @@ mod tests {
             .kill_grace(Duration::from_millis(300)))
         .unwrap();
         assert_eq!(done.ended, Ended::Stalled(Duration::from_millis(200)));
-        assert_eq!(done.describe("ffmpeg"), "ffmpeg stalled (no progress for 200 ms)");
+        assert_eq!(
+            done.describe("ffmpeg"),
+            "ffmpeg stalled (no progress for 200 ms)"
+        );
     }
 
     #[test]

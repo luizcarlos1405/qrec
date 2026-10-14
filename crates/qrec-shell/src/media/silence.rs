@@ -33,13 +33,7 @@ pub(crate) struct CacheFile {
     pub silences: Vec<Interval>,
 }
 
-pub(crate) fn run(
-    ctx: &Ctx,
-    ctl: &JobCtl,
-    job: JobId,
-    key: SilenceKey,
-    argv: &[String],
-) -> Event {
+pub(crate) fn run(ctx: &Ctx, ctl: &JobCtl, job: JobId, key: SilenceKey, argv: &[String]) -> Event {
     match detect(ctx, ctl, job, &key, argv) {
         Ok(silences) => Event::SilenceDetected { job, key, silences },
         Err(message) => Event::SilenceFailed { job, key, message },
@@ -54,7 +48,11 @@ pub(crate) fn cache_path(ctx: &Ctx, key: &SilenceKey) -> Option<PathBuf> {
             .0
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-    ok.then(|| ctx.project.silence_cache_dir().join(format!("{}.json", key.0)))
+    ok.then(|| {
+        ctx.project
+            .silence_cache_dir()
+            .join(format!("{}.json", key.0))
+    })
 }
 
 /// A cached result, if a valid one exists.
@@ -129,14 +127,13 @@ fn detect(
         }
         return Err(format!("{message} (log: {})", log.display()));
     }
-    let parsed = catch_unwind(AssertUnwindSafe(|| parse_silencedetect(&stderr))).map_err(
-        |panic| {
+    let parsed =
+        catch_unwind(AssertUnwindSafe(|| parse_silencedetect(&stderr))).map_err(|panic| {
             format!(
                 "internal error: the silencedetect parser failed: {}",
                 child::panic_message(panic.as_ref())
             )
-        },
-    )?;
+        })?;
     let silences = parsed.map_err(|e| format!("{e} (log: {})", log.display()))?;
     if let Some(path) = &cache {
         write_cache(ctx, job, path, key, &silences);

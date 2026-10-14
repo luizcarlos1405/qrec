@@ -44,7 +44,11 @@ fn runner(dir: &Path) -> FfmpegRunner {
 }
 
 /// Events until `last` matches one (inclusive).
-fn events_until(rx: &Receiver<Msg>, timeout: Duration, last: impl Fn(&Event) -> bool) -> Vec<Event> {
+fn events_until(
+    rx: &Receiver<Msg>,
+    timeout: Duration,
+    last: impl Fn(&Event) -> bool,
+) -> Vec<Event> {
     let deadline = Instant::now() + timeout;
     let mut events = Vec::new();
     loop {
@@ -196,7 +200,9 @@ fn hand_plan(project: &Project, out: &str) -> ExportPlan {
             label = format!("o{input}");
             input += 1;
         }
-        chains.push(format!("[{label}]trim=end_frame={n},setsar=1,format=yuv420p[v]"));
+        chains.push(format!(
+            "[{label}]trim=end_frame={n},setsar=1,format=yuv420p[v]"
+        ));
         let tracks: Vec<_> = take
             .scene
             .audio
@@ -205,7 +211,9 @@ fn hand_plan(project: &Project, out: &str) -> ExportPlan {
             .filter_map(|t| take.stream(t.id.as_str()).map(|s| (t, s)))
             .collect();
         if tracks.is_empty() {
-            chains.push(format!("anullsrc=r=48000:cl=stereo,atrim=end_sample={samples}[a]"));
+            chains.push(format!(
+                "anullsrc=r=48000:cl=stereo,atrim=end_sample={samples}[a]"
+            ));
         } else {
             let mut mix = String::new();
             for (j, (track, stream)) in tracks.iter().enumerate() {
@@ -222,9 +230,11 @@ fn hand_plan(project: &Project, out: &str) -> ExportPlan {
                 } else {
                     "aformat=channel_layouts=stereo"
                 };
-                let mut chain = format!("[{input}:a]aresample=48000,{up},volume={}dB", track.gain_db);
+                let mut chain =
+                    format!("[{input}:a]aresample=48000,{up},volume={}dB", track.gain_db);
                 if t < 0 {
-                    let delay = ((-t) as u128 * 48_000 + NS_PER_SEC as u128 / 2) / NS_PER_SEC as u128;
+                    let delay =
+                        ((-t) as u128 * 48_000 + NS_PER_SEC as u128 / 2) / NS_PER_SEC as u128;
                     chain.push_str(&format!(",adelay={delay}S:all=1"));
                 }
                 chain.push_str(&format!("[a{j}]"));
@@ -257,9 +267,28 @@ fn hand_plan(project: &Project, out: &str) -> ExportPlan {
             "[a]".to_owned(),
         ]);
         argv.extend(strings(&[
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
-            "-profile:v", "high", "-color_range", "tv", "-colorspace", "bt709",
-            "-color_primaries", "bt709", "-color_trc", "bt709", "-c:a", "pcm_s16le", "-f", "mov",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
+            "-pix_fmt",
+            "yuv420p",
+            "-profile:v",
+            "high",
+            "-color_range",
+            "tv",
+            "-colorspace",
+            "bt709",
+            "-color_primaries",
+            "bt709",
+            "-color_trc",
+            "bt709",
+            "-c:a",
+            "pcm_s16le",
+            "-f",
+            "mov",
         ]));
         let key = sha256_hex(format!("media-test\0{}", argv.join("\0")).as_bytes());
         let path = format!("{SEGMENTS}/{key}.mov");
@@ -301,8 +330,20 @@ fn stitch_plan(segments: &[SegmentPlan], out: &str) -> StitchPlan {
     argv.extend(strings(&["-f", "concat", "-i"]));
     argv.push(file_arg(&list_path));
     argv.extend(strings(&[
-        "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-        "-movflags", "+faststart", "-f", "mp4",
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-movflags",
+        "+faststart",
+        "-f",
+        "mp4",
     ]));
     argv.push(file_arg(out));
     StitchPlan {
@@ -452,13 +493,20 @@ fn exports_three_takes_with_splits_offsets_and_a_repeat() {
         assert!(cached.contains(&format!("{}.mov", segment.key)));
     }
     let seg_logs = logs_matching(&dir, "-j1-seg");
-    assert_eq!(seg_logs.len(), 3, "the repeated unit renders once: {seg_logs:?}");
+    assert_eq!(
+        seg_logs.len(),
+        3,
+        "the repeated unit renders once: {seg_logs:?}"
+    );
     for log in &seg_logs {
         let text = fs::read_to_string(dir.join(".qrec/logs").join(log)).unwrap();
         assert!(text.contains("# qrec: verify:"), "{log}");
     }
     assert!(temps_in(&dir.join("exports")).is_empty());
-    assert_eq!(names_in(&dir.join("exports")), ["swamp-20261014-120000.mp4"]);
+    assert_eq!(
+        names_in(&dir.join("exports")),
+        ["swamp-20261014-120000.mp4"]
+    );
 
     // Re-export: every segment comes from the cache; never overwrite.
     runner.render_export(JobId(2), plan.clone(), inbox.clone());
@@ -466,16 +514,28 @@ fn exports_three_takes_with_splits_offsets_and_a_repeat() {
     let Some(Event::ExportFinished { path, .. }) = events.last() else {
         panic!("{events:#?}");
     };
-    assert_eq!(Path::new(path), dir.join("exports/swamp-20261014-120000-2.mp4"));
-    assert!(logs_matching(&dir, "-j2-seg").is_empty(), "nothing re-rendered");
+    assert_eq!(
+        Path::new(path),
+        dir.join("exports/swamp-20261014-120000-2.mp4")
+    );
+    assert!(
+        logs_matching(&dir, "-j2-seg").is_empty(),
+        "nothing re-rendered"
+    );
     assert_eq!(video_packets(Path::new(path)), 180);
 
     // Losing one cache file re-renders only that unit.
     fs::remove_file(dir.join(&plan.segments[2].path)).unwrap();
     runner.render_export(JobId(3), plan.clone(), inbox);
     let events = events_until(&rx, WAIT, export_ended);
-    assert!(matches!(events.last(), Some(Event::ExportFinished { .. })), "{events:#?}");
-    assert_eq!(logs_matching(&dir, "-j3-seg"), [logs_matching(&dir, "-j3-seg2")[0].clone()]);
+    assert!(
+        matches!(events.last(), Some(Event::ExportFinished { .. })),
+        "{events:#?}"
+    );
+    assert_eq!(
+        logs_matching(&dir, "-j3-seg"),
+        [logs_matching(&dir, "-j3-seg2")[0].clone()]
+    );
     assert_eq!(names_in(&dir.join("exports")).len(), 3);
 }
 
@@ -484,7 +544,10 @@ fn exports_three_takes_with_splits_offsets_and_a_repeat() {
 fn hand_picked_outputs_are_replaced_only_when_they_existed() {
     let env = TestEnv::new();
     let dir = env.empty_dir("swamp");
-    fixture_project(&dir, &[MediaSpec::video(320, 180, 30, 30).with_audio(48_000, 1, &[])]);
+    fixture_project(
+        &dir,
+        &[MediaSpec::video(320, 180, 30, 30).with_audio(48_000, 1, &[])],
+    );
     let project: Project =
         serde_json::from_str(&fs::read_to_string(dir.join("qrec.json")).unwrap()).unwrap();
     let out = env.root().join("mine.mp4");
@@ -518,9 +581,25 @@ fn cancel_stops_ffmpeg_and_deletes_temp_files() {
     // An endless, real-time render: only a cancel ends it.
     let segment = raw_segment(
         &[
-            "-re", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30", "-f", "lavfi", "-i",
-            "anullsrc=r=48000:cl=stereo", "-map", "0:v", "-map", "1:a", "-c:v", "libx264",
-            "-preset", "ultrafast", "-c:a", "pcm_s16le",
+            "-re",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x180:rate=30",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=48000:cl=stereo",
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-c:a",
+            "pcm_s16le",
         ],
         300,
     );
@@ -533,18 +612,31 @@ fn cancel_stops_ffmpeg_and_deletes_temp_files() {
     let segments = dir.join(SEGMENTS);
     let started = Instant::now();
     while temps_in(&segments).is_empty() {
-        assert!(started.elapsed() < Duration::from_secs(30), "no temp segment appeared");
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "no temp segment appeared"
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(runner.is_running(JobId(7)));
     let cancelled_at = Instant::now();
     runner.cancel(JobId(7));
     let events = events_until(&rx, Duration::from_secs(20), export_ended);
-    assert_eq!(events.last(), Some(&Event::ExportCancelled { job: JobId(7) }));
-    assert!(cancelled_at.elapsed() < Duration::from_secs(5), "{:?}", cancelled_at.elapsed());
+    assert_eq!(
+        events.last(),
+        Some(&Event::ExportCancelled { job: JobId(7) })
+    );
+    assert!(
+        cancelled_at.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        cancelled_at.elapsed()
+    );
     assert!(!runner.is_running(JobId(7)));
     assert!(temps_in(&segments).is_empty(), "{:?}", names_in(&segments));
-    assert!(!dir.join(&segment.path).exists(), "an unfinished segment was cached");
+    assert!(
+        !dir.join(&segment.path).exists(),
+        "an unfinished segment was cached"
+    );
     assert!(names_in(&dir.join("exports")).is_empty());
     // Cancelling again (or an unknown job) is harmless.
     runner.cancel(JobId(7));
@@ -556,7 +648,14 @@ fn a_failing_segment_reports_the_ffmpeg_error_and_its_log() {
     let env = TestEnv::new();
     let dir = env.empty_dir("swamp");
     let segment = raw_segment(
-        &["-f", "lavfi", "-i", "testsrc2=duration=1", "-vf", "qrecnosuchfilter"],
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=duration=1",
+            "-vf",
+            "qrecnosuchfilter",
+        ],
         30,
     );
     let mut runner = runner(&dir);
@@ -572,13 +671,19 @@ fn a_failing_segment_reports_the_ffmpeg_error_and_its_log() {
     else {
         panic!("{events:#?}");
     };
-    assert!(message.starts_with("segment 1/1 (take-0001, frames 0–30): ffmpeg exited with status"), "{message}");
+    assert!(
+        message.starts_with("segment 1/1 (take-0001, frames 0–30): ffmpeg exited with status"),
+        "{message}"
+    );
     assert!(
         stderr_tail.iter().any(|l| l.contains("qrecnosuchfilter")),
         "{stderr_tail:#?}"
     );
     assert!(stderr_tail.len() <= 30);
-    assert!(log.contains("/.qrec/logs/") && log.ends_with("-j3-seg0.log"), "{log}");
+    assert!(
+        log.contains("/.qrec/logs/") && log.ends_with("-j3-seg0.log"),
+        "{log}"
+    );
     assert!(Path::new(log).is_file());
     assert!(temps_in(&dir.join(SEGMENTS)).is_empty());
     assert!(temps_in(&dir.join("exports")).is_empty());
@@ -612,7 +717,11 @@ fn missing_sources_and_programs_fail_cleanly() {
 
     // A plan that would write outside an existing folder.
     let segment = raw_segment(&["-f", "lavfi", "-i", "testsrc2"], 30);
-    runner.render_export(JobId(3), raw_plan(segment, "/qrec-no-such-dir/x.mp4"), inbox);
+    runner.render_export(
+        JobId(3),
+        raw_plan(segment, "/qrec-no-such-dir/x.mp4"),
+        inbox,
+    );
     let events = events_until(&rx, WAIT, export_ended);
     assert!(
         matches!(events.last(), Some(Event::ExportFailed { message, .. })
@@ -677,7 +786,10 @@ fn exports_with_the_core_planner_and_split_identity() {
     assert_eq!(keys(&split_plan), keys(&plan));
     runner.render_export(JobId(2), split_plan, inbox);
     let events = events_until(&rx, WAIT, export_ended);
-    assert!(matches!(events.last(), Some(Event::ExportFinished { .. })), "{events:#?}");
+    assert!(
+        matches!(events.last(), Some(Event::ExportFinished { .. })),
+        "{events:#?}"
+    );
     assert!(logs_matching(&dir, "-j2-seg").is_empty());
 }
 
@@ -720,14 +832,21 @@ fn frames_get_new_names_and_are_pngs() {
     let (inbox, rx) = Inbox::channel();
     let done = |e: &Event| matches!(e, Event::FrameSaved { .. } | Event::FrameFailed { .. });
     let out = "frames/swamp-take-0001-00000001.png";
-    for (job, expected) in [(1, "swamp-take-0001-00000001.png"), (2, "swamp-take-0001-00000001-2.png")] {
+    for (job, expected) in [
+        (1, "swamp-take-0001-00000001.png"),
+        (2, "swamp-take-0001-00000001-2.png"),
+    ] {
         runner.save_frame(JobId(job), frame_plan(out), inbox.clone());
         let events = events_until(&rx, WAIT, done);
         assert_eq!(
             events.last(),
             Some(&Event::FrameSaved {
                 job: JobId(job),
-                path: dir.join("frames").join(expected).to_string_lossy().into_owned(),
+                path: dir
+                    .join("frames")
+                    .join(expected)
+                    .to_string_lossy()
+                    .into_owned(),
             })
         );
     }
@@ -748,7 +867,10 @@ fn a_failed_frame_save_reports_its_log() {
     let Some(Event::FrameFailed { message, log, .. }) = events.last() else {
         panic!("{events:#?}");
     };
-    assert!(message.contains("L1-screen-FAKE-1.mkv is missing"), "{message}");
+    assert!(
+        message.contains("L1-screen-FAKE-1.mkv is missing"),
+        "{message}"
+    );
     assert!(log.ends_with("-j4-frame.log"), "{log}");
 }
 
@@ -780,7 +902,10 @@ fn probing_a_missing_file_is_an_error_result() {
     };
     assert_eq!((t, *purpose), (&take, ProbePurpose::Recover));
     assert_eq!(results.len(), 1);
-    assert_eq!((results[0].id.as_str(), results[0].file.as_str()), ("L1", file));
+    assert_eq!(
+        (results[0].id.as_str(), results[0].file.as_str()),
+        ("L1", file)
+    );
     assert_eq!(results[0].info, Err(format!("{file} is missing")));
 }
 
@@ -802,7 +927,11 @@ fn probes_fixture_media() {
         argv: probe_argv(file, kind),
     };
     let jobs = vec![
-        job("L1", "takes/take-0001/L1-screen-FAKE-1.mkv", StreamKind::Video),
+        job(
+            "L1",
+            "takes/take-0001/L1-screen-FAKE-1.mkv",
+            StreamKind::Video,
+        ),
         job("A1", "takes/take-0001/A1-mic.mka", StreamKind::Audio),
         job("L2", "takes/take-0001/L2-camera-0.mkv", StreamKind::Video),
     ];
@@ -812,7 +941,10 @@ fn probes_fixture_media() {
         panic!("{events:#?}");
     };
     let video = results[0].info.as_ref().unwrap();
-    assert_eq!((video.frames, video.width, video.height), (Some(60), Some(320), Some(180)));
+    assert_eq!(
+        (video.frames, video.width, video.height),
+        (Some(60), Some(320), Some(180))
+    );
     let audio = results[1].info.as_ref().unwrap();
     assert_eq!((audio.sample_rate, audio.channels), (Some(48_000), Some(1)));
     assert!(results[2].info.is_err());
@@ -852,7 +984,12 @@ fn cached_silences_are_reused_without_ffmpeg() {
     let mut runner = runner(&dir);
     let (inbox, rx) = Inbox::channel();
     // The argv would fail: the input doesn't exist. The cache answers first.
-    runner.detect_silence(JobId(5), key.clone(), silence_argv("takes/gone.mka", -35.0, 400), inbox.clone());
+    runner.detect_silence(
+        JobId(5),
+        key.clone(),
+        silence_argv("takes/gone.mka", -35.0, 400),
+        inbox.clone(),
+    );
     let events = events_until(&rx, WAIT, |_| true);
     assert_eq!(
         events,
@@ -867,7 +1004,12 @@ fn cached_silences_are_reused_without_ffmpeg() {
     // A cache file for another key (or corrupt) is ignored: ffmpeg runs and fails.
     fs::write(cache_dir.join(format!("{}.json", "cd".repeat(32))), "{oops").unwrap();
     let other = SilenceKey("cd".repeat(32));
-    runner.detect_silence(JobId(6), other.clone(), silence_argv("takes/gone.mka", -35.0, 400), inbox);
+    runner.detect_silence(
+        JobId(6),
+        other.clone(),
+        silence_argv("takes/gone.mka", -35.0, 400),
+        inbox,
+    );
     let events = events_until(&rx, WAIT, |_| true);
     let [Event::SilenceFailed { job, key, message }] = events.as_slice() else {
         panic!("{events:#?}");
@@ -896,12 +1038,24 @@ fn silence_detection_finds_the_fixture_gaps_and_caches_them() {
         panic!("{events:#?}");
     };
     let ms = |ns: i64| (ns as f64 / 1e6).round() as i64;
-    let found: Vec<(i64, i64)> = silences.iter().map(|i| (ms(i.start_ns), ms(i.end_ns))).collect();
+    let found: Vec<(i64, i64)> = silences
+        .iter()
+        .map(|i| (ms(i.start_ns), ms(i.end_ns)))
+        .collect();
     assert_eq!(found.len(), 2, "{found:?}");
-    assert!((found[0].0 - 500).abs() <= 10 && (found[0].1 - 1500).abs() <= 10, "{found:?}");
+    assert!(
+        (found[0].0 - 500).abs() <= 10 && (found[0].1 - 1500).abs() <= 10,
+        "{found:?}"
+    );
     // A trailing silence ends at the file's end.
-    assert!((found[1].0 - 2000).abs() <= 10 && (found[1].1 - 2500).abs() <= 10, "{found:?}");
-    assert!(dir.join(format!(".qrec/cache/silence/{}.json", key.0)).is_file());
+    assert!(
+        (found[1].0 - 2000).abs() <= 10 && (found[1].1 - 2500).abs() <= 10,
+        "{found:?}"
+    );
+    assert!(
+        dir.join(format!(".qrec/cache/silence/{}.json", key.0))
+            .is_file()
+    );
 
     // Again (another job): straight from the cache.
     runner.detect_silence(JobId(2), key, argv, inbox);
@@ -916,7 +1070,13 @@ fn silence_detection_finds_the_fixture_gaps_and_caches_them() {
 fn purge_reports_through_the_inbox() {
     let env = TestEnv::new();
     let dir = env.empty_dir("swamp");
-    fixture_project(&dir, &[MediaSpec::audio(48_000, 1, 500, &[]), MediaSpec::audio(48_000, 1, 500, &[])]);
+    fixture_project(
+        &dir,
+        &[
+            MediaSpec::audio(48_000, 1, 500, &[]),
+            MediaSpec::audio(48_000, 1, 500, &[]),
+        ],
+    );
     let mut runner = runner(&dir);
     let (inbox, rx) = Inbox::channel();
     runner.delete_take_dirs(JobId(9), vec![TakeId::numbered(2)], inbox);

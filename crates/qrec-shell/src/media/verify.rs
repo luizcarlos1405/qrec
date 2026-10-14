@@ -40,10 +40,7 @@ fn probe_argv(select: &str, extra: &[&str], entries: &str, file: &Path) -> Vec<S
         .map(String::from)
         .to_vec();
     argv.extend(extra.iter().map(|s| (*s).to_owned()));
-    argv.extend(
-        ["-show_entries", entries, "-of", "csv=p=0"]
-            .map(String::from),
-    );
+    argv.extend(["-show_entries", entries, "-of", "csv=p=0"].map(String::from));
     argv.push(format!("file:{}", file.display()));
     argv
 }

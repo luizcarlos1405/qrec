@@ -109,7 +109,10 @@ fn probe_one(ctx: &Ctx, take: &TakeId, job: &ProbeJob) -> Result<MediaInfo, Stri
         return Err(format!("{} is empty", job.file));
     }
     let program = job.argv.first().map_or("ffprobe", String::as_str);
-    let log = ctx.open_log(&ctx.log_base(&format!("probe-{take}-{}", job.id)), &job.argv)?;
+    let log = ctx.open_log(
+        &ctx.log_base(&format!("probe-{take}-{}", job.id)),
+        &job.argv,
+    )?;
     let done = child::run(
         Spec::new(&job.argv, Stderr::Log(log.file()))
             .cwd(ctx.root())

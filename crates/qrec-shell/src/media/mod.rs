@@ -48,8 +48,7 @@ pub use logs::{KEEP_LOGS, prune_logs};
 pub use place::PART_MARKER;
 
 pub(crate) use child::{
-    Ended as ChildEnded, Spec as ChildSpec, Stderr as ChildStderr, Stdout as ChildStdout,
-    run as run_child,
+    Spec as ChildSpec, Stderr as ChildStderr, Stdout as ChildStdout, run as run_child,
 };
 
 /// Timeouts and limits of the media runner (A§8.7).
@@ -116,12 +115,7 @@ impl Ctx {
 
     /// `.qrec/logs/<stamp>-<pid>-j<job>-<step>` (without `.log`).
     pub(crate) fn job_log_base(&self, job: JobId, step: &str) -> String {
-        format!(
-            "{}-{}-j{}-{step}",
-            logs::stamp(),
-            std::process::id(),
-            job.0
-        )
+        format!("{}-{}-j{}-{step}", logs::stamp(), std::process::id(), job.0)
     }
 
     /// `.qrec/logs/<stamp>-<pid>-<step>` (without `.log`), for work without a job.
@@ -201,7 +195,10 @@ impl FfmpegRunner {
 
 impl MediaRunner for FfmpegRunner {
     fn probe(&mut self, take: TakeId, purpose: ProbePurpose, jobs: Vec<ProbeJob>, out: Inbox) {
-        let ids: Vec<(String, String)> = jobs.iter().map(|j| (j.id.clone(), j.file.clone())).collect();
+        let ids: Vec<(String, String)> = jobs
+            .iter()
+            .map(|j| (j.id.clone(), j.file.clone()))
+            .collect();
         let take_for_fail = take.clone();
         self.spawn(
             format!("qrec-probe-{take}"),

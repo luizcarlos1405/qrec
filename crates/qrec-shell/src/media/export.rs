@@ -132,7 +132,10 @@ fn export(
             log: String::new(),
         })?;
     if plan.segments.is_empty() {
-        return Err(Failure::plain("nothing to export: the plan has no segments", &log));
+        return Err(Failure::plain(
+            "nothing to export: the plan has no segments",
+            &log,
+        ));
     }
     let dest = destination(ctx, &plan.out).map_err(|m| Failure::plain(m, &log))?;
     log.note(&format!("destination {:?}", dest));
@@ -157,7 +160,10 @@ fn export(
     for unit in units {
         let path = resolve(ctx, &unit.segment.path).map_err(|m| Failure::plain(m, &log))?;
         if is_cached(&path) {
-            log.note(&format!("segment {} is cached: {}", unit.first, unit.segment.path));
+            log.note(&format!(
+                "segment {} is cached: {}",
+                unit.first, unit.segment.path
+            ));
             for &i in &unit.indices {
                 out.event(Event::ExportProgress {
                     job,
@@ -229,7 +235,10 @@ fn render_all(
             if ctl.stop.is_set() {
                 break;
             }
-            let next = queue.lock().unwrap_or_else(PoisonError::into_inner).pop_front();
+            let next = queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pop_front();
             let Some(unit) = next else { break };
             let result = catch_unwind(AssertUnwindSafe(|| {
                 render_unit(ctx, ctl, job, total, &unit, out)
@@ -305,7 +314,10 @@ fn render_unit(
             log: String::new(),
         })?;
     if let Some(missing) = missing_input(ctx, &argv) {
-        return Err(Failure::plain(format!("{label}: {missing} is missing"), &log));
+        return Err(Failure::plain(
+            format!("{label}: {missing} is missing"),
+            &log,
+        ));
     }
     let final_path = resolve(ctx, &segment.path).map_err(|m| Failure::plain(m, &log))?;
     let dir = final_path
@@ -339,6 +351,11 @@ fn render_unit(
         spec = spec.env("LIBVA_DRIVER_NAME", driver);
     }
     let done = child::run(spec).map_err(|m| Failure::plain(format!("{label}: {m}"), &log))?;
+    log.note(&format!(
+        "{} after {}",
+        done.describe("ffmpeg"),
+        child::human(done.elapsed)
+    ));
     stopped(ctl, &done)?;
     check_ffmpeg(&done, &label, &log)?;
 
@@ -498,8 +515,7 @@ pub(crate) fn destination(ctx: &Ctx, out: &str) -> Result<Destination, String> {
     } else {
         let abs = ctx.project.resolve(out).map_err(|e| e.message)?;
         if let Some(dir) = abs.parent() {
-            fs::create_dir_all(dir)
-                .map_err(|e| format!("can't create {}: {e}", dir.display()))?;
+            fs::create_dir_all(dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
         }
         Ok(Destination::Auto(abs))
     }
@@ -575,7 +591,10 @@ pub(crate) fn check_ffmpeg(done: &Finished, what: &str, log: &LogFile) -> Result
         return Err(Failure::step(format!("{what}: internal error: {e}"), log));
     }
     if !done.exited_ok() {
-        return Err(Failure::step(format!("{what}: {}", done.describe("ffmpeg")), log));
+        return Err(Failure::step(
+            format!("{what}: {}", done.describe("ffmpeg")),
+            log,
+        ));
     }
     if !done.progress_end {
         return Err(Failure::step(
@@ -608,9 +627,16 @@ mod tests {
 
     #[test]
     fn output_replacement_and_inputs() {
-        let mut argv: Vec<String> = ["ffmpeg", "-i", "file:a.mkv", "-f", "mov", "file:.qrec/x.mov"]
-            .map(String::from)
-            .to_vec();
+        let mut argv: Vec<String> = [
+            "ffmpeg",
+            "-i",
+            "file:a.mkv",
+            "-f",
+            "mov",
+            "file:.qrec/x.mov",
+        ]
+        .map(String::from)
+        .to_vec();
         replace_output(&mut argv, Path::new("/p/.qrec/.x.qrec-part-1-2.mov")).unwrap();
         assert_eq!(argv.last().unwrap(), "file:/p/.qrec/.x.qrec-part-1-2.mov");
         assert!(replace_output(&mut [], Path::new("/x")).is_err());
