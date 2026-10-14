@@ -11,9 +11,15 @@
 //! 6. nothing kept ⇒ the clip is left unchanged and reported "entirely
 //!    silent at −35 dB": autocut never deletes a whole clip.
 //!
-//! Overlapping or touching silences are merged before step 2. ffmpeg never
-//! reports such pairs, but shrinking them one by one would leave a hole of
-//! fake "speech" where they meet.
+//! Two precisions the property tests forced:
+//! - Overlapping or touching silences are merged before step 2. ffmpeg never
+//!   reports such pairs, but shrinking them one by one would leave a hole of
+//!   fake "speech" where they meet.
+//! - `minKeepMs` drops *leftover* fragments (SPEC §6.3): a clip no shrunk
+//!   silence reaches is kept whole even when it is shorter than that. When
+//!   only slivers under `minKeepMs` are left of a clip that does have sound,
+//!   step 6 reports "nothing of 200 ms or more to keep" rather than
+//!   "entirely silent".
 //!
 //! Everything here is pure planning; the command, the job and the history
 //! entry live in `apply::autocut` and `on_event::autocut`.
@@ -38,8 +44,8 @@ pub use crate::on_event::autocut::apply_ready_autocuts;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClipCut {
     /// Kept fragments as `[in, out)` take frames, sorted and separated by
-    /// at least one removed frame; empty = entirely silent (the clip stays
-    /// as it is).
+    /// at least one removed frame; empty = nothing worth keeping (the clip
+    /// stays as it is, see [`nothing_kept_reason`]).
     pub kept: Vec<[Frame; 2]>,
     /// Silences removed: the runs of frames the cut takes out of the clip.
     pub silences: usize,
@@ -47,8 +53,8 @@ pub struct ClipCut {
 }
 
 impl ClipCut {
-    /// Nothing would be kept: the clip is left alone.
-    pub fn is_entirely_silent(&self) -> bool {
+    /// Nothing would be kept: the clip is left alone (A§5.7 step 6).
+    pub fn keeps_nothing(&self) -> bool {
         self.kept.is_empty()
     }
 
@@ -57,8 +63,8 @@ impl ClipCut {
         !self.kept.is_empty() && self.kept != [[clip.in_, clip.out]]
     }
 
-    /// The removed runs `[in, out)` of take frames; none for an entirely
-    /// silent clip (it isn't touched).
+    /// The removed runs `[in, out)` of take frames; none when the cut keeps
+    /// nothing (the clip isn't touched).
     pub fn removed(&self, clip: &Clip) -> Vec<[Frame; 2]> {
         if self.kept.is_empty() {
             return Vec::new();
@@ -142,6 +148,9 @@ pub fn cut_clip(clip: &Clip, silences: &[Interval], params: &AutocutParams, fps:
 /// Steps 2–4 in take-time nanoseconds: the parts of `range` outside every
 /// silence shrunk by `padding_ms`, without those shorter than `min_keep_ms`.
 /// Sorted and disjoint. These are the padded speech regions the cut must keep.
+///
+/// A range no shrunk silence reaches comes back whole whatever its length:
+/// `minKeepMs` drops *leftover* fragments (SPEC §6.3), and nothing was cut.
 pub fn kept_spans(
     range: Interval,
     silences: &[Interval],
@@ -178,8 +187,35 @@ pub fn kept_spans(
             end_ns: range.end_ns,
         });
     }
-    spans.retain(|s| s.end_ns.saturating_sub(s.start_ns) >= min_keep);
+    if spans != [range] {
+        spans.retain(|s| s.end_ns.saturating_sub(s.start_ns) >= min_keep);
+    }
     spans
+}
+
+/// Why a clip whose cut keeps nothing is left alone: "entirely silent at
+/// −35 dB" when the silences (file time) cover all of it, else "nothing of
+/// 200 ms or more to keep" (its sounds are slivers under `minKeepMs`).
+pub fn nothing_kept_reason(
+    clip: &Clip,
+    stream: &Stream,
+    track: &AudioTrack,
+    silences: &[Interval],
+    params: &AutocutParams,
+    fps: Fps,
+) -> String {
+    let range = Interval {
+        start_ns: frame_ns(as_i64(clip.in_), fps),
+        end_ns: frame_ns(as_i64(clip.out), fps),
+    };
+    let covered = union(&to_take_time(silences, stream, track))
+        .iter()
+        .any(|s| s.start_ns <= range.start_ns && range.end_ns <= s.end_ns);
+    if covered {
+        entirely_silent(params)
+    } else {
+        format!("nothing of {} ms or more to keep", params.min_keep_ms)
+    }
 }
 
 /// Step 5: each span snapped outward to whole frames (`in` = the frame
@@ -442,7 +478,7 @@ mod tests {
     #[test]
     fn an_entirely_silent_clip_keeps_nothing() {
         let cut = cut_clip(&clip(30, 90), &[ms(0, 10_000)], &params(), FPS30);
-        assert!(cut.is_entirely_silent());
+        assert!(cut.keeps_nothing());
         assert_eq!(cut.silences, 0, "nothing is removed: the clip stays");
         assert_eq!(cut.removed_frames, 0);
         assert!(!cut.changes(&clip(30, 90)));
@@ -451,8 +487,46 @@ mod tests {
         // still entirely silent. (Between two silences a fragment is at least
         // 2 × padding long.)
         let cut = cut_clip(&clip(0, 300), &[ms(-20, 10_000)], &params(), FPS30);
-        assert!(cut.is_entirely_silent(), "{cut:?}");
+        assert!(cut.keeps_nothing(), "{cut:?}");
         assert_eq!(entirely_silent(&params()), "entirely silent at \u{2212}35 dB");
+    }
+
+    #[test]
+    fn min_keep_only_drops_leftovers() {
+        // A one-frame clip (33 ms) no silence reaches stays whole even though
+        // it is shorter than the 200 ms minimum: nothing was cut from it.
+        let whole = ClipCut {
+            kept: vec![[0, 1]],
+            silences: 0,
+            removed_frames: 0,
+        };
+        assert_eq!(cut_clip(&clip(0, 1), &[], &params(), FPS30), whole);
+        assert_eq!(cut_clip(&clip(0, 1), &[ms(500, 2000)], &params(), FPS30), whole);
+    }
+
+    #[test]
+    fn why_nothing_is_kept() {
+        let project = ProjectBuilder::new()
+            .mic("A1", "alsa_input.mic")
+            .take("take-0001", 300)
+            .build();
+        let take = project.take(&TakeId::numbered(1)).unwrap();
+        let (track, stream) = analysis_source(&project, &TakeId::numbered(1), take, None).unwrap();
+        let reason = |c: &Clip, silences: &[Interval]| {
+            let cut = plan_clip(c, stream, track, silences, &params(), FPS30);
+            assert!(cut.keeps_nothing(), "{cut:?}");
+            nothing_kept_reason(c, stream, track, silences, &params(), FPS30)
+        };
+        assert_eq!(
+            reason(&clip(30, 90), &[ms(0, 2500), ms(2500, 4000)]),
+            "entirely silent at \u{2212}35 dB"
+        );
+        // 300 ms with a 250 ms silence: 120 ms and 170 ms of padded sound
+        // are left, both under 200 ms.
+        assert_eq!(
+            reason(&clip(0, 9), &[ms(0, 250)]),
+            "nothing of 200 ms or more to keep"
+        );
     }
 
     #[test]
@@ -467,7 +541,7 @@ mod tests {
             min_keep_ms: 700,
             ..params()
         };
-        assert!(cut_clip(&clip(0, 300), &silences, &strict, FPS30).is_entirely_silent());
+        assert!(cut_clip(&clip(0, 300), &silences, &strict, FPS30).keeps_nothing());
         let silences = [ms(1000, 3900), ms(4300, 6000)];
         let cut = cut_clip(&clip(0, 300), &silences, &strict, FPS30);
         assert_eq!(cut.kept, vec![[0, 34], [176, 300]], "one removal 1.12–5.88 s");

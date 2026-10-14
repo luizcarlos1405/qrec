@@ -19,7 +19,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 
 use crate::apply::Outcome;
-use crate::autocut::{ClipCut, db_label, dry_run_label, entirely_silent, plan_clip, plural, run_label};
+use crate::autocut::{
+    ClipCut, db_label, dry_run_label, nothing_kept_reason, plan_clip, plural, run_label,
+};
 use crate::ctx::{Ctx, IdGen};
 use crate::error::CoreError;
 use crate::history::commit;
@@ -413,9 +415,10 @@ fn plan_target<'s>(
         .silence
         .get(&target.key)
         .ok_or_else(|| format!("{ANALYSIS_FAILED}no result"))?;
-    let cut = plan_clip(clip, stream, track, silences, params, project.canvas.fps);
-    if cut.is_entirely_silent() {
-        return Err(entirely_silent(params));
+    let fps = project.canvas.fps;
+    let cut = plan_clip(clip, stream, track, silences, params, fps);
+    if cut.keeps_nothing() {
+        return Err(nothing_kept_reason(clip, stream, track, silences, params, fps));
     }
     Ok((clip, cut))
 }
