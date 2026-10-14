@@ -175,7 +175,8 @@ pub fn run(opts: &DoctorOptions) -> DoctorReport {
 /// Runs every check against `probe`.
 pub fn run_with(probe: &dyn Probe, opts: &DoctorOptions) -> DoctorReport {
     let mut checks = Vec::new();
-    gstreamer_checks(probe, opts, &mut checks);
+    // Asked only once GStreamer works: a stuck plugin scan isn't waited for twice.
+    let gst_va_encoders = gstreamer_checks(probe, opts, &mut checks);
     ffmpeg_checks(probe, &mut checks);
     desktop_checks(probe, opts, &mut checks);
     checks.push(match probe.which("wl-copy") {
@@ -187,7 +188,7 @@ pub fn run_with(probe: &dyn Probe, opts: &DoctorOptions) -> DoctorReport {
             "install wl-clipboard",
         ),
     });
-    let va = va_report(probe, opts);
+    let va = va_report(probe, opts, gst_va_encoders);
     checks.push(va_check(&va));
     DoctorReport {
         checks,
@@ -304,7 +305,13 @@ const FAKE_ELEMENTS: &[Element] = &[
     },
 ];
 
-fn gstreamer_checks(probe: &dyn Probe, opts: &DoctorOptions, checks: &mut Vec<Check>) {
+/// The GStreamer checks; returns the `va*h264enc` encoders when GStreamer
+/// works (empty otherwise).
+fn gstreamer_checks(
+    probe: &dyn Probe,
+    opts: &DoctorOptions,
+    checks: &mut Vec<Check>,
+) -> Vec<String> {
     let version = match probe.gstreamer() {
         Ok(version) => version,
         Err(e) => {
@@ -315,7 +322,7 @@ fn gstreamer_checks(probe: &dyn Probe, opts: &DoctorOptions, checks: &mut Vec<Ch
                 "install GStreamer ≥ 1.24 (the Qrec Nix package ships it); if it hangs, \
                  a GPU driver blocks the plugin scan: check the VA-API section",
             ));
-            return;
+            return Vec::new();
         }
     };
     checks.push(ok("gstreamer", true, version));
@@ -366,6 +373,7 @@ fn gstreamer_checks(probe: &dyn Probe, opts: &DoctorOptions, checks: &mut Vec<Ch
             "install gst-editing-services",
         ),
     });
+    va
 }
 
 /// Encoder name, required, what for.
@@ -551,7 +559,7 @@ pub fn libva_driver_for(vendor: u16) -> Option<&'static str> {
     }
 }
 
-fn va_report(probe: &dyn Probe, opts: &DoctorOptions) -> VaReport {
+fn va_report(probe: &dyn Probe, opts: &DoctorOptions, gst_encoders: Vec<String>) -> VaReport {
     let nodes = probe.render_nodes();
     let (device, origin) = if let Some(d) = &opts.project_vaapi_device {
         (Some(d.clone()), Some("project"))
@@ -602,7 +610,7 @@ fn va_report(probe: &dyn Probe, opts: &DoctorOptions) -> VaReport {
         expected_driver,
         libva_driver_name: probe.env("LIBVA_DRIVER_NAME"),
         ffmpeg_h264,
-        gst_encoders: probe.gst_va_encoders(),
+        gst_encoders,
         note,
     }
 }
@@ -1241,6 +1249,10 @@ mod tests {
         fake.programs.remove("ffmpeg");
         let report = run_with(&fake, &opts());
         assert!(!check(&report, "gstreamer").ok);
+        assert!(
+            report.va.as_ref().unwrap().gst_encoders.is_empty(),
+            "a stuck GStreamer isn't asked again"
+        );
         assert!(
             check(&report, "gstreamer")
                 .detail
