@@ -18,7 +18,9 @@ use crate::model::{Canvas, Fps, Scene, VideoSource};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExportPlan {
-    /// The final output path (absolute).
+    /// The final output path: absolute when hand-picked (`--out`), else a
+    /// project-relative auto name (`exports/…`, `frames/…`) that the runner
+    /// bumps with `-2`, `-3`, … instead of overwriting (A§8.8).
     pub out: String,
     /// Extension of the temp output (`.<stem>.qrec-part-<pid>-<job>.<ext>`).
     pub tmp_ext: String,
@@ -67,7 +69,9 @@ pub struct StitchPlan {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FramePlan {
-    /// The final output path (absolute).
+    /// The final output path: absolute when hand-picked (`--out`), else a
+    /// project-relative auto name (`exports/…`, `frames/…`) that the runner
+    /// bumps with `-2`, `-3`, … instead of overwriting (A§8.8).
     pub out: String,
     /// Extension of the temp output (`png`).
     pub tmp_ext: String,

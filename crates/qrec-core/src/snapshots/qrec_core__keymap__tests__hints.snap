@@ -1,0 +1,10 @@
+---
+source: crates/qrec-core/src/keymap.rs
+expression: text
+---
+Idle: r record · o record over · s split · c autocut · ? all keys
+Countdown: Esc cancel · r cancel
+Recording: r stop · Esc cancel take (files kept) · Tab switch view · = - zoom · \ fit
+Finalizing: finalizing the take, waiting for every file to close (up to 10 s) · d discard it · Tab switch view · = - zoom
+ClipSelected: s split · [ ] trim to playhead · < > move · x remove · c autocut · o record over · z zoom to clip · ? all keys
+Dragging: release to apply · Esc cancel drag · n snapping on/off

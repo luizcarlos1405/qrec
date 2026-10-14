@@ -1,0 +1,720 @@
+---
+source: crates/qrec-core/src/schema.rs
+expression: project_schema()
+---
+{
+  "$defs": {
+    "AudioRole": {
+      "description": "What an audio track records. Labels only; any number of each is allowed.",
+      "enum": [
+        "mic",
+        "system"
+      ],
+      "type": "string"
+    },
+    "AudioTrack": {
+      "additionalProperties": false,
+      "description": "An audio source recorded to its own file.",
+      "properties": {
+        "gainDb": {
+          "format": "double",
+          "maximum": 60.0,
+          "minimum": -60.0,
+          "type": "number"
+        },
+        "id": {
+          "$ref": "#/$defs/TrackId"
+        },
+        "label": {
+          "type": "string"
+        },
+        "missing": {
+          "description": "Take scenes only: the source disappeared mid-take or its file is unreadable.",
+          "type": "boolean"
+        },
+        "muted": {
+          "type": "boolean"
+        },
+        "role": {
+          "$ref": "#/$defs/AudioRole"
+        },
+        "source": {
+          "description": "PulseAudio/PipeWire source name (`alsa_input.…` or `….monitor`).",
+          "type": "string"
+        },
+        "syncOffsetMs": {
+          "description": "Manual sync correction. Positive values place the audio later.",
+          "format": "int32",
+          "maximum": 5000,
+          "minimum": -5000,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "role",
+        "source",
+        "label",
+        "gainDb",
+        "muted",
+        "syncOffsetMs"
+      ],
+      "type": "object"
+    },
+    "AutocutSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "autoRunAfterTake": {
+          "type": "boolean"
+        },
+        "minKeepMs": {
+          "description": "Leftover fragments shorter than this are dropped.",
+          "format": "uint32",
+          "maximum": 60000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "minSilenceMs": {
+          "description": "Only silences at least this long are removed.",
+          "format": "uint32",
+          "maximum": 60000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "paddingMs": {
+          "description": "Kept on each side of speech.",
+          "format": "uint32",
+          "maximum": 60000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "thresholdDb": {
+          "format": "double",
+          "maximum": 0,
+          "minimum": -90.0,
+          "type": "number"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrackId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The audio track used for silence detection. `null` = the take's first mic track."
+        }
+      },
+      "required": [
+        "autoRunAfterTake",
+        "thresholdDb",
+        "minSilenceMs",
+        "paddingMs",
+        "minKeepMs"
+      ],
+      "type": "object"
+    },
+    "Canvas": {
+      "additionalProperties": false,
+      "description": "The output frame: size, frame rate and background.",
+      "properties": {
+        "background": {
+          "$ref": "#/$defs/Color"
+        },
+        "fps": {
+          "$ref": "#/$defs/Fps"
+        },
+        "height": {
+          "format": "uint32",
+          "maximum": 8192,
+          "minimum": 16,
+          "multipleOf": 2,
+          "type": "integer"
+        },
+        "width": {
+          "format": "uint32",
+          "maximum": 8192,
+          "minimum": 16,
+          "multipleOf": 2,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height",
+        "fps",
+        "background"
+      ],
+      "type": "object"
+    },
+    "Clip": {
+      "additionalProperties": false,
+      "description": "A range `[in, out)` of a take, in frames.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ClipId"
+        },
+        "in": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "out": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "take": {
+          "$ref": "#/$defs/TakeId"
+        }
+      },
+      "required": [
+        "id",
+        "take",
+        "in",
+        "out"
+      ],
+      "type": "object"
+    },
+    "ClipId": {
+      "description": "A timeline clip: `c` followed by hex digits, e.g. `c7f3`.",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$",
+      "type": "string"
+    },
+    "Color": {
+      "description": "A `#RRGGBB` color.",
+      "pattern": "^#[0-9A-Fa-f]{6}$",
+      "type": "string"
+    },
+    "Crop": {
+      "additionalProperties": false,
+      "description": "Pixels trimmed from each side of a source.",
+      "properties": {
+        "bottom": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "left": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "right": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "top": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "top",
+        "right",
+        "bottom",
+        "left"
+      ],
+      "type": "object"
+    },
+    "EncoderPref": {
+      "description": "Which H.264 encoder to use for recording and MP4 export.",
+      "oneOf": [
+        {
+          "enum": [
+            "vaapi",
+            "x264"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "auto",
+          "description": "VA-API when it is verified on the chosen node, x264 otherwise.",
+          "type": "string"
+        }
+      ]
+    },
+    "Fit": {
+      "description": "How a (cropped) source fills its rect.",
+      "oneOf": [
+        {
+          "const": "contain",
+          "description": "Scale to fit inside the rect, keeping the aspect ratio (letterboxed).",
+          "type": "string"
+        },
+        {
+          "const": "cover",
+          "description": "Scale to cover the rect, keeping the aspect ratio (overflow cropped).",
+          "type": "string"
+        }
+      ]
+    },
+    "Fps": {
+      "additionalProperties": false,
+      "description": "A frame rate as a rational number (`30/1`, `30000/1001`); the canvas allows up to 240 fps.",
+      "properties": {
+        "den": {
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "num": {
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "num",
+        "den"
+      ],
+      "type": "object"
+    },
+    "Layer": {
+      "additionalProperties": false,
+      "description": "A video source placed on the canvas (\"Onion layer\" in the UI).",
+      "properties": {
+        "crop": {
+          "$ref": "#/$defs/Crop",
+          "description": "Trim of the source, in source pixels."
+        },
+        "fit": {
+          "$ref": "#/$defs/Fit"
+        },
+        "id": {
+          "$ref": "#/$defs/LayerId"
+        },
+        "locked": {
+          "description": "Locked layers can't be moved on the canvas (UI aid).",
+          "type": "boolean"
+        },
+        "missing": {
+          "description": "Take scenes only: the source disappeared mid-take or its file is unreadable.",
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "opacity": {
+          "description": "0.0 to 1.0.",
+          "format": "double",
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "rect": {
+          "$ref": "#/$defs/Rect",
+          "description": "Placement on the canvas, in canvas pixels. May extend past the canvas."
+        },
+        "source": {
+          "$ref": "#/$defs/VideoSource"
+        },
+        "visible": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "visible",
+        "opacity",
+        "source",
+        "rect",
+        "crop",
+        "fit"
+      ],
+      "type": "object"
+    },
+    "LayerId": {
+      "description": "A video layer in a scene: `L1`, `L2`, …",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$",
+      "type": "string"
+    },
+    "RecordingSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "countdownSecs": {
+          "description": "0 to 10 seconds.",
+          "format": "uint32",
+          "maximum": 10,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "encoder": {
+          "$ref": "#/$defs/EncoderPref"
+        },
+        "vaapiDevice": {
+          "description": "The VA-API render node, e.g. `/dev/dri/renderD129`. `null` lets Qrec\npick the first Intel or AMD node (never NVIDIA).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "countdownSecs",
+        "encoder"
+      ],
+      "type": "object"
+    },
+    "Rect": {
+      "additionalProperties": false,
+      "description": "A rectangle in canvas pixels.",
+      "properties": {
+        "h": {
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "w": {
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "x": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "y": {
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "w",
+        "h"
+      ],
+      "type": "object"
+    },
+    "Scene": {
+      "additionalProperties": false,
+      "description": "Layers and audio tracks. The project scene is used for new takes; each\ntake keeps its own snapshot.",
+      "properties": {
+        "audio": {
+          "items": {
+            "$ref": "#/$defs/AudioTrack"
+          },
+          "type": "array"
+        },
+        "layers": {
+          "description": "Array order is z-order: the last layer is on top.",
+          "items": {
+            "$ref": "#/$defs/Layer"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "layers",
+        "audio"
+      ],
+      "type": "object"
+    },
+    "Stream": {
+      "additionalProperties": false,
+      "description": "One recorded file. `id` is the layer or track id it was recorded for.\n\nWhile the take is recording, media fields are absent; they are filled\nfrom `ffprobe` when the take is finalized.",
+      "properties": {
+        "channels": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "durationNs": {
+          "description": "Probed duration of the file. Absent while recording.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "file": {
+          "description": "Project-relative, `/`-separated.",
+          "pattern": "^takes/take-[0-9]{4,}/[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "fps": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Fps"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Video only: the recorded frame rate."
+        },
+        "frames": {
+          "description": "Video only: packet count from `ffprobe -count_packets` (A§2.2).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/StreamKind"
+        },
+        "sampleRate": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "startOffsetNs": {
+          "description": "Running time of the file's first buffer minus the take's start `T0`.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "file",
+        "startOffsetNs"
+      ],
+      "type": "object"
+    },
+    "StreamKind": {
+      "enum": [
+        "video",
+        "audio"
+      ],
+      "type": "string"
+    },
+    "Take": {
+      "additionalProperties": false,
+      "description": "One recording session: a folder with one file per source.",
+      "properties": {
+        "durationFrames": {
+          "description": "0 while recording. Derived from the streams (ARCHITECTURE §2.2).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "error": {
+          "description": "Why the take is broken, when it is.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "placed": {
+          "description": "Finalization placed clips for this take (drives discard-last, A§5.5).",
+          "type": "boolean"
+        },
+        "recordedAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "replaced": {
+          "description": "Clips a record-over replaced; discarding the take puts them back.",
+          "items": {
+            "$ref": "#/$defs/Clip"
+          },
+          "type": "array"
+        },
+        "scene": {
+          "$ref": "#/$defs/Scene",
+          "description": "Snapshot of the project scene at record time. Editable and undoable."
+        },
+        "status": {
+          "$ref": "#/$defs/TakeStatus"
+        },
+        "streams": {
+          "items": {
+            "$ref": "#/$defs/Stream"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "status",
+        "recordedAt",
+        "durationFrames",
+        "scene",
+        "streams"
+      ],
+      "type": "object"
+    },
+    "TakeId": {
+      "description": "A take (one recording session): `take-0001`. Numbers are never reused.",
+      "pattern": "^take-[0-9]{4,}$",
+      "type": "string"
+    },
+    "TakeStatus": {
+      "enum": [
+        "recording",
+        "ok",
+        "broken",
+        "tooShort"
+      ],
+      "type": "string"
+    },
+    "Timeline": {
+      "additionalProperties": false,
+      "description": "One magnetic track: clips sit back to back, positions are prefix sums.",
+      "properties": {
+        "clips": {
+          "items": {
+            "$ref": "#/$defs/Clip"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "clips"
+      ],
+      "type": "object"
+    },
+    "TrackId": {
+      "description": "An audio track in a scene: `A1`, `A2`, …",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$",
+      "type": "string"
+    },
+    "VideoSource": {
+      "description": "What a layer captures.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A monitor, captured through the ScreenCast portal. `output` is the bare\noutput name (`DP-4`), never the description.",
+          "properties": {
+            "kind": {
+              "const": "screen",
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "output": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "output",
+            "label"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A V4L2 camera (`/dev/video0`).",
+          "properties": {
+            "device": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "camera",
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "device",
+            "label"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A Qrec project: the qrec.json of a project folder (schema v1). Times are integer frames at the canvas fps. The timeline is one track of clips played back to back; each clip is a half-open range [in, out) of a take. `takes` is the media pool: facts about the recorded files that undo never changes. `scene` is the layout new takes copy; each take keeps its own snapshot. Qrec also checks what this schema can't: clip ids are unique and each clip uses an existing `ok` take with out <= durationFrames; layer and track ids are unique in a scene; a stream file lives in its own take's folder; nextTakeNumber is above every take number. Prefer `qrec` commands over hand edits: they keep the undo history.",
+  "properties": {
+    "autocut": {
+      "$ref": "#/$defs/AutocutSettings"
+    },
+    "canvas": {
+      "$ref": "#/$defs/Canvas"
+    },
+    "createdAt": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "name": {
+      "description": "Defaults to the folder name.",
+      "type": "string"
+    },
+    "nextTakeNumber": {
+      "description": "The next take number. Never reused; not undoable.",
+      "format": "uint32",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "recording": {
+      "$ref": "#/$defs/RecordingSettings"
+    },
+    "scene": {
+      "$ref": "#/$defs/Scene",
+      "description": "The project scene, used for new takes."
+    },
+    "takes": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Take"
+      },
+      "description": "The media pool. Append-only facts about the disk; not undoable (SPEC §8.2).",
+      "propertyNames": {
+        "pattern": "^take-[0-9]{4,}$"
+      },
+      "type": "object"
+    },
+    "timeline": {
+      "$ref": "#/$defs/Timeline"
+    },
+    "version": {
+      "const": 1,
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "name",
+    "createdAt",
+    "canvas",
+    "scene",
+    "recording",
+    "autocut",
+    "takes",
+    "nextTakeNumber",
+    "timeline"
+  ],
+  "title": "qrec.json",
+  "type": "object"
+}

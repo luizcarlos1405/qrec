@@ -1,13 +1,14 @@
 //! File names derived from the project name (A§9.9, A§5.9). Owner: output.
 //!
-//! `file_stem` is implemented by the foundation (capture file names need it
-//! too); the auto names are signatures only.
-#![allow(clippy::todo, unused_variables)]
+//! Auto names are project-relative (`exports/…`, `frames/…`); the shell
+//! joins them with the project dir and appends `-2`, `-3`, … when a name is
+//! taken (A§8.8).
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 
 use crate::ids::{Frame, TakeId};
 use crate::model::Fps;
+use crate::time::timecode_compact;
 
 /// Longest stem in bytes.
 pub const MAX_STEM_BYTES: usize = 120;
@@ -46,12 +47,23 @@ pub fn export_file_name(
     utc_offset_secs: i32,
     ext: &str,
 ) -> String {
-    todo!("output: export_file_name")
+    let offset = FixedOffset::east_opt(utc_offset_secs)
+        .unwrap_or_else(|| FixedOffset::east_opt(0).expect("UTC is a valid offset"));
+    let local = now.with_timezone(&offset);
+    format!(
+        "exports/{}-{}.{ext}",
+        file_stem(project_name),
+        local.format("%Y%m%d-%H%M%S")
+    )
 }
 
 /// `frames/<stem>-<take>-<HHMMSSFF>.png` with the timeline timecode of `at`.
 pub fn frame_file_name(project_name: &str, take: &TakeId, at: Frame, fps: Fps) -> String {
-    todo!("output: frame_file_name")
+    format!(
+        "frames/{}-{take}-{}.png",
+        file_stem(project_name),
+        timecode_compact(at, fps)
+    )
 }
 
 #[cfg(test)]
@@ -69,5 +81,43 @@ mod tests {
         let stem = file_stem(&long);
         assert_eq!(stem.len(), 120);
         assert!(stem.chars().all(|c| c == 'é'));
+    }
+
+    #[test]
+    fn export_names_use_local_time() {
+        let now = DateTime::parse_from_rfc3339("2026-10-14T23:30:05Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(
+            export_file_name("my-video", now, 0, "mp4"),
+            "exports/my-video-20261014-233005.mp4"
+        );
+        // UTC−3 (São Paulo) and UTC+2: the local date can differ from UTC.
+        assert_eq!(
+            export_file_name("my-video", now, -3 * 3600, "webm"),
+            "exports/my-video-20261014-203005.webm"
+        );
+        assert_eq!(
+            export_file_name("../x", now, 2 * 3600, "mp4"),
+            "exports/_x-20261015-013005.mp4"
+        );
+        // An impossible offset falls back to UTC.
+        assert_eq!(
+            export_file_name("", now, 100_000, "mp4"),
+            "exports/qrec-20261014-233005.mp4"
+        );
+    }
+
+    #[test]
+    fn frame_names_use_the_timeline_timecode() {
+        let take = TakeId::numbered(3);
+        assert_eq!(
+            frame_file_name("my-video", &take, 411, Fps::new(30, 1)),
+            "frames/my-video-take-0003-00001321.png"
+        );
+        assert_eq!(
+            frame_file_name("a/b", &take, 30 * 3600 + 2, Fps::new(30000, 1001)),
+            "frames/a_b-take-0003-01000002.png"
+        );
     }
 }

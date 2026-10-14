@@ -1,0 +1,296 @@
+---
+source: crates/qrec-core/src/on_event/autocut.rs
+expression: "json!({\n    \"firstResult\": fixtures::digest(&first), \"lastResult\":\n    fixtures::digest(&done), \"failedWhileRecording\":\n    fixtures::digest(&failed_first), \"readyWhileRecording\":\n    fixtures::digest(&deferred), \"appliedAfterPlacement\":\n    fixtures::digest(&flushed),\n})"
+---
+appliedAfterPlacement:
+  effects:
+    - historyAppend:
+        cmd:
+          cmd: autocut
+          dryRun: false
+          overrides: {}
+          scope: all
+        label: "Autocut take 2: removed 1 silence (0.5 s)"
+        seq: 1
+    - writeProject
+    - reply:
+        reply:
+          Ok:
+            created:
+              - ce8d
+            message: "Autocut take 2: removed 1 silence (0.5 s); 1 clip skipped (c001: silence analysis failed: ffmpeg exited with status 1)"
+            removed: []
+            result:
+              clips:
+                - clip: c002
+                  kept:
+                    - - 0
+                      - 34
+                    - - 50
+                      - 150
+                  removedFrames: 16
+                  silences: 1
+              skipped:
+                - clip: c001
+                  reason: "silence analysis failed: ffmpeg exited with status 1"
+            seq: 1
+        req: r1
+  history:
+    - cmd:
+        cmd: autocut
+        dryRun: false
+        overrides: {}
+        scope: all
+      label: "Autocut take 2: removed 1 silence (0.5 s)"
+      seq: 1
+  jobs: {}
+  reply: ~
+  timeline:
+    - id: c001
+      in: 0
+      out: 300
+      take: take-0001
+    - id: c002
+      in: 0
+      out: 34
+      take: take-0002
+    - id: ce8d
+      in: 50
+      out: 150
+      take: take-0002
+failedWhileRecording:
+  effects:
+    - log:
+        level: warn
+        message: "autocut job-1: silence analysis failed: ffmpeg exited with status 1"
+    - progress:
+        progress:
+          done: 1
+          label: Analyzing audio 1/2
+          phase: analyze
+          total: 2
+        req: r1
+  history: []
+  jobs:
+    "1":
+      id: 1
+      kind:
+        cmd:
+          cmd: autocut
+          dryRun: false
+          overrides: {}
+          scope: all
+          skipped:
+            - clip: c001
+              reason: "silence analysis failed: ffmpeg exited with status 1"
+        dryRun: false
+        kind: autocut
+        params:
+          minKeepMs: 200
+          minSilenceMs: 400
+          paddingMs: 120
+          thresholdDb: -35
+        pending:
+          - 58b2a081050a9e326a6c405d1ac2b771a9eb1e508071b70461085fc30ec6ae9d
+        ready: false
+        targets:
+          - clip:
+              id: c002
+              in: 0
+              out: 150
+              take: take-0002
+            key: 58b2a081050a9e326a6c405d1ac2b771a9eb1e508071b70461085fc30ec6ae9d
+            track: A1
+      req: r1
+      started: "2026-10-14T12:30:00Z"
+  reply: ~
+  timeline:
+    - id: c001
+      in: 0
+      out: 300
+      take: take-0001
+    - id: c002
+      in: 0
+      out: 150
+      take: take-0002
+firstResult:
+  effects:
+    - progress:
+        progress:
+          done: 1
+          label: Analyzing audio 1/2
+          phase: analyze
+          total: 2
+        req: r1
+  history: []
+  jobs:
+    "1":
+      id: 1
+      kind:
+        cmd:
+          cmd: autocut
+          dryRun: false
+          overrides: {}
+          scope: all
+        dryRun: false
+        kind: autocut
+        params:
+          minKeepMs: 200
+          minSilenceMs: 400
+          paddingMs: 120
+          thresholdDb: -35
+        pending:
+          - 58b2a081050a9e326a6c405d1ac2b771a9eb1e508071b70461085fc30ec6ae9d
+        ready: false
+        targets:
+          - clip:
+              id: c001
+              in: 0
+              out: 300
+              take: take-0001
+            key: eb039e93458ab3222f17cdf85c66a6a25b51b0dd8f431d8b1a9338fea36fa25a
+            track: A1
+          - clip:
+              id: c002
+              in: 0
+              out: 150
+              take: take-0002
+            key: 58b2a081050a9e326a6c405d1ac2b771a9eb1e508071b70461085fc30ec6ae9d
+            track: A1
+      req: r1
+      started: "2026-10-14T12:30:00Z"
+  reply: ~
+  timeline:
+    - id: c001
+      in: 0
+      out: 300
+      take: take-0001
+    - id: c002
+      in: 0
+      out: 150
+      take: take-0002
+lastResult:
+  effects:
+    - progress:
+        progress:
+          done: 2
+          label: Analyzing audio 2/2
+          phase: analyze
+          total: 2
+        req: r1
+    - historyAppend:
+        cmd:
+          cmd: autocut
+          dryRun: false
+          overrides: {}
+          scope: all
+        label: "Autocut 2 takes: removed 4 silences (4.3 s)"
+        seq: 1
+    - writeProject
+    - reply:
+        reply:
+          Ok:
+            created:
+              - ce8d
+              - c4ff
+            message: "Autocut 2 takes: removed 4 silences (4.3 s)"
+            removed: []
+            result:
+              clips:
+                - clip: c001
+                  kept:
+                    - - 20
+                      - 94
+                    - - 131
+                      - 244
+                  removedFrames: 113
+                  silences: 3
+                - clip: c002
+                  kept:
+                    - - 0
+                      - 34
+                    - - 50
+                      - 150
+                  removedFrames: 16
+                  silences: 1
+              skipped: []
+            seq: 1
+        req: r1
+  history:
+    - cmd:
+        cmd: autocut
+        dryRun: false
+        overrides: {}
+        scope: all
+      label: "Autocut 2 takes: removed 4 silences (4.3 s)"
+      seq: 1
+  jobs: {}
+  reply: ~
+  timeline:
+    - id: c001
+      in: 20
+      out: 94
+      take: take-0001
+    - id: ce8d
+      in: 131
+      out: 244
+      take: take-0001
+    - id: c002
+      in: 0
+      out: 34
+      take: take-0002
+    - id: c4ff
+      in: 50
+      out: 150
+      take: take-0002
+readyWhileRecording:
+  effects:
+    - progress:
+        progress:
+          done: 2
+          label: Waiting for the recording to finish
+          phase: analyze
+          total: 2
+        req: r1
+  history: []
+  jobs:
+    "1":
+      id: 1
+      kind:
+        cmd:
+          cmd: autocut
+          dryRun: false
+          overrides: {}
+          scope: all
+          skipped:
+            - clip: c001
+              reason: "silence analysis failed: ffmpeg exited with status 1"
+        dryRun: false
+        kind: autocut
+        params:
+          minKeepMs: 200
+          minSilenceMs: 400
+          paddingMs: 120
+          thresholdDb: -35
+        pending: []
+        ready: true
+        targets:
+          - clip:
+              id: c002
+              in: 0
+              out: 150
+              take: take-0002
+            key: 58b2a081050a9e326a6c405d1ac2b771a9eb1e508071b70461085fc30ec6ae9d
+            track: A1
+      req: r1
+      started: "2026-10-14T12:30:00Z"
+  reply: ~
+  timeline:
+    - id: c001
+      in: 0
+      out: 300
+      take: take-0001
+    - id: c002
+      in: 0
+      out: 150
+      take: take-0002

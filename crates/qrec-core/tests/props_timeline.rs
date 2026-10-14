@@ -688,7 +688,7 @@ proptest! {
     }
 }
 
-// ------------------------------------- plans (needs the output owner's code)
+// --------------------------------------------- plans (the output owner's code)
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
@@ -696,7 +696,6 @@ proptest! {
     /// A§5.2 / A§9.3: `plan_export(split(p)) == plan_export(p)` and the same
     /// for GES, up to the clip ids a segment lists.
     #[test]
-    #[ignore = "needs export_plan::plan_export, ges_plan::plan_ges and render_units (output owner); run with --ignored once they exist"]
     fn split_leaves_the_export_and_ges_plans_unchanged(
         p in strategies::arb_project(),
         which in any::<Index>(),
