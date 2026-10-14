@@ -1,0 +1,173 @@
+---
+source: crates/qrec-core/src/apply/scene.rs
+expression: "(replies, labels, &state.project.scene)"
+---
+- - seq: 1
+    created:
+      - L1
+    removed: []
+    message: Added layer L1 (Screen DP-4) on top of the project scene
+    result:
+      crop:
+        bottom: 0
+        left: 0
+        right: 0
+        top: 0
+      fit: contain
+      id: L1
+      name: Screen DP-4
+      opacity: 1
+      rect:
+        h: 1080
+        w: 1920
+        x: 0
+        y: 0
+      source:
+        kind: screen
+        label: GIGA-BYTE GS27QA
+        output: DP-4
+      visible: true
+  - seq: 2
+    created:
+      - L2
+    removed: []
+    message: Added layer L2 (Face) on top of the project scene
+    result:
+      crop:
+        bottom: 0
+        left: 0
+        right: 0
+        top: 0
+      fit: cover
+      id: L2
+      name: Face
+      opacity: 1
+      rect:
+        h: 288
+        w: 384
+        x: 1498
+        y: 754
+      source:
+        device: /dev/video0
+        kind: camera
+        label: Logitech C920
+      visible: true
+  - seq: 3
+    created:
+      - A1
+    removed: []
+    message: Added mic track A1 (Yeti Nano) from alsa_input.usb-Yeti
+    result:
+      gainDb: 0
+      id: A1
+      label: Yeti Nano
+      muted: false
+      role: mic
+      source: alsa_input.usb-Yeti
+      syncOffsetMs: 0
+  - seq: 4
+    created:
+      - A2
+    removed: []
+    message: Added system audio track A2 (Desktop) from alsa_output.pci.analog-stereo.monitor
+    result:
+      gainDb: 0
+      id: A2
+      label: Desktop
+      muted: false
+      role: system
+      source: alsa_output.pci.analog-stereo.monitor
+      syncOffsetMs: 0
+  - seq: 5
+    created: []
+    removed: []
+    message: "Changed layer L2: opacity 0.9, rect 1500,760,384,288"
+    result:
+      crop:
+        bottom: 0
+        left: 0
+        right: 0
+        top: 0
+      fit: cover
+      id: L2
+      name: Face
+      opacity: 0.9
+      rect:
+        h: 288
+        w: 384
+        x: 1500
+        y: 760
+      source:
+        device: /dev/video0
+        kind: camera
+        label: Logitech C920
+      visible: true
+  - seq: 6
+    created: []
+    removed: []
+    message: Moved layer L2 to index 0 (bottom)
+    result:
+      order:
+        - L2
+        - L1
+  - seq: 7
+    created: []
+    removed: []
+    message: "Changed audio track A2: gain -6 dB"
+    result:
+      gainDb: -6
+      id: A2
+      label: Desktop
+      muted: false
+      role: system
+      source: alsa_output.pci.analog-stereo.monitor
+      syncOffsetMs: 0
+  - seq: 8
+    created: []
+    removed:
+      - A2
+    message: "Removed audio track A2 (Desktop) from the project scene; new takes won't record it"
+    result: ~
+  - seq: 9
+    created: []
+    removed:
+      - L2
+    message: "Removed layer L2 (Face) from the project scene; new takes won't record it"
+    result: ~
+- - Add layer L1 (Screen DP-4)
+  - Add layer L2 (Face)
+  - Add audio track A1 (Yeti Nano)
+  - Add audio track A2 (Desktop)
+  - "Change layer L2: opacity 0.9, rect 1500,760,384,288"
+  - Move layer L2 to index 0 (bottom)
+  - "Change audio track A2: gain -6 dB"
+  - Remove audio track A2 (Desktop)
+  - Remove layer L2 (Face)
+- layers:
+    - id: L1
+      name: Screen DP-4
+      visible: true
+      opacity: 1
+      source:
+        kind: screen
+        output: DP-4
+        label: GIGA-BYTE GS27QA
+      rect:
+        x: 0
+        y: 0
+        w: 1920
+        h: 1080
+      crop:
+        top: 0
+        right: 0
+        bottom: 0
+        left: 0
+      fit: contain
+  audio:
+    - id: A1
+      role: mic
+      source: alsa_input.usb-Yeti
+      label: Yeti Nano
+      gainDb: 0
+      muted: false
+      syncOffsetMs: 0
