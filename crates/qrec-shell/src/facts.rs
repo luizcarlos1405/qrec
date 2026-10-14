@@ -618,6 +618,8 @@ impl std::fmt::Debug for FactsGatherer {
 pub struct Gathered {
     pub facts: Facts,
     pub warnings: Vec<String>,
+    /// `config.toml` was just (re)read and is unusable (reported once per change).
+    pub config_problem: Option<String>,
 }
 
 impl FactsGatherer {
@@ -638,8 +640,7 @@ impl FactsGatherer {
     /// Gathers exactly what `need` asks for, plus the config.
     pub fn gather(&mut self, need: &FactsNeeded) -> Gathered {
         let mut warnings = Vec::new();
-        let (config, problem) = self.config.get();
-        warnings.extend(problem);
+        let (config, config_problem) = self.config.get();
         let mut facts = Facts {
             config,
             ..Facts::default()
@@ -693,7 +694,11 @@ impl FactsGatherer {
                 Err(e) => warnings.push(format!("{file}: {e}")),
             }
         }
-        Gathered { facts, warnings }
+        Gathered {
+            facts,
+            warnings,
+            config_problem,
+        }
     }
 }
 

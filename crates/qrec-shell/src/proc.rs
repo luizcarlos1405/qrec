@@ -1239,7 +1239,7 @@ mod tests {
             format!("-{}-j7-stitch.log", std::process::id()),
             "{name}"
         );
-        let stamp = name[..15].as_bytes();
+        let stamp = &name.as_bytes()[..15];
         assert!(
             stamp[8] == b'-'
                 && stamp

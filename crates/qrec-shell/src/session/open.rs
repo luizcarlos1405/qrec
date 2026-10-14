@@ -1,0 +1,286 @@
+//! Opening a project: the folder rule and init order (A§8.4), the lock
+//! (A§8.3), loading and reconciling the files (A§7.6, A§7.7), capabilities
+//! before the first dispatch (A§8.10), recovery probes (A§5.3) and the
+//! watcher (A§8.9).
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use qrec_core::apply::project::{is_initialized, uninitialized_state};
+use qrec_core::apply::ui::live_scene;
+use qrec_core::media_argv::probe_argv;
+use qrec_core::model::{Take, TakeStatus};
+use qrec_core::protocol::{Effect, ProbeJob, ProbePurpose, Toast, ToastLevel};
+use qrec_core::{CoreError, ErrorCode, Event, State};
+
+use super::config::{LogNotifier, SessionConfig, SessionEnv};
+use super::Session;
+use crate::caps::{self, VaConfig};
+use crate::deps::{Deps, OpenOpts};
+use crate::error::ShellError;
+use crate::facts::{FactsGatherer, FakeSources, Sources, SystemSources};
+use crate::host::lockfile;
+use crate::lock::ProjectLock;
+use crate::msg::Inbox;
+use crate::paths::ProjectPaths;
+use crate::proc;
+use crate::store::{self, Check, LoadOpts, Loaded, Store};
+use crate::timers::Timers;
+use crate::watcher;
+
+/// What a folder holds (A§8.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Folder {
+    /// `qrec.json` is there.
+    Project,
+    /// Strictly empty, or only a `.qrec/` without a history (an init that
+    /// stopped half-way): a new project goes here.
+    Empty,
+    /// `.qrec/` holds a history but `qrec.json` is gone (restore it).
+    MissingFile,
+}
+
+/// The folder rule. Anything else is "Not my swamp" (exit 3).
+pub(super) fn classify(paths: &ProjectPaths) -> Result<Folder, ShellError> {
+    if store::exists(&paths.project_file()) {
+        return Ok(Folder::Project);
+    }
+    let root = paths.root();
+    let entries = fs::read_dir(root).map_err(|e| ShellError::io(format!("read {}", root.display()), e))?;
+    let mut has_qrec = false;
+    for entry in entries {
+        let entry = entry.map_err(|e| ShellError::io(format!("read {}", root.display()), e))?;
+        if entry.file_name() == ".qrec" && entry.file_type().is_ok_and(|t| t.is_dir()) {
+            has_qrec = true;
+        } else {
+            return Err(CoreError::not_project().into());
+        }
+    }
+    let history = [paths.history_head(), paths.history_file(), paths.history_base()];
+    if has_qrec && history.iter().any(|p| store::exists(p)) {
+        return Ok(Folder::MissingFile);
+    }
+    Ok(Folder::Empty)
+}
+
+fn canonical_dir(dir: &Path) -> Result<PathBuf, ShellError> {
+    let canonical = fs::canonicalize(dir).map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound => ShellError::Core(
+            CoreError::new(ErrorCode::NotProject, format!("{} doesn't exist", dir.display()))
+                .with_hint("pass --project with an existing folder"),
+        ),
+        _ => ShellError::io(format!("open {}", dir.display()), e),
+    })?;
+    if !canonical.is_dir() {
+        return Err(CoreError::new(ErrorCode::NotProject, format!("{} is not a folder", dir.display())).into());
+    }
+    Ok(canonical)
+}
+
+/// `Busy` naming the host when its record says who it is.
+fn lock_held(dir: &Path) -> ShellError {
+    let who = match lockfile::read(dir) {
+        Ok(Some(record)) => format!("a {} host (pid {})", record.kind.as_str(), record.pid),
+        _ => "another Qrec process".to_owned(),
+    };
+    CoreError::busy(format!("the project is open in {who}"))
+        .with_hint("send the command to it (the CLI routes there by itself), or wait until it exits")
+        .into()
+}
+
+pub(super) fn open(dir: &Path, opts: OpenOpts, deps: Deps, cfg: SessionConfig) -> Result<Session, ShellError> {
+    let dir = canonical_dir(dir)?;
+    let paths = ProjectPaths::new(&dir);
+    let env = match cfg.env {
+        Some(env) => env,
+        None => SessionEnv::from_process()?,
+    };
+    #[cfg(test)]
+    let check: Check = cfg.check.unwrap_or(store::validated);
+    #[cfg(not(test))]
+    let check: Check = store::validated;
+
+    let mut folder = classify(&paths)?;
+    let lock = match cfg.lock {
+        Some(lock) => Some(lock),
+        None if opts.mutating => Some(ProjectLock::try_acquire(&dir)?.ok_or_else(|| lock_held(&dir))?),
+        None => None,
+    };
+    if lock.is_some() {
+        // A§8.4: another process may have initialized the folder meanwhile.
+        folder = classify(&paths)?;
+    }
+    let writable = lock.is_some();
+
+    let mut store = Store::new(paths.clone(), writable);
+    let (state, loaded) = match folder {
+        Folder::Empty => (uninitialized_state(opts.host), None),
+        Folder::Project | Folder::MissingFile => {
+            let loaded = store::load(
+                &paths,
+                &LoadOpts {
+                    recovery: opts.recovery,
+                    check,
+                },
+            )?;
+            store.adopt(&loaded);
+            let mut state = State::new(
+                loaded.project.clone(),
+                loaded.history.clone(),
+                loaded.ui.clone(),
+                opts.host,
+            );
+            state.runtime.disk_invalid = loaded.disk_invalid.clone();
+            (state, Some(loaded))
+        }
+    };
+
+    let (inbox, rx) = cfg.channel.unwrap_or_else(Inbox::channel);
+    let sources: Box<dyn Sources> = match cfg.sources {
+        Some(sources) => sources,
+        None if env.fake_backend => Box::new(FakeSources),
+        None => {
+            let logs = if writable {
+                paths.logs_dir()
+            } else {
+                env.dirs.state.join("logs")
+            };
+            Box::new(SystemSources::new(Some(logs)))
+        }
+    };
+    let facts = FactsGatherer::new(paths.clone(), env.config_file(), sources);
+    let timers = Timers::new(inbox.clone());
+    let mut session = Session {
+        dir,
+        paths,
+        state,
+        deps,
+        inbox,
+        rx,
+        store,
+        opts,
+        check,
+        facts,
+        timers,
+        watcher: None,
+        pending: BTreeMap::new(),
+        next_req: 0,
+        notifier: cfg.notifier.unwrap_or_else(|| Box::new(LogNotifier)),
+        shutdown: false,
+        interrupts: 0,
+        #[cfg(test)]
+        crashed: false,
+        lock,
+    };
+
+    if let Some(loaded) = &loaded {
+        session.report_load(loaded);
+    }
+    let initialized = is_initialized(&session.state.project);
+    // A consistent commit record from the start. Recovery mode leaves the
+    // files alone until its first write (the restore) rewrites them all.
+    if writable && initialized && !opts.recovery && session.store.is_dirty() {
+        if let Err(e) = session.store.write_all(&session.state) {
+            session.notify_error("Couldn't repair the project files", &e.to_string());
+        }
+    }
+    if writable {
+        let logs = proc::prune_logs(&session.paths.logs_dir(), proc::KEEP_LOGS);
+        let parts = proc::prune_temp_outputs(&session.paths, proc::TEMP_MAX_AGE);
+        if logs + parts > 0 {
+            tracing::debug!("pruned {logs} old logs and {parts} stale temp outputs");
+        }
+    }
+
+    session.detect_capabilities(&env);
+
+    // An external edit (or a crash between writing qrec.json and the
+    // commit record) is merged before anything else (A§7.6).
+    if let Some(external) = loaded.as_ref().and_then(|l| l.external.clone()) {
+        session.run_event(Event::ProjectChangedOnDisk { project: external });
+    }
+    if writable && is_initialized(&session.state.project) {
+        session.start_recovery_probes();
+    }
+    if writable && !opts.recovery {
+        match watcher::watch(&session.dir, session.inbox.clone()) {
+            Ok(w) => session.watcher = Some(w),
+            Err(e) => tracing::warn!("external edits of qrec.json won't be noticed: {e}"),
+        }
+    }
+    // What the live pipeline should show from the start (a GUI in Live mode).
+    if let Some(live) = live_scene(&session.state) {
+        session.deps.capture.set_live(Some(live), session.inbox.clone());
+    }
+    Ok(session)
+}
+
+impl Session {
+    fn report_load(&mut self, loaded: &Loaded) {
+        for note in &loaded.notes {
+            tracing::warn!("{}: {note}", self.dir.display());
+        }
+        if !loaded.notes.is_empty() && self.store.writable() {
+            let toast = Toast::new(ToastLevel::Warning, "Qrec repaired the project's files")
+                .with_body(loaded.notes.join("\n"));
+            self.notifier.notify(&toast);
+        }
+    }
+
+    pub(super) fn notify_error(&mut self, title: &str, body: &str) {
+        tracing::error!("{title}: {body}");
+        self.notifier.notify(&Toast::new(ToastLevel::Error, title).with_body(body));
+    }
+
+    /// `Event::Capabilities` before the first dispatch (A§3).
+    fn detect_capabilities(&mut self, env: &SessionEnv) {
+        let (config, _) = self.facts.config();
+        let va = VaConfig {
+            project: self.state.project.recording.vaapi_device.clone(),
+            config: config.encoder.vaapi_device.clone(),
+        };
+        let detected = caps::detect(&env.caps, &va);
+        for note in &detected.notes {
+            tracing::info!("capabilities: {note}");
+        }
+        self.run_event(Event::Capabilities(detected.caps));
+    }
+
+    /// One `Probe{Recover}` per take still `recording` (A§5.3 "Recovery").
+    fn start_recovery_probes(&mut self) {
+        let in_flight = self.state.runtime.record.take().cloned();
+        let probes: Vec<Effect> = self
+            .state
+            .project
+            .takes
+            .iter()
+            .filter(|(id, take)| take.status == TakeStatus::Recording && in_flight.as_ref() != Some(*id))
+            .map(|(id, take)| Effect::Probe {
+                take: id.clone(),
+                purpose: ProbePurpose::Recover,
+                jobs: probe_jobs(take),
+            })
+            .collect();
+        for probe in probes {
+            if let Effect::Probe { take, purpose, jobs } = probe {
+                tracing::info!("recovering {take}: probing {} file(s)", jobs.len());
+                self.deps.media.probe(take, purpose, jobs, self.inbox.clone());
+            }
+        }
+    }
+}
+
+/// One `ffprobe` per stream of `take` (`media_argv::probe_argv`).
+pub(super) fn probe_jobs(take: &Take) -> Vec<ProbeJob> {
+    take.streams
+        .iter()
+        .map(|s| ProbeJob {
+            id: s.id.clone(),
+            file: s.file.clone(),
+            kind: s.kind,
+            argv: probe_argv(&s.file, s.kind),
+        })
+        .collect()
+}

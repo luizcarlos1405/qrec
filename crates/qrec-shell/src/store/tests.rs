@@ -284,7 +284,7 @@ fn rewrites_store_the_base_with_its_seq_and_survive_a_crash() {
     let mut next = s.clone();
     next.history = compacted;
     store.crash_after = Some(Step::History);
-    assert!(commit(&mut store, &s, &next, &[op.clone()], true).is_err());
+    assert!(commit(&mut store, &s, &next, std::slice::from_ref(&op), true).is_err());
     let base: BaseFile = serde_json::from_slice(&fs::read(store.paths().history_base()).unwrap()).unwrap();
     assert_eq!(base.base_seq, 2);
     assert_eq!(history_lines(&store), [3]);
