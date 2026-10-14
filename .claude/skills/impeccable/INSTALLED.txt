@@ -1,0 +1,5 @@
+source: https://github.com/pbakaus/impeccable
+commit: 2f98774f86bc05563876643db37e6c37c322850f
+path: .claude/skills/impeccable (Claude Code skill)
+installed: 2026-10-14 (SPEC.md section 15.1, gate 1)
+engine: scripts/impeccable downloads engine v0.1.14 on first run (sha256-verified)
