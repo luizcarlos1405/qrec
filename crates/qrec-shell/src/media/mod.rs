@@ -13,6 +13,10 @@
 //!
 //! [`FfmpegRunner::new`] builds the runner for a project; hosts also call
 //! [`housekeeping`] once at start (prune logs, sweep stale temp files).
+//!
+//! Children run through `child`, an A§8.7 runner written here while
+//! `crate::proc` (owner: session) was still a stub; `sources` and `doctor`
+//! use it too.
 
 mod child;
 mod export;

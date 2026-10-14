@@ -362,6 +362,99 @@ fn exports_three_takes_with_splits_offsets_and_a_repeat() {
     );
 }
 
+/// The core's own flow: `apply(Export)` → `RenderExport` → this runner →
+/// `on_event` for every event → the requester's `ExportDone` reply.
+#[test]
+fn the_core_export_and_frame_flows_finish_through_the_runner() {
+    use qrec_core::ctx::{Ctx, Facts};
+    use qrec_core::protocol::{Command, Effect, ExportDone, FrameSavedView};
+    use qrec_core::state::{History, HostKind, State, UiState};
+    use qrec_core::{ReqId, TimeArg, apply, on_event};
+
+    let env = TestEnv::new();
+    let dir = env.empty_dir("swamp");
+    let project = three_take_project(&dir);
+    let mut state = State::new(project, History::new(), UiState::default(), HostKind::Cli);
+    state.runtime.capabilities = caps(None);
+    let ctx = Ctx {
+        now: "2026-10-14T12:00:00Z".parse().unwrap(),
+        utc_offset_secs: 0,
+        entropy: 7,
+        confirmed: false,
+        req: Some(ReqId("r1".to_owned())),
+        facts: Facts::default(),
+    };
+    let mut runner = runner(&dir);
+    let (inbox, rx) = Inbox::channel();
+
+    // Runs one job's effects through the runner and its events through the core.
+    let mut drive = |state: &mut State, cmd: Command| -> (serde_json::Value, usize) {
+        let outcome = apply(state, &ctx, cmd).expect("accepted");
+        *state = outcome.state;
+        for effect in outcome.effects {
+            match effect {
+                Effect::RenderExport { job, plan } => {
+                    runner.render_export(job, plan, inbox.clone())
+                }
+                Effect::SaveFrame { job, plan } => runner.save_frame(job, plan, inbox.clone()),
+                _ => {}
+            }
+        }
+        let mut progress = 0;
+        loop {
+            let Ok(Msg::Event(ev)) = rx.recv_timeout(WAIT) else {
+                panic!("no event");
+            };
+            let out = on_event(state, &ctx, ev);
+            *state = out.state;
+            for effect in out.effects {
+                match effect {
+                    Effect::Progress { .. } => progress += 1,
+                    Effect::Reply { reply, .. } => {
+                        return (reply.expect("finished").result, progress);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    };
+
+    let export = Command::Export {
+        format: ExportFormat::Mp4,
+        quality: Quality::Draft,
+        codec: None,
+        out: None,
+    };
+    let (result, progress) = drive(&mut state, export);
+    let done: ExportDone = serde_json::from_value(result).unwrap();
+    assert_eq!(
+        Path::new(&done.path),
+        dir.join("exports/swamp-20261014-120000.mp4")
+    );
+    assert_eq!(done.frames, 180);
+    assert_eq!(done.bytes, fs::metadata(&done.path).unwrap().len());
+    assert!(progress > 0, "the requester saw progress");
+    assert!(state.runtime.jobs.is_empty());
+
+    // Timeline frame 70 (00:00:02:10) is take 2's frame 10.
+    let frame = Command::FrameSave {
+        at: TimeArg::frames(70),
+        layer: None,
+        out: None,
+    };
+    let (result, _) = drive(&mut state, frame);
+    let saved: FrameSavedView = serde_json::from_value(result).unwrap();
+    assert_eq!(
+        Path::new(&saved.path),
+        dir.join("frames/swamp-take-0002-00000210.png")
+    );
+    assert_eq!(
+        ffprobe(Path::new(&saved.path))["streams"][0]["codec_name"],
+        "png"
+    );
+    assert!(state.runtime.jobs.is_empty());
+}
+
 #[test]
 fn a_split_renders_nothing_new() {
     let env = TestEnv::new();

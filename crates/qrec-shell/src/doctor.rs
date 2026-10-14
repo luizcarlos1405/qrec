@@ -158,6 +158,13 @@ pub trait Probe {
     fn env(&self, key: &str) -> Option<String>;
     /// The h264_vaapi export chain on `device` (two frames to the null muxer).
     fn vaapi_h264(&self, device: &str, driver: Option<&str>) -> Result<(), String>;
+    /// `path` with symlinks resolved (`/dev/dri/by-path/…-render` →
+    /// `/dev/dri/renderD129`); stats it, never opens it.
+    fn canonicalize(&self, path: &str) -> Option<String> {
+        fs::canonicalize(path)
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned())
+    }
 }
 
 /// Runs every check against this machine.
@@ -558,10 +565,13 @@ fn va_report(probe: &dyn Probe, opts: &DoctorOptions) -> VaReport {
         let origin = auto.as_ref().map(|_| "auto");
         (auto, origin)
     };
-    let vendor = device
-        .as_ref()
-        .and_then(|d| nodes.iter().find(|n| &n.path == d))
-        .map(|n| n.vendor);
+    let vendor = device.as_ref().and_then(|d| {
+        let canonical = probe.canonicalize(d);
+        nodes
+            .iter()
+            .find(|n| &n.path == d || canonical.as_deref() == Some(n.path.as_str()))
+            .map(|n| n.vendor)
+    });
     let expected_driver = vendor.and_then(libva_driver_for).map(str::to_owned);
     let mut note = None;
     let ffmpeg_h264 = match (&device, vendor) {
@@ -1082,6 +1092,26 @@ mod tests {
             self.vaapi_probed.set(self.vaapi_probed.get() + 1);
             self.vaapi.clone()
         }
+        fn canonicalize(&self, path: &str) -> Option<String> {
+            (path == "/dev/dri/by-path/pci-0000:00:02.0-render")
+                .then(|| "/dev/dri/renderD129".to_owned())
+        }
+    }
+
+    #[test]
+    fn configured_symlinks_resolve_to_their_node() {
+        let fake = Fake::healthy();
+        let report = run_with(
+            &fake,
+            &DoctorOptions {
+                config_vaapi_device: Some("/dev/dri/by-path/pci-0000:00:02.0-render".to_owned()),
+                ..opts()
+            },
+        );
+        let va = report.va.as_ref().unwrap();
+        assert_eq!(va.vendor, Some(PCI_INTEL));
+        assert_eq!(va.ffmpeg_h264, Some(true));
+        assert!(check(&report, "vaapi").ok);
     }
 
     fn opts() -> DoctorOptions {
