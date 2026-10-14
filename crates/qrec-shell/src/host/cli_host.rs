@@ -1,32 +1,38 @@
-//! How the CLI runs one request (A§8.3 step 4, A§8.4, A§8.5). Owner: ipc.
+//! How the CLI runs one request (A§8.3 step 4, A§8.5, A§8.6). Owner: ipc.
 //!
-//! [`run_cli`] resolves the project, then routes:
+//! [`request`] takes a resolved project folder and routes the request:
 //!
 //! - a live host answers `hello` ⇒ the request goes there over IPC;
-//! - no host, a query ⇒ it runs in-process on a read-only Session (no lock,
-//!   nothing written);
-//! - no host, `record start|toggle` ⇒ the CLI takes the lock, hands it to a
-//!   spawned headless host (A§8.3 step 5) and sends the request to it;
-//! - no host, any other command ⇒ the CLI takes the lock and **is** the host
-//!   (`HostKind::Cli`) until its command is done: short commands finish at
-//!   once, async ones keep serving IPC so other commands run against the
-//!   same Session (SPEC §13.1);
-//! - no host for GUI-only commands, `--over-selection`, `hello` or
-//!   `shutdown` ⇒ `Unavailable`.
+//! - no host and [`Fallback::InProcess`] without the lock (queries) ⇒ a
+//!   read-only Session in this process: no lock, nothing written (A§8.4);
+//! - no host and [`Fallback::InProcess`] with the lock (commands) ⇒ this
+//!   process takes the lock and **is** the host (`HostKind::Cli`) until its
+//!   command is done: short commands finish at once, async ones keep serving
+//!   IPC so other commands run against the same Session (A§8.5);
+//! - no host and [`Fallback::SpawnHeadless`] (`record start|toggle`) ⇒ take
+//!   the lock, hand it to a spawned headless host (A§8.3 step 5), send the
+//!   request there;
+//! - no host and [`Fallback::None`] (GUI-only commands, `--over-selection`,
+//!   `hello`, `shutdown`) ⇒ [`Finish::NoHost`].
+//!
+//! [`run_cli`] is the whole CLI path in one call: resolve the project
+//! (A§8.4, `ipc::resolve`), pick the route options from the request
+//! ([`RouteOpts::for_request`]) and run it.
 //!
 //! The caller installs signal handlers first (`signals::install(&HOST_SIGNALS)`)
 //! and passes the counter: Ctrl+C on an IPC request closes the connection
 //! (exit 130; for `record … --wait` the first one stops the recording and
-//! the second detaches); in an in-process host the first cancels jobs and
-//! the second kills child processes and exits 130.
+//! the second detaches); in an in-process host the first finalizes a
+//! recording and cancels jobs, the second kills child processes and exits 130.
 
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
+use qrec_core::CoreError;
 use qrec_core::protocol::{Command, HelloInfo, Progress, RecordModeArg, WireBody};
 use qrec_core::state::HostKind;
-use qrec_core::CoreError;
 use serde_json::Value;
 
 use super::signals::Interrupts;
@@ -34,7 +40,8 @@ use super::spawn::{HostProgram, SpawnError, SpawnedHost, spawn_headless};
 use super::{ExitRules, Host, HostOptions, Opener, find_host_log};
 use crate::deps::OpenOpts;
 use crate::ipc::client::{
-    RouteError, RouteMode, Routed, Router, SendError, SendOpts, Sent, route, send_request,
+    Replies, RouteError, RouteMode, Routed, Router, SendError, SendOpts, Sent, route,
+    send_request,
     stops_on_interrupt,
 };
 use crate::ipc::lock_glue::ProjectLock;
@@ -44,6 +51,232 @@ use crate::msg::{Msg, Request, Responder};
 use crate::paths::{Env, ProjectPaths, UserDirs, ensure_runtime_dir, socket_path};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+// ------------------------------------------------------------ the port
+
+/// What happens when no host serves the project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fallback {
+    /// Run it in this process (A§8.5); with [`RouteOpts::lock`] this
+    /// process becomes the project's `cli` host.
+    InProcess,
+    /// Take the lock, spawn `qrec host --headless` with it and send the
+    /// request there (A§8.3 step 5): `record start` and `record toggle`.
+    SpawnHeadless,
+    /// Don't run it: [`Finish::NoHost`].
+    None,
+}
+
+/// How a request is routed (A§8.3 step 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RouteOpts {
+    /// How long to look for the host: 3 s, 20 s for `record *`.
+    pub deadline: Duration,
+    pub fallback: Fallback,
+    /// In-process: take the lock and become the host (commands). `false`
+    /// for queries, which take no lock and write nothing (A§8.4).
+    pub lock: bool,
+    /// Open the Session in recovery mode (`qrec history [restore]`, A§7.7).
+    pub recovery: bool,
+    /// `record … --wait`: the first Ctrl+C sends `RecordStop` and keeps
+    /// streaming until the take is finalized; the second detaches (A§8.6).
+    pub stop_on_interrupt: bool,
+}
+
+impl RouteOpts {
+    /// The A§8.3–A§8.5 routing of `req`: queries in-process without the
+    /// lock; commands in-process under it; `record start|toggle` spawn a
+    /// headless host; GUI-only commands, `--over-selection`, `hello` and
+    /// `shutdown` need a live host; 20 s deadlines for `record *`.
+    pub fn for_request(req: &Request) -> RouteOpts {
+        let query = RouteOpts {
+            deadline: ROUTE_DEADLINE,
+            fallback: Fallback::InProcess,
+            lock: false,
+            recovery: false,
+            stop_on_interrupt: false,
+        };
+        let cmd = match &req.body {
+            WireBody::Query(_) => return query,
+            WireBody::Hello | WireBody::Shutdown => {
+                return RouteOpts {
+                    fallback: Fallback::None,
+                    ..query
+                };
+            }
+            WireBody::Command(cmd) => cmd,
+        };
+        let record = matches!(
+            cmd,
+            Command::RecordStart { .. }
+                | Command::RecordStop
+                | Command::RecordCancel
+                | Command::RecordToggle { .. }
+        );
+        let over_selection = matches!(
+            cmd,
+            Command::RecordStart {
+                mode: RecordModeArg::OverSelection,
+                ..
+            }
+        );
+        let fallback = if cmd.gui_only() || over_selection {
+            Fallback::None
+        } else if matches!(cmd, Command::RecordStart { .. } | Command::RecordToggle { .. }) {
+            Fallback::SpawnHeadless
+        } else {
+            Fallback::InProcess
+        };
+        RouteOpts {
+            deadline: if record {
+                RECORD_ROUTE_DEADLINE
+            } else {
+                ROUTE_DEADLINE
+            },
+            fallback,
+            lock: true,
+            recovery: false,
+            stop_on_interrupt: stops_on_interrupt(req),
+        }
+    }
+
+    fn route_mode(&self) -> RouteMode {
+        match (self.fallback, self.lock) {
+            (Fallback::SpawnHeadless, _) | (Fallback::InProcess, true) => RouteMode::Lock,
+            (Fallback::InProcess, false) | (Fallback::None, _) => RouteMode::NoLock,
+        }
+    }
+}
+
+/// How a request ended.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Finish {
+    /// The reply: a `CmdResult`, a query answer, or the error that stopped
+    /// the request (including routing failures such as `busy`).
+    Reply(Result<Value, CoreError>),
+    /// [`Fallback::None`] and no host serves the project.
+    NoHost,
+    /// Ctrl+C (exit 130): in-process, jobs were cancelled; routed, the
+    /// connection was closed (the host may still finish the request);
+    /// `--wait`, the second Ctrl+C detached.
+    Interrupted,
+}
+
+/// What a request reports while it runs.
+pub trait RequestEvents {
+    /// The request reached a host: `Some(hello)` of a live host (`hello`
+    /// may be missing if the host answered it with an error), `None` when
+    /// it runs in this process.
+    fn routed(&mut self, host: Option<&HelloInfo>);
+    /// The host parsed and queued the request.
+    fn accepted(&mut self);
+    /// Progress of a long request (export, analysis, recording).
+    fn progress(&mut self, progress: &Progress);
+}
+
+/// What running a request needs besides the request.
+pub struct RequestContext<'a> {
+    /// For the runtime dir (sockets) and the GUI's session log.
+    pub env: &'a Env,
+    /// Opens the Session when this process runs the request itself.
+    pub opener: &'a mut dyn Opener,
+    /// What `record start|toggle` spawns ([`HostProgram::current_exe`]).
+    pub host_program: &'a HostProgram,
+    /// Ctrl+C / SIGTERM / SIGHUP, from `signals::install`.
+    pub interrupts: &'a Interrupts,
+    /// Exit rules of an in-process host.
+    pub rules: ExitRules,
+    /// The second signal in an in-process host; `None` kills the child
+    /// process groups and exits 130.
+    pub on_second_signal: Option<Box<dyn FnOnce() + Send>>,
+}
+
+/// Sends one request for the project in `project` (a folder that holds
+/// `qrec.json`, or an empty one), streaming what happens into `events`
+/// (A§8.3–A§8.6).
+pub fn request(
+    mut cx: RequestContext<'_>,
+    project: &Path,
+    request: Request,
+    opts: &RouteOpts,
+    events: &mut dyn RequestEvents,
+) -> Finish {
+    let mut sink = EventsSink {
+        events,
+        reply: None,
+    };
+    match run_request(&mut cx, project, &request, opts, &mut sink) {
+        Ran::Replied => Finish::Reply(
+            sink.reply
+                .unwrap_or_else(|| Err(CoreError::internal("the request ended without a reply"))),
+        ),
+        Ran::NoHost => Finish::NoHost,
+        Ran::Interrupted => Finish::Interrupted,
+    }
+}
+
+/// Where [`run_request`] reports: the request's responder, and which host
+/// it reached.
+trait Sink {
+    fn routed(&mut self, host: Option<&HelloInfo>);
+    fn out(&mut self) -> &mut dyn Replies;
+}
+
+/// [`request`]'s sink: events as they come, the reply kept for [`Finish`].
+struct EventsSink<'e> {
+    events: &'e mut dyn RequestEvents,
+    reply: Option<Result<Value, CoreError>>,
+}
+
+impl Replies for EventsSink<'_> {
+    fn accepted(&mut self) {
+        self.events.accepted();
+    }
+
+    fn progress(&mut self, p: &Progress) {
+        self.events.progress(p);
+    }
+
+    fn reply(&mut self, r: Result<Value, CoreError>) {
+        self.reply.get_or_insert(r);
+    }
+}
+
+impl Sink for EventsSink<'_> {
+    fn routed(&mut self, host: Option<&HelloInfo>) {
+        self.events.routed(host);
+    }
+
+    fn out(&mut self) -> &mut dyn Replies {
+        self
+    }
+}
+
+/// [`run_cli`]'s sink: the caller's responder, and a stderr note when the
+/// host runs another Qrec version.
+struct CliSink<'o, 'n> {
+    out: &'o mut dyn Replies,
+    notice: &'n mut dyn FnMut(&str),
+}
+
+impl Sink for CliSink<'_, '_> {
+    fn routed(&mut self, host: Option<&HelloInfo>) {
+        if let Some(hello) = host.filter(|h| h.version != VERSION) {
+            (self.notice)(&format!(
+                "qrec: the running {} host (pid {}) is qrec {}; this is qrec {VERSION}",
+                hello.host.as_str(),
+                hello.pid,
+                hello.version
+            ));
+        }
+    }
+
+    fn out(&mut self) -> &mut dyn Replies {
+        &mut *self.out
+    }
+}
+
+// --------------------------------------------------------------- run_cli
 
 /// Everything [`run_cli`] needs besides the request.
 pub struct CliContext<'a> {
@@ -87,79 +320,165 @@ pub enum CliExit {
     Interrupted,
 }
 
-/// Runs one request: resolve the project, route it, stream the outcome to
-/// `out` (A§8.3, A§8.4, A§8.5).
-pub fn run_cli(mut cx: CliContext<'_>, req: CliRequest, out: &mut dyn Responder) -> CliExit {
-    let baseline = cx.interrupts.count();
-    let plan = Plan::of(&req.request);
-    let runtime = match ensure_runtime_dir(cx.env) {
+/// The whole CLI path: resolve the project (A§8.4), route the request with
+/// [`RouteOpts::for_request`], stream the outcome to `out`. A request that
+/// needs a live host and finds none is answered `Unavailable`.
+pub fn run_cli(cx: CliContext<'_>, req: CliRequest, out: &mut dyn Replies) -> CliExit {
+    let CliContext {
+        env,
+        cwd,
+        project,
+        opener,
+        host_program,
+        interrupts,
+        notice,
+        rules,
+        on_second_signal,
+    } = cx;
+    let runtime = match ensure_runtime_dir(env) {
         Ok(runtime) => runtime,
         Err(e) => return fail(out, e),
     };
-    let project = match resolve_project(cx.project, cx.cwd, &runtime) {
-        Ok(project) => project,
+    let resolved = match resolve_project(project, cwd, &runtime) {
+        Ok(resolved) => resolved,
         Err(e) => return fail(out, e),
     };
-    if let Some(notice) = project.notice() {
-        (cx.notice)(&notice);
+    if let Some(line) = resolved.notice() {
+        notice(&line);
     }
-    let paths = ProjectPaths::new(&project.dir);
-    let socket = match socket_path(&runtime, &project.dir) {
-        Ok(socket) => socket,
-        Err(e) => return fail(out, e),
+    let mut opts = RouteOpts::for_request(&req.request);
+    opts.recovery = req.recovery;
+    let mut rcx = RequestContext {
+        env,
+        opener,
+        host_program,
+        interrupts,
+        rules,
+        on_second_signal,
     };
-    let mut deadline = Instant::now() + plan.deadline;
+    let ran = {
+        let mut sink = CliSink {
+            out: &mut *out,
+            notice,
+        };
+        run_request(&mut rcx, &resolved.dir, &req.request, &opts, &mut sink)
+    };
+    match ran {
+        Ran::Replied => CliExit::Replied,
+        Ran::Interrupted => CliExit::Interrupted,
+        Ran::NoHost => fail(out, CoreError::unavailable(no_host_reason(&req.request))),
+    }
+}
+
+/// The `Unavailable` message for a request that needs a live host.
+fn no_host_reason(req: &Request) -> &'static str {
+    match &req.body {
+        WireBody::Command(cmd) if cmd.gui_only() => {
+            "this command needs the Qrec GUI, and it isn't running for this project"
+        }
+        WireBody::Command(Command::RecordStart {
+            mode: RecordModeArg::OverSelection,
+            ..
+        }) => "--over-selection needs clips selected in a running Qrec GUI",
+        _ => "no Qrec host is running for this project",
+    }
+}
+
+/// Reports `err` as the request's reply.
+fn fail(out: &mut dyn Replies, err: CoreError) -> CliExit {
+    out.reply(Err(err));
+    CliExit::Replied
+}
+
+// --------------------------------------------------------------- routing
+
+/// How [`run_request`] ended.
+enum Ran {
+    /// `out` got exactly one reply.
+    Replied,
+    NoHost,
+    Interrupted,
+}
+
+fn reply_err(out: &mut dyn Replies, err: CoreError) -> Ran {
+    out.reply(Err(err));
+    Ran::Replied
+}
+
+/// The routing loop around [`route`]: send to a host, or fall back.
+fn run_request(
+    cx: &mut RequestContext<'_>,
+    project: &Path,
+    req: &Request,
+    opts: &RouteOpts,
+    sink: &mut dyn Sink,
+) -> Ran {
+    let baseline = cx.interrupts.count();
+    let runtime = match ensure_runtime_dir(cx.env) {
+        Ok(runtime) => runtime,
+        Err(e) => return reply_err(sink.out(), e),
+    };
+    // Canonical, so it maps to the one socket every client computes.
+    let dir = match fs::canonicalize(project) {
+        Ok(dir) => dir,
+        Err(e) => {
+            return reply_err(
+                sink.out(),
+                CoreError::not_project().with_hint(format!("{}: {e}", project.display())),
+            );
+        }
+    };
+    let paths = ProjectPaths::new(&dir);
+    let socket = match socket_path(&runtime, &dir) {
+        Ok(socket) => socket,
+        Err(e) => return reply_err(sink.out(), e),
+    };
+    let mut deadline = Instant::now() + opts.deadline;
     let mut rerouted = false;
     let mut spawned: Option<SpawnedHost> = None;
     loop {
-        let mut router = Router::new(&paths, &socket, plan.route_mode(), deadline, cx.interrupts);
+        let mut router = Router::new(&paths, &socket, opts.route_mode(), deadline, cx.interrupts);
         router.baseline = baseline;
         match route(&router) {
-            Err(RouteError::Interrupted) => return CliExit::Interrupted,
-            Err(RouteError::Failed(e)) => return fail(out, e),
+            Err(RouteError::Interrupted) => return Ran::Interrupted,
+            Err(RouteError::Failed(e)) => return reply_err(sink.out(), e),
             Ok(Routed::Host {
                 socket: host_socket,
                 hello,
             }) => {
-                if let Some(hello) = &hello
-                    && hello.version != VERSION
-                {
-                    (cx.notice)(&format!(
-                        "qrec: the running {} host (pid {}) is qrec {}; this is qrec {VERSION}",
-                        hello.host.as_str(),
-                        hello.pid,
-                        hello.version
-                    ));
-                }
-                let mut opts = SendOpts::new(cx.interrupts);
-                opts.baseline = baseline;
-                opts.stop_on_interrupt = stops_on_interrupt(&req.request);
-                match send_request(&host_socket, &req.request, out, &opts) {
-                    Ok(Sent::Replied) => return CliExit::Replied,
-                    Ok(Sent::Interrupted) => return CliExit::Interrupted,
-                    // EOF before `accepted`: the request never ran; route once more.
+                sink.routed(hello.as_deref());
+                let mut send = SendOpts::new(cx.interrupts);
+                send.baseline = baseline;
+                send.stop_on_interrupt = opts.stop_on_interrupt;
+                match send_request(&host_socket, req, sink.out(), &send) {
+                    Ok(Sent::Replied) => return Ran::Replied,
+                    Ok(Sent::Interrupted) => return Ran::Interrupted,
+                    // EOF before `accepted`: it never ran; route once more.
                     Err(SendError::NotAccepted) if !rerouted => {
                         rerouted = true;
-                        deadline = Instant::now() + plan.deadline;
+                        deadline = Instant::now() + opts.deadline;
                     }
                     Err(e) => {
                         let log = host_log(&paths, cx.env, hello.as_deref(), spawned.as_ref());
-                        return fail(out, send_failure(e, hello.as_deref(), log));
+                        return reply_err(sink.out(), send_failure(e, hello.as_deref(), log));
                     }
                 }
             }
             Ok(Routed::NoHost) => {
-                return match plan.kind {
-                    PlanKind::ReadOnly => run_read_only(&mut cx, &project.dir, &req, out, baseline),
-                    PlanKind::NeedsHost(why) => fail(out, CoreError::unavailable(why)),
-                    PlanKind::InProcess | PlanKind::Spawn => fail(
-                        out,
+                return match opts.fallback {
+                    Fallback::InProcess => {
+                        sink.routed(None);
+                        run_read_only(cx, &dir, req, opts.recovery, sink.out(), baseline)
+                    }
+                    Fallback::None => Ran::NoHost,
+                    Fallback::SpawnHeadless => reply_err(
+                        sink.out(),
                         CoreError::internal("routing returned no host without taking the lock"),
                     ),
                 };
             }
-            Ok(Routed::Locked(lock)) => match plan.kind {
-                PlanKind::Spawn if spawned.is_none() => {
+            Ok(Routed::Locked(lock)) => match opts.fallback {
+                Fallback::SpawnHeadless if spawned.is_none() => {
                     match spawn_headless(
                         lock,
                         &paths,
@@ -173,23 +492,33 @@ pub fn run_cli(mut cx: CliContext<'_>, req: CliRequest, out: &mut dyn Responder)
                             spawned = Some(host);
                             deadline = deadline.max(Instant::now() + ROUTE_DEADLINE);
                         }
-                        Err(SpawnError::Interrupted) => return CliExit::Interrupted,
-                        Err(SpawnError::Failed(e)) => return fail(out, e),
+                        Err(SpawnError::Interrupted) => return Ran::Interrupted,
+                        Err(SpawnError::Failed(e)) => return reply_err(sink.out(), e),
                     }
                 }
-                PlanKind::Spawn => {
+                Fallback::SpawnHeadless => {
                     drop(lock);
-                    let mut err = CoreError::io("the background host exited right after starting");
+                    let mut err =
+                        CoreError::io("the background host exited right after starting");
                     if let Some(host) = &spawned {
                         err = err.with_hint(format!("see {}", host.log.display()));
                     }
-                    return fail(out, err);
+                    return reply_err(sink.out(), err);
                 }
-                PlanKind::InProcess => return run_in_process(&mut cx, lock, &paths, &socket, &req, out),
-                PlanKind::ReadOnly | PlanKind::NeedsHost(_) => {
+                Fallback::InProcess => {
+                    sink.routed(None);
+                    let in_process = InProcess {
+                        paths: &paths,
+                        socket: &socket,
+                        recovery: opts.recovery,
+                        baseline,
+                    };
+                    return run_in_process(cx, lock, &in_process, req, sink.out());
+                }
+                Fallback::None => {
                     drop(lock);
-                    return fail(
-                        out,
+                    return reply_err(
+                        sink.out(),
                         CoreError::internal("routing took the lock for a request that never does"),
                     );
                 }
@@ -198,140 +527,73 @@ pub fn run_cli(mut cx: CliContext<'_>, req: CliRequest, out: &mut dyn Responder)
     }
 }
 
-/// What the routing does with a request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PlanKind {
-    /// Queries: a host, else in-process without the lock.
-    ReadOnly,
-    /// Commands: a host, else this process becomes one.
-    InProcess,
-    /// `record start|toggle`: a host, else a spawned headless one.
-    Spawn,
-    /// Needs a running host; the message for `Unavailable` otherwise.
-    NeedsHost(&'static str),
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Plan {
-    kind: PlanKind,
-    deadline: std::time::Duration,
-}
-
-impl Plan {
-    fn of(req: &Request) -> Plan {
-        let cmd = match &req.body {
-            WireBody::Query(_) => {
-                return Plan {
-                    kind: PlanKind::ReadOnly,
-                    deadline: ROUTE_DEADLINE,
-                };
-            }
-            WireBody::Hello | WireBody::Shutdown => {
-                return Plan {
-                    kind: PlanKind::NeedsHost("no Qrec host is running for this project"),
-                    deadline: ROUTE_DEADLINE,
-                };
-            }
-            WireBody::Command(cmd) => cmd,
-        };
-        let record = matches!(
-            cmd,
-            Command::RecordStart { .. }
-                | Command::RecordStop
-                | Command::RecordCancel
-                | Command::RecordToggle { .. }
-        );
-        let kind = if cmd.gui_only() {
-            PlanKind::NeedsHost("this command needs the Qrec GUI, and it isn't running for this project")
-        } else if matches!(
-            cmd,
-            Command::RecordStart {
-                mode: RecordModeArg::OverSelection,
-                ..
-            }
-        ) {
-            PlanKind::NeedsHost("--over-selection needs clips selected in a running Qrec GUI")
-        } else if matches!(cmd, Command::RecordStart { .. } | Command::RecordToggle { .. }) {
-            PlanKind::Spawn
-        } else {
-            PlanKind::InProcess
-        };
-        Plan {
-            kind,
-            deadline: if record {
-                RECORD_ROUTE_DEADLINE
-            } else {
-                ROUTE_DEADLINE
-            },
-        }
-    }
-
-    fn route_mode(&self) -> RouteMode {
-        match self.kind {
-            PlanKind::InProcess | PlanKind::Spawn => RouteMode::Lock,
-            PlanKind::ReadOnly | PlanKind::NeedsHost(_) => RouteMode::NoLock,
-        }
-    }
-}
-
-/// Reports `err` as the request's reply.
-fn fail(out: &mut dyn Responder, err: CoreError) -> CliExit {
-    out.reply(Err(err));
-    CliExit::Replied
-}
-
 /// A query with no host: a read-only Session, no lock (A§8.4).
 fn run_read_only(
-    cx: &mut CliContext<'_>,
+    cx: &mut RequestContext<'_>,
     dir: &Path,
-    req: &CliRequest,
-    out: &mut dyn Responder,
+    req: &Request,
+    recovery: bool,
+    out: &mut dyn Replies,
     baseline: usize,
-) -> CliExit {
+) -> Ran {
     let opts = OpenOpts {
         host: HostKind::Cli,
         mutating: false,
-        recovery: req.recovery,
+        recovery,
     };
     let mut session = match cx.opener.open(dir, opts) {
         Ok(session) => session,
-        Err(e) => return fail(out, e.to_core()),
+        Err(e) => return reply_err(out, e.to_core()),
     };
     let (mut own, responder) = OwnRequest::new();
     if !session.inbox().send(Msg::Request {
-        req: req.request.clone(),
+        req: req.clone(),
         to: Box::new(responder),
     }) {
-        return fail(out, CoreError::internal("the Session isn't running"));
+        return reply_err(out, CoreError::internal("the Session isn't running"));
     }
     let interrupts = cx.interrupts.clone();
     session.run_until(&mut |_state| own.forward(out) || interrupts.count() > baseline);
     if own.forward(out) {
-        CliExit::Replied
+        Ran::Replied
     } else if interrupts.count() > baseline {
-        CliExit::Interrupted
+        Ran::Interrupted
     } else {
-        fail(out, CoreError::internal("the Session stopped before answering"))
+        reply_err(out, CoreError::internal("the Session stopped before answering"))
     }
+}
+
+/// Where an in-process host lives and how it was asked for.
+struct InProcess<'a> {
+    paths: &'a ProjectPaths,
+    socket: &'a Path,
+    recovery: bool,
+    /// Interrupts counted when the request started.
+    baseline: usize,
 }
 
 /// No host and a command: this process becomes the host (A§8.5).
 fn run_in_process(
-    cx: &mut CliContext<'_>,
+    cx: &mut RequestContext<'_>,
     lock: ProjectLock,
-    paths: &ProjectPaths,
-    socket: &Path,
-    req: &CliRequest,
-    out: &mut dyn Responder,
-) -> CliExit {
+    at: &InProcess<'_>,
+    req: &Request,
+    out: &mut dyn Replies,
+) -> Ran {
+    let InProcess {
+        paths,
+        socket,
+        recovery,
+        baseline,
+    } = *at;
     let dir = paths.root();
     // A§8.4 init order: the folder rule again, under the lock (`.qrec/`
     // alone counts as empty).
     match classify(dir, true) {
         Ok(Folder::Project | Folder::Empty) => {}
-        Ok(Folder::Other) => return fail(out, CoreError::not_project()),
+        Ok(Folder::Other) => return reply_err(out, CoreError::not_project()),
         Err(e) => {
-            return fail(
+            return reply_err(
                 out,
                 CoreError::io(format!("can't read {}: {e}", dir.display())),
             );
@@ -340,16 +602,17 @@ fn run_in_process(
     let opts = HostOptions {
         rules: cx.rules,
         interrupts: Some(cx.interrupts.clone()),
+        signal_baseline: baseline,
         on_second_signal: cx.on_second_signal.take(),
     };
     let host = match Host::start(HostKind::Cli, paths.clone(), lock, socket, opts) {
         Ok(host) => host,
-        Err(e) => return fail(out, e),
+        Err(e) => return reply_err(out, e),
     };
     let open = OpenOpts {
         host: HostKind::Cli,
         mutating: true,
-        recovery: req.recovery,
+        recovery,
     };
     let mut session = match cx.opener.open(dir, open) {
         Ok(session) => session,
@@ -357,13 +620,13 @@ fn run_in_process(
             let e = e.to_core();
             host.server.fail(e.clone());
             host.finish(None, e.clone());
-            return fail(out, e);
+            return reply_err(out, e);
         }
     };
     host.attach(session.inbox());
     let (mut own, responder) = OwnRequest::new();
     host.server.send(Msg::Request {
-        req: req.request.clone(),
+        req: req.clone(),
         to: Box::new(responder),
     });
     let end = {
@@ -377,13 +640,15 @@ fn run_in_process(
     );
     let replied = own.forward(out);
     if signalled {
-        CliExit::Interrupted
+        Ran::Interrupted
     } else if replied {
-        CliExit::Replied
+        Ran::Replied
     } else {
-        fail(out, CoreError::io("the host stopped before answering"))
+        reply_err(out, CoreError::io("the host stopped before answering"))
     }
 }
+
+// ----------------------------------------------------- the own request
 
 /// The in-process request's events, carried from the session thread's
 /// responder to the caller's (which needn't be `Send` or `'static`).
@@ -413,7 +678,7 @@ impl OwnRequest {
     }
 
     /// Forwards what arrived; `true` once the reply was forwarded.
-    fn forward(&mut self, out: &mut dyn Responder) -> bool {
+    fn forward(&mut self, out: &mut dyn Replies) -> bool {
         while let Ok(event) = self.rx.try_recv() {
             match event {
                 OwnEvent::Accepted => out.accepted(),
@@ -456,6 +721,8 @@ impl Drop for ProxyResponder {
     }
 }
 
+// --------------------------------------------------------------- errors
+
 /// The error for a request that got no reply over IPC (A§8.3 step 6).
 fn send_failure(e: SendError, hello: Option<&HelloInfo>, log: Option<PathBuf>) -> CoreError {
     let who = match hello {
@@ -491,9 +758,7 @@ fn host_log(
     hello: Option<&HelloInfo>,
     spawned: Option<&SpawnedHost>,
 ) -> Option<PathBuf> {
-    if let Some(spawned) = spawned
-        && hello.is_none_or(|h| h.pid == spawned.pid)
-    {
+    if let Some(spawned) = spawned.filter(|s| hello.is_none_or(|h| h.pid == s.pid)) {
         return Some(spawned.log.clone());
     }
     let hello = hello?;
@@ -514,42 +779,56 @@ mod tests {
     }
 
     #[test]
-    fn plans() {
-        let plan = Plan::of(&Request::query(Query::ClipList));
-        assert_eq!((plan.kind, plan.deadline), (PlanKind::ReadOnly, ROUTE_DEADLINE));
-        assert_eq!(plan.route_mode(), RouteMode::NoLock);
+    fn route_options_follow_the_request() {
+        let opts = RouteOpts::for_request(&Request::query(Query::ClipList));
+        assert_eq!(
+            (opts.fallback, opts.lock, opts.deadline),
+            (Fallback::InProcess, false, ROUTE_DEADLINE)
+        );
+        assert_eq!(opts.route_mode(), RouteMode::NoLock);
 
-        let plan = Plan::of(&command(Command::Undo { steps: 1 }));
-        assert_eq!((plan.kind, plan.deadline), (PlanKind::InProcess, ROUTE_DEADLINE));
-        assert_eq!(plan.route_mode(), RouteMode::Lock);
+        let opts = RouteOpts::for_request(&command(Command::Undo { steps: 1 }));
+        assert_eq!((opts.fallback, opts.lock), (Fallback::InProcess, true));
+        assert_eq!(opts.route_mode(), RouteMode::Lock);
 
         let start = Command::RecordStart {
             mode: RecordModeArg::Append,
             countdown: None,
             wait: false,
         };
-        let plan = Plan::of(&command(start));
-        assert_eq!((plan.kind, plan.deadline), (PlanKind::Spawn, RECORD_ROUTE_DEADLINE));
-        let plan = Plan::of(&command(Command::RecordToggle { wait: true }));
-        assert_eq!(plan.kind, PlanKind::Spawn);
-        let plan = Plan::of(&command(Command::RecordStop));
-        assert_eq!((plan.kind, plan.deadline), (PlanKind::InProcess, RECORD_ROUTE_DEADLINE));
+        let opts = RouteOpts::for_request(&command(start));
+        assert_eq!(
+            (opts.fallback, opts.deadline, opts.stop_on_interrupt),
+            (Fallback::SpawnHeadless, RECORD_ROUTE_DEADLINE, false)
+        );
+        assert_eq!(opts.route_mode(), RouteMode::Lock);
+        let opts = RouteOpts::for_request(&command(Command::RecordToggle { wait: true }));
+        assert_eq!((opts.fallback, opts.stop_on_interrupt), (Fallback::SpawnHeadless, true));
+        let opts = RouteOpts::for_request(&command(Command::RecordStop));
+        assert_eq!(
+            (opts.fallback, opts.deadline),
+            (Fallback::InProcess, RECORD_ROUTE_DEADLINE)
+        );
 
         let over_selection = Command::RecordStart {
             mode: RecordModeArg::OverSelection,
             countdown: None,
             wait: false,
         };
-        assert!(matches!(
-            Plan::of(&command(over_selection)).kind,
-            PlanKind::NeedsHost(_)
-        ));
-        assert!(matches!(Plan::of(&command(Command::Play)).kind, PlanKind::NeedsHost(_)));
+        let opts = RouteOpts::for_request(&command(over_selection.clone()));
+        assert_eq!(opts.fallback, Fallback::None);
+        assert_eq!(opts.route_mode(), RouteMode::NoLock);
+        assert!(no_host_reason(&command(over_selection)).contains("--over-selection"));
+        assert_eq!(
+            RouteOpts::for_request(&command(Command::Play)).fallback,
+            Fallback::None
+        );
+        assert!(no_host_reason(&command(Command::Play)).contains("GUI"));
         let hello = Request {
             body: WireBody::Hello,
             confirmed: false,
         };
-        assert_eq!(Plan::of(&hello).route_mode(), RouteMode::NoLock);
+        assert_eq!(RouteOpts::for_request(&hello).fallback, Fallback::None);
     }
 
     #[test]
@@ -577,31 +856,19 @@ mod tests {
 
     #[test]
     fn own_request_forwards_once() {
-        struct Collect(Vec<String>);
-        impl Responder for Collect {
-            fn accepted(&mut self) {
-                self.0.push("accepted".into());
-            }
-            fn progress(&mut self, p: &Progress) {
-                self.0.push(format!("progress {}", p.done));
-            }
-            fn reply(&mut self, r: Result<Value, CoreError>) {
-                self.0.push(format!("reply {}", r.is_ok()));
-            }
-        }
         let (mut own, mut responder) = OwnRequest::new();
-        let mut out = Collect(Vec::new());
+        let mut out = crate::ipc::testing::Collect::default();
         assert!(!own.forward(&mut out));
         responder.accepted();
         responder.reply(Ok(Value::Null));
         responder.reply(Err(CoreError::internal("again")));
         assert!(own.forward(&mut out));
-        assert_eq!(out.0, ["accepted", "reply true"]);
+        assert_eq!((out.accepted, out.replies.len()), (1, 1));
         // Dropped without a reply: an error reply.
         let (mut own, responder) = OwnRequest::new();
         drop(responder);
-        let mut out = Collect(Vec::new());
+        let mut out = crate::ipc::testing::Collect::default();
         assert!(own.forward(&mut out));
-        assert_eq!(out.0, ["reply false"]);
+        assert!(out.reply().is_err());
     }
 }

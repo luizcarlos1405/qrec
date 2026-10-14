@@ -4,7 +4,7 @@
 //! (`ipc::testing::child_entry`).
 
 use std::fs;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,9 +17,10 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::ipc::client::{self, SendOpts, Sent, send_request};
-use crate::ipc::lock_glue::{ProjectLock, read_record};
+use crate::ipc::lock_glue::ProjectLock;
+use crate::ipc::lock_glue::lockfile::{self, HostState};
 use crate::ipc::testing::{
-    Collect, FakeOpener, LOG, PROJECT, REQUEST, RULES, STUBBORN, child_command, hold_lock,
+    Collect, FakeOpener, PROJECT, REQUEST, RULES, STUBBORN, child_command, hold_lock,
     quick_rules, raw_exchange, read_events, request_line, rules_env, wait_for,
 };
 use crate::paths::{Env, ensure_runtime_dir, socket_path};
@@ -140,7 +141,11 @@ impl Fixture {
     }
 
     fn lock_held(&self) -> bool {
-        ProjectLock::is_held(&self.paths()).unwrap()
+        ProjectLock::is_held(&self.dir).unwrap()
+    }
+
+    fn record(&self) -> lockfile::LockRecord {
+        lockfile::read(&self.dir).unwrap().expect("a lock record")
     }
 }
 
@@ -225,9 +230,9 @@ fn a_short_command_without_a_host_runs_in_process_and_exits_at_once() {
     assert_eq!(opened.len(), 1);
     assert!(opened[0].mutating && opened[0].host == HostKind::Cli);
     // The host is gone: lock released, socket unlinked, record says so.
-    assert!(!f.lock_held());
+    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
     assert!(!f.socket.exists());
-    assert_eq!(read_record(&f.paths()).unwrap().state, crate::ipc::lock_glue::LockState::Stopping);
+    assert_eq!(f.record().state, HostState::Stopping);
 }
 
 #[test]
@@ -271,7 +276,7 @@ fn a_failed_open_is_the_reply_and_frees_the_project() {
     let (exit, out, _) = cli(&f, &mut opener, &Interrupts::new(), command(set_ui()), quick_rules(), None);
     assert_eq!(exit, CliExit::Replied);
     assert_eq!(out.err().code, ErrorCode::Invalid);
-    assert!(!f.lock_held());
+    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
     assert!(!f.socket.exists());
 }
 
@@ -284,8 +289,9 @@ fn an_in_process_host_serves_other_commands_while_its_job_runs() {
         let f = std::sync::Arc::clone(&f);
         let mut opener = opener.clone();
         thread::spawn(move || {
+            let started = Instant::now();
             let (exit, out, _) = cli(&f, &mut opener, &Interrupts::new(), command(export(800)), quick_rules(), None);
-            (exit, out, Instant::now())
+            (exit, out, started.elapsed())
         })
     };
     assert!(wait_for(Duration::from_secs(5), || client::hello(&f.socket, Duration::from_secs(1)).is_ok()));
@@ -295,21 +301,18 @@ fn an_in_process_host_serves_other_commands_while_its_job_runs() {
     assert_eq!(exit, CliExit::Replied);
     assert_eq!(out.ok()["handledBy"], std::process::id());
     assert!(second.opened.lock().unwrap().is_empty(), "routed, not opened");
-    let (exit, out, ended) = host.join().unwrap();
+    let (exit, out, took) = host.join().unwrap();
     assert_eq!(exit, CliExit::Replied);
     assert_eq!(out.ok()["exported"], true);
     assert_eq!(out.progress, [1, 2, 3, 4, 5]);
-    // Someone else used it, so it lingered for the idle grace after its job.
-    let done = log
-        .events()
-        .iter()
-        .position(|e| e["event"] == "jobDone")
-        .expect("the job finished");
-    assert!(done > 0);
-    assert!(!f.lock_held());
-    let _ = ended;
+    // Someone else used it, so after its 800 ms job it lingered for the
+    // idle grace (300 ms) before exiting.
+    assert!(took >= Duration::from_millis(1100), "{took:?}");
+    assert!(took < Duration::from_secs(4), "{took:?}");
+    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
     let names = log.names();
     assert_eq!(names.iter().filter(|n| *n == "open").count(), 1, "{names:?}");
+    assert!(names.contains(&"jobDone".to_owned()), "{names:?}");
 }
 
 #[test]
@@ -329,7 +332,7 @@ fn ctrl_c_in_an_in_process_host_cancels_its_job() {
     assert_eq!(out.err().message, "interrupted");
     let names = opener.log.names();
     assert!(names.contains(&"interrupt".to_owned()), "{names:?}");
-    assert!(!f.lock_held());
+    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
 }
 
 #[test]
@@ -384,6 +387,7 @@ fn headless(f: &Fixture, opener: FakeOpener, rules: ExitRules, interrupts: Optio
             rules,
             interrupts,
             on_second_signal: Some(Box::new(|| {})),
+            ..HostOptions::default()
         };
         run_headless(args, &env, &mut opener, opts)
     })
@@ -416,7 +420,7 @@ fn an_unused_headless_host_exits_after_its_timeout() {
     assert_eq!(host.join().unwrap(), 0);
     assert!(started.elapsed() >= Duration::from_millis(400));
     assert!(started.elapsed() < Duration::from_secs(4));
-    assert!(!f.lock_held());
+    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
     assert!(!f.socket.exists());
 }
 
@@ -467,16 +471,16 @@ fn shutdown_stops_accepting_finalizes_and_lets_jobs_finish() {
     assert!(wait_for(Duration::from_secs(5), || log.names().contains(&"job".to_owned())));
     let lines = raw_exchange(&f.socket, &request_line("s", json!("shutdown")));
     assert_eq!(lines[1]["reply"]["ok"], true, "{lines:?}");
-    // No new connections…
+    // No new connections (and the record soon says why)…
     assert!(client::hello(&f.socket, Duration::from_millis(300)).is_err());
-    assert_eq!(read_record(&f.paths()).unwrap().state, crate::ipc::lock_glue::LockState::Stopping);
+    assert!(wait_for(Duration::from_secs(2), || f.record().state == HostState::Stopping));
     // …but the running job finishes and its client gets the reply.
     let out = job.join().unwrap();
     assert_eq!(out.ok()["exported"], true);
     assert_eq!(host.join().unwrap(), 0);
     let names = log.names();
     assert!(names.contains(&"shutdown".to_owned()), "{names:?}");
-    assert!(!f.lock_held());
+    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
 }
 
 #[test]
@@ -502,7 +506,7 @@ fn a_signal_finalizes_the_recording_then_the_host_exits() {
     if let Some(interrupt) = names.iter().position(|n| n == "interrupt") {
         assert!(finalized < interrupt, "{names:?}");
     }
-    assert!(!f.lock_held());
+    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
 }
 
 #[test]
@@ -533,7 +537,6 @@ fn startup_errors_go_to_the_ready_fd() {
     assert_eq!(value["ok"], false);
     assert_eq!(value["error"]["code"], "busy");
     drop(other);
-    let _ = AsRawFd::as_raw_fd(&file);
 }
 
 // ------------------------------------------------------- real processes
@@ -633,7 +636,7 @@ fn processes_racing_to_become_the_host_share_one() {
         assert_eq!(d["exit"], "Replied");
         assert_eq!(d["reply"]["data"]["handledBy"], host_pid, "{d}");
     }
-    assert!(!f.lock_held());
+    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
 }
 
 #[test]
@@ -663,8 +666,8 @@ fn the_spawned_host_keeps_the_lock_after_its_parent_exits() {
     assert!(f.lock_held());
     let hello = client::hello(&f.socket, Duration::from_secs(2)).unwrap();
     assert_eq!((hello.pid, hello.host), (host_pid, HostKind::Headless));
-    let record = read_record(&f.paths()).unwrap();
-    assert_eq!((record.pid, record.state), (host_pid, crate::ipc::lock_glue::LockState::Ready));
+    let record = f.record();
+    assert_eq!((record.pid, record.state), (host_pid, HostState::Ready));
     // Its stdout/stderr go to the host log, named after its pid.
     let host_log = PathBuf::from(spawned[0]["log"].as_str().unwrap());
     assert!(host_log.is_file());
@@ -736,7 +739,7 @@ fn sigterm_finalizes_the_take_and_exits_130() {
         .filter_map(|e| e["event"].as_str().map(str::to_owned))
         .collect();
     assert!(names.contains(&"finalized".to_owned()), "{names:?}");
-    assert!(!f.lock_held());
+    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
     assert!(!f.socket.exists());
 }
 
@@ -777,7 +780,7 @@ fn a_second_signal_kills_child_processes_and_exits_130() {
     assert!(second.elapsed() < Duration::from_secs(3));
     assert!(wait_for(Duration::from_secs(5), || !alive(sleep_pid)), "the child group was killed");
     // The lock died with the process; the socket was unlinked first.
-    assert!(!f.lock_held());
+    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
     assert!(!f.socket.exists());
 }
 
@@ -799,5 +802,4 @@ fn a_host_started_by_hand_takes_the_lock_itself() {
     let lines = raw_exchange(&f.socket, &request_line("s", json!("shutdown")));
     assert_eq!(lines[1]["reply"]["ok"], true);
     assert_eq!(wait_exit(&mut host, Duration::from_secs(10)), Some(0));
-    let _ = LOG;
 }

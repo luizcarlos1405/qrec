@@ -7,7 +7,7 @@
 //!   read the lock record and retry every 50 ms until the holder is ready or
 //!   the deadline (3 s, 20 s for `record *`) passes.
 //! - [`send_request`]: one request on its own connection, streaming
-//!   `accepted`, progress and the reply to a [`Responder`]. EOF before
+//!   `accepted`, progress and the reply to [`Replies`]. EOF before
 //!   `accepted` is [`SendError::NotAccepted`] (safe to route again, once);
 //!   EOF after it is [`SendError::Disconnected`] (never retried: it may have
 //!   run). Ctrl+C closes the connection, except for `record … --wait`, where
@@ -21,19 +21,21 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use qrec_core::protocol::{
-    Command, HelloInfo, WIRE_VERSION, WireBody, WireMessage, WireRequest, from_wire,
-};
 use qrec_core::CoreError;
+use qrec_core::protocol::{
+    Command, HelloInfo, Progress, WIRE_VERSION, WireBody, WireMessage, WireRequest, from_wire,
+};
+use serde_json::Value;
 
 use super::framing::{LineReader, ReadError, encode_line, is_disconnect, write_all_before};
-use super::lock_glue::{LockRecord, LockState, ProjectLock, read_record};
+use super::lock_glue::ProjectLock;
+use super::lock_glue::lockfile::{self, HostState, LockRecord};
 use super::{
     ACCEPT_TIMEOUT, HEARTBEAT_AFTER, HELLO_TIMEOUT, MAX_REPLY_LINE, ROUTE_RETRY, WRITE_TIMEOUT,
     peer,
 };
 use crate::host::signals::Interrupts;
-use crate::msg::{Request, Responder};
+use crate::msg::Request;
 use crate::paths::ProjectPaths;
 
 /// How often the streaming and routing loops look at [`Interrupts`].
@@ -185,6 +187,17 @@ pub fn hello(socket: &Path, timeout: Duration) -> Result<HelloInfo, HelloError> 
 
 // ------------------------------------------------------------------ request
 
+/// Where a request's messages go on the client side. Unlike
+/// [`Responder`](crate::msg::Responder) it needn't be `Send`: it never
+/// leaves the calling thread.
+pub trait Replies {
+    /// The host queued the request.
+    fn accepted(&mut self);
+    fn progress(&mut self, p: &Progress);
+    /// The one reply.
+    fn reply(&mut self, r: Result<Value, CoreError>);
+}
+
 /// How [`send_request`] behaves.
 #[derive(Debug, Clone)]
 pub struct SendOpts {
@@ -242,7 +255,7 @@ pub enum SendError {
 pub fn send_request(
     socket: &Path,
     req: &Request,
-    out: &mut dyn Responder,
+    out: &mut dyn Replies,
     opts: &SendOpts,
 ) -> Result<Sent, SendError> {
     let mut exchange = match Exchange::open(
@@ -444,6 +457,7 @@ impl<'a> Router<'a> {
 
 /// The routing loop of A§8.3 step 4.
 pub fn route(r: &Router<'_>) -> Result<Routed, RouteError> {
+    let dir = r.paths.root();
     let mut record: Option<LockRecord> = None;
     loop {
         if r.interrupts.count() > r.baseline {
@@ -452,9 +466,9 @@ pub fn route(r: &Router<'_>) -> Result<Routed, RouteError> {
         // Our socket path, then the one the lock record names (a host started
         // with another runtime dir).
         let mut candidates = vec![r.socket.to_path_buf()];
-        if let Some(rec) = &record
-            && rec.state == LockState::Ready
-            && Path::new(&rec.socket) != r.socket
+        if let Some(rec) = record
+            .as_ref()
+            .filter(|rec| rec.state == HostState::Ready && Path::new(&rec.socket) != r.socket)
         {
             candidates.push(PathBuf::from(&rec.socket));
         }
@@ -468,7 +482,9 @@ pub fn route(r: &Router<'_>) -> Result<Routed, RouteError> {
                 }
                 Err(HelloError::Refused(_)) => return Ok(Routed::Host { socket, hello: None }),
                 Err(HelloError::Timeout) => {
-                    let rec = record.clone().or_else(|| read_record(r.paths));
+                    let rec = record
+                        .clone()
+                        .or_else(|| lockfile::read(dir).ok().flatten());
                     return Err(RouteError::Failed(not_responding(rec.as_ref())));
                 }
                 Err(
@@ -480,19 +496,19 @@ pub fn route(r: &Router<'_>) -> Result<Routed, RouteError> {
             }
         }
         match r.mode {
-            RouteMode::Lock => match ProjectLock::try_acquire(r.paths) {
+            RouteMode::Lock => match ProjectLock::try_acquire(dir) {
                 Ok(Some(lock)) => return Ok(Routed::Locked(lock)),
                 Ok(None) => {}
-                Err(e) => return Err(RouteError::Failed(e)),
+                Err(e) => return Err(RouteError::Failed(e.into())),
             },
-            RouteMode::NoLock => match ProjectLock::is_held(r.paths) {
+            RouteMode::NoLock => match ProjectLock::is_held(dir) {
                 Ok(false) => return Ok(Routed::NoHost),
                 Ok(true) => {}
-                Err(e) => return Err(RouteError::Failed(e)),
+                Err(e) => return Err(RouteError::Failed(e.into())),
             },
         }
         // Someone holds the lock: wait for it to be ready (or to go away).
-        if let Some(rec) = read_record(r.paths) {
+        if let Ok(Some(rec)) = lockfile::read(dir) {
             record = Some(rec);
         }
         let now = Instant::now();
@@ -506,13 +522,26 @@ pub fn route(r: &Router<'_>) -> Result<Routed, RouteError> {
     }
 }
 
+/// `headless host (pid 4242, since 2026-10-14 12:00:03)`.
+pub fn describe(record: &LockRecord) -> String {
+    format!(
+        "{} host (pid {}, since {})",
+        record.kind.as_str(),
+        record.pid,
+        record
+            .since
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M:%S")
+    )
+}
+
 /// `hello` timed out (A§8.3 step 4).
 pub fn not_responding(record: Option<&LockRecord>) -> CoreError {
     match record {
         Some(rec) => CoreError::busy(format!("host pid {} is not responding", rec.pid))
             .with_hint(format!(
                 "the project's {} may be stuck; stop it with `kill {}` (a second signal force-quits it)",
-                rec.describe(),
+                describe(rec),
                 rec.pid
             )),
         None => CoreError::busy("the project's host is not responding")
@@ -525,11 +554,11 @@ pub fn lock_held_too_long(record: Option<&LockRecord>) -> CoreError {
     match record {
         Some(rec) => {
             let what = match rec.state {
-                LockState::Starting => "hasn't finished starting",
-                LockState::Ready => "isn't accepting connections",
-                LockState::Stopping => "is shutting down",
+                HostState::Starting => "hasn't finished starting",
+                HostState::Ready => "isn't accepting connections",
+                HostState::Stopping => "is shutting down",
             };
-            CoreError::busy(format!("the project's {} {what}", rec.describe())).with_hint(
+            CoreError::busy(format!("the project's {} {what}", describe(rec))).with_hint(
                 format!(
                     "try again in a moment; if it persists, stop pid {} (`kill {}`)",
                     rec.pid, rec.pid

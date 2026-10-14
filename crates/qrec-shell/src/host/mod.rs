@@ -36,18 +36,21 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use chrono::{SubsecRound, Utc};
 use qrec_core::protocol::{Command, Progress, Query};
 use qrec_core::state::HostKind;
 use qrec_core::{CoreError, State};
 use serde_json::Value;
 
 pub use cli_host::{CliContext, CliExit, CliRequest, run_cli};
-pub use headless::{HeadlessArgs, run_headless};
+pub use headless::{HeadlessArgs, main_headless, run_headless};
 pub use spawn::HostProgram;
 
 use crate::deps::{Deps, OpenOpts};
 use crate::error::ShellError;
-use crate::ipc::lock_glue::{LockRecord, LockState, ProjectLock, PublishedSocket, publish_socket};
+use crate::ipc::lock_glue::ProjectLock;
+use crate::ipc::lock_glue::lockfile::{self as lock_record, HostState, LockRecord};
+use crate::ipc::lock_glue::publish::publish;
 use crate::ipc::server::{Hook, IpcServer, ServerConfig, ServerEvent};
 use crate::msg::{Inbox, Msg, Request, Responder};
 use crate::paths::ProjectPaths;
@@ -378,6 +381,9 @@ pub struct HostOptions {
     /// The counter signals raise (from [`signals::install`]); `None` means
     /// signals aren't watched (tests drive [`Interrupts::raise`] instead).
     pub interrupts: Option<Interrupts>,
+    /// Interrupts counted before this host's work began (e.g. when the CLI
+    /// started); later ones are the "first" and "second" signals.
+    pub signal_baseline: usize,
     /// The second signal. `None`: unlink the socket, SIGKILL the child
     /// process groups and `_exit(130)` ([`signals::hard_exit`]).
     pub on_second_signal: Option<Box<dyn FnOnce() + Send>>,
@@ -388,6 +394,7 @@ impl Default for HostOptions {
         Self {
             rules: ExitRules::default(),
             interrupts: None,
+            signal_baseline: 0,
             on_second_signal: None,
         }
     }
@@ -448,10 +455,10 @@ impl Host {
         socket: &Path,
         opts: HostOptions,
     ) -> Result<Host, CoreError> {
-        let record = LockRecord::new(kind, socket, LockState::Starting);
-        lock.write_record(&record)?;
-        let published = publish_socket(socket, std::process::id())?;
-        let published_socket = published.socket.clone();
+        let mut record = LockRecord::starting(kind, socket, Utc::now().trunc_subsecs(0));
+        lock_record::write(&lock, &record)?;
+        let published = publish(socket)?;
+        let published_path = published.path().to_path_buf();
         let ctl = Arc::new(HostCtl::default());
         let hook_ctl = Arc::clone(&ctl);
         let hook: Hook = Arc::new(move |event| match event {
@@ -467,19 +474,19 @@ impl Host {
         let signals = match &opts.interrupts {
             Some(interrupts) => Some(watch_signals(
                 interrupts,
+                opts.signal_baseline,
                 &ctl,
                 &server,
-                published_socket,
+                published_path,
                 opts.on_second_signal,
             )?),
             None => None,
         };
-        let ready = record.with_state(LockState::Ready);
-        lock.write_record(&ready)?;
+        lock_record::set_state(&lock, &mut record, HostState::Ready)?;
         Ok(Host {
             paths,
             lock,
-            record: ready,
+            record,
             server,
             waker,
             ctl,
@@ -570,11 +577,15 @@ impl Host {
     /// `shutdown` (A§8.6): the record says `stopping`, a recording is
     /// finalized, the Session hears `Msg::Shutdown`; jobs finish.
     fn on_shutdown_request(&self) {
-        let _ = self
-            .lock
-            .write_record(&self.record.with_state(LockState::Stopping));
+        self.mark_stopping();
         self.server.send(record_stop_msg());
         self.server.send(Msg::Shutdown);
+    }
+
+    /// The lock record says `stopping` (best effort: it only words errors).
+    fn mark_stopping(&self) {
+        let mut record = self.record.clone();
+        let _ = lock_record::set_state(&self.lock, &mut record, HostState::Stopping);
     }
 
     /// The exit sequence (A§8.3 step 3): record `stopping`, stop accepting
@@ -582,9 +593,7 @@ impl Host {
     /// answered), let replies flush (≤ `flush_timeout`), then release the
     /// lock by closing it.
     pub fn finish(self, session: Option<Box<dyn HostSession>>, why: CoreError) {
-        let _ = self
-            .lock
-            .write_record(&self.record.with_state(LockState::Stopping));
+        self.mark_stopping();
         self.server.stop_accepting();
         drop(session);
         self.server.finish(why, self.rules.flush_timeout);
@@ -610,9 +619,10 @@ impl Host {
 /// (`Msg::Interrupt`), wake the loop. The second: `on_second` or the hard exit.
 fn watch_signals(
     interrupts: &Interrupts,
+    baseline: usize,
     ctl: &Arc<HostCtl>,
     server: &IpcServer,
-    socket: PublishedSocket,
+    socket: PathBuf,
     on_second: Option<Box<dyn FnOnce() + Send>>,
 ) -> Result<SignalWatch, CoreError> {
     let first_ctl = Arc::clone(ctl);
@@ -632,11 +642,12 @@ fn watch_signals(
     let second = move || match on_second {
         Some(second) => second(),
         None => {
-            socket.unlink();
+            // We still hold the lock, so the path is ours (A§8.3 step 2).
+            let _ = std::fs::remove_file(&socket);
             signals::hard_exit();
         }
     };
-    signals::watch(interrupts, interrupts.count(), first, second)
+    signals::watch(interrupts, baseline, first, second)
         .map_err(|e| CoreError::io(format!("can't watch signals: {e}")))
 }
 

@@ -10,8 +10,8 @@
 //! Its stdout/stderr are the host log; it writes one line per lifecycle step.
 
 use std::fs::{self, File};
-use std::io::{self, Write};
-use std::os::fd::{FromRawFd, RawFd};
+use std::io::Write;
+use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 
 use chrono::Local;
@@ -116,8 +116,8 @@ fn start(args: &HeadlessArgs, env: &Env, opts: HostOptions) -> Result<Host, Core
     })?;
     let paths = ProjectPaths::new(&dir);
     let lock = match args.lock_fd {
-        Some(fd) => ProjectLock::adopt_fd(fd, &paths)?,
-        None => ProjectLock::try_acquire(&paths)?.ok_or_else(|| {
+        Some(fd) => ProjectLock::adopt(&dir, inherited_fd(fd, "--lock-fd")?)?,
+        None => ProjectLock::try_acquire(&dir)?.ok_or_else(|| {
             CoreError::busy(format!("another Qrec host holds {}", dir.display()))
                 .with_hint("send it commands instead; they are routed automatically")
         })?,
@@ -132,20 +132,27 @@ fn start(args: &HeadlessArgs, env: &Env, opts: HostOptions) -> Result<Host, Core
     Host::start(HostKind::Headless, paths, lock, &socket, opts)
 }
 
+/// Takes ownership of a descriptor our parent passed down: it must be above
+/// the standard streams and open (checked before owning it, so a bad number
+/// is an error, not a double close). `FD_CLOEXEC` keeps it from our children.
+fn inherited_fd(fd: RawFd, flag: &str) -> Result<OwnedFd, CoreError> {
+    if fd <= 2 {
+        return Err(CoreError::usage(format!(
+            "{flag} {fd}: expected an inherited descriptor above 2"
+        )));
+    }
+    set_cloexec(fd).map_err(|e| CoreError::io(format!("{flag} {fd}: {e}")))?;
+    // SAFETY: the fd is open (fcntl succeeded) and nothing else in this
+    // process owns it: it was inherited for us.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
 /// The write end of the ready pipe (A§8.3 step 5).
 struct ReadyPipe(File);
 
 impl ReadyPipe {
-    fn adopt(fd: RawFd) -> io::Result<ReadyPipe> {
-        if fd <= 2 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("{fd} is a standard stream"),
-            ));
-        }
-        set_cloexec(fd)?;
-        // SAFETY: the fd is open (fcntl succeeded) and was handed to us.
-        Ok(ReadyPipe(unsafe { File::from_raw_fd(fd) }))
+    fn adopt(fd: RawFd) -> Result<ReadyPipe, CoreError> {
+        inherited_fd(fd, "--ready-fd").map(|fd| ReadyPipe(File::from(fd)))
     }
 
     /// One line, then close. A parent that already gave up is ignored.

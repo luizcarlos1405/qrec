@@ -7,12 +7,12 @@ use qrec_core::ErrorCode;
 use serde_json::json;
 
 use super::*;
-use crate::ipc::lock_glue::LockRecord;
+use crate::ipc::lock_glue::lockfile::{self, HostState, LockRecord};
 use crate::ipc::testing::{
     Collect, hold_lock, line_id, raw_server, send_line, session_thread, socket_dir, start_server,
     wait_for,
 };
-use crate::msg::Msg;
+use crate::msg::{Msg, Responder};
 
 fn progress(done: u64) -> Progress {
     Progress {
@@ -307,6 +307,13 @@ fn project() -> Project {
     }
 }
 
+/// A lock record of this process.
+fn record(kind: HostKind, socket: &Path, state: HostState) -> LockRecord {
+    let mut record = LockRecord::starting(kind, socket, chrono::Utc::now());
+    record.state = state;
+    record
+}
+
 fn router<'a>(p: &'a Project, mode: RouteMode, ms: u64, interrupts: &'a Interrupts) -> Router<'a> {
     let mut r = Router::new(
         &p.paths,
@@ -342,7 +349,7 @@ fn without_a_host_mutating_requests_take_the_lock() {
     let interrupts = Interrupts::new();
     match route(&router(&p, RouteMode::Lock, 1000, &interrupts)).unwrap() {
         Routed::Locked(lock) => {
-            assert!(ProjectLock::is_held(&p.paths).unwrap());
+            assert!(ProjectLock::is_held(p.paths.root()).unwrap());
             drop(lock);
         }
         other => panic!("{other:?}"),
@@ -353,20 +360,20 @@ fn without_a_host_mutating_requests_take_the_lock() {
         Routed::NoHost => {}
         other => panic!("{other:?}"),
     }
-    assert!(!ProjectLock::is_held(&p.paths).unwrap());
+    assert!(!ProjectLock::is_held(p.paths.root()).unwrap());
 }
 
 #[test]
 fn a_starting_host_is_waited_for() {
     let p = project();
     let lock = hold_lock(p.paths.root());
-    lock.write_record(&LockRecord::new(HostKind::Cli, &p.socket, LockState::Starting))
+    lockfile::write(&lock, &record(HostKind::Cli, &p.socket, HostState::Starting))
         .unwrap();
     let runtime = p.runtime.path().to_path_buf();
     let starter = thread::spawn(move || {
         thread::sleep(Duration::from_millis(300));
         let t = start_server(&runtime, |_| {});
-        lock.write_record(&LockRecord::new(HostKind::Cli, &t.socket, LockState::Ready))
+        lockfile::write(&lock, &record(HostKind::Cli, &t.socket, HostState::Ready))
             .unwrap();
         thread::sleep(Duration::from_secs(2));
         drop((t, lock));
@@ -385,8 +392,8 @@ fn a_starting_host_is_waited_for() {
 fn a_lock_held_too_long_is_busy_naming_the_holder() {
     let p = project();
     let lock = hold_lock(p.paths.root());
-    let record = LockRecord::new(HostKind::Headless, &p.socket, LockState::Starting);
-    lock.write_record(&record).unwrap();
+    let rec = record(HostKind::Headless, &p.socket, HostState::Starting);
+    lockfile::write(&lock, &rec).unwrap();
     let interrupts = Interrupts::new();
     let started = Instant::now();
     let err = match route(&router(&p, RouteMode::Lock, 300, &interrupts)) {
@@ -395,7 +402,7 @@ fn a_lock_held_too_long_is_busy_naming_the_holder() {
     };
     assert!(started.elapsed() >= Duration::from_millis(300));
     assert_eq!(err.code, ErrorCode::Busy);
-    assert!(err.message.contains(&format!("pid {}", record.pid)), "{}", err.message);
+    assert!(err.message.contains(&format!("pid {}", rec.pid)), "{}", err.message);
     assert!(err.message.contains("headless host"), "{}", err.message);
     assert!(err.message.contains("hasn't finished starting"), "{}", err.message);
 
@@ -407,7 +414,7 @@ fn a_lock_held_too_long_is_busy_naming_the_holder() {
     assert_eq!(err.code, ErrorCode::Busy);
 
     // No record at all: someone else holds the flock.
-    lock.write_record(&record.with_state(LockState::Ready)).unwrap();
+    lockfile::write(&lock, &record(HostKind::Headless, &p.socket, HostState::Ready)).unwrap();
     std::fs::write(p.paths.lock_file(), b"").unwrap();
     let err = match route(&router(&p, RouteMode::Lock, 200, &interrupts)) {
         Err(RouteError::Failed(e)) => e,
@@ -421,8 +428,8 @@ fn a_lock_held_too_long_is_busy_naming_the_holder() {
 fn a_host_that_never_answers_hello_is_not_responding() {
     let p = project();
     let lock = hold_lock(p.paths.root());
-    let record = LockRecord::new(HostKind::Gui, &p.socket, LockState::Ready);
-    lock.write_record(&record).unwrap();
+    let rec = record(HostKind::Gui, &p.socket, HostState::Ready);
+    lockfile::write(&lock, &rec).unwrap();
     let _silent = raw_server(p.runtime.path(), "p.sock", |_, _stream| {
         thread::sleep(Duration::from_secs(2));
     });
@@ -432,7 +439,7 @@ fn a_host_that_never_answers_hello_is_not_responding() {
         other => panic!("{other:?}"),
     };
     assert_eq!(err.code, ErrorCode::Busy);
-    assert_eq!(err.message, format!("host pid {} is not responding", record.pid));
+    assert_eq!(err.message, format!("host pid {} is not responding", rec.pid));
     drop(lock);
 }
 
@@ -440,7 +447,7 @@ fn a_host_that_never_answers_hello_is_not_responding() {
 fn routing_stops_on_ctrl_c() {
     let p = project();
     let lock = hold_lock(p.paths.root());
-    lock.write_record(&LockRecord::new(HostKind::Cli, &p.socket, LockState::Starting))
+    lockfile::write(&lock, &record(HostKind::Cli, &p.socket, HostState::Starting))
         .unwrap();
     let interrupts = Interrupts::new();
     let raiser = interrupts.clone();
@@ -463,7 +470,7 @@ fn the_record_names_a_socket_in_another_runtime_dir() {
     let elsewhere = socket_dir();
     let t = start_server(elsewhere.path(), |_| {});
     let lock = hold_lock(p.paths.root());
-    lock.write_record(&LockRecord::new(HostKind::Gui, &t.socket, LockState::Ready))
+    lockfile::write(&lock, &record(HostKind::Gui, &t.socket, HostState::Ready))
         .unwrap();
     let interrupts = Interrupts::new();
     match route(&router(&p, RouteMode::Lock, 2000, &interrupts)).unwrap() {

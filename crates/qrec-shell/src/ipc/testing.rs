@@ -24,7 +24,8 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use super::framing::{LineReader, ReadError, write_all_before};
-use super::lock_glue::{ProjectLock, publish_socket};
+use super::lock_glue::ProjectLock;
+use super::lock_glue::publish::publish;
 use super::server::{Hook, IpcServer, ServerConfig, ServerEvent};
 use crate::deps::OpenOpts;
 use crate::error::ShellError;
@@ -38,12 +39,16 @@ use crate::msg::{Inbox, Msg, Request, Responder};
 use crate::paths::{Env, ProjectPaths, ensure_runtime_dir, socket_path};
 use crate::testkit::TestEnv;
 
-/// A private dir under `/tmp` with room for `<64 hex>.sock.<pid>` names.
+/// A private (0700) dir under `/tmp` with room for `<64 hex>.sock.<pid>`
+/// names, like a runtime dir.
 pub(crate) fn socket_dir() -> TempDir {
-    tempfile::Builder::new()
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::Builder::new()
         .prefix("qri-")
         .tempdir_in("/tmp")
-        .expect("create a socket dir")
+        .expect("create a socket dir");
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).expect("chmod 0700");
+    dir
 }
 
 /// A started server on `<dir>/p.sock` with a hook that records its events.
@@ -55,7 +60,7 @@ pub(crate) struct TestServer {
 
 pub(crate) fn start_server(dir: &Path, edit: impl FnOnce(&mut ServerConfig)) -> TestServer {
     let socket = dir.join("p.sock");
-    let published = publish_socket(&socket, std::process::id()).expect("publish");
+    let published = publish(&socket).expect("publish");
     let mut cfg = ServerConfig::new(Path::new("/projects/swamp"), HostKind::Headless);
     edit(&mut cfg);
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -152,7 +157,7 @@ pub(crate) fn read_events(path: &Path) -> Vec<Value> {
 
 /// Holds a project's lock from this process (a stand-in for another host).
 pub(crate) fn hold_lock(dir: &Path) -> ProjectLock {
-    ProjectLock::try_acquire(&ProjectPaths::new(dir))
+    ProjectLock::try_acquire(dir)
         .expect("lock")
         .expect("the lock is free")
 }
@@ -239,7 +244,7 @@ pub(crate) struct Collect {
     pub replies: Vec<Result<Value, CoreError>>,
 }
 
-impl Responder for Collect {
+impl super::client::Replies for Collect {
     fn accepted(&mut self) {
         self.accepted += 1;
     }
@@ -755,7 +760,7 @@ fn child_headless(log: &Path) -> u8 {
     let opts = HostOptions {
         rules: rules_from_env(),
         interrupts: signals::install(&HOST_SIGNALS).ok(),
-        on_second_signal: None,
+        ..HostOptions::default()
     };
     let mut opener = FakeOpener::to_file(log);
     opener.stubborn = std::env::var_os(STUBBORN).is_some();
@@ -828,7 +833,7 @@ fn child_spawner(log: &Path) -> u8 {
     let paths = ProjectPaths::new(&dir);
     let runtime = ensure_runtime_dir(&Env::from_process()).unwrap();
     let socket = socket_path(&runtime, &dir).unwrap();
-    let lock = ProjectLock::try_acquire(&paths)
+    let lock = ProjectLock::try_acquire(&dir)
         .unwrap()
         .expect("the lock is free");
     let program = test_host_program(log, &rules_env(&rules_from_env()));

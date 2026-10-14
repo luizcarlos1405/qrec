@@ -37,7 +37,7 @@ use qrec_core::{CoreError, Event, ReqId};
 use serde_json::Value;
 
 use super::framing::{LineReader, ReadError, encode_line, write_all_before};
-use super::lock_glue::{Published, PublishedSocket};
+use super::lock_glue::publish::PublishedSocket;
 use super::{CONN_QUEUE_CAP, MAX_REQUEST_LINE, REQUEST_READ_TIMEOUT, WRITE_TIMEOUT, peer};
 use crate::msg::{Inbox, Msg, Request, Responder};
 
@@ -138,9 +138,16 @@ impl std::fmt::Debug for IpcServer {
 
 impl IpcServer {
     /// Serves a published socket. Requests are parked until [`attach`](Self::attach).
-    pub fn start(published: Published, cfg: ServerConfig, hook: Hook) -> Result<IpcServer, CoreError> {
-        let Published { listener, socket } = published;
+    pub fn start(
+        published: PublishedSocket,
+        cfg: ServerConfig,
+        hook: Hook,
+    ) -> Result<IpcServer, CoreError> {
         let io_err = |what: &str, e: io::Error| CoreError::io(format!("{what}: {e}"));
+        // The acceptor's own handle; `O_NONBLOCK` is shared with the original.
+        let listener = published
+            .try_clone_listener()
+            .map_err(|e| io_err("can't clone the listening socket", e))?;
         listener
             .set_nonblocking(true)
             .map_err(|e| io_err("can't configure the socket", e))?;
@@ -151,7 +158,7 @@ impl IpcServer {
             link: Mutex::new(Link::Pending(Vec::new())),
             accepting: AtomicBool::new(true),
             shutdown: AtomicBool::new(false),
-            socket: Mutex::new(Some(socket)),
+            socket: Mutex::new(Some(published)),
             wake_wr,
             conns: Mutex::new(Conns {
                 open: BTreeMap::new(),
@@ -283,7 +290,8 @@ struct Shared {
     link: Mutex<Link>,
     accepting: AtomicBool,
     shutdown: AtomicBool,
-    /// Taken (and unlinked) when the server stops accepting.
+    /// Taken (unpublished and closed) when the server stops accepting; the
+    /// acceptor closes its own handle when it exits.
     socket: Mutex<Option<PublishedSocket>>,
     /// Wakes the acceptor out of `poll`.
     wake_wr: OwnedFd,
@@ -320,8 +328,10 @@ impl Shared {
             // SAFETY: writing one byte from a valid buffer to our pipe fd.
             unsafe { libc::write(self.wake_wr.as_raw_fd(), byte.as_ptr().cast(), 1) };
         }
-        if let Some(socket) = lock(&self.socket).take() {
-            socket.unlink();
+        if let Some(mut socket) = lock(&self.socket).take() {
+            if let Err(e) = socket.unpublish() {
+                tracing::warn!("IPC: {e}");
+            }
         }
     }
 
@@ -654,9 +664,9 @@ fn parse_request(line: &[u8], cfg: &ServerConfig) -> Result<WireRequest, (String
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    if let Some(v) = value.get("v")
-        && v.as_u64() != Some(u64::from(WIRE_VERSION))
-    {
+    let version = value.get("v");
+    if version.is_some_and(|v| v.as_u64() != Some(u64::from(WIRE_VERSION))) {
+        let v = version.cloned().unwrap_or_default();
         return Err((
             id,
             CoreError::usage(format!(

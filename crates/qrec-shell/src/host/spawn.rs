@@ -14,7 +14,7 @@
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -22,13 +22,15 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use chrono::Local;
+use chrono::{Local, SubsecRound, Utc};
 use qrec_core::CoreError;
 use qrec_core::state::HostKind;
 use serde_json::Value;
 
 use super::signals::Interrupts;
-use crate::ipc::lock_glue::{LockRecord, LockState, ProjectLock};
+use crate::error::ShellError;
+use crate::ipc::lock_glue::ProjectLock;
+use crate::ipc::lock_glue::lockfile::{self, LockRecord};
 use crate::ipc::server::pipe_cloexec;
 use crate::paths::ProjectPaths;
 
@@ -86,6 +88,12 @@ impl From<CoreError> for SpawnError {
     }
 }
 
+impl From<ShellError> for SpawnError {
+    fn from(e: ShellError) -> Self {
+        SpawnError::Failed(e.into())
+    }
+}
+
 /// Spawns the headless host with `lock` and waits (until `deadline`) for
 /// its ready line. `socket` is what the host will publish (for the lock
 /// record the CLI writes meanwhile, so routing clients wait for it).
@@ -98,17 +106,16 @@ pub fn spawn_headless(
     interrupts: &Interrupts,
     baseline: usize,
 ) -> Result<SpawnedHost, SpawnError> {
-    lock.write_record(&LockRecord::new(
-        HostKind::Headless,
-        socket,
-        LockState::Starting,
-    ))?;
+    // Routing clients wait for a `starting` host instead of reading a stale record.
+    let since = Utc::now().trunc_subsecs(0);
+    lockfile::write(&lock, &LockRecord::starting(HostKind::Headless, socket, since))?;
     let stamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
     let (log_path, log) = create_log(paths, &stamp, std::process::id(), "spawn")?;
     let io_err = |what: &str, e: io::Error| CoreError::io(format!("{what}: {e}"));
     let (ready_read, ready_write) =
         pipe_cloexec().map_err(|e| io_err("can't create the ready pipe", e))?;
-    let lock_high = dup_high(lock.as_raw_fd()).map_err(|e| io_err("can't pass the lock", e))?;
+    let lock_high =
+        dup_high(lock.as_fd().as_raw_fd()).map_err(|e| io_err("can't pass the lock", e))?;
     let ready_high =
         dup_high(ready_write.as_raw_fd()).map_err(|e| io_err("can't pass the ready pipe", e))?;
     let stdout = log
