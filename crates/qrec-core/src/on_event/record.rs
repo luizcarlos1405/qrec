@@ -1,13 +1,16 @@
 //! Recording events (A§5.3). Owner: record.
 //!
 //! Every handler first checks that the event belongs to the current phase
-//! (take, timer, job); anything else is ignored with a debug `Log`.
+//! (take, timer); anything else is ignored with a debug `Log` (A§4.1). Like
+//! the commands, every step that changes facts or the record phase finishes
+//! through `history::persist`/`commit`, which emit the `SetLive` the change
+//! implies.
 //!
 //! Finalization order (A§5.3): fill media info and mark unreadable streams
-//! `missing` with `persist` (facts first), then place the take with
-//! `commit` ("Record take N", `cmd: {"event":"takeFinalized","take":…}`),
-//! then the pending discard, ready autocut jobs and auto-run autocut, then
-//! the `TakeFinalizedView` replies.
+//! `missing` with `persist` (facts first, the phase back to Idle), then
+//! place the take with `commit` ("Record take N", `cmd:
+//! {"event":"takeFinalized","take":…}`), then the pending discard, the ready
+//! autocut jobs and `autoRunAfterTake`, then the `TakeFinalizedView` replies.
 //!
 //! Streams of a finished take always carry the media fields of their kind:
 //! a stream that couldn't be probed (or was never probed, for a broken
@@ -18,32 +21,34 @@ use serde_json::json;
 
 use crate::apply::Outcome;
 use crate::apply::record::{
-    COUNTDOWN_TICK_MS, ENGINE_STUCK, MIN_TAKE_FRAMES, begin_take, countdown_progress, discard_last,
-    finalize_progress, join_ids, live_change, ordered, started_result, stop_capture, unique,
+    COUNTDOWN_TICK_MS, ENGINE_STUCK, MIN_TAKE_FRAMES, autocut_hooks, begin_take,
+    countdown_progress, discard_last, end_countdown, finalize_progress, join_ids, ordered,
+    started_result, stop_capture, unique,
 };
 use crate::capture_plan::EOS_TIMEOUT_MS;
 use crate::ctx::{Ctx, IdGen};
 use crate::error::CoreError;
 use crate::history;
-use crate::ids::{ClipId, JobId, TakeId, TimerId};
+use crate::ids::{ClipId, TakeId, TimerId};
 use crate::media_argv::probe_argv;
 use crate::model::{Clip, Scene, Stream, StreamKind, Take, TakeStatus};
-use crate::protocol::command::{AutocutOverrides, ClipScope};
 use crate::protocol::effect::{Effect, LogLevel, ProbeJob, ProbePurpose};
 use crate::protocol::event::{MediaInfo, ProbeResult, RecordedStream};
 use crate::protocol::progress::{Progress, ProgressPhase};
 use crate::protocol::reply::{CmdResult, TakeFinalizedView};
 use crate::protocol::toast::{Toast, ToastLevel};
 use crate::requantize::derive_duration_frames;
-use crate::state::{DiscardRequest, JobKind, RecordMode, RecordPhase, State};
+use crate::state::{DiscardRequest, RecordMode, RecordPhase, State};
 use crate::time::{duration_label, frames_to_ns};
+use crate::timeline;
 
-/// `Progress{phase: Record}` goes to `wait` requesters at most once per this
-/// much pipeline time.
+/// Record progress goes to `wait` requesters when the pipeline clock enters
+/// the first of these slots of a new second (see [`announces_second`]).
 pub const RECORD_PROGRESS_NS: u64 = 500_000_000;
 
 /// Starting ⇒ Recording; reply `RecordStartedView` to the start request
-/// (unless `wait`: then it waits for the whole take).
+/// (unless `wait`: then it waits for the whole take, starting with a
+/// `Recording take N: 00:00` progress).
 pub fn capture_started(
     state: &State,
     _ctx: &Ctx,
@@ -63,36 +68,45 @@ pub fn capture_started(
     if *current != take {
         return ignore(state, format!("CaptureStarted for {take}"));
     }
-    let mut effects = vec![Effect::Log {
-        level: LogLevel::Info,
-        message: format!("{take}: capture started (T0 = {t0_ns} ns)"),
-    }];
+    let mut next = state.clone();
     let mut waiters = Vec::new();
-    if let Some(req) = start_req {
-        if *wait {
+    let mut answers = Vec::new();
+    match start_req {
+        Some(req) if *wait => {
             waiters.push(req.clone());
-        } else {
-            effects.push(Effect::Reply {
+            answers.push(Effect::Progress {
                 req: req.clone(),
-                reply: Ok(started_result(&take, mode, files)),
+                progress: record_progress(&take, 0),
             });
         }
+        Some(req) => answers.push(Effect::Reply {
+            req: req.clone(),
+            reply: Ok(started_result(&take, mode, files)),
+        }),
+        None => {}
     }
-    let mut next = state.clone();
     next.runtime.record = RecordPhase::Recording {
-        take,
+        take: take.clone(),
         mode: mode.clone(),
         elapsed_ns: 0,
         waiters,
     };
-    Outcome::new(next, effects, None)
+    let persisted = history::persist(state, next);
+    let mut effects = persisted.effects;
+    effects.push(Effect::Log {
+        level: LogLevel::Info,
+        message: format!("{take}: capture started (T0 = {t0_ns} ns)"),
+    });
+    effects.extend(answers);
+    Outcome::new(persisted.state, ordered(effects), None)
 }
 
 /// Start/health-window or pipeline-wide failure (A§5.3): the take is
 /// `broken` (+`error`) ⇒ Idle; the start request and `wait` requesters get
 /// `capture_failed` (the hint names the source); stop requests get the
-/// broken `TakeFinalizedView`. A failure without a take while nothing is
-/// being captured (the live pipeline) only tells people.
+/// broken `TakeFinalizedView`. A pipeline failure during a countdown ends
+/// the countdown the same way; one while Idle (the live preview) only tells
+/// people.
 pub fn capture_failed(
     state: &State,
     ctx: &Ctx,
@@ -104,20 +118,7 @@ pub fn capture_failed(
     let target = match (&take, current) {
         (Some(t), Some(c)) if *t == c => c,
         (None, Some(c)) => c,
-        (None, None) => {
-            let what = match &source {
-                Some(s) => format!("{s}: {message}"),
-                None => message,
-            };
-            let effects = vec![
-                Effect::Log {
-                    level: LogLevel::Warn,
-                    message: format!("capture failed: {what}"),
-                },
-                Effect::Notify(Toast::new(ToastLevel::Error, "Capture failed").with_body(what)),
-            ];
-            return Outcome::new(state.clone(), effects, None);
-        }
+        (None, None) => return pipeline_failed(state, ctx, source, message),
         (Some(t), _) => return ignore(state, format!("CaptureFailed for {t}")),
     };
     let label = source.as_deref().map(|s| source_label(state, &target, s));
@@ -125,16 +126,46 @@ pub fn capture_failed(
         Some(l) => format!("{l}: {message}"),
         None => message,
     };
-    let hint = match &label {
-        Some(l) => format!("check {l}; qrec doctor lists capture problems"),
+    let err = capture_error(&reason, label.as_deref());
+    end_broken(state, ctx, state.clone(), &target, &reason, &err)
+}
+
+/// `capture failed: <reason>`, with a hint naming the failing source.
+fn capture_error(reason: &str, source: Option<&str>) -> CoreError {
+    let hint = match source {
+        Some(s) => format!("check {s}; qrec doctor lists capture problems"),
         None => "qrec doctor lists capture problems".to_owned(),
     };
-    let err = CoreError::capture_failed(format!("capture failed: {reason}")).with_hint(hint);
-    end_broken(state, ctx, &target, &reason, &err)
+    CoreError::capture_failed(format!("capture failed: {reason}")).with_hint(hint)
+}
+
+/// A failure of the live pipeline with no take in flight: a countdown can't
+/// lead to a recording any more, so it ends and the start request fails;
+/// otherwise people are told.
+fn pipeline_failed(state: &State, ctx: &Ctx, source: Option<String>, message: String) -> Outcome {
+    let what = match &source {
+        Some(s) => format!("{s}: {message}"),
+        None => message,
+    };
+    let mut effects = vec![Effect::Log {
+        level: LogLevel::Warn,
+        message: format!("capture failed: {what}"),
+    }];
+    let mut next = state.clone();
+    if matches!(state.runtime.record, RecordPhase::Countdown { .. }) {
+        let (ended, more) =
+            end_countdown(state, ctx, true, capture_error(&what, source.as_deref()));
+        next = ended;
+        effects.extend(more);
+    }
+    effects.push(Effect::Notify(
+        Toast::new(ToastLevel::Error, "Capture failed").with_body(what),
+    ));
+    Outcome::new(next, ordered(effects), None)
 }
 
 /// Marks the layer/track `missing` (persist); the last stream lost acts as
-/// Stop (A§5.3).
+/// Stop (A§5.3): the waiters keep waiting for the finalized take.
 pub fn stream_lost(
     state: &State,
     _ctx: &Ctx,
@@ -197,8 +228,9 @@ pub fn stream_lost(
     Outcome::new(next, ordered(effects), None)
 }
 
-/// Updates `elapsed_ns`; `Progress{phase: Record}` to the `wait` requesters
-/// each time the pipeline clock enters a new 500 ms slot.
+/// Updates `elapsed_ns` (never backwards: the pipeline clock is monotonic
+/// and a late event must not rewind it) and sends `Progress{phase: Record}`
+/// to the `wait` requesters when [`announces_second`] says so.
 pub fn record_clock(state: &State, _ctx: &Ctx, take: TakeId, elapsed_ns: u64) -> Outcome {
     let RecordPhase::Recording {
         take: current,
@@ -212,20 +244,31 @@ pub fn record_clock(state: &State, _ctx: &Ctx, take: TakeId, elapsed_ns: u64) ->
     if *current != take {
         return ignore(state, format!("RecordClock for {take}"));
     }
+    let elapsed = elapsed_ns.max(*previous);
     let mut effects = Vec::new();
-    if elapsed_ns / RECORD_PROGRESS_NS > *previous / RECORD_PROGRESS_NS {
+    if announces_second(*previous, elapsed) {
         for req in waiters {
             effects.push(Effect::Progress {
                 req: req.clone(),
-                progress: record_progress(&take, elapsed_ns),
+                progress: record_progress(&take, elapsed),
             });
         }
     }
     let mut next = state.clone();
     if let RecordPhase::Recording { elapsed_ns: e, .. } = &mut next.runtime.record {
-        *e = elapsed_ns;
+        *e = elapsed;
     }
     Outcome::new(next, effects, None)
+}
+
+/// Whether the clock moving from `previous` to `elapsed` announces a new
+/// second: it entered a new 500 ms slot that is the first half of a second.
+/// Two announcements are then always more than 500 ms apart (A§5.3) —
+/// they sit in different seconds' first halves — whatever the clock's tick
+/// rate or jitter, and each shows a new `mm:ss`.
+pub fn announces_second(previous: u64, elapsed: u64) -> bool {
+    let slot = elapsed / RECORD_PROGRESS_NS;
+    slot > previous / RECORD_PROGRESS_NS && slot % 2 == 0
 }
 
 /// `timed_out` ⇒ `broken`; else record the offsets (persist) and
@@ -256,38 +299,35 @@ pub fn capture_stopped(
             EOS_TIMEOUT_MS / 1000
         );
         let err = CoreError::capture_failed(reason.clone());
-        return end_broken(state, ctx, &take, &reason, &err);
+        return end_broken(state, ctx, state.clone(), &take, &reason, &err);
     }
-    if state.project.take(&take).is_none() {
+    let mut next = state.clone();
+    let Some(t) = next.project.takes.get_mut(&take) else {
         let reason = "the take is missing from the project".to_owned();
         let err = CoreError::internal(reason.clone());
-        return end_broken(state, ctx, &take, &reason, &err);
-    }
-    let mut effects = Vec::new();
-    let mut next = state.clone();
-    let mut jobs = Vec::new();
-    if let Some(t) = next.project.takes.get_mut(&take) {
-        for recorded in &streams {
-            match t.stream_mut(&recorded.id) {
-                Some(s) => s.start_offset_ns = recorded.start_offset_ns,
-                None => effects.push(Effect::Log {
-                    level: LogLevel::Warn,
-                    message: format!(
-                        "{take}: the engine reported an unknown stream {}",
-                        recorded.id
-                    ),
-                }),
-            }
+        return end_broken(state, ctx, state.clone(), &take, &reason, &err);
+    };
+    let mut notes = Vec::new();
+    for recorded in &streams {
+        match t.stream_mut(&recorded.id) {
+            Some(s) => s.start_offset_ns = recorded.start_offset_ns,
+            None => notes.push(Effect::Log {
+                level: LogLevel::Warn,
+                message: format!(
+                    "{take}: the engine reported an unknown stream {}",
+                    recorded.id
+                ),
+            }),
         }
-        jobs = probe_jobs(t);
     }
+    let jobs = probe_jobs(t);
     let no_eos: Vec<&str> = streams
         .iter()
         .filter(|s| !s.eos)
         .map(|s| s.id.as_str())
         .collect();
     if !no_eos.is_empty() {
-        effects.push(Effect::Log {
+        notes.push(Effect::Log {
             level: LogLevel::Warn,
             message: format!("{take}: no EOS from {}", no_eos.join(", ")),
         });
@@ -295,7 +335,8 @@ pub fn capture_stopped(
     let progress = finalize_progress(&take, format!("Finalizing take {}", take.number()));
     let reqs = unique(stop_reqs.iter().chain(waiters));
     let persisted = history::persist(state, next);
-    effects.extend(persisted.effects);
+    let mut effects = persisted.effects;
+    effects.extend(notes);
     effects.push(Effect::Probe {
         take,
         purpose: ProbePurpose::Finalize,
@@ -311,8 +352,8 @@ pub fn capture_stopped(
 }
 
 /// The engine missed a teardown (A§5.3, A§8.11): the in-flight take (if
-/// any) is `broken`, a countdown is cancelled, and people are told to
-/// restart Qrec. Nothing more is asked of the stuck engine.
+/// any) is `broken` with the "stuck" error, a countdown ends, and people are
+/// told to restart Qrec. No `StopCapture` is sent to the stuck engine.
 pub fn engine_wedged(state: &State, ctx: &Ctx, message: String) -> Outcome {
     let log = Effect::Log {
         level: LogLevel::Error,
@@ -325,41 +366,22 @@ pub fn engine_wedged(state: &State, ctx: &Ctx, message: String) -> Outcome {
     };
     let err = CoreError::capture_failed(ENGINE_STUCK)
         .with_hint("restart Qrec; qrec doctor checks the GPU driver");
+    let toast = Effect::Notify(
+        Toast::new(ToastLevel::Error, "The capture engine is stuck").with_body(reason.clone()),
+    );
     match &state.runtime.record {
-        RecordPhase::Idle => Outcome::new(
-            state.clone(),
-            vec![
-                log,
-                Effect::Notify(
-                    Toast::new(ToastLevel::Error, "The capture engine is stuck").with_body(reason),
-                ),
-            ],
-            None,
-        ),
-        RecordPhase::Countdown {
-            timer, start_req, ..
-        } => {
-            let mut next = state.clone();
-            next.runtime.record = RecordPhase::Idle;
-            let mut effects = vec![log, Effect::CancelTimer { timer: *timer }];
-            effects.extend(live_change(state, &next));
-            if let Some(req) = start_req {
-                effects.push(Effect::Reply {
-                    req: req.clone(),
-                    reply: Err(err),
-                });
-            }
-            let (next, jobs) = run_ready_autocut(next, ctx);
-            effects.extend(jobs);
-            effects.push(Effect::Notify(
-                Toast::new(ToastLevel::Error, "The capture engine is stuck").with_body(reason),
-            ));
+        RecordPhase::Idle => Outcome::new(state.clone(), vec![log, toast], None),
+        RecordPhase::Countdown { .. } => {
+            let (next, more) = end_countdown(state, ctx, true, err);
+            let mut effects = vec![log];
+            effects.extend(more);
+            effects.push(toast);
             Outcome::new(next, ordered(effects), None)
         }
         RecordPhase::Starting { take, .. }
         | RecordPhase::Recording { take, .. }
         | RecordPhase::Finalizing { take, .. } => {
-            let mut out = end_broken(state, ctx, take, &reason, &err);
+            let mut out = end_broken(state, ctx, state.clone(), take, &reason, &err);
             out.effects.insert(0, log);
             out.effects = ordered(out.effects);
             out
@@ -435,92 +457,18 @@ pub fn timer_fired(state: &State, ctx: &Ctx, timer: TimerId) -> Outcome {
     match begin_take(state, ctx, mode.clone(), start_req.clone(), *wait) {
         Ok((next, effects)) => Outcome::new(next, effects, None),
         Err(err) => {
-            let mut next = state.clone();
-            next.runtime.record = RecordPhase::Idle;
             let mut effects = vec![Effect::Log {
                 level: LogLevel::Warn,
                 message: format!("the take didn't begin: {err}"),
             }];
-            effects.extend(live_change(state, &next));
-            if let Some(req) = start_req {
-                effects.push(Effect::Reply {
-                    req: req.clone(),
-                    reply: Err(err.clone()),
-                });
-            }
-            let (next, jobs) = run_ready_autocut(next, ctx);
-            effects.extend(jobs);
+            let (next, more) = end_countdown(state, ctx, false, err.clone());
+            effects.extend(more);
             effects.push(Effect::Notify(
                 Toast::new(ToastLevel::Error, "Recording didn't start").with_body(err.message),
             ));
             Outcome::new(next, ordered(effects), None)
         }
     }
-}
-
-/// The purge job finished (A§5.6): drop the job, reply to its requester.
-pub fn take_dirs_deleted(
-    state: &State,
-    _ctx: &Ctx,
-    job: JobId,
-    deleted: Vec<String>,
-    errors: Vec<String>,
-) -> Outcome {
-    let Some(found) = state.runtime.jobs.get(&job) else {
-        return ignore(state, format!("TakeDirsDeleted for the unknown {job}"));
-    };
-    let JobKind::Purge { takes } = &found.kind else {
-        return ignore(
-            state,
-            format!("TakeDirsDeleted for {job}, which isn't a purge"),
-        );
-    };
-    let mut next = state.clone();
-    next.runtime.jobs.remove(&job);
-    let names = match takes.as_slice() {
-        [one] => format!("take {}", one.number()),
-        many => {
-            let numbers: Vec<String> = many.iter().map(|t| t.number().to_string()).collect();
-            format!("takes {}", numbers.join(", "))
-        }
-    };
-    let mut effects = Vec::new();
-    let reply = if errors.is_empty() {
-        let message = format!("Purged {names} from disk");
-        effects.push(Effect::Notify(Toast::new(
-            ToastLevel::Success,
-            message.clone(),
-        )));
-        Ok(CmdResult::new(message)
-            .with_removed(takes)
-            .with_result(&json!({"takes": takes, "deleted": deleted})))
-    } else {
-        let message = format!(
-            "purged {names} from the project, but some files couldn't be deleted: {}",
-            errors[0]
-        );
-        effects.push(Effect::Log {
-            level: LogLevel::Error,
-            message: format!("{job}: {}", errors.join("; ")),
-        });
-        effects.push(Effect::Notify(
-            Toast::new(
-                ToastLevel::Error,
-                format!("Couldn't delete every file of {names}"),
-            )
-            .with_body(errors.join("\n")),
-        ));
-        Err(CoreError::io(message)
-            .with_hint("the files left behind can be removed by hand")
-            .with_details(json!({"takes": takes, "deleted": deleted, "errors": errors})))
-    };
-    if let Some(req) = &found.req {
-        effects.push(Effect::Reply {
-            req: req.clone(),
-            reply,
-        });
-    }
-    Outcome::new(next, effects, None)
 }
 
 /// The probes startup recovery runs (A§5.3 "Recovery"): one
@@ -560,7 +508,8 @@ pub fn probe_jobs(take: &Take) -> Vec<ProbeJob> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Placement {
     Append,
-    /// Replace `len` clips from `start` (every `ClipRef` still matches).
+    /// Replace `len` clips from `start`: every `ClipRef` still matches its
+    /// clip and the clips still sit together.
     Over {
         start: usize,
         len: usize,
@@ -573,19 +522,21 @@ fn placement_for(clips: &[Clip], mode: &RecordMode) -> Placement {
     let RecordMode::Over { clips: refs } = mode else {
         return Placement::Append;
     };
-    let Some(first) = refs.first() else {
+    let ids: Vec<ClipId> = refs.iter().map(|r| r.id.clone()).collect();
+    let all_match = refs.iter().all(|r| clips.iter().any(|c| r.matches(c)));
+    if !all_match || !timeline::is_contiguous(clips, &ids) {
         return Placement::Fallback;
-    };
-    let Some(start) = clips.iter().position(|c| first.matches(c)) else {
-        return Placement::Fallback;
-    };
-    let run = clips.get(start..start + refs.len());
-    match run {
-        Some(run) if refs.iter().zip(run).all(|(r, c)| r.matches(c)) => Placement::Over {
+    }
+    match ids
+        .iter()
+        .filter_map(|id| timeline::index_of(clips, id))
+        .min()
+    {
+        Some(start) => Placement::Over {
             start,
             len: refs.len(),
         },
-        _ => Placement::Fallback,
+        None => Placement::Fallback,
     }
 }
 
@@ -612,17 +563,16 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
     let n = take.number();
     let fps = state.project.canvas.fps;
     let mut next = state.clone();
-    next.runtime.record = RecordPhase::Idle;
     let placement = placement_for(&next.project.timeline.clips, &mode);
     let Some(t) = next.project.takes.get_mut(take) else {
         let reason = "the take is missing from the project".to_owned();
         let err = CoreError::internal(reason.clone());
-        return end_broken(state, ctx, take, &reason, &err);
+        return end_broken(state, ctx, state.clone(), take, &reason, &err);
     };
-    if fill_media(t, results) == 0 {
-        let reason = "none of the recorded files could be read".to_owned();
-        let err = CoreError::capture_failed(reason.clone());
-        return end_broken(state, ctx, take, &reason, &err);
+    fill_media(t, results);
+    if let Some(reason) = unusable(t) {
+        let err = CoreError::capture_failed(format!("take {n} is broken: {reason}"));
+        return end_broken(state, ctx, next, take, &reason, &err);
     }
     let frames = derive_duration_frames(t, fps);
     t.duration_frames = frames;
@@ -644,8 +594,9 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
         Verdict::Placed(placement)
     };
     let status = next.project.takes[take].status;
+    next.runtime.record = RecordPhase::Idle;
 
-    // Facts first: media info, missing flags, status, placed/replaced.
+    // Facts first: media info, missing flags, status, placed/replaced, Idle.
     let facts = history::persist(state, next);
     let mut effects = facts.effects;
     let mut current = facts.state;
@@ -678,16 +629,17 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
                 in_: 0,
                 out: frames,
             };
+            let clips = &current.project.timeline.clips;
             let mut edit = current.clone();
             let message = match placement {
                 Placement::Over { start, len } => {
-                    let gone: Vec<Clip> = edit
-                        .project
-                        .timeline
-                        .clips
-                        .splice(start..start + len, [clip])
+                    replaced_ids = clips[start..start + len]
+                        .iter()
+                        .map(|c| c.id.clone())
                         .collect();
-                    replaced_ids = gone.into_iter().map(|c| c.id).collect();
+                    edit.project.timeline.clips =
+                        timeline::replace_run(clips, start, len, vec![clip]);
+                    // A§5.10: after a record-over the new clip is selected.
                     edit.ui.selection = vec![id.clone()];
                     format!(
                         "Recorded take {n} ({length}) over {}",
@@ -695,11 +647,11 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
                     )
                 }
                 Placement::Append => {
-                    edit.project.timeline.clips.push(clip);
+                    edit.project.timeline.clips = timeline::insert(clips, clips.len(), vec![clip]);
                     format!("Recorded take {n} ({length})")
                 }
                 Placement::Fallback => {
-                    edit.project.timeline.clips.push(clip);
+                    edit.project.timeline.clips = timeline::insert(clips, clips.len(), vec![clip]);
                     notes.push(Effect::Notify(Toast::new(
                         ToastLevel::Warning,
                         "record-over target changed; take appended at the end",
@@ -734,7 +686,7 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
                 d.result.with_seq(d.committed.seq)
             })
         } else {
-            Ok(CmdResult::new(format!("Take {n} was not placed")))
+            Ok(CmdResult::new(format!("take {n} was not placed")))
         };
         if let Some(req) = req {
             effects.push(Effect::Reply { req, reply });
@@ -742,18 +694,15 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
     }
 
     // Autocut jobs that finished while recording (A§5.7).
-    let (after, autocut) = run_ready_autocut(current, ctx);
-    current = after;
-    effects.extend(autocut);
+    let ready = autocut_hooks::apply_ready_autocuts(&current, ctx);
+    current = ready.state;
+    effects.extend(ready.effects);
 
-    // Auto-run autocut on the new clip (SPEC §5.3.6).
+    // autoRunAfterTake on the new clip (SPEC §5.3 step 6).
     if let Some(id) = placed_clips.first() {
-        let on_timeline = current.project.clip(id).is_some();
-        if current.project.autocut.auto_run_after_take && on_timeline {
-            let (after, autocut) = auto_autocut(current, ctx, id);
-            current = after;
-            effects.extend(autocut);
-        }
+        let auto = autocut_hooks::start_auto_run(&current, ctx, id);
+        current = auto.state;
+        effects.extend(auto.effects);
     }
 
     let view = TakeFinalizedView {
@@ -774,94 +723,8 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
             reply: Ok(result.clone()),
         });
     }
-    // Back in Idle: the live pipeline follows.
-    effects.extend(live_change(state, &current));
     effects.extend(notes);
     Outcome::new(current, ordered(effects), None)
-}
-
-/// Applies the autocut jobs that finished while not Idle (`ready`, A§5.7).
-/// Runs at every return to Idle: after placement, and when a take or a
-/// countdown ends any other way, so no job waits forever.
-///
-/// The job's last analysis is re-delivered: its key goes back into
-/// `pending`, and the autocut owner's `silence_detected` sees the last
-/// pending key arrive while Idle, which applies the job.
-pub(crate) fn run_ready_autocut(mut state: State, ctx: &Ctx) -> (State, Vec<Effect>) {
-    if !state.runtime.record.is_idle() {
-        return (state, Vec::new());
-    }
-    let ready: Vec<JobId> = state
-        .runtime
-        .jobs
-        .iter()
-        .filter(|(_, job)| {
-            matches!(&job.kind, JobKind::Autocut { ready: true, pending, .. } if pending.is_empty())
-        })
-        .map(|(id, _)| *id)
-        .collect();
-    let mut effects = Vec::new();
-    for job in ready {
-        let key = match state.runtime.jobs.get(&job).map(|j| &j.kind) {
-            Some(JobKind::Autocut { targets, .. }) => targets
-                .iter()
-                .map(|t| &t.key)
-                .find(|k| state.runtime.silence.contains_key(*k))
-                .cloned(),
-            _ => None,
-        };
-        let Some(key) = key else {
-            effects.push(Effect::Log {
-                level: LogLevel::Warn,
-                message: format!("{job}: ready, but none of its analyses is known; left alone"),
-            });
-            continue;
-        };
-        let silences = state.runtime.silence[&key].clone();
-        if let Some(JobKind::Autocut { pending, ready, .. }) =
-            state.runtime.jobs.get_mut(&job).map(|j| &mut j.kind)
-        {
-            pending.insert(key.clone());
-            *ready = false;
-        }
-        let out = crate::on_event::autocut::silence_detected(&state, ctx, job, key, silences);
-        state = out.state;
-        effects.extend(out.effects);
-    }
-    (state, effects)
-}
-
-/// `autocut.autoRunAfterTake`: an autocut job for the new clip, with no
-/// requester (its history entry is separate, so it can be undone alone).
-fn auto_autocut(state: State, ctx: &Ctx, clip: &ClipId) -> (State, Vec<Effect>) {
-    let mut auto = ctx.clone();
-    auto.req = None;
-    let scope = ClipScope::Clips(vec![clip.clone()]);
-    match crate::apply::autocut::autocut(&state, &auto, scope, AutocutOverrides::default(), false) {
-        Ok(out) => {
-            let mut effects = out.effects;
-            if let Some(Err(err)) = &out.reply {
-                effects.push(autocut_warning(err));
-            }
-            (out.state, effects)
-        }
-        Err(err) => {
-            let effects = vec![
-                Effect::Log {
-                    level: LogLevel::Warn,
-                    message: format!("autocut after the take didn't run: {err}"),
-                },
-                autocut_warning(&err),
-            ];
-            (state, effects)
-        }
-    }
-}
-
-fn autocut_warning(err: &CoreError) -> Effect {
-    Effect::Notify(
-        Toast::new(ToastLevel::Warning, "Autocut didn't run").with_body(err.message.clone()),
-    )
 }
 
 /// Recovery (A§5.3): readable ⇒ `ok` (or `tooShort` under 10 frames), bin,
@@ -873,13 +736,11 @@ fn recover(state: &State, take: &TakeId, results: &[ProbeResult]) -> Outcome {
     let Some(t) = next.project.takes.get_mut(take) else {
         return ignore(state, format!("TakeProbed(recover) for the unknown {take}"));
     };
-    let toast = if fill_media(t, results) == 0 {
-        mark_broken(
-            t,
-            "recovery failed: none of the recorded files could be read",
-        );
+    fill_media(t, results);
+    let toast = if let Some(reason) = unusable(t) {
+        mark_broken(t, &format!("recovery failed: {reason}"));
         Toast::new(ToastLevel::Error, format!("Take {n} couldn't be recovered"))
-            .with_body("None of its files could be read; it is marked broken.")
+            .with_body(format!("It is marked broken: {reason}."))
     } else {
         let frames = derive_duration_frames(t, fps);
         t.duration_frames = frames;
@@ -906,20 +767,26 @@ fn recover(state: &State, take: &TakeId, results: &[ProbeResult]) -> Outcome {
 
 // ----------------------------------------------------------------- endings
 
-/// Ends the in-flight phase with a `broken` take ⇒ Idle. Requests that
-/// asked to record (the start request, `wait` requesters while capturing)
-/// get `err`; once stopping (Finalizing) the stop requests and waiters get
-/// the broken `TakeFinalizedView` and a pending discard is told the take
-/// wasn't placed. Back in Idle the live pipeline follows (`SetLive`) and
-/// ready autocut jobs run.
-fn end_broken(state: &State, ctx: &Ctx, take: &TakeId, reason: &str, err: &CoreError) -> Outcome {
+/// Ends the in-flight phase with `take` broken ⇒ Idle, starting from `next`
+/// (the state with whatever facts were gathered). Requests that asked to
+/// record (the start request, `wait` requesters while capturing) get `err`;
+/// once stopping (Finalizing) the stop requests and waiters get the broken
+/// `TakeFinalizedView` and a pending discard is told the take wasn't
+/// placed. Back in Idle the ready autocut jobs run.
+fn end_broken(
+    prev: &State,
+    ctx: &Ctx,
+    mut next: State,
+    take: &TakeId,
+    reason: &str,
+    err: &CoreError,
+) -> Outcome {
     let n = take.number();
-    let mut next = state.clone();
     let phase = std::mem::take(&mut next.runtime.record);
     if let Some(t) = next.project.takes.get_mut(take) {
         mark_broken(t, reason);
     }
-    let persisted = history::persist(state, next);
+    let persisted = history::persist(prev, next);
     let mut effects = persisted.effects;
     effects.push(Effect::Log {
         level: LogLevel::Error,
@@ -961,27 +828,28 @@ fn end_broken(state: &State, ctx: &Ctx, take: &TakeId, reason: &str, err: &CoreE
             if let Some(DiscardRequest { req: Some(req) }) = discard {
                 effects.push(Effect::Reply {
                     req,
-                    reply: Ok(CmdResult::new(format!("Take {n} was not placed"))),
+                    reply: Ok(CmdResult::new(format!("take {n} was not placed"))),
                 });
             }
         }
         RecordPhase::Idle | RecordPhase::Countdown { .. } => {}
     }
-    effects.extend(live_change(state, &persisted.state));
-    let (next, jobs) = run_ready_autocut(persisted.state, ctx);
-    effects.extend(jobs);
+    let ready = autocut_hooks::apply_ready_autocuts(&persisted.state, ctx);
+    effects.extend(ready.effects);
     effects.push(Effect::Notify(
         Toast::new(ToastLevel::Error, format!("Take {n} is broken")).with_body(reason),
     ));
-    Outcome::new(next, ordered(effects), None)
+    Outcome::new(ready.state, ordered(effects), None)
 }
 
 /// `broken` with `error`; streams without media leave the take and their
-/// layers/tracks are marked `missing`.
+/// layers/tracks are marked `missing`. Probed streams keep their facts.
 fn mark_broken(take: &mut Take, reason: &str) {
     take.status = TakeStatus::Broken;
     take.error = Some(reason.to_owned());
     take.duration_frames = 0;
+    take.placed = false;
+    take.replaced.clear();
     let (kept, dropped): (Vec<Stream>, Vec<Stream>) = std::mem::take(&mut take.streams)
         .into_iter()
         .partition(has_media);
@@ -994,16 +862,15 @@ fn mark_broken(take: &mut Take, reason: &str) {
 // ----------------------------------------------------------- media facts
 
 /// Fills each stream from its probe result; streams without a usable
-/// result leave `streams` and are marked `missing`. Returns how many
-/// streams are readable.
-fn fill_media(take: &mut Take, results: &[ProbeResult]) -> usize {
+/// result leave `streams` and are marked `missing`.
+fn fill_media(take: &mut Take, results: &[ProbeResult]) {
     let mut kept = Vec::with_capacity(take.streams.len());
     for mut stream in std::mem::take(&mut take.streams) {
         let info = results
             .iter()
             .find(|r| r.id == stream.id)
             .and_then(|r| r.info.as_ref().ok())
-            .filter(|info| usable(info, stream.kind));
+            .filter(|info| readable(info, stream.kind));
         match info {
             Some(info) => {
                 fill(&mut stream, info);
@@ -1013,11 +880,23 @@ fn fill_media(take: &mut Take, results: &[ProbeResult]) -> usize {
         }
     }
     take.streams = kept;
-    take.streams.len()
+}
+
+/// Why a probed take has nothing to use: none of its files could be read
+/// ("zero readable streams ⇒ broken", A§5.3), or every readable one belongs
+/// to a source lost during the take (missing streams don't count, A§2.2).
+fn unusable(take: &Take) -> Option<String> {
+    if take.streams.is_empty() {
+        return Some("none of the recorded files could be read".to_owned());
+    }
+    if take.streams.iter().all(|s| is_missing(&take.scene, &s.id)) {
+        return Some("every source was lost during the take".to_owned());
+    }
+    None
 }
 
 /// A video stream needs packets and a size; audio needs a rate and channels.
-fn usable(info: &MediaInfo, kind: StreamKind) -> bool {
+fn readable(info: &MediaInfo, kind: StreamKind) -> bool {
     info.kind == kind
         && match kind {
             StreamKind::Video => {
@@ -1099,8 +978,8 @@ fn source_label(state: &State, take: &TakeId, source: &str) -> String {
 
 // ------------------------------------------------------------------ misc
 
-/// Events that don't belong to the current phase, job table or timer are
-/// ignored with a debug log (A§4.1).
+/// Events that don't belong to the current phase or timer are ignored with
+/// a debug log (A§4.1).
 fn ignore(state: &State, what: String) -> Outcome {
     Outcome::new(
         state.clone(),
@@ -1125,7 +1004,7 @@ fn phase_name(phase: &RecordPhase) -> String {
     }
 }
 
-/// `Recording take 3: 01:05` (pipeline time).
+/// `Recording take 3: 01:05` (pipeline time); `done` is in milliseconds.
 fn record_progress(take: &TakeId, elapsed_ns: u64) -> Progress {
     let secs = elapsed_ns / 1_000_000_000;
     let clock = if secs >= 3600 {
@@ -1147,8 +1026,8 @@ fn record_progress(take: &TakeId, elapsed_ns: u64) -> Progress {
 mod tests {
     use super::*;
     use crate::model::Fps;
-    use crate::state::{AutocutParams, AutocutTarget, ClipRef, Job, SilenceKey};
-    use crate::testkit::{self, ProjectBuilder};
+    use crate::state::ClipRef;
+    use crate::testkit::ProjectBuilder;
 
     fn clip(id: &str, take: u32, in_: u64, out: u64) -> Clip {
         Clip {
@@ -1223,6 +1102,12 @@ mod tests {
             placement_for(&clips, &over(&[&clips[1], &clips[2]])),
             Placement::Over { start: 1, len: 2 }
         );
+        // The run was reordered but still sits together: still replaced.
+        let swapped = vec![clips[0].clone(), clips[2].clone(), clips[1].clone()];
+        assert_eq!(
+            placement_for(&swapped, &over(&[&clips[1], &clips[2]])),
+            Placement::Over { start: 1, len: 2 }
+        );
         // A trimmed clip, a gone clip, a run that no longer sits together.
         assert_eq!(
             placement_for(&clips, &over(&[&clip("c2", 1, 10, 19)])),
@@ -1239,7 +1124,7 @@ mod tests {
         assert_eq!(
             placement_for(&clips, &over(&[&clips[2], &clip("c4", 1, 30, 40)])),
             Placement::Fallback,
-            "the run would go past the end"
+            "a clip of the run is gone"
         );
         assert_eq!(placement_for(&clips, &over(&[])), Placement::Fallback);
     }
@@ -1253,7 +1138,7 @@ mod tests {
             result("A1", Ok(info(StreamKind::Audio))),
             result("L9", Ok(info(StreamKind::Video))),
         ];
-        assert_eq!(fill_media(&mut take, &results), 2);
+        fill_media(&mut take, &results);
         let ids: Vec<&str> = take.streams.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["L1", "A1"]);
         let l1 = take.stream("L1").unwrap();
@@ -1271,15 +1156,39 @@ mod tests {
         assert_eq!((a1.sample_rate, a1.channels), (Some(48_000), Some(2)));
         assert!(take.scene.layers[1].missing, "L2 probed as audio");
         assert!(!take.scene.layers[0].missing && !take.scene.audio[0].missing);
+        assert_eq!(unusable(&take), None);
 
         // A video without packets is unreadable; so is a missing result.
         let mut take = recording_take();
         let mut empty = info(StreamKind::Video);
         empty.frames = Some(0);
-        assert_eq!(fill_media(&mut take, &[result("L1", Ok(empty))]), 0);
+        fill_media(&mut take, &[result("L1", Ok(empty))]);
         assert!(take.streams.is_empty());
         assert!(take.scene.layers.iter().all(|l| l.missing));
         assert!(take.scene.audio.iter().all(|t| t.missing));
+        assert_eq!(
+            unusable(&take).as_deref(),
+            Some("none of the recorded files could be read")
+        );
+    }
+
+    #[test]
+    fn a_take_whose_every_source_was_lost_is_unusable() {
+        let mut take = recording_take();
+        for id in ["L1", "L2", "A1"] {
+            set_missing(&mut take.scene, id);
+        }
+        let results: Vec<ProbeResult> = take
+            .streams
+            .iter()
+            .map(|s| result(&s.id, Ok(info(s.kind))))
+            .collect();
+        fill_media(&mut take, &results);
+        assert_eq!(take.streams.len(), 3, "the files are readable");
+        assert_eq!(
+            unusable(&take).as_deref(),
+            Some("every source was lost during the take")
+        );
     }
 
     #[test]
@@ -1294,58 +1203,40 @@ mod tests {
             ],
         );
         take.streams[1].frames = None;
+        take.placed = true;
+        take.replaced = vec![clip("c1", 1, 0, 10)];
         mark_broken(&mut take, "boom");
         assert_eq!(take.status, TakeStatus::Broken);
         assert_eq!(take.error.as_deref(), Some("boom"));
         assert_eq!(take.duration_frames, 0);
+        assert!(!take.placed && take.replaced.is_empty());
         let ids: Vec<&str> = take.streams.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["L1", "A1"]);
         assert!(take.scene.layers[1].missing);
     }
 
     #[test]
-    fn ready_autocut_jobs_without_known_analyses_are_left_alone() {
-        let mut state = testkit::state(ProjectBuilder::new().mic("A1", "mic").build());
-        let job = Job {
-            id: JobId(3),
-            kind: JobKind::Autocut {
-                cmd: json!({"cmd": "autocut"}),
-                targets: vec![AutocutTarget {
-                    clip: ClipRef::of(&clip("c1", 1, 0, 10)),
-                    track: "A1".parse().unwrap(),
-                    key: SilenceKey("ab".repeat(32)),
-                }],
-                params: AutocutParams {
-                    threshold_db: -35.0,
-                    min_silence_ms: 400,
-                    padding_ms: 120,
-                    min_keep_ms: 200,
-                },
-                dry_run: false,
-                pending: Default::default(),
-                ready: true,
-            },
-            req: None,
-            started: testkit::ctx("2026-10-14T12:00:00Z", 1).now,
-        };
-        state.runtime.jobs.insert(JobId(3), job.clone());
-        // A job still analyzing is not touched either.
-        let mut analyzing = job;
-        analyzing.id = JobId(4);
-        if let JobKind::Autocut { ready, .. } = &mut analyzing.kind {
-            *ready = false;
+    fn seconds_are_announced_more_than_half_a_second_apart() {
+        // Ticks every ~250 ms with jitter right at the slot edges.
+        let ticks = [
+            249u64, 499, 501, 749, 999, 1001, 1249, 1499, 1501, 1999, 2001,
+        ];
+        let mut previous = 0;
+        let mut sent = Vec::new();
+        for ms in ticks {
+            let now = ms * 1_000_000;
+            if announces_second(previous, now) {
+                sent.push(ms);
+            }
+            previous = now;
         }
-        state.runtime.jobs.insert(JobId(4), analyzing);
-        let ctx = testkit::ctx("2026-10-14T12:00:00Z", 1);
-        let (after, effects) = run_ready_autocut(state.clone(), &ctx);
-        assert_eq!(after, state);
-        assert!(matches!(
-            effects.as_slice(),
-            [Effect::Log {
-                level: LogLevel::Warn,
-                ..
-            }]
-        ));
+        assert_eq!(sent, [1001, 2001]);
+        // A slow clock that skips the first half of a second skips it.
+        assert!(!announces_second(900_000_000, 1_600_000_000));
+        assert!(announces_second(1_600_000_000, 2_100_000_000));
+        // Never twice in one second, never backwards.
+        assert!(!announces_second(1_000_000_000, 1_400_000_000));
+        assert!(!announces_second(2_000_000_000, 1_000_000_000));
     }
 
     #[test]

@@ -1,42 +1,39 @@
-//! Recording commands (A§5.3 state machine, A§5.5 discard, A§5.6 purge).
-//! Owner: record.
+//! Recording commands (A§5.3 state machine, A§5.5 discard). Owner: record.
 //!
 //! `apply` has already rejected non-R commands while not `Idle`; these
 //! handlers implement the command rows of the A§5.3 table. The helpers the
 //! event side (`on_event::record`) shares live here too: beginning a take,
-//! stopping the capture, discarding the last take, reply results and the
-//! A§7.6 effect order.
+//! stopping the capture, ending a countdown, discarding the last take, the
+//! autocut hooks, reply results and the A§7.6 effect order.
+//!
+//! Every step that changes the record phase, facts or the UI finishes
+//! through `history::persist` (or `commit` for edits), which also emits the
+//! `SetLive` the change implies (`apply::ui::live_scene`: the pipeline runs
+//! while the GUI shows Live or while `record != Idle`, countdown included).
+//! `StartCapture`/`StopCapture` come after those effects, so the engine
+//! gets the pipeline before the record bins.
 //!
 //! Begin take: `ctx::next_take_number`, insert the take (`status:
 //! recording`, scene snapshot, planned streams) with `persist`, then
 //! `CreateTakeDir`, `WriteProject`, `SetLive` (if needed) and
 //! `StartCapture`.
-//!
-//! The live pipeline follows one rule ([`wanted_live`]): it runs while the
-//! GUI shows Live or while `record != Idle` (countdown included), and every
-//! transition that changes what is wanted emits `SetLive`.
 
 use std::collections::BTreeSet;
 
-use serde_json::json;
-
 use crate::apply::Outcome;
 use crate::capture_plan::{self, plan_capture, planned_streams};
-use crate::ctx::{Ctx, FileFact, next_take_number};
+use crate::ctx::{Ctx, next_take_number};
 use crate::error::CoreError;
-use crate::history::purge::{PurgeRewrite, purge_rewrite};
 use crate::history::{self, Committed};
-use crate::ids::{ClipId, ReqId, TakeId, TimerId};
-use crate::model::{Clip, EncoderPref, Take, TakeStatus};
-use crate::on_event::record::run_ready_autocut;
-use crate::plans::{CapturePlan, LiveScene, VideoEncoder};
+use crate::ids::{ClipId, ReqId, TakeId};
+use crate::model::{Clip, EncoderPref, Project, Take, TakeStatus};
+use crate::plans::{CapturePlan, VideoEncoder};
 use crate::protocol::command::{Command, RecordModeArg};
 use crate::protocol::effect::{Effect, LogLevel};
 use crate::protocol::progress::{Progress, ProgressPhase};
 use crate::protocol::reply::{CmdResult, RecordStartedView};
-use crate::state::{
-    CanvasMode, ClipRef, DiscardRequest, HostKind, Job, JobKind, RecordMode, RecordPhase, State,
-};
+use crate::state::{ClipRef, DiscardRequest, JobKind, RecordMode, RecordPhase, State};
+use crate::timeline;
 
 /// `recording.countdownSecs` and `--countdown` are 0–10 (SPEC §5.5).
 pub const MAX_COUNTDOWN_SECS: u32 = 10;
@@ -44,7 +41,7 @@ pub const MAX_COUNTDOWN_SECS: u32 = 10;
 pub const COUNTDOWN_TICK_MS: u64 = 1_000;
 /// Takes shorter than this become `tooShort` (SPEC §5.3).
 pub const MIN_TAKE_FRAMES: u64 = 10;
-/// Why every take and start fails once the engine missed a teardown (A§5.3).
+/// Why a take breaks once the engine missed a teardown (A§5.3).
 pub const ENGINE_STUCK: &str = "the capture engine is stuck (GPU driver?); restart Qrec";
 
 /// `qrec record start`: countdown > 0 ⇒ Countdown + `StartTimer`; else begin take.
@@ -63,24 +60,27 @@ pub fn record_start(
     if !state.runtime.record.is_idle() {
         return Err(busy_phase(&state.runtime.record));
     }
-    let secs = countdown.unwrap_or(state.project.recording.countdown_secs);
-    if secs > MAX_COUNTDOWN_SECS {
-        return Err(CoreError::usage(format!(
-            "the countdown must be 0–{MAX_COUNTDOWN_SECS} seconds, not {secs}"
-        )));
-    }
+    let secs = match countdown {
+        Some(secs) if secs > MAX_COUNTDOWN_SECS => {
+            return Err(CoreError::usage(format!(
+                "the countdown must be 0–{MAX_COUNTDOWN_SECS} seconds, not {secs}"
+            )));
+        }
+        Some(secs) => secs,
+        None => project_countdown(&state.project),
+    };
     check_can_start(state)?;
     let mode = resolve_mode(state, mode)?;
     start(state, ctx, mode, secs, wait)
 }
 
 /// `qrec record stop`: finalize (the caller waits for `TakeFinalizedView`).
+/// During a countdown it cancels the countdown; while finalizing the caller
+/// joins the stop requests.
 pub fn record_stop(state: &State, ctx: &Ctx) -> Result<Outcome, CoreError> {
     match &state.runtime.record {
         RecordPhase::Idle => Err(not_recording()),
-        RecordPhase::Countdown {
-            timer, start_req, ..
-        } => Ok(cancel_countdown(state, ctx, *timer, start_req.as_ref())),
+        RecordPhase::Countdown { .. } => Ok(cancel_countdown(state, ctx)),
         RecordPhase::Starting { .. } | RecordPhase::Recording { .. } => {
             Ok(stop_capture(state, ctx.req.clone(), false))
         }
@@ -92,9 +92,7 @@ pub fn record_stop(state: &State, ctx: &Ctx) -> Result<Outcome, CoreError> {
 pub fn record_cancel(state: &State, ctx: &Ctx) -> Result<Outcome, CoreError> {
     match &state.runtime.record {
         RecordPhase::Idle => Err(not_recording()),
-        RecordPhase::Countdown {
-            timer, start_req, ..
-        } => Ok(cancel_countdown(state, ctx, *timer, start_req.as_ref())),
+        RecordPhase::Countdown { .. } => Ok(cancel_countdown(state, ctx)),
         RecordPhase::Starting { .. } | RecordPhase::Recording { .. } => {
             Ok(stop_capture(state, ctx.req.clone(), true))
         }
@@ -108,16 +106,10 @@ pub fn record_toggle(state: &State, ctx: &Ctx, wait: bool) -> Result<Outcome, Co
     match &state.runtime.record {
         RecordPhase::Idle => {
             check_can_start(state)?;
-            let secs = state
-                .project
-                .recording
-                .countdown_secs
-                .min(MAX_COUNTDOWN_SECS);
+            let secs = project_countdown(&state.project);
             start(state, ctx, RecordMode::Append, secs, wait)
         }
-        RecordPhase::Countdown {
-            timer, start_req, ..
-        } => Ok(cancel_countdown(state, ctx, *timer, start_req.as_ref())),
+        RecordPhase::Countdown { .. } => Ok(cancel_countdown(state, ctx)),
         RecordPhase::Starting { .. } | RecordPhase::Recording { .. } => {
             Ok(stop_capture(state, ctx.req.clone(), false))
         }
@@ -126,7 +118,7 @@ pub fn record_toggle(state: &State, ctx: &Ctx, wait: bool) -> Result<Outcome, Co
 }
 
 /// `qrec take discard-last` (A§5.5); while finalizing it is remembered and
-/// applied after placement.
+/// applied after placement (the requester is answered then).
 pub fn take_discard_last(state: &State, ctx: &Ctx) -> Result<Outcome, CoreError> {
     match &state.runtime.record {
         RecordPhase::Idle => {
@@ -152,35 +144,13 @@ pub fn take_discard_last(state: &State, ctx: &Ctx) -> Result<Outcome, CoreError>
     }
 }
 
-/// `qrec take purge <take>… --yes` (A§5.6, A§7.5). Not undoable.
-///
-/// Only takes no clip references and that aren't recording; `Busy` while a
-/// job reads one of their files. Unconfirmed, it fails with
-/// `confirmation_required` and `details {takes, files:[{path,bytes}],
-/// historyEntriesLost, oldestKept}`. Confirmed: `History(Rewrite)`,
-/// `WriteProject`, then `DeleteTakeDirs`; the reply comes with
-/// `TakeDirsDeleted` (`on_event::record::take_dirs_deleted`).
-pub fn take_purge(state: &State, ctx: &Ctx, takes: Vec<TakeId>) -> Result<Outcome, CoreError> {
-    let mut seen = BTreeSet::new();
-    let takes: Vec<TakeId> = takes
-        .into_iter()
-        .filter(|t| seen.insert(t.clone()))
-        .collect();
-    if takes.is_empty() {
-        return Err(CoreError::usage("name at least one take to purge")
-            .with_hint("qrec take list --unused shows the takes in the bin"));
-    }
-    for take in &takes {
-        check_purgeable(state, take)?;
-    }
-    let rewrite = purge_rewrite(state, &takes)?;
-    if !ctx.confirmed {
-        return Err(purge_confirmation(ctx, &takes, &rewrite));
-    }
-    Ok(purge(state, ctx, takes, rewrite))
-}
-
 // ------------------------------------------------------------- starting
+
+/// The project's countdown; a hand-edited value above the limit counts as
+/// the limit (only an explicit `--countdown` is a usage error).
+fn project_countdown(project: &Project) -> u32 {
+    project.recording.countdown_secs.min(MAX_COUNTDOWN_SECS)
+}
 
 /// What an Idle `Start`/`Toggle` needs: no export running and a scene with
 /// something to record.
@@ -203,7 +173,7 @@ pub(crate) fn check_can_start(state: &State) -> Result<(), CoreError> {
 }
 
 /// Resolves `--over`/`--over-selection` into the `ClipRef`s the take will
-/// replace (timeline order).
+/// replace (timeline order, each once).
 fn resolve_mode(state: &State, mode: RecordModeArg) -> Result<RecordMode, CoreError> {
     match mode {
         RecordModeArg::Append => Ok(RecordMode::Append),
@@ -220,32 +190,34 @@ fn resolve_mode(state: &State, mode: RecordModeArg) -> Result<RecordMode, CoreEr
     }
 }
 
+/// Record over needs existing clips that sit next to each other.
 fn over_refs(state: &State, ids: &[ClipId]) -> Result<RecordMode, CoreError> {
     if ids.is_empty() {
         return Err(CoreError::usage("record over needs at least one clip"));
     }
-    let mut indices = Vec::with_capacity(ids.len());
-    for id in ids {
-        let index = state.project.clip_index(id).ok_or_else(|| {
-            CoreError::not_found(format!("no clip {id}"))
-                .with_hint("qrec clip list shows the clips on the timeline")
-        })?;
-        if !indices.contains(&index) {
-            indices.push(index);
-        }
+    let clips = &state.project.timeline.clips;
+    if let Some(id) = ids
+        .iter()
+        .find(|id| timeline::index_of(clips, id).is_none())
+    {
+        return Err(timeline::unknown_clip(id));
     }
-    indices.sort_unstable();
-    if indices.windows(2).any(|w| w[1] != w[0] + 1) {
+    if !timeline::is_contiguous(clips, ids) {
         return Err(CoreError::invalid("record over needs contiguous clips")
             .with_hint("pick clips that sit next to each other on the timeline"));
     }
-    let clips = &state.project.timeline.clips;
+    let wanted: BTreeSet<&ClipId> = ids.iter().collect();
     Ok(RecordMode::Over {
-        clips: indices.iter().map(|&i| ClipRef::of(&clips[i])).collect(),
+        clips: clips
+            .iter()
+            .filter(|c| wanted.contains(&c.id))
+            .map(ClipRef::of)
+            .collect(),
     })
 }
 
-/// Countdown when `secs > 0`, else the take begins right away.
+/// Countdown when `secs > 0`, else the take begins right away. Either way
+/// playback stops.
 fn start(
     state: &State,
     ctx: &Ctx,
@@ -258,6 +230,7 @@ fn start(
         return Ok(Outcome::new(next, effects, None));
     }
     let mut next = state.clone();
+    next.runtime.playing = false;
     let timer = next.runtime.alloc_timer_id();
     next.runtime.record = RecordPhase::Countdown {
         remaining: secs,
@@ -266,7 +239,8 @@ fn start(
         start_req: ctx.req.clone(),
         wait,
     };
-    let mut effects: Vec<Effect> = live_change(state, &next).into_iter().collect();
+    let persisted = history::persist(state, next);
+    let mut effects = persisted.effects;
     effects.push(Effect::StartTimer {
         timer,
         after_ms: COUNTDOWN_TICK_MS,
@@ -275,14 +249,14 @@ fn start(
         req: req.clone(),
         progress: countdown_progress(secs),
     }));
-    Ok(Outcome::new(next, effects, None))
+    Ok(Outcome::new(persisted.state, ordered(effects), None))
 }
 
 /// Begin take (A§5.3): allocate the take number, insert the take
 /// (`recording`, scene snapshot, planned streams) with `persist`, then
-/// `CreateTakeDir`, `WriteProject`, `SetLive` when the wanted pipeline
-/// changes (not after a countdown, which already wanted it), and
-/// `StartCapture`. The phase becomes `Starting`.
+/// `CreateTakeDir`, `WriteProject`, the `SetLive` the phase change implies
+/// (none after a countdown, which already wanted the pipeline) and
+/// `StartCapture`. The phase becomes `Starting`; playback stops.
 pub(crate) fn begin_take(
     state: &State,
     ctx: &Ctx,
@@ -296,8 +270,12 @@ pub(crate) fn begin_take(
     if state.project.takes.contains_key(&take) {
         return Err(CoreError::internal(format!("{take} already exists")));
     }
-    let caps = &state.runtime.capabilities;
-    let plan = plan_capture(&state.project, &take, caps, &ctx.facts)?;
+    let plan = plan_capture(
+        &state.project,
+        &take,
+        &state.runtime.capabilities,
+        &ctx.facts,
+    )?;
     let mut next = state.clone();
     next.project.takes.insert(
         take.clone(),
@@ -313,6 +291,7 @@ pub(crate) fn begin_take(
         },
     );
     next.project.next_take_number = number.saturating_add(1);
+    next.runtime.playing = false;
     next.runtime.record = RecordPhase::Starting {
         take,
         mode,
@@ -330,7 +309,6 @@ pub(crate) fn begin_take(
             message,
         });
     }
-    effects.extend(live_change(state, &persisted.state));
     effects.push(Effect::StartCapture { plan });
     Ok((persisted.state, ordered(effects)))
 }
@@ -351,59 +329,51 @@ fn encoder_warning(state: &State, ctx: &Ctx, plan: &CapturePlan) -> Option<Strin
     })
 }
 
-/// The live pipeline `state` wants (A§8.11): the project scene while the
-/// GUI shows the Live canvas (with the preview branch), or while a take is
-/// counted down, started, recorded or finalized in any host (record bins
-/// attach to it; no preview unless the GUI shows Live). `None` otherwise.
-/// Counting down already wants it, so sources start during the countdown.
-///
-/// The same rule as the timeline owner's `apply::ui::live_scene`, so the
-/// UI commands and the recording agree on what the engine runs.
-pub(crate) fn wanted_live(state: &State) -> Option<LiveScene> {
-    let preview = state.runtime.host == HostKind::Gui && state.ui.canvas_mode == CanvasMode::Live;
-    let recording = !state.runtime.record.is_idle();
-    (preview || recording).then(|| LiveScene {
-        canvas: state.project.canvas.clone(),
-        scene: state.project.scene.clone(),
-        preview,
-    })
-}
-
-/// `SetLive` with what `next` wants, when that differs from what `prev`
-/// wanted ("SetLive (if needed)", A§5.3).
-pub(crate) fn live_change(prev: &State, next: &State) -> Option<Effect> {
-    let wanted = wanted_live(next);
-    (wanted_live(prev) != wanted).then_some(Effect::SetLive(wanted))
-}
-
 // ------------------------------------------------------------- stopping
 
 /// Countdown + Stop/Toggle/Cancel: `CancelTimer` ⇒ Idle; the start request
-/// gets `Invalid` "countdown cancelled", the caller gets Ok. Back in Idle,
-/// autocut jobs that finished meanwhile are applied.
-fn cancel_countdown(
+/// gets `Invalid` "countdown cancelled", the caller gets Ok.
+fn cancel_countdown(state: &State, ctx: &Ctx) -> Outcome {
+    let (next, effects) =
+        end_countdown(state, ctx, true, CoreError::invalid("countdown cancelled"));
+    Outcome::new(
+        next,
+        effects,
+        Some(Ok(CmdResult::new("Countdown cancelled"))),
+    )
+}
+
+/// Ends a countdown ⇒ Idle: `CancelTimer` (unless the timer just fired),
+/// the start request gets `err`, and the autocut jobs that finished meanwhile
+/// are applied (A§5.7). Not in a countdown: nothing changes.
+pub(crate) fn end_countdown(
     state: &State,
     ctx: &Ctx,
-    timer: TimerId,
-    start_req: Option<&ReqId>,
-) -> Outcome {
+    cancel_timer: bool,
+    err: CoreError,
+) -> (State, Vec<Effect>) {
+    let RecordPhase::Countdown {
+        timer, start_req, ..
+    } = &state.runtime.record
+    else {
+        return (state.clone(), Vec::new());
+    };
     let mut next = state.clone();
     next.runtime.record = RecordPhase::Idle;
-    let mut effects = vec![Effect::CancelTimer { timer }];
-    effects.extend(live_change(state, &next));
+    let persisted = history::persist(state, next);
+    let mut effects = persisted.effects;
+    if cancel_timer {
+        effects.push(Effect::CancelTimer { timer: *timer });
+    }
     if let Some(req) = start_req {
         effects.push(Effect::Reply {
             req: req.clone(),
-            reply: Err(CoreError::invalid("countdown cancelled")),
+            reply: Err(err),
         });
     }
-    let (next, jobs) = run_ready_autocut(next, ctx);
-    effects.extend(jobs);
-    Outcome::new(
-        next,
-        ordered(effects),
-        Some(Ok(CmdResult::new("Countdown cancelled"))),
-    )
+    let ready = autocut_hooks::apply_ready_autocuts(&persisted.state, ctx);
+    effects.extend(ready.effects);
+    (ready.state, ordered(effects))
 }
 
 /// Starting/Recording + Stop (`cancel: false`) or Cancel: `StopCapture` ⇒
@@ -411,38 +381,37 @@ fn cancel_countdown(
 /// answers the start request now (its started reply) unless it waits for
 /// the whole take, in which case it joins the waiters.
 pub(crate) fn stop_capture(state: &State, stopper: Option<ReqId>, cancel: bool) -> Outcome {
-    let mut effects = Vec::new();
-    let (take, mode, waiters) = match &state.runtime.record {
+    let (take, mode, started, waiters) = match &state.runtime.record {
         RecordPhase::Starting {
             take,
             mode,
             start_req,
             wait,
         } => {
-            let mut waiters = Vec::new();
-            if let Some(req) = start_req {
-                if *wait {
-                    waiters.push(req.clone());
-                } else {
+            let (started, waiters) = match start_req {
+                Some(req) if *wait => (None, vec![req.clone()]),
+                Some(req) => {
                     let files = state
                         .project
                         .take(take)
                         .map(|t| t.streams.iter().map(|s| s.file.clone()).collect())
                         .unwrap_or_default();
-                    effects.push(Effect::Reply {
+                    let reply = Effect::Reply {
                         req: req.clone(),
                         reply: Ok(started_result(take, mode, files)),
-                    });
+                    };
+                    (Some(reply), Vec::new())
                 }
-            }
-            (take.clone(), mode.clone(), waiters)
+                None => (None, Vec::new()),
+            };
+            (take.clone(), mode.clone(), started, waiters)
         }
         RecordPhase::Recording {
             take,
             mode,
             waiters,
             ..
-        } => (take.clone(), mode.clone(), waiters.clone()),
+        } => (take.clone(), mode.clone(), None, waiters.clone()),
         _ => return Outcome::unchanged(state),
     };
     let stop_reqs: Vec<ReqId> = stopper.into_iter().collect();
@@ -451,30 +420,33 @@ pub(crate) fn stop_capture(state: &State, stopper: Option<ReqId>, cancel: bool) 
     } else {
         format!("Stopping take {}", take.number())
     };
-    let mut all = vec![Effect::StopCapture {
-        take: take.clone(),
-        cancel,
-    }];
-    all.append(&mut effects);
-    for req in unique(stop_reqs.iter().chain(&waiters)) {
-        all.push(Effect::Progress {
-            req,
-            progress: finalize_progress(&take, label.clone()),
-        });
-    }
+    let notify = unique(stop_reqs.iter().chain(&waiters));
     let mut next = state.clone();
     next.runtime.record = RecordPhase::Finalizing {
-        take,
+        take: take.clone(),
         mode,
         cancelled: cancel,
         stop_reqs,
         waiters,
         discard: None,
     };
-    Outcome::new(next, all, None)
+    let persisted = history::persist(state, next);
+    let mut effects = persisted.effects;
+    effects.push(Effect::StopCapture {
+        take: take.clone(),
+        cancel,
+    });
+    effects.extend(started);
+    for req in notify {
+        effects.push(Effect::Progress {
+            req,
+            progress: finalize_progress(&take, label.clone()),
+        });
+    }
+    Outcome::new(persisted.state, ordered(effects), None)
 }
 
-/// Finalizing + Stop: the caller joins the stop waiters.
+/// Finalizing + Stop: the caller joins the stop requests.
 fn join_stop(state: &State, ctx: &Ctx) -> Outcome {
     let mut next = state.clone();
     if let (RecordPhase::Finalizing { stop_reqs, .. }, Some(req)) =
@@ -499,8 +471,9 @@ pub(crate) struct Discarded {
 /// Discard last (A§5.5): the highest-numbered take with `placed`; its clips
 /// leave the timeline in one entry "Discard take N". After a record-over
 /// whose replaced clips are all gone from the timeline, those clips are put
-/// back where the first removed clip was. No clip left ⇒ `NotFound` "Take N
-/// is already in the bin" (`d` never reaches older takes).
+/// back where the first removed clip was, clamped to their takes' current
+/// lengths. No clip left ⇒ `NotFound` "Take N is already in the bin" (`d`
+/// never reaches older takes).
 pub(crate) fn discard_last(state: &State, ctx: &Ctx) -> Result<Discarded, CoreError> {
     let project = &state.project;
     let (take_id, take) = project
@@ -508,7 +481,10 @@ pub(crate) fn discard_last(state: &State, ctx: &Ctx) -> Result<Discarded, CoreEr
         .iter()
         .filter(|(_, t)| t.placed)
         .max_by_key(|(id, _)| id.number())
-        .ok_or_else(|| CoreError::not_found("there is no recorded take to discard"))?;
+        .ok_or_else(|| {
+            CoreError::not_found("there is no recorded take to discard")
+                .with_hint("record a take first (r, or qrec record toggle)")
+        })?;
     let n = take_id.number();
     let clips = &project.timeline.clips;
     let Some(first) = clips.iter().position(|c| &c.take == take_id) else {
@@ -528,16 +504,14 @@ pub(crate) fn discard_last(state: &State, ctx: &Ctx) -> Result<Discarded, CoreEr
     {
         take.replaced
             .iter()
-            .filter(|c| restorable(state, c))
-            .cloned()
+            .filter_map(|c| restorable(project, c))
             .collect()
     } else {
         Vec::new()
     };
     let mut next = state.clone();
-    let timeline = &mut next.project.timeline.clips;
-    timeline.retain(|c| &c.take != take_id);
-    timeline.splice(first..first, restore.iter().cloned());
+    let kept = timeline::remove(clips, &removed);
+    next.project.timeline.clips = timeline::insert(&kept, first, restore.clone());
     let committed = history::commit(
         state,
         ctx,
@@ -556,154 +530,143 @@ pub(crate) fn discard_last(state: &State, ctx: &Ctx) -> Result<Discarded, CoreEr
     Ok(Discarded { committed, result })
 }
 
-/// A replaced clip can go back when its take still exists, is `ok` and
-/// covers the range.
-fn restorable(state: &State, clip: &Clip) -> bool {
-    state.project.take(&clip.take).is_some_and(|t| {
-        t.status == TakeStatus::Ok && clip.in_ < clip.out && clip.out <= t.duration_frames
+/// A replaced clip as it can go back: its take still exists and is `ok`, and
+/// the range is clamped to the take's current `durationFrames` (an fps
+/// change may have shortened it). `None` when nothing of it is left.
+fn restorable(project: &Project, clip: &Clip) -> Option<Clip> {
+    let take = project.take(&clip.take)?;
+    if take.status != TakeStatus::Ok {
+        return None;
+    }
+    let out = clip.out.min(take.duration_frames);
+    let in_ = clip.in_.min(out);
+    (in_ < out).then(|| Clip {
+        in_,
+        out,
+        ..clip.clone()
     })
 }
 
-// --------------------------------------------------------------- purge
+// -------------------------------------------------------- autocut hooks
 
-fn check_purgeable(state: &State, take: &TakeId) -> Result<(), CoreError> {
-    let Some(t) = state.project.take(take) else {
-        return Err(CoreError::not_found(format!("no take {take}"))
-            .with_hint("qrec take list shows the takes"));
-    };
-    let used: Vec<ClipId> = state
-        .project
-        .timeline
-        .clips
-        .iter()
-        .filter(|c| &c.take == take)
-        .map(|c| c.id.clone())
-        .collect();
-    if !used.is_empty() {
-        return Err(CoreError::invalid(format!(
-            "{take} is on the timeline (clips {})",
-            join_ids(&used)
-        ))
-        .with_hint("only takes in the bin can be purged: remove their clips first"));
-    }
-    if t.status == TakeStatus::Recording || state.runtime.record.take() == Some(take) {
-        return Err(CoreError::busy(format!("{take} is still recording")));
-    }
-    let prefix = format!("takes/{take}/");
-    let reads = |files: &BTreeSet<String>| {
-        files
-            .iter()
-            .any(|f| f.starts_with(&prefix) || t.streams.iter().any(|s| &s.file == f))
-    };
-    let busy = state.runtime.jobs.values().find(|job| match &job.kind {
-        JobKind::Export { files, .. } | JobKind::FrameSave { files, .. } => reads(files),
-        JobKind::Autocut { targets, .. } => targets.iter().any(|x| &x.clip.take == take),
-        JobKind::Purge { takes } => takes.contains(take),
-    });
-    if let Some(job) = busy {
-        return Err(CoreError::busy(format!(
-            "{take} is in use by {} ({})",
-            job.id,
-            job_kind_name(&job.kind)
-        ))
-        .with_hint("wait for the job to finish, then purge again"));
-    }
-    Ok(())
-}
+/// The autocut owner's entry points for the record flow (A§5.7, SPEC §5.3
+/// step 6): `apply_ready_autocuts` applies the jobs that finished analyzing
+/// while a recording ran, and `start_auto_run` is `autoRunAfterTake` for a
+/// freshly placed clip. Their home is `apply::autocut`; this module has the
+/// same signatures and reaches the same result through the autocut entry
+/// points every base has, so switching to the owner's functions is one
+/// `use` line (`pub(crate) use crate::apply::autocut::{apply_ready_autocuts,
+/// start_auto_run};`).
+pub(crate) mod autocut_hooks {
+    use crate::apply::Outcome;
+    use crate::ctx::Ctx;
+    use crate::error::CoreError;
+    use crate::ids::{ClipId, JobId};
+    use crate::protocol::command::{AutocutOverrides, ClipScope};
+    use crate::protocol::effect::{Effect, LogLevel};
+    use crate::protocol::toast::{Toast, ToastLevel};
+    use crate::state::{JobKind, State};
 
-fn job_kind_name(kind: &JobKind) -> &'static str {
-    match kind {
-        JobKind::Autocut { .. } => "autocut",
-        JobKind::Export { .. } => "export",
-        JobKind::FrameSave { .. } => "frame save",
-        JobKind::Purge { .. } => "purge",
+    /// Applies every autocut job marked `ready` (its analysis finished while
+    /// not Idle), oldest first: the job's last analysis is delivered again
+    /// now that the machine is Idle, which completes it. A no-op when no job
+    /// is ready.
+    pub(crate) fn apply_ready_autocuts(state: &State, ctx: &Ctx) -> Outcome {
+        let ready: Vec<JobId> = state
+            .runtime
+            .jobs
+            .values()
+            .filter(|job| {
+                matches!(&job.kind, JobKind::Autocut { ready: true, pending, .. } if pending.is_empty())
+            })
+            .map(|job| job.id)
+            .collect();
+        let mut current = state.clone();
+        let mut effects = Vec::new();
+        for job in ready {
+            let key = match current.runtime.jobs.get(&job).map(|j| &j.kind) {
+                Some(JobKind::Autocut { targets, .. }) => targets
+                    .iter()
+                    .map(|t| &t.key)
+                    .find(|key| current.runtime.silence.contains_key(*key))
+                    .cloned(),
+                _ => None,
+            };
+            let Some(key) = key else {
+                effects.push(Effect::Log {
+                    level: LogLevel::Warn,
+                    message: format!(
+                        "{job}: ready, but none of its analyses is known; left for the next autocut"
+                    ),
+                });
+                continue;
+            };
+            let silences = current.runtime.silence[&key].clone();
+            if let Some(JobKind::Autocut { pending, ready, .. }) =
+                current.runtime.jobs.get_mut(&job).map(|j| &mut j.kind)
+            {
+                pending.insert(key.clone());
+                *ready = false;
+            }
+            let out = crate::on_event::autocut::silence_detected(&current, ctx, job, key, silences);
+            current = out.state;
+            effects.extend(out.effects);
+        }
+        Outcome::new(current, effects, None)
     }
-}
 
-/// `confirmation required: purge take-0003 (2 files, 412 MB)` with the
-/// files, the history entries lost and the oldest surviving label.
-fn purge_confirmation(ctx: &Ctx, takes: &[TakeId], rewrite: &PurgeRewrite) -> CoreError {
-    let files: Vec<&FileFact> = takes
-        .iter()
-        .filter_map(|t| ctx.facts.take_files.get(t))
-        .flatten()
-        .collect();
-    let bytes: u64 = files.iter().map(|f| f.bytes).sum();
-    let count = match files.len() {
-        1 => "1 file".to_owned(),
-        n => format!("{n} files"),
-    };
-    let mut what = format!(
-        "purge {} ({count}, {})",
-        join_ids(takes),
-        human_bytes(bytes)
-    );
-    match rewrite.entries_lost {
-        0 => {}
-        1 => what.push_str(" and drop 1 history entry"),
-        n => what.push_str(&format!(" and drop {n} history entries")),
-    }
-    CoreError::confirmation_required(what).with_details(json!({
-        "takes": takes,
-        "files": files
-            .iter()
-            .map(|f| json!({"path": f.path, "bytes": f.bytes}))
-            .collect::<Vec<_>>(),
-        "historyEntriesLost": rewrite.entries_lost,
-        "oldestKept": rewrite.oldest_kept,
-    }))
-}
-
-/// The confirmed purge: the takes leave the pool (and every `replaced` list),
-/// the history is rewritten, a purge job deletes the directories after the
-/// commit is durable.
-fn purge(state: &State, ctx: &Ctx, takes: Vec<TakeId>, rewrite: PurgeRewrite) -> Outcome {
-    let mut next = state.clone();
-    next.history = rewrite.history;
-    for take in &takes {
-        next.project.takes.remove(take);
-    }
-    for take in next.project.takes.values_mut() {
-        take.replaced.retain(|c| !takes.contains(&c.take));
-    }
-    let job = next.runtime.alloc_job_id();
-    next.runtime.jobs.insert(
-        job,
-        Job {
-            id: job,
-            kind: JobKind::Purge {
-                takes: takes.clone(),
-            },
-            req: ctx.req.clone(),
-            started: ctx.now,
-        },
-    );
-    let persisted = history::persist(state, next);
-    let mut effects = vec![Effect::History(rewrite.op)];
-    effects.extend(persisted.effects);
-    effects.push(Effect::DeleteTakeDirs { job, takes });
-    Outcome::new(persisted.state, ordered(effects), None)
-}
-
-/// `412 MB`, `1.2 GB`, `900 B` (decimal units).
-pub(crate) fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["kB", "MB", "GB", "TB", "PB"];
-    if bytes < 1000 {
-        return format!("{bytes} B");
-    }
-    let mut value = bytes as f64;
-    let mut unit = "B";
-    for u in UNITS {
-        value /= 1000.0;
-        unit = u;
-        if value < 999.95 {
-            break;
+    /// `autocut.autoRunAfterTake`: autocut on `clip` as its own job (and its
+    /// own history entry), with no requester; problems are told with a
+    /// toast. A no-op unless the setting is on.
+    pub(crate) fn start_auto_run(state: &State, ctx: &Ctx, clip: &ClipId) -> Outcome {
+        if !state.project.autocut.auto_run_after_take {
+            return Outcome::unchanged(state);
+        }
+        if state.project.clip(clip).is_none() {
+            return Outcome::new(
+                state.clone(),
+                vec![Effect::Log {
+                    level: LogLevel::Debug,
+                    message: format!("autocut after the take: {clip} is not on the timeline"),
+                }],
+                None,
+            );
+        }
+        let mut auto = ctx.clone();
+        auto.req = None;
+        let scope = ClipScope::Clips(vec![clip.clone()]);
+        match crate::apply::autocut::autocut(
+            state,
+            &auto,
+            scope,
+            AutocutOverrides::default(),
+            false,
+        ) {
+            Ok(out) => {
+                let mut effects = out.effects;
+                if let Some(Err(err)) = &out.reply {
+                    effects.push(warning(err));
+                }
+                Outcome::new(out.state, effects, None)
+            }
+            Err(err) => Outcome::new(
+                state.clone(),
+                vec![
+                    Effect::Log {
+                        level: LogLevel::Warn,
+                        message: format!("autocut after the take didn't run: {err}"),
+                    },
+                    warning(&err),
+                ],
+                None,
+            ),
         }
     }
-    if value < 9.95 {
-        format!("{value:.1} {unit}")
-    } else {
-        format!("{value:.0} {unit}")
+
+    fn warning(err: &CoreError) -> Effect {
+        Effect::Notify(
+            Toast::new(ToastLevel::Warning, "Autocut didn't run").with_body(err.message.clone()),
+        )
     }
 }
 
@@ -782,7 +745,9 @@ pub(crate) fn join_ids<T: std::fmt::Display>(ids: &[T]) -> String {
 
 /// Puts one outcome's effects in the A§7.6 commit order: history ops (in
 /// order), take directories, one `WriteProject`, one `WriteUi`, then the
-/// effects that touch the world, in their original order.
+/// effects that touch the world (`SetLive`, `StartCapture`, replies, …) in
+/// their original order. An outcome that commits and persists several times
+/// (finalization) thus writes the files once, before anything else happens.
 pub(crate) fn ordered(effects: Vec<Effect>) -> Vec<Effect> {
     let mut history = Vec::new();
     let mut dirs = Vec::new();
@@ -811,14 +776,17 @@ pub(crate) fn ordered(effects: Vec<Effect>) -> Vec<Effect> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+    use crate::ErrorCode;
     use crate::ctx::Facts;
     use crate::history::HistoryEntry;
-    use crate::model::Project;
+    use crate::ids::JobId;
+    use crate::model::{Fps, Project};
     use crate::protocol::effect::HistoryOp;
-    use crate::state::ClipRef;
+    use crate::state::{AutocutParams, AutocutTarget, ClipRef, Job, SilenceKey};
     use crate::testkit::{self, ProjectBuilder};
-    use crate::{ErrorCode, JobId};
 
     const NOW: &str = "2026-10-14T12:30:00Z";
 
@@ -842,10 +810,22 @@ mod tests {
         Some(ReqId(id.to_owned()))
     }
 
+    fn ids(xs: &[&str]) -> Vec<ClipId> {
+        xs.iter().map(|x| ClipId::from_raw(*x)).collect()
+    }
+
+    fn clip(id: &str, take: u32, in_: u64, out: u64) -> Clip {
+        Clip {
+            id: ClipId::from_raw(id),
+            take: TakeId::numbered(take),
+            in_,
+            out,
+        }
+    }
+
     #[test]
     fn over_needs_contiguous_existing_clips() {
         let state = testkit::state(project());
-        let ids = |xs: &[&str]| xs.iter().map(|x| ClipId::from_raw(*x)).collect::<Vec<_>>();
         let mode =
             resolve_mode(&state, RecordModeArg::Over(ids(&["c002", "c001", "c002"]))).unwrap();
         let RecordMode::Over { clips } = mode else {
@@ -876,6 +856,34 @@ mod tests {
     }
 
     #[test]
+    fn the_countdown_comes_from_the_command_or_the_project() {
+        let mut state = testkit::state(project());
+        state.project.recording.countdown_secs = 3;
+        state.runtime.playing = true;
+        let out = record_start(&state, &ctx(), RecordModeArg::Append, None, false).unwrap();
+        assert!(matches!(
+            out.state.runtime.record,
+            RecordPhase::Countdown { remaining: 3, .. }
+        ));
+        assert!(!out.state.runtime.playing, "a countdown stops playback");
+        let out = record_start(&state, &ctx(), RecordModeArg::Append, Some(0), false).unwrap();
+        assert!(matches!(
+            out.state.runtime.record,
+            RecordPhase::Starting { .. }
+        ));
+        assert!(!out.state.runtime.playing, "a take stops playback");
+        // A hand-edited countdown above the limit counts as the limit.
+        state.project.recording.countdown_secs = 30;
+        let out = record_toggle(&state, &ctx(), false).unwrap();
+        assert!(matches!(
+            out.state.runtime.record,
+            RecordPhase::Countdown { remaining: 10, .. }
+        ));
+        let err = record_start(&state, &ctx(), RecordModeArg::Append, Some(11), false).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Usage);
+    }
+
+    #[test]
     fn effects_follow_the_commit_order() {
         let entry = |seq| HistoryEntry {
             seq,
@@ -897,6 +905,7 @@ mod tests {
             Effect::CreateTakeDir {
                 path: "takes/take-0003".into(),
             },
+            Effect::SetLive(None),
             Effect::WriteProject,
             Effect::History(HistoryOp::Append(entry(2))),
             Effect::StartCapture {
@@ -919,6 +928,7 @@ mod tests {
                 Effect::WriteProject => "project",
                 Effect::WriteUi => "ui",
                 Effect::Notify(_) => "notify",
+                Effect::SetLive(_) => "live",
                 Effect::StartCapture { .. } => "capture",
                 _ => "other",
             })
@@ -926,20 +936,9 @@ mod tests {
         assert_eq!(
             names,
             [
-                "append1", "append2", "mkdir", "project", "ui", "notify", "capture"
+                "append1", "append2", "mkdir", "project", "ui", "notify", "live", "capture"
             ]
         );
-    }
-
-    #[test]
-    fn human_sizes() {
-        assert_eq!(human_bytes(0), "0 B");
-        assert_eq!(human_bytes(999), "999 B");
-        assert_eq!(human_bytes(1000), "1.0 kB");
-        assert_eq!(human_bytes(412_000_000), "412 MB");
-        assert_eq!(human_bytes(1_234_000_000), "1.2 GB");
-        assert_eq!(human_bytes(999_960_000), "1.0 GB");
-        assert_eq!(human_bytes(9_960_000), "10 MB");
     }
 
     #[test]
@@ -976,22 +975,24 @@ mod tests {
     }
 
     #[test]
-    fn discard_puts_replaced_clips_back() {
-        // take-0003 recorded over c001 + c002 (both of take-0001).
-        let replaced = vec![
-            Clip {
-                id: ClipId::from_raw("c001"),
-                take: TakeId::numbered(1),
-                in_: 0,
-                out: 100,
-            },
-            Clip {
-                id: ClipId::from_raw("c002"),
-                take: TakeId::numbered(1),
-                in_: 100,
-                out: 300,
-            },
-        ];
+    fn discard_orders_takes_by_number() {
+        // take-10000 sorts before take-9999 as a string; numbers decide.
+        let p = ProjectBuilder::new()
+            .screen_layer("L1", "DP-4")
+            .take("take-9999", 50)
+            .take("take-10000", 50)
+            .with_take("take-9999", |t| t.placed = true)
+            .with_take("take-10000", |t| t.placed = true)
+            .clip("c001", "take-9999", 0, 50)
+            .clip("c002", "take-10000", 0, 50)
+            .build();
+        let d = discard_last(&testkit::state(p), &ctx()).unwrap();
+        assert_eq!(d.result.removed, ["c002"]);
+    }
+
+    /// take-0003 recorded over c001 + c002 (both of take-0001).
+    fn after_record_over() -> (State, Vec<Clip>) {
+        let replaced = vec![clip("c001", 1, 0, 100), clip("c002", 1, 100, 300)];
         let p = ProjectBuilder::new()
             .screen_layer("L1", "DP-4")
             .take("take-0001", 300)
@@ -1004,7 +1005,12 @@ mod tests {
             .clip("c003", "take-0002", 0, 200)
             .clip("c010", "take-0003", 0, 150)
             .build();
-        let state = testkit::state(p);
+        (testkit::state(p), replaced)
+    }
+
+    #[test]
+    fn discard_puts_replaced_clips_back() {
+        let (state, replaced) = after_record_over();
         let d = discard_last(&state, &ctx()).unwrap();
         let clips = &d.committed.state.project.timeline.clips;
         assert_eq!(clips[0].id.as_str(), "c003");
@@ -1028,6 +1034,34 @@ mod tests {
             .collect();
         assert_eq!(ids, ["c001", "c003"]);
         assert!(d.result.created.is_empty());
+    }
+
+    #[test]
+    fn discard_clamps_replaced_clips_to_their_takes() {
+        // take-0001 got shorter (an fps change re-derived it): c002 is cut to
+        // the new length; a clip past the end, or of a take gone from the
+        // pool, doesn't come back.
+        let (mut state, _) = after_record_over();
+        state
+            .project
+            .takes
+            .get_mut(&TakeId::numbered(1))
+            .unwrap()
+            .duration_frames = 250;
+        state
+            .project
+            .takes
+            .get_mut(&TakeId::numbered(3))
+            .unwrap()
+            .replaced
+            .extend([clip("c004", 1, 260, 280), clip("c005", 8, 0, 10)]);
+        let d = discard_last(&state, &ctx()).unwrap();
+        let clips = &d.committed.state.project.timeline.clips;
+        assert_eq!(
+            clips[1..],
+            [clip("c001", 1, 0, 100), clip("c002", 1, 100, 250)]
+        );
+        assert_eq!(d.result.created, ["c001", "c002"]);
     }
 
     #[test]
@@ -1055,177 +1089,109 @@ mod tests {
     }
 
     #[test]
-    fn purge_checks_its_takes() {
+    fn the_engine_gets_the_pipeline_before_the_record_bins() {
+        // A headless host has no pipeline until the take begins.
         let mut state = testkit::state(project());
-        let c = ctx();
-        let err = take_purge(&state, &c, vec![]).unwrap_err();
-        assert_eq!(err.code, ErrorCode::Usage);
-        let err = take_purge(&state, &c, vec![TakeId::numbered(9)]).unwrap_err();
-        assert_eq!(err.code, ErrorCode::NotFound);
-        let err = take_purge(&state, &c, vec![TakeId::numbered(2)]).unwrap_err();
-        assert_eq!(err.code, ErrorCode::Invalid);
-        assert_eq!(err.message, "take-0002 is on the timeline (clips c003)");
-
-        // A bin take that a job reads, or that is still recording.
-        state.project.timeline.clips.pop();
-        let job = |kind| Job {
-            id: JobId(5),
-            kind,
-            req: None,
-            started: c.now,
-        };
-        let mut exporting = state.clone();
-        exporting.runtime.jobs.insert(
-            JobId(5),
-            job(JobKind::FrameSave {
-                out: "/tmp/x.png".into(),
-                files: ["takes/take-0002/L1-screen-DP-4.mkv".to_owned()].into(),
-            }),
-        );
-        let err = check_purgeable(&exporting, &TakeId::numbered(2)).unwrap_err();
-        assert_eq!(err.code, ErrorCode::Busy);
-        assert_eq!(err.message, "take-0002 is in use by job-5 (frame save)");
-        let mut purging = state.clone();
-        purging.runtime.jobs.insert(
-            JobId(5),
-            job(JobKind::Purge {
-                takes: vec![TakeId::numbered(2)],
-            }),
-        );
-        assert_eq!(
-            check_purgeable(&purging, &TakeId::numbered(2))
-                .unwrap_err()
-                .code,
-            ErrorCode::Busy
-        );
-        let mut recording = state.clone();
-        recording
-            .project
-            .takes
-            .get_mut(&TakeId::numbered(2))
-            .unwrap()
-            .status = TakeStatus::Recording;
-        assert_eq!(
-            check_purgeable(&recording, &TakeId::numbered(2))
-                .unwrap_err()
-                .code,
-            ErrorCode::Busy
-        );
-        assert_eq!(check_purgeable(&state, &TakeId::numbered(2)), Ok(()));
+        state.runtime.host = crate::state::HostKind::Headless;
+        let out = record_start(&state, &ctx(), RecordModeArg::Append, Some(0), false).unwrap();
+        let live = out
+            .effects
+            .iter()
+            .position(|e| matches!(e, Effect::SetLive(Some(_))))
+            .unwrap();
+        let capture = out
+            .effects
+            .iter()
+            .position(|e| matches!(e, Effect::StartCapture { .. }))
+            .unwrap();
+        assert!(live < capture);
     }
 
-    fn rewrite_for(state: &State, lost: usize) -> PurgeRewrite {
-        let mut history = state.history.clone();
-        history.cursor = 3;
-        history.next_seq = 9;
-        PurgeRewrite {
-            op: HistoryOp::Rewrite {
-                entries: vec![],
-                base: Box::new(state.project.clone()),
-                base_seq: 3,
-                cursor: 3,
-                next_seq: 9,
+    fn autocut_job(ready: bool, key: &str) -> Job {
+        Job {
+            id: JobId(3),
+            kind: JobKind::Autocut {
+                cmd: json!({"cmd": "autocut"}),
+                targets: vec![AutocutTarget {
+                    clip: ClipRef::of(&clip("c001", 1, 0, 100)),
+                    track: "A1".parse().unwrap(),
+                    key: SilenceKey(key.to_owned()),
+                }],
+                params: AutocutParams {
+                    threshold_db: -35.0,
+                    min_silence_ms: 400,
+                    padding_ms: 120,
+                    min_keep_ms: 200,
+                },
+                dry_run: false,
+                pending: Default::default(),
+                ready,
             },
-            history,
-            entries_lost: lost,
-            oldest_kept: Some("Split clip c001 at 00:00:01:00".into()),
+            req: None,
+            started: ctx().now,
         }
     }
 
     #[test]
-    fn purge_confirmation_details() {
-        let mut state = testkit::state(project());
-        state.project.timeline.clips.pop();
-        let mut c = ctx();
-        c.facts.take_files.insert(
-            TakeId::numbered(2),
-            vec![
-                FileFact {
-                    path: "takes/take-0002/L1-screen-DP-4.mkv".into(),
-                    bytes: 400_000_000,
-                    mtime_ns: 1,
-                },
-                FileFact {
-                    path: "takes/take-0002/A1-mic.mka".into(),
-                    bytes: 12_000_000,
-                    mtime_ns: 2,
-                },
-            ],
-        );
-        let err = purge_confirmation(&c, &[TakeId::numbered(2)], &rewrite_for(&state, 3));
-        assert_eq!(err.code, ErrorCode::ConfirmationRequired);
+    fn autocut_hooks_do_nothing_without_work() {
+        let state = testkit::state(project());
+        let out = autocut_hooks::apply_ready_autocuts(&state, &ctx());
+        assert_eq!(out, Outcome::unchanged(&state));
+        // A job still analyzing is not ready; one whose analysis is unknown
+        // is left for the next autocut.
+        let mut busy = state.clone();
+        busy.runtime.jobs.insert(JobId(3), autocut_job(false, "ab"));
         assert_eq!(
-            err.message,
-            "confirmation required: purge take-0002 (2 files, 412 MB) and drop 3 history entries"
+            autocut_hooks::apply_ready_autocuts(&busy, &ctx()),
+            Outcome::unchanged(&busy)
         );
+        let mut unknown = state.clone();
+        unknown
+            .runtime
+            .jobs
+            .insert(JobId(3), autocut_job(true, "ab"));
+        let out = autocut_hooks::apply_ready_autocuts(&unknown, &ctx());
+        assert_eq!(out.state, unknown);
+        assert!(matches!(
+            out.effects.as_slice(),
+            [Effect::Log {
+                level: LogLevel::Warn,
+                ..
+            }]
+        ));
+        // autoRunAfterTake is off by default.
+        let id = ClipId::from_raw("c001");
         assert_eq!(
-            err.details.unwrap(),
-            json!({
-                "takes": ["take-0002"],
-                "files": [
-                    {"path": "takes/take-0002/L1-screen-DP-4.mkv", "bytes": 400_000_000},
-                    {"path": "takes/take-0002/A1-mic.mka", "bytes": 12_000_000}
-                ],
-                "historyEntriesLost": 3,
-                "oldestKept": "Split clip c001 at 00:00:01:00"
-            })
+            autocut_hooks::start_auto_run(&state, &ctx(), &id),
+            Outcome::unchanged(&state)
         );
-        let err = purge_confirmation(&c, &[TakeId::numbered(2)], &rewrite_for(&state, 0));
-        assert_eq!(
-            err.message,
-            "confirmation required: purge take-0002 (2 files, 412 MB)"
-        );
+        let mut on = state.clone();
+        on.project.autocut.auto_run_after_take = true;
+        let out = autocut_hooks::start_auto_run(&on, &ctx(), &ClipId::from_raw("c404"));
+        assert_eq!(out.state, on);
+        assert!(matches!(
+            out.effects.as_slice(),
+            [Effect::Log {
+                level: LogLevel::Debug,
+                ..
+            }]
+        ));
     }
 
     #[test]
-    fn confirmed_purge_rewrites_writes_then_deletes() {
-        let mut p = project();
-        p.timeline.clips.pop();
-        // take-0003 replaced a clip of take-0002 earlier.
-        p.takes.insert(
-            TakeId::numbered(3),
-            Take {
-                replaced: vec![Clip {
-                    id: ClipId::from_raw("c003"),
-                    take: TakeId::numbered(2),
-                    in_: 0,
-                    out: 200,
-                }],
-                ..p.takes[&TakeId::numbered(1)].clone()
-            },
+    fn a_take_records_the_scene_at_the_canvas_rate() {
+        let state = testkit::state(
+            ProjectBuilder::new()
+                .canvas(1280, 720, Fps::new(60, 1))
+                .screen_layer("L1", "DP-4")
+                .build(),
         );
-        let state = testkit::state(p);
-        let mut c = ctx();
-        c.confirmed = true;
-        c.req = req("p1");
-        let rewrite = rewrite_for(&state, 1);
-        let out = purge(&state, &c, vec![TakeId::numbered(2)], rewrite.clone());
-        assert_eq!(out.reply, None, "replied when the directories are gone");
-        assert!(!out.state.project.takes.contains_key(&TakeId::numbered(2)));
-        assert!(
-            out.state.project.takes[&TakeId::numbered(3)]
-                .replaced
-                .is_empty()
-        );
-        assert_eq!(out.state.history, rewrite.history);
-        let job = JobId(1);
-        assert_eq!(
-            out.state.runtime.jobs[&job].kind,
-            JobKind::Purge {
-                takes: vec![TakeId::numbered(2)]
-            }
-        );
-        assert_eq!(out.state.runtime.jobs[&job].req, req("p1"));
-        assert_eq!(
-            out.effects,
-            vec![
-                Effect::History(rewrite.op),
-                Effect::WriteProject,
-                Effect::DeleteTakeDirs {
-                    job,
-                    takes: vec![TakeId::numbered(2)]
-                }
-            ]
-        );
+        let (next, effects) = begin_take(&state, &ctx(), RecordMode::Append, None, false).unwrap();
+        let Some(Effect::StartCapture { plan }) = effects.last() else {
+            panic!("{effects:?}")
+        };
+        assert_eq!(plan.fps, Fps::new(60, 1));
+        assert_eq!(plan.video[0].key_int_max, 60);
+        assert_eq!(next.project.takes[&TakeId::numbered(1)].streams.len(), 1);
     }
 }

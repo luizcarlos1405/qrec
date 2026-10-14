@@ -1,6 +1,5 @@
 //! The recording state machine (A§5.3), driven row by row through `apply`
-//! and `on_event` with fake shell events, plus discard (A§5.5), the purge
-//! reply (A§5.6) and recovery.
+//! and `on_event` with fake shell events, plus discard (A§5.5) and recovery.
 
 use pretty_assertions::assert_eq;
 use qrec_core::apply::record::ENGINE_STUCK;
@@ -8,7 +7,7 @@ use qrec_core::capture_plan::plan_files;
 use qrec_core::ctx::Ctx;
 use qrec_core::ids::{ClipId, JobId, ReqId, TakeId, TimerId};
 use qrec_core::model::{Clip, Fps, Project, StreamKind, TakeStatus};
-use qrec_core::on_event::record::{recovery_probes, take_dirs_deleted};
+use qrec_core::on_event::record::recovery_probes;
 use qrec_core::protocol::command::{Command, RecordModeArg};
 use qrec_core::protocol::effect::{Effect, LogLevel, ProbePurpose};
 use qrec_core::protocol::event::{Event, MediaInfo, ProbeResult, RecordedStream};
@@ -756,7 +755,8 @@ fn starting_capture_started() {
         }
     );
 
-    // With --wait the start request waits for the whole take.
+    // With --wait the start request waits for the whole take; its progress
+    // starts at 00:00.
     let state = starting(true);
     let out = event(
         &state,
@@ -771,6 +771,15 @@ fn starting_capture_started() {
         &out.state.runtime.record,
         RecordPhase::Recording { waiters, .. } if *waiters == [req("s1")]
     ));
+    let progress: Vec<(&str, &str)> = out
+        .effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Progress { req, progress } => Some((req.0.as_str(), progress.label.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(progress, [("s1", "Recording take 2: 00:00")]);
 
     // Stale: another take, or not starting.
     assert_ignored(
@@ -983,10 +992,13 @@ fn recording_stop_and_toggle() {
 }
 
 #[test]
-fn record_clock_updates_and_reports_twice_a_second() {
+fn record_clock_updates_and_reports_each_new_second() {
     let mut state = recording(true);
     let mut sent = Vec::new();
-    for ms in [250u64, 500, 750, 990, 1_000, 1_250, 1_600] {
+    // ~4 Hz with jitter around the half-second edges.
+    for ms in [
+        249u64, 501, 749, 999, 1_001, 1_249, 1_499, 1_501, 1_999, 2_001, 2_250,
+    ] {
         let out = event(
             &state,
             Event::RecordClock {
@@ -1010,7 +1022,23 @@ fn record_clock_updates_and_reports_twice_a_second() {
         }
         state = out.state;
     }
-    assert_eq!(sent, [500, 1000, 1600]);
+    assert_eq!(sent, [1_001, 2_001], "once per second, > 500 ms apart");
+    // A late clock never rewinds the timer (or re-announces a second).
+    let late = event(
+        &state,
+        Event::RecordClock {
+            take: take2(),
+            elapsed_ns: 1_000_000_000,
+        },
+    );
+    assert!(late.effects.is_empty());
+    assert!(matches!(
+        late.state.runtime.record,
+        RecordPhase::Recording {
+            elapsed_ns: 2_250_000_000,
+            ..
+        }
+    ));
     let out = event(
         &state,
         Event::RecordClock {
@@ -1535,7 +1563,7 @@ fn discard_while_finalizing_runs_after_placement() {
     let out = finalize(&probing(&queued), 90);
     assert_eq!(
         reply_to(&out, "d1").unwrap().message,
-        "Take 2 was not placed"
+        "take 2 was not placed"
     );
     assert!(out.state.history.entries.is_empty());
 }
@@ -1780,62 +1808,6 @@ fn recovery_probes_leftover_takes() {
             results: vec![],
         },
     );
-}
-
-// ---------------------------------------------------------------- purge
-
-#[test]
-fn take_dirs_deleted_answers_the_purge() {
-    let mut state = idle();
-    state.runtime.jobs.insert(
-        JobId(4),
-        Job {
-            id: JobId(4),
-            kind: JobKind::Purge {
-                takes: vec![TakeId::numbered(5), TakeId::numbered(6)],
-            },
-            req: Some(req("p1")),
-            started: ctx_for(None).now,
-        },
-    );
-    let out = take_dirs_deleted(
-        &state,
-        &ctx_for(None),
-        JobId(4),
-        vec!["takes/take-0005".into(), "takes/take-0006".into()],
-        vec![],
-    );
-    assert!(out.state.runtime.jobs.is_empty());
-    let result = reply_to(&out, "p1").unwrap();
-    assert_eq!(result.message, "Purged takes 5, 6 from disk");
-    assert_eq!(result.removed, ["take-0005", "take-0006"]);
-    assert_eq!(toasts(&out)[0].level, ToastLevel::Success);
-
-    let out = take_dirs_deleted(
-        &state,
-        &ctx_for(None),
-        JobId(4),
-        vec!["takes/take-0005".into()],
-        vec!["takes/take-0006/A1-mic.mka: Permission denied".into()],
-    );
-    let err = reply_to(&out, "p1").unwrap_err();
-    assert_eq!(err.code, ErrorCode::Io);
-    assert_eq!(
-        err.details.unwrap()["errors"][0],
-        "takes/take-0006/A1-mic.mka: Permission denied"
-    );
-    assert!(out.state.runtime.jobs.is_empty());
-
-    // Unknown or foreign jobs are stale.
-    let out = take_dirs_deleted(&state, &ctx_for(None), JobId(9), vec![], vec![]);
-    assert_eq!(out.state, state);
-    assert!(matches!(
-        out.effects.as_slice(),
-        [Effect::Log {
-            level: LogLevel::Debug,
-            ..
-        }]
-    ));
 }
 
 // ------------------------------------------------------- stale events
