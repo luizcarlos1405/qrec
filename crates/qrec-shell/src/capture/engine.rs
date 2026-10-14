@@ -29,11 +29,12 @@
 //! (`set_live`); `start` builds it from the plan when needed.
 
 use std::any::Any;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -41,6 +42,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use gst::prelude::*;
 use qrec_core::ctx::CameraMode;
+use qrec_core::model::VideoSource;
 use qrec_core::plans::{CapturePlan, LiveScene};
 use qrec_core::protocol::RecordedStream;
 use qrec_core::{Event, Fps, TakeId};
@@ -62,8 +64,9 @@ use crate::gst_init::{self, InitError};
 use crate::msg::Inbox;
 use crate::paths::ProjectPaths;
 
-/// How long `shutdown()` waits for the engine thread.
-const SHUTDOWN_WAIT: Duration = Duration::from_secs(7);
+/// How long `shutdown()` waits for the engine thread: a running take is
+/// finalized first (EOS within the default 10 s, then teardown within 5 s).
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(16);
 /// How many finished takes are remembered (late stops get `CaptureStopped`).
 const ENDED_MEMORY: usize = 32;
 
@@ -91,6 +94,19 @@ pub(super) enum Cmd {
     },
     /// Test hook (fake backend only): make a source fail.
     Inject { source: String, failure: FakeFailure },
+    /// Test hook: what the live pipeline is right now.
+    #[cfg(test)]
+    Inspect(Sender<LiveInfo>),
+}
+
+/// The live pipeline as tests see it.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct LiveInfo {
+    /// Bumped by every rebuild; `None` without a pipeline.
+    pub generation: Option<u64>,
+    pub sources: Vec<SourceSpec>,
+    pub preview: bool,
 }
 
 /// What a record bin's probes saw (index = position in the take's bins).
@@ -150,6 +166,14 @@ impl GstCaptureEngine {
             thread: Some(thread),
             out,
         })
+    }
+
+    /// Test hook: the live pipeline once every command sent so far is handled.
+    #[cfg(test)]
+    pub(super) fn inspect(&self) -> LiveInfo {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.tx.send(Cmd::Inspect(tx)).expect("the engine runs");
+        rx.recv_timeout(Duration::from_secs(20)).expect("the engine answers")
     }
 
     /// Fake backend only: makes the source `source` (an output, camera
@@ -237,8 +261,10 @@ fn panic_text(panic: &Box<dyn Any + Send>) -> String {
 
 /// Where the take is.
 enum Phase {
+    /// Accepted, nothing attached yet (left within the same command).
+    New,
     /// Waiting for the portal to share screens.
-    AwaitingPortal { id: u64, deadline: Instant },
+    AwaitingPortal { deadline: Instant },
     /// Bins attached at T0; waiting for first writes and the health window.
     Starting {
         health_until: Instant,
@@ -312,7 +338,11 @@ struct Engine {
     portal: Option<PortalWorker>,
     casts: BTreeMap<String, ScreenShare>,
     portal_seq: u64,
-    pending_live: Option<u64>,
+    /// Outputs asked of the portal and not answered yet.
+    in_flight: BTreeSet<String>,
+    /// Outputs the portal refused for the current live scene (not asked
+    /// again until the scene changes).
+    refused: BTreeMap<String, String>,
     shutdown_ack: Option<Sender<()>>,
     exiting: bool,
     done: bool,
@@ -344,7 +374,8 @@ impl Engine {
             portal: None,
             casts: BTreeMap::new(),
             portal_seq: 0,
-            pending_live: None,
+            in_flight: BTreeSet::new(),
+            refused: BTreeMap::new(),
             shutdown_ack: None,
             exiting: false,
             done: false,
@@ -407,8 +438,24 @@ impl Engine {
                 width,
                 height,
             } => self.on_source_size(generation, source, width, height),
-            Cmd::PortalDone { id, results } => self.on_portal(id, results),
+            Cmd::PortalDone { id, results } => {
+                tracing::debug!("capture: portal answer {id}");
+                self.on_portal(results);
+            }
             Cmd::Inject { source, failure } => self.inject(&source, failure),
+            #[cfg(test)]
+            Cmd::Inspect(reply) => {
+                let info = LiveInfo {
+                    generation: self.live.as_ref().map(|l| l.generation),
+                    sources: self
+                        .live
+                        .as_ref()
+                        .map(|l| l.sources.iter().map(|s| s.spec.clone()).collect())
+                        .unwrap_or_default(),
+                    preview: self.live.as_ref().is_some_and(|l| l.preview.is_some()),
+                };
+                let _ = reply.send(info);
+            }
         }
     }
 
@@ -439,7 +486,16 @@ impl Engine {
 
     // ------------------------------------------------------------ live
 
+    /// The core sends the live scene it wants whenever that changes (A§8.11);
+    /// an equal scene with a healthy pipeline changes nothing.
     fn set_live(&mut self, scene: Option<LiveScene>) {
+        if scene == self.desired && self.live_is_healthy() {
+            return;
+        }
+        if scene.as_ref().map(|s| &s.scene) != self.desired.as_ref().map(|s| &s.scene) {
+            // New sources may be picked differently in the dialog: ask again.
+            self.refused.clear();
+        }
         self.desired = scene;
         if self.take.is_some() {
             // Layout changes show now; source changes wait for the take's end.
@@ -449,6 +505,16 @@ impl Engine {
             return;
         }
         self.apply_desired();
+    }
+
+    /// The pipeline matches `desired`: none wanted and none running, or one
+    /// running with every source alive.
+    fn live_is_healthy(&self) -> bool {
+        match (&self.desired, &self.live) {
+            (None, None) => true,
+            (Some(_), Some(live)) => live.sources.iter().all(|s| s.dead.is_none()),
+            _ => false,
+        }
     }
 
     /// Makes the live pipeline match `desired` (no take running).
@@ -468,7 +534,13 @@ impl Engine {
             }
             return;
         }
-        let specs = self.scene_specs(&scene);
+        // Screens the portal refused stay out of the preview until the
+        // scene changes; the rest still shows.
+        let specs: Vec<SourceSpec> = self
+            .scene_specs(&scene)
+            .into_iter()
+            .filter(|s| !matches!(s, SourceSpec::Screen { output } if self.refused.contains_key(output)))
+            .collect();
         let key = LiveKey::of(specs.clone(), Some(&scene));
         if let Some(live) = &self.live
             && live.key == key
@@ -477,13 +549,17 @@ impl Engine {
             live.apply_layout(&scene);
             return;
         }
-        let missing = self.missing_casts(&specs);
-        if !missing.is_empty() {
-            match self.request_casts(missing) {
-                Some(id) => self.pending_live = Some(id),
-                None => self.side(SideEvent::LiveError("can't reach the screen-share portal".into())),
+        match self.await_casts(&specs) {
+            Ok(false) => {}
+            // The portal answers later (`on_portal` comes back here).
+            Ok(true) => return,
+            Err(message) => {
+                for output in self.missing_casts(&specs) {
+                    self.refused.insert(output, message.clone());
+                }
+                self.side(SideEvent::LiveError(message));
+                return self.apply_desired();
             }
-            return;
         }
         let fps = scene.canvas.fps;
         match self.rebuild_live(&specs, Some(&scene), fps) {
@@ -532,12 +608,20 @@ impl Engine {
         if modes.is_empty() {
             return None;
         }
-        // The rule lives in the core; never let a panic there take the engine down.
-        catch_unwind(|| qrec_core::capture_plan::choose_camera_mode(&modes, fps))
-            .ok()
-            .flatten()
-            .as_ref()
-            .map(CameraKey::from)
+        // The rule lives in the core; never let a panic there (a stub, a
+        // bug) take the engine down, and don't retry one that panicked.
+        static BROKEN: AtomicBool = AtomicBool::new(false);
+        if BROKEN.load(Ordering::Relaxed) {
+            return None;
+        }
+        match catch_unwind(|| qrec_core::capture_plan::choose_camera_mode(&modes, fps)) {
+            Ok(mode) => mode.as_ref().map(CameraKey::from),
+            Err(_) => {
+                BROKEN.store(true, Ordering::Relaxed);
+                tracing::warn!("capture: the camera mode rule failed; cameras pick their own mode");
+                None
+            }
+        }
     }
 
     fn side(&self, event: SideEvent) {
@@ -687,18 +771,33 @@ impl Engine {
             .collect()
     }
 
-    fn request_casts(&mut self, outputs: Vec<String>) -> Option<u64> {
+    /// Asks the portal for the screens of `specs` that have no session and
+    /// aren't asked for already. `Ok(true)` = an answer is pending; `Err` =
+    /// the portal can't be asked.
+    fn await_casts(&mut self, specs: &[SourceSpec]) -> Result<bool, String> {
+        let missing = self.missing_casts(specs);
+        if missing.is_empty() {
+            return Ok(false);
+        }
+        let new: Vec<String> = missing
+            .into_iter()
+            .filter(|output| !self.in_flight.contains(output))
+            .collect();
+        if !new.is_empty() {
+            self.request_casts(new)?;
+        }
+        Ok(true)
+    }
+
+    fn request_casts(&mut self, outputs: Vec<String>) -> Result<(), String> {
         if self.portal.is_none() {
-            match PortalWorker::spawn() {
-                Ok(worker) => self.portal = Some(worker),
-                Err(e) => {
-                    tracing::error!("capture: can't start the portal thread: {e}");
-                    return None;
-                }
-            }
+            let worker = PortalWorker::spawn().map_err(|e| {
+                tracing::error!("capture: can't start the portal thread: {e}");
+                "can't reach the screen-share portal".to_owned()
+            })?;
+            self.portal = Some(worker);
         }
         self.portal_seq += 1;
-        let id = self.portal_seq;
         let screens = self
             .opts
             .devices
@@ -706,22 +805,31 @@ impl Engine {
             .map(|d| d.screens())
             .unwrap_or_default();
         let request = OpenRequest {
-            id,
-            outputs,
+            id: self.portal_seq,
+            outputs: outputs.clone(),
             screens,
             tokens: self.opts.portal_tokens.clone(),
             timeout: self.opts.portal_timeout,
             register_app_id: self.opts.register_app_id,
         };
-        let worker = self.portal.as_ref()?;
-        worker.open(request, self.tx.clone()).then_some(id)
+        let sent = self
+            .portal
+            .as_ref()
+            .is_some_and(|worker| worker.open(request, self.tx.clone()));
+        if !sent {
+            return Err("can't reach the screen-share portal".to_owned());
+        }
+        self.in_flight.extend(outputs);
+        Ok(())
     }
 
-    fn on_portal(&mut self, id: u64, results: Vec<(String, Result<ScreenShare, String>)>) {
+    fn on_portal(&mut self, results: Vec<(String, Result<ScreenShare, String>)>) {
         let mut failures = Vec::new();
         for (output, result) in results {
+            self.in_flight.remove(&output);
             match result {
                 Ok(cast) => {
+                    self.refused.remove(&output);
                     if let Some(old) = self.casts.insert(output, cast)
                         && let Some(worker) = &self.portal
                     {
@@ -733,26 +841,32 @@ impl Engine {
         }
         let awaiting = matches!(
             self.take.as_ref().map(|t| &t.phase),
-            Some(Phase::AwaitingPortal { id: waiting, .. }) if *waiting == id
+            Some(Phase::AwaitingPortal { .. })
         );
         if awaiting {
-            if let Some((output, message)) = failures.into_iter().next() {
-                let source = self.take.as_ref().and_then(|run| {
+            let needed = |output: &str| {
+                self.take.as_ref().and_then(|run| {
                     run.plan.video.iter().find_map(|rec| match &rec.source {
-                        qrec_core::model::VideoSource::Screen { output: o, .. } if *o == output => {
-                            Some(video_label(rec))
-                        }
+                        VideoSource::Screen { output: o, .. } if o == output => Some(video_label(rec)),
                         _ => None,
                     })
-                });
-                self.fail_take(source.or(Some(format!("screen {output}"))), message);
-            } else {
-                self.prepare_take();
+                })
+            };
+            let failed = failures
+                .iter()
+                .find_map(|(output, message)| needed(output).map(|label| (label, message.clone())));
+            for (output, message) in &failures {
+                self.refused.insert(output.clone(), message.clone());
             }
-        } else if self.pending_live == Some(id) {
-            self.pending_live = None;
+            match failed {
+                Some((label, message)) => self.fail_take(Some(label), message),
+                // Every screen it needs may be shared now (or still pending).
+                None => self.prepare_take(),
+            }
+        } else {
             for (output, message) in failures {
                 self.side(SideEvent::LiveError(format!("screen {output}: {message}")));
+                self.refused.insert(output, message);
             }
             if self.take.is_none() {
                 self.apply_desired();
@@ -853,10 +967,7 @@ impl Engine {
             plan,
             tag: self.tags,
             log,
-            phase: Phase::AwaitingPortal {
-                id: 0,
-                deadline: Instant::now(),
-            },
+            phase: Phase::New,
             t0: 0,
             t1: None,
             bins: Vec::new(),
@@ -883,31 +994,35 @@ impl Engine {
         {
             return self.attach_take();
         }
-        // Rebuild with the plan's sources plus what the live scene shows.
+        // The plan's screens must be shared first (one dialog per screen,
+        // never twice for the same one).
+        match self.await_casts(&wanted) {
+            Ok(false) => {}
+            Ok(true) => {
+                let count = self.missing_casts(&wanted).len().max(1) as u32;
+                let wait = self.opts.portal_timeout * count + Duration::from_secs(10);
+                if let Some(run) = &mut self.take
+                    && !matches!(run.phase, Phase::AwaitingPortal { .. })
+                {
+                    run.log.line("waiting for the screen-share portal");
+                    run.phase = Phase::AwaitingPortal {
+                        deadline: Instant::now() + wait,
+                    };
+                }
+                return;
+            }
+            Err(message) => return self.fail_take(None, message),
+        }
+        // Rebuild with the plan's sources plus what the live scene shows
+        // (its screens only if they're shared already).
         let mut specs = wanted.clone();
         if let Some(scene) = self.desired.clone() {
             for spec in self.scene_specs(&scene) {
-                if !specs.iter().any(|s| s.same_device(&spec)) {
+                let unshared = self.missing_casts(std::slice::from_ref(&spec)).len() > 0;
+                if !unshared && !specs.iter().any(|s| s.same_device(&spec)) {
                     specs.push(spec);
                 }
             }
-        }
-        let missing = self.missing_casts(&specs);
-        if !missing.is_empty() {
-            let wait = self.opts.portal_timeout * (missing.len() as u32) + Duration::from_secs(10);
-            match self.request_casts(missing) {
-                Some(id) => {
-                    if let Some(run) = &mut self.take {
-                        run.log.line("waiting for the screen-share portal");
-                        run.phase = Phase::AwaitingPortal {
-                            id,
-                            deadline: Instant::now() + wait,
-                        };
-                    }
-                }
-                None => self.fail_take(None, "can't reach the screen-share portal".into()),
-            }
-            return;
         }
         let scene = self.desired.clone();
         let fps = self.take.as_ref().map_or(Fps::new(30, 1), |r| r.plan.fps);
@@ -1014,7 +1129,7 @@ impl Engine {
             return self.fail_take(None, "the capture pipeline has no clock".into());
         };
         for bin in &run.bins {
-            bin.probe.t0.store(t0, std::sync::atomic::Ordering::SeqCst);
+            bin.probe.t0.store(t0, Ordering::SeqCst);
         }
         run.t0 = t0;
         let now = Instant::now();
@@ -1071,7 +1186,7 @@ impl Engine {
         let Some(run) = &mut self.take else { return };
         run.cancel = cancel;
         match run.phase {
-            Phase::AwaitingPortal { .. } => {
+            Phase::New | Phase::AwaitingPortal { .. } => {
                 run.log.line("stopped before the portal answered");
                 let take = run.plan.take.clone();
                 self.take = None;
@@ -1093,7 +1208,7 @@ impl Engine {
                     .max(run.t0);
                 run.t1 = Some(t1);
                 for bin in &run.bins {
-                    bin.probe.t1.store(t1, std::sync::atomic::Ordering::SeqCst);
+                    bin.probe.t1.store(t1, Ordering::SeqCst);
                 }
                 let now = Instant::now();
                 run.phase = Phase::Stopping {
@@ -1292,7 +1407,7 @@ impl Engine {
     fn branch_lost(&mut self, bins: &[usize], message: String) {
         let Some(run) = &mut self.take else { return };
         match run.phase {
-            Phase::AwaitingPortal { .. } => {}
+            Phase::New | Phase::AwaitingPortal { .. } => {}
             Phase::Starting { .. } => {
                 let label = bins.first().and_then(|&i| run.bins.get(i)).map(|b| b.label.clone());
                 self.fail_take(label, message);
@@ -1461,6 +1576,7 @@ impl Engine {
     fn next_deadline(&self) -> Option<Instant> {
         let run = self.take.as_ref()?;
         match &run.phase {
+            Phase::New => None,
             Phase::AwaitingPortal { deadline, .. } => Some(*deadline),
             Phase::Starting {
                 health_until,
@@ -1485,6 +1601,7 @@ impl Engine {
         let now = Instant::now();
         let Some(run) = &mut self.take else { return };
         match run.phase {
+            Phase::New => {}
             Phase::AwaitingPortal { deadline, .. } => {
                 if now >= deadline {
                     self.fail_take(None, "the screen-share portal didn't answer".into());

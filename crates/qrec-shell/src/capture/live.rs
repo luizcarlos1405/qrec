@@ -271,6 +271,11 @@ fn add_source(
             if src.find_property("client-name").is_some() {
                 set_value(&src, "client-name", "Qrec").map_err(err)?;
             }
+            // A screencast that ends (sharing stopped, monitor unplugged)
+            // must become a bus error (StreamLost), not a frozen last frame.
+            if src.find_property("on-disconnect").is_some() {
+                set_str(&src, "on-disconnect", "error").map_err(err)?;
+            }
             chain.push(src.clone());
             src
         }

@@ -633,3 +633,103 @@ fn shutdown_finalizes_a_running_take() {
 fn plan_with_take(n: u32, dir: &str) -> CapturePlan {
     plan(n, dir, vec![], vec![audio("A1", FAKE_MIC, "mic")])
 }
+
+fn screen_layer(id: &str, output: &str, rect: Rect) -> Layer {
+    Layer {
+        id: id.parse().unwrap(),
+        name: format!("Screen {output}"),
+        visible: true,
+        opacity: 1.0,
+        source: VideoSource::Screen {
+            output: output.into(),
+            label: format!("Fake {output}"),
+        },
+        rect,
+        crop: Crop::default(),
+        fit: Fit::Contain,
+        locked: false,
+        missing: false,
+    }
+}
+
+fn audio_track(id: &str, device: &str) -> AudioTrack {
+    AudioTrack {
+        id: id.parse().unwrap(),
+        role: if device.ends_with(".monitor") { AudioRole::System } else { AudioRole::Mic },
+        source: device.into(),
+        label: device.into(),
+        gain_db: 0.0,
+        muted: false,
+        sync_offset_ms: 0,
+        missing: false,
+    }
+}
+
+fn live_scene(layers: Vec<Layer>, audio: Vec<AudioTrack>, preview: bool) -> LiveScene {
+    LiveScene {
+        canvas: Canvas {
+            width: 320,
+            height: 180,
+            fps: Fps::new(30, 1),
+            background: "#000000".parse().unwrap(),
+        },
+        scene: Scene { layers, audio },
+        preview,
+    }
+}
+
+/// The core sends `SetLive` whenever the wanted scene changes, before
+/// `StartCapture` (A§8.11): the engine builds the pipeline then, keeps it
+/// for equal scenes and layout changes, and records from it.
+#[test]
+fn set_live_is_idempotent_and_the_take_reuses_its_pipeline() {
+    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let mut h = Harness::new();
+    assert_eq!(h.engine.inspect().generation, None);
+
+    // Headless recording: the scene without preview.
+    let full = Rect::new(0, 0, 320, 180);
+    let scene = live_scene(
+        vec![screen_layer("L1", "FAKE-1", full)],
+        vec![audio_track("A1", FAKE_MIC)],
+        false,
+    );
+    h.engine.set_live(Some(scene.clone()), h.inbox.clone());
+    let built = h.engine.inspect();
+    let generation = built.generation.expect("SetLive builds the pipeline");
+    assert!(!built.preview);
+    assert_eq!(built.sources.len(), 2, "{built:?}");
+
+    // The same scene again, or only a new layout: nothing is rebuilt.
+    h.engine.set_live(Some(scene.clone()), h.inbox.clone());
+    let mut moved = scene.clone();
+    moved.scene.layers[0].rect = Rect::new(10, 10, 100, 60);
+    h.engine.set_live(Some(moved.clone()), h.inbox.clone());
+    assert_eq!(h.engine.inspect().generation, Some(generation));
+
+    // The take attaches to the running pipeline.
+    let dir = h.take_dir(1);
+    let take = plan(1, &dir, vec![screen("L1", "FAKE-1")], vec![audio("A1", FAKE_MIC, "mic")]);
+    h.start(&take);
+    h.started();
+    assert_eq!(h.engine.inspect().generation, Some(generation));
+    // While recording, an equal scene is still a no-op.
+    h.engine.set_live(Some(moved.clone()), h.inbox.clone());
+    std::thread::sleep(Duration::from_millis(600));
+    h.engine.stop(&take.take, false);
+    let (streams, timed_out, skipped) = h.stopped();
+    assert!(!timed_out && streams.iter().all(|s| s.eos), "{streams:?} {skipped:?}");
+    assert_eq!(h.engine.inspect().generation, Some(generation), "kept between takes");
+
+    // New sources rebuild; no scene tears it down.
+    let mut more = moved.clone();
+    more.scene.audio.push(audio_track("A2", FAKE_MONITOR));
+    h.engine.set_live(Some(more), h.inbox.clone());
+    let rebuilt = h.engine.inspect();
+    assert!(rebuilt.generation > Some(generation));
+    assert_eq!(rebuilt.sources.len(), 3);
+    h.engine.set_live(None, h.inbox.clone());
+    assert_eq!(h.engine.inspect().generation, None);
+    h.engine.set_live(None, h.inbox.clone());
+    assert_eq!(h.engine.inspect().generation, None);
+}
