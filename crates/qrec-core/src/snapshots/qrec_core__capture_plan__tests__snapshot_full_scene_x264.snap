@@ -1,0 +1,76 @@
+---
+source: crates/qrec-core/src/capture_plan.rs
+expression: plan
+---
+{
+  "take": "take-0004",
+  "dir": "takes/take-0004",
+  "log": "takes/take-0004/recorder.log",
+  "fps": {
+    "num": 30,
+    "den": 1
+  },
+  "healthCheckMs": 500,
+  "firstBufferMs": 3000,
+  "eosTimeoutMs": 10000,
+  "video": [
+    {
+      "id": "L1",
+      "source": {
+        "kind": "screen",
+        "output": "DP-4",
+        "label": "Monitor DP-4"
+      },
+      "file": "takes/take-0004/L1-screen-DP-4.mkv",
+      "encoder": {
+        "kind": "x264",
+        "pass": "qual",
+        "quantizer": 18,
+        "speedPreset": "veryfast",
+        "tune": "zerolatency"
+      },
+      "keyIntMax": 30,
+      "cameraMode": null
+    },
+    {
+      "id": "L2",
+      "source": {
+        "kind": "camera",
+        "device": "/dev/video0",
+        "label": "Camera /dev/video0"
+      },
+      "file": "takes/take-0004/L2-camera-0.mkv",
+      "encoder": {
+        "kind": "x264",
+        "pass": "qual",
+        "quantizer": 18,
+        "speedPreset": "veryfast",
+        "tune": "zerolatency"
+      },
+      "keyIntMax": 30,
+      "cameraMode": {
+        "width": 1920,
+        "height": 1080,
+        "fps": {
+          "num": 30,
+          "den": 1
+        },
+        "format": "image/jpeg"
+      }
+    }
+  ],
+  "audio": [
+    {
+      "id": "A1",
+      "device": "alsa_input.usb-Blue_Yeti",
+      "file": "takes/take-0004/A1-mic.mka",
+      "sampleRate": 48000
+    },
+    {
+      "id": "A2",
+      "device": "alsa_output.pci.analog-stereo.monitor",
+      "file": "takes/take-0004/A2-system.mka",
+      "sampleRate": 48000
+    }
+  ]
+}
