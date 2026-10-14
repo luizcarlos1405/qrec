@@ -9,8 +9,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use proptest::prelude::*;
 
+use qrec_core::apply::history::{redo_checked, undo_checked};
 use qrec_core::autocut::{ClipCut, analysis_source, cut_clip, kept_spans, plan_clip};
 use qrec_core::ctx::{Ctx, FileFact};
+use qrec_core::history::ops::unchecked;
 use qrec_core::protocol::command::{AutocutOverrides, ClipScope, Command};
 use qrec_core::protocol::effect::Effect;
 use qrec_core::protocol::event::{Event, Interval};
@@ -374,7 +376,8 @@ proptest! {
     /// `qrec autocut` end to end: one job, the analysis events, then exactly
     /// the planned cuts in place of each clip (first fragment keeps the id,
     /// fresh unique ids for the others, untouched clips stay), and one
-    /// history entry if and only if something changed.
+    /// history entry if and only if something changed, undone and redone
+    /// as one step.
     #[test]
     fn the_command_applies_exactly_the_plan(
         project in strategies::arb_project(),
@@ -432,6 +435,12 @@ proptest! {
             let entry = &after.history.entries[0];
             prop_assert!(entry.label.starts_with("Autocut "), "{}", entry.label);
             prop_assert_eq!(&entry.cmd["cmd"], "autocut");
+            // One entry for the whole run: one undo restores every clip, one
+            // redo cuts them all again (with every guarding test passing).
+            let undone = undo_checked(&after, &ctx, 1, unchecked).expect("undo");
+            prop_assert_eq!(&undone.state.project, &state.project);
+            let redone = redo_checked(&undone.state, &ctx, 1, unchecked).expect("redo");
+            prop_assert_eq!(&redone.state.project, &after.project);
         }
         // Nothing but the timeline (and the runtime cache) changed.
         let mut same = after.project.clone();

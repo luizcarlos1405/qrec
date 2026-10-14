@@ -149,11 +149,17 @@ struct Request {
 enum Started {
     /// Every key was known: the run completed (or nothing was analyzable).
     Done(events::Finished),
-    /// A job waits for `DetectSilence` results.
+    /// A job waits for `DetectSilence` results, or for the recording to end.
     Pending { state: State, effects: Vec<Effect> },
 }
 
 /// Resolves targets, then completes at once or creates the job.
+///
+/// A real run edits the timeline only while `Idle` (A§5.7): if a recording
+/// runs, a run whose silences are all known becomes a job that is `ready`
+/// at once and waits for [`apply_ready_autocuts`] after placement. (The
+/// `Autocut` command itself is `Busy` while recording; this guards
+/// [`start_auto_run`] and direct callers.)
 fn start(state: &State, ctx: &Ctx, request: Request) -> Started {
     let project = &state.project;
     let params = request.params;
@@ -204,7 +210,8 @@ fn start(state: &State, ctx: &Ctx, request: Request) -> Started {
         .iter()
         .filter(|(key, _)| !state.runtime.silence.contains_key(key))
         .collect();
-    if missing.is_empty() {
+    let wait_for_recording = !request.dry_run && !state.runtime.record.is_idle();
+    if missing.is_empty() && !wait_for_recording {
         let snapshot = Snapshot {
             cmd: request.cmd,
             targets,
@@ -231,8 +238,9 @@ fn start(state: &State, ctx: &Ctx, request: Request) -> Started {
         targets,
         params,
         dry_run: request.dry_run,
+        // Nothing to analyze: only the recording holds it back.
+        ready: pending.is_empty(),
         pending,
-        ready: false,
     };
     let entry = Job {
         id: job,
@@ -1032,6 +1040,70 @@ mod tests {
         let gone = start_auto_run(&state, &ctx, &ClipId::from_raw("c999"));
         assert_eq!(gone.state, state);
         assert!(matches!(gone.effects.as_slice(), [Effect::Log { .. }]));
+    }
+
+    #[test]
+    fn known_silences_still_wait_for_the_recording() {
+        let project = fixtures::project();
+        let ctx = fixtures::ctx(&project);
+        let mut state = fixtures::cached(testkit::state(project), &ctx, &fixtures::params());
+        state.project.autocut.auto_run_after_take = true;
+        state.runtime.record = RecordPhase::Recording {
+            take: crate::ids::TakeId::numbered(3),
+            mode: Default::default(),
+            elapsed_ns: 0,
+            waiters: vec![],
+        };
+        // Nothing to analyze, but a recording runs: a job that is ready at once.
+        let out = start_auto_run(&state, &ctx, &ClipId::from_raw("c002"));
+        assert_eq!(
+            out.state.project, state.project,
+            "nothing applied while recording"
+        );
+        assert!(
+            !out.effects
+                .iter()
+                .any(|e| matches!(e, Effect::DetectSilence { .. })),
+            "{:?}",
+            out.effects
+        );
+        let JobKind::Autocut { pending, ready, .. } = &out.state.runtime.jobs[&JobId(1)].kind
+        else {
+            panic!("an autocut job");
+        };
+        assert!(pending.is_empty() && *ready);
+
+        // Applied once the take is placed, with a toast (nobody waits).
+        let mut placed = out.state.clone();
+        placed.runtime.record = RecordPhase::Idle;
+        let applied = apply_ready_autocuts(&placed, &ctx);
+        let label = "Autocut take 2: removed 1 silence (0.5 s)";
+        assert_eq!(applied.state.history.entries[0].label, label);
+        assert!(matches!(
+            applied.effects.last(),
+            Some(Effect::Notify(toast)) if toast.title == label
+        ));
+        assert!(applied.state.runtime.jobs.is_empty());
+    }
+
+    #[test]
+    fn a_selected_clip_passes_the_selection_to_its_fragments() {
+        let project = fixtures::project();
+        let ctx = fixtures::ctx(&project);
+        let mut state = fixtures::cached(testkit::state(project), &ctx, &fixtures::params());
+        state.ui.selection = vec![ClipId::from_raw("c001")];
+        let out = run(&state, &ctx, ClipScope::All, false).unwrap();
+        let reply = out.reply.unwrap().unwrap();
+        // The first fragment kept the id; the second (created[0]) follows it.
+        assert_eq!(
+            out.state.ui.selection,
+            vec![
+                ClipId::from_raw("c001"),
+                ClipId::from_raw(reply.created[0].clone())
+            ],
+            "c002's fragments stay unselected"
+        );
+        assert!(out.effects.contains(&Effect::WriteUi));
     }
 
     #[test]
