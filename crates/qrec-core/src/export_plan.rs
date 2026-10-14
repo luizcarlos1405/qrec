@@ -20,6 +20,27 @@
 //!
 //! [`frame_plan`](crate::frame_plan) and [`ges_plan`](crate::ges_plan) use
 //! the same units, layer inputs and frame selection.
+//!
+//! ## What the runner does with a plan (A§8.7, A§8.8)
+//!
+//! - Runs each segment's `argv` with the project dir as cwd (at most
+//!   `cores/2` at once). A segment whose `path` exists is cached, and equal
+//!   keys in one plan render once; every segment index still reports
+//!   `ExportProgress` up to its `frames` (cached ones at once), or the
+//!   render share of the progress never completes.
+//! - Checks each new segment with `media_argv::segment_check_argv` and
+//!   `parse::ffprobe::parse_segment_check` + `SegmentCounts::check(frames,
+//!   samples)` before renaming it into place; a mismatch fails the export.
+//! - Writes `stitch.list_content` to `stitch.list_path`, runs `stitch.argv`
+//!   with only its last element replaced by the temp output, reports
+//!   `ExportStitchProgress` from `-progress` `out_time`, then renames. A
+//!   project-relative `out` is an auto name (loop `-2`, `-3` on EEXIST); an
+//!   absolute one was picked by hand (and confirmed if it existed).
+//! - A failing VA segment switches the whole export to [`without_vaapi`]
+//!   (libx264, other keys; nothing mixes).
+//!
+//! `crates/qrec-shell/tests/plans_ffmpeg.rs` does all of this with real
+//! ffmpeg and checks the frames and samples that come out.
 
 use std::collections::BTreeSet;
 
