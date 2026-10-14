@@ -1,0 +1,22 @@
+---
+source: crates/qrec-core/tests/history_patches.rs
+expression: render(&e)
+---
+forward:
+test    /canvas/fps/num 30
+replace /canvas/fps/num 60
+test    /timeline/clips/0/out 410
+replace /timeline/clips/0/out 820
+test    /timeline/clips/1/in 455
+replace /timeline/clips/1/in 910
+test    /timeline/clips/1/out 912
+replace /timeline/clips/1/out 1824
+inverse:
+test    /canvas/fps/num 60
+replace /canvas/fps/num 30
+test    /timeline/clips/0/out 820
+replace /timeline/clips/0/out 410
+test    /timeline/clips/1/in 910
+replace /timeline/clips/1/in 455
+test    /timeline/clips/1/out 1824
+replace /timeline/clips/1/out 912

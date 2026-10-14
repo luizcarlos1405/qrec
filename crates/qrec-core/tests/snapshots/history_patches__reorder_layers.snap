@@ -1,0 +1,12 @@
+---
+source: crates/qrec-core/tests/history_patches.rs
+expression: render(&e)
+---
+forward:
+test    /scene/layers/1 {"crop":{"bottom":0,"left":0,"right":0,"top":0},"fit":"cover","id":"L2","locked":false,"missing":false,"name":"Camera","opacity":1.0,"rect":{"h":288,"w":384,"x":1498,"y":754},"source":{"device":"/dev/video0","kind":"camera","label":"Camera /dev/video0"},"visible":true}
+remove  /scene/layers/1
+add     /scene/layers/0 {"crop":{"bottom":0,"left":0,"right":0,"top":0},"fit":"cover","id":"L2","locked":false,"missing":false,"name":"Camera","opacity":1.0,"rect":{"h":288,"w":384,"x":1498,"y":754},"source":{"device":"/dev/video0","kind":"camera","label":"Camera /dev/video0"},"visible":true}
+inverse:
+test    /scene/layers/1 {"crop":{"bottom":0,"left":0,"right":0,"top":0},"fit":"contain","id":"L1","locked":false,"missing":false,"name":"Screen DP-4","opacity":1.0,"rect":{"h":1080,"w":1920,"x":0,"y":0},"source":{"kind":"screen","label":"Monitor DP-4","output":"DP-4"},"visible":true}
+remove  /scene/layers/1
+add     /scene/layers/0 {"crop":{"bottom":0,"left":0,"right":0,"top":0},"fit":"contain","id":"L1","locked":false,"missing":false,"name":"Screen DP-4","opacity":1.0,"rect":{"h":1080,"w":1920,"x":0,"y":0},"source":{"kind":"screen","label":"Monitor DP-4","output":"DP-4"},"visible":true}

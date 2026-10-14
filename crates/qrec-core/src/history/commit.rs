@@ -10,16 +10,18 @@ use serde_json::Value;
 
 use crate::ctx::Ctx;
 use crate::hash::json_hash;
-use crate::history::{HistoryEntry, diff};
+use crate::history::{HistoryEntry, diff, ops};
 use crate::protocol::effect::{Effect, HistoryOp};
 use crate::state::State;
+use crate::apply::ui::live_effect;
 use crate::ui_normalize::ui_normalize;
 
 /// The result of [`commit`] or [`persist`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Committed {
     pub state: State,
-    /// `History(Append)` (if an entry was appended), then `WriteProject` /
+    /// `History(Append)` (if an entry was appended; `History(Rewrite)` when
+    /// the append also compacted the history), then `WriteProject` /
     /// `WriteUi` for what changed, in the A§7.6 order.
     pub effects: Vec<Effect>,
     /// The new entry's seq; `None` when nothing undoable changed.
@@ -31,6 +33,10 @@ pub struct Committed {
 /// (`seq = next_seq`) and emits `History(Append)` + `WriteProject` (+
 /// `WriteUi` when the UI changed). Equal views append nothing and behave
 /// like [`persist`].
+///
+/// When the append takes the history above 5,000 entries it is compacted
+/// (A§7.3) and the one history effect is the `Rewrite` (which holds the
+/// new entry) instead of the `Append`.
 ///
 /// `cmd` is the entry's `cmd`: `Command::to_json()`, `{"event":…}` or
 /// `{"external":true}`.
@@ -56,13 +62,18 @@ pub fn commit(prev: &State, ctx: &Ctx, label: String, cmd: Value, mut next: Stat
         after_hash: json_hash(&after),
     };
     next.history.append(entry.clone());
-    let mut effects = vec![
-        Effect::History(HistoryOp::Append(entry)),
-        Effect::WriteProject,
-    ];
+    let history_op = match ops::compact(&next.history, &next.project) {
+        Some((compacted, rewrite)) => {
+            next.history = compacted;
+            rewrite
+        }
+        None => HistoryOp::Append(entry),
+    };
+    let mut effects = vec![Effect::History(history_op), Effect::WriteProject];
     if next.ui != prev.ui {
         effects.push(Effect::WriteUi);
     }
+    effects.extend(live_effect(prev, &next));
     Committed {
         state: next,
         effects,
@@ -82,6 +93,10 @@ pub fn persist(prev: &State, mut next: State) -> Committed {
     }
 }
 
+/// The writes for what changed, then the `SetLive` the change implies.
+/// `SetLive` is emitted here and only here, so the live pipeline follows
+/// scene edits, undo/redo, canvas-mode switches and record phases alike;
+/// handlers add `StartCapture`/`StopCapture` after it.
 fn writes(prev: &State, next: &State) -> Vec<Effect> {
     let mut effects = Vec::new();
     if next.project != prev.project {
@@ -90,6 +105,7 @@ fn writes(prev: &State, next: &State) -> Vec<Effect> {
     if next.ui != prev.ui {
         effects.push(Effect::WriteUi);
     }
+    effects.extend(live_effect(prev, next));
     effects
 }
 
@@ -137,13 +153,8 @@ mod tests {
                 Effect::WriteProject
             ]
         );
-        assert!(
-            c.state
-                .history
-                .seen_clip_ids
-                .iter()
-                .any(|id| id.as_str() == "c002")
-        );
+        // A trim patches fields only; the clip is still on the timeline.
+        assert!(c.state.history.seen_clip_ids.is_empty());
 
         // The patches move between the two views.
         let mut doc = undoable_view(&prev.project);
@@ -159,6 +170,15 @@ mod tests {
         let c2 = commit(&c.state, &ctx, "Remove clip c001".into(), Value::Null, next);
         assert_eq!(c2.seq, Some(2));
         assert_eq!(c2.state.history.entries.len(), 2);
+        // A removed clip could come back with undo: its id is never reused.
+        let seen: Vec<&str> = c2
+            .state
+            .history
+            .seen_clip_ids
+            .iter()
+            .map(|id| id.as_str())
+            .collect();
+        assert_eq!(seen, ["c001"]);
     }
 
     #[test]
@@ -208,5 +228,99 @@ mod tests {
         let seqs: Vec<u64> = c.state.history.entries.iter().map(|e| e.seq).collect();
         assert_eq!(seqs, vec![1, 4]);
         assert_eq!(c.state.history.cursor, 4);
+    }
+
+    #[test]
+    fn patches_are_guarded_by_tests() {
+        let prev = two_clips();
+        let ctx = testkit::ctx("2026-10-14T12:30:00Z", 1);
+        let mut next = prev.clone();
+        next.project.timeline.clips.remove(0);
+        next.project.timeline.clips[0].out = 290;
+        let c = commit(&prev, &ctx, "Edit".into(), Value::Null, next);
+        let entry = &c.state.history.entries[0];
+        let ops: Vec<String> = entry.forward.0.iter().map(|op| op.to_string()).collect();
+        assert_eq!(
+            ops,
+            [
+                r#"{"op":"test","path":"/timeline/clips/0","value":{"id":"c001","in":0,"out":100,"take":"take-0001"}}"#,
+                r#"{"op":"remove","path":"/timeline/clips/0"}"#,
+                r#"{"op":"test","path":"/timeline/clips/0/out","value":300}"#,
+                r#"{"op":"replace","path":"/timeline/clips/0/out","value":290}"#,
+            ]
+        );
+    }
+
+    /// 5,000 renames, entry `i` turning `n{i-1}` into `n{i}`.
+    fn long_history() -> State {
+        use json_patch::Patch;
+        let mut state = two_clips();
+        let ts = state.project.created_at;
+        let mut name = "n0".to_owned();
+        state.project.name = name.clone();
+        let rename = |from: &str, to: &str| -> Patch {
+            serde_json::from_value(serde_json::json!([
+                {"op": "test", "path": "/name", "value": from},
+                {"op": "replace", "path": "/name", "value": to}
+            ]))
+            .unwrap()
+        };
+        let entries = std::sync::Arc::make_mut(&mut state.history.entries);
+        for seq in 1..=5_000u64 {
+            let new = format!("n{seq}");
+            entries.push(HistoryEntry {
+                seq,
+                ts,
+                label: format!("Rename {seq}"),
+                cmd: Value::Null,
+                forward: rename(&name, &new),
+                inverse: rename(&new, &name),
+                after_hash: String::new(),
+            });
+            name = new;
+        }
+        state.history.cursor = 5_000;
+        state.history.next_seq = 5_001;
+        state.project.name = name;
+        state
+    }
+
+    #[test]
+    fn appending_past_the_limit_compacts() {
+        let state = long_history();
+        let ctx = testkit::ctx("2026-10-14T12:30:00Z", 1);
+        let mut next = state.clone();
+        next.project.name = "final".into();
+        let c = commit(&state, &ctx, "Rename final".into(), Value::Null, next);
+        assert_eq!(c.seq, Some(5_001));
+        let h = &c.state.history;
+        assert_eq!(h.entries.len(), 4_000);
+        assert_eq!((h.base_seq, h.cursor, h.next_seq), (1_001, 5_001, 5_002));
+        assert_eq!(h.entries.last().unwrap().label, "Rename final");
+        match c.effects.as_slice() {
+            [
+                Effect::History(HistoryOp::Rewrite {
+                    entries,
+                    base,
+                    base_seq,
+                    cursor,
+                    next_seq,
+                }),
+                Effect::WriteProject,
+            ] => {
+                assert_eq!(entries, &*h.entries);
+                assert_eq!(base.name, "n1001", "the state before the oldest kept entry");
+                assert_eq!((*base_seq, *cursor, *next_seq), (1_001, 5_001, 5_002));
+            }
+            other => panic!("expected a rewrite: {other:?}"),
+        }
+        // One more entry appends normally: 4,001 is below the limit.
+        let mut next = c.state.clone();
+        next.project.name = "again".into();
+        let c2 = commit(&c.state, &ctx, "Rename again".into(), Value::Null, next);
+        assert!(matches!(
+            c2.effects[0],
+            Effect::History(HistoryOp::Append(_))
+        ));
     }
 }

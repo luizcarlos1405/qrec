@@ -1,0 +1,86 @@
+---
+source: crates/qrec-core/src/apply/ui.rs
+expression: summary(&live)
+---
+{
+  "effects": [
+    "writeUi",
+    {
+      "setLive": {
+        "canvas": {
+          "background": "#000000",
+          "fps": {
+            "den": 1,
+            "num": 30
+          },
+          "height": 1080,
+          "width": 1920
+        },
+        "preview": true,
+        "scene": {
+          "audio": [
+            {
+              "gainDb": 0.0,
+              "id": "A1",
+              "label": "Mic",
+              "muted": false,
+              "role": "mic",
+              "source": "alsa_input.mic",
+              "syncOffsetMs": 0
+            }
+          ],
+          "layers": [
+            {
+              "crop": {
+                "bottom": 0,
+                "left": 0,
+                "right": 0,
+                "top": 0
+              },
+              "fit": "contain",
+              "id": "L1",
+              "name": "Screen DP-1",
+              "opacity": 1.0,
+              "rect": {
+                "h": 1080,
+                "w": 1920,
+                "x": 0,
+                "y": 0
+              },
+              "source": {
+                "kind": "screen",
+                "label": "Monitor DP-1",
+                "output": "DP-1"
+              },
+              "visible": true
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "playing": false,
+  "reply": {
+    "Ok": {
+      "created": [],
+      "message": "Switched the canvas to Live",
+      "removed": [],
+      "result": {
+        "canvasMode": "live"
+      },
+      "seq": null
+    }
+  },
+  "ui": {
+    "binOpen": false,
+    "canvasMode": "live",
+    "panels": {},
+    "playhead": 0,
+    "scrollPx": 0.0,
+    "selectedLayer": null,
+    "selection": [],
+    "snapping": true,
+    "solo": null,
+    "zoom": null
+  }
+}
