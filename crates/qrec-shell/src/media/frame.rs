@@ -99,6 +99,9 @@ fn save(
         ));
     }
     check_png(&tmp, &log)?;
+    File::open(&tmp)
+        .and_then(|f| f.sync_all())
+        .map_err(|e| Failure::plain(format!("can't sync the frame: {e}"), &log))?;
     if ctl.is_cancelled() {
         return Err(Failure::Cancelled);
     }

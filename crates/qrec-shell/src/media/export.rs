@@ -471,9 +471,14 @@ fn stitch(
     stopped(ctl, &done)?;
     check_ffmpeg(&done, "stitch", &log)?;
     match fs::metadata(&tmp) {
-        Ok(meta) if meta.len() > 0 => Ok(tmp),
-        _ => Err(Failure::step("stitch: ffmpeg wrote no output", &log)),
+        Ok(meta) if meta.len() > 0 => {}
+        _ => return Err(Failure::step("stitch: ffmpeg wrote no output", &log)),
     }
+    // "Your video is ready" must survive a crash right after it.
+    fs::File::open(&tmp)
+        .and_then(|f| f.sync_all())
+        .map_err(|e| Failure::plain(format!("can't sync the export: {e}"), &log))?;
+    Ok(tmp)
 }
 
 /// The concat list, written atomically (it lives in the segments dir).
