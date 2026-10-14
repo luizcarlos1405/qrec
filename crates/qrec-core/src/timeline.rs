@@ -87,7 +87,9 @@ pub fn is_contiguous(clips: &[Clip], ids: &[ClipId]) -> bool {
         }
     }
     match (indices.first(), indices.last()) {
-        (Some(first), Some(last)) => found.len() == wanted.len() && last - first + 1 == indices.len(),
+        (Some(first), Some(last)) => {
+            found.len() == wanted.len() && last - first + 1 == indices.len()
+        }
         _ => false,
     }
 }
@@ -189,11 +191,19 @@ pub fn move_block(clips: &[Clip], ids: &[ClipId], to: &MoveTo) -> Result<Vec<Cli
             if wanted.contains(anchor) {
                 return Err(CoreError::invalid(format!(
                     "can't move clips {} {anchor}: {anchor} is one of the clips being moved",
-                    if matches!(to, MoveTo::Before(_)) { "before" } else { "after" }
+                    if matches!(to, MoveTo::Before(_)) {
+                        "before"
+                    } else {
+                        "after"
+                    }
                 )));
             }
             let idx = index_of(&rest, anchor).ok_or_else(|| unknown_clip(anchor))?;
-            if matches!(to, MoveTo::Before(_)) { idx } else { idx + 1 }
+            if matches!(to, MoveTo::Before(_)) {
+                idx
+            } else {
+                idx + 1
+            }
         }
     };
     let mut out = rest;
@@ -204,7 +214,11 @@ pub fn move_block(clips: &[Clip], ids: &[ClipId], to: &MoveTo) -> Result<Vec<Cli
 /// The timeline without these clips.
 pub fn remove(clips: &[Clip], ids: &[ClipId]) -> Vec<Clip> {
     let gone: BTreeSet<&ClipId> = ids.iter().collect();
-    clips.iter().filter(|c| !gone.contains(&c.id)).cloned().collect()
+    clips
+        .iter()
+        .filter(|c| !gone.contains(&c.id))
+        .cloned()
+        .collect()
 }
 
 /// Inserts `new` before index `index` (clamped to the end).
@@ -272,7 +286,11 @@ pub fn absolute_frame(arg: &TimeArg, fps: Fps, what: &str) -> Result<Frame, Core
 /// A signed frame delta (`seek --by`, relative trim edges); an unsigned value counts as `+`.
 pub fn delta_frames(arg: &TimeArg, fps: Fps) -> Result<i64, CoreError> {
     let m = magnitude(arg, fps)?;
-    Ok(if arg.sign == crate::time::Sign::Minus { -m } else { m })
+    Ok(if arg.sign == crate::time::Sign::Minus {
+        -m
+    } else {
+        m
+    })
 }
 
 /// The take frame a trim argument puts `edge` of clip `i` at (A§5.2):
@@ -312,7 +330,11 @@ pub fn trim_edge(
         ))
         .with_hint(format!(
             "use a time inside the clip, or a relative value like {}-10f to move the {} edge",
-            if edge == Edge::Start { "--start " } else { "--end " },
+            if edge == Edge::Start {
+                "--start "
+            } else {
+                "--end "
+            },
             edge.as_str()
         )));
     }
@@ -333,7 +355,11 @@ pub fn split_point(
     let clip = clip_index(clips, i)?;
     let t = absolute_frame(arg, fps, "clip split --at")?;
     if clip.len() < 2 {
-        let frames = if clip.len() == 1 { "1 frame".to_owned() } else { format!("{} frames", clip.len()) };
+        let frames = if clip.len() == 1 {
+            "1 frame".to_owned()
+        } else {
+            format!("{} frames", clip.len())
+        };
         return Err(CoreError::invalid(format!(
             "clip {} is {frames} long and can't be split",
             clip.id
@@ -346,7 +372,9 @@ pub fn split_point(
                 clip.id,
                 clip.len() - 1
             ))
-            .with_hint("--at is relative to the clip's start; add --timeline for a timeline position"));
+            .with_hint(
+                "--at is relative to the clip's start; add --timeline for a timeline position",
+            ));
         }
         return Ok(clip.in_ + t);
     }
@@ -464,9 +492,15 @@ mod tests {
         let clips = five();
         assert!(is_contiguous(&clips, &[cid("c1")]));
         assert!(is_contiguous(&clips, &[cid("c2"), cid("c1"), cid("c3")]));
-        assert!(is_contiguous(&clips, &[cid("c1"), cid("c1"), cid("c2")]), "duplicates count once");
+        assert!(
+            is_contiguous(&clips, &[cid("c1"), cid("c1"), cid("c2")]),
+            "duplicates count once"
+        );
         assert!(!is_contiguous(&clips, &[cid("c1"), cid("c3")]));
-        assert!(!is_contiguous(&clips, &[cid("c1"), cid("c9")]), "unknown ids aren't on the timeline");
+        assert!(
+            !is_contiguous(&clips, &[cid("c1"), cid("c9")]),
+            "unknown ids aren't on the timeline"
+        );
         assert!(!is_contiguous(&clips, &[]), "an empty list is not a run");
         assert!(!is_contiguous(&[], &[cid("c1")]));
     }
@@ -488,9 +522,16 @@ mod tests {
             let err = split(&clips, 1, bad, cid("c9")).unwrap_err();
             assert_eq!(err.code, ErrorCode::Invalid, "cut at {bad}");
         }
-        assert_eq!(split(&clips, 2, 5, cid("c9")).unwrap_err().code, ErrorCode::Invalid);
+        assert_eq!(
+            split(&clips, 2, 5, cid("c9")).unwrap_err().code,
+            ErrorCode::Invalid
+        );
         let err = split(&clips, 1, 113, cid("c1")).unwrap_err();
-        assert!(err.message.contains("already on the timeline"), "{}", err.message);
+        assert!(
+            err.message.contains("already on the timeline"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]
@@ -510,7 +551,10 @@ mod tests {
             assert_eq!(err.code, ErrorCode::Invalid, "[{a}, {b})");
             assert!(err.message.contains("empty"), "{}", err.message);
         }
-        assert_eq!(trim(&clips, 5, 0, 1, 100).unwrap_err().code, ErrorCode::Invalid);
+        assert_eq!(
+            trim(&clips, 5, 0, 1, 100).unwrap_err().code,
+            ErrorCode::Invalid
+        );
         let huge = trim(&clips, 0, 0, i64::MAX, u64::MAX).unwrap();
         assert_eq!(huge.clips[0].out, i64::MAX as u64);
     }
@@ -540,7 +584,11 @@ mod tests {
             ids(&move_block(&clips, &sel, &MoveTo::Index(i)).unwrap()).join(" ")
         };
         assert_eq!(to(0, &["c3", "c4"]), "c3 c4 c0 c1 c2");
-        assert_eq!(to(2, &["c0"]), "c1 c2 c0 c3 c4", "the index ignores the block");
+        assert_eq!(
+            to(2, &["c0"]),
+            "c1 c2 c0 c3 c4",
+            "the index ignores the block"
+        );
         assert_eq!(to(99, &["c0"]), "c1 c2 c3 c4 c0", "clamped to the end");
     }
 
@@ -567,18 +615,39 @@ mod tests {
     #[test]
     fn remove_insert_replace() {
         let clips = five();
-        assert_eq!(ids(&remove(&clips, &[cid("c1"), cid("c3"), cid("c9")])), ["c0", "c2", "c4"]);
+        assert_eq!(
+            ids(&remove(&clips, &[cid("c1"), cid("c3"), cid("c9")])),
+            ["c0", "c2", "c4"]
+        );
         assert_eq!(remove(&clips, &[]), clips);
 
         let new = vec![clip("n1", 0, 1), clip("n2", 1, 2)];
-        assert_eq!(ids(&insert(&clips, 0, new.clone())), ["n1", "n2", "c0", "c1", "c2", "c3", "c4"]);
-        assert_eq!(ids(&insert(&clips, 2, new.clone())), ["c0", "c1", "n1", "n2", "c2", "c3", "c4"]);
-        assert_eq!(ids(&insert(&clips, 99, new.clone())), ["c0", "c1", "c2", "c3", "c4", "n1", "n2"]);
+        assert_eq!(
+            ids(&insert(&clips, 0, new.clone())),
+            ["n1", "n2", "c0", "c1", "c2", "c3", "c4"]
+        );
+        assert_eq!(
+            ids(&insert(&clips, 2, new.clone())),
+            ["c0", "c1", "n1", "n2", "c2", "c3", "c4"]
+        );
+        assert_eq!(
+            ids(&insert(&clips, 99, new.clone())),
+            ["c0", "c1", "c2", "c3", "c4", "n1", "n2"]
+        );
         assert_eq!(ids(&insert(&[], 3, new.clone())), ["n1", "n2"]);
 
-        assert_eq!(ids(&replace_run(&clips, 1, 2, new.clone())), ["c0", "n1", "n2", "c3", "c4"]);
-        assert_eq!(ids(&replace_run(&clips, 4, 9, new.clone())), ["c0", "c1", "c2", "c3", "n1", "n2"]);
-        assert_eq!(ids(&replace_run(&clips, 9, 1, new.clone())), ["c0", "c1", "c2", "c3", "c4", "n1", "n2"]);
+        assert_eq!(
+            ids(&replace_run(&clips, 1, 2, new.clone())),
+            ["c0", "n1", "n2", "c3", "c4"]
+        );
+        assert_eq!(
+            ids(&replace_run(&clips, 4, 9, new.clone())),
+            ["c0", "c1", "c2", "c3", "n1", "n2"]
+        );
+        assert_eq!(
+            ids(&replace_run(&clips, 9, 1, new.clone())),
+            ["c0", "c1", "c2", "c3", "c4", "n1", "n2"]
+        );
         assert_eq!(ids(&replace_run(&clips, 1, 0, vec![])), ids(&clips));
     }
 
@@ -600,13 +669,24 @@ mod tests {
         assert_eq!(edge(Edge::Start, "10f", true).unwrap(), 100);
         let err = edge(Edge::Start, "9f", true).unwrap_err();
         assert_eq!(err.code, ErrorCode::Invalid);
-        assert_eq!(err.message, "00:00:00:09 is outside clip c1 (00:00:00:10–00:00:01:10 on the timeline)");
-        assert_eq!(edge(Edge::End, "41f", true).unwrap_err().code, ErrorCode::Invalid);
+        assert_eq!(
+            err.message,
+            "00:00:00:09 is outside clip c1 (00:00:00:10–00:00:01:10 on the timeline)"
+        );
+        assert_eq!(
+            edge(Edge::End, "41f", true).unwrap_err().code,
+            ErrorCode::Invalid
+        );
         // Seconds round to the nearest frame; huge values don't wrap.
         assert_eq!(edge(Edge::Start, "0.5s", false).unwrap(), 115);
         let err = edge(Edge::Start, "18446744073709551615f", false).unwrap_err();
         assert_eq!(err.code, ErrorCode::Usage);
-        assert_eq!(trim_edge(&clips, 7, Edge::Start, &t("1f"), false, F30).unwrap_err().code, ErrorCode::Invalid);
+        assert_eq!(
+            trim_edge(&clips, 7, Edge::Start, &t("1f"), false, F30)
+                .unwrap_err()
+                .code,
+            ErrorCode::Invalid
+        );
     }
 
     #[test]
@@ -617,8 +697,18 @@ mod tests {
         assert_eq!(at(1, "13f", true).unwrap(), 103);
         assert_eq!(at(1, "1f", false).unwrap(), 101);
         assert_eq!(at(1, "29f", false).unwrap(), 129);
-        for (s, tl) in [("0f", false), ("30f", false), ("10f", true), ("40f", true), ("99f", true)] {
-            assert_eq!(at(1, s, tl).unwrap_err().code, ErrorCode::Invalid, "{s} timeline={tl}");
+        for (s, tl) in [
+            ("0f", false),
+            ("30f", false),
+            ("10f", true),
+            ("40f", true),
+            ("99f", true),
+        ] {
+            assert_eq!(
+                at(1, s, tl).unwrap_err().code,
+                ErrorCode::Invalid,
+                "{s} timeline={tl}"
+            );
         }
         assert_eq!(at(1, "+3f", false).unwrap_err().code, ErrorCode::Usage);
         let err = at(2, "0f", false).unwrap_err();
@@ -627,13 +717,26 @@ mod tests {
 
     #[test]
     fn absolute_and_delta_frames() {
-        assert_eq!(absolute_frame(&t("00:00:01:05"), F30, "seek --to").unwrap(), 35);
+        assert_eq!(
+            absolute_frame(&t("00:00:01:05"), F30, "seek --to").unwrap(),
+            35
+        );
         let err = absolute_frame(&t("-1f"), F30, "seek --to").unwrap_err();
         assert_eq!(err.code, ErrorCode::Usage);
-        assert_eq!(err.message, "seek --to takes an absolute time, not the relative -1f");
+        assert_eq!(
+            err.message,
+            "seek --to takes an absolute time, not the relative -1f"
+        );
         assert_eq!(delta_frames(&t("-1s"), F30).unwrap(), -30);
         assert_eq!(delta_frames(&t("+2f"), F30).unwrap(), 2);
-        assert_eq!(delta_frames(&t("2f"), F30).unwrap(), 2, "unsigned counts as +");
-        assert_eq!(delta_frames(&t("00:00:00:30"), F30).unwrap_err().code, ErrorCode::Usage);
+        assert_eq!(
+            delta_frames(&t("2f"), F30).unwrap(),
+            2,
+            "unsigned counts as +"
+        );
+        assert_eq!(
+            delta_frames(&t("00:00:00:30"), F30).unwrap_err().code,
+            ErrorCode::Usage
+        );
     }
 }

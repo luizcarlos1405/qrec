@@ -38,7 +38,8 @@ use crate::ui_normalize::{canvas_scene, canvas_target};
 /// when the playhead is at the end).
 pub fn select(state: &State, _ctx: &Ctx, op: SelectOp) -> Result<Outcome, CoreError> {
     let clips = &state.project.timeline.clips;
-    let find = |id: &ClipId| timeline::index_of(clips, id).ok_or_else(|| timeline::unknown_clip(id));
+    let find =
+        |id: &ClipId| timeline::index_of(clips, id).ok_or_else(|| timeline::unknown_clip(id));
     let mut current: Vec<usize> = state
         .ui
         .selection
@@ -81,9 +82,10 @@ pub fn select(state: &State, _ctx: &Ctx, op: SelectOp) -> Result<Outcome, CoreEr
             ids(i..=i)
         }
         SelectOp::Next => {
-            let i = current
-                .last()
-                .map_or_else(|| clip_under_playhead(state), |&l| (l + 1).min(clips.len() - 1));
+            let i = current.last().map_or_else(
+                || clip_under_playhead(state),
+                |&l| (l + 1).min(clips.len() - 1),
+            );
             ids(i..=i)
         }
         SelectOp::All => clips.iter().map(|c| c.id.clone()).collect(),
@@ -223,7 +225,9 @@ pub fn set_ui(state: &State, _ctx: &Ctx, patch: UiPatch) -> Result<Outcome, Core
     }
     if let Some(px) = patch.scroll_px {
         if !px.is_finite() {
-            return Err(CoreError::usage(format!("scroll must be a number of pixels, not {px}")));
+            return Err(CoreError::usage(format!(
+                "scroll must be a number of pixels, not {px}"
+            )));
         }
         ui.scroll_px = px.max(0.0);
         changed.push("scroll");
@@ -432,7 +436,12 @@ mod tests {
 
     fn selected(state: &State, op: SelectOp) -> Vec<String> {
         let out = run(state, Command::Select { op }).unwrap();
-        out.state.ui.selection.iter().map(ToString::to_string).collect()
+        out.state
+            .ui
+            .selection
+            .iter()
+            .map(ToString::to_string)
+            .collect()
     }
 
     fn with_selection(ids: &[&str]) -> State {
@@ -444,21 +453,54 @@ mod tests {
     #[test]
     fn select_ops() {
         let none = state();
-        let out = run(&none, Command::Select { op: SelectOp::Set(vec![cid("c003"), cid("c001")]) }).unwrap();
+        let out = run(
+            &none,
+            Command::Select {
+                op: SelectOp::Set(vec![cid("c003"), cid("c001")]),
+            },
+        )
+        .unwrap();
         insta::assert_json_snapshot!("select_set", summary(&out));
 
         assert_eq!(selected(&none, SelectOp::All), ["c001", "c002", "c003"]);
         assert!(selected(&with_selection(&["c002"]), SelectOp::Clear).is_empty());
-        assert_eq!(selected(&with_selection(&["c002"]), SelectOp::Toggle(cid("c001"))), ["c001", "c002"]);
-        assert_eq!(selected(&with_selection(&["c001", "c002"]), SelectOp::Toggle(cid("c001"))), ["c002"]);
+        assert_eq!(
+            selected(&with_selection(&["c002"]), SelectOp::Toggle(cid("c001"))),
+            ["c001", "c002"]
+        );
+        assert_eq!(
+            selected(
+                &with_selection(&["c001", "c002"]),
+                SelectOp::Toggle(cid("c001"))
+            ),
+            ["c002"]
+        );
         assert_eq!(selected(&none, SelectOp::RangeTo(cid("c002"))), ["c002"]);
-        assert_eq!(selected(&with_selection(&["c003"]), SelectOp::RangeTo(cid("c001"))), ["c001", "c002", "c003"]);
-        assert_eq!(selected(&with_selection(&["c002"]), SelectOp::RangeTo(cid("c003"))), ["c002", "c003"]);
+        assert_eq!(
+            selected(&with_selection(&["c003"]), SelectOp::RangeTo(cid("c001"))),
+            ["c001", "c002", "c003"]
+        );
+        assert_eq!(
+            selected(&with_selection(&["c002"]), SelectOp::RangeTo(cid("c003"))),
+            ["c002", "c003"]
+        );
         // Prev / Next move a single selection and clamp at the ends.
-        assert_eq!(selected(&with_selection(&["c002"]), SelectOp::Prev), ["c001"]);
-        assert_eq!(selected(&with_selection(&["c001"]), SelectOp::Prev), ["c001"]);
-        assert_eq!(selected(&with_selection(&["c002", "c003"]), SelectOp::Next), ["c003"]);
-        assert_eq!(selected(&with_selection(&["c002", "c003"]), SelectOp::Prev), ["c001"]);
+        assert_eq!(
+            selected(&with_selection(&["c002"]), SelectOp::Prev),
+            ["c001"]
+        );
+        assert_eq!(
+            selected(&with_selection(&["c001"]), SelectOp::Prev),
+            ["c001"]
+        );
+        assert_eq!(
+            selected(&with_selection(&["c002", "c003"]), SelectOp::Next),
+            ["c003"]
+        );
+        assert_eq!(
+            selected(&with_selection(&["c002", "c003"]), SelectOp::Prev),
+            ["c001"]
+        );
         // With nothing selected: the clip under the playhead, the last one at the end.
         let mut s = state();
         s.ui.playhead = 120;
@@ -469,13 +511,45 @@ mod tests {
 
         let empty = testkit::state(ProjectBuilder::new().build());
         let out = run(&empty, Command::Select { op: SelectOp::Next }).unwrap();
-        assert_eq!(out.reply.unwrap().unwrap().message, "Nothing selected: the timeline is empty");
+        assert_eq!(
+            out.reply.unwrap().unwrap().message,
+            "Nothing selected: the timeline is empty"
+        );
         assert!(out.effects.is_empty());
 
-        let err = run(&none, Command::Select { op: SelectOp::Set(vec![cid("c001"), cid("c404")]) }).unwrap_err();
-        assert_eq!((err.code, err.message.as_str()), (ErrorCode::NotFound, "no clip c404 on the timeline"));
-        assert_eq!(run(&none, Command::Select { op: SelectOp::Toggle(cid("c404")) }).unwrap_err().code, ErrorCode::NotFound);
-        assert_eq!(run(&none, Command::Select { op: SelectOp::RangeTo(cid("c404")) }).unwrap_err().code, ErrorCode::NotFound);
+        let err = run(
+            &none,
+            Command::Select {
+                op: SelectOp::Set(vec![cid("c001"), cid("c404")]),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            (err.code, err.message.as_str()),
+            (ErrorCode::NotFound, "no clip c404 on the timeline")
+        );
+        assert_eq!(
+            run(
+                &none,
+                Command::Select {
+                    op: SelectOp::Toggle(cid("c404"))
+                }
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            run(
+                &none,
+                Command::Select {
+                    op: SelectOp::RangeTo(cid("c404"))
+                }
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::NotFound
+        );
     }
 
     #[test]
@@ -493,10 +567,18 @@ mod tests {
     #[test]
     fn seek_targets() {
         let s = state();
-        let seek = |s: &State, to: SeekTarget| run(s, Command::Seek { to }).map(|o| o.state.ui.playhead);
+        let seek =
+            |s: &State, to: SeekTarget| run(s, Command::Seek { to }).map(|o| o.state.ui.playhead);
         assert_eq!(seek(&s, SeekTarget::To(t("00:00:04:00"))).unwrap(), 120);
-        assert_eq!(seek(&s, SeekTarget::To(t("1000f"))).unwrap(), 450, "clamped to the end");
-        assert_eq!(seek(&s, SeekTarget::To(t("-1f"))).unwrap_err().code, ErrorCode::Usage);
+        assert_eq!(
+            seek(&s, SeekTarget::To(t("1000f"))).unwrap(),
+            450,
+            "clamped to the end"
+        );
+        assert_eq!(
+            seek(&s, SeekTarget::To(t("-1f"))).unwrap_err().code,
+            ErrorCode::Usage
+        );
         assert_eq!(seek(&s, SeekTarget::End).unwrap(), 450);
 
         let mut at = s.clone();
@@ -510,14 +592,28 @@ mod tests {
         assert_eq!(seek(&at, SeekTarget::EditNext).unwrap(), 250);
         assert_eq!(seek(&at, SeekTarget::Start).unwrap(), 0);
         at.ui.playhead = 100;
-        assert_eq!(seek(&at, SeekTarget::EditPrev).unwrap(), 0, "strictly before");
-        assert_eq!(seek(&at, SeekTarget::EditNext).unwrap(), 250, "strictly after");
+        assert_eq!(
+            seek(&at, SeekTarget::EditPrev).unwrap(),
+            0,
+            "strictly before"
+        );
+        assert_eq!(
+            seek(&at, SeekTarget::EditNext).unwrap(),
+            250,
+            "strictly after"
+        );
         at.ui.playhead = 450;
         assert_eq!(seek(&at, SeekTarget::EditNext).unwrap(), 450);
         at.ui.playhead = 0;
         assert_eq!(seek(&at, SeekTarget::EditPrev).unwrap(), 0);
 
-        let out = run(&s, Command::Seek { to: SeekTarget::To(t("13.7s")) }).unwrap();
+        let out = run(
+            &s,
+            Command::Seek {
+                to: SeekTarget::To(t("13.7s")),
+            },
+        )
+        .unwrap();
         insta::assert_json_snapshot!("seek_to", summary(&out));
         let empty = testkit::state(ProjectBuilder::new().build());
         assert_eq!(seek(&empty, SeekTarget::End).unwrap(), 0);
@@ -530,18 +626,41 @@ mod tests {
             let mut s = state();
             s.runtime.host = host;
             for cmd in [
-                Command::Seek { to: SeekTarget::Start },
+                Command::Seek {
+                    to: SeekTarget::Start,
+                },
                 Command::Play,
                 Command::Pause,
-                Command::Shuttle { dir: ShuttleDir::Forward },
+                Command::Shuttle {
+                    dir: ShuttleDir::Forward,
+                },
             ] {
                 let err = run(&s, cmd.clone()).unwrap_err();
                 assert_eq!(err.code, ErrorCode::Unavailable, "{cmd:?} in {host:?}");
             }
             // The rest of the UI commands work in every host.
             assert!(run(&s, Command::Select { op: SelectOp::All }).is_ok());
-            assert!(run(&s, Command::SetCanvasMode { mode: CanvasMode::Program }).is_ok());
-            assert!(run(&s, Command::SetUi { patch: UiPatch { snapping: Some(false), ..UiPatch::default() } }).is_ok());
+            assert!(
+                run(
+                    &s,
+                    Command::SetCanvasMode {
+                        mode: CanvasMode::Program
+                    }
+                )
+                .is_ok()
+            );
+            assert!(
+                run(
+                    &s,
+                    Command::SetUi {
+                        patch: UiPatch {
+                            snapping: Some(false),
+                            ..UiPatch::default()
+                        }
+                    }
+                )
+                .is_ok()
+            );
         }
     }
 
@@ -556,14 +675,24 @@ mod tests {
         let playing = out.state;
         let out = run(&playing, Command::Pause).unwrap();
         assert!(!out.state.runtime.playing);
-        assert_eq!(out.effects, [], "playing isn't persisted; Program keeps the pipeline off");
+        assert_eq!(
+            out.effects,
+            [],
+            "playing isn't persisted; Program keeps the pipeline off"
+        );
         assert_eq!(out.reply.unwrap().unwrap().message, "Paused at 00:00:00:00");
         let out = run(&s, Command::Pause).unwrap();
-        assert_eq!(out.reply.unwrap().unwrap().message, "Already paused at 00:00:15:00");
+        assert_eq!(
+            out.reply.unwrap().unwrap().message,
+            "Already paused at 00:00:15:00"
+        );
 
         let empty = testkit::state(ProjectBuilder::new().build());
         let err = run(&empty, Command::Play).unwrap_err();
-        assert_eq!((err.code, err.message.as_str()), (ErrorCode::Invalid, "nothing to play: the timeline is empty"));
+        assert_eq!(
+            (err.code, err.message.as_str()),
+            (ErrorCode::Invalid, "nothing to play: the timeline is empty")
+        );
     }
 
     #[test]
@@ -571,37 +700,94 @@ mod tests {
         let mut s = state();
         s.ui.canvas_mode = CanvasMode::Program;
         s.ui.playhead = 200;
-        let out = run(&s, Command::Shuttle { dir: ShuttleDir::Reverse }).unwrap();
+        let out = run(
+            &s,
+            Command::Shuttle {
+                dir: ShuttleDir::Reverse,
+            },
+        )
+        .unwrap();
         assert!(out.state.runtime.playing);
-        assert_eq!(out.reply.unwrap().unwrap().message, "Playing backwards from 00:00:06:20");
-        let out = run(&s, Command::Shuttle { dir: ShuttleDir::Forward }).unwrap();
+        assert_eq!(
+            out.reply.unwrap().unwrap().message,
+            "Playing backwards from 00:00:06:20"
+        );
+        let out = run(
+            &s,
+            Command::Shuttle {
+                dir: ShuttleDir::Forward,
+            },
+        )
+        .unwrap();
         assert!(out.state.runtime.playing);
         assert_eq!(out.state.ui.playhead, 200);
-        let stopped = run(&out.state, Command::Shuttle { dir: ShuttleDir::Stop }).unwrap();
+        let stopped = run(
+            &out.state,
+            Command::Shuttle {
+                dir: ShuttleDir::Stop,
+            },
+        )
+        .unwrap();
         assert!(!stopped.state.runtime.playing);
         // Backwards from the very start just stops.
         let mut start = out.state.clone();
         start.ui.playhead = 0;
-        let out = run(&start, Command::Shuttle { dir: ShuttleDir::Reverse }).unwrap();
+        let out = run(
+            &start,
+            Command::Shuttle {
+                dir: ShuttleDir::Reverse,
+            },
+        )
+        .unwrap();
         assert!(!out.state.runtime.playing);
-        assert_eq!(out.reply.unwrap().unwrap().message, "At the start of the timeline; nothing to play backwards");
+        assert_eq!(
+            out.reply.unwrap().unwrap().message,
+            "At the start of the timeline; nothing to play backwards"
+        );
     }
 
     #[test]
     fn canvas_mode_drives_the_live_pipeline() {
         let s = state();
-        let program = run(&s, Command::SetCanvasMode { mode: CanvasMode::Program }).unwrap();
+        let program = run(
+            &s,
+            Command::SetCanvasMode {
+                mode: CanvasMode::Program,
+            },
+        )
+        .unwrap();
         assert_eq!(program.effects, [Effect::WriteUi, Effect::SetLive(None)]);
-        let live = run(&program.state, Command::SetCanvasMode { mode: CanvasMode::Live }).unwrap();
+        let live = run(
+            &program.state,
+            Command::SetCanvasMode {
+                mode: CanvasMode::Live,
+            },
+        )
+        .unwrap();
         insta::assert_json_snapshot!("canvas_to_live", summary(&live));
-        let again = run(&live.state, Command::SetCanvasMode { mode: CanvasMode::Live }).unwrap();
+        let again = run(
+            &live.state,
+            Command::SetCanvasMode {
+                mode: CanvasMode::Live,
+            },
+        )
+        .unwrap();
         assert!(again.effects.is_empty());
-        assert_eq!(again.reply.unwrap().unwrap().message, "The canvas is already in Live mode");
+        assert_eq!(
+            again.reply.unwrap().unwrap().message,
+            "The canvas is already in Live mode"
+        );
 
         // Switching to Live stops playback.
         let mut playing = program.state.clone();
         playing.runtime.playing = true;
-        let out = run(&playing, Command::SetCanvasMode { mode: CanvasMode::Live }).unwrap();
+        let out = run(
+            &playing,
+            Command::SetCanvasMode {
+                mode: CanvasMode::Live,
+            },
+        )
+        .unwrap();
         assert!(!out.state.runtime.playing);
 
         // While recording the pipeline stays up; only the preview branch follows the mode.
@@ -612,7 +798,13 @@ mod tests {
             elapsed_ns: 0,
             waiters: vec![],
         };
-        let out = run(&rec, Command::SetCanvasMode { mode: CanvasMode::Program }).unwrap();
+        let out = run(
+            &rec,
+            Command::SetCanvasMode {
+                mode: CanvasMode::Program,
+            },
+        )
+        .unwrap();
         let Some(Effect::SetLive(Some(scene))) = out.effects.last() else {
             panic!("expected SetLive(Some): {:?}", out.effects);
         };
@@ -620,7 +812,13 @@ mod tests {
         assert_eq!(scene.scene, rec.project.scene);
         // A headless host has no preview: its wish doesn't change with the mode.
         rec.runtime.host = HostKind::Headless;
-        let out = run(&rec, Command::SetCanvasMode { mode: CanvasMode::Program }).unwrap();
+        let out = run(
+            &rec,
+            Command::SetCanvasMode {
+                mode: CanvasMode::Program,
+            },
+        )
+        .unwrap();
         assert_eq!(out.effects, [Effect::WriteUi]);
         assert_eq!(live_scene(&rec).map(|l| l.preview), Some(false));
         rec.runtime.record = RecordPhase::Idle;
@@ -647,28 +845,91 @@ mod tests {
         // Panels merge; null clears.
         let mut more = BTreeMap::new();
         more.insert("bin".to_owned(), 300.0);
-        let patch = UiPatch { zoom: Nullable::Clear, solo: Nullable::Clear, panels: Some(more), ..UiPatch::default() };
+        let patch = UiPatch {
+            zoom: Nullable::Clear,
+            solo: Nullable::Clear,
+            panels: Some(more),
+            ..UiPatch::default()
+        };
         let out = run(&out.state, Command::SetUi { patch }).unwrap();
         assert_eq!(out.state.ui.zoom, None);
         assert_eq!(out.state.ui.solo, None);
-        assert_eq!(out.state.ui.panels.keys().collect::<Vec<_>>(), ["bin", "layers"]);
-        let out = run(&out.state, Command::SetUi { patch: UiPatch::default() }).unwrap();
+        assert_eq!(
+            out.state.ui.panels.keys().collect::<Vec<_>>(),
+            ["bin", "layers"]
+        );
+        let out = run(
+            &out.state,
+            Command::SetUi {
+                patch: UiPatch::default(),
+            },
+        )
+        .unwrap();
         assert!(out.effects.is_empty());
         assert_eq!(out.reply.unwrap().unwrap().message, "Nothing to change");
 
         let bad = |patch: UiPatch| run(&s, Command::SetUi { patch }).unwrap_err();
-        assert_eq!(bad(UiPatch { zoom: Nullable::Set(0.0), ..UiPatch::default() }).code, ErrorCode::Usage);
-        assert_eq!(bad(UiPatch { zoom: Nullable::Set(f64::NAN), ..UiPatch::default() }).code, ErrorCode::Usage);
-        assert_eq!(bad(UiPatch { scroll_px: Some(f64::INFINITY), ..UiPatch::default() }).code, ErrorCode::Usage);
+        assert_eq!(
+            bad(UiPatch {
+                zoom: Nullable::Set(0.0),
+                ..UiPatch::default()
+            })
+            .code,
+            ErrorCode::Usage
+        );
+        assert_eq!(
+            bad(UiPatch {
+                zoom: Nullable::Set(f64::NAN),
+                ..UiPatch::default()
+            })
+            .code,
+            ErrorCode::Usage
+        );
+        assert_eq!(
+            bad(UiPatch {
+                scroll_px: Some(f64::INFINITY),
+                ..UiPatch::default()
+            })
+            .code,
+            ErrorCode::Usage
+        );
         let mut panels = BTreeMap::new();
         panels.insert("x".to_owned(), f64::NAN);
-        assert_eq!(bad(UiPatch { panels: Some(panels), ..UiPatch::default() }).code, ErrorCode::Usage);
-        let err = bad(UiPatch { solo: Nullable::Set(TrackId::numbered(7)), ..UiPatch::default() });
-        assert_eq!((err.code, err.message.as_str()), (ErrorCode::NotFound, "no audio track A7 in the project scene"));
+        assert_eq!(
+            bad(UiPatch {
+                panels: Some(panels),
+                ..UiPatch::default()
+            })
+            .code,
+            ErrorCode::Usage
+        );
+        let err = bad(UiPatch {
+            solo: Nullable::Set(TrackId::numbered(7)),
+            ..UiPatch::default()
+        });
+        assert_eq!(
+            (err.code, err.message.as_str()),
+            (
+                ErrorCode::NotFound,
+                "no audio track A7 in the project scene"
+            )
+        );
         let mut program = s.clone();
         program.ui.canvas_mode = CanvasMode::Program;
         program.ui.selection = vec![cid("c003")];
-        let err = run(&program, Command::SetUi { patch: UiPatch { selected_layer: Nullable::Set(LayerId::numbered(9)), ..UiPatch::default() } }).unwrap_err();
-        assert_eq!((err.code, err.message.as_str()), (ErrorCode::NotFound, "no layer L9 in take 2's scene"));
+        let err = run(
+            &program,
+            Command::SetUi {
+                patch: UiPatch {
+                    selected_layer: Nullable::Set(LayerId::numbered(9)),
+                    ..UiPatch::default()
+                },
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            (err.code, err.message.as_str()),
+            (ErrorCode::NotFound, "no layer L9 in take 2's scene")
+        );
     }
 }

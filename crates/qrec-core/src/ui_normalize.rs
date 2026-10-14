@@ -35,11 +35,15 @@ pub fn ui_normalize(prev: &Project, next: &Project, ui: &UiState) -> UiState {
 
     let (old_fps, new_fps) = (prev.canvas.fps, next.canvas.fps);
     if old_fps != new_fps {
-        let playhead = ui.playhead.min(timeline::total_frames(&prev.timeline.clips));
+        let playhead = ui
+            .playhead
+            .min(timeline::total_frames(&prev.timeline.clips));
         out.playhead = convert_frame(playhead, old_fps, new_fps);
         out.zoom = ui.zoom.map(|z| convert_zoom(z, old_fps, new_fps));
     }
-    out.playhead = out.playhead.min(timeline::total_frames(&next.timeline.clips));
+    out.playhead = out
+        .playhead
+        .min(timeline::total_frames(&next.timeline.clips));
 
     if out.zoom.is_some_and(|z| !(z.is_finite() && z > 0.0)) {
         out.zoom = None;
@@ -90,9 +94,7 @@ pub fn canvas_target(project: &Project, ui: &UiState) -> SceneTarget {
 pub fn canvas_scene<'a>(project: &'a Project, ui: &UiState) -> &'a Scene {
     match canvas_target(project, ui) {
         SceneTarget::Project => &project.scene,
-        SceneTarget::Take(take) => project
-            .take(&take)
-            .map_or(&project.scene, |t| &t.scene),
+        SceneTarget::Take(take) => project.take(&take).map_or(&project.scene, |t| &t.scene),
     }
 }
 
@@ -178,8 +180,8 @@ fn selection(prev: &Project, next: &Project, selection: &[ClipId]) -> Vec<ClipId
 /// like clip boundaries are re-quantized). Values too large for
 /// nanoseconds are left alone (the caller clamps them).
 fn convert_frame(f: Frame, old: Fps, new: Fps) -> Frame {
-    let ns = i128::from(f) * i128::from(NS_PER_SEC) * i128::from(old.den)
-        / i128::from(old.num.max(1));
+    let ns =
+        i128::from(f) * i128::from(NS_PER_SEC) * i128::from(old.den) / i128::from(old.num.max(1));
     match (i64::try_from(ns), i64::try_from(f)) {
         (Ok(_), Ok(f)) => ns_to_frame_round(frame_ns(f, old), new).max(0) as Frame,
         _ => f,
@@ -246,7 +248,11 @@ mod tests {
 
     #[test]
     fn selection_is_filtered_sorted_and_deduplicated() {
-        let p = project(&[clip("c1", 1, 0, 10), clip("c2", 1, 10, 20), clip("c3", 2, 0, 10)]);
+        let p = project(&[
+            clip("c1", 1, 0, 10),
+            clip("c2", 1, 10, 20),
+            clip("c3", 2, 0, 10),
+        ]);
         let out = ui_normalize(&p, &p, &ui_with(&["c3", "c9", "c1", "c3"]));
         assert_eq!(sel(&out), ["c1", "c3"]);
         let out = ui_normalize(&p, &p, &ui_with(&[]));
@@ -255,34 +261,79 @@ mod tests {
 
     #[test]
     fn record_over_selects_the_new_clip() {
-        let prev = project(&[clip("c1", 1, 0, 10), clip("c2", 1, 10, 20), clip("c3", 1, 20, 30), clip("c4", 1, 30, 40)]);
-        let next = project(&[clip("c1", 1, 0, 10), clip("cx", 2, 0, 200), clip("c4", 1, 30, 40)]);
+        let prev = project(&[
+            clip("c1", 1, 0, 10),
+            clip("c2", 1, 10, 20),
+            clip("c3", 1, 20, 30),
+            clip("c4", 1, 30, 40),
+        ]);
+        let next = project(&[
+            clip("c1", 1, 0, 10),
+            clip("cx", 2, 0, 200),
+            clip("c4", 1, 30, 40),
+        ]);
         let out = ui_normalize(&prev, &next, &ui_with(&["c2", "c3"]));
         assert_eq!(sel(&out), ["cx"]);
         // At the start and at the end of the timeline too.
-        let next = project(&[clip("cx", 2, 0, 200), clip("c3", 1, 20, 30), clip("c4", 1, 30, 40)]);
+        let next = project(&[
+            clip("cx", 2, 0, 200),
+            clip("c3", 1, 20, 30),
+            clip("c4", 1, 30, 40),
+        ]);
         assert_eq!(sel(&ui_normalize(&prev, &next, &ui_with(&["c1"]))), ["cx"]);
-        let next = project(&[clip("c1", 1, 0, 10), clip("c2", 1, 10, 20), clip("c3", 1, 20, 30), clip("cx", 2, 0, 200)]);
-        assert_eq!(sel(&ui_normalize(&prev, &next, &ui_with(&["c4", "c1"]))), ["c1", "cx"]);
+        let next = project(&[
+            clip("c1", 1, 0, 10),
+            clip("c2", 1, 10, 20),
+            clip("c3", 1, 20, 30),
+            clip("cx", 2, 0, 200),
+        ]);
+        assert_eq!(
+            sel(&ui_normalize(&prev, &next, &ui_with(&["c4", "c1"]))),
+            ["c1", "cx"]
+        );
         // A record over clips that weren't selected leaves the selection alone.
-        let next = project(&[clip("c1", 1, 0, 10), clip("cx", 2, 0, 200), clip("c4", 1, 30, 40)]);
+        let next = project(&[
+            clip("c1", 1, 0, 10),
+            clip("cx", 2, 0, 200),
+            clip("c4", 1, 30, 40),
+        ]);
         assert_eq!(sel(&ui_normalize(&prev, &next, &ui_with(&["c4"]))), ["c4"]);
         // Removing selected clips selects nothing new.
         let next = project(&[clip("c1", 1, 0, 10), clip("c4", 1, 30, 40)]);
-        assert!(ui_normalize(&prev, &next, &ui_with(&["c2"])).selection.is_empty());
+        assert!(
+            ui_normalize(&prev, &next, &ui_with(&["c2"]))
+                .selection
+                .is_empty()
+        );
     }
 
     #[test]
     fn discard_after_record_over_selects_the_restored_clips() {
-        let prev = project(&[clip("c1", 1, 0, 10), clip("cx", 2, 0, 200), clip("c4", 1, 30, 40)]);
-        let next = project(&[clip("c1", 1, 0, 10), clip("c2", 1, 10, 20), clip("c3", 1, 20, 30), clip("c4", 1, 30, 40)]);
-        assert_eq!(sel(&ui_normalize(&prev, &next, &ui_with(&["cx"]))), ["c2", "c3"]);
+        let prev = project(&[
+            clip("c1", 1, 0, 10),
+            clip("cx", 2, 0, 200),
+            clip("c4", 1, 30, 40),
+        ]);
+        let next = project(&[
+            clip("c1", 1, 0, 10),
+            clip("c2", 1, 10, 20),
+            clip("c3", 1, 20, 30),
+            clip("c4", 1, 30, 40),
+        ]);
+        assert_eq!(
+            sel(&ui_normalize(&prev, &next, &ui_with(&["cx"]))),
+            ["c2", "c3"]
+        );
     }
 
     #[test]
     fn fragments_of_a_selected_clip_are_selected() {
         // Autocut: c2 [0, 300) becomes c2 [10, 80), ca [120, 200), cb [240, 290).
-        let prev = project(&[clip("c1", 2, 0, 50), clip("c2", 1, 0, 300), clip("c3", 2, 50, 60)]);
+        let prev = project(&[
+            clip("c1", 2, 0, 50),
+            clip("c2", 1, 0, 300),
+            clip("c3", 2, 50, 60),
+        ]);
         let next = project(&[
             clip("c1", 2, 0, 50),
             clip("c2", 1, 10, 80),
@@ -290,23 +341,48 @@ mod tests {
             clip("cb", 1, 240, 290),
             clip("c3", 2, 50, 60),
         ]);
-        assert_eq!(sel(&ui_normalize(&prev, &next, &ui_with(&["c2"]))), ["c2", "ca", "cb"]);
+        assert_eq!(
+            sel(&ui_normalize(&prev, &next, &ui_with(&["c2"]))),
+            ["c2", "ca", "cb"]
+        );
         assert_eq!(sel(&ui_normalize(&prev, &next, &ui_with(&["c1"]))), ["c1"]);
         // A split is the same shape: both halves stay selected.
-        let next = project(&[clip("c1", 2, 0, 50), clip("c2", 1, 0, 140), clip("cs", 1, 140, 300), clip("c3", 2, 50, 60)]);
-        assert_eq!(sel(&ui_normalize(&prev, &next, &ui_with(&["c3", "c2"]))), ["c2", "cs", "c3"]);
+        let next = project(&[
+            clip("c1", 2, 0, 50),
+            clip("c2", 1, 0, 140),
+            clip("cs", 1, 140, 300),
+            clip("c3", 2, 50, 60),
+        ]);
+        assert_eq!(
+            sel(&ui_normalize(&prev, &next, &ui_with(&["c3", "c2"]))),
+            ["c2", "cs", "c3"]
+        );
         // A clip inserted after an unchanged selected clip isn't a fragment.
-        let next = project(&[clip("c1", 2, 0, 50), clip("c2", 1, 0, 300), clip("cn", 1, 0, 300), clip("c3", 2, 50, 60)]);
+        let next = project(&[
+            clip("c1", 2, 0, 50),
+            clip("c2", 1, 0, 300),
+            clip("cn", 1, 0, 300),
+            clip("c3", 2, 50, 60),
+        ]);
         assert_eq!(sel(&ui_normalize(&prev, &next, &ui_with(&["c2"]))), ["c2"]);
         // Nor is a new clip of another take, or one outside the old range.
-        let next = project(&[clip("c1", 2, 0, 50), clip("c2", 1, 0, 100), clip("cn", 2, 0, 10), clip("c3", 2, 50, 60)]);
+        let next = project(&[
+            clip("c1", 2, 0, 50),
+            clip("c2", 1, 0, 100),
+            clip("cn", 2, 0, 10),
+            clip("c3", 2, 50, 60),
+        ]);
         assert_eq!(sel(&ui_normalize(&prev, &next, &ui_with(&["c2"]))), ["c2"]);
     }
 
     #[test]
     fn playhead_is_clamped_and_converted_on_fps_changes() {
         let p = project(&[clip("c1", 1, 0, 300)]);
-        let ui = UiState { playhead: 999, zoom: Some(2.0), ..UiState::default() };
+        let ui = UiState {
+            playhead: 999,
+            zoom: Some(2.0),
+            ..UiState::default()
+        };
         let out = ui_normalize(&p, &p, &ui);
         assert_eq!(out.playhead, 300);
         assert_eq!(out.zoom, Some(2.0));
@@ -315,32 +391,53 @@ mod tests {
         let mut next = p.clone();
         next.canvas.fps = Fps::new(60, 1);
         next.timeline.clips[0].out = 600;
-        let ui = UiState { playhead: 150, zoom: Some(2.0), ..UiState::default() };
+        let ui = UiState {
+            playhead: 150,
+            zoom: Some(2.0),
+            ..UiState::default()
+        };
         let out = ui_normalize(&p, &next, &ui);
         assert_eq!(out.playhead, 300);
         assert_eq!(out.zoom, Some(1.0));
         // 30 → 29.97: frame 10 starts at 333.33 ms, nearest to frame 10 (333.67 ms).
         next.canvas.fps = Fps::new(30000, 1001);
-        let ui = UiState { playhead: 10, ..UiState::default() };
+        let ui = UiState {
+            playhead: 10,
+            ..UiState::default()
+        };
         assert_eq!(ui_normalize(&p, &next, &ui).playhead, 10);
         // A shorter timeline at the new rate clamps.
         next.timeline.clips[0].out = 100;
-        let ui = UiState { playhead: 290, ..UiState::default() };
+        let ui = UiState {
+            playhead: 290,
+            ..UiState::default()
+        };
         assert_eq!(ui_normalize(&p, &next, &ui).playhead, 100);
-        assert_eq!(convert_frame(u64::MAX, Fps::new(30, 1), Fps::new(60, 1)), u64::MAX);
+        assert_eq!(
+            convert_frame(u64::MAX, Fps::new(30, 1), Fps::new(60, 1)),
+            u64::MAX
+        );
     }
 
     #[test]
     fn broken_view_values_fall_back() {
         let p = project(&[]);
-        let mut ui = UiState { zoom: Some(f64::NAN), scroll_px: -4.0, ..UiState::default() };
+        let mut ui = UiState {
+            zoom: Some(f64::NAN),
+            scroll_px: -4.0,
+            ..UiState::default()
+        };
         ui.panels.insert("bin".into(), f64::INFINITY);
         ui.panels.insert("layers".into(), 352.0);
         let out = ui_normalize(&p, &p, &ui);
         assert_eq!(out.zoom, None);
         assert_eq!(out.scroll_px, 0.0);
         assert_eq!(out.panels.keys().collect::<Vec<_>>(), ["layers"]);
-        let ui = UiState { zoom: Some(0.0), scroll_px: f64::NAN, ..UiState::default() };
+        let ui = UiState {
+            zoom: Some(0.0),
+            scroll_px: f64::NAN,
+            ..UiState::default()
+        };
         let out = ui_normalize(&p, &p, &ui);
         assert_eq!((out.zoom, out.scroll_px), (None, 0.0));
     }
@@ -359,7 +456,10 @@ mod tests {
         // Program, c1 selected: take 1 has them too.
         ui.canvas_mode = CanvasMode::Program;
         ui.selection = ids(&["c1"]);
-        assert_eq!(canvas_target(&p, &ui), SceneTarget::Take(TakeId::numbered(1)));
+        assert_eq!(
+            canvas_target(&p, &ui),
+            SceneTarget::Take(TakeId::numbered(1))
+        );
         assert_eq!(ui_normalize(&p, &p, &ui), ui);
         // Program, c2 selected: take 2 was recorded without L2 and A2.
         ui.selection = ids(&["c2"]);
@@ -369,9 +469,15 @@ mod tests {
         // last clip's take at the end, the project scene when empty.
         ui.selection.clear();
         ui.playhead = 50;
-        assert_eq!(canvas_target(&p, &ui), SceneTarget::Take(TakeId::numbered(1)));
+        assert_eq!(
+            canvas_target(&p, &ui),
+            SceneTarget::Take(TakeId::numbered(1))
+        );
         ui.playhead = 200;
-        assert_eq!(canvas_target(&p, &ui), SceneTarget::Take(TakeId::numbered(2)));
+        assert_eq!(
+            canvas_target(&p, &ui),
+            SceneTarget::Take(TakeId::numbered(2))
+        );
         assert_eq!(canvas_target(&project(&[]), &ui), SceneTarget::Project);
         // Layers removed from the project scene are cleared in Live mode.
         let mut q = p.clone();

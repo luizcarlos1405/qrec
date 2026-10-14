@@ -87,7 +87,9 @@ pub fn clip_add(
     let committed = commit(state, ctx, label, cmd, next);
     Ok(Outcome::done(
         committed,
-        CmdResult::new(message).with_created([&id]).with_result(&row),
+        CmdResult::new(message)
+            .with_created([&id])
+            .with_result(&row),
     ))
 }
 
@@ -128,7 +130,10 @@ pub fn clip_move(
     let mut next = state.clone();
     next.project.timeline.clips = after;
     let committed = commit(state, ctx, label, cmd, next);
-    Ok(Outcome::done(committed, CmdResult::new(message).with_result(&rows)))
+    Ok(Outcome::done(
+        committed,
+        CmdResult::new(message).with_result(&rows),
+    ))
 }
 
 /// `qrec clip trim`: clip-relative times unless `timeline`; values outside
@@ -253,9 +258,16 @@ pub fn clip_split(
     let new_id = IdGen::for_state(state, ctx.entropy).next_clip_id();
     let split = timeline::split(clips, i, cut, new_id.clone())?;
     let at_timeline = timeline::position_of(clips, i) + (cut - original.in_);
-    let label = format!("Split clip {} at {}", original.id, timecode(at_timeline, fps));
+    let label = format!(
+        "Split clip {} at {}",
+        original.id,
+        timecode(at_timeline, fps)
+    );
     let message = format!("{label} into {} and {new_id}", original.id);
-    let rows = [timeline::clip_row(&split, i), timeline::clip_row(&split, i + 1)];
+    let rows = [
+        timeline::clip_row(&split, i),
+        timeline::clip_row(&split, i + 1),
+    ];
     let mut next = state.clone();
     next.project.timeline.clips = split;
     let committed = commit(state, ctx, label, cmd, next);
@@ -296,7 +308,10 @@ pub fn clip_remove(state: &State, ctx: &Ctx, clips: Vec<ClipId>) -> Result<Outco
         [take] => message.push_str(&format!("; take {} is in the bin now", take.number())),
         takes => {
             let numbers: Vec<String> = takes.iter().map(|t| t.number().to_string()).collect();
-            message.push_str(&format!("; takes {} are in the bin now", join_and(&numbers)));
+            message.push_str(&format!(
+                "; takes {} are in the bin now",
+                join_and(&numbers)
+            ));
         }
     }
     let label = format!("Remove {what}");
@@ -472,89 +487,236 @@ mod tests {
     #[test]
     fn add_inserts_a_whole_take() {
         let s = state();
-        let end = run(&s, Command::ClipAdd { take: TakeId::numbered(2), at: InsertAt::End }).unwrap();
+        let end = run(
+            &s,
+            Command::ClipAdd {
+                take: TakeId::numbered(2),
+                at: InsertAt::End,
+            },
+        )
+        .unwrap();
         insta::assert_json_snapshot!("add_at_end", summary(&end));
 
         let at = |at: InsertAt| {
-            let out = run(&s, Command::ClipAdd { take: TakeId::numbered(1), at }).unwrap();
+            let out = run(
+                &s,
+                Command::ClipAdd {
+                    take: TakeId::numbered(1),
+                    at,
+                },
+            )
+            .unwrap();
             let entry = out.state.history.entries.last().unwrap().label.clone();
-            (timeline_of(&out.state).into_iter().map(|c| c[..4].to_owned()).collect::<Vec<_>>().join(" "), entry)
+            (
+                timeline_of(&out.state)
+                    .into_iter()
+                    .map(|c| c[..4].to_owned())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                entry,
+            )
         };
         let (order, label) = at(InsertAt::Index(1));
         assert_eq!(label, "Insert take 1 at index 1");
-        assert!(order.starts_with("c001 c") && order.ends_with("c002 c003"), "{order}");
+        assert!(
+            order.starts_with("c001 c") && order.ends_with("c002 c003"),
+            "{order}"
+        );
         let (order, label) = at(InsertAt::Index(99));
         assert_eq!(label, "Insert take 1 at the end");
         assert!(order.starts_with("c001 c002 c003 "), "{order}");
         let (order, label) = at(InsertAt::After(cid("c002")));
         assert_eq!(label, "Insert take 1 after c002");
-        assert!(order.starts_with("c001 c002 c") && order.ends_with(" c003"), "{order}");
+        assert!(
+            order.starts_with("c001 c002 c") && order.ends_with(" c003"),
+            "{order}"
+        );
 
         let mut selected = s.clone();
         selected.ui.selection = vec![cid("c001")];
-        let out = run(&selected, Command::ClipAdd { take: TakeId::numbered(2), at: InsertAt::AfterSelection }).unwrap();
+        let out = run(
+            &selected,
+            Command::ClipAdd {
+                take: TakeId::numbered(2),
+                at: InsertAt::AfterSelection,
+            },
+        )
+        .unwrap();
         insta::assert_json_snapshot!("add_after_selection", summary(&out));
     }
 
     #[test]
     fn add_refuses_bad_takes_and_anchors() {
         let s = state();
-        let add = |take: u32, at: InsertAt| err(&s, Command::ClipAdd { take: TakeId::numbered(take), at });
+        let add = |take: u32, at: InsertAt| {
+            err(
+                &s,
+                Command::ClipAdd {
+                    take: TakeId::numbered(take),
+                    at,
+                },
+            )
+        };
         let e = add(9, InsertAt::End);
-        assert_eq!((e.code, e.message.as_str()), (ErrorCode::NotFound, "no take take-0009"));
+        assert_eq!(
+            (e.code, e.message.as_str()),
+            (ErrorCode::NotFound, "no take take-0009")
+        );
         let e = add(3, InsertAt::End);
         assert_eq!(e.code, ErrorCode::Invalid);
-        assert_eq!(e.message, "take 3 is too short; only ok takes can go on the timeline");
-        assert_eq!(add(1, InsertAt::After(cid("c999"))).code, ErrorCode::NotFound);
+        assert_eq!(
+            e.message,
+            "take 3 is too short; only ok takes can go on the timeline"
+        );
+        assert_eq!(
+            add(1, InsertAt::After(cid("c999"))).code,
+            ErrorCode::NotFound
+        );
         let e = add(1, InsertAt::AfterSelection);
-        assert_eq!((e.code, e.message.as_str()), (ErrorCode::Unavailable, "nothing is selected"));
+        assert_eq!(
+            (e.code, e.message.as_str()),
+            (ErrorCode::Unavailable, "nothing is selected")
+        );
     }
 
     #[test]
     fn new_ids_avoid_every_id_in_use() {
         let s = state();
-        let a = run(&s, Command::ClipAdd { take: TakeId::numbered(1), at: InsertAt::End }).unwrap();
-        let b = run(&s, Command::ClipAdd { take: TakeId::numbered(1), at: InsertAt::End }).unwrap();
-        assert_eq!(a.state.project.timeline.clips, b.state.project.timeline.clips, "same state + entropy ⇒ same id");
+        let a = run(
+            &s,
+            Command::ClipAdd {
+                take: TakeId::numbered(1),
+                at: InsertAt::End,
+            },
+        )
+        .unwrap();
+        let b = run(
+            &s,
+            Command::ClipAdd {
+                take: TakeId::numbered(1),
+                at: InsertAt::End,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            a.state.project.timeline.clips, b.state.project.timeline.clips,
+            "same state + entropy ⇒ same id"
+        );
         let id = &a.state.project.timeline.clips[3].id;
         // The same entropy against a state that has seen that id picks another.
         let mut seen = s.clone();
         seen.history.remember_clip_ids([id]);
-        let c = run(&seen, Command::ClipAdd { take: TakeId::numbered(1), at: InsertAt::End }).unwrap();
+        let c = run(
+            &seen,
+            Command::ClipAdd {
+                take: TakeId::numbered(1),
+                at: InsertAt::End,
+            },
+        )
+        .unwrap();
         assert_ne!(&c.state.project.timeline.clips[3].id, id);
     }
 
     #[test]
     fn move_moves_a_block() {
         let s = state();
-        let out = run(&s, Command::ClipMove { clips: vec![cid("c003"), cid("c001")], to: MoveTo::By(1) }).unwrap();
+        let out = run(
+            &s,
+            Command::ClipMove {
+                clips: vec![cid("c003"), cid("c001")],
+                to: MoveTo::By(1),
+            },
+        )
+        .unwrap();
         // The block [c001, c003] is gathered at c001's slot shifted by one: after c002.
         insta::assert_json_snapshot!("move_by_one", summary(&out));
 
         let moved = |to: MoveTo| {
-            let out = run(&s, Command::ClipMove { clips: vec![cid("c001")], to }).unwrap();
-            (timeline_of(&out.state).iter().map(|c| c[..4].to_owned()).collect::<Vec<_>>().join(" "),
-             out.state.history.entries.last().map(|e| e.label.clone()))
+            let out = run(
+                &s,
+                Command::ClipMove {
+                    clips: vec![cid("c001")],
+                    to,
+                },
+            )
+            .unwrap();
+            (
+                timeline_of(&out.state)
+                    .iter()
+                    .map(|c| c[..4].to_owned())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                out.state.history.entries.last().map(|e| e.label.clone()),
+            )
         };
-        assert_eq!(moved(MoveTo::Index(2)), ("c002 c003 c001".into(), Some("Move clip c001 to index 2".into())));
-        assert_eq!(moved(MoveTo::After(cid("c002"))), ("c002 c001 c003".into(), Some("Move clip c001 after c002".into())));
-        assert_eq!(moved(MoveTo::Before(cid("c003"))), ("c002 c001 c003".into(), Some("Move clip c001 before c003".into())));
-        assert_eq!(moved(MoveTo::By(-1)), ("c001 c002 c003".into(), None), "already first: no entry");
+        assert_eq!(
+            moved(MoveTo::Index(2)),
+            (
+                "c002 c003 c001".into(),
+                Some("Move clip c001 to index 2".into())
+            )
+        );
+        assert_eq!(
+            moved(MoveTo::After(cid("c002"))),
+            (
+                "c002 c001 c003".into(),
+                Some("Move clip c001 after c002".into())
+            )
+        );
+        assert_eq!(
+            moved(MoveTo::Before(cid("c003"))),
+            (
+                "c002 c001 c003".into(),
+                Some("Move clip c001 before c003".into())
+            )
+        );
+        assert_eq!(
+            moved(MoveTo::By(-1)),
+            ("c001 c002 c003".into(), None),
+            "already first: no entry"
+        );
 
-        let out = run(&s, Command::ClipMove { clips: vec![cid("c001")], to: MoveTo::By(-1) }).unwrap();
+        let out = run(
+            &s,
+            Command::ClipMove {
+                clips: vec![cid("c001")],
+                to: MoveTo::By(-1),
+            },
+        )
+        .unwrap();
         let reply = out.reply.unwrap().unwrap();
-        assert_eq!((reply.seq, reply.message.as_str()), (None, "Clip c001 already there"));
+        assert_eq!(
+            (reply.seq, reply.message.as_str()),
+            (None, "Clip c001 already there")
+        );
         assert!(out.effects.is_empty());
     }
 
     #[test]
     fn move_refuses_bad_ids() {
         let s = state();
-        let mv = |clips: &[&str], to: MoveTo| err(&s, Command::ClipMove { clips: clips.iter().map(|c| cid(c)).collect(), to });
+        let mv = |clips: &[&str], to: MoveTo| {
+            err(
+                &s,
+                Command::ClipMove {
+                    clips: clips.iter().map(|c| cid(c)).collect(),
+                    to,
+                },
+            )
+        };
         assert_eq!(mv(&[], MoveTo::By(1)).code, ErrorCode::Usage);
-        assert_eq!(mv(&["c001", "c404"], MoveTo::By(1)).message, "no clip c404 on the timeline");
-        assert_eq!(mv(&["c001"], MoveTo::After(cid("c404"))).code, ErrorCode::NotFound);
-        assert_eq!(mv(&["c001", "c002"], MoveTo::Before(cid("c002"))).code, ErrorCode::Invalid);
+        assert_eq!(
+            mv(&["c001", "c404"], MoveTo::By(1)).message,
+            "no clip c404 on the timeline"
+        );
+        assert_eq!(
+            mv(&["c001"], MoveTo::After(cid("c404"))).code,
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            mv(&["c001", "c002"], MoveTo::Before(cid("c002"))).code,
+            ErrorCode::Invalid
+        );
     }
 
     #[test]
@@ -562,7 +724,15 @@ mod tests {
         let s = state();
         // c002 is take 1 [150, 300) at timeline 100..250.
         let trim = |start: Option<&str>, end: Option<&str>, timeline: bool| {
-            run(&s, Command::ClipTrim { clip: cid("c002"), start: start.map(t), end: end.map(t), timeline })
+            run(
+                &s,
+                Command::ClipTrim {
+                    clip: cid("c002"),
+                    start: start.map(t),
+                    end: end.map(t),
+                    timeline,
+                },
+            )
         };
         let out = trim(Some("+10f"), Some("-1s"), false).unwrap();
         insta::assert_json_snapshot!("trim_both_edges", summary(&out));
@@ -573,41 +743,98 @@ mod tests {
         };
         assert_eq!(range(&trim(Some("5f"), None, false).unwrap()), (155, 300));
         assert_eq!(range(&trim(None, Some("20f"), false).unwrap()), (150, 170));
-        assert_eq!(range(&trim(Some("110f"), Some("200f"), true).unwrap()), (160, 250));
+        assert_eq!(
+            range(&trim(Some("110f"), Some("200f"), true).unwrap()),
+            (160, 250)
+        );
         // Extending past the take clamps and says so.
         let out = trim(Some("-200f"), Some("+1s"), false).unwrap();
         assert_eq!(range(&out), (0, 300));
         insta::assert_json_snapshot!("trim_clamped", summary(&out));
 
         assert_eq!(trim(None, None, false).unwrap_err().code, ErrorCode::Usage);
-        assert_eq!(trim(Some("200f"), None, false).unwrap_err().code, ErrorCode::Invalid);
-        assert_eq!(trim(Some("99f"), None, true).unwrap_err().code, ErrorCode::Invalid, "before the clip");
-        assert_eq!(trim(Some("00:00:00:31"), None, false).unwrap_err().code, ErrorCode::Usage);
-        let e = err(&s, Command::ClipTrim { clip: cid("c404"), start: Some(t("1f")), end: None, timeline: false });
+        assert_eq!(
+            trim(Some("200f"), None, false).unwrap_err().code,
+            ErrorCode::Invalid
+        );
+        assert_eq!(
+            trim(Some("99f"), None, true).unwrap_err().code,
+            ErrorCode::Invalid,
+            "before the clip"
+        );
+        assert_eq!(
+            trim(Some("00:00:00:31"), None, false).unwrap_err().code,
+            ErrorCode::Usage
+        );
+        let e = err(
+            &s,
+            Command::ClipTrim {
+                clip: cid("c404"),
+                start: Some(t("1f")),
+                end: None,
+                timeline: false,
+            },
+        );
         assert_eq!(e.code, ErrorCode::NotFound);
         // Trimming to the current range is not an edit.
         let out = trim(Some("0f"), Some("150f"), false).unwrap();
         let reply = out.reply.unwrap().unwrap();
         assert_eq!(reply.seq, None);
-        assert_eq!(reply.message, "Clip c002 already spans take 1 frames [150, 300) (00:00:05:00 long)");
+        assert_eq!(
+            reply.message,
+            "Clip c002 already spans take 1 frames [150, 300) (00:00:05:00 long)"
+        );
     }
 
     #[test]
     fn split_at_a_clip_time_or_a_timeline_position() {
         let s = state();
         // c002 is take 1 [150, 300) at timeline 100..250; 13f into it = timeline 113.
-        let out = run(&s, Command::ClipSplit { clip: Some(cid("c002")), at: t("13f"), timeline: false }).unwrap();
+        let out = run(
+            &s,
+            Command::ClipSplit {
+                clip: Some(cid("c002")),
+                at: t("13f"),
+                timeline: false,
+            },
+        )
+        .unwrap();
         insta::assert_json_snapshot!("split_clip_relative", summary(&out));
-        let same = run(&s, Command::ClipSplit { clip: Some(cid("c002")), at: t("113f"), timeline: true }).unwrap();
+        let same = run(
+            &s,
+            Command::ClipSplit {
+                clip: Some(cid("c002")),
+                at: t("113f"),
+                timeline: true,
+            },
+        )
+        .unwrap();
         assert_eq!(same.state.project, out.state.project);
-        let under = run(&s, Command::ClipSplit { clip: None, at: t("00:00:03:23"), timeline: true }).unwrap();
-        assert_eq!(under.state.project, out.state.project, "the clip under timeline frame 113");
-        assert_eq!(under.state.history.entries[0].label, "Split clip c002 at 00:00:03:23");
+        let under = run(
+            &s,
+            Command::ClipSplit {
+                clip: None,
+                at: t("00:00:03:23"),
+                timeline: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            under.state.project, out.state.project,
+            "the clip under timeline frame 113"
+        );
+        assert_eq!(
+            under.state.history.entries[0].label,
+            "Split clip c002 at 00:00:03:23"
+        );
 
         // The split keeps what every timeline frame shows.
         let (before, after) = (&s.project.timeline.clips, &out.state.project.timeline.clips);
         for f in 0..timeline::total_frames(before) {
-            assert_eq!(timeline::source_at(after, f), timeline::source_at(before, f));
+            assert_eq!(
+                timeline::source_at(after, f),
+                timeline::source_at(before, f)
+            );
         }
     }
 
@@ -615,13 +842,29 @@ mod tests {
     fn split_refuses_cuts_on_edges() {
         let s = state();
         let split = |clip: Option<&str>, at: &str, timeline: bool| {
-            err(&s, Command::ClipSplit { clip: clip.map(cid), at: t(at), timeline })
+            err(
+                &s,
+                Command::ClipSplit {
+                    clip: clip.map(cid),
+                    at: t(at),
+                    timeline,
+                },
+            )
         };
         let e = split(None, "100f", true);
         assert_eq!(e.code, ErrorCode::Invalid);
-        assert_eq!(e.message, "00:00:03:10 is already the cut between c001 and c002; nothing to split");
-        assert_eq!(split(None, "0f", true).message, "00:00:00:00 is already the start of the timeline; nothing to split");
-        assert_eq!(split(None, "450f", true).message, "00:00:15:00 is past the end of the timeline (00:00:15:00)");
+        assert_eq!(
+            e.message,
+            "00:00:03:10 is already the cut between c001 and c002; nothing to split"
+        );
+        assert_eq!(
+            split(None, "0f", true).message,
+            "00:00:00:00 is already the start of the timeline; nothing to split"
+        );
+        assert_eq!(
+            split(None, "450f", true).message,
+            "00:00:15:00 is past the end of the timeline (00:00:15:00)"
+        );
         assert_eq!(split(None, "5f", false).code, ErrorCode::Usage);
         assert_eq!(split(Some("c001"), "+5f", false).code, ErrorCode::Usage);
         assert_eq!(split(Some("c001"), "100f", false).code, ErrorCode::Invalid);
@@ -633,7 +876,15 @@ mod tests {
         let mut s = state();
         s.ui.selection = vec![cid("c002")];
         s.ui.canvas_mode = CanvasMode::Program;
-        let out = run(&s, Command::ClipSplit { clip: Some(cid("c002")), at: t("13f"), timeline: false }).unwrap();
+        let out = run(
+            &s,
+            Command::ClipSplit {
+                clip: Some(cid("c002")),
+                at: t("13f"),
+                timeline: false,
+            },
+        )
+        .unwrap();
         let new = out.reply.as_ref().unwrap().as_ref().unwrap().created[0].clone();
         assert_eq!(out.state.ui.selection, vec![cid("c002"), cid(&new)]);
         assert!(out.effects.contains(&Effect::WriteUi));
@@ -642,22 +893,58 @@ mod tests {
     #[test]
     fn remove_reports_takes_moving_to_the_bin() {
         let s = state();
-        let out = run(&s, Command::ClipRemove { clips: vec![cid("c003"), cid("c001"), cid("c003")] }).unwrap();
+        let out = run(
+            &s,
+            Command::ClipRemove {
+                clips: vec![cid("c003"), cid("c001"), cid("c003")],
+            },
+        )
+        .unwrap();
         insta::assert_json_snapshot!("remove_two", summary(&out));
-        let out = run(&s, Command::ClipRemove { clips: vec![cid("c001"), cid("c002"), cid("c003")] }).unwrap();
+        let out = run(
+            &s,
+            Command::ClipRemove {
+                clips: vec![cid("c001"), cid("c002"), cid("c003")],
+            },
+        )
+        .unwrap();
         let reply = out.reply.unwrap().unwrap();
-        assert_eq!(reply.message, "Removed clips c001, c002 and c003; takes 1 and 2 are in the bin now");
-        assert_eq!(out.state.history.entries[0].label, "Remove clips c001, c002 and c003");
+        assert_eq!(
+            reply.message,
+            "Removed clips c001, c002 and c003; takes 1 and 2 are in the bin now"
+        );
+        assert_eq!(
+            out.state.history.entries[0].label,
+            "Remove clips c001, c002 and c003"
+        );
 
-        assert_eq!(err(&s, Command::ClipRemove { clips: vec![] }).code, ErrorCode::Usage);
-        assert_eq!(err(&s, Command::ClipRemove { clips: vec![cid("c001"), cid("c404")] }).code, ErrorCode::NotFound);
+        assert_eq!(
+            err(&s, Command::ClipRemove { clips: vec![] }).code,
+            ErrorCode::Usage
+        );
+        assert_eq!(
+            err(
+                &s,
+                Command::ClipRemove {
+                    clips: vec![cid("c001"), cid("c404")]
+                }
+            )
+            .code,
+            ErrorCode::NotFound
+        );
     }
 
     #[test]
     fn edits_drop_removed_clips_from_the_selection() {
         let mut s = state();
         s.ui.selection = vec![cid("c001"), cid("c003")];
-        let out = run(&s, Command::ClipRemove { clips: vec![cid("c003")] }).unwrap();
+        let out = run(
+            &s,
+            Command::ClipRemove {
+                clips: vec![cid("c003")],
+            },
+        )
+        .unwrap();
         assert_eq!(out.state.ui.selection, vec![cid("c001")]);
         assert_eq!(
             out.effects[1..],
@@ -674,7 +961,10 @@ mod tests {
         assert_eq!(describe(&ids[..3]), "clips c1, c2 and c3");
         assert_eq!(describe(&ids), "4 clips");
         assert_eq!(describe_move(&MoveTo::By(-2)), "left by 2");
-        assert_eq!(describe_move(&MoveTo::By(i64::MIN)), "left by 9223372036854775808");
+        assert_eq!(
+            describe_move(&MoveTo::By(i64::MIN)),
+            "left by 9223372036854775808"
+        );
         assert_eq!(describe_move(&MoveTo::By(3)), "right by 3");
     }
 }
