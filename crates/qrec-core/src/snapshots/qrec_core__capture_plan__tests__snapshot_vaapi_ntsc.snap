@@ -1,0 +1,82 @@
+---
+source: crates/qrec-core/src/capture_plan.rs
+expression: plan
+---
+{
+  "take": "take-0012",
+  "dir": "takes/take-0012",
+  "log": "takes/take-0012/recorder.log",
+  "fps": {
+    "num": 30000,
+    "den": 1001
+  },
+  "healthCheckMs": 500,
+  "firstBufferMs": 3000,
+  "eosTimeoutMs": 10000,
+  "video": [
+    {
+      "id": "L1",
+      "source": {
+        "kind": "screen",
+        "output": "DP-4",
+        "label": "Monitor DP-4"
+      },
+      "file": "takes/take-0012/L1-screen-DP-4.mkv",
+      "encoder": {
+        "kind": "va",
+        "factory": "varenderD129h264enc",
+        "qp": 18
+      },
+      "keyIntMax": 30,
+      "cameraMode": null
+    },
+    {
+      "id": "L2",
+      "source": {
+        "kind": "screen",
+        "output": "eDP-1",
+        "label": "Monitor eDP-1"
+      },
+      "file": "takes/take-0012/L2-screen-eDP-1.mkv",
+      "encoder": {
+        "kind": "va",
+        "factory": "varenderD129h264enc",
+        "qp": 18
+      },
+      "keyIntMax": 30,
+      "cameraMode": null
+    },
+    {
+      "id": "L3",
+      "source": {
+        "kind": "camera",
+        "device": "/dev/video2",
+        "label": "Camera /dev/video2"
+      },
+      "file": "takes/take-0012/L3-camera-2.mkv",
+      "encoder": {
+        "kind": "va",
+        "factory": "varenderD129h264enc",
+        "qp": 18
+      },
+      "keyIntMax": 30,
+      "cameraMode": {
+        "width": 1920,
+        "height": 1080,
+        "fps": {
+          "num": 30,
+          "den": 1
+        },
+        "format": "image/jpeg"
+      }
+    }
+  ],
+  "audio": [
+    {
+      "id": "A1",
+      "device": "alsa_input.usb-Blue_Yeti",
+      "file": "takes/take-0012/A1-mic.mka",
+      "sampleRate": 48000
+    }
+  ]
+}

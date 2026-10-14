@@ -1,0 +1,183 @@
+---
+source: crates/qrec-core/src/autocut.rs
+expression: table
+---
+- name: speech sample
+  fps: "30"
+  clip:
+    - 0
+    - 210
+  silences_ms:
+    - - 0
+      - 512
+    - - 2005
+      - 3008
+    - - 3605
+      - 5013
+    - - 6016
+      - 7000
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 120
+    minKeepMs: 200
+  cut:
+    kept:
+      - - 11
+        - 64
+      - - 86
+        - 112
+      - - 146
+        - 185
+    silences: 4
+    removedFrames: 92
+- name: no padding
+  fps: "30"
+  clip:
+    - 0
+    - 210
+  silences_ms:
+    - - 0
+      - 512
+    - - 2005
+      - 3008
+    - - 3605
+      - 5013
+    - - 6016
+      - 7000
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 0
+    minKeepMs: 200
+  cut:
+    kept:
+      - - 15
+        - 61
+      - - 90
+        - 109
+      - - 150
+        - 181
+    silences: 4
+    removedFrames: 114
+- name: big padding
+  fps: "30"
+  clip:
+    - 0
+    - 210
+  silences_ms:
+    - - 0
+      - 512
+    - - 2005
+      - 3008
+    - - 3605
+      - 5013
+    - - 6016
+      - 7000
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 400
+    minKeepMs: 200
+  cut:
+    kept:
+      - - 0
+        - 73
+      - - 78
+        - 121
+      - - 138
+        - 193
+      - - 198
+        - 210
+    silences: 3
+    removedFrames: 27
+- name: 29.97 middle clip
+  fps: 30000/1001
+  clip:
+    - 45
+    - 200
+  silences_ms:
+    - - 1000
+      - 2500
+    - - 4100
+      - 4700
+    - - 6000
+      - 9000
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 120
+    minKeepMs: 200
+  cut:
+    kept:
+      - - 71
+        - 127
+      - - 137
+        - 184
+    silences: 3
+    removedFrames: 52
+- name: 25 fps long silence
+  fps: "25"
+  clip:
+    - 0
+    - 500
+  silences_ms:
+    - - 2000
+      - 15000
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 120
+    minKeepMs: 200
+  cut:
+    kept:
+      - - 0
+        - 53
+      - - 372
+        - 500
+    silences: 1
+    removedFrames: 319
+- name: 60 fps min keep
+  fps: "60"
+  clip:
+    - 0
+    - 600
+  silences_ms:
+    - - 500
+      - 1000
+    - - 1250
+      - 4000
+    - - 4040
+      - 9000
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 120
+    minKeepMs: 300
+  cut:
+    kept:
+      - - 0
+        - 38
+      - - 52
+        - 83
+      - - 532
+        - 600
+    silences: 2
+    removedFrames: 463
+- name: entirely silent
+  fps: "30"
+  clip:
+    - 10
+    - 50
+  silences_ms:
+    - - 0
+      - 3000
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 120
+    minKeepMs: 200
+  cut:
+    kept: []
+    silences: 0
+    removedFrames: 0

@@ -1,0 +1,23 @@
+---
+source: crates/qrec-core/src/apply/output.rs
+expression: "out.effects[..2].to_vec()"
+---
+[
+    Log {
+        level: Info,
+        message: "job-1: exporting 250 frames in 2 segments to exports/my-video-20261014-123456.mp4",
+    },
+    Progress {
+        req: ReqId(
+            "r1",
+        ),
+        progress: Progress {
+            phase: Render,
+            done: 0,
+            total: 250,
+            eta_secs: None,
+            label: "Rendering clip 1/2",
+            take: None,
+        },
+    },
+]
