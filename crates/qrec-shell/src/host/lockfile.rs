@@ -143,7 +143,10 @@ mod tests {
                 .unwrap()
                 .contains("\"state\":\"stopping\"")
         );
-        assert_eq!(read(tmp.path()).unwrap().unwrap().state, HostState::Stopping);
+        assert_eq!(
+            read(tmp.path()).unwrap().unwrap().state,
+            HostState::Stopping
+        );
         // The record is written through the locked file itself.
         assert!(ProjectLock::try_acquire(tmp.path()).unwrap().is_none());
     }

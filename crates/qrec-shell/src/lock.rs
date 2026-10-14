@@ -229,8 +229,14 @@ mod tests {
     #[test]
     fn one_holder_at_a_time() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(!ProjectLock::is_held(tmp.path()).unwrap(), "no lock file yet");
-        assert!(!tmp.path().join(".qrec").exists(), "probing creates nothing");
+        assert!(
+            !ProjectLock::is_held(tmp.path()).unwrap(),
+            "no lock file yet"
+        );
+        assert!(
+            !tmp.path().join(".qrec").exists(),
+            "probing creates nothing"
+        );
         let first = ProjectLock::try_acquire(tmp.path()).unwrap().expect("free");
         assert!(tmp.path().join(".qrec/lock").is_file());
         // Another open file description, even in this process, is refused.
@@ -301,7 +307,10 @@ mod tests {
             .unwrap();
         let err = CoreError::from(ProjectLock::try_acquire(tmp.path()).unwrap_err());
         assert_eq!(err.code, qrec_core::ErrorCode::Io);
-        assert!(!tmp.path().join("elsewhere").exists(), "nothing was created");
+        assert!(
+            !tmp.path().join("elsewhere").exists(),
+            "nothing was created"
+        );
     }
 
     #[test]

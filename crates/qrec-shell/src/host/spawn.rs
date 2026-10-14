@@ -30,8 +30,8 @@ use serde_json::Value;
 use super::signals::Interrupts;
 use crate::error::ShellError;
 use crate::host::lockfile::{self, LockRecord};
-use crate::lock::ProjectLock;
 use crate::ipc::server::pipe_cloexec;
+use crate::lock::ProjectLock;
 use crate::paths::ProjectPaths;
 
 /// The fds the child finds its lock and ready pipe on.

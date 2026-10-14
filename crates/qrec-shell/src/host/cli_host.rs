@@ -43,9 +43,9 @@ use crate::ipc::client::{
     Replies, RouteError, RouteMode, Routed, Router, SendError, SendOpts, Sent, route, send_request,
     stops_on_interrupt,
 };
-use crate::lock::ProjectLock;
 use crate::ipc::resolve::{Folder, classify, resolve_project};
 use crate::ipc::{RECORD_ROUTE_DEADLINE, ROUTE_DEADLINE};
+use crate::lock::ProjectLock;
 use crate::msg::{Msg, Request, Responder};
 use crate::paths::{Env, ProjectPaths, UserDirs, ensure_runtime_dir, socket_path};
 

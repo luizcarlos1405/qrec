@@ -37,8 +37,8 @@ use qrec_core::{CoreError, Event, ReqId};
 use serde_json::Value;
 
 use super::framing::{LineReader, ReadError, encode_line, write_all_before};
-use crate::host::publish::PublishedSocket;
 use super::{CONN_QUEUE_CAP, MAX_REQUEST_LINE, REQUEST_READ_TIMEOUT, WRITE_TIMEOUT, peer};
+use crate::host::publish::PublishedSocket;
 use crate::msg::{Inbox, Msg, Request, Responder};
 
 /// How often an idle connection checks whether its client left.
@@ -955,8 +955,7 @@ impl Responder for ConnResponder {
     fn accepted(&mut self) {
         self.out.push_accepted();
         // Called by the Session on its thread, with the request's id current.
-        if let (Some(req), Some(inbox)) =
-            (crate::session::current_request(), self.session_inbox())
+        if let (Some(req), Some(inbox)) = (crate::session::current_request(), self.session_inbox())
         {
             self.out.bind(req, inbox);
         }

@@ -51,13 +51,13 @@ pub use spawn::HostProgram;
 
 use crate::deps::{Deps, OpenOpts};
 use crate::error::ShellError;
-use crate::lock::ProjectLock;
-use lockfile::{self as lock_record, HostState, LockRecord};
-use publish::publish;
 use crate::ipc::server::{Hook, IpcServer, ServerConfig, ServerEvent};
+use crate::lock::ProjectLock;
 use crate::msg::{Inbox, Msg, Request, Responder};
 use crate::paths::ProjectPaths;
 use crate::session::Session;
+use lockfile::{self as lock_record, HostState, LockRecord};
+use publish::publish;
 use signals::{Interrupts, SignalWatch};
 
 /// What a host needs from its Session (A§8.1). [`Session`] implements it;

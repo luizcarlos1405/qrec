@@ -36,8 +36,8 @@ use qrec_shell::doctor::{self, DoctorOptions};
 use qrec_shell::gpu::GpuInputs;
 use qrec_shell::host::signals::{self, HOST_SIGNALS, Interrupts};
 use qrec_shell::host::{
-    self, ExitRules, HeadlessArgs, HostProgram, HostSession, Opener, RequestContext,
-    RequestEvents, SessionLock,
+    self, ExitRules, HeadlessArgs, HostProgram, HostSession, Opener, RequestContext, RequestEvents,
+    SessionLock,
 };
 use qrec_shell::media::FfmpegRunner;
 use qrec_shell::msg::Request;
@@ -186,14 +186,18 @@ impl Backend for Shell {
     ) -> Finish {
         self.init_logging(Role::Cli);
         let interrupts = self.interrupts();
-        let program = match HostProgram::current_exe() {
-            Ok(program) => program,
-            Err(e) => {
-                return Finish::Reply(Err(CoreError::io(format!(
-                    "can't find the qrec executable: {e}"
-                ))));
+        // What `record start|toggle` spawns: this executable, else the
+        // `qrec` on PATH.
+        let program = HostProgram::current_exe().unwrap_or_else(|e| {
+            tracing::warn!(
+                "can't find this executable ({e}); a recording host runs `qrec` from PATH"
+            );
+            HostProgram {
+                program: PathBuf::from("qrec"),
+                args: vec!["host".into(), "--headless".into()],
+                env: Vec::new(),
             }
-        };
+        });
         let (notices, received) = mpsc::channel();
         let mut opener = ShellOpener {
             notices: Some(notices),

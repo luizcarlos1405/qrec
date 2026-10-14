@@ -23,8 +23,8 @@ use super::signals::{self, HOST_SIGNALS};
 use super::{Host, HostEnd, HostOptions, Opener};
 use crate::deps::OpenOpts;
 use crate::ipc::framing::encode_line;
-use crate::lock::{ProjectLock, set_cloexec};
 use crate::ipc::resolve::{Folder, classify};
+use crate::lock::{ProjectLock, set_cloexec};
 use crate::paths::{Env, ProjectPaths, ensure_runtime_dir, socket_path};
 
 /// The arguments of `qrec host --headless`.

@@ -16,13 +16,13 @@ use qrec_core::{ErrorCode, Query};
 use serde_json::{Value, json};
 
 use super::*;
-use crate::ipc::client::{self, SendOpts, Sent, send_request};
 use crate::host::lockfile::{self, HostState};
-use crate::lock::ProjectLock;
+use crate::ipc::client::{self, SendOpts, Sent, send_request};
 use crate::ipc::testing::{
     Collect, FakeOpener, PROJECT, REQUEST, RULES, STUBBORN, child_command, hold_lock, quick_rules,
     raw_exchange, read_events, request_line, rules_env, wait_for,
 };
+use crate::lock::ProjectLock;
 use crate::paths::{Env, ensure_runtime_dir, socket_path};
 use crate::testkit::TestEnv;
 use signals::Interrupts;

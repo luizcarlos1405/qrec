@@ -670,7 +670,12 @@ fn only_streaming_commands_print_progress_lines() {
             progress(ProgressPhase::Finalize, 0, 0, "Finalizing take 1"),
         ],
         notices: vec![],
-        finish: Finish::Reply(Ok(result("Recorded take 1 (2.0 s)", Some(1), &[], json!(null)))),
+        finish: Finish::Reply(Ok(result(
+            "Recorded take 1 (2.0 s)",
+            Some(1),
+            &[],
+            json!(null),
+        ))),
     };
     let mut fake = Fake::new(&tmp.dir("cfg"))
         .script(finalizing())

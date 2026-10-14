@@ -26,17 +26,17 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use super::framing::{LineReader, ReadError, write_all_before};
-use crate::host::publish::publish;
-use crate::lock::ProjectLock;
 use super::server::{Hook, IpcServer, ServerConfig, ServerEvent};
 use crate::deps::OpenOpts;
 use crate::error::ShellError;
+use crate::host::publish::publish;
 use crate::host::signals::{self, HOST_SIGNALS, Interrupts};
 use crate::host::spawn::{HostProgram, spawn_headless};
 use crate::host::{
     CliContext, CliExit, CliRequest, ExitRules, HeadlessArgs, HostOptions, HostSession, Opener,
     run_cli, run_headless,
 };
+use crate::lock::ProjectLock;
 use crate::msg::{Inbox, Msg, Request, Responder};
 use crate::paths::{Env, ProjectPaths, ensure_runtime_dir, socket_path};
 use crate::testkit::TestEnv;
