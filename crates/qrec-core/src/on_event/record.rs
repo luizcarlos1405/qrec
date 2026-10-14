@@ -361,6 +361,10 @@ pub fn capture_stopped(
 /// The engine missed a teardown (A§5.3, A§8.11): the in-flight take (if
 /// any) is `broken` with the "stuck" error, a countdown ends, and people are
 /// told to restart Qrec. No `StopCapture` is sent to the stuck engine.
+///
+/// A§5.3 also wants later starts to fail at once; that needs a runtime flag
+/// A§3 doesn't define. Until it exists, a later start reaches the engine,
+/// which answers `StartCapture` with `CaptureFailed` (the take breaks).
 pub fn engine_wedged(state: &State, ctx: &Ctx, message: String) -> Outcome {
     let log = Effect::Log {
         level: LogLevel::Error,
