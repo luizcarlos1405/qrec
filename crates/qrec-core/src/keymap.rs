@@ -7,7 +7,8 @@
 //! [`action_for`] / [`command_for`] turn a binding into the `Command` it runs
 //! in a state (shared by the GUI and the palette); [`palette`] lists every
 //! binding with its keys, CLI form and availability; [`cheat_sheet`] and
-//! [`keys_view`] are the human and JSON forms of `qrec keys`.
+//! [`keys_view`] are the human and JSON forms of `qrec keys`, and
+//! [`problems`] words the conflicts and `keys.toml` errors for notices.
 //!
 //! **Chord grammar** (`keys.toml`, `qrec keys --json`): modifiers `ctrl`,
 //! `alt`, `shift`, `super` joined with `+`, then a GDK keyval name:
@@ -796,7 +797,8 @@ fn join_and(items: &[String]) -> String {
 
 /// The human form of `qrec keys` (the cheat sheet): per group, each
 /// binding's keys, label and id (the name `keys.toml` uses), then the
-/// conflicts and the `keys.toml` errors. CLI forms are in [`keys_view`].
+/// [`problems`] (conflicts and `keys.toml` errors). CLI forms are in
+/// [`keys_view`].
 pub fn cheat_sheet(map: &Keymap) -> String {
     let keys_of = |b: &Binding| {
         if b.keys.is_empty() {
