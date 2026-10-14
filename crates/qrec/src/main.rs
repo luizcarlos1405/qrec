@@ -17,7 +17,9 @@ use qrec_shell::gpu::{self, GpuInputs};
 fn main() -> ExitCode {
     gpu::run_probe_if_requested();
     let args: Vec<OsString> = std::env::args_os().collect();
-    let is_gui = args.len() == 1;
+    // `qrec` without a command (global flags allowed) opens the GUI, which
+    // also pins EGL and Vulkan. Parsing starts no thread.
+    let is_gui = qrec_cli::parse_args(args.iter().cloned()).is_ok_and(|cli| cli.command.is_none());
     let inputs = GpuInputs::discover(&args, is_gui);
     gpu::prepare_gpu_env(&inputs);
     let mut backend = shell::Shell::new(&args, inputs);

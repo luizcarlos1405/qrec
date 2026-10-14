@@ -976,14 +976,15 @@ pub fn prune_logs(dir: &Path, keep: usize) -> usize {
 }
 
 /// Deletes `*.qrec-part-*` temp outputs older than `max_age` in
-/// `exports/`, `frames/` and `.qrec/cache/segments/` (regular files only).
-/// Returns how many were deleted.
+/// `exports/`, `frames/`, `.qrec/cache/segments/` and the silence cache
+/// (regular files only). Returns how many were deleted.
 pub fn prune_temp_outputs(paths: &ProjectPaths, max_age: Duration) -> usize {
     let now = SystemTime::now();
     [
         paths.exports_dir(),
         paths.frames_dir(),
         paths.segments_dir(),
+        paths.silence_cache_dir(),
     ]
     .iter()
     .filter_map(|dir| fs::read_dir(dir).ok())

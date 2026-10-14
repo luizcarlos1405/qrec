@@ -994,10 +994,14 @@ Cli) and serves the socket.
    `{pid, kind, socket, since, state:"starting"}` to the lock file, unlink
    `<hash>.sock`, bind `<hash>.sock.<pid>`, listen, `rename` it to
    `<hash>.sock` (atomic publish), set `state:"ready"`. This happens before
-   recovery and `gst::init()`; early requests queue in the inbox.
+   recovery and `gst::init()`; early requests queue in the inbox. The host
+   then opens its Session with a second descriptor of the lock (`dup`, same
+   open file description): a second `open` + `flock` in the same process
+   would be refused, and dropping the Session only closes its copy.
 2. Only the lock holder unlinks its socket. Scanners never delete anything.
-3. **Exit:** stop accepting → unlink the socket → flush replies → exit
-   (closing the lock fd releases the lock).
+3. **Exit:** `state:"stopping"` → stop accepting → unlink the socket →
+   flush replies → exit (closing the lock fd releases the lock). Routing
+   clients treat `starting` and `stopping` alike: retry.
 4. **CLI routing** (deadline 3 s; 20 s for `record *`): connect. On
    ENOENT/ECONNREFUSED try the lock; if acquired, become the host (in-process,
    or hand off to a spawned headless host). If not, read the lock file: when
