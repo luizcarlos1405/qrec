@@ -160,10 +160,14 @@ pub enum Command {
         #[serde(default)]
         dry_run: bool,
     },
+    /// Steps default to 1 (`{"cmd":"undo"}`).
     Undo {
+        #[serde(default = "one")]
         steps: u32,
     },
+    /// Steps default to 1.
     Redo {
+        #[serde(default = "one")]
         steps: u32,
     },
     /// `!`.
@@ -215,6 +219,10 @@ pub enum Command {
     SetUi {
         patch: UiPatch,
     },
+}
+
+fn one() -> u32 {
+    1
 }
 
 impl Command {
