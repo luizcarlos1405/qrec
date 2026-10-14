@@ -352,11 +352,16 @@ fn ensure_track_known<'a>(
     let known =
         project.scene.track(track).is_some() || takes.any(|take| take.scene.track(track).is_some());
     if known {
-        Ok(())
-    } else {
-        Err(CoreError::not_found(format!("no audio track {track}"))
-            .with_hint("use the id of an audio track in the scene, such as A1"))
+        return Ok(());
     }
+    let ids: Vec<&str> = project.scene.audio.iter().map(|t| t.id.as_str()).collect();
+    let hint = if ids.is_empty() {
+        "the project scene has no audio tracks; leave --track out to use each take's first mic"
+            .to_owned()
+    } else {
+        format!("tracks in the project scene: {}", ids.join(", "))
+    };
+    Err(CoreError::not_found(format!("no audio track {track}")).with_hint(hint))
 }
 
 fn log(level: LogLevel, message: String) -> Effect {
@@ -953,6 +958,15 @@ mod tests {
             let err = with(overrides).unwrap_err();
             assert_eq!((err.code, err.message.as_str()), (code, text));
         }
+        let err = with(AutocutOverrides {
+            track: Some("A9".parse().unwrap()),
+            ..Default::default()
+        })
+        .unwrap_err();
+        assert_eq!(
+            err.hint.as_deref(),
+            Some("tracks in the project scene: A1, A2")
+        );
         let unknown = ClipScope::Clips(vec![ClipId::from_raw("c404")]);
         let err = run(&state, &ctx, unknown, false).unwrap_err();
         assert_eq!(
