@@ -67,8 +67,6 @@ Canvas
   Shift+↑               Nudge layer up 10 px                       layer.nudge-up-10
   Shift+↓               Nudge layer down 10 px                     layer.nudge-down-10
 
-Conflicts (neither binding runs until one is changed in keys.toml)
-  x (global): clip.remove, autocut.run
-
-Errors in keys.toml
+Problems
+  x is bound to clip.remove and autocut.run in global; neither runs until keys.toml changes one
   keys.toml: unknown binding `nope` (`qrec keys` lists the ids)

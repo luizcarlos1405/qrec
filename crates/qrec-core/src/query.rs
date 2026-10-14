@@ -7,15 +7,16 @@
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use crate::apply::project::is_initialized;
 use crate::ctx::Ctx;
 use crate::error::CoreError;
-use crate::ids::{Frame, TakeId};
+use crate::ids::TakeId;
 use crate::keymap;
 use crate::model::{Project, TakeStatus};
 use crate::protocol::query::Query;
 use crate::protocol::reply::{ClipRow, HistoryRow, StatusView, TakeRow};
 use crate::state::State;
-use crate::timeline::total_frames;
+use crate::timeline::{clip_row, total_frames};
 
 /// Answers one query (pure).
 pub fn query(state: &State, ctx: &Ctx, q: &Query) -> Result<Value, CoreError> {
@@ -36,12 +37,14 @@ fn to_json(view: &impl Serialize) -> Result<Value, CoreError> {
 }
 
 /// `StatusView` (`path`/`pid` are left `None` for the shell to fill).
+/// `initialized` is false for the placeholder state of a folder without
+/// `qrec.json` (`apply::project::uninitialized_state`).
 pub fn status(state: &State, _ctx: &Ctx) -> Result<Value, CoreError> {
     let project = &state.project;
     to_json(&StatusView {
         project: project.name.clone(),
         path: None,
-        initialized: true,
+        initialized: is_initialized(project),
         host: state.runtime.host,
         pid: None,
         record: state.runtime.record.clone(),
@@ -139,25 +142,11 @@ pub fn take_show(state: &State, take: &TakeId) -> Result<Value, CoreError> {
     Ok(value)
 }
 
+/// Every clip's `ClipRow` (`timeline::clip_row`, the row `clip` commands
+/// return too), in timeline order.
 fn clip_rows(project: &Project) -> Vec<ClipRow> {
-    let mut start: Frame = 0;
-    project
-        .timeline
-        .clips
-        .iter()
-        .map(|clip| {
-            let row = ClipRow {
-                id: clip.id.clone(),
-                take: clip.take.clone(),
-                in_: clip.in_,
-                out: clip.out,
-                start,
-                duration: clip.len(),
-            };
-            start += clip.len();
-            row
-        })
-        .collect()
+    let clips = &project.timeline.clips;
+    (0..clips.len()).map(|i| clip_row(clips, i)).collect()
 }
 
 /// `[ClipRow]` in timeline order; `start` is the clip's timeline position.
@@ -199,7 +188,7 @@ pub fn keys(_state: &State, _ctx: &Ctx) -> Result<Value, CoreError> {
 mod tests {
     use super::*;
     use crate::history::HistoryEntry;
-    use crate::ids::{ClipId, JobId};
+    use crate::ids::{ClipId, Frame, JobId};
     use crate::state::{HostKind, Job, JobKind, RecordMode, RecordPhase};
     use crate::testkit::{self, ProjectBuilder};
     use pretty_assertions::assert_eq;
@@ -448,13 +437,32 @@ mod tests {
     #[test]
     fn keys_are_the_keymap_view() {
         let value = query(&state(), &ctx(), &Query::Keys).unwrap();
-        let view: keymap::KeysView = serde_json::from_value(value).unwrap();
+        let view: Vec<keymap::BindingView> = serde_json::from_value(value).unwrap();
         assert_eq!(view, keymap::keys_view(&keymap::resolve("")));
-        assert!(
-            view.bindings
-                .iter()
-                .any(|b| b.id == "clip.split" && b.keys == ["s"])
-        );
+        assert!(view.iter().any(|b| b.id == "clip.split" && b.keys == ["s"]));
+    }
+
+    #[test]
+    fn status_of_a_folder_without_a_project() {
+        let state = crate::apply::project::uninitialized_state(HostKind::Cli);
+        let view: StatusView =
+            serde_json::from_value(query(&state, &ctx(), &Query::Status).unwrap()).unwrap();
+        assert!(!view.initialized);
+        assert_eq!(view.host, HostKind::Cli);
+        assert_eq!((view.takes, view.clips, view.duration_frames), (0, 0, 0));
+        assert_eq!(view.cursor, 0);
+        assert_eq!(view.record, RecordPhase::Idle);
+    }
+
+    #[test]
+    fn clip_rows_are_the_timeline_rows() {
+        let s = state();
+        let rows: Vec<ClipRow> =
+            serde_json::from_value(query(&s, &ctx(), &Query::ClipList).unwrap()).unwrap();
+        let clips = &s.project.timeline.clips;
+        let expected: Vec<ClipRow> = (0..clips.len()).map(|i| clip_row(clips, i)).collect();
+        assert_eq!(rows, expected);
+        assert_eq!(query(&testkit::state(ProjectBuilder::new().build()), &ctx(), &Query::ClipList).unwrap(), json!([]));
     }
 
     #[test]

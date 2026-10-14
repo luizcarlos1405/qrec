@@ -40,14 +40,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
 use crate::ids::{ClipId, Frame};
-use crate::model::{Clip, Rect, Scene};
+use crate::model::{Clip, Rect};
 use crate::protocol::command::{
     AutocutOverrides, ClipScope, Command, ExportFormat, LayerPatch, MoveTo, Nullable, Quality,
-    RecordModeArg, SceneTarget, SeekTarget, SelectOp, ShuttleDir, UiPatch,
+    RecordModeArg, SeekTarget, SelectOp, ShuttleDir, UiPatch,
 };
 use crate::state::{CanvasMode, HostKind, JobKind, RecordPhase, State};
 use crate::time::{NS_PER_SEC, Sign, TimeArg, TimeValue};
 use crate::timeline::{clip_at, position_of, total_frames};
+use crate::ui_normalize::{canvas_scene, canvas_target};
 
 /// One key combination.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -733,62 +734,61 @@ fn usable_keys<'a>(map: &Keymap, binding: &'a Binding) -> Vec<&'a KeyChord> {
 
 // ----------------------------------------------------------------- views
 
-/// `qrec keys --json`: the bindings in the chord grammar, the conflicts and
-/// the `keys.toml` errors.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct KeysView {
-    pub bindings: Vec<BindingView>,
-    pub conflicts: Vec<ConflictView>,
-    pub errors: Vec<String>,
-}
-
-/// One binding: `{"id","group","label","keys":[..],"cli","contexts"}`.
+/// One row of `qrec keys --json` (A§9.7):
+/// `{"id","group","label","keys":[..],"cli","contexts"}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingView {
     pub id: String,
     pub group: String,
     pub label: String,
-    /// Chords in the `keys.toml` grammar (`ctrl+shift+z`).
+    /// Chords in the `keys.toml` grammar (`ctrl+shift+z`); empty when unbound.
     pub keys: Vec<String>,
+    /// The CLI equivalent; `null` for actions only the GUI has.
     pub cli: Option<String>,
     pub contexts: Vec<KeyContext>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ConflictView {
-    pub chord: String,
-    pub ids: Vec<String>,
-    pub context: KeyContext,
+/// `qrec keys --json` and `Query::Keys` (A§9.7): every binding, in table
+/// order. Conflicts and `keys.toml` errors aren't rows; [`problems`] words
+/// them for notices.
+pub fn keys_view(map: &Keymap) -> Vec<BindingView> {
+    map.bindings
+        .iter()
+        .map(|b| BindingView {
+            id: b.id.to_owned(),
+            group: b.group.to_owned(),
+            label: b.label.to_owned(),
+            keys: b.keys.iter().map(KeyChord::to_string).collect(),
+            cli: b.cli.map(str::to_owned),
+            contexts: b.contexts.clone(),
+        })
+        .collect()
 }
 
-/// The JSON form of a keymap.
-pub fn keys_view(map: &Keymap) -> KeysView {
-    KeysView {
-        bindings: map
-            .bindings
-            .iter()
-            .map(|b| BindingView {
-                id: b.id.to_owned(),
-                group: b.group.to_owned(),
-                label: b.label.to_owned(),
-                keys: b.keys.iter().map(KeyChord::to_string).collect(),
-                cli: b.cli.map(str::to_owned),
-                contexts: b.contexts.clone(),
-            })
-            .collect(),
-        conflicts: map
-            .conflicts
-            .iter()
-            .map(|c| ConflictView {
-                chord: c.chord.to_string(),
-                ids: c.ids.clone(),
-                context: c.context,
-            })
-            .collect(),
-        errors: map.errors.clone(),
+/// What is wrong with a keymap, one line each: every conflict ("x is bound
+/// to clip.remove and autocut.run in global; neither runs …"), then every
+/// `keys.toml` error. Empty for a clean keymap. `qrec keys` prints them
+/// (as notices on stderr under `--json`); the GUI shows them on load
+/// (SPEC §10.1).
+pub fn problems(map: &Keymap) -> Vec<String> {
+    let conflicts = map.conflicts.iter().map(|c| {
+        format!(
+            "{} is bound to {} in {}; neither runs until keys.toml changes one",
+            c.chord.display(),
+            join_and(&c.ids),
+            c.context.as_str()
+        )
+    });
+    conflicts.chain(map.errors.iter().cloned()).collect()
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn join_and(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
     }
 }
 
@@ -842,21 +842,11 @@ pub fn cheat_sheet(map: &Keymap) -> String {
             ));
         }
     }
-    if !map.conflicts.is_empty() {
-        out.push_str("\nConflicts (neither binding runs until one is changed in keys.toml)\n");
-        for c in &map.conflicts {
-            out.push_str(&format!(
-                "  {} ({}): {}\n",
-                c.chord.display(),
-                c.context.as_str(),
-                c.ids.join(", ")
-            ));
-        }
-    }
-    if !map.errors.is_empty() {
-        out.push_str("\nErrors in keys.toml\n");
-        for e in &map.errors {
-            out.push_str(&format!("  {e}\n"));
+    let problems = problems(map);
+    if !problems.is_empty() {
+        out.push_str("\nProblems\n");
+        for p in problems {
+            out.push_str(&format!("  {p}\n"));
         }
     }
     out
@@ -1457,31 +1447,16 @@ fn autocut(state: &State, dry_run: bool) -> Action {
     })
 }
 
-/// The scene the canvas edits: the project scene in Live mode; in Program
-/// mode the take scene of the selected clip (else the clip under the playhead).
-fn canvas_scene(state: &State) -> Option<(SceneTarget, &Scene)> {
-    let project = &state.project;
-    match state.ui.canvas_mode {
-        CanvasMode::Live => Some((SceneTarget::Project, &project.scene)),
-        CanvasMode::Program => {
-            let clips = &project.timeline.clips;
-            let clip = clips
-                .iter()
-                .find(|c| state.ui.selection.contains(&c.id))
-                .or_else(|| clip_at(clips, state.ui.playhead).map(|(i, _)| &clips[i]))?;
-            let take = project.take(&clip.take)?;
-            Some((SceneTarget::Take(clip.take.clone()), &take.scene))
-        }
-    }
-}
-
+/// Arrow keys on the canvas move the selected layer of the scene the canvas
+/// edits (`ui_normalize::canvas_target`: the project scene in Live mode,
+/// the take of the selected clip or the clip under the playhead in Program
+/// mode), unless it is locked.
 fn nudge_layer(state: &State, dx: i32, dy: i32) -> Action {
     let Some(layer_id) = &state.ui.selected_layer else {
         return Action::Unavailable("Select a layer on the canvas".to_owned());
     };
-    let Some((target, scene)) = canvas_scene(state) else {
-        return Action::Unavailable("Select a clip to edit its take's layout".to_owned());
-    };
+    let target = canvas_target(&state.project, &state.ui);
+    let scene = canvas_scene(&state.project, &state.ui);
     let Some(layer) = scene.layer(layer_id) else {
         return Action::Unavailable(format!("Layer {layer_id} isn't in this scene"));
     };
@@ -1569,6 +1544,7 @@ pub fn palette(map: &Keymap, state: &State) -> Vec<PaletteRow> {
 mod tests {
     use super::*;
     use crate::ids::{LayerId, TakeId};
+    use crate::protocol::command::SceneTarget;
     use crate::state::{Job, RecordMode};
     use crate::testkit::{self, ProjectBuilder};
 
@@ -2345,6 +2321,25 @@ mod tests {
             }),
             "Program mode edits the take under the playhead"
         );
+        // The same scene the canvas shows (ui_normalize::canvas_target): the
+        // selected clip's take first, the last take at the end of the timeline.
+        state.ui.selection = ids(&["c001"]);
+        assert!(matches!(
+            command_for("layer.nudge-up", &state),
+            Some(Command::LayerSet { target: SceneTarget::Take(t), .. }) if t == TakeId::numbered(1)
+        ));
+        state.ui.selection.clear();
+        state.ui.playhead = 450;
+        assert!(matches!(
+            command_for("layer.nudge-up", &state),
+            Some(Command::LayerSet { target: SceneTarget::Take(t), .. }) if t == TakeId::numbered(2)
+        ));
+        state.ui.selected_layer = Some(LayerId::numbered(7));
+        assert_eq!(
+            action_for("layer.nudge-up", &state),
+            Some(Action::Unavailable("Layer L7 isn't in this scene".into()))
+        );
+        state.ui.selected_layer = Some(LayerId::numbered(1));
         state
             .project
             .takes
@@ -2401,14 +2396,12 @@ mod tests {
 
     #[test]
     fn keys_view_json_shape() {
+        // A§9.7: `[{"id","group","label","keys":[..],"cli","contexts"}]`.
         let view = keys_view(&resolve(""));
         let json = serde_json::to_value(&view).unwrap();
-        let redo = json["bindings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|b| b["id"] == "history.redo")
-            .unwrap();
+        let rows = json.as_array().unwrap();
+        assert_eq!(rows.len(), DEFAULTS.len());
+        let redo = rows.iter().find(|b| b["id"] == "history.redo").unwrap();
         assert_eq!(
             redo,
             &serde_json::json!({
@@ -2420,7 +2413,32 @@ mod tests {
                 "contexts": ["global"]
             })
         );
-        assert_eq!(serde_json::from_value::<KeysView>(json).unwrap(), view);
+        let zoom = rows.iter().find(|b| b["id"] == "zoom.in").unwrap();
+        assert_eq!(zoom["cli"], serde_json::Value::Null);
+        assert_eq!(
+            serde_json::from_value::<Vec<BindingView>>(json).unwrap(),
+            view
+        );
+        // Rebound and unbound keys show as they are.
+        let view = keys_view(&resolve("[bindings]\nrecord.over = []\nframe.save = \"F5\"\n"));
+        let row = |id: &str| view.iter().find(|b| b.id == id).unwrap().keys.clone();
+        assert!(row("record.over").is_empty());
+        assert_eq!(row("frame.save"), ["F5"]);
+    }
+
+    #[test]
+    fn problems_name_conflicts_then_errors() {
+        assert!(problems(&resolve("")).is_empty());
+        let map = resolve("[bindings]\nautocut.run = \"x\"\nzoom.selection = \"x\"\nnope = \"q\"\n");
+        assert_eq!(
+            problems(&map),
+            [
+                "x is bound to clip.remove, autocut.run and zoom.selection in global; neither runs until keys.toml changes one",
+                "keys.toml: unknown binding `nope` (`qrec keys` lists the ids)",
+            ]
+        );
+        assert_eq!(join_and(&["a".into(), "b".into()]), "a and b");
+        assert_eq!(join_and(&[]), "");
     }
 
     #[test]
