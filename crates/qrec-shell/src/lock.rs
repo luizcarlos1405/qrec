@@ -165,6 +165,24 @@ fn set_cloexec(file: &File) -> io::Result<()> {
     Ok(())
 }
 
+/// Tests: takes a lock that was just released. Other tests fork children
+/// in parallel, and a child between `fork` and `exec` briefly holds a copy
+/// of every descriptor (the lock's `O_CLOEXEC` one too), so a lock dropped
+/// a moment ago can still look held.
+#[cfg(test)]
+pub(crate) fn acquire_eventually(project_dir: &Path) -> ProjectLock {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match ProjectLock::try_acquire(project_dir).unwrap() {
+            Some(lock) => return lock,
+            None if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            None => panic!("{} stayed locked", project_dir.display()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,8 +195,8 @@ mod tests {
         // Another open file description, even in this process, is refused.
         assert!(ProjectLock::try_acquire(tmp.path()).unwrap().is_none());
         drop(first);
-        let again = ProjectLock::try_acquire(tmp.path()).unwrap();
-        assert!(again.is_some(), "dropping released the lock");
+        // Dropping released the lock.
+        let _again = acquire_eventually(tmp.path());
     }
 
     #[test]
@@ -194,7 +212,7 @@ mod tests {
         assert_eq!(adopted.path(), tmp.path().join(".qrec/lock"));
         assert!(ProjectLock::try_acquire(tmp.path()).unwrap().is_none());
         drop(adopted);
-        assert!(ProjectLock::try_acquire(tmp.path()).unwrap().is_some());
+        let _free = acquire_eventually(tmp.path());
     }
 
     #[test]

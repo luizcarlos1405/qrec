@@ -47,20 +47,20 @@ pub(super) fn classify(paths: &ProjectPaths) -> Result<Folder, ShellError> {
     if store::exists(&paths.project_file()) {
         return Ok(Folder::Project);
     }
+    // A project that lost its qrec.json (its takes/ and exports/ are
+    // still there): restore it rather than call it someone else's folder.
+    let history = [paths.history_head(), paths.history_file(), paths.history_base()];
+    if paths.qrec_dir().is_dir() && history.iter().any(|p| store::exists(p)) {
+        return Ok(Folder::MissingFile);
+    }
     let root = paths.root();
     let entries = fs::read_dir(root).map_err(|e| ShellError::io(format!("read {}", root.display()), e))?;
-    let mut has_qrec = false;
     for entry in entries {
         let entry = entry.map_err(|e| ShellError::io(format!("read {}", root.display()), e))?;
-        if entry.file_name() == ".qrec" && entry.file_type().is_ok_and(|t| t.is_dir()) {
-            has_qrec = true;
-        } else {
+        let qrec = entry.file_name() == ".qrec" && entry.file_type().is_ok_and(|t| t.is_dir());
+        if !qrec {
             return Err(CoreError::not_project().into());
         }
-    }
-    let history = [paths.history_head(), paths.history_file(), paths.history_base()];
-    if has_qrec && history.iter().any(|p| store::exists(p)) {
-        return Ok(Folder::MissingFile);
     }
     Ok(Folder::Empty)
 }

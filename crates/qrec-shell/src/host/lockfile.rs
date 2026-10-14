@@ -147,7 +147,7 @@ mod tests {
         // The record outlives its host…
         assert!(read(tmp.path()).unwrap().is_some());
         // …until the next host takes the lock.
-        let _next = ProjectLock::try_acquire(tmp.path()).unwrap().unwrap();
+        let _next = crate::lock::acquire_eventually(tmp.path());
         assert_eq!(read(tmp.path()).unwrap(), None);
     }
 }
