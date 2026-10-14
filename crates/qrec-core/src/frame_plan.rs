@@ -47,7 +47,9 @@ pub fn plan_frame(
 ) -> Result<FramePlan, CoreError> {
     let (take_id, take_frame) = frame_source(project, at)?;
     let take = project.take(&take_id).ok_or_else(|| {
-        CoreError::invalid(format!("the clip at {at}f uses {take_id}, which isn't in the project"))
+        CoreError::invalid(format!(
+            "the clip at {at}f uses {take_id}, which isn't in the project"
+        ))
     })?;
     let canvas = &project.canvas;
     let mut argv = ffmpeg_prelude(true);
@@ -143,7 +145,10 @@ mod tests {
         assert_eq!(frame_source(&p, 100).unwrap(), (TakeId::numbered(2), 0));
         let err = frame_source(&p, 150).unwrap_err();
         assert_eq!(err.code, ErrorCode::Invalid);
-        assert_eq!(err.message, "00:00:05:00 is past the end of the timeline (00:00:05:00)");
+        assert_eq!(
+            err.message,
+            "00:00:05:00 is past the end of the timeline (00:00:05:00)"
+        );
         assert_eq!(err.hint.as_deref(), Some("pick a frame from 0f to 149f"));
         let empty = ProjectBuilder::new().build();
         assert_eq!(
@@ -157,14 +162,20 @@ mod tests {
         let p = project();
         let plan = plan_frame(&p, 137, None, "frames/my-video-take-0002-00000407.png").unwrap();
         assert_eq!(plan.tmp_ext, "png");
-        assert_eq!(plan.argv.last().unwrap(), "file:frames/my-video-take-0002-00000407.png");
+        assert_eq!(
+            plan.argv.last().unwrap(),
+            "file:frames/my-video-take-0002-00000407.png"
+        );
         assert_eq!(plan.files.len(), 2);
         insta::assert_snapshot!("frame_composite", render_argv(&plan.argv));
         // Frame 100 is the second take's first frame: its camera starts one
         // frame late, so only the screen is drawn.
         let plan = plan_frame(&p, 100, None, "/tmp/x.png").unwrap();
         assert_eq!(plan.files.len(), 1);
-        assert!(!plan.argv.iter().any(|a| a == "-ss"), "frame 0 needs no seek");
+        assert!(
+            !plan.argv.iter().any(|a| a == "-ss"),
+            "frame 0 needs no seek"
+        );
     }
 
     #[test]
@@ -173,17 +184,34 @@ mod tests {
         let plan = plan_frame(&p, 137, Some(&"L2".parse().unwrap()), "/home/me/cam.png").unwrap();
         insta::assert_snapshot!("frame_raw_layer", render_argv(&plan.argv));
         // The camera's frame 36 (take frame 37 minus one frame of offset).
-        assert!(plan.argv.windows(2).any(|w| w[0] == "-ss" && w[1] == "1.198000"));
+        assert!(
+            plan.argv
+                .windows(2)
+                .any(|w| w[0] == "-ss" && w[1] == "1.198000")
+        );
         let err = plan_frame(&p, 100, Some(&"L2".parse().unwrap()), "/tmp/x.png").unwrap_err();
-        assert_eq!(err.message, "layer L2 has no picture at 00:00:03:10: its recording starts later");
+        assert_eq!(
+            err.message,
+            "layer L2 has no picture at 00:00:03:10: its recording starts later"
+        );
         let err = plan_frame(&p, 0, Some(&"L9".parse().unwrap()), "/tmp/x.png").unwrap_err();
         assert_eq!(err.code, ErrorCode::NotFound);
         let mut lost = p.clone();
-        lost.takes.get_mut(&TakeId::numbered(1)).unwrap().scene.layers[1].missing = true;
+        lost.takes
+            .get_mut(&TakeId::numbered(1))
+            .unwrap()
+            .scene
+            .layers[1]
+            .missing = true;
         let err = plan_frame(&lost, 0, Some(&"L2".parse().unwrap()), "/tmp/x.png").unwrap_err();
         assert!(err.message.contains("source was lost"), "{}", err.message);
         let mut no_media = p.clone();
-        no_media.takes.get_mut(&TakeId::numbered(1)).unwrap().streams.retain(|s| s.id != "L2");
+        no_media
+            .takes
+            .get_mut(&TakeId::numbered(1))
+            .unwrap()
+            .streams
+            .retain(|s| s.id != "L2");
         let err = plan_frame(&no_media, 0, Some(&"L2".parse().unwrap()), "/tmp/x.png").unwrap_err();
         assert_eq!(err.message, "layer L2 has no recorded video in take-0001");
     }
@@ -194,11 +222,17 @@ mod tests {
             .canvas(1280, 720, Fps::new(30, 1))
             .screen_layer("L1", "DP-1")
             .take("take-0001", 100)
-            .with_take("take-0001", |take| take.streams[0].fps = Some(Fps::new(60, 1)))
+            .with_take("take-0001", |take| {
+                take.streams[0].fps = Some(Fps::new(60, 1))
+            })
             .clip("c1", "take-0001", 0, 100)
             .build();
         let plan = plan_frame(&p, 10, Some(&"L1".parse().unwrap()), "/tmp/x.png").unwrap();
         // Canvas frame 10 = recorded frame 20 = 333.333 ms, minus 2 ms.
-        assert!(plan.argv.windows(2).any(|w| w[0] == "-ss" && w[1] == "0.331333"));
+        assert!(
+            plan.argv
+                .windows(2)
+                .any(|w| w[0] == "-ss" && w[1] == "0.331333")
+        );
     }
 }

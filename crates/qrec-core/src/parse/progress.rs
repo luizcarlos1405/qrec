@@ -117,8 +117,16 @@ mod tests {
         assert_eq!(
             blocks,
             vec![
-                ProgressBlock { frame: Some(12), out_time_ns: Some(0), end: false },
-                ProgressBlock { frame: Some(30), out_time_ns: Some(933_333_000), end: true },
+                ProgressBlock {
+                    frame: Some(12),
+                    out_time_ns: Some(0),
+                    end: false
+                },
+                ProgressBlock {
+                    frame: Some(30),
+                    out_time_ns: Some(933_333_000),
+                    end: true
+                },
             ]
         );
     }
@@ -131,13 +139,25 @@ mod tests {
         assert_eq!(block.out_time_ns, Some(3_601_500_000_000));
         assert_eq!(block.frame, None);
         // out_time_us wins whatever the order.
-        feed_all(&mut parser, "out_time_us=2000\nout_time_ms=7000\nout_time=00:00:09.000000");
-        assert_eq!(parser.feed("progress=continue").unwrap().out_time_ns, Some(2_000_000));
+        feed_all(
+            &mut parser,
+            "out_time_us=2000\nout_time_ms=7000\nout_time=00:00:09.000000",
+        );
+        assert_eq!(
+            parser.feed("progress=continue").unwrap().out_time_ns,
+            Some(2_000_000)
+        );
         feed_all(&mut parser, "out_time_ms=7000\nout_time=00:00:09.000000");
-        assert_eq!(parser.feed("progress=continue").unwrap().out_time_ns, Some(7_000_000));
+        assert_eq!(
+            parser.feed("progress=continue").unwrap().out_time_ns,
+            Some(7_000_000)
+        );
         // Negative times (before the first packet) count as 0.
         feed_all(&mut parser, "out_time_us=-33333\n");
-        assert_eq!(parser.feed("progress=continue").unwrap().out_time_ns, Some(0));
+        assert_eq!(
+            parser.feed("progress=continue").unwrap().out_time_ns,
+            Some(0)
+        );
         assert_eq!(clock_ns("-00:00:00.033333"), Some(-33_333_000));
     }
 
@@ -147,11 +167,17 @@ mod tests {
         assert_eq!(parser.feed(""), None);
         assert_eq!(parser.feed("garbage"), None);
         assert_eq!(parser.feed("frame=abc"), None);
-        assert_eq!(parser.feed("  progress=end \r").unwrap(), ProgressBlock {
-            frame: Some(0),
-            out_time_ns: None,
-            end: true
-        });
-        assert_eq!(parser.feed("progress=continue").unwrap(), ProgressBlock::default());
+        assert_eq!(
+            parser.feed("  progress=end \r").unwrap(),
+            ProgressBlock {
+                frame: Some(0),
+                out_time_ns: None,
+                end: true
+            }
+        );
+        assert_eq!(
+            parser.feed("progress=continue").unwrap(),
+            ProgressBlock::default()
+        );
     }
 }

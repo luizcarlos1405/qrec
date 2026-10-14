@@ -45,8 +45,7 @@ use qrec_core::state::{Capabilities, FfmpegCaps, History, HostKind, JobKind, Sta
 use qrec_core::time::{NS_PER_MS, frame_ns};
 use qrec_core::{
     AudioRole, AudioTrack, Canvas, Clip, ClipId, Crop, Fit, Fps, Frame, Layer, LayerId, Project,
-    ProjectDefaults, Rect, ReqId, Scene, Stream, StreamKind, Take, TakeId, TakeStatus,
-    VideoSource,
+    ProjectDefaults, Rect, ReqId, Scene, Stream, StreamKind, Take, TakeId, TakeStatus, VideoSource,
 };
 
 const W: u32 = 320;
@@ -138,7 +137,13 @@ fn fixture_takes() -> Vec<TakeFx> {
                     sync_ms: 20,
                     gain_db: 0.0,
                     duration_ms: 4000,
-                    bursts_ms: &[(300, 600), (1000, 1200), (2200, 2500), (3400, 3600), (3700, 4000)],
+                    bursts_ms: &[
+                        (300, 600),
+                        (1000, 1200),
+                        (2200, 2500),
+                        (3400, 3600),
+                        (3700, 4000),
+                    ],
                 },
                 TrackFx {
                     id: "A2",
@@ -250,7 +255,11 @@ impl Fixture {
                 let info = probe(dir.path(), &file, StreamKind::Audio);
                 assert_eq!(info.sample_rate, Some(48_000), "{file}");
                 assert_eq!(info.channels, Some(track.channels), "{file}");
-                assert_eq!(info.duration_ns, Some(track.duration_ms * NS_PER_MS), "{file}");
+                assert_eq!(
+                    info.duration_ns,
+                    Some(track.duration_ms * NS_PER_MS),
+                    "{file}"
+                );
                 scene.audio.push(AudioTrack {
                     id: track.id.parse().unwrap(),
                     role: track.role,
@@ -279,7 +288,10 @@ impl Fixture {
         project.next_take_number = 3;
         // The −20 ms layer ends a frame early: 119 frames of take 1.
         assert_eq!(project.takes[&TakeId::numbered(1)].duration_frames, 119);
-        assert_eq!(project.takes[&TakeId::numbered(2)].duration_frames, VIDEO_FRAMES);
+        assert_eq!(
+            project.takes[&TakeId::numbered(2)].duration_frames,
+            VIDEO_FRAMES
+        );
         project.timeline.clips = CLIPS
             .iter()
             .map(|&(id, take, in_, out)| Clip {
@@ -340,10 +352,36 @@ fn make_video(dir: &Path, file: &str) {
     ffmpeg(
         dir,
         &[
-            "-filter_complex", &graph, "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast",
-            "-crf", "12", "-bf", "0", "-g", "30", "-keyint_min", "30", "-sc_threshold", "0",
-            "-pix_fmt", "yuv420p", "-color_range", "tv", "-colorspace", "bt709",
-            "-color_primaries", "bt709", "-color_trc", "bt709", "-f", "matroska",
+            "-filter_complex",
+            &graph,
+            "-map",
+            "[v]",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "12",
+            "-bf",
+            "0",
+            "-g",
+            "30",
+            "-keyint_min",
+            "30",
+            "-sc_threshold",
+            "0",
+            "-pix_fmt",
+            "yuv420p",
+            "-color_range",
+            "tv",
+            "-colorspace",
+            "bt709",
+            "-color_primaries",
+            "bt709",
+            "-color_trc",
+            "bt709",
+            "-f",
+            "matroska",
             &format!("file:{file}"),
         ],
     );
@@ -357,7 +395,11 @@ fn make_audio(dir: &Path, file: &str, track: &TrackFx) {
         .iter()
         .map(|&(a, b)| format!("gte(t,{})*lt(t,{})", seconds(a), seconds(b)))
         .collect();
-    let layout = if track.channels == 1 { "mono" } else { "stereo" };
+    let layout = if track.channels == 1 {
+        "mono"
+    } else {
+        "stereo"
+    };
     let graph = format!(
         "aevalsrc=exprs='if(gt({},0),0.5*sin(2*PI*1000*t),0)':s={SAMPLE_RATE}:c={layout}:d={}[a]",
         gates.join("+"),
@@ -366,8 +408,17 @@ fn make_audio(dir: &Path, file: &str, track: &TrackFx) {
     ffmpeg(
         dir,
         &[
-            "-filter_complex", &graph, "-map", "[a]", "-c:a", "flac", "-sample_fmt", "s16", "-f",
-            "matroska", &format!("file:{file}"),
+            "-filter_complex",
+            &graph,
+            "-map",
+            "[a]",
+            "-c:a",
+            "flac",
+            "-sample_fmt",
+            "s16",
+            "-f",
+            "matroska",
+            &format!("file:{file}"),
         ],
     );
 }
@@ -439,7 +490,14 @@ fn placed_bursts(take: &TakeFx, in_: Frame) -> Vec<Placed> {
 /// The audio of a unit: burst edges within 1 ms, levels within 2 % (mono
 /// upmixed at 0 dB, gains applied), silence elsewhere, and the boundary
 /// fades exactly at cuts.
-fn check_audio(pcm: &[[i16; 2]], take: &TakeFx, in_: Frame, out: Frame, take_end: Frame, what: &str) {
+fn check_audio(
+    pcm: &[[i16; 2]],
+    take: &TakeFx,
+    in_: Frame,
+    out: Frame,
+    take_end: Frame,
+    what: &str,
+) {
     let len = pcm.len() as f64;
     let level = |range: std::ops::Range<usize>| -> [f64; 2] {
         let mut peak = [0f64; 2];
@@ -452,7 +510,8 @@ fn check_audio(pcm: &[[i16; 2]], take: &TakeFx, in_: Frame, out: Frame, take_end
     };
     let audible = |i: usize| pcm[i].iter().any(|&x| i32::from(x).abs() > 1000);
     assert!(
-        pcm.iter().all(|s| (i32::from(s[0]) - i32::from(s[1])).abs() <= 2),
+        pcm.iter()
+            .all(|s| (i32::from(s[0]) - i32::from(s[1])).abs() <= 2),
         "{what}: the channels differ (the mono upmix must copy, and both fixtures are L = R)"
     );
     let bursts = placed_bursts(take, in_);
@@ -468,7 +527,12 @@ fn check_audio(pcm: &[[i16; 2]], take: &TakeFx, in_: Frame, out: Frame, take_end
             } else {
                 around.clone().rev().find(|&i| audible(i)).map(|i| i + 1)
             };
-            let found = found.unwrap_or_else(|| panic!("{what}: no {} edge of a burst near sample {edge:.0}", b.track));
+            let found = found.unwrap_or_else(|| {
+                panic!(
+                    "{what}: no {} edge of a burst near sample {edge:.0}",
+                    b.track
+                )
+            });
             assert!(
                 (found as f64 - edge).abs() <= 48.0,
                 "{what}: a {} burst edge is at sample {found}, expected {edge:.1}",
@@ -492,7 +556,9 @@ fn check_audio(pcm: &[[i16; 2]], take: &TakeFx, in_: Frame, out: Frame, take_end
     // Silence wherever no burst plays.
     for (i, s) in pcm.iter().enumerate() {
         let x = i as f64;
-        let near_burst = bursts.iter().any(|b| x > b.start - 150.0 && x < b.end + 150.0);
+        let near_burst = bursts
+            .iter()
+            .any(|b| x > b.start - 150.0 && x < b.end + 150.0);
         if !near_burst {
             assert!(
                 s.iter().all(|&v| i32::from(v).abs() <= 40),
@@ -506,30 +572,54 @@ fn check_audio(pcm: &[[i16; 2]], take: &TakeFx, in_: Frame, out: Frame, take_end
     if let Some(b) = playing(-50.0, 600.0) {
         let head = level(0..24);
         if in_ == 0 {
-            assert!(head.iter().all(|&p| p > 0.5 * b.amp), "{what}: no fade-in expected at the take's start");
+            assert!(
+                head.iter().all(|&p| p > 0.5 * b.amp),
+                "{what}: no fade-in expected at the take's start"
+            );
         } else {
-            assert!(head.iter().all(|&p| p < 0.12 * b.amp), "{what}: missing fade-in: {head:?}");
+            assert!(
+                head.iter().all(|&p| p < 0.12 * b.amp),
+                "{what}: missing fade-in: {head:?}"
+            );
             for (i, s) in pcm[..240].iter().enumerate() {
                 let limit = b.amp * (i + 1) as f64 / 240.0 + 80.0;
-                assert!(s.iter().all(|&v| f64::from(v).abs() <= limit), "{what}: fade-in sample {i} = {s:?}");
+                assert!(
+                    s.iter().all(|&v| f64::from(v).abs() <= limit),
+                    "{what}: fade-in sample {i} = {s:?}"
+                );
             }
             let after = level(240..480);
-            assert!(after.iter().all(|&p| p > 0.9 * b.amp), "{what}: level after the fade-in {after:?}");
+            assert!(
+                after.iter().all(|&p| p > 0.9 * b.amp),
+                "{what}: level after the fade-in {after:?}"
+            );
         }
     }
     if let Some(b) = playing(len - 600.0, len + 50.0) {
         let n = pcm.len();
         let tail = level(n - 24..n);
         if out == take_end {
-            assert!(tail.iter().all(|&p| p > 0.5 * b.amp), "{what}: no fade-out expected at the take's end: {tail:?}");
+            assert!(
+                tail.iter().all(|&p| p > 0.5 * b.amp),
+                "{what}: no fade-out expected at the take's end: {tail:?}"
+            );
         } else {
-            assert!(tail.iter().all(|&p| p < 0.12 * b.amp), "{what}: missing fade-out: {tail:?}");
+            assert!(
+                tail.iter().all(|&p| p < 0.12 * b.amp),
+                "{what}: missing fade-out: {tail:?}"
+            );
             for (k, s) in pcm[n - 240..].iter().enumerate() {
                 let limit = b.amp * (240 - k) as f64 / 240.0 + 80.0;
-                assert!(s.iter().all(|&v| f64::from(v).abs() <= limit), "{what}: fade-out sample {k} = {s:?}");
+                assert!(
+                    s.iter().all(|&v| f64::from(v).abs() <= limit),
+                    "{what}: fade-out sample {k} = {s:?}"
+                );
             }
             let before = level(n - 480..n - 240);
-            assert!(before.iter().all(|&p| p > 0.9 * b.amp), "{what}: level before the fade-out {before:?}");
+            assert!(
+                before.iter().all(|&p| p > 0.9 * b.amp),
+                "{what}: level before the fade-out {before:?}"
+            );
         }
     }
 }
@@ -569,13 +659,25 @@ fn without_clip_ids(mut plan: ExportPlan) -> ExportPlan {
 
 /// Runs a segment's argv, checks its counts and progress, and returns its
 /// decoded frames (gray) and audio.
-fn render_and_check_segment(fx: &Fixture, s: &SegmentPlan, what: &str) -> (Vec<Vec<u8>>, Vec<[i16; 2]>) {
+fn render_and_check_segment(
+    fx: &Fixture,
+    s: &SegmentPlan,
+    what: &str,
+) -> (Vec<Vec<u8>>, Vec<[i16; 2]>) {
     let out = run(fx.path(), &s.argv);
     let blocks = progress_blocks(&out.stdout);
-    let last = blocks.last().unwrap_or_else(|| panic!("{what}: no -progress output"));
-    assert!(last.end, "{what}: the last progress block isn't progress=end");
+    let last = blocks
+        .last()
+        .unwrap_or_else(|| panic!("{what}: no -progress output"));
+    assert!(
+        last.end,
+        "{what}: the last progress block isn't progress=end"
+    );
     assert_eq!(last.frame, Some(s.frames), "{what}: progress frame count");
-    assert!(blocks.windows(2).all(|w| w[0].frame <= w[1].frame), "{what}: progress went back");
+    assert!(
+        blocks.windows(2).all(|w| w[0].frame <= w[1].frame),
+        "{what}: progress went back"
+    );
     let counts = segment_counts(fx.path(), &s.path);
     assert_eq!(counts.check(s.frames, s.samples), Ok(()), "{what}");
     let frames = gray_frames(fx.path(), &s.path);
@@ -594,7 +696,12 @@ fn render_and_check_segment(fx: &Fixture, s: &SegmentPlan, what: &str) -> (Vec<V
 fn mp4_export_renders_exact_frames_samples_and_fades() {
     let fx = Fixture::new("mp4");
     let caps = capabilities();
-    let mut state = State::new(fx.project.clone(), History::new(), UiState::default(), HostKind::Cli);
+    let mut state = State::new(
+        fx.project.clone(),
+        History::new(),
+        UiState::default(),
+        HostKind::Cli,
+    );
     state.runtime.capabilities = caps.clone();
     let ctx = Ctx {
         now: Default::default(),
@@ -628,13 +735,21 @@ fn mp4_export_renders_exact_frames_samples_and_fades() {
         plan_export(
             &fx.project,
             &caps,
-            &options(ExportFormat::Mp4, VideoCodec::H264, Quality::Standard, &plan.out)
+            &options(
+                ExportFormat::Mp4,
+                VideoCodec::H264,
+                Quality::Standard,
+                &plan.out
+            )
         )
         .unwrap(),
         "the command plans what plan_export plans"
     );
     let units = render_units(&fx.project);
-    let ranges: Vec<(TakeId, Frame, Frame)> = units.iter().map(|u| (u.take.clone(), u.in_, u.out)).collect();
+    let ranges: Vec<(TakeId, Frame, Frame)> = units
+        .iter()
+        .map(|u| (u.take.clone(), u.in_, u.out))
+        .collect();
     assert_eq!(
         ranges,
         vec![
@@ -671,7 +786,11 @@ fn mp4_export_renders_exact_frames_samples_and_fades() {
         state = progress.state;
     }
     match &state.runtime.jobs[&job].kind {
-        JobKind::Export { seg_done, seg_frames, .. } => assert_eq!(seg_done, seg_frames),
+        JobKind::Export {
+            seg_done,
+            seg_frames,
+            ..
+        } => assert_eq!(seg_done, seg_frames),
         other => panic!("{other:?}"),
     }
 
@@ -681,14 +800,33 @@ fn mp4_export_renders_exact_frames_samples_and_fades() {
     let tags = run(
         fx.path(),
         &args(&[
-            "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-            "stream=color_range,color_space,color_primaries,color_transfer", "-of", "csv=p=0",
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=color_range,color_space,color_primaries,color_transfer",
+            "-of",
+            "csv=p=0",
             &format!("file:{first}"),
         ]),
     );
-    assert_eq!(String::from_utf8_lossy(&tags.stdout).trim(), "tv,bt709,bt709,bt709");
-    let rgb = rgb_frame(fx.path(), first, "scale=in_color_matrix=bt709:in_range=tv,format=rgb24");
-    assert_close_rgb(pixel(&rgb, W / 2, 55), BACKGROUND_RGB, 4, "segment background");
+    assert_eq!(
+        String::from_utf8_lossy(&tags.stdout).trim(),
+        "tv,bt709,bt709,bt709"
+    );
+    let rgb = rgb_frame(
+        fx.path(),
+        first,
+        "scale=in_color_matrix=bt709:in_range=tv,format=rgb24",
+    );
+    assert_close_rgb(
+        pixel(&rgb, W / 2, 55),
+        BACKGROUND_RGB,
+        4,
+        "segment background",
+    );
 
     // Stitch, into a temp name the way the runner does (it may replace only
     // the last argv element), then the real name.
@@ -720,12 +858,18 @@ fn mp4_export_renders_exact_frames_samples_and_fades() {
     // Copied bit-exactly: the stitched frames are the segments' frames.
     let stitched = gray_frames(fx.path(), &plan.out);
     assert_eq!(stitched.len(), all_frames.len());
-    assert!(stitched == all_frames, "the stitch changed or reordered frames");
+    assert!(
+        stitched == all_frames,
+        "the stitch changed or reordered frames"
+    );
     // Constant rate: every frame lasts exactly one frame.
     let pts = packet_pts(fx.path(), &plan.out);
     assert_eq!(pts.len() as u64, plan.total_frames);
     let steps: Vec<i64> = pts.windows(2).map(|w| w[1] - w[0]).collect();
-    assert!(steps.iter().all(|&d| d == steps[0]), "VFR timestamps: {steps:?}");
+    assert!(
+        steps.iter().all(|&d| d == steps[0]),
+        "VFR timestamps: {steps:?}"
+    );
     // AAC, encoded once: the priming is trimmed on decode, the end keeps
     // the last frame's silent padding (ffmpeg 8.1.2 decodes whole 1024-sample
     // frames: 195 584 samples for 195 200).
@@ -740,7 +884,15 @@ fn mp4_export_renders_exact_frames_samples_and_fades() {
     let bytes = fs::metadata(fx.path().join(&plan.out)).unwrap().len();
     let real = fx.path().join(&plan.out).display().to_string();
     let progress_before = state.clone();
-    let finished = qrec_core::on_event(&state, &ctx, Event::ExportFinished { job, path: real.clone(), bytes });
+    let finished = qrec_core::on_event(
+        &state,
+        &ctx,
+        Event::ExportFinished {
+            job,
+            path: real.clone(),
+            bytes,
+        },
+    );
     assert!(finished.state.runtime.jobs.is_empty());
     let reply = finished
         .effects
@@ -781,9 +933,17 @@ fn mp4_export_renders_exact_frames_samples_and_fades() {
     cut(&mut split.timeline.clips, "c1", 17, "c1b");
     cut(&mut split.timeline.clips, "c3", 80, "c3b");
     cut(&mut split.timeline.clips, "c6", 6, "c6b");
-    let opts = options(ExportFormat::Mp4, VideoCodec::H264, Quality::Standard, &plan.out);
+    let opts = options(
+        ExportFormat::Mp4,
+        VideoCodec::H264,
+        Quality::Standard,
+        &plan.out,
+    );
     let split_plan = plan_export(&split, &caps, &opts).unwrap();
-    assert_eq!(without_clip_ids(split_plan.clone()), without_clip_ids(plan.clone()));
+    assert_eq!(
+        without_clip_ids(split_plan.clone()),
+        without_clip_ids(plan.clone())
+    );
     let first_render: BTreeMap<String, Vec<u8>> = plan
         .segments
         .iter()
@@ -812,9 +972,17 @@ fn webm_exports_render_exact_frames_and_samples() {
     let caps = capabilities();
     // AV1 at Draft (crf 38) smears the 40 px bars at 320×180 enough to
     // misread them; High keeps them legible.
-    for (codec, quality) in [(VideoCodec::Vp9, Quality::Draft), (VideoCodec::Av1, Quality::High)] {
+    for (codec, quality) in [
+        (VideoCodec::Vp9, Quality::Draft),
+        (VideoCodec::Av1, Quality::High),
+    ] {
         let out = format!("exports/plans-{codec:?}.webm");
-        let plan = plan_export(&fx.project, &caps, &options(ExportFormat::Webm, codec, quality, &out)).unwrap();
+        let plan = plan_export(
+            &fx.project,
+            &caps,
+            &options(ExportFormat::Webm, codec, quality, &out),
+        )
+        .unwrap();
         assert_eq!(plan.tmp_ext, "webm");
         for (i, s) in plan.segments.iter().enumerate() {
             assert!(s.path.ends_with(".mkv"), "{}", s.path);
@@ -824,7 +992,11 @@ fn webm_exports_render_exact_frames_and_samples() {
             check_frame_ids(&frames, take, s.in_, &what);
             check_audio(&pcm, take, s.in_, s.out, fx.duration_frames(&s.take), &what);
         }
-        fs::write(fx.path().join(&plan.stitch.list_path), &plan.stitch.list_content).unwrap();
+        fs::write(
+            fx.path().join(&plan.stitch.list_path),
+            &plan.stitch.list_content,
+        )
+        .unwrap();
         fs::create_dir_all(fx.path().join("exports")).unwrap();
         let result = run(fx.path(), &plan.stitch.argv);
         assert!(progress_blocks(&result.stdout).last().unwrap().end);
@@ -882,7 +1054,11 @@ fn frame_saves_are_srgb_pngs_of_the_export_frames() {
         assert_eq!(read_id(&gray[0], H / 2), Some(want), "{out}");
     }
     let err = plan_frame(&fx.project, 0, Some(&"L2".parse().unwrap()), "frames/x.png").unwrap_err();
-    assert!(err.message.contains("recording starts later"), "{}", err.message);
+    assert!(
+        err.message.contains("recording starts later"),
+        "{}",
+        err.message
+    );
 }
 
 // ------------------------------------------------------------------ tools
@@ -941,7 +1117,12 @@ fn run(cwd: &Path, argv: &[String]) -> ToolOutput {
         .stdout(File::create(&out_path).unwrap())
         .stderr(File::create(&err_path).unwrap())
         .spawn()
-        .unwrap_or_else(|e| panic!("can't run {}: {e} (run the tests in the Nix dev shell)", argv[0]));
+        .unwrap_or_else(|e| {
+            panic!(
+                "can't run {}: {e} (run the tests in the Nix dev shell)",
+                argv[0]
+            )
+        });
     let deadline = Instant::now() + TOOL_TIMEOUT;
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
@@ -962,14 +1143,23 @@ fn run(cwd: &Path, argv: &[String]) -> ToolOutput {
 }
 
 fn ffmpeg(cwd: &Path, list: &[&str]) -> Vec<u8> {
-    let mut argv = args(&["ffmpeg", "-hide_banner", "-nostdin", "-nostats", "-loglevel", "error", "-y"]);
+    let mut argv = args(&[
+        "ffmpeg",
+        "-hide_banner",
+        "-nostdin",
+        "-nostats",
+        "-loglevel",
+        "error",
+        "-y",
+    ]);
     argv.extend(args(list));
     run(cwd, &argv).stdout
 }
 
 fn probe(cwd: &Path, file: &str, kind: StreamKind) -> MediaInfo {
     let out = run(cwd, &probe_argv(file, kind));
-    parse_ffprobe(&String::from_utf8(out.stdout).unwrap(), kind).unwrap_or_else(|e| panic!("{file}: {e}"))
+    parse_ffprobe(&String::from_utf8(out.stdout).unwrap(), kind)
+        .unwrap_or_else(|e| panic!("{file}: {e}"))
 }
 
 fn segment_counts(cwd: &Path, path: &str) -> SegmentCounts {
@@ -989,7 +1179,17 @@ fn progress_blocks(stdout: &[u8]) -> Vec<ProgressBlock> {
 fn gray_frames(cwd: &Path, file: &str) -> Vec<Vec<u8>> {
     let raw = ffmpeg(
         cwd,
-        &["-i", &format!("file:{file}"), "-map", "0:v:0", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+        &[
+            "-i",
+            &format!("file:{file}"),
+            "-map",
+            "0:v:0",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray",
+            "-",
+        ],
     );
     let size = (W * H) as usize;
     assert_eq!(raw.len() % size, 0, "{file}: partial frame");
@@ -1001,8 +1201,19 @@ fn rgb_frame(cwd: &Path, file: &str, filter: &str) -> Vec<u8> {
     ffmpeg(
         cwd,
         &[
-            "-i", &format!("file:{file}"), "-map", "0:v:0", "-frames:v", "1", "-vf", filter,
-            "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+            "-i",
+            &format!("file:{file}"),
+            "-map",
+            "0:v:0",
+            "-frames:v",
+            "1",
+            "-vf",
+            filter,
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
         ],
     )
 }
@@ -1014,7 +1225,9 @@ fn pixel(rgb: &[u8], x: u32, y: u32) -> [u8; 3] {
 
 fn assert_close_rgb(got: [u8; 3], want: [u8; 3], tolerance: u8, what: &str) {
     assert!(
-        got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= tolerance),
+        got.iter()
+            .zip(want)
+            .all(|(g, w)| g.abs_diff(w) <= tolerance),
         "{what}: colour {got:?}, expected {want:?} ± {tolerance}"
     );
 }
@@ -1024,12 +1237,28 @@ fn pcm(cwd: &Path, file: &str) -> Vec<[i16; 2]> {
     let raw = ffmpeg(
         cwd,
         &[
-            "-i", &format!("file:{file}"), "-map", "0:a:0", "-c:a", "pcm_s16le", "-ac", "2", "-ar",
-            "48000", "-f", "s16le", "-",
+            "-i",
+            &format!("file:{file}"),
+            "-map",
+            "0:a:0",
+            "-c:a",
+            "pcm_s16le",
+            "-ac",
+            "2",
+            "-ar",
+            "48000",
+            "-f",
+            "s16le",
+            "-",
         ],
     );
     raw.chunks_exact(4)
-        .map(|c| [i16::from_le_bytes([c[0], c[1]]), i16::from_le_bytes([c[2], c[3]])])
+        .map(|c| {
+            [
+                i16::from_le_bytes([c[0], c[1]]),
+                i16::from_le_bytes([c[2], c[3]]),
+            ]
+        })
         .collect()
 }
 
@@ -1038,8 +1267,16 @@ fn packet_pts(cwd: &Path, file: &str) -> Vec<i64> {
     let out = run(
         cwd,
         &args(&[
-            "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts", "-of",
-            "csv=p=0", &format!("file:{file}"),
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "packet=pts",
+            "-of",
+            "csv=p=0",
+            &format!("file:{file}"),
         ]),
     );
     let mut pts: Vec<i64> = String::from_utf8(out.stdout)
@@ -1073,6 +1310,9 @@ fn check_png(png: &[u8], w: u32, h: u32, what: &str) {
         at += 12 + len;
     }
     let has = |name: &str| chunks.iter().any(|c| c == name);
-    assert!(has("sRGB") || (has("cHRM") && has("gAMA")), "{what}: no sRGB tags in {chunks:?}");
+    assert!(
+        has("sRGB") || (has("cHRM") && has("gAMA")),
+        "{what}: no sRGB tags in {chunks:?}"
+    );
     assert!(!has("cICP"), "{what}: a cICP chunk in {chunks:?}");
 }

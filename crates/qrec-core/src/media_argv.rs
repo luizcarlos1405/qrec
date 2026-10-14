@@ -110,10 +110,7 @@ pub fn silence_argv(file: &str, threshold_db: f64, min_silence_ms: u32) -> Vec<S
         "-i".to_owned(),
         file_arg(file),
         "-af".to_owned(),
-        format!(
-            "silencedetect=noise={}dB:d={seconds}",
-            number(threshold_db)
-        ),
+        format!("silencedetect=noise={}dB:d={seconds}", number(threshold_db)),
         "-vn".to_owned(),
         "-f".to_owned(),
         "null".to_owned(),

@@ -67,8 +67,8 @@ pub(crate) fn export_progress_view(job: &Job, now: DateTime<Utc>) -> Option<Prog
         )
     };
     let elapsed = (now - job.started).num_seconds().max(0) as u128;
-    let eta_secs = (done > 0)
-        .then(|| (elapsed * u128::from(total - done) / u128::from(done)) as u64);
+    let eta_secs =
+        (done > 0).then(|| (elapsed * u128::from(total - done) / u128::from(done)) as u64);
     Some(Progress {
         phase,
         done,
@@ -89,7 +89,10 @@ pub fn export_progress(
 ) -> Outcome {
     let mut next = state.clone();
     let Some(entry) = next.runtime.jobs.get_mut(&job) else {
-        return ignore(state, format!("ExportProgress for {job}, which isn't running"));
+        return ignore(
+            state,
+            format!("ExportProgress for {job}, which isn't running"),
+        );
     };
     let JobKind::Export {
         seg_frames,
@@ -97,10 +100,19 @@ pub fn export_progress(
         ..
     } = &mut entry.kind
     else {
-        return ignore(state, format!("ExportProgress for {job}, which isn't an export"));
+        return ignore(
+            state,
+            format!("ExportProgress for {job}, which isn't an export"),
+        );
     };
     let (Some(frames), Some(done)) = (seg_frames.get(segment), seg_done.get_mut(segment)) else {
-        return ignore(state, format!("ExportProgress for segment {segment} of {job}, which has {}", seg_frames.len()));
+        return ignore(
+            state,
+            format!(
+                "ExportProgress for segment {segment} of {job}, which has {}",
+                seg_frames.len()
+            ),
+        );
     };
     *done = frames_done.min(*frames);
     let effects = progress_effect(entry, ctx.now).into_iter().collect();
@@ -110,7 +122,10 @@ pub fn export_progress(
 pub fn export_stitch_progress(state: &State, ctx: &Ctx, job: JobId, out_time_ns: u64) -> Outcome {
     let mut next = state.clone();
     let Some(entry) = next.runtime.jobs.get_mut(&job) else {
-        return ignore(state, format!("ExportStitchProgress for {job}, which isn't running"));
+        return ignore(
+            state,
+            format!("ExportStitchProgress for {job}, which isn't running"),
+        );
     };
     let JobKind::Export {
         seg_frames,
@@ -121,7 +136,10 @@ pub fn export_stitch_progress(state: &State, ctx: &Ctx, job: JobId, out_time_ns:
         ..
     } = &mut entry.kind
     else {
-        return ignore(state, format!("ExportStitchProgress for {job}, which isn't an export"));
+        return ignore(
+            state,
+            format!("ExportStitchProgress for {job}, which isn't an export"),
+        );
     };
     // The stitch starts once every segment is rendered and verified.
     seg_done.clone_from(seg_frames);
@@ -135,7 +153,10 @@ pub fn export_stitch_progress(state: &State, ctx: &Ctx, job: JobId, out_time_ns:
 pub fn export_finished(state: &State, ctx: &Ctx, job: JobId, path: String, bytes: u64) -> Outcome {
     let _ = ctx;
     let Some(entry) = job_of(state, job, |k| matches!(k, JobKind::Export { .. })) else {
-        return ignore(state, format!("ExportFinished for {job}, which isn't a running export"));
+        return ignore(
+            state,
+            format!("ExportFinished for {job}, which isn't a running export"),
+        );
     };
     let frames = match entry.kind {
         JobKind::Export { total_frames, .. } => total_frames,
@@ -162,7 +183,10 @@ pub fn export_finished(state: &State, ctx: &Ctx, job: JobId, path: String, bytes
             .with_action("Open folder", UiAction::RevealPath(path.clone()))
             .with_action("Copy path", UiAction::CopyText(path.clone())),
     ));
-    effects.push(log(LogLevel::Info, format!("{job}: exported {path} ({bytes} bytes, {frames} frames)")));
+    effects.push(log(
+        LogLevel::Info,
+        format!("{job}: exported {path} ({bytes} bytes, {frames} frames)"),
+    ));
     Outcome::new(next, effects, None)
 }
 
@@ -176,7 +200,10 @@ pub fn export_failed(
 ) -> Outcome {
     let _ = ctx;
     let Some(entry) = job_of(state, job, |k| matches!(k, JobKind::Export { .. })) else {
-        return ignore(state, format!("ExportFailed for {job}, which isn't a running export"));
+        return ignore(
+            state,
+            format!("ExportFailed for {job}, which isn't a running export"),
+        );
     };
     let tail = last_lines(stderr_tail);
     let mut next = state.clone();
@@ -196,14 +223,20 @@ pub fn export_failed(
             .with_body(failure_body(&message, &tail))
             .with_action("Open log", UiAction::OpenPath(log_path.clone())),
     ));
-    effects.push(log(LogLevel::Error, format!("{job}: export failed: {message} (log: {log_path})")));
+    effects.push(log(
+        LogLevel::Error,
+        format!("{job}: export failed: {message} (log: {log_path})"),
+    ));
     Outcome::new(next, effects, None)
 }
 
 pub fn export_cancelled(state: &State, ctx: &Ctx, job: JobId) -> Outcome {
     let _ = ctx;
     let Some(entry) = job_of(state, job, |k| matches!(k, JobKind::Export { .. })) else {
-        return ignore(state, format!("ExportCancelled for {job}, which isn't a running export"));
+        return ignore(
+            state,
+            format!("ExportCancelled for {job}, which isn't a running export"),
+        );
     };
     let mut next = state.clone();
     next.runtime.jobs.remove(&job);
@@ -214,7 +247,10 @@ pub fn export_cancelled(state: &State, ctx: &Ctx, job: JobId) -> Outcome {
             reply: Err(CoreError::invalid("export cancelled")),
         });
     }
-    effects.push(Effect::Notify(Toast::new(ToastLevel::Info, "Export cancelled")));
+    effects.push(Effect::Notify(Toast::new(
+        ToastLevel::Info,
+        "Export cancelled",
+    )));
     effects.push(log(LogLevel::Info, format!("{job}: export cancelled")));
     Outcome::new(next, effects, None)
 }
@@ -223,7 +259,10 @@ pub fn export_cancelled(state: &State, ctx: &Ctx, job: JobId) -> Outcome {
 pub fn frame_saved(state: &State, ctx: &Ctx, job: JobId, path: String) -> Outcome {
     let _ = ctx;
     let Some(entry) = job_of(state, job, |k| matches!(k, JobKind::FrameSave { .. })) else {
-        return ignore(state, format!("FrameSaved for {job}, which isn't a running frame save"));
+        return ignore(
+            state,
+            format!("FrameSaved for {job}, which isn't a running frame save"),
+        );
     };
     let mut next = state.clone();
     next.runtime.jobs.remove(&job);
@@ -244,10 +283,19 @@ pub fn frame_saved(state: &State, ctx: &Ctx, job: JobId, path: String) -> Outcom
     Outcome::new(next, effects, None)
 }
 
-pub fn frame_failed(state: &State, ctx: &Ctx, job: JobId, message: String, log_path: String) -> Outcome {
+pub fn frame_failed(
+    state: &State,
+    ctx: &Ctx,
+    job: JobId,
+    message: String,
+    log_path: String,
+) -> Outcome {
     let _ = ctx;
     let Some(entry) = job_of(state, job, |k| matches!(k, JobKind::FrameSave { .. })) else {
-        return ignore(state, format!("FrameFailed for {job}, which isn't a running frame save"));
+        return ignore(
+            state,
+            format!("FrameFailed for {job}, which isn't a running frame save"),
+        );
     };
     let mut next = state.clone();
     next.runtime.jobs.remove(&job);
@@ -266,7 +314,10 @@ pub fn frame_failed(state: &State, ctx: &Ctx, job: JobId, message: String, log_p
             .with_body(message.clone())
             .with_action("Open log", UiAction::OpenPath(log_path.clone())),
     ));
-    effects.push(log(LogLevel::Error, format!("{job}: frame save failed: {message} (log: {log_path})")));
+    effects.push(log(
+        LogLevel::Error,
+        format!("{job}: frame save failed: {message} (log: {log_path})"),
+    ));
     Outcome::new(next, effects, None)
 }
 
@@ -308,10 +359,17 @@ pub fn requester_gone(state: &State, ctx: &Ctx, req: ReqId) -> Outcome {
     let what = if cancelled.is_empty() && dropped.is_empty() {
         "nothing to cancel".to_owned()
     } else {
-        let ids: Vec<String> = cancelled.iter().chain(&dropped).map(JobId::to_string).collect();
+        let ids: Vec<String> = cancelled
+            .iter()
+            .chain(&dropped)
+            .map(JobId::to_string)
+            .collect();
         format!("cancelled {}", ids.join(", "))
     };
-    effects.push(log(LogLevel::Debug, format!("requester {req} went away: {what}")));
+    effects.push(log(
+        LogLevel::Debug,
+        format!("requester {req} went away: {what}"),
+    ));
     Outcome::new(next, effects, None)
 }
 
@@ -406,19 +464,43 @@ mod tests {
         let p = progress_of(&out);
         // 0.9 · 50/200 of 200 frames = 45; 10 s for 45 of 200 ⇒ 34 s left.
         assert_eq!((p.done, p.total, p.eta_secs), (45, 200, Some(34)));
-        assert_eq!((p.phase, p.label.as_str()), (ProgressPhase::Render, "Rendering clip 1/2"));
+        assert_eq!(
+            (p.phase, p.label.as_str()),
+            (ProgressPhase::Render, "Rendering clip 1/2")
+        );
         let out = on_event(&out.state, &ctx, event(0, 100));
         assert_eq!(progress_of(&out).label, "Rendering clip 2/2");
         let out = on_event(&out.state, &ctx, event(1, 1000));
         let p = progress_of(&out);
-        assert_eq!((p.done, p.label.as_str()), (180, "Rendering clip 2/2"), "clamped to the segment");
+        assert_eq!(
+            (p.done, p.label.as_str()),
+            (180, "Rendering clip 2/2"),
+            "clamped to the segment"
+        );
         // Stitching: 0.9 + 0.1 · half.
         let half = frame_ns_of(&out.state) / 2;
-        let out = on_event(&out.state, &ctx, Event::ExportStitchProgress { job: JobId(1), out_time_ns: half });
+        let out = on_event(
+            &out.state,
+            &ctx,
+            Event::ExportStitchProgress {
+                job: JobId(1),
+                out_time_ns: half,
+            },
+        );
         let p = progress_of(&out);
-        assert_eq!((p.phase, p.label.as_str(), p.done), (ProgressPhase::Stitch, "Stitching", 190));
+        assert_eq!(
+            (p.phase, p.label.as_str(), p.done),
+            (ProgressPhase::Stitch, "Stitching", 190)
+        );
         assert_eq!(p.eta_secs, Some(0));
-        let out = on_event(&out.state, &ctx, Event::ExportStitchProgress { job: JobId(1), out_time_ns: u64::MAX });
+        let out = on_event(
+            &out.state,
+            &ctx,
+            Event::ExportStitchProgress {
+                job: JobId(1),
+                out_time_ns: u64::MAX,
+            },
+        );
         assert_eq!(progress_of(&out).done, 200);
 
         // Nobody waiting: the state still tracks it, but no progress effect.
@@ -434,7 +516,9 @@ mod tests {
 
     fn frame_ns_of(state: &State) -> u64 {
         match &state.runtime.jobs[&JobId(1)].kind {
-            JobKind::Export { stitch_total_ns, .. } => *stitch_total_ns,
+            JobKind::Export {
+                stitch_total_ns, ..
+            } => *stitch_total_ns,
             _ => unreachable!(),
         }
     }
@@ -444,20 +528,53 @@ mod tests {
         let state = exporting(HostKind::Cli);
         let ctx = testkit::ctx(START, 2);
         for event in [
-            Event::ExportProgress { job: JobId(9), segment: 0, frames_done: 1 },
-            Event::ExportProgress { job: JobId(1), segment: 5, frames_done: 1 },
-            Event::ExportStitchProgress { job: JobId(9), out_time_ns: 1 },
-            Event::ExportFinished { job: JobId(9), path: "x".into(), bytes: 1 },
-            Event::ExportFailed { job: JobId(9), message: "x".into(), stderr_tail: vec![], log: "l".into() },
+            Event::ExportProgress {
+                job: JobId(9),
+                segment: 0,
+                frames_done: 1,
+            },
+            Event::ExportProgress {
+                job: JobId(1),
+                segment: 5,
+                frames_done: 1,
+            },
+            Event::ExportStitchProgress {
+                job: JobId(9),
+                out_time_ns: 1,
+            },
+            Event::ExportFinished {
+                job: JobId(9),
+                path: "x".into(),
+                bytes: 1,
+            },
+            Event::ExportFailed {
+                job: JobId(9),
+                message: "x".into(),
+                stderr_tail: vec![],
+                log: "l".into(),
+            },
             Event::ExportCancelled { job: JobId(9) },
-            Event::FrameSaved { job: JobId(1), path: "x".into() },
-            Event::FrameFailed { job: JobId(1), message: "x".into(), log: "l".into() },
+            Event::FrameSaved {
+                job: JobId(1),
+                path: "x".into(),
+            },
+            Event::FrameFailed {
+                job: JobId(1),
+                message: "x".into(),
+                log: "l".into(),
+            },
         ] {
             let out = on_event(&state, &ctx, event.clone());
             assert_eq!(out.state, state, "{event:?}");
             assert!(out.reply.is_none());
             assert!(
-                matches!(out.effects.as_slice(), [Effect::Log { level: LogLevel::Debug, .. }]),
+                matches!(
+                    out.effects.as_slice(),
+                    [Effect::Log {
+                        level: LogLevel::Debug,
+                        ..
+                    }]
+                ),
                 "{event:?}: {:?}",
                 out.effects
             );
@@ -471,7 +588,11 @@ mod tests {
         let out = on_event(
             &state,
             &ctx,
-            Event::ExportFinished { job: JobId(1), path: "/p/exports/test-20261014-120000.mp4".into(), bytes: 4096 },
+            Event::ExportFinished {
+                job: JobId(1),
+                path: "/p/exports/test-20261014-120000.mp4".into(),
+                bytes: 4096,
+            },
         );
         assert!(out.state.runtime.jobs.is_empty());
         insta::assert_debug_snapshot!("export_finished_effects", out.effects);
@@ -488,13 +609,23 @@ mod tests {
             },
         );
         assert!(out.state.runtime.jobs.is_empty());
-        let Effect::Reply { reply: Err(err), .. } = &out.effects[0] else { panic!("{:?}", out.effects) };
+        let Effect::Reply {
+            reply: Err(err), ..
+        } = &out.effects[0]
+        else {
+            panic!("{:?}", out.effects)
+        };
         assert_eq!(err.code, ErrorCode::Io);
-        assert_eq!(err.message, "export failed: segment 2: ffmpeg exited with 1");
+        assert_eq!(
+            err.message,
+            "export failed: segment 2: ffmpeg exited with 1"
+        );
         let details = err.details.as_ref().unwrap();
         assert_eq!(details["stderrTail"].as_array().unwrap().len(), 30);
         assert_eq!(details["stderrTail"][0], "line 11");
-        let Effect::Notify(toast) = &out.effects[1] else { panic!() };
+        let Effect::Notify(toast) = &out.effects[1] else {
+            panic!()
+        };
         assert_eq!(toast.level, ToastLevel::Error);
         assert!(toast.body.as_ref().unwrap().ends_with("line 40"));
 
@@ -511,14 +642,36 @@ mod tests {
     fn frame_events() {
         let state = exporting(HostKind::Gui);
         let ctx = testkit::ctx(START, 2);
-        let cmd = Command::FrameSave { at: "5f".parse().unwrap(), layer: None, out: None };
+        let cmd = Command::FrameSave {
+            at: "5f".parse().unwrap(),
+            layer: None,
+            out: None,
+        };
         let saving = apply(&state, &ctx, cmd).unwrap().state;
         assert!(saving.runtime.jobs.contains_key(&JobId(2)));
-        let out = on_event(&saving, &ctx, Event::FrameSaved { job: JobId(2), path: "/p/frames/a.png".into() });
+        let out = on_event(
+            &saving,
+            &ctx,
+            Event::FrameSaved {
+                job: JobId(2),
+                path: "/p/frames/a.png".into(),
+            },
+        );
         assert!(!out.state.runtime.jobs.contains_key(&JobId(2)));
-        assert!(out.state.runtime.jobs.contains_key(&JobId(1)), "the export goes on");
+        assert!(
+            out.state.runtime.jobs.contains_key(&JobId(1)),
+            "the export goes on"
+        );
         insta::assert_debug_snapshot!("frame_saved_effects", out.effects);
-        let out = on_event(&saving, &ctx, Event::FrameFailed { job: JobId(2), message: "boom".into(), log: "l.log".into() });
+        let out = on_event(
+            &saving,
+            &ctx,
+            Event::FrameFailed {
+                job: JobId(2),
+                message: "boom".into(),
+                log: "l.log".into(),
+            },
+        );
         assert!(matches!(
             &out.effects[0],
             Effect::Reply { reply: Err(e), .. } if e.code == ErrorCode::Io && e.message == "saving the frame failed: boom"
@@ -533,31 +686,70 @@ mod tests {
         let gui = exporting(HostKind::Gui);
         let out = on_event(&gui, &ctx, Event::RequesterGone { req: gone.clone() });
         assert_eq!(out.state.runtime.jobs[&JobId(1)].req, None);
-        assert!(!out.effects.iter().any(|e| matches!(e, Effect::CancelJob { .. })));
+        assert!(
+            !out.effects
+                .iter()
+                .any(|e| matches!(e, Effect::CancelJob { .. }))
+        );
 
         // A CLI host cancels what that requester started.
         let mut state = exporting(HostKind::Headless);
         let mut add = |id: u64, kind: JobKind, req: &str| {
             state.runtime.jobs.insert(
                 JobId(id),
-                Job { id: JobId(id), kind, req: Some(ReqId(req.into())), started: ctx.now },
+                Job {
+                    id: JobId(id),
+                    kind,
+                    req: Some(ReqId(req.into())),
+                    started: ctx.now,
+                },
             );
         };
-        add(2, JobKind::FrameSave { out: "f.png".into(), files: Default::default() }, "r1");
+        add(
+            2,
+            JobKind::FrameSave {
+                out: "f.png".into(),
+                files: Default::default(),
+            },
+            "r1",
+        );
         add(
             3,
             JobKind::Autocut {
-                cmd: Command::Autocut { scope: ClipScope::All, overrides: Default::default(), dry_run: false }.to_json(),
+                cmd: Command::Autocut {
+                    scope: ClipScope::All,
+                    overrides: Default::default(),
+                    dry_run: false,
+                }
+                .to_json(),
                 targets: vec![],
-                params: AutocutParams { threshold_db: -35.0, min_silence_ms: 400, padding_ms: 120, min_keep_ms: 200 },
+                params: AutocutParams {
+                    threshold_db: -35.0,
+                    min_silence_ms: 400,
+                    padding_ms: 120,
+                    min_keep_ms: 200,
+                },
                 dry_run: false,
                 pending: Default::default(),
                 ready: false,
             },
             "r1",
         );
-        add(4, JobKind::Purge { takes: vec![TakeId::numbered(1)] }, "r1");
-        add(5, JobKind::FrameSave { out: "g.png".into(), files: Default::default() }, "r2");
+        add(
+            4,
+            JobKind::Purge {
+                takes: vec![TakeId::numbered(1)],
+            },
+            "r1",
+        );
+        add(
+            5,
+            JobKind::FrameSave {
+                out: "g.png".into(),
+                files: Default::default(),
+            },
+            "r2",
+        );
         let out = on_event(&state, &ctx, Event::RequesterGone { req: gone });
         let cancelled: Vec<JobId> = out
             .effects
@@ -570,8 +762,15 @@ mod tests {
         assert_eq!(cancelled, vec![JobId(1), JobId(2), JobId(3)]);
         let jobs = &out.state.runtime.jobs;
         assert!(!jobs.contains_key(&JobId(3)), "autocut jobs leave at once");
-        assert!(jobs.contains_key(&JobId(1)) && jobs.contains_key(&JobId(2)), "until the shell reports the end");
-        assert!(jobs.values().filter(|j| j.id != JobId(5)).all(|j| j.req.is_none()));
+        assert!(
+            jobs.contains_key(&JobId(1)) && jobs.contains_key(&JobId(2)),
+            "until the shell reports the end"
+        );
+        assert!(
+            jobs.values()
+                .filter(|j| j.id != JobId(5))
+                .all(|j| j.req.is_none())
+        );
         assert_eq!(jobs[&JobId(5)].req, Some(ReqId("r2".into())));
         assert!(matches!(
             out.effects.last(),

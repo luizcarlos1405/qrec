@@ -224,7 +224,13 @@ pub(crate) fn layer_inputs<'a>(
             let stream = take
                 .stream(layer.id.as_str())
                 .filter(|s| s.kind == StreamKind::Video)?;
-            let placement = place(stream.width?, stream.height?, layer.crop, layer.rect, layer.fit)?;
+            let placement = place(
+                stream.width?,
+                stream.height?,
+                layer.crop,
+                layer.rect,
+                layer.fit,
+            )?;
             if !on_canvas(&placement, canvas) {
                 return None;
             }
@@ -556,8 +562,9 @@ fn check_ffmpeg<'a>(
     format: ExportFormat,
 ) -> Result<&'a FfmpegCaps, CoreError> {
     let ffmpeg = caps.ffmpeg.as_ref().ok_or_else(|| {
-        CoreError::new(ErrorCode::MissingDependency, "ffmpeg wasn't found")
-            .with_hint("install ffmpeg with libx264, libvpx-vp9 and libopus; `qrec doctor` checks it")
+        CoreError::new(ErrorCode::MissingDependency, "ffmpeg wasn't found").with_hint(
+            "install ffmpeg with libx264, libvpx-vp9 and libopus; `qrec doctor` checks it",
+        )
     })?;
     if !ffmpeg.encoders.is_empty() {
         let video = match encoder {
@@ -592,7 +599,9 @@ pub fn plan_export(
     let codec = resolve_codec(opts.format, Some(opts.codec))?;
     let units = render_units(project);
     if units.is_empty() {
-        return Err(CoreError::invalid("nothing to export: the timeline is empty"));
+        return Err(CoreError::invalid(
+            "nothing to export: the timeline is empty",
+        ));
     }
     let encoder = Encoder::choose(codec, caps, opts.allow_vaapi);
     let ffmpeg = check_ffmpeg(caps, &encoder, opts.format)?;
@@ -605,7 +614,14 @@ pub fn plan_export(
                 unit.clips[0], unit.take
             ))
         })?;
-        let segment = plan_segment(project, take, unit, &encoder, opts.quality, &ffmpeg.identity);
+        let segment = plan_segment(
+            project,
+            take,
+            unit,
+            &encoder,
+            opts.quality,
+            &ffmpeg.identity,
+        );
         files.extend(segment.1);
         segments.push(segment.0);
     }
@@ -699,7 +715,11 @@ fn plan_segment(
 
 /// `sha256(PLAN_VERSION ‖ ffmpeg identity ‖ VA device for VA plans ‖ argv
 /// without the output path)`, the parts joined with `\0`.
-pub fn cache_key(identity: &str, vaapi_device: Option<&str>, argv_without_output: &[String]) -> String {
+pub fn cache_key(
+    identity: &str,
+    vaapi_device: Option<&str>,
+    argv_without_output: &[String],
+) -> String {
     let version = PLAN_VERSION.to_string();
     let mut parts: Vec<&str> = vec![&version, identity];
     parts.extend(vaapi_device);
@@ -953,11 +973,17 @@ pub(crate) mod tests {
     fn frame_selection_at_the_canvas_rate() {
         let mut s = spec_project().takes.values().next().unwrap().streams[0].clone();
         s.start_offset_ns = 0;
-        assert_eq!(select_frames(&s, F30, 37), FrameSelection { k0: 37, lead: 0 });
+        assert_eq!(
+            select_frames(&s, F30, 37),
+            FrameSelection { k0: 37, lead: 0 }
+        );
         // 41 ms rounds to frame 1: the layer starts one frame late.
         s.start_offset_ns = 41_000_000;
         assert_eq!(select_frames(&s, F30, 0), FrameSelection { k0: 0, lead: 1 });
-        assert_eq!(select_frames(&s, F30, 37), FrameSelection { k0: 36, lead: 0 });
+        assert_eq!(
+            select_frames(&s, F30, 37),
+            FrameSelection { k0: 36, lead: 0 }
+        );
         // −20 ms rounds to frame −1: the recording started a frame early.
         s.start_offset_ns = -20_000_000;
         assert_eq!(select_frames(&s, F30, 0), FrameSelection { k0: 1, lead: 0 });
@@ -975,7 +1001,10 @@ pub(crate) mod tests {
         s.fps = Some(Fps::new(60, 1));
         s.start_offset_ns = 0;
         // 60 fps into 30: frame 10 starts at 333.3 ms = recorded frame 20.
-        assert_eq!(select_frames(&s, F30, 10), FrameSelection { k0: 20, lead: 0 });
+        assert_eq!(
+            select_frames(&s, F30, 10),
+            FrameSelection { k0: 20, lead: 0 }
+        );
         // 100 ms late: canvas frames 0-2 come before recorded frame 0 is
         // nearest; frame 3 (100 ms) shows it.
         s.start_offset_ns = 100_000_000;
@@ -992,14 +1021,26 @@ pub(crate) mod tests {
             (F30, Fps::new(60, 1)),
         ] {
             s.fps = Some(rec);
-            for offset in [-50_000_000, -1, 0, 1, 8_333_333, 8_333_334, 41_000_000, 250_000_000] {
+            for offset in [
+                -50_000_000,
+                -1,
+                0,
+                1,
+                8_333_333,
+                8_333_334,
+                41_000_000,
+                250_000_000,
+            ] {
                 s.start_offset_ns = offset;
                 for in_ in 0..20u64 {
                     let sel = select_frames(&s, canvas, in_);
                     let nearest =
                         |t: u64| ns_to_frame_round(frame_ns(t as i64, canvas) - offset, rec);
                     let lead = (in_..in_ + 1000).take_while(|&t| nearest(t) < 0).count() as u64;
-                    assert_eq!(sel.lead, lead, "{rec} → {canvas}, offset {offset}, in {in_}");
+                    assert_eq!(
+                        sel.lead, lead,
+                        "{rec} → {canvas}, offset {offset}, in {in_}"
+                    );
                     assert_eq!(sel.k0, nearest(in_ + lead).max(0) as u64);
                 }
             }
@@ -1019,25 +1060,40 @@ pub(crate) mod tests {
 
     #[test]
     fn codecs_follow_the_format() {
-        assert_eq!(resolve_codec(ExportFormat::Mp4, None).unwrap(), VideoCodec::H264);
-        assert_eq!(resolve_codec(ExportFormat::Webm, None).unwrap(), VideoCodec::Vp9);
+        assert_eq!(
+            resolve_codec(ExportFormat::Mp4, None).unwrap(),
+            VideoCodec::H264
+        );
+        assert_eq!(
+            resolve_codec(ExportFormat::Webm, None).unwrap(),
+            VideoCodec::Vp9
+        );
         assert_eq!(
             resolve_codec(ExportFormat::Webm, Some(VideoCodec::Av1)).unwrap(),
             VideoCodec::Av1
         );
         assert_eq!(
-            resolve_codec(ExportFormat::Mp4, Some(VideoCodec::Vp9)).unwrap_err().code,
+            resolve_codec(ExportFormat::Mp4, Some(VideoCodec::Vp9))
+                .unwrap_err()
+                .code,
             ErrorCode::Usage
         );
         assert_eq!(
-            resolve_codec(ExportFormat::Webm, Some(VideoCodec::H264)).unwrap_err().code,
+            resolve_codec(ExportFormat::Webm, Some(VideoCodec::H264))
+                .unwrap_err()
+                .code,
             ErrorCode::Usage
         );
     }
 
     #[test]
     fn spec_project_plan() {
-        let plan = plan_export(&spec_project(), &testkit::capabilities(), &opts("/home/me/out.mp4")).unwrap();
+        let plan = plan_export(
+            &spec_project(),
+            &testkit::capabilities(),
+            &opts("/home/me/out.mp4"),
+        )
+        .unwrap();
         assert_eq!(plan.segments.len(), 2);
         assert_eq!(plan.total_frames, 410 + 457);
         let s = &plan.segments[0];
@@ -1051,25 +1107,44 @@ pub(crate) mod tests {
     #[test]
     fn vaapi_plan_and_its_x264_fallback() {
         let project = spec_project();
-        let plan = plan_export(&project, &va_caps(), &opts("exports/my-video-20261014-120000.mp4")).unwrap();
-        assert!(plan.segments.iter().all(|s| s.argv.contains(&"h264_vaapi".to_owned())));
+        let plan = plan_export(
+            &project,
+            &va_caps(),
+            &opts("exports/my-video-20261014-120000.mp4"),
+        )
+        .unwrap();
+        assert!(
+            plan.segments
+                .iter()
+                .all(|s| s.argv.contains(&"h264_vaapi".to_owned()))
+        );
         insta::assert_snapshot!("spec_project_vaapi", render_plan(&plan));
 
         let mut no_va = opts("exports/my-video-20261014-120000.mp4");
         no_va.allow_vaapi = false;
         let x264 = plan_export(&project, &va_caps(), &no_va).unwrap();
-        assert!(x264.segments.iter().all(|s| s.argv.contains(&"libx264".to_owned())));
+        assert!(
+            x264.segments
+                .iter()
+                .all(|s| s.argv.contains(&"libx264".to_owned()))
+        );
         assert_ne!(plan.segments[0].key, x264.segments[0].key);
         assert_eq!(without_vaapi(&plan, &va_caps()), Some(x264.clone()));
         assert_eq!(without_vaapi(&x264, &va_caps()), None, "not a VA plan");
         // Same argv as the plain-caps plan: only the encoder differs.
-        assert_eq!(x264, plan_export(&project, &testkit::capabilities(), &no_va).unwrap());
+        assert_eq!(
+            x264,
+            plan_export(&project, &testkit::capabilities(), &no_va).unwrap()
+        );
         for quality in [Quality::Draft, Quality::High] {
             let mut o = opts("x.mp4");
             o.quality = quality;
             let va = plan_export(&project, &va_caps(), &o).unwrap();
             o.allow_vaapi = false;
-            assert_eq!(without_vaapi(&va, &va_caps()).unwrap(), plan_export(&project, &va_caps(), &o).unwrap());
+            assert_eq!(
+                without_vaapi(&va, &va_caps()).unwrap(),
+                plan_export(&project, &va_caps(), &o).unwrap()
+            );
         }
     }
 
@@ -1093,7 +1168,10 @@ pub(crate) mod tests {
         both.push_str(&render_argv(&av1.stitch.argv));
         insta::assert_snapshot!("webm_vp9_av1", both);
         o.codec = VideoCodec::H264;
-        assert_eq!(plan_export(&project, &va_caps(), &o).unwrap_err().code, ErrorCode::Usage);
+        assert_eq!(
+            plan_export(&project, &va_caps(), &o).unwrap_err().code,
+            ErrorCode::Usage
+        );
     }
 
     #[test]
@@ -1128,8 +1206,16 @@ pub(crate) mod tests {
         assert_eq!(layers, ["L1"]);
         assert!(track_inputs(take, F30, 0).is_empty());
         let plan = plan_export(&project, &testkit::capabilities(), &opts("x.mp4")).unwrap();
-        let graph = &plan.segments[0].argv[plan.segments[0].argv.iter().position(|a| a == "-filter_complex").unwrap() + 1];
-        assert!(graph.contains("anullsrc=r=48000:cl=stereo,atrim=end_sample=160000[a]"), "{graph}");
+        let graph = &plan.segments[0].argv[plan.segments[0]
+            .argv
+            .iter()
+            .position(|a| a == "-filter_complex")
+            .unwrap()
+            + 1];
+        assert!(
+            graph.contains("anullsrc=r=48000:cl=stereo,atrim=end_sample=160000[a]"),
+            "{graph}"
+        );
         assert_eq!(plan.files.len(), 1);
     }
 
@@ -1138,14 +1224,25 @@ pub(crate) mod tests {
         let project = ProjectBuilder::new()
             .screen_layer("L1", "DP-1")
             .take("take-0001", 100)
-            .with_take("take-0001", |take| take.streams[0].start_offset_ns = 100_000_000)
+            .with_take("take-0001", |take| {
+                take.streams[0].start_offset_ns = 100_000_000
+            })
             .clip("c1", "take-0001", 0, 3)
             .clip("c2", "take-0001", 50, 52)
             .build();
         let plan = plan_export(&project, &testkit::capabilities(), &opts("x.mp4")).unwrap();
         // 100 ms = 3 frames of lead ≥ the 3-frame unit: background only.
-        assert!(!plan.segments[0].argv.iter().any(|a| a.starts_with("file:takes/")));
-        assert!(plan.segments[1].argv.contains(&"file:takes/take-0001/L1-screen-DP-1.mkv".to_owned()));
+        assert!(
+            !plan.segments[0]
+                .argv
+                .iter()
+                .any(|a| a.starts_with("file:takes/"))
+        );
+        assert!(
+            plan.segments[1]
+                .argv
+                .contains(&"file:takes/take-0001/L1-screen-DP-1.mkv".to_owned())
+        );
     }
 
     #[test]
@@ -1161,18 +1258,35 @@ pub(crate) mod tests {
         let graphs: Vec<String> = plan
             .segments
             .iter()
-            .map(|s| s.argv[s.argv.iter().position(|a| a == "-filter_complex").unwrap() + 1].clone())
+            .map(|s| {
+                s.argv[s.argv.iter().position(|a| a == "-filter_complex").unwrap() + 1].clone()
+            })
             .collect();
-        assert!(graphs[0].ends_with("apad,atrim=end_sample=64000,afade=t=out:ss=63760:ns=240[a]"), "{}", graphs[0]);
-        assert!(graphs[1].ends_with("apad,atrim=end_sample=64000,afade=t=in:ns=240[a]"), "{}", graphs[1]);
         assert!(
-            graphs[2].ends_with("apad,atrim=end_sample=1600,afade=t=in:ns=240,afade=t=out:ss=1360:ns=240[a]"),
+            graphs[0].ends_with("apad,atrim=end_sample=64000,afade=t=out:ss=63760:ns=240[a]"),
+            "{}",
+            graphs[0]
+        );
+        assert!(
+            graphs[1].ends_with("apad,atrim=end_sample=64000,afade=t=in:ns=240[a]"),
+            "{}",
+            graphs[1]
+        );
+        assert!(
+            graphs[2].ends_with(
+                "apad,atrim=end_sample=1600,afade=t=in:ns=240,afade=t=out:ss=1360:ns=240[a]"
+            ),
             "{}",
             graphs[2]
         );
         // Mono, no seek at frame 0, seek at frame 60.
         assert!(graphs[0].contains("[0:a]aresample=48000,pan=stereo|c0=c0|c1=c0,volume=0dB[a0]"));
-        assert!(plan.segments[1].argv.windows(2).any(|w| w[0] == "-ss" && w[1] == "2.000000"));
+        assert!(
+            plan.segments[1]
+                .argv
+                .windows(2)
+                .any(|w| w[0] == "-ss" && w[1] == "2.000000")
+        );
     }
 
     #[test]
@@ -1196,7 +1310,11 @@ pub(crate) mod tests {
         let other = plan_export(&project, &caps, &opts("x.mp4")).unwrap();
         assert_ne!(other.segments[0].key, plan.segments[0].key);
         assert_eq!(
-            plan.stitch.list_content.lines().filter(|l| l.contains(&plan.segments[0].key)).count(),
+            plan.stitch
+                .list_content
+                .lines()
+                .filter(|l| l.contains(&plan.segments[0].key))
+                .count(),
             2
         );
     }
@@ -1212,7 +1330,12 @@ pub(crate) mod tests {
         project.canvas.background = "#12170f".parse::<Color>().unwrap();
         let take = project.takes.get_mut(&TakeId::numbered(1)).unwrap();
         let layer = &mut take.scene.layers[0];
-        layer.crop = Crop { top: 10, right: 0, bottom: 0, left: 21 };
+        layer.crop = Crop {
+            top: 10,
+            right: 0,
+            bottom: 0,
+            left: 21,
+        };
         layer.rect = Rect::new(-31, 17, 640, 480);
         layer.fit = Fit::Contain;
         layer.opacity = 0.5;
@@ -1226,7 +1349,9 @@ pub(crate) mod tests {
         let mut caps = testkit::capabilities();
         caps.ffmpeg = None;
         assert_eq!(
-            plan_export(&project, &caps, &opts("x.mp4")).unwrap_err().code,
+            plan_export(&project, &caps, &opts("x.mp4"))
+                .unwrap_err()
+                .code,
             ErrorCode::MissingDependency
         );
         let mut caps = testkit::capabilities();
@@ -1242,7 +1367,9 @@ pub(crate) mod tests {
         assert!(plan_export(&project, &caps, &o).is_ok());
         let empty = ProjectBuilder::new().build();
         assert_eq!(
-            plan_export(&empty, &testkit::capabilities(), &opts("x.mp4")).unwrap_err().message,
+            plan_export(&empty, &testkit::capabilities(), &opts("x.mp4"))
+                .unwrap_err()
+                .message,
             "nothing to export: the timeline is empty"
         );
     }

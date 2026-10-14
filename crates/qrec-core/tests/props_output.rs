@@ -1,8 +1,11 @@
 //! Properties of the output planners (A§9.3, A§9.6, A§11): a split never
 //! changes the export or GES plan, every segment has exactly the frames and
-//! samples of its unit, units are maximal runs, the libx264 fallback of a VA
-//! plan equals planning without VA, and the frame selection's lead counts
-//! canvas frames.
+//! samples of its unit, units are maximal runs, GES clips stay inside their
+//! unit and their media, the libx264 fallback of a VA plan equals planning
+//! without VA, and the frame selection's lead counts canvas frames.
+//!
+//! `crates/qrec-shell/tests/plans_ffmpeg.rs` runs the plans through real
+//! ffmpeg.
 
 use proptest::prelude::*;
 use proptest::sample::Index;
@@ -35,11 +38,13 @@ struct Tweak {
 
 fn arb_tweaks() -> impl Strategy<Value = Vec<Tweak>> {
     prop::collection::vec(
-        (-60i64..150, 0u8..6, 0u8..8, -100i32..100).prop_map(|(offset_ms, rate, flag, sync_ms)| Tweak {
-            offset_ms,
-            rate,
-            flag,
-            sync_ms,
+        (-60i64..150, 0u8..6, 0u8..8, -100i32..100).prop_map(|(offset_ms, rate, flag, sync_ms)| {
+            Tweak {
+                offset_ms,
+                rate,
+                flag,
+                sync_ms,
+            }
         }),
         16,
     )
@@ -117,7 +122,12 @@ fn split(project: &Project, which: Index, at: Index) -> Option<(Project, ClipId)
     Some((split, new_id))
 }
 
-fn opts(format: ExportFormat, codec: VideoCodec, quality: Quality, allow_vaapi: bool) -> ExportOptions {
+fn opts(
+    format: ExportFormat,
+    codec: VideoCodec,
+    quality: Quality,
+    allow_vaapi: bool,
+) -> ExportOptions {
     ExportOptions {
         format,
         quality,
@@ -158,7 +168,10 @@ fn without_clip_ids(mut plan: ExportPlan) -> ExportPlan {
 }
 
 fn graph(argv: &[String]) -> &str {
-    let at = argv.iter().position(|a| a == "-filter_complex").expect("a filter graph");
+    let at = argv
+        .iter()
+        .position(|a| a == "-filter_complex")
+        .expect("a filter graph");
     &argv[at + 1]
 }
 
@@ -174,9 +187,9 @@ proptest! {
         opts in arb_opts(),
     ) {
         let project = tweaked(project, &tweaks);
-        let split = split(&project, which, at);
-        prop_assume!(split.is_some(), "no clip to split");
-        let (split, new_id) = split.unwrap();
+        // Nothing to split: nothing to check (returning instead of
+        // `prop_assume!` keeps large PROPTEST_CASES runs under the reject limit).
+        let Some((split, new_id)) = split(&project, which, at) else { return Ok(()); };
         let caps = va_caps();
         let before = plan_export(&project, &caps, &opts).unwrap();
         let after = plan_export(&split, &caps, &opts).unwrap();
@@ -197,9 +210,7 @@ proptest! {
         at in any::<Index>(),
     ) {
         let project = tweaked(project, &tweaks);
-        let split = split(&project, which, at);
-        prop_assume!(split.is_some(), "no clip to split");
-        let (split, _) = split.unwrap();
+        let Some((split, _)) = split(&project, which, at) else { return Ok(()); };
         prop_assert_eq!(plan_ges(&split), plan_ges(&project));
     }
 
@@ -276,12 +287,60 @@ proptest! {
         let project = tweaked(project, &tweaks);
         let quality = [Quality::Draft, Quality::Standard, Quality::High][quality];
         let caps = va_caps();
-        let va = plan_export(&project, &caps, &opts(ExportFormat::Mp4, VideoCodec::H264, quality, true));
-        prop_assume!(va.is_ok(), "nothing to export");
-        let va = va.unwrap();
+        let Ok(va) = plan_export(&project, &caps, &opts(ExportFormat::Mp4, VideoCodec::H264, quality, true)) else {
+            prop_assert!(project.timeline.clips.is_empty(), "only an empty timeline has nothing to export");
+            return Ok(());
+        };
         let x264 = plan_export(&project, &caps, &opts(ExportFormat::Mp4, VideoCodec::H264, quality, false)).unwrap();
         prop_assert_eq!(without_vaapi(&va, &caps), Some(x264.clone()));
         prop_assert_eq!(without_vaapi(&x264, &caps), None);
+    }
+
+    #[test]
+    fn ges_clips_stay_inside_their_unit_and_their_media(
+        project in arb_project(),
+        tweaks in arb_tweaks(),
+    ) {
+        let project = tweaked(project, &tweaks);
+        let fps = project.canvas.fps;
+        let ges = plan_ges(&project);
+        let total = total_frames(&project.timeline.clips);
+        prop_assert_eq!(ges.duration_ns as i64, frame_ns(total as i64, fps));
+        let units: Vec<(i64, i64)> = render_units(&project)
+            .iter()
+            .map(|u| (frame_ns(u.position as i64, fps), frame_ns((u.position + u.frames()) as i64, fps)))
+            .collect();
+        let inside = |start: u64, duration: u64| {
+            let (start, end) = (start as i64, (start + duration) as i64);
+            units.iter().any(|&(a, b)| a <= start && end <= b)
+        };
+        let stream = |file: &str| {
+            project
+                .takes
+                .values()
+                .flat_map(|t| &t.streams)
+                .find(|s| s.file == file)
+                .expect("a clip plays a stream of the project")
+        };
+        for clip in &ges.video {
+            prop_assert!(clip.duration_ns > 0);
+            prop_assert!(inside(clip.start_ns, clip.duration_ns), "{:?}", clip);
+            let s = stream(&clip.file);
+            if let Some(frames) = s.frames {
+                let end = frame_ns(frames as i64, s.fps.unwrap_or(fps));
+                prop_assert!((clip.inpoint_ns + clip.duration_ns) as i64 <= end, "{:?} {:?}", clip, s);
+            }
+            prop_assert!(clip.alpha > 0.0 && clip.alpha <= 1.0);
+        }
+        for clip in &ges.audio {
+            prop_assert!(clip.duration_ns > 0);
+            prop_assert!(inside(clip.start_ns, clip.duration_ns), "{:?}", clip);
+            let s = stream(&clip.file);
+            if let Some(duration) = s.duration_ns {
+                prop_assert!((clip.inpoint_ns + clip.duration_ns) as i64 <= duration, "{:?} {:?}", clip, s);
+            }
+            prop_assert!(clip.fade_in_samples <= 240 && clip.fade_out_samples <= 240);
+        }
     }
 
     #[test]

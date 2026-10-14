@@ -74,10 +74,26 @@ pub fn parse_ffprobe(json: &str, kind: StreamKind) -> Result<MediaInfo, String> 
         kind,
         frames,
         fps,
-        width: if kind == StreamKind::Video { width } else { None },
-        height: if kind == StreamKind::Video { height } else { None },
-        sample_rate: if kind == StreamKind::Audio { sample_rate } else { None },
-        channels: if kind == StreamKind::Audio { channels } else { None },
+        width: if kind == StreamKind::Video {
+            width
+        } else {
+            None
+        },
+        height: if kind == StreamKind::Video {
+            height
+        } else {
+            None
+        },
+        sample_rate: if kind == StreamKind::Audio {
+            sample_rate
+        } else {
+            None
+        },
+        channels: if kind == StreamKind::Audio {
+            channels
+        } else {
+            None
+        },
         duration_ns,
         start_time_ns,
         color_range: name(stream.get("color_range")),
@@ -204,7 +220,11 @@ fn decimal_ns(s: &str) -> Option<i64> {
     for (i, digit) in frac.bytes().take(9).enumerate() {
         frac_ns += i64::from(digit - b'0') * 10i64.pow(8 - i as u32);
     }
-    let ns = int.parse::<i64>().ok()?.checked_mul(NS_PER_SEC)?.checked_add(frac_ns)?;
+    let ns = int
+        .parse::<i64>()
+        .ok()?
+        .checked_mul(NS_PER_SEC)?
+        .checked_add(frac_ns)?;
     Some(if negative { -ns } else { ns })
 }
 
@@ -348,26 +368,52 @@ mod tests {
 
     #[test]
     fn unreadable_files() {
-        assert!(parse_ffprobe("", StreamKind::Video).unwrap_err().contains("isn't JSON"));
-        assert!(parse_ffprobe("{}", StreamKind::Video).unwrap_err().contains("no video stream"));
+        assert!(
+            parse_ffprobe("", StreamKind::Video)
+                .unwrap_err()
+                .contains("isn't JSON")
+        );
+        assert!(
+            parse_ffprobe("{}", StreamKind::Video)
+                .unwrap_err()
+                .contains("no video stream")
+        );
         assert!(
             parse_ffprobe(r#"{"programs":[],"streams":[]}"#, StreamKind::Audio)
                 .unwrap_err()
                 .contains("no audio stream")
         );
         let empty = r#"{"streams":[{"width":2,"height":2,"nb_read_packets":"0"}]}"#;
-        assert!(parse_ffprobe(empty, StreamKind::Video).unwrap_err().contains("no packets"));
+        assert!(
+            parse_ffprobe(empty, StreamKind::Video)
+                .unwrap_err()
+                .contains("no packets")
+        );
         let no_size = r#"{"streams":[{"nb_read_packets":"3"}]}"#;
-        assert!(parse_ffprobe(no_size, StreamKind::Video).unwrap_err().contains("size"));
+        assert!(
+            parse_ffprobe(no_size, StreamKind::Video)
+                .unwrap_err()
+                .contains("size")
+        );
         let no_rate = r#"{"streams":[{"channels":1,"nb_read_packets":"3"}]}"#;
-        assert!(parse_ffprobe(no_rate, StreamKind::Audio).unwrap_err().contains("sample rate"));
+        assert!(
+            parse_ffprobe(no_rate, StreamKind::Audio)
+                .unwrap_err()
+                .contains("sample rate")
+        );
     }
 
     #[test]
     fn segment_checks() {
         let csv = "video,4394\nvideo,1789\naudio,4096\n\naudio,4096\r\naudio,2048\nvideo,881\nsubtitle,3\n";
         let counts = parse_segment_check(csv).unwrap();
-        assert_eq!(counts, SegmentCounts { video_packets: 3, audio_samples: 2560 });
+        assert_eq!(
+            counts,
+            SegmentCounts {
+                video_packets: 3,
+                audio_samples: 2560
+            }
+        );
         assert_eq!(counts.check(3, 2560), Ok(()));
         assert_eq!(
             counts.check(4, 2560).unwrap_err(),
@@ -378,9 +424,21 @@ mod tests {
             "the segment has 3 video frames instead of 2 and 2560 audio samples instead of 2561"
         );
         assert_eq!(parse_segment_check("").unwrap(), SegmentCounts::default());
-        assert!(parse_segment_check("audio,6").unwrap_err().contains("whole stereo"));
-        assert!(parse_segment_check("video").unwrap_err().contains("unexpected packet line"));
-        assert!(parse_segment_check("video,N/A").unwrap_err().contains("unexpected packet size"));
+        assert!(
+            parse_segment_check("audio,6")
+                .unwrap_err()
+                .contains("whole stereo")
+        );
+        assert!(
+            parse_segment_check("video")
+                .unwrap_err()
+                .contains("unexpected packet line")
+        );
+        assert!(
+            parse_segment_check("video,N/A")
+                .unwrap_err()
+                .contains("unexpected packet size")
+        );
     }
 
     #[test]

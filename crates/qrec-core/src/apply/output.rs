@@ -37,16 +37,25 @@ pub fn export(
 ) -> Result<Outcome, CoreError> {
     let codec = resolve_codec(format, codec)?;
     if let Some(running) = running_export(state) {
-        return Err(CoreError::busy(format!("an export is already running ({running})"))
-            .with_hint("wait for it to finish or cancel it with `qrec export cancel`"));
+        return Err(
+            CoreError::busy(format!("an export is already running ({running})"))
+                .with_hint("wait for it to finish or cancel it with `qrec export cancel`"),
+        );
     }
     let project = &state.project;
     if total_frames(&project.timeline.clips) == 0 {
-        return Err(CoreError::invalid("nothing to export: the timeline is empty")
-            .with_hint("record a take or add one from the bin first"));
+        return Err(
+            CoreError::invalid("nothing to export: the timeline is empty")
+                .with_hint("record a take or add one from the bin first"),
+        );
     }
     let out = match out {
-        None => export_file_name(&project.name, ctx.now, ctx.utc_offset_secs, format.extension()),
+        None => export_file_name(
+            &project.name,
+            ctx.now,
+            ctx.utc_offset_secs,
+            format.extension(),
+        ),
         Some(path) => checked_out(ctx, &path, "export to")?,
     };
     let caps = &state.runtime.capabilities;
@@ -114,7 +123,8 @@ pub fn export_cancel(state: &State, _ctx: &Ctx, job: Option<JobId>) -> Result<Ou
         },
         None => running_export(state).ok_or_else(|| CoreError::invalid("no export is running"))?,
     };
-    let result = CmdResult::new(format!("Cancelling the export ({id})")).with_result(&json!({ "job": id }));
+    let result =
+        CmdResult::new(format!("Cancelling the export ({id})")).with_result(&json!({ "job": id }));
     Ok(Outcome::new(
         state.clone(),
         vec![Effect::CancelJob { job: id }],
@@ -154,7 +164,11 @@ pub fn frame_save(
             started: ctx.now,
         },
     );
-    Ok(Outcome::new(next, vec![Effect::SaveFrame { job: id, plan }], None))
+    Ok(Outcome::new(
+        next,
+        vec![Effect::SaveFrame { job: id, plan }],
+        None,
+    ))
 }
 
 /// The running export, if any.
@@ -174,8 +188,10 @@ fn checked_out(ctx: &Ctx, requested: &str, verb: &str) -> Result<String, CoreErr
     match &ctx.facts.out {
         Some(facts) => {
             if let Some(why) = &facts.forbidden {
-                return Err(CoreError::invalid(format!("can't {verb} {}: {why}", facts.abs))
-                    .with_hint("pick a path outside takes/ and .qrec/"));
+                return Err(
+                    CoreError::invalid(format!("can't {verb} {}: {why}", facts.abs))
+                        .with_hint("pick a path outside takes/ and .qrec/"),
+                );
             }
             if facts.exists && !ctx.confirmed {
                 return Err(
@@ -289,8 +305,13 @@ mod tests {
             }
         );
         assert_eq!(out.state.runtime.next_id, 2);
-        assert_eq!(out.state.project, state.project, "exports change no project data");
-        assert!(matches!(&out.effects[1], Effect::Progress { progress, .. } if progress.done == 0 && progress.total == 250));
+        assert_eq!(
+            out.state.project, state.project,
+            "exports change no project data"
+        );
+        assert!(
+            matches!(&out.effects[1], Effect::Progress { progress, .. } if progress.done == 0 && progress.total == 250)
+        );
         insta::assert_debug_snapshot!("export_effects_without_plan", out.effects[..2].to_vec());
 
         // One export at a time; frame saves may run alongside.
@@ -315,7 +336,10 @@ mod tests {
             codec: Some(VideoCodec::H264),
             out: None,
         };
-        assert_eq!(apply(&state, &ctx, webm_h264).unwrap_err().code, ErrorCode::Usage);
+        assert_eq!(
+            apply(&state, &ctx, webm_h264).unwrap_err().code,
+            ErrorCode::Usage
+        );
         let mut empty = state.clone();
         empty.project.timeline.clips.clear();
         let err = apply(&empty, &ctx, export_cmd(None)).unwrap_err();
@@ -327,7 +351,10 @@ mod tests {
             elapsed_ns: 0,
             waiters: vec![],
         };
-        assert_eq!(apply(&recording, &ctx, export_cmd(None)).unwrap_err().code, ErrorCode::Busy);
+        assert_eq!(
+            apply(&recording, &ctx, export_cmd(None)).unwrap_err().code,
+            ErrorCode::Busy
+        );
     }
 
     #[test]
@@ -341,10 +368,15 @@ mod tests {
         });
         let err = apply(&state, &ctx, export_cmd(Some("/home/me/v/takes/x.mp4"))).unwrap_err();
         assert_eq!(err.code, ErrorCode::Invalid);
-        assert_eq!(err.message, "can't export to /home/me/v/takes/x.mp4: it is inside takes/");
+        assert_eq!(
+            err.message,
+            "can't export to /home/me/v/takes/x.mp4: it is inside takes/"
+        );
         ctx.confirmed = true;
         assert_eq!(
-            apply(&state, &ctx, export_cmd(Some("/home/me/v/takes/x.mp4"))).unwrap_err().code,
+            apply(&state, &ctx, export_cmd(Some("/home/me/v/takes/x.mp4")))
+                .unwrap_err()
+                .code,
             ErrorCode::Invalid,
             "forbidden paths can't be confirmed"
         );
@@ -357,16 +389,27 @@ mod tests {
         });
         let err = apply(&state, &ctx, export_cmd(Some("/home/me/out.mp4"))).unwrap_err();
         assert_eq!(err.code, ErrorCode::ConfirmationRequired);
-        assert_eq!(err.message, "confirmation required: overwrite /home/me/out.mp4");
-        assert_eq!(err.details, Some(json!({"files": [{"path": "/home/me/out.mp4"}]})));
+        assert_eq!(
+            err.message,
+            "confirmation required: overwrite /home/me/out.mp4"
+        );
+        assert_eq!(
+            err.details,
+            Some(json!({"files": [{"path": "/home/me/out.mp4"}]}))
+        );
         ctx.confirmed = true;
         let out = apply(&state, &ctx, export_cmd(Some("/home/me/out.mp4"))).unwrap();
         assert_eq!(render_plan(&out).out, "/home/me/out.mp4");
-        assert_eq!(render_plan(&out).stitch.argv.last().unwrap(), "file:/home/me/out.mp4");
+        assert_eq!(
+            render_plan(&out).stitch.argv.last().unwrap(),
+            "file:/home/me/out.mp4"
+        );
 
         ctx.facts.out = None;
         assert_eq!(
-            apply(&state, &ctx, export_cmd(Some("out.mp4"))).unwrap_err().code,
+            apply(&state, &ctx, export_cmd(Some("out.mp4")))
+                .unwrap_err()
+                .code,
             ErrorCode::Usage
         );
         assert!(apply(&state, &ctx, export_cmd(Some("/tmp/out.mp4"))).is_ok());
@@ -385,19 +428,36 @@ mod tests {
         let caps = state.runtime.capabilities.clone();
         assert!(allow_vaapi(&state.project, &config, &caps));
         config.encoder.preference = EncoderPref::X264;
-        assert!(!allow_vaapi(&state.project, &config, &caps), "config prefers x264");
+        assert!(
+            !allow_vaapi(&state.project, &config, &caps),
+            "config prefers x264"
+        );
         state.project.recording.encoder = EncoderPref::Vaapi;
-        assert!(allow_vaapi(&state.project, &config, &caps), "the project wins");
+        assert!(
+            allow_vaapi(&state.project, &config, &caps),
+            "the project wins"
+        );
         config.encoder.vaapi_device = Some("/dev/dri/renderD128".into());
-        assert!(!allow_vaapi(&state.project, &config, &caps), "verified another node");
+        assert!(
+            !allow_vaapi(&state.project, &config, &caps),
+            "verified another node"
+        );
         state.project.recording.vaapi_device = Some("/dev/dri/renderD129".into());
         assert!(allow_vaapi(&state.project, &config, &caps));
         let ctx = testkit::ctx(NOW, 1);
         let out = apply(&state, &ctx, export_cmd(None)).unwrap();
-        assert!(render_plan(&out).segments[0].argv.contains(&"h264_vaapi".to_owned()));
+        assert!(
+            render_plan(&out).segments[0]
+                .argv
+                .contains(&"h264_vaapi".to_owned())
+        );
         state.project.recording.encoder = EncoderPref::X264;
         let out = apply(&state, &ctx, export_cmd(None)).unwrap();
-        assert!(render_plan(&out).segments[0].argv.contains(&"libx264".to_owned()));
+        assert!(
+            render_plan(&out).segments[0]
+                .argv
+                .contains(&"libx264".to_owned())
+        );
     }
 
     #[test]
@@ -405,7 +465,9 @@ mod tests {
         let state = state();
         let ctx = testkit::ctx(NOW, 1);
         assert_eq!(
-            apply(&state, &ctx, Command::ExportCancel { job: None }).unwrap_err().message,
+            apply(&state, &ctx, Command::ExportCancel { job: None })
+                .unwrap_err()
+                .message,
             "no export is running"
         );
         let running = apply(&state, &ctx, export_cmd(None)).unwrap().state;
@@ -415,17 +477,43 @@ mod tests {
         let reply = out.reply.unwrap().unwrap();
         assert_eq!(reply.message, "Cancelling the export (job-1)");
         assert_eq!(reply.result, json!({"job": 1}));
-        let err = apply(&running, &ctx, Command::ExportCancel { job: Some(JobId(7)) }).unwrap_err();
-        assert_eq!((err.code, err.message.as_str()), (ErrorCode::NotFound, "job-7 isn't running"));
+        let err = apply(
+            &running,
+            &ctx,
+            Command::ExportCancel {
+                job: Some(JobId(7)),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            (err.code, err.message.as_str()),
+            (ErrorCode::NotFound, "job-7 isn't running")
+        );
         let frame = Command::FrameSave {
             at: "1f".parse().unwrap(),
             layer: None,
             out: None,
         };
         let both = apply(&running, &ctx, frame).unwrap().state;
-        let err = apply(&both, &ctx, Command::ExportCancel { job: Some(JobId(2)) }).unwrap_err();
+        let err = apply(
+            &both,
+            &ctx,
+            Command::ExportCancel {
+                job: Some(JobId(2)),
+            },
+        )
+        .unwrap_err();
         assert_eq!(err.message, "job-2 isn't an export");
-        assert!(apply(&both, &ctx, Command::ExportCancel { job: Some(JobId(1)) }).is_ok());
+        assert!(
+            apply(
+                &both,
+                &ctx,
+                Command::ExportCancel {
+                    job: Some(JobId(1))
+                }
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -445,7 +533,11 @@ mod tests {
         assert_eq!(*job, JobId(1));
         // Timeline frame 120 is take frame 170.
         assert_eq!(plan.out, "frames/my-video-take-0001-00000400.png");
-        assert!(plan.argv.windows(2).any(|w| w[0] == "-ss" && w[1] == "5.664667"));
+        assert!(
+            plan.argv
+                .windows(2)
+                .any(|w| w[0] == "-ss" && w[1] == "5.664667")
+        );
         assert_eq!(
             out.state.runtime.jobs[&JobId(1)].kind,
             JobKind::FrameSave {
@@ -464,10 +556,22 @@ mod tests {
             layer: layer.map(|l| l.parse().unwrap()),
             out: out.map(String::from),
         };
-        assert_eq!(apply(&state, &ctx, save("+1f", None, None)).unwrap_err().code, ErrorCode::Usage);
-        assert_eq!(apply(&state, &ctx, save("250f", None, None)).unwrap_err().code, ErrorCode::Invalid);
         assert_eq!(
-            apply(&state, &ctx, save("0f", Some("L7"), None)).unwrap_err().code,
+            apply(&state, &ctx, save("+1f", None, None))
+                .unwrap_err()
+                .code,
+            ErrorCode::Usage
+        );
+        assert_eq!(
+            apply(&state, &ctx, save("250f", None, None))
+                .unwrap_err()
+                .code,
+            ErrorCode::Invalid
+        );
+        assert_eq!(
+            apply(&state, &ctx, save("0f", Some("L7"), None))
+                .unwrap_err()
+                .code,
             ErrorCode::NotFound
         );
         ctx.facts.out = Some(OutFacts {
@@ -479,7 +583,9 @@ mod tests {
         assert_eq!(err.code, ErrorCode::ConfirmationRequired);
         ctx.confirmed = true;
         let out = apply(&state, &ctx, save("0f", Some("L1"), Some("/home/me/f.png"))).unwrap();
-        let Effect::SaveFrame { plan, .. } = &out.effects[0] else { panic!() };
+        let Effect::SaveFrame { plan, .. } = &out.effects[0] else {
+            panic!()
+        };
         assert_eq!(plan.out, "/home/me/f.png");
     }
 }

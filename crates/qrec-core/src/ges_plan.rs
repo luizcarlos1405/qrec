@@ -139,7 +139,10 @@ mod tests {
         let camera = &ges.video[1];
         assert_eq!(camera.layer_priority, 0, "the camera is on top");
         assert_eq!((camera.start_ns, camera.inpoint_ns), (33_333_333, 0));
-        assert_eq!(camera.start_ns + camera.duration_ns, frame_ns(410, F30) as u64);
+        assert_eq!(
+            camera.start_ns + camera.duration_ns,
+            frame_ns(410, F30) as u64
+        );
         // Second unit: take frame 455, camera frame 454.
         assert_eq!(ges.video[3].inpoint_ns, frame_ns(454, F30) as u64);
         // Audio: the mic is 3 ms + 20 ms late at the take start.
@@ -147,7 +150,10 @@ mod tests {
         assert_eq!((mic.start_ns, mic.inpoint_ns), (23_000_000, 0));
         assert_eq!((mic.fade_in_samples, mic.fade_out_samples), (0, 240));
         assert!((ges.audio[1].volume - 0.501_187).abs() < 1e-6);
-        assert_eq!(ges.audio[1].inpoint_ns, 20_000_000, "started 20 ms before T0");
+        assert_eq!(
+            ges.audio[1].inpoint_ns, 20_000_000,
+            "started 20 ms before T0"
+        );
         // The continuous clips of take 2 are one unit; its mic is muted.
         assert_eq!(ges.video.len(), 6);
         assert_eq!(ges.audio.len(), 5);
@@ -203,12 +209,18 @@ mod tests {
         let ges = plan_ges(&project);
         // [4 s, 6.67 s) of a 5 s mic: 1 s remains, without a fade-out.
         let mic = &ges.audio[0];
-        assert_eq!((mic.inpoint_ns, mic.duration_ns), (4_000_000_000, 1_000_000_000));
+        assert_eq!(
+            (mic.inpoint_ns, mic.duration_ns),
+            (4_000_000_000, 1_000_000_000)
+        );
         assert_eq!((mic.fade_in_samples, mic.fade_out_samples), (240, 0));
         // Nothing of the mic remains in the second unit; the screen does.
         assert_eq!(ges.audio.len(), 1);
         assert_eq!(ges.video.len(), 2);
-        assert_eq!(ges.video[1].duration_ns, (frame_ns(100, F30) - frame_ns(80, F30)) as u64);
+        assert_eq!(
+            ges.video[1].duration_ns,
+            (frame_ns(100, F30) - frame_ns(80, F30)) as u64
+        );
         assert_eq!(clamp(10, 5, Some(12)), Some(7));
         assert_eq!(clamp(10, 12, Some(12)), None);
         assert_eq!(clamp(10, 0, None), Some(10));
