@@ -1,0 +1,34 @@
+---
+source: crates/qrec-core/src/apply/ui.rs
+expression: summary(&out)
+---
+{
+  "effects": [
+    "writeUi"
+  ],
+  "playing": false,
+  "reply": {
+    "Ok": {
+      "created": [],
+      "message": "Playhead at 00:00:13:21",
+      "removed": [],
+      "result": {
+        "playhead": 411,
+        "timecode": "00:00:13:21"
+      },
+      "seq": null
+    }
+  },
+  "ui": {
+    "binOpen": false,
+    "canvasMode": "live",
+    "panels": {},
+    "playhead": 411,
+    "scrollPx": 0.0,
+    "selectedLayer": null,
+    "selection": [],
+    "snapping": true,
+    "solo": null,
+    "zoom": null
+  }
+}
