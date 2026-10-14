@@ -1,0 +1,33 @@
+# qrec-core is the functional core: no I/O, no clocks, no randomness.
+# Time, ids and entropy are injected through `Ctx` (docs/ARCHITECTURE.md §1.1).
+disallowed-methods = [
+  { path = "std::time::SystemTime::now", reason = "the core is pure: use Ctx::now" },
+  { path = "std::time::Instant::now", reason = "the core is pure: use Ctx::now" },
+  { path = "chrono::Utc::now", reason = "the core is pure: use Ctx::now" },
+  { path = "chrono::Local::now", reason = "the core is pure: use Ctx::now" },
+  { path = "std::env::var", reason = "the core is pure: pass configuration in" },
+  { path = "std::env::var_os", reason = "the core is pure: pass configuration in" },
+  { path = "std::env::vars", reason = "the core is pure: pass configuration in" },
+  { path = "std::env::current_dir", reason = "the core is pure: paths are project-relative strings" },
+  { path = "std::fs::read", reason = "the core is pure: no file I/O" },
+  { path = "std::fs::read_to_string", reason = "the core is pure: no file I/O" },
+  { path = "std::fs::write", reason = "the core is pure: no file I/O" },
+  { path = "std::fs::read_dir", reason = "the core is pure: no file I/O" },
+  { path = "std::fs::metadata", reason = "the core is pure: no file I/O" },
+  { path = "std::fs::create_dir_all", reason = "the core is pure: no file I/O" },
+  { path = "std::fs::remove_file", reason = "the core is pure: no file I/O" },
+  { path = "std::fs::canonicalize", reason = "the core is pure: no file I/O" },
+  { path = "std::path::Path::exists", reason = "the core is pure: no file I/O" },
+  { path = "std::path::Path::canonicalize", reason = "the core is pure: no file I/O" },
+  { path = "std::thread::spawn", reason = "the core is pure: no threads" },
+  { path = "std::thread::sleep", reason = "the core is pure: no clocks" },
+]
+disallowed-types = [
+  { path = "std::fs::File", reason = "the core is pure: no file I/O" },
+  { path = "std::fs::OpenOptions", reason = "the core is pure: no file I/O" },
+  { path = "std::process::Command", reason = "the core is pure: return Effects instead" },
+  { path = "std::net::TcpStream", reason = "the core is pure: no network" },
+  { path = "std::os::unix::net::UnixStream", reason = "the core is pure: no IPC" },
+  { path = "std::time::Instant", reason = "the core is pure: use Ctx::now" },
+  { path = "std::time::SystemTime", reason = "the core is pure: use Ctx::now" },
+]

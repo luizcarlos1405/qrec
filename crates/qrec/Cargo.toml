@@ -1,0 +1,17 @@
+[package]
+name = "qrec"
+description = "Quick Wayland screen and camera recorder: press R, talk, press R"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "qrec"
+path = "src/main.rs"
+
+[dependencies]
+qrec-cli.workspace = true
+
+[lints]
+workspace = true

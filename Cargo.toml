@@ -1,0 +1,89 @@
+[workspace]
+resolver = "3"
+members = ["crates/qrec-core", "crates/qrec-shell", "crates/qrec-cli", "crates/qrec-gui", "crates/qrec"]
+default-members = ["crates/qrec"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/rsensato/qrec"
+authors = ["RSensato"]
+
+[workspace.dependencies]
+qrec-core = { path = "crates/qrec-core" }
+qrec-shell = { path = "crates/qrec-shell" }
+qrec-cli = { path = "crates/qrec-cli" }
+qrec-gui = { path = "crates/qrec-gui" }
+
+# core (pure) — chrono WITHOUT the `clock` feature: the core can't read the time.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+schemars = { version = "1.2.3", features = ["chrono04"] }
+chrono = { version = "0.4.45", default-features = false, features = ["std", "serde"] }
+json-patch = { version = "4.2.0", default-features = false }
+jsonptr = "0.7.1"
+sha2 = "0.11.1"
+hex = "0.4.3"
+toml = "1.1.8"
+toml_edit = "0.25.17"
+
+# shell
+gst = { package = "gstreamer", version = "0.25.4", features = ["v1_24"] }
+gst-app = { package = "gstreamer-app", version = "0.25.2", features = ["v1_24"] }
+gst-video = { package = "gstreamer-video", version = "0.25.4", features = ["v1_24"] }
+gst-audio = { package = "gstreamer-audio", version = "0.25.4", features = ["v1_24"] }
+gst-pbutils = { package = "gstreamer-pbutils", version = "0.25.4", features = ["v1_24"] }
+ges = { package = "gstreamer-editing-services", version = "0.25.4", features = ["v1_24"] }
+ashpd = { version = "0.13.13", default-features = false, features = ["tokio", "screencast"] }
+tokio = { version = "1", features = ["rt", "macros", "time", "sync"] }
+rustix = { version = "1.1.5", features = ["fs", "process", "thread", "net"] }
+crossbeam-channel = "0.5.17"
+notify = { version = "8.2.0", default-features = false }
+wayland-client = "0.31.15"
+tempfile = "3.27.0"
+getrandom = "0.4.3"
+dirs = "7.0.0"
+which = "8.0.6"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+anyhow = "1.0.104"
+libc = "0.2.190"
+
+# cli
+clap = { version = "4.6.7", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4.6.11"
+
+# tests
+proptest = "1.12.0"
+insta = { version = "1.49.0", features = ["json", "yaml", "redactions", "filters"] }
+pretty_assertions = "1.4.1"
+assert_cmd = "2.2.2"
+predicates = "3.1.4"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+
+# Debug info is most of a Rust target dir; keep it small (the dev machine's
+# disk is nearly full) while keeping line numbers in backtraces.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.dev.package.proptest]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = "debuginfo"

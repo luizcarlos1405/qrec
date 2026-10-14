@@ -1,0 +1,28 @@
+[package]
+name = "qrec-core"
+description = "Qrec functional core: project model, commands, planners and state machine (no I/O)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+schemars.workspace = true
+chrono.workspace = true
+json-patch.workspace = true
+jsonptr.workspace = true
+sha2.workspace = true
+hex.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+insta.workspace = true
+pretty_assertions.workspace = true
+
+[lints]
+workspace = true
