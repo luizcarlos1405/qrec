@@ -14,6 +14,10 @@ pub struct CoreError {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    /// Structured data for confirmations and failures (files and sizes,
+    /// history entries lost, affected clips). Emitted as `error.details`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 impl fmt::Display for CoreError {
@@ -46,6 +50,8 @@ pub enum ErrorCode {
     NotFound,
     /// The edit is impossible or the project doesn't validate. Exit 1.
     Invalid,
+    /// A capture source failed to start (health check). Exit 1.
+    CaptureFailed,
     /// The command needs something that isn't available (e.g. the GUI host). Exit 1.
     Unavailable,
     /// A file or process operation failed. Exit 1.
@@ -63,7 +69,11 @@ impl ErrorCode {
             ErrorCode::MissingDependency => 5,
             ErrorCode::Busy => 6,
             ErrorCode::NotFound => 7,
-            ErrorCode::Invalid | ErrorCode::Unavailable | ErrorCode::Io | ErrorCode::Internal => 1,
+            ErrorCode::Invalid
+            | ErrorCode::CaptureFailed
+            | ErrorCode::Unavailable
+            | ErrorCode::Io
+            | ErrorCode::Internal => 1,
         }
     }
 
@@ -76,6 +86,7 @@ impl ErrorCode {
             ErrorCode::Busy => "busy",
             ErrorCode::NotFound => "not_found",
             ErrorCode::Invalid => "invalid",
+            ErrorCode::CaptureFailed => "capture_failed",
             ErrorCode::Unavailable => "unavailable",
             ErrorCode::Io => "io",
             ErrorCode::Internal => "internal",
@@ -88,12 +99,25 @@ pub const NOT_MY_SWAMP: &str = "Not my swamp: this folder isn't empty and has no
 
 impl CoreError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
-        Self { code, message: message.into(), hint: None }
+        Self { code, message: message.into(), hint: None, details: None }
     }
 
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
         self
+    }
+
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
+    }
+
+    pub fn capture_failed(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::CaptureFailed, message)
+    }
+
+    pub fn io(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::Io, message)
     }
 
     pub fn usage(message: impl Into<String>) -> Self {
