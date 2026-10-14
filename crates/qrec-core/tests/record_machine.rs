@@ -371,6 +371,103 @@ fn a_host_without_live_mode_starts_the_live_pipeline_first() {
     }
 }
 
+/// The `SetLive` effects of an outcome.
+fn live(out: &Outcome) -> Vec<Option<bool>> {
+    out.effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::SetLive(scene) => Some(scene.as_ref().map(|s| s.preview)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_live_pipeline_follows_the_phase() {
+    // Headless with a countdown: the sources start with the countdown and
+    // stop once the take is finalized.
+    let mut state = idle();
+    state.runtime.host = HostKind::Headless;
+    let out = cmd(
+        &state,
+        Some("s1"),
+        start(RecordModeArg::Append, Some(1), false),
+    );
+    assert_eq!(live(&out), [Some(false)], "no preview branch");
+    let RecordPhase::Countdown { timer, .. } = out.state.runtime.record else {
+        panic!()
+    };
+    let out = event(&out.state, Event::TimerFired { timer });
+    assert!(matches!(
+        out.state.runtime.record,
+        RecordPhase::Starting { .. }
+    ));
+    assert_eq!(live(&out), [], "already running");
+    let files = files(&out.state);
+    let out = event(
+        &out.state,
+        Event::CaptureStarted {
+            take: take2(),
+            t0_ns: 1,
+            files,
+        },
+    );
+    assert_eq!(live(&out), []);
+    let stopping = cmd(&out.state, Some("t1"), Command::RecordStop);
+    assert_eq!(live(&stopping), []);
+    let stopped = event(
+        &stopping.state,
+        Event::CaptureStopped {
+            take: take2(),
+            streams: recorded(&stopping.state),
+            timed_out: false,
+        },
+    );
+    assert_eq!(live(&stopped), [], "until the take is finalized");
+    let done = finalize(&stopped.state, 90);
+    assert_eq!(live(&done), [None]);
+
+    // A cancelled countdown stops what it started.
+    let counting = cmd(
+        &state,
+        Some("s1"),
+        start(RecordModeArg::Append, Some(3), false),
+    )
+    .state;
+    let out = cmd(&counting, Some("c1"), Command::RecordCancel);
+    assert_eq!(live(&out), [None]);
+
+    // The GUI in Program mode: a pipeline without preview, stopped after the take.
+    let mut program = idle();
+    program.ui.canvas_mode = CanvasMode::Program;
+    let out = cmd(&program, Some("s1"), append());
+    assert_eq!(live(&out), [Some(false)]);
+    // Switching to Live while recording (the UI owner's SetCanvasMode) keeps
+    // the pipeline once the take is done.
+    let mut switched = finalizing_from(
+        &event(
+            &out.state,
+            Event::CaptureStarted {
+                take: take2(),
+                t0_ns: 1,
+                files: vec![],
+            },
+        )
+        .state,
+    );
+    switched.ui.canvas_mode = CanvasMode::Live;
+    let done = finalize(&probing(&switched), 90);
+    assert_eq!(live(&done), []);
+
+    // The GUI in Live mode never starts or stops anything.
+    let out = cmd(
+        &idle(),
+        Some("s1"),
+        start(RecordModeArg::Append, Some(1), false),
+    );
+    assert_eq!(live(&out), []);
+}
+
 #[test]
 fn the_take_number_never_reuses_a_folder() {
     let state = idle();

@@ -18,10 +18,11 @@ use qrec_core::ids::{ClipId, LayerId, ReqId, TakeId, TimerId, TrackId};
 use qrec_core::model::{
     AudioRole, AudioTrack, Crop, Fit, Fps, Layer, Rect, Stream, StreamKind, TakeStatus, VideoSource,
 };
+use qrec_core::plans::LiveScene;
 use qrec_core::protocol::command::{Command, RecordModeArg};
 use qrec_core::protocol::effect::{Effect, ProbePurpose};
 use qrec_core::protocol::event::{Event, MediaInfo, ProbeResult, RecordedStream};
-use qrec_core::state::{HostKind, RecordPhase, State};
+use qrec_core::state::{CanvasMode, HostKind, RecordPhase, State};
 use qrec_core::testkit::{self, strategies::arb_fps, strategies::arb_project};
 use qrec_core::time::frames_to_ns;
 use qrec_core::{Outcome, apply, on_event};
@@ -158,13 +159,27 @@ struct Harness {
     finals: BTreeMap<ReqId, usize>,
     /// Requests whose reply comes later.
     open: BTreeSet<ReqId>,
+    /// The live pipeline the engine runs: the last `SetLive`.
+    live: Option<LiveScene>,
     requests: u32,
     entropy: u64,
+}
+
+/// What the engine should run (A§8.11): a pipeline while the GUI shows
+/// Live (with preview) or while `record != Idle` (countdown included).
+fn wanted_live(state: &State) -> Option<LiveScene> {
+    let preview = state.runtime.host == HostKind::Gui && state.ui.canvas_mode == CanvasMode::Live;
+    (preview || !state.runtime.record.is_idle()).then(|| LiveScene {
+        canvas: state.project.canvas.clone(),
+        scene: state.project.scene.clone(),
+        preview,
+    })
 }
 
 impl Harness {
     fn new(state: State) -> Self {
         Self {
+            live: wanted_live(&state),
             state,
             pending: Vec::new(),
             finals: BTreeMap::new(),
@@ -209,12 +224,22 @@ impl Harness {
     fn absorb(&mut self, out: Outcome) -> Result<(), TestCaseError> {
         self.state = out.state;
         for effect in &out.effects {
-            if let Effect::Reply { req, .. } = effect {
-                self.answered(req)?;
+            match effect {
+                Effect::Reply { req, .. } => self.answered(req)?,
+                Effect::SetLive(scene) => {
+                    prop_assert_ne!(&self.live, scene, "a SetLive that changes nothing");
+                    self.live = scene.clone();
+                }
+                _ => {}
             }
             let answers = answers(&self.state, effect, 90);
             self.pending.extend(answers);
         }
+        prop_assert_eq!(
+            &self.live,
+            &wanted_live(&self.state),
+            "the engine runs another pipeline than the state wants"
+        );
         Ok(())
     }
 
@@ -444,16 +469,19 @@ proptest! {
 
     /// Any interleaving of record commands and (late, failing, stale) shell
     /// answers keeps the invariants, settles to Idle and answers every
-    /// request exactly once.
+    /// request exactly once; the engine always runs the live pipeline the
+    /// state wants.
     #[test]
     fn the_record_machine_is_safe_and_live(
         project in arb_project(),
-        headless in any::<bool>(),
+        host in prop_oneof![Just(HostKind::Gui), Just(HostKind::Headless), Just(HostKind::Cli)],
+        program in any::<bool>(),
         steps in prop::collection::vec(arb_step(), 1..40),
     ) {
         let mut state = testkit::state(project);
-        if headless {
-            state.runtime.host = HostKind::Headless;
+        state.runtime.host = host;
+        if program {
+            state.ui.canvas_mode = CanvasMode::Program;
         }
         let mut h = Harness::new(state);
         check(&h.state)?;

@@ -9,8 +9,12 @@
 //!
 //! Begin take: `ctx::next_take_number`, insert the take (`status:
 //! recording`, scene snapshot, planned streams) with `persist`, then
-//! `CreateTakeDir`, `WriteProject`, `SetLive` (if the GUI isn't already
-//! showing Live) and `StartCapture`.
+//! `CreateTakeDir`, `WriteProject`, `SetLive` (if needed) and
+//! `StartCapture`.
+//!
+//! The live pipeline follows one rule ([`wanted_live`]): it runs while the
+//! GUI shows Live or while `record != Idle` (countdown included), and every
+//! transition that changes what is wanted emits `SetLive`.
 
 use std::collections::BTreeSet;
 
@@ -24,6 +28,7 @@ use crate::history::purge::{PurgeRewrite, purge_rewrite};
 use crate::history::{self, Committed};
 use crate::ids::{ClipId, ReqId, TakeId, TimerId};
 use crate::model::{Clip, EncoderPref, Take, TakeStatus};
+use crate::on_event::record::run_ready_autocut;
 use crate::plans::{CapturePlan, LiveScene, VideoEncoder};
 use crate::protocol::command::{Command, RecordModeArg};
 use crate::protocol::effect::{Effect, LogLevel};
@@ -75,7 +80,7 @@ pub fn record_stop(state: &State, ctx: &Ctx) -> Result<Outcome, CoreError> {
         RecordPhase::Idle => Err(not_recording()),
         RecordPhase::Countdown {
             timer, start_req, ..
-        } => Ok(cancel_countdown(state, *timer, start_req.as_ref())),
+        } => Ok(cancel_countdown(state, ctx, *timer, start_req.as_ref())),
         RecordPhase::Starting { .. } | RecordPhase::Recording { .. } => {
             Ok(stop_capture(state, ctx.req.clone(), false))
         }
@@ -89,7 +94,7 @@ pub fn record_cancel(state: &State, ctx: &Ctx) -> Result<Outcome, CoreError> {
         RecordPhase::Idle => Err(not_recording()),
         RecordPhase::Countdown {
             timer, start_req, ..
-        } => Ok(cancel_countdown(state, *timer, start_req.as_ref())),
+        } => Ok(cancel_countdown(state, ctx, *timer, start_req.as_ref())),
         RecordPhase::Starting { .. } | RecordPhase::Recording { .. } => {
             Ok(stop_capture(state, ctx.req.clone(), true))
         }
@@ -112,7 +117,7 @@ pub fn record_toggle(state: &State, ctx: &Ctx, wait: bool) -> Result<Outcome, Co
         }
         RecordPhase::Countdown {
             timer, start_req, ..
-        } => Ok(cancel_countdown(state, *timer, start_req.as_ref())),
+        } => Ok(cancel_countdown(state, ctx, *timer, start_req.as_ref())),
         RecordPhase::Starting { .. } | RecordPhase::Recording { .. } => {
             Ok(stop_capture(state, ctx.req.clone(), false))
         }
@@ -261,10 +266,11 @@ fn start(
         start_req: ctx.req.clone(),
         wait,
     };
-    let mut effects = vec![Effect::StartTimer {
+    let mut effects: Vec<Effect> = live_change(state, &next).into_iter().collect();
+    effects.push(Effect::StartTimer {
         timer,
         after_ms: COUNTDOWN_TICK_MS,
-    }];
+    });
     effects.extend(ctx.req.iter().map(|req| Effect::Progress {
         req: req.clone(),
         progress: countdown_progress(secs),
@@ -274,8 +280,9 @@ fn start(
 
 /// Begin take (A§5.3): allocate the take number, insert the take
 /// (`recording`, scene snapshot, planned streams) with `persist`, then
-/// `CreateTakeDir`, `WriteProject`, `SetLive` when the GUI isn't showing
-/// Live already, and `StartCapture`. The phase becomes `Starting`.
+/// `CreateTakeDir`, `WriteProject`, `SetLive` when the wanted pipeline
+/// changes (not after a countdown, which already wanted it), and
+/// `StartCapture`. The phase becomes `Starting`.
 pub(crate) fn begin_take(
     state: &State,
     ctx: &Ctx,
@@ -323,9 +330,7 @@ pub(crate) fn begin_take(
             message,
         });
     }
-    if !ui_wants_live(&persisted.state) {
-        effects.push(Effect::SetLive(Some(live_scene(&persisted.state))));
-    }
+    effects.extend(live_change(state, &persisted.state));
     effects.push(Effect::StartCapture { plan });
     Ok((persisted.state, ordered(effects)))
 }
@@ -346,39 +351,57 @@ fn encoder_warning(state: &State, ctx: &Ctx, plan: &CapturePlan) -> Option<Strin
     })
 }
 
-/// The GUI shows Live, so its live pipeline already runs with the project
-/// scene and nobody else should start or stop it.
-pub(crate) fn ui_wants_live(state: &State) -> bool {
-    state.runtime.host == HostKind::Gui && state.ui.canvas_mode == CanvasMode::Live
-}
-
-/// The live pipeline a recording needs when the GUI isn't showing Live (no
-/// preview branch).
-pub(crate) fn live_scene(state: &State) -> LiveScene {
-    LiveScene {
+/// The live pipeline `state` wants (A§8.11): the project scene while the
+/// GUI shows the Live canvas (with the preview branch), or while a take is
+/// counted down, started, recorded or finalized in any host (record bins
+/// attach to it; no preview unless the GUI shows Live). `None` otherwise.
+/// Counting down already wants it, so sources start during the countdown.
+///
+/// The same rule as the timeline owner's `apply::ui::live_scene`, so the
+/// UI commands and the recording agree on what the engine runs.
+pub(crate) fn wanted_live(state: &State) -> Option<LiveScene> {
+    let preview = state.runtime.host == HostKind::Gui && state.ui.canvas_mode == CanvasMode::Live;
+    let recording = !state.runtime.record.is_idle();
+    (preview || recording).then(|| LiveScene {
         canvas: state.project.canvas.clone(),
         scene: state.project.scene.clone(),
-        preview: false,
-    }
+        preview,
+    })
+}
+
+/// `SetLive` with what `next` wants, when that differs from what `prev`
+/// wanted ("SetLive (if needed)", A§5.3).
+pub(crate) fn live_change(prev: &State, next: &State) -> Option<Effect> {
+    let wanted = wanted_live(next);
+    (wanted_live(prev) != wanted).then_some(Effect::SetLive(wanted))
 }
 
 // ------------------------------------------------------------- stopping
 
 /// Countdown + Stop/Toggle/Cancel: `CancelTimer` ⇒ Idle; the start request
-/// gets `Invalid` "countdown cancelled", the caller gets Ok.
-fn cancel_countdown(state: &State, timer: TimerId, start_req: Option<&ReqId>) -> Outcome {
+/// gets `Invalid` "countdown cancelled", the caller gets Ok. Back in Idle,
+/// autocut jobs that finished meanwhile are applied.
+fn cancel_countdown(
+    state: &State,
+    ctx: &Ctx,
+    timer: TimerId,
+    start_req: Option<&ReqId>,
+) -> Outcome {
     let mut next = state.clone();
     next.runtime.record = RecordPhase::Idle;
     let mut effects = vec![Effect::CancelTimer { timer }];
+    effects.extend(live_change(state, &next));
     if let Some(req) = start_req {
         effects.push(Effect::Reply {
             req: req.clone(),
             reply: Err(CoreError::invalid("countdown cancelled")),
         });
     }
+    let (next, jobs) = run_ready_autocut(next, ctx);
+    effects.extend(jobs);
     Outcome::new(
         next,
-        effects,
+        ordered(effects),
         Some(Ok(CmdResult::new("Countdown cancelled"))),
     )
 }

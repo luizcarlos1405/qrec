@@ -19,7 +19,7 @@ use serde_json::json;
 use crate::apply::Outcome;
 use crate::apply::record::{
     COUNTDOWN_TICK_MS, ENGINE_STUCK, MIN_TAKE_FRAMES, begin_take, countdown_progress, discard_last,
-    finalize_progress, join_ids, ordered, started_result, stop_capture, ui_wants_live, unique,
+    finalize_progress, join_ids, live_change, ordered, started_result, stop_capture, unique,
 };
 use crate::capture_plan::EOS_TIMEOUT_MS;
 use crate::ctx::{Ctx, IdGen};
@@ -95,7 +95,7 @@ pub fn capture_started(
 /// being captured (the live pipeline) only tells people.
 pub fn capture_failed(
     state: &State,
-    _ctx: &Ctx,
+    ctx: &Ctx,
     take: Option<TakeId>,
     source: Option<String>,
     message: String,
@@ -130,7 +130,7 @@ pub fn capture_failed(
         None => "qrec doctor lists capture problems".to_owned(),
     };
     let err = CoreError::capture_failed(format!("capture failed: {reason}")).with_hint(hint);
-    end_broken(state, &target, &reason, &err, true)
+    end_broken(state, ctx, &target, &reason, &err)
 }
 
 /// Marks the layer/track `missing` (persist); the last stream lost acts as
@@ -229,11 +229,11 @@ pub fn record_clock(state: &State, _ctx: &Ctx, take: TakeId, elapsed_ns: u64) ->
 }
 
 /// `timed_out` ⇒ `broken`; else record the offsets (persist) and
-/// `Probe{Finalize}`. The capture is over, so the live pipeline stops unless
-/// the GUI shows Live.
+/// `Probe{Finalize}`. The live pipeline stays wanted until the take is
+/// finalized (back in Idle).
 pub fn capture_stopped(
     state: &State,
-    _ctx: &Ctx,
+    ctx: &Ctx,
     take: TakeId,
     streams: Vec<RecordedStream>,
     timed_out: bool,
@@ -256,12 +256,12 @@ pub fn capture_stopped(
             EOS_TIMEOUT_MS / 1000
         );
         let err = CoreError::capture_failed(reason.clone());
-        return end_broken(state, &take, &reason, &err, true);
+        return end_broken(state, ctx, &take, &reason, &err);
     }
     if state.project.take(&take).is_none() {
         let reason = "the take is missing from the project".to_owned();
         let err = CoreError::internal(reason.clone());
-        return end_broken(state, &take, &reason, &err, true);
+        return end_broken(state, ctx, &take, &reason, &err);
     }
     let mut effects = Vec::new();
     let mut next = state.clone();
@@ -301,9 +301,6 @@ pub fn capture_stopped(
         purpose: ProbePurpose::Finalize,
         jobs,
     });
-    if !ui_wants_live(&persisted.state) {
-        effects.push(Effect::SetLive(None));
-    }
     for req in reqs {
         effects.push(Effect::Progress {
             req,
@@ -316,7 +313,7 @@ pub fn capture_stopped(
 /// The engine missed a teardown (A§5.3, A§8.11): the in-flight take (if
 /// any) is `broken`, a countdown is cancelled, and people are told to
 /// restart Qrec. Nothing more is asked of the stuck engine.
-pub fn engine_wedged(state: &State, _ctx: &Ctx, message: String) -> Outcome {
+pub fn engine_wedged(state: &State, ctx: &Ctx, message: String) -> Outcome {
     let log = Effect::Log {
         level: LogLevel::Error,
         message: format!("capture engine wedged: {message}"),
@@ -345,21 +342,24 @@ pub fn engine_wedged(state: &State, _ctx: &Ctx, message: String) -> Outcome {
             let mut next = state.clone();
             next.runtime.record = RecordPhase::Idle;
             let mut effects = vec![log, Effect::CancelTimer { timer: *timer }];
+            effects.extend(live_change(state, &next));
             if let Some(req) = start_req {
                 effects.push(Effect::Reply {
                     req: req.clone(),
                     reply: Err(err),
                 });
             }
+            let (next, jobs) = run_ready_autocut(next, ctx);
+            effects.extend(jobs);
             effects.push(Effect::Notify(
                 Toast::new(ToastLevel::Error, "The capture engine is stuck").with_body(reason),
             ));
-            Outcome::new(next, effects, None)
+            Outcome::new(next, ordered(effects), None)
         }
         RecordPhase::Starting { take, .. }
         | RecordPhase::Recording { take, .. }
         | RecordPhase::Finalizing { take, .. } => {
-            let mut out = end_broken(state, take, &reason, &err, false);
+            let mut out = end_broken(state, ctx, take, &reason, &err);
             out.effects.insert(0, log);
             out.effects = ordered(out.effects);
             out
@@ -441,16 +441,19 @@ pub fn timer_fired(state: &State, ctx: &Ctx, timer: TimerId) -> Outcome {
                 level: LogLevel::Warn,
                 message: format!("the take didn't begin: {err}"),
             }];
+            effects.extend(live_change(state, &next));
             if let Some(req) = start_req {
                 effects.push(Effect::Reply {
                     req: req.clone(),
                     reply: Err(err.clone()),
                 });
             }
+            let (next, jobs) = run_ready_autocut(next, ctx);
+            effects.extend(jobs);
             effects.push(Effect::Notify(
                 Toast::new(ToastLevel::Error, "Recording didn't start").with_body(err.message),
             ));
-            Outcome::new(next, effects, None)
+            Outcome::new(next, ordered(effects), None)
         }
     }
 }
@@ -613,18 +616,13 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
     let placement = placement_for(&next.project.timeline.clips, &mode);
     let Some(t) = next.project.takes.get_mut(take) else {
         let reason = "the take is missing from the project".to_owned();
-        return end_broken(
-            state,
-            take,
-            &reason,
-            &CoreError::internal(reason.clone()),
-            false,
-        );
+        let err = CoreError::internal(reason.clone());
+        return end_broken(state, ctx, take, &reason, &err);
     };
     if fill_media(t, results) == 0 {
         let reason = "none of the recorded files could be read".to_owned();
         let err = CoreError::capture_failed(reason.clone());
-        return end_broken(state, take, &reason, &err, false);
+        return end_broken(state, ctx, take, &reason, &err);
     }
     let frames = derive_duration_frames(t, fps);
     t.duration_frames = frames;
@@ -776,16 +774,23 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
             reply: Ok(result.clone()),
         });
     }
+    // Back in Idle: the live pipeline follows.
+    effects.extend(live_change(state, &current));
     effects.extend(notes);
     Outcome::new(current, ordered(effects), None)
 }
 
-/// Re-delivers the last analysis of every autocut job that finished while
-/// recording (`ready`), now that the take is placed and the phase is Idle.
-/// The key goes back into `pending` so the autocut owner's
-/// `silence_detected` sees its last pending key arrive and applies the job
-/// (A§5.7).
-fn run_ready_autocut(mut state: State, ctx: &Ctx) -> (State, Vec<Effect>) {
+/// Applies the autocut jobs that finished while not Idle (`ready`, A§5.7).
+/// Runs at every return to Idle: after placement, and when a take or a
+/// countdown ends any other way, so no job waits forever.
+///
+/// The job's last analysis is re-delivered: its key goes back into
+/// `pending`, and the autocut owner's `silence_detected` sees the last
+/// pending key arrive while Idle, which applies the job.
+pub(crate) fn run_ready_autocut(mut state: State, ctx: &Ctx) -> (State, Vec<Effect>) {
+    if !state.runtime.record.is_idle() {
+        return (state, Vec::new());
+    }
     let ready: Vec<JobId> = state
         .runtime
         .jobs
@@ -905,15 +910,9 @@ fn recover(state: &State, take: &TakeId, results: &[ProbeResult]) -> Outcome {
 /// asked to record (the start request, `wait` requesters while capturing)
 /// get `err`; once stopping (Finalizing) the stop requests and waiters get
 /// the broken `TakeFinalizedView` and a pending discard is told the take
-/// wasn't placed. `stop_live`: the capture is over, stop the live pipeline
-/// unless the GUI shows Live.
-fn end_broken(
-    state: &State,
-    take: &TakeId,
-    reason: &str,
-    err: &CoreError,
-    stop_live: bool,
-) -> Outcome {
+/// wasn't placed. Back in Idle the live pipeline follows (`SetLive`) and
+/// ready autocut jobs run.
+fn end_broken(state: &State, ctx: &Ctx, take: &TakeId, reason: &str, err: &CoreError) -> Outcome {
     let n = take.number();
     let mut next = state.clone();
     let phase = std::mem::take(&mut next.runtime.record);
@@ -968,13 +967,13 @@ fn end_broken(
         }
         RecordPhase::Idle | RecordPhase::Countdown { .. } => {}
     }
-    if stop_live && !ui_wants_live(&persisted.state) {
-        effects.push(Effect::SetLive(None));
-    }
+    effects.extend(live_change(state, &persisted.state));
+    let (next, jobs) = run_ready_autocut(persisted.state, ctx);
+    effects.extend(jobs);
     effects.push(Effect::Notify(
         Toast::new(ToastLevel::Error, format!("Take {n} is broken")).with_body(reason),
     ));
-    Outcome::new(persisted.state, ordered(effects), None)
+    Outcome::new(next, ordered(effects), None)
 }
 
 /// `broken` with `error`; streams without media leave the take and their
