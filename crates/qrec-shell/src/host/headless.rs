@@ -20,7 +20,7 @@ use qrec_core::state::HostKind;
 use serde_json::json;
 
 use super::signals::{self, HOST_SIGNALS};
-use super::{Host, HostOptions, Opener};
+use super::{Host, HostEnd, HostOptions, Opener};
 use crate::deps::OpenOpts;
 use crate::ipc::framing::encode_line;
 use crate::ipc::lock_glue::{ProjectLock, set_cloexec};
@@ -79,10 +79,7 @@ pub fn run_headless(
             return 1;
         }
     };
-    log(&format!(
-        "serving {} (ready)",
-        host.paths.root().display()
-    ));
+    log(&format!("serving {} (ready)", host.paths.root().display()));
     if let Some(ready) = ready.take() {
         ready.send(Ok(()));
     }
@@ -106,14 +103,19 @@ pub fn run_headless(
     let signalled = host.signalled() || end.signalled();
     log(&format!("exiting ({end:?})"));
     host.finish(Some(session), CoreError::io("the headless host is exiting"));
-    if signalled { 130 } else { 0 }
+    if signalled {
+        130
+    } else if end == HostEnd::SessionStopped {
+        1
+    } else {
+        0
+    }
 }
 
 /// Lock, folder check, socket, server.
 fn start(args: &HeadlessArgs, env: &Env, opts: HostOptions) -> Result<Host, CoreError> {
-    let dir = fs::canonicalize(&args.project).map_err(|e| {
-        CoreError::io(format!("can't open {}: {e}", args.project.display()))
-    })?;
+    let dir = fs::canonicalize(&args.project)
+        .map_err(|e| CoreError::io(format!("can't open {}: {e}", args.project.display())))?;
     let paths = ProjectPaths::new(&dir);
     let lock = match args.lock_fd {
         Some(fd) => ProjectLock::adopt(&dir, inherited_fd(fd, "--lock-fd")?)?,

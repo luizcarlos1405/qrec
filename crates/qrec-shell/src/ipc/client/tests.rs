@@ -1,9 +1,9 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
+use qrec_core::ErrorCode;
 use qrec_core::protocol::{Progress, ProgressPhase, RecordModeArg};
 use qrec_core::state::HostKind;
-use qrec_core::ErrorCode;
 use serde_json::json;
 
 use super::*;
@@ -40,7 +40,10 @@ fn hello_reaches_live_hosts_and_classifies_failures() {
     let dir = socket_dir();
     let t = start_server(dir.path(), |_| {});
     let info = hello(&t.socket, HELLO_TIMEOUT).unwrap();
-    assert_eq!((info.pid, info.host), (std::process::id(), HostKind::Headless));
+    assert_eq!(
+        (info.pid, info.host),
+        (std::process::id(), HostKind::Headless)
+    );
 
     assert!(matches!(
         hello(&dir.path().join("missing.sock"), HELLO_TIMEOUT),
@@ -49,7 +52,10 @@ fn hello_reaches_live_hosts_and_classifies_failures() {
     // A socket file left by a dead host: refused, i.e. no host.
     let stale = dir.path().join("stale.sock");
     drop(std::os::unix::net::UnixListener::bind(&stale).unwrap());
-    assert!(matches!(hello(&stale, HELLO_TIMEOUT), Err(HelloError::NoHost)));
+    assert!(matches!(
+        hello(&stale, HELLO_TIMEOUT),
+        Err(HelloError::NoHost)
+    ));
 
     // Accepts but never answers: a timeout, quickly.
     let silent = raw_server(dir.path(), "silent.sock", |_, _stream| {
@@ -141,7 +147,12 @@ fn eof_before_accepted_is_safe_to_reroute_and_after_is_not() {
 
     let nobody = dir.path().join("nobody.sock");
     assert_eq!(
-        send_request(&nobody, &undo(), &mut Collect::default(), &quick(&interrupts)),
+        send_request(
+            &nobody,
+            &undo(),
+            &mut Collect::default(),
+            &quick(&interrupts)
+        ),
         Err(SendError::NotAccepted)
     );
 }
@@ -155,7 +166,12 @@ fn a_host_that_never_accepts_is_not_responding() {
     let interrupts = Interrupts::new();
     let started = Instant::now();
     assert_eq!(
-        send_request(&silent.socket, &undo(), &mut Collect::default(), &quick(&interrupts)),
+        send_request(
+            &silent.socket,
+            &undo(),
+            &mut Collect::default(),
+            &quick(&interrupts)
+        ),
         Err(SendError::NotResponding)
     );
     assert!(started.elapsed() < Duration::from_secs(2));
@@ -198,8 +214,13 @@ fn ctrl_c_closes_the_connection() {
     let raiser = interrupts.clone();
     let opts = quick(&interrupts);
     let socket = t.socket.clone();
-    let client = thread::spawn(move || send_request(&socket, &undo(), &mut Collect::default(), &opts));
-    assert!(wait_for(Duration::from_secs(5), || held.lock().unwrap().len() == 1));
+    let client =
+        thread::spawn(move || send_request(&socket, &undo(), &mut Collect::default(), &opts));
+    assert!(wait_for(Duration::from_secs(5), || held
+        .lock()
+        .unwrap()
+        .len()
+        == 1));
     raiser.raise();
     assert_eq!(client.join().unwrap(), Ok(Sent::Interrupted));
     // The host sees the client leave.
@@ -262,7 +283,11 @@ fn record_wait_ctrl_c_stops_then_detaches() {
         let sent = send_request(&socket, &request, &mut out, &opts);
         (sent, out)
     });
-    assert!(wait_for(Duration::from_secs(5), || t.server.stats().requests == 1));
+    assert!(wait_for(Duration::from_secs(5), || t
+        .server
+        .stats()
+        .requests
+        == 1));
     thread::sleep(Duration::from_millis(100));
     raiser.raise();
     let (sent, out) = client.join().unwrap();
@@ -277,11 +302,18 @@ fn record_wait_ctrl_c_stops_then_detaches() {
     opts.stop_on_interrupt = true;
     let raiser = interrupts.clone();
     let socket = t.socket.clone();
-    let client = thread::spawn(move || send_request(&socket, &start, &mut Collect::default(), &opts));
-    assert!(wait_for(Duration::from_secs(5), || t.server.stats().requests == 2));
+    let client =
+        thread::spawn(move || send_request(&socket, &start, &mut Collect::default(), &opts));
+    assert!(wait_for(Duration::from_secs(5), || t
+        .server
+        .stats()
+        .requests
+        == 2));
     thread::sleep(Duration::from_millis(100));
     raiser.raise();
-    assert!(wait_for(Duration::from_secs(5), || stops.load(std::sync::atomic::Ordering::SeqCst) == 2));
+    assert!(wait_for(Duration::from_secs(5), || stops
+        .load(std::sync::atomic::Ordering::SeqCst)
+        == 2));
     raiser.raise();
     assert_eq!(client.join().unwrap(), Ok(Sent::Interrupted));
 }
@@ -367,14 +399,16 @@ fn without_a_host_mutating_requests_take_the_lock() {
 fn a_starting_host_is_waited_for() {
     let p = project();
     let lock = hold_lock(p.paths.root());
-    lockfile::write(&lock, &record(HostKind::Cli, &p.socket, HostState::Starting))
-        .unwrap();
+    lockfile::write(
+        &lock,
+        &record(HostKind::Cli, &p.socket, HostState::Starting),
+    )
+    .unwrap();
     let runtime = p.runtime.path().to_path_buf();
     let starter = thread::spawn(move || {
         thread::sleep(Duration::from_millis(300));
         let t = start_server(&runtime, |_| {});
-        lockfile::write(&lock, &record(HostKind::Cli, &t.socket, HostState::Ready))
-            .unwrap();
+        lockfile::write(&lock, &record(HostKind::Cli, &t.socket, HostState::Ready)).unwrap();
         thread::sleep(Duration::from_secs(2));
         drop((t, lock));
     });
@@ -402,9 +436,17 @@ fn a_lock_held_too_long_is_busy_naming_the_holder() {
     };
     assert!(started.elapsed() >= Duration::from_millis(300));
     assert_eq!(err.code, ErrorCode::Busy);
-    assert!(err.message.contains(&format!("pid {}", rec.pid)), "{}", err.message);
+    assert!(
+        err.message.contains(&format!("pid {}", rec.pid)),
+        "{}",
+        err.message
+    );
     assert!(err.message.contains("headless host"), "{}", err.message);
-    assert!(err.message.contains("hasn't finished starting"), "{}", err.message);
+    assert!(
+        err.message.contains("hasn't finished starting"),
+        "{}",
+        err.message
+    );
 
     // Read-only requests wait for a host too, rather than reading under it.
     let err = match route(&router(&p, RouteMode::NoLock, 200, &interrupts)) {
@@ -414,7 +456,11 @@ fn a_lock_held_too_long_is_busy_naming_the_holder() {
     assert_eq!(err.code, ErrorCode::Busy);
 
     // No record at all: someone else holds the flock.
-    lockfile::write(&lock, &record(HostKind::Headless, &p.socket, HostState::Ready)).unwrap();
+    lockfile::write(
+        &lock,
+        &record(HostKind::Headless, &p.socket, HostState::Ready),
+    )
+    .unwrap();
     std::fs::write(p.paths.lock_file(), b"").unwrap();
     let err = match route(&router(&p, RouteMode::Lock, 200, &interrupts)) {
         Err(RouteError::Failed(e)) => e,
@@ -439,7 +485,10 @@ fn a_host_that_never_answers_hello_is_not_responding() {
         other => panic!("{other:?}"),
     };
     assert_eq!(err.code, ErrorCode::Busy);
-    assert_eq!(err.message, format!("host pid {} is not responding", rec.pid));
+    assert_eq!(
+        err.message,
+        format!("host pid {} is not responding", rec.pid)
+    );
     drop(lock);
 }
 
@@ -447,8 +496,11 @@ fn a_host_that_never_answers_hello_is_not_responding() {
 fn routing_stops_on_ctrl_c() {
     let p = project();
     let lock = hold_lock(p.paths.root());
-    lockfile::write(&lock, &record(HostKind::Cli, &p.socket, HostState::Starting))
-        .unwrap();
+    lockfile::write(
+        &lock,
+        &record(HostKind::Cli, &p.socket, HostState::Starting),
+    )
+    .unwrap();
     let interrupts = Interrupts::new();
     let raiser = interrupts.clone();
     thread::spawn(move || {
@@ -470,8 +522,7 @@ fn the_record_names_a_socket_in_another_runtime_dir() {
     let elsewhere = socket_dir();
     let t = start_server(elsewhere.path(), |_| {});
     let lock = hold_lock(p.paths.root());
-    lockfile::write(&lock, &record(HostKind::Gui, &t.socket, HostState::Ready))
-        .unwrap();
+    lockfile::write(&lock, &record(HostKind::Gui, &t.socket, HostState::Ready)).unwrap();
     let interrupts = Interrupts::new();
     match route(&router(&p, RouteMode::Lock, 2000, &interrupts)).unwrap() {
         Routed::Host { socket, .. } => assert_eq!(socket, t.socket),

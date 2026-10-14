@@ -367,7 +367,10 @@ fn send_record_stop(socket: &Path) {
         return;
     };
     while let Ok(msg) = exchange.next(deadline) {
-        if matches!(msg, WireMessage::Accepted { .. } | WireMessage::Reply { .. }) {
+        if matches!(
+            msg,
+            WireMessage::Accepted { .. } | WireMessage::Reply { .. }
+        ) {
             return;
         }
     }
@@ -480,7 +483,12 @@ pub fn route(r: &Router<'_>) -> Result<Routed, RouteError> {
                         hello: Some(Box::new(info)),
                     });
                 }
-                Err(HelloError::Refused(_)) => return Ok(Routed::Host { socket, hello: None }),
+                Err(HelloError::Refused(_)) => {
+                    return Ok(Routed::Host {
+                        socket,
+                        hello: None,
+                    });
+                }
                 Err(HelloError::Timeout) => {
                     let rec = record
                         .clone()
@@ -558,12 +566,10 @@ pub fn lock_held_too_long(record: Option<&LockRecord>) -> CoreError {
                 HostState::Ready => "isn't accepting connections",
                 HostState::Stopping => "is shutting down",
             };
-            CoreError::busy(format!("the project's {} {what}", describe(rec))).with_hint(
-                format!(
-                    "try again in a moment; if it persists, stop pid {} (`kill {}`)",
-                    rec.pid, rec.pid
-                ),
-            )
+            CoreError::busy(format!("the project's {} {what}", describe(rec))).with_hint(format!(
+                "try again in a moment; if it persists, stop pid {} (`kill {}`)",
+                rec.pid, rec.pid
+            ))
         }
         None => CoreError::busy(
             "another process holds the project lock (.qrec/lock) but runs no Qrec host",

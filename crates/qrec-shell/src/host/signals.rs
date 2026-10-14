@@ -332,14 +332,16 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         assert_eq!(firsts.load(Ordering::SeqCst), 0);
         interrupts.raise();
-        assert!(crate::ipc::testing::wait_for(Duration::from_secs(2), || firsts
-            .load(Ordering::SeqCst)
-            == 1));
+        assert!(crate::ipc::testing::wait_for(
+            Duration::from_secs(2),
+            || firsts.load(Ordering::SeqCst) == 1
+        ));
         assert_eq!(seconds.load(Ordering::SeqCst), 0);
         interrupts.raise();
-        assert!(crate::ipc::testing::wait_for(Duration::from_secs(2), || seconds
-            .load(Ordering::SeqCst)
-            == 1));
+        assert!(crate::ipc::testing::wait_for(
+            Duration::from_secs(2),
+            || seconds.load(Ordering::SeqCst) == 1
+        ));
         drop(guard);
         assert_eq!(firsts.load(Ordering::SeqCst), 1);
     }
@@ -358,11 +360,10 @@ mod tests {
         .unwrap();
         interrupts.raise();
         interrupts.raise();
-        assert!(crate::ipc::testing::wait_for(Duration::from_secs(2), || calls
-            .lock()
-            .unwrap()
-            .len()
-            == 2));
+        assert!(crate::ipc::testing::wait_for(
+            Duration::from_secs(2),
+            || calls.lock().unwrap().len() == 2
+        ));
         assert_eq!(*calls.lock().unwrap(), ["first", "second"]);
     }
 

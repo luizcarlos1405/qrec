@@ -148,7 +148,9 @@ pub fn write_all_before(stream: &UnixStream, bytes: &[u8], deadline: Instant) ->
             Err(e)
                 if matches!(
                     e.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::Interrupted
                 ) => {}
             Err(e) => return Err(e),
         }

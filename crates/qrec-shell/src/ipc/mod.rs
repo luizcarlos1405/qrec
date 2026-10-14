@@ -13,11 +13,16 @@
 //! - [`client`]: the CLI side. `hello` with a 2 s timeout, the routing loop of
 //!   A§8.3 step 4 (3 s deadline, 20 s for `record *`, retries every 50 ms),
 //!   re-route once on EOF before `accepted`, "host disconnected" after it.
-//! - [`resolve`]: which project a command is for (A§8.4).
+//! - [`resolve`]: which project a command is for (A§8.4), and the live
+//!   hosts on `<runtime>/*.sock`.
 //! - [`lock_glue`]: the project lock, the lock record and socket publishing
-//!   (A§8.3 steps 1–3) — interim versions of the store owner's `lock.rs`,
-//!   `host::lockfile` and `host::publish`.
-//! - [`framing`], [`peer`]: bounded JSON lines and peer credentials.
+//!   (A§8.3 steps 1–3) — interim copies, same names and signatures, of the
+//!   store owner's `lock::ProjectLock`, `host::lockfile` and `host::publish`.
+//! - [`framing`], [`peer`]: bounded JSON lines, peer credentials and a
+//!   connect that can't block on a stuck listener.
+//!
+//! The hosts that run a server (`host::headless`, `host::cli_host`) and the
+//! CLI's entry points (`host::request`, `host::run_cli`) live in `host`.
 
 pub mod client;
 pub mod framing;

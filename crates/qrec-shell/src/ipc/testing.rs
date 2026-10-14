@@ -17,7 +17,9 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use qrec_core::model::{Project, ProjectDefaults};
-use qrec_core::protocol::{Command as CoreCommand, HelloInfo, Progress, ProgressPhase, Query, WireBody};
+use qrec_core::protocol::{
+    Command as CoreCommand, HelloInfo, Progress, ProgressPhase, Query, WireBody,
+};
 use qrec_core::state::{History, HostKind, Job, JobKind, RecordMode, RecordPhase, UiState};
 use qrec_core::{CoreError, Ctx, Event, Facts, JobId, ReqId, State, TakeId};
 use serde_json::{Value, json};
@@ -422,7 +424,9 @@ impl FakeSession {
     fn command(&mut self, cmd: CoreCommand, confirmed: bool, mut to: Box<dyn Responder>) {
         let recording = !self.state.runtime.record.is_idle();
         match cmd {
-            CoreCommand::RecordStart { wait, .. } | CoreCommand::RecordToggle { wait } if !recording => {
+            CoreCommand::RecordStart { wait, .. } | CoreCommand::RecordToggle { wait }
+                if !recording =>
+            {
                 self.state.runtime.record = RecordPhase::Recording {
                     take: TakeId::numbered(1),
                     mode: RecordMode::Append,
@@ -449,7 +453,9 @@ impl FakeSession {
             CoreCommand::RecordStop | CoreCommand::RecordCancel => {
                 to.reply(Err(CoreError::invalid("not recording")));
             }
-            CoreCommand::Export { out: Some(spec), .. } if spec.starts_with("ms:") => {
+            CoreCommand::Export {
+                out: Some(spec), ..
+            } if spec.starts_with("ms:") => {
                 self.start_job(&spec, to);
             }
             CoreCommand::ExportCancel { .. } => {
@@ -506,7 +512,8 @@ impl FakeSession {
                 started: Utc::now(),
             },
         );
-        self.log.push(json!({ "event": "job", "job": id.0, "ms": ms }));
+        self.log
+            .push(json!({ "event": "job", "job": id.0, "ms": ms }));
         let inbox = self.inbox.clone();
         thread::spawn(move || {
             for step in 1..=5 {
@@ -563,7 +570,8 @@ impl FakeSession {
                         let _ = child.kill();
                         let _ = child.wait();
                     }
-                    self.log.push(json!({ "event": "jobDone", "job": job.id.0 }));
+                    self.log
+                        .push(json!({ "event": "jobDone", "job": job.id.0 }));
                     job.to.reply(Ok(Self::handled(json!({ "exported": true }))));
                 }
             }
@@ -669,7 +677,13 @@ const CHILD_TEST: &str = "ipc::testing::child_entry";
 /// libtest arguments that run only [`child_entry`]; anything after them
 /// (after `--`) is ignored by the harness and read by the role.
 fn child_args() -> Vec<&'static str> {
-    vec!["--exact", CHILD_TEST, "--nocapture", "--test-threads=1", "--"]
+    vec![
+        "--exact",
+        CHILD_TEST,
+        "--nocapture",
+        "--test-threads=1",
+        "--",
+    ]
 }
 
 /// This test binary as a child playing `role`, in `env`'s isolation.
@@ -740,7 +754,10 @@ fn child_entry() {
 /// Arguments after `--`: `--project DIR [--lock-fd N] [--ready-fd N]`.
 fn host_args() -> HeadlessArgs {
     let args: Vec<String> = std::env::args().collect();
-    let after = args.iter().position(|a| a == "--").map_or(&args[..0], |i| &args[i + 1..]);
+    let after = args
+        .iter()
+        .position(|a| a == "--")
+        .map_or(&args[..0], |i| &args[i + 1..]);
     let value = |flag: &str| {
         after
             .iter()
@@ -764,7 +781,9 @@ fn child_headless(log: &Path) -> u8 {
     };
     let mut opener = FakeOpener::to_file(log);
     opener.stubborn = std::env::var_os(STUBBORN).is_some();
-    opener.log.push(json!({ "event": "hostStart", "role": "headless" }));
+    opener
+        .log
+        .push(json!({ "event": "hostStart", "role": "headless" }));
     let code = run_headless(args, &Env::from_process(), &mut opener, opts);
     opener
         .log

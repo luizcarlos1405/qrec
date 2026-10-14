@@ -249,11 +249,15 @@ impl IpcServer {
         for out in self.shared.open_outgoing() {
             out.push_reply(&Err(why.clone()));
         }
-        if self.shared.wait_closed(Instant::now() + Duration::from_secs(1)) {
+        if self
+            .shared
+            .wait_closed(Instant::now() + Duration::from_secs(1))
+        {
             return;
         }
         self.shared.force_close();
-        self.shared.wait_closed(Instant::now() + Duration::from_secs(1));
+        self.shared
+            .wait_closed(Instant::now() + Duration::from_secs(1));
     }
 }
 

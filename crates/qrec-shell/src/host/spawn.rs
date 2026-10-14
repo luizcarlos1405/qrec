@@ -108,7 +108,10 @@ pub fn spawn_headless(
 ) -> Result<SpawnedHost, SpawnError> {
     // Routing clients wait for a `starting` host instead of reading a stale record.
     let since = Utc::now().trunc_subsecs(0);
-    lockfile::write(&lock, &LockRecord::starting(HostKind::Headless, socket, since))?;
+    lockfile::write(
+        &lock,
+        &LockRecord::starting(HostKind::Headless, socket, since),
+    )?;
     let stamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
     let (log_path, log) = create_log(paths, &stamp, std::process::id(), "spawn")?;
     let io_err = |what: &str, e: io::Error| CoreError::io(format!("{what}: {e}"));
@@ -277,7 +280,12 @@ enum Ready {
 }
 
 /// Reads the host's one ready line.
-fn wait_ready(read: &OwnedFd, deadline: Instant, interrupts: &Interrupts, baseline: usize) -> Ready {
+fn wait_ready(
+    read: &OwnedFd,
+    deadline: Instant,
+    interrupts: &Interrupts,
+    baseline: usize,
+) -> Ready {
     let mut line = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -325,7 +333,9 @@ fn wait_ready(read: &OwnedFd, deadline: Instant, interrupts: &Interrupts, baseli
             return parse_ready(&line[..end]);
         }
         if line.len() > MAX_READY_LINE {
-            return Ready::Failed(CoreError::io("the background host's ready line is too long"));
+            return Ready::Failed(CoreError::io(
+                "the background host's ready line is too long",
+            ));
         }
     }
 }

@@ -42,7 +42,10 @@ use qrec_core::state::HostKind;
 use qrec_core::{CoreError, State};
 use serde_json::Value;
 
-pub use cli_host::{CliContext, CliExit, CliRequest, run_cli};
+pub use cli_host::{
+    CliContext, CliExit, CliRequest, Fallback, Finish, RequestContext, RequestEvents, RouteOpts,
+    request, run_cli,
+};
 pub use headless::{HeadlessArgs, main_headless, run_headless};
 pub use spawn::HostProgram;
 
@@ -376,6 +379,7 @@ pub(crate) fn record_stop_msg() -> Msg {
 // ------------------------------------------------------------- the host
 
 /// How a host is set up beyond its kind.
+#[derive(Default)]
 pub struct HostOptions {
     pub rules: ExitRules,
     /// The counter signals raise (from [`signals::install`]); `None` means
@@ -387,17 +391,6 @@ pub struct HostOptions {
     /// The second signal. `None`: unlink the socket, SIGKILL the child
     /// process groups and `_exit(130)` ([`signals::hard_exit`]).
     pub on_second_signal: Option<Box<dyn FnOnce() + Send>>,
-}
-
-impl Default for HostOptions {
-    fn default() -> Self {
-        Self {
-            rules: ExitRules::default(),
-            interrupts: None,
-            signal_baseline: 0,
-            on_second_signal: None,
-        }
-    }
 }
 
 impl std::fmt::Debug for HostOptions {

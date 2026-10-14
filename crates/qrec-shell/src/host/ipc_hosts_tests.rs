@@ -20,8 +20,8 @@ use crate::ipc::client::{self, SendOpts, Sent, send_request};
 use crate::ipc::lock_glue::ProjectLock;
 use crate::ipc::lock_glue::lockfile::{self, HostState};
 use crate::ipc::testing::{
-    Collect, FakeOpener, PROJECT, REQUEST, RULES, STUBBORN, child_command, hold_lock,
-    quick_rules, raw_exchange, read_events, request_line, rules_env, wait_for,
+    Collect, FakeOpener, PROJECT, REQUEST, RULES, STUBBORN, child_command, hold_lock, quick_rules,
+    raw_exchange, read_events, request_line, rules_env, wait_for,
 };
 use crate::paths::{Env, ensure_runtime_dir, socket_path};
 use crate::testkit::TestEnv;
@@ -93,7 +93,10 @@ fn exit_rules() {
     signal.busy = true;
     assert_eq!(decide(&signal, &rules), Decision::Wait(Some(s(16))));
     signal.now = s(16);
-    assert_eq!(decide(&signal, &rules), Decision::Exit(HostEnd::SignalTimeout));
+    assert_eq!(
+        decide(&signal, &rules),
+        Decision::Exit(HostEnd::SignalTimeout)
+    );
     signal.now = s(5);
     signal.busy = false;
     assert_eq!(decide(&signal, &rules), Decision::Exit(HostEnd::Signal));
@@ -220,7 +223,14 @@ fn a_short_command_without_a_host_runs_in_process_and_exits_at_once() {
     let f = fixture();
     let mut opener = FakeOpener::default();
     let started = Instant::now();
-    let (exit, out, notices) = cli(&f, &mut opener, &Interrupts::new(), command(set_ui()), quick_rules(), None);
+    let (exit, out, notices) = cli(
+        &f,
+        &mut opener,
+        &Interrupts::new(),
+        command(set_ui()),
+        quick_rules(),
+        None,
+    );
     assert_eq!(exit, CliExit::Replied);
     // The real core ran the command (SetUi is a timeline-owner command).
     assert_eq!(out.ok()["handledBy"], std::process::id());
@@ -230,7 +240,10 @@ fn a_short_command_without_a_host_runs_in_process_and_exits_at_once() {
     assert_eq!(opened.len(), 1);
     assert!(opened[0].mutating && opened[0].host == HostKind::Cli);
     // The host is gone: lock released, socket unlinked, record says so.
-    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
+    assert!(
+        wait_for(Duration::from_secs(2), || !f.lock_held()),
+        "the lock was released"
+    );
     assert!(!f.socket.exists());
     assert_eq!(f.record().state, HostState::Stopping);
 }
@@ -239,20 +252,38 @@ fn a_short_command_without_a_host_runs_in_process_and_exits_at_once() {
 fn a_query_without_a_host_takes_no_lock_and_writes_nothing() {
     let f = fixture();
     let mut opener = FakeOpener::default();
-    let (exit, out, _) = cli(&f, &mut opener, &Interrupts::new(), query(Query::ClipList), quick_rules(), None);
+    let (exit, out, _) = cli(
+        &f,
+        &mut opener,
+        &Interrupts::new(),
+        query(Query::ClipList),
+        quick_rules(),
+        None,
+    );
     assert_eq!(exit, CliExit::Replied);
     assert_eq!(out.ok()["query"], "ClipList");
     let opened = opener.opened.lock().unwrap().clone();
     assert_eq!(opened.len(), 1);
     assert!(!opened[0].mutating);
-    assert_eq!(fs::read_dir(&f.dir).unwrap().count(), 0, "still strictly empty");
+    assert_eq!(
+        fs::read_dir(&f.dir).unwrap().count(),
+        0,
+        "still strictly empty"
+    );
 }
 
 #[test]
 fn gui_only_commands_need_a_running_gui() {
     let f = fixture();
     let mut opener = FakeOpener::default();
-    let (exit, out, _) = cli(&f, &mut opener, &Interrupts::new(), command(qrec_core::Command::Play), quick_rules(), None);
+    let (exit, out, _) = cli(
+        &f,
+        &mut opener,
+        &Interrupts::new(),
+        command(qrec_core::Command::Play),
+        quick_rules(),
+        None,
+    );
     assert_eq!(exit, CliExit::Replied);
     assert_eq!(out.err().code, ErrorCode::Unavailable);
     let over_selection = qrec_core::Command::RecordStart {
@@ -260,7 +291,14 @@ fn gui_only_commands_need_a_running_gui() {
         countdown: None,
         wait: false,
     };
-    let (_, out, _) = cli(&f, &mut opener, &Interrupts::new(), command(over_selection), quick_rules(), None);
+    let (_, out, _) = cli(
+        &f,
+        &mut opener,
+        &Interrupts::new(),
+        command(over_selection),
+        quick_rules(),
+        None,
+    );
     assert_eq!(out.err().code, ErrorCode::Unavailable);
     assert!(opener.opened.lock().unwrap().is_empty());
     assert!(!f.dir.join(".qrec").exists());
@@ -270,13 +308,25 @@ fn gui_only_commands_need_a_running_gui() {
 fn a_failed_open_is_the_reply_and_frees_the_project() {
     let f = fixture();
     let mut opener = FakeOpener {
-        fail: Some(qrec_core::CoreError::invalid("qrec.json on disk is invalid")),
+        fail: Some(qrec_core::CoreError::invalid(
+            "qrec.json on disk is invalid",
+        )),
         ..FakeOpener::default()
     };
-    let (exit, out, _) = cli(&f, &mut opener, &Interrupts::new(), command(set_ui()), quick_rules(), None);
+    let (exit, out, _) = cli(
+        &f,
+        &mut opener,
+        &Interrupts::new(),
+        command(set_ui()),
+        quick_rules(),
+        None,
+    );
     assert_eq!(exit, CliExit::Replied);
     assert_eq!(out.err().code, ErrorCode::Invalid);
-    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
+    assert!(
+        wait_for(Duration::from_secs(2), || !f.lock_held()),
+        "the lock was released"
+    );
     assert!(!f.socket.exists());
 }
 
@@ -290,17 +340,38 @@ fn an_in_process_host_serves_other_commands_while_its_job_runs() {
         let mut opener = opener.clone();
         thread::spawn(move || {
             let started = Instant::now();
-            let (exit, out, _) = cli(&f, &mut opener, &Interrupts::new(), command(export(800)), quick_rules(), None);
+            let (exit, out, _) = cli(
+                &f,
+                &mut opener,
+                &Interrupts::new(),
+                command(export(800)),
+                quick_rules(),
+                None,
+            );
             (exit, out, started.elapsed())
         })
     };
-    assert!(wait_for(Duration::from_secs(5), || client::hello(&f.socket, Duration::from_secs(1)).is_ok()));
+    assert!(wait_for(Duration::from_secs(5), || client::hello(
+        &f.socket,
+        Duration::from_secs(1)
+    )
+    .is_ok()));
     // A second CLI routes to it instead of opening the project itself.
     let mut second = FakeOpener::default();
-    let (exit, out, _) = cli(&f, &mut second, &Interrupts::new(), command(set_ui()), quick_rules(), None);
+    let (exit, out, _) = cli(
+        &f,
+        &mut second,
+        &Interrupts::new(),
+        command(set_ui()),
+        quick_rules(),
+        None,
+    );
     assert_eq!(exit, CliExit::Replied);
     assert_eq!(out.ok()["handledBy"], std::process::id());
-    assert!(second.opened.lock().unwrap().is_empty(), "routed, not opened");
+    assert!(
+        second.opened.lock().unwrap().is_empty(),
+        "routed, not opened"
+    );
     let (exit, out, took) = host.join().unwrap();
     assert_eq!(exit, CliExit::Replied);
     assert_eq!(out.ok()["exported"], true);
@@ -309,9 +380,16 @@ fn an_in_process_host_serves_other_commands_while_its_job_runs() {
     // idle grace (300 ms) before exiting.
     assert!(took >= Duration::from_millis(1100), "{took:?}");
     assert!(took < Duration::from_secs(4), "{took:?}");
-    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
+    assert!(
+        wait_for(Duration::from_secs(2), || !f.lock_held()),
+        "the lock was released"
+    );
     let names = log.names();
-    assert_eq!(names.iter().filter(|n| *n == "open").count(), 1, "{names:?}");
+    assert_eq!(
+        names.iter().filter(|n| *n == "open").count(),
+        1,
+        "{names:?}"
+    );
     assert!(names.contains(&"jobDone".to_owned()), "{names:?}");
 }
 
@@ -326,13 +404,23 @@ fn ctrl_c_in_an_in_process_host_cancels_its_job() {
         raiser.raise();
     });
     let started = Instant::now();
-    let (exit, out, _) = cli(&f, &mut opener, &interrupts, command(export(20_000)), quick_rules(), None);
+    let (exit, out, _) = cli(
+        &f,
+        &mut opener,
+        &interrupts,
+        command(export(20_000)),
+        quick_rules(),
+        None,
+    );
     assert_eq!(exit, CliExit::Interrupted);
     assert!(started.elapsed() < Duration::from_secs(3));
     assert_eq!(out.err().message, "interrupted");
     let names = opener.log.names();
     assert!(names.contains(&"interrupt".to_owned()), "{names:?}");
-    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
+    assert!(
+        wait_for(Duration::from_secs(2), || !f.lock_held()),
+        "the lock was released"
+    );
 }
 
 #[test]
@@ -366,15 +454,122 @@ fn a_second_ctrl_c_runs_the_hard_exit() {
         Some(Box::new(move || called.store(true, Ordering::SeqCst))),
     );
     assert_eq!(exit, CliExit::Interrupted);
-    assert!(hard.load(Ordering::SeqCst), "the second signal ran the hard exit");
+    assert!(
+        hard.load(Ordering::SeqCst),
+        "the second signal ran the hard exit"
+    );
     // A stubborn job: the host gave up after the signal grace.
     assert!(started.elapsed() >= Duration::from_millis(1500));
     assert!(started.elapsed() < Duration::from_secs(5));
 }
 
+/// What the Backend-shaped entry reported.
+#[derive(Default)]
+struct Events {
+    routed: Vec<Option<u32>>,
+    accepted: usize,
+    progress: Vec<u64>,
+}
+
+impl RequestEvents for Events {
+    fn routed(&mut self, host: Option<&qrec_core::protocol::HelloInfo>) {
+        self.routed.push(host.map(|h| h.pid));
+    }
+
+    fn accepted(&mut self) {
+        self.accepted += 1;
+    }
+
+    fn progress(&mut self, p: &qrec_core::protocol::Progress) {
+        self.progress.push(p.done);
+    }
+}
+
+fn backend(f: &Fixture, opener: &mut FakeOpener, req: &Request, events: &mut Events) -> Finish {
+    let program = HostProgram::current_exe().unwrap();
+    let interrupts = Interrupts::new();
+    let cx = RequestContext {
+        env: &f.paths_env,
+        opener,
+        host_program: &program,
+        interrupts: &interrupts,
+        rules: quick_rules(),
+        on_second_signal: None,
+    };
+    request(cx, &f.dir, req.clone(), &RouteOpts::for_request(req), events)
+}
+
+#[test]
+fn the_backend_entry_reports_where_each_request_ran() {
+    let f = fixture();
+    let req = Request::command(export(100), false);
+    // No host: this process runs it.
+    let mut events = Events::default();
+    let finish = backend(&f, &mut FakeOpener::default(), &req, &mut events);
+    assert!(matches!(&finish, Finish::Reply(Ok(v)) if v["exported"] == true), "{finish:?}");
+    assert_eq!(events.routed, [None]);
+    assert_eq!(events.accepted, 1);
+    assert_eq!(events.progress, [1, 2, 3, 4, 5]);
+    // A live host: routed there, with its hello.
+    let host = headless(&f, FakeOpener::default(), quick_rules(), None);
+    wait_ready(&f);
+    let mut events = Events::default();
+    let mut unused = FakeOpener::default();
+    let finish = backend(&f, &mut unused, &req, &mut events);
+    assert!(matches!(&finish, Finish::Reply(Ok(_))), "{finish:?}");
+    assert_eq!(events.routed, [Some(std::process::id())]);
+    assert_eq!(events.accepted, 1);
+    assert!(unused.opened.lock().unwrap().is_empty());
+    assert_eq!(host.join().unwrap(), 0);
+    // Needs a live host and there is none.
+    let play = Request::command(qrec_core::Command::Play, false);
+    let mut events = Events::default();
+    let finish = backend(&f, &mut FakeOpener::default(), &play, &mut events);
+    assert_eq!(finish, Finish::NoHost);
+    assert!(events.routed.is_empty());
+}
+
+#[test]
+fn a_host_running_another_version_is_noted() {
+    let f = fixture();
+    let published = crate::ipc::lock_glue::publish::publish(&f.socket).unwrap();
+    let mut cfg = crate::ipc::server::ServerConfig::new(&f.dir, HostKind::Gui);
+    cfg.version = "0.0.1".into();
+    let hello = cfg.starting_hello();
+    let server = IpcServer::start(published, cfg, Arc::new(|_| {})).unwrap();
+    let (inbox, _session) = crate::ipc::testing::session_thread(move |msg| {
+        if let Msg::Request { req, mut to } = msg {
+            match req.body {
+                WireBody::Hello => to.reply(Ok(serde_json::to_value(&hello).unwrap())),
+                _ => to.reply(Ok(json!({ "answered": true }))),
+            }
+        }
+        true
+    });
+    server.attach(inbox);
+    let (exit, out, notices) = cli(
+        &f,
+        &mut FakeOpener::default(),
+        &Interrupts::new(),
+        query(Query::ClipList),
+        quick_rules(),
+        None,
+    );
+    assert_eq!(exit, CliExit::Replied);
+    assert_eq!(out.ok()["answered"], true);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(notices[0].contains("is qrec 0.0.1"), "{notices:?}");
+    assert!(notices[0].contains("gui host"), "{notices:?}");
+}
+
 // -------------------------------------------------- headless host (thread)
 
-fn headless(f: &Fixture, opener: FakeOpener, rules: ExitRules, interrupts: Option<Interrupts>) -> thread::JoinHandle<u8> {
+fn headless(
+    f: &Fixture,
+    opener: FakeOpener,
+    rules: ExitRules,
+    interrupts: Option<Interrupts>,
+) -> thread::JoinHandle<u8> {
     let env = f.paths_env.clone();
     let args = HeadlessArgs {
         project: f.dir.clone(),
@@ -395,7 +590,11 @@ fn headless(f: &Fixture, opener: FakeOpener, rules: ExitRules, interrupts: Optio
 
 fn wait_ready(f: &Fixture) {
     assert!(
-        wait_for(Duration::from_secs(10), || client::hello(&f.socket, Duration::from_secs(1)).is_ok()),
+        wait_for(Duration::from_secs(10), || client::hello(
+            &f.socket,
+            Duration::from_secs(1)
+        )
+        .is_ok()),
         "the host never answered hello"
     );
 }
@@ -420,7 +619,10 @@ fn an_unused_headless_host_exits_after_its_timeout() {
     assert_eq!(host.join().unwrap(), 0);
     assert!(started.elapsed() >= Duration::from_millis(400));
     assert!(started.elapsed() < Duration::from_secs(4));
-    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
+    assert!(
+        wait_for(Duration::from_secs(2), || !f.lock_held()),
+        "the lock was released"
+    );
     assert!(!f.socket.exists());
 }
 
@@ -468,19 +670,25 @@ fn shutdown_stops_accepting_finalizes_and_lets_jobs_finish() {
     wait_ready(&f);
     let socket = f.socket.clone();
     let job = thread::spawn(move || send(&socket, Request::command(export(700), false)));
-    assert!(wait_for(Duration::from_secs(5), || log.names().contains(&"job".to_owned())));
+    assert!(wait_for(Duration::from_secs(5), || log
+        .names()
+        .contains(&"job".to_owned())));
     let lines = raw_exchange(&f.socket, &request_line("s", json!("shutdown")));
     assert_eq!(lines[1]["reply"]["ok"], true, "{lines:?}");
     // No new connections (and the record soon says why)…
     assert!(client::hello(&f.socket, Duration::from_millis(300)).is_err());
-    assert!(wait_for(Duration::from_secs(2), || f.record().state == HostState::Stopping));
+    assert!(wait_for(Duration::from_secs(2), || f.record().state
+        == HostState::Stopping));
     // …but the running job finishes and its client gets the reply.
     let out = job.join().unwrap();
     assert_eq!(out.ok()["exported"], true);
     assert_eq!(host.join().unwrap(), 0);
     let names = log.names();
     assert!(names.contains(&"shutdown".to_owned()), "{names:?}");
-    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
+    assert!(
+        wait_for(Duration::from_secs(2), || !f.lock_held()),
+        "the lock was released"
+    );
 }
 
 #[test]
@@ -496,17 +704,26 @@ fn a_signal_finalizes_the_recording_then_the_host_exits() {
         countdown: None,
         wait: false,
     };
-    assert_eq!(send(&f.socket, Request::command(start, false)).ok()["recording"], true);
+    assert_eq!(
+        send(&f.socket, Request::command(start, false)).ok()["recording"],
+        true
+    );
     interrupts.raise();
     assert_eq!(host.join().unwrap(), 130);
     // RecordStop goes first (finalize, not cancel). Quiet right after it, the
     // host may exit before the queued `Interrupt` (nothing left to cancel).
     let names = log.names();
-    let finalized = names.iter().position(|n| n == "finalized").expect("finalized");
+    let finalized = names
+        .iter()
+        .position(|n| n == "finalized")
+        .expect("finalized");
     if let Some(interrupt) = names.iter().position(|n| n == "interrupt") {
         assert!(finalized < interrupt, "{names:?}");
     }
-    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
+    assert!(
+        wait_for(Duration::from_secs(2), || !f.lock_held()),
+        "the lock was released"
+    );
 }
 
 #[test]
@@ -525,10 +742,15 @@ fn startup_errors_go_to_the_ready_fd() {
         lock_fd: None,
         ready_fd: Some(ready_fd),
     };
-    let code = run_headless(args, &f.paths_env, &mut FakeOpener::default(), HostOptions {
-        rules: quick_rules(),
-        ..HostOptions::default()
-    });
+    let code = run_headless(
+        args,
+        &f.paths_env,
+        &mut FakeOpener::default(),
+        HostOptions {
+            rules: quick_rules(),
+            ..HostOptions::default()
+        },
+    );
     assert_eq!(code, 1);
     let mut file = fs::File::from(read);
     let mut line = String::new();
@@ -599,11 +821,14 @@ fn headless_child(f: &Fixture, log: &Path, stubborn: bool) -> Child {
     let mut command = child_command(&f.env, "headless", log);
     command
         .args(["--project".as_ref(), f.dir.as_os_str()])
-        .env(RULES, rules_env(&ExitRules {
-            unused_timeout: Duration::from_secs(10),
-            signal_grace: Duration::from_secs(5),
-            ..quick_rules()
-        }))
+        .env(
+            RULES,
+            rules_env(&ExitRules {
+                unused_timeout: Duration::from_secs(10),
+                signal_grace: Duration::from_secs(5),
+                ..quick_rules()
+            }),
+        )
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     if stubborn {
@@ -636,7 +861,10 @@ fn processes_racing_to_become_the_host_share_one() {
         assert_eq!(d["exit"], "Replied");
         assert_eq!(d["reply"]["data"]["handledBy"], host_pid, "{d}");
     }
-    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
+    assert!(
+        wait_for(Duration::from_secs(2), || !f.lock_held()),
+        "the lock was released"
+    );
 }
 
 #[test]
@@ -645,15 +873,23 @@ fn the_spawned_host_keeps_the_lock_after_its_parent_exits() {
     let log = f.env.root().join("spawn.jsonl");
     let mut spawner = child_command(&f.env, "spawner", &log)
         .env(PROJECT, &f.dir)
-        .env(RULES, rules_env(&ExitRules {
-            unused_timeout: Duration::from_secs(10),
-            ..quick_rules()
-        }))
+        .env(
+            RULES,
+            rules_env(&ExitRules {
+                unused_timeout: Duration::from_secs(10),
+                ..quick_rules()
+            }),
+        )
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    assert_eq!(wait_exit(&mut spawner, Duration::from_secs(30)), Some(0), "{:#?}", read_events(&log));
+    assert_eq!(
+        wait_exit(&mut spawner, Duration::from_secs(30)),
+        Some(0),
+        "{:#?}",
+        read_events(&log)
+    );
     let spawned = events_named(&log, "spawned");
     assert_eq!(spawned.len(), 1, "{:#?}", read_events(&log));
     let host_pid = spawned[0]["host"].as_u64().unwrap() as u32;
@@ -671,7 +907,11 @@ fn the_spawned_host_keeps_the_lock_after_its_parent_exits() {
     // Its stdout/stderr go to the host log, named after its pid.
     let host_log = PathBuf::from(spawned[0]["log"].as_str().unwrap());
     assert!(host_log.is_file());
-    assert!(host_log.to_string_lossy().ends_with(&format!("-{host_pid}-host.log")));
+    assert!(
+        host_log
+            .to_string_lossy()
+            .ends_with(&format!("-{host_pid}-host.log"))
+    );
     assert_eq!(find_host_log(&f.paths(), host_pid), Some(host_log));
     // The lock goes away with the host.
     let lines = raw_exchange(&f.socket, &request_line("s", json!("shutdown")));
@@ -707,7 +947,10 @@ fn record_start_without_a_host_spawns_a_headless_one() {
     // The CLI exited; the recorder keeps running and holds the project.
     assert!(alive(host_pid));
     assert!(f.lock_held());
-    let out = send(&f.socket, Request::command(qrec_core::Command::RecordStop, false));
+    let out = send(
+        &f.socket,
+        Request::command(qrec_core::Command::RecordStop, false),
+    );
     assert_eq!(out.ok()["finalized"], true);
     // Idle again: it exits on its own.
     assert!(wait_for(Duration::from_secs(10), || !f.lock_held()));
@@ -729,7 +972,10 @@ fn sigterm_finalizes_the_take_and_exits_130() {
         countdown: None,
         wait: false,
     };
-    assert_eq!(send(&f.socket, Request::command(start, false)).ok()["recording"], true);
+    assert_eq!(
+        send(&f.socket, Request::command(start, false)).ok()["recording"],
+        true
+    );
     // SAFETY: kill(2) on our child.
     unsafe { libc::kill(host.id() as i32, libc::SIGTERM) };
     assert_eq!(wait_exit(&mut host, Duration::from_secs(10)), Some(130));
@@ -739,7 +985,10 @@ fn sigterm_finalizes_the_take_and_exits_130() {
         .filter_map(|e| e["event"].as_str().map(str::to_owned))
         .collect();
     assert!(names.contains(&"finalized".to_owned()), "{names:?}");
-    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
+    assert!(
+        wait_for(Duration::from_secs(2), || !f.lock_held()),
+        "the lock was released"
+    );
     assert!(!f.socket.exists());
 }
 
@@ -765,22 +1014,39 @@ fn a_second_signal_kills_child_processes_and_exits_130() {
         );
         out
     });
-    assert!(wait_for(Duration::from_secs(10), || !events_named(&log, "child").is_empty()));
+    assert!(wait_for(Duration::from_secs(10), || !events_named(
+        &log, "child"
+    )
+    .is_empty()));
     let sleep_pid = events_named(&log, "child")[0]["child"].as_u64().unwrap() as u32;
     assert!(alive(sleep_pid));
     // SAFETY: kill(2) on our child.
     unsafe { libc::kill(host.id() as i32, libc::SIGTERM) };
-    assert!(wait_for(Duration::from_secs(5), || !events_named(&log, "interrupt").is_empty()));
+    assert!(wait_for(Duration::from_secs(5), || !events_named(
+        &log,
+        "interrupt"
+    )
+    .is_empty()));
     thread::sleep(Duration::from_millis(300));
-    assert_eq!(host.try_wait().unwrap(), None, "busy: the first signal waits");
+    assert_eq!(
+        host.try_wait().unwrap(),
+        None,
+        "busy: the first signal waits"
+    );
     let second = Instant::now();
     // SAFETY: kill(2) on our child.
     unsafe { libc::kill(host.id() as i32, libc::SIGTERM) };
     assert_eq!(wait_exit(&mut host, Duration::from_secs(5)), Some(130));
     assert!(second.elapsed() < Duration::from_secs(3));
-    assert!(wait_for(Duration::from_secs(5), || !alive(sleep_pid)), "the child group was killed");
+    assert!(
+        wait_for(Duration::from_secs(5), || !alive(sleep_pid)),
+        "the child group was killed"
+    );
     // The lock died with the process; the socket was unlinked first.
-    assert!(wait_for(Duration::from_secs(2), || !f.lock_held()), "the lock was released");
+    assert!(
+        wait_for(Duration::from_secs(2), || !f.lock_held()),
+        "the lock was released"
+    );
     assert!(!f.socket.exists());
 }
 

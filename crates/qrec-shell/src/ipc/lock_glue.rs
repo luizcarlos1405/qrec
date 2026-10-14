@@ -109,8 +109,8 @@ impl ProjectLock {
         let mine = file
             .metadata()
             .map_err(|e| ShellError::io("stat the inherited lock descriptor", e))?;
-        let on_disk =
-            fs::metadata(&path).map_err(|e| ShellError::io(format!("stat {}", path.display()), e))?;
+        let on_disk = fs::metadata(&path)
+            .map_err(|e| ShellError::io(format!("stat {}", path.display()), e))?;
         if (mine.dev(), mine.ino()) != (on_disk.dev(), on_disk.ino()) {
             return Err(CoreError::internal(format!(
                 "the inherited lock descriptor is not {}",
@@ -298,9 +298,9 @@ pub mod publish {
     /// Publishes a listening socket at `socket`, under the project lock.
     /// The runtime dir (its parent) is created 0700 or checked.
     pub fn publish(socket: &Path) -> Result<PublishedSocket, ShellError> {
-        let runtime = socket
-            .parent()
-            .ok_or_else(|| ShellError::Internal(format!("{} has no parent dir", socket.display())))?;
+        let runtime = socket.parent().ok_or_else(|| {
+            ShellError::Internal(format!("{} has no parent dir", socket.display()))
+        })?;
         paths::ensure_private_dir(runtime, rustix::process::getuid().as_raw())?;
         let temp = paths::socket_publish_path(socket, std::process::id())?;
         remove_if_present(socket)
@@ -379,17 +379,20 @@ mod tests {
     use crate::ipc::peer::connect_nonblocking;
     use crate::ipc::testing::wait_for;
     use chrono::Utc;
-    use std::time::Duration;
     use qrec_core::ErrorCode;
     use qrec_core::state::HostKind;
     use std::os::fd::FromRawFd;
     use std::os::unix::net::UnixListener;
+    use std::time::Duration;
 
     #[test]
     fn one_holder_at_a_time() {
         let dir = tempfile::tempdir().unwrap();
         let paths = ProjectPaths::new(dir.path());
-        assert!(!ProjectLock::is_held(dir.path()).unwrap(), "no lock file yet");
+        assert!(
+            !ProjectLock::is_held(dir.path()).unwrap(),
+            "no lock file yet"
+        );
         assert!(!paths.qrec_dir().exists(), "probing creates nothing");
 
         let lock = ProjectLock::try_acquire(dir.path()).unwrap().expect("free");
@@ -409,8 +412,15 @@ mod tests {
         drop(lock);
         // Other test threads' fork/exec windows can hold a copy of the fd
         // for a moment, so "released" is waited for.
-        assert!(wait_for(Duration::from_secs(2), || !ProjectLock::is_held(dir.path()).unwrap()));
-        assert_eq!(read(dir.path()).unwrap(), Some(record), "stale until the next holder");
+        assert!(wait_for(Duration::from_secs(2), || !ProjectLock::is_held(
+            dir.path()
+        )
+        .unwrap()));
+        assert_eq!(
+            read(dir.path()).unwrap(),
+            Some(record),
+            "stale until the next holder"
+        );
         let _again = acquire_soon(dir.path());
         assert_eq!(read(dir.path()).unwrap(), None, "the next holder clears it");
     }
@@ -471,11 +481,18 @@ mod tests {
 
     #[test]
     fn publishing_replaces_a_stale_socket_atomically() {
-        let dir = tempfile::Builder::new().prefix("qp-").tempdir_in("/tmp").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("qp-")
+            .tempdir_in("/tmp")
+            .unwrap();
         let runtime = dir.path().join("run");
         let socket = runtime.join("p.sock");
         fs::create_dir(&runtime).unwrap();
-        fs::set_permissions(&runtime, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        fs::set_permissions(
+            &runtime,
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
         // A crashed host left its socket file behind: connecting is refused.
         drop(UnixListener::bind(&socket).unwrap());
         assert_eq!(
@@ -483,7 +500,11 @@ mod tests {
             Some(libc::ECONNREFUSED)
         );
         let mut published = publish(&socket).unwrap();
-        assert!(!runtime.join(format!("p.sock.{}", std::process::id())).exists());
+        assert!(
+            !runtime
+                .join(format!("p.sock.{}", std::process::id()))
+                .exists()
+        );
         let _client = connect_nonblocking(&socket).unwrap();
         assert!(published.listener().accept().is_ok());
 

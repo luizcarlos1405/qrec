@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 use qrec_core::CoreError;
-use qrec_core::protocol::{Command, HelloInfo, Progress, RecordModeArg, WireBody};
+use qrec_core::protocol::{Command, HelloInfo, InsertAt, Progress, RecordModeArg, WireBody};
 use qrec_core::state::HostKind;
 use serde_json::Value;
 
@@ -40,8 +40,7 @@ use super::spawn::{HostProgram, SpawnError, SpawnedHost, spawn_headless};
 use super::{ExitRules, Host, HostOptions, Opener, find_host_log};
 use crate::deps::OpenOpts;
 use crate::ipc::client::{
-    Replies, RouteError, RouteMode, Routed, Router, SendError, SendOpts, Sent, route,
-    send_request,
+    Replies, RouteError, RouteMode, Routed, Router, SendError, SendOpts, Sent, route, send_request,
     stops_on_interrupt,
 };
 use crate::ipc::lock_glue::ProjectLock;
@@ -113,16 +112,23 @@ impl RouteOpts {
                 | Command::RecordCancel
                 | Command::RecordToggle { .. }
         );
-        let over_selection = matches!(
+        // The live selection lives in a running host (A§8.4).
+        let needs_selection = matches!(
             cmd,
             Command::RecordStart {
                 mode: RecordModeArg::OverSelection,
                 ..
+            } | Command::ClipAdd {
+                at: InsertAt::AfterSelection,
+                ..
             }
         );
-        let fallback = if cmd.gui_only() || over_selection {
+        let fallback = if cmd.gui_only() || needs_selection {
             Fallback::None
-        } else if matches!(cmd, Command::RecordStart { .. } | Command::RecordToggle { .. }) {
+        } else if matches!(
+            cmd,
+            Command::RecordStart { .. } | Command::RecordToggle { .. }
+        ) {
             Fallback::SpawnHeadless
         } else {
             Fallback::InProcess
@@ -380,6 +386,10 @@ fn no_host_reason(req: &Request) -> &'static str {
             mode: RecordModeArg::OverSelection,
             ..
         }) => "--over-selection needs clips selected in a running Qrec GUI",
+        WireBody::Command(Command::ClipAdd {
+            at: InsertAt::AfterSelection,
+            ..
+        }) => "--after-selection needs clips selected in a running Qrec GUI",
         _ => "no Qrec host is running for this project",
     }
 }
@@ -436,6 +446,8 @@ fn run_request(
     let mut deadline = Instant::now() + opts.deadline;
     let mut rerouted = false;
     let mut spawned: Option<SpawnedHost> = None;
+    // Which host `sink.routed` last heard about (a re-route may find the same).
+    let mut reported: Option<Option<u32>> = None;
     loop {
         let mut router = Router::new(&paths, &socket, opts.route_mode(), deadline, cx.interrupts);
         router.baseline = baseline;
@@ -446,7 +458,11 @@ fn run_request(
                 socket: host_socket,
                 hello,
             }) => {
-                sink.routed(hello.as_deref());
+                let pid = hello.as_ref().map(|h| h.pid);
+                if reported != Some(pid) {
+                    reported = Some(pid);
+                    sink.routed(hello.as_deref());
+                }
                 let mut send = SendOpts::new(cx.interrupts);
                 send.baseline = baseline;
                 send.stop_on_interrupt = opts.stop_on_interrupt;
@@ -498,8 +514,7 @@ fn run_request(
                 }
                 Fallback::SpawnHeadless => {
                     drop(lock);
-                    let mut err =
-                        CoreError::io("the background host exited right after starting");
+                    let mut err = CoreError::io("the background host exited right after starting");
                     if let Some(host) = &spawned {
                         err = err.with_hint(format!("see {}", host.log.display()));
                     }
@@ -559,7 +574,10 @@ fn run_read_only(
     } else if interrupts.count() > baseline {
         Ran::Interrupted
     } else {
-        reply_err(out, CoreError::internal("the Session stopped before answering"))
+        reply_err(
+            out,
+            CoreError::internal("the Session stopped before answering"),
+        )
     }
 }
 
@@ -734,18 +752,19 @@ fn send_failure(e: SendError, hello: Option<&HelloInfo>, log: Option<PathBuf>) -
         None => hint.to_owned(),
     };
     match e {
-        SendError::NotAccepted => {
-            CoreError::busy(format!("{who} closed the connection before accepting the request"))
-                .with_hint("it is probably shutting down; run the command again")
-        }
+        SendError::NotAccepted => CoreError::busy(format!(
+            "{who} closed the connection before accepting the request"
+        ))
+        .with_hint("it is probably shutting down; run the command again"),
         SendError::NotResponding => CoreError::busy(format!("{who} is not responding"))
             .with_hint(see_log("it may be stuck; the request may still run")),
-        SendError::Disconnected => CoreError::io("host disconnected")
-            .with_hint(see_log("the request may have run; check with `qrec status`")),
-        SendError::LostContact => {
-            CoreError::busy(format!("{who} stopped responding while running the request"))
-                .with_hint(see_log("it may still finish; check with `qrec status`"))
-        }
+        SendError::Disconnected => CoreError::io("host disconnected").with_hint(see_log(
+            "the request may have run; check with `qrec status`",
+        )),
+        SendError::LostContact => CoreError::busy(format!(
+            "{who} stopped responding while running the request"
+        ))
+        .with_hint(see_log("it may still finish; check with `qrec status`")),
         SendError::Protocol(msg) => CoreError::io(format!("unexpected answer from {who}: {msg}")),
     }
 }
@@ -803,7 +822,10 @@ mod tests {
         );
         assert_eq!(opts.route_mode(), RouteMode::Lock);
         let opts = RouteOpts::for_request(&command(Command::RecordToggle { wait: true }));
-        assert_eq!((opts.fallback, opts.stop_on_interrupt), (Fallback::SpawnHeadless, true));
+        assert_eq!(
+            (opts.fallback, opts.stop_on_interrupt),
+            (Fallback::SpawnHeadless, true)
+        );
         let opts = RouteOpts::for_request(&command(Command::RecordStop));
         assert_eq!(
             (opts.fallback, opts.deadline),

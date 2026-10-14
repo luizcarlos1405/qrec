@@ -1,8 +1,8 @@
 use std::io::Write;
 use std::time::{Duration, Instant};
 
-use qrec_core::protocol::{CmdResult, Progress, ProgressPhase, WireBody};
 use qrec_core::CoreError;
+use qrec_core::protocol::{CmdResult, Progress, ProgressPhase, WireBody};
 use serde_json::{Value, json};
 
 use super::*;
@@ -54,11 +54,13 @@ fn requests_wait_for_the_session_in_order() {
     let clients: Vec<_> = (0..3)
         .map(|i| {
             let socket = socket.clone();
-            let handle = std::thread::spawn(move || {
-                raw_exchange(&socket, &command_line(&format!("r{i}")))
-            });
+            let handle =
+                std::thread::spawn(move || raw_exchange(&socket, &command_line(&format!("r{i}"))));
             // Arrive one after another.
-            assert!(wait_for(Duration::from_secs(5), || t.server.stats().requests
+            assert!(wait_for(Duration::from_secs(5), || t
+                .server
+                .stats()
+                .requests
                 == i + 1));
             handle
         })
@@ -104,10 +106,14 @@ fn accepted_then_progress_then_one_reply_then_eof() {
         true
     });
     t.server.attach(inbox);
-    let line = json!({ "v": 1, "id": "x", "confirmed": true, "body": { "command": { "cmd": "undo" } } });
+    let line =
+        json!({ "v": 1, "id": "x", "confirmed": true, "body": { "command": { "cmd": "undo" } } });
     let lines = raw_exchange(&t.socket, &line.to_string());
     assert_eq!(lines.first(), Some(&json!({ "id": "x", "accepted": true })));
-    assert_eq!(lines.last().unwrap()["reply"], json!({ "ok": true, "data": ok_result("done") }));
+    assert_eq!(
+        lines.last().unwrap()["reply"],
+        json!({ "ok": true, "data": ok_result("done") })
+    );
     let dones: Vec<u64> = lines[1..lines.len() - 1]
         .iter()
         .map(|l| l["progress"]["done"].as_u64().unwrap())
@@ -131,7 +137,9 @@ fn progress_is_coalesced_and_the_reply_is_never_dropped() {
     {
         let st = out.state();
         assert_eq!(st.queue.len(), 2, "accepted + the newest progress");
-        assert!(matches!(&st.queue[1], WireMessage::Progress { progress, .. } if progress.done == 999));
+        assert!(
+            matches!(&st.queue[1], WireMessage::Progress { progress, .. } if progress.done == 999)
+        );
     }
     out.push_reply(&Ok(json!(1)));
     out.push_progress(&progress(5000));
@@ -154,7 +162,11 @@ fn a_full_queue_drops_progress_never_replies() {
     out.push_progress(&progress(1));
     assert_eq!(out.state().queue.len(), CONN_QUEUE_CAP, "progress skipped");
     out.push_reply(&Ok(json!("r")));
-    assert_eq!(out.state().queue.len(), CONN_QUEUE_CAP + 1, "the reply always fits");
+    assert_eq!(
+        out.state().queue.len(),
+        CONN_QUEUE_CAP + 1,
+        "the reply always fits"
+    );
 }
 
 #[test]
@@ -173,18 +185,26 @@ fn malformed_requests_get_usage_errors() {
     assert_eq!(lines[0]["id"], "9");
     let error = &lines[0]["reply"]["error"];
     assert_eq!(error["code"], "usage");
-    assert!(error["message"].as_str().unwrap().contains("version 2"), "{error}");
+    assert!(
+        error["message"].as_str().unwrap().contains("version 2"),
+        "{error}"
+    );
 
-    let lines = raw_exchange(&t.socket, r#"{"v":1,"id":"8","body":{"command":{"cmd":"nope"}}}"#);
+    let lines = raw_exchange(
+        &t.socket,
+        r#"{"v":1,"id":"8","body":{"command":{"cmd":"nope"}}}"#,
+    );
     assert_eq!(lines[0]["id"], "8");
     assert_eq!(lines[0]["reply"]["error"]["code"], "usage");
 
     let long = format!(r#"{{"v":1,"id":"{}","body":"hello"}}"#, "x".repeat(300));
     let lines = raw_exchange(&t.socket, &long);
-    assert!(lines[0]["reply"]["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("longer than 200"));
+    assert!(
+        lines[0]["reply"]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("longer than 200")
+    );
 
     // A client that never finishes its line is cut off after the read timeout.
     let stream = UnixStream::connect(&t.socket).unwrap();
@@ -192,17 +212,21 @@ fn malformed_requests_get_usage_errors() {
     let started = Instant::now();
     let lines = read_all(stream, Instant::now() + Duration::from_secs(5));
     assert!(started.elapsed() < Duration::from_secs(3));
-    assert!(lines[0]["reply"]["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("no complete request line"));
+    assert!(
+        lines[0]["reply"]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no complete request line")
+    );
     assert_eq!(t.server.stats().requests, 0);
 }
 
 #[test]
 fn peers_with_another_uid_are_refused() {
     let dir = socket_dir();
-    let t = start_server(dir.path(), |cfg| cfg.allowed_uid = peer::our_uid().wrapping_add(1));
+    let t = start_server(dir.path(), |cfg| {
+        cfg.allowed_uid = peer::our_uid().wrapping_add(1)
+    });
     let stream = UnixStream::connect(&t.socket).unwrap();
     let _ = (&stream).write_all(format!("{}\n", request_line("1", json!("hello"))).as_bytes());
     let lines = read_all(stream, Instant::now() + Duration::from_secs(5));
@@ -217,10 +241,12 @@ fn shutdown_stops_accepting_and_unlinks_the_socket() {
     let lines = raw_exchange(&t.socket, &request_line("s", json!("shutdown")));
     assert_eq!(lines[0], json!({ "id": "s", "accepted": true }));
     assert_eq!(lines[1]["reply"]["ok"], true);
-    assert!(lines[1]["reply"]["data"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("shutting down"));
+    assert!(
+        lines[1]["reply"]["data"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("shutting down")
+    );
     assert!(t.events.lock().unwrap().contains(&ServerEvent::Shutdown));
     let stats = t.server.stats();
     assert!(stats.shutdown && !stats.accepting);
@@ -247,8 +273,13 @@ fn every_accepted_request_gets_exactly_one_reply() {
     let t = start_server(dir.path(), |_| {});
     let socket = t.socket.clone();
     let parked = std::thread::spawn(move || raw_exchange(&socket, &command_line("p")));
-    assert!(wait_for(Duration::from_secs(5), || t.server.stats().requests == 1));
-    t.server.fail(CoreError::invalid("qrec.json on disk is invalid"));
+    assert!(wait_for(Duration::from_secs(5), || t
+        .server
+        .stats()
+        .requests
+        == 1));
+    t.server
+        .fail(CoreError::invalid("qrec.json on disk is invalid"));
     let lines = parked.join().unwrap();
     assert_eq!(lines[1]["reply"]["error"]["code"], "invalid");
     let lines = raw_exchange(&t.socket, &command_line("n"));
@@ -273,7 +304,11 @@ fn a_client_that_leaves_frees_its_connection() {
     (&stream)
         .write_all(format!("{}\n", command_line("g")).as_bytes())
         .unwrap();
-    assert!(wait_for(Duration::from_secs(5), || held.lock().unwrap().len() == 1));
+    assert!(wait_for(Duration::from_secs(5), || held
+        .lock()
+        .unwrap()
+        .len()
+        == 1));
     assert_eq!(t.server.stats().open, 1);
     drop(stream);
     assert!(wait_for(Duration::from_secs(5), || t.server.stats().open == 0));
@@ -323,13 +358,22 @@ fn finish_lets_replies_flush_then_answers_stragglers() {
     t.server.attach(inbox);
     let socket = t.socket.clone();
     let client = std::thread::spawn(move || raw_exchange(&socket, &command_line("w")));
-    assert!(wait_for(Duration::from_secs(5), || held.lock().unwrap().len() == 1));
+    assert!(wait_for(Duration::from_secs(5), || held
+        .lock()
+        .unwrap()
+        .len()
+        == 1));
     let started = Instant::now();
-    t.server
-        .finish(CoreError::io("the host is exiting"), Duration::from_millis(300));
+    t.server.finish(
+        CoreError::io("the host is exiting"),
+        Duration::from_millis(300),
+    );
     assert!(started.elapsed() < Duration::from_secs(3));
     let lines = client.join().unwrap();
-    assert_eq!(lines.last().unwrap()["reply"]["error"]["message"], "the host is exiting");
+    assert_eq!(
+        lines.last().unwrap()["reply"]["error"]["message"],
+        "the host is exiting"
+    );
     assert_eq!(t.server.stats().open, 0);
     assert!(!t.socket.exists());
 }

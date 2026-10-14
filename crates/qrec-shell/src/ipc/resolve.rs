@@ -77,7 +77,9 @@ pub enum ProjectSource {
     Flag,
     Cwd,
     /// The only live host, found by `hello`.
-    LiveHost { pid: u32 },
+    LiveHost {
+        pid: u32,
+    },
 }
 
 /// The project a command runs against.
@@ -268,14 +270,20 @@ mod tests {
         // --project is relative to the cwd and canonicalized.
         let r = resolve_project(Some(Path::new("../proj")), &empty, &runtime).unwrap();
         assert_eq!(r.dir, fs::canonicalize(&proj).unwrap());
-        assert_eq!((r.source.clone(), r.initialized), (ProjectSource::Flag, true));
+        assert_eq!(
+            (r.source.clone(), r.initialized),
+            (ProjectSource::Flag, true)
+        );
         assert_eq!(r.notice(), None);
         let r = resolve_project(Some(&empty), &junk, &runtime).unwrap();
         assert!(!r.initialized);
         // Being initialized by another process (only `.qrec/` so far).
         fs::create_dir(empty.join(".qrec")).unwrap();
         let r = resolve_project(None, &empty, &runtime).unwrap();
-        assert_eq!((r.source.clone(), r.initialized), (ProjectSource::Cwd, false));
+        assert_eq!(
+            (r.source.clone(), r.initialized),
+            (ProjectSource::Cwd, false)
+        );
         fs::remove_dir(empty.join(".qrec")).unwrap();
         let err = resolve_project(Some(&junk), &proj, &runtime).unwrap_err();
         assert_eq!(err.code, ErrorCode::NotProject);
