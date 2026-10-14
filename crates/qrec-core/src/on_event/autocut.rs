@@ -8,9 +8,13 @@
 //!   [`apply_ready_autocuts`] (dry runs apply nothing and complete at once);
 //! - otherwise it is applied to targets whose clip still equals its
 //!   `ClipRef` (the others are skipped, "changed while analyzing"): one
-//!   history entry for the whole run, the first fragment keeping the clip
-//!   id, and no entry when nothing changes.
+//!   history entry for the whole run, each cut clip replaced in place by its
+//!   fragments (`timeline::replace_run`, the first fragment keeping the clip
+//!   id), and no entry when nothing changes.
 //!
+//! Jobs left `ready` by a recording that placed nothing are applied before
+//! another run completes while `Idle` or a new real run starts, oldest
+//! first, each as its own entry.
 //! The requester gets the reply; a run nobody waits for (autocut after a
 //! take, a requester gone) is told with a toast.
 
