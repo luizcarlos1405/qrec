@@ -12,7 +12,6 @@ use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use qrec_core::hash::sha256_hex;
@@ -24,6 +23,7 @@ use qrec_core::{Fps, TakeId};
 use serde_json::json;
 
 use super::*;
+use crate::gst_init::testing::{assert_quiet_since, problems, serial};
 use crate::testkit::{MediaSpec, TestEnv, fixture, fixtures_dir, run_tool, write_project};
 
 const FFMPEG_TIMEOUT: Duration = Duration::from_secs(120);
@@ -35,9 +35,6 @@ const ID_BITS: u32 = 8;
 /// The clips: take frames `[10, 40)`, then `[55, 80)` and `[80, 90)`, which
 /// are continuous (one render unit) and end with the take.
 const CLIPS: [(u64, u64); 3] = [(10, 40), (55, 80), (80, 90)];
-
-/// GES tests share one GStreamer process; they're heavy, so one at a time.
-static SERIAL: Mutex<()> = Mutex::new(());
 
 /// `frames` frames whose luma shows the frame index as `ID_BITS` vertical
 /// bars (white = 1), H.264 limited-range BT.709 in Matroska (millisecond
@@ -463,7 +460,8 @@ fn frame_argv(project: &Project, at: u64, out: &Path, use_core: bool) -> Vec<Str
 
 #[test]
 fn ges_matches_the_frame_plan_and_shows_exact_frames() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let _serial = serial();
+    let quiet = problems();
     let p = parity_project();
     let (plan, origin) = ges_plan(&p.project);
     let layers = placements(&p.project);
@@ -523,6 +521,8 @@ fn ges_matches_the_frame_plan_and_shows_exact_frames() {
     }
     // Never past the end.
     assert!(matches!(renderer.render(65), Err(GesError::Render(_))));
+    drop(renderer);
+    assert_quiet_since(quiet);
 }
 
 /// The peak of `samples` (interleaved F32 stereo) in frames `[from, to)`.
@@ -534,9 +534,7 @@ fn peak(samples: &[f32], from: usize, to: usize) -> f32 {
 
 /// The first `frames` audio frames the timeline plays (F32LE stereo, 48 kHz).
 fn play_audio(timeline: &ges::Timeline, frames: usize) -> Vec<f32> {
-    let pipeline = ges::Pipeline::new();
-    pipeline.set_timeline(timeline).unwrap();
-    pipeline.set_mode(ges::PipelineFlags::FULL_PREVIEW).unwrap();
+    let pipeline = preview_pipeline(timeline, ges::PipelineFlags::FULL_PREVIEW).unwrap();
     let caps = gst::Caps::builder("audio/x-raw")
         .field("format", "F32LE")
         .field("rate", AUDIO_RATE as i32)
@@ -569,7 +567,8 @@ fn play_audio(timeline: &ges::Timeline, frames: usize) -> Vec<f32> {
 
 #[test]
 fn audio_clips_play_with_their_volume_and_fades() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let _serial = serial();
+    let quiet = problems();
     let env = TestEnv::new();
     let dir = env.empty_dir("audio");
     // A 440 Hz tone at 0.5 the whole time.
@@ -655,4 +654,5 @@ fn audio_clips_play_with_their_volume_and_fades() {
     assert!((steady - 0.25).abs() < 0.02, "steady {steady}");
     let mixed = peak(&samples, 26_400, 31_200);
     assert!((mixed - 0.375).abs() < 0.03, "mixed {mixed}");
+    assert_quiet_since(quiet);
 }

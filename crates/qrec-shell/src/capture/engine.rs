@@ -67,8 +67,6 @@ use crate::paths::ProjectPaths;
 /// How long `shutdown()` waits for the engine thread: a running take is
 /// finalized first (EOS within the default 10 s, then teardown within 5 s).
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(16);
-/// How many finished takes are remembered (late stops get `CaptureStopped`).
-const ENDED_MEMORY: usize = 32;
 
 /// Messages to the engine thread.
 pub(super) enum Cmd {
@@ -335,7 +333,6 @@ struct TakeRun {
     t0: u64,
     t1: Option<u64>,
     bins: Vec<RecordBin>,
-    started: bool,
     cancel: bool,
 }
 
@@ -355,7 +352,6 @@ struct Engine {
     generation: u64,
     take: Option<TakeRun>,
     tags: u64,
-    ended: VecDeque<TakeId>,
     portal: Option<PortalWorker>,
     casts: BTreeMap<String, ScreenShare>,
     portal_seq: u64,
@@ -391,7 +387,6 @@ impl Engine {
             generation: 0,
             take: None,
             tags: 0,
-            ended: VecDeque::new(),
             portal: None,
             casts: BTreeMap::new(),
             portal_seq: 0,
@@ -929,7 +924,6 @@ impl Engine {
     fn start(&mut self, plan: CapturePlan) {
         let take = plan.take.clone();
         let fail = |engine: &mut Engine, source: Option<String>, message: String| {
-            engine.remember_ended(take.clone());
             engine.emit(Event::CaptureFailed {
                 take: Some(take.clone()),
                 source,
@@ -1001,7 +995,6 @@ impl Engine {
             t0: 0,
             t1: None,
             bins: Vec::new(),
-            started: false,
             cancel: false,
         };
         run.log.line(format!(
@@ -1202,7 +1195,6 @@ impl Engine {
                 .unwrap_or_default()
         ));
         let ok = self.teardown_bins(&mut run.bins, false);
-        self.remember_ended(run.plan.take.clone());
         self.emit(Event::CaptureFailed {
             take: Some(run.plan.take.clone()),
             source,
@@ -1215,13 +1207,6 @@ impl Engine {
             );
         }
         self.after_take();
-    }
-
-    fn remember_ended(&mut self, take: TakeId) {
-        self.ended.push_back(take);
-        while self.ended.len() > ENDED_MEMORY {
-            self.ended.pop_front();
-        }
     }
 
     fn stop(&mut self, take: TakeId, cancel: bool) {
@@ -1244,7 +1229,6 @@ impl Engine {
                 run.log.line("stopped before the portal answered");
                 let take = run.plan.take.clone();
                 self.take = None;
-                self.remember_ended(take.clone());
                 self.emit(Event::CaptureStopped {
                     take,
                     streams: Vec::new(),
@@ -1563,7 +1547,6 @@ impl Engine {
             if run.cancel { " (cancelled)" } else { "" },
             if timed_out { " (timed out)" } else { "" }
         ));
-        self.remember_ended(run.plan.take.clone());
         self.emit(Event::CaptureStopped {
             take: run.plan.take.clone(),
             streams,
@@ -1691,7 +1674,6 @@ impl Engine {
             } => {
                 let all_written = run.bins.iter().all(RecordBin::written);
                 if all_written && now >= health_until {
-                    run.started = true;
                     run.phase = Phase::Recording {
                         next_clock: now + CLOCK_INTERVAL,
                     };

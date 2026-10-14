@@ -22,11 +22,27 @@
 //! `/proc/self/task` and refuses to touch the environment once another
 //! thread exists, so call it first thing in `main()`. The report is kept for
 //! `qrec doctor` ([`startup_report`]).
+//!
+//! Probes that touch a render node run in a child process with a 10 s
+//! deadline ([`run_probe_child`]): the child is the `qrec` binary itself,
+//! whose `main()` starts with [`run_probe_if_requested`]. Today that is the
+//! VA H.264 encoder lookup for `VaapiCaps.gst_h264_factory`
+//! ([`va_h264_factory_for`], by `device-path`, never by name).
+//!
+//! ```ignore
+//! fn main() {
+//!     qrec_shell::gpu::run_probe_if_requested(); // exits when it is a probe child
+//!     let args: Vec<_> = std::env::args_os().collect();
+//!     let report = qrec_shell::gpu::prepare_gpu_env(&GpuInputs::discover(&args, is_gui));
+//!     // … only now threads, GTK, GStreamer
+//! }
+//! ```
 
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use serde::Serialize;
 
@@ -662,6 +678,214 @@ pub fn va_h264_factory_for(device: &str) -> Option<String> {
     })
 }
 
+// ------------------------------------------------------------ probe child
+
+/// Set on a `qrec` child process to make it a GPU probe (A§8.10: probes
+/// that touch a render node run as child processes with a 10 s timeout):
+/// `va-h264-factory:<render node>`.
+pub const PROBE_ENV: &str = "QREC_GPU_PROBE";
+
+/// How long a probe child may run.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A probe a child process runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Probe {
+    /// [`va_h264_factory_for`] the node.
+    VaH264Factory { device: String },
+}
+
+impl Probe {
+    /// The [`PROBE_ENV`] value.
+    pub fn env_value(&self) -> String {
+        match self {
+            Probe::VaH264Factory { device } => format!("va-h264-factory:{device}"),
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.split_once(':')? {
+            ("va-h264-factory", device) if !device.is_empty() => Some(Probe::VaH264Factory {
+                device: device.to_owned(),
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// What a probe child prints (one JSON line on stdout).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeAnswer {
+    /// The VA H.264 encoder bound to the node, if any.
+    pub factory: Option<String>,
+    /// Why the probe couldn't answer.
+    pub error: Option<String>,
+}
+
+/// **Call first thing in `main()`** (before [`prepare_gpu_env`]): when this
+/// process was started as a probe child ([`PROBE_ENV`]), runs the probe,
+/// prints its [`ProbeAnswer`] and exits; otherwise returns at once. The
+/// parent already set the child's `LIBVA_DRIVER_NAME` for the probed node.
+pub fn run_probe_if_requested() {
+    let Some(value) = std::env::var_os(PROBE_ENV) else {
+        return;
+    };
+    let (answer, code) = match Probe::parse(&value.to_string_lossy()) {
+        Some(probe) => run_probe(&probe),
+        None => (
+            ProbeAnswer {
+                factory: None,
+                error: Some(format!("unknown probe {value:?}")),
+            },
+            2,
+        ),
+    };
+    println!("{}", serde_json::to_string(&answer).unwrap_or_default());
+    std::process::exit(code);
+}
+
+fn run_probe(probe: &Probe) -> (ProbeAnswer, i32) {
+    match probe {
+        #[cfg(feature = "gst")]
+        Probe::VaH264Factory { device } => match crate::gst_init::init() {
+            Ok(()) => (
+                ProbeAnswer {
+                    factory: va_h264_factory_for(device),
+                    error: None,
+                },
+                0,
+            ),
+            Err(e) => (
+                ProbeAnswer {
+                    factory: None,
+                    error: Some(e.to_string()),
+                },
+                crate::gst_init::EXIT_CODE,
+            ),
+        },
+        #[cfg(not(feature = "gst"))]
+        Probe::VaH264Factory { .. } => (
+            ProbeAnswer {
+                factory: None,
+                error: Some("this qrec was built without GStreamer".into()),
+            },
+            5,
+        ),
+    }
+}
+
+/// Runs `probe` in a child `exe` (the `qrec` binary: `std::env::current_exe()`)
+/// that calls [`run_probe_if_requested`], with `LIBVA_DRIVER_NAME` set for
+/// the probed node's vendor. stdin is null, stdout goes to a temp file (no
+/// pipe to stall), stderr to `log` (or nowhere); the child gets its own
+/// process group, which is killed (SIGTERM, then SIGKILL after 2 s) when it
+/// outlives `timeout`. Never waits longer than `timeout` + 4 s.
+pub fn run_probe_child(
+    exe: &Path,
+    probe: &Probe,
+    log: Option<&Path>,
+    timeout: Duration,
+) -> Result<ProbeAnswer, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    let mut stdout = tempfile::tempfile().map_err(|e| format!("can't create a temp file: {e}"))?;
+    let stderr = match log {
+        Some(path) => fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map(Stdio::from)
+            .map_err(|e| format!("can't open {}: {e}", path.display()))?,
+        None => Stdio::null(),
+    };
+    let mut command = Command::new(exe);
+    command
+        .env(PROBE_ENV, probe.env_value())
+        .stdin(Stdio::null())
+        .stdout(
+            stdout
+                .try_clone()
+                .map_err(|e| format!("can't dup the temp file: {e}"))?,
+        )
+        .stderr(stderr)
+        .process_group(0);
+    let Probe::VaH264Factory { device } = probe;
+    let vendor = render_nodes()
+        .into_iter()
+        .find(|n| n.path == *device)
+        .and_then(|n| n.vendor);
+    if let Some(driver) = vendor.and_then(libva_driver_for) {
+        command.env(LIBVA_DRIVER_NAME, driver);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("can't start the probe {}: {e}", exe.display()))?;
+    let status = match wait_with_deadline(&mut child, timeout) {
+        Some(status) => status,
+        None => {
+            kill_group(child);
+            return Err(format!(
+                "the GPU probe didn't finish within {} s (a hung driver?)",
+                timeout.as_secs()
+            ));
+        }
+    };
+    let mut text = String::new();
+    stdout
+        .seek(SeekFrom::Start(0))
+        .and_then(|_| stdout.read_to_string(&mut text))
+        .map_err(|e| format!("can't read the probe's answer: {e}"))?;
+    let answer = text
+        .lines()
+        .rev()
+        .find_map(|line| serde_json::from_str::<ProbeAnswer>(line).ok());
+    match answer {
+        Some(answer) => Ok(answer),
+        None => Err(format!("the GPU probe failed ({status}) without an answer")),
+    }
+}
+
+fn wait_with_deadline(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Option<std::process::ExitStatus> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// SIGTERM to the child's process group, SIGKILL after 2 s, then at most
+/// 2 s more of waiting; a child that still lives is left to a reaper thread.
+fn kill_group(mut child: std::process::Child) {
+    let pgid = child.id() as i32;
+    // SAFETY: kill(2) with a negative pid signals the process group the
+    // child leads (it was spawned with process_group(0)); no memory is shared.
+    unsafe { libc::kill(-pgid, libc::SIGTERM) };
+    if wait_with_deadline(&mut child, Duration::from_secs(2)).is_some() {
+        return;
+    }
+    // SAFETY: as above.
+    unsafe { libc::kill(-pgid, libc::SIGKILL) };
+    if wait_with_deadline(&mut child, Duration::from_secs(2)).is_some() {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("qrec-reaper".into())
+        .spawn(move || {
+            let _ = child.wait();
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1047,5 +1271,66 @@ mod tests {
         assert_eq!(vendor_name(0x1234), "0x1234");
         assert_eq!(parse_hex_u16("0x10de"), Some(VENDOR_NVIDIA));
         assert_eq!(parse_hex_u16("zz"), None);
+    }
+
+    /// An executable script standing in for `qrec` as a probe child (the
+    /// real probe would load the VA plugin, which opens every render node).
+    fn fake_child(dir: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("fake-qrec");
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn probes_run_in_a_child_with_a_deadline() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The probe is a fake node: no real device is ever named.
+        let probe = Probe::VaH264Factory {
+            device: tmp.path().join("renderD999").to_string_lossy().into_owned(),
+        };
+        assert_eq!(Probe::parse(&probe.env_value()), Some(probe.clone()));
+        assert_eq!(Probe::parse("va-h264-factory:"), None);
+        assert_eq!(Probe::parse("something-else:/x"), None);
+
+        // The child sees the request and answers on stdout.
+        let log = tmp.path().join("probe.log");
+        let exe = fake_child(
+            tmp.path(),
+            r#"echo "probing $QREC_GPU_PROBE" >&2; echo noise; echo '{"factory":"varenderD129h264enc"}'"#,
+        );
+        let answer = run_probe_child(&exe, &probe, Some(&log), PROBE_TIMEOUT).unwrap();
+        assert_eq!(answer.factory.as_deref(), Some("varenderD129h264enc"));
+        let logged = fs::read_to_string(&log).unwrap();
+        assert!(logged.contains("probing va-h264-factory:"), "{logged}");
+
+        let exe = fake_child(
+            tmp.path(),
+            r#"echo '{"factory":null,"error":"no VA"}'; exit 5"#,
+        );
+        let answer = run_probe_child(&exe, &probe, None, PROBE_TIMEOUT).unwrap();
+        assert_eq!(
+            (answer.factory, answer.error.as_deref()),
+            (None, Some("no VA"))
+        );
+
+        let exe = fake_child(tmp.path(), "exit 3");
+        let err = run_probe_child(&exe, &probe, None, PROBE_TIMEOUT).unwrap_err();
+        assert!(err.contains("without an answer"), "{err}");
+
+        // A hung child (and its own children) is killed at the deadline.
+        let exe = fake_child(tmp.path(), "sleep 30 & sleep 30");
+        let started = std::time::Instant::now();
+        let err = run_probe_child(&exe, &probe, None, Duration::from_millis(200)).unwrap_err();
+        assert!(err.contains("didn't finish"), "{err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+
+        let missing = run_probe_child(&tmp.path().join("nope"), &probe, None, PROBE_TIMEOUT);
+        assert!(missing.unwrap_err().contains("can't start the probe"));
     }
 }

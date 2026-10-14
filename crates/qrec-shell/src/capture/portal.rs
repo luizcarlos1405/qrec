@@ -150,32 +150,75 @@ fn register_app_id() {
 
 fn open_all(request: &OpenRequest) -> Vec<(String, Result<ScreenShare, String>)> {
     let mut tokens = PortalTokens::load(&request.tokens);
-    let mut results = Vec::new();
-    for output in &request.outputs {
-        let outcome = run_with_deadline(
-            request.timeout,
-            open_one(output, &request.screens, &mut tokens),
-        );
-        let result = match outcome {
-            Some(result) => result,
-            None => Err(format!(
-                "the screen-share dialog for {output} wasn't answered within {} s",
-                request.timeout.as_secs()
-            )),
-        };
-        results.push((output.clone(), result));
-    }
+    let results = request
+        .outputs
+        .iter()
+        .map(|output| {
+            let result = open_one(output, request, &mut tokens);
+            (output.clone(), result)
+        })
+        .collect();
     if let Err(e) = tokens.save(&request.tokens) {
         tracing::warn!("can't save {}: {e}", request.tokens.display());
     }
     results
 }
 
-async fn open_one(
+/// A portal session waiting for its dialog.
+struct Pending {
+    proxy: Screencast,
+    session: Session<Screencast>,
+    cursor: CursorMode,
+}
+
+/// What a shared stream turned into.
+struct Shared {
+    node_id: u32,
+    fd: OwnedFd,
+    position: Option<(i32, i32)>,
+    size: Option<(i32, i32)>,
+}
+
+/// One screen: a session (bounded by [`CLOSE_TIMEOUT`]), then the dialog
+/// (bounded by the request's timeout). A session whose dialog fails, times
+/// out or shares the wrong screen is closed, which also takes a dialog
+/// still showing off the screen.
+fn open_one(
     output: &str,
-    screens: &[ScreenInfo],
+    request: &OpenRequest,
     tokens: &mut PortalTokens,
 ) -> Result<ScreenShare, String> {
+    let pending = run_with_deadline(CLOSE_TIMEOUT, begin()).unwrap_or_else(|| {
+        Err("the ScreenCast portal didn't answer (is xdg-desktop-portal running?)".to_owned())
+    })?;
+    let shared = run_with_deadline(
+        request.timeout,
+        share(&pending, output, &request.screens, tokens),
+    )
+    .unwrap_or_else(|| {
+        Err(format!(
+            "the screen-share dialog for {output} wasn't answered within {} s",
+            request.timeout.as_secs()
+        ))
+    });
+    match shared {
+        Ok(shared) => Ok(ScreenShare {
+            output: output.to_owned(),
+            node_id: shared.node_id,
+            fd: shared.fd,
+            position: shared.position,
+            size: shared.size,
+            session: Some(pending.session),
+        }),
+        Err(message) => {
+            let session = pending.session;
+            let _ = run_with_deadline(CLOSE_TIMEOUT, async move { session.close().await });
+            Err(message)
+        }
+    }
+}
+
+async fn begin() -> Result<Pending, String> {
     let proxy = Screencast::new()
         .await
         .map_err(|e| describe("the ScreenCast portal isn't available", e))?;
@@ -188,13 +231,33 @@ async fn open_one(
         .create_session(CreateSessionOptions::default())
         .await
         .map_err(|e| describe("can't create a screen-share session", e))?;
+    Ok(Pending {
+        proxy,
+        session,
+        cursor,
+    })
+}
+
+/// Shows the dialog (or restores `output`'s token), checks which screen was
+/// shared, keeps the new token and opens the PipeWire remote.
+async fn share(
+    pending: &Pending,
+    output: &str,
+    screens: &[ScreenInfo],
+    tokens: &mut PortalTokens,
+) -> Result<Shared, String> {
+    let Pending {
+        proxy,
+        session,
+        cursor,
+    } = pending;
     let token = tokens.get(output).map(|t| t.token.clone());
     let selected = async {
         proxy
             .select_sources(
-                &session,
+                session,
                 SelectSourcesOptions::default()
-                    .set_cursor_mode(cursor)
+                    .set_cursor_mode(*cursor)
                     .set_sources(ashpd::enumflags2::BitFlags::from(SourceType::Monitor))
                     .set_multiple(false)
                     .set_persist_mode(PersistMode::ExplicitlyRevoked)
@@ -203,22 +266,18 @@ async fn open_one(
             .await?
             .response()?;
         proxy
-            .start(&session, None, StartCastOptions::default())
+            .start(session, None, StartCastOptions::default())
             .await?
             .response()
     }
     .await;
-    let streams = match selected {
-        Ok(streams) => streams,
-        Err(e) => {
-            let _ = session.close().await;
-            return Err(describe(&format!("screen sharing for {output} failed"), e));
-        }
-    };
-    let Some(stream) = streams.streams().first().cloned() else {
-        let _ = session.close().await;
-        return Err(format!("the portal shared no stream for {output}"));
-    };
+    let streams =
+        selected.map_err(|e| describe(&format!("screen sharing for {output} failed"), e))?;
+    let stream = streams
+        .streams()
+        .first()
+        .cloned()
+        .ok_or_else(|| format!("the portal shared no stream for {output}"))?;
     let identified = identify(&stream, screens);
     if let Some(new_token) = streams.restore_token() {
         let key = identified.clone().unwrap_or_else(|| output.to_owned());
@@ -238,22 +297,19 @@ async fn open_one(
         tokens.remove(output);
     }
     if let Some(other) = identified.filter(|o| o != output) {
-        let _ = session.close().await;
         return Err(format!(
             "the screen-share dialog picked {other}, not {output}; pick {output} next time"
         ));
     }
     let fd = proxy
-        .open_pipe_wire_remote(&session, OpenPipeWireRemoteOptions::default())
+        .open_pipe_wire_remote(session, OpenPipeWireRemoteOptions::default())
         .await
         .map_err(|e| describe("can't open the PipeWire remote", e))?;
-    Ok(ScreenShare {
-        output: output.to_owned(),
+    Ok(Shared {
         node_id: stream.pipe_wire_node_id(),
         fd,
         position: stream.position(),
         size: stream.size(),
-        session: Some(session),
     })
 }
 

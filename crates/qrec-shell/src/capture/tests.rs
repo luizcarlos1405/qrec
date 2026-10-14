@@ -5,7 +5,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
@@ -19,22 +18,32 @@ use serde_json::Value;
 use super::fake::{FAKE_CAMERA, FAKE_MIC, FAKE_MONITOR};
 use super::{Backend, EngineOptions, FakeFailure, GstCaptureEngine, SideEvent};
 use crate::deps::CaptureEngine;
+use crate::gst_init::testing::{assert_quiet_since, problems, serial};
 use crate::msg::{Inbox, Msg};
 use crate::paths::UserDirs;
 use crate::testkit::{TestEnv, ffprobe, run_tool};
 
-/// Recording tests run one at a time: they're CPU-bound (x264) and their
-/// timing assertions shouldn't fight each other.
-static SERIAL: Mutex<()> = Mutex::new(());
-
 const WAIT: Duration = Duration::from_secs(20);
 
+/// An engine with the fake backend in a temp project. Tests that record
+/// take [`serial`] first; dropping the harness shuts the engine down and
+/// fails the test if GStreamer printed a critical or a warning meanwhile.
 struct Harness {
     _env: TestEnv,
     project: PathBuf,
     engine: GstCaptureEngine,
     inbox: Inbox,
     rx: Receiver<Msg>,
+    problems_before: u64,
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        self.engine.shutdown();
+        if !std::thread::panicking() {
+            assert_quiet_since(self.problems_before);
+        }
+    }
 }
 
 impl Harness {
@@ -43,25 +52,6 @@ impl Harness {
     }
 
     fn with_side(side: Option<crossbeam_channel::Sender<SideEvent>>) -> Self {
-        static DIAG: std::sync::Once = std::sync::Once::new();
-        DIAG.call_once(|| {
-            let printed = std::sync::atomic::AtomicBool::new(false);
-            gst::glib::log_set_handler(
-                Some("GStreamer"),
-                gst::glib::LogLevels::LEVEL_CRITICAL,
-                false,
-                false,
-                move |_, _, msg| {
-                    if !printed.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                        eprintln!(
-                            "DIAG CRITICAL {msg} on {:?}\n{}",
-                            std::thread::current().name(),
-                            std::backtrace::Backtrace::force_capture()
-                        );
-                    }
-                },
-            );
-        });
         let env = TestEnv::new();
         let project = env.empty_dir("swamp");
         fs::create_dir(project.join("takes")).unwrap();
@@ -77,6 +67,7 @@ impl Harness {
             engine,
             inbox,
             rx,
+            problems_before: problems(),
         }
     }
 
@@ -285,7 +276,7 @@ fn check_audio(file: &Path, channels: u64) -> f64 {
 
 #[test]
 fn records_screens_cameras_and_audio_in_sync() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let _serial = serial();
     let mut h = Harness::new();
     let dir = h.take_dir(1);
     let plan = plan(
@@ -390,7 +381,7 @@ fn records_screens_cameras_and_audio_in_sync() {
 
 #[test]
 fn fake_mic_has_periodic_silence() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let _serial = serial();
     let mut h = Harness::new();
     let dir = h.take_dir(1);
     let plan = plan(1, &dir, vec![], vec![audio("A1", FAKE_MIC, "mic")]);
@@ -411,7 +402,7 @@ fn fake_mic_has_periodic_silence() {
 
 #[test]
 fn stop_and_cancel_while_starting() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let _serial = serial();
     let mut h = Harness::new();
     let dir = h.take_dir(1);
     let first = plan(
@@ -449,6 +440,7 @@ fn stop_and_cancel_while_starting() {
 
 #[test]
 fn stop_of_an_unknown_take_still_answers() {
+    let _serial = serial();
     let mut h = Harness::new();
     h.engine.set_live(None, h.inbox.clone());
     h.engine.stop(&TakeId::numbered(99), false);
@@ -458,7 +450,7 @@ fn stop_of_an_unknown_take_still_answers() {
 
 #[test]
 fn start_failures_name_the_source() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let _serial = serial();
     let mut h = Harness::new();
 
     // A device the fake backend doesn't have.
@@ -556,7 +548,7 @@ fn start_failures_name_the_source() {
 
 #[test]
 fn a_lost_source_is_stream_lost_and_the_rest_keeps_recording() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let _serial = serial();
     let mut h = Harness::new();
     let dir = h.take_dir(1);
     let plan = plan(
@@ -625,7 +617,7 @@ fn a_lost_source_is_stream_lost_and_the_rest_keeps_recording() {
 
 #[test]
 fn live_pipeline_previews_and_records() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let _serial = serial();
     let (side_tx, side_rx) = crossbeam_channel::unbounded();
     let mut h = Harness::with_side(Some(side_tx));
     let layer = Layer {
@@ -720,7 +712,7 @@ fn live_pipeline_previews_and_records() {
 
 #[test]
 fn shutdown_finalizes_a_running_take() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let _serial = serial();
     let mut h = Harness::new();
     let dir = h.take_dir(1);
     let plan = plan(
@@ -804,7 +796,7 @@ fn live_scene(layers: Vec<Layer>, audio: Vec<AudioTrack>, preview: bool) -> Live
 /// for equal scenes and layout changes, and records from it.
 #[test]
 fn set_live_is_idempotent_and_the_take_reuses_its_pipeline() {
-    let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let _serial = serial();
     let mut h = Harness::new();
     assert_eq!(h.engine.inspect().generation, None);
 

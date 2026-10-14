@@ -109,6 +109,59 @@ pub fn init_or_exit() {
     }
 }
 
+/// For this crate's tests that run GStreamer pipelines (capture, GES).
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Mutex, MutexGuard, Once, PoisonError};
+
+    static LOCK: Mutex<()> = Mutex::new(());
+    static PROBLEMS: AtomicU64 = AtomicU64::new(0);
+    static HANDLER: Once = Once::new();
+
+    /// One pipeline test at a time: they're CPU-bound, their timing
+    /// assertions shouldn't fight, and [`problems`] stays attributable.
+    pub(crate) fn serial() -> MutexGuard<'static, ()> {
+        install();
+        LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// GStreamer criticals and warnings (`g_critical`/`g_warning`, which
+    /// mean a bug like data before a segment) seen so far in this process.
+    pub(crate) fn problems() -> u64 {
+        install();
+        PROBLEMS.load(Ordering::SeqCst)
+    }
+
+    /// Fails when GStreamer complained since `before` (see stderr).
+    pub(crate) fn assert_quiet_since(before: u64) {
+        let now = problems();
+        assert_eq!(
+            now,
+            before,
+            "GStreamer printed {} critical(s)/warning(s); see stderr",
+            now - before
+        );
+    }
+
+    fn install() {
+        HANDLER.call_once(|| {
+            let levels = gst::glib::LogLevels::LEVEL_CRITICAL | gst::glib::LogLevels::LEVEL_WARNING;
+            gst::glib::log_set_handler(Some("GStreamer"), levels, false, false, |_, _, msg| {
+                // The first one with a backtrace: it names the element.
+                if PROBLEMS.fetch_add(1, Ordering::SeqCst) == 0 {
+                    eprintln!(
+                        "GStreamer: {msg}\n{}",
+                        std::backtrace::Backtrace::force_capture()
+                    );
+                } else {
+                    eprintln!("GStreamer: {msg}");
+                }
+            });
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -629,14 +629,7 @@ impl FrameRenderer {
             ));
         }
         let timeline = build(plan, project_dir, Tracks::Video)?;
-        let pipeline = ges::Pipeline::new();
-        pipeline
-            .set_timeline(&timeline)
-            .map_err(|e| GesError::Build(format!("can't use the timeline: {e}")))?;
-        bilinear_compositors(&pipeline);
-        pipeline
-            .set_mode(ges::PipelineFlags::VIDEO_PREVIEW)
-            .map_err(|e| GesError::Build(format!("can't set the preview mode: {e}")))?;
+        let pipeline = preview_pipeline(&timeline, ges::PipelineFlags::VIDEO_PREVIEW)?;
         let (bin, sink) = rgb_sink()?;
         pipeline.preview_set_video_sink(Some(&bin));
         let renderer = Self {
@@ -673,6 +666,10 @@ impl FrameRenderer {
             )));
         }
         let at = frame_ns(frame as i64, self.canvas.fps).max(0) as u64;
+        // A late ASYNC_DONE of an earlier step must not end this wait early.
+        if let Some(bus) = self.pipeline.bus() {
+            while bus.pop_filtered(&[gst::MessageType::AsyncDone]).is_some() {}
+        }
         self.pipeline
             .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE, clock(at))
             .map_err(|_| self.failure(&format!("seeking to frame {frame} failed")))?;
@@ -683,7 +680,17 @@ impl FrameRenderer {
             .ok_or_else(|| {
                 GesError::Timeout(format!("rendering frame {frame}"), STEP_TIMEOUT.as_secs())
             })?;
-        rgb_frame(sample)
+        let rendered = rgb_frame(sample)?;
+        // The preroll after an accurate seek starts exactly there.
+        let half_frame = (frame_ns(1, self.canvas.fps) / 2).max(1) as u64;
+        if let Some(pts) = rendered.pts_ns
+            && pts.abs_diff(at) >= half_frame
+        {
+            return Err(GesError::Render(format!(
+                "GES rendered the frame at {pts} ns instead of frame {frame} ({at} ns)"
+            )));
+        }
+        Ok(rendered)
     }
 
     /// Renders `frame` and writes it to `out` as a PNG. Never overwrites.
@@ -775,6 +782,25 @@ pub fn render_frames_png(
         renderer.save_png(*frame, out)?;
     }
     Ok(())
+}
+
+/// A GES pipeline playing `timeline` in `mode` (`FULL_PREVIEW` for the
+/// GUI's Program mode, `VIDEO_PREVIEW` for frames), with the compositor set
+/// up like the export ([`bilinear_compositors`]). The caller adds sinks
+/// (`preview_set_video_sink`/`preview_set_audio_sink`) and drives it.
+pub fn preview_pipeline(
+    timeline: &ges::Timeline,
+    mode: ges::PipelineFlags,
+) -> Result<ges::Pipeline, GesError> {
+    let pipeline = ges::Pipeline::new();
+    pipeline
+        .set_timeline(timeline)
+        .map_err(|e| GesError::Build(format!("can't use the timeline: {e}")))?;
+    bilinear_compositors(&pipeline);
+    pipeline
+        .set_mode(mode)
+        .map_err(|e| GesError::Build(format!("can't set the pipeline mode: {e}")))?;
+    Ok(pipeline)
 }
 
 /// Makes every `compositor` inside `pipeline` (GES's mixer) scale its
