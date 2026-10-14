@@ -301,9 +301,10 @@ fn run_project(
         Finish::Reply(Err(e)) => ui.fail(&e),
         Finish::NoHost => ui.fail(&needs_host(plan)),
         Finish::Interrupted => {
+            let what = plan.name.strip_prefix("qrec ").unwrap_or(&plan.name);
             ui.notice(&Toast::new(
                 ToastLevel::Warning,
-                format!("{} interrupted", plan.name),
+                format!("{what} interrupted"),
             ));
             EXIT_INTERRUPTED
         }

@@ -656,8 +656,7 @@ fn ctrl_c_exits_130() {
     assert_eq!(run1.code, EXIT_INTERRUPTED);
     assert_eq!(run1.out, "");
     assert!(
-        run1.err
-            .ends_with("qrec: warning: qrec export interrupted\n"),
+        run1.err.ends_with("qrec: warning: export interrupted\n"),
         "{}",
         run1.err
     );
