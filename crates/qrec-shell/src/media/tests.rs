@@ -432,6 +432,22 @@ fn duration_secs(file: &Path) -> f64 {
         .unwrap()
 }
 
+/// Video packets and decoded audio samples, counted like the runner does.
+fn counts(file: &Path) -> (u64, u64) {
+    let run = |argv: Vec<String>| {
+        let out = crate::testkit::run_tool(
+            std::process::Command::new(&argv[0]).args(&argv[1..]),
+            Duration::from_secs(60),
+        );
+        assert!(out.status.success(), "{argv:?}: {}", out.stderr);
+        String::from_utf8(out.stdout).unwrap()
+    };
+    (
+        super::verify::parse_packets(&run(super::verify::packets_argv(file))).unwrap(),
+        super::verify::parse_samples(&run(super::verify::samples_argv(file))).unwrap(),
+    )
+}
+
 // ---------------------------------------------------------------- export
 
 #[test]
@@ -458,8 +474,11 @@ fn exports_three_takes_with_splits_offsets_and_a_repeat() {
     assert_eq!(*bytes, fs::metadata(&out).unwrap().len());
     assert!(!runner.is_running(JobId(1)));
 
-    // Frame-exact output: every unit's frames, about 6 s of audio and video.
-    assert_eq!(video_packets(&out), 180);
+    // Frame-exact output: every unit's frames, 6 s of audio (the AAC
+    // encoder's padding is at most one frame) and video.
+    let (frames, samples) = counts(&out);
+    assert_eq!(frames, 180);
+    assert!(samples.abs_diff(288_000) <= 1024, "{samples} samples");
     let duration = duration_secs(&out);
     assert!((duration - 6.0).abs() < 0.05, "{duration}");
 
@@ -491,7 +510,15 @@ fn exports_three_takes_with_splits_offsets_and_a_repeat() {
     assert_eq!(cached.len(), 3, "{cached:?}");
     for segment in &plan.segments {
         assert!(cached.contains(&format!("{}.mov", segment.key)));
+        assert_eq!(
+            counts(&dir.join(&segment.path)),
+            (segment.frames, segment.samples),
+            "{}",
+            segment.path
+        );
     }
+    // 30 frames at 30 fps: 48 000 samples; the take-3 unit starts mid-take.
+    assert_eq!(plan.segments[2].samples, 48_000);
     let seg_logs = logs_matching(&dir, "-j1-seg");
     assert_eq!(
         seg_logs.len(),
@@ -536,7 +563,14 @@ fn exports_three_takes_with_splits_offsets_and_a_repeat() {
         logs_matching(&dir, "-j3-seg"),
         [logs_matching(&dir, "-j3-seg2")[0].clone()]
     );
-    assert_eq!(names_in(&dir.join("exports")).len(), 3);
+    assert_eq!(
+        names_in(&dir.join("exports")),
+        [
+            "swamp-20261014-120000-2.mp4",
+            "swamp-20261014-120000-3.mp4",
+            "swamp-20261014-120000.mp4"
+        ]
+    );
 }
 
 #[test]

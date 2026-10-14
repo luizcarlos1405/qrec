@@ -365,15 +365,21 @@ fn supervise(child: &mut Child, spec: &Limits<'_>, shared: &Shared) -> (Option<E
         }
         let now = Instant::now();
         if reason.is_none() {
-            reason = if spec.stop.is_some_and(StopFlag::is_set) {
-                Some(Ended::Stopped)
-            } else if let Some(limit) = spec.timeout.filter(|t| now - shared.started >= *t) {
-                Some(Ended::TimedOut(limit))
-            } else if let Some(limit) = spec.stall.filter(|s| shared.since_progress(now) >= *s) {
-                Some(Ended::Stalled(limit))
-            } else {
-                None
+            let stopped = spec
+                .stop
+                .is_some_and(StopFlag::is_set)
+                .then_some(Ended::Stopped);
+            let timed_out = || {
+                spec.timeout
+                    .filter(|t| now - shared.started >= *t)
+                    .map(Ended::TimedOut)
             };
+            let stalled = || {
+                spec.stall
+                    .filter(|s| shared.since_progress(now) >= *s)
+                    .map(Ended::Stalled)
+            };
+            reason = stopped.or_else(timed_out).or_else(stalled);
             if reason.is_some() {
                 signal_group(pid, rustix::process::Signal::TERM);
                 term_at = Some(now);

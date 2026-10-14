@@ -45,7 +45,8 @@ use crate::msg::Inbox;
 use crate::paths::ProjectPaths;
 
 pub use logs::{KEEP_LOGS, prune_logs};
-pub use place::PART_MARKER;
+/// Never-overwrite renames, also for migration backups (A§8.8).
+pub use place::{PART_MARKER, rename_noreplace};
 
 pub(crate) use child::{
     Spec as ChildSpec, Stderr as ChildStderr, Stdout as ChildStdout, run as run_child,

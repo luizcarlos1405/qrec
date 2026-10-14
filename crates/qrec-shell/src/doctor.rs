@@ -768,9 +768,10 @@ impl Probe for SystemProbe {
 
     fn version(&self, program: &str) -> Result<String, String> {
         let out = sources::tool_output(&[program, "-hide_banner", "-version"], FFMPEG_TIMEOUT)?;
+        // "ffmpeg version 8.1.2 Copyright (c) …" → "ffmpeg version 8.1.2".
         out.lines()
             .next()
-            .map(|l| l.trim().to_owned())
+            .map(|l| l.split(" Copyright").next().unwrap_or(l).trim().to_owned())
             .filter(|l| !l.is_empty())
             .ok_or_else(|| format!("{program} -version printed nothing"))
     }
@@ -948,6 +949,8 @@ pub fn vaapi_check_argv(device: &str) -> Vec<String> {
 #[cfg(feature = "gst")]
 mod gst_impl {
     use std::time::Duration;
+
+    use gst::prelude::*;
 
     use crate::sources::{GST_INIT_TIMEOUT, init_gstreamer};
 
@@ -1419,5 +1422,61 @@ mod tests {
         let argv = vaapi_check_argv("/dev/dri/renderD129");
         assert!(argv.contains(&"vaapi=va:/dev/dri/renderD129".to_owned()));
         assert_eq!(&argv[argv.len() - 3..], ["-f", "null", "-"]);
+    }
+
+    /// The real machine minus GStreamer (whose plugin scan may touch every
+    /// GPU): ffmpeg, the portal over D-Bus (read-only), pactl, sysfs.
+    /// Run by hand: `cargo test -p qrec-shell real_doctor -- --ignored --nocapture`.
+    struct NoGst;
+
+    impl Probe for NoGst {
+        fn gstreamer(&self) -> Result<String, String> {
+            Ok("(skipped)".to_owned())
+        }
+        fn gst_element(&self, _: &str) -> bool {
+            true
+        }
+        fn gst_va_encoders(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn ges(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn which(&self, program: &str) -> Option<PathBuf> {
+            SystemProbe.which(program)
+        }
+        fn version(&self, program: &str) -> Result<String, String> {
+            SystemProbe.version(program)
+        }
+        fn ffmpeg_encoders(&self) -> Result<BTreeSet<String>, String> {
+            SystemProbe.ffmpeg_encoders()
+        }
+        fn portal(&self) -> Result<PortalInfo, String> {
+            SystemProbe.portal()
+        }
+        fn pulse_server(&self) -> Result<String, String> {
+            SystemProbe.pulse_server()
+        }
+        fn render_nodes(&self) -> Vec<RenderNode> {
+            SystemProbe.render_nodes()
+        }
+        fn env(&self, key: &str) -> Option<String> {
+            SystemProbe.env(key)
+        }
+        fn vaapi_h264(&self, device: &str, driver: Option<&str>) -> Result<(), String> {
+            assert!(
+                !device.ends_with("renderD128"),
+                "never probe the NVIDIA node"
+            );
+            SystemProbe.vaapi_h264(device, driver)
+        }
+    }
+
+    #[test]
+    #[ignore = "talks to the real machine (no GStreamer)"]
+    fn real_doctor() {
+        let report = run_with(&NoGst, &DoctorOptions::from_env());
+        println!("{}", report.to_text());
+        println!("{:#?}", report.va);
     }
 }

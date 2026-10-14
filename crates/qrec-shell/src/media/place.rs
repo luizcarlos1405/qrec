@@ -149,7 +149,7 @@ pub(crate) fn numbered(path: &Path, n: u32) -> PathBuf {
 /// `to`: `renameat2(RENAME_NOREPLACE)`; where the file system doesn't
 /// support it, `link` + `unlink`; where it can't link either, an `O_EXCL`
 /// placeholder renamed over.
-pub(crate) fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     let c_from = c_path(from)?;
     let c_to = c_path(to)?;
     // SAFETY: both arguments are valid NUL-terminated paths that outlive the call.

@@ -438,17 +438,13 @@ mod wayland {
                     );
                 }
                 wl_output::Event::Mode {
-                    flags,
+                    flags: WEnum::Value(flags),
                     width,
                     height,
                     ..
-                } => {
-                    if let WEnum::Value(flags) = flags {
-                        if flags.contains(wl_output::Mode::Current) {
-                            out.width = width;
-                            out.height = height;
-                        }
-                    }
+                } if flags.contains(wl_output::Mode::Current) => {
+                    out.width = width;
+                    out.height = height;
                 }
                 wl_output::Event::Scale { factor } => out.scale = factor,
                 wl_output::Event::Name { name } => out.name = Some(name),
