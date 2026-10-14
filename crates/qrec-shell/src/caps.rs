@@ -280,40 +280,14 @@ pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
     }
 }
 
-/// The exact VA export chain of A§9.3 on two frames:
-/// `-init_hw_device vaapi=va:<node> -filter_hw_device va …
-/// format=nv12,hwupload -c:v h264_vaapi -rc_mode CQP`.
+/// The exact VA export chain of A§9.3 on two frames, as the core builds
+/// it (`media_argv::vaapi_check_argv`, which `qrec doctor` runs too),
+/// without the program name: the caller runs the resolved ffmpeg.
 pub fn va_probe_args(device: &str) -> Vec<String> {
-    [
-        "-hide_banner",
-        "-nostdin",
-        "-loglevel",
-        "error",
-        "-init_hw_device",
-        &format!("vaapi=va:{device}"),
-        "-filter_hw_device",
-        "va",
-        "-f",
-        "lavfi",
-        "-i",
-        "testsrc2=size=256x144:rate=30",
-        "-vf",
-        "format=nv12,hwupload",
-        "-frames:v",
-        "2",
-        "-c:v",
-        "h264_vaapi",
-        "-rc_mode",
-        "CQP",
-        "-qp",
-        "26",
-        "-f",
-        "null",
-        "-",
-    ]
-    .iter()
-    .map(|s| (*s).to_owned())
-    .collect()
+    qrec_core::media_argv::vaapi_check_argv(device)
+        .into_iter()
+        .skip(1)
+        .collect()
 }
 
 /// `ffmpeg version 8.1.2 Copyright …` → `8.1.2`.
