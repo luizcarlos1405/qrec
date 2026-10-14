@@ -1,0 +1,37 @@
+---
+source: crates/qrec-core/src/frame_plan.rs
+expression: render_argv(&plan.argv)
+---
+  ffmpeg
+  -hide_banner
+  -nostdin
+  -nostats
+  -loglevel
+  info
+  -y
+  -progress
+  pipe:1
+  -ss
+  1.231333
+  -i
+  file:takes/take-0002/L1-screen-DP-4.mkv
+  -ss
+  1.198000
+  -i
+  file:takes/take-0002/L2-camera-0.mkv
+  -filter_complex
+    color=c=0x000000:s=1920x1080:r=30/1[base]
+    [0:v]fps=30/1,setpts=PTS-STARTPTS,crop=1920:1080:0:0,scale=1920:1080:flags=bilinear,format=yuva420p[l0]
+    [1:v]fps=30/1,setpts=PTS-STARTPTS,crop=960:720:160:0,scale=384:288:flags=bilinear,format=yuva420p,lutyuv=a=val*0.75[l1]
+    [base][l0]overlay=x=0:y=0:eof_action=pass[o0]
+    [o0][l1]overlay=x=1498:y=754:eof_action=pass[o1]
+    [o1]trim=end_frame=1,setsar=1,format=yuv420p,scale=out_color_matrix=bt709:out_range=pc,format=rgb24,setparams=color_primaries=bt709:color_trc=iec61966-2-1[v]
+  -map
+  [v]
+  -frames:v
+  1
+  -f
+  image2
+  -update
+  1
+  file:frames/my-video-take-0002-00000407.png

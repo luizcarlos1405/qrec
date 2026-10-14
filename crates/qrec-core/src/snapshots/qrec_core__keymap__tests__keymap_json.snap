@@ -1,0 +1,671 @@
+---
+source: crates/qrec-core/src/keymap.rs
+expression: "keys_view(&resolve(\"\"))"
+---
+[
+  {
+    "id": "record.toggle",
+    "group": "Record",
+    "label": "Start / stop recording",
+    "keys": [
+      "r"
+    ],
+    "cli": "qrec record toggle",
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "record.over",
+    "group": "Record",
+    "label": "Record over the selection",
+    "keys": [
+      "o"
+    ],
+    "cli": "qrec record start --over <clip>…",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "take.discard-last",
+    "group": "Record",
+    "label": "Discard the last take (to the bin)",
+    "keys": [
+      "d"
+    ],
+    "cli": "qrec take discard-last",
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "cancel",
+    "group": "Record",
+    "label": "Cancel recording, deselect, close overlay",
+    "keys": [
+      "Escape"
+    ],
+    "cli": "qrec record cancel",
+    "contexts": [
+      "global",
+      "recording",
+      "overlay"
+    ]
+  },
+  {
+    "id": "play.toggle",
+    "group": "Playback",
+    "label": "Play / pause",
+    "keys": [
+      "space"
+    ],
+    "cli": "qrec play",
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "shuttle.reverse",
+    "group": "Playback",
+    "label": "Shuttle reverse (again: 2×, 4×)",
+    "keys": [
+      "j"
+    ],
+    "cli": null,
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "shuttle.stop",
+    "group": "Playback",
+    "label": "Shuttle stop",
+    "keys": [
+      "k"
+    ],
+    "cli": null,
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "shuttle.forward",
+    "group": "Playback",
+    "label": "Shuttle forward (again: 2×, 4×)",
+    "keys": [
+      "l"
+    ],
+    "cli": null,
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "seek.prev-frame",
+    "group": "Playback",
+    "label": "Previous frame",
+    "keys": [
+      "Left"
+    ],
+    "cli": "qrec seek --by -1f",
+    "contexts": [
+      "timeline",
+      "recording"
+    ]
+  },
+  {
+    "id": "seek.next-frame",
+    "group": "Playback",
+    "label": "Next frame",
+    "keys": [
+      "Right"
+    ],
+    "cli": "qrec seek --by +1f",
+    "contexts": [
+      "timeline",
+      "recording"
+    ]
+  },
+  {
+    "id": "seek.back",
+    "group": "Playback",
+    "label": "Back 1 s",
+    "keys": [
+      "shift+Left"
+    ],
+    "cli": "qrec seek --by -1s",
+    "contexts": [
+      "timeline",
+      "recording"
+    ]
+  },
+  {
+    "id": "seek.forward",
+    "group": "Playback",
+    "label": "Forward 1 s",
+    "keys": [
+      "shift+Right"
+    ],
+    "cli": "qrec seek --by +1s",
+    "contexts": [
+      "timeline",
+      "recording"
+    ]
+  },
+  {
+    "id": "seek.prev-edit",
+    "group": "Playback",
+    "label": "Previous edit point",
+    "keys": [
+      "Up"
+    ],
+    "cli": "qrec seek --edit prev",
+    "contexts": [
+      "timeline",
+      "recording"
+    ]
+  },
+  {
+    "id": "seek.next-edit",
+    "group": "Playback",
+    "label": "Next edit point",
+    "keys": [
+      "Down"
+    ],
+    "cli": "qrec seek --edit next",
+    "contexts": [
+      "timeline",
+      "recording"
+    ]
+  },
+  {
+    "id": "seek.start",
+    "group": "Playback",
+    "label": "Timeline start",
+    "keys": [
+      "Home"
+    ],
+    "cli": "qrec seek --to start",
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "seek.end",
+    "group": "Playback",
+    "label": "Timeline end",
+    "keys": [
+      "End"
+    ],
+    "cli": "qrec seek --to end",
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "select.prev",
+    "group": "Edit",
+    "label": "Select previous clip",
+    "keys": [
+      "comma"
+    ],
+    "cli": null,
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "select.next",
+    "group": "Edit",
+    "label": "Select next clip",
+    "keys": [
+      "period"
+    ],
+    "cli": null,
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "clip.move-left",
+    "group": "Edit",
+    "label": "Move selection left one slot",
+    "keys": [
+      "less"
+    ],
+    "cli": "qrec clip move <clip>… --by -1",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "clip.move-right",
+    "group": "Edit",
+    "label": "Move selection right one slot",
+    "keys": [
+      "greater"
+    ],
+    "cli": "qrec clip move <clip>… --by 1",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "clip.split",
+    "group": "Edit",
+    "label": "Split clip at the playhead",
+    "keys": [
+      "s"
+    ],
+    "cli": "qrec clip split <clip> --at <t>",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "clip.trim-start",
+    "group": "Edit",
+    "label": "Trim start to the playhead",
+    "keys": [
+      "bracketleft"
+    ],
+    "cli": "qrec clip trim <clip> --start <t>",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "clip.trim-end",
+    "group": "Edit",
+    "label": "Trim end to the playhead",
+    "keys": [
+      "bracketright"
+    ],
+    "cli": "qrec clip trim <clip> --end <t>",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "clip.nudge-start",
+    "group": "Edit",
+    "label": "Trim 1 frame off the start",
+    "keys": [
+      "alt+bracketleft"
+    ],
+    "cli": "qrec clip trim <clip> --start +1f",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "clip.nudge-end",
+    "group": "Edit",
+    "label": "Trim 1 frame off the end",
+    "keys": [
+      "alt+bracketright"
+    ],
+    "cli": "qrec clip trim <clip> --end -1f",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "clip.nudge-start-10",
+    "group": "Edit",
+    "label": "Trim 10 frames off the start",
+    "keys": [
+      "alt+braceleft"
+    ],
+    "cli": "qrec clip trim <clip> --start +10f",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "clip.nudge-end-10",
+    "group": "Edit",
+    "label": "Trim 10 frames off the end",
+    "keys": [
+      "alt+braceright"
+    ],
+    "cli": "qrec clip trim <clip> --end -10f",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "clip.remove",
+    "group": "Edit",
+    "label": "Remove selected clips (to the bin)",
+    "keys": [
+      "Delete",
+      "x",
+      "BackSpace"
+    ],
+    "cli": "qrec clip remove <clip>…",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "autocut.run",
+    "group": "Edit",
+    "label": "Autocut the selection, or every clip",
+    "keys": [
+      "c"
+    ],
+    "cli": "qrec autocut [--clips <clip>…]",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "autocut.preview",
+    "group": "Edit",
+    "label": "Autocut settings and preview",
+    "keys": [
+      "shift+c"
+    ],
+    "cli": "qrec autocut --dry-run",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "history.undo",
+    "group": "Edit",
+    "label": "Undo",
+    "keys": [
+      "ctrl+z"
+    ],
+    "cli": "qrec undo",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "history.redo",
+    "group": "Edit",
+    "label": "Redo",
+    "keys": [
+      "ctrl+shift+z",
+      "ctrl+y"
+    ],
+    "cli": "qrec redo",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "select.all",
+    "group": "Edit",
+    "label": "Select all clips",
+    "keys": [
+      "ctrl+a"
+    ],
+    "cli": null,
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "frame.save",
+    "group": "Output",
+    "label": "Save the frame at the playhead (PNG)",
+    "keys": [
+      "p"
+    ],
+    "cli": "qrec frame save --at <t>",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "export",
+    "group": "Output",
+    "label": "Export…",
+    "keys": [
+      "ctrl+e"
+    ],
+    "cli": "qrec export",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "zoom.in",
+    "group": "View",
+    "label": "Zoom timeline in",
+    "keys": [
+      "equal"
+    ],
+    "cli": null,
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "zoom.out",
+    "group": "View",
+    "label": "Zoom timeline out",
+    "keys": [
+      "minus"
+    ],
+    "cli": null,
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "zoom.fit",
+    "group": "View",
+    "label": "Zoom to fit",
+    "keys": [
+      "backslash"
+    ],
+    "cli": null,
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "zoom.selection",
+    "group": "View",
+    "label": "Zoom to the selection",
+    "keys": [
+      "z"
+    ],
+    "cli": null,
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "snapping.toggle",
+    "group": "View",
+    "label": "Toggle snapping",
+    "keys": [
+      "n"
+    ],
+    "cli": null,
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "canvas.mode",
+    "group": "View",
+    "label": "Switch canvas Live / Program",
+    "keys": [
+      "Tab"
+    ],
+    "cli": null,
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "bin.toggle",
+    "group": "View",
+    "label": "Toggle the bin",
+    "keys": [
+      "b"
+    ],
+    "cli": "qrec take list --unused",
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "keys.help",
+    "group": "View",
+    "label": "Cheat sheet",
+    "keys": [
+      "question"
+    ],
+    "cli": "qrec keys",
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "palette.open",
+    "group": "View",
+    "label": "Command palette",
+    "keys": [
+      "ctrl+k",
+      "colon"
+    ],
+    "cli": null,
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "settings.open",
+    "group": "View",
+    "label": "Settings",
+    "keys": [
+      "ctrl+comma"
+    ],
+    "cli": "qrec config",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "layer.nudge-left",
+    "group": "Canvas",
+    "label": "Nudge layer left 1 px",
+    "keys": [
+      "Left"
+    ],
+    "cli": "qrec scene layer set <layer> --rect X,Y,W,H",
+    "contexts": [
+      "canvas"
+    ]
+  },
+  {
+    "id": "layer.nudge-right",
+    "group": "Canvas",
+    "label": "Nudge layer right 1 px",
+    "keys": [
+      "Right"
+    ],
+    "cli": "qrec scene layer set <layer> --rect X,Y,W,H",
+    "contexts": [
+      "canvas"
+    ]
+  },
+  {
+    "id": "layer.nudge-up",
+    "group": "Canvas",
+    "label": "Nudge layer up 1 px",
+    "keys": [
+      "Up"
+    ],
+    "cli": "qrec scene layer set <layer> --rect X,Y,W,H",
+    "contexts": [
+      "canvas"
+    ]
+  },
+  {
+    "id": "layer.nudge-down",
+    "group": "Canvas",
+    "label": "Nudge layer down 1 px",
+    "keys": [
+      "Down"
+    ],
+    "cli": "qrec scene layer set <layer> --rect X,Y,W,H",
+    "contexts": [
+      "canvas"
+    ]
+  },
+  {
+    "id": "layer.nudge-left-10",
+    "group": "Canvas",
+    "label": "Nudge layer left 10 px",
+    "keys": [
+      "shift+Left"
+    ],
+    "cli": "qrec scene layer set <layer> --rect X,Y,W,H",
+    "contexts": [
+      "canvas"
+    ]
+  },
+  {
+    "id": "layer.nudge-right-10",
+    "group": "Canvas",
+    "label": "Nudge layer right 10 px",
+    "keys": [
+      "shift+Right"
+    ],
+    "cli": "qrec scene layer set <layer> --rect X,Y,W,H",
+    "contexts": [
+      "canvas"
+    ]
+  },
+  {
+    "id": "layer.nudge-up-10",
+    "group": "Canvas",
+    "label": "Nudge layer up 10 px",
+    "keys": [
+      "shift+Up"
+    ],
+    "cli": "qrec scene layer set <layer> --rect X,Y,W,H",
+    "contexts": [
+      "canvas"
+    ]
+  },
+  {
+    "id": "layer.nudge-down-10",
+    "group": "Canvas",
+    "label": "Nudge layer down 10 px",
+    "keys": [
+      "shift+Down"
+    ],
+    "cli": "qrec scene layer set <layer> --rect X,Y,W,H",
+    "contexts": [
+      "canvas"
+    ]
+  }
+]

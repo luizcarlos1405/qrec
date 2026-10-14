@@ -1,0 +1,28 @@
+---
+source: crates/qrec-core/src/frame_plan.rs
+expression: render_argv(&plan.argv)
+---
+  ffmpeg
+  -hide_banner
+  -nostdin
+  -nostats
+  -loglevel
+  info
+  -y
+  -progress
+  pipe:1
+  -ss
+  1.198000
+  -i
+  file:takes/take-0002/L2-camera-0.mkv
+  -filter_complex
+    [0:v]scale=out_color_matrix=bt709:out_range=pc,format=rgb24,setparams=color_primaries=bt709:color_trc=iec61966-2-1[v]
+  -map
+  [v]
+  -frames:v
+  1
+  -f
+  image2
+  -update
+  1
+  file:/home/me/cam.png

@@ -1,0 +1,197 @@
+---
+source: crates/qrec-core/src/ges_plan.rs
+expression: ges
+---
+{
+  "canvas": {
+    "width": 1920,
+    "height": 1080,
+    "fps": {
+      "num": 30,
+      "den": 1
+    },
+    "background": "#000000"
+  },
+  "durationNs": 32566666666,
+  "video": [
+    {
+      "file": "takes/take-0001/L1-screen-DP-4.mkv",
+      "layerPriority": 1,
+      "startNs": 0,
+      "inpointNs": 0,
+      "durationNs": 13666666666,
+      "placement": {
+        "src": {
+          "x": 0,
+          "y": 0,
+          "w": 1920,
+          "h": 1080
+        },
+        "dst": {
+          "x": 0,
+          "y": 0,
+          "w": 1920,
+          "h": 1080
+        }
+      },
+      "alpha": 1.0
+    },
+    {
+      "file": "takes/take-0001/L2-camera-0.mkv",
+      "layerPriority": 0,
+      "startNs": 33333333,
+      "inpointNs": 0,
+      "durationNs": 13633333333,
+      "placement": {
+        "src": {
+          "x": 160,
+          "y": 0,
+          "w": 960,
+          "h": 720
+        },
+        "dst": {
+          "x": 1498,
+          "y": 754,
+          "w": 384,
+          "h": 288
+        }
+      },
+      "alpha": 0.8
+    },
+    {
+      "file": "takes/take-0001/L1-screen-DP-4.mkv",
+      "layerPriority": 1,
+      "startNs": 13666666666,
+      "inpointNs": 15166666666,
+      "durationNs": 15233333334,
+      "placement": {
+        "src": {
+          "x": 0,
+          "y": 0,
+          "w": 1920,
+          "h": 1080
+        },
+        "dst": {
+          "x": 0,
+          "y": 0,
+          "w": 1920,
+          "h": 1080
+        }
+      },
+      "alpha": 1.0
+    },
+    {
+      "file": "takes/take-0001/L2-camera-0.mkv",
+      "layerPriority": 0,
+      "startNs": 13666666666,
+      "inpointNs": 15133333333,
+      "durationNs": 15233333334,
+      "placement": {
+        "src": {
+          "x": 160,
+          "y": 0,
+          "w": 960,
+          "h": 720
+        },
+        "dst": {
+          "x": 1498,
+          "y": 754,
+          "w": 384,
+          "h": 288
+        }
+      },
+      "alpha": 0.8
+    },
+    {
+      "file": "takes/take-0002/L1-screen-DP-4.mkv",
+      "layerPriority": 1,
+      "startNs": 28900000000,
+      "inpointNs": 3333333333,
+      "durationNs": 3666666666,
+      "placement": {
+        "src": {
+          "x": 0,
+          "y": 0,
+          "w": 1920,
+          "h": 1080
+        },
+        "dst": {
+          "x": 0,
+          "y": 0,
+          "w": 1920,
+          "h": 1080
+        }
+      },
+      "alpha": 1.0
+    },
+    {
+      "file": "takes/take-0002/L2-camera-0.mkv",
+      "layerPriority": 0,
+      "startNs": 28900000000,
+      "inpointNs": 3333333333,
+      "durationNs": 3666666666,
+      "placement": {
+        "src": {
+          "x": 160,
+          "y": 0,
+          "w": 960,
+          "h": 720
+        },
+        "dst": {
+          "x": 1498,
+          "y": 754,
+          "w": 384,
+          "h": 288
+        }
+      },
+      "alpha": 1.0
+    }
+  ],
+  "audio": [
+    {
+      "file": "takes/take-0001/A1-mic.mka",
+      "startNs": 23000000,
+      "inpointNs": 0,
+      "durationNs": 13643666666,
+      "volume": 1.0,
+      "fadeInSamples": 0,
+      "fadeOutSamples": 240
+    },
+    {
+      "file": "takes/take-0001/A2-system.mka",
+      "startNs": 0,
+      "inpointNs": 20000000,
+      "durationNs": 13666666666,
+      "volume": 0.5011872336272722,
+      "fadeInSamples": 0,
+      "fadeOutSamples": 240
+    },
+    {
+      "file": "takes/take-0001/A1-mic.mka",
+      "startNs": 13666666666,
+      "inpointNs": 15143666666,
+      "durationNs": 15233333334,
+      "volume": 1.0,
+      "fadeInSamples": 240,
+      "fadeOutSamples": 0
+    },
+    {
+      "file": "takes/take-0001/A2-system.mka",
+      "startNs": 13666666666,
+      "inpointNs": 15186666666,
+      "durationNs": 15213333334,
+      "volume": 0.5011872336272722,
+      "fadeInSamples": 240,
+      "fadeOutSamples": 0
+    },
+    {
+      "file": "takes/take-0002/A2-system.mka",
+      "startNs": 28900000000,
+      "inpointNs": 3333333333,
+      "durationNs": 3666666666,
+      "volume": 1.0,
+      "fadeInSamples": 240,
+      "fadeOutSamples": 240
+    }
+  ]
+}
