@@ -51,9 +51,9 @@ pub use spawn::HostProgram;
 
 use crate::deps::{Deps, OpenOpts};
 use crate::error::ShellError;
-use crate::ipc::lock_glue::ProjectLock;
-use crate::ipc::lock_glue::lockfile::{self as lock_record, HostState, LockRecord};
-use crate::ipc::lock_glue::publish::publish;
+use crate::lock::ProjectLock;
+use lockfile::{self as lock_record, HostState, LockRecord};
+use publish::publish;
 use crate::ipc::server::{Hook, IpcServer, ServerConfig, ServerEvent};
 use crate::msg::{Inbox, Msg, Request, Responder};
 use crate::paths::ProjectPaths;

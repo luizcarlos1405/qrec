@@ -7,7 +7,7 @@ use qrec_core::state::HostKind;
 use serde_json::json;
 
 use super::*;
-use crate::ipc::lock_glue::lockfile::{self, HostState, LockRecord};
+use crate::host::lockfile::{self, HostState, LockRecord};
 use crate::ipc::testing::{
     Collect, hold_lock, line_id, raw_server, send_line, session_thread, socket_dir, start_server,
     wait_for,

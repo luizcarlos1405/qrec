@@ -26,8 +26,8 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use super::framing::{LineReader, ReadError, write_all_before};
-use super::lock_glue::ProjectLock;
-use super::lock_glue::publish::publish;
+use crate::host::publish::publish;
+use crate::lock::ProjectLock;
 use super::server::{Hook, IpcServer, ServerConfig, ServerEvent};
 use crate::deps::OpenOpts;
 use crate::error::ShellError;

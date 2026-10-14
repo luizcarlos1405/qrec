@@ -1,5 +1,5 @@
 //! The lock file's JSON record (`{pid, kind, socket, since,
-//! state:"starting"|"ready"}`) and reading it while routing (A§8.3).
+//! state:"starting"|"ready"|"stopping"}`) and reading it while routing (A§8.3).
 //! Owner: store.
 //!
 //! The record lives in `.qrec/lock` itself, the file the host holds the
@@ -34,7 +34,7 @@ pub struct LockRecord {
     pub state: HostState,
 }
 
-/// Whether the host accepts connections yet.
+/// Whether the host accepts connections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum HostState {
@@ -42,6 +42,9 @@ pub enum HostState {
     Starting,
     /// The socket is published: connect.
     Ready,
+    /// Stopped accepting, finishing its work before exiting: retry (and
+    /// say so when the deadline passes).
+    Stopping,
 }
 
 impl LockRecord {
@@ -134,6 +137,13 @@ mod tests {
         let read_back = read(tmp.path()).unwrap().unwrap();
         assert_eq!(read_back.state, HostState::Ready);
         assert_eq!(read_back.socket, "/s");
+        set_state(&lock, &mut record, HostState::Stopping).unwrap();
+        assert!(
+            fs::read_to_string(lock.path())
+                .unwrap()
+                .contains("\"state\":\"stopping\"")
+        );
+        assert_eq!(read(tmp.path()).unwrap().unwrap().state, HostState::Stopping);
         // The record is written through the locked file itself.
         assert!(ProjectLock::try_acquire(tmp.path()).unwrap().is_none());
     }

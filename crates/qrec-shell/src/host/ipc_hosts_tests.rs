@@ -17,8 +17,8 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::ipc::client::{self, SendOpts, Sent, send_request};
-use crate::ipc::lock_glue::ProjectLock;
-use crate::ipc::lock_glue::lockfile::{self, HostState};
+use crate::host::lockfile::{self, HostState};
+use crate::lock::ProjectLock;
 use crate::ipc::testing::{
     Collect, FakeOpener, PROJECT, REQUEST, RULES, STUBBORN, child_command, hold_lock, quick_rules,
     raw_exchange, read_events, request_line, rules_env, wait_for,
@@ -610,7 +610,7 @@ fn real_timeline_commands_round_trip_through_a_host() {
 #[test]
 fn a_host_running_another_version_is_noted() {
     let f = fixture();
-    let published = crate::ipc::lock_glue::publish::publish(&f.socket).unwrap();
+    let published = crate::host::publish::publish(&f.socket).unwrap();
     let mut cfg = crate::ipc::server::ServerConfig::new(&f.dir, HostKind::Gui);
     cfg.version = "0.0.1".into();
     let hello = cfg.starting_hello();

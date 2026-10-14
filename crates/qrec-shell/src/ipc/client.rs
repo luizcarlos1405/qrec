@@ -28,8 +28,8 @@ use qrec_core::protocol::{
 use serde_json::Value;
 
 use super::framing::{LineReader, ReadError, encode_line, is_disconnect, write_all_before};
-use super::lock_glue::ProjectLock;
-use super::lock_glue::lockfile::{self, HostState, LockRecord};
+use crate::host::lockfile::{self, HostState, LockRecord};
+use crate::lock::ProjectLock;
 use super::{
     ACCEPT_TIMEOUT, HEARTBEAT_AFTER, HELLO_TIMEOUT, MAX_REPLY_LINE, ROUTE_RETRY, WRITE_TIMEOUT,
     peer,

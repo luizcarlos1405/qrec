@@ -15,7 +15,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
@@ -79,6 +79,35 @@ impl ProjectLock {
         }
     }
 
+    /// Whether some process holds the lock, without taking it or creating
+    /// anything (read-only commands, A§8.4): a shared lock coexists with
+    /// other probes and fails only against a host's exclusive one. A missing
+    /// lock file means no host.
+    pub fn is_held(project_dir: &Path) -> Result<bool, ShellError> {
+        let path = ProjectPaths::new(project_dir).lock_file();
+        let file = match OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return Ok(false);
+            }
+            Err(e) => return Err(ShellError::io(format!("open {}", path.display()), e)),
+        };
+        // Closing `file` releases the probe's shared lock.
+        match flock(&file, libc::LOCK_SH) {
+            Ok(free) => Ok(!free),
+            Err(e) => Err(ShellError::io(format!("probe {}", path.display()), e)),
+        }
+    }
+
     /// Adopts a lock inherited as a descriptor (`qrec host --headless
     /// --lock-fd 3`, A§8.3 step 5). The descriptor must be the project's
     /// `.qrec/lock` (same device and inode), and the lock must be held
@@ -99,7 +128,8 @@ impl ProjectLock {
             ))
             .into());
         }
-        set_cloexec(&file).map_err(|e| ShellError::io("set FD_CLOEXEC on the lock", e))?;
+        set_cloexec(file.as_raw_fd())
+            .map_err(|e| ShellError::io("set FD_CLOEXEC on the lock", e))?;
         match try_flock(&file) {
             Ok(true) => Ok(ProjectLock { file, path }),
             Ok(false) => Err(CoreError::busy(format!(
@@ -137,9 +167,14 @@ impl AsFd for ProjectLock {
 
 /// `flock(LOCK_EX | LOCK_NB)`: `Ok(false)` when someone else holds it.
 fn try_flock(file: &File) -> io::Result<bool> {
+    flock(file, libc::LOCK_EX)
+}
+
+/// `flock(op | LOCK_NB)`: `Ok(false)` when someone else holds it.
+fn flock(file: &File, op: libc::c_int) -> io::Result<bool> {
     loop {
         // SAFETY: flock only reads the descriptor number, which `file` keeps open.
-        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        let rc = unsafe { libc::flock(file.as_raw_fd(), op | libc::LOCK_NB) };
         if rc == 0 {
             return Ok(true);
         }
@@ -152,10 +187,11 @@ fn try_flock(file: &File) -> io::Result<bool> {
     }
 }
 
-fn set_cloexec(file: &File) -> io::Result<()> {
-    let fd = file.as_raw_fd();
-    // SAFETY: fcntl on a descriptor `file` keeps open; F_GETFD/F_SETFD
-    // only read and set its flags.
+/// Sets `FD_CLOEXEC` on `fd` (inherited descriptors, so our own children
+/// never get them).
+pub fn set_cloexec(fd: RawFd) -> io::Result<()> {
+    // SAFETY: fcntl on a descriptor number; F_GETFD/F_SETFD only read and
+    // set its flags, and errors are reported.
     unsafe {
         let flags = libc::fcntl(fd, libc::F_GETFD);
         if flags == -1 {
@@ -193,13 +229,36 @@ mod tests {
     #[test]
     fn one_holder_at_a_time() {
         let tmp = tempfile::tempdir().unwrap();
+        assert!(!ProjectLock::is_held(tmp.path()).unwrap(), "no lock file yet");
+        assert!(!tmp.path().join(".qrec").exists(), "probing creates nothing");
         let first = ProjectLock::try_acquire(tmp.path()).unwrap().expect("free");
         assert!(tmp.path().join(".qrec/lock").is_file());
         // Another open file description, even in this process, is refused.
         assert!(ProjectLock::try_acquire(tmp.path()).unwrap().is_none());
+        assert!(ProjectLock::is_held(tmp.path()).unwrap());
+        assert!(
+            ProjectLock::is_held(tmp.path()).unwrap(),
+            "a probe doesn't keep a lock of its own"
+        );
         drop(first);
         // Dropping released the lock.
-        let _again = acquire_eventually(tmp.path());
+        let again = acquire_eventually(tmp.path());
+        drop(again);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while ProjectLock::is_held(tmp.path()).unwrap() {
+            assert!(std::time::Instant::now() < deadline, "the lock stayed held");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn adopted_descriptors_are_cloexec() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = ProjectLock::try_acquire(tmp.path()).unwrap().unwrap();
+        let adopted = ProjectLock::adopt(tmp.path(), lock.try_clone_fd().unwrap()).unwrap();
+        // SAFETY: an fcntl query on a descriptor `adopted` keeps open.
+        let flags = unsafe { libc::fcntl(adopted.as_fd().as_raw_fd(), libc::F_GETFD) };
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
     }
 
     #[test]
@@ -232,6 +291,17 @@ mod tests {
         let wrong: OwnedFd = File::open(tmp.path().join("x")).unwrap().into();
         let err = CoreError::from(ProjectLock::adopt(tmp.path(), wrong).unwrap_err());
         assert_eq!(err.code, qrec_core::ErrorCode::Internal);
+    }
+
+    #[test]
+    fn a_symlinked_lock_file_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join(".qrec")).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("elsewhere"), tmp.path().join(".qrec/lock"))
+            .unwrap();
+        let err = CoreError::from(ProjectLock::try_acquire(tmp.path()).unwrap_err());
+        assert_eq!(err.code, qrec_core::ErrorCode::Io);
+        assert!(!tmp.path().join("elsewhere").exists(), "nothing was created");
     }
 
     #[test]

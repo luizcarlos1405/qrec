@@ -15,9 +15,6 @@
 //!   re-route once on EOF before `accepted`, "host disconnected" after it.
 //! - [`resolve`]: which project a command is for (A§8.4), and the live
 //!   hosts on `<runtime>/*.sock`.
-//! - [`lock_glue`]: the project lock, the lock record and socket publishing
-//!   (A§8.3 steps 1–3) — interim copies, same names and signatures, of the
-//!   store owner's `lock::ProjectLock`, `host::lockfile` and `host::publish`.
 //! - [`framing`], [`peer`]: bounded JSON lines, peer credentials and a
 //!   connect that can't block on a stuck listener.
 //!
@@ -26,7 +23,6 @@
 
 pub mod client;
 pub mod framing;
-pub mod lock_glue;
 pub mod peer;
 pub mod resolve;
 pub mod server;

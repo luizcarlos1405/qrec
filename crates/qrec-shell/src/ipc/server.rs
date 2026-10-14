@@ -37,7 +37,7 @@ use qrec_core::{CoreError, Event, ReqId};
 use serde_json::Value;
 
 use super::framing::{LineReader, ReadError, encode_line, write_all_before};
-use super::lock_glue::publish::PublishedSocket;
+use crate::host::publish::PublishedSocket;
 use super::{CONN_QUEUE_CAP, MAX_REQUEST_LINE, REQUEST_READ_TIMEOUT, WRITE_TIMEOUT, peer};
 use crate::msg::{Inbox, Msg, Request, Responder};
 
