@@ -1,5 +1,6 @@
 [package]
 name = "qrec-shell"
+description = "Qrec imperative shell: session, files, history store, lock, IPC, hosts, ffmpeg and GStreamer"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,6 +8,43 @@ license.workspace = true
 
 [dependencies]
 qrec-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# The shell may read the clock (the core may not).
+chrono = { workspace = true, features = ["clock"] }
+crossbeam-channel.workspace = true
+notify.workspace = true
+wayland-client.workspace = true
+rustix.workspace = true
+libc.workspace = true
+tempfile.workspace = true
+getrandom.workspace = true
+dirs.workspace = true
+which.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+
+# GStreamer capture, GES preview render and the portal (feature `gst`).
+gst = { workspace = true, optional = true }
+gst-app = { workspace = true, optional = true }
+gst-video = { workspace = true, optional = true }
+gst-audio = { workspace = true, optional = true }
+gst-pbutils = { workspace = true, optional = true }
+ges = { workspace = true, optional = true }
+ashpd = { workspace = true, optional = true }
+futures-lite = { workspace = true, optional = true }
+
+# Test helpers for other crates' tests (feature `testkit`).
+assert_cmd = { workspace = true, optional = true }
+
+[features]
+default = ["gst"]
+# The real capture engine (GStreamer + portal) and GES rendering. Without it
+# the shell still runs every ffmpeg-only command.
+gst = ["dep:gst", "dep:gst-app", "dep:gst-video", "dep:gst-audio", "dep:gst-pbutils", "dep:ges", "dep:ashpd", "dep:futures-lite"]
+# TestEnv, media fixtures and the core testkit (A§11).
+testkit = ["qrec-core/testkit", "dep:assert_cmd"]
 
 [lints]
 workspace = true

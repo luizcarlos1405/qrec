@@ -24,6 +24,8 @@ proptest = { workspace = true, optional = true }
 testkit = ["dep:proptest"]
 
 [dev-dependencies]
+# Integration tests (tests/*.rs) use the testkit too: enable it on ourselves.
+qrec-core = { path = ".", features = ["testkit"] }
 proptest.workspace = true
 insta.workspace = true
 pretty_assertions.workspace = true
