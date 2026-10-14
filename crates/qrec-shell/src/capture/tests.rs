@@ -45,6 +45,25 @@ impl Harness {
     }
 
     fn with_side(side: Option<crossbeam_channel::Sender<SideEvent>>) -> Self {
+        static DIAG: std::sync::Once = std::sync::Once::new();
+        DIAG.call_once(|| {
+            let printed = std::sync::atomic::AtomicBool::new(false);
+            gst::glib::log_set_handler(
+                Some("GStreamer"),
+                gst::glib::LogLevels::LEVEL_CRITICAL,
+                false,
+                false,
+                move |_, _, msg| {
+                    if !printed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        eprintln!(
+                            "DIAG CRITICAL {msg} on {:?}\n{}",
+                            std::thread::current().name(),
+                            std::backtrace::Backtrace::force_capture()
+                        );
+                    }
+                },
+            );
+        });
         let env = TestEnv::new();
         let project = env.empty_dir("swamp");
         fs::create_dir(project.join("takes")).unwrap();

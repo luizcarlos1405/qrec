@@ -58,8 +58,6 @@ pub(super) struct RecProbe {
 pub(super) struct ProbeState {
     /// The source's segment (running times are computed in it).
     pub segment: Option<gst::FormattedSegment<gst::ClockTime>>,
-    /// The bin got its `[0, ∞)` segment.
-    pub zero_segment_sent: bool,
     /// Running time of the first passed buffer.
     pub first: Option<u64>,
     /// Running time of the last passed buffer.
@@ -153,23 +151,29 @@ impl RecProbe {
 
     /// Passes the bin one `[0, ∞)` segment (file time) and remembers the
     /// source's segment for running-time math (streaming thread).
-    fn on_segment(&self, info: &mut gst::PadProbeInfo) -> gst::PadProbeReturn {
+    ///
+    /// Whether the bin already has its segment is read from the sticky
+    /// events of the peer (the bin's ghost pad), not remembered here: the
+    /// tee may push on its new pad before the bin is linked, and that push
+    /// fails, so the segment is sent again once the link exists.
+    fn on_segment(&self, pad: &gst::Pad, info: &mut gst::PadProbeInfo) -> gst::PadProbeReturn {
         let Some(gst::PadProbeData::Event(ev)) = &info.data else {
             return gst::PadProbeReturn::Ok;
         };
         let gst::EventView::Segment(seg) = ev.view() else {
             return gst::PadProbeReturn::Ok;
         };
-        let mut state = self.lock();
+        let delivered = pad
+            .peer()
+            .is_some_and(|peer| peer.sticky_event::<gst::event::Segment>(0).is_some());
         if let Ok(original) = seg.segment().clone().downcast::<gst::ClockTime>() {
-            state.segment = Some(original);
+            self.lock().segment = Some(original);
         }
-        if state.zero_segment_sent {
+        if delivered {
             // The bin's timeline never restarts (a new segment would reset
             // videorate/audiorate mid-take).
             return gst::PadProbeReturn::Drop;
         }
-        state.zero_segment_sent = true;
         let zero = gst::FormattedSegment::<gst::ClockTime>::new();
         info.data = Some(gst::PadProbeData::Event(gst::event::Segment::new(&zero)));
         gst::PadProbeReturn::Ok
@@ -471,7 +475,7 @@ fn attach(
                         gst::PadProbeReturn::Ok
                     }
                 }
-                Some(gst::PadProbeData::Event(_)) => probe.on_segment(info),
+                Some(gst::PadProbeData::Event(_)) => probe.on_segment(pad, info),
                 _ => gst::PadProbeReturn::Ok,
             },
         );
