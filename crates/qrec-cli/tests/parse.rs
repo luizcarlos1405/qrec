@@ -907,18 +907,39 @@ fn completions_print_a_script() {
 }
 
 #[test]
-fn other_commands_are_not_implemented_yet() {
-    let (code, out, err) = run("qrec clip split c7f3 --at 13f");
+fn project_commands_need_the_shell() {
+    // Without qrec-shell (`Standalone`), an empty folder still answers its
+    // queries, and changes report that this build can't run them.
+    let dir = std::env::temp_dir().join(format!("qrec-parse-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = RunEnv {
+        cwd: Some(dir.clone()),
+        err_tty: false,
+    };
+    let mut backend = Standalone::default();
+    let mut run_in = |line: &str| {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = run_with_backend(words(line), &mut backend, &env, &mut out, &mut err);
+        (
+            code,
+            String::from_utf8(out).unwrap(),
+            String::from_utf8(err).unwrap(),
+        )
+    };
+    let (code, out, err) = run_in("qrec clip split c7f3 --at 13f");
     assert_eq!((code, out.as_str()), (1, ""));
-    assert_eq!(err, "qrec clip split: not implemented yet\n");
-
-    let (code, out, _) = run("qrec --json status");
-    assert_eq!(code, 1);
-    let reply: Value = serde_json::from_str(&out).unwrap();
-    assert_eq!(
-        reply,
-        json!({"ok": false, "error": {"code": "unavailable", "message": "qrec status: not implemented yet"}})
+    assert!(
+        err.starts_with(
+            "project commands can't run: this qrec build doesn't include its shell (qrec-shell)\n"
+        ),
+        "{err}"
     );
+
+    let (code, out, _) = run_in("qrec --json status");
+    assert_eq!(code, 0);
+    let reply: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(reply["data"]["initialized"], json!(false));
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 // --------------------------------------------------------------- the tree
