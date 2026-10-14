@@ -36,6 +36,15 @@ fn even_down(v: u32) -> u32 {
     v & !1
 }
 
+/// The nearest even integer, ties to the multiple of 4 (`2·round_half_even(v/2)`).
+/// ffmpeg floors odd overlay positions while GES rounds them up, so positions
+/// are made even before either sees them.
+fn even_pos(v: i64) -> i32 {
+    let half = v.div_euclid(2);
+    let even = if v.rem_euclid(2) == 0 { v } else if half.rem_euclid(2) == 0 { 2 * half } else { 2 * half + 2 };
+    even as i32
+}
+
 /// Rounds to the nearest even number, at least 2.
 fn even_round(v: f64) -> u32 {
     let v = (v / 2.0).round() * 2.0;
@@ -66,8 +75,8 @@ pub fn place(src_w: u32, src_h: u32, crop: Crop, rect: Rect, fit: Fit) -> Option
             }
             let w = even_round(cwf * scale).min(even_down(rect.w).max(2));
             let h = even_round(chf * scale).min(even_down(rect.h).max(2));
-            let x = rect.x + ((i64::from(rect.w) - i64::from(w)) / 2) as i32;
-            let y = rect.y + ((i64::from(rect.h) - i64::from(h)) / 2) as i32;
+            let x = even_pos(i64::from(rect.x) + (i64::from(rect.w) - i64::from(w)) / 2);
+            let y = even_pos(i64::from(rect.y) + (i64::from(rect.h) - i64::from(h)) / 2);
             Some(Placement { src: SourceRegion { x: left, y: top, w: cw, h: ch }, dst: Rect::new(x, y, w, h) })
         }
         Fit::Cover => {
@@ -81,7 +90,8 @@ pub fn place(src_w: u32, src_h: u32, crop: Crop, rect: Rect, fit: Fit) -> Option
             let sy = top + even_down((ch - sh) / 2);
             let w = even_down(rect.w).max(2);
             let h = even_down(rect.h).max(2);
-            Some(Placement { src: SourceRegion { x: sx, y: sy, w: sw, h: sh }, dst: Rect::new(rect.x, rect.y, w, h) })
+            let dst = Rect::new(even_pos(i64::from(rect.x)), even_pos(i64::from(rect.y)), w, h);
+            Some(Placement { src: SourceRegion { x: sx, y: sy, w: sw, h: sh }, dst })
         }
     }
 }
@@ -98,7 +108,7 @@ mod tests {
         // 2560x1440 (16:9) into a 4:3 rect: full width, letterboxed.
         let p = place(2560, 1440, NO_CROP, Rect::new(100, 100, 800, 600), Fit::Contain).unwrap();
         assert_eq!(p.src, SourceRegion { x: 0, y: 0, w: 2560, h: 1440 });
-        assert_eq!(p.dst, Rect::new(100, 175, 800, 450));
+        assert_eq!(p.dst, Rect::new(100, 176, 800, 450)); // 175 rounded to even
         // Same aspect: fills the rect exactly.
         let p = place(2560, 1440, NO_CROP, Rect::new(0, 0, 1920, 1080), Fit::Contain).unwrap();
         assert_eq!(p.dst, Rect::new(0, 0, 1920, 1080));
@@ -118,6 +128,16 @@ mod tests {
         let p = place(2560, 1440, crop, Rect::new(0, 0, 1920, 1080), Fit::Contain).unwrap();
         assert_eq!(p.src, SourceRegion { x: 0, y: 0, w: 1920, h: 1440 });
         assert_eq!(p.dst, Rect::new(240, 0, 1440, 1080));
+    }
+
+    #[test]
+    fn positions_are_even() {
+        assert_eq!(even_pos(33), 32);
+        assert_eq!(even_pos(35), 36);
+        assert_eq!(even_pos(-3), -4);
+        assert_eq!(even_pos(-1), 0);
+        let p = place(1280, 720, NO_CROP, Rect::new(33, 17, 384, 288), Fit::Cover).unwrap();
+        assert_eq!((p.dst.x, p.dst.y), (32, 16));
     }
 
     #[test]
@@ -143,9 +163,10 @@ mod tests {
                 prop_assert!(p.src.x + p.src.w <= sw && p.src.y + p.src.h <= sh);
                 prop_assert!(p.src.x % 2 == 0 && p.src.y % 2 == 0 && p.src.w % 2 == 0 && p.src.h % 2 == 0);
                 prop_assert!(p.dst.w % 2 == 0 && p.dst.h % 2 == 0 && p.dst.w >= 2 && p.dst.h >= 2);
+                prop_assert!(p.dst.x % 2 == 0 && p.dst.y % 2 == 0);
                 if fit == Fit::Contain {
-                    // Inside the rect (allowing the even rounding of odd rects).
-                    prop_assert!(p.dst.x >= x && p.dst.y >= y);
+                    // Inside the rect, give or take the 1 px of even rounding.
+                    prop_assert!(p.dst.x >= x - 1 && p.dst.y >= y - 1);
                     prop_assert!(i64::from(p.dst.x) + i64::from(p.dst.w) <= i64::from(x) + i64::from(w.max(2)) + 1);
                     prop_assert!(i64::from(p.dst.y) + i64::from(p.dst.h) <= i64::from(y) + i64::from(h.max(2)) + 1);
                 }

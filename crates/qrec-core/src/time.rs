@@ -21,41 +21,43 @@ fn div_floor(a: i128, b: i128) -> i128 {
     if (a % b != 0) && ((a < 0) != (b < 0)) { q - 1 } else { q }
 }
 
-fn div_ceil(a: i128, b: i128) -> i128 {
-    -div_floor(-a, b)
-}
-
 fn div_round(a: i128, b: i128) -> i128 {
     // Rounds half up (towards +inf) for positive b: floor((2a + b) / 2b).
     div_floor(2 * a + b, 2 * b)
 }
 
-/// The start of frame `f` in nanoseconds: `round(f · 10⁹ · den / num)`.
+/// The start of frame `f` in nanoseconds: `floor(f · 10⁹ · den / num)`.
 ///
-/// The result can be up to half a nanosecond before the exact start, so map
-/// it back with [`ns_to_frame_round`], not [`ns_to_frame_floor`].
+/// This is exactly GStreamer's `gst_util_uint64_scale(f, den·GST_SECOND, num)`
+/// (truncation). Rounding instead makes GES pick the previous clip's frame
+/// at about one cut in three (measured with ges-launch 1.26). Durations of
+/// ranges are always `frame_ns(end) − frame_ns(start)`; never sum ns durations.
 pub fn frame_ns(f: i64, fps: Fps) -> i64 {
-    div_round(f as i128 * NS_PER_SEC as i128 * fps.den as i128, fps.num as i128) as i64
+    div_floor(f as i128 * NS_PER_SEC as i128 * fps.den as i128, fps.num as i128) as i64
 }
 
-/// The duration of `frames` frames in nanoseconds (`frame_ns(frames)`).
+/// The duration of `frames` frames starting at frame 0, in nanoseconds.
 pub fn frames_to_ns(frames: Frame, fps: Fps) -> i64 {
     frame_ns(frames as i64, fps)
 }
 
-/// The frame containing instant `ns`.
+/// The frame containing instant `ns`: the `f` with `frame_ns(f) ≤ ns < frame_ns(f + 1)`.
 pub fn ns_to_frame_floor(ns: i64, fps: Fps) -> i64 {
-    div_floor(ns as i128 * fps.num as i128, NS_PER_SEC as i128 * fps.den as i128) as i64
+    let unit = NS_PER_SEC as i128 * fps.den as i128;
+    div_floor((ns as i128 + 1) * fps.num as i128 - 1, unit) as i64
 }
 
-/// The first frame starting at or after `ns`.
+/// The first frame starting at or after `ns`: the smallest `f` with `frame_ns(f) ≥ ns`.
 pub fn ns_to_frame_ceil(ns: i64, fps: Fps) -> i64 {
-    div_ceil(ns as i128 * fps.num as i128, NS_PER_SEC as i128 * fps.den as i128) as i64
+    let unit = NS_PER_SEC as i128 * fps.den as i128;
+    div_floor(ns as i128 * fps.num as i128 + unit - 1, unit) as i64
 }
 
 /// The frame whose start is nearest to `ns`.
 pub fn ns_to_frame_round(ns: i64, fps: Fps) -> i64 {
-    div_round(ns as i128 * fps.num as i128, NS_PER_SEC as i128 * fps.den as i128) as i64
+    let f = ns_to_frame_floor(ns, fps);
+    let (start, next) = (frame_ns(f, fps), frame_ns(f + 1, fps));
+    if (ns - start) * 2 >= next - start { f + 1 } else { f }
 }
 
 /// `HH:MM:SS:FF` at the nominal rate (non-drop-frame).
@@ -336,12 +338,17 @@ mod tests {
         assert_eq!(parse("-2s").resolve(100, F30).unwrap(), 40);
         assert_eq!(parse("5f").resolve(100, F30).unwrap(), 5);
         assert_eq!(frame_ns(1, F30), 33_333_333);
+        assert_eq!(frame_ns(2, F30), 66_666_666);
         assert_eq!(frame_ns(3, F30), 100_000_000);
-        assert_eq!(frame_ns(1, F2997), 33_366_667);
+        assert_eq!(frame_ns(1, F2997), 33_366_666);
         assert_eq!(ns_to_frame_floor(33_333_332, F30), 0);
-        assert_eq!(ns_to_frame_floor(33_333_334, F30), 1);
+        assert_eq!(ns_to_frame_floor(33_333_333, F30), 1);
+        assert_eq!(ns_to_frame_ceil(33_333_333, F30), 1);
+        assert_eq!(ns_to_frame_ceil(33_333_334, F30), 2);
         assert_eq!(ns_to_frame_ceil(1, F30), 1);
         assert_eq!(ns_to_frame_floor(-1, F30), -1);
+        assert_eq!(ns_to_frame_round(16_666_666, F30), 0);
+        assert_eq!(ns_to_frame_round(16_666_667, F30), 1);
         assert_eq!(timecode(411, F30), "00:00:13:21");
         assert_eq!(timecode_compact(411, F30), "00001321");
         assert_eq!(timecode(30 * 3600, F30), "01:00:00:00");
@@ -371,15 +378,16 @@ mod tests {
 
     proptest! {
         #[test]
-        fn frame_ns_round_trips(f in 0i64..10_000_000, fps in any_fps()) {
-            // frame_ns is rounded to the nearest ns, so a frame start maps back
-            // with ns_to_frame_round; instants inside a frame floor to it.
+        fn frame_ns_round_trips(f in -1_000i64..10_000_000, fps in any_fps()) {
             let ns = frame_ns(f, fps);
+            let next = frame_ns(f + 1, fps);
+            prop_assert!(next > ns);
+            // frame_ns(f) is the first instant of frame f, frame_ns(f+1)-1 its last.
+            prop_assert_eq!(ns_to_frame_floor(ns, fps), f);
+            prop_assert_eq!(ns_to_frame_floor(next - 1, fps), f);
+            prop_assert_eq!(ns_to_frame_ceil(ns, fps), f);
+            prop_assert_eq!(ns_to_frame_ceil(ns + 1, fps), f + 1);
             prop_assert_eq!(ns_to_frame_round(ns, fps), f);
-            let mid = (ns + frame_ns(f + 1, fps)) / 2;
-            prop_assert_eq!(ns_to_frame_floor(mid, fps), f);
-            prop_assert_eq!(ns_to_frame_ceil(mid, fps), f + 1);
-            prop_assert!(frame_ns(f + 1, fps) > ns);
         }
 
         #[test]
