@@ -1,0 +1,26 @@
+---
+source: crates/qrec-core/tests/history_patches.rs
+expression: render(&e)
+---
+forward:
+test    /takes/take-0001/scene/layers/1/opacity 1.0
+replace /takes/take-0001/scene/layers/1/opacity 0.8
+test    /takes/take-0001/scene/layers/1/rect/h 288
+replace /takes/take-0001/scene/layers/1/rect/h 360
+test    /takes/take-0001/scene/layers/1/rect/w 384
+replace /takes/take-0001/scene/layers/1/rect/w 480
+test    /takes/take-0001/scene/layers/1/rect/x 1498
+replace /takes/take-0001/scene/layers/1/rect/x 40
+test    /takes/take-0001/scene/layers/1/rect/y 754
+replace /takes/take-0001/scene/layers/1/rect/y 40
+inverse:
+test    /takes/take-0001/scene/layers/1/opacity 0.8
+replace /takes/take-0001/scene/layers/1/opacity 1.0
+test    /takes/take-0001/scene/layers/1/rect/h 360
+replace /takes/take-0001/scene/layers/1/rect/h 288
+test    /takes/take-0001/scene/layers/1/rect/w 480
+replace /takes/take-0001/scene/layers/1/rect/w 384
+test    /takes/take-0001/scene/layers/1/rect/x 40
+replace /takes/take-0001/scene/layers/1/rect/x 1498
+test    /takes/take-0001/scene/layers/1/rect/y 40
+replace /takes/take-0001/scene/layers/1/rect/y 754

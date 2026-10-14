@@ -1,0 +1,66 @@
+---
+source: crates/qrec-core/src/apply/clip.rs
+expression: summary(&out)
+---
+{
+  "effects": [
+    "history.append#1",
+    "writeProject"
+  ],
+  "entry": {
+    "cmd": {
+      "at": "13f",
+      "clip": "c002",
+      "cmd": "clipSplit",
+      "timeline": false
+    },
+    "label": "Split clip c002 at 00:00:03:23",
+    "seq": 1
+  },
+  "reply": {
+    "Ok": {
+      "created": [
+        "ce8d"
+      ],
+      "message": "Split clip c002 at 00:00:03:23 into c002 and ce8d",
+      "removed": [],
+      "result": [
+        {
+          "duration": 13,
+          "id": "c002",
+          "in": 150,
+          "out": 163,
+          "start": 100,
+          "take": "take-0001"
+        },
+        {
+          "duration": 137,
+          "id": "ce8d",
+          "in": 163,
+          "out": 300,
+          "start": 113,
+          "take": "take-0001"
+        }
+      ],
+      "seq": 1
+    }
+  },
+  "timeline": [
+    "c001 take-0001 [0, 100)",
+    "c002 take-0001 [150, 163)",
+    "ce8d take-0001 [163, 300)",
+    "c003 take-0002 [0, 200)"
+  ],
+  "ui": {
+    "binOpen": false,
+    "canvasMode": "live",
+    "panels": {},
+    "playhead": 0,
+    "scrollPx": 0.0,
+    "selectedLayer": null,
+    "selection": [],
+    "snapping": true,
+    "solo": null,
+    "zoom": null
+  }
+}

@@ -1,0 +1,48 @@
+---
+source: crates/qrec-core/src/apply/ui.rs
+expression: summary(&out)
+---
+{
+  "effects": [
+    "writeUi"
+  ],
+  "playing": false,
+  "reply": {
+    "Ok": {
+      "created": [],
+      "message": "Updated zoom, scroll, bin, snapping, solo, selected layer, panels",
+      "removed": [],
+      "result": {
+        "ui": {
+          "binOpen": true,
+          "canvasMode": "live",
+          "panels": {
+            "layers": 352.0
+          },
+          "playhead": 0,
+          "scrollPx": 0.0,
+          "selectedLayer": "L1",
+          "selection": [],
+          "snapping": false,
+          "solo": "A1",
+          "zoom": 2.5
+        }
+      },
+      "seq": null
+    }
+  },
+  "ui": {
+    "binOpen": true,
+    "canvasMode": "live",
+    "panels": {
+      "layers": 352.0
+    },
+    "playhead": 0,
+    "scrollPx": 0.0,
+    "selectedLayer": "L1",
+    "selection": [],
+    "snapping": false,
+    "solo": "A1",
+    "zoom": 2.5
+  }
+}

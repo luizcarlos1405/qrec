@@ -1,0 +1,76 @@
+---
+source: crates/qrec-core/src/requantize.rs
+expression: "requantize(&project, NTSC)"
+---
+from:
+  num: 60
+  den: 1
+to:
+  num: 30000
+  den: 1001
+clips:
+  - id: c001
+    take: take-0001
+    in: 0
+    out: 5
+  - id: c002
+    take: take-0001
+    in: 5
+    out: 6
+  - id: c003
+    take: take-0001
+    in: 6
+    out: 200
+  - id: c004
+    take: take-0002
+    in: 1
+    out: 62
+  - id: c005
+    take: take-0001
+    in: 200
+    out: 300
+mapped:
+  - id: c001
+    take: take-0001
+    before:
+      - 0
+      - 11
+    after:
+      - 0
+      - 5
+  - id: c002
+    take: take-0001
+    before:
+      - 11
+      - 12
+    after:
+      - 5
+      - 6
+  - id: c003
+    take: take-0001
+    before:
+      - 12
+      - 400
+    after:
+      - 6
+      - 200
+  - id: c004
+    take: take-0002
+    before:
+      - 3
+      - 125
+    after:
+      - 1
+      - 62
+  - id: c005
+    take: take-0001
+    before:
+      - 401
+      - 600
+    after:
+      - 200
+      - 300
+removed: []
+durations:
+  take-0001: 300
+  take-0002: 62
