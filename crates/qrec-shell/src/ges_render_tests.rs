@@ -43,7 +43,10 @@ static SERIAL: Mutex<()> = Mutex::new(());
 /// bars (white = 1), H.264 limited-range BT.709 in Matroska (millisecond
 /// timestamps, like recordings). Cached next to the testkit fixtures.
 fn frame_id_fixture(width: u32, height: u32, fps: Fps, frames: u64) -> PathBuf {
-    let key = format!("qrec frame-id v1 {width}x{height} {}/{} {frames}", fps.num, fps.den);
+    let key = format!(
+        "qrec frame-id v1 {width}x{height} {}/{} {frames}",
+        fps.num, fps.den
+    );
     let path = fixtures_dir().join(format!("{}.mkv", sha256_hex(key.as_bytes())));
     if path.is_file() {
         return path;
@@ -58,11 +61,27 @@ fn frame_id_fixture(width: u32, height: u32, fps: Fps, frames: u64) -> PathBuf {
     let gop = (fps.num / fps.den).max(1).to_string();
     let out = run_tool(
         Command::new("ffmpeg")
-            .args(["-hide_banner", "-nostdin", "-nostats", "-loglevel", "error", "-y"])
+            .args([
+                "-hide_banner",
+                "-nostdin",
+                "-nostats",
+                "-loglevel",
+                "error",
+                "-y",
+            ])
             .args(["-filter_complex", &graph, "-map", "[v]"])
-            .args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-bf", "0"])
+            .args([
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-bf", "0",
+            ])
             .args(["-g", &gop, "-pix_fmt", "yuv420p", "-color_range", "tv"])
-            .args(["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"])
+            .args([
+                "-colorspace",
+                "bt709",
+                "-color_primaries",
+                "bt709",
+                "-color_trc",
+                "bt709",
+            ])
             .args(["-f", "matroska"])
             .arg(format!("file:{}", tmp.display())),
         FFMPEG_TIMEOUT,
@@ -88,9 +107,23 @@ impl Rgb {
                 .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"]),
             FFMPEG_TIMEOUT,
         );
-        assert!(out.status.success(), "decode {}: {}", png.display(), out.stderr);
-        assert_eq!(out.stdout.len(), (width * height * 3) as usize, "{} size", png.display());
-        Self { width, height, data: out.stdout }
+        assert!(
+            out.status.success(),
+            "decode {}: {}",
+            png.display(),
+            out.stderr
+        );
+        assert_eq!(
+            out.stdout.len(),
+            (width * height * 3) as usize,
+            "{} size",
+            png.display()
+        );
+        Self {
+            width,
+            height,
+            data: out.stdout,
+        }
     }
 
     fn red(&self, x: u32, y: u32) -> u8 {
@@ -122,7 +155,10 @@ fn ssim(a: &Path, b: &Path, rect: Rect) -> f64 {
             .arg(format!("file:{}", a.display()))
             .arg("-i")
             .arg(format!("file:{}", b.display()))
-            .args(["-filter_complex", &format!("[0:v]{crop}[a];[1:v]{crop}[b];[a][b]ssim")])
+            .args([
+                "-filter_complex",
+                &format!("[0:v]{crop}[a];[1:v]{crop}[b];[a][b]ssim"),
+            ])
             .args(["-f", "null", "-"]),
         FFMPEG_TIMEOUT,
     );
@@ -154,7 +190,12 @@ fn parity_project() -> ParityProject {
     fs::copy(&screen, take_dir.join("L1-screen-FAKE-1.mkv")).unwrap();
     fs::copy(&camera, take_dir.join("L2-camera-0.mkv")).unwrap();
 
-    let layer = |id: &str, source: serde_json::Value, rect: [u32; 4], crop: [u32; 4], fit: &str, opacity: f64| {
+    let layer = |id: &str,
+                 source: serde_json::Value,
+                 rect: [u32; 4],
+                 crop: [u32; 4],
+                 fit: &str,
+                 opacity: f64| {
         json!({
             "id": id, "name": id, "visible": true, "opacity": opacity, "source": source,
             "rect": { "x": rect[0], "y": rect[1], "w": rect[2], "h": rect[3] },
@@ -163,10 +204,22 @@ fn parity_project() -> ParityProject {
         })
     };
     let layers = json!([
-        layer("L1", json!({ "kind": "screen", "output": "FAKE-1", "label": "Fake screen 1" }),
-              [0, 0, CANVAS.0, CANVAS.1], [20, 40, 20, 40], "contain", 0.8),
-        layer("L2", json!({ "kind": "camera", "device": "/dev/fake0", "label": "Fake camera" }),
-              [200, 100, 100, 75], [0, 0, 0, 0], "cover", 1.0),
+        layer(
+            "L1",
+            json!({ "kind": "screen", "output": "FAKE-1", "label": "Fake screen 1" }),
+            [0, 0, CANVAS.0, CANVAS.1],
+            [20, 40, 20, 40],
+            "contain",
+            0.8
+        ),
+        layer(
+            "L2",
+            json!({ "kind": "camera", "device": "/dev/fake0", "label": "Fake camera" }),
+            [200, 100, 100, 75],
+            [0, 0, 0, 0],
+            "cover",
+            1.0
+        ),
     ]);
     let stream = |id: &str, file: &str, w: u32, h: u32| {
         json!({
@@ -217,7 +270,11 @@ fn parity_project() -> ParityProject {
     assert_eq!(position, 65);
     write_project(&dir, &value);
     let project: Project = serde_json::from_value(value).expect("the parity project is valid");
-    ParityProject { _env: env, dir, project }
+    ParityProject {
+        _env: env,
+        dir,
+        project,
+    }
 }
 
 /// `(take frame, timeline position, frames)` of each render unit: maximal
@@ -255,7 +312,13 @@ fn placements(project: &Project) -> Vec<(String, String, Placement, f64)> {
         .filter_map(|layer| {
             let stream = take.streams.iter().find(|s| s.id == layer.id.as_str())?;
             assert_eq!(stream.kind, StreamKind::Video);
-            let p = place(stream.width?, stream.height?, layer.crop, layer.rect, layer.fit)?;
+            let p = place(
+                stream.width?,
+                stream.height?,
+                layer.crop,
+                layer.rect,
+                layer.fit,
+            )?;
             Some((layer.id.to_string(), stream.file.clone(), p, layer.opacity))
         })
         .collect()
@@ -294,10 +357,17 @@ fn reference_ges(project: &Project) -> GesTimeline {
 fn reference_frame_argv(project: &Project, at: u64, out: &Path) -> Vec<String> {
     let canvas = &project.canvas;
     let (fps, t) = (canvas.fps, take_frame(project, at));
-    let mut argv: Vec<String> =
-        ["ffmpeg", "-hide_banner", "-nostdin", "-nostats", "-loglevel", "info", "-y"]
-            .map(String::from)
-            .to_vec();
+    let mut argv: Vec<String> = [
+        "ffmpeg",
+        "-hide_banner",
+        "-nostdin",
+        "-nostats",
+        "-loglevel",
+        "info",
+        "-y",
+    ]
+    .map(String::from)
+    .to_vec();
     let mut chains = vec![format!(
         "color=c={}:s={}x{}:r={}/{}[base]",
         canvas.background.as_str(),
@@ -313,7 +383,11 @@ fn reference_frame_argv(project: &Project, at: u64, out: &Path) -> Vec<String> {
             argv.extend(["-ss".into(), format!("{:.6}", seek as f64 / 1e9)]);
         }
         argv.extend(["-i".into(), format!("file:{file}")]);
-        let alpha = if *opacity < 1.0 { format!(",lutyuv=a=val*{opacity}") } else { String::new() };
+        let alpha = if *opacity < 1.0 {
+            format!(",lutyuv=a=val*{opacity}")
+        } else {
+            String::new()
+        };
         chains.push(format!(
             "[{i}:v]fps={}/{},setpts=PTS-STARTPTS,crop={}:{}:{}:{},scale={}:{}:flags=bilinear,format=yuva420p{alpha}[l{i}]",
             fps.num, fps.den, p.src.w, p.src.h, p.src.x, p.src.y, p.dst.w, p.dst.h
@@ -332,7 +406,19 @@ fn reference_frame_argv(project: &Project, at: u64, out: &Path) -> Vec<String> {
          scale=out_color_matrix=bt709:out_range=pc,format=rgb24,setparams=color_trc=iec61966-2-1[v]"
     ));
     argv.extend(["-filter_complex".into(), chains.join(";")]);
-    argv.extend(["-map", "[v]", "-frames:v", "1", "-f", "image2", "-update", "1"].map(String::from));
+    argv.extend(
+        [
+            "-map",
+            "[v]",
+            "-frames:v",
+            "1",
+            "-f",
+            "image2",
+            "-update",
+            "1",
+        ]
+        .map(String::from),
+    );
     argv.push(format!("file:{}", out.display()));
     argv
 }
@@ -387,7 +473,11 @@ fn ges_matches_the_frame_plan_and_shows_exact_frames() {
     let use_core = core_frame_plan(&p.project, &out.join("probe.png"));
     eprintln!(
         "parity: GES from the {origin}, ffmpeg from the {}",
-        if use_core { "core plan_frame" } else { "hand-built A§9.4 plan" }
+        if use_core {
+            "core plan_frame"
+        } else {
+            "hand-built A§9.4 plan"
+        }
     );
 
     // Every rounding phase of 30 fps in Matroska (frame k at round(k·33.3) ms),
@@ -406,7 +496,10 @@ fn ges_matches_the_frame_plan_and_shows_exact_frames() {
 
         let ffmpeg_png = out.join(format!("ffmpeg-{at}.png"));
         let argv = frame_argv(&p.project, at, &ffmpeg_png, use_core);
-        let run = run_tool(Command::new(&argv[0]).args(&argv[1..]).current_dir(&p.dir), FFMPEG_TIMEOUT);
+        let run = run_tool(
+            Command::new(&argv[0]).args(&argv[1..]).current_dir(&p.dir),
+            FFMPEG_TIMEOUT,
+        );
         assert!(run.status.success(), "ffmpeg frame {at}: {}", run.stderr);
         let ffmpeg = Rgb::load(&ffmpeg_png, CANVAS.0, CANVAS.1);
         let ffmpeg_id = read_frame_id(|x, y| ffmpeg.red(x, y), camera_rect);
@@ -421,7 +514,10 @@ fn ges_matches_the_frame_plan_and_shows_exact_frames() {
             eprintln!("parity: frame {at} (source frame {expected}), layer {id}: SSIM {score:.4}");
             if score < 0.98 {
                 let kept = keep_for_inspection(&out);
-                panic!("frame {at}, layer {id}: SSIM {score} < 0.98 (frames kept in {})", kept.display());
+                panic!(
+                    "frame {at}, layer {id}: SSIM {score} < 0.98 (frames kept in {})",
+                    kept.display()
+                );
             }
         }
     }
@@ -431,7 +527,9 @@ fn ges_matches_the_frame_plan_and_shows_exact_frames() {
 
 /// The peak of `samples` (interleaved F32 stereo) in frames `[from, to)`.
 fn peak(samples: &[f32], from: usize, to: usize) -> f32 {
-    samples[from * 2..to * 2].iter().fold(0.0, |m, s| m.max(s.abs()))
+    samples[from * 2..to * 2]
+        .iter()
+        .fold(0.0, |m, s| m.max(s.abs()))
 }
 
 /// The first `frames` audio frames the timeline plays (F32LE stereo, 48 kHz).
@@ -518,12 +616,19 @@ fn audio_clips_play_with_their_volume_and_fades() {
         })
         .collect();
     assert_eq!(audio.len(), 2);
-    assert_ne!(audio[0].layer_priority(), audio[1].layer_priority(), "overlapping clips share a layer");
+    assert_ne!(
+        audio[0].layer_priority(),
+        audio[1].layer_priority(),
+        "overlapping clips share a layer"
+    );
 
     // The fades: a control binding in the clip's internal (media) time.
     let binding = audio[0].control_binding("volume").expect("a fade binding");
     let at = |ns: u64| -> f64 {
-        ControlBindingExt::value(&binding, gst::ClockTime::from_nseconds(ns)).unwrap().get().unwrap()
+        ControlBindingExt::value(&binding, gst::ClockTime::from_nseconds(ns))
+            .unwrap()
+            .get()
+            .unwrap()
     };
     let ramp = samples_ns(240);
     assert_eq!(at(second / 2), 0.0);
@@ -532,13 +637,20 @@ fn audio_clips_play_with_their_volume_and_fades() {
     assert!((at(second + second / 2 - ramp) - 0.5).abs() < 1e-9);
     assert_eq!(at(second + second / 2), 0.0);
     assert!(audio[1].control_binding("volume").is_none());
-    let volume: f64 = TrackElementExt::child_property(&audio[1], "volume").unwrap().get().unwrap();
+    let volume: f64 = TrackElementExt::child_property(&audio[1], "volume")
+        .unwrap()
+        .get()
+        .unwrap();
     assert_eq!(volume, 0.25);
 
     // What plays: silence-to-tone over the first 240 samples, then the tone
     // at 0.5 × 0.5; from 0.5 s the second clip adds 0.5 × 0.25.
     let samples = play_audio(&timeline, 48_000 * 3 / 4);
-    assert!(peak(&samples, 0, 24) < 0.06, "fade-in start {}", peak(&samples, 0, 24));
+    assert!(
+        peak(&samples, 0, 24) < 0.06,
+        "fade-in start {}",
+        peak(&samples, 0, 24)
+    );
     let steady = peak(&samples, 4_800, 9_600);
     assert!((steady - 0.25).abs() < 0.02, "steady {steady}");
     let mixed = peak(&samples, 26_400, 31_200);

@@ -55,7 +55,10 @@ impl PortalTokens {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Self::default(),
             Err(e) => {
-                tracing::warn!("can't read {}: {e}; the screen picker will show", path.display());
+                tracing::warn!(
+                    "can't read {}: {e}; the screen picker will show",
+                    path.display()
+                );
                 return Self::default();
             }
         };
@@ -92,7 +95,10 @@ impl PortalTokens {
             .filter(|d| !d.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         if !dir.is_dir() {
-            fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)?;
         }
         let mut doc = self.clone();
         doc.version = TOKENS_VERSION;

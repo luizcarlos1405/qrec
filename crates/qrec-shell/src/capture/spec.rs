@@ -77,7 +77,9 @@ impl CameraKey {
 fn is_video_format_name(format: &str) -> bool {
     !format.is_empty()
         && format.len() <= 16
-        && format.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && format
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 impl SourceSpec {
@@ -96,8 +98,14 @@ impl SourceSpec {
     pub fn serves(&self, wanted: &SourceSpec) -> bool {
         match (self, wanted) {
             (
-                SourceSpec::Camera { device: a, mode: have },
-                SourceSpec::Camera { device: b, mode: want },
+                SourceSpec::Camera {
+                    device: a,
+                    mode: have,
+                },
+                SourceSpec::Camera {
+                    device: b,
+                    mode: want,
+                },
             ) => a == b && (want.is_none() || have == want),
             _ => self == wanted,
         }
@@ -348,9 +356,27 @@ mod tests {
         };
         let scene = Scene {
             layers: vec![
-                layer("L1", VideoSource::Screen { output: "DP-4".into(), label: "a".into() }),
-                layer("L2", VideoSource::Screen { output: "DP-4".into(), label: "a".into() }),
-                layer("L3", VideoSource::Camera { device: "/dev/video0".into(), label: "c".into() }),
+                layer(
+                    "L1",
+                    VideoSource::Screen {
+                        output: "DP-4".into(),
+                        label: "a".into(),
+                    },
+                ),
+                layer(
+                    "L2",
+                    VideoSource::Screen {
+                        output: "DP-4".into(),
+                        label: "a".into(),
+                    },
+                ),
+                layer(
+                    "L3",
+                    VideoSource::Camera {
+                        device: "/dev/video0".into(),
+                        label: "c".into(),
+                    },
+                ),
             ],
             audio: vec![AudioTrack {
                 id: "A1".parse().unwrap(),
@@ -366,14 +392,24 @@ mod tests {
         assert_eq!(
             scene_sources(&scene),
             vec![
-                SourceSpec::Screen { output: "DP-4".into() },
-                SourceSpec::Camera { device: "/dev/video0".into(), mode: None },
-                SourceSpec::Audio { device: "alsa_input.x".into() },
+                SourceSpec::Screen {
+                    output: "DP-4".into()
+                },
+                SourceSpec::Camera {
+                    device: "/dev/video0".into(),
+                    mode: None
+                },
+                SourceSpec::Audio {
+                    device: "alsa_input.x".into()
+                },
             ]
         );
 
         let mut cam = screen("L3", "x");
-        cam.source = VideoSource::Camera { device: "/dev/video0".into(), label: "C920".into() };
+        cam.source = VideoSource::Camera {
+            device: "/dev/video0".into(),
+            label: "C920".into(),
+        };
         cam.camera_mode = Some(mode(1280, 720, 30, "image/jpeg"));
         let plan = CapturePlan {
             take: TakeId::numbered(1),
@@ -393,9 +429,15 @@ mod tests {
         };
         let sources = plan_sources(&plan);
         assert_eq!(sources.len(), 3);
-        let live_cam = SourceSpec::Camera { device: "/dev/video0".into(), mode: None };
+        let live_cam = SourceSpec::Camera {
+            device: "/dev/video0".into(),
+            mode: None,
+        };
         assert!(live_cam.same_device(&sources[1]));
-        assert!(!live_cam.serves(&sources[1]), "the plan wants a specific mode");
+        assert!(
+            !live_cam.serves(&sources[1]),
+            "the plan wants a specific mode"
+        );
         assert!(sources[1].serves(&live_cam));
         assert!(sources[1].serves(&sources[1]));
         assert!(!sources[0].same_device(&sources[2]));
@@ -405,7 +447,10 @@ mod tests {
 
     #[test]
     fn labels_and_paths() {
-        assert_eq!(video_label(&screen("L1", "DP-4")), "L1 screen DP-4 (GIGA-BYTE GS27QA)");
+        assert_eq!(
+            video_label(&screen("L1", "DP-4")),
+            "L1 screen DP-4 (GIGA-BYTE GS27QA)"
+        );
         let rec = AudioRecord {
             id: "A2".parse().unwrap(),
             device: "alsa_output.x.monitor".into(),
@@ -444,7 +489,10 @@ mod tests {
             ]
         );
         let mut va = screen("L1", "DP-4");
-        va.encoder = VideoEncoder::Va { factory: "varenderD129h264enc".into(), qp: 18 };
+        va.encoder = VideoEncoder::Va {
+            factory: "varenderD129h264enc".into(),
+            qp: 18,
+        };
         let (factory, props) = encoder_settings(&va);
         assert_eq!(factory, "varenderD129h264enc");
         assert_eq!(props[0], ("rate-control", "cqp".to_owned()));
@@ -452,7 +500,12 @@ mod tests {
         assert_eq!(encoder_input_format(&va.encoder), "NV12");
         assert_eq!(encoder_input_format(&x264()), "I420");
 
-        let tone = FakeTone { channels: 1, freq_hz: 440, tone_ms: 500, period_ms: 1500 };
+        let tone = FakeTone {
+            channels: 1,
+            freq_hz: 440,
+            tone_ms: 500,
+            period_ms: 1500,
+        };
         assert_eq!(tick_settings(&tone), (220, 1_500_000_000));
     }
 }

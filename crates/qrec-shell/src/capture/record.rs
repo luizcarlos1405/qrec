@@ -336,7 +336,20 @@ pub(super) fn attach_video(
     }
     let parse = make("h264parse", &format!("{p}-parse"))?;
     let elements = [queue, rate, rate_caps, convert, format_caps, encoder, parse];
-    attach(pipeline, tee, source, index, &rec.id.to_string(), StreamKind::Video, &elements, location, file, label, tx, tag)
+    attach(
+        pipeline,
+        tee,
+        source,
+        index,
+        &rec.id.to_string(),
+        StreamKind::Video,
+        &elements,
+        location,
+        file,
+        label,
+        tx,
+        tag,
+    )
 }
 
 /// Builds, adds and links an audio record bin.
@@ -363,14 +376,31 @@ pub(super) fn attach_audio(
     let resample = make("audioresample", &format!("{p}-resample"))?;
     let rate = make("audiorate", &format!("{p}-rate"))?;
     set_value(&rate, "skip-to-first", true)?;
-    let sample_rate = if rec.sample_rate == 0 { 48_000 } else { rec.sample_rate };
+    let sample_rate = if rec.sample_rate == 0 {
+        48_000
+    } else {
+        rec.sample_rate
+    };
     let rate_caps = capsfilter(
         &format!("{p}-caps"),
         &format!("audio/x-raw,rate={sample_rate}"),
     )?;
     let encoder = make("flacenc", &format!("{p}-encoder"))?;
     let elements = [queue, convert, resample, rate, rate_caps, encoder];
-    attach(pipeline, tee, source, index, &rec.id.to_string(), StreamKind::Audio, &elements, location, file, label, tx, tag)
+    attach(
+        pipeline,
+        tee,
+        source,
+        index,
+        &rec.id.to_string(),
+        StreamKind::Audio,
+        &elements,
+        location,
+        file,
+        label,
+        tx,
+        tag,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -408,7 +438,9 @@ fn attach(
         .map_err(|e| format!("can't build the record bin for {id}: {e}"))?;
     gst::Element::link_many(chain.iter().copied())
         .map_err(|e| format!("can't link the record bin for {id}: {e}"))?;
-    let target = head[0].static_pad("sink").ok_or("the queue has no sink pad")?;
+    let target = head[0]
+        .static_pad("sink")
+        .ok_or("the queue has no sink pad")?;
     let ghost = gst::GhostPad::builder_with_target(&target)
         .map_err(|e| format!("can't expose the record bin's input: {e}"))?
         .name("sink")
@@ -418,12 +450,16 @@ fn attach(
 
     let probe = RecProbe::new(index, kind);
     // The filesink side: first write and EOS.
-    let sink_pad = sink.static_pad("sink").ok_or("the filesink has no sink pad")?;
+    let sink_pad = sink
+        .static_pad("sink")
+        .ok_or("the filesink has no sink pad")?;
     {
         let probe = probe.clone();
         let tx = tx.clone();
         sink_pad.add_probe(
-            gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST | gst::PadProbeType::EVENT_DOWNSTREAM,
+            gst::PadProbeType::BUFFER
+                | gst::PadProbeType::BUFFER_LIST
+                | gst::PadProbeType::EVENT_DOWNSTREAM,
             move |_pad, info| {
                 match &info.data {
                     Some(gst::PadProbeData::Buffer(_)) | Some(gst::PadProbeData::BufferList(_)) => {
@@ -456,7 +492,9 @@ fn attach(
         let probe = probe.clone();
         let tx = tx.clone();
         tee_pad.add_probe(
-            gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST | gst::PadProbeType::EVENT_DOWNSTREAM,
+            gst::PadProbeType::BUFFER
+                | gst::PadProbeType::BUFFER_LIST
+                | gst::PadProbeType::EVENT_DOWNSTREAM,
             move |pad, info| match &mut info.data {
                 Some(gst::PadProbeData::Buffer(buffer)) => probe.on_buffer(pad, buffer, &tx, tag),
                 Some(gst::PadProbeData::BufferList(list)) => {

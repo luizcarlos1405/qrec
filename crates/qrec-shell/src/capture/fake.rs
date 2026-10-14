@@ -149,7 +149,11 @@ mod tests {
         let inv = fake_inventory();
         let outputs: Vec<&str> = inv.screens.iter().map(|s| s.output.as_str()).collect();
         assert_eq!(outputs, ["FAKE-1", "FAKE-2"]);
-        assert!(inv.screens.iter().all(|s| (s.width, s.height) == (1280, 720)));
+        assert!(
+            inv.screens
+                .iter()
+                .all(|s| (s.width, s.height) == (1280, 720))
+        );
         assert_eq!(inv.screens[1].x, 1280);
         assert_eq!(inv.cameras[0].device, "/dev/fake0");
         assert_eq!(inv.mics[0].name, "alsa_input.fake");

@@ -10,9 +10,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 use qrec_core::ctx::CameraMode;
-use qrec_core::model::{
-    AudioRole, AudioTrack, Canvas, Crop, Fit, Layer, Rect, Scene, VideoSource,
-};
+use qrec_core::model::{AudioRole, AudioTrack, Canvas, Crop, Fit, Layer, Rect, Scene, VideoSource};
 use qrec_core::plans::{AudioRecord, CapturePlan, LiveScene, VideoEncoder, VideoRecord};
 use qrec_core::protocol::RecordedStream;
 use qrec_core::{Event, Fps, TakeId};
@@ -110,7 +108,10 @@ impl Harness {
 
     fn started(&self) -> Event {
         let (ev, skipped) = self.wait_for("CaptureStarted", |e| {
-            matches!(e, Event::CaptureStarted { .. } | Event::CaptureFailed { .. })
+            matches!(
+                e,
+                Event::CaptureStarted { .. } | Event::CaptureFailed { .. }
+            )
         });
         assert!(
             matches!(ev, Event::CaptureStarted { .. }),
@@ -213,7 +214,14 @@ fn secs(v: &Value) -> f64 {
 fn packet_times(file: &Path) -> Vec<f64> {
     let out = run_tool(
         Command::new("ffprobe")
-            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time"])
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "packet=pts_time",
+            ])
             .args(["-of", "csv=p=0"])
             .arg(format!("file:{}", file.display())),
         Duration::from_secs(30),
@@ -234,7 +242,10 @@ fn check_video(file: &Path, width: u64, height: u64) -> (u64, f64) {
     let probe = ffprobe(file);
     let v = stream_of(&probe);
     assert_eq!(v["codec_name"], "h264", "{probe}");
-    assert_eq!((v["width"].as_u64(), v["height"].as_u64()), (Some(width), Some(height)));
+    assert_eq!(
+        (v["width"].as_u64(), v["height"].as_u64()),
+        (Some(width), Some(height))
+    );
     assert_eq!(v["r_frame_rate"], "30/1", "{probe}");
     assert_eq!(v["color_space"], "bt709", "{probe}");
     assert_eq!(v["color_range"], "tv", "{probe}");
@@ -247,7 +258,10 @@ fn check_video(file: &Path, width: u64, height: u64) -> (u64, f64) {
     // Constant frame rate: every step is one frame (MKV stores ms).
     for pair in times.windows(2) {
         let step = pair[1] - pair[0];
-        assert!((step - 1.0 / 30.0).abs() < 0.0015, "VFR step {step} in {file:?}");
+        assert!(
+            (step - 1.0 / 30.0).abs() < 0.0015,
+            "VFR step {step} in {file:?}"
+        );
     }
     let duration = secs(&probe["format"]["duration"]);
     (frames, duration)
@@ -261,7 +275,11 @@ fn check_audio(file: &Path, channels: u64) -> f64 {
     assert_eq!(a["sample_rate"], "48000");
     assert_eq!(a["channels"].as_u64(), Some(channels));
     let start = secs(&probe["format"]["start_time"]);
-    assert!(start.abs() < 0.001, "start_time {start} of {}: {probe}", file.display());
+    assert!(
+        start.abs() < 0.001,
+        "start_time {start} of {}: {probe}",
+        file.display()
+    );
     secs(&probe["format"]["duration"])
 }
 
@@ -274,7 +292,10 @@ fn records_screens_cameras_and_audio_in_sync() {
         1,
         &dir,
         vec![screen("L1", "FAKE-1"), camera("L2", FAKE_CAMERA)],
-        vec![audio("A1", FAKE_MIC, "mic"), audio("A2", FAKE_MONITOR, "system")],
+        vec![
+            audio("A1", FAKE_MIC, "mic"),
+            audio("A2", FAKE_MONITOR, "system"),
+        ],
     );
     let started_at = Instant::now();
     h.start(&plan);
@@ -309,7 +330,12 @@ fn records_screens_cameras_and_audio_in_sync() {
         .collect();
     assert!(clocks.len() >= 8, "{clocks:?}");
     assert!(clocks.windows(2).all(|w| w[0] <= w[1]), "{clocks:?}");
-    assert!(!skipped.iter().any(|e| matches!(e, Event::StreamLost { .. })), "{skipped:?}");
+    assert!(
+        !skipped
+            .iter()
+            .any(|e| matches!(e, Event::StreamLost { .. })),
+        "{skipped:?}"
+    );
 
     let ids: Vec<&str> = streams.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, ["L1", "L2", "A1", "A2"]);
@@ -317,7 +343,10 @@ fn records_screens_cameras_and_audio_in_sync() {
         assert!(s.eos, "{s:?}");
         // The first buffer after T0: within a frame or an audio buffer.
         assert!((0..100_000_000).contains(&s.start_offset_ns), "{s:?}");
-        assert_eq!(s.file, format!("takes/take-0001/{}", s.file.rsplit('/').next().unwrap()));
+        assert_eq!(
+            s.file,
+            format!("takes/take-0001/{}", s.file.rsplit('/').next().unwrap())
+        );
     }
 
     let (screen_frames, screen_dur) = check_video(&h.file(&streams[0].file), 1280, 720);
@@ -331,18 +360,30 @@ fn records_screens_cameras_and_audio_in_sync() {
             (frames as f64 - duration * 30.0).abs() <= 2.0,
             "{frames} frames in {duration} s"
         );
-        assert!(duration >= last_clock - 0.1 && duration < last_clock + 1.0, "{duration} vs {last_clock}");
+        assert!(
+            duration >= last_clock - 0.1 && duration < last_clock + 1.0,
+            "{duration} vs {last_clock}"
+        );
     }
     // Every stream covers the same span (one clock, filled to T1).
     for duration in [camera_dur, mic_dur, system_dur] {
-        assert!((duration - screen_dur).abs() < 0.12, "{duration} vs {screen_dur}");
+        assert!(
+            (duration - screen_dur).abs() < 0.12,
+            "{duration} vs {screen_dur}"
+        );
     }
     let offsets: Vec<i64> = streams.iter().map(|s| s.start_offset_ns).collect();
     let spread = offsets.iter().max().unwrap() - offsets.iter().min().unwrap();
     assert!(spread < 70_000_000, "start offsets {offsets:?}");
 
     let log = fs::read_to_string(h.file("takes/take-0001/recorder.log")).unwrap();
-    for needle in ["attached at T0", "recording", "EOS written", "startOffsetNs", "stopped"] {
+    for needle in [
+        "attached at T0",
+        "recording",
+        "EOS written",
+        "startOffsetNs",
+        "stopped",
+    ] {
         assert!(log.contains(needle), "{needle:?} missing from:\n{log}");
     }
 }
@@ -373,14 +414,21 @@ fn stop_and_cancel_while_starting() {
     let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
     let mut h = Harness::new();
     let dir = h.take_dir(1);
-    let first = plan(1, &dir, vec![screen("L1", "FAKE-2")], vec![audio("A1", FAKE_MIC, "mic")]);
+    let first = plan(
+        1,
+        &dir,
+        vec![screen("L1", "FAKE-2")],
+        vec![audio("A1", FAKE_MIC, "mic")],
+    );
     h.start(&first);
     // Cancel right away: no CaptureStarted, but always CaptureStopped.
     h.engine.stop(&first.take, true);
     let (streams, timed_out, skipped) = h.stopped();
     assert!(!timed_out, "{skipped:?}");
     assert!(
-        !skipped.iter().any(|e| matches!(e, Event::CaptureFailed { .. })),
+        !skipped
+            .iter()
+            .any(|e| matches!(e, Event::CaptureFailed { .. })),
         "{skipped:?}"
     );
     assert_eq!(streams.len(), 2);
@@ -417,10 +465,22 @@ fn start_failures_name_the_source() {
     let dir = h.take_dir(1);
     let plan1 = plan(1, &dir, vec![camera("L2", "/dev/video0")], vec![]);
     h.start(&plan1);
-    let (ev, _) = h.wait_for("CaptureFailed", |e| matches!(e, Event::CaptureFailed { .. }));
-    let Event::CaptureFailed { take, source, message } = ev else { unreachable!() };
+    let (ev, _) = h.wait_for("CaptureFailed", |e| {
+        matches!(e, Event::CaptureFailed { .. })
+    });
+    let Event::CaptureFailed {
+        take,
+        source,
+        message,
+    } = ev
+    else {
+        unreachable!()
+    };
     assert_eq!(take, Some(TakeId::numbered(1)));
-    assert!(source.as_deref().unwrap().contains("/dev/video0"), "{source:?}");
+    assert!(
+        source.as_deref().unwrap().contains("/dev/video0"),
+        "{source:?}"
+    );
     assert!(message.contains("no fake camera"), "{message}");
 
     // Never overwrite: an existing target file fails the start untouched.
@@ -428,16 +488,33 @@ fn start_failures_name_the_source() {
     fs::write(h.file(&format!("{dir}/A1-mic.mka")), b"precious").unwrap();
     let plan2 = plan(2, &dir, vec![], vec![audio("A1", FAKE_MIC, "mic")]);
     h.start(&plan2);
-    let (ev, _) = h.wait_for("CaptureFailed", |e| matches!(e, Event::CaptureFailed { .. }));
-    let Event::CaptureFailed { source, message, .. } = ev else { unreachable!() };
+    let (ev, _) = h.wait_for("CaptureFailed", |e| {
+        matches!(e, Event::CaptureFailed { .. })
+    });
+    let Event::CaptureFailed {
+        source, message, ..
+    } = ev
+    else {
+        unreachable!()
+    };
     assert!(message.contains("already exists"), "{message}");
     assert_eq!(source.as_deref(), Some("A1 audio alsa_input.fake"));
-    assert_eq!(fs::read(h.file(&format!("{dir}/A1-mic.mka"))).unwrap(), b"precious");
+    assert_eq!(
+        fs::read(h.file(&format!("{dir}/A1-mic.mka"))).unwrap(),
+        b"precious"
+    );
 
     // A missing take folder.
-    let plan3 = plan(3, "takes/take-0003", vec![], vec![audio("A1", FAKE_MIC, "mic")]);
+    let plan3 = plan(
+        3,
+        "takes/take-0003",
+        vec![],
+        vec![audio("A1", FAKE_MIC, "mic")],
+    );
     h.start(&plan3);
-    let (ev, _) = h.wait_for("CaptureFailed", |e| matches!(e, Event::CaptureFailed { .. }));
+    let (ev, _) = h.wait_for("CaptureFailed", |e| {
+        matches!(e, Event::CaptureFailed { .. })
+    });
     assert!(format!("{ev:?}").contains("is missing"), "{ev:?}");
 
     // A plan with an encoder setting GStreamer rejects.
@@ -451,8 +528,15 @@ fn start_failures_name_the_source() {
     };
     let plan4 = plan(4, &dir, vec![bad], vec![]);
     h.start(&plan4);
-    let (ev, _) = h.wait_for("CaptureFailed", |e| matches!(e, Event::CaptureFailed { .. }));
-    let Event::CaptureFailed { source, message, .. } = ev else { unreachable!() };
+    let (ev, _) = h.wait_for("CaptureFailed", |e| {
+        matches!(e, Event::CaptureFailed { .. })
+    });
+    let Event::CaptureFailed {
+        source, message, ..
+    } = ev
+    else {
+        unreachable!()
+    };
     assert!(message.contains("speed-preset"), "{message}");
     assert!(source.unwrap().starts_with("L1 screen FAKE-1"));
 
@@ -479,23 +563,39 @@ fn a_lost_source_is_stream_lost_and_the_rest_keeps_recording() {
         1,
         &dir,
         vec![screen("L1", "FAKE-1"), camera("L2", FAKE_CAMERA)],
-        vec![audio("A1", FAKE_MIC, "mic"), audio("A2", FAKE_MONITOR, "system")],
+        vec![
+            audio("A1", FAKE_MIC, "mic"),
+            audio("A2", FAKE_MONITOR, "system"),
+        ],
     );
     h.start(&plan);
     h.started();
     std::thread::sleep(Duration::from_millis(800));
 
     // The camera errors (unplugged).
-    h.engine.inject_fake_failure(FAKE_CAMERA, FakeFailure::Error);
+    h.engine
+        .inject_fake_failure(FAKE_CAMERA, FakeFailure::Error);
     let (ev, _) = h.wait_for("StreamLost", |e| matches!(e, Event::StreamLost { .. }));
-    let Event::StreamLost { take, stream, message } = ev else { unreachable!() };
+    let Event::StreamLost {
+        take,
+        stream,
+        message,
+    } = ev
+    else {
+        unreachable!()
+    };
     assert_eq!((take, stream.as_str()), (TakeId::numbered(1), "L2"));
     assert!(message.contains("unplugged"), "{message}");
 
     // The monitor's stream ends (EOS).
     h.engine.inject_fake_failure(FAKE_MONITOR, FakeFailure::Eos);
     let (ev, _) = h.wait_for("StreamLost", |e| matches!(e, Event::StreamLost { .. }));
-    let Event::StreamLost { stream, message, .. } = ev else { unreachable!() };
+    let Event::StreamLost {
+        stream, message, ..
+    } = ev
+    else {
+        unreachable!()
+    };
     assert_eq!(stream, "A2");
     assert!(message.contains("stopped sending data"), "{message}");
 
@@ -504,7 +604,9 @@ fn a_lost_source_is_stream_lost_and_the_rest_keeps_recording() {
     let (streams, timed_out, skipped) = h.stopped();
     assert!(!timed_out, "{skipped:?}");
     assert!(
-        !skipped.iter().any(|e| matches!(e, Event::StreamLost { .. })),
+        !skipped
+            .iter()
+            .any(|e| matches!(e, Event::StreamLost { .. })),
         "each stream is lost once: {skipped:?}"
     );
     assert!(streams.iter().all(|s| s.eos), "{streams:?}");
@@ -513,7 +615,10 @@ fn a_lost_source_is_stream_lost_and_the_rest_keeps_recording() {
     let (_, camera_dur) = check_video(&h.file(&streams[1].file), 640, 480);
     let mic_dur = check_audio(&h.file(&streams[2].file), 1);
     let system_dur = check_audio(&h.file(&streams[3].file), 2);
-    assert!(screen_dur > camera_dur + 0.4, "{screen_dur} vs {camera_dur}");
+    assert!(
+        screen_dur > camera_dur + 0.4,
+        "{screen_dur} vs {camera_dur}"
+    );
     assert!(mic_dur > system_dur + 0.4, "{mic_dur} vs {system_dur}");
     assert!((screen_dur - mic_dur).abs() < 0.12);
 }
@@ -589,7 +694,12 @@ fn live_pipeline_previews_and_records() {
 
     // Recording uses the running pipeline.
     let dir = h.take_dir(1);
-    let plan = plan(1, &dir, vec![screen("L1", "FAKE-1")], vec![audio("A1", FAKE_MIC, "mic")]);
+    let plan = plan(
+        1,
+        &dir,
+        vec![screen("L1", "FAKE-1")],
+        vec![audio("A1", FAKE_MIC, "mic")],
+    );
     h.start(&plan);
     h.started();
     std::thread::sleep(Duration::from_millis(1500));
@@ -613,7 +723,12 @@ fn shutdown_finalizes_a_running_take() {
     let _serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
     let mut h = Harness::new();
     let dir = h.take_dir(1);
-    let plan = plan(1, &dir, vec![screen("L1", "FAKE-1")], vec![audio("A1", FAKE_MIC, "mic")]);
+    let plan = plan(
+        1,
+        &dir,
+        vec![screen("L1", "FAKE-1")],
+        vec![audio("A1", FAKE_MIC, "mic")],
+    );
     h.start(&plan);
     h.started();
     std::thread::sleep(Duration::from_millis(700));
@@ -626,7 +741,9 @@ fn shutdown_finalizes_a_running_take() {
     // After shutdown, starts fail at once.
     let dir = h.take_dir(2);
     h.start(&plan_with_take(2, &dir));
-    let (ev, _) = h.wait_for("CaptureFailed", |e| matches!(e, Event::CaptureFailed { .. }));
+    let (ev, _) = h.wait_for("CaptureFailed", |e| {
+        matches!(e, Event::CaptureFailed { .. })
+    });
     assert!(format!("{ev:?}").contains("isn't running"), "{ev:?}");
 }
 
@@ -655,7 +772,11 @@ fn screen_layer(id: &str, output: &str, rect: Rect) -> Layer {
 fn audio_track(id: &str, device: &str) -> AudioTrack {
     AudioTrack {
         id: id.parse().unwrap(),
-        role: if device.ends_with(".monitor") { AudioRole::System } else { AudioRole::Mic },
+        role: if device.ends_with(".monitor") {
+            AudioRole::System
+        } else {
+            AudioRole::Mic
+        },
         source: device.into(),
         label: device.into(),
         gain_db: 0.0,
@@ -709,7 +830,12 @@ fn set_live_is_idempotent_and_the_take_reuses_its_pipeline() {
 
     // The take attaches to the running pipeline.
     let dir = h.take_dir(1);
-    let take = plan(1, &dir, vec![screen("L1", "FAKE-1")], vec![audio("A1", FAKE_MIC, "mic")]);
+    let take = plan(
+        1,
+        &dir,
+        vec![screen("L1", "FAKE-1")],
+        vec![audio("A1", FAKE_MIC, "mic")],
+    );
     h.start(&take);
     h.started();
     assert_eq!(h.engine.inspect().generation, Some(generation));
@@ -718,8 +844,15 @@ fn set_live_is_idempotent_and_the_take_reuses_its_pipeline() {
     std::thread::sleep(Duration::from_millis(600));
     h.engine.stop(&take.take, false);
     let (streams, timed_out, skipped) = h.stopped();
-    assert!(!timed_out && streams.iter().all(|s| s.eos), "{streams:?} {skipped:?}");
-    assert_eq!(h.engine.inspect().generation, Some(generation), "kept between takes");
+    assert!(
+        !timed_out && streams.iter().all(|s| s.eos),
+        "{streams:?} {skipped:?}"
+    );
+    assert_eq!(
+        h.engine.inspect().generation,
+        Some(generation),
+        "kept between takes"
+    );
 
     // New sources rebuild; no scene tears it down.
     let mut more = moved.clone();

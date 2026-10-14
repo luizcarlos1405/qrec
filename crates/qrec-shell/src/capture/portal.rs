@@ -126,7 +126,8 @@ fn worker(rx: Receiver<Job>) {
             Job::Close(casts) => {
                 for cast in casts {
                     if let Some(session) = cast.session {
-                        let _ = run_with_deadline(CLOSE_TIMEOUT, async move { session.close().await });
+                        let _ =
+                            run_with_deadline(CLOSE_TIMEOUT, async move { session.close().await });
                     }
                 }
             }
@@ -227,7 +228,9 @@ async fn open_one(
                 token: new_token.to_owned(),
                 position: stream.position(),
                 size: stream.size(),
-                updated: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+                updated: Some(
+                    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                ),
             },
         );
     } else if identified.as_deref().is_none_or(|o| o == output) {
@@ -268,7 +271,11 @@ fn identify(stream: &Stream, screens: &[ScreenInfo]) -> Option<String> {
 fn size_matches(size: Option<(i32, i32)>, screen: &ScreenInfo) -> bool {
     let Some((w, h)) = size else { return true };
     let pixels = (screen.width as i32, screen.height as i32);
-    let scale = if screen.scale > 0.0 { screen.scale } else { 1.0 };
+    let scale = if screen.scale > 0.0 {
+        screen.scale
+    } else {
+        1.0
+    };
     let logical = (
         (f64::from(screen.width) / scale).round() as i32,
         (f64::from(screen.height) / scale).round() as i32,
@@ -398,6 +405,9 @@ mod tests {
         let never = std::future::pending::<()>();
         assert_eq!(run_with_deadline(Duration::from_millis(50), never), None);
         assert!(started.elapsed() < Duration::from_secs(5));
-        assert_eq!(run_with_deadline(Duration::from_secs(5), async { 7 }), Some(7));
+        assert_eq!(
+            run_with_deadline(Duration::from_secs(5), async { 7 }),
+            Some(7)
+        );
     }
 }

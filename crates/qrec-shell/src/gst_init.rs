@@ -22,7 +22,8 @@ use std::time::{Duration, Instant};
 pub const INIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Printed when `gst::init()` doesn't return in time.
-pub const STUCK_MESSAGE: &str = "GStreamer is stuck scanning plugins (a GPU driver is probably hung); see `qrec doctor`";
+pub const STUCK_MESSAGE: &str =
+    "GStreamer is stuck scanning plugins (a GPU driver is probably hung); see `qrec doctor`";
 
 /// The exit code of [`init_or_exit`] (`missing_dependency`).
 pub const EXIT_CODE: i32 = 5;

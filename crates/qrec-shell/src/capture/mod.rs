@@ -237,7 +237,10 @@ mod unit_tests {
         let env = crate::testkit::TestEnv::new();
         let dirs = UserDirs::resolve(&env.paths_env()).unwrap();
         let opts = EngineOptions::new("/p", Backend::Fake, &dirs);
-        assert_eq!(opts.portal_tokens, env.state_home().join("qrec/portal-tokens.json"));
+        assert_eq!(
+            opts.portal_tokens,
+            env.state_home().join("qrec/portal-tokens.json")
+        );
         assert!(opts.register_app_id);
         assert!(format!("{opts:?}").contains("Fake"));
     }

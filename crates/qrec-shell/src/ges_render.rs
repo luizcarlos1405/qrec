@@ -283,7 +283,11 @@ pub fn build_timeline(plan: &GesTimeline, project_dir: &Path) -> Result<ges::Tim
 }
 
 /// Builds the GES timeline of `plan` with the given tracks.
-pub fn build(plan: &GesTimeline, project_dir: &Path, tracks: Tracks) -> Result<ges::Timeline, GesError> {
+pub fn build(
+    plan: &GesTimeline,
+    project_dir: &Path,
+    tracks: Tracks,
+) -> Result<ges::Timeline, GesError> {
     init()?;
     let timeline = ges::Timeline::new();
     timeline.set_auto_transition(false);
@@ -318,9 +322,18 @@ pub fn build(plan: &GesTimeline, project_dir: &Path, tracks: Tracks) -> Result<g
         add_background(&background, &plan.canvas, plan.duration_ns)?;
     }
     for clip in &plan.video {
-        add_video(&layers[clip.layer_priority as usize], clip, project_dir, &mut assets)?;
+        add_video(
+            &layers[clip.layer_priority as usize],
+            clip,
+            project_dir,
+            &mut assets,
+        )?;
     }
-    let audio = if tracks == Tracks::All { plan.audio.as_slice() } else { &[] };
+    let audio = if tracks == Tracks::All {
+        plan.audio.as_slice()
+    } else {
+        &[]
+    };
     let intervals: Vec<(u64, u64)> = audio
         .iter()
         .map(|c| (c.start_ns, c.start_ns + c.duration_ns))
@@ -416,8 +429,8 @@ fn add_video(
             .set_child_property(name, value)
             .map_err(|e| GesError::Build(format!("{}: {name}: {e}", clip.file)))
     };
-    set("posx", (dst.x as i32).into())?;
-    set("posy", (dst.y as i32).into())?;
+    set("posx", dst.x.into())?;
+    set("posy", dst.y.into())?;
     set("width", (dst.w.min(i32::MAX as u32) as i32).into())?;
     set("height", (dst.h.min(i32::MAX as u32) as i32).into())?;
     set("alpha", clip.alpha.clamp(0.0, 1.0).into())
@@ -485,8 +498,14 @@ mod controller {
             // tables; both names are nul-terminated literals.
             let (new, set) = unsafe {
                 (
-                    libc::dlsym(libc::RTLD_DEFAULT, c"gst_interpolation_control_source_new".as_ptr()),
-                    libc::dlsym(libc::RTLD_DEFAULT, c"gst_timed_value_control_source_set".as_ptr()),
+                    libc::dlsym(
+                        libc::RTLD_DEFAULT,
+                        c"gst_interpolation_control_source_new".as_ptr(),
+                    ),
+                    libc::dlsym(
+                        libc::RTLD_DEFAULT,
+                        c"gst_timed_value_control_source_set".as_ptr(),
+                    ),
                 )
             };
             if new.is_null() || set.is_null() {
@@ -576,8 +595,12 @@ impl RgbFrame {
     /// The frame as a PNG file.
     pub fn png(&self) -> Result<Vec<u8>, GesError> {
         let caps = gst::Caps::builder("image/png").build();
-        let png = gst_video::convert_sample(&self.sample, &caps, Some(clock(STEP_TIMEOUT.as_nanos() as u64)))
-            .map_err(|e| GesError::Render(format!("PNG encoding failed: {e}")))?;
+        let png = gst_video::convert_sample(
+            &self.sample,
+            &caps,
+            Some(clock(STEP_TIMEOUT.as_nanos() as u64)),
+        )
+        .map_err(|e| GesError::Render(format!("PNG encoding failed: {e}")))?;
         let buffer = png
             .buffer()
             .ok_or_else(|| GesError::Render("the PNG encoder produced nothing".into()))?;
@@ -601,7 +624,9 @@ impl FrameRenderer {
     /// Builds the timeline and prerolls the pipeline.
     pub fn new(plan: &GesTimeline, project_dir: &Path) -> Result<Self, GesError> {
         if plan.duration_ns == 0 {
-            return Err(GesError::Build("nothing to render: the timeline is empty".into()));
+            return Err(GesError::Build(
+                "nothing to render: the timeline is empty".into(),
+            ));
         }
         let timeline = build(plan, project_dir, Tracks::Video)?;
         let pipeline = ges::Pipeline::new();
@@ -655,7 +680,9 @@ impl FrameRenderer {
         let sample = self
             .sink
             .try_pull_preroll(clock(STEP_TIMEOUT.as_nanos() as u64))
-            .ok_or_else(|| GesError::Timeout(format!("rendering frame {frame}"), STEP_TIMEOUT.as_secs()))?;
+            .ok_or_else(|| {
+                GesError::Timeout(format!("rendering frame {frame}"), STEP_TIMEOUT.as_secs())
+            })?;
         rgb_frame(sample)
     }
 
@@ -686,7 +713,11 @@ impl FrameRenderer {
             }
             let Some(msg) = bus.timed_pop_filtered(
                 clock(left.as_nanos() as u64),
-                &[gst::MessageType::AsyncDone, gst::MessageType::Error, gst::MessageType::Eos],
+                &[
+                    gst::MessageType::AsyncDone,
+                    gst::MessageType::Error,
+                    gst::MessageType::Eos,
+                ],
             ) else {
                 return Err(GesError::Timeout(what.to_owned(), STEP_TIMEOUT.as_secs()));
             };
@@ -709,9 +740,10 @@ impl FrameRenderer {
 
     /// The pipeline's first error, or `message`.
     fn failure(&self, message: &str) -> GesError {
-        let error = self.pipeline.bus().and_then(|bus| {
-            bus.timed_pop_filtered(clock(100_000_000), &[gst::MessageType::Error])
-        });
+        let error = self
+            .pipeline
+            .bus()
+            .and_then(|bus| bus.timed_pop_filtered(clock(100_000_000), &[gst::MessageType::Error]));
         match error.as_ref().map(|m| m.view()) {
             Some(gst::MessageView::Error(err)) => {
                 GesError::Render(format!("{message}: {}", err.error()))
@@ -725,7 +757,9 @@ impl Drop for FrameRenderer {
     fn drop(&mut self) {
         let pipeline = self.pipeline.clone().upcast::<gst::Element>();
         if !set_null_with_deadline(pipeline, TEARDOWN_TIMEOUT) {
-            tracing::warn!("ges: the render pipeline didn't stop within {TEARDOWN_TIMEOUT:?}; abandoned");
+            tracing::warn!(
+                "ges: the render pipeline didn't stop within {TEARDOWN_TIMEOUT:?}; abandoned"
+            );
         }
     }
 }
@@ -794,7 +828,9 @@ fn rgb_sink() -> Result<(gst::Element, gst_app::AppSink), GesError> {
     let filter = make("capsfilter")?;
     filter.set_property(
         "caps",
-        gst::Caps::builder("video/x-raw").field("format", "RGB").build(),
+        gst::Caps::builder("video/x-raw")
+            .field("format", "RGB")
+            .build(),
     );
     let sink = gst_app::AppSink::builder()
         .sync(false)
@@ -861,7 +897,12 @@ mod tests {
 
     fn placement(src: (u32, u32, u32, u32), dst: (i32, i32, u32, u32)) -> Placement {
         Placement {
-            src: SourceRegion { x: src.0, y: src.1, w: src.2, h: src.3 },
+            src: SourceRegion {
+                x: src.0,
+                y: src.1,
+                w: src.2,
+                h: src.3,
+            },
             dst: Rect::new(dst.0, dst.1, dst.2, dst.3),
         }
     }
@@ -869,8 +910,19 @@ mod tests {
     #[test]
     fn crops_from_the_placement() {
         let crop = CropSides::of(&placement((10, 20, 600, 300), (0, 0, 320, 160)), 640, 360);
-        assert_eq!(crop, CropSides { left: 10, top: 20, right: 30, bottom: 40 });
-        assert_eq!(crop.effect_description(), "videocrop left=10 top=20 right=30 bottom=40");
+        assert_eq!(
+            crop,
+            CropSides {
+                left: 10,
+                top: 20,
+                right: 30,
+                bottom: 40
+            }
+        );
+        assert_eq!(
+            crop.effect_description(),
+            "videocrop left=10 top=20 right=30 bottom=40"
+        );
         assert!(CropSides::of(&placement((0, 0, 640, 360), (0, 0, 1, 1)), 640, 360).is_none());
     }
 
@@ -882,9 +934,18 @@ mod tests {
         assert_eq!(policy("avdec_h264", "Codec/Decoder/Video"), Policy::Keep);
         let hw = "Filter/Editor/Video/Compositor/Hardware";
         assert_eq!(policy("vacompositor", hw), Policy::Hide);
-        assert_eq!(policy("glvideomixer", "Filter/Effect/Video/Compositor"), Policy::Hide);
-        assert_eq!(policy("compositor", "Filter/Editor/Video/Compositor"), Policy::Keep);
-        assert_eq!(policy("vah264enc", "Codec/Encoder/Video/Hardware"), Policy::Keep);
+        assert_eq!(
+            policy("glvideomixer", "Filter/Effect/Video/Compositor"),
+            Policy::Hide
+        );
+        assert_eq!(
+            policy("compositor", "Filter/Editor/Video/Compositor"),
+            Policy::Keep
+        );
+        assert_eq!(
+            policy("vah264enc", "Codec/Encoder/Video/Hardware"),
+            Policy::Keep
+        );
     }
 }
 

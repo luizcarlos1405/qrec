@@ -15,20 +15,17 @@ pub(super) fn make(factory: &str, name: &str) -> Result<gst::Element, String> {
     gst::ElementFactory::make(factory)
         .name(name)
         .build()
-        .map_err(|_| {
-            format!("the GStreamer element {factory} is missing (see `qrec doctor`)")
-        })
+        .map_err(|_| format!("the GStreamer element {factory} is missing (see `qrec doctor`)"))
 }
 
 /// Sets a property from its string form (ints, enums by nick, flags, bools).
 pub(super) fn set_str(obj: &impl IsA<glib::Object>, name: &str, value: &str) -> Result<(), String> {
     let obj = obj.as_ref();
-    let pspec = obj.find_property(name).ok_or_else(|| {
-        format!("{} has no property {name}", obj.type_().name())
-    })?;
-    let value = glib::Value::deserialize_with_pspec(value, &pspec).map_err(|_| {
-        format!("{}: invalid value {value:?} for {name}", obj.type_().name())
-    })?;
+    let pspec = obj
+        .find_property(name)
+        .ok_or_else(|| format!("{} has no property {name}", obj.type_().name()))?;
+    let value = glib::Value::deserialize_with_pspec(value, &pspec)
+        .map_err(|_| format!("{}: invalid value {value:?} for {name}", obj.type_().name()))?;
     obj.set_property_from_value(name, &value);
     Ok(())
 }
@@ -40,16 +37,16 @@ pub(super) fn set_value(
     value: impl ToValue,
 ) -> Result<(), String> {
     let obj = obj.as_ref();
-    let pspec = obj.find_property(name).ok_or_else(|| {
-        format!("{} has no property {name}", obj.type_().name())
-    })?;
+    let pspec = obj
+        .find_property(name)
+        .ok_or_else(|| format!("{} has no property {name}", obj.type_().name()))?;
     let value = value.to_value();
     let value = if value.type_().is_a(pspec.value_type()) {
         value
     } else {
-        value.transform_with_type(pspec.value_type()).map_err(|_| {
-            format!("{}: wrong value type for {name}", obj.type_().name())
-        })?
+        value
+            .transform_with_type(pspec.value_type())
+            .map_err(|_| format!("{}: wrong value type for {name}", obj.type_().name()))?
     };
     obj.set_property_from_value(name, &value);
     Ok(())

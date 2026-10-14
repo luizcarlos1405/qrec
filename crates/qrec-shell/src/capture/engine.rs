@@ -49,7 +49,7 @@ use qrec_core::{Event, Fps, TakeId};
 
 use super::fake::{fake_camera_modes, is_fake_audio, is_fake_camera, is_fake_screen};
 use super::live::{BuildCtx, BuildError, Live, LiveKey, level_reading};
-use super::portal::{ScreenShare, OpenRequest, PortalWorker};
+use super::portal::{OpenRequest, PortalWorker, ScreenShare};
 use super::record::{RecordBin, attach_audio, attach_video};
 use super::spec::{
     CameraKey, SourceSpec, audio_label, plan_sources, record_file_rel, scene_sources, video_label,
@@ -74,7 +74,10 @@ const ENDED_MEMORY: usize = 32;
 pub(super) enum Cmd {
     SetLive(Option<LiveScene>, Inbox),
     Start(Box<CapturePlan>, Inbox),
-    Stop { take: TakeId, cancel: bool },
+    Stop {
+        take: TakeId,
+        cancel: bool,
+    },
     Shutdown(Sender<()>),
     /// A bus message of the live pipeline with this generation.
     Bus(u64, gst::Message),
@@ -93,7 +96,10 @@ pub(super) enum Cmd {
         results: Vec<(String, Result<ScreenShare, String>)>,
     },
     /// Test hook (fake backend only): make a source fail.
-    Inject { source: String, failure: FakeFailure },
+    Inject {
+        source: String,
+        failure: FakeFailure,
+    },
     /// Test hook: what the live pipeline is right now.
     #[cfg(test)]
     Inspect(Sender<LiveInfo>),
@@ -155,7 +161,10 @@ impl GstCaptureEngine {
                 if let Err(panic) = catch_unwind(AssertUnwindSafe(move || engine.run())) {
                     let message = format!("the capture engine crashed: {}", panic_text(&panic));
                     tracing::error!("{message}");
-                    let out = shared.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                    let out = shared
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .clone();
                     if let Some(out) = out {
                         out.event(Event::EngineWedged { message });
                     }
@@ -173,7 +182,8 @@ impl GstCaptureEngine {
     pub(super) fn inspect(&self) -> LiveInfo {
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.tx.send(Cmd::Inspect(tx)).expect("the engine runs");
-        rx.recv_timeout(Duration::from_secs(20)).expect("the engine answers")
+        rx.recv_timeout(Duration::from_secs(20))
+            .expect("the engine answers")
     }
 
     /// Fake backend only: makes the source `source` (an output, camera
@@ -190,7 +200,10 @@ impl GstCaptureEngine {
     }
 
     fn gone(&self) -> Option<Inbox> {
-        self.out.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.out
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -203,7 +216,11 @@ impl CaptureEngine for GstCaptureEngine {
     fn start(&mut self, plan: CapturePlan, out: Inbox) {
         self.remember(&out);
         let take = plan.take.clone();
-        if self.tx.send(Cmd::Start(Box::new(plan), out.clone())).is_err() {
+        if self
+            .tx
+            .send(Cmd::Start(Box::new(plan), out.clone()))
+            .is_err()
+        {
             out.event(Event::CaptureFailed {
                 take: Some(take),
                 source: None,
@@ -233,9 +250,9 @@ impl CaptureEngine for GstCaptureEngine {
             return;
         };
         let (ack_tx, ack_rx) = crossbeam_channel::bounded(1);
-        if self.tx.send(Cmd::Shutdown(ack_tx)).is_ok() && ack_rx.recv_timeout(SHUTDOWN_WAIT).is_ok() {
-            let _ = thread.join();
-        } else if thread.is_finished() {
+        let acked = self.tx.send(Cmd::Shutdown(ack_tx)).is_ok()
+            && ack_rx.recv_timeout(SHUTDOWN_WAIT).is_ok();
+        if acked || thread.is_finished() {
             let _ = thread.join();
         } else {
             tracing::warn!("the capture engine didn't stop in time; leaving it behind");
@@ -264,13 +281,17 @@ enum Phase {
     /// Accepted, nothing attached yet (left within the same command).
     New,
     /// Waiting for the portal to share screens.
-    AwaitingPortal { deadline: Instant },
+    AwaitingPortal {
+        deadline: Instant,
+    },
     /// Bins attached at T0; waiting for first writes and the health window.
     Starting {
         health_until: Instant,
         first_buffer_by: Instant,
     },
-    Recording { next_clock: Instant },
+    Recording {
+        next_clock: Instant,
+    },
     Stopping {
         fill_by: Instant,
         eos_by: Instant,
@@ -714,7 +735,10 @@ impl Engine {
         let deadline = Instant::now() + Duration::from_millis(200);
         let mut found = None;
         loop {
-            let cmd = match self.rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            let cmd = match self
+                .rx
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
                 Ok(cmd) => cmd,
                 Err(_) => break,
             };
@@ -847,7 +871,9 @@ impl Engine {
             let needed = |output: &str| {
                 self.take.as_ref().and_then(|run| {
                     run.plan.video.iter().find_map(|rec| match &rec.source {
-                        VideoSource::Screen { output: o, .. } if o == output => Some(video_label(rec)),
+                        VideoSource::Screen { output: o, .. } if o == output => {
+                            Some(video_label(rec))
+                        }
                         _ => None,
                     })
                 })
@@ -938,7 +964,11 @@ impl Engine {
         match self.project.resolve(&plan.dir) {
             Ok(dir) if dir.is_dir() => {}
             Ok(dir) => {
-                return fail(self, None, format!("the take folder {} is missing", dir.display()));
+                return fail(
+                    self,
+                    None,
+                    format!("the take folder {} is missing", dir.display()),
+                );
             }
             Err(e) => return fail(self, None, e.message),
         }
@@ -1018,7 +1048,7 @@ impl Engine {
         let mut specs = wanted.clone();
         if let Some(scene) = self.desired.clone() {
             for spec in self.scene_specs(&scene) {
-                let unshared = self.missing_casts(std::slice::from_ref(&spec)).len() > 0;
+                let unshared = !self.missing_casts(std::slice::from_ref(&spec)).is_empty();
                 if !unshared && !specs.iter().any(|s| s.same_device(&spec)) {
                     specs.push(spec);
                 }
@@ -1105,11 +1135,28 @@ impl Engine {
             let tee = &live.sources[source].tee;
             let attached = match (vrec, arec) {
                 (Some(rec), _) => attach_video(
-                    &live.pipeline, tee, source, index, rec, plan.fps, &location, rel, label.clone(),
-                    &self.tx, run.tag,
+                    &live.pipeline,
+                    tee,
+                    source,
+                    index,
+                    rec,
+                    plan.fps,
+                    &location,
+                    rel,
+                    label.clone(),
+                    &self.tx,
+                    run.tag,
                 ),
                 (_, Some(rec)) => attach_audio(
-                    &live.pipeline, tee, source, index, rec, &location, rel, label.clone(), &self.tx,
+                    &live.pipeline,
+                    tee,
+                    source,
+                    index,
+                    rec,
+                    &location,
+                    rel,
+                    label.clone(),
+                    &self.tx,
                     run.tag,
                 ),
                 _ => unreachable!("every stream is video or audio"),
@@ -1138,7 +1185,8 @@ impl Engine {
             first_buffer_by: now + Duration::from_millis(u64::from(plan.first_buffer_ms)),
         };
         let files: Vec<&str> = run.bins.iter().map(|b| b.file.as_str()).collect();
-        run.log.line(format!("attached at T0 = {t0} ns: {}", files.join(", ")));
+        run.log
+            .line(format!("attached at T0 = {t0} ns: {}", files.join(", ")));
     }
 
     /// Fails the take being started: tears its bins down, `CaptureFailed`.
@@ -1148,7 +1196,10 @@ impl Engine {
         };
         run.log.line(format!(
             "failed: {}{message}",
-            source.as_deref().map(|s| format!("{s}: ")).unwrap_or_default()
+            source
+                .as_deref()
+                .map(|s| format!("{s}: "))
+                .unwrap_or_default()
         ));
         let ok = self.teardown_bins(&mut run.bins, false);
         self.remember_ended(run.plan.take.clone());
@@ -1158,7 +1209,10 @@ impl Engine {
             message,
         });
         if !ok {
-            self.wedge("the capture engine is stuck tearing down a take (GPU driver?); restart Qrec".into());
+            self.wedge(
+                "the capture engine is stuck tearing down a take (GPU driver?); restart Qrec"
+                    .into(),
+            );
         }
         self.after_take();
     }
@@ -1288,7 +1342,9 @@ impl Engine {
             }
             ProbeEvent::SinkEos(i) => {
                 let stopping = matches!(run.phase, Phase::Stopping { .. });
-                let Some(bin) = run.bins.get_mut(i) else { return };
+                let Some(bin) = run.bins.get_mut(i) else {
+                    return;
+                };
                 bin.eos = true;
                 run.log.line(format!("{}: EOS written", bin.id));
                 if !stopping && !bin.closing && bin.lost.is_none() {
@@ -1311,7 +1367,8 @@ impl Engine {
                 let path = msg.src().map(object_path).unwrap_or_default();
                 tracing::warn!("capture: error from {}: {detailed}", path.join("<"));
                 if let Some(run) = &mut self.take {
-                    run.log.line(format!("error from {}: {detailed}", path.join(" < ")));
+                    run.log
+                        .line(format!("error from {}: {detailed}", path.join(" < ")));
                 }
                 self.on_error(&path, message);
             }
@@ -1320,7 +1377,8 @@ impl Engine {
                 let path = msg.src().map(object_path).unwrap_or_default();
                 tracing::info!("capture: warning from {}: {detailed}", path.join("<"));
                 if let Some(run) = &mut self.take {
-                    run.log.line(format!("warning from {}: {detailed}", path.join(" < ")));
+                    run.log
+                        .line(format!("warning from {}: {detailed}", path.join(" < ")));
                 }
             }
             gst::MessageView::Latency(_) => {
@@ -1330,8 +1388,7 @@ impl Engine {
                 if let Some(s) = e.structure()
                     && s.name() == "level"
                     && let Some(index) = msg.src().and_then(|src| live.source_of(&object_path(src)))
-                    && let Some(reading) =
-                        level_reading(live.sources[index].spec.device_name(), s)
+                    && let Some(reading) = level_reading(live.sources[index].spec.device_name(), s)
                 {
                     self.side(SideEvent::Level(reading));
                 }
@@ -1352,7 +1409,11 @@ impl Engine {
                 .position(|b| path.iter().any(|name| *name == b.bin.name().as_str()))
         });
         if let Some(index) = bin_index {
-            let label = self.take.as_ref().map(|r| r.bins[index].label.clone()).unwrap_or_default();
+            let label = self
+                .take
+                .as_ref()
+                .map(|r| r.bins[index].label.clone())
+                .unwrap_or_default();
             return self.branch_lost(&[index], format!("{label}: {message}"));
         }
         let source = self.live.as_ref().and_then(|live| live.source_of(path));
@@ -1389,7 +1450,10 @@ impl Engine {
             return;
         }
         // Pipeline-wide.
-        let all: Vec<usize> = self.take.as_ref().map_or(Vec::new(), |run| (0..run.bins.len()).collect());
+        let all: Vec<usize> = self
+            .take
+            .as_ref()
+            .map_or(Vec::new(), |run| (0..run.bins.len()).collect());
         if let Some(live) = &mut self.live {
             for source in &mut live.sources {
                 source.dead.get_or_insert_with(|| message.clone());
@@ -1409,7 +1473,10 @@ impl Engine {
         match run.phase {
             Phase::New | Phase::AwaitingPortal { .. } => {}
             Phase::Starting { .. } => {
-                let label = bins.first().and_then(|&i| run.bins.get(i)).map(|b| b.label.clone());
+                let label = bins
+                    .first()
+                    .and_then(|&i| run.bins.get(i))
+                    .map(|b| b.label.clone());
                 self.fail_take(label, message);
             }
             Phase::Recording { .. } | Phase::Stopping { .. } => {
@@ -1417,7 +1484,9 @@ impl Engine {
                 let take = run.plan.take.clone();
                 let mut lost = Vec::new();
                 for &i in bins {
-                    let Some(bin) = run.bins.get_mut(i) else { continue };
+                    let Some(bin) = run.bins.get_mut(i) else {
+                        continue;
+                    };
                     if bin.lost.is_some() {
                         continue;
                     }
@@ -1454,7 +1523,9 @@ impl Engine {
     }
 
     fn finish_take(&mut self, timed_out: bool) {
-        let Some(mut run) = self.take.take() else { return };
+        let Some(mut run) = self.take.take() else {
+            return;
+        };
         let streams: Vec<RecordedStream> = run
             .bins
             .iter()
@@ -1499,7 +1570,10 @@ impl Engine {
             timed_out,
         });
         if !ok {
-            self.wedge("the capture engine is stuck tearing down a take (GPU driver?); restart Qrec".into());
+            self.wedge(
+                "the capture engine is stuck tearing down a take (GPU driver?); restart Qrec"
+                    .into(),
+            );
         }
         self.after_take();
     }
@@ -1592,7 +1666,11 @@ impl Engine {
             Phase::Recording { next_clock } => Some(*next_clock),
             Phase::Stopping { fill_by, eos_by } => {
                 let closing_done = run.bins.iter().all(|b| b.closing || b.lost.is_some());
-                Some(if closing_done { *eos_by } else { (*fill_by).min(*eos_by) })
+                Some(if closing_done {
+                    *eos_by
+                } else {
+                    (*fill_by).min(*eos_by)
+                })
             }
         }
     }

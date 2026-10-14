@@ -21,8 +21,8 @@ use crossbeam_channel::Sender;
 use gst::glib;
 use gst::prelude::*;
 use qrec_core::layout::place;
-use qrec_core::plans::LiveScene;
 use qrec_core::model::Layer;
+use qrec_core::plans::LiveScene;
 
 use super::engine::Cmd;
 use super::fake::{FAKE_SCREEN_FPS, FAKE_SCREEN_SIZE, FakeTone, fake_tone};
@@ -211,7 +211,11 @@ fn add_source(
         (Backend::Fake, SourceSpec::Screen { output }) => {
             let src = make("videotestsrc", &name("src")).map_err(err)?;
             set_value(&src, "is-live", true).map_err(err)?;
-            let pattern = if output.ends_with('2') { "ball" } else { "smpte" };
+            let pattern = if output.ends_with('2') {
+                "ball"
+            } else {
+                "smpte"
+            };
             set_str(&src, "pattern", pattern).map_err(err)?;
             let (w, h) = FAKE_SCREEN_SIZE;
             chain.push(src.clone());
@@ -231,9 +235,9 @@ fn add_source(
             let src = make("videotestsrc", &name("src")).map_err(err)?;
             set_value(&src, "is-live", true).map_err(err)?;
             set_str(&src, "pattern", "ball").map_err(err)?;
-            let (w, h, num, den) = mode
-                .as_ref()
-                .map_or((640, 480, 30, 1), |m| (m.width, m.height, m.fps_num, m.fps_den));
+            let (w, h, num, den) = mode.as_ref().map_or((640, 480, 30, 1), |m| {
+                (m.width, m.height, m.fps_num, m.fps_den)
+            });
             chain.push(src.clone());
             chain.push(
                 capsfilter(
@@ -258,9 +262,10 @@ fn add_source(
             src
         }
         (Backend::Real, SourceSpec::Screen { output }) => {
-            let cast = ctx.casts.get(output).ok_or_else(|| {
-                err(format!("no screen-share session for {output}"))
-            })?;
+            let cast = ctx
+                .casts
+                .get(output)
+                .ok_or_else(|| err(format!("no screen-share session for {output}")))?;
             let src = make("pipewiresrc", &name("src")).map_err(err)?;
             set_value(&src, "fd", cast.fd_raw()).map_err(err)?;
             set_value(&src, "path", cast.node_id.to_string()).map_err(err)?;
@@ -305,7 +310,8 @@ fn add_source(
         let convert = make("videoconvert", &name("convert")).map_err(err)?;
         chain.push(convert);
         chain.push(
-            capsfilter(&name("format"), "video/x-raw,format=I420,colorimetry=bt709").map_err(err)?,
+            capsfilter(&name("format"), "video/x-raw,format=I420,colorimetry=bt709")
+                .map_err(err)?,
         );
     } else {
         chain.push(make("audioconvert", &name("convert")).map_err(err)?);
@@ -390,7 +396,11 @@ fn add_preview(live: &Live, scene: &LiveScene, ctx: &BuildCtx<'_>) -> Result<Pre
     let background = make("videotestsrc", "pv-background")?;
     set_value(&background, "is-live", true)?;
     set_str(&background, "pattern", "solid-color")?;
-    set_value(&background, "foreground-color", argb(canvas.background.as_str()))?;
+    set_value(
+        &background,
+        "foreground-color",
+        argb(canvas.background.as_str()),
+    )?;
     let background_caps = capsfilter("pv-background-caps", &raw(""))?;
     let compositor = make("compositor", "pv-compositor")?;
     let out_caps = capsfilter("pv-caps", &raw(""))?;
@@ -441,7 +451,11 @@ fn add_preview(live: &Live, scene: &LiveScene, ctx: &BuildCtx<'_>) -> Result<Pre
     let mut layers = Vec::new();
     for (z, layer) in scene.scene.layers.iter().enumerate() {
         let wanted = SourceSpec::of_video(&layer.source, None);
-        let Some(source) = live.sources.iter().position(|b| b.spec.same_device(&wanted)) else {
+        let Some(source) = live
+            .sources
+            .iter()
+            .position(|b| b.spec.same_device(&wanted))
+        else {
             continue;
         };
         let p = format!("pv{z}");
@@ -451,7 +465,9 @@ fn add_preview(live: &Live, scene: &LiveScene, ctx: &BuildCtx<'_>) -> Result<Pre
         set_value(&queue, "max-size-bytes", 0u32)?;
         set_value(&queue, "max-size-time", 0u64)?;
         let crop = make("videocrop", &format!("{p}-crop"))?;
-        pipeline.add_many([&queue, &crop]).map_err(|e| e.to_string())?;
+        pipeline
+            .add_many([&queue, &crop])
+            .map_err(|e| e.to_string())?;
         queue.link(&crop).map_err(|e| e.to_string())?;
         let tee_pad = live.sources[source]
             .tee
@@ -496,7 +512,12 @@ fn apply_layer(pl: &PreviewLayer, layer: &Layer, size: Option<(u32, u32)>, zorde
         _ => ((0, 0, 0, 0), layer.rect),
     };
     let (left, top, right, bottom) = crop;
-    for (name, value) in [("left", left), ("top", top), ("right", right), ("bottom", bottom)] {
+    for (name, value) in [
+        ("left", left),
+        ("top", top),
+        ("right", right),
+        ("bottom", bottom),
+    ] {
         let _ = set_value(&pl.crop, name, value as i32);
     }
     let visible = layer.visible && (size.is_none() || placement.is_some());
@@ -504,7 +525,15 @@ fn apply_layer(pl: &PreviewLayer, layer: &Layer, size: Option<(u32, u32)>, zorde
     let _ = set_value(&pl.pad, "ypos", dst.y);
     let _ = set_value(&pl.pad, "width", dst.w as i32);
     let _ = set_value(&pl.pad, "height", dst.h as i32);
-    let _ = set_value(&pl.pad, "alpha", if visible { layer.opacity.clamp(0.0, 1.0) } else { 0.0 });
+    let _ = set_value(
+        &pl.pad,
+        "alpha",
+        if visible {
+            layer.opacity.clamp(0.0, 1.0)
+        } else {
+            0.0
+        },
+    );
     let _ = set_value(&pl.pad, "zorder", zorder);
 }
 

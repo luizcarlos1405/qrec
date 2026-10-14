@@ -235,9 +235,9 @@ pub fn plan_gpu_env(inputs: &GpuEnvInputs<'_>) -> GpuEnvPlan {
     let mut plan = GpuEnvPlan::default();
     let inherited = |key: &str| (inputs.env)(key).filter(|v| !v.is_empty());
     match inputs.choice {
-        None => plan
-            .notes
-            .push("no Intel or AMD render node: VA-API stays off, LIBVA_DRIVER_NAME untouched".into()),
+        None => plan.notes.push(
+            "no Intel or AMD render node: VA-API stays off, LIBVA_DRIVER_NAME untouched".into(),
+        ),
         Some(choice) => match choice.vendor {
             None => plan.notes.push(format!(
                 "can't read the PCI vendor of {}; LIBVA_DRIVER_NAME untouched",
@@ -255,7 +255,10 @@ pub fn plan_gpu_env(inputs: &GpuEnvInputs<'_>) -> GpuEnvPlan {
                 )),
                 Some(driver) => {
                     let previous = inherited(LIBVA_DRIVER_NAME);
-                    if previous.as_deref().is_some_and(|p| driver_fits_vendor(p, vendor)) {
+                    if previous
+                        .as_deref()
+                        .is_some_and(|p| driver_fits_vendor(p, vendor))
+                    {
                         // Already right (or a legacy driver of the same vendor).
                     } else {
                         if let Some(previous) = &previous {
@@ -340,7 +343,12 @@ pub fn find_mesa_egl_vendor(data_dirs: &[PathBuf]) -> Option<String> {
         json_files(&dir.join("glvnd/egl_vendor.d"))
             .into_iter()
             .find(|name| name.to_ascii_lowercase().contains("mesa"))
-            .map(|name| dir.join("glvnd/egl_vendor.d").join(name).to_string_lossy().into_owned())
+            .map(|name| {
+                dir.join("glvnd/egl_vendor.d")
+                    .join(name)
+                    .to_string_lossy()
+                    .into_owned()
+            })
     })
 }
 
@@ -394,8 +402,8 @@ impl GpuInputs {
     /// config. Unreadable files count as "not configured".
     pub fn discover(args: &[OsString], for_gui: bool) -> Self {
         let cwd = std::env::current_dir().ok();
-        let project_device = project_dir_from_args(args, cwd.as_deref())
-            .and_then(|dir| project_va_device(&dir));
+        let project_device =
+            project_dir_from_args(args, cwd.as_deref()).and_then(|dir| project_va_device(&dir));
         let env = crate::paths::Env::from_process();
         let config_device = crate::paths::UserDirs::resolve(&env)
             .ok()
@@ -618,7 +626,9 @@ fn apply_changes(changes: &[EnvChange], threads: Option<usize>) -> Result<(), St
 
 /// The number of threads of this process (`/proc/self/task` entries).
 fn thread_count() -> Option<usize> {
-    fs::read_dir("/proc/self/task").ok().map(|entries| entries.count())
+    fs::read_dir("/proc/self/task")
+        .ok()
+        .map(|entries| entries.count())
 }
 
 /// The `va*h264enc` factory whose `device-path` is `device` (A§8.10): VA
@@ -648,9 +658,7 @@ pub fn va_h264_factory_for(device: &str) -> Option<String> {
             return false;
         }
         let path: Option<String> = element.property("device-path");
-        path.is_some_and(|p| {
-            fs::canonicalize(&p).unwrap_or_else(|_| PathBuf::from(&p)) == wanted
-        })
+        path.is_some_and(|p| fs::canonicalize(&p).unwrap_or_else(|_| PathBuf::from(&p)) == wanted)
     })
 }
 
@@ -717,7 +725,10 @@ mod tests {
 
     #[test]
     fn effective_device_order_never_picks_nvidia_automatically() {
-        let nodes = [node(128, Some(VENDOR_NVIDIA)), node(129, Some(VENDOR_INTEL))];
+        let nodes = [
+            node(128, Some(VENDOR_NVIDIA)),
+            node(129, Some(VENDOR_INTEL)),
+        ];
         let auto = effective_va_device(None, None, &nodes).unwrap();
         assert_eq!(
             auto,
@@ -732,16 +743,22 @@ mod tests {
             (config.origin, config.vendor),
             (DeviceOrigin::Config, Some(VENDOR_NVIDIA))
         );
-        let project =
-            effective_va_device(Some("/dev/dri/renderD129"), Some("/dev/dri/renderD128"), &nodes)
-                .unwrap();
+        let project = effective_va_device(
+            Some("/dev/dri/renderD129"),
+            Some("/dev/dri/renderD128"),
+            &nodes,
+        )
+        .unwrap();
         assert_eq!(project.origin, DeviceOrigin::Project);
         // Blank values don't count; only NVIDIA ⇒ nothing.
         assert_eq!(
             effective_va_device(Some(" "), None, &nodes).unwrap().origin,
             DeviceOrigin::Auto
         );
-        assert_eq!(effective_va_device(None, None, &[node(128, Some(VENDOR_NVIDIA))]), None);
+        assert_eq!(
+            effective_va_device(None, None, &[node(128, Some(VENDOR_NVIDIA))]),
+            None
+        );
         // AMD counts too; an unknown configured node has no vendor.
         let amd = effective_va_device(None, None, &[node(128, Some(VENDOR_AMD))]).unwrap();
         assert_eq!(amd.vendor, Some(VENDOR_AMD));
@@ -765,14 +782,19 @@ mod tests {
             nodes,
             for_gui,
             env: &env,
-            mesa_egl_vendor: Some("/run/opengl-driver/share/glvnd/egl_vendor.d/50_mesa.json".into()),
+            mesa_egl_vendor: Some(
+                "/run/opengl-driver/share/glvnd/egl_vendor.d/50_mesa.json".into(),
+            ),
             vulkan_icd: Some("/run/opengl-driver/share/vulkan/icd.d/intel_icd.x86_64.json".into()),
         })
     }
 
     #[test]
     fn libva_driver_follows_the_chosen_vendor() {
-        let nodes = [node(128, Some(VENDOR_NVIDIA)), node(129, Some(VENDOR_INTEL))];
+        let nodes = [
+            node(128, Some(VENDOR_NVIDIA)),
+            node(129, Some(VENDOR_INTEL)),
+        ];
         let intel = effective_va_device(None, None, &nodes).unwrap();
 
         let plan = plan_with(Some(&intel), &nodes, false, &[]);
@@ -786,23 +808,40 @@ mod tests {
         );
 
         // An inherited mismatch is overridden and noted; a fitting value is kept.
-        let plan = plan_with(Some(&intel), &nodes, false, &[(LIBVA_DRIVER_NAME, "nvidia")]);
+        let plan = plan_with(
+            Some(&intel),
+            &nodes,
+            false,
+            &[(LIBVA_DRIVER_NAME, "nvidia")],
+        );
         assert_eq!(plan.changes[0].previous.as_deref(), Some("nvidia"));
         assert!(plan.notes[0].contains("overriding inherited LIBVA_DRIVER_NAME=nvidia"));
-        assert!(plan_with(Some(&intel), &nodes, false, &[(LIBVA_DRIVER_NAME, "iHD")])
-            .changes
-            .is_empty());
-        assert!(plan_with(Some(&intel), &nodes, false, &[(LIBVA_DRIVER_NAME, "i965")])
-            .changes
-            .is_empty());
+        assert!(
+            plan_with(Some(&intel), &nodes, false, &[(LIBVA_DRIVER_NAME, "iHD")])
+                .changes
+                .is_empty()
+        );
+        assert!(
+            plan_with(Some(&intel), &nodes, false, &[(LIBVA_DRIVER_NAME, "i965")])
+                .changes
+                .is_empty()
+        );
 
         let amd_nodes = [node(128, Some(VENDOR_AMD))];
         let amd = effective_va_device(None, None, &amd_nodes).unwrap();
-        assert_eq!(plan_with(Some(&amd), &amd_nodes, false, &[]).changes[0].value, "radeonsi");
+        assert_eq!(
+            plan_with(Some(&amd), &amd_nodes, false, &[]).changes[0].value,
+            "radeonsi"
+        );
 
         // Explicit NVIDIA: untouched.
         let nvidia = effective_va_device(None, Some("/dev/dri/renderD128"), &nodes).unwrap();
-        let plan = plan_with(Some(&nvidia), &nodes, true, &[(LIBVA_DRIVER_NAME, "nvidia")]);
+        let plan = plan_with(
+            Some(&nvidia),
+            &nodes,
+            true,
+            &[(LIBVA_DRIVER_NAME, "nvidia")],
+        );
         assert!(plan.changes.is_empty(), "{plan:?}");
         assert!(plan.notes[0].contains("configured explicitly"));
 
@@ -813,7 +852,10 @@ mod tests {
 
     #[test]
     fn gui_pins_egl_and_vulkan_away_from_nvidia() {
-        let nodes = [node(128, Some(VENDOR_NVIDIA)), node(129, Some(VENDOR_INTEL))];
+        let nodes = [
+            node(128, Some(VENDOR_NVIDIA)),
+            node(129, Some(VENDOR_INTEL)),
+        ];
         let intel = effective_va_device(None, None, &nodes).unwrap();
         let keys = |plan: &GpuEnvPlan| -> Vec<String> {
             plan.changes.iter().map(|c| c.key.clone()).collect()
@@ -822,13 +864,21 @@ mod tests {
         let plan = plan_with(Some(&intel), &nodes, true, &[]);
         assert_eq!(
             keys(&plan),
-            [LIBVA_DRIVER_NAME, EGL_VENDOR_FILES, VK_DRIVER_FILES, VK_ICD_FILENAMES]
+            [
+                LIBVA_DRIVER_NAME,
+                EGL_VENDOR_FILES,
+                VK_DRIVER_FILES,
+                VK_ICD_FILENAMES
+            ]
         );
         assert!(plan.changes[1].value.ends_with("50_mesa.json"));
         assert!(plan.changes[3].value.ends_with("intel_icd.x86_64.json"));
 
         // Not for the CLI; not without an NVIDIA device; never over the user's values.
-        assert_eq!(keys(&plan_with(Some(&intel), &nodes, false, &[])), [LIBVA_DRIVER_NAME]);
+        assert_eq!(
+            keys(&plan_with(Some(&intel), &nodes, false, &[])),
+            [LIBVA_DRIVER_NAME]
+        );
         let intel_only = [node(129, Some(VENDOR_INTEL))];
         assert_eq!(
             keys(&plan_with(Some(&intel), &intel_only, true, &[])),
@@ -838,7 +888,10 @@ mod tests {
             Some(&intel),
             &nodes,
             true,
-            &[(EGL_VENDOR_FILES, "/mine.json"), (VK_ICD_FILENAMES, "/vk.json")],
+            &[
+                (EGL_VENDOR_FILES, "/mine.json"),
+                (VK_ICD_FILENAMES, "/vk.json"),
+            ],
         );
         assert_eq!(keys(&plan), [LIBVA_DRIVER_NAME]);
         assert_eq!(plan.notes.len(), 2);
@@ -864,10 +917,20 @@ mod tests {
         let dirs = vec![tmp.path().join("empty"), share.clone()];
         assert_eq!(
             find_mesa_egl_vendor(&dirs).unwrap(),
-            share.join("glvnd/egl_vendor.d/50_mesa.json").to_string_lossy()
+            share
+                .join("glvnd/egl_vendor.d/50_mesa.json")
+                .to_string_lossy()
         );
-        assert!(find_vulkan_icd(&dirs, VENDOR_INTEL).unwrap().ends_with("/intel_icd.x86_64.json"));
-        assert!(find_vulkan_icd(&dirs, VENDOR_AMD).unwrap().ends_with("/radeon_icd.x86_64.json"));
+        assert!(
+            find_vulkan_icd(&dirs, VENDOR_INTEL)
+                .unwrap()
+                .ends_with("/intel_icd.x86_64.json")
+        );
+        assert!(
+            find_vulkan_icd(&dirs, VENDOR_AMD)
+                .unwrap()
+                .ends_with("/radeon_icd.x86_64.json")
+        );
         assert_eq!(find_vulkan_icd(&dirs, VENDOR_NVIDIA), None);
 
         let dirs = graphics_data_dirs(Some("/a:relative:/b"));
@@ -898,11 +961,24 @@ mod tests {
         );
         // The cwd counts only when it holds qrec.json.
         assert_eq!(project_dir_from_args(&args(&["qrec"]), Some(cwd)), None);
-        fs::write(cwd.join("qrec.json"), r#"{"recording":{"vaapiDevice":"/dev/dri/renderD129"}}"#)
-            .unwrap();
-        assert_eq!(project_dir_from_args(&args(&["qrec"]), Some(cwd)), Some(cwd.to_path_buf()));
-        assert_eq!(project_va_device(cwd).as_deref(), Some("/dev/dri/renderD129"));
-        fs::write(cwd.join("qrec.json"), r#"{"recording":{"vaapiDevice":null}}"#).unwrap();
+        fs::write(
+            cwd.join("qrec.json"),
+            r#"{"recording":{"vaapiDevice":"/dev/dri/renderD129"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            project_dir_from_args(&args(&["qrec"]), Some(cwd)),
+            Some(cwd.to_path_buf())
+        );
+        assert_eq!(
+            project_va_device(cwd).as_deref(),
+            Some("/dev/dri/renderD129")
+        );
+        fs::write(
+            cwd.join("qrec.json"),
+            r#"{"recording":{"vaapiDevice":null}}"#,
+        )
+        .unwrap();
         assert_eq!(project_va_device(cwd), None);
         fs::write(cwd.join("qrec.json"), "not json").unwrap();
         assert_eq!(project_va_device(cwd), None);
@@ -911,7 +987,10 @@ mod tests {
     #[test]
     fn reads_the_configured_vaapi_device() {
         let cases = [
-            ("[encoder]\nvaapi_device = \"/dev/dri/renderD129\"\n", Some("/dev/dri/renderD129")),
+            (
+                "[encoder]\nvaapi_device = \"/dev/dri/renderD129\"\n",
+                Some("/dev/dri/renderD129"),
+            ),
             (
                 "theme = \"swamp-night\"\n[encoder] # GPU\npreference = \"vaapi\"\nvaapi_device = '/dev/dri/renderD130' # intel\n",
                 Some("/dev/dri/renderD130"),
@@ -919,7 +998,10 @@ mod tests {
             ("encoder.vaapi_device = \"/dev/x\"\n", Some("/dev/x")),
             ("[ui]\nvaapi_device = \"/dev/x\"\n", None),
             ("[encoder]\n# vaapi_device = \"/dev/x\"\n", None),
-            ("[encoder]\nvaapi_device = \"a\\\"b\\u0041\"\n", Some("a\"bA")),
+            (
+                "[encoder]\nvaapi_device = \"a\\\"b\\u0041\"\n",
+                Some("a\"bA"),
+            ),
             ("[encoder]\nvaapi_device = \"unterminated\n", None),
             ("", None),
         ];
