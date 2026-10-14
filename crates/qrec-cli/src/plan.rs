@@ -63,6 +63,11 @@ pub struct ProjectPlan {
     /// Why only a live host can answer ([`Fallback::None`]): the
     /// `unavailable` message when none runs.
     pub needs_host: Option<String>,
+    /// A streaming command (SPEC §14: export, `record … --wait`): under
+    /// `--json` its progress goes to stdout as JSON lines before the reply.
+    /// Every other command prints exactly one object (people still see
+    /// its progress on stderr).
+    pub streams: bool,
 }
 
 /// What a strictly empty folder, which isn't a project yet (SPEC §4.4),
@@ -159,6 +164,7 @@ impl Builder {
             view,
             on_empty: OnEmpty::Init,
             needs_host: None,
+            streams: false,
         }
     }
 
@@ -171,6 +177,7 @@ impl Builder {
             view,
             on_empty: OnEmpty::Answer,
             needs_host: None,
+            streams: false,
         }
     }
 
@@ -425,6 +432,7 @@ impl Builder {
         plan.route.deadline = RECORD_DEADLINE;
         plan.route.fallback = fallback;
         plan.route.stop_on_interrupt = wait;
+        plan.streams = wait;
         if over_selection {
             plan = Self::needs_selection(plan, "--over-selection");
         }
@@ -613,7 +621,7 @@ impl Builder {
                 View::Command,
             ));
         }
-        Ok(self.command(
+        let plan = self.command(
             "export",
             Command::Export {
                 format: match args.format {
@@ -633,7 +641,11 @@ impl Builder {
                 out: args.out.as_deref().map(|p| out_path(cwd, p)).transpose()?,
             },
             View::Export,
-        ))
+        );
+        Ok(ProjectPlan {
+            streams: true,
+            ..plan
+        })
     }
 }
 

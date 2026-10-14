@@ -211,7 +211,7 @@ fn run_local(
                 (None, Some(cwd)) => cwd.to_path_buf(),
                 _ => return Err(no_cwd()),
             };
-            backend.host(&project, args)?;
+            return backend.host(&project, args);
         }
     }
     Ok(0)
@@ -224,6 +224,8 @@ struct Live<'u, 'a> {
     ui: &'u mut Ui<'a>,
     /// The live host that served the request; `None` in-process.
     host: Option<HelloInfo>,
+    /// [`ProjectPlan::streams`](crate::plan::ProjectPlan::streams).
+    streams: bool,
 }
 
 impl Events for Live<'_, '_> {
@@ -245,7 +247,11 @@ impl Events for Live<'_, '_> {
     fn accepted(&mut self) {}
 
     fn progress(&mut self, progress: &Progress) {
-        self.ui.progress(progress);
+        // Under --json only streaming commands print progress lines; the
+        // others print exactly one object (SPEC §14).
+        if self.streams || !self.ui.json {
+            self.ui.progress(progress);
+        }
     }
 
     fn notice(&mut self, toast: &Toast) {
@@ -293,6 +299,7 @@ fn run_project(
     let mut live = Live {
         ui: &mut *ui,
         host: None,
+        streams: plan.streams,
     };
     let finish = backend.request(dir, plan.request.clone(), &plan.route, &mut live);
     let host = live.host;
@@ -338,6 +345,7 @@ fn lazy_init(dir: &Path, backend: &mut dyn Backend, ui: &mut Ui<'_>) -> Result<(
     let mut live = Live {
         ui: &mut *ui,
         host: None,
+        streams: false,
     };
     let finish = backend.request(dir, request, &RouteOpts::command(), &mut live);
     match finish {

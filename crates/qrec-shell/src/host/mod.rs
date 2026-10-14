@@ -87,13 +87,26 @@ impl HostSession for Session {
 
 /// Opens the Session of a project for a host or an in-process command.
 pub trait Opener {
-    /// `opts.mutating`: the caller holds the project lock (it never asks the
-    /// Session to take it again). Read-only opens hold no lock.
-    fn open(&mut self, dir: &Path, opts: OpenOpts) -> Result<Box<dyn HostSession>, ShellError>;
+    /// `opts.mutating`: the caller holds the project lock and passes a
+    /// second descriptor of it in `lock` (same open file description, so
+    /// the same `flock`): the Session keeps it to write the project and
+    /// only closes it when dropped, never asking for the lock again (a
+    /// second `open` of `.qrec/lock` in this process couldn't take it).
+    /// Read-only opens get `None` and hold no lock.
+    fn open(
+        &mut self,
+        dir: &Path,
+        opts: OpenOpts,
+        lock: Option<SessionLock>,
+    ) -> Result<Box<dyn HostSession>, ShellError>;
 }
 
-/// The production [`Opener`]: [`Session::open`] with `Deps` from a factory
-/// (the capture engine depends on the host kind and `QREC_CAPTURE_BACKEND`).
+/// The project lock as the Session holds it (see [`Opener::open`]).
+pub type SessionLock = crate::lock::ProjectLock;
+
+/// The production [`Opener`]: [`Session::open_with`] with `Deps` from a
+/// factory (the capture engine depends on the host kind and
+/// `QREC_CAPTURE_BACKEND`) and the host's lock.
 pub struct SessionOpener<F> {
     make_deps: F,
 }
@@ -111,9 +124,18 @@ impl<F> Opener for SessionOpener<F>
 where
     F: FnMut(&OpenOpts) -> Result<Deps, ShellError>,
 {
-    fn open(&mut self, dir: &Path, opts: OpenOpts) -> Result<Box<dyn HostSession>, ShellError> {
+    fn open(
+        &mut self,
+        dir: &Path,
+        opts: OpenOpts,
+        lock: Option<SessionLock>,
+    ) -> Result<Box<dyn HostSession>, ShellError> {
         let deps = (self.make_deps)(&opts)?;
-        Ok(Box::new(Session::open(dir, opts, deps)?))
+        let cfg = crate::session::SessionConfig {
+            lock,
+            ..Default::default()
+        };
+        Ok(Box::new(Session::open_with(dir, opts, deps, cfg)?))
     }
 }
 
@@ -492,6 +514,17 @@ impl Host {
     /// Connects the opened Session; parked requests go to it in order.
     pub fn attach(&self, inbox: Inbox) {
         self.server.attach(inbox);
+    }
+
+    /// The lock for this host's Session ([`Opener::open`]): a second
+    /// descriptor of the lock the host holds. Closing it (when the Session
+    /// is dropped) releases nothing while the host keeps its own.
+    pub fn session_lock(&self) -> Result<SessionLock, CoreError> {
+        let fd = self
+            .lock
+            .try_clone_fd()
+            .map_err(|e| CoreError::io(format!("can't share the project lock: {e}")))?;
+        Ok(SessionLock::adopt(self.paths.root(), fd)?)
     }
 
     /// Runs the Session until the exit rules say stop. `own` (in-process CLI

@@ -1,12 +1,9 @@
 //! `qrec` end to end: the real binary in an isolated environment
 //! (`TestEnv`: temp HOME/XDG dirs, a private runtime dir and
 //! `QREC_CAPTURE_BACKEND=fake`), with ffmpeg-generated fixture media.
-//!
-//! Tests that need pieces not merged yet are `#[ignore]`d with the owner
-//! they wait for. Most project commands need the shell linked into the
-//! binary (`qrec → qrec-shell`, see the `qrec_cli::Backend` port) plus the
-//! shell's session and IPC; media tests also need the core's output and
-//! autocut, recording needs the core's record area and the capture engine.
+//! Project commands run through the shell linked into the binary: an
+//! in-process `cli` host per command, or (recording) a spawned headless
+//! host that later commands are routed to.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -282,7 +279,6 @@ fn config_lives_in_the_isolated_config_home() {
 // ------------------------------------------------------------ project commands
 
 #[test]
-#[ignore = "needs shell session + ipc linked into the binary (qrec → qrec-shell)"]
 fn init_and_status_shapes() {
     let env = TestEnv::new();
     let dir = env.empty_dir("my-video");
@@ -324,7 +320,6 @@ fn init_and_status_shapes() {
 }
 
 #[test]
-#[ignore = "needs shell session + ipc linked into the binary (qrec → qrec-shell)"]
 fn the_first_change_creates_the_project() {
     let env = TestEnv::new();
     let dir = env.empty_dir("lazy");
@@ -343,7 +338,6 @@ fn the_first_change_creates_the_project() {
 }
 
 #[test]
-#[ignore = "needs shell session + ipc linked into the binary (qrec → qrec-shell)"]
 fn scene_commands_return_seqs_and_ids() {
     let env = TestEnv::new();
     let dir = env.empty_dir("scene");
@@ -426,7 +420,6 @@ fn scene_commands_return_seqs_and_ids() {
 }
 
 #[test]
-#[ignore = "needs shell session + ipc linked into the binary (qrec → qrec-shell)"]
 fn clip_edits_return_seqs_and_created_ids() {
     let env = TestEnv::new();
     let dir = project_with(&env, "clips", &[video(90), video(60)]);
@@ -488,7 +481,6 @@ fn clip_edits_return_seqs_and_created_ids() {
 }
 
 #[test]
-#[ignore = "needs shell session + ipc linked into the binary (qrec → qrec-shell)"]
 fn undo_redo_and_history() {
     let env = TestEnv::new();
     let dir = project_with(&env, "history", &[video(90)]);
@@ -530,7 +522,6 @@ fn undo_redo_and_history() {
 }
 
 #[test]
-#[ignore = "needs shell session + ipc linked into the binary (qrec → qrec-shell)"]
 fn bad_ids_are_not_found() {
     let env = TestEnv::new();
     let dir = project_with(&env, "ids", &[video(30)]);
@@ -547,7 +538,6 @@ fn bad_ids_are_not_found() {
 }
 
 #[test]
-#[ignore = "needs shell session + ipc + media linked into the binary (qrec → qrec-shell)"]
 fn purging_a_take_needs_yes() {
     let env = TestEnv::new();
     let dir = project_with(&env, "purge", &[video(30), video(30)]);
@@ -579,7 +569,6 @@ fn purging_a_take_needs_yes() {
 }
 
 #[test]
-#[ignore = "needs core autocut + shell session/ipc/media linked into the binary"]
 fn autocut_dry_run_then_apply() {
     let env = TestEnv::new();
     // 3 s at 30 fps; speech 0-1 s and 2-3 s: one 1 s silence.
@@ -620,7 +609,6 @@ fn autocut_dry_run_then_apply() {
 }
 
 #[test]
-#[ignore = "needs core output + shell session/ipc/media linked into the binary"]
 fn export_end_to_end_never_overwrites() {
     let env = TestEnv::new();
     let dir = project_with(&env, "export", &[video(30), video(30)]);
@@ -691,7 +679,6 @@ fn export_end_to_end_never_overwrites() {
 }
 
 #[test]
-#[ignore = "needs core output + shell session/ipc/media linked into the binary"]
 fn frame_save_writes_a_png() {
     let env = TestEnv::new();
     let dir = project_with(&env, "frames", &[video(30)]);
@@ -738,7 +725,6 @@ fn schema_keys_and_agent_guide() {
 }
 
 #[test]
-#[ignore = "needs shell media (doctor, sources) linked into the binary"]
 fn sources_and_doctor_use_the_fake_inventory() {
     let env = TestEnv::new();
     let dir = env.empty_dir("anywhere");
@@ -769,7 +755,6 @@ fn sources_and_doctor_use_the_fake_inventory() {
 }
 
 #[test]
-#[ignore = "needs core record + shell capture/session/ipc linked into the binary"]
 fn record_start_and_stop_with_the_fake_backend() {
     let env = TestEnv::new();
     let dir = env.empty_dir("rec");

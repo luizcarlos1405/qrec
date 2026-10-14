@@ -11,7 +11,12 @@ name = "qrec"
 path = "src/main.rs"
 
 [dependencies]
+qrec-core.workspace = true
 qrec-cli.workspace = true
+qrec-shell.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
 qrec-core = { workspace = true, features = ["testkit"] }

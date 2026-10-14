@@ -88,7 +88,11 @@ pub fn run_headless(
         mutating: true,
         recovery: false,
     };
-    let mut session = match opener.open(host.paths.root(), open) {
+    let opened = host
+        .session_lock()
+        .map_err(Into::into)
+        .and_then(|lock| opener.open(host.paths.root(), open, Some(lock)));
+    let mut session = match opened {
         Ok(session) => session,
         Err(e) => {
             let e = e.to_core();

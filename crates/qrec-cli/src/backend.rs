@@ -152,6 +152,8 @@ pub trait Backend {
     fn sources(&mut self) -> Result<Value, CoreError>;
 
     /// `qrec host --headless` (A§8.3 step 5, A§8.6): serves the project
-    /// until it is idle, then returns.
-    fn host(&mut self, project: &Path, args: &HostArgs) -> Result<(), CoreError>;
+    /// until it is idle, then returns the process's exit code: 0 after
+    /// idling out or `shutdown`, 130 after a signal, 1 when it couldn't
+    /// start (the host already logged why).
+    fn host(&mut self, project: &Path, args: &HostArgs) -> Result<u8, CoreError>;
 }

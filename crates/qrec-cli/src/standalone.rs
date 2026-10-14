@@ -77,7 +77,7 @@ impl Backend for Standalone {
         Err(no_shell("qrec sources list"))
     }
 
-    fn host(&mut self, _project: &Path, _args: &HostArgs) -> Result<(), CoreError> {
+    fn host(&mut self, _project: &Path, _args: &HostArgs) -> Result<u8, CoreError> {
         Err(no_shell("qrec host"))
     }
 }

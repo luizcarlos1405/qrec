@@ -150,6 +150,12 @@ impl Fixture {
     fn record(&self) -> lockfile::LockRecord {
         lockfile::read(&self.dir).unwrap().expect("a lock record")
     }
+
+    /// The record's state; `None` while it is caught mid-write (it is
+    /// rewritten in place, so a reader can see half of it).
+    fn record_state(&self) -> Option<HostState> {
+        lockfile::read(&self.dir).ok().flatten().map(|r| r.state)
+    }
 }
 
 fn command(cmd: qrec_core::Command) -> CliRequest {
@@ -749,8 +755,8 @@ fn shutdown_stops_accepting_finalizes_and_lets_jobs_finish() {
     assert_eq!(lines[1]["reply"]["ok"], true, "{lines:?}");
     // No new connections (and the record soon says why)…
     assert!(client::hello(&f.socket, Duration::from_millis(300)).is_err());
-    assert!(wait_for(Duration::from_secs(2), || f.record().state
-        == HostState::Stopping));
+    assert!(wait_for(Duration::from_secs(2), || f.record_state()
+        == Some(HostState::Stopping)));
     // …but the running job finishes and its client gets the reply.
     let out = job.join().unwrap();
     assert_eq!(out.ok()["exported"], true);

@@ -144,9 +144,9 @@ impl Backend for Fake {
         self.sources.clone()
     }
 
-    fn host(&mut self, project: &Path, args: &HostArgs) -> Result<(), CoreError> {
+    fn host(&mut self, project: &Path, args: &HostArgs) -> Result<u8, CoreError> {
         self.hosted.push((project.to_path_buf(), args.clone()));
-        Ok(())
+        Ok(0)
     }
 }
 
@@ -656,6 +656,34 @@ fn export_streams_progress_then_one_object() {
          Stitching [####################] 100%  ETA 5s\n\
          qrec: Layers! Like an onion. Your video is ready.\n"
     );
+}
+
+#[test]
+fn only_streaming_commands_print_progress_lines() {
+    let tmp = Tmp::new();
+    let project = tmp.project("p");
+    let finalizing = || Script {
+        routed: None,
+        progress: vec![progress(ProgressPhase::Finalize, 0, 0, "Finalizing take 1")],
+        notices: vec![],
+        finish: Finish::Reply(Ok(result("Recorded take 1 (2.0 s)", Some(1), &[], json!(null)))),
+    };
+    let mut fake = Fake::new(&tmp.dir("cfg"))
+        .script(finalizing())
+        .script(finalizing())
+        .script(finalizing());
+    // `record stop` isn't a streaming command: exactly one object (SPEC §14) …
+    let stop = run(&mut fake, &project, "qrec record stop --json");
+    assert_eq!(stop.code, 0);
+    assert_eq!(stop.json()["ok"], true);
+    // … `record start --wait` is.
+    let wait = run(&mut fake, &project, "qrec record start --wait --json");
+    let lines = wait.json_lines();
+    assert_eq!(lines.len(), 2, "{}", wait.out);
+    assert_eq!(lines[0]["event"], "progress");
+    // People see the progress on stderr either way.
+    let human = run(&mut fake, &project, "qrec record stop");
+    assert!(human.err.contains("Finalizing take 1"), "{}", human.err);
 }
 
 #[test]

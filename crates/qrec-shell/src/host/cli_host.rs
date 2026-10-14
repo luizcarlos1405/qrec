@@ -556,7 +556,7 @@ fn run_read_only(
         mutating: false,
         recovery,
     };
-    let mut session = match cx.opener.open(dir, opts) {
+    let mut session = match cx.opener.open(dir, opts, None) {
         Ok(session) => session,
         Err(e) => return reply_err(out, e.to_core()),
     };
@@ -632,7 +632,11 @@ fn run_in_process(
         mutating: true,
         recovery,
     };
-    let mut session = match cx.opener.open(dir, open) {
+    let opened = host
+        .session_lock()
+        .map_err(Into::into)
+        .and_then(|lock| cx.opener.open(dir, open, Some(lock)));
+    let mut session = match opened {
         Ok(session) => session,
         Err(e) => {
             let e = e.to_core();

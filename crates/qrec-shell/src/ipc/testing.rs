@@ -639,7 +639,16 @@ impl FakeOpener {
 }
 
 impl Opener for FakeOpener {
-    fn open(&mut self, dir: &Path, opts: OpenOpts) -> Result<Box<dyn HostSession>, ShellError> {
+    fn open(
+        &mut self,
+        dir: &Path,
+        opts: OpenOpts,
+        lock: Option<crate::host::SessionLock>,
+    ) -> Result<Box<dyn HostSession>, ShellError> {
+        // A host hands its Session a share of the lock it holds; a
+        // read-only open holds none.
+        assert_eq!(lock.is_some(), opts.mutating, "the lock follows `mutating`");
+        drop(lock);
         self.opened.lock().unwrap().push(opts);
         self.log.push(json!({
             "event": "open",

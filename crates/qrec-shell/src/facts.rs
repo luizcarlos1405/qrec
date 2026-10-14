@@ -87,7 +87,7 @@ pub type Discover<T> = fn() -> Result<Vec<T>, String>;
 
 /// The machine's devices: audio through `pactl --format=json` (3 s
 /// timeout, stderr to `log_dir`); screens and cameras through the hooks
-/// (`None` until the media owner's discovery is wired in).
+/// (`None` turns that discovery off).
 pub struct SystemSources {
     pub log_dir: Option<PathBuf>,
     pub screens: Option<Discover<ScreenInfo>>,
@@ -95,11 +95,13 @@ pub struct SystemSources {
 }
 
 impl SystemSources {
+    /// Screens and cameras through the `sources` module (`wl_output`, then
+    /// `niri msg`; GStreamer's device monitor, then sysfs).
     pub fn new(log_dir: Option<PathBuf>) -> Self {
         Self {
             log_dir,
-            screens: None,
-            cameras: None,
+            screens: Some(crate::sources::discover_screens),
+            cameras: Some(crate::sources::discover_cameras),
         }
     }
 
