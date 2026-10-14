@@ -276,6 +276,8 @@ pub struct FactsGatherer {
     /// The canonical project folder.
     paths: ProjectPaths,
     config: ConfigFile,
+    /// `keys.toml`, next to `config.toml`.
+    keys_file: PathBuf,
     sources: Box<dyn Sources>,
 }
 
@@ -302,6 +304,7 @@ impl FactsGatherer {
     pub fn new(paths: ProjectPaths, config_file: PathBuf, sources: Box<dyn Sources>) -> Self {
         Self {
             paths,
+            keys_file: config_file.with_file_name("keys.toml"),
             config: ConfigFile::new(config_file),
             sources,
         }
@@ -310,6 +313,20 @@ impl FactsGatherer {
     /// The config alone (every dispatch needs it).
     pub fn config(&mut self) -> (UserConfig, Option<String>) {
         self.config.get()
+    }
+
+    /// The text of `keys.toml` (`Facts::keys_toml`, for `Query::Keys`):
+    /// empty when there is none; the core reports what's wrong with it.
+    pub fn keys_toml(&self) -> String {
+        match fs::read_to_string(&self.keys_file) {
+            Ok(text) => text,
+            Err(e) => {
+                if e.kind() != io::ErrorKind::NotFound {
+                    tracing::warn!("can't read {}: {e}", self.keys_file.display());
+                }
+                String::new()
+            }
+        }
     }
 
     /// Gathers exactly what `need` asks for, plus the config.

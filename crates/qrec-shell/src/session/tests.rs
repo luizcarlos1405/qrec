@@ -336,6 +336,40 @@ fn sessions_move_between_threads() {
 }
 
 #[test]
+fn the_keys_query_reads_keys_toml() {
+    let h = Harness::with_sample("keys");
+    let mut s = h.open(false).unwrap();
+    let keys = |s: &mut Session| {
+        request(s, WireBody::Query(qrec_core::protocol::Query::Keys), false)
+            .last()
+            .unwrap()
+            .unwrap()
+    };
+    let chords_of = |rows: &Value, id: &str| {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .map(|r| r["keys"].clone())
+            .unwrap()
+    };
+    let defaults = keys(&mut s);
+    assert_eq!(chords_of(&defaults, "clip.split"), serde_json::json!(["s"]));
+    let config = h.env.config_home().join("qrec");
+    fs::create_dir_all(&config).unwrap();
+    fs::write(
+        config.join("keys.toml"),
+        "[bindings]\n\"clip.split\" = \"ctrl+b\"\n",
+    )
+    .unwrap();
+    let custom = keys(&mut s);
+    assert_eq!(
+        chords_of(&custom, "clip.split"),
+        serde_json::json!(["ctrl+b"])
+    );
+}
+
+#[test]
 fn timeline_commands_commit_in_order_and_reload() {
     let h = Harness::with_sample("swamp");
     let mut s = h.open(true).unwrap();

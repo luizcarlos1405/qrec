@@ -346,6 +346,44 @@ fn requester_gone_is_reported_once_the_request_is_bound() {
 }
 
 #[test]
+fn a_client_that_leaves_before_its_reply_is_reported_to_the_session() {
+    let dir = socket_dir();
+    let t = start_server(dir.path(), |_| {});
+    let (gone_tx, gone_rx) = crossbeam_channel::unbounded();
+    let held = Arc::new(Mutex::new(Vec::new()));
+    let keep = Arc::clone(&held);
+    // A Session that accepts the request (with its id current, like the
+    // real one) and keeps it without answering.
+    let (inbox, _session) = session_thread(move |msg| {
+        match msg {
+            Msg::Request { mut to, .. } => {
+                crate::session::with_current(&ReqId("r7".into()), || to.accepted());
+                keep.lock().unwrap().push(to);
+            }
+            Msg::Event(Event::RequesterGone { req }) => {
+                let _ = gone_tx.send(req);
+            }
+            _ => {}
+        }
+        true
+    });
+    t.server.attach(inbox);
+    let stream = UnixStream::connect(&t.socket).unwrap();
+    (&stream)
+        .write_all(format!("{}\n", command_line("x")).as_bytes())
+        .unwrap();
+    assert!(wait_for(Duration::from_secs(5), || held
+        .lock()
+        .unwrap()
+        .len()
+        == 1));
+    // Ctrl+C in the CLI: the connection closes before the reply.
+    drop(stream);
+    let gone = gone_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(gone, ReqId("r7".into()));
+}
+
+#[test]
 fn finish_lets_replies_flush_then_answers_stragglers() {
     let dir = socket_dir();
     let t = start_server(dir.path(), |_| {});

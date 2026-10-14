@@ -92,11 +92,17 @@ impl Session {
 
     fn answer_query(&mut self, id: &ReqId, query: &Query) -> Result<Value, CoreError> {
         let (config, _) = self.facts.config();
+        let keys_toml = if matches!(query, Query::Keys) {
+            self.facts.keys_toml()
+        } else {
+            String::new()
+        };
         let ctx = self.ctx(
             Some(id.clone()),
             false,
             Facts {
                 config,
+                keys_toml,
                 ..Facts::default()
             },
         );

@@ -59,7 +59,8 @@ pub fn current_request() -> Option<ReqId> {
     CURRENT.with(|c| c.borrow().clone())
 }
 
-fn with_current<R>(req: &ReqId, f: impl FnOnce() -> R) -> R {
+/// Runs `f` (a responder call) with `req` as the [`current_request`].
+pub(crate) fn with_current<R>(req: &ReqId, f: impl FnOnce() -> R) -> R {
     let previous = CURRENT.with(|c| c.replace(Some(req.clone())));
     let result = f();
     CURRENT.with(|c| *c.borrow_mut() = previous);

@@ -25,7 +25,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -564,7 +564,7 @@ fn accept_loop(shared: &Arc<Shared>, listener: &UnixListener, wake_rd: &OwnedFd)
 
 // ------------------------------------------------------------- connection
 
-fn serve_conn(shared: &Shared, stream: &UnixStream, out: &Arc<Outgoing>) {
+fn serve_conn(shared: &Arc<Shared>, stream: &UnixStream, out: &Arc<Outgoing>) {
     let read_half = match stream.try_clone() {
         Ok(read_half) => read_half,
         Err(e) => {
@@ -611,7 +611,7 @@ fn serve_conn(shared: &Shared, stream: &UnixStream, out: &Arc<Outgoing>) {
         body: request.body,
         confirmed: request.confirmed,
     };
-    let responder = || Box::new(ConnResponder::new(Arc::clone(out)));
+    let responder = || Box::new(ConnResponder::new(Arc::clone(out), Arc::downgrade(shared)));
     match &req.body {
         WireBody::Shutdown => {
             shared.begin_shutdown();
@@ -916,19 +916,36 @@ impl Outgoing {
 /// queue and never block the session thread on the network. A responder
 /// dropped without replying answers with an error, so every accepted
 /// request gets exactly one reply.
+///
+/// When the Session accepts the request it learns the request's `ReqId`
+/// (`session::current_request`), so a client that disconnects before its
+/// reply becomes `Event::RequesterGone` (A§5.8: e.g. Ctrl+C on a routed
+/// export cancels it in a headless or CLI host).
 pub struct ConnResponder {
     out: Arc<Outgoing>,
+    /// The server, for the Session's inbox.
+    shared: Weak<Shared>,
 }
 
 impl ConnResponder {
-    fn new(out: Arc<Outgoing>) -> Self {
-        Self { out }
+    fn new(out: Arc<Outgoing>, shared: Weak<Shared>) -> Self {
+        Self { out, shared }
+    }
+
+    /// The Session's inbox, once attached.
+    fn session_inbox(&self) -> Option<Inbox> {
+        let shared = self.shared.upgrade()?;
+        let link = lock(&shared.link);
+        match &*link {
+            Link::Attached(inbox) => Some(inbox.clone()),
+            Link::Pending(_) | Link::Failed(_) => None,
+        }
     }
 
     /// Tells the connection which Session request it carries, so a client
     /// that disconnects before its reply becomes `Event::RequesterGone`
-    /// (A§5.8). The Session calls it right after allocating the `ReqId`
-    /// (see the `Responder::bind` request in this module's owner notes).
+    /// (A§5.8). [`Responder::accepted`] does this on its own when the
+    /// Session accepts the request (it knows the `ReqId` then).
     pub fn bind(&self, req: ReqId, inbox: Inbox) {
         self.out.bind(req, inbox);
     }
@@ -937,6 +954,12 @@ impl ConnResponder {
 impl Responder for ConnResponder {
     fn accepted(&mut self) {
         self.out.push_accepted();
+        // Called by the Session on its thread, with the request's id current.
+        if let (Some(req), Some(inbox)) =
+            (crate::session::current_request(), self.session_inbox())
+        {
+            self.out.bind(req, inbox);
+        }
     }
 
     fn progress(&mut self, p: &Progress) {
