@@ -1,0 +1,487 @@
+{
+  "name": "Qrec design tokens",
+  "source": "design/qrec.pen (pen.dev variables, read with GetVariables)",
+  "generated": "2026-10-14",
+  "note": "Generated file. Change the variable in design/qrec.pen, then regenerate. Colors are #RRGGBB or #RRGGBBAA. Numbers are logical px. Roles, derivations and contrast results: DESIGN.md, Colors.",
+  "themes": [
+    "swamp-night",
+    "swamp-day",
+    "dragons-keep",
+    "ogre-mode"
+  ],
+  "defaultTheme": "swamp-night",
+  "colors": {
+    "bg": {
+      "swamp-night": "#12170F",
+      "swamp-day": "#F1EEDA",
+      "dragons-keep": "#151316",
+      "ogre-mode": "#1E2A0E"
+    },
+    "surface": {
+      "swamp-night": "#1C2416",
+      "swamp-day": "#E6E3C6",
+      "dragons-keep": "#201D22",
+      "ogre-mode": "#2E4214"
+    },
+    "raised": {
+      "swamp-night": "#27321F",
+      "swamp-day": "#FAF8EA",
+      "dragons-keep": "#2C2830",
+      "ogre-mode": "#3F5A1B"
+    },
+    "border": {
+      "swamp-night": "#3A4A2C",
+      "swamp-day": "#C9C29A",
+      "dragons-keep": "#433C47",
+      "ogre-mode": "#5E7F2A"
+    },
+    "text": {
+      "swamp-night": "#E8E6C8",
+      "swamp-day": "#2A2A18",
+      "dragons-keep": "#EDE6E8",
+      "ogre-mode": "#F4EDD0"
+    },
+    "muted": {
+      "swamp-night": "#9BA582",
+      "swamp-day": "#635F41",
+      "dragons-keep": "#A49AA5",
+      "ogre-mode": "#CFC69B"
+    },
+    "accent": {
+      "swamp-night": "#8FC43A",
+      "swamp-day": "#446E04",
+      "dragons-keep": "#E0457B",
+      "ogre-mode": "#B5D334"
+    },
+    "accent-2": {
+      "swamp-night": "#E3B23C",
+      "swamp-day": "#A87811",
+      "dragons-keep": "#F28C28",
+      "ogre-mode": "#E7C86A"
+    },
+    "record": {
+      "swamp-night": "#E5483B",
+      "swamp-day": "#CF3B3C",
+      "dragons-keep": "#FF3B30",
+      "ogre-mode": "#E8432F"
+    },
+    "warning": {
+      "swamp-night": "#D98A2B",
+      "swamp-day": "#B8661A",
+      "dragons-keep": "#F28C28",
+      "ogre-mode": "#D98A2B"
+    },
+    "wood": {
+      "swamp-night": "#6B4A2B",
+      "swamp-day": "#7A5532",
+      "dragons-keep": "#5A4636",
+      "ogre-mode": "#7A4E2A"
+    },
+    "text-on-accent": {
+      "swamp-night": "#12170F",
+      "swamp-day": "#FAF8EA",
+      "dragons-keep": "#151316",
+      "ogre-mode": "#1E2A0E"
+    },
+    "text-on-record": {
+      "swamp-night": "#12170F",
+      "swamp-day": "#FAF8EA",
+      "dragons-keep": "#151316",
+      "ogre-mode": "#091003"
+    },
+    "accent-text": {
+      "swamp-night": "#8FC43A",
+      "swamp-day": "#446E04",
+      "dragons-keep": "#F3578B",
+      "ogre-mode": "#B5D334"
+    },
+    "record-text": {
+      "swamp-night": "#FC6555",
+      "swamp-day": "#BF2A2F",
+      "dragons-keep": "#FD5648",
+      "ogre-mode": "#FEB3A5"
+    },
+    "warning-text": {
+      "swamp-night": "#D98A2B",
+      "swamp-day": "#9A5103",
+      "dragons-keep": "#F28C28",
+      "ogre-mode": "#FFB66B"
+    },
+    "border-strong": {
+      "swamp-night": "#6B7D5D",
+      "swamp-day": "#88815B",
+      "dragons-keep": "#77707C",
+      "ogre-mode": "#88AC58"
+    },
+    "field": {
+      "swamp-night": "#12170F",
+      "swamp-day": "#FAF8EA",
+      "dragons-keep": "#151316",
+      "ogre-mode": "#1E2A0E"
+    },
+    "keycap": {
+      "swamp-night": "#3A4430",
+      "swamp-day": "#FFFEF6",
+      "dragons-keep": "#3F3B42",
+      "ogre-mode": "#51692D"
+    },
+    "hover": {
+      "swamp-night": "#E8E6C80D",
+      "swamp-day": "#2A2A180D",
+      "dragons-keep": "#EDE6E80D",
+      "ogre-mode": "#F4EDD00D"
+    },
+    "pressed": {
+      "swamp-night": "#E8E6C81F",
+      "swamp-day": "#2A2A181F",
+      "dragons-keep": "#EDE6E81F",
+      "ogre-mode": "#F4EDD01F"
+    },
+    "selected": {
+      "swamp-night": "#8FC43A29",
+      "swamp-day": "#446E0424",
+      "dragons-keep": "#E0457B29",
+      "ogre-mode": "#B5D33429"
+    },
+    "disabled-text": {
+      "swamp-night": "#E8E6C861",
+      "swamp-day": "#2A2A1861",
+      "dragons-keep": "#EDE6E861",
+      "ogre-mode": "#F4EDD061"
+    },
+    "focus-ring": {
+      "swamp-night": "#8FC43A",
+      "swamp-day": "#446E04",
+      "dragons-keep": "#E0457B",
+      "ogre-mode": "#B5D334"
+    },
+    "scrim": {
+      "swamp-night": "#12170FCC",
+      "swamp-day": "#2A2A1873",
+      "dragons-keep": "#151316CC",
+      "ogre-mode": "#1E2A0ECC"
+    },
+    "scrim-strong": {
+      "swamp-night": "#12170FF0",
+      "swamp-day": "#F1EEDAF2",
+      "dragons-keep": "#151316F0",
+      "ogre-mode": "#1E2A0EF0"
+    },
+    "shadow": {
+      "swamp-night": "#000000",
+      "swamp-day": "#2A2A18",
+      "dragons-keep": "#000000",
+      "ogre-mode": "#000000"
+    },
+    "playhead": {
+      "swamp-night": "#E3B23C",
+      "swamp-day": "#A87811",
+      "dragons-keep": "#F28C28",
+      "ogre-mode": "#E7C86A"
+    },
+    "snap-guide": {
+      "swamp-night": "#E3B23C",
+      "swamp-day": "#A87811",
+      "dragons-keep": "#F28C28",
+      "ogre-mode": "#E7C86A"
+    },
+    "caret": {
+      "swamp-night": "#8FC43A",
+      "swamp-day": "#446E04",
+      "dragons-keep": "#E0457B",
+      "ogre-mode": "#B5D334"
+    },
+    "ghost-fill": {
+      "swamp-night": "#E5483B29",
+      "swamp-day": "#CF3B3C29",
+      "dragons-keep": "#FF3B3029",
+      "ogre-mode": "#E8432F29"
+    },
+    "hatch-stripe": {
+      "swamp-night": "#D98A2B99",
+      "swamp-day": "#B8661A99",
+      "dragons-keep": "#F28C2899",
+      "ogre-mode": "#D98A2B99"
+    },
+    "wave": {
+      "swamp-night": "#9BA582",
+      "swamp-day": "#635F41",
+      "dragons-keep": "#A49AA5",
+      "ogre-mode": "#CFC69B"
+    },
+    "wave-dim": {
+      "swamp-night": "#9BA58259",
+      "swamp-day": "#635F4159",
+      "dragons-keep": "#A49AA559",
+      "ogre-mode": "#CFC69B59"
+    },
+    "meter-green": {
+      "swamp-night": "#8FC43A",
+      "swamp-day": "#446E04",
+      "dragons-keep": "#62C26C",
+      "ogre-mode": "#B5D334"
+    },
+    "meter-yellow": {
+      "swamp-night": "#E3B23C",
+      "swamp-day": "#A87811",
+      "dragons-keep": "#EDC658",
+      "ogre-mode": "#E7C86A"
+    },
+    "meter-red": {
+      "swamp-night": "#E5483B",
+      "swamp-day": "#CF3B3C",
+      "dragons-keep": "#FF3B30",
+      "ogre-mode": "#E8432F"
+    },
+    "success": {
+      "swamp-night": "#8FC43A",
+      "swamp-day": "#446E04",
+      "dragons-keep": "#62C26C",
+      "ogre-mode": "#B5D334"
+    },
+    "mud": {
+      "swamp-night": "#7E5C3D",
+      "swamp-day": "#7A5532",
+      "dragons-keep": "#735E4D",
+      "ogre-mode": "#936541"
+    },
+    "mud-bubble": {
+      "swamp-night": "#A68669",
+      "swamp-day": "#A27F5F",
+      "dragons-keep": "#9B8777",
+      "ogre-mode": "#BC906F"
+    },
+    "video-scrim": {
+      "swamp-night": "#0000009E",
+      "swamp-day": "#0000009E",
+      "dragons-keep": "#0000009E",
+      "ogre-mode": "#0000009E"
+    },
+    "video-text": {
+      "swamp-night": "#F5F2DF",
+      "swamp-day": "#F5F2DF",
+      "dragons-keep": "#F5F2DF",
+      "ogre-mode": "#F5F2DF"
+    },
+    "take-moss": {
+      "swamp-night": "#718A55",
+      "swamp-day": "#2C592A",
+      "dragons-keep": "#6A9320",
+      "ogre-mode": "#7B955F"
+    },
+    "take-donkey": {
+      "swamp-night": "#C4CADD",
+      "swamp-day": "#788092",
+      "dragons-keep": "#C8CAD1",
+      "ogre-mode": "#CED6E9"
+    },
+    "take-onion": {
+      "swamp-night": "#E1CE6F",
+      "swamp-day": "#9B8600",
+      "dragons-keep": "#EDC658",
+      "ogre-mode": "#FFDE5C"
+    },
+    "take-mud": {
+      "swamp-night": "#827067",
+      "swamp-day": "#52453A",
+      "dragons-keep": "#7F7266",
+      "ogre-mode": "#8D7A71"
+    },
+    "take-lily": {
+      "swamp-night": "#07BDB2",
+      "swamp-day": "#149581",
+      "dragons-keep": "#20BEA1",
+      "ogre-mode": "#0FC9BE"
+    },
+    "take-ginger": {
+      "swamp-night": "#DF8326",
+      "swamp-day": "#AC580D",
+      "dragons-keep": "#DD8F66",
+      "ogre-mode": "#F59442"
+    },
+    "take-dragon": {
+      "swamp-night": "#FD84B0",
+      "swamp-day": "#A3406E",
+      "dragons-keep": "#F599E5",
+      "ogre-mode": "#F88BB0"
+    },
+    "take-fairy": {
+      "swamp-night": "#448CE1",
+      "swamp-day": "#014984",
+      "dragons-keep": "#4989D2",
+      "ogre-mode": "#4B90D5"
+    },
+    "take-moss-tint": {
+      "swamp-night": "#718A551F",
+      "swamp-day": "#2C592A1F",
+      "dragons-keep": "#6A93201F",
+      "ogre-mode": "#7B955F1F"
+    },
+    "take-donkey-tint": {
+      "swamp-night": "#C4CADD1F",
+      "swamp-day": "#7880921F",
+      "dragons-keep": "#C8CAD11F",
+      "ogre-mode": "#CED6E91F"
+    },
+    "take-onion-tint": {
+      "swamp-night": "#E1CE6F1F",
+      "swamp-day": "#9B86001F",
+      "dragons-keep": "#EDC6581F",
+      "ogre-mode": "#FFDE5C1F"
+    },
+    "take-mud-tint": {
+      "swamp-night": "#8270671F",
+      "swamp-day": "#52453A1F",
+      "dragons-keep": "#7F72661F",
+      "ogre-mode": "#8D7A711F"
+    },
+    "take-lily-tint": {
+      "swamp-night": "#07BDB21F",
+      "swamp-day": "#1495811F",
+      "dragons-keep": "#20BEA11F",
+      "ogre-mode": "#0FC9BE1F"
+    },
+    "take-ginger-tint": {
+      "swamp-night": "#DF83261F",
+      "swamp-day": "#AC580D1F",
+      "dragons-keep": "#DD8F661F",
+      "ogre-mode": "#F594421F"
+    },
+    "take-dragon-tint": {
+      "swamp-night": "#FD84B01F",
+      "swamp-day": "#A3406E1F",
+      "dragons-keep": "#F599E51F",
+      "ogre-mode": "#F88BB01F"
+    },
+    "take-fairy-tint": {
+      "swamp-night": "#448CE11F",
+      "swamp-day": "#0149841F",
+      "dragons-keep": "#4989D21F",
+      "ogre-mode": "#4B90D51F"
+    },
+    "shadow-e1": {
+      "swamp-night": "#00000066",
+      "swamp-day": "#2A2A1829",
+      "dragons-keep": "#00000066",
+      "ogre-mode": "#00000066"
+    },
+    "shadow-e2": {
+      "swamp-night": "#0000008C",
+      "swamp-day": "#2A2A1833",
+      "dragons-keep": "#0000008C",
+      "ogre-mode": "#0000008C"
+    },
+    "shadow-e2-contact": {
+      "swamp-night": "#00000059",
+      "swamp-day": "#2A2A181F",
+      "dragons-keep": "#00000059",
+      "ogre-mode": "#00000059"
+    },
+    "shadow-e3": {
+      "swamp-night": "#000000A6",
+      "swamp-day": "#2A2A1840",
+      "dragons-keep": "#000000A6",
+      "ogre-mode": "#000000A6"
+    },
+    "record-glow": {
+      "swamp-night": "#E5483B73",
+      "swamp-day": "#CF3B3C73",
+      "dragons-keep": "#FF3B3073",
+      "ogre-mode": "#E8432F73"
+    },
+    "project-canvas": {
+      "swamp-night": "#000000",
+      "swamp-day": "#000000",
+      "dragons-keep": "#000000",
+      "ogre-mode": "#000000"
+    },
+    "warning-20": {
+      "swamp-night": "#D98A2B33",
+      "swamp-day": "#B8661A33",
+      "dragons-keep": "#F28C2833",
+      "ogre-mode": "#D98A2B33"
+    },
+    "warning-16": {
+      "swamp-night": "#D98A2B29",
+      "swamp-day": "#B8661A29",
+      "dragons-keep": "#F28C2829",
+      "ogre-mode": "#D98A2B29"
+    },
+    "accent-2-20": {
+      "swamp-night": "#E3B23C33",
+      "swamp-day": "#A8781133",
+      "dragons-keep": "#F28C2833",
+      "ogre-mode": "#E7C86A33"
+    },
+    "video-text-20": {
+      "swamp-night": "#F5F2DF33",
+      "swamp-day": "#F5F2DF33",
+      "dragons-keep": "#F5F2DF33",
+      "ogre-mode": "#F5F2DF33"
+    },
+    "text-35": {
+      "swamp-night": "#E8E6C859",
+      "swamp-day": "#2A2A1859",
+      "dragons-keep": "#EDE6E859",
+      "ogre-mode": "#F4EDD059"
+    },
+    "bg-55": {
+      "swamp-night": "#12170F8C",
+      "swamp-day": "#F1EEDA8C",
+      "dragons-keep": "#1513168C",
+      "ogre-mode": "#1E2A0E8C"
+    },
+    "record-25": {
+      "swamp-night": "#E5483B40",
+      "swamp-day": "#CF3B3C40",
+      "dragons-keep": "#FF3B3040",
+      "ogre-mode": "#E8432F40"
+    },
+    "muted-40": {
+      "swamp-night": "#9BA58266",
+      "swamp-day": "#635F4166",
+      "dragons-keep": "#A49AA566",
+      "ogre-mode": "#CFC69B66"
+    },
+    "muted-20": {
+      "swamp-night": "#9BA58233",
+      "swamp-day": "#635F4133",
+      "dragons-keep": "#A49AA533",
+      "ogre-mode": "#CFC69B33"
+    },
+    "text-on-record-45": {
+      "swamp-night": "#12170F73",
+      "swamp-day": "#FAF8EA73",
+      "dragons-keep": "#15131673",
+      "ogre-mode": "#09100373"
+    },
+    "text-on-accent-45": {
+      "swamp-night": "#12170F73",
+      "swamp-day": "#FAF8EA73",
+      "dragons-keep": "#15131673",
+      "ogre-mode": "#1E2A0E73"
+    }
+  },
+  "numbers": {
+    "space-2xs": 2,
+    "space-xs": 4,
+    "space-sm": 8,
+    "space-md": 12,
+    "space-lg": 16,
+    "space-xl": 24,
+    "space-2xl": 32,
+    "space-3xl": 48,
+    "space-4xl": 64,
+    "radius-xs": 2,
+    "radius-sm": 4,
+    "radius-md": 6,
+    "radius-lg": 12,
+    "radius-xl": 16,
+    "radius-pill": 999
+  },
+  "strings": {
+    "font-display": "Fraunces",
+    "font-ui": "Atkinson Hyperlegible Next",
+    "font-mono": "JetBrains Mono"
+  }
+}

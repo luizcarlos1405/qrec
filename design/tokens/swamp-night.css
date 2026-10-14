@@ -1,0 +1,127 @@
+/*
+ * Qrec design tokens: Swamp Night (the default theme)
+ *
+ * Generated from design/qrec.pen (pen.dev variables) on 2026-10-14.
+ * Do not edit by hand. Change the variable in design/qrec.pen and regenerate.
+ * All four themes are in design/tokens/qrec-tokens.json.
+ *
+ * The GTK CSS in crates/qrec-gui/resources/theme/ will consume these
+ * custom properties after the product owner approves the designs
+ * (SPEC §15.1). Until then nothing in crates/ reads this file.
+ *
+ * Colors are #RRGGBB or #RRGGBBAA. Numbers are logical px.
+ */
+
+:root {
+  /* Base colors (SPEC §15.2) */
+  --qrec-bg:                 #12170F;
+  --qrec-surface:            #1C2416;
+  --qrec-raised:             #27321F;
+  --qrec-border:             #3A4A2C;
+  --qrec-text:               #E8E6C8;
+  --qrec-muted:              #9BA582;
+  --qrec-accent:             #8FC43A;
+  --qrec-accent-2:           #E3B23C;
+  --qrec-record:             #E5483B;
+  --qrec-warning:            #D98A2B;
+  --qrec-wood:               #6B4A2B;
+
+  /* Derived colors (DESIGN.md, Colors, Derived tokens). record-text is proposal P6 */
+  --qrec-text-on-accent:     #12170F;
+  --qrec-text-on-record:     #12170F;
+  --qrec-accent-text:        #8FC43A;
+  --qrec-record-text:        #FC6555;
+  --qrec-warning-text:       #D98A2B;
+  --qrec-border-strong:      #6B7D5D;
+  --qrec-field:              #12170F;
+  --qrec-keycap:             #3A4430;
+  --qrec-hover:              #E8E6C80D;
+  --qrec-pressed:            #E8E6C81F;
+  --qrec-selected:           #8FC43A29;
+  --qrec-disabled-text:      #E8E6C861;
+  --qrec-focus-ring:         #8FC43A;
+  --qrec-scrim:              #12170FCC;
+  --qrec-scrim-strong:       #12170FF0;
+  --qrec-shadow:             #000000;
+  --qrec-playhead:           #E3B23C;
+  --qrec-snap-guide:         #E3B23C;
+  --qrec-caret:              #8FC43A;
+  --qrec-ghost-fill:         #E5483B29;
+  --qrec-hatch-stripe:       #D98A2B99;
+  --qrec-wave:               #9BA582;
+  --qrec-wave-dim:           #9BA58259;
+  --qrec-meter-green:        #8FC43A;
+  --qrec-meter-yellow:       #E3B23C;
+  --qrec-meter-red:          #E5483B;
+  --qrec-success:            #8FC43A;
+  --qrec-mud:                #7E5C3D;
+  --qrec-mud-bubble:         #A68669;
+  --qrec-video-scrim:        #0000009E;
+  --qrec-video-text:         #F5F2DF;
+  --qrec-project-canvas:     #000000;
+
+  /* Take colors: take n uses order[(n - 1) mod 8] = moss, donkey, onion, mud, lily, ginger, dragon, fairy */
+  --qrec-take-moss:          #718A55;
+  --qrec-take-donkey:        #C4CADD;
+  --qrec-take-onion:         #E1CE6F;
+  --qrec-take-mud:           #827067;
+  --qrec-take-lily:          #07BDB2;
+  --qrec-take-ginger:        #DF8326;
+  --qrec-take-dragon:        #FD84B0;
+  --qrec-take-fairy:         #448CE1;
+
+  /* Take tints: the take color at 12%, filling audio lane segments */
+  --qrec-take-moss-tint:     #718A551F;
+  --qrec-take-donkey-tint:   #C4CADD1F;
+  --qrec-take-onion-tint:    #E1CE6F1F;
+  --qrec-take-mud-tint:      #8270671F;
+  --qrec-take-lily-tint:     #07BDB21F;
+  --qrec-take-ginger-tint:   #DF83261F;
+  --qrec-take-dragon-tint:   #FD84B01F;
+  --qrec-take-fairy-tint:    #448CE11F;
+
+  /* Shadow colors. Geometry (DESIGN.md, Elevation): e1 0 2px 6px; e2 0 8px 24px plus contact 0 1px 2px;
+     e3 0 20px 48px; REC glow 0 0 12px */
+  --qrec-shadow-e1:          #00000066;
+  --qrec-shadow-e2:          #0000008C;
+  --qrec-shadow-e2-contact:  #00000059;
+  --qrec-shadow-e3:          #000000A6;
+  --qrec-record-glow:        #E5483B73;
+
+  /* Alpha steps used by components */
+  --qrec-warning-20:         #D98A2B33;
+  --qrec-warning-16:         #D98A2B29;
+  --qrec-accent-2-20:        #E3B23C33;
+  --qrec-video-text-20:      #F5F2DF33;
+  --qrec-text-35:            #E8E6C859;
+  --qrec-bg-55:              #12170F8C;
+  --qrec-record-25:          #E5483B40;
+  --qrec-muted-40:           #9BA58266;
+  --qrec-muted-20:           #9BA58233;
+  --qrec-text-on-record-45:  #12170F73;
+  --qrec-text-on-accent-45:  #12170F73;
+
+  /* Spacing (4 px base) */
+  --qrec-space-2xs:          2px;
+  --qrec-space-xs:           4px;
+  --qrec-space-sm:           8px;
+  --qrec-space-md:           12px;
+  --qrec-space-lg:           16px;
+  --qrec-space-xl:           24px;
+  --qrec-space-2xl:          32px;
+  --qrec-space-3xl:          48px;
+  --qrec-space-4xl:          64px;
+
+  /* Radii */
+  --qrec-radius-xs:          2px;
+  --qrec-radius-sm:          4px;
+  --qrec-radius-md:          6px;
+  --qrec-radius-lg:          12px;
+  --qrec-radius-xl:          16px;
+  --qrec-radius-pill:        999px;
+
+  /* Font families (fallback stacks and the type scale: DESIGN.md, Typography) */
+  --qrec-font-display:       "Fraunces";
+  --qrec-font-ui:            "Atkinson Hyperlegible Next";
+  --qrec-font-mono:          "JetBrains Mono";
+}
