@@ -2,8 +2,8 @@
 //! of a fragment ≥ `minKeepMs`; fragments stay inside the clip; a clip
 //! without silence is unchanged. Plus: the planner equals an independent
 //! oracle, re-cutting a fragment changes nothing, more padding never keeps
-//! less, and the whole command (job, analysis events, one history entry)
-//! applies exactly the planned cuts.
+//! less, the whole command (job, analysis events, one history entry)
+//! applies exactly the planned cuts, and ffmpeg logs parse back exactly.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -13,6 +13,7 @@ use qrec_core::apply::history::{redo_checked, undo_checked};
 use qrec_core::autocut::{ClipCut, analysis_source, cut_clip, kept_spans, plan_clip};
 use qrec_core::ctx::{Ctx, FileFact};
 use qrec_core::history::ops::unchecked;
+use qrec_core::parse::silencedetect::{parse_silencedetect, parse_silencedetect_until};
 use qrec_core::protocol::command::{AutocutOverrides, ClipScope, Command};
 use qrec_core::protocol::effect::Effect;
 use qrec_core::protocol::event::{Event, Interval};
@@ -446,5 +447,103 @@ proptest! {
         let mut same = after.project.clone();
         same.timeline = state.project.timeline.clone();
         prop_assert_eq!(&same, &state.project);
+    }
+}
+
+// ------------------------------------------------------------- the parser
+
+/// Seconds as ffmpeg 8.1 prints silence times: up to six decimals, trailing
+/// zeros trimmed (`0`, `0.512`, `2.005333`).
+fn ffmpeg_seconds(us: i64) -> String {
+    let (secs, frac) = (us / 1_000_000, us % 1_000_000);
+    let frac = format!("{frac:06}");
+    let frac = frac.trim_end_matches('0');
+    if frac.is_empty() {
+        secs.to_string()
+    } else {
+        format!("{secs}.{frac}")
+    }
+}
+
+/// `HH:MM:SS.cc` as in `Duration:` and `time=` (whole centiseconds).
+fn ffmpeg_clock(cs: i64) -> String {
+    let (secs, cs) = (cs / 100, cs % 100);
+    format!(
+        "{:02}:{:02}:{:02}.{cs:02}",
+        secs / 3600,
+        (secs / 60) % 60,
+        secs % 60
+    )
+}
+
+/// An ffmpeg 8.1 log for `silences` (µs, sorted, disjoint) in a file of
+/// `duration_cs`; with `open_end` the last silence has no `silence_end`.
+fn ffmpeg_log(silences: &[(i64, i64)], open_end: bool, duration_cs: i64) -> String {
+    let tag = "[Parsed_silencedetect_0 @ 0x77b040004800]";
+    let mut log = format!(
+        "Input #0, matroska,webm, from 'file:takes/take-0001/A1-mic.mka':\n  \
+         Duration: {}, start: 0.000000, bitrate: 52 kb/s\n  \
+         Stream #0:0: Audio: flac, 48000 Hz, mono, s32 (24 bit)\n",
+        ffmpeg_clock(duration_cs)
+    );
+    for (i, &(start, end)) in silences.iter().enumerate() {
+        log.push_str(&format!("{tag} silence_start: {}\n", ffmpeg_seconds(start)));
+        if !(open_end && i + 1 == silences.len()) {
+            log.push_str(&format!(
+                "{tag} silence_end: {} | silence_duration: {}\n",
+                ffmpeg_seconds(end),
+                ffmpeg_seconds(end - start)
+            ));
+        }
+    }
+    log.push_str(&format!(
+        "[out#0/null @ 0x63dfacdbf380] video:0KiB audio:656KiB subtitle:0KiB \
+         other streams:0KiB global headers:0KiB muxing overhead: unknown\n\
+         size=N/A time={} bitrate=N/A speed= 778x elapsed=0:00:00.00    \n",
+        ffmpeg_clock(duration_cs)
+    ));
+    log
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// The parser reads back exactly the silences an ffmpeg log reports (µs
+    /// precision, files of any length); a silence still open at the end of
+    /// the log ends at the file's duration, or at the one the caller gives.
+    #[test]
+    fn silencedetect_logs_parse_back(
+        gaps in prop::collection::vec((0i64..5_000_000, 1i64..90_000_000), 0..10),
+        open_end in any::<bool>(),
+        tail_cs in 1i64..500,
+    ) {
+        let mut silences = Vec::new();
+        let mut cursor = 0;
+        for (gap, len) in gaps {
+            let start = cursor + gap;
+            silences.push((start, start + len));
+            cursor = start + len + 1;
+        }
+        // The file lasts past the last silence, to a whole centisecond.
+        let duration_cs = cursor / 10_000 + tail_cs;
+        let open_end = open_end && !silences.is_empty();
+        let log = ffmpeg_log(&silences, open_end, duration_cs);
+        let mut expected: Vec<Interval> = silences
+            .iter()
+            .map(|&(start, end)| Interval { start_ns: start * 1_000, end_ns: end * 1_000 })
+            .collect();
+        if open_end {
+            if let Some(last) = expected.last_mut() {
+                last.end_ns = duration_cs * 10_000_000;
+            }
+        }
+        prop_assert_eq!(parse_silencedetect(&log), Ok(expected.clone()));
+        if open_end {
+            let given = duration_cs * 10_000_000 + 1_234;
+            if let Some(last) = expected.last_mut() {
+                last.end_ns = given;
+            }
+            prop_assert_eq!(parse_silencedetect_until(&log, Some(given)), Ok(expected));
+        }
     }
 }
