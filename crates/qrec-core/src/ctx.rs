@@ -42,6 +42,10 @@ pub struct Ctx {
 pub struct Facts {
     /// Always filled (defaults if there is no config file).
     pub config: UserConfig,
+    /// The text of `~/.config/qrec/keys.toml` (empty when absent). Always
+    /// filled, like `config`; `Query::Keys` resolves it.
+    #[serde(default)]
+    pub keys_toml: String,
     /// `Init`: the project folder's name.
     pub folder_name: Option<String>,
     /// `AudioAdd` mic without a source.

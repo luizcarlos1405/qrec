@@ -366,6 +366,9 @@ pub fn capture_stopped(
 /// A§3 doesn't define. Until it exists, a later start reaches the engine,
 /// which answers `StartCapture` with `CaptureFailed` (the take breaks).
 pub fn engine_wedged(state: &State, ctx: &Ctx, message: String) -> Outcome {
+    let mut stuck = state.clone();
+    stuck.runtime.engine_stuck = Some(if message.is_empty() { ENGINE_STUCK.to_owned() } else { message.clone() });
+    let state = &stuck;
     let log = Effect::Log {
         level: LogLevel::Error,
         message: format!("capture engine wedged: {message}"),

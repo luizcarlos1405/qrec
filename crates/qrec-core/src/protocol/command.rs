@@ -306,6 +306,7 @@ impl Command {
                 | Command::RecordStop
                 | Command::RecordCancel
                 | Command::RecordToggle { .. }
+                | Command::TakeDiscardLast
                 | Command::TakePurge { .. }
                 | Command::Autocut { .. }
                 | Command::Export { .. }

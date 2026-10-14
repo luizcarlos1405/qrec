@@ -1742,9 +1742,11 @@ fn engine_wedged_in_every_phase() {
             },
         )
     };
-    // Idle: people are told.
+    // Idle: people are told, and new takes are refused until a restart.
     let out = wedged(&idle());
-    assert_eq!(out.state, idle());
+    let mut expected = idle();
+    expected.runtime.engine_stuck = Some("teardown timed out".into());
+    assert_eq!(out.state, expected);
     assert_eq!(toasts(&out)[0].title, "The capture engine is stuck");
 
     // Countdown: cancelled, the start request fails.

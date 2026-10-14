@@ -252,6 +252,10 @@ pub struct Runtime {
     pub playing: bool,
     /// `qrec.json` on disk failed to load (A§7.7).
     pub disk_invalid: Option<String>,
+    /// The capture engine wedged (A§5.3 `EngineWedged`): new takes can't
+    /// start until Qrec restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_stuck: Option<String>,
 }
 
 impl Runtime {
@@ -266,6 +270,7 @@ impl Runtime {
             next_id: 1,
             playing: false,
             disk_invalid: None,
+            engine_stuck: None,
         }
     }
 

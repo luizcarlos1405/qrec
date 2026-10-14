@@ -180,8 +180,9 @@ pub fn history(state: &State, limit: Option<usize>) -> Result<Value, CoreError> 
 ///
 /// `Facts` carries no `keys.toml` text yet, so this is the default keymap;
 /// the CLI's project-less `qrec keys` resolves the user's file itself.
-pub fn keys(_state: &State, _ctx: &Ctx) -> Result<Value, CoreError> {
-    to_json(&keymap::keys_view(&keymap::resolve("")))
+/// The effective keymap: defaults plus `keys.toml` overrides (`Facts::keys_toml`).
+pub fn keys(_state: &State, ctx: &Ctx) -> Result<Value, CoreError> {
+    to_json(&keymap::keys_view(&keymap::resolve(&ctx.facts.keys_toml)))
 }
 
 #[cfg(test)]
@@ -440,6 +441,16 @@ mod tests {
         let view: Vec<keymap::BindingView> = serde_json::from_value(value).unwrap();
         assert_eq!(view, keymap::keys_view(&keymap::resolve("")));
         assert!(view.iter().any(|b| b.id == "clip.split" && b.keys == ["s"]));
+    }
+
+    #[test]
+    fn keys_apply_the_users_overrides() {
+        let mut ctx = ctx();
+        ctx.facts.keys_toml = "[bindings]\n\"clip.split\" = \"ctrl+b\"\n".into();
+        let value = query(&state(), &ctx, &Query::Keys).unwrap();
+        let view: Vec<keymap::BindingView> = serde_json::from_value(value).unwrap();
+        let split = view.iter().find(|b| b.id == "clip.split").unwrap();
+        assert_eq!(split.keys, ["ctrl+b"]);
     }
 
     #[test]

@@ -155,6 +155,10 @@ fn project_countdown(project: &Project) -> u32 {
 /// What an Idle `Start`/`Toggle` needs: no export running and a scene with
 /// something to record.
 pub(crate) fn check_can_start(state: &State) -> Result<(), CoreError> {
+    if state.runtime.engine_stuck.is_some() {
+        return Err(CoreError::capture_failed(ENGINE_STUCK)
+            .with_hint("restart Qrec; qrec doctor checks the GPU driver"));
+    }
     let export = state
         .runtime
         .jobs
@@ -549,125 +553,10 @@ fn restorable(project: &Project, clip: &Clip) -> Option<Clip> {
 
 // -------------------------------------------------------- autocut hooks
 
-/// The autocut owner's entry points for the record flow (A§5.7, SPEC §5.3
-/// step 6): `apply_ready_autocuts` applies the jobs that finished analyzing
-/// while a recording ran, and `start_auto_run` is `autoRunAfterTake` for a
-/// freshly placed clip. Their home is `apply::autocut`; this module has the
-/// same signatures and reaches the same result through the autocut entry
-/// points every base has, so switching to the owner's functions is one
-/// `use` line (`pub(crate) use crate::apply::autocut::{apply_ready_autocuts,
-/// start_auto_run};`).
+/// The autocut owner's hooks, called after a take is placed (A§5.3).
 pub(crate) mod autocut_hooks {
-    use crate::apply::Outcome;
-    use crate::ctx::Ctx;
-    use crate::error::CoreError;
-    use crate::ids::{ClipId, JobId};
-    use crate::protocol::command::{AutocutOverrides, ClipScope};
-    use crate::protocol::effect::{Effect, LogLevel};
-    use crate::protocol::toast::{Toast, ToastLevel};
-    use crate::state::{JobKind, State};
-
-    /// Applies every autocut job marked `ready` (its analysis finished while
-    /// not Idle), oldest first: the job's last analysis is delivered again
-    /// now that the machine is Idle, which completes it. A no-op when no job
-    /// is ready.
-    pub(crate) fn apply_ready_autocuts(state: &State, ctx: &Ctx) -> Outcome {
-        let ready: Vec<JobId> = state
-            .runtime
-            .jobs
-            .values()
-            .filter(|job| {
-                matches!(&job.kind, JobKind::Autocut { ready: true, pending, .. } if pending.is_empty())
-            })
-            .map(|job| job.id)
-            .collect();
-        let mut current = state.clone();
-        let mut effects = Vec::new();
-        for job in ready {
-            let key = match current.runtime.jobs.get(&job).map(|j| &j.kind) {
-                Some(JobKind::Autocut { targets, .. }) => targets
-                    .iter()
-                    .map(|t| &t.key)
-                    .find(|key| current.runtime.silence.contains_key(*key))
-                    .cloned(),
-                _ => None,
-            };
-            let Some(key) = key else {
-                effects.push(Effect::Log {
-                    level: LogLevel::Warn,
-                    message: format!(
-                        "{job}: ready, but none of its analyses is known; left for the next autocut"
-                    ),
-                });
-                continue;
-            };
-            let silences = current.runtime.silence[&key].clone();
-            if let Some(JobKind::Autocut { pending, ready, .. }) =
-                current.runtime.jobs.get_mut(&job).map(|j| &mut j.kind)
-            {
-                pending.insert(key.clone());
-                *ready = false;
-            }
-            let out = crate::on_event::autocut::silence_detected(&current, ctx, job, key, silences);
-            current = out.state;
-            effects.extend(out.effects);
-        }
-        Outcome::new(current, effects, None)
-    }
-
-    /// `autocut.autoRunAfterTake`: autocut on `clip` as its own job (and its
-    /// own history entry), with no requester; problems are told with a
-    /// toast. A no-op unless the setting is on.
-    pub(crate) fn start_auto_run(state: &State, ctx: &Ctx, clip: &ClipId) -> Outcome {
-        if !state.project.autocut.auto_run_after_take {
-            return Outcome::unchanged(state);
-        }
-        if state.project.clip(clip).is_none() {
-            return Outcome::new(
-                state.clone(),
-                vec![Effect::Log {
-                    level: LogLevel::Debug,
-                    message: format!("autocut after the take: {clip} is not on the timeline"),
-                }],
-                None,
-            );
-        }
-        let mut auto = ctx.clone();
-        auto.req = None;
-        let scope = ClipScope::Clips(vec![clip.clone()]);
-        match crate::apply::autocut::autocut(
-            state,
-            &auto,
-            scope,
-            AutocutOverrides::default(),
-            false,
-        ) {
-            Ok(out) => {
-                let mut effects = out.effects;
-                if let Some(Err(err)) = &out.reply {
-                    effects.push(warning(err));
-                }
-                Outcome::new(out.state, effects, None)
-            }
-            Err(err) => Outcome::new(
-                state.clone(),
-                vec![
-                    Effect::Log {
-                        level: LogLevel::Warn,
-                        message: format!("autocut after the take didn't run: {err}"),
-                    },
-                    warning(&err),
-                ],
-                None,
-            ),
-        }
-    }
-
-    fn warning(err: &CoreError) -> Effect {
-        Effect::Notify(
-            Toast::new(ToastLevel::Warning, "Autocut didn't run").with_body(err.message.clone()),
-        )
-    }
+    pub(crate) use crate::apply::autocut::start_auto_run;
+    pub(crate) use crate::on_event::autocut::apply_ready_autocuts;
 }
 
 // ------------------------------------------------------- shared helpers
@@ -782,10 +671,9 @@ mod tests {
     use crate::ErrorCode;
     use crate::ctx::Facts;
     use crate::history::HistoryEntry;
-    use crate::ids::JobId;
     use crate::model::{Fps, Project};
     use crate::protocol::effect::HistoryOp;
-    use crate::state::{AutocutParams, AutocutTarget, ClipRef, Job, SilenceKey};
+    use crate::state::ClipRef;
     use crate::testkit::{self, ProjectBuilder};
 
     const NOW: &str = "2026-10-14T12:30:00Z";
@@ -821,6 +709,20 @@ mod tests {
             in_,
             out,
         }
+    }
+
+    #[test]
+    fn a_wedged_engine_refuses_new_takes() {
+        let mut state = testkit::state(project());
+        state.runtime.engine_stuck = Some("teardown timed out".into());
+        let start = crate::protocol::command::Command::RecordStart {
+            mode: crate::protocol::command::RecordModeArg::Append,
+            countdown: None,
+            wait: false,
+        };
+        let err = crate::apply::apply(&state, &ctx(), start).unwrap_err();
+        assert_eq!(err.code, crate::error::ErrorCode::CaptureFailed);
+        assert!(err.message.contains("stuck"), "{}", err.message);
     }
 
     #[test]
@@ -1105,77 +1007,6 @@ mod tests {
             .position(|e| matches!(e, Effect::StartCapture { .. }))
             .unwrap();
         assert!(live < capture);
-    }
-
-    fn autocut_job(ready: bool, key: &str) -> Job {
-        Job {
-            id: JobId(3),
-            kind: JobKind::Autocut {
-                cmd: json!({"cmd": "autocut"}),
-                targets: vec![AutocutTarget {
-                    clip: ClipRef::of(&clip("c001", 1, 0, 100)),
-                    track: "A1".parse().unwrap(),
-                    key: SilenceKey(key.to_owned()),
-                }],
-                params: AutocutParams {
-                    threshold_db: -35.0,
-                    min_silence_ms: 400,
-                    padding_ms: 120,
-                    min_keep_ms: 200,
-                },
-                dry_run: false,
-                pending: Default::default(),
-                ready,
-            },
-            req: None,
-            started: ctx().now,
-        }
-    }
-
-    #[test]
-    fn autocut_hooks_do_nothing_without_work() {
-        let state = testkit::state(project());
-        let out = autocut_hooks::apply_ready_autocuts(&state, &ctx());
-        assert_eq!(out, Outcome::unchanged(&state));
-        // A job still analyzing is not ready; one whose analysis is unknown
-        // is left for the next autocut.
-        let mut busy = state.clone();
-        busy.runtime.jobs.insert(JobId(3), autocut_job(false, "ab"));
-        assert_eq!(
-            autocut_hooks::apply_ready_autocuts(&busy, &ctx()),
-            Outcome::unchanged(&busy)
-        );
-        let mut unknown = state.clone();
-        unknown
-            .runtime
-            .jobs
-            .insert(JobId(3), autocut_job(true, "ab"));
-        let out = autocut_hooks::apply_ready_autocuts(&unknown, &ctx());
-        assert_eq!(out.state, unknown);
-        assert!(matches!(
-            out.effects.as_slice(),
-            [Effect::Log {
-                level: LogLevel::Warn,
-                ..
-            }]
-        ));
-        // autoRunAfterTake is off by default.
-        let id = ClipId::from_raw("c001");
-        assert_eq!(
-            autocut_hooks::start_auto_run(&state, &ctx(), &id),
-            Outcome::unchanged(&state)
-        );
-        let mut on = state.clone();
-        on.project.autocut.auto_run_after_take = true;
-        let out = autocut_hooks::start_auto_run(&on, &ctx(), &ClipId::from_raw("c404"));
-        assert_eq!(out.state, on);
-        assert!(matches!(
-            out.effects.as_slice(),
-            [Effect::Log {
-                level: LogLevel::Debug,
-                ..
-            }]
-        ));
     }
 
     #[test]
