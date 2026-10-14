@@ -496,7 +496,13 @@ fn backend(f: &Fixture, opener: &mut FakeOpener, req: &Request, events: &mut Eve
         rules: quick_rules(),
         on_second_signal: None,
     };
-    request(cx, &f.dir, req.clone(), &RouteOpts::for_request(req), events)
+    request(
+        cx,
+        &f.dir,
+        req.clone(),
+        &RouteOpts::for_request(req),
+        events,
+    )
 }
 
 #[test]
@@ -506,7 +512,10 @@ fn the_backend_entry_reports_where_each_request_ran() {
     // No host: this process runs it.
     let mut events = Events::default();
     let finish = backend(&f, &mut FakeOpener::default(), &req, &mut events);
-    assert!(matches!(&finish, Finish::Reply(Ok(v)) if v["exported"] == true), "{finish:?}");
+    assert!(
+        matches!(&finish, Finish::Reply(Ok(v)) if v["exported"] == true),
+        "{finish:?}"
+    );
     assert_eq!(events.routed, [None]);
     assert_eq!(events.accepted, 1);
     assert_eq!(events.progress, [1, 2, 3, 4, 5]);
@@ -527,6 +536,69 @@ fn the_backend_entry_reports_where_each_request_ran() {
     let finish = backend(&f, &mut FakeOpener::default(), &play, &mut events);
     assert_eq!(finish, Finish::NoHost);
     assert!(events.routed.is_empty());
+}
+
+/// A project with one 300-frame take placed as clip `c001`.
+fn one_clip_project() -> qrec_core::Project {
+    serde_json::from_value(json!({
+        "version": 1,
+        "name": "swamp",
+        "createdAt": "2026-10-14T12:00:00Z",
+        "canvas": { "width": 1920, "height": 1080, "fps": { "num": 30, "den": 1 }, "background": "#000000" },
+        "scene": { "layers": [], "audio": [] },
+        "recording": { "countdownSecs": 0, "encoder": "auto", "vaapiDevice": null },
+        "autocut": {
+            "autoRunAfterTake": false, "track": null, "thresholdDb": -35.0,
+            "minSilenceMs": 400, "paddingMs": 120, "minKeepMs": 200,
+        },
+        "takes": {
+            "take-0001": {
+                "status": "ok", "recordedAt": "2026-10-14T12:00:00Z", "durationFrames": 300,
+                "scene": { "layers": [], "audio": [] }, "streams": [], "placed": true,
+            },
+        },
+        "nextTakeNumber": 2,
+        "timeline": { "clips": [{ "id": "c001", "take": "take-0001", "in": 0, "out": 300 }] },
+    }))
+    .expect("a valid project")
+}
+
+#[test]
+fn real_timeline_commands_round_trip_through_a_host() {
+    let f = fixture();
+    let opener = FakeOpener {
+        project: Some(one_clip_project()),
+        ..FakeOpener::default()
+    };
+    let host = headless(&f, opener, quick_rules(), None);
+    wait_ready(&f);
+    // The core's split runs in the host; its CmdResult crosses the wire.
+    let split = qrec_core::Command::ClipSplit {
+        clip: Some("c001".parse().unwrap()),
+        at: "100f".parse().unwrap(),
+        timeline: false,
+    };
+    let out = send(&f.socket, Request::command(split, false));
+    let result = out.ok();
+    assert_eq!(result["seq"], 1, "{result}");
+    assert_eq!(
+        result["created"].as_array().map(Vec::len),
+        Some(1),
+        "{result}"
+    );
+    // A bad id is the core's not_found, delivered as the reply.
+    let missing = qrec_core::Command::ClipRemove {
+        clips: vec!["cfff".parse().unwrap()],
+    };
+    let out = send(&f.socket, Request::command(missing, false));
+    assert_eq!(out.err().code, ErrorCode::NotFound);
+    // Undo moves the cursor back.
+    let out = send(
+        &f.socket,
+        Request::command(qrec_core::Command::Undo { steps: 1 }, false),
+    );
+    assert_eq!(out.ok()["seq"], 0);
+    assert_eq!(host.join().unwrap(), 0);
 }
 
 #[test]

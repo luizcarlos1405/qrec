@@ -353,8 +353,15 @@ struct FakeJob {
 }
 
 impl FakeSession {
-    pub fn new(dir: &Path, host: HostKind, log: FakeLog, stubborn: bool) -> Self {
-        let project = Project::new("fake", Utc::now(), &ProjectDefaults::default());
+    pub fn new(
+        dir: &Path,
+        host: HostKind,
+        log: FakeLog,
+        stubborn: bool,
+        project: Option<Project>,
+    ) -> Self {
+        let project = project
+            .unwrap_or_else(|| Project::new("fake", Utc::now(), &ProjectDefaults::default()));
         let (inbox, rx) = Inbox::channel();
         Self {
             state: State::new(project, History::new(), UiState::default(), host),
@@ -618,6 +625,8 @@ pub(crate) struct FakeOpener {
     pub stubborn: bool,
     /// How long opening takes (a slow recovery).
     pub delay: Duration,
+    /// The project the Session starts with (default: a new empty one).
+    pub project: Option<Project>,
 }
 
 impl FakeOpener {
@@ -647,6 +656,7 @@ impl Opener for FakeOpener {
             opts.host,
             self.log.clone(),
             self.stubborn,
+            self.project.clone(),
         )))
     }
 }
