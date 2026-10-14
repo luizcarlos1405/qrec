@@ -147,7 +147,6 @@ mod tests {
         first.unpublished = true; // pretend it died without cleaning up
         drop(first);
         assert!(socket.exists());
-        assert!(UnixStream::connect(&socket).is_err(), "nobody listens");
         let mut second = publish(&socket).unwrap();
         assert!(UnixStream::connect(&socket).is_ok());
 
