@@ -1,11 +1,12 @@
 //! The export and frame plans against real ffmpeg (A§9.3, A§9.4, A§11).
 //!
-//! Fixtures are generated in a temp project dir: 320×180 @ 30 fps H.264 in
-//! Matroska (no B-frames, a keyframe per second, like the recorder) whose
-//! frames show their own index as binary bars, and FLAC tracks with 1 kHz
-//! tone bursts at known file times. The project's streams start 0, +41 ms
-//! and −20 ms after T0 (audio +3 ms with a +20 ms sync offset, and −20 ms).
-//! Every planned argv runs verbatim with the project dir as cwd, then:
+//! Fixtures are generated in a temp project dir: 320×180 H.264 in Matroska
+//! (no B-frames, a keyframe per second, like the recorder) at 30 or
+//! 30000/1001 fps, whose frames show their own index as binary bars, and
+//! FLAC tracks with 1 kHz tone bursts at known file times. The project's
+//! streams start 0, +41 ms and −20 ms after T0 (audio +3 ms with a +20 ms
+//! sync offset, and −20 ms). Every planned argv runs verbatim with the
+//! project dir as cwd, then:
 //!
 //! - each segment has exactly its unit's video packets and PCM samples, and
 //!   ffmpeg's `-progress` blocks say so;
@@ -50,7 +51,8 @@ use qrec_core::{
 
 const W: u32 = 320;
 const H: u32 = 180;
-const FPS: Fps = Fps::new(30, 1);
+const FPS30: Fps = Fps::new(30, 1);
+const NTSC: Fps = Fps::new(30000, 1001);
 /// Frames in every video fixture.
 const VIDEO_FRAMES: u64 = 120;
 /// Bars of the frame-ID pattern: bits 0–6 of the frame index, bar 7 always
@@ -194,19 +196,21 @@ const CLIPS: &[(&str, &str, Frame, Frame)] = &[
 /// A project dir with fixture media and the project that uses it.
 struct Fixture {
     dir: TempDir,
+    fps: Fps,
     takes: Vec<TakeFx>,
     project: Project,
 }
 
 impl Fixture {
-    fn new(tag: &str) -> Self {
+    /// Fixtures recorded at `fps` on a canvas of the same rate.
+    fn new(tag: &str, fps: Fps) -> Self {
         let dir = TempDir::new(tag);
         let takes = fixture_takes();
         let mut project = Project::new("plans", Default::default(), &ProjectDefaults::default());
         project.canvas = Canvas {
             width: W,
             height: H,
-            fps: FPS,
+            fps,
             background: BACKGROUND.parse().unwrap(),
         };
         let mut video_template: Option<String> = None;
@@ -221,13 +225,13 @@ impl Fixture {
                         fs::copy(dir.path().join(first), dir.path().join(&file)).unwrap();
                     }
                     None => {
-                        make_video(dir.path(), &file);
+                        make_video(dir.path(), &file, fps);
                         video_template = Some(file.clone());
                     }
                 }
                 let info = probe(dir.path(), &file, StreamKind::Video);
                 assert_eq!(info.frames, Some(VIDEO_FRAMES), "{file}");
-                assert_eq!(info.fps, Some(FPS), "{file}");
+                assert_eq!(info.fps, Some(fps), "{file}");
                 assert_eq!((info.width, info.height), (Some(W), Some(H)), "{file}");
                 assert_eq!(info.color_range.as_deref(), Some("tv"), "{file}");
                 assert_eq!(info.color_space.as_deref(), Some("bt709"), "{file}");
@@ -282,7 +286,7 @@ impl Fixture {
                 placed: true,
                 replaced: Vec::new(),
             };
-            take.duration_frames = derive_duration_frames(&take, FPS);
+            take.duration_frames = derive_duration_frames(&take, fps);
             project.takes.insert(fx.take_id(), take);
         }
         project.next_take_number = 3;
@@ -303,6 +307,7 @@ impl Fixture {
             .collect();
         Self {
             dir,
+            fps,
             takes,
             project,
         }
@@ -338,8 +343,13 @@ fn stream(id: &str, file: String, offset_ns: i64, info: &MediaInfo) -> Stream {
     }
 }
 
-/// 120 frames whose bars spell their index (H.264, Matroska, BT.709).
-fn make_video(dir: &Path, file: &str) {
+/// 120 frames whose bars spell their index (H.264, Matroska, BT.709), with
+/// the recorder's timestamps: GStreamer's `matroskamux` *truncates* them to
+/// milliseconds where ffmpeg rounds, so the encode is remuxed with frame `k`
+/// at `⌊k·1000/fps⌋` ms. That is what the planner's 2 ms seek back-off is
+/// for: without it, every frame whose time truncates (k ≡ 2 mod 3 at 30
+/// fps) would show the next one.
+fn make_video(dir: &Path, file: &str, fps: Fps) {
     let id = format!(
         "if(eq(floor(X/{BAR_PX}),{ID_BITS}),235,if(mod(floor(N/pow(2,floor(X/{BAR_PX}))),2),235,16))"
     );
@@ -347,43 +357,37 @@ fn make_video(dir: &Path, file: &str) {
         "color=c=black:s={W}x{H}:r={}/{},trim=end_frame={VIDEO_FRAMES},\
          format=pix_fmts=yuv420p:color_spaces=bt709:color_ranges=tv,geq=lum='{id}':cb=128:cr=128,\
          setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709[v]",
-        FPS.num, FPS.den
+        fps.num, fps.den
     );
-    ffmpeg(
-        dir,
-        &[
-            "-filter_complex",
-            &graph,
-            "-map",
-            "[v]",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "12",
-            "-bf",
-            "0",
-            "-g",
-            "30",
-            "-keyint_min",
-            "30",
-            "-sc_threshold",
-            "0",
-            "-pix_fmt",
-            "yuv420p",
-            "-color_range",
-            "tv",
-            "-colorspace",
-            "bt709",
-            "-color_primaries",
-            "bt709",
-            "-color_trc",
-            "bt709",
-            "-f",
-            "matroska",
-            &format!("file:{file}"),
-        ],
+    let gop = fps.nominal().to_string();
+    let encoded = format!("{file}.ffmpeg.mkv");
+    #[rustfmt::skip]
+    ffmpeg(dir, &[
+        "-filter_complex", &graph, "-map", "[v]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "12",
+        "-bf", "0", "-g", &gop, "-keyint_min", &gop, "-sc_threshold", "0",
+        "-pix_fmt", "yuv420p", "-color_range", "tv", "-colorspace", "bt709",
+        "-color_primaries", "bt709", "-color_trc", "bt709",
+        "-f", "matroska", &format!("file:{encoded}"),
+    ]);
+    let truncate = format!("setts=ts=floor(N*1000*{}/{})", fps.den, fps.num);
+    #[rustfmt::skip]
+    ffmpeg(dir, &[
+        "-i", &format!("file:{encoded}"), "-map", "0", "-c", "copy", "-bsf:v", &truncate,
+        "-f", "matroska", &format!("file:{file}"),
+    ]);
+    fs::remove_file(dir.join(&encoded)).unwrap();
+    // Frame 2 at 66.67 ms (66.73 ms at 29.97) is stored as 66 ms.
+    #[rustfmt::skip]
+    let pts = run(dir, &args(&[
+        "ffprobe", "-v", "error", "-read_intervals", "%+#3", "-show_entries", "packet=pts",
+        "-of", "csv=p=0", &format!("file:{file}"),
+    ]));
+    assert_eq!(
+        String::from_utf8_lossy(&pts.stdout)
+            .split_whitespace()
+            .collect::<Vec<_>>(),
+        ["0", "33", "66"]
     );
 }
 
@@ -405,22 +409,12 @@ fn make_audio(dir: &Path, file: &str, track: &TrackFx) {
         gates.join("+"),
         seconds(track.duration_ms)
     );
-    ffmpeg(
-        dir,
-        &[
-            "-filter_complex",
-            &graph,
-            "-map",
-            "[a]",
-            "-c:a",
-            "flac",
-            "-sample_fmt",
-            "s16",
-            "-f",
-            "matroska",
-            &format!("file:{file}"),
-        ],
-    );
+    #[rustfmt::skip]
+    ffmpeg(dir, &[
+        "-filter_complex", &graph, "-map", "[a]",
+        "-c:a", "flac", "-sample_fmt", "s16",
+        "-f", "matroska", &format!("file:{file}"),
+    ]);
 }
 
 fn seconds(ms: i64) -> String {
@@ -432,8 +426,9 @@ fn seconds(ms: i64) -> String {
 /// The recorded frame take frame `f` should show: the one whose take time
 /// (`offset + j/fps`) is nearest to the frame's, if the file has it. Worked
 /// out independently of the planner (no offset in these tests is a tie).
-fn expected_frame(offset_ns: i64, f: Frame) -> Option<u64> {
-    let j = (f as f64 - offset_ns as f64 * f64::from(FPS.num) / (f64::from(FPS.den) * 1e9)).round();
+fn expected_frame(offset_ns: i64, f: Frame, fps: Fps) -> Option<u64> {
+    let per_ns = f64::from(fps.num) / (f64::from(fps.den) * 1e9);
+    let j = (f as f64 - offset_ns as f64 * per_ns).round();
     (j >= 0.0 && (j as u64) < VIDEO_FRAMES).then_some(j as u64)
 }
 
@@ -445,13 +440,13 @@ fn read_id(gray: &[u8], y: u32) -> Option<u64> {
 
 /// Every output frame of a unit shows the expected recorded frame of every
 /// layer.
-fn check_frame_ids(frames: &[Vec<u8>], take: &TakeFx, in_: Frame, what: &str) {
+fn check_frame_ids(frames: &[Vec<u8>], take: &TakeFx, in_: Frame, fps: Fps, what: &str) {
     for (t, gray) in frames.iter().enumerate() {
         let f = in_ + t as u64;
         for layer in &take.layers {
             assert_eq!(
                 read_id(gray, layer.probe_y),
-                expected_frame(layer.offset_ns, f),
+                expected_frame(layer.offset_ns, f, fps),
                 "{what}: output frame {t} (take frame {f}), layer {} starting {} ns after T0",
                 layer.id,
                 layer.offset_ns
@@ -469,8 +464,8 @@ struct Placed {
 }
 
 /// Where every burst of the take lands in the unit starting at `in_`.
-fn placed_bursts(take: &TakeFx, in_: Frame) -> Vec<Placed> {
-    let unit_ns = frame_ns(in_ as i64, FPS) as f64;
+fn placed_bursts(take: &TakeFx, in_: Frame, fps: Fps) -> Vec<Placed> {
+    let unit_ns = frame_ns(in_ as i64, fps) as f64;
     let to_samples = |take_ns: f64| (take_ns - unit_ns) * SAMPLE_RATE as f64 / 1e9;
     let mut out = Vec::new();
     for track in &take.tracks {
@@ -487,17 +482,11 @@ fn placed_bursts(take: &TakeFx, in_: Frame) -> Vec<Placed> {
     out
 }
 
-/// The audio of a unit: burst edges within 1 ms, levels within 2 % (mono
-/// upmixed at 0 dB, gains applied), silence elsewhere, and the boundary
-/// fades exactly at cuts.
-fn check_audio(
-    pcm: &[[i16; 2]],
-    take: &TakeFx,
-    in_: Frame,
-    out: Frame,
-    take_end: Frame,
-    what: &str,
-) {
+/// The audio of a unit `[in_, out)`: burst edges within 1 ms, levels within
+/// 2 % (mono upmixed at 0 dB, gains applied), silence elsewhere, and the
+/// boundary fades exactly at cuts (none at the take's own start and end).
+fn check_audio(pcm: &[[i16; 2]], take: &TakeFx, unit: (Frame, Frame, Frame), fps: Fps, what: &str) {
+    let (in_, out, take_end) = unit;
     let len = pcm.len() as f64;
     let level = |range: std::ops::Range<usize>| -> [f64; 2] {
         let mut peak = [0f64; 2];
@@ -514,7 +503,7 @@ fn check_audio(
             .all(|s| (i32::from(s[0]) - i32::from(s[1])).abs() <= 2),
         "{what}: the channels differ (the mono upmix must copy, and both fixtures are L = R)"
     );
-    let bursts = placed_bursts(take, in_);
+    let bursts = placed_bursts(take, in_, fps);
     for b in &bursts {
         // Burst edges well inside the unit land within 1 ms.
         for (edge, is_start) in [(b.start, true), (b.end, false)] {
@@ -542,8 +531,7 @@ fn check_audio(
         // Full level away from the edges and the unit's fades.
         let (from, to) = (b.start.max(240.0) + 300.0, b.end.min(len - 240.0) - 300.0);
         if to > from {
-            let peak = level(from as usize..to as usize);
-            for p in peak {
+            for p in level(from as usize..to as usize) {
                 assert!(
                     (p / b.amp - 1.0).abs() < 0.02,
                     "{what}: a {} burst peaks at {p}, expected {:.0}",
@@ -624,7 +612,7 @@ fn check_audio(
     }
 }
 
-// --------------------------------------------------------------- planning
+// ------------------------------------------------------- planning, running
 
 fn capabilities() -> Capabilities {
     Capabilities {
@@ -687,6 +675,72 @@ fn render_and_check_segment(
     (frames, pcm)
 }
 
+/// Renders and checks every segment of `plan` (counts, progress, which
+/// frames, audio); returns all their frames in timeline order.
+fn render_segments(fx: &Fixture, plan: &ExportPlan, label: &str) -> Vec<Vec<u8>> {
+    let mut all = Vec::new();
+    for (i, s) in plan.segments.iter().enumerate() {
+        let what = format!("{label} segment {i} ({} [{}, {}))", s.take, s.in_, s.out);
+        let (frames, pcm) = render_and_check_segment(fx, s, &what);
+        let take = fx.take(&s.take);
+        check_frame_ids(&frames, take, s.in_, fx.fps, &what);
+        let unit = (s.in_, s.out, fx.duration_frames(&s.take));
+        check_audio(&pcm, take, unit, fx.fps, &what);
+        all.extend(frames);
+    }
+    all
+}
+
+/// Writes the concat list and runs the stitch, into `tmp` (the runner may
+/// replace only the last argv element) then renamed to the plan's output.
+/// Returns its progress blocks.
+fn stitch(fx: &Fixture, plan: &ExportPlan, tmp: &str) -> Vec<ProgressBlock> {
+    fs::write(
+        fx.path().join(&plan.stitch.list_path),
+        &plan.stitch.list_content,
+    )
+    .unwrap();
+    fs::create_dir_all(fx.path().join("exports")).unwrap();
+    let mut argv = plan.stitch.argv.clone();
+    assert_eq!(argv.last().unwrap(), &format!("file:{}", plan.out));
+    *argv.last_mut().unwrap() = format!("file:{tmp}");
+    let blocks = progress_blocks(&run(fx.path(), &argv).stdout);
+    assert!(
+        blocks.last().is_some_and(|b| b.end),
+        "the stitch didn't end"
+    );
+    fs::rename(fx.path().join(tmp), fx.path().join(&plan.out)).unwrap();
+    blocks
+}
+
+/// The stitched MP4 holds every segment frame bit-exactly at a constant rate,
+/// tagged BT.709, and the AAC audio once (whole 1024-sample frames: the
+/// priming is trimmed on decode, the last frame's padding stays).
+fn check_stitched_mp4(fx: &Fixture, plan: &ExportPlan, frames: &[Vec<u8>]) {
+    let info = probe(fx.path(), &plan.out, StreamKind::Video);
+    assert_eq!(info.frames, Some(plan.total_frames));
+    assert_eq!(info.fps, Some(fx.fps));
+    assert_eq!((info.width, info.height), (Some(W), Some(H)));
+    assert_eq!(info.color_range.as_deref(), Some("tv"));
+    assert_eq!(info.color_space.as_deref(), Some("bt709"));
+    let stitched = gray_frames(fx.path(), &plan.out);
+    assert_eq!(stitched.len(), frames.len());
+    assert!(stitched == frames, "the stitch changed or reordered frames");
+    let pts = packet_pts(fx.path(), &plan.out);
+    assert_eq!(pts.len() as u64, plan.total_frames);
+    let steps: Vec<i64> = pts.windows(2).map(|w| w[1] - w[0]).collect();
+    assert!(
+        steps.iter().all(|&d| d == steps[0]),
+        "VFR timestamps: {steps:?}"
+    );
+    let samples: u64 = plan.segments.iter().map(|s| s.samples).sum();
+    let decoded = pcm(fx.path(), &plan.out).len() as u64;
+    assert!(
+        decoded >= samples && decoded - samples < 1024,
+        "the stitched audio has {decoded} samples, the segments {samples}"
+    );
+}
+
 // ------------------------------------------------------------------ tests
 
 /// The MP4 export of the fixture timeline, through the `Export` command:
@@ -694,7 +748,7 @@ fn render_and_check_segment(
 /// identical segments.
 #[test]
 fn mp4_export_renders_exact_frames_samples_and_fades() {
-    let fx = Fixture::new("mp4");
+    let fx = Fixture::new("mp4", FPS30);
     let caps = capabilities();
     let mut state = State::new(
         fx.project.clone(),
@@ -730,19 +784,15 @@ fn mp4_export_renders_exact_frames_samples_and_fades() {
         })
         .expect("a RenderExport effect");
     assert_eq!(plan.out, "exports/plans-19700101-000000.mp4");
+    let opts = options(
+        ExportFormat::Mp4,
+        VideoCodec::H264,
+        Quality::Standard,
+        &plan.out,
+    );
     assert_eq!(
         plan,
-        plan_export(
-            &fx.project,
-            &caps,
-            &options(
-                ExportFormat::Mp4,
-                VideoCodec::H264,
-                Quality::Standard,
-                &plan.out
-            )
-        )
-        .unwrap(),
+        plan_export(&fx.project, &caps, &opts).unwrap(),
         "the command plans what plan_export plans"
     );
     let units = render_units(&fx.project);
@@ -763,27 +813,16 @@ fn mp4_export_renders_exact_frames_samples_and_fades() {
     assert_eq!(plan.total_frames, 122);
     assert!(plan.segments.iter().all(|s| s.path.ends_with(".mov")));
 
-    // Segments: counts, progress, frames, audio.
+    // Segments; the job follows the runner's progress.
+    let frames = render_segments(&fx, &plan, "mp4");
     let mut state = outcome.state;
-    let mut all_frames = Vec::new();
     for (i, s) in plan.segments.iter().enumerate() {
-        let what = format!("segment {i} ({} [{}, {}))", s.take, s.in_, s.out);
-        let (frames, pcm) = render_and_check_segment(&fx, s, &what);
-        let take = fx.take(&s.take);
-        check_frame_ids(&frames, take, s.in_, &what);
-        check_audio(&pcm, take, s.in_, s.out, fx.duration_frames(&s.take), &what);
-        all_frames.extend(frames);
-        // The job follows the runner's progress.
-        let progress = qrec_core::on_event(
-            &state,
-            &ctx,
-            Event::ExportProgress {
-                job,
-                segment: i,
-                frames_done: s.frames,
-            },
-        );
-        state = progress.state;
+        let event = Event::ExportProgress {
+            job,
+            segment: i,
+            frames_done: s.frames,
+        };
+        state = qrec_core::on_event(&state, &ctx, event).state;
     }
     match &state.runtime.jobs[&job].kind {
         JobKind::Export {
@@ -797,21 +836,12 @@ fn mp4_export_renders_exact_frames_samples_and_fades() {
     // Colour: the segments are tagged BT.709 and the background was drawn
     // with BT.709 coefficients.
     let first = &plan.segments[0].path;
-    let tags = run(
-        fx.path(),
-        &args(&[
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=color_range,color_space,color_primaries,color_transfer",
-            "-of",
-            "csv=p=0",
-            &format!("file:{first}"),
-        ]),
-    );
+    #[rustfmt::skip]
+    let tags = run(fx.path(), &args(&[
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=color_range,color_space,color_primaries,color_transfer",
+        "-of", "csv=p=0", &format!("file:{first}"),
+    ]));
     assert_eq!(
         String::from_utf8_lossy(&tags.stdout).trim(),
         "tv,bt709,bt709,bt709"
@@ -828,62 +858,37 @@ fn mp4_export_renders_exact_frames_samples_and_fades() {
         "segment background",
     );
 
-    // Stitch, into a temp name the way the runner does (it may replace only
-    // the last argv element), then the real name.
-    let list = fx.path().join(&plan.stitch.list_path);
-    fs::write(&list, &plan.stitch.list_content).unwrap();
-    fs::create_dir_all(fx.path().join("exports")).unwrap();
-    let tmp = "exports/.plans.qrec-part-1-1.mp4";
-    let mut argv = plan.stitch.argv.clone();
-    assert_eq!(argv.last().unwrap(), &format!("file:{}", plan.out));
-    *argv.last_mut().unwrap() = format!("file:{tmp}");
-    let out = run(fx.path(), &argv);
-    let blocks = progress_blocks(&out.stdout);
-    assert!(blocks.last().unwrap().end);
+    // The stitch, its progress through the job, and the stitched file.
+    let blocks = stitch(&fx, &plan, "exports/.plans.qrec-part-1-1.mp4");
     for block in &blocks {
-        let ev = Event::ExportStitchProgress {
+        let event = Event::ExportStitchProgress {
             job,
             out_time_ns: block.out_time_ns.unwrap_or(0).max(0) as u64,
         };
-        let step = qrec_core::on_event(&state, &ctx, ev);
-        state = step.state;
+        state = qrec_core::on_event(&state, &ctx, event).state;
     }
-    fs::rename(fx.path().join(tmp), fx.path().join(&plan.out)).unwrap();
-    let info = probe(fx.path(), &plan.out, StreamKind::Video);
-    assert_eq!(info.frames, Some(plan.total_frames));
-    assert_eq!(info.fps, Some(FPS));
-    assert_eq!((info.width, info.height), (Some(W), Some(H)));
-    assert_eq!(info.color_range.as_deref(), Some("tv"));
-    assert_eq!(info.color_space.as_deref(), Some("bt709"));
-    // Copied bit-exactly: the stitched frames are the segments' frames.
-    let stitched = gray_frames(fx.path(), &plan.out);
-    assert_eq!(stitched.len(), all_frames.len());
-    assert!(
-        stitched == all_frames,
-        "the stitch changed or reordered frames"
-    );
-    // Constant rate: every frame lasts exactly one frame.
-    let pts = packet_pts(fx.path(), &plan.out);
-    assert_eq!(pts.len() as u64, plan.total_frames);
-    let steps: Vec<i64> = pts.windows(2).map(|w| w[1] - w[0]).collect();
-    assert!(
-        steps.iter().all(|&d| d == steps[0]),
-        "VFR timestamps: {steps:?}"
-    );
-    // AAC, encoded once: the priming is trimmed on decode, the end keeps
-    // the last frame's silent padding (ffmpeg 8.1.2 decodes whole 1024-sample
-    // frames: 195 584 samples for 195 200).
-    let samples: u64 = plan.segments.iter().map(|s| s.samples).sum();
-    let decoded = pcm(fx.path(), &plan.out).len() as u64;
-    assert!(
-        decoded >= samples && decoded - samples < 1024,
-        "the stitched audio has {decoded} samples, the segments {samples}"
-    );
+    match &state.runtime.jobs[&job].kind {
+        JobKind::Export {
+            stitching,
+            stitch_done_ns,
+            stitch_total_ns,
+            ..
+        } => {
+            // ffmpeg's last `out_time` trails the end by the B-frame delay
+            // of the copied video (two frames here).
+            assert!(*stitching);
+            assert!(
+                stitch_total_ns - stitch_done_ns <= frame_ns(3, fx.fps) as u64,
+                "the stitch's progress stopped at {stitch_done_ns} of {stitch_total_ns} ns"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    check_stitched_mp4(&fx, &plan, &frames);
 
     // The job ends with the reply the requester waits for.
     let bytes = fs::metadata(fx.path().join(&plan.out)).unwrap().len();
     let real = fx.path().join(&plan.out).display().to_string();
-    let progress_before = state.clone();
     let finished = qrec_core::on_event(
         &state,
         &ctx,
@@ -906,23 +911,6 @@ fn mp4_export_renders_exact_frames_samples_and_fades() {
     assert_eq!(reply.result["path"], real.as_str());
     assert_eq!(reply.result["frames"], plan.total_frames);
     assert_eq!(reply.result["bytes"], bytes);
-    match &progress_before.runtime.jobs[&job].kind {
-        JobKind::Export {
-            stitching,
-            stitch_done_ns,
-            stitch_total_ns,
-            ..
-        } => {
-            // ffmpeg's last `out_time` trails the end by the B-frame delay
-            // of the copied video (two frames here).
-            assert!(*stitching);
-            assert!(
-                stitch_total_ns - stitch_done_ns <= frame_ns(3, FPS) as u64,
-                "the stitch's progress stopped at {stitch_done_ns} of {stitch_total_ns} ns"
-            );
-        }
-        other => panic!("{other:?}"),
-    }
 
     // A split timeline: the same plan, and byte-identical segments.
     let mut split = fx.project.clone();
@@ -933,12 +921,6 @@ fn mp4_export_renders_exact_frames_samples_and_fades() {
     cut(&mut split.timeline.clips, "c1", 17, "c1b");
     cut(&mut split.timeline.clips, "c3", 80, "c3b");
     cut(&mut split.timeline.clips, "c6", 6, "c6b");
-    let opts = options(
-        ExportFormat::Mp4,
-        VideoCodec::H264,
-        Quality::Standard,
-        &plan.out,
-    );
     let split_plan = plan_export(&split, &caps, &opts).unwrap();
     assert_eq!(
         without_clip_ids(split_plan.clone()),
@@ -964,11 +946,32 @@ fn mp4_export_renders_exact_frames_samples_and_fades() {
     }
 }
 
+/// At 30000/1001 fps the Matroska timestamps (whole ms) never match frame
+/// times and a unit's samples aren't whole per frame (1601.6): the 2 ms
+/// seek back-off, the in-graph trims and the stitch must still be exact.
+#[test]
+fn ntsc_export_renders_exact_frames_and_samples() {
+    let fx = Fixture::new("ntsc", NTSC);
+    let opts = options(
+        ExportFormat::Mp4,
+        VideoCodec::H264,
+        Quality::Draft,
+        "exports/plans-ntsc.mp4",
+    );
+    let plan = plan_export(&fx.project, &capabilities(), &opts).unwrap();
+    // 50 frames at 29.97 are 80 080 samples; 25 are 40 040.
+    let samples: Vec<u64> = plan.segments.iter().map(|s| s.samples).collect();
+    assert_eq!(samples, vec![80_080, 40_040, 12_813, 30_430, 32_032]);
+    let frames = render_segments(&fx, &plan, "ntsc");
+    stitch(&fx, &plan, "exports/.plans-ntsc.qrec-part-1-2.mp4");
+    check_stitched_mp4(&fx, &plan, &frames);
+}
+
 /// WebM: VP9 and AV1 segments are Matroska with PCM, exact counts; the
 /// stitch copies the video and encodes Opus.
 #[test]
 fn webm_exports_render_exact_frames_and_samples() {
-    let fx = Fixture::new("webm");
+    let fx = Fixture::new("webm", FPS30);
     let caps = capabilities();
     // AV1 at Draft (crf 38) smears the 40 px bars at 320×180 enough to
     // misread them; High keeps them legible.
@@ -984,22 +987,13 @@ fn webm_exports_render_exact_frames_and_samples() {
         )
         .unwrap();
         assert_eq!(plan.tmp_ext, "webm");
-        for (i, s) in plan.segments.iter().enumerate() {
-            assert!(s.path.ends_with(".mkv"), "{}", s.path);
-            let what = format!("{codec:?} segment {i} ({} [{}, {}))", s.take, s.in_, s.out);
-            let (frames, pcm) = render_and_check_segment(&fx, s, &what);
-            let take = fx.take(&s.take);
-            check_frame_ids(&frames, take, s.in_, &what);
-            check_audio(&pcm, take, s.in_, s.out, fx.duration_frames(&s.take), &what);
-        }
-        fs::write(
-            fx.path().join(&plan.stitch.list_path),
-            &plan.stitch.list_content,
-        )
-        .unwrap();
-        fs::create_dir_all(fx.path().join("exports")).unwrap();
-        let result = run(fx.path(), &plan.stitch.argv);
-        assert!(progress_blocks(&result.stdout).last().unwrap().end);
+        assert!(plan.segments.iter().all(|s| s.path.ends_with(".mkv")));
+        render_segments(&fx, &plan, &format!("{codec:?}"));
+        stitch(
+            &fx,
+            &plan,
+            &format!("exports/.plans-{codec:?}.qrec-part-1-3.webm"),
+        );
         let info = probe(fx.path(), &plan.out, StreamKind::Video);
         assert_eq!(info.frames, Some(plan.total_frames), "{codec:?}");
         assert_eq!((info.width, info.height), (Some(W), Some(H)));
@@ -1014,12 +1008,8 @@ fn webm_exports_render_exact_frames_and_samples() {
 /// recorded frames, sRGB PNGs, BT.709 colours; `--layer` is the raw frame.
 #[test]
 fn frame_saves_are_srgb_pngs_of_the_export_frames() {
-    let fx = Fixture::new("frames");
+    let fx = Fixture::new("frames", FPS30);
     fs::create_dir_all(fx.path().join("frames")).unwrap();
-    let positions = |at: Frame| {
-        let (take, f) = qrec_core::timeline::source_at(&fx.project.timeline.clips, at).unwrap();
-        (take.clone(), f)
-    };
     // Timeline 0: L2 hasn't started (lead); 1; 53 = take frame 68; 120 =
     // the second take's frame 23.
     for at in [0, 1, 53, 120] {
@@ -1029,31 +1019,35 @@ fn frame_saves_are_srgb_pngs_of_the_export_frames() {
         assert!(progress_blocks(&result.stdout).last().unwrap().end);
         let png = fs::read(fx.path().join(&out)).unwrap();
         check_png(&png, W, H, &out);
-        let (take, f) = positions(at);
+        let (take, f) = qrec_core::timeline::source_at(&fx.project.timeline.clips, at).unwrap();
         let gray = gray_frames(fx.path(), &out);
         assert_eq!(gray.len(), 1);
-        check_frame_ids(&gray, fx.take(&take), f, &out);
-        if take == TakeId::numbered(1) {
+        check_frame_ids(&gray, fx.take(take), f, fx.fps, &out);
+        if *take == TakeId::numbered(1) {
             // The background between the bands, a bar that is off (bit 5 of
             // frames 0, 1 and 68) and the marker bar, full range.
             let rgb = rgb_frame(fx.path(), &out, "format=rgb24");
             assert_close_rgb(pixel(&rgb, W / 2, 55), BACKGROUND_RGB, 3, &out);
-            assert_close_rgb(pixel(&rgb, 5 * BAR_PX + BAR_PX / 2, 25), [0, 0, 0], 3, &out);
-            assert_close_rgb(pixel(&rgb, W - BAR_PX / 2, 25), [255, 255, 255], 3, &out);
+            let off_bar = pixel(&rgb, 5 * BAR_PX + BAR_PX / 2, 25);
+            assert_close_rgb(off_bar, [0, 0, 0], 3, &out);
+            let marker = pixel(&rgb, W - BAR_PX / 2, 25);
+            assert_close_rgb(marker, [255, 255, 255], 3, &out);
         }
     }
     // Raw layer frames, at native size: L2 (41 ms late) at timeline 53 shows
     // its frame 67; L3 (20 ms early) at timeline 0 its frame 1.
     for (at, layer, want) in [(53, "L2", 67), (0, "L3", 1), (120, "L1", 23)] {
         let out = format!("frames/raw-{layer}-{at}.png");
-        let plan = plan_frame(&fx.project, at, Some(&layer.parse().unwrap()), &out).unwrap();
+        let layer: LayerId = layer.parse().unwrap();
+        let plan = plan_frame(&fx.project, at, Some(&layer), &out).unwrap();
         run(fx.path(), &plan.argv);
         let png = fs::read(fx.path().join(&out)).unwrap();
         check_png(&png, W, H, &out);
         let gray = gray_frames(fx.path(), &out);
         assert_eq!(read_id(&gray[0], H / 2), Some(want), "{out}");
     }
-    let err = plan_frame(&fx.project, 0, Some(&"L2".parse().unwrap()), "frames/x.png").unwrap_err();
+    let l2: LayerId = "L2".parse().unwrap();
+    let err = plan_frame(&fx.project, 0, Some(&l2), "frames/x.png").unwrap_err();
     assert!(
         err.message.contains("recording starts later"),
         "{}",
@@ -1177,20 +1171,11 @@ fn progress_blocks(stdout: &[u8]) -> Vec<ProgressBlock> {
 
 /// Every video frame as 8-bit gray (W×H bytes each).
 fn gray_frames(cwd: &Path, file: &str) -> Vec<Vec<u8>> {
-    let raw = ffmpeg(
-        cwd,
-        &[
-            "-i",
-            &format!("file:{file}"),
-            "-map",
-            "0:v:0",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "gray",
-            "-",
-        ],
-    );
+    #[rustfmt::skip]
+    let raw = ffmpeg(cwd, &[
+        "-i", &format!("file:{file}"), "-map", "0:v:0",
+        "-f", "rawvideo", "-pix_fmt", "gray", "-",
+    ]);
     let size = (W * H) as usize;
     assert_eq!(raw.len() % size, 0, "{file}: partial frame");
     raw.chunks(size).map(<[u8]>::to_vec).collect()
@@ -1198,24 +1183,12 @@ fn gray_frames(cwd: &Path, file: &str) -> Vec<Vec<u8>> {
 
 /// The first video frame as RGB through `filter`.
 fn rgb_frame(cwd: &Path, file: &str, filter: &str) -> Vec<u8> {
-    ffmpeg(
-        cwd,
-        &[
-            "-i",
-            &format!("file:{file}"),
-            "-map",
-            "0:v:0",
-            "-frames:v",
-            "1",
-            "-vf",
-            filter,
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgb24",
-            "-",
-        ],
-    )
+    #[rustfmt::skip]
+    let rgb = ffmpeg(cwd, &[
+        "-i", &format!("file:{file}"), "-map", "0:v:0", "-frames:v", "1", "-vf", filter,
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+    ]);
+    rgb
 }
 
 fn pixel(rgb: &[u8], x: u32, y: u32) -> [u8; 3] {
@@ -1234,24 +1207,11 @@ fn assert_close_rgb(got: [u8; 3], want: [u8; 3], tolerance: u8, what: &str) {
 
 /// The audio as interleaved stereo s16 at 48 kHz.
 fn pcm(cwd: &Path, file: &str) -> Vec<[i16; 2]> {
-    let raw = ffmpeg(
-        cwd,
-        &[
-            "-i",
-            &format!("file:{file}"),
-            "-map",
-            "0:a:0",
-            "-c:a",
-            "pcm_s16le",
-            "-ac",
-            "2",
-            "-ar",
-            "48000",
-            "-f",
-            "s16le",
-            "-",
-        ],
-    );
+    #[rustfmt::skip]
+    let raw = ffmpeg(cwd, &[
+        "-i", &format!("file:{file}"), "-map", "0:a:0",
+        "-c:a", "pcm_s16le", "-ac", "2", "-ar", "48000", "-f", "s16le", "-",
+    ]);
     raw.chunks_exact(4)
         .map(|c| {
             [
@@ -1264,21 +1224,11 @@ fn pcm(cwd: &Path, file: &str) -> Vec<[i16; 2]> {
 
 /// The video packets' timestamps, in presentation order.
 fn packet_pts(cwd: &Path, file: &str) -> Vec<i64> {
-    let out = run(
-        cwd,
-        &args(&[
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "packet=pts",
-            "-of",
-            "csv=p=0",
-            &format!("file:{file}"),
-        ]),
-    );
+    #[rustfmt::skip]
+    let out = run(cwd, &args(&[
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "packet=pts", "-of", "csv=p=0", &format!("file:{file}"),
+    ]));
     let mut pts: Vec<i64> = String::from_utf8(out.stdout)
         .unwrap()
         .lines()

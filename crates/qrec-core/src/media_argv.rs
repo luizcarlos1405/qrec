@@ -6,9 +6,10 @@
 //! explicit muxer (`-f …`); every path is prefixed with `file:`. The runner
 //! may replace only the last element (with its temp path).
 //!
-//! The export, frame-save and GES planners (`export_plan`, `frame_plan`,
-//! `ges_plan`) build their filter graphs with the helpers below; the probe
-//! and silence argv are complete here. Verified against ffmpeg 8.1.2.
+//! The export and frame-save planners (`export_plan`, `frame_plan`) build
+//! their filter graphs with the helpers below; the probe, segment-check,
+//! silence and VA-check argv are complete here. Verified against ffmpeg
+//! 8.1.2 (`crates/qrec-shell/tests/plans_ffmpeg.rs` runs them).
 
 use crate::model::StreamKind;
 
