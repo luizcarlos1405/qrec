@@ -10,7 +10,9 @@ use qrec_core::apply::project::is_initialized;
 use qrec_core::ctx::{Ctx, Facts, FactsNeeded};
 use qrec_core::protocol::{Command, HelloInfo, Query, Toast, ToastLevel, WireBody};
 use qrec_core::state::JobKind;
-use qrec_core::{CoreError, ErrorCode, Event, ReqId, apply, facts_needed, facts_needed_for_event, on_event};
+use qrec_core::{
+    CoreError, ErrorCode, Event, ReqId, apply, facts_needed, facts_needed_for_event, on_event,
+};
 use serde_json::{Value, json};
 
 use super::effects::Ran;
@@ -103,7 +105,10 @@ impl Session {
             && let Value::Object(view) = &mut value
         {
             // The shell's part of `StatusView`.
-            view.insert("path".into(), Value::from(self.dir.to_string_lossy().into_owned()));
+            view.insert(
+                "path".into(),
+                Value::from(self.dir.to_string_lossy().into_owned()),
+            );
             if self.is_host() {
                 view.insert("pid".into(), Value::from(std::process::id()));
             }
@@ -139,8 +144,10 @@ impl Session {
             let refusal = match classify(&self.paths) {
                 Ok(Folder::Empty) => None,
                 Ok(Folder::Project | Folder::MissingFile) => Some(
-                    CoreError::invalid("a qrec.json appeared in this folder while Qrec had it open")
-                        .with_hint("open the project again"),
+                    CoreError::invalid(
+                        "a qrec.json appeared in this folder while Qrec had it open",
+                    )
+                    .with_hint("open the project again"),
                 ),
                 Err(e) => Some(e.into()),
             };
@@ -174,12 +181,19 @@ impl Session {
             canvas: None,
             name: None,
         };
-        self.dispatch(None, init, false, Some(Box::new(Capture(Arc::clone(&slot)))));
+        self.dispatch(
+            None,
+            init,
+            false,
+            Some(Box::new(Capture(Arc::clone(&slot)))),
+        );
         let reply = slot.lock().ok().and_then(|mut s| s.take());
         match reply {
             Some(Ok(_)) => Ok(()),
             Some(Err(e)) => Err(e),
-            None => Err(CoreError::internal("initializing the project gave no answer")),
+            None => Err(CoreError::internal(
+                "initializing the project gave no answer",
+            )),
         }
     }
 
@@ -215,7 +229,9 @@ impl Session {
         }
         if let Some(file) = self.store.disk_changed(self.check) {
             self.store.accept_disk(&file);
-            self.run_event(Event::ProjectChangedOnDisk { project: file.project });
+            self.run_event(Event::ProjectChangedOnDisk {
+                project: file.project,
+            });
         }
     }
 
@@ -266,8 +282,9 @@ impl Session {
             tracing::warn!("facts: {warning}");
         }
         if let Some(problem) = gathered.config_problem {
-            self.notifier
-                .notify(&Toast::new(ToastLevel::Warning, "config.toml is invalid").with_body(problem));
+            self.notifier.notify(
+                &Toast::new(ToastLevel::Warning, "config.toml is invalid").with_body(problem),
+            );
         }
         gathered.facts
     }

@@ -85,7 +85,8 @@ pub struct Detected {
 
 /// Detects the capabilities (from the cache when nothing changed).
 pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
-    let cores = std::thread::available_parallelism().map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX));
+    let cores = std::thread::available_parallelism()
+        .map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX));
     let mut notes = Vec::new();
     let Some(ffmpeg) = resolve_program(&opts.ffmpeg) else {
         notes.push(format!(
@@ -105,7 +106,9 @@ pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
     let nodes = scan_render_nodes(&opts.sys_class_drm, &opts.dev_dri);
     let choice = effective_device(va, &nodes);
     if let Some((device, None)) = &choice {
-        notes.push(format!("{device} isn't a render node this machine lists; VA-API is off"));
+        notes.push(format!(
+            "{device} isn't a render node this machine lists; VA-API is off"
+        ));
     }
     let key = CacheKey {
         ffmpeg: ffmpeg.to_string_lossy().into_owned(),
@@ -196,7 +199,10 @@ pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
                 match run(&args, env) {
                     Ok(out) if out.success() => true,
                     Ok(out) => {
-                        notes.push(format!("the h264_vaapi check on {device} failed: {}", out.describe()));
+                        notes.push(format!(
+                            "the h264_vaapi check on {device} failed: {}",
+                            out.describe()
+                        ));
                         false
                     }
                     Err(e) => {
@@ -355,7 +361,8 @@ pub fn effective_device(va: &VaConfig, nodes: &[RenderNode]) -> Option<(String, 
         let vendor = nodes
             .iter()
             .find(|n| {
-                n.path == device || (canonical.is_some() && fs::canonicalize(&n.path).ok() == canonical)
+                n.path == device
+                    || (canonical.is_some() && fs::canonicalize(&n.path).ok() == canonical)
             })
             .and_then(|n| n.vendor);
         return Some((device.to_owned(), vendor));
@@ -471,23 +478,39 @@ esac
     #[test]
     fn detects_ffmpeg_and_the_intel_node_never_nvidia() {
         let tmp = tempfile::tempdir().unwrap();
-        let sys = fake_sysfs(tmp.path(), &[("renderD128", "0x10de"), ("renderD129", "0x8086")]);
+        let sys = fake_sysfs(
+            tmp.path(),
+            &[("renderD128", "0x10de"), ("renderD129", "0x8086")],
+        );
         let opts = options(tmp.path(), sys);
         let found = detect(&opts, &VaConfig::default());
         assert!(!found.cached);
         let ffmpeg = found.caps.ffmpeg.as_ref().unwrap();
         assert_eq!(ffmpeg.version, "9.9-test");
-        assert_eq!(ffmpeg.identity, fs::canonicalize(&opts.ffmpeg).unwrap().to_string_lossy());
         assert_eq!(
-            ffmpeg.encoders.iter().map(String::as_str).collect::<Vec<_>>(),
+            ffmpeg.identity,
+            fs::canonicalize(&opts.ffmpeg).unwrap().to_string_lossy()
+        );
+        assert_eq!(
+            ffmpeg
+                .encoders
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
             ["aac", "h264_vaapi", "libx264", "png"]
         );
         let va = found.caps.vaapi.as_ref().unwrap();
-        assert_eq!((va.device.as_str(), va.vendor, va.ffmpeg_h264), ("/dev/dri/renderD129", VENDOR_INTEL, true));
+        assert_eq!(
+            (va.device.as_str(), va.vendor, va.ffmpeg_h264),
+            ("/dev/dri/renderD129", VENDOR_INTEL, true)
+        );
         assert_eq!(va.gst_h264_factory, None);
         let probe = fs::read_to_string(tmp.path().join("va-probe")).unwrap();
         assert!(probe.starts_with("iHD "), "{probe}");
-        assert!(probe.contains("-init_hw_device vaapi=va:/dev/dri/renderD129"), "{probe}");
+        assert!(
+            probe.contains("-init_hw_device vaapi=va:/dev/dri/renderD129"),
+            "{probe}"
+        );
         assert!(found.caps.cores >= 1);
         assert_eq!(runs(tmp.path()), 3);
         let logs = fs::read_dir(tmp.path().join("logs")).unwrap().count();
@@ -506,7 +529,10 @@ esac
         };
         let chosen = detect(&opts, &nvidia);
         let va = chosen.caps.vaapi.unwrap();
-        assert_eq!((va.device.as_str(), va.vendor), ("/dev/dri/renderD128", VENDOR_NVIDIA));
+        assert_eq!(
+            (va.device.as_str(), va.vendor),
+            ("/dev/dri/renderD128", VENDOR_NVIDIA)
+        );
         // An explicitly chosen NVIDIA node keeps the inherited LIBVA_DRIVER_NAME (A§8.10).
         let inherited = std::env::var("LIBVA_DRIVER_NAME").unwrap_or_default();
         let probe = fs::read_to_string(tmp.path().join("va-probe")).unwrap();
@@ -516,7 +542,15 @@ esac
             project: Some("/dev/dri/renderD129".into()),
             config: Some("/dev/dri/renderD128".into()),
         };
-        assert_eq!(effective_device(&both, &scan_render_nodes(&opts.sys_class_drm, &opts.dev_dri)).unwrap().0, "/dev/dri/renderD129");
+        assert_eq!(
+            effective_device(
+                &both,
+                &scan_render_nodes(&opts.sys_class_drm, &opts.dev_dri)
+            )
+            .unwrap()
+            .0,
+            "/dev/dri/renderD129"
+        );
     }
 
     #[test]
@@ -526,7 +560,10 @@ esac
         let mut opts = options(tmp.path(), sys);
         opts.cache_file = None;
         let only_nvidia = detect(&opts, &VaConfig::default());
-        assert_eq!(only_nvidia.caps.vaapi, None, "NVIDIA is never picked automatically");
+        assert_eq!(
+            only_nvidia.caps.vaapi, None,
+            "NVIDIA is never picked automatically"
+        );
 
         let sys = fake_sysfs(tmp.path(), &[("renderD130", "0x1002")]);
         opts.sys_class_drm = sys;
@@ -534,8 +571,16 @@ esac
         let failed = detect(&opts, &VaConfig::default());
         let va = failed.caps.vaapi.unwrap();
         assert_eq!((va.vendor, va.ffmpeg_h264), (VENDOR_AMD, false));
-        assert!(failed.notes.iter().any(|n| n.contains("h264_vaapi check")), "{:?}", failed.notes);
-        assert!(fs::read_to_string(tmp.path().join("va-probe")).unwrap().starts_with("radeonsi "));
+        assert!(
+            failed.notes.iter().any(|n| n.contains("h264_vaapi check")),
+            "{:?}",
+            failed.notes
+        );
+        assert!(
+            fs::read_to_string(tmp.path().join("va-probe"))
+                .unwrap()
+                .starts_with("radeonsi ")
+        );
 
         opts.probe_va = false;
         let before = runs(tmp.path());
@@ -543,12 +588,21 @@ esac
         assert!(!skipped.caps.vaapi.unwrap().ffmpeg_h264);
         assert_eq!(runs(tmp.path()), before + 2, "no VA check");
 
-        let unknown = detect(&opts, &VaConfig { project: Some("/dev/dri/renderD199".into()), config: None });
+        let unknown = detect(
+            &opts,
+            &VaConfig {
+                project: Some("/dev/dri/renderD199".into()),
+                config: None,
+            },
+        );
         assert_eq!(unknown.caps.vaapi, None);
 
         opts.gst_factory = Some(|device| Some(format!("va-for-{device}")));
         let with_gst = detect(&opts, &VaConfig::default());
-        assert_eq!(with_gst.caps.vaapi.unwrap().gst_h264_factory.as_deref(), Some("va-for-/dev/dri/renderD130"));
+        assert_eq!(
+            with_gst.caps.vaapi.unwrap().gst_h264_factory.as_deref(),
+            Some("va-for-/dev/dri/renderD130")
+        );
 
         opts.ffmpeg = "qrec-no-such-ffmpeg".into();
         let missing = detect(&opts, &VaConfig::default());
@@ -567,7 +621,11 @@ esac
         };
         let found = detect(&opts, &VaConfig::default());
         let ffmpeg = found.caps.ffmpeg.expect("the dev shell has ffmpeg");
-        assert!(ffmpeg.version.starts_with(char::is_numeric), "{}", ffmpeg.version);
+        assert!(
+            ffmpeg.version.starts_with(char::is_numeric),
+            "{}",
+            ffmpeg.version
+        );
         for encoder in ["libx264", "libvpx-vp9", "aac", "libopus", "png"] {
             assert!(ffmpeg.encoders.contains(encoder), "{encoder} missing");
         }
@@ -577,10 +635,16 @@ esac
 
     #[test]
     fn parsers() {
-        assert_eq!(parse_version("ffmpeg version 8.1.2 Copyright (c) 2000-2026").as_deref(), Some("8.1.2"));
+        assert_eq!(
+            parse_version("ffmpeg version 8.1.2 Copyright (c) 2000-2026").as_deref(),
+            Some("8.1.2")
+        );
         assert_eq!(parse_version("nope"), None);
         assert_eq!(parse_encoders(ENCODERS).len(), 4);
-        assert!(parse_encoders("V....D x\n").is_empty(), "nothing before the separator counts");
+        assert!(
+            parse_encoders("V....D x\n").is_empty(),
+            "nothing before the separator counts"
+        );
         let args = va_probe_args("/dev/dri/renderD129");
         assert!(args.windows(2).any(|w| w == ["-c:v", "h264_vaapi"]));
         assert_eq!(args.last().unwrap(), "-");

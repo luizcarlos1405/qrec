@@ -62,7 +62,9 @@ impl ProjectLock {
             .map_err(|e| ShellError::io(format!("stat {}", path.display()), e))?
             .is_file()
         {
-            return Err(CoreError::invalid(format!("{} is not a regular file", path.display())).into());
+            return Err(
+                CoreError::invalid(format!("{} is not a regular file", path.display())).into(),
+            );
         }
         match try_flock(&file) {
             Ok(true) => {
@@ -88,7 +90,8 @@ impl ProjectLock {
         let mine = file
             .metadata()
             .map_err(|e| ShellError::io("stat the inherited lock descriptor", e))?;
-        let on_disk = fs::metadata(&path).map_err(|e| ShellError::io(format!("stat {}", path.display()), e))?;
+        let on_disk = fs::metadata(&path)
+            .map_err(|e| ShellError::io(format!("stat {}", path.display()), e))?;
         if (mine.dev(), mine.ino()) != (on_disk.dev(), on_disk.ino()) {
             return Err(CoreError::internal(format!(
                 "the inherited lock descriptor is not {}",

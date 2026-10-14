@@ -74,7 +74,11 @@ pub fn write(lock: &ProjectLock, record: &LockRecord) -> Result<(), ShellError> 
 }
 
 /// Sets the record's state and rewrites it.
-pub fn set_state(lock: &ProjectLock, record: &mut LockRecord, state: HostState) -> Result<(), ShellError> {
+pub fn set_state(
+    lock: &ProjectLock,
+    record: &mut LockRecord,
+    state: HostState,
+) -> Result<(), ShellError> {
     record.state = state;
     write(lock, record)
 }
@@ -111,7 +115,8 @@ mod tests {
         let lock = ProjectLock::try_acquire(tmp.path()).unwrap().unwrap();
         assert_eq!(read(tmp.path()).unwrap(), None, "empty: starting");
 
-        let mut record = LockRecord::starting(HostKind::Headless, Path::new("/run/q/abc.sock"), since());
+        let mut record =
+            LockRecord::starting(HostKind::Headless, Path::new("/run/q/abc.sock"), since());
         write(&lock, &record).unwrap();
         assert_eq!(read(tmp.path()).unwrap().as_ref(), Some(&record));
         let text = fs::read_to_string(lock.path()).unwrap();
@@ -137,8 +142,12 @@ mod tests {
     fn a_torn_record_reads_as_none_and_a_new_host_clears_a_stale_one() {
         let tmp = tempfile::tempdir().unwrap();
         let lock = ProjectLock::try_acquire(tmp.path()).unwrap().unwrap();
-        let mut file = fs::OpenOptions::new().write(true).open(lock.path()).unwrap();
-        file.write_all(b"{\"pid\":12,\"kind\":\"gui\",\"soc").unwrap();
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .open(lock.path())
+            .unwrap();
+        file.write_all(b"{\"pid\":12,\"kind\":\"gui\",\"soc")
+            .unwrap();
         assert_eq!(read(tmp.path()).unwrap(), None);
 
         let record = LockRecord::starting(HostKind::Gui, Path::new("/x.sock"), since());

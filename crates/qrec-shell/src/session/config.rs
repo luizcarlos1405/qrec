@@ -67,7 +67,10 @@ impl SessionEnv {
     /// the VA-API check, so nothing touches a GPU and exports plan the
     /// same everywhere.
     pub fn for_dirs(dirs: UserDirs, fake_backend: bool) -> Self {
-        let mut caps = CapsOptions::system(Some(dirs.capabilities_cache()), Some(dirs.state.join("logs")));
+        let mut caps = CapsOptions::system(
+            Some(dirs.capabilities_cache()),
+            Some(dirs.state.join("logs")),
+        );
         caps.probe_va = !fake_backend;
         Self {
             dirs,

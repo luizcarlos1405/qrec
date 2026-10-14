@@ -55,7 +55,13 @@ pub fn sha(bytes: &[u8]) -> String {
 }
 
 /// The head file for these values (the project is borrowed, not copied).
-pub fn head_bytes(cursor: u64, base_seq: u64, next_seq: u64, project_sha256: &str, project: &Project) -> Vec<u8> {
+pub fn head_bytes(
+    cursor: u64,
+    base_seq: u64,
+    next_seq: u64,
+    project_sha256: &str,
+    project: &Project,
+) -> Vec<u8> {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct HeadRef<'a> {
@@ -85,7 +91,8 @@ pub fn base_bytes(base_seq: u64, project: &Project) -> Vec<u8> {
         base_seq: u64,
         project: &'a Project,
     }
-    let mut bytes = serde_json::to_vec(&BaseRef { base_seq, project }).expect("bases always serialize");
+    let mut bytes =
+        serde_json::to_vec(&BaseRef { base_seq, project }).expect("bases always serialize");
     bytes.push(b'\n');
     bytes
 }
@@ -129,10 +136,16 @@ pub fn parse_project_text(text: &str) -> Result<Migrated, CoreError> {
         None => {
             return Err(CoreError::invalid("qrec.json has no version").with_hint(RESTORE_HINT));
         }
-        Some(v) => v.as_u64().and_then(|v| u32::try_from(v).ok()).filter(|v| *v >= 1).ok_or_else(|| {
-            CoreError::invalid(format!("qrec.json version {v} is not a schema version (1, 2, …)"))
+        Some(v) => v
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .filter(|v| *v >= 1)
+            .ok_or_else(|| {
+                CoreError::invalid(format!(
+                    "qrec.json version {v} is not a schema version (1, 2, …)"
+                ))
                 .with_hint(RESTORE_HINT)
-        })?,
+            })?,
     };
     if version > CURRENT_VERSION {
         return Err(CoreError::invalid(format!(
@@ -167,11 +180,16 @@ pub struct ParsedHistory {
 /// increase.
 pub fn parse_history(bytes: &[u8]) -> Result<ParsedHistory, CoreError> {
     let complete_end = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
-    let mut dropped_torn = complete_end < bytes.len()
-        && !bytes[complete_end..].iter().all(u8::is_ascii_whitespace);
+    let mut dropped_torn =
+        complete_end < bytes.len() && !bytes[complete_end..].iter().all(u8::is_ascii_whitespace);
     let lines: Vec<&[u8]> = bytes[..complete_end]
         .split(|b| *b == b'\n')
-        .take(bytes[..complete_end].iter().filter(|b| **b == b'\n').count())
+        .take(
+            bytes[..complete_end]
+                .iter()
+                .filter(|b| **b == b'\n')
+                .count(),
+        )
         .collect();
     let last_content = lines
         .iter()
@@ -256,7 +274,12 @@ mod tests {
         bytes.extend_from_slice(&history_bytes(&[entry(3)]));
         let err = parse_history(&bytes).unwrap_err();
         assert_eq!(err.code, ErrorCode::Invalid);
-        assert!(err.message.starts_with(".qrec/history.jsonl line 2 is corrupt"), "{}", err.message);
+        assert!(
+            err.message
+                .starts_with(".qrec/history.jsonl line 2 is corrupt"),
+            "{}",
+            err.message
+        );
 
         // A bad last line followed by a torn tail: the bad line isn't last.
         let mut bytes = history_bytes(&[entry(1)]);
@@ -266,7 +289,11 @@ mod tests {
 
         let bytes = history_bytes(&[entry(2), entry(2)]);
         let err = parse_history(&bytes).unwrap_err();
-        assert!(err.message.contains("line 2: seq 2 doesn't follow seq 2"), "{}", err.message);
+        assert!(
+            err.message.contains("line 2: seq 2 doesn't follow seq 2"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]
@@ -302,7 +329,12 @@ mod tests {
         assert_eq!(parsed.base_seq, 7);
         let head: Head = serde_json::from_slice(&head_bytes(3, 1, 4, "abc", &project)).unwrap();
         assert_eq!(
-            (head.cursor, head.base_seq, head.next_seq, head.project_sha256.as_str()),
+            (
+                head.cursor,
+                head.base_seq,
+                head.next_seq,
+                head.project_sha256.as_str()
+            ),
             (3, 1, 4, "abc")
         );
         assert_eq!(head.project, project);

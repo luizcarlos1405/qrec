@@ -34,10 +34,20 @@ fn state(project: Project) -> State {
 
 /// One undoable edit through the core's commit helper: the next state and
 /// the persistence effects it asks for.
-fn edit(prev: &State, label: &str, change: impl FnOnce(&mut Project)) -> (State, Vec<HistoryOp>, bool) {
+fn edit(
+    prev: &State,
+    label: &str,
+    change: impl FnOnce(&mut Project),
+) -> (State, Vec<HistoryOp>, bool) {
     let mut next = prev.clone();
     change(&mut next.project);
-    let committed = qrec_core::history::commit(prev, &ctx(), label.to_owned(), serde_json::json!({"cmd": "test"}), next);
+    let committed = qrec_core::history::commit(
+        prev,
+        &ctx(),
+        label.to_owned(),
+        serde_json::json!({"cmd": "test"}),
+        next,
+    );
     assert!(committed.seq.is_some(), "{label} changed nothing undoable");
     let ops = committed
         .effects
@@ -51,7 +61,13 @@ fn edit(prev: &State, label: &str, change: impl FnOnce(&mut Project)) -> (State,
     (committed.state, ops, project)
 }
 
-fn commit(store: &mut Store, prev: &State, next: &State, ops: &[HistoryOp], project: bool) -> Result<(), CommitError> {
+fn commit(
+    store: &mut Store,
+    prev: &State,
+    next: &State,
+    ops: &[HistoryOp],
+    project: bool,
+) -> Result<(), CommitError> {
     let refs: Vec<&HistoryOp> = ops.iter().collect();
     store.commit(prev, next, &refs, project)
 }
@@ -133,10 +149,19 @@ fn appends_commit_in_order_and_reload() {
     assert_eq!(loaded.project, s2.project);
     assert_eq!(loaded.history.entries, s2.history.entries);
     assert_eq!(
-        (loaded.history.cursor, loaded.history.base_seq, loaded.history.next_seq),
+        (
+            loaded.history.cursor,
+            loaded.history.base_seq,
+            loaded.history.next_seq
+        ),
         (2, 0, 3)
     );
-    assert!(loaded.history.seen_clip_ids.contains(&ClipId::from_raw("c001")));
+    assert!(
+        loaded
+            .history
+            .seen_clip_ids
+            .contains(&ClipId::from_raw("c001"))
+    );
     assert_eq!(loaded.external, None);
     assert!(!loaded.needs_repair);
 }
@@ -192,7 +217,10 @@ fn a_crash_after_writing_qrec_json_is_an_external_edit() {
     assert_eq!(loaded.project, s0.project);
     assert!(loaded.history.entries.is_empty());
     assert_eq!(loaded.external, Some(Ok(Box::new(s1.project.clone()))));
-    assert_eq!(loaded.accepted_sha.as_deref(), Some(format::sha(&format::project_bytes(&s1.project)).as_str()));
+    assert_eq!(
+        loaded.accepted_sha.as_deref(),
+        Some(format::sha(&format::project_bytes(&s1.project)).as_str())
+    );
 }
 
 #[test]
@@ -223,7 +251,11 @@ fn a_torn_last_line_is_dropped_and_repaired() {
     assert_eq!(loaded.project, s1.project);
     assert_eq!(loaded.history.entries.len(), 1);
     assert!(loaded.needs_repair);
-    assert!(loaded.notes.iter().any(|n| n.contains("torn")), "{:?}", loaded.notes);
+    assert!(
+        loaded.notes.iter().any(|n| n.contains("torn")),
+        "{:?}",
+        loaded.notes
+    );
 
     let mut store = Store::new(ProjectPaths::new(tmp.path()), true);
     store.adopt(&loaded);
@@ -232,7 +264,10 @@ fn a_torn_last_line_is_dropped_and_repaired() {
         ..state(loaded.project.clone())
     };
     store.write_all(&reopened).unwrap();
-    assert_eq!(fs::read(store.paths().history_file()).unwrap(), format::history_bytes(&s1.history.entries[..]));
+    assert_eq!(
+        fs::read(store.paths().history_file()).unwrap(),
+        format::history_bytes(&s1.history.entries[..])
+    );
 
     // A bad line that isn't the last one makes the project invalid.
     let mut bytes = b"{oops}\n".to_vec();
@@ -258,7 +293,10 @@ fn appending_after_an_undo_rewrites_the_redo_tail_away() {
     commit(&mut store, &s, &undone, &[HistoryOp::SetCursor(1)], true).unwrap();
     assert_eq!(history_lines(&store), [1, 2, 3], "undo keeps the redo tail");
     let loaded = load(&ProjectPaths::new(tmp.path()), &opts()).unwrap();
-    assert_eq!((loaded.history.cursor, loaded.history.entries.len()), (1, 3));
+    assert_eq!(
+        (loaded.history.cursor, loaded.history.entries.len()),
+        (1, 3)
+    );
     assert_eq!(loaded.project, undone.project);
 
     let (next, ops, project) = edit(&undone, "Trim 60", trim(60));
@@ -280,12 +318,14 @@ fn rewrites_store_the_base_with_its_seq_and_survive_a_crash() {
         s = next;
     }
     // Fold the two oldest entries into the base (like compaction).
-    let (compacted, op) = qrec_core::history::ops::compact_to(&s.history, &s.project, 1, 1).unwrap();
+    let (compacted, op) =
+        qrec_core::history::ops::compact_to(&s.history, &s.project, 1, 1).unwrap();
     let mut next = s.clone();
     next.history = compacted;
     store.crash_after = Some(Step::History);
     assert!(commit(&mut store, &s, &next, std::slice::from_ref(&op), true).is_err());
-    let base: BaseFile = serde_json::from_slice(&fs::read(store.paths().history_base()).unwrap()).unwrap();
+    let base: BaseFile =
+        serde_json::from_slice(&fs::read(store.paths().history_base()).unwrap()).unwrap();
     assert_eq!(base.base_seq, 2);
     assert_eq!(history_lines(&store), [3]);
 
@@ -295,7 +335,11 @@ fn rewrites_store_the_base_with_its_seq_and_survive_a_crash() {
     assert_eq!(loaded.history.cursor, 3);
     assert_eq!(loaded.history.entries.len(), 1);
     assert_eq!(loaded.project, s.project);
-    assert!(loaded.notes.iter().any(|n| n.contains("didn't finish")), "{:?}", loaded.notes);
+    assert!(
+        loaded.notes.iter().any(|n| n.contains("didn't finish")),
+        "{:?}",
+        loaded.notes
+    );
 
     // Undoing the kept entry lands exactly on the stored base.
     let reopened = State {
@@ -325,11 +369,22 @@ fn a_cursor_lost_from_the_history_starts_it_over() {
 fn projects_without_a_commit_record_load_and_get_one() {
     let tmp = tempfile::tempdir().unwrap();
     let project = sample_project();
-    fs::write(tmp.path().join("qrec.json"), format::project_bytes(&project)).unwrap();
+    fs::write(
+        tmp.path().join("qrec.json"),
+        format::project_bytes(&project),
+    )
+    .unwrap();
     let paths = ProjectPaths::new(tmp.path());
     let loaded = load(&paths, &opts()).unwrap();
     assert_eq!(loaded.project, project);
-    assert_eq!((loaded.history.cursor, loaded.history.base_seq, loaded.history.next_seq), (0, 0, 1));
+    assert_eq!(
+        (
+            loaded.history.cursor,
+            loaded.history.base_seq,
+            loaded.history.next_seq
+        ),
+        (0, 0, 1)
+    );
     assert!(loaded.needs_repair);
     assert_eq!(loaded.base_to_write, Some((0, project.clone())));
 
@@ -368,16 +423,38 @@ fn invalid_or_missing_files_fail_with_the_restore_hint() {
     fs::write(paths.project_file(), b"{ not json").unwrap();
     let err = CoreError::from(load(&paths, &opts()).unwrap_err());
     assert_eq!(err.code, ErrorCode::Invalid);
-    assert!(err.message.starts_with("qrec.json is not valid JSON"), "{}", err.message);
+    assert!(
+        err.message.starts_with("qrec.json is not valid JSON"),
+        "{}",
+        err.message
+    );
     assert_eq!(
         err.hint.as_deref(),
         Some("fix it, or rebuild it from the history with `qrec history restore 1 --yes`")
     );
     // A file that parses but fails the check.
     fs::write(paths.project_file(), format::project_bytes(&s1.project)).unwrap();
-    let refuse: Check = |_| Err(CoreError::invalid("invalid project: clip c002 is too long (/timeline/clips/0)"));
-    let err = CoreError::from(load(&paths, &LoadOpts { recovery: false, check: refuse }).unwrap_err());
-    assert!(err.message.starts_with("qrec.json is invalid: invalid project"), "{}", err.message);
+    let refuse: Check = |_| {
+        Err(CoreError::invalid(
+            "invalid project: clip c002 is too long (/timeline/clips/0)",
+        ))
+    };
+    let err = CoreError::from(
+        load(
+            &paths,
+            &LoadOpts {
+                recovery: false,
+                check: refuse,
+            },
+        )
+        .unwrap_err(),
+    );
+    assert!(
+        err.message
+            .starts_with("qrec.json is invalid: invalid project"),
+        "{}",
+        err.message
+    );
 
     fs::remove_file(paths.project_file()).unwrap();
     let err = CoreError::from(load(&paths, &opts()).unwrap_err());
@@ -398,8 +475,17 @@ fn recovery_mode_uses_the_head_and_never_the_file() {
     let loaded = load(&paths, &recovery()).unwrap();
     assert_eq!(loaded.project, s1.project);
     assert_eq!(loaded.history.cursor, 1);
-    assert!(loaded.disk_invalid.as_deref().unwrap().contains("doesn't match the history"));
-    assert_eq!(loaded.accepted_sha.as_deref(), Some(format::sha(b"garbage").as_str()));
+    assert!(
+        loaded
+            .disk_invalid
+            .as_deref()
+            .unwrap()
+            .contains("doesn't match the history")
+    );
+    assert_eq!(
+        loaded.accepted_sha.as_deref(),
+        Some(format::sha(b"garbage").as_str())
+    );
 }
 
 #[test]
@@ -431,7 +517,11 @@ fn recovery_rebuilds_from_the_base_and_re_adds_takes() {
     assert_eq!(loaded.readded, vec!["take-0002".parse().unwrap()]);
     let take = &loaded.project.takes[&"take-0002".parse().unwrap()];
     assert_eq!(take.status, qrec_core::model::TakeStatus::Recording);
-    let files: Vec<(&str, &str)> = take.streams.iter().map(|s| (s.id.as_str(), s.file.as_str())).collect();
+    let files: Vec<(&str, &str)> = take
+        .streams
+        .iter()
+        .map(|s| (s.id.as_str(), s.file.as_str()))
+        .collect();
     assert_eq!(
         files,
         [
@@ -440,13 +530,23 @@ fn recovery_rebuilds_from_the_base_and_re_adds_takes() {
         ]
     );
     assert_eq!(loaded.project.next_take_number, 3);
-    assert!(loaded.disk_invalid.as_deref().unwrap().starts_with("qrec.json is invalid"));
+    assert!(
+        loaded
+            .disk_invalid
+            .as_deref()
+            .unwrap()
+            .starts_with("qrec.json is invalid")
+    );
     assert!(loaded.needs_repair);
 
     // Nothing at all to recover from.
     fs::remove_file(paths.history_base()).unwrap();
     let err = CoreError::from(load(&paths, &recovery()).unwrap_err());
-    assert!(err.message.starts_with("nothing to recover from"), "{}", err.message);
+    assert!(
+        err.message.starts_with("nothing to recover from"),
+        "{}",
+        err.message
+    );
 }
 
 #[test]
@@ -464,12 +564,20 @@ fn disk_changes_are_detected_by_hash() {
 
     fs::write(store.paths().project_file(), b"{\"version\":1}").unwrap();
     let file = store.disk_changed(unchecked).unwrap();
-    assert!(file.project.as_ref().unwrap_err().contains("doesn't match the project schema"));
+    assert!(
+        file.project
+            .as_ref()
+            .unwrap_err()
+            .contains("doesn't match the project schema")
+    );
     store.accept_disk(&file);
 
     fs::remove_file(store.paths().project_file()).unwrap();
     let file = store.disk_changed(unchecked).unwrap();
-    assert_eq!((file.sha, file.project), (None, Err("qrec.json was deleted".to_owned())));
+    assert_eq!(
+        (file.sha, file.project),
+        (None, Err("qrec.json was deleted".to_owned()))
+    );
 }
 
 #[test]
@@ -477,10 +585,19 @@ fn bad_files_are_moved_or_copied_aside_without_overwriting() {
     let (_tmp, mut store, _) = initialized();
     let paths = store.paths().clone();
     fs::write(paths.project_file(), b"bad 1").unwrap();
-    let copy = store.copy_disk_file_aside("20261014-120000").unwrap().unwrap();
+    let copy = store
+        .copy_disk_file_aside("20261014-120000")
+        .unwrap()
+        .unwrap();
     assert_eq!(copy, paths.corrupt_copy("20261014-120000"));
-    let copy2 = store.copy_disk_file_aside("20261014-120000").unwrap().unwrap();
-    assert_eq!(copy2.file_name().unwrap(), "qrec.corrupt-20261014-120000-2.json");
+    let copy2 = store
+        .copy_disk_file_aside("20261014-120000")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        copy2.file_name().unwrap(),
+        "qrec.corrupt-20261014-120000-2.json"
+    );
     assert!(paths.project_file().exists(), "copying leaves the file");
 
     let moved = store.reject_disk_file("20261014-120000").unwrap().unwrap();
@@ -492,7 +609,11 @@ fn bad_files_are_moved_or_copied_aside_without_overwriting() {
     assert_eq!(moved2.file_name().unwrap(), "qrec-20261014-120000-2.json");
     assert_eq!(fs::read(&moved).unwrap(), b"bad 1");
     assert_eq!(fs::read(&moved2).unwrap(), b"bad 2");
-    assert_eq!(store.reject_disk_file("x").unwrap(), None, "nothing left to move");
+    assert_eq!(
+        store.reject_disk_file("x").unwrap(),
+        None,
+        "nothing left to move"
+    );
 }
 
 #[test]
@@ -517,13 +638,19 @@ fn ui_writes_are_coalesced() {
     let t0 = Instant::now();
     ui.playhead = 5;
     store.want_ui_write(&ui, t0).unwrap();
-    let read = |store: &Store| -> UiState { serde_json::from_slice(&fs::read(store.paths().ui_file()).unwrap()).unwrap() };
+    let read = |store: &Store| -> UiState {
+        serde_json::from_slice(&fs::read(store.paths().ui_file()).unwrap()).unwrap()
+    };
     assert_eq!(read(&store).playhead, 5);
     ui.playhead = 9;
-    store.want_ui_write(&ui, t0 + Duration::from_millis(100)).unwrap();
+    store
+        .want_ui_write(&ui, t0 + Duration::from_millis(100))
+        .unwrap();
     assert_eq!(read(&store).playhead, 5, "coalesced");
     assert_eq!(store.ui_deadline(), Some(t0 + UI_WRITE_INTERVAL));
-    store.flush_ui(&ui, t0 + Duration::from_millis(200), false).unwrap();
+    store
+        .flush_ui(&ui, t0 + Duration::from_millis(200), false)
+        .unwrap();
     assert_eq!(read(&store).playhead, 5, "not due yet");
     store.flush_ui(&ui, t0 + UI_WRITE_INTERVAL, false).unwrap();
     assert_eq!(read(&store).playhead, 9);

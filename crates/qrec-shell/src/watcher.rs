@@ -160,7 +160,11 @@ mod tests {
 
         // Atomic replace (what editors and the host do).
         fs::write(tmp.path().join("qrec.json.tmp"), "{}").unwrap();
-        fs::rename(tmp.path().join("qrec.json.tmp"), tmp.path().join("qrec.json")).unwrap();
+        fs::rename(
+            tmp.path().join("qrec.json.tmp"),
+            tmp.path().join("qrec.json"),
+        )
+        .unwrap();
         assert!(next(&rx, Duration::from_secs(3)));
 
         fs::remove_file(tmp.path().join("qrec.json")).unwrap();
@@ -186,7 +190,10 @@ mod tests {
                 }
             })
         };
-        assert!(next(&rx, Duration::from_millis(1600)), "within MAX_DELAY despite the stream");
+        assert!(
+            next(&rx, Duration::from_millis(1600)),
+            "within MAX_DELAY despite the stream"
+        );
         writer.join().unwrap();
     }
 }

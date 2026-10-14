@@ -15,8 +15,8 @@ use qrec_core::model::{Take, TakeStatus};
 use qrec_core::protocol::{Effect, ProbeJob, ProbePurpose, Toast, ToastLevel};
 use qrec_core::{CoreError, ErrorCode, Event, State};
 
-use super::config::{LogNotifier, SessionConfig, SessionEnv};
 use super::Session;
+use super::config::{LogNotifier, SessionConfig, SessionEnv};
 use crate::caps::{self, VaConfig};
 use crate::deps::{Deps, OpenOpts};
 use crate::error::ShellError;
@@ -49,12 +49,17 @@ pub(super) fn classify(paths: &ProjectPaths) -> Result<Folder, ShellError> {
     }
     // A project that lost its qrec.json (its takes/ and exports/ are
     // still there): restore it rather than call it someone else's folder.
-    let history = [paths.history_head(), paths.history_file(), paths.history_base()];
+    let history = [
+        paths.history_head(),
+        paths.history_file(),
+        paths.history_base(),
+    ];
     if paths.qrec_dir().is_dir() && history.iter().any(|p| store::exists(p)) {
         return Ok(Folder::MissingFile);
     }
     let root = paths.root();
-    let entries = fs::read_dir(root).map_err(|e| ShellError::io(format!("read {}", root.display()), e))?;
+    let entries =
+        fs::read_dir(root).map_err(|e| ShellError::io(format!("read {}", root.display()), e))?;
     for entry in entries {
         let entry = entry.map_err(|e| ShellError::io(format!("read {}", root.display()), e))?;
         let qrec = entry.file_name() == ".qrec" && entry.file_type().is_ok_and(|t| t.is_dir());
@@ -68,13 +73,20 @@ pub(super) fn classify(paths: &ProjectPaths) -> Result<Folder, ShellError> {
 fn canonical_dir(dir: &Path) -> Result<PathBuf, ShellError> {
     let canonical = fs::canonicalize(dir).map_err(|e| match e.kind() {
         io::ErrorKind::NotFound => ShellError::Core(
-            CoreError::new(ErrorCode::NotProject, format!("{} doesn't exist", dir.display()))
-                .with_hint("pass --project with an existing folder"),
+            CoreError::new(
+                ErrorCode::NotProject,
+                format!("{} doesn't exist", dir.display()),
+            )
+            .with_hint("pass --project with an existing folder"),
         ),
         _ => ShellError::io(format!("open {}", dir.display()), e),
     })?;
     if !canonical.is_dir() {
-        return Err(CoreError::new(ErrorCode::NotProject, format!("{} is not a folder", dir.display())).into());
+        return Err(CoreError::new(
+            ErrorCode::NotProject,
+            format!("{} is not a folder", dir.display()),
+        )
+        .into());
     }
     Ok(canonical)
 }
@@ -86,11 +98,18 @@ fn lock_held(dir: &Path) -> ShellError {
         _ => "another Qrec process".to_owned(),
     };
     CoreError::busy(format!("the project is open in {who}"))
-        .with_hint("send the command to it (the CLI routes there by itself), or wait until it exits")
+        .with_hint(
+            "send the command to it (the CLI routes there by itself), or wait until it exits",
+        )
         .into()
 }
 
-pub(super) fn open(dir: &Path, opts: OpenOpts, deps: Deps, cfg: SessionConfig) -> Result<Session, ShellError> {
+pub(super) fn open(
+    dir: &Path,
+    opts: OpenOpts,
+    deps: Deps,
+    cfg: SessionConfig,
+) -> Result<Session, ShellError> {
     let dir = canonical_dir(dir)?;
     let paths = ProjectPaths::new(&dir);
     let env = match cfg.env {
@@ -115,7 +134,9 @@ pub(super) fn open(dir: &Path, opts: OpenOpts, deps: Deps, cfg: SessionConfig) -
     }
     let lock = match cfg.lock {
         Some(lock) => Some(lock),
-        None if opts.mutating => Some(ProjectLock::try_acquire(&dir)?.ok_or_else(|| lock_held(&dir))?),
+        None if opts.mutating => {
+            Some(ProjectLock::try_acquire(&dir)?.ok_or_else(|| lock_held(&dir))?)
+        }
         None => None,
     };
     if lock.is_some() {
@@ -223,7 +244,10 @@ pub(super) fn open(dir: &Path, opts: OpenOpts, deps: Deps, cfg: SessionConfig) -
     }
     // What the live pipeline should show from the start (a GUI in Live mode).
     if let Some(live) = live_scene(&session.state) {
-        session.deps.capture.set_live(Some(live), session.inbox.clone());
+        session
+            .deps
+            .capture
+            .set_live(Some(live), session.inbox.clone());
     }
     Ok(session)
 }
@@ -242,7 +266,8 @@ impl Session {
 
     pub(super) fn notify_error(&mut self, title: &str, body: &str) {
         tracing::error!("{title}: {body}");
-        self.notifier.notify(&Toast::new(ToastLevel::Error, title).with_body(body));
+        self.notifier
+            .notify(&Toast::new(ToastLevel::Error, title).with_body(body));
     }
 
     /// `Event::Capabilities` before the first dispatch (A§3).
@@ -267,7 +292,9 @@ impl Session {
             .project
             .takes
             .iter()
-            .filter(|(id, take)| take.status == TakeStatus::Recording && in_flight.as_ref() != Some(*id))
+            .filter(|(id, take)| {
+                take.status == TakeStatus::Recording && in_flight.as_ref() != Some(*id)
+            })
             .map(|(id, take)| Effect::Probe {
                 take: id.clone(),
                 purpose: ProbePurpose::Recover,
@@ -275,9 +302,16 @@ impl Session {
             })
             .collect();
         for probe in probes {
-            if let Effect::Probe { take, purpose, jobs } = probe {
+            if let Effect::Probe {
+                take,
+                purpose,
+                jobs,
+            } = probe
+            {
                 tracing::info!("recovering {take}: probing {} file(s)", jobs.len());
-                self.deps.media.probe(take, purpose, jobs, self.inbox.clone());
+                self.deps
+                    .media
+                    .probe(take, purpose, jobs, self.inbox.clone());
             }
         }
     }

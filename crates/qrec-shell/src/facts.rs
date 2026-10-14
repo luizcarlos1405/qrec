@@ -146,7 +146,9 @@ impl SystemSources {
             .capture_stdout(8 << 20);
         if let Some(dir) = &self.log_dir {
             let stamp = proc::log_stamp(chrono::Local::now());
-            if let Ok((log, _)) = proc::create_log(dir, &format!("{stamp}-{}-pactl", std::process::id())) {
+            if let Ok((log, _)) =
+                proc::create_log(dir, &format!("{stamp}-{}-pactl", std::process::id()))
+            {
                 spec = spec.stderr_to(log);
             }
         }
@@ -185,7 +187,8 @@ impl Sources for SystemSources {
 /// `monitor_source`).
 pub fn parse_pactl(info: &str, sources: &str) -> Result<AudioInventory, String> {
     let info: Value = serde_json::from_str(info).map_err(|e| format!("pactl info: {e}"))?;
-    let list: Value = serde_json::from_str(sources).map_err(|e| format!("pactl list sources: {e}"))?;
+    let list: Value =
+        serde_json::from_str(sources).map_err(|e| format!("pactl list sources: {e}"))?;
     let list = list
         .as_array()
         .ok_or_else(|| "pactl list sources: not a JSON array".to_owned())?;
@@ -221,7 +224,12 @@ pub fn parse_pactl(info: &str, sources: &str) -> Result<AudioInventory, String> 
         .and_then(Value::as_str)
         .map(|sink| format!("{sink}.monitor"))
         .filter(|name| has(name))
-        .or_else(|| devices.iter().find(|d| d.is_monitor).map(|d| d.name.clone()));
+        .or_else(|| {
+            devices
+                .iter()
+                .find(|d| d.is_monitor)
+                .map(|d| d.name.clone())
+        });
     Ok(AudioInventory {
         devices,
         default_mic,
@@ -266,7 +274,8 @@ impl ConfigFile {
             return (self.config.clone(), None);
         }
         self.stamp = stamp;
-        let read = fs::read_to_string(&self.path).map_err(|e| format!("can't read {}: {e}", self.path.display()));
+        let read = fs::read_to_string(&self.path)
+            .map_err(|e| format!("can't read {}: {e}", self.path.display()));
         match read.and_then(|text| parse_config(&text)) {
             Ok(config) => {
                 self.config = config;
@@ -341,7 +350,10 @@ pub fn toml_to_json(text: &str) -> Result<Map<String, Value>, String> {
 }
 
 /// The table at `path`, created as needed; a non-table in the way is an error.
-fn table_at<'a>(root: &'a mut Map<String, Value>, path: &[String]) -> Result<&'a mut Map<String, Value>, String> {
+fn table_at<'a>(
+    root: &'a mut Map<String, Value>,
+    path: &[String],
+) -> Result<&'a mut Map<String, Value>, String> {
     let mut table = root;
     for part in path {
         let entry = table
@@ -573,7 +585,9 @@ impl<'a> Cursor<'a> {
                     .map_err(|_| format!("bad number {token}"));
             }
         }
-        let date = body.len() > 4 && body.as_bytes()[4] == b'-' && body[..4].bytes().all(|b| b.is_ascii_digit());
+        let date = body.len() > 4
+            && body.as_bytes()[4] == b'-'
+            && body[..4].bytes().all(|b| b.is_ascii_digit());
         if date || body.contains(':') {
             return Err(format!("dates and times aren't supported ({token})"));
         }
@@ -681,7 +695,9 @@ impl FactsGatherer {
             facts.out = Some(out_facts(self.paths.root(), out));
         }
         for take in &need.take_files {
-            facts.take_files.insert(take.clone(), take_files(&self.paths, take));
+            facts
+                .take_files
+                .insert(take.clone(), take_files(&self.paths, take));
         }
         if need.take_dirs {
             facts.min_take_number = min_take_number(&self.paths);
@@ -774,7 +790,9 @@ pub fn out_facts(project_root: &Path, out: &str) -> OutFacts {
     if meta.as_ref().is_some_and(|m| m.file_type().is_symlink())
         && let Ok(target) = fs::read_link(&abs)
     {
-        let target = abs.parent().map_or_else(|| target.clone(), |dir| dir.join(&target));
+        let target = abs
+            .parent()
+            .map_or_else(|| target.clone(), |dir| dir.join(&target));
         candidates.push(resolve_existing(&normalize(&target)));
     }
     let forbidden = candidates
@@ -906,8 +924,14 @@ esc = "tab\there é"
         )
         .unwrap();
         assert_eq!(cfg.theme, Theme::OgreMode);
-        assert_eq!((cfg.canvas.width, cfg.canvas.height, cfg.canvas.fps), (1280, 720, Fps::new(25, 1)));
-        assert_eq!(cfg.encoder.vaapi_device.as_deref(), Some("/dev/dri/renderD129"));
+        assert_eq!(
+            (cfg.canvas.width, cfg.canvas.height, cfg.canvas.fps),
+            (1280, 720, Fps::new(25, 1))
+        );
+        assert_eq!(
+            cfg.encoder.vaapi_device.as_deref(),
+            Some("/dev/dri/renderD129")
+        );
         assert_eq!(cfg.autocut.threshold_db, -40.0);
         let err = parse_config("[canvas]\nfsp = 25\n").unwrap_err();
         assert!(err.starts_with("config.toml: unknown field `fsp`"), "{err}");
@@ -916,7 +940,11 @@ esc = "tab\there é"
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("config.toml");
         let mut file = ConfigFile::new(path.clone());
-        assert_eq!(file.get(), (UserConfig::default(), None), "no file: defaults");
+        assert_eq!(
+            file.get(),
+            (UserConfig::default(), None),
+            "no file: defaults"
+        );
         fs::write(&path, "[canvas]\nfps = 60\n").unwrap();
         assert_eq!(file.get().0.canvas.fps, Fps::new(60, 1));
         fs::write(&path, "[canvas]\nfps = \"sixty\"\n").unwrap();
@@ -938,16 +966,26 @@ esc = "tab\there é"
         ]"#;
         let inv = parse_pactl(info, sources).unwrap();
         assert_eq!(inv.devices.len(), 5);
-        assert_eq!(inv.default_mic.as_deref(), Some("alsa_input.usb-yeti.analog-stereo"));
-        assert_eq!(inv.default_monitor.as_deref(), Some("alsa_output.usb-yeti.analog-stereo.monitor"));
+        assert_eq!(
+            inv.default_mic.as_deref(),
+            Some("alsa_input.usb-yeti.analog-stereo")
+        );
+        assert_eq!(
+            inv.default_monitor.as_deref(),
+            Some("alsa_output.usb-yeti.analog-stereo.monitor")
+        );
         assert!(inv.devices[0].is_monitor && !inv.devices[1].is_monitor);
 
         // A monitor as the default source isn't a mic; a missing sink monitor
         // falls back to the first monitor.
-        let info = r#"{"default_sink_name":"gone","default_source_name":"alsa_output.hdmi.monitor"}"#;
+        let info =
+            r#"{"default_sink_name":"gone","default_source_name":"alsa_output.hdmi.monitor"}"#;
         let inv = parse_pactl(info, sources).unwrap();
         assert_eq!(inv.default_mic.as_deref(), Some("alsa_input.laptop.mic"));
-        assert_eq!(inv.default_monitor.as_deref(), Some("alsa_output.hdmi.monitor"));
+        assert_eq!(
+            inv.default_monitor.as_deref(),
+            Some("alsa_output.hdmi.monitor")
+        );
         assert!(parse_pactl("{}", "{}").is_err());
     }
 
@@ -965,9 +1003,21 @@ esc = "tab\there é"
     #[test]
     fn gathering_only_what_is_needed() {
         let (tmp, paths) = project_dir();
-        fs::write(paths.take_dir(&TakeId::numbered(2)).join("A1-mic.mka"), b"12345").unwrap();
-        fs::write(paths.take_dir(&TakeId::numbered(2)).join("recorder.log"), b"x").unwrap();
-        symlink("/etc/hostname", paths.take_dir(&TakeId::numbered(2)).join("link")).unwrap();
+        fs::write(
+            paths.take_dir(&TakeId::numbered(2)).join("A1-mic.mka"),
+            b"12345",
+        )
+        .unwrap();
+        fs::write(
+            paths.take_dir(&TakeId::numbered(2)).join("recorder.log"),
+            b"x",
+        )
+        .unwrap();
+        symlink(
+            "/etc/hostname",
+            paths.take_dir(&TakeId::numbered(2)).join("link"),
+        )
+        .unwrap();
         let config = tmp.path().join("config.toml");
         fs::write(&config, "[recording]\ncountdown_secs = 3\n").unwrap();
         let mut gatherer = FactsGatherer::new(paths.clone(), config, Box::new(FakeSources));
@@ -990,7 +1040,10 @@ esc = "tab\there é"
             out: Some("exports/../x.mp4".into()),
             take_files: vec![TakeId::numbered(2)],
             take_dirs: true,
-            files: vec!["takes/take-0002/A1-mic.mka".into(), "takes/take-0002/missing.mka".into()],
+            files: vec![
+                "takes/take-0002/A1-mic.mka".into(),
+                "takes/take-0002/missing.mka".into(),
+            ],
         });
         let facts = &all.facts;
         assert_eq!(facts.folder_name.as_deref(), Some("swamp"));
@@ -1004,7 +1057,13 @@ esc = "tab\there é"
             .iter()
             .map(|f| (f.path.as_str(), f.bytes))
             .collect();
-        assert_eq!(files, [("takes/take-0002/A1-mic.mka", 5), ("takes/take-0002/recorder.log", 1)]);
+        assert_eq!(
+            files,
+            [
+                ("takes/take-0002/A1-mic.mka", 5),
+                ("takes/take-0002/recorder.log", 1)
+            ]
+        );
         assert_eq!(facts.files["takes/take-0002/A1-mic.mka"].bytes, 5);
         assert!(facts.files["takes/take-0002/A1-mic.mka"].mtime_ns > 0);
         assert!(!facts.files.contains_key("takes/take-0002/missing.mka"));
@@ -1024,10 +1083,30 @@ esc = "tab\there é"
         let check = |out: &str| out_facts(&root, out);
         let at = |p: &str| root.join(p).to_string_lossy().into_owned();
 
-        assert!(check(&at("qrec.json")).forbidden.unwrap().contains("qrec.json"));
-        assert!(check(&at("takes/take-0002/x.mp4")).forbidden.unwrap().contains("takes/"));
-        assert!(check(&at("exports/../takes/x.mp4")).forbidden.unwrap().contains("takes/"));
-        assert!(check(&at(".qrec/x.mp4")).forbidden.unwrap().contains(".qrec/"));
+        assert!(
+            check(&at("qrec.json"))
+                .forbidden
+                .unwrap()
+                .contains("qrec.json")
+        );
+        assert!(
+            check(&at("takes/take-0002/x.mp4"))
+                .forbidden
+                .unwrap()
+                .contains("takes/")
+        );
+        assert!(
+            check(&at("exports/../takes/x.mp4"))
+                .forbidden
+                .unwrap()
+                .contains("takes/")
+        );
+        assert!(
+            check(&at(".qrec/x.mp4"))
+                .forbidden
+                .unwrap()
+                .contains(".qrec/")
+        );
         assert!(check(&at("takes")).forbidden.is_some());
         assert!(check(&at("")).forbidden.unwrap().contains("project folder"));
         let outside = root.parent().unwrap().join("out.mp4");
@@ -1038,17 +1117,29 @@ esc = "tab\there é"
         let link = root.parent().unwrap().join("sneaky.mp4");
         symlink(root.join("takes/take-0002/A1.mka"), &link).unwrap();
         let sneaky = check(&link.to_string_lossy());
-        assert!(sneaky.forbidden.unwrap().contains("takes/"), "dangling links count too");
+        assert!(
+            sneaky.forbidden.unwrap().contains("takes/"),
+            "dangling links count too"
+        );
         let linked_dir = root.parent().unwrap().join("linked");
         symlink(root.join("takes"), &linked_dir).unwrap();
-        assert!(check(&linked_dir.join("new.mp4").to_string_lossy()).forbidden.is_some());
+        assert!(
+            check(&linked_dir.join("new.mp4").to_string_lossy())
+                .forbidden
+                .is_some()
+        );
 
         // Existing files are reported (the core asks for confirmation).
         fs::create_dir_all(root.join("exports")).unwrap();
         fs::write(root.join("exports/old.mp4"), "x").unwrap();
         let existing = check(&at("exports/old.mp4"));
         assert_eq!((existing.exists, existing.forbidden), (true, None));
-        assert!(check(&at("exports")).forbidden.unwrap().contains("directory"));
+        assert!(
+            check(&at("exports"))
+                .forbidden
+                .unwrap()
+                .contains("directory")
+        );
         // Relative paths are taken from the project folder.
         assert_eq!(check("exports/old.mp4").abs, at("exports/old.mp4"));
     }

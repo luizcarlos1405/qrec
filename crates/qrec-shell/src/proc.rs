@@ -453,7 +453,13 @@ impl Spec {
         let activity = Arc::new(AtomicU64::new(0));
         let stdout_rx = stdout.map(|pipe| {
             let mode = std::mem::replace(&mut self.stdout, StdoutMode::Null);
-            spawn_reader(pipe, mode, self.marker.clone(), started, Arc::clone(&activity))
+            spawn_reader(
+                pipe,
+                mode,
+                self.marker.clone(),
+                started,
+                Arc::clone(&activity),
+            )
         });
         Ok(Running {
             label: self.label,
@@ -649,7 +655,9 @@ impl Running {
                 .into_iter()
                 .flatten()
                 .min()
-                .map_or(Duration::from_secs(3600), |t| t.saturating_duration_since(now));
+                .map_or(Duration::from_secs(3600), |t| {
+                    t.saturating_duration_since(now)
+                });
             crossbeam_channel::select! {
                 recv(self.exit_rx) -> status => break status.ok().and_then(Result::ok),
                 recv(self.cancel_rx) -> why => {
@@ -670,7 +678,12 @@ impl Running {
             elapsed: self.started.elapsed(),
         };
         if let Some(log) = self.log.as_mut() {
-            let _ = writeln!(log, "# {} ({:.1} s)", finished.describe(), finished.elapsed.as_secs_f64());
+            let _ = writeln!(
+                log,
+                "# {} ({:.1} s)",
+                finished.describe(),
+                finished.elapsed.as_secs_f64()
+            );
         }
         finished
     }
@@ -704,7 +717,11 @@ impl Running {
         let Some(rx) = self.stdout_rx.take() else {
             return (Vec::new(), false);
         };
-        let wait = if exited { STDOUT_DRAIN } else { Duration::from_millis(200) };
+        let wait = if exited {
+            STDOUT_DRAIN
+        } else {
+            Duration::from_millis(200)
+        };
         if let Ok(done) = rx.recv_timeout(wait) {
             return (done.bytes, done.truncated);
         }
@@ -893,7 +910,11 @@ pub fn create_log(dir: &Path, name: &str) -> io::Result<(File, PathBuf)> {
 }
 
 /// `.qrec/logs/YYYYMMDD-HHMMSS-<pid>[-j<job>]-<step>.log`, created with `O_EXCL`.
-pub fn job_log(paths: &ProjectPaths, job: Option<JobId>, step: &str) -> io::Result<(File, PathBuf)> {
+pub fn job_log(
+    paths: &ProjectPaths,
+    job: Option<JobId>,
+    step: &str,
+) -> io::Result<(File, PathBuf)> {
     let stamp = log_stamp(Local::now());
     let pid = std::process::id();
     let step = sanitize_step(step);
@@ -959,23 +980,27 @@ pub fn prune_logs(dir: &Path, keep: usize) -> usize {
 /// Returns how many were deleted.
 pub fn prune_temp_outputs(paths: &ProjectPaths, max_age: Duration) -> usize {
     let now = SystemTime::now();
-    [paths.exports_dir(), paths.frames_dir(), paths.segments_dir()]
-        .iter()
-        .filter_map(|dir| fs::read_dir(dir).ok())
-        .flatten()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_name().to_string_lossy().contains(".qrec-part-"))
-        .filter(|e| {
-            e.path().symlink_metadata().is_ok_and(|m| {
-                m.file_type().is_file()
-                    && m.modified()
-                        .ok()
-                        .and_then(|t| now.duration_since(t).ok())
-                        .is_some_and(|age| age > max_age)
-            })
+    [
+        paths.exports_dir(),
+        paths.frames_dir(),
+        paths.segments_dir(),
+    ]
+    .iter()
+    .filter_map(|dir| fs::read_dir(dir).ok())
+    .flatten()
+    .filter_map(Result::ok)
+    .filter(|e| e.file_name().to_string_lossy().contains(".qrec-part-"))
+    .filter(|e| {
+        e.path().symlink_metadata().is_ok_and(|m| {
+            m.file_type().is_file()
+                && m.modified()
+                    .ok()
+                    .and_then(|t| now.duration_since(t).ok())
+                    .is_some_and(|age| age > max_age)
         })
-        .filter(|e| fs::remove_file(e.path()).is_ok())
-        .count()
+    })
+    .filter(|e| fs::remove_file(e.path()).is_ok())
+    .count()
 }
 
 /// Quotes `arg` for a POSIX shell when it needs it (log readability only).
@@ -1034,11 +1059,14 @@ mod tests {
     fn captures_stdout_and_logs_stderr() {
         let tmp = tempfile::tempdir().unwrap();
         let (log, path) = create_log(tmp.path(), "t").unwrap();
-        let out = sh("echo out; echo err >&2; exit 3", Limit::Timeout(Duration::from_secs(10)))
-            .capture_stdout(1 << 20)
-            .stderr_to(log)
-            .run()
-            .unwrap();
+        let out = sh(
+            "echo out; echo err >&2; exit 3",
+            Limit::Timeout(Duration::from_secs(10)),
+        )
+        .capture_stdout(1 << 20)
+        .stderr_to(log)
+        .run()
+        .unwrap();
         assert_eq!(out.end, End::Exited);
         assert_eq!(out.status.and_then(|s| s.code()), Some(3));
         assert!(!out.success());
@@ -1046,17 +1074,24 @@ mod tests {
         assert_eq!(out.describe(), "sh exited with status 3");
         let log = fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = log.lines().collect();
-        assert!(lines[0].starts_with("# ") && lines[0].ends_with("$ sh -c 'echo out; echo err >&2; exit 3'"), "{log}");
+        assert!(
+            lines[0].starts_with("# ")
+                && lines[0].ends_with("$ sh -c 'echo out; echo err >&2; exit 3'"),
+            "{log}"
+        );
         assert_eq!(lines[1], "err");
         assert!(lines[2].starts_with("# sh exited with status 3"), "{log}");
     }
 
     #[test]
     fn stdout_capture_is_capped_but_drained() {
-        let out = sh("head -c 100000 /dev/zero", Limit::Timeout(Duration::from_secs(10)))
-            .capture_stdout(10)
-            .run()
-            .unwrap();
+        let out = sh(
+            "head -c 100000 /dev/zero",
+            Limit::Timeout(Duration::from_secs(10)),
+        )
+        .capture_stdout(10)
+        .run()
+        .unwrap();
         assert!(out.success());
         assert_eq!(out.stdout.len(), 10);
         assert!(out.stdout_truncated);
@@ -1066,10 +1101,13 @@ mod tests {
     fn lines_reach_the_handler_in_order() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
-        let out = sh("printf 'a\\nb\\r\\nc'", Limit::Timeout(Duration::from_secs(10)))
-            .stdout_lines(move |line| sink.lock().unwrap().push(line.to_owned()))
-            .run()
-            .unwrap();
+        let out = sh(
+            "printf 'a\\nb\\r\\nc'",
+            Limit::Timeout(Duration::from_secs(10)),
+        )
+        .stdout_lines(move |line| sink.lock().unwrap().push(line.to_owned()))
+        .run()
+        .unwrap();
         assert!(out.success());
         assert_eq!(*seen.lock().unwrap(), ["a", "b", "c"]);
     }
@@ -1084,10 +1122,22 @@ mod tests {
             .run()
             .unwrap();
         assert_eq!(out.end, End::TimedOut);
-        assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
-        assert!(out.describe().starts_with("sh timed out after"), "{}", out.describe());
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(
+            out.describe().starts_with("sh timed out after"),
+            "{}",
+            out.describe()
+        );
         // SIGTERM went to the whole group: the background sleep is gone too.
-        let grandchild: u32 = fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+        let grandchild: u32 = fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
         while alive(grandchild) && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(20));
@@ -1101,12 +1151,18 @@ mod tests {
     fn sigterm_is_followed_by_sigkill() {
         let started = Instant::now();
         // `exec sleep` would reset the trap; a shell loop keeps ignoring TERM.
-        let out = sh("trap '' TERM; while :; do sleep 0.05; done", Limit::Timeout(Duration::from_millis(200)))
-            .run()
-            .unwrap();
+        let out = sh(
+            "trap '' TERM; while :; do sleep 0.05; done",
+            Limit::Timeout(Duration::from_millis(200)),
+        )
+        .run()
+        .unwrap();
         let took = started.elapsed();
         assert_eq!(out.end, End::TimedOut);
-        assert!(took >= TERM_GRACE, "SIGKILL came before the grace period: {took:?}");
+        assert!(
+            took >= TERM_GRACE,
+            "SIGKILL came before the grace period: {took:?}"
+        );
         assert!(took < TERM_GRACE + Duration::from_secs(2), "{took:?}");
         assert_eq!(out.status.and_then(|s| s.signal()), Some(libc::SIGKILL));
     }
@@ -1157,10 +1213,13 @@ mod tests {
     #[test]
     fn a_grandchild_holding_stdout_doesnt_hang_the_caller() {
         let started = Instant::now();
-        let out = sh("sleep 30 & echo done", Limit::Timeout(Duration::from_secs(20)))
-            .capture_stdout(1024)
-            .run()
-            .unwrap();
+        let out = sh(
+            "sleep 30 & echo done",
+            Limit::Timeout(Duration::from_secs(20)),
+        )
+        .capture_stdout(1024)
+        .run()
+        .unwrap();
         assert!(out.success());
         assert_eq!(out.stdout_text(), "done\n");
         assert!(started.elapsed() < STDOUT_DRAIN + Duration::from_secs(2));
@@ -1228,7 +1287,10 @@ mod tests {
         let (_, a) = create_log(tmp.path(), "20261014-120000-1-j7-segment 3").unwrap();
         let (_, b) = create_log(tmp.path(), "20261014-120000-1-j7-segment 3").unwrap();
         assert_eq!(a.file_name().unwrap(), "20261014-120000-1-j7-segment_3.log");
-        assert_eq!(b.file_name().unwrap(), "20261014-120000-1-j7-segment_3-2.log");
+        assert_eq!(
+            b.file_name().unwrap(),
+            "20261014-120000-1-j7-segment_3-2.log"
+        );
 
         let paths = ProjectPaths::new(tmp.path());
         let (_, log) = job_log(&paths, Some(JobId(7)), "stitch").unwrap();
@@ -1250,7 +1312,10 @@ mod tests {
         );
         let (_, log) = job_log(&paths, None, "pactl").unwrap();
         let name = log.to_string_lossy().into_owned();
-        assert!(name.ends_with(&format!("-{}-pactl.log", std::process::id())), "{name}");
+        assert!(
+            name.ends_with(&format!("-{}-pactl.log", std::process::id())),
+            "{name}"
+        );
         assert_eq!(sanitize_step("../x"), ".._x");
         assert_eq!(sanitize_step(".."), "step");
     }
@@ -1284,7 +1349,12 @@ mod tests {
         left.sort();
         assert_eq!(
             left,
-            ["20261012-120000-1-x.log", "20261013-120000-1-x.log", "20261014-120000-1-x.log", "notes.txt"]
+            [
+                "20261012-120000-1-x.log",
+                "20261013-120000-1-x.log",
+                "20261014-120000-1-x.log",
+                "notes.txt"
+            ]
         );
         assert_eq!(prune_logs(&tmp.path().join("nope"), 3), 0);
 
@@ -1297,8 +1367,18 @@ mod tests {
             fs::write(f, "x").unwrap();
         }
         let two_hours_ago = SystemTime::now() - Duration::from_secs(7200);
-        File::options().write(true).open(&old).unwrap().set_modified(two_hours_ago).unwrap();
-        File::options().write(true).open(&keep).unwrap().set_modified(two_hours_ago).unwrap();
+        File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(two_hours_ago)
+            .unwrap();
+        File::options()
+            .write(true)
+            .open(&keep)
+            .unwrap()
+            .set_modified(two_hours_ago)
+            .unwrap();
         assert_eq!(prune_temp_outputs(&paths, TEMP_MAX_AGE), 1);
         assert!(!old.exists() && fresh.exists() && keep.exists());
     }
@@ -1311,8 +1391,13 @@ mod tests {
         assert_eq!(shell_quote(""), "''");
         let spec = Spec::new("ffmpeg", Limit::Timeout(Duration::from_secs(1))).args(["-i", "a b"]);
         assert_eq!(spec.command_line(), "ffmpeg -i 'a b'");
-        let ok = sh("true", Limit::Timeout(Duration::from_secs(5))).run().unwrap();
-        let bad = sh("exit 2", Limit::Timeout(Duration::from_secs(5))).label("x").run().unwrap();
+        let ok = sh("true", Limit::Timeout(Duration::from_secs(5)))
+            .run()
+            .unwrap();
+        let bad = sh("exit 2", Limit::Timeout(Duration::from_secs(5)))
+            .label("x")
+            .run()
+            .unwrap();
         assert_eq!(summary(&[ok, bad]), "sh finished; x exited with status 2");
     }
 }

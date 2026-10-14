@@ -89,7 +89,10 @@ pub fn load(paths: &ProjectPaths, opts: &LoadOpts) -> Result<Loaded, ShellError>
             let disk_invalid = match &file_sha {
                 None => Some("qrec.json is missing".to_owned()),
                 Some(sha) if *sha == head.project_sha256 => None,
-                Some(_) => Some("qrec.json doesn't match the history (recovery mode doesn't load it)".to_owned()),
+                Some(_) => Some(
+                    "qrec.json doesn't match the history (recovery mode doesn't load it)"
+                        .to_owned(),
+                ),
             };
             let mut loaded = with_head(head, base, parsed, ui, notes);
             loaded.disk_invalid = disk_invalid;
@@ -99,7 +102,15 @@ pub fn load(paths: &ProjectPaths, opts: &LoadOpts) -> Result<Loaded, ShellError>
         let why = match file.as_deref().map(|bytes| parse_file(bytes, opts.check)) {
             Some(Ok(migrated)) => {
                 let original = migrated_original(&migrated, file.as_deref());
-                return Ok(without_head(migrated.project, original, base, parsed, ui, notes, file_sha));
+                return Ok(without_head(
+                    migrated.project,
+                    original,
+                    base,
+                    parsed,
+                    ui,
+                    notes,
+                    file_sha,
+                ));
             }
             Some(Err(e)) => format!("qrec.json is invalid: {}", e.message),
             None => "qrec.json is missing".to_owned(),
@@ -120,10 +131,19 @@ pub fn load(paths: &ProjectPaths, opts: &LoadOpts) -> Result<Loaded, ShellError>
     let migrated = parse_file(&bytes, opts.check).map_err(|e| invalid_file(&e, restore_seq))?;
     let original = migrated_original(&migrated, Some(&bytes));
     let Some(head) = head else {
-        return Ok(without_head(migrated.project, original, base, parsed, ui, notes, file_sha));
+        return Ok(without_head(
+            migrated.project,
+            original,
+            base,
+            parsed,
+            ui,
+            notes,
+            file_sha,
+        ));
     };
     let file_project = migrated.project;
-    let clean = file_sha.as_deref() == Some(head.project_sha256.as_str()) || file_project == head.project;
+    let clean =
+        file_sha.as_deref() == Some(head.project_sha256.as_str()) || file_project == head.project;
     let mut loaded = with_head(head, base, parsed, ui, notes);
     loaded.external = (!clean).then(|| Ok(Box::new(file_project)));
     loaded.accepted_sha = file_sha;
@@ -147,13 +167,15 @@ fn missing_file(restore_seq: Option<u64>) -> CoreError {
 
 fn invalid_file(e: &CoreError, restore_seq: Option<u64>) -> CoreError {
     let hint = match restore_seq {
-        Some(seq) => format!("fix it, or rebuild it from the history with `qrec history restore {seq} --yes`"),
+        Some(seq) => format!(
+            "fix it, or rebuild it from the history with `qrec history restore {seq} --yes`"
+        ),
         None => "fix it; there is no history to rebuild it from".to_owned(),
     };
-    let message = e
-        .message
-        .strip_prefix("qrec.json ")
-        .map_or_else(|| format!("qrec.json is invalid: {}", e.message), |rest| format!("qrec.json {rest}"));
+    let message = e.message.strip_prefix("qrec.json ").map_or_else(
+        || format!("qrec.json is invalid: {}", e.message),
+        |rest| format!("qrec.json {rest}"),
+    );
     let mut err = CoreError::new(ErrorCode::Invalid, message).with_hint(hint);
     err.details = e.details.clone();
     err
@@ -167,7 +189,10 @@ fn parse_file(bytes: &[u8], check: Check) -> Result<qrec_core::migrate::Migrated
     Ok(migrated)
 }
 
-fn migrated_original(migrated: &qrec_core::migrate::Migrated, bytes: Option<&[u8]>) -> Option<(u32, Vec<u8>)> {
+fn migrated_original(
+    migrated: &qrec_core::migrate::Migrated,
+    bytes: Option<&[u8]>,
+) -> Option<(u32, Vec<u8>)> {
     (migrated.from_version < qrec_core::model::CURRENT_VERSION)
         .then(|| (migrated.from_version, bytes.unwrap_or_default().to_vec()))
 }
@@ -181,7 +206,10 @@ fn with_head(
     ui: UiState,
     mut notes: Vec<String>,
 ) -> Loaded {
-    let base_seq = base.as_ref().and_then(|(seq, _)| *seq).unwrap_or(head.base_seq);
+    let base_seq = base
+        .as_ref()
+        .and_then(|(seq, _)| *seq)
+        .unwrap_or(head.base_seq);
     if base_seq != head.base_seq {
         notes.push(format!(
             "history base {base_seq} differs from the commit record's {}; a history rewrite didn't finish",
@@ -214,8 +242,8 @@ fn with_head(
         seen_clip_ids: Arc::default(),
     };
     let mut base_to_write = None;
-    let cursor_known =
-        history.cursor == history.base_seq || history.entries.iter().any(|e| e.seq == history.cursor);
+    let cursor_known = history.cursor == history.base_seq
+        || history.entries.iter().any(|e| e.seq == history.cursor);
     if !cursor_known {
         notes.push(format!(
             "the undo history lost its current entry {}; it starts over from the current project",
@@ -285,14 +313,18 @@ fn without_head(
         last
     };
     if !entries.is_empty() || base_project.is_some() {
-        notes.push("no .qrec/history.head.json: rebuilt the commit record from qrec.json".to_owned());
+        notes.push(
+            "no .qrec/history.head.json: rebuilt the commit record from qrec.json".to_owned(),
+        );
     }
     let base_to_write = match (&base_project, entries.is_empty()) {
         (None, true) => Some((base_seq, project.clone())),
         _ => None,
     };
     if base_project.is_none() && !entries.is_empty() {
-        notes.push("no .qrec/history.base.json: the project can't be rebuilt from the history".to_owned());
+        notes.push(
+            "no .qrec/history.base.json: the project can't be rebuilt from the history".to_owned(),
+        );
     }
     let history = History {
         entries: Arc::new(entries),
@@ -342,7 +374,11 @@ fn rebuild(
         notes.push(format!(
             "added back {} take(s) found under takes/: {}",
             readded.len(),
-            readded.iter().map(TakeId::as_str).collect::<Vec<_>>().join(", ")
+            readded
+                .iter()
+                .map(TakeId::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     let mut kept: Vec<HistoryEntry> = Vec::new();
@@ -363,7 +399,9 @@ fn rebuild(
     }
     let cursor = kept.last().map_or(base_seq, |e| e.seq);
     let next_seq = (cursor + 1).max(base_seq + 1);
-    notes.push(format!("rebuilt the project from the history (entry {cursor})"));
+    notes.push(format!(
+        "rebuilt the project from the history (entry {cursor})"
+    ));
     let history = History {
         entries: Arc::new(kept),
         cursor,
@@ -477,21 +515,30 @@ fn read_optional(path: &std::path::Path) -> io::Result<Option<Vec<u8>>> {
 
 fn read_head(paths: &ProjectPaths, notes: &mut Vec<String>) -> Result<Option<Head>, ShellError> {
     let path = paths.history_head();
-    let Some(bytes) = read_optional(&path).map_err(|e| ShellError::io(format!("read {}", path.display()), e))? else {
+    let Some(bytes) =
+        read_optional(&path).map_err(|e| ShellError::io(format!("read {}", path.display()), e))?
+    else {
         return Ok(None);
     };
     match serde_json::from_slice::<Head>(&bytes) {
         Ok(head) => Ok(Some(head)),
         Err(e) => {
-            notes.push(format!("ignored an unreadable .qrec/history.head.json: {e}"));
+            notes.push(format!(
+                "ignored an unreadable .qrec/history.head.json: {e}"
+            ));
             Ok(None)
         }
     }
 }
 
-fn read_base(paths: &ProjectPaths, notes: &mut Vec<String>) -> Result<Option<(Option<u64>, Project)>, ShellError> {
+fn read_base(
+    paths: &ProjectPaths,
+    notes: &mut Vec<String>,
+) -> Result<Option<(Option<u64>, Project)>, ShellError> {
     let path = paths.history_base();
-    let Some(bytes) = read_optional(&path).map_err(|e| ShellError::io(format!("read {}", path.display()), e))? else {
+    let Some(bytes) =
+        read_optional(&path).map_err(|e| ShellError::io(format!("read {}", path.display()), e))?
+    else {
         return Ok(None);
     };
     let base = format::parse_base(&bytes);

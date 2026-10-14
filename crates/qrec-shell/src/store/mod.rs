@@ -177,7 +177,8 @@ impl Store {
         self.pending_backup = loaded.migrated_from.clone();
         self.pending_base = loaded.base_to_write.clone();
         self.has_base = self.paths.history_base().is_file();
-        self.dirty = loaded.needs_repair || self.pending_base.is_some() || self.pending_backup.is_some();
+        self.dirty =
+            loaded.needs_repair || self.pending_base.is_some() || self.pending_backup.is_some();
     }
 
     // ------------------------------------------------------------ commit
@@ -202,7 +203,12 @@ impl Store {
         result
     }
 
-    fn commit_steps(&mut self, prev: &State, next: &State, ops: &[&HistoryOp]) -> Result<(), CommitError> {
+    fn commit_steps(
+        &mut self,
+        prev: &State,
+        next: &State,
+        ops: &[&HistoryOp],
+    ) -> Result<(), CommitError> {
         self.write_history(prev, next, ops)?;
         self.crash_point(Step::History)?;
         self.write_project(&next.project)?;
@@ -227,11 +233,18 @@ impl Store {
 
     /// Step 1: the base (on `Rewrite`, or the first time a project gets a
     /// history), then one appended line or the whole file.
-    fn write_history(&mut self, prev: &State, next: &State, ops: &[&HistoryOp]) -> Result<(), CommitError> {
-        let io_err = |what: String| move |source| CommitError::Io {
-            step: Step::History,
-            what,
-            source,
+    fn write_history(
+        &mut self,
+        prev: &State,
+        next: &State,
+        ops: &[&HistoryOp],
+    ) -> Result<(), CommitError> {
+        let io_err = |what: String| {
+            move |source| CommitError::Io {
+                step: Step::History,
+                what,
+                source,
+            }
         };
         for op in ops {
             if let HistoryOp::Rewrite { base, base_seq, .. } = op {
@@ -250,33 +263,43 @@ impl Store {
         if let Some((base_seq, project)) = &self.pending_base {
             let path = self.paths.history_base();
             // On failure it stays pending for the next attempt.
-            fsx::replace(&path, &format::base_bytes(*base_seq, project), fsx::Sync::File)
-                .map_err(io_err(format!("write {}", path.display())))?;
+            fsx::replace(
+                &path,
+                &format::base_bytes(*base_seq, project),
+                fsx::Sync::File,
+            )
+            .map_err(io_err(format!("write {}", path.display())))?;
             self.pending_base = None;
             self.has_base = true;
         }
         let path = self.paths.history_file();
         let append = match ops {
-            [HistoryOp::Append(entry)] if !self.dirty && !has_redo_tail(&prev.history) => Some(entry),
+            [HistoryOp::Append(entry)] if !self.dirty && !has_redo_tail(&prev.history) => {
+                Some(entry)
+            }
             _ => None,
         };
         match append {
             Some(entry) => fsx::append_durable(&path, &format::entry_line(entry))
                 .map_err(io_err(format!("append to {}", path.display()))),
-            None if !ops.is_empty() || self.dirty => {
-                fsx::replace(&path, &format::history_bytes(next.history.entries.iter()), fsx::Sync::File)
-                    .map_err(io_err(format!("write {}", path.display())))
-            }
+            None if !ops.is_empty() || self.dirty => fsx::replace(
+                &path,
+                &format::history_bytes(next.history.entries.iter()),
+                fsx::Sync::File,
+            )
+            .map_err(io_err(format!("write {}", path.display()))),
             None => Ok(()),
         }
     }
 
     /// Step 2: `qrec.json` (after a pending migration backup).
     fn write_project(&mut self, project: &Project) -> Result<(), CommitError> {
-        let io_err = |what: String| move |source| CommitError::Io {
-            step: Step::Project,
-            what,
-            source,
+        let io_err = |what: String| {
+            move |source| CommitError::Io {
+                step: Step::Project,
+                what,
+                source,
+            }
         };
         if let Some((from, original)) = self.pending_backup.take() {
             let path = self.paths.migration_backup(from);
@@ -287,7 +310,8 @@ impl Store {
         }
         let bytes = format::project_bytes(project);
         let path = self.paths.project_file();
-        fsx::replace(&path, &bytes, fsx::Sync::FileAndDir).map_err(io_err(format!("write {}", path.display())))?;
+        fsx::replace(&path, &bytes, fsx::Sync::FileAndDir)
+            .map_err(io_err(format!("write {}", path.display())))?;
         self.last_sha = Some(format::sha(&bytes));
         Ok(())
     }
@@ -433,9 +457,9 @@ impl Store {
             .map_err(|e| format!("can't create takes/: {e}"))?;
         match fs::create_dir(&path) {
             Ok(()) => Ok(path),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                Err(format!("{relative} already exists; a take never reuses a folder"))
-            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(format!(
+                "{relative} already exists; a take never reuses a folder"
+            )),
             Err(e) => Err(format!("can't create {relative}: {e}")),
         }
     }
@@ -467,8 +491,10 @@ impl Store {
 
     /// When a pending UI write is due.
     pub fn ui_deadline(&self) -> Option<Instant> {
-        self.ui_pending
-            .then(|| self.ui_last.map_or_else(Instant::now, |t| t + UI_WRITE_INTERVAL))
+        self.ui_pending.then(|| {
+            self.ui_last
+                .map_or_else(Instant::now, |t| t + UI_WRITE_INTERVAL)
+        })
     }
 
     /// Writes a pending UI write if it is due (or `force`).
@@ -490,7 +516,10 @@ impl Store {
 
 /// The history has entries after its cursor (a redo tail) on disk.
 fn has_redo_tail(history: &History) -> bool {
-    history.entries.last().is_some_and(|e| e.seq > history.cursor)
+    history
+        .entries
+        .last()
+        .is_some_and(|e| e.seq > history.cursor)
 }
 
 /// The takes on disk: every `takes/<take>` folder name that parses as a take id.

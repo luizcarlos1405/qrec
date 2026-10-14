@@ -33,9 +33,12 @@ pub fn publish(socket: &Path) -> Result<PublishedSocket, ShellError> {
     paths::ensure_private_dir(runtime, rustix::process::getuid().as_raw())?;
     let temp = paths::socket_publish_path(socket, std::process::id())?;
 
-    remove_if_present(socket).map_err(|e| ShellError::io(format!("unlink {}", socket.display()), e))?;
-    remove_if_present(&temp).map_err(|e| ShellError::io(format!("unlink {}", temp.display()), e))?;
-    let listener = UnixListener::bind(&temp).map_err(|e| ShellError::io(format!("bind {}", temp.display()), e))?;
+    remove_if_present(socket)
+        .map_err(|e| ShellError::io(format!("unlink {}", socket.display()), e))?;
+    remove_if_present(&temp)
+        .map_err(|e| ShellError::io(format!("unlink {}", temp.display()), e))?;
+    let listener = UnixListener::bind(&temp)
+        .map_err(|e| ShellError::io(format!("bind {}", temp.display()), e))?;
     let published = fs::symlink_metadata(&temp)
         .and_then(|meta| fs::rename(&temp, socket).map(|()| (meta.dev(), meta.ino())));
     match published {
@@ -113,7 +116,11 @@ mod tests {
         let socket = env.runtime_dir().join(format!("{}.sock", "a".repeat(64)));
         let mut published = publish(&socket).unwrap();
         assert_eq!(published.path(), socket);
-        assert!(!paths::socket_publish_path(&socket, std::process::id()).unwrap().exists());
+        assert!(
+            !paths::socket_publish_path(&socket, std::process::id())
+                .unwrap()
+                .exists()
+        );
         let runtime_mode = fs::metadata(env.runtime_dir()).unwrap().mode() & 0o777;
         assert_eq!(runtime_mode, 0o700);
 

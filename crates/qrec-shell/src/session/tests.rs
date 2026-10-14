@@ -22,8 +22,8 @@ use qrec_core::history::ops::unchecked;
 use qrec_core::model::TakeStatus;
 use qrec_core::plans::{CapturePlan, ExportPlan, FramePlan, LiveScene};
 use qrec_core::protocol::{
-    Command, Effect, HelloInfo, HistoryOp, MoveTo, ProbeJob, ProbePurpose, Progress, SceneTarget, SelectOp,
-    Toast, VideoSourceArg, WireBody,
+    Command, Effect, HelloInfo, HistoryOp, MoveTo, ProbeJob, ProbePurpose, Progress, SceneTarget,
+    SelectOp, Toast, VideoSourceArg, WireBody,
 };
 use qrec_core::state::{HostKind, Job, JobKind, RecordPhase, SilenceKey};
 use qrec_core::{ClipId, CoreError, ErrorCode, Event, Fps, JobId, ReqId, TakeId};
@@ -90,7 +90,8 @@ struct FakeMedia {
 impl MediaRunner for FakeMedia {
     fn probe(&mut self, take: TakeId, purpose: ProbePurpose, jobs: Vec<ProbeJob>, _out: Inbox) {
         let files: Vec<&str> = jobs.iter().map(|j| j.file.as_str()).collect();
-        self.log.push(format!("probe {take} {purpose:?} {}", files.join(",")));
+        self.log
+            .push(format!("probe {take} {purpose:?} {}", files.join(",")));
     }
 
     fn detect_silence(&mut self, job: JobId, _key: SilenceKey, _argv: Vec<String>, _out: Inbox) {
@@ -108,10 +109,12 @@ impl MediaRunner for FakeMedia {
     fn delete_take_dirs(&mut self, job: JobId, takes: Vec<TakeId>, out: Inbox) {
         // A§7.6 step 4: the commit record no longer has the takes.
         let head: Head =
-            serde_json::from_slice(&fs::read(self.dir.join(".qrec/history.head.json")).unwrap()).unwrap();
+            serde_json::from_slice(&fs::read(self.dir.join(".qrec/history.head.json")).unwrap())
+                .unwrap();
         let committed = takes.iter().all(|t| !head.project.takes.contains_key(t));
         let names: Vec<&str> = takes.iter().map(TakeId::as_str).collect();
-        self.log.push(format!("delete {} committed={committed}", names.join(",")));
+        self.log
+            .push(format!("delete {} committed={committed}", names.join(",")));
         let deleted = takes.iter().map(|t| format!("takes/{t}")).collect();
         out.event(Event::TakeDirsDeleted {
             job,
@@ -205,7 +208,9 @@ impl Harness {
         let toasts = Arc::clone(&self.toasts);
         SessionConfig {
             env: Some(self.session_env()),
-            notifier: Some(Box::new(move |t: &Toast| toasts.lock().unwrap().push(t.clone()))),
+            notifier: Some(Box::new(move |t: &Toast| {
+                toasts.lock().unwrap().push(t.clone())
+            })),
             check: Some(unchecked),
             ..SessionConfig::default()
         }
@@ -244,7 +249,9 @@ impl Harness {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             match self.open_once(opts) {
-                Err(ShellError::Core(e)) if e.code == ErrorCode::Busy && Instant::now() < deadline => {
+                Err(ShellError::Core(e))
+                    if e.code == ErrorCode::Busy && Instant::now() < deadline =>
+                {
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 other => return other,
@@ -275,7 +282,12 @@ impl Harness {
     }
 
     fn toast_titles(&self) -> Vec<String> {
-        self.toasts.lock().unwrap().iter().map(|t| t.title.clone()).collect()
+        self.toasts
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|t| t.title.clone())
+            .collect()
     }
 }
 
@@ -330,7 +342,10 @@ fn timeline_commands_commit_in_order_and_reload() {
     let mut s = h.open(true).unwrap();
     assert!(s.is_host());
     let paths = h.paths();
-    assert!(paths.history_head().is_file(), "the open wrote a commit record");
+    assert!(
+        paths.history_head().is_file(),
+        "the open wrote a commit record"
+    );
     assert!(paths.history_base().is_file());
 
     let split = send(
@@ -446,7 +461,10 @@ fn the_first_command_in_an_empty_folder_creates_the_project() {
     assert!(!is_initialized(&s.state().project));
     let paths = h.paths();
     assert!(paths.qrec_dir().is_dir(), "mkdir .qrec, then the lock");
-    assert!(!paths.project_file().exists(), "nothing is written before a command");
+    assert!(
+        !paths.project_file().exists(),
+        "nothing is written before a command"
+    );
 
     let added = send(
         &mut s,
@@ -469,7 +487,10 @@ fn the_first_command_in_an_empty_folder_creates_the_project() {
     assert!(paths.takes_dir().is_dir(), "takes/ comes with the project");
     let base: BaseFile = serde_json::from_slice(&fs::read(paths.history_base()).unwrap()).unwrap();
     assert_eq!(base.base_seq, 0);
-    assert!(base.project.scene.layers.is_empty(), "the base is the new project");
+    assert!(
+        base.project.scene.layers.is_empty(),
+        "the base is the new project"
+    );
     assert_eq!(h.head().cursor, 1);
     assert_eq!(h.history_seqs(), [1]);
 
@@ -491,7 +512,9 @@ fn only_mutating_commands_create_a_project() {
     let h = Harness::new("empty");
     let mut s = h.open(true).unwrap();
     for cmd in [
-        Command::Select { op: SelectOp::Clear },
+        Command::Select {
+            op: SelectOp::Clear,
+        },
         Command::Undo { steps: 1 },
         Command::Export {
             format: Default::default(),
@@ -567,7 +590,10 @@ fn the_folder_rule() {
     fs::write(h.dir.join("notes.txt"), "hi").unwrap();
     let err = CoreError::from(h.open(true).unwrap_err());
     assert_eq!(err.code, ErrorCode::NotProject);
-    assert!(!h.dir.join(".qrec").exists(), "nothing is created in someone else's folder");
+    assert!(
+        !h.dir.join(".qrec").exists(),
+        "nothing is created in someone else's folder"
+    );
 
     // A folder holding only an interrupted init's .qrec/ counts as empty.
     let h = Harness::new("half");
@@ -584,7 +610,10 @@ fn the_folder_rule() {
     )
     .unwrap();
     assert_eq!(
-        (s.state().project.name.as_str(), s.state().project.canvas.fps),
+        (
+            s.state().project.name.as_str(),
+            s.state().project.canvas.fps
+        ),
         ("Demo", Fps::new(25, 1))
     );
     drop(s);
@@ -592,7 +621,10 @@ fn the_folder_rule() {
     // A history without qrec.json: restore it rather than start over.
     fs::remove_file(h.dir.join("qrec.json")).unwrap();
     let err = CoreError::from(h.open(true).unwrap_err());
-    assert_eq!((err.code, err.message.as_str()), (ErrorCode::Invalid, "qrec.json is missing"));
+    assert_eq!(
+        (err.code, err.message.as_str()),
+        (ErrorCode::Invalid, "qrec.json is missing")
+    );
     assert!(err.hint.unwrap().contains("qrec history restore 0 --yes"));
 
     let missing = h.env.root().join("projects/nope");
@@ -601,7 +633,8 @@ fn the_folder_rule() {
         mutating: true,
         recovery: false,
     };
-    let err = CoreError::from(Session::open_with(&missing, opts, h.deps(), h.config()).unwrap_err());
+    let err =
+        CoreError::from(Session::open_with(&missing, opts, h.deps(), h.config()).unwrap_err());
     assert_eq!(err.code, ErrorCode::NotProject);
 }
 
@@ -610,7 +643,10 @@ fn read_only_sessions_take_no_lock_and_write_nothing() {
     let h = Harness::with_sample("ro");
     let mut ro = h.open(false).unwrap();
     assert!(!ro.is_host() && ro.lock().is_none());
-    let hello = request(&mut ro, WireBody::Hello, false).last().unwrap().unwrap();
+    let hello = request(&mut ro, WireBody::Hello, false)
+        .last()
+        .unwrap()
+        .unwrap();
     assert_eq!(hello["host"], "cli");
     let err = send(
         &mut ro,
@@ -621,7 +657,10 @@ fn read_only_sessions_take_no_lock_and_write_nothing() {
     )
     .unwrap_err();
     assert_eq!(err.code, ErrorCode::Internal);
-    assert!(!h.dir.join(".qrec").exists(), "no lock file, no history, nothing");
+    assert!(
+        !h.dir.join(".qrec").exists(),
+        "no lock file, no history, nothing"
+    );
     // A host can open the same project meanwhile.
     let host = h.open(true).unwrap();
     assert!(host.is_host());
@@ -645,7 +684,10 @@ fn two_hosts_exclude_each_other() {
     let err = CoreError::from(h.open_once(host).unwrap_err());
     assert_eq!(
         err.message,
-        format!("the project is open in a headless host (pid {})", std::process::id())
+        format!(
+            "the project is open in a headless host (pid {})",
+            std::process::id()
+        )
     );
     // Readers don't need the lock.
     assert!(h.open(false).is_ok());
@@ -661,7 +703,10 @@ fn requests_get_ids_and_hello_describes_the_host() {
     let info: HelloInfo = serde_json::from_value(first.last().unwrap().unwrap()).unwrap();
     assert_eq!(info.pid, std::process::id());
     assert_eq!(Path::new(&info.project_dir), s.dir());
-    assert_eq!((info.host, &info.record), (HostKind::Cli, &RecordPhase::Idle));
+    assert_eq!(
+        (info.host, &info.record),
+        (HostKind::Cli, &RecordPhase::Idle)
+    );
     assert!(info.jobs.is_empty());
     assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
     assert_eq!(*first.accepted.lock().unwrap(), [Some(ReqId("r1".into()))]);
@@ -669,7 +714,10 @@ fn requests_get_ids_and_hello_describes_the_host() {
     assert_eq!(*second.accepted.lock().unwrap(), [Some(ReqId("r2".into()))]);
     assert_eq!(current_request(), None, "only while a responder runs");
 
-    let bye = request(&mut s, WireBody::Shutdown, false).last().unwrap().unwrap();
+    let bye = request(&mut s, WireBody::Shutdown, false)
+        .last()
+        .unwrap()
+        .unwrap();
     assert_eq!(bye["shuttingDown"], true);
     assert!(s.shutdown_requested());
     assert!(s.is_idle());
@@ -688,18 +736,31 @@ fn a_purge_is_committed_before_anything_is_deleted() {
     fs::write(take_dir.join("L1-screen-FAKE-1.mkv"), b"123").unwrap();
     let mut s = h.open(true).unwrap();
 
-    let purge = Command::TakePurge { takes: vec![take(2)] };
+    let purge = Command::TakePurge {
+        takes: vec![take(2)],
+    };
     let err = send(&mut s, purge.clone(), false).unwrap_err();
     assert_eq!(err.code, ErrorCode::ConfirmationRequired);
     let files = err.details.unwrap()["files"].as_array().unwrap().clone();
-    assert_eq!(files.len(), 2, "the take's files, with sizes, from the facts");
+    assert_eq!(
+        files.len(),
+        2,
+        "the take's files, with sizes, from the facts"
+    );
     assert!(!h.log.has("delete"));
 
     let reply = send(&mut s, purge, true).unwrap();
-    assert!(reply["message"].as_str().unwrap().starts_with("Purged"), "{reply}");
-    assert_eq!(h.log.lines().last().unwrap(), "delete take-0002 committed=true");
+    assert!(
+        reply["message"].as_str().unwrap().starts_with("Purged"),
+        "{reply}"
+    );
+    assert_eq!(
+        h.log.lines().last().unwrap(),
+        "delete take-0002 committed=true"
+    );
     assert!(!s.state().project.takes.contains_key(&take(2)));
-    let on_disk: Value = serde_json::from_slice(&fs::read(h.dir.join("qrec.json")).unwrap()).unwrap();
+    let on_disk: Value =
+        serde_json::from_slice(&fs::read(h.dir.join("qrec.json")).unwrap()).unwrap();
     assert!(on_disk["takes"].get("take-0002").is_none());
     assert!(s.state().runtime.jobs.is_empty(), "the purge job is done");
 }
@@ -724,16 +785,26 @@ fn a_crash_after_the_history_line_loses_only_that_command() {
         }),
         false,
     );
-    assert!(answers.replies.lock().unwrap().is_empty(), "a dead process doesn't answer");
+    assert!(
+        answers.replies.lock().unwrap().is_empty(),
+        "a dead process doesn't answer"
+    );
     assert_eq!(h.history_seqs(), [1, 2], "the line made it to disk");
     drop(s);
 
     let s = h.open(true).unwrap();
-    assert_eq!(clip_layout(&s), [("c002".to_owned(), 150, 300)], "the second command never happened");
+    assert_eq!(
+        clip_layout(&s),
+        [("c002".to_owned(), 150, 300)],
+        "the second command never happened"
+    );
     assert_eq!(s.state().history.cursor, 1);
     assert_eq!(s.state().history.entries.len(), 1);
     assert_eq!(h.history_seqs(), [1], "the uncommitted line was cleaned up");
-    assert!(h.toast_titles().contains(&"Qrec repaired the project's files".to_owned()));
+    assert!(
+        h.toast_titles()
+            .contains(&"Qrec repaired the project's files".to_owned())
+    );
 }
 
 #[test]
@@ -770,7 +841,11 @@ fn a_crash_after_writing_qrec_json_is_merged_as_an_external_edit() {
     drop(s);
 
     let s = h.open(true).unwrap();
-    assert_eq!(clip_layout(&s), [("c002".to_owned(), 150, 300)], "the file's change is kept");
+    assert_eq!(
+        clip_layout(&s),
+        [("c002".to_owned(), 150, 300)],
+        "the file's change is kept"
+    );
     let last = s.state().history.entries.last().unwrap();
     assert_eq!(last.label, "External edit");
     assert_eq!(h.head().cursor, last.seq);
@@ -786,22 +861,44 @@ fn a_hand_edit_found_at_open_survives_the_repairs() {
     let h = Harness::with_sample("edit-and-torn");
     {
         let mut s = h.open(true).unwrap();
-        send(&mut s, Command::ClipRemove { clips: vec![clip("c001")] }, false).unwrap();
+        send(
+            &mut s,
+            Command::ClipRemove {
+                clips: vec![clip("c001")],
+            },
+            false,
+        )
+        .unwrap();
     }
     // A torn line from a crash, and a hand edit of qrec.json while no host ran.
     let mut history = fs::read(h.paths().history_file()).unwrap();
     history.extend_from_slice(b"{\"seq\":2,\"ts\"");
     fs::write(h.paths().history_file(), history).unwrap();
-    let mut json: Value = serde_json::from_slice(&fs::read(h.dir.join("qrec.json")).unwrap()).unwrap();
+    let mut json: Value =
+        serde_json::from_slice(&fs::read(h.dir.join("qrec.json")).unwrap()).unwrap();
     json["name"] = "edited while closed".into();
     write_project(&h.dir, &json);
 
     let s = h.open(true).unwrap();
     assert_eq!(s.state().project.name, "edited while closed");
-    let labels: Vec<&str> = s.state().history.entries.iter().map(|e| e.label.as_str()).collect();
+    let labels: Vec<&str> = s
+        .state()
+        .history
+        .entries
+        .iter()
+        .map(|e| e.label.as_str())
+        .collect();
     assert_eq!(labels.last().copied(), Some("External edit"));
     assert_eq!(h.head().project.name, "edited while closed");
-    assert_eq!(h.history_seqs(), s.state().history.entries.iter().map(|e| e.seq).collect::<Vec<_>>());
+    assert_eq!(
+        h.history_seqs(),
+        s.state()
+            .history
+            .entries
+            .iter()
+            .map(|e| e.seq)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -809,12 +906,16 @@ fn a_hand_edit_found_at_open_survives_the_repairs() {
 fn external_edits_are_merged_and_undoable() {
     let h = Harness::with_sample("external");
     let mut s = h.open(true).unwrap();
-    let mut json: Value = serde_json::from_slice(&fs::read(h.dir.join("qrec.json")).unwrap()).unwrap();
+    let mut json: Value =
+        serde_json::from_slice(&fs::read(h.dir.join("qrec.json")).unwrap()).unwrap();
     json["name"] = "renamed by hand".into();
     write_project(&h.dir, &json);
     s.handle(Msg::DiskChanged);
     assert_eq!(s.state().project.name, "renamed by hand");
-    assert_eq!(s.state().history.entries.last().unwrap().label, "External edit");
+    assert_eq!(
+        s.state().history.entries.last().unwrap().label,
+        "External edit"
+    );
     assert_eq!(h.head().project.name, "renamed by hand");
     // Our own write doesn't come back as an edit.
     let entries = s.state().history.entries.len();
@@ -824,7 +925,8 @@ fn external_edits_are_merged_and_undoable() {
     let undone = send(&mut s, Command::Undo { steps: 1 }, false).unwrap();
     assert_eq!(undone["seq"], 0);
     assert_eq!(s.state().project.name, "swamp");
-    let on_disk: Value = serde_json::from_slice(&fs::read(h.dir.join("qrec.json")).unwrap()).unwrap();
+    let on_disk: Value =
+        serde_json::from_slice(&fs::read(h.dir.join("qrec.json")).unwrap()).unwrap();
     assert_eq!(on_disk["name"], "swamp");
 }
 
@@ -833,7 +935,8 @@ fn external_edits_are_merged_and_undoable() {
 fn an_external_edit_goes_before_a_pending_command() {
     let h = Harness::with_sample("pre-check");
     let mut s = h.open(true).unwrap();
-    let mut json: Value = serde_json::from_slice(&fs::read(h.dir.join("qrec.json")).unwrap()).unwrap();
+    let mut json: Value =
+        serde_json::from_slice(&fs::read(h.dir.join("qrec.json")).unwrap()).unwrap();
     json["name"] = "edited".into();
     write_project(&h.dir, &json);
     // No DiskChanged yet: the command finds the edit before it writes.
@@ -845,7 +948,13 @@ fn an_external_edit_goes_before_a_pending_command() {
         false,
     )
     .unwrap();
-    let labels: Vec<&str> = s.state().history.entries.iter().map(|e| e.label.as_str()).collect();
+    let labels: Vec<&str> = s
+        .state()
+        .history
+        .entries
+        .iter()
+        .map(|e| e.label.as_str())
+        .collect();
     assert_eq!(labels.first().copied(), Some("External edit"));
     assert_eq!(reply["seq"], 2);
     assert_eq!(s.state().project.name, "edited");
@@ -858,7 +967,14 @@ fn undo_and_redo_move_the_cursor_on_disk() {
     let h = Harness::with_sample("undo");
     let mut s = h.open(true).unwrap();
     for id in ["c001", "c002"] {
-        send(&mut s, Command::ClipRemove { clips: vec![clip(id)] }, false).unwrap();
+        send(
+            &mut s,
+            Command::ClipRemove {
+                clips: vec![clip(id)],
+            },
+            false,
+        )
+        .unwrap();
     }
     let undone = send(&mut s, Command::Undo { steps: 2 }, false).unwrap();
     assert_eq!(undone["seq"], 0);
@@ -881,7 +997,11 @@ fn undo_and_redo_move_the_cursor_on_disk() {
     )
     .unwrap();
     assert_eq!(split["seq"], 3, "seqs are never reused");
-    assert_eq!(h.history_seqs(), [1, 3], "a new command drops the redo tail");
+    assert_eq!(
+        h.history_seqs(),
+        [1, 3],
+        "a new command drops the redo tail"
+    );
     assert_eq!(h.head().cursor, 3);
 }
 
@@ -902,9 +1022,19 @@ fn a_corrupt_qrec_json_fails_the_open_but_not_recovery_mode() {
     fs::write(h.dir.join("qrec.json"), "{ oops").unwrap();
     let err = CoreError::from(h.open(true).unwrap_err());
     assert_eq!(err.code, ErrorCode::Invalid);
-    assert!(err.hint.as_deref().unwrap().contains("qrec history restore 1 --yes"), "{err:?}");
+    assert!(
+        err.hint
+            .as_deref()
+            .unwrap()
+            .contains("qrec history restore 1 --yes"),
+        "{err:?}"
+    );
     let err = CoreError::from(h.open(false).unwrap_err());
-    assert_eq!(err.code, ErrorCode::Invalid, "read-only opens fail the same way");
+    assert_eq!(
+        err.code,
+        ErrorCode::Invalid,
+        "read-only opens fail the same way"
+    );
 
     let s = h
         .open_opts(OpenOpts {
@@ -915,7 +1045,11 @@ fn a_corrupt_qrec_json_fails_the_open_but_not_recovery_mode() {
         .unwrap();
     assert_eq!(clip_layout(&s), [("c002".to_owned(), 150, 300)]);
     assert!(s.state().runtime.disk_invalid.is_some());
-    assert_eq!(fs::read(h.dir.join("qrec.json")).unwrap(), b"{ oops", "never touched");
+    assert_eq!(
+        fs::read(h.dir.join("qrec.json")).unwrap(),
+        b"{ oops",
+        "never touched"
+    );
 }
 
 #[test]
@@ -924,7 +1058,14 @@ fn a_restore_rewrites_qrec_json_and_keeps_the_broken_one() {
     let h = Harness::with_sample("restore");
     {
         let mut s = h.open(true).unwrap();
-        send(&mut s, Command::ClipRemove { clips: vec![clip("c001")] }, false).unwrap();
+        send(
+            &mut s,
+            Command::ClipRemove {
+                clips: vec![clip("c001")],
+            },
+            false,
+        )
+        .unwrap();
     }
     fs::write(h.dir.join("qrec.json"), "{ oops").unwrap();
     let mut s = h
@@ -946,7 +1087,10 @@ fn a_restore_rewrites_qrec_json_and_keeps_the_broken_one() {
         .filter(|n| n.starts_with("qrec.corrupt-"))
         .collect();
     assert_eq!(copies.len(), 1);
-    assert_eq!(fs::read(h.dir.join(".qrec").join(&copies[0])).unwrap(), b"{ oops");
+    assert_eq!(
+        fs::read(h.dir.join(".qrec").join(&copies[0])).unwrap(),
+        b"{ oops"
+    );
 }
 
 #[test]
@@ -974,7 +1118,10 @@ fn takes_still_recording_are_probed_when_a_host_opens() {
         "{:?}",
         h.log.lines()
     );
-    assert_eq!(s.state().project.takes[&take(2)].status, TakeStatus::Recording);
+    assert_eq!(
+        s.state().project.takes[&take(2)].status,
+        TakeStatus::Recording
+    );
 }
 
 #[test]
@@ -1028,10 +1175,15 @@ fn a_take_folder_that_exists_fails_the_capture_instead_of_starting_it() {
     let outcome = begin(&s, 2);
     assert_eq!(s.run_outcome(outcome, None, &mut None, false), Ran::Done);
     assert!(!h.log.has("start"), "never started");
-    assert!(h.head().project.takes.contains_key(&take(2)), "saved before the failure is reported");
+    assert!(
+        h.head().project.takes.contains_key(&take(2)),
+        "saved before the failure is reported"
+    );
     match s.rx.try_recv() {
         Ok(Msg::Event(Event::CaptureFailed {
-            take: Some(t), message, ..
+            take: Some(t),
+            message,
+            ..
         })) => {
             assert_eq!(t, take(2));
             assert!(message.contains("already exists"), "{message}");
@@ -1043,7 +1195,10 @@ fn a_take_folder_that_exists_fails_the_capture_instead_of_starting_it() {
     s.run_outcome(outcome, None, &mut None, false);
     assert!(h.dir.join("takes/take-0003").is_dir());
     assert_eq!(h.log.lines().last().unwrap(), "start take-0003");
-    assert!(h.head().project.takes.contains_key(&take(3)), "committed before the capture started");
+    assert!(
+        h.head().project.takes.contains_key(&take(3)),
+        "committed before the capture started"
+    );
 }
 
 #[test]
@@ -1068,15 +1223,25 @@ fn deleting_waits_for_a_durable_commit() {
     s.run_outcome(outcome, None, &mut None, false);
     fs::set_permissions(&qrec, fs::Permissions::from_mode(0o755)).unwrap();
 
-    assert!(!h.log.has("delete"), "nothing is deleted without a commit record");
+    assert!(
+        !h.log.has("delete"),
+        "nothing is deleted without a commit record"
+    );
     match s.rx.try_recv() {
-        Ok(Msg::Event(Event::TakeDirsDeleted { job, deleted, errors })) => {
+        Ok(Msg::Event(Event::TakeDirsDeleted {
+            job,
+            deleted,
+            errors,
+        })) => {
             assert_eq!(job, JobId(9));
             assert!(deleted.is_empty() && !errors.is_empty());
         }
         other => panic!("expected TakeDirsDeleted, got {other:?}"),
     }
-    assert!(h.toast_titles().contains(&"Couldn't save the project".to_owned()));
+    assert!(
+        h.toast_titles()
+            .contains(&"Couldn't save the project".to_owned())
+    );
     assert!(s.store.is_dirty());
 
     // The next change saves everything again.
@@ -1101,11 +1266,17 @@ fn ui_writes_are_coalesced() {
     let select = |ids: &[&str]| Command::Select {
         op: SelectOp::Set(ids.iter().map(|i| clip(i)).collect()),
     };
-    let ui = |h: &Harness| -> Value { serde_json::from_slice(&fs::read(h.paths().ui_file()).unwrap()).unwrap() };
+    let ui = |h: &Harness| -> Value {
+        serde_json::from_slice(&fs::read(h.paths().ui_file()).unwrap()).unwrap()
+    };
     send(&mut s, select(&["c001"]), false).unwrap();
     assert_eq!(ui(&h)["selection"], serde_json::json!(["c001"]));
     send(&mut s, select(&["c002"]), false).unwrap();
-    assert_eq!(ui(&h)["selection"], serde_json::json!(["c001"]), "coalesced");
+    assert_eq!(
+        ui(&h)["selection"],
+        serde_json::json!(["c001"]),
+        "coalesced"
+    );
     let due = s.next_deadline().expect("a write is pending");
     while Instant::now() < due {
         std::thread::sleep(Duration::from_millis(20));
@@ -1113,7 +1284,11 @@ fn ui_writes_are_coalesced() {
     s.tick();
     assert_eq!(ui(&h)["selection"], serde_json::json!(["c002"]));
     assert_eq!(s.next_deadline(), None);
-    assert_eq!(h.history_seqs(), Vec::<u64>::new(), "selection isn't undoable");
+    assert_eq!(
+        h.history_seqs(),
+        Vec::<u64>::new(),
+        "selection isn't undoable"
+    );
     drop(s);
     let again = h.open(false).unwrap();
     assert_eq!(again.state().ui.selection, [clip("c002")]);
@@ -1126,7 +1301,10 @@ fn an_invalid_file_is_moved_aside_before_facts_are_saved() {
     fs::write(h.dir.join("qrec.json"), "{ broken").unwrap();
     s.handle(Msg::DiskChanged);
     assert!(s.state().runtime.disk_invalid.is_some());
-    assert!(h.toast_titles().contains(&"qrec.json on disk is invalid".to_owned()));
+    assert!(
+        h.toast_titles()
+            .contains(&"qrec.json on disk is invalid".to_owned())
+    );
     // The user's edits wait until it is fixed…
     let err = send(
         &mut s,
@@ -1136,13 +1314,22 @@ fn an_invalid_file_is_moved_aside_before_facts_are_saved() {
         false,
     )
     .unwrap_err();
-    assert!(err.message.starts_with("qrec.json on disk is invalid"), "{}", err.message);
+    assert!(
+        err.message.starts_with("qrec.json on disk is invalid"),
+        "{}",
+        err.message
+    );
     assert_eq!(fs::read(h.dir.join("qrec.json")).unwrap(), b"{ broken");
 
     // …but facts are saved: the broken file goes to .qrec/rejected first.
     let mut next = s.state().clone();
     next.project.takes.get_mut(&take(1)).unwrap().status = TakeStatus::Broken;
-    s.run_outcome(Outcome::new(next, vec![Effect::WriteProject], None), None, &mut None, false);
+    s.run_outcome(
+        Outcome::new(next, vec![Effect::WriteProject], None),
+        None,
+        &mut None,
+        false,
+    );
     let rejected: Vec<PathBuf> = fs::read_dir(h.dir.join(".qrec/rejected"))
         .unwrap()
         .map(|e| e.unwrap().path())
@@ -1153,8 +1340,15 @@ fn an_invalid_file_is_moved_aside_before_facts_are_saved() {
         fs::read(h.dir.join("qrec.json")).unwrap(),
         format::project_bytes(&s.state().project)
     );
-    assert_eq!(s.state().runtime.disk_invalid, None, "the file is ours again");
-    assert!(h.toast_titles().contains(&"Moved the invalid qrec.json aside".to_owned()));
+    assert_eq!(
+        s.state().runtime.disk_invalid,
+        None,
+        "the file is ours again"
+    );
+    assert!(
+        h.toast_titles()
+            .contains(&"Moved the invalid qrec.json aside".to_owned())
+    );
 }
 
 #[test]
@@ -1166,7 +1360,10 @@ fn clearing_disk_invalid_keeps_a_copy_of_the_broken_file() {
     let mut next = s.state().clone();
     next.runtime.disk_invalid = None;
     let cursor = next.history.cursor;
-    let effects = vec![Effect::History(HistoryOp::SetCursor(cursor)), Effect::WriteProject];
+    let effects = vec![
+        Effect::History(HistoryOp::SetCursor(cursor)),
+        Effect::WriteProject,
+    ];
     s.run_outcome(Outcome::new(next, effects, None), None, &mut None, false);
     let copies: Vec<String> = fs::read_dir(h.dir.join(".qrec"))
         .unwrap()
@@ -1174,12 +1371,18 @@ fn clearing_disk_invalid_keeps_a_copy_of_the_broken_file() {
         .filter(|n| n.starts_with("qrec.corrupt-"))
         .collect();
     assert_eq!(copies.len(), 1, "{copies:?}");
-    assert_eq!(fs::read(h.dir.join(".qrec").join(&copies[0])).unwrap(), b"{ broken");
+    assert_eq!(
+        fs::read(h.dir.join(".qrec").join(&copies[0])).unwrap(),
+        b"{ broken"
+    );
     assert_eq!(
         fs::read(h.dir.join("qrec.json")).unwrap(),
         format::project_bytes(&s.state().project)
     );
-    assert!(h.toast_titles().contains(&"Kept the broken qrec.json".to_owned()));
+    assert!(
+        h.toast_titles()
+            .contains(&"Kept the broken qrec.json".to_owned())
+    );
 }
 
 #[test]

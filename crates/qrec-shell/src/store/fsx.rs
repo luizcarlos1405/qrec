@@ -61,7 +61,11 @@ pub fn replace(path: &Path, bytes: &[u8], sync: Sync) -> io::Result<()> {
 
 /// fsyncs a directory, making renames and creations in it durable.
 pub fn sync_dir(dir: &Path) -> io::Result<()> {
-    let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
     File::open(dir)?.sync_all()
 }
 
@@ -120,7 +124,10 @@ pub fn numbered(path: &Path, n: u32, ext_from: &str) -> PathBuf {
     if n <= 1 {
         return path.to_path_buf();
     }
-    let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let (stem, ext) = match name.find(ext_from) {
         Some(i) if i > 0 => name.split_at(i),
         _ => (name.as_str(), ""),
@@ -204,7 +211,10 @@ mod tests {
         let path = tmp.path().join("h.jsonl");
         append_durable(&path, b"{\"seq\":1}\n").unwrap();
         append_durable(&path, b"{\"seq\":2}\n").unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "{\"seq\":1}\n{\"seq\":2}\n");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "{\"seq\":1}\n{\"seq\":2}\n"
+        );
     }
 
     #[test]
@@ -242,6 +252,9 @@ mod tests {
             numbered(p, 3, ".json"),
             Path::new("/p/.qrec/rejected/qrec-20261014-120000-3.json")
         );
-        assert_eq!(numbered(Path::new("/x/noext"), 2, ".json"), Path::new("/x/noext-2"));
+        assert_eq!(
+            numbered(Path::new("/x/noext"), 2, ".json"),
+            Path::new("/x/noext-2")
+        );
     }
 }

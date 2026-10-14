@@ -63,11 +63,17 @@ impl Session {
         let write_project = effects.contains(&Effect::WriteProject);
         let writable = self.store.writable();
 
-        if writable && (write_project || !ops.is_empty()) && !force && is_initialized(&self.state.project) {
+        if writable
+            && (write_project || !ops.is_empty())
+            && !force
+            && is_initialized(&self.state.project)
+        {
             if let Some(file) = self.store.disk_changed(self.check) {
                 tracing::info!("qrec.json changed on disk: merging it before this change");
                 self.store.accept_disk(&file);
-                self.run_event(Event::ProjectChangedOnDisk { project: file.project });
+                self.run_event(Event::ProjectChangedOnDisk {
+                    project: file.project,
+                });
                 return Ran::ExternalFirst;
             }
         }
@@ -80,7 +86,10 @@ impl Session {
                 && let Err(why) = self.store.create_take_dir(path)
             {
                 tracing::error!("{why}");
-                let take = path.rsplit('/').next().and_then(|name| name.parse::<TakeId>().ok());
+                let take = path
+                    .rsplit('/')
+                    .next()
+                    .and_then(|name| name.parse::<TakeId>().ok());
                 if let Some(take) = take {
                     failed_takes.insert(take, why);
                 }
@@ -95,11 +104,20 @@ impl Session {
                 match self.store.copy_disk_file_aside(&stamp) {
                     Ok(Some(path)) => self.notifier.notify(
                         &Toast::new(ToastLevel::Info, "Kept the broken qrec.json")
-                            .with_body(format!("It was copied to {} before the restore.", path.display()))
-                            .with_action("Reveal", UiAction::RevealPath(path.to_string_lossy().into_owned())),
+                            .with_body(format!(
+                                "It was copied to {} before the restore.",
+                                path.display()
+                            ))
+                            .with_action(
+                                "Reveal",
+                                UiAction::RevealPath(path.to_string_lossy().into_owned()),
+                            ),
                     ),
                     Ok(None) => {}
-                    Err(e) => self.notify_error("Couldn't keep a copy of the broken qrec.json", &e.to_string()),
+                    Err(e) => self.notify_error(
+                        "Couldn't keep a copy of the broken qrec.json",
+                        &e.to_string(),
+                    ),
                 }
             } else {
                 match self.store.reject_disk_file(&stamp) {
@@ -115,7 +133,8 @@ impl Session {
                         );
                     }
                     Ok(None) => reclaimed = true,
-                    Err(e) => self.notify_error("Couldn't move the invalid qrec.json aside", &e.to_string()),
+                    Err(e) => self
+                        .notify_error("Couldn't move the invalid qrec.json aside", &e.to_string()),
                 }
             }
         }
@@ -180,7 +199,12 @@ impl Session {
     }
 
     /// One effect after the commit.
-    fn run_world_effect(&mut self, effect: Effect, committed: bool, failed_takes: &BTreeMap<TakeId, String>) {
+    fn run_world_effect(
+        &mut self,
+        effect: Effect,
+        committed: bool,
+        failed_takes: &BTreeMap<TakeId, String>,
+    ) {
         let inbox = self.inbox.clone();
         match effect {
             Effect::WriteProject | Effect::History(_) | Effect::CreateTakeDir { .. } => {}
@@ -196,7 +220,9 @@ impl Session {
                     inbox.event(Event::TakeDirsDeleted {
                         job,
                         deleted: Vec::new(),
-                        errors: vec!["nothing was deleted: the project couldn't be saved first".to_owned()],
+                        errors: vec![
+                            "nothing was deleted: the project couldn't be saved first".to_owned(),
+                        ],
                     });
                 }
             }
@@ -204,7 +230,9 @@ impl Session {
             Effect::StartCapture { plan } => {
                 let failure = match failed_takes.get(&plan.take) {
                     Some(why) => Some(why.clone()),
-                    None if !committed => Some("the project couldn't be saved, so the take didn't start".to_owned()),
+                    None if !committed => {
+                        Some("the project couldn't be saved, so the take didn't start".to_owned())
+                    }
                     None => None,
                 };
                 match failure {
@@ -219,8 +247,14 @@ impl Session {
                 }
             }
             Effect::StopCapture { take, cancel } => self.deps.capture.stop(&take, cancel),
-            Effect::Probe { take, purpose, jobs } => self.deps.media.probe(take, purpose, jobs, inbox),
-            Effect::DetectSilence { job, key, argv } => self.deps.media.detect_silence(job, key, argv, inbox),
+            Effect::Probe {
+                take,
+                purpose,
+                jobs,
+            } => self.deps.media.probe(take, purpose, jobs, inbox),
+            Effect::DetectSilence { job, key, argv } => {
+                self.deps.media.detect_silence(job, key, argv, inbox)
+            }
             Effect::RenderExport { job, plan } => self.deps.media.render_export(job, plan, inbox),
             Effect::SaveFrame { job, plan } => self.deps.media.save_frame(job, plan, inbox),
             Effect::CancelJob { job } => self.deps.media.cancel(job),
@@ -233,7 +267,8 @@ impl Session {
             },
             Effect::Reply { req, reply } => match self.pending.remove(&req) {
                 Some(mut to) => {
-                    let reply = reply.map(|result| serde_json::to_value(result).unwrap_or(Value::Null));
+                    let reply =
+                        reply.map(|result| serde_json::to_value(result).unwrap_or(Value::Null));
                     with_current(&req, || to.reply(reply));
                 }
                 None => tracing::debug!("a reply for {req}, which nobody waits for"),

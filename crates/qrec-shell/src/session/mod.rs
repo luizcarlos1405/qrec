@@ -116,7 +116,12 @@ impl Session {
 
     /// [`Session::open`] with a lock or inbox taken earlier, another
     /// environment, a toast sink or other device discovery.
-    pub fn open_with(dir: &Path, opts: OpenOpts, deps: Deps, cfg: SessionConfig) -> Result<Session, ShellError> {
+    pub fn open_with(
+        dir: &Path,
+        opts: OpenOpts,
+        deps: Deps,
+        cfg: SessionConfig,
+    ) -> Result<Session, ShellError> {
         open::open(dir, opts, deps, cfg)
     }
 
@@ -149,9 +154,9 @@ impl Session {
             if done(&self.state) {
                 return;
             }
-            let wait = self
-                .next_deadline()
-                .map_or(POLL, |due| due.saturating_duration_since(Instant::now()).min(POLL));
+            let wait = self.next_deadline().map_or(POLL, |due| {
+                due.saturating_duration_since(Instant::now()).min(POLL)
+            });
             match self.rx.recv_timeout(wait) {
                 Ok(msg) => self.handle(msg),
                 Err(RecvTimeoutError::Timeout) => {}
@@ -205,7 +210,9 @@ impl Session {
     /// Not recording, no jobs and no request waiting: a headless or CLI host
     /// may exit (after its own grace period, A§8.6).
     pub fn is_idle(&self) -> bool {
-        self.state.runtime.record.is_idle() && self.state.runtime.jobs.is_empty() && self.pending.is_empty()
+        self.state.runtime.record.is_idle()
+            && self.state.runtime.jobs.is_empty()
+            && self.pending.is_empty()
     }
 
     /// When [`Session::tick`] has work (a coalesced `ui.json` write).
