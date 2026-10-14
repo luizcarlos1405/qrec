@@ -1,17 +1,17 @@
 # Qrec — Specification
 
-> **Qrec** (*Quick Recording*, rhymes with Shrek). A Wayland screen and camera
+> **Qrec** (_Quick Recording_, rhymes with Shrek). A Wayland screen and camera
 > recorder built for one loop: **press R, talk, press R, repeat**. When you stop
 > recording, the video is already mostly edited.
 >
-> *Ogres have layers. So do your recordings.*
+> _Ogres have layers. So do your recordings._
 
-| | |
-|---|---|
-| Status | Draft v1, written 2026-10-14 from an interview with the product owner |
-| Target | Linux, Wayland (developed on NixOS + niri) |
-| App ID | `com.rsensato.qrec` (GApplication id, `.desktop` file, icon name, D-Bus name) |
-| Related docs | `docs/RECORDING.md` covers wf-recorder lessons from `qrec-tui` |
+|                |                                                                                                                                |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Status         | Draft v1, written 2026-10-14 from an interview with the product owner                                                          |
+| Target         | Linux, Wayland (developed on NixOS + niri)                                                                                     |
+| App ID         | `com.rsensato.qrec` (GApplication id, `.desktop` file, icon name, D-Bus name)                                                  |
+| Related docs   | `docs/RECORDING.md` covers wf-recorder lessons from `qrec-tui`                                                                 |
 | Prior attempts | `qrec-tui` (Rust, FCIS, solid), `qrec-electron` (fragile browser playback), `qrec-sky` (never compiled), `qrec-glm` (scaffold) |
 
 ---
@@ -21,7 +21,7 @@
 ### 1.1 Goals
 
 1. **Quick recording.** Recording starts with one key and no dialogs. Each
-   stop adds a *take* to the timeline. You can discard the last take or record
+   stop adds a _take_ to the timeline. You can discard the last take or record
    over a selected one with one key.
 2. **Mostly edited at the end.** Trimming, cutting, reordering and **autocut
    (silence removal)** are built in. The finished timeline exports straight to
@@ -54,19 +54,19 @@
 
 ## 2. Glossary
 
-| Term | Meaning |
-|---|---|
-| **Project** | A folder containing `qrec.json` and its media. |
-| **Source** | A capture device: a monitor (screen), a camera, a mic, or system audio. |
-| **Layer** | A video source placed on the canvas with a rect, z-order, opacity, crop and visibility. In the UI these are called "Onion layers". |
-| **Audio track** | An audio source (`mic` or `system`) with gain, mute and sync offset. Each one is recorded to its own file. |
-| **Scene** | The full set of layers and audio tracks. The **project scene** is used for new takes. Each take keeps its own **snapshot** of the scene. |
-| **Take** | One recording session (start → stop). It is a folder with one file per source, all on one shared clock. Takes are immutable media. |
-| **Clip** | A timeline item that references a take with an in/out range `[in, out)` in frames. One take can back several clips, for example after a cut or autocut. |
-| **Timeline** | An ordered, gapless list of clips (one magnetic track). |
-| **Bin** | Takes that no clip references ("unused takes"). They're shown in a drawer and can be put back on the timeline. |
-| **Canvas** | The output frame size and fps. Default **1920×1080 @ 30 fps**. |
-| **Host** | The single process that owns a project while it is open: the GUI, or a headless recorder. |
+| Term            | Meaning                                                                                                                                                 |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Project**     | A folder containing `qrec.json` and its media.                                                                                                          |
+| **Source**      | A capture device: a monitor (screen), a camera, a mic, or system audio.                                                                                 |
+| **Layer**       | A video source placed on the canvas with a rect, z-order, opacity, crop and visibility. In the UI these are called "Onion layers".                      |
+| **Audio track** | An audio source (`mic` or `system`) with gain, mute and sync offset. Each one is recorded to its own file.                                              |
+| **Scene**       | The full set of layers and audio tracks. The **project scene** is used for new takes. Each take keeps its own **snapshot** of the scene.                |
+| **Take**        | One recording session (start → stop). It is a folder with one file per source, all on one shared clock. Takes are immutable media.                      |
+| **Clip**        | A timeline item that references a take with an in/out range `[in, out)` in frames. One take can back several clips, for example after a cut or autocut. |
+| **Timeline**    | An ordered, gapless list of clips (one magnetic track).                                                                                                 |
+| **Bin**         | Takes that no clip references ("unused takes"). They're shown in a drawer and can be put back on the timeline.                                          |
+| **Canvas**      | The output frame size and fps. Default **1920×1080 @ 30 fps**.                                                                                          |
+| **Host**        | The single process that owns a project while it is open: the GUI, or a headless recorder.                                                               |
 
 ---
 
@@ -74,16 +74,16 @@
 
 ### 3.1 Decision
 
-| Concern | Choice | Why |
-|---|---|---|
-| Language | **Rust** (stable, edition 2024) | Fits FCIS (pure core, rich types, property tests). `qrec-tui` already proved the approach. One static binary with both GUI and CLI. |
-| GUI toolkit | **GTK4 + libadwaita** (`gtk4-rs`, `libadwaita-rs`). The theme is fully custom CSS on top. | Native Wayland and GPU-rendered (GSK/Vulkan/GL). Smooth video through `gtk4paintablesink`. Custom widgets (timeline, canvas) draw with `GtkSnapshot`. |
-| Live capture and preview playback | **GStreamer ≥ 1.24** (`gstreamer-rs`, GES via `gstreamer-editing-services`) | One pipeline clock for every source, so audio and video stay in sync with no manual delay (this was qrec-tui's biggest workaround). It also provides live compositing for the canvas, `pipewiresrc` for portal screencasts, `v4l2src` for cameras, `pulsesrc` for PipeWire audio, and VA-API encoding. GES gives frame-accurate seeks for timeline playback. |
-| Portal / D-Bus | **`ashpd`** | xdg-desktop-portal ScreenCast with restore tokens (`persist_mode = 2`), so the source picker appears once per monitor. |
-| Offline media work | **ffmpeg / ffprobe** (CLI, spawned) | Probing, `silencedetect`, waveform peaks, thumbnails, **export** and **frame save**. We don't reinvent any of this. Every ffmpeg command line is built as pure data in the core. |
-| CLI | **clap** (derive) | Subcommands, `--json`, completions. |
-| Config | TOML (`~/.config/qrec/config.toml`, `keys.toml`) | Meant for hand editing. Project state stays JSON (§6.1). |
-| Packaging | **Nix flake** (dev shell + package). Add a Flatpak later if wanted. | All dependencies are pinned. GStreamer isn't installed system-wide on the dev machine, so the flake provides it. |
+| Concern                           | Choice                                                                                    | Why                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Language                          | **Rust** (stable, edition 2024)                                                           | Fits FCIS (pure core, rich types, property tests). `qrec-tui` already proved the approach. One static binary with both GUI and CLI.                                                                                                                                                                                                                          |
+| GUI toolkit                       | **GTK4 + libadwaita** (`gtk4-rs`, `libadwaita-rs`). The theme is fully custom CSS on top. | Native Wayland and GPU-rendered (GSK/Vulkan/GL). Smooth video through `gtk4paintablesink`. Custom widgets (timeline, canvas) draw with `GtkSnapshot`.                                                                                                                                                                                                        |
+| Live capture and preview playback | **GStreamer ≥ 1.24** (`gstreamer-rs`, GES via `gstreamer-editing-services`)               | One pipeline clock for every source, so audio and video stay in sync with no manual delay (this was qrec-tui's biggest workaround). It also provides live compositing for the canvas, `pipewiresrc` for portal screencasts, `v4l2src` for cameras, `pulsesrc` for PipeWire audio, and VA-API encoding. GES gives frame-accurate seeks for timeline playback. |
+| Portal / D-Bus                    | **`ashpd`**                                                                               | xdg-desktop-portal ScreenCast with restore tokens (`persist_mode = 2`), so the source picker appears once per monitor.                                                                                                                                                                                                                                       |
+| Offline media work                | **ffmpeg / ffprobe** (CLI, spawned)                                                       | Probing, `silencedetect`, waveform peaks, thumbnails, **export** and **frame save**. We don't reinvent any of this. Every ffmpeg command line is built as pure data in the core.                                                                                                                                                                             |
+| CLI                               | **clap** (derive)                                                                         | Subcommands, `--json`, completions.                                                                                                                                                                                                                                                                                                                          |
+| Config                            | TOML (`~/.config/qrec/config.toml`, `keys.toml`)                                          | Meant for hand editing. Project state stays JSON (§6.1).                                                                                                                                                                                                                                                                                                     |
+| Packaging                         | **Nix flake** (dev shell + package). Add a Flatpak later if wanted.                       | All dependencies are pinned. GStreamer isn't installed system-wide on the dev machine, so the flake provides it.                                                                                                                                                                                                                                             |
 
 ### 3.2 Alternatives rejected
 
@@ -164,6 +164,7 @@ IPC msg ──┘                       ▲                   │ returns (new_s
   - Undo diffs.
 
   All of them get snapshot tests.
+
 - **`Session::dispatch` is the only entry point**, and the GUI, the CLI and
   IPC all call it. This satisfies requirement 21: the CLI always exercises the
   same code paths as the UI.
@@ -202,8 +203,8 @@ or the directory given with `--project <dir>`, must be one of:
    (`qrec.json`, `takes/`, `.qrec/`). The CLI does this lazily on the first
    mutating command, or explicitly with `qrec init`.
 
-Anything else is rejected with the message *"Not my swamp: this folder isn't
-empty and has no qrec.json"* and exit code 3. Commands that don't use a
+Anything else is rejected with the message _"Not my swamp: this folder isn't
+empty and has no qrec.json"_ and exit code 3. Commands that don't use a
 project still work anywhere: `--help`, `version`, `doctor`, `sources list`,
 `schema`, `keys`, `agent-guide`.
 
@@ -213,12 +214,12 @@ project still work anywhere: `--help`, `version`, `doctor`, `sources list`,
 
 ### 5.1 Sources
 
-| Kind | Capture | Notes |
-|---|---|---|
-| Screen (monitor) | Portal ScreenCast → `pipewiresrc` | The picker is shown once per monitor. Restore tokens are saved in `~/.local/state/qrec/portal-tokens.json`, keyed by output name, so later sessions (including headless ones) don't prompt. |
-| Camera | `v4l2src` (or `pipewiresrc` through the camera portal when available) | Caps are negotiated at the closest mode ≥ canvas fps. |
-| Mic | `pulsesrc device=<alsa_input…>` | Only real inputs (`alsa_input.*`) are offered as mics. Fixes a qrec-tui data bug where a `.monitor` source got picked as the mic. |
-| System audio | `pulsesrc device=<sink>.monitor` | The default sink monitor unless one is chosen. |
+| Kind             | Capture                                                               | Notes                                                                                                                                                                                       |
+| ---------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Screen (monitor) | Portal ScreenCast → `pipewiresrc`                                     | The picker is shown once per monitor. Restore tokens are saved in `~/.local/state/qrec/portal-tokens.json`, keyed by output name, so later sessions (including headless ones) don't prompt. |
+| Camera           | `v4l2src` (or `pipewiresrc` through the camera portal when available) | Caps are negotiated at the closest mode ≥ canvas fps.                                                                                                                                       |
+| Mic              | `pulsesrc device=<alsa_input…>`                                       | Only real inputs (`alsa_input.*`) are offered as mics. Fixes a qrec-tui data bug where a `.monitor` source got picked as the mic.                                                           |
+| System audio     | `pulsesrc device=<sink>.monitor`                                      | The default sink monitor unless one is chosen.                                                                                                                                              |
 
 A scene may contain **any number** of screen and camera layers and **zero or
 more** audio tracks. The `mic` and `system` roles are labels. Multiple mics
@@ -239,7 +240,7 @@ per audio source:  src → audioconvert → level → tee ─┬─ meter (UI)
 - The pipeline keeps running between takes, so **recording starts with no
   delay**. Pressing R only attaches record bins.
 - **Record bin for video:** `queue → videorate (CFR = canvas fps) →
-  videoconvert → encoder → h264parse → matroskamux → filesink`.
+videoconvert → encoder → h264parse → matroskamux → filesink`.
   - Encoder: `vah264enc` on the configured render node, falling back to
     `x264enc speed-preset=veryfast tune=zerolatency`.
   - Keyframe every 1 s, so preview seeks and exports stay fast.
@@ -247,7 +248,7 @@ per audio source:  src → audioconvert → level → tee ─┬─ meter (UI)
   - Video is recorded at the source's **native resolution**. Scaling to the
     canvas happens at preview and export time, so layouts can change later.
 - **Record bin for audio:** `queue → audioresample (48 kHz) → flacenc →
-  matroskamux → filesink`. That gives lossless audio per track.
+matroskamux → filesink`. That gives lossless audio per track.
 - **Container: Matroska** for everything. A truncated MKV, for example after a
   crash, is still playable, while an MP4 without its `moov` atom is not
   (`RECORDING.md` §5).
@@ -304,7 +305,7 @@ Idle ──r──► [Countdown n s] ──► Recording ──r──► Final
    clip as a **separate history entry**, so you can undo just the autocut.
 7. **Recovery.** On startup, a take still marked `recording` (for example
    after a crash) is probed. If its files are readable, it is finalized and
-   added to the bin with a toast: *"Recovered take 7 from the bog"*.
+   added to the bin with a toast: _"Recovered take 7 from the bog"_.
    Otherwise it is marked `broken`.
 
 ### 5.4 Discard (`d`)
@@ -373,63 +374,133 @@ and doesn't take part in undo.
 ```jsonc
 {
   "version": 1,
-  "name": "my-video",                       // defaults to folder name
+  "name": "my-video", // defaults to folder name
   "createdAt": "2026-10-14T12:00:00Z",
-  "canvas": { "width": 1920, "height": 1080, "fps": { "num": 30, "den": 1 }, "background": "#000000" },
+  "canvas": {
+    "width": 1920,
+    "height": 1080,
+    "fps": { "num": 30, "den": 1 },
+    "background": "#000000",
+  },
 
-  "scene": {                                 // project scene: used for NEW takes
+  "scene": {
+    // project scene: used for NEW takes
     "layers": [
-      { "id": "L1", "name": "Main screen", "visible": true, "opacity": 1.0,
-        "source": { "kind": "screen", "output": "DP-4", "label": "GIGA-BYTE GS27QA" },
-        "rect": { "x": 0, "y": 0, "w": 1920, "h": 1080 },          // canvas px
-        "crop": { "top": 0, "right": 0, "bottom": 0, "left": 0 },  // source px
-        "fit": "contain" },
-      { "id": "L2", "name": "Face", "visible": true, "opacity": 1.0,
-        "source": { "kind": "camera", "device": "/dev/video0", "label": "Logitech C920" },
-        "rect": { "x": 1500, "y": 760, "w": 384, "h": 288 }, "crop": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
-        "fit": "cover" }
-    ],                                       // array order = z-order (last on top)
+      {
+        "id": "L1",
+        "name": "Main screen",
+        "visible": true,
+        "opacity": 1.0,
+        "source": {
+          "kind": "screen",
+          "output": "DP-4",
+          "label": "GIGA-BYTE GS27QA",
+        },
+        "rect": { "x": 0, "y": 0, "w": 1920, "h": 1080 }, // canvas px
+        "crop": { "top": 0, "right": 0, "bottom": 0, "left": 0 }, // source px
+        "fit": "contain",
+      },
+      {
+        "id": "L2",
+        "name": "Face",
+        "visible": true,
+        "opacity": 1.0,
+        "source": {
+          "kind": "camera",
+          "device": "/dev/video0",
+          "label": "Logitech C920",
+        },
+        "rect": { "x": 1500, "y": 760, "w": 384, "h": 288 },
+        "crop": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
+        "fit": "cover",
+      },
+    ], // array order = z-order (last on top)
     "audio": [
-      { "id": "A1", "role": "mic",    "source": "alsa_input.usb-Blue_Microphones_Yeti_Nano…", "label": "Yeti Nano",
-        "gainDb": 0.0, "muted": false, "syncOffsetMs": 0 },
-      { "id": "A2", "role": "system", "source": "alsa_output.…analog-stereo.monitor", "label": "System audio",
-        "gainDb": -6.0, "muted": false, "syncOffsetMs": 0 }
-    ]
+      {
+        "id": "A1",
+        "role": "mic",
+        "source": "alsa_input.usb-Blue_Microphones_Yeti_Nano…",
+        "label": "Yeti Nano",
+        "gainDb": 0.0,
+        "muted": false,
+        "syncOffsetMs": 0,
+      },
+      {
+        "id": "A2",
+        "role": "system",
+        "source": "alsa_output.…analog-stereo.monitor",
+        "label": "System audio",
+        "gainDb": -6.0,
+        "muted": false,
+        "syncOffsetMs": 0,
+      },
+    ],
   },
 
   "recording": { "countdownSecs": 0, "encoder": "auto", "vaapiDevice": null },
 
   "autocut": {
     "autoRunAfterTake": false,
-    "track": "A1",            // audio track id used for silence detection
+    "track": "A1", // audio track id used for silence detection
     "thresholdDb": -35.0,
-    "minSilenceMs": 400,      // only silences at least this long are removed
-    "paddingMs": 120,         // kept on each side of speech
-    "minKeepMs": 200          // drop leftover fragments shorter than this
+    "minSilenceMs": 400, // only silences at least this long are removed
+    "paddingMs": 120, // kept on each side of speech
+    "minKeepMs": 200, // drop leftover fragments shorter than this
   },
 
-  "takes": {                  // MEDIA POOL: append-only, not affected by undo (§8.2)
+  "takes": {
+    // MEDIA POOL: append-only, not affected by undo (§8.2)
     "take-0001": {
-      "status": "ok",         // recording | ok | broken | tooShort
+      "status": "ok", // recording | ok | broken | tooShort
       "recordedAt": "2026-10-14T12:03:10Z",
       "durationFrames": 912,
-      "scene": { /* snapshot of project scene at record time, editable per take */ },
+      "scene": {
+        /* snapshot of project scene at record time, editable per take */
+      },
       "streams": [
-        { "id": "L1", "kind": "video", "file": "takes/take-0001/L1-screen-DP-4.mkv", "width": 2560, "height": 1440, "startOffsetNs": 0 },
-        { "id": "L2", "kind": "video", "file": "takes/take-0001/L2-camera-0.mkv",    "width": 1280, "height": 720,  "startOffsetNs": 41000000 },
-        { "id": "A1", "kind": "audio", "file": "takes/take-0001/A1-mic.mka",    "sampleRate": 48000, "channels": 1, "startOffsetNs": 3000000 },
-        { "id": "A2", "kind": "audio", "file": "takes/take-0001/A2-system.mka", "sampleRate": 48000, "channels": 2, "startOffsetNs": 2500000 }
-      ]
-    }
+        {
+          "id": "L1",
+          "kind": "video",
+          "file": "takes/take-0001/L1-screen-DP-4.mkv",
+          "width": 2560,
+          "height": 1440,
+          "startOffsetNs": 0,
+        },
+        {
+          "id": "L2",
+          "kind": "video",
+          "file": "takes/take-0001/L2-camera-0.mkv",
+          "width": 1280,
+          "height": 720,
+          "startOffsetNs": 41000000,
+        },
+        {
+          "id": "A1",
+          "kind": "audio",
+          "file": "takes/take-0001/A1-mic.mka",
+          "sampleRate": 48000,
+          "channels": 1,
+          "startOffsetNs": 3000000,
+        },
+        {
+          "id": "A2",
+          "kind": "audio",
+          "file": "takes/take-0001/A2-system.mka",
+          "sampleRate": 48000,
+          "channels": 2,
+          "startOffsetNs": 2500000,
+        },
+      ],
+    },
   },
   "nextTakeNumber": 2,
 
   "timeline": {
     "clips": [
-      { "id": "c7f3", "take": "take-0001", "in": 0,   "out": 410 },
-      { "id": "c8a1", "take": "take-0001", "in": 455, "out": 912 }
-    ]
-  }
+      { "id": "c7f3", "take": "take-0001", "in": 0, "out": 410 },
+      { "id": "c8a1", "take": "take-0001", "in": 455, "out": 912 },
+    ],
+  },
 }
 ```
 
@@ -440,7 +511,7 @@ and doesn't take part in undo.
 - Every layer and track id in a take scene exists in that take's `streams`,
   or the layer is shown as "missing media".
 - Clip ids are unique.
-- The timeline has no gaps: the position of clip *i* is the sum of the
+- The timeline has no gaps: the position of clip _i_ is the sum of the
   durations before it.
 
 **Versioning:** `version` is bumped on schema changes, and `qrec-core` ships
@@ -471,18 +542,19 @@ There is a single magnetic track. Clips sit back to back, so removing one
 closes the gap and moving one shifts its neighbors. All operations are pure
 functions on `timeline.clips`.
 
-| Operation | Behavior |
-|---|---|
-| **Select** | Click, Shift+click (range), Ctrl+click (toggle), `,`/`.` (previous/next clip), Ctrl+A (all). Selection is UI state. |
-| **Move** | Drag and drop, with an insertion caret between clips. `<`/`>` move the selection one slot left or right. A multi-selection moves as a contiguous block, in its original order. |
+| Operation            | Behavior                                                                                                                                                                                                                                                                      |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Select**           | Click, Shift+click (range), Ctrl+click (toggle), `,`/`.` (previous/next clip), Ctrl+A (all). Selection is UI state.                                                                                                                                                           |
+| **Move**             | Drag and drop, with an insertion caret between clips. `<`/`>` move the selection one slot left or right. A multi-selection moves as a contiguous block, in its original order.                                                                                                |
 | **Trim start / end** | Drag a clip edge, or press `[` / `]` to trim the clip under the playhead (or the selected clip) to the playhead. You can extend an edge back out up to the take's bounds, so nothing is ever lost. While dragging, the canvas shows the frame at the edge (scrub-while-trim). |
-| **Cut (split)** | `s` splits the clip under the playhead at the playhead frame into `[in, p)` and `[p, out)`, both pointing at the same take. Rendered output is identical before and after (a property test checks this). |
-| **Remove** | `Delete`/`Backspace`/`x` removes the selected clips from the timeline. Takes and files stay. A take no longer referenced by any clip shows up in the bin. |
-| **Insert from bin** | Drag from the bin, or use *Insert at end* / *Insert after selection*. |
-| **Autocut** | `c` runs on the selected clips, or on all clips when nothing is selected (§9). |
-| **Edit take layout** | With a clip selected in Program mode, layer changes on the canvas edit **that take's** scene snapshot. Actions: *Apply this layout to all takes*, *Use this layout for new takes*, *Reset take to project scene*. |
+| **Cut (split)**      | `s` splits the clip under the playhead at the playhead frame into `[in, p)` and `[p, out)`, both pointing at the same take. Rendered output is identical before and after (a property test checks this).                                                                      |
+| **Remove**           | `Delete`/`Backspace`/`x` removes the selected clips from the timeline. Takes and files stay. A take no longer referenced by any clip shows up in the bin.                                                                                                                     |
+| **Insert from bin**  | Drag from the bin, or use _Insert at end_ / _Insert after selection_.                                                                                                                                                                                                         |
+| **Autocut**          | `c` runs on the selected clips, or on all clips when nothing is selected (§9).                                                                                                                                                                                                |
+| **Edit take layout** | With a clip selected in Program mode, layer changes on the canvas edit **that take's** scene snapshot. Actions: _Apply this layout to all takes_, _Use this layout for new takes_, _Reset take to project scene_.                                                             |
 
 Undo groups:
+
 - A drag-move or drag-trim is **one** history entry, committed on mouse
   release.
 - During a drag the core works on a transient state that isn't saved.
@@ -490,7 +562,7 @@ Undo groups:
 ### 7.2 Timeline view
 
 - **Length is proportional to duration:** clip width = `frames ×
-  pxPerFrame`, with no minimum width distortion. A clip that is too narrow
+pxPerFrame`, with no minimum width distortion. A clip that is too narrow
   for its label still shows a 1 px edge marker.
 - **Zoom** goes from fitting the whole project down to **frame level**, where
   frames are at least 24 px wide and you see per-frame ticks, frame numbers
@@ -540,7 +612,7 @@ recording time and status, with actions:
   contains:
   - `seq`
   - `ts`
-  - `label` (for example *"Split clip c7f3 at 00:00:13:20"*)
+  - `label` (for example _"Split clip c7f3 at 00:00:13:20"_)
   - `cmd` (the serialized command)
   - `forward` and `inverse` as RFC 6902 JSON Patches against `qrec.json`
   - `afterHash`
@@ -574,7 +646,7 @@ recording time and status, with actions:
 
 1. **Analysis (shell).**
    - Runs `ffmpeg -i <track file> -af
-     silencedetect=noise=<thresholdDb>dB:d=<minSilence> -vn -f null -` on
+silencedetect=noise=<thresholdDb>dB:d=<minSilence> -vn -f null -` on
      the audio file chosen by `autocut.track` (requirement 23: you pick which
      track drives detection).
    - Results are cached in `.qrec/cache/silence/` keyed by file hash and
@@ -589,8 +661,8 @@ recording time and status, with actions:
    - Drop kept fragments shorter than `minKeepMs`.
    - Snap boundaries to frames (rounding outward, so speech is never clipped).
 3. **Apply.** The clip is replaced by N clips from the same take as **one
-   history entry**, for example *"Autocut take 3: removed 4 silences
-   (6.2 s)"*.
+   history entry**, for example _"Autocut take 3: removed 4 silences
+   (6.2 s)"_.
    - Removed audio and video can always be brought back by extending a clip
      edge, or with undo.
 4. **Preview first (optional).**
@@ -627,39 +699,39 @@ recording time and status, with actions:
 
 ### 10.2 Default keymap
 
-| Group | Key | Command | CLI |
-|---|---|---|---|
-| **Record** | `r` | Toggle record (start / stop) | `qrec record toggle` |
-| | `o` | Record over the selection | `qrec record start --over <clip>…` |
-| | `d` | Discard the last take (to the bin) | `qrec take discard-last` |
-| | `Esc` | Cancel the countdown or recording (take goes to the bin), clear the selection, or close an overlay | `qrec record cancel` |
-| **Playback** | `Space` | Play / pause | `qrec play` (GUI host only) |
-| | `j` / `k` / `l` | Shuttle reverse / stop / forward (press again for 2×, 4×) | — |
-| | `←` / `→` | Previous / next frame | `qrec seek --by -1f` |
-| | `Shift+←` / `Shift+→` | Back / forward 1 s | `qrec seek --by -1s` |
-| | `↑` / `↓` | Previous / next edit point | `qrec seek --edit prev` |
-| | `Home` / `End` | Timeline start / end | `qrec seek --to start` |
-| **Edit** | `,` / `.` | Select previous / next clip | — (UI state) |
-| | `<` / `>` | Move the selection left / right one slot | `qrec clip move <id> --by -1` |
-| | `s` | Split at the playhead | `qrec clip split <id> --at <t>` |
-| | `[` / `]` | Trim start / end to the playhead | `qrec clip trim <id> --start/--end <t>` |
-| | `Alt+[` / `Alt+]` | Nudge the start / end edge by ±1 frame (`Shift` = 10) | `qrec clip trim <id> --start +1f` |
-| | `Delete` / `x` | Remove the selected clips (to the bin) | `qrec clip remove <id>…` |
-| | `c` | Autocut the selection, or everything | `qrec autocut [--clips …]` |
-| | `Shift+C` | Autocut settings + preview | `qrec autocut --dry-run` |
-| | `Ctrl+Z` / `Ctrl+Shift+Z` (also `Ctrl+Y`) | Undo / redo | `qrec undo` / `qrec redo` |
-| | `Ctrl+A` | Select all | — |
-| **Output** | `p` | Save the frame at the playhead as PNG | `qrec frame save --at <t>` |
-| | `Ctrl+E` | Export… | `qrec export` |
-| **View** | `=` / `-` | Zoom the timeline in / out | — |
-| | `\` | Zoom to fit | — |
-| | `z` | Zoom to the selection | — |
-| | `n` | Toggle snapping | — |
-| | `Tab` | Switch the canvas between Live and Program | — |
-| | `b` | Toggle the bin | `qrec take list --unused` |
-| | `?` | Cheat sheet | `qrec keys` |
-| | `Ctrl+K` or `:` | Command palette | — |
-| | `Ctrl+,` | Settings | `qrec config` |
+| Group        | Key                                       | Command                                                                                            | CLI                                     |
+| ------------ | ----------------------------------------- | -------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| **Record**   | `r`                                       | Toggle record (start / stop)                                                                       | `qrec record toggle`                    |
+|              | `o`                                       | Record over the selection                                                                          | `qrec record start --over <clip>…`      |
+|              | `d`                                       | Discard the last take (to the bin)                                                                 | `qrec take discard-last`                |
+|              | `Esc`                                     | Cancel the countdown or recording (take goes to the bin), clear the selection, or close an overlay | `qrec record cancel`                    |
+| **Playback** | `Space`                                   | Play / pause                                                                                       | `qrec play` (GUI host only)             |
+|              | `j` / `k` / `l`                           | Shuttle reverse / stop / forward (press again for 2×, 4×)                                          | —                                       |
+|              | `←` / `→`                                 | Previous / next frame                                                                              | `qrec seek --by -1f`                    |
+|              | `Shift+←` / `Shift+→`                     | Back / forward 1 s                                                                                 | `qrec seek --by -1s`                    |
+|              | `↑` / `↓`                                 | Previous / next edit point                                                                         | `qrec seek --edit prev`                 |
+|              | `Home` / `End`                            | Timeline start / end                                                                               | `qrec seek --to start`                  |
+| **Edit**     | `,` / `.`                                 | Select previous / next clip                                                                        | — (UI state)                            |
+|              | `<` / `>`                                 | Move the selection left / right one slot                                                           | `qrec clip move <id> --by -1`           |
+|              | `s`                                       | Split at the playhead                                                                              | `qrec clip split <id> --at <t>`         |
+|              | `[` / `]`                                 | Trim start / end to the playhead                                                                   | `qrec clip trim <id> --start/--end <t>` |
+|              | `Alt+[` / `Alt+]`                         | Nudge the start / end edge by ±1 frame (`Shift` = 10)                                              | `qrec clip trim <id> --start +1f`       |
+|              | `Delete` / `x`                            | Remove the selected clips (to the bin)                                                             | `qrec clip remove <id>…`                |
+|              | `c`                                       | Autocut the selection, or everything                                                               | `qrec autocut [--clips …]`              |
+|              | `Shift+C`                                 | Autocut settings + preview                                                                         | `qrec autocut --dry-run`                |
+|              | `Ctrl+Z` / `Ctrl+Shift+Z` (also `Ctrl+Y`) | Undo / redo                                                                                        | `qrec undo` / `qrec redo`               |
+|              | `Ctrl+A`                                  | Select all                                                                                         | —                                       |
+| **Output**   | `p`                                       | Save the frame at the playhead as PNG                                                              | `qrec frame save --at <t>`              |
+|              | `Ctrl+E`                                  | Export…                                                                                            | `qrec export`                           |
+| **View**     | `=` / `-`                                 | Zoom the timeline in / out                                                                         | —                                       |
+|              | `\`                                       | Zoom to fit                                                                                        | —                                       |
+|              | `z`                                       | Zoom to the selection                                                                              | —                                       |
+|              | `n`                                       | Toggle snapping                                                                                    | —                                       |
+|              | `Tab`                                     | Switch the canvas between Live and Program                                                         | —                                       |
+|              | `b`                                       | Toggle the bin                                                                                     | `qrec take list --unused`               |
+|              | `?`                                       | Cheat sheet                                                                                        | `qrec keys`                             |
+|              | `Ctrl+K` or `:`                           | Command palette                                                                                    | —                                       |
+|              | `Ctrl+,`                                  | Settings                                                                                           | `qrec config`                           |
 
 **Global binding** (requirement 25: record while another app has focus). The
 docs and `qrec doctor` print a ready-to-paste niri snippet:
@@ -690,14 +762,14 @@ looks for the target project in this order:
   timestamped filenames.
 - Every command that deletes or overwrites a file needs confirmation:
 
-  | Action | What gets lost |
-  |---|---|
-  | Purge take(s) from disk | The take's media files |
-  | Export to an existing path chosen by hand | The existing file |
-  | Clear history | Undo/redo history |
+  | Action                                    | What gets lost                                                    |
+  | ----------------------------------------- | ----------------------------------------------------------------- |
+  | Purge take(s) from disk                   | The take's media files                                            |
+  | Export to an existing path chosen by hand | The existing file                                                 |
+  | Clear history                             | Undo/redo history                                                 |
   | Change canvas fps on a project with takes | Clip bounds are re-quantized (all clips are listed in the dialog) |
 
-- **GUI:** the confirmation is a modal titled *"Get out of my swamp?"*. It
+- **GUI:** the confirmation is a modal titled _"Get out of my swamp?"_. It
   states exactly what will be lost (files, sizes, counts). Focus starts on
   **Cancel**, and the destructive button is torch-red and needs a deliberate
   click or Enter on it.
@@ -712,12 +784,13 @@ looks for the target project in this order:
 There are two modes, switched with `Tab`. A badge in the corner of the canvas
 shows which one is active.
 
-| Mode | Shows | Layer edits affect |
-|---|---|---|
-| **Live** | Live sources composited with the **project scene**. Used to set up and while recording. | The project scene, used by new takes |
-| **Program** | Timeline playback (GES) at the playhead | The scene snapshot of the selected clip's take |
+| Mode        | Shows                                                                                   | Layer edits affect                             |
+| ----------- | --------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| **Live**    | Live sources composited with the **project scene**. Used to set up and while recording. | The project scene, used by new takes           |
+| **Program** | Timeline playback (GES) at the playhead                                                 | The scene snapshot of the selected clip's take |
 
 **Layer editing on the canvas:**
+
 - Click to select a layer. Drag to move it.
 - Corner handles resize it, keeping the aspect ratio by default (`Shift`
   frees it).
@@ -727,12 +800,14 @@ shows which one is active.
   it 10 px.
 
 **Onion layers panel:**
+
 - Layer list with z-order (drag to reorder), visibility, lock and rename.
-- *Add layer*: screen or camera, from the detected sources.
+- _Add layer_: screen or camera, from the detected sources.
 - Audio tracks with a meter, gain, mute and sync offset.
 - An inspector with numeric fields for rect, crop, opacity and fit.
 
 **Playback and quality:**
+
 - Seeking is frame-accurate.
 - Playback must hold canvas fps with 2 screen layers + 1 camera layer on the
   dev machine.
@@ -788,7 +863,7 @@ and through the ffmpeg export plan, and requires SSIM ≥ 0.98 for each frame.
 - **Snapshot:** export copies the project state when it starts, so editing
   can continue while it runs. Recording is blocked during an export.
 - **CLI:** `qrec export [--format mp4|webm] [--quality draft|standard|high]
-  [--out PATH]`.
+[--out PATH]`.
   - It prints a human progress bar by default.
   - With `--json` it prints JSON-lines events instead:
     `{"event":"progress","phase":"render","done":1234,"total":5678,"etaSecs":42}`.
@@ -802,7 +877,7 @@ and through the ffmpeg export plan, and requires SSIM ≥ 0.98 for each frame.
 - It is rendered through the same ffmpeg plan as export (one frame), so it
   matches the export exactly. The output is a canvas-size PNG at
   `frames/<name>-<take>-<HHMMSSFF>.png`.
-- A toast shows the path, with *Copy image* (`wl-copy`) and *Open folder*.
+- A toast shows the path, with _Copy image_ (`wl-copy`) and _Open folder_.
 - Option: `--layer L2` saves the raw source frame of one layer at native
   resolution.
 
@@ -811,12 +886,14 @@ and through the ffmpeg export plan, and requires SSIM ≥ 0.98 for each frame.
 ## 14. CLI reference (v1)
 
 Global flags:
+
 - `--project DIR` (default: the current directory)
 - `--json` (machine-readable output)
 - `--yes` (confirm destructive actions)
 - `-q` / `-v`
 
 Time arguments accept:
+
 - frames: `412f`
 - seconds: `13.7s`
 - timecode: `00:00:13:21` or `00:00:13.700`
@@ -872,6 +949,7 @@ qrec agent-guide                      # concise usage guide for LLM agents
 ```
 
 **Output contract:**
+
 - With `--json`, every command prints exactly one JSON object
   `{"ok":true,"data":…}` or
   `{"ok":false,"error":{"code":"…","message":"…","hint":"…"}}`.
@@ -881,16 +959,16 @@ qrec agent-guide                      # concise usage guide for LLM agents
 
 **Exit codes:**
 
-| Code | Meaning |
-|---|---|
-| 0 | OK |
-| 1 | Error |
-| 2 | Usage error |
-| 3 | Not a project folder / folder not empty |
-| 4 | Confirmation required |
-| 5 | Missing dependency |
-| 6 | Busy (recording or exporting) |
-| 7 | Not found (bad id) |
+| Code | Meaning                                 |
+| ---- | --------------------------------------- |
+| 0    | OK                                      |
+| 1    | Error                                   |
+| 2    | Usage error                             |
+| 3    | Not a project folder / folder not empty |
+| 4    | Confirmation required                   |
+| 5    | Missing dependency                      |
+| 6    | Busy (recording or exporting)           |
+| 7    | Not found (bad id)                      |
 
 ---
 
@@ -909,6 +987,7 @@ qrec agent-guide                      # concise usage guide for LLM agents
    the code and the design share one source.
 
 **Screens and states to design:**
+
 - First run / empty swamp
 - Main window:
   - Live mode, idle
@@ -935,19 +1014,19 @@ qrec agent-guide                      # concise usage guide for LLM agents
 
 The default is **Swamp Night**. Every theme defines the same token names.
 
-| Token | Swamp Night (default) | Swamp Day | Dragon's Keep | Ogre Mode |
-|---|---|---|---|---|
-| `bg` | `#12170F` bog at midnight | `#F1EEDA` parchment | `#151316` castle stone | `#1E2A0E` deep ogre |
-| `surface` | `#1C2416` wet moss | `#E6E3C6` dried reed | `#201D22` dungeon | `#2E4214` ogre shade |
-| `raised` | `#27321F` log | `#FAF8EA` onion skin | `#2C2830` tower | `#3F5A1B` ogre skin dark |
-| `border` | `#3A4A2C` reeds | `#C9C29A` straw | `#433C47` chain | `#5E7F2A` ear trumpet |
-| `text` | `#E8E6C8` parchment | `#2A2A18` mud ink | `#EDE6E8` bone | `#F4EDD0` linen shirt |
-| `muted` | `#9BA582` lichen | `#6E6A4B` bark | `#A49AA5` ash | `#C2B98F` burlap |
-| `accent` | `#8FC43A` ogre skin | `#4F7A19` fern | `#E0457B` dragon scale | `#B5D334` bright ogre |
-| `accent-2` | `#E3B23C` onion gold | `#B5831A` honey | `#F28C28` lava | `#E7C86A` onion |
-| `record` | `#E5483B` torch | `#C8352A` fire | `#FF3B30` fire breath | `#E8432F` red |
-| `warning` | `#D98A2B` swamp gas | `#B8661A` | `#F28C28` | `#D98A2B` |
-| `wood` | `#6B4A2B` outhouse door | `#7A5532` cottage beams | `#5A4636` drawbridge | `#7A4E2A` leather vest |
+| Token      | Swamp Night (default)     | Swamp Day               | Dragon's Keep          | Ogre Mode                |
+| ---------- | ------------------------- | ----------------------- | ---------------------- | ------------------------ |
+| `bg`       | `#12170F` bog at midnight | `#F1EEDA` parchment     | `#151316` castle stone | `#1E2A0E` deep ogre      |
+| `surface`  | `#1C2416` wet moss        | `#E6E3C6` dried reed    | `#201D22` dungeon      | `#2E4214` ogre shade     |
+| `raised`   | `#27321F` log             | `#FAF8EA` onion skin    | `#2C2830` tower        | `#3F5A1B` ogre skin dark |
+| `border`   | `#3A4A2C` reeds           | `#C9C29A` straw         | `#433C47` chain        | `#5E7F2A` ear trumpet    |
+| `text`     | `#E8E6C8` parchment       | `#2A2A18` mud ink       | `#EDE6E8` bone         | `#F4EDD0` linen shirt    |
+| `muted`    | `#9BA582` lichen          | `#6E6A4B` bark          | `#A49AA5` ash          | `#C2B98F` burlap         |
+| `accent`   | `#8FC43A` ogre skin       | `#4F7A19` fern          | `#E0457B` dragon scale | `#B5D334` bright ogre    |
+| `accent-2` | `#E3B23C` onion gold      | `#B5831A` honey         | `#F28C28` lava         | `#E7C86A` onion          |
+| `record`   | `#E5483B` torch           | `#C8352A` fire          | `#FF3B30` fire breath  | `#E8432F` red            |
+| `warning`  | `#D98A2B` swamp gas       | `#B8661A`               | `#F28C28`              | `#D98A2B`                |
+| `wood`     | `#6B4A2B` outhouse door   | `#7A5532` cottage beams | `#5A4636` drawbridge   | `#7A4E2A` leather vest   |
 
 - **Take colors** for clip stripes form a separate 8-color categorical set
   derived from each theme (mossy green, onion gold, mud, dragon pink, donkey
@@ -959,22 +1038,23 @@ The default is **Swamp Night**. Every theme defines the same token names.
 ### 15.3 Character
 
 **Typography:**
+
 - A storybook serif for display moments only: the logo, empty states and
-  modal titles. *Fraunces* or similar OFL font.
-- A highly legible sans for the UI: *Atkinson Hyperlegible* or *Inter*.
-- A monospace with tabular numbers for timecodes: *JetBrains Mono*.
+  modal titles. _Fraunces_ or similar OFL font.
+- A highly legible sans for the UI: _Atkinson Hyperlegible_ or _Inter_.
+- A monospace with tabular numbers for timecodes: _JetBrains Mono_.
 - All fonts are bundled.
 
 **Copy:** swamp flavor goes in secondary text. Primary labels stay plain
 verbs ("Record", "Export"), so the app stays usable.
 
-| Situation | Text |
-|---|---|
-| Empty state | *"This swamp is quiet. Press **R** and make some noise."* |
-| Delete modal | *"Get out of my swamp?"* |
-| Export done | *"Layers! Like an onion. Your video is ready."* |
-| Too-short take | *"That was shorter than Lord Farquaad. Take moved to the bin."* |
-| Recovered take | *"Recovered take 7 from the bog."* |
+| Situation      | Text                                                            |
+| -------------- | --------------------------------------------------------------- |
+| Empty state    | _"This swamp is quiet. Press **R** and make some noise."_       |
+| Delete modal   | _"Get out of my swamp?"_                                        |
+| Export done    | _"Layers! Like an onion. Your video is ready."_                 |
+| Too-short take | _"That was shorter than Lord Farquaad. Take moved to the bin."_ |
+| Recovered take | _"Recovered take 7 from the bog."_                              |
 
 - **Icon:** an onion with ogre-ear trumpets, also used as the REC badge
   motif.
@@ -991,6 +1071,7 @@ verbs ("Record", "Export"), so the app stays usable.
 ## 16. Error handling and robustness
 
 **Capture:**
+
 - Every failure (portal denied, device busy, encoder failure, VA-API hang) is
   reported quickly and to the specific source. A 500 ms startup health check,
   bus error watching and a 10 s EOS timeout ensure that the UI never freezes
@@ -1001,6 +1082,7 @@ verbs ("Record", "Export"), so the app stays usable.
   on the dev machine Intel `renderD129`, because NVIDIA `renderD128` hangs.
 
 **Files and history:**
+
 - Every child process logs to a file, and no unread pipes are left open:
   - `takes/<take>/recorder.log` for capture.
   - `.qrec/logs/` for ffmpeg jobs.
@@ -1013,62 +1095,62 @@ verbs ("Record", "Export"), so the app stays usable.
 
 ## 17. Testing strategy
 
-| Layer | How |
-|---|---|
-| Core | Unit tests plus `proptest` properties: split → render identity, trim bounds, move permutations, undo∘apply = id, autocut never cuts inside padded speech, migrations round-trip. |
-| Planners | Snapshot tests (`insta`) of ffmpeg argv, the GES description and the capture plan. |
+| Layer           | How                                                                                                                                                                                                                                                    |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Core            | Unit tests plus `proptest` properties: split → render identity, trim bounds, move permutations, undo∘apply = id, autocut never cuts inside padded speech, migrations round-trip.                                                                       |
+| Planners        | Snapshot tests (`insta`) of ffmpeg argv, the GES description and the capture plan.                                                                                                                                                                     |
 | CLI integration | Temp project folders. Fixture media is generated by ffmpeg (`testsrc2`, plus `sine` with known silence gaps). Covers record (fake capture), autocut, export and frame save end to end, with assertions on durations, frame hashes and silence removal. |
-| Fake capture | With `QREC_CAPTURE_BACKEND=fake`, the capture engine uses `videotestsrc`/`audiotestsrc`. The whole recording loop runs headless in CI and in LLM sessions. |
-| Parity | SSIM check between the GES preview and the ffmpeg export (§12). |
-| GUI | A thin smoke test (launch, dispatch a scripted command list over IPC, screenshot). Behavior is covered by the tests above because the GUI only sends Commands. |
-| Manual | A checklist on niri: two monitors + camera + mic + system audio, a 10-minute take, the A/V sync clap test, a portal restore after reboot. |
+| Fake capture    | With `QREC_CAPTURE_BACKEND=fake`, the capture engine uses `videotestsrc`/`audiotestsrc`. The whole recording loop runs headless in CI and in LLM sessions.                                                                                             |
+| Parity          | SSIM check between the GES preview and the ffmpeg export (§12).                                                                                                                                                                                        |
+| GUI             | A thin smoke test (launch, dispatch a scripted command list over IPC, screenshot). Behavior is covered by the tests above because the GUI only sends Commands.                                                                                         |
+| Manual          | A checklist on niri: two monitors + camera + mic + system audio, a 10-minute take, the A/V sync clap test, a portal restore after reboot.                                                                                                              |
 
 ---
 
 ## 18. Milestones
 
-| # | Milestone | Exit criteria |
-|---|---|---|
-| **M0** | **Spikes** (de-risk) | (a) portal + `pipewiresrc` on niri, with the restore token reused headlessly. (b) 2 screens + camera + 2 audio tracks in one pipeline, with measured A/V offset < 1 frame and CFR output. (c) GES playback of a 2-layer, 10-clip timeline with frame-accurate seeks and smooth `gtk4paintablesink`. (d) ffmpeg segment export matching GES with SSIM ≥ 0.98. |
-| M1 | Core + CLI, no capture | Project model, folder rule, all timeline ops, undo/redo, autocut, export, frame save, `--json`. All of it is tested with fixture media. |
-| M2 | Capture engine + headless host | `qrec record start/stop` (real + fake), IPC, locking, recovery, `doctor`. |
-| M3 | Design (parallel with M1–M2) | Impeccable installed. All screens from §15.1 in `design/qrec.pen`, approved. |
-| M4 | GUI | Live/Program canvas, layer editing, timeline with zoom down to frames, drag, trim and split, bin, export panel, confirmations. |
-| M5 | Polish | Keymap config + cheat sheet + palette, themes, motion, toasts, niri bind docs, Nix packaging. |
+| #      | Milestone                      | Exit criteria                                                                                                                                                                                                                                                                                                                                                |
+| ------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **M0** | **Spikes** (de-risk)           | (a) portal + `pipewiresrc` on niri, with the restore token reused headlessly. (b) 2 screens + camera + 2 audio tracks in one pipeline, with measured A/V offset < 1 frame and CFR output. (c) GES playback of a 2-layer, 10-clip timeline with frame-accurate seeks and smooth `gtk4paintablesink`. (d) ffmpeg segment export matching GES with SSIM ≥ 0.98. |
+| M1     | Core + CLI, no capture         | Project model, folder rule, all timeline ops, undo/redo, autocut, export, frame save, `--json`. All of it is tested with fixture media.                                                                                                                                                                                                                      |
+| M2     | Capture engine + headless host | `qrec record start/stop` (real + fake), IPC, locking, recovery, `doctor`.                                                                                                                                                                                                                                                                                    |
+| M3     | Design (parallel with M1–M2)   | Impeccable installed. All screens from §15.1 in `design/qrec.pen`, approved.                                                                                                                                                                                                                                                                                 |
+| M4     | GUI                            | Live/Program canvas, layer editing, timeline with zoom down to frames, drag, trim and split, bin, export panel, confirmations.                                                                                                                                                                                                                               |
+| M5     | Polish                         | Keymap config + cheat sheet + palette, themes, motion, toasts, niri bind docs, Nix packaging.                                                                                                                                                                                                                                                                |
 
 ---
 
 ## 19. Requirement traceability
 
-| # | Requirement | Section |
-|---|---|---|
-| 1 | Wayland first, X11 only if simple | §1.2, §3 |
-| 2 | Best stack, nice and smooth | §3 |
-| 3 | Name Qrec | header |
-| 4 | Shrek theme and color schemes | §15 |
-| 5 | Impeccable before UI | §15.1 |
-| 6 | Pen.dev design before UI | §15.1 |
-| 7 | CLI operation | §4.3, §14 |
-| 8 | JSON project file is the state | §6 |
-| 9 | Non-destructive, confirm destructive actions | §11 |
-| 10 | Undo / redo | §8 |
-| 11–12 | Recording takes onto the timeline | §5 |
-| 13 | Preview of the timeline | §12 |
-| 14 | Select, move, trim, cut, delete | §7.1 |
-| 15–17 | Folder rule, no project management | §4.4 |
-| 18–19 | Export with clear progress | §13.1 |
-| 20 | FCIS | §4 |
-| 21 | CLI and UI share functions | §4.2 |
-| 22 | NLE timeline with zoom to frames and proportional widths | §7.2 |
-| 23 | Autocut silences (choose the track) | §9 |
-| 24 | Rely on ffmpeg | §3.1, §9, §13 |
-| 25 | Quick-record loop (r / d / o) | §5.3, §5.4, §10 |
-| 26 | Save frame as image | §13.2 |
-| 27 | Keyboard shortcuts, discoverable | §10 |
-| (interview) | Layers, multiple screens and cameras, OBS-like canvas | §5.1, §12 |
-| (interview) | Separate mic and system tracks, autocut track choice | §5.1, §9 |
-| (interview) | Compositor bind + in-app shortcuts | §10.2 |
-| (interview) | Headless CLI recording | §4.3 |
+| #           | Requirement                                              | Section         |
+| ----------- | -------------------------------------------------------- | --------------- |
+| 1           | Wayland first, X11 only if simple                        | §1.2, §3        |
+| 2           | Best stack, nice and smooth                              | §3              |
+| 3           | Name Qrec                                                | header          |
+| 4           | Shrek theme and color schemes                            | §15             |
+| 5           | Impeccable before UI                                     | §15.1           |
+| 6           | Pen.dev design before UI                                 | §15.1           |
+| 7           | CLI operation                                            | §4.3, §14       |
+| 8           | JSON project file is the state                           | §6              |
+| 9           | Non-destructive, confirm destructive actions             | §11             |
+| 10          | Undo / redo                                              | §8              |
+| 11–12       | Recording takes onto the timeline                        | §5              |
+| 13          | Preview of the timeline                                  | §12             |
+| 14          | Select, move, trim, cut, delete                          | §7.1            |
+| 15–17       | Folder rule, no project management                       | §4.4            |
+| 18–19       | Export with clear progress                               | §13.1           |
+| 20          | FCIS                                                     | §4              |
+| 21          | CLI and UI share functions                               | §4.2            |
+| 22          | NLE timeline with zoom to frames and proportional widths | §7.2            |
+| 23          | Autocut silences (choose the track)                      | §9              |
+| 24          | Rely on ffmpeg                                           | §3.1, §9, §13   |
+| 25          | Quick-record loop (r / d / o)                            | §5.3, §5.4, §10 |
+| 26          | Save frame as image                                      | §13.2           |
+| 27          | Keyboard shortcuts, discoverable                         | §10             |
+| (interview) | Layers, multiple screens and cameras, OBS-like canvas    | §5.1, §12       |
+| (interview) | Separate mic and system tracks, autocut track choice     | §5.1, §9        |
+| (interview) | Compositor bind + in-app shortcuts                       | §10.2           |
+| (interview) | Headless CLI recording                                   | §4.3            |
 
 ---
 
