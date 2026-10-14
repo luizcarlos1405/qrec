@@ -1,0 +1,44 @@
+---
+source: crates/qrec-core/src/capture_plan.rs
+expression: plan
+---
+{
+  "take": "take-10000",
+  "dir": "takes/take-10000",
+  "log": "takes/take-10000/recorder.log",
+  "fps": {
+    "num": 30,
+    "den": 1
+  },
+  "healthCheckMs": 500,
+  "firstBufferMs": 3000,
+  "eosTimeoutMs": 10000,
+  "video": [
+    {
+      "id": "L7",
+      "source": {
+        "kind": "camera",
+        "device": "/dev/video9",
+        "label": "Camera /dev/video9"
+      },
+      "file": "takes/take-10000/L7-camera-9.mkv",
+      "encoder": {
+        "kind": "x264",
+        "pass": "qual",
+        "quantizer": 18,
+        "speedPreset": "veryfast",
+        "tune": "zerolatency"
+      },
+      "keyIntMax": 30,
+      "cameraMode": null
+    }
+  ],
+  "audio": [
+    {
+      "id": "A3",
+      "device": "alsa_output.monitor",
+      "file": "takes/take-10000/A3-system.mka",
+      "sampleRate": 48000
+    }
+  ]
+}
