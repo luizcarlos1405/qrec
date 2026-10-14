@@ -1,0 +1,21 @@
+Input #0, matroska,webm, from 'file:takes/take-0003/A3-mic.mka':
+  Metadata:
+    ENCODER         : Lavf62.12.102
+  Duration: 00:20:50.00, start: 0.000000, bitrate: 105 kb/s
+  Stream #0:0: Audio: flac, 48000 Hz, mono, s32 (24 bit)
+    Metadata:
+      ENCODER         : Lavc62.28.102 flac
+      DURATION        : 00:20:50.000000000
+Stream mapping:
+  Stream #0:0 -> #0:0 (flac (native) -> pcm_s16le (native))
+Output #0, null, to 'pipe:':
+  Metadata:
+    encoder         : Lavf62.12.102
+  Stream #0:0: Audio: pcm_s16le, 48000 Hz, mono, s16, 768 kb/s
+    Metadata:
+      encoder         : Lavc62.28.102 pcm_s16le
+      DURATION        : 00:20:50.000000000
+[Parsed_silencedetect_0 @ 0x732c0c004800] silence_start: 1234.568
+[Parsed_silencedetect_0 @ 0x732c0c004800] silence_end: 1236.001 | silence_duration: 1.433
+[out#0/null @ 0x614da393f440] video:0KiB audio:117188KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+size=N/A time=00:20:50.00 bitrate=N/A speed=3.43e+03x elapsed=0:00:00.36    

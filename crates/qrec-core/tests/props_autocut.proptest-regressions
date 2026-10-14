@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e5834c2b922424c09942eda4a4533943ad6b2654ab3814a592c178cd06323f41 # shrinks to fps = Fps { num: 30, den: 1 }, clip = Clip { id: ClipId("c001"), take: TakeId("take-0001"), in_: 327, out: 1981 }, params = AutocutParams { threshold_db: -35.0, min_silence_ms: 400, padding_ms: 375, min_keep_ms: 0 }, outside = [Interval { start_ns: 65495478333, end_ns: 65495478333 }, Interval { start_ns: 64745478333, end_ns: 64745478333 }]
+cc b85d349c7da13fc699a2cb38dde795eac30341c6a186bf82ed79d8f3a72c3684 # shrinks to fps = Fps { num: 30, den: 1 }, clip = Clip { id: ClipId("c001"), take: TakeId("take-0001"), in_: 0, out: 1 }, params = AutocutParams { threshold_db: -35.0, min_silence_ms: 400, padding_ms: 0, min_keep_ms: 34 }, outside = []
