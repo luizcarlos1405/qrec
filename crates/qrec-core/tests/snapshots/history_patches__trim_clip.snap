@@ -1,0 +1,10 @@
+---
+source: crates/qrec-core/tests/history_patches.rs
+expression: render(&e)
+---
+forward:
+test    /timeline/clips/1/in 455
+replace /timeline/clips/1/in 460
+inverse:
+test    /timeline/clips/1/in 460
+replace /timeline/clips/1/in 455

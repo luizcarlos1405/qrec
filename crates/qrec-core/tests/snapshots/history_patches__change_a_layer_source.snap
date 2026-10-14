@@ -1,0 +1,10 @@
+---
+source: crates/qrec-core/tests/history_patches.rs
+expression: render(&e)
+---
+forward:
+test    /scene/layers/0/source {"kind":"screen","label":"Monitor DP-4","output":"DP-4"}
+replace /scene/layers/0/source {"device":"/dev/video2","kind":"camera","label":"Cam"}
+inverse:
+test    /scene/layers/0/source {"device":"/dev/video2","kind":"camera","label":"Cam"}
+replace /scene/layers/0/source {"kind":"screen","label":"Monitor DP-4","output":"DP-4"}
