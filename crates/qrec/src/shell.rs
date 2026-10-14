@@ -100,6 +100,7 @@ impl Shell {
                 .with_ansi(false)
                 .with_target(false)
                 .with_thread_names(true)
+                .with_timer(LocalTime)
                 .try_init(),
             Role::Cli => tracing_subscriber::fmt()
                 .with_env_filter(filter)
@@ -128,6 +129,20 @@ impl Shell {
 
     fn dirs(&self) -> Result<UserDirs, CoreError> {
         UserDirs::resolve(&self.env)
+    }
+}
+
+/// Log lines stamped in local time, like the host's lifecycle lines and the
+/// log file names.
+struct LocalTime;
+
+impl tracing_subscriber::fmt::time::FormatTime for LocalTime {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
+        write!(
+            w,
+            "{}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f")
+        )
     }
 }
 
