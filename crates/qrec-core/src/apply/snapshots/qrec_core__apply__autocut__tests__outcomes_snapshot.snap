@@ -1,0 +1,193 @@
+---
+source: crates/qrec-core/src/apply/autocut.rs
+expression: "json!({\n    \"started\": fixtures::digest(&started), \"completedAtOnce\":\n    fixtures::digest(&at_once), \"dryRun\": fixtures::digest(&dry),\n})"
+---
+completedAtOnce:
+  effects:
+    - historyAppend:
+        cmd:
+          cmd: autocut
+          dryRun: false
+          overrides: {}
+          scope: all
+        label: "Autocut 2 takes: removed 4 silences (4.3 s)"
+        seq: 1
+    - writeProject
+  history:
+    - cmd:
+        cmd: autocut
+        dryRun: false
+        overrides: {}
+        scope: all
+      label: "Autocut 2 takes: removed 4 silences (4.3 s)"
+      seq: 1
+  jobs: {}
+  reply:
+    Ok:
+      created:
+        - ce8d
+        - c4ff
+      message: "Autocut 2 takes: removed 4 silences (4.3 s)"
+      removed: []
+      result:
+        clips:
+          - clip: c001
+            kept:
+              - - 20
+                - 94
+              - - 131
+                - 244
+            removedFrames: 113
+            silences: 3
+          - clip: c002
+            kept:
+              - - 0
+                - 34
+              - - 50
+                - 150
+            removedFrames: 16
+            silences: 1
+        skipped: []
+      seq: 1
+  timeline:
+    - id: c001
+      in: 20
+      out: 94
+      take: take-0001
+    - id: ce8d
+      in: 131
+      out: 244
+      take: take-0001
+    - id: c002
+      in: 0
+      out: 34
+      take: take-0002
+    - id: c4ff
+      in: 50
+      out: 150
+      take: take-0002
+dryRun:
+  effects: []
+  history: []
+  jobs: {}
+  reply:
+    Ok:
+      created: []
+      message: "Dry run: autocut take 2 would remove 1 silence (0.5 s)"
+      removed: []
+      result:
+        clips:
+          - clip: c002
+            kept:
+              - - 0
+                - 34
+              - - 50
+                - 150
+            removedFrames: 16
+            silences: 1
+        skipped: []
+      seq: ~
+  timeline:
+    - id: c001
+      in: 0
+      out: 300
+      take: take-0001
+    - id: c002
+      in: 0
+      out: 150
+      take: take-0002
+started:
+  effects:
+    - detectSilence:
+        argv:
+          - ffmpeg
+          - "-hide_banner"
+          - "-nostdin"
+          - "-nostats"
+          - "-loglevel"
+          - info
+          - "-y"
+          - "-i"
+          - "file:takes/take-0001/A1-mic.mka"
+          - "-af"
+          - "silencedetect=noise=-35dB:d=0.4"
+          - "-vn"
+          - "-f"
+          - "null"
+          - "-"
+        job: 1
+        key: eb039e93458ab3222f17cdf85c66a6a25b51b0dd8f431d8b1a9338fea36fa25a
+    - detectSilence:
+        argv:
+          - ffmpeg
+          - "-hide_banner"
+          - "-nostdin"
+          - "-nostats"
+          - "-loglevel"
+          - info
+          - "-y"
+          - "-i"
+          - "file:takes/take-0002/A1-mic.mka"
+          - "-af"
+          - "silencedetect=noise=-35dB:d=0.4"
+          - "-vn"
+          - "-f"
+          - "null"
+          - "-"
+        job: 1
+        key: 58b2a081050a9e326a6c405d1ac2b771a9eb1e508071b70461085fc30ec6ae9d
+    - progress:
+        progress:
+          done: 0
+          label: Analyzing audio 0/2
+          phase: analyze
+          total: 2
+        req: r1
+  history: []
+  jobs:
+    "1":
+      id: 1
+      kind:
+        cmd:
+          cmd: autocut
+          dryRun: false
+          overrides: {}
+          scope: all
+        dryRun: false
+        kind: autocut
+        params:
+          minKeepMs: 200
+          minSilenceMs: 400
+          paddingMs: 120
+          thresholdDb: -35
+        pending:
+          - 58b2a081050a9e326a6c405d1ac2b771a9eb1e508071b70461085fc30ec6ae9d
+          - eb039e93458ab3222f17cdf85c66a6a25b51b0dd8f431d8b1a9338fea36fa25a
+        ready: false
+        targets:
+          - clip:
+              id: c001
+              in: 0
+              out: 300
+              take: take-0001
+            key: eb039e93458ab3222f17cdf85c66a6a25b51b0dd8f431d8b1a9338fea36fa25a
+            track: A1
+          - clip:
+              id: c002
+              in: 0
+              out: 150
+              take: take-0002
+            key: 58b2a081050a9e326a6c405d1ac2b771a9eb1e508071b70461085fc30ec6ae9d
+            track: A1
+      req: r1
+      started: "2026-10-14T12:30:00Z"
+  reply: ~
+  timeline:
+    - id: c001
+      in: 0
+      out: 300
+      take: take-0001
+    - id: c002
+      in: 0
+      out: 150
+      take: take-0002

@@ -515,7 +515,8 @@ pub(crate) fn progress_of(job: &Job, ctx: &Ctx) -> Option<Effect> {
     let total = (targets.len() + failed) as u64;
     let done = (failed + targets.iter().filter(|t| !pending.contains(&t.key)).count()) as u64;
     let elapsed = u64::try_from((ctx.now - job.started).num_seconds()).unwrap_or(0);
-    let eta_secs = (done > 0 && done < total).then(|| elapsed * (total - done) / done);
+    let eta_secs =
+        (done > 0 && done < total && elapsed > 0).then(|| elapsed * (total - done) / done);
     let label = if *ready {
         "Waiting for the recording to finish".to_owned()
     } else {
@@ -559,4 +560,448 @@ pub(crate) fn split_skipped(cmd: &Value) -> (Value, Vec<AutocutSkipView>) {
         _ => Vec::new(),
     };
     (clean, skipped)
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+
+    use super::*;
+    use crate::apply::autocut::fixtures::{self, MIC1, MIC2};
+    use crate::error::ErrorCode;
+    use crate::ids::TakeId;
+    use crate::protocol::command::{AutocutOverrides, ClipScope, Command};
+    use crate::protocol::effect::HistoryOp;
+    use crate::state::{ClipRef, RecordMode, RecordPhase};
+    use crate::testkit;
+
+    /// A state with job 1 analyzing both mic files (`qrec autocut`, request r1).
+    fn analyzing(dry_run: bool) -> (State, Ctx) {
+        let project = fixtures::project();
+        let ctx = fixtures::ctx(&project);
+        let state = testkit::state(project);
+        let cmd = Command::Autocut {
+            scope: ClipScope::All,
+            overrides: AutocutOverrides::default(),
+            dry_run,
+        };
+        let out = crate::apply::apply(&state, &ctx, cmd).unwrap();
+        assert_eq!(out.reply, None);
+        (out.state, ctx)
+    }
+
+    fn detected(state: &State, ctx: &Ctx, file: &str) -> Outcome {
+        let key = fixtures::key(ctx, file, &fixtures::params());
+        silence_detected(state, ctx, JobId(1), key, fixtures::silences(file))
+    }
+
+    fn failed(state: &State, ctx: &Ctx, file: &str, message: &str) -> Outcome {
+        let key = fixtures::key(ctx, file, &fixtures::params());
+        silence_failed(state, ctx, JobId(1), key, message.to_owned())
+    }
+
+    fn recording(state: &mut State) {
+        state.runtime.record = RecordPhase::Recording {
+            take: TakeId::numbered(3),
+            mode: RecordMode::Append,
+            elapsed_ns: 0,
+            waiters: vec![],
+        };
+    }
+
+    fn reply_of(out: &Outcome) -> Option<(&ReqId, &Result<CmdResult, CoreError>)> {
+        out.effects.iter().find_map(|e| match e {
+            Effect::Reply { req, reply } => Some((req, reply)),
+            _ => None,
+        })
+    }
+
+    fn progress_labels(out: &Outcome) -> Vec<String> {
+        out.effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::Progress { progress, .. } => {
+                    Some(format!("{} ({}/{})", progress.label, progress.done, progress.total))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn view(result: &CmdResult) -> AutocutPlanView {
+        serde_json::from_value(result.result.clone()).unwrap()
+    }
+
+    #[test]
+    fn the_last_result_applies_the_run() {
+        let (state, ctx) = analyzing(false);
+        let first = detected(&state, &ctx, MIC1);
+        assert!(reply_of(&first).is_none(), "one key is still pending");
+        assert_eq!(progress_labels(&first), ["Analyzing audio 1/2 (1/2)"]);
+        assert_eq!(first.state.project, state.project);
+        let key1 = fixtures::key(&ctx, MIC1, &fixtures::params());
+        assert_eq!(first.state.runtime.silence[&key1], fixtures::silences(MIC1));
+
+        let done = detected(&first.state, &ctx, MIC2);
+        let (req, reply) = reply_of(&done).expect("the requester gets the reply");
+        assert_eq!(req.0, "r1");
+        let result = reply.as_ref().unwrap();
+        assert_eq!(result.message, "Autocut 2 takes: removed 4 silences (4.3 s)");
+        assert_eq!(result.seq, Some(1));
+        assert_eq!(result.created.len(), 2);
+        assert_eq!(view(result).clips.len(), 2);
+        assert_eq!(done.reply, None, "events answer through Effect::Reply");
+        assert!(done.state.runtime.jobs.is_empty());
+        assert_eq!(done.state.runtime.silence.len(), 2, "results stay cached");
+        assert_eq!(done.state.project.timeline.clips.len(), 4);
+        // Persistence first, the reply last (A§7.6).
+        assert!(matches!(
+            done.effects.as_slice(),
+            [
+                Effect::Progress { .. },
+                Effect::History(HistoryOp::Append(_)),
+                Effect::WriteProject,
+                Effect::Reply { .. }
+            ]
+        ));
+        let entry = &done.state.history.entries[0];
+        assert_eq!(
+            entry.cmd,
+            json!({"cmd": "autocut", "scope": "all", "overrides": {}, "dryRun": false})
+        );
+    }
+
+    #[test]
+    fn a_dry_run_replies_with_the_plan() {
+        let (state, ctx) = analyzing(true);
+        let first = detected(&state, &ctx, MIC1);
+        let done = detected(&first.state, &ctx, MIC2);
+        let (_, reply) = reply_of(&done).unwrap();
+        let result = reply.as_ref().unwrap();
+        assert_eq!(result.seq, None);
+        assert_eq!(
+            result.message,
+            "Dry run: autocut 2 takes would remove 4 silences (4.3 s)"
+        );
+        assert_eq!(view(result).clips[0].kept, vec![[20, 94], [131, 244]]);
+        assert_eq!(done.state.project, state.project);
+        assert!(done.state.history.entries.is_empty());
+    }
+
+    #[test]
+    fn a_recording_defers_the_run_until_placement() {
+        let (mut state, ctx) = analyzing(false);
+        recording(&mut state);
+        let first = detected(&state, &ctx, MIC1);
+        let ready = detected(&first.state, &ctx, MIC2);
+        assert!(reply_of(&ready).is_none());
+        assert_eq!(ready.state.project, state.project, "nothing applied while recording");
+        assert_eq!(
+            progress_labels(&ready),
+            ["Waiting for the recording to finish (2/2)"]
+        );
+        assert!(matches!(
+            ready.state.runtime.jobs[&JobId(1)].kind,
+            JobKind::Autocut { ready: true, .. }
+        ));
+
+        // The take was appended and placed: the record owner applies the job
+        // (whatever the phase still says).
+        let mut placed = ready.state.clone();
+        placed.project.timeline.clips.push(Clip {
+            id: ClipId::from_raw("c003"),
+            take: TakeId::numbered(2),
+            in_: 0,
+            out: 150,
+        });
+        let applied = apply_ready_autocuts(&placed, &ctx);
+        let (_, reply) = reply_of(&applied).unwrap();
+        assert_eq!(reply.as_ref().unwrap().seq, Some(1));
+        assert!(applied.state.runtime.jobs.is_empty());
+        assert_eq!(applied.state.project.timeline.clips.len(), 5);
+        assert_eq!(
+            applied.state.project.timeline.clips[4].id.as_str(),
+            "c003",
+            "the new clip isn't a target"
+        );
+        // Nothing else is ready: a no-op.
+        assert_eq!(apply_ready_autocuts(&applied.state, &ctx), Outcome::unchanged(&applied.state));
+    }
+
+    #[test]
+    fn a_record_over_the_target_skips_it() {
+        let (mut state, ctx) = analyzing(false);
+        recording(&mut state);
+        let ready = detected(&detected(&state, &ctx, MIC1).state, &ctx, MIC2).state;
+        // Record over c002: the take replaces it.
+        let mut placed = ready.clone();
+        placed.project.timeline.clips[1] = Clip {
+            id: ClipId::from_raw("c003"),
+            take: TakeId::numbered(2),
+            in_: 0,
+            out: 150,
+        };
+        placed.runtime.record = RecordPhase::Idle;
+        let applied = apply_ready_autocuts(&placed, &ctx);
+        let (_, reply) = reply_of(&applied).unwrap();
+        let result = reply.as_ref().unwrap();
+        assert_eq!(
+            view(result).skipped,
+            vec![AutocutSkipView {
+                clip: ClipId::from_raw("c002"),
+                reason: CHANGED_WHILE_ANALYZING.to_owned()
+            }]
+        );
+        assert_eq!(
+            result.message,
+            "Autocut take 1: removed 3 silences (3.8 s); 1 clip skipped \
+             (c002: changed while analyzing)"
+        );
+    }
+
+    #[test]
+    fn a_dry_run_completes_even_while_recording() {
+        let (mut state, ctx) = analyzing(true);
+        recording(&mut state);
+        let done = detected(&detected(&state, &ctx, MIC1).state, &ctx, MIC2);
+        assert!(reply_of(&done).is_some());
+        assert!(done.state.runtime.jobs.is_empty());
+    }
+
+    #[test]
+    fn clips_edited_during_the_analysis_are_skipped() {
+        let (mut state, ctx) = analyzing(false);
+        state.project.timeline.clips[0].out = 200; // trimmed meanwhile
+        let done = detected(&detected(&state, &ctx, MIC1).state, &ctx, MIC2);
+        let (_, reply) = reply_of(&done).unwrap();
+        let result = reply.as_ref().unwrap();
+        let plan = view(result);
+        assert_eq!(plan.skipped.len(), 1);
+        assert_eq!(plan.skipped[0].clip.as_str(), "c001");
+        assert_eq!(plan.skipped[0].reason, "changed while analyzing");
+        assert_eq!(result.message.split(';').next(), Some("Autocut take 2: removed 1 silence (0.5 s)"));
+        assert_eq!(done.state.project.timeline.clips[0].out, 200, "left as edited");
+
+        // A clip removed meanwhile is skipped the same way.
+        let (mut state, ctx) = analyzing(false);
+        state.project.timeline.clips.remove(1);
+        let done = detected(&detected(&state, &ctx, MIC1).state, &ctx, MIC2);
+        let (_, reply) = reply_of(&done).unwrap();
+        let plan = view(reply.as_ref().unwrap());
+        assert_eq!(plan.skipped[0].clip.as_str(), "c002");
+    }
+
+    #[test]
+    fn a_failed_analysis_skips_its_clips() {
+        let (state, ctx) = analyzing(false);
+        let first = failed(&state, &ctx, MIC1, "ffmpeg exited with status 1 (see .qrec/logs/x.log)");
+        assert!(matches!(first.effects.first(), Some(Effect::Log { level: LogLevel::Warn, .. })));
+        assert_eq!(progress_labels(&first), ["Analyzing audio 1/2 (1/2)"]);
+        let JobKind::Autocut { targets, cmd, .. } = &first.state.runtime.jobs[&JobId(1)].kind else {
+            panic!("still running");
+        };
+        assert_eq!(targets.len(), 1);
+        assert_eq!(cmd["skipped"][0]["clip"], "c001");
+
+        let done = detected(&first.state, &ctx, MIC2);
+        let (_, reply) = reply_of(&done).unwrap();
+        let result = reply.as_ref().unwrap();
+        assert_eq!(
+            view(result).skipped,
+            vec![AutocutSkipView {
+                clip: ClipId::from_raw("c001"),
+                reason: "silence analysis failed: ffmpeg exited with status 1 (see .qrec/logs/x.log)"
+                    .to_owned()
+            }]
+        );
+        assert_eq!(result.seq, Some(1));
+        let entry = &done.state.history.entries[0];
+        assert_eq!(entry.label, "Autocut take 2: removed 1 silence (0.5 s)");
+        assert!(entry.cmd.get("skipped").is_none(), "the stash never reaches history");
+    }
+
+    #[test]
+    fn when_every_analysis_fails_the_run_fails() {
+        let (state, ctx) = analyzing(false);
+        let first = failed(&state, &ctx, MIC1, "boom");
+        let done = failed(&first.state, &ctx, MIC2, "boom 2");
+        let (_, reply) = reply_of(&done).unwrap();
+        let err = reply.as_ref().unwrap_err();
+        assert_eq!(err.code, ErrorCode::Io);
+        assert_eq!(err.message, "silence analysis failed: boom");
+        let details = err.details.as_ref().unwrap();
+        assert_eq!(details["skipped"].as_array().unwrap().len(), 2);
+        assert_eq!(done.state.project, state.project);
+        assert!(done.state.runtime.jobs.is_empty());
+    }
+
+    #[test]
+    fn unrelated_events_are_ignored() {
+        let (state, ctx) = analyzing(false);
+        let key = fixtures::key(&ctx, MIC1, &fixtures::params());
+        let other = SilenceKey("0".repeat(64));
+        for out in [
+            silence_detected(&state, &ctx, JobId(7), key.clone(), vec![]),
+            silence_detected(&state, &ctx, JobId(1), other.clone(), vec![]),
+            silence_failed(&state, &ctx, JobId(7), key.clone(), "x".into()),
+            silence_failed(&state, &ctx, JobId(1), other, "x".into()),
+        ] {
+            assert_eq!(out.state, state);
+            assert!(matches!(
+                out.effects.as_slice(),
+                [Effect::Log { level: LogLevel::Debug, .. }]
+            ));
+        }
+        // A duplicate result after the key resolved is ignored too.
+        let first = detected(&state, &ctx, MIC1);
+        let again = detected(&first.state, &ctx, MIC1);
+        assert_eq!(again.state, first.state);
+    }
+
+    #[test]
+    fn nobody_waiting_means_a_toast() {
+        let (mut state, ctx) = analyzing(false);
+        if let Some(job) = state.runtime.jobs.get_mut(&JobId(1)) {
+            job.req = None; // the requester went away
+        }
+        let first = detected(&state, &ctx, MIC1);
+        assert!(progress_labels(&first).is_empty());
+        let done = detected(&first.state, &ctx, MIC2);
+        assert!(reply_of(&done).is_none());
+        let Some(Effect::Notify(toast)) = done.effects.last() else {
+            panic!("a toast: {:?}", done.effects);
+        };
+        assert_eq!(toast.level, ToastLevel::Success);
+        assert_eq!(toast.title, "Autocut 2 takes: removed 4 silences (4.3 s)");
+
+        let failing = failed(&failed(&state, &ctx, MIC1, "boom").state, &ctx, MIC2, "boom");
+        let Some(Effect::Notify(toast)) = failing.effects.last() else {
+            panic!("a toast");
+        };
+        assert_eq!(toast.level, ToastLevel::Error);
+        assert_eq!(toast.title, "Autocut failed");
+        assert_eq!(toast.body.as_deref(), Some("silence analysis failed: boom"));
+    }
+
+    #[test]
+    fn an_invalid_file_on_disk_blocks_the_edit() {
+        let (mut state, ctx) = analyzing(false);
+        state.runtime.disk_invalid = Some("expected value at line 3".into());
+        let done = detected(&detected(&state, &ctx, MIC1).state, &ctx, MIC2);
+        let (_, reply) = reply_of(&done).unwrap();
+        let err = reply.as_ref().unwrap_err();
+        assert_eq!(err.code, ErrorCode::Invalid);
+        assert!(err.message.starts_with("qrec.json on disk is invalid: expected value at line 3;"));
+        assert_eq!(done.state.project, state.project);
+        assert!(done.state.history.entries.is_empty());
+        assert!(done.state.runtime.jobs.is_empty());
+    }
+
+    #[test]
+    fn progress_estimates_the_time_left() {
+        let (mut state, _) = analyzing(false);
+        let later = testkit::ctx("2026-10-14T12:30:10Z", 8);
+        let mut ctx = fixtures::ctx(&state.project);
+        ctx.now = later.now;
+        if let Some(job) = state.runtime.jobs.get_mut(&JobId(1)) {
+            job.started = testkit::ctx("2026-10-14T12:30:00Z", 0).now;
+        }
+        let first = detected(&state, &ctx, MIC1);
+        let Some(Effect::Progress { progress, .. }) = first
+            .effects
+            .iter()
+            .find(|e| matches!(e, Effect::Progress { .. }))
+        else {
+            panic!("progress");
+        };
+        assert_eq!(progress.eta_secs, Some(10), "10 s for one file, one left");
+        assert_eq!(progress.phase, ProgressPhase::Analyze);
+    }
+
+    #[test]
+    fn stale_ready_jobs_go_first_when_idle() {
+        let (state, ctx) = analyzing(false);
+        let p = fixtures::params();
+        // Job 9 became ready during a recording that ended without a take.
+        let mut state = state;
+        let target = AutocutTarget {
+            clip: ClipRef::of(&state.project.timeline.clips[1]),
+            track: "A1".parse().unwrap(),
+            key: fixtures::key(&ctx, MIC2, &p),
+        };
+        state.runtime.jobs.insert(
+            JobId(9),
+            Job {
+                id: JobId(9),
+                kind: JobKind::Autocut {
+                    cmd: json!({"cmd": "autocut", "scope": {"clips": ["c002"]}, "overrides": {}, "dryRun": false}),
+                    targets: vec![target],
+                    params: p.clone(),
+                    dry_run: false,
+                    pending: BTreeSet::new(),
+                    ready: true,
+                },
+                req: None,
+                started: ctx.now,
+            },
+        );
+        state
+            .runtime
+            .silence
+            .insert(fixtures::key(&ctx, MIC2, &p), fixtures::silences(MIC2));
+        let first = detected(&state, &ctx, MIC1);
+        let done = detected(&first.state, &ctx, MIC2);
+        let labels: Vec<&str> = done.state.history.entries.iter().map(|e| e.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["Autocut take 2: removed 1 silence (0.5 s)", "Autocut take 1: removed 3 silences (3.8 s)"]
+        );
+        let (_, reply) = reply_of(&done).unwrap();
+        let result = reply.as_ref().unwrap();
+        assert_eq!(
+            view(result).skipped,
+            vec![AutocutSkipView {
+                clip: ClipId::from_raw("c002"),
+                reason: CHANGED_WHILE_ANALYZING.to_owned()
+            }],
+            "job 9 already cut c002"
+        );
+        assert!(done.state.runtime.jobs.is_empty());
+    }
+
+    #[test]
+    fn the_stash_round_trips() {
+        let cmd = json!({"cmd": "autocut", "scope": "all", "overrides": {}, "dryRun": false});
+        assert_eq!(with_skipped(cmd.clone(), &[]), cmd, "no member without skips");
+        let skips = vec![AutocutSkipView {
+            clip: ClipId::from_raw("c001"),
+            reason: "take 1 has no audio track".into(),
+        }];
+        let stashed = with_skipped(cmd.clone(), &skips);
+        assert_eq!(stashed["skipped"][0]["reason"], "take 1 has no audio track");
+        assert_eq!(split_skipped(&stashed), (cmd.clone(), skips));
+        assert_eq!(split_skipped(&cmd), (cmd, vec![]));
+    }
+
+    #[test]
+    fn events_snapshot() {
+        let (state, ctx) = analyzing(false);
+        let first = detected(&state, &ctx, MIC1);
+        let done = detected(&first.state, &ctx, MIC2);
+        let (mut deferred_state, _) = analyzing(false);
+        recording(&mut deferred_state);
+        let failed_first = failed(&deferred_state, &ctx, MIC1, "ffmpeg exited with status 1");
+        let deferred = detected(&failed_first.state, &ctx, MIC2);
+        let mut placed = deferred.state.clone();
+        placed.runtime.record = RecordPhase::Idle;
+        let flushed = apply_ready_autocuts(&placed, &ctx);
+        insta::assert_yaml_snapshot!(json!({
+            "firstResult": fixtures::digest(&first),
+            "lastResult": fixtures::digest(&done),
+            "failedWhileRecording": fixtures::digest(&failed_first),
+            "readyWhileRecording": fixtures::digest(&deferred),
+            "appliedAfterPlacement": fixtures::digest(&flushed),
+        }));
+    }
 }
