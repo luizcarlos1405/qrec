@@ -1,0 +1,39 @@
+---
+source: crates/qrec-core/src/apply/ui.rs
+expression: summary(&out)
+---
+{
+  "effects": [
+    "writeUi"
+  ],
+  "playing": false,
+  "reply": {
+    "Ok": {
+      "created": [],
+      "message": "Selected clips c001 and c003",
+      "removed": [],
+      "result": {
+        "selection": [
+          "c001",
+          "c003"
+        ]
+      },
+      "seq": null
+    }
+  },
+  "ui": {
+    "binOpen": false,
+    "canvasMode": "live",
+    "panels": {},
+    "playhead": 0,
+    "scrollPx": 0.0,
+    "selectedLayer": null,
+    "selection": [
+      "c001",
+      "c003"
+    ],
+    "snapping": true,
+    "solo": null,
+    "zoom": null
+  }
+}

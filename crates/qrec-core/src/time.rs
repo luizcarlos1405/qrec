@@ -149,9 +149,16 @@ impl TimeArg {
     /// The magnitude in frames (seconds round to the nearest frame).
     /// Fails for a timecode whose frame field is ≥ the nominal rate.
     pub fn magnitude_frames(&self, fps: Fps) -> Result<i64, CoreError> {
-        Ok(match self.value {
-            TimeValue::Frames(n) => n as i64,
-            TimeValue::Seconds(ns) | TimeValue::Clock(ns) => ns_to_frame_round(ns as i64, fps),
+        // No wrap into negative i64; callers clamp to take bounds before any
+        // nanosecond conversion, so huge-but-representable values are fine.
+        let max = i64::MAX as u64;
+        let too_big = || CoreError::usage(format!("time {self} is too large"));
+        let frames = match self.value {
+            TimeValue::Frames(n) => n,
+            TimeValue::Seconds(ns) | TimeValue::Clock(ns) => {
+                let ns = i64::try_from(ns).map_err(|_| too_big())?;
+                ns_to_frame_round(ns, fps) as u64
+            }
             TimeValue::Timecode { h, m, s, f } => {
                 let nominal = fps.nominal();
                 if f >= nominal {
@@ -160,9 +167,17 @@ impl TimeArg {
                         nominal - 1
                     )));
                 }
-                ((h * 3600 + u64::from(m) * 60 + u64::from(s)) * u64::from(nominal) + u64::from(f)) as i64
+                h.checked_mul(3600)
+                    .and_then(|v| v.checked_add(u64::from(m) * 60 + u64::from(s)))
+                    .and_then(|v| v.checked_mul(u64::from(nominal)))
+                    .and_then(|v| v.checked_add(u64::from(f)))
+                    .ok_or_else(too_big)?
             }
-        })
+        };
+        if frames > max {
+            return Err(too_big());
+        }
+        Ok(frames as i64)
     }
 
     /// The signed value in frames: the magnitude, negated for `-`.
@@ -354,6 +369,20 @@ mod tests {
         assert_eq!(timecode(30 * 3600, F30), "01:00:00:00");
         assert_eq!(duration_label(6_249_000_000), "6.2 s");
         assert_eq!(duration_label(64_000_000_000), "1 min 4.0 s");
+    }
+
+    #[test]
+    fn huge_values_are_usage_errors() {
+        // Large but representable values are fine (callers clamp them).
+        assert!(parse("999999:00:00:00").magnitude_frames(F30).is_ok());
+        for big in ["99999999999999999:00:00:00", "18446744073709551615f", "18446744073709551s"] {
+            // Rejected either while parsing or while converting, never a panic.
+            let err = big
+                .parse::<TimeArg>()
+                .and_then(|t| t.magnitude_frames(F30))
+                .unwrap_err();
+            assert_eq!(err.code, crate::error::ErrorCode::Usage, "{big}");
+        }
     }
 
     #[test]
