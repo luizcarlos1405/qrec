@@ -1,0 +1,57 @@
+---
+source: crates/qrec-core/src/on_event/output.rs
+expression: out.effects
+---
+[
+    Reply {
+        req: ReqId(
+            "r1",
+        ),
+        reply: Ok(
+            CmdResult {
+                seq: None,
+                created: [],
+                removed: [],
+                message: "Exported /p/exports/test-20261014-120000.mp4",
+                result: Object {
+                    "bytes": Number(4096),
+                    "frames": Number(200),
+                    "path": String("/p/exports/test-20261014-120000.mp4"),
+                },
+            },
+        ),
+    },
+    Notify(
+        Toast {
+            level: Success,
+            title: "Layers! Like an onion. Your video is ready.",
+            body: Some(
+                "/p/exports/test-20261014-120000.mp4",
+            ),
+            actions: [
+                ToastAction {
+                    label: "Open file",
+                    action: OpenPath(
+                        "/p/exports/test-20261014-120000.mp4",
+                    ),
+                },
+                ToastAction {
+                    label: "Open folder",
+                    action: RevealPath(
+                        "/p/exports/test-20261014-120000.mp4",
+                    ),
+                },
+                ToastAction {
+                    label: "Copy path",
+                    action: CopyText(
+                        "/p/exports/test-20261014-120000.mp4",
+                    ),
+                },
+            ],
+        },
+    ),
+    Log {
+        level: Info,
+        message: "job-1: exported /p/exports/test-20261014-120000.mp4 (4096 bytes, 200 frames)",
+    },
+]

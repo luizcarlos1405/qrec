@@ -1,0 +1,5 @@
+---
+source: crates/qrec-core/src/media_argv.rs
+expression: "silence_argv(\"takes/take-0001/A1-mic.mka\", -35.0, 400).join(\" \")"
+---
+ffmpeg -hide_banner -nostdin -nostats -loglevel info -y -i file:takes/take-0001/A1-mic.mka -af silencedetect=noise=-35dB:d=0.4 -vn -f null -
