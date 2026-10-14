@@ -471,6 +471,12 @@ pub struct Take {
     /// Why the take is broken, when it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Finalization placed clips for this take (drives discard-last, A§5.5).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub placed: bool,
+    /// Clips a record-over replaced; discarding the take puts them back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replaced: Vec<Clip>,
 }
 
 impl Take {
@@ -527,6 +533,12 @@ pub struct Stream {
     /// Probed duration of the file. Absent while recording.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ns: Option<i64>,
+    /// Video only: packet count from `ffprobe -count_packets` (A§2.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frames: Option<u64>,
+    /// Video only: the recorded frame rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fps: Option<Fps>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -606,6 +618,8 @@ mod tests {
             channels: None,
             start_offset_ns: 0,
             duration_ns: None,
+            frames: None,
+            fps: None,
         };
         assert_eq!(
             serde_json::to_string(&s).unwrap(),
