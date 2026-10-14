@@ -11,7 +11,7 @@
 //! | `project.rs` | scene | `Init`, `ProjectSet` |
 //! | `scene.rs` | scene | `Layer*`, `Audio*`, `SceneApply` |
 //! | `record.rs` | record | `Record*`, `TakeDiscardLast` |
-//! | `autocut.rs` | autocut | `Autocut`, `AutocutSettings` |
+//! | `autocut.rs` | autocut | `Autocut` (`AutocutSettings` lives in `project.rs`) |
 //! | `output.rs` | output | `Export`, `ExportCancel`, `FrameSave` |
 //!
 //! Handlers return `Err` for anything that changes nothing (bad id, busy,
@@ -92,6 +92,7 @@ impl Outcome {
 
 /// Runs one command against `state` (pure).
 pub fn apply(state: &State, ctx: &Ctx, cmd: Command) -> Result<Outcome, CoreError> {
+    check_initialized(state, &cmd)?;
     check_recording(state, &cmd)?;
     check_host(state, &cmd)?;
     check_disk(state, &cmd)?;
@@ -142,7 +143,7 @@ pub fn apply(state: &State, ctx: &Ctx, cmd: Command) -> Result<Outcome, CoreErro
         } => scene::audio_set(state, ctx, target, track, patch),
         Command::AudioRemove { target, track } => scene::audio_remove(state, ctx, target, track),
         Command::SceneApply { from, to } => scene::scene_apply(state, ctx, from, to),
-        Command::AutocutSettings { patch } => autocut::autocut_settings(state, ctx, patch),
+        Command::AutocutSettings { patch } => project::autocut_settings(state, ctx, patch),
         Command::RecordStart {
             mode,
             countdown,
@@ -190,6 +191,17 @@ pub fn apply(state: &State, ctx: &Ctx, cmd: Command) -> Result<Outcome, CoreErro
         Command::SetCanvasMode { mode } => ui::set_canvas_mode(state, ctx, mode),
         Command::SetUi { patch } => ui::set_ui(state, ctx, patch),
     }
+}
+
+/// A folder without `qrec.json` holds a placeholder project (version 0): only
+/// `Init` runs there. The shell initializes lazily before mutating commands
+/// (A§8.4), so this mostly guards IPC clients and tests.
+fn check_initialized(state: &State, cmd: &Command) -> Result<(), CoreError> {
+    if project::is_initialized(&state.project) || matches!(cmd, Command::Init { .. }) {
+        return Ok(());
+    }
+    Err(CoreError::new(crate::ErrorCode::NotProject, "this folder has no Qrec project yet")
+        .with_hint("run `qrec init`, or any editing command, to create one here"))
 }
 
 /// A§5.3: while not `Idle`, only the commands marked R run; the rest are `Busy`.

@@ -1,0 +1,18 @@
+---
+source: crates/qrec-core/tests/history_patches.rs
+expression: render(&e)
+---
+forward:
+test    /canvas/background "#000000"
+replace /canvas/background "#12170F"
+test    /name "test"
+replace /name "Talk"
+test    /recording/vaapiDevice null
+replace /recording/vaapiDevice "/dev/dri/renderD129"
+inverse:
+test    /canvas/background "#12170F"
+replace /canvas/background "#000000"
+test    /name "Talk"
+replace /name "test"
+test    /recording/vaapiDevice "/dev/dri/renderD129"
+replace /recording/vaapiDevice null

@@ -1,0 +1,53 @@
+---
+source: crates/qrec-core/src/apply/clip.rs
+expression: summary(&out)
+---
+{
+  "effects": [
+    "history.append#1",
+    "writeProject"
+  ],
+  "entry": {
+    "cmd": {
+      "clips": [
+        "c003",
+        "c001",
+        "c003"
+      ],
+      "cmd": "clipRemove"
+    },
+    "label": "Remove clips c001 and c003",
+    "seq": 1
+  },
+  "reply": {
+    "Ok": {
+      "created": [],
+      "message": "Removed clips c001 and c003; take 2 is in the bin now",
+      "removed": [
+        "c001",
+        "c003"
+      ],
+      "result": {
+        "binned": [
+          "take-0002"
+        ]
+      },
+      "seq": 1
+    }
+  },
+  "timeline": [
+    "c002 take-0001 [150, 300)"
+  ],
+  "ui": {
+    "binOpen": false,
+    "canvasMode": "live",
+    "panels": {},
+    "playhead": 0,
+    "scrollPx": 0.0,
+    "selectedLayer": null,
+    "selection": [],
+    "snapping": true,
+    "solo": null,
+    "zoom": null
+  }
+}

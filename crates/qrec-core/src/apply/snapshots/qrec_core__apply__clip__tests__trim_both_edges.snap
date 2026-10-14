@@ -1,0 +1,57 @@
+---
+source: crates/qrec-core/src/apply/clip.rs
+expression: summary(&out)
+---
+{
+  "effects": [
+    "history.append#1",
+    "writeProject"
+  ],
+  "entry": {
+    "cmd": {
+      "clip": "c002",
+      "cmd": "clipTrim",
+      "end": "-1s",
+      "start": "+10f",
+      "timeline": false
+    },
+    "label": "Trim clip c002",
+    "seq": 1
+  },
+  "reply": {
+    "Ok": {
+      "created": [],
+      "message": "Trimmed clip c002 to take 1 frames [160, 270) (00:00:03:20 long)",
+      "removed": [],
+      "result": {
+        "clamped": false,
+        "clip": {
+          "duration": 110,
+          "id": "c002",
+          "in": 160,
+          "out": 270,
+          "start": 100,
+          "take": "take-0001"
+        }
+      },
+      "seq": 1
+    }
+  },
+  "timeline": [
+    "c001 take-0001 [0, 100)",
+    "c002 take-0001 [160, 270)",
+    "c003 take-0002 [0, 200)"
+  ],
+  "ui": {
+    "binOpen": false,
+    "canvasMode": "live",
+    "panels": {},
+    "playhead": 0,
+    "scrollPx": 0.0,
+    "selectedLayer": null,
+    "selection": [],
+    "snapping": true,
+    "solo": null,
+    "zoom": null
+  }
+}
