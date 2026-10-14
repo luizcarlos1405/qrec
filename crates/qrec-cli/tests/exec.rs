@@ -433,6 +433,22 @@ fn the_first_change_creates_the_project() {
     assert_eq!(run2.code, 1);
     assert_eq!(run2.json()["error"]["message"], "disk full");
     assert_eq!(failing.seen.len(), 1);
+
+    // A project that appeared meanwhile is used as it is.
+    let mut raced = Fake::new(&tmp.dir("cfg"))
+        .script(Script::error(CoreError::invalid("already a project")))
+        .script(Script::reply(result(
+            "Nothing undone",
+            None,
+            &[],
+            Value::Null,
+        )));
+    let run3 = run(&mut raced, &empty, "qrec undo");
+    assert_eq!(
+        (run3.code, run3.out.as_str(), run3.err.as_str()),
+        (0, "Nothing undone\n", "")
+    );
+    assert_eq!(raced.seen.len(), 2);
 }
 
 #[test]

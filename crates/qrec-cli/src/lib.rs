@@ -1,10 +1,12 @@
 //! The `qrec` command line (SPEC §14, A§10).
 //!
 //! - [`args`]: the clap command tree.
-//! - [`plan`]: a parsed command line → a request for the project's host
+//! - `plan`: a parsed command line → a request for the project's host
 //!   (`Command`/`Query`, A§4.4) or a project-less action.
-//! - The folder rule (SPEC §4.4, A§8.4) picks the project; a [`Backend`]
-//!   routes the request to its host or runs it in-process (A§8.3–A§8.6).
+//! - `resolve`: the folder rule (SPEC §4.4, A§8.4) picks the project; a
+//!   [`Backend`] routes the request to its host or runs it in-process
+//!   (A§8.3–A§8.6). The binary implements it over `qrec-shell`;
+//!   [`Standalone`] is the backend of a build without the shell.
 //! - Replies are printed for people (short lines, aligned tables, a
 //!   progress line on stderr) or, with `--json`, as exactly one
 //!   `{"ok":…}` object, after `{"event":"progress",…}` lines for streaming
@@ -21,8 +23,8 @@ mod config;
 mod exec;
 mod human;
 mod output;
-pub mod plan;
-pub mod resolve;
+mod plan;
+mod resolve;
 mod standalone;
 mod table;
 mod values;

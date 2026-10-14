@@ -320,9 +320,13 @@ fn needs_host(plan: &ProjectPlan) -> CoreError {
     .with_hint("open the project in Qrec (or start a recording) and try again")
 }
 
+/// The core's answer to `Init` in a folder that already holds a project.
+const ALREADY_A_PROJECT: &str = "already a project";
+
 /// The first change in an empty folder creates the project with the
 /// user's defaults (SPEC §4.4); the notice goes to stderr so stdout keeps
-/// only the command's own reply.
+/// only the command's own reply. A project that appeared meanwhile (another
+/// command initialized it first) is fine: the command runs on it.
 fn lazy_init(dir: &Path, backend: &mut dyn Backend, ui: &mut Ui<'_>) -> Result<(), u8> {
     let request = ProjectRequest {
         body: WireBody::Command(Command::Init {
@@ -343,6 +347,9 @@ fn lazy_init(dir: &Path, backend: &mut dyn Backend, ui: &mut Ui<'_>) -> Result<(
                 .filter(|m| !m.is_empty())
                 .unwrap_or_else(|| format!("created a project in {}", dir.display()));
             ui.info(message);
+            Ok(())
+        }
+        Finish::Reply(Err(e)) if e.code == ErrorCode::Invalid && e.message == ALREADY_A_PROJECT => {
             Ok(())
         }
         Finish::Reply(Err(e)) => Err(ui.fail(&e)),
