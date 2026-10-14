@@ -2420,7 +2420,9 @@ mod tests {
             view
         );
         // Rebound and unbound keys show as they are.
-        let view = keys_view(&resolve("[bindings]\nrecord.over = []\nframe.save = \"F5\"\n"));
+        let view = keys_view(&resolve(
+            "[bindings]\nrecord.over = []\nframe.save = \"F5\"\n",
+        ));
         let row = |id: &str| view.iter().find(|b| b.id == id).unwrap().keys.clone();
         assert!(row("record.over").is_empty());
         assert_eq!(row("frame.save"), ["F5"]);
@@ -2429,7 +2431,8 @@ mod tests {
     #[test]
     fn problems_name_conflicts_then_errors() {
         assert!(problems(&resolve("")).is_empty());
-        let map = resolve("[bindings]\nautocut.run = \"x\"\nzoom.selection = \"x\"\nnope = \"q\"\n");
+        let map =
+            resolve("[bindings]\nautocut.run = \"x\"\nzoom.selection = \"x\"\nnope = \"q\"\n");
         assert_eq!(
             problems(&map),
             [

@@ -7,14 +7,23 @@ use std::collections::{BTreeMap, BTreeSet};
 use proptest::prelude::*;
 use proptest::sample::{Index, select};
 use qrec_core::config;
+use qrec_core::ctx::{AudioDeviceInfo, CameraInfo, CameraMode, ScreenInfo};
 use qrec_core::keymap::{self, KeyChord, KeyContext};
 use qrec_core::migrate::{self, Step};
+use qrec_core::protocol::command::{
+    AudioPatch, AutocutPatch, CanvasSpec, InsertAt, LayerPatch, MoveTo, Nullable, SceneDest,
+    SceneTarget, VideoSourceArg,
+};
 use qrec_core::protocol::reply::{ClipRow, StatusView, TakeRow};
 use qrec_core::schema::{self, check::check};
 use qrec_core::state::{RecordMode, RecordPhase};
 use qrec_core::testkit::{self, strategies::arb_project};
+use qrec_core::timeline::total_frames;
 use qrec_core::validate::{Severity, validate};
-use qrec_core::{CoreError, Project, Query, TakeId, TakeStatus};
+use qrec_core::{
+    AudioRole, Command, CoreError, Crop, Facts, Fit, Fps, Project, Query, Rect, Scene, State,
+    TakeId, TakeStatus, TimeArg,
+};
 use serde_json::{Value, json};
 
 // ------------------------------------------------------------- migration
@@ -503,4 +512,429 @@ fn spec_example_is_valid_everywhere() {
     assert!(check(&schema::project_schema(), &value).is_empty());
     let project: Project = serde_json::from_value(value).unwrap();
     assert_eq!(project, migrated.project);
+}
+
+// ------------------------------- validation accepts what commands produce
+
+/// One user edit; indices are resolved against the state it runs on.
+#[derive(Debug, Clone)]
+enum Op {
+    Split(Index),
+    Trim {
+        clip: Index,
+        start: i16,
+        end: i16,
+    },
+    Move {
+        clip: Index,
+        by: i8,
+    },
+    Remove(Index),
+    Add {
+        take: Index,
+        at: Option<Index>,
+    },
+    LayerSet {
+        scene: Index,
+        layer: Index,
+        opacity: u8,
+        rect: (i16, i16, u16, u16),
+        crop: u8,
+        visible: bool,
+        cover: bool,
+    },
+    LayerOrder {
+        scene: Index,
+        layer: Index,
+        to: Index,
+    },
+    LayerRemove {
+        scene: Index,
+        layer: Index,
+    },
+    LayerAdd(Index),
+    AudioAdd(bool),
+    AudioSet {
+        scene: Index,
+        track: Index,
+        gain: i8,
+        sync: i16,
+        mute: bool,
+    },
+    AudioRemove {
+        scene: Index,
+        track: Index,
+    },
+    SceneApply {
+        from: Index,
+        to: Index,
+    },
+    Autocut {
+        track: Option<Index>,
+        threshold: u8,
+        ms: u16,
+    },
+    Project {
+        fps: Option<Fps>,
+        size: Option<(u16, u16)>,
+        countdown: u8,
+    },
+    Undo(u8),
+    Redo(u8),
+    Restore(Index),
+}
+
+fn arb_op() -> impl Strategy<Value = Op> {
+    let i = any::<Index>;
+    prop_oneof![
+        3 => i().prop_map(Op::Split),
+        3 => (i(), -40i16..40, -40i16..40).prop_map(|(clip, start, end)| Op::Trim { clip, start, end }),
+        2 => (i(), -3i8..=3).prop_map(|(clip, by)| Op::Move { clip, by }),
+        2 => i().prop_map(Op::Remove),
+        2 => (i(), any::<Option<Index>>()).prop_map(|(take, at)| Op::Add { take, at }),
+        2 => (i(), i(), 0u8..=110, (any::<i16>(), any::<i16>(), 0u16..4000, 0u16..4000), 0u8..20, any::<bool>(), any::<bool>())
+            .prop_map(|(scene, layer, opacity, rect, crop, visible, cover)| Op::LayerSet { scene, layer, opacity, rect, crop, visible, cover }),
+        1 => (i(), i(), i()).prop_map(|(scene, layer, to)| Op::LayerOrder { scene, layer, to }),
+        1 => (i(), i()).prop_map(|(scene, layer)| Op::LayerRemove { scene, layer }),
+        1 => i().prop_map(Op::LayerAdd),
+        1 => any::<bool>().prop_map(Op::AudioAdd),
+        2 => (i(), i(), any::<i8>(), -6000i16..6000, any::<bool>())
+            .prop_map(|(scene, track, gain, sync, mute)| Op::AudioSet { scene, track, gain, sync, mute }),
+        1 => (i(), i()).prop_map(|(scene, track)| Op::AudioRemove { scene, track }),
+        1 => (i(), i()).prop_map(|(from, to)| Op::SceneApply { from, to }),
+        1 => (any::<Option<Index>>(), 0u8..=100, 0u16..=61_000)
+            .prop_map(|(track, threshold, ms)| Op::Autocut { track, threshold, ms }),
+        1 => (prop::option::of(testkit::strategies::arb_fps()), prop::option::of((8u16..=1000, 8u16..=1000)), 0u8..12)
+            .prop_map(|(fps, size, countdown)| Op::Project { fps, size, countdown }),
+        2 => (1u8..=3).prop_map(Op::Undo),
+        1 => (1u8..=3).prop_map(Op::Redo),
+        1 => i().prop_map(Op::Restore),
+    ]
+}
+
+/// The project scene, then every take scene.
+fn scene_targets(p: &Project) -> Vec<(SceneTarget, &Scene)> {
+    std::iter::once((SceneTarget::Project, &p.scene))
+        .chain(
+            p.takes
+                .iter()
+                .map(|(id, t)| (SceneTarget::Take(id.clone()), &t.scene)),
+        )
+        .collect()
+}
+
+/// A relative trim edge (`+n f` / `-n f`); 0 leaves the edge alone.
+fn delta(n: i16) -> Option<TimeArg> {
+    let frames = u64::from(n.unsigned_abs());
+    match n {
+        0 => None,
+        n if n > 0 => Some(TimeArg::plus_frames(frames)),
+        _ => Some(TimeArg::minus_frames(frames)),
+    }
+}
+
+/// The command `op` stands for in `state`; `None` when it has nothing to act on.
+fn command_for_op(state: &State, op: &Op) -> Option<Command> {
+    let p = &state.project;
+    let clips = &p.timeline.clips;
+    let clip = |i: &Index| (!clips.is_empty()).then(|| clips[i.index(clips.len())].id.clone());
+    let scenes = scene_targets(p);
+    let scene = |i: &Index| scenes[i.index(scenes.len())].clone();
+    Some(match op {
+        Op::Split(at) => {
+            let total = total_frames(clips);
+            if total == 0 {
+                return None;
+            }
+            Command::ClipSplit {
+                clip: None,
+                at: TimeArg::frames(at.index(total as usize) as u64),
+                timeline: true,
+            }
+        }
+        Op::Trim {
+            clip: c,
+            start,
+            end,
+        } => Command::ClipTrim {
+            clip: clip(c)?,
+            start: delta(*start),
+            end: delta(*end),
+            timeline: false,
+        },
+        Op::Move { clip: c, by } => Command::ClipMove {
+            clips: vec![clip(c)?],
+            to: MoveTo::By(i64::from(*by)),
+        },
+        Op::Remove(c) => Command::ClipRemove {
+            clips: vec![clip(c)?],
+        },
+        Op::Add { take, at } => {
+            let takes: Vec<&TakeId> = p.takes.keys().collect();
+            if takes.is_empty() {
+                return None;
+            }
+            Command::ClipAdd {
+                take: takes[take.index(takes.len())].clone(),
+                at: match at {
+                    None => InsertAt::End,
+                    Some(i) => InsertAt::Index(i.index(clips.len() + 1)),
+                },
+            }
+        }
+        Op::LayerSet {
+            scene: s,
+            layer,
+            opacity,
+            rect,
+            crop,
+            visible,
+            cover,
+        } => {
+            let (target, scene) = scene(s);
+            if scene.layers.is_empty() {
+                return None;
+            }
+            let layer = scene.layers[layer.index(scene.layers.len())].id.clone();
+            let c = u32::from(*crop);
+            Command::LayerSet {
+                target,
+                layer,
+                patch: LayerPatch {
+                    name: None,
+                    visible: Some(*visible),
+                    opacity: Some(f64::from(*opacity) / 100.0),
+                    rect: Some(Rect::new(
+                        i32::from(rect.0),
+                        i32::from(rect.1),
+                        u32::from(rect.2),
+                        u32::from(rect.3),
+                    )),
+                    crop: Some(Crop {
+                        top: c,
+                        right: c,
+                        bottom: c,
+                        left: c,
+                    }),
+                    fit: Some(if *cover { Fit::Cover } else { Fit::Contain }),
+                    locked: Some(*visible && *cover),
+                },
+            }
+        }
+        Op::LayerOrder {
+            scene: s,
+            layer,
+            to,
+        } => {
+            let (target, scene) = scene(s);
+            if scene.layers.is_empty() {
+                return None;
+            }
+            Command::LayerOrder {
+                target,
+                layer: scene.layers[layer.index(scene.layers.len())].id.clone(),
+                to: to.index(scene.layers.len()),
+            }
+        }
+        Op::LayerRemove { scene: s, layer } => {
+            let (target, scene) = scene(s);
+            if scene.layers.is_empty() {
+                return None;
+            }
+            Command::LayerRemove {
+                target,
+                layer: scene.layers[layer.index(scene.layers.len())].id.clone(),
+            }
+        }
+        Op::LayerAdd(source) => Command::LayerAdd {
+            target: SceneTarget::Project,
+            source: match source.index(4) {
+                3 => VideoSourceArg::Camera {
+                    device: "/dev/video0".into(),
+                },
+                n => VideoSourceArg::Screen {
+                    output: format!("DP-{}", n + 1),
+                },
+            },
+            name: None,
+            rect: None,
+        },
+        Op::AudioAdd(system) => Command::AudioAdd {
+            target: SceneTarget::Project,
+            role: if *system {
+                AudioRole::System
+            } else {
+                AudioRole::Mic
+            },
+            source: None,
+            label: None,
+        },
+        Op::AudioSet {
+            scene: s,
+            track,
+            gain,
+            sync,
+            mute,
+        } => {
+            let (target, scene) = scene(s);
+            if scene.audio.is_empty() {
+                return None;
+            }
+            Command::AudioSet {
+                target,
+                track: scene.audio[track.index(scene.audio.len())].id.clone(),
+                patch: AudioPatch {
+                    label: None,
+                    source: None,
+                    gain_db: Some(f64::from(*gain) / 2.0),
+                    muted: Some(*mute),
+                    sync_offset_ms: Some(i32::from(*sync)),
+                },
+            }
+        }
+        Op::AudioRemove { scene: s, track } => {
+            let (target, scene) = scene(s);
+            if scene.audio.is_empty() {
+                return None;
+            }
+            Command::AudioRemove {
+                target,
+                track: scene.audio[track.index(scene.audio.len())].id.clone(),
+            }
+        }
+        Op::SceneApply { from, to } => {
+            let (from, _) = scene(from);
+            let takes: Vec<TakeId> = p.takes.keys().cloned().collect();
+            let to = match to.index(2 + takes.len()) {
+                0 => SceneDest::Project,
+                1 => SceneDest::AllTakes,
+                n => SceneDest::Takes(vec![takes[n - 2].clone()]),
+            };
+            Command::SceneApply { from, to }
+        }
+        Op::Autocut {
+            track,
+            threshold,
+            ms,
+        } => {
+            let tracks = &p.scene.audio;
+            Command::AutocutSettings {
+                patch: AutocutPatch {
+                    auto_run_after_take: None,
+                    track: match track {
+                        Some(i) if !tracks.is_empty() => {
+                            Nullable::Set(tracks[i.index(tracks.len())].id.clone())
+                        }
+                        _ => Nullable::Clear,
+                    },
+                    threshold_db: Some(-f64::from(*threshold)),
+                    min_silence_ms: Some(u32::from(*ms)),
+                    padding_ms: Some(u32::from(*ms / 10)),
+                    min_keep_ms: Some(u32::from(*ms / 2)),
+                },
+            }
+        }
+        Op::Project {
+            fps,
+            size,
+            countdown,
+        } => Command::ProjectSet {
+            name: None,
+            canvas: (fps.is_some() || size.is_some()).then(|| CanvasSpec {
+                width: size.map(|(w, _)| u32::from(w) * 2),
+                height: size.map(|(_, h)| u32::from(h) * 2),
+                fps: *fps,
+            }),
+            background: None,
+            countdown_secs: Some(u32::from(*countdown)),
+            encoder: None,
+            vaapi_device: Nullable::Keep,
+        },
+        Op::Undo(steps) => Command::Undo {
+            steps: u32::from(*steps),
+        },
+        Op::Redo(steps) => Command::Redo {
+            steps: u32::from(*steps),
+        },
+        Op::Restore(i) => {
+            let h = &state.history;
+            let seqs: Vec<u64> = std::iter::once(h.base_seq)
+                .chain(h.entries.iter().map(|e| e.seq))
+                .collect();
+            Command::HistoryRestore {
+                seq: seqs[i.index(seqs.len())],
+            }
+        }
+    })
+}
+
+/// Devices `LayerAdd`/`AudioAdd` can find, as the shell would report them.
+fn device_facts() -> Facts {
+    let screen = |n: u32| ScreenInfo {
+        output: format!("DP-{n}"),
+        description: format!("Monitor {n}"),
+        x: 0,
+        y: 0,
+        width: 2560,
+        height: 1440,
+        scale: 1.0,
+    };
+    Facts {
+        screens: (1..=3).map(screen).collect(),
+        cameras: vec![CameraInfo {
+            device: "/dev/video0".into(),
+            label: "Webcam".into(),
+            modes: vec![CameraMode {
+                width: 1280,
+                height: 720,
+                fps: Fps::new(30, 1),
+                format: "image/jpeg".into(),
+            }],
+        }],
+        default_mic: Some(AudioDeviceInfo {
+            name: "alsa_input.usb-mic".into(),
+            description: "USB mic".into(),
+            is_monitor: false,
+        }),
+        default_monitor: Some(AudioDeviceInfo {
+            name: "alsa_output.speakers.monitor".into(),
+            description: "Speakers".into(),
+            is_monitor: true,
+        }),
+        ..Facts::default()
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// The history owner validates after every undo, redo, restore and
+    /// external merge, so whatever the commands produce must validate (no
+    /// errors; warnings such as missing media are fine), match the
+    /// published schema and read back unchanged.
+    #[test]
+    fn command_results_validate(project in arb_project(), ops in prop::collection::vec(arb_op(), 1..24)) {
+        let schema = schema::project_schema();
+        let mut state = testkit::state(project);
+        for (n, op) in ops.iter().enumerate() {
+            let Some(cmd) = command_for_op(&state, op) else { continue };
+            let mut ctx = testkit::ctx(testkit::CREATED_AT, n as u64);
+            ctx.confirmed = true;
+            ctx.facts = device_facts();
+            // Refused commands change nothing; the others must leave a valid project.
+            let Ok(outcome) = qrec_core::apply(&state, &ctx, cmd.clone()) else { continue };
+            state = outcome.state;
+            let errors: Vec<String> = validate(&state.project)
+                .into_iter()
+                .filter(|i| i.severity == Severity::Error)
+                .map(|i| i.to_string())
+                .collect();
+            prop_assert!(errors.is_empty(), "after {:?}: {:#?}", cmd, errors);
+            let value = serde_json::to_value(&state.project).unwrap();
+            let problems = check(&schema, &value);
+            prop_assert!(problems.is_empty(), "after {:?}: {:#?}", cmd, problems);
+            let read_back = migrate::parse_project(&value.to_string()).unwrap();
+            prop_assert_eq!(&read_back.project, &state.project);
+        }
+    }
 }

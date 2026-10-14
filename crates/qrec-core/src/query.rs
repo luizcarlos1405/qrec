@@ -462,7 +462,15 @@ mod tests {
         let clips = &s.project.timeline.clips;
         let expected: Vec<ClipRow> = (0..clips.len()).map(|i| clip_row(clips, i)).collect();
         assert_eq!(rows, expected);
-        assert_eq!(query(&testkit::state(ProjectBuilder::new().build()), &ctx(), &Query::ClipList).unwrap(), json!([]));
+        assert_eq!(
+            query(
+                &testkit::state(ProjectBuilder::new().build()),
+                &ctx(),
+                &Query::ClipList
+            )
+            .unwrap(),
+            json!([])
+        );
     }
 
     #[test]

@@ -172,34 +172,44 @@ fn canvas(issues: &mut Issues, canvas: &Canvas) {
     }
 }
 
-/// Checks one scene. `take` is the take a snapshot belongs to (for the
-/// "missing media" warning).
-fn unique_id<'a>(issues: &mut Issues, ids: &mut BTreeSet<&'a str>, id: &'a str, path: String) {
+/// Records a duplicate layer/track id of one scene.
+fn unique_id<'a>(
+    issues: &mut Issues,
+    ids: &mut BTreeSet<&'a str>,
+    id: &'a str,
+    path: impl FnOnce() -> String,
+) {
     if !ids.insert(id) {
         issues.error(
-            path,
+            path(),
             format!("duplicate id {id} in the scene (layer and track ids must be unique)"),
         );
     }
 }
 
+/// Checks one scene at `path`. `take` is the take a snapshot belongs to
+/// (for the "missing media" warning). Paths are only built for findings:
+/// history validates after every undo, so a clean project costs no
+/// allocations per element.
 fn scene(issues: &mut Issues, path: &str, scene: &Scene, take: Option<(&TakeId, &Take)>) {
     let mut ids: BTreeSet<&str> = BTreeSet::new();
     for (i, layer) in scene.layers.iter().enumerate() {
-        let at = format!("{path}/layers/{i}");
+        let at = || format!("{path}/layers/{i}");
         if let Some((take_id, _)) = take.filter(|(_, t)| t.stream(layer.id.as_str()).is_none()) {
             issues.warning(
-                at.clone(),
+                at(),
                 format!(
                     "layer {} of {take_id} has no stream (missing media)",
                     layer.id
                 ),
             );
         }
-        unique_id(issues, &mut ids, layer.id.as_str(), format!("{at}/id"));
+        unique_id(issues, &mut ids, layer.id.as_str(), || {
+            format!("{}/id", at())
+        });
         if !(0.0..=1.0).contains(&layer.opacity) {
             issues.error(
-                format!("{at}/opacity"),
+                format!("{}/opacity", at()),
                 format!(
                     "layer {} opacity {} is outside 0 to 1",
                     layer.id, layer.opacity
@@ -208,7 +218,7 @@ fn scene(issues: &mut Issues, path: &str, scene: &Scene, take: Option<(&TakeId, 
         }
         if layer.rect.w < 1 || layer.rect.h < 1 {
             issues.error(
-                format!("{at}/rect"),
+                format!("{}/rect", at()),
                 format!(
                     "layer {} rect is {}×{}; width and height must be at least 1",
                     layer.id, layer.rect.w, layer.rect.h
@@ -217,20 +227,22 @@ fn scene(issues: &mut Issues, path: &str, scene: &Scene, take: Option<(&TakeId, 
         }
     }
     for (i, track) in scene.audio.iter().enumerate() {
-        let at = format!("{path}/audio/{i}");
+        let at = || format!("{path}/audio/{i}");
         if let Some((take_id, _)) = take.filter(|(_, t)| t.stream(track.id.as_str()).is_none()) {
             issues.warning(
-                at.clone(),
+                at(),
                 format!(
                     "track {} of {take_id} has no stream (missing media)",
                     track.id
                 ),
             );
         }
-        unique_id(issues, &mut ids, track.id.as_str(), format!("{at}/id"));
+        unique_id(issues, &mut ids, track.id.as_str(), || {
+            format!("{}/id", at())
+        });
         if !(-MAX_GAIN_DB..=MAX_GAIN_DB).contains(&track.gain_db) {
             issues.error(
-                format!("{at}/gainDb"),
+                format!("{}/gainDb", at()),
                 format!(
                     "track {} gain {} dB is outside -{MAX_GAIN_DB} to {MAX_GAIN_DB} dB",
                     track.id, track.gain_db
@@ -239,7 +251,7 @@ fn scene(issues: &mut Issues, path: &str, scene: &Scene, take: Option<(&TakeId, 
         }
         if track.sync_offset_ms.unsigned_abs() > MAX_SYNC_OFFSET_MS.unsigned_abs() {
             issues.error(
-                format!("{at}/syncOffsetMs"),
+                format!("{}/syncOffsetMs", at()),
                 format!(
                     "track {} sync offset {} ms is outside -{MAX_SYNC_OFFSET_MS} to {MAX_SYNC_OFFSET_MS} ms",
                     track.id, track.sync_offset_ms
@@ -305,26 +317,26 @@ fn take_issues(issues: &mut Issues, id: &TakeId, take: &Take) {
         Some((id, take)),
     );
     let finalized = matches!(take.status, TakeStatus::Ok | TakeStatus::TooShort);
+    let prefix = format!("takes/{id}/");
     let mut ids: BTreeMap<&str, usize> = BTreeMap::new();
     for (i, stream) in take.streams.iter().enumerate() {
-        let at = format!("{path}/streams/{i}");
+        let at = || format!("{path}/streams/{i}");
         if let Some(first) = ids.insert(stream.id.as_str(), i) {
             issues.error(
-                format!("{at}/id"),
+                format!("{}/id", at()),
                 format!(
                     "duplicate stream id {} in {id} (also at {path}/streams/{first})",
                     stream.id
                 ),
             );
         }
-        let prefix = format!("takes/{id}/");
         let name_ok = stream
             .file
             .strip_prefix(&prefix)
             .is_some_and(valid_file_name);
         if !name_ok {
             issues.error(
-                format!("{at}/file"),
+                format!("{}/file", at()),
                 format!(
                     "stream {} file {:?} must be {prefix}<name> with <name> made of letters, digits, '.', '_' and '-'",
                     stream.id, stream.file
@@ -361,7 +373,7 @@ fn take_issues(issues: &mut Issues, id: &TakeId, take: &Take) {
                     StreamKind::Audio => "audio",
                 };
                 issues.error(
-                    at,
+                    at(),
                     format!(
                         "{kind} stream {} of {id} lacks {fields} (only recording or broken takes and missing sources may)",
                         stream.id
@@ -375,10 +387,10 @@ fn take_issues(issues: &mut Issues, id: &TakeId, take: &Take) {
 fn timeline(issues: &mut Issues, project: &Project) {
     let mut ids: BTreeMap<&str, usize> = BTreeMap::new();
     for (i, clip) in project.timeline.clips.iter().enumerate() {
-        let at = format!("/timeline/clips/{i}");
+        let at = || format!("/timeline/clips/{i}");
         if let Some(first) = ids.insert(clip.id.as_str(), i) {
             issues.error(
-                format!("{at}/id"),
+                format!("{}/id", at()),
                 format!(
                     "duplicate clip id {} (also at /timeline/clips/{first})",
                     clip.id
@@ -387,11 +399,11 @@ fn timeline(issues: &mut Issues, project: &Project) {
         }
         match project.take(&clip.take) {
             None => issues.error(
-                format!("{at}/take"),
+                format!("{}/take", at()),
                 format!("clip {} uses {}, which doesn't exist", clip.id, clip.take),
             ),
             Some(take) if take.status != TakeStatus::Ok => issues.error(
-                format!("{at}/take"),
+                format!("{}/take", at()),
                 format!(
                     "clip {} uses {}, which is {} (clips need an ok take)",
                     clip.id,
@@ -402,7 +414,7 @@ fn timeline(issues: &mut Issues, project: &Project) {
             Some(take) => {
                 if clip.out > take.duration_frames {
                     issues.error(
-                        format!("{at}/out"),
+                        format!("{}/out", at()),
                         format!(
                             "clip {} ends at frame {}, past the end of {} ({} frames)",
                             clip.id, clip.out, clip.take, take.duration_frames
@@ -413,7 +425,7 @@ fn timeline(issues: &mut Issues, project: &Project) {
         }
         if clip.in_ >= clip.out {
             issues.error(
-                at,
+                at(),
                 format!(
                     "clip {} range [{}, {}) is empty",
                     clip.id, clip.in_, clip.out
