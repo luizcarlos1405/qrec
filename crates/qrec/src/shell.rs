@@ -28,7 +28,7 @@ use std::sync::mpsc;
 
 use qrec_cli::{Backend, Events, Fallback, Finish, HostArgs, ProjectRequest, RouteOpts};
 use qrec_core::CoreError;
-use qrec_core::protocol::{HelloInfo, Progress, Toast};
+use qrec_core::protocol::{HelloInfo, Progress, Toast, ToastLevel};
 use qrec_core::state::HostKind;
 use qrec_shell::capture::{self, EngineOptions};
 use qrec_shell::deps::{CaptureEngine, Deps, NoCapture, OpenOpts, os_entropy, system_clock};
@@ -46,6 +46,9 @@ use qrec_shell::session::{Notifier, Session, SessionConfig, SessionEnv};
 use qrec_shell::sources::{self, Discover, LiveDevices, SourceInventory};
 use qrec_shell::{ShellError, caps, ipc};
 use serde_json::Value;
+
+/// This build's version, compared with a live host's `hello`.
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The `qrec` binary's backend.
 pub struct Shell {
@@ -295,6 +298,19 @@ impl Bridge<'_> {
 impl RequestEvents for Bridge<'_> {
     fn routed(&mut self, host: Option<&HelloInfo>) {
         self.flush();
+        // A host left running across an upgrade still gets the request
+        // (so a recording can be stopped), with a word about it.
+        if let Some(hello) = host.filter(|h| h.version != VERSION) {
+            self.events.notice(&Toast::new(
+                ToastLevel::Warning,
+                format!(
+                    "the running {} host (pid {}) is qrec {}; this is qrec {VERSION}",
+                    hello.host.as_str(),
+                    hello.pid,
+                    hello.version
+                ),
+            ));
+        }
         self.events.routed(host);
     }
 
