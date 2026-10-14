@@ -1,0 +1,67 @@
+---
+source: crates/qrec-core/src/apply/clip.rs
+expression: summary(&out)
+---
+{
+  "effects": [
+    "history.append#1",
+    "writeProject"
+  ],
+  "entry": {
+    "cmd": {
+      "clips": [
+        "c003",
+        "c001"
+      ],
+      "cmd": "clipMove",
+      "to": {
+        "by": 1
+      }
+    },
+    "label": "Move clips c001 and c003 right by 1",
+    "seq": 1
+  },
+  "reply": {
+    "Ok": {
+      "created": [],
+      "message": "Moved clips c001 and c003 to 00:00:05:00",
+      "removed": [],
+      "result": [
+        {
+          "duration": 100,
+          "id": "c001",
+          "in": 0,
+          "out": 100,
+          "start": 150,
+          "take": "take-0001"
+        },
+        {
+          "duration": 200,
+          "id": "c003",
+          "in": 0,
+          "out": 200,
+          "start": 250,
+          "take": "take-0002"
+        }
+      ],
+      "seq": 1
+    }
+  },
+  "timeline": [
+    "c002 take-0001 [150, 300)",
+    "c001 take-0001 [0, 100)",
+    "c003 take-0002 [0, 200)"
+  ],
+  "ui": {
+    "binOpen": false,
+    "canvasMode": "live",
+    "panels": {},
+    "playhead": 0,
+    "scrollPx": 0.0,
+    "selectedLayer": null,
+    "selection": [],
+    "snapping": true,
+    "solo": null,
+    "zoom": null
+  }
+}
