@@ -12,10 +12,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
+use crate::ids::TakeId;
 use crate::model::{
     AutocutSettings, CURRENT_VERSION, Canvas, Project, Scene, StreamKind, Take, TakeStatus,
 };
-use crate::ids::TakeId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -159,10 +159,16 @@ fn canvas(issues: &mut Issues, canvas: &Canvas) {
     if fps.num == 0 || fps.den == 0 {
         issues.error(
             "/canvas/fps",
-            format!("canvas fps {}/{} needs a positive numerator and denominator", fps.num, fps.den),
+            format!(
+                "canvas fps {}/{} needs a positive numerator and denominator",
+                fps.num, fps.den
+            ),
         );
     } else if fps.as_f64() > MAX_FPS {
-        issues.error("/canvas/fps", format!("canvas fps {fps} is above {MAX_FPS}"));
+        issues.error(
+            "/canvas/fps",
+            format!("canvas fps {fps} is above {MAX_FPS}"),
+        );
     }
 }
 
@@ -184,14 +190,20 @@ fn scene(issues: &mut Issues, path: &str, scene: &Scene, take: Option<(&TakeId, 
         if let Some((take_id, _)) = take.filter(|(_, t)| t.stream(layer.id.as_str()).is_none()) {
             issues.warning(
                 at.clone(),
-                format!("layer {} of {take_id} has no stream (missing media)", layer.id),
+                format!(
+                    "layer {} of {take_id} has no stream (missing media)",
+                    layer.id
+                ),
             );
         }
         unique_id(issues, &mut ids, layer.id.as_str(), format!("{at}/id"));
         if !(0.0..=1.0).contains(&layer.opacity) {
             issues.error(
                 format!("{at}/opacity"),
-                format!("layer {} opacity {} is outside 0 to 1", layer.id, layer.opacity),
+                format!(
+                    "layer {} opacity {} is outside 0 to 1",
+                    layer.id, layer.opacity
+                ),
             );
         }
         if layer.rect.w < 1 || layer.rect.h < 1 {
@@ -209,7 +221,10 @@ fn scene(issues: &mut Issues, path: &str, scene: &Scene, take: Option<(&TakeId, 
         if let Some((take_id, _)) = take.filter(|(_, t)| t.stream(track.id.as_str()).is_none()) {
             issues.warning(
                 at.clone(),
-                format!("track {} of {take_id} has no stream (missing media)", track.id),
+                format!(
+                    "track {} of {take_id} has no stream (missing media)",
+                    track.id
+                ),
             );
         }
         unique_id(issues, &mut ids, track.id.as_str(), format!("{at}/id"));
@@ -235,10 +250,16 @@ fn scene(issues: &mut Issues, path: &str, scene: &Scene, take: Option<(&TakeId, 
 }
 
 fn autocut(issues: &mut Issues, autocut: &AutocutSettings, project_scene: &Scene) {
-    if let Some(track) = autocut.track.as_ref().filter(|t| project_scene.track(t).is_none()) {
+    if let Some(track) = autocut
+        .track
+        .as_ref()
+        .filter(|t| project_scene.track(t).is_none())
+    {
         issues.warning(
             "/autocut/track",
-            format!("autocut track {track} isn't in the project scene; takes lacking it are skipped"),
+            format!(
+                "autocut track {track} isn't in the project scene; takes lacking it are skipped"
+            ),
         );
     }
     if !(MIN_THRESHOLD_DB..=0.0).contains(&autocut.threshold_db) {
@@ -277,7 +298,12 @@ fn valid_file_name(name: &str) -> bool {
 
 fn take_issues(issues: &mut Issues, id: &TakeId, take: &Take) {
     let path = format!("/takes/{}", token(id.as_str()));
-    scene(issues, &format!("{path}/scene"), &take.scene, Some((id, take)));
+    scene(
+        issues,
+        &format!("{path}/scene"),
+        &take.scene,
+        Some((id, take)),
+    );
     let finalized = matches!(take.status, TakeStatus::Ok | TakeStatus::TooShort);
     let mut ids: BTreeMap<&str, usize> = BTreeMap::new();
     for (i, stream) in take.streams.iter().enumerate() {
@@ -285,7 +311,10 @@ fn take_issues(issues: &mut Issues, id: &TakeId, take: &Take) {
         if let Some(first) = ids.insert(stream.id.as_str(), i) {
             issues.error(
                 format!("{at}/id"),
-                format!("duplicate stream id {} in {id} (also at {path}/streams/{first})", stream.id),
+                format!(
+                    "duplicate stream id {} in {id} (also at {path}/streams/{first})",
+                    stream.id
+                ),
             );
         }
         let prefix = format!("takes/{id}/");
@@ -350,7 +379,10 @@ fn timeline(issues: &mut Issues, project: &Project) {
         if let Some(first) = ids.insert(clip.id.as_str(), i) {
             issues.error(
                 format!("{at}/id"),
-                format!("duplicate clip id {} (also at /timeline/clips/{first})", clip.id),
+                format!(
+                    "duplicate clip id {} (also at /timeline/clips/{first})",
+                    clip.id
+                ),
             );
         }
         match project.take(&clip.take) {
@@ -382,7 +414,10 @@ fn timeline(issues: &mut Issues, project: &Project) {
         if clip.in_ >= clip.out {
             issues.error(
                 at,
-                format!("clip {} range [{}, {}) is empty", clip.id, clip.in_, clip.out),
+                format!(
+                    "clip {} range [{}, {}) is empty",
+                    clip.id, clip.in_, clip.out
+                ),
             );
         }
     }
@@ -465,9 +500,12 @@ mod tests {
             ]
         );
         p.canvas.fps = Fps::new(30, 0);
-        assert!(summary(&p).contains(
-            &"error at /canvas/fps: canvas fps 30/0 needs a positive numerator and denominator".to_owned()
-        ));
+        assert!(
+            summary(&p).contains(
+                &"error at /canvas/fps: canvas fps 30/0 needs a positive numerator and denominator"
+                    .to_owned()
+            )
+        );
         let err = ensure_valid(&p).unwrap_err();
         assert_eq!(err.code, crate::ErrorCode::Invalid);
         assert_eq!(

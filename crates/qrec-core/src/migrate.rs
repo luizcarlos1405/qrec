@@ -50,9 +50,9 @@ const RESTORE_HINT: &str =
 
 /// The `version` of a `qrec.json` document.
 pub fn version_of(value: &Value) -> Result<u32, CoreError> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| CoreError::invalid("qrec.json is not a JSON object").with_hint(RESTORE_HINT))?;
+    let object = value.as_object().ok_or_else(|| {
+        CoreError::invalid("qrec.json is not a JSON object").with_hint(RESTORE_HINT)
+    })?;
     let version = object
         .get("version")
         .ok_or_else(|| CoreError::invalid("qrec.json has no version").with_hint(RESTORE_HINT))?;
@@ -176,26 +176,51 @@ mod tests {
             "qrec.json is schema version 2, but this Qrec reads up to version 1"
         );
         assert!(err.hint.unwrap().contains("update Qrec"));
-        for bad in [json!(0), json!(-1), json!(1.5), json!("1"), json!(null), json!(4294967296u64)] {
+        for bad in [
+            json!(0),
+            json!(-1),
+            json!(1.5),
+            json!("1"),
+            json!(null),
+            json!(4294967296u64),
+        ] {
             let err = migrate(with_version(bad.clone())).unwrap_err();
             assert_eq!(err.code, ErrorCode::Invalid, "{bad}");
-            assert!(err.message.contains("is not a schema version"), "{bad}: {}", err.message);
+            assert!(
+                err.message.contains("is not a schema version"),
+                "{bad}: {}",
+                err.message
+            );
         }
         let mut value = with_version(json!(1));
         value.as_object_mut().unwrap().remove("version");
-        assert_eq!(migrate(value).unwrap_err().message, "qrec.json has no version");
-        assert_eq!(migrate(json!([1])).unwrap_err().message, "qrec.json is not a JSON object");
+        assert_eq!(
+            migrate(value).unwrap_err().message,
+            "qrec.json has no version"
+        );
+        assert_eq!(
+            migrate(json!([1])).unwrap_err().message,
+            "qrec.json is not a JSON object"
+        );
     }
 
     #[test]
     fn parse_errors_say_where() {
         let err = parse_project("{\"version\": 1,").unwrap_err();
         assert_eq!(err.code, ErrorCode::Invalid);
-        assert!(err.message.starts_with("qrec.json is not valid JSON:"), "{}", err.message);
+        assert!(
+            err.message.starts_with("qrec.json is not valid JSON:"),
+            "{}",
+            err.message
+        );
         assert!(err.hint.unwrap().contains("qrec history restore"));
         let text = SPEC_EXAMPLE.replace("\"fps\": { \"num\": 30", "\"fsp\": { \"num\": 30");
         let err = parse_project(&text).unwrap_err();
-        assert!(err.message.contains("unknown field `fsp`"), "{}", err.message);
+        assert!(
+            err.message.contains("unknown field `fsp`"),
+            "{}",
+            err.message
+        );
         assert!(err.message.contains("line 8"), "{}", err.message);
     }
 
@@ -209,7 +234,8 @@ mod tests {
             .ok_or_else(|| CoreError::invalid("canvas.fps must be a string in v1"))?
             .to_owned();
         let (num, den) = fps.split_once('/').unwrap_or((&fps, "1"));
-        object["canvas"]["fps"] = json!({ "num": num.parse::<u32>().unwrap(), "den": den.parse::<u32>().unwrap() });
+        object["canvas"]["fps"] =
+            json!({ "num": num.parse::<u32>().unwrap(), "den": den.parse::<u32>().unwrap() });
         let edit = object.remove("edit").unwrap_or(json!({ "clips": [] }));
         object.insert("timeline".into(), edit);
         object.insert("version".into(), json!(2));

@@ -159,8 +159,15 @@ impl Default for UiDefaults {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Kind {
     Theme,
-    Int { min: i64, max: i64, even: bool },
-    Float { min: f64, max: f64 },
+    Int {
+        min: i64,
+        max: i64,
+        even: bool,
+    },
+    Float {
+        min: f64,
+        max: f64,
+    },
     Bool,
     Fps,
     Color,
@@ -201,6 +208,7 @@ const SIZE: Kind = Kind::Int {
 };
 
 /// Every setting, in file order.
+#[rustfmt::skip]
 pub const KEYS: &[ConfigKey] = &[
     key("theme", Kind::Theme, "swamp-night, swamp-day, dragons-keep or ogre-mode", "The color theme."),
     key("canvas.width", SIZE, "an even integer from 16 to 8192", "Canvas width of new projects."),
@@ -321,7 +329,8 @@ pub fn problems(cfg: &UserConfig) -> Vec<String> {
 /// Reads `config.toml` text: missing settings take their defaults; unknown
 /// keys, wrong types and out-of-range values are `Invalid`.
 pub fn parse(text: &str) -> Result<UserConfig, CoreError> {
-    let hint = "fix ~/.config/qrec/config.toml (or change a value with `qrec config set KEY VALUE`)";
+    let hint =
+        "fix ~/.config/qrec/config.toml (or change a value with `qrec config set KEY VALUE`)";
     let cfg: UserConfig = toml::from_str(text)
         .map_err(|e| CoreError::invalid(toml_error("config.toml", text, &e)).with_hint(hint))?;
     let problems = problems(&cfg);
@@ -528,25 +537,64 @@ mod tests {
     #[test]
     fn get_values() {
         let cfg = UserConfig::default();
-        assert_eq!(get(&cfg, "theme").unwrap(), toml::Value::String("swamp-night".into()));
-        assert_eq!(get(&cfg, "canvas.width").unwrap(), toml::Value::Integer(1920));
-        assert_eq!(get(&cfg, "canvas.fps").unwrap(), toml::Value::String("30".into()));
-        assert_eq!(get(&cfg, "autocut.threshold_db").unwrap(), toml::Value::Float(-35.0));
-        assert_eq!(get(&cfg, "encoder.preference").unwrap(), toml::Value::String("auto".into()));
-        assert!(get(&cfg, "autocut").unwrap().as_table().unwrap().contains_key("padding_ms"));
+        assert_eq!(
+            get(&cfg, "theme").unwrap(),
+            toml::Value::String("swamp-night".into())
+        );
+        assert_eq!(
+            get(&cfg, "canvas.width").unwrap(),
+            toml::Value::Integer(1920)
+        );
+        assert_eq!(
+            get(&cfg, "canvas.fps").unwrap(),
+            toml::Value::String("30".into())
+        );
+        assert_eq!(
+            get(&cfg, "autocut.threshold_db").unwrap(),
+            toml::Value::Float(-35.0)
+        );
+        assert_eq!(
+            get(&cfg, "encoder.preference").unwrap(),
+            toml::Value::String("auto".into())
+        );
+        assert!(
+            get(&cfg, "autocut")
+                .unwrap()
+                .as_table()
+                .unwrap()
+                .contains_key("padding_ms")
+        );
         let unset = get(&cfg, "encoder.vaapi_device").unwrap_err();
         assert_eq!(unset.code, ErrorCode::NotFound);
         assert_eq!(get_json(&cfg, "encoder.vaapi_device").unwrap(), Json::Null);
         assert_eq!(get_json(&cfg, "ui.scale").unwrap(), json!(1.0));
-        for bad in ["", "nope", "canvas.nope", "theme.x", "canvas.", ".theme", "canvas.width.x"] {
+        for bad in [
+            "",
+            "nope",
+            "canvas.nope",
+            "theme.x",
+            "canvas.",
+            ".theme",
+            "canvas.width.x",
+        ] {
             let err = get(&cfg, bad).unwrap_err();
             assert_eq!(err.code, ErrorCode::Usage, "{bad:?}");
             assert!(err.hint.unwrap().contains("canvas.fps"));
         }
         let entries = list(&cfg);
         assert_eq!(entries.len(), KEYS.len());
-        assert_eq!(entries[0], ConfigEntry { key: "theme".into(), value: json!("swamp-night") });
-        assert!(entries.iter().any(|e| e.key == "encoder.vaapi_device" && e.value.is_null()));
+        assert_eq!(
+            entries[0],
+            ConfigEntry {
+                key: "theme".into(),
+                value: json!("swamp-night")
+            }
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.key == "encoder.vaapi_device" && e.value.is_null())
+        );
     }
 
     const COMMENTED: &str = "\
@@ -616,7 +664,11 @@ vaapi_device = \"/dev/dri/renderD129\"
     #[test]
     fn set_rejects_bad_values_and_leaves_the_document_alone() {
         let cases = [
-            ("canvas.width", "1921", "must be an even integer from 16 to 8192"),
+            (
+                "canvas.width",
+                "1921",
+                "must be an even integer from 16 to 8192",
+            ),
             ("canvas.width", "20000", "must be an even integer"),
             ("canvas.height", "wide", "must be an even integer"),
             ("canvas.fps", "1000", "at most 240"),
@@ -637,8 +689,16 @@ vaapi_device = \"/dev/dri/renderD129\"
             let mut d = doc(COMMENTED);
             let err = set(&mut d, key, value).unwrap_err();
             assert_eq!(err.code, ErrorCode::Usage, "{key} = {value}");
-            assert!(err.message.contains(expected), "{key} = {value}: {}", err.message);
-            assert_eq!(d.to_string(), COMMENTED, "{key} = {value} changed the document");
+            assert!(
+                err.message.contains(expected),
+                "{key} = {value}: {}",
+                err.message
+            );
+            assert_eq!(
+                d.to_string(),
+                COMMENTED,
+                "{key} = {value} changed the document"
+            );
         }
         let mut d = doc(COMMENTED);
         let err = set(&mut d, "canvas.depth", "8").unwrap_err();
@@ -650,7 +710,11 @@ vaapi_device = \"/dev/dri/renderD129\"
         // A bad value elsewhere in the file blocks the write and is named.
         let mut d = doc("[canvas]\nwidth = 7\n");
         let err = set(&mut d, "theme", "swamp-day").unwrap_err();
-        assert!(err.message.contains("canvas.width must be"), "{}", err.message);
+        assert!(
+            err.message.contains("canvas.width must be"),
+            "{}",
+            err.message
+        );
         let mut d = doc("canvas = 5\n");
         let err = set(&mut d, "canvas.width", "1280").unwrap_err();
         assert!(err.message.contains("isn't a table"), "{}", err.message);
@@ -674,11 +738,25 @@ vaapi_device = \"/dev/dri/renderD129\"
         assert_eq!(cfg.recording.countdown_secs, 3);
         let err = parse("[canvas]\nwidth = 15\n[ui]\nscale = 0.1\n").unwrap_err();
         assert_eq!(err.code, ErrorCode::Invalid);
-        assert_eq!(err.message, "config.toml: canvas.width must be an even integer from 16 to 8192 (got 15)");
-        assert_eq!(err.details.unwrap()["problems"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            err.message,
+            "config.toml: canvas.width must be an even integer from 16 to 8192 (got 15)"
+        );
+        assert_eq!(
+            err.details.unwrap()["problems"].as_array().unwrap().len(),
+            2
+        );
         let err = parse("\n\n[canvas\n").unwrap_err();
-        assert!(err.message.starts_with("config.toml line 3:"), "{}", err.message);
+        assert!(
+            err.message.starts_with("config.toml line 3:"),
+            "{}",
+            err.message
+        );
         let err = parse("[encoder]\nvaapi_device = \"renderD128\"\n").unwrap_err();
-        assert!(err.message.contains("encoder.vaapi_device must be"), "{}", err.message);
+        assert!(
+            err.message.contains("encoder.vaapi_device must be"),
+            "{}",
+            err.message
+        );
     }
 }

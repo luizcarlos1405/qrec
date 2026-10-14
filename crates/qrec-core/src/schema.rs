@@ -39,10 +39,16 @@ fn refinements() -> Vec<(&'static str, Value)> {
     let short_id = json!({ "pattern": SHORT_ID_PATTERN });
     let ms = json!({ "maximum": MAX_AUTOCUT_MS });
     vec![
-        ("", json!({ "title": "qrec.json", "description": DESCRIPTION })),
+        (
+            "",
+            json!({ "title": "qrec.json", "description": DESCRIPTION }),
+        ),
         ("/properties/version", json!({ "const": CURRENT_VERSION })),
         ("/properties/nextTakeNumber", json!({ "minimum": 1 })),
-        ("/properties/takes", json!({ "propertyNames": { "pattern": TAKE_ID_PATTERN } })),
+        (
+            "/properties/takes",
+            json!({ "propertyNames": { "pattern": TAKE_ID_PATTERN } }),
+        ),
         ("/$defs/Canvas/properties/width", size.clone()),
         ("/$defs/Canvas/properties/height", size),
         (
@@ -57,8 +63,14 @@ fn refinements() -> Vec<(&'static str, Value)> {
         ("/$defs/TrackId", short_id.clone()),
         ("/$defs/ClipId", short_id.clone()),
         ("/$defs/Stream/properties/id", short_id),
-        ("/$defs/Stream/properties/file", json!({ "pattern": STREAM_FILE_PATTERN })),
-        ("/$defs/Layer/properties/opacity", json!({ "minimum": 0, "maximum": 1 })),
+        (
+            "/$defs/Stream/properties/file",
+            json!({ "pattern": STREAM_FILE_PATTERN }),
+        ),
+        (
+            "/$defs/Layer/properties/opacity",
+            json!({ "minimum": 0, "maximum": 1 }),
+        ),
         ("/$defs/Rect/properties/w", json!({ "minimum": 1 })),
         ("/$defs/Rect/properties/h", json!({ "minimum": 1 })),
         (
@@ -88,7 +100,9 @@ fn refinements() -> Vec<(&'static str, Value)> {
 pub fn project_schema() -> Value {
     let mut schema = schemars::schema_for!(Project).to_value();
     for (pointer, extra) in refinements() {
-        if let (Some(Value::Object(node)), Value::Object(extra)) = (schema.pointer_mut(pointer), extra) {
+        if let (Some(Value::Object(node)), Value::Object(extra)) =
+            (schema.pointer_mut(pointer), extra)
+        {
             node.extend(extra);
         }
     }
@@ -139,17 +153,32 @@ pub mod check {
         if let Some(expected) = keyword("const").filter(|c| *c != inst) {
             problems.push(format!("{inst} is not {expected}"));
         }
-        if let Some(options) = keyword("enum").and_then(Value::as_array).filter(|o| !o.contains(inst)) {
-            problems.push(format!("{inst} is not one of {}", Value::Array(options.clone())));
+        if let Some(options) = keyword("enum")
+            .and_then(Value::as_array)
+            .filter(|o| !o.contains(inst))
+        {
+            problems.push(format!(
+                "{inst} is not one of {}",
+                Value::Array(options.clone())
+            ));
         }
         if let Some(n) = inst.as_f64() {
-            if let Some(min) = keyword("minimum").and_then(Value::as_f64).filter(|min| n < *min) {
+            if let Some(min) = keyword("minimum")
+                .and_then(Value::as_f64)
+                .filter(|min| n < *min)
+            {
                 problems.push(format!("{inst} is below {min}"));
             }
-            if let Some(max) = keyword("maximum").and_then(Value::as_f64).filter(|max| n > *max) {
+            if let Some(max) = keyword("maximum")
+                .and_then(Value::as_f64)
+                .filter(|max| n > *max)
+            {
                 problems.push(format!("{inst} is above {max}"));
             }
-            if let Some(m) = keyword("multipleOf").and_then(Value::as_f64).filter(|m| (n / m).fract() != 0.0) {
+            if let Some(m) = keyword("multipleOf")
+                .and_then(Value::as_f64)
+                .filter(|m| (n / m).fract() != 0.0)
+            {
                 problems.push(format!("{inst} is not a multiple of {m}"));
             }
         }
@@ -158,8 +187,12 @@ pub mod check {
                 "date-time" => inst
                     .as_str()
                     .is_none_or(|t| chrono::DateTime::parse_from_rfc3339(t).is_ok()),
-                "uint32" => !inst.is_number() || inst.as_u64().is_some_and(|n| n <= u64::from(u32::MAX)),
-                "int32" => !inst.is_number() || inst.as_i64().is_some_and(|n| i32::try_from(n).is_ok()),
+                "uint32" => {
+                    !inst.is_number() || inst.as_u64().is_some_and(|n| n <= u64::from(u32::MAX))
+                }
+                "int32" => {
+                    !inst.is_number() || inst.as_i64().is_some_and(|n| i32::try_from(n).is_ok())
+                }
                 "uint64" => !inst.is_number() || inst.is_u64(),
                 "int64" => !inst.is_number() || inst.is_i64(),
                 _ => true,
@@ -168,7 +201,9 @@ pub mod check {
                 problems.push(format!("{inst} is not a valid {format}"));
             }
         }
-        if let (Some(text), Some(pattern)) = (inst.as_str(), keyword("pattern").and_then(Value::as_str)) {
+        if let (Some(text), Some(pattern)) =
+            (inst.as_str(), keyword("pattern").and_then(Value::as_str))
+        {
             match super::regex::is_match(pattern, text) {
                 Ok(true) => {}
                 Ok(false) => problems.push(format!("{inst} doesn't match {pattern}")),
@@ -188,9 +223,14 @@ pub mod check {
                 if let Some(names) = keyword("propertyNames") {
                     walk(root, names, &Value::String(key.clone()), &child, errors);
                 }
-                match (properties.and_then(|p| p.get(key)), keyword("additionalProperties")) {
+                match (
+                    properties.and_then(|p| p.get(key)),
+                    keyword("additionalProperties"),
+                ) {
                     (Some(sub), _) => walk(root, sub, value, &child, errors),
-                    (None, Some(Value::Bool(false))) => problems.push(format!("unknown property {key}")),
+                    (None, Some(Value::Bool(false))) => {
+                        problems.push(format!("unknown property {key}"))
+                    }
                     (None, Some(sub)) => walk(root, sub, value, &child, errors),
                     (None, None) => {}
                 }
@@ -201,7 +241,11 @@ pub mod check {
                 walk(root, sub, item, &format!("{path}/{i}"), errors);
             }
         }
-        for sub in keyword("allOf").and_then(Value::as_array).into_iter().flatten() {
+        for sub in keyword("allOf")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             walk(root, sub, inst, path, errors);
         }
         let passes = |sub: &Value| {
@@ -231,7 +275,9 @@ pub mod check {
             "boolean" => inst.is_boolean(),
             "null" => inst.is_null(),
             "number" => inst.is_number(),
-            "integer" => inst.is_i64() || inst.is_u64() || inst.as_f64().is_some_and(|f| f.fract() == 0.0),
+            "integer" => {
+                inst.is_i64() || inst.is_u64() || inst.as_f64().is_some_and(|f| f.fract() == 0.0)
+            }
             _ => false,
         }
     }
@@ -284,7 +330,9 @@ mod regex {
                             i += 1;
                             lo = *chars.get(i).ok_or("dangling \\")?;
                         }
-                        if chars.get(i + 1) == Some(&'-') && chars.get(i + 2).is_some_and(|c| *c != ']') {
+                        if chars.get(i + 1) == Some(&'-')
+                            && chars.get(i + 2).is_some_and(|c| *c != ']')
+                        {
                             ranges.push((lo, chars[i + 2]));
                             i += 3;
                         } else {
@@ -305,7 +353,11 @@ mod regex {
                 Some('*') => (0, usize::MAX),
                 Some('+') => (1, usize::MAX),
                 Some('{') => {
-                    let end = chars[i..].iter().position(|c| *c == '}').ok_or("unclosed {")? + i;
+                    let end = chars[i..]
+                        .iter()
+                        .position(|c| *c == '}')
+                        .ok_or("unclosed {")?
+                        + i;
                     let inner: String = chars[i + 1..end].iter().collect();
                     let bad = || format!("bad quantifier {{{inner}}}");
                     let (min, max) = match inner.split_once(',') {
@@ -314,13 +366,20 @@ mod regex {
                             (n, n)
                         }
                         Some((lo, "")) => (lo.parse().map_err(|_| bad())?, usize::MAX),
-                        Some((lo, hi)) => (lo.parse().map_err(|_| bad())?, hi.parse().map_err(|_| bad())?),
+                        Some((lo, hi)) => (
+                            lo.parse().map_err(|_| bad())?,
+                            hi.parse().map_err(|_| bad())?,
+                        ),
                     };
                     i = end;
                     (min, max)
                 }
                 _ => {
-                    pieces.push(Piece { atom, min: 1, max: 1 });
+                    pieces.push(Piece {
+                        atom,
+                        min: 1,
+                        max: 1,
+                    });
                     continue;
                 }
             };
@@ -338,7 +397,10 @@ mod regex {
         while n < piece.max && n < text.len() && piece.atom.matches(text[n]) {
             n += 1;
         }
-        n >= piece.min && (piece.min..=n).rev().any(|k| match_here(rest, &text[k..], to_end))
+        n >= piece.min
+            && (piece.min..=n)
+                .rev()
+                .any(|k| match_here(rest, &text[k..], to_end))
     }
 
     /// Whether `pattern` matches somewhere in `text` (anchors as written).
@@ -374,9 +436,18 @@ mod regex {
             assert!(!m("^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$", "-x"));
             assert!(!m("^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$", &"a".repeat(33)));
             assert!(m("^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$", &"a".repeat(32)));
-            assert!(m("^takes/take-[0-9]{4,}/[A-Za-z0-9._-]+$", "takes/take-0001/L1-screen-DP-4.mkv"));
-            assert!(!m("^takes/take-[0-9]{4,}/[A-Za-z0-9._-]+$", "takes/take-0001/a b"));
-            assert!(!m("^takes/take-[0-9]{4,}/[A-Za-z0-9._-]+$", "takes/take-0001/"));
+            assert!(m(
+                "^takes/take-[0-9]{4,}/[A-Za-z0-9._-]+$",
+                "takes/take-0001/L1-screen-DP-4.mkv"
+            ));
+            assert!(!m(
+                "^takes/take-[0-9]{4,}/[A-Za-z0-9._-]+$",
+                "takes/take-0001/a b"
+            ));
+            assert!(!m(
+                "^takes/take-[0-9]{4,}/[A-Za-z0-9._-]+$",
+                "takes/take-0001/"
+            ));
             assert!(m("b+c?", "aabbx"), "unanchored patterns search");
             assert!(m("^a.c$", "abc"));
             assert!(m("^a\\.c$", "a.c") && !m("^a\\.c$", "abc"));
@@ -400,13 +471,22 @@ mod tests {
     fn every_refinement_lands() {
         let plain = schemars::schema_for!(Project).to_value();
         for (pointer, _) in refinements() {
-            assert!(plain.pointer(pointer).is_some(), "{pointer} is not in the derived schema");
+            assert!(
+                plain.pointer(pointer).is_some(),
+                "{pointer} is not in the derived schema"
+            );
         }
         let schema = project_schema();
         assert_eq!(schema["title"], "qrec.json");
-        assert_eq!(schema["$schema"], "https://json-schema.org/draft/2020-12/schema");
+        assert_eq!(
+            schema["$schema"],
+            "https://json-schema.org/draft/2020-12/schema"
+        );
         assert_eq!(schema["properties"]["version"]["const"], CURRENT_VERSION);
-        assert_eq!(schema["$defs"]["Canvas"]["properties"]["width"]["maximum"], 8192);
+        assert_eq!(
+            schema["$defs"]["Canvas"]["properties"]["width"]["maximum"],
+            8192
+        );
         assert_eq!(schema["$defs"]["Color"]["pattern"], COLOR_PATTERN);
         assert_eq!(schema["$defs"]["Clip"]["additionalProperties"], false);
     }
@@ -426,8 +506,16 @@ mod tests {
             ("/canvas/fps/num", json!(0), "below 1"),
             ("/version", json!(2), "is not 1"),
             ("/scene/layers/0/opacity", json!(1.5), "above 1"),
-            ("/scene/layers/0/fit", json!("stretch"), "matches 0 of oneOf"),
-            ("/scene/layers/0/source/kind", json!("window"), "matches 0 of oneOf"),
+            (
+                "/scene/layers/0/fit",
+                json!("stretch"),
+                "matches 0 of oneOf",
+            ),
+            (
+                "/scene/layers/0/source/kind",
+                json!("window"),
+                "matches 0 of oneOf",
+            ),
             ("/scene/audio/0/gainDb", json!(-61), "below -60"),
             ("/scene/audio/0/syncOffsetMs", json!(5001), "above 5000"),
             ("/scene/audio/0/role", json!("speaker"), "is not one of"),
@@ -436,9 +524,17 @@ mod tests {
             ("/autocut/thresholdDb", json!(3), "above 0"),
             ("/autocut/minKeepMs", json!(60001), "above 60000"),
             ("/autocut/track", json!("A 1"), "matches none of anyOf"),
-            ("/takes/take-0001/recordedAt", json!("yesterday"), "not a valid date-time"),
+            (
+                "/takes/take-0001/recordedAt",
+                json!("yesterday"),
+                "not a valid date-time",
+            ),
             ("/takes/take-0001/status", json!("done"), "is not one of"),
-            ("/takes/take-0001/streams/0/file", json!("/etc/passwd"), "doesn't match"),
+            (
+                "/takes/take-0001/streams/0/file",
+                json!("/etc/passwd"),
+                "doesn't match",
+            ),
             ("/takes/take-0001/streams/0/width", json!(-1), "below 0"),
             ("/timeline/clips/0/id", json!("bad id"), "doesn't match"),
             ("/timeline/clips/0/in", json!(1.5), "not of type integer"),
@@ -448,7 +544,8 @@ mod tests {
         let schema = project_schema();
         for (pointer, value, expected) in cases {
             let mut doc = spec();
-            *doc.pointer_mut(pointer).unwrap_or_else(|| panic!("{pointer}")) = value.clone();
+            *doc.pointer_mut(pointer)
+                .unwrap_or_else(|| panic!("{pointer}")) = value.clone();
             let errors = check(&schema, &doc);
             assert!(
                 errors.iter().any(|e| e.contains(expected)),
@@ -458,14 +555,26 @@ mod tests {
 
         let mut doc = spec();
         doc["canvas"]["fsp"] = json!(30);
-        assert!(check(&schema, &doc).iter().any(|e| e.contains("unknown property fsp")));
+        assert!(
+            check(&schema, &doc)
+                .iter()
+                .any(|e| e.contains("unknown property fsp"))
+        );
         let mut doc = spec();
         doc.as_object_mut().unwrap().remove("timeline");
-        assert!(check(&schema, &doc).iter().any(|e| e.contains("missing required property timeline")));
+        assert!(
+            check(&schema, &doc)
+                .iter()
+                .any(|e| e.contains("missing required property timeline"))
+        );
         let mut doc = spec();
         let take = doc["takes"]["take-0001"].clone();
         doc["takes"]["take-1"] = take;
-        assert!(check(&schema, &doc).iter().any(|e| e.contains("\"take-1\" doesn't match")));
+        assert!(
+            check(&schema, &doc)
+                .iter()
+                .any(|e| e.contains("\"take-1\" doesn't match"))
+        );
     }
 
     #[test]

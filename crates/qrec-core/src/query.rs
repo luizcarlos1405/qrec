@@ -31,7 +31,8 @@ pub fn query(state: &State, ctx: &Ctx, q: &Query) -> Result<Value, CoreError> {
 }
 
 fn to_json(view: &impl Serialize) -> Result<Value, CoreError> {
-    serde_json::to_value(view).map_err(|e| CoreError::internal(format!("view doesn't serialize: {e}")))
+    serde_json::to_value(view)
+        .map_err(|e| CoreError::internal(format!("view doesn't serialize: {e}")))
 }
 
 /// `StatusView` (`path`/`pid` are left `None` for the shell to fill).
@@ -73,7 +74,12 @@ pub fn state_json(state: &State) -> Result<Value, CoreError> {
 
 /// How many timeline clips use `take`.
 fn clip_count(project: &Project, take: &TakeId) -> usize {
-    project.timeline.clips.iter().filter(|c| &c.take == take).count()
+    project
+        .timeline
+        .clips
+        .iter()
+        .filter(|c| &c.take == take)
+        .count()
 }
 
 /// The take is in the bin: no clip uses it and it isn't being recorded.
@@ -273,9 +279,10 @@ mod tests {
     fn takes_and_the_bin() {
         let mut s = state();
         s.project.takes.get_mut(&TakeId::numbered(2)).unwrap().error = None;
-        let rows: Vec<TakeRow> =
-            serde_json::from_value(query(&s, &ctx(), &Query::TakeList { unused_only: false }).unwrap())
-                .unwrap();
+        let rows: Vec<TakeRow> = serde_json::from_value(
+            query(&s, &ctx(), &Query::TakeList { unused_only: false }).unwrap(),
+        )
+        .unwrap();
         let summary: Vec<(String, usize, bool)> = rows
             .iter()
             .map(|r| (r.id.to_string(), r.clips, r.unused))
@@ -291,11 +298,20 @@ mod tests {
         );
         assert_eq!(rows[2].status, TakeStatus::TooShort);
         let bin = query(&s, &ctx(), &Query::TakeList { unused_only: true }).unwrap();
-        let ids: Vec<&str> = bin.as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
+        let ids: Vec<&str> = bin
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
         assert_eq!(ids, ["take-0002", "take-0003"]);
 
         // A take being recorded is not in the bin.
-        s.project.takes.get_mut(&TakeId::numbered(2)).unwrap().status = TakeStatus::Recording;
+        s.project
+            .takes
+            .get_mut(&TakeId::numbered(2))
+            .unwrap()
+            .status = TakeStatus::Recording;
         let bin = query(&s, &ctx(), &Query::TakeList { unused_only: true }).unwrap();
         assert_eq!(bin.as_array().unwrap().len(), 1);
     }
@@ -306,14 +322,35 @@ mod tests {
         let take = s.project.takes[&TakeId::numbered(2)].clone();
         s.project.takes.insert(TakeId::numbered(10_000), take);
         let rows = take_list(&s, false).unwrap();
-        let ids: Vec<&str> = rows.as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
-        assert_eq!(ids, ["take-0001", "take-0002", "take-0003", "take-0004", "take-10000"]);
+        let ids: Vec<&str> = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "take-0001",
+                "take-0002",
+                "take-0003",
+                "take-0004",
+                "take-10000"
+            ]
+        );
     }
 
     #[test]
     fn take_show_is_complete() {
         let s = state();
-        let value = query(&s, &ctx(), &Query::TakeShow { take: TakeId::numbered(1) }).unwrap();
+        let value = query(
+            &s,
+            &ctx(),
+            &Query::TakeShow {
+                take: TakeId::numbered(1),
+            },
+        )
+        .unwrap();
         assert_eq!(value["id"], "take-0001");
         assert_eq!(value["status"], "ok");
         assert_eq!(value["durationFrames"], 300);
@@ -330,7 +367,14 @@ mod tests {
                 {"id": "c002", "take": "take-0001", "in": 150, "out": 300, "start": 100, "duration": 150},
             ])
         );
-        let err = query(&s, &ctx(), &Query::TakeShow { take: TakeId::numbered(9) }).unwrap_err();
+        let err = query(
+            &s,
+            &ctx(),
+            &Query::TakeShow {
+                take: TakeId::numbered(9),
+            },
+        )
+        .unwrap_err();
         assert_eq!(err.code, crate::ErrorCode::NotFound);
         assert_eq!(err.message, "there is no take-0009");
     }
@@ -343,7 +387,10 @@ mod tests {
             .iter()
             .map(|r| (r.id.as_str(), r.start, r.duration))
             .collect();
-        assert_eq!(positions, [("c001", 0, 100), ("c002", 100, 150), ("c003", 250, 100)]);
+        assert_eq!(
+            positions,
+            [("c001", 0, 100), ("c002", 100, 150), ("c003", 250, 100)]
+        );
         assert_eq!(rows[2].in_, 20);
         assert_eq!(rows[2].out, 120);
     }
@@ -351,17 +398,27 @@ mod tests {
     #[test]
     fn history_rows_mark_the_cursor() {
         let mut s = state();
-        for (seq, label) in [(1, "Split clip c001"), (2, "Remove clip c009"), (4, "Autocut take 1")] {
+        for (seq, label) in [
+            (1, "Split clip c001"),
+            (2, "Remove clip c009"),
+            (4, "Autocut take 1"),
+        ] {
             s.history.append(entry(seq, label));
         }
         s.history.cursor = 2;
         let rows: Vec<HistoryRow> =
-            serde_json::from_value(query(&s, &ctx(), &Query::History { limit: None }).unwrap()).unwrap();
+            serde_json::from_value(query(&s, &ctx(), &Query::History { limit: None }).unwrap())
+                .unwrap();
         let summary: Vec<(u64, bool)> = rows.iter().map(|r| (r.seq, r.current)).collect();
         assert_eq!(summary, [(1, false), (2, true), (4, false)]);
         assert_eq!(rows[0].label, "Split clip c001");
         let rows = history(&s, Some(2)).unwrap();
-        let seqs: Vec<u64> = rows.as_array().unwrap().iter().map(|r| r["seq"].as_u64().unwrap()).collect();
+        let seqs: Vec<u64> = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["seq"].as_u64().unwrap())
+            .collect();
         assert_eq!(seqs, [2, 4], "the newest entries, oldest first");
         assert_eq!(history(&s, Some(0)).unwrap(), json!([]));
         assert_eq!(history(&s, Some(99)).unwrap().as_array().unwrap().len(), 3);
@@ -393,7 +450,11 @@ mod tests {
         let value = query(&state(), &ctx(), &Query::Keys).unwrap();
         let view: keymap::KeysView = serde_json::from_value(value).unwrap();
         assert_eq!(view, keymap::keys_view(&keymap::resolve("")));
-        assert!(view.bindings.iter().any(|b| b.id == "clip.split" && b.keys == ["s"]));
+        assert!(
+            view.bindings
+                .iter()
+                .any(|b| b.id == "clip.split" && b.keys == ["s"])
+        );
     }
 
     #[test]
@@ -412,7 +473,9 @@ mod tests {
             Query::Status,
             Query::State,
             Query::TakeList { unused_only: true },
-            Query::TakeShow { take: TakeId::numbered(1) },
+            Query::TakeShow {
+                take: TakeId::numbered(1),
+            },
             Query::ClipList,
             Query::History { limit: Some(5) },
             Query::Keys,

@@ -315,7 +315,10 @@ impl KeyChord {
             }
         };
         let mut chord = KeyChord::key("");
-        for m in mods.map(|m| m.split('+').collect::<Vec<_>>()).unwrap_or_default() {
+        for m in mods
+            .map(|m| m.split('+').collect::<Vec<_>>())
+            .unwrap_or_default()
+        {
             let flag = match m.trim().to_ascii_lowercase().as_str() {
                 "ctrl" | "control" => &mut chord.ctrl,
                 "alt" => &mut chord.alt,
@@ -353,7 +356,13 @@ impl KeyChord {
     /// the modifier state. Letters are lowercased and shift is dropped for
     /// keys that type a character (Shift+, arrives as `less`). `None` for
     /// keys Qrec can't bind (modifier keys alone, dead keys, non-ASCII letters).
-    pub fn from_gdk(keyval: &str, ctrl: bool, alt: bool, shift: bool, super_: bool) -> Option<Self> {
+    pub fn from_gdk(
+        keyval: &str,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        super_: bool,
+    ) -> Option<Self> {
         let (key, kind, shift) = if keyval == "ISO_Left_Tab" {
             ("Tab".to_owned(), KeyKind::Named, true)
         } else {
@@ -464,6 +473,7 @@ const CLI_NUDGE_LAYER: Option<&str> = Some("qrec scene layer set <layer> --rect 
 
 /// SPEC §10.2, plus Backspace for remove (A§9.7) and the canvas nudges of
 /// SPEC §12 (arrow keys with the canvas focused; Shift = 10 px).
+#[rustfmt::skip]
 const DEFAULTS: &[Def] = &[
     // Record
     def("record.toggle", "Record", "Start / stop recording", &["r"], Some("qrec record toggle"), &[Global, Recording]),
@@ -610,7 +620,9 @@ fn apply_overrides(bindings: &mut [Binding], table: &toml::Table, errors: &mut V
                 continue;
             };
             if !seen.insert(id.clone()) {
-                errors.push(format!("keys.toml: `{id}` is set twice; the first one is used"));
+                errors.push(format!(
+                    "keys.toml: `{id}` is set twice; the first one is used"
+                ));
                 continue;
             }
             match override_keys(value) {
@@ -673,7 +685,9 @@ fn find_conflicts(bindings: &[Binding]) -> Vec<Conflict> {
                 continue;
             }
             // Global bindings clashing with each other are reported once, under global.
-            let all_global = users.iter().all(|b| b.contexts.contains(&KeyContext::Global));
+            let all_global = users
+                .iter()
+                .all(|b| b.contexts.contains(&KeyContext::Global));
             if matches!(ctx, KeyContext::Timeline | KeyContext::Canvas) && all_global {
                 continue;
             }
@@ -786,12 +800,26 @@ pub fn cheat_sheet(map: &Keymap) -> String {
         if b.keys.is_empty() {
             "(unbound)".to_owned()
         } else {
-            b.keys.iter().map(KeyChord::display).collect::<Vec<_>>().join("  ")
+            b.keys
+                .iter()
+                .map(KeyChord::display)
+                .collect::<Vec<_>>()
+                .join("  ")
         }
     };
     let width = |text: &str| text.chars().count();
-    let key_width = map.bindings.iter().map(|b| width(&keys_of(b))).max().unwrap_or(0);
-    let label_width = map.bindings.iter().map(|b| width(b.label)).max().unwrap_or(0);
+    let key_width = map
+        .bindings
+        .iter()
+        .map(|b| width(&keys_of(b)))
+        .max()
+        .unwrap_or(0);
+    let label_width = map
+        .bindings
+        .iter()
+        .map(|b| width(b.label))
+        .max()
+        .unwrap_or(0);
     let mut out = String::new();
     for group in GROUPS {
         let rows: Vec<&Binding> = map.bindings.iter().filter(|b| b.group == group).collect();
@@ -862,7 +890,10 @@ const IDLE_HINTS: &[HintDef] = &[
     hint(&["keys.help"], "all keys"),
 ];
 
-const COUNTDOWN_HINTS: &[HintDef] = &[hint(&["cancel"], "cancel"), hint(&["record.toggle"], "cancel")];
+const COUNTDOWN_HINTS: &[HintDef] = &[
+    hint(&["cancel"], "cancel"),
+    hint(&["record.toggle"], "cancel"),
+];
 
 const RECORDING_HINTS: &[HintDef] = &[
     hint(&["record.toggle"], "stop"),
@@ -873,7 +904,10 @@ const RECORDING_HINTS: &[HintDef] = &[
 ];
 
 const FINALIZING_HINTS: &[HintDef] = &[
-    hint(&[], "finalizing the take, waiting for every file to close (up to 10 s)"),
+    hint(
+        &[],
+        "finalizing the take, waiting for every file to close (up to 10 s)",
+    ),
     hint(&["take.discard-last"], "discard it"),
     hint(&["canvas.mode"], "switch view"),
     hint(&["zoom.in", "zoom.out"], "zoom"),
@@ -1010,17 +1044,31 @@ pub fn action_for(id: &str, state: &State) -> Option<Action> {
         "take.discard-last" => discard_last(state),
         "cancel" => cancel(state),
         "play.toggle" => play_toggle(state),
-        "shuttle.reverse" => needs_clips(state, || Command::Shuttle { dir: ShuttleDir::Reverse }),
-        "shuttle.stop" => run(Command::Shuttle { dir: ShuttleDir::Stop }),
-        "shuttle.forward" => needs_clips(state, || Command::Shuttle { dir: ShuttleDir::Forward }),
+        "shuttle.reverse" => needs_clips(state, || Command::Shuttle {
+            dir: ShuttleDir::Reverse,
+        }),
+        "shuttle.stop" => run(Command::Shuttle {
+            dir: ShuttleDir::Stop,
+        }),
+        "shuttle.forward" => needs_clips(state, || Command::Shuttle {
+            dir: ShuttleDir::Forward,
+        }),
         "seek.prev-frame" => seek_by(Sign::Minus, TimeValue::Frames(1)),
         "seek.next-frame" => seek_by(Sign::Plus, TimeValue::Frames(1)),
         "seek.back" => seek_by(Sign::Minus, TimeValue::Seconds(NS_PER_SEC as u64)),
         "seek.forward" => seek_by(Sign::Plus, TimeValue::Seconds(NS_PER_SEC as u64)),
-        "seek.prev-edit" => run(Command::Seek { to: SeekTarget::EditPrev }),
-        "seek.next-edit" => run(Command::Seek { to: SeekTarget::EditNext }),
-        "seek.start" => run(Command::Seek { to: SeekTarget::Start }),
-        "seek.end" => run(Command::Seek { to: SeekTarget::End }),
+        "seek.prev-edit" => run(Command::Seek {
+            to: SeekTarget::EditPrev,
+        }),
+        "seek.next-edit" => run(Command::Seek {
+            to: SeekTarget::EditNext,
+        }),
+        "seek.start" => run(Command::Seek {
+            to: SeekTarget::Start,
+        }),
+        "seek.end" => run(Command::Seek {
+            to: SeekTarget::End,
+        }),
         "select.prev" => needs_clips(state, || Command::Select { op: SelectOp::Prev }),
         "select.next" => needs_clips(state, || Command::Select { op: SelectOp::Next }),
         "select.all" => needs_clips(state, || Command::Select { op: SelectOp::All }),
@@ -1239,15 +1287,15 @@ fn discard_last(state: &State) -> Action {
 
 fn cancel(state: &State) -> Action {
     match &state.runtime.record {
-        RecordPhase::Countdown { .. } | RecordPhase::Starting { .. } | RecordPhase::Recording { .. } => {
-            run(Command::RecordCancel)
-        }
+        RecordPhase::Countdown { .. }
+        | RecordPhase::Starting { .. }
+        | RecordPhase::Recording { .. } => run(Command::RecordCancel),
         RecordPhase::Finalizing { take, .. } => {
             Action::Unavailable(format!("Take {} is finalizing", take.number()))
         }
-        RecordPhase::Idle if !state.ui.selection.is_empty() => {
-            run(Command::Select { op: SelectOp::Clear })
-        }
+        RecordPhase::Idle if !state.ui.selection.is_empty() => run(Command::Select {
+            op: SelectOp::Clear,
+        }),
         RecordPhase::Idle if state.ui.selected_layer.is_some() => run(Command::SetUi {
             patch: UiPatch {
                 selected_layer: Nullable::Clear,
@@ -1350,7 +1398,10 @@ fn trim_to_playhead(state: &State, edge: Edge) -> Action {
         Some((i, _, _)) => Some(i),
         None => match edge {
             Edge::Start => clip_at(clips, p).map(|(i, _)| i),
-            Edge::End => p.checked_sub(1).and_then(|q| clip_at(clips, q)).map(|(i, _)| i),
+            Edge::End => p
+                .checked_sub(1)
+                .and_then(|q| clip_at(clips, q))
+                .map(|(i, _)| i),
         },
     };
     let Some(i) = target else {
@@ -1477,7 +1528,12 @@ impl PaletteRow {
         } else {
             self.keys.join(" ")
         };
-        format!("{} — {} — {}", self.label, keys, self.cli.as_deref().unwrap_or("—"))
+        format!(
+            "{} — {} — {}",
+            self.label,
+            keys,
+            self.cli.as_deref().unwrap_or("—")
+        )
     }
 }
 
@@ -1496,7 +1552,10 @@ pub fn palette(map: &Keymap, state: &State) -> Vec<PaletteRow> {
                 id: b.id.to_owned(),
                 group: b.group.to_owned(),
                 label: b.label.to_owned(),
-                keys: usable_keys(map, b).into_iter().map(KeyChord::display).collect(),
+                keys: usable_keys(map, b)
+                    .into_iter()
+                    .map(KeyChord::display)
+                    .collect(),
                 cli: b.cli.map(str::to_owned),
                 enabled: reason.is_none(),
                 reason,
@@ -1565,26 +1624,67 @@ mod tests {
         assert_eq!(chord("shift+Tab").to_string(), "shift+Tab");
 
         for bad in [
-            "", "ctrl+", "+a", "hyper+a", "ctrl+ctrl+a", "bogus", "ctrl+bogus", "shift+comma",
-            "shift+<", "shift+1", "f0", "f25", "f01", "ctrl++a",
+            "",
+            "ctrl+",
+            "+a",
+            "hyper+a",
+            "ctrl+ctrl+a",
+            "bogus",
+            "ctrl+bogus",
+            "shift+comma",
+            "shift+<",
+            "shift+1",
+            "f0",
+            "f25",
+            "f01",
+            "ctrl++a",
         ] {
             assert!(KeyChord::parse(bad).is_err(), "{bad:?} should not parse");
         }
         let err = "shift+,".parse::<KeyChord>().unwrap_err();
         assert_eq!(err.code, crate::ErrorCode::Usage);
-        assert!(err.message.contains("bind that character instead"), "{}", err.message);
+        assert!(
+            err.message.contains("bind that character instead"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]
     fn chords_from_gdk_events() {
-        assert_eq!(KeyChord::from_gdk("C", false, false, true, false), Some(chord("shift+c")));
-        assert_eq!(KeyChord::from_gdk("less", false, false, true, false), Some(chord("less")));
-        assert_eq!(KeyChord::from_gdk("braceleft", false, true, true, false), Some(chord("alt+braceleft")));
-        assert_eq!(KeyChord::from_gdk("ISO_Left_Tab", false, false, true, false), Some(chord("shift+Tab")));
-        assert_eq!(KeyChord::from_gdk("Left", false, false, true, false), Some(chord("shift+Left")));
-        assert_eq!(KeyChord::from_gdk("Z", true, false, false, false), Some(chord("ctrl+z")), "caps lock");
-        assert_eq!(KeyChord::from_gdk("Shift_L", false, false, true, false), None);
-        assert_eq!(KeyChord::from_gdk("eacute", false, false, false, false), None);
+        assert_eq!(
+            KeyChord::from_gdk("C", false, false, true, false),
+            Some(chord("shift+c"))
+        );
+        assert_eq!(
+            KeyChord::from_gdk("less", false, false, true, false),
+            Some(chord("less"))
+        );
+        assert_eq!(
+            KeyChord::from_gdk("braceleft", false, true, true, false),
+            Some(chord("alt+braceleft"))
+        );
+        assert_eq!(
+            KeyChord::from_gdk("ISO_Left_Tab", false, false, true, false),
+            Some(chord("shift+Tab"))
+        );
+        assert_eq!(
+            KeyChord::from_gdk("Left", false, false, true, false),
+            Some(chord("shift+Left"))
+        );
+        assert_eq!(
+            KeyChord::from_gdk("Z", true, false, false, false),
+            Some(chord("ctrl+z")),
+            "caps lock"
+        );
+        assert_eq!(
+            KeyChord::from_gdk("Shift_L", false, false, true, false),
+            None
+        );
+        assert_eq!(
+            KeyChord::from_gdk("eacute", false, false, false, false),
+            None
+        );
     }
 
     #[test]
@@ -1609,7 +1709,10 @@ mod tests {
             vec![chord("Delete"), chord("x"), chord("BackSpace")],
             "SPEC §10.2 plus Backspace"
         );
-        assert_eq!(action_for("bogus", &testkit::state(ProjectBuilder::new().build())), None);
+        assert_eq!(
+            action_for("bogus", &testkit::state(ProjectBuilder::new().build())),
+            None
+        );
     }
 
     #[test]
@@ -1617,24 +1720,64 @@ mod tests {
         // SPEC §10.2, row by row.
         let map = resolve("");
         let keys = |id: &str| -> Vec<String> {
-            map.binding(id).unwrap().keys.iter().map(KeyChord::display).collect()
+            map.binding(id)
+                .unwrap()
+                .keys
+                .iter()
+                .map(KeyChord::display)
+                .collect()
         };
         assert_eq!(keys("record.toggle"), ["r"]);
         assert_eq!(keys("record.over"), ["o"]);
         assert_eq!(keys("take.discard-last"), ["d"]);
         assert_eq!(keys("cancel"), ["Esc"]);
         assert_eq!(keys("play.toggle"), ["Space"]);
-        assert_eq!([keys("shuttle.reverse"), keys("shuttle.stop"), keys("shuttle.forward")].concat(), ["j", "k", "l"]);
-        assert_eq!([keys("seek.prev-frame"), keys("seek.next-frame")].concat(), ["←", "→"]);
-        assert_eq!([keys("seek.back"), keys("seek.forward")].concat(), ["Shift+←", "Shift+→"]);
-        assert_eq!([keys("seek.prev-edit"), keys("seek.next-edit")].concat(), ["↑", "↓"]);
-        assert_eq!([keys("seek.start"), keys("seek.end")].concat(), ["Home", "End"]);
-        assert_eq!([keys("select.prev"), keys("select.next")].concat(), [",", "."]);
-        assert_eq!([keys("clip.move-left"), keys("clip.move-right")].concat(), ["<", ">"]);
+        assert_eq!(
+            [
+                keys("shuttle.reverse"),
+                keys("shuttle.stop"),
+                keys("shuttle.forward")
+            ]
+            .concat(),
+            ["j", "k", "l"]
+        );
+        assert_eq!(
+            [keys("seek.prev-frame"), keys("seek.next-frame")].concat(),
+            ["←", "→"]
+        );
+        assert_eq!(
+            [keys("seek.back"), keys("seek.forward")].concat(),
+            ["Shift+←", "Shift+→"]
+        );
+        assert_eq!(
+            [keys("seek.prev-edit"), keys("seek.next-edit")].concat(),
+            ["↑", "↓"]
+        );
+        assert_eq!(
+            [keys("seek.start"), keys("seek.end")].concat(),
+            ["Home", "End"]
+        );
+        assert_eq!(
+            [keys("select.prev"), keys("select.next")].concat(),
+            [",", "."]
+        );
+        assert_eq!(
+            [keys("clip.move-left"), keys("clip.move-right")].concat(),
+            ["<", ">"]
+        );
         assert_eq!(keys("clip.split"), ["s"]);
-        assert_eq!([keys("clip.trim-start"), keys("clip.trim-end")].concat(), ["[", "]"]);
-        assert_eq!([keys("clip.nudge-start"), keys("clip.nudge-end")].concat(), ["Alt+[", "Alt+]"]);
-        assert_eq!([keys("clip.nudge-start-10"), keys("clip.nudge-end-10")].concat(), ["Alt+{", "Alt+}"]);
+        assert_eq!(
+            [keys("clip.trim-start"), keys("clip.trim-end")].concat(),
+            ["[", "]"]
+        );
+        assert_eq!(
+            [keys("clip.nudge-start"), keys("clip.nudge-end")].concat(),
+            ["Alt+[", "Alt+]"]
+        );
+        assert_eq!(
+            [keys("clip.nudge-start-10"), keys("clip.nudge-end-10")].concat(),
+            ["Alt+{", "Alt+}"]
+        );
         assert_eq!(keys("clip.remove"), ["Del", "x", "Backspace"]);
         assert_eq!(keys("autocut.run"), ["c"]);
         assert_eq!(keys("autocut.preview"), ["Shift+C"]);
@@ -1676,9 +1819,21 @@ mod tests {
             }]
         );
         assert_eq!(lookup(&map, &chord("x"), KeyContext::Timeline), None);
-        assert_eq!(lookup(&map, &chord("Delete"), KeyContext::Timeline).unwrap().id, "clip.remove");
-        assert_eq!(lookup(&map, &chord("f"), KeyContext::Canvas).unwrap().id, "frame.save");
-        assert_eq!(lookup(&map, &chord("p"), KeyContext::Timeline), None, "p is unbound now");
+        assert_eq!(
+            lookup(&map, &chord("Delete"), KeyContext::Timeline)
+                .unwrap()
+                .id,
+            "clip.remove"
+        );
+        assert_eq!(
+            lookup(&map, &chord("f"), KeyContext::Canvas).unwrap().id,
+            "frame.save"
+        );
+        assert_eq!(
+            lookup(&map, &chord("p"), KeyContext::Timeline),
+            None,
+            "p is unbound now"
+        );
 
         // Errors keep the defaults and are reported one per problem.
         let map = resolve(
@@ -1686,28 +1841,76 @@ mod tests {
         );
         assert_eq!(map.binding("clip.split").unwrap().keys, vec![chord("s")]);
         assert_eq!(map.errors.len(), 5, "{:#?}", map.errors);
-        assert!(map.errors.iter().any(|e| e.contains("`clip.split`") && e.contains("bogus")));
-        assert!(map.errors.iter().any(|e| e.contains("unknown binding `nope`")));
-        assert!(map.errors.iter().any(|e| e.contains("unknown binding `undo`")));
-        assert!(map.errors.iter().any(|e| e.contains("`export`") && e.contains("found 5")));
-        assert!(map.errors.iter().any(|e| e.contains("unknown section `extra`")));
+        assert!(
+            map.errors
+                .iter()
+                .any(|e| e.contains("`clip.split`") && e.contains("bogus"))
+        );
+        assert!(
+            map.errors
+                .iter()
+                .any(|e| e.contains("unknown binding `nope`"))
+        );
+        assert!(
+            map.errors
+                .iter()
+                .any(|e| e.contains("unknown binding `undo`"))
+        );
+        assert!(
+            map.errors
+                .iter()
+                .any(|e| e.contains("`export`") && e.contains("found 5"))
+        );
+        assert!(
+            map.errors
+                .iter()
+                .any(|e| e.contains("unknown section `extra`"))
+        );
 
         let map = resolve("[bindings\n");
         assert_eq!(map.errors.len(), 1);
-        assert!(map.errors[0].starts_with("keys.toml line 1:"), "{}", map.errors[0]);
-        assert_eq!(map.bindings, resolve("").bindings, "a broken file keeps the defaults");
+        assert!(
+            map.errors[0].starts_with("keys.toml line 1:"),
+            "{}",
+            map.errors[0]
+        );
+        assert_eq!(
+            map.bindings,
+            resolve("").bindings,
+            "a broken file keeps the defaults"
+        );
     }
 
     #[test]
     fn conflicts_follow_contexts() {
         // Left seeks on the timeline and nudges layers on the canvas: no conflict.
         let map = resolve("");
-        assert_eq!(lookup(&map, &chord("Left"), KeyContext::Timeline).unwrap().id, "seek.prev-frame");
-        assert_eq!(lookup(&map, &chord("Left"), KeyContext::Canvas).unwrap().id, "layer.nudge-left");
+        assert_eq!(
+            lookup(&map, &chord("Left"), KeyContext::Timeline)
+                .unwrap()
+                .id,
+            "seek.prev-frame"
+        );
+        assert_eq!(
+            lookup(&map, &chord("Left"), KeyContext::Canvas).unwrap().id,
+            "layer.nudge-left"
+        );
         assert_eq!(lookup(&map, &chord("Left"), KeyContext::Recording), None);
-        assert_eq!(lookup(&map, &chord("r"), KeyContext::Recording).unwrap().id, "record.toggle");
-        assert_eq!(lookup(&map, &chord("s"), KeyContext::Recording), None, "editing stops while recording");
-        assert_eq!(lookup(&map, &chord("Escape"), KeyContext::Overlay).unwrap().id, "cancel");
+        assert_eq!(
+            lookup(&map, &chord("r"), KeyContext::Recording).unwrap().id,
+            "record.toggle"
+        );
+        assert_eq!(
+            lookup(&map, &chord("s"), KeyContext::Recording),
+            None,
+            "editing stops while recording"
+        );
+        assert_eq!(
+            lookup(&map, &chord("Escape"), KeyContext::Overlay)
+                .unwrap()
+                .id,
+            "cancel"
+        );
         assert_eq!(lookup(&map, &chord("r"), KeyContext::Overlay), None);
 
         // A global key reused for a timeline-only binding clashes on the timeline only.
@@ -1720,7 +1923,10 @@ mod tests {
                 context: KeyContext::Timeline,
             }]
         );
-        assert_eq!(lookup(&map, &chord("s"), KeyContext::Canvas).unwrap().id, "clip.split");
+        assert_eq!(
+            lookup(&map, &chord("s"), KeyContext::Canvas).unwrap().id,
+            "clip.split"
+        );
         // Two globals clash once, under global.
         let map = resolve("[bindings]\nzoom.selection = \"r\"\n");
         let contexts: Vec<KeyContext> = map.conflicts.iter().map(|c| c.context).collect();
@@ -1739,7 +1945,9 @@ mod tests {
             format_hints(&hints(HintContext::ClipSelected, &map)),
             "s split · [ ] trim to playhead · < > move · x remove · c autocut · o record over · z zoom to clip · ? all keys"
         );
-        let map = resolve("[bindings]\nrecord.toggle = \"F9\"\nrecord.over = []\nclip.remove = \"Delete\"\n");
+        let map = resolve(
+            "[bindings]\nrecord.toggle = \"F9\"\nrecord.over = []\nclip.remove = \"Delete\"\n",
+        );
         assert_eq!(
             format_hints(&hints(HintContext::Idle, &map)),
             "F9 record · s split · c autocut · ? all keys"
@@ -1773,10 +1981,15 @@ mod tests {
     #[test]
     fn commands_for_the_hot_loop() {
         let mut state = editing_state();
-        assert_eq!(command_for("record.toggle", &state), Some(Command::RecordToggle { wait: false }));
+        assert_eq!(
+            command_for("record.toggle", &state),
+            Some(Command::RecordToggle { wait: false })
+        );
         assert_eq!(
             action_for("record.over", &state),
-            Some(Action::Unavailable("Select the clips to record over".into()))
+            Some(Action::Unavailable(
+                "Select the clips to record over".into()
+            ))
         );
         state.ui.selection = ids(&["c003", "c001"]);
         assert_eq!(
@@ -1793,16 +2006,33 @@ mod tests {
             }),
             "the selection in timeline order"
         );
-        assert_eq!(command_for("cancel", &state), Some(Command::Select { op: SelectOp::Clear }));
+        assert_eq!(
+            command_for("cancel", &state),
+            Some(Command::Select {
+                op: SelectOp::Clear
+            })
+        );
 
         // Discard needs a placed take with clips on the timeline (A§5.5).
         assert_eq!(
             action_for("take.discard-last", &state),
             Some(Action::Unavailable("No take to discard yet".into()))
         );
-        state.project.takes.get_mut(&TakeId::numbered(2)).unwrap().placed = true;
-        assert_eq!(command_for("take.discard-last", &state), Some(Command::TakeDiscardLast));
-        state.project.timeline.clips.retain(|c| c.take != TakeId::numbered(2));
+        state
+            .project
+            .takes
+            .get_mut(&TakeId::numbered(2))
+            .unwrap()
+            .placed = true;
+        assert_eq!(
+            command_for("take.discard-last", &state),
+            Some(Command::TakeDiscardLast)
+        );
+        state
+            .project
+            .timeline
+            .clips
+            .retain(|c| c.take != TakeId::numbered(2));
         assert_eq!(
             action_for("take.discard-last", &state),
             Some(Action::Unavailable("Take 2 is already in the bin".into()))
@@ -1815,7 +2045,10 @@ mod tests {
             elapsed_ns: 0,
             waiters: vec![],
         };
-        assert_eq!(command_for("record.toggle", &state), Some(Command::RecordToggle { wait: false }));
+        assert_eq!(
+            command_for("record.toggle", &state),
+            Some(Command::RecordToggle { wait: false })
+        );
         assert_eq!(command_for("cancel", &state), Some(Command::RecordCancel));
         assert_eq!(
             action_for("clip.remove", &state),
@@ -1825,7 +2058,10 @@ mod tests {
             action_for("take.discard-last", &state),
             Some(Action::Unavailable("Not while recording".into()))
         );
-        assert!(matches!(command_for("canvas.mode", &state), Some(Command::SetCanvasMode { .. })));
+        assert!(matches!(
+            command_for("canvas.mode", &state),
+            Some(Command::SetCanvasMode { .. })
+        ));
 
         // Finalizing: d is remembered, r and Esc wait.
         state.runtime.record = RecordPhase::Finalizing {
@@ -1836,7 +2072,10 @@ mod tests {
             waiters: vec![],
             discard: None,
         };
-        assert_eq!(command_for("take.discard-last", &state), Some(Command::TakeDiscardLast));
+        assert_eq!(
+            command_for("take.discard-last", &state),
+            Some(Command::TakeDiscardLast)
+        );
         assert_eq!(
             action_for("record.toggle", &state),
             Some(Action::Unavailable("Take 3 is finalizing".into()))
@@ -1848,7 +2087,9 @@ mod tests {
         let mut state = testkit::state(ProjectBuilder::new().build());
         assert_eq!(
             action_for("record.toggle", &state),
-            Some(Action::Unavailable("Add a layer or audio track first".into()))
+            Some(Action::Unavailable(
+                "Add a layer or audio track first".into()
+            ))
         );
         state = editing_state();
         state.runtime.jobs.insert(
@@ -1863,7 +2104,10 @@ mod tests {
                 started: state.project.created_at,
             },
         );
-        assert!(command_for("record.toggle", &state).is_some(), "a frame save doesn't block");
+        assert!(
+            command_for("record.toggle", &state).is_some(),
+            "a frame save doesn't block"
+        );
         state.runtime.jobs.insert(
             crate::ids::JobId(2),
             Job {
@@ -1899,7 +2143,11 @@ mod tests {
         state.ui.playhead = 130;
         assert_eq!(
             command_for("clip.split", &state),
-            Some(Command::ClipSplit { clip: None, at: TimeArg::frames(130), timeline: true })
+            Some(Command::ClipSplit {
+                clip: None,
+                at: TimeArg::frames(130),
+                timeline: true
+            })
         );
         state.ui.playhead = 100;
         assert_eq!(
@@ -1913,19 +2161,34 @@ mod tests {
             end: end.map(TimeArg::frames),
             timeline: true,
         };
-        assert_eq!(command_for("clip.trim-end", &state), Some(trim("c001", None, Some(100))));
-        assert_eq!(command_for("clip.trim-start", &state), Some(trim("c002", Some(100), None)));
+        assert_eq!(
+            command_for("clip.trim-end", &state),
+            Some(trim("c001", None, Some(100)))
+        );
+        assert_eq!(
+            command_for("clip.trim-start", &state),
+            Some(trim("c002", Some(100), None))
+        );
         // The selected clip wins when the playhead is on it.
         state.ui.playhead = 250;
         state.ui.selection = ids(&["c002"]);
-        assert_eq!(command_for("clip.trim-end", &state), Some(trim("c002", None, Some(250))));
-        assert_eq!(command_for("clip.trim-start", &state), Some(trim("c003", Some(250), None)));
+        assert_eq!(
+            command_for("clip.trim-end", &state),
+            Some(trim("c002", None, Some(250)))
+        );
+        assert_eq!(
+            command_for("clip.trim-start", &state),
+            Some(trim("c003", Some(250), None))
+        );
         state.ui.playhead = 450;
         assert_eq!(
             action_for("clip.split", &state),
             Some(Action::Unavailable("Move the playhead onto a clip".into()))
         );
-        assert_eq!(command_for("clip.trim-end", &state), Some(trim("c003", None, Some(450))));
+        assert_eq!(
+            command_for("clip.trim-end", &state),
+            Some(trim("c003", None, Some(450)))
+        );
 
         // Nudges: start later, end earlier, on the selected clip.
         assert_eq!(
@@ -1953,11 +2216,16 @@ mod tests {
         );
         assert_eq!(
             command_for("clip.move-left", &state),
-            Some(Command::ClipMove { clips: ids(&["c001", "c002"]), to: MoveTo::By(-1) })
+            Some(Command::ClipMove {
+                clips: ids(&["c001", "c002"]),
+                to: MoveTo::By(-1)
+            })
         );
         assert_eq!(
             command_for("clip.remove", &state),
-            Some(Command::ClipRemove { clips: ids(&["c001", "c002"]) })
+            Some(Command::ClipRemove {
+                clips: ids(&["c001", "c002"])
+            })
         );
         assert_eq!(
             command_for("autocut.run", &state),
@@ -1978,7 +2246,11 @@ mod tests {
         );
         assert_eq!(
             command_for("frame.save", &state),
-            Some(Command::FrameSave { at: TimeArg::frames(449), layer: None, out: None }),
+            Some(Command::FrameSave {
+                at: TimeArg::frames(449),
+                layer: None,
+                out: None
+            }),
             "the last frame when the playhead is at the end"
         );
         assert_eq!(command_for("history.undo", &state), None, "nothing to undo");
@@ -1996,19 +2268,30 @@ mod tests {
         assert_eq!(command_for("play.toggle", &state), Some(Command::Pause));
         assert_eq!(
             command_for("seek.back", &state),
-            Some(Command::Seek { to: SeekTarget::By("-1s".parse().unwrap()) })
+            Some(Command::Seek {
+                to: SeekTarget::By("-1s".parse().unwrap())
+            })
         );
         assert_eq!(
             command_for("seek.next-frame", &state),
-            Some(Command::Seek { to: SeekTarget::By("+1f".parse().unwrap()) })
+            Some(Command::Seek {
+                to: SeekTarget::By("+1f".parse().unwrap())
+            })
         );
         assert_eq!(
             command_for("canvas.mode", &state),
-            Some(Command::SetCanvasMode { mode: CanvasMode::Program })
+            Some(Command::SetCanvasMode {
+                mode: CanvasMode::Program
+            })
         );
         assert_eq!(
             command_for("snapping.toggle", &state),
-            Some(Command::SetUi { patch: UiPatch { snapping: Some(false), ..UiPatch::default() } })
+            Some(Command::SetUi {
+                patch: UiPatch {
+                    snapping: Some(false),
+                    ..UiPatch::default()
+                }
+            })
         );
         assert_eq!(action_for("zoom.in", &state), Some(Action::Gui));
         assert_eq!(command_for("zoom.in", &state), None);
@@ -2042,7 +2325,10 @@ mod tests {
             Some(Command::LayerSet {
                 target: SceneTarget::Project,
                 layer: LayerId::numbered(1),
-                patch: LayerPatch { rect: Some(rect(-10, 0)), ..LayerPatch::default() },
+                patch: LayerPatch {
+                    rect: Some(rect(-10, 0)),
+                    ..LayerPatch::default()
+                },
             })
         );
         state.ui.canvas_mode = CanvasMode::Program;
@@ -2052,11 +2338,21 @@ mod tests {
             Some(Command::LayerSet {
                 target: SceneTarget::Take(TakeId::numbered(2)),
                 layer: LayerId::numbered(1),
-                patch: LayerPatch { rect: Some(rect(0, 1)), ..LayerPatch::default() },
+                patch: LayerPatch {
+                    rect: Some(rect(0, 1)),
+                    ..LayerPatch::default()
+                },
             }),
             "Program mode edits the take under the playhead"
         );
-        state.project.takes.get_mut(&TakeId::numbered(2)).unwrap().scene.layers[0].locked = true;
+        state
+            .project
+            .takes
+            .get_mut(&TakeId::numbered(2))
+            .unwrap()
+            .scene
+            .layers[0]
+            .locked = true;
         assert_eq!(
             action_for("layer.nudge-down", &state),
             Some(Action::Unavailable("Layer L1 is locked".into()))
@@ -2096,7 +2392,10 @@ mod tests {
         let over = row("record.over");
         assert!(!over.enabled);
         assert_eq!(over.reason.as_deref(), Some("Needs a contiguous selection"));
-        assert!(row("palette.open").enabled, "GUI actions are always enabled");
+        assert!(
+            row("palette.open").enabled,
+            "GUI actions are always enabled"
+        );
         assert_eq!(row("palette.open").keys, ["Ctrl+K", ":"]);
     }
 

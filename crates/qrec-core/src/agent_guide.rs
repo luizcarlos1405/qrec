@@ -345,9 +345,30 @@ mod tests {
     fn commands_in_the_guide_exist() {
         // Every `qrec <word>` names a top-level command of the CLI (A§10, SPEC §14).
         const COMMANDS: &[&str] = &[
-            "init", "status", "doctor", "sources", "scene", "record", "take", "clip", "autocut",
-            "undo", "redo", "history", "export", "frame", "seek", "play", "pause", "project",
-            "config", "keys", "schema", "agent-guide", "version", "completions",
+            "init",
+            "status",
+            "doctor",
+            "sources",
+            "scene",
+            "record",
+            "take",
+            "clip",
+            "autocut",
+            "undo",
+            "redo",
+            "history",
+            "export",
+            "frame",
+            "seek",
+            "play",
+            "pause",
+            "project",
+            "config",
+            "keys",
+            "schema",
+            "agent-guide",
+            "version",
+            "completions",
         ];
         let guide = agent_guide();
         for (i, _) in guide.match_indices("qrec ") {
@@ -358,7 +379,10 @@ mod tests {
             if word.is_empty() {
                 continue;
             }
-            assert!(COMMANDS.contains(&word.as_str()), "unknown command `qrec {word}`");
+            assert!(
+                COMMANDS.contains(&word.as_str()),
+                "unknown command `qrec {word}`"
+            );
         }
     }
 
