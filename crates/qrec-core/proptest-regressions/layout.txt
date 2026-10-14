@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 0d932066588847c36b44a1ded0645f0ae45bed0d72dafa2496707ca8bfb7df43 # shrinks to sw = 385, sh = 449, ct = 0, cr = 17, cb = 0, cl = 7, x = 0, y = 0, w = 55, h = 21, cover = false
+cc b49ff8fadf0e14245bc21dd0360001a15d02c1d36e9ea08e0a954edbcaedfaa9 # shrinks to sw = 426, sh = 545, ct = 118, cr = 0, cb = 390, cl = 0, x = 0, y = 0, w = 2, h = 398, cover = false

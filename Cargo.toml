@@ -24,7 +24,6 @@ thiserror = "2.0.21"
 schemars = { version = "1.2.3", features = ["chrono04"] }
 chrono = { version = "0.4.45", default-features = false, features = ["std", "serde"] }
 json-patch = { version = "4.2.0", default-features = false }
-jsonptr = "0.7.1"
 sha2 = "0.11.1"
 hex = "0.4.3"
 toml = "1.1.8"
@@ -37,9 +36,9 @@ gst-video = { package = "gstreamer-video", version = "0.25.4", features = ["v1_2
 gst-audio = { package = "gstreamer-audio", version = "0.25.4", features = ["v1_24"] }
 gst-pbutils = { package = "gstreamer-pbutils", version = "0.25.4", features = ["v1_24"] }
 ges = { package = "gstreamer-editing-services", version = "0.25.4", features = ["v1_24"] }
-ashpd = { version = "0.13.13", default-features = false, features = ["tokio", "screencast"] }
-tokio = { version = "1", features = ["rt", "macros", "time", "sync"] }
-rustix = { version = "1.1.5", features = ["fs", "process", "thread", "net"] }
+ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "screencast", "camera"] }
+futures-lite = "2.6.1"
+rustix = { version = "1.1.5", features = ["process", "termios"] }
 crossbeam-channel = "0.5.17"
 notify = { version = "8.2.0", default-features = false }
 wayland-client = "0.31.15"

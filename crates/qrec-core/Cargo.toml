@@ -13,11 +13,15 @@ thiserror.workspace = true
 schemars.workspace = true
 chrono.workspace = true
 json-patch.workspace = true
-jsonptr.workspace = true
 sha2.workspace = true
 hex.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
+proptest = { workspace = true, optional = true }
+
+[features]
+# Pure test helpers (ProjectBuilder, ctx(), proptest strategies) for other crates' tests.
+testkit = ["dep:proptest"]
 
 [dev-dependencies]
 proptest.workspace = true

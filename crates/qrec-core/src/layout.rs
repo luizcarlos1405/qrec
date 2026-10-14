@@ -44,7 +44,8 @@ fn even_round(v: f64) -> u32 {
 
 /// Places a `src_w × src_h` source cropped by `crop` into `rect` with `fit`.
 ///
-/// Returns `None` when nothing would be visible (empty crop or empty rect).
+/// Returns `None` when nothing would be visible: an empty crop or rect, or a
+/// result thinner than a pixel.
 pub fn place(src_w: u32, src_h: u32, crop: Crop, rect: Rect, fit: Fit) -> Option<Placement> {
     if rect.w == 0 || rect.h == 0 {
         return None;
@@ -60,6 +61,9 @@ pub fn place(src_w: u32, src_h: u32, crop: Crop, rect: Rect, fit: Fit) -> Option
     match fit {
         Fit::Contain => {
             let scale = (rwf / cwf).min(rhf / chf);
+            if cwf * scale < 1.0 || chf * scale < 1.0 {
+                return None; // thinner than a pixel: nothing visible
+            }
             let w = even_round(cwf * scale).min(even_down(rect.w).max(2));
             let h = even_round(chf * scale).min(even_down(rect.h).max(2));
             let x = rect.x + ((i64::from(rect.w) - i64::from(w)) / 2) as i32;
@@ -68,11 +72,11 @@ pub fn place(src_w: u32, src_h: u32, crop: Crop, rect: Rect, fit: Fit) -> Option
         }
         Fit::Cover => {
             // Crop the source (centered) to the rect's aspect ratio, then scale.
-            let (sw, sh) = if cwf * rhf > chf * rwf {
-                (even_round(chf * rwf / rhf).min(cw), ch)
-            } else {
-                (cw, even_round(cwf * rhf / rwf).min(ch))
-            };
+            let (raw_w, raw_h) = if cwf * rhf > chf * rwf { (chf * rwf / rhf, chf) } else { (cwf, cwf * rhf / rwf) };
+            if raw_w < 1.0 || raw_h < 1.0 {
+                return None; // the visible source region is thinner than a pixel
+            }
+            let (sw, sh) = (even_round(raw_w).min(cw), even_round(raw_h).min(ch));
             let sx = left + even_down((cw - sw) / 2);
             let sy = top + even_down((ch - sh) / 2);
             let w = even_down(rect.w).max(2);

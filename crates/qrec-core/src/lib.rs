@@ -5,8 +5,10 @@
 //! come out, and turns their results into events (docs/ARCHITECTURE.md).
 
 #![forbid(unsafe_code)]
+#![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 
 pub mod error;
+pub mod hash;
 pub mod ids;
 pub mod layout;
 pub mod model;

@@ -472,7 +472,6 @@ dependencies = [
  "hex",
  "insta",
  "json-patch",
- "jsonptr",
  "pretty_assertions",
  "proptest",
  "schemars",
