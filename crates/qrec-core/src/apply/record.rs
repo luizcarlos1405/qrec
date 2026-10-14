@@ -186,8 +186,10 @@ pub(crate) fn check_can_start(state: &State) -> Result<(), CoreError> {
         .values()
         .find(|j| matches!(j.kind, JobKind::Export { .. }));
     if let Some(job) = export {
-        return Err(CoreError::busy(format!("an export is running ({})", job.id))
-            .with_hint("wait for it to finish, or cancel it with qrec export cancel"));
+        return Err(
+            CoreError::busy(format!("an export is running ({})", job.id))
+                .with_hint("wait for it to finish, or cancel it with qrec export cancel"),
+        );
     }
     if state.project.scene.is_empty() {
         return Err(capture_plan::empty_scene());
@@ -204,9 +206,8 @@ fn resolve_mode(state: &State, mode: RecordModeArg) -> Result<RecordMode, CoreEr
         RecordModeArg::OverSelection => {
             if state.ui.selection.is_empty() {
                 return Err(
-                    CoreError::unavailable("no clips are selected to record over").with_hint(
-                        "select clips on the timeline, or pass --over <clip>… instead",
-                    ),
+                    CoreError::unavailable("no clips are selected to record over")
+                        .with_hint("select clips on the timeline, or pass --over <clip>… instead"),
                 );
             }
             over_refs(state, &state.ui.selection)
@@ -230,11 +231,8 @@ fn over_refs(state: &State, ids: &[ClipId]) -> Result<RecordMode, CoreError> {
     }
     indices.sort_unstable();
     if indices.windows(2).any(|w| w[1] != w[0] + 1) {
-        return Err(
-            CoreError::invalid("record over needs contiguous clips").with_hint(
-                "pick clips that sit next to each other on the timeline",
-            ),
-        );
+        return Err(CoreError::invalid("record over needs contiguous clips")
+            .with_hint("pick clips that sit next to each other on the timeline"));
     }
     let clips = &state.project.timeline.clips;
     Ok(RecordMode::Over {
@@ -491,8 +489,11 @@ pub(crate) fn discard_last(state: &State, ctx: &Ctx) -> Result<Discarded, CoreEr
     let n = take_id.number();
     let clips = &project.timeline.clips;
     let Some(first) = clips.iter().position(|c| &c.take == take_id) else {
-        return Err(CoreError::not_found(format!("Take {n} is already in the bin"))
-            .with_hint("d only discards the newest take; remove other clips with qrec clip remove"));
+        return Err(
+            CoreError::not_found(format!("Take {n} is already in the bin")).with_hint(
+                "d only discards the newest take; remove other clips with qrec clip remove",
+            ),
+        );
     };
     let removed: Vec<ClipId> = clips
         .iter()
@@ -609,7 +610,11 @@ fn purge_confirmation(ctx: &Ctx, takes: &[TakeId], rewrite: &PurgeRewrite) -> Co
         1 => "1 file".to_owned(),
         n => format!("{n} files"),
     };
-    let mut what = format!("purge {} ({count}, {})", join_ids(takes), human_bytes(bytes));
+    let mut what = format!(
+        "purge {} ({count}, {})",
+        join_ids(takes),
+        human_bytes(bytes)
+    );
     match rewrite.entries_lost {
         0 => {}
         1 => what.push_str(" and drop 1 history entry"),
@@ -818,8 +823,8 @@ mod tests {
     fn over_needs_contiguous_existing_clips() {
         let state = testkit::state(project());
         let ids = |xs: &[&str]| xs.iter().map(|x| ClipId::from_raw(*x)).collect::<Vec<_>>();
-        let mode = resolve_mode(&state, RecordModeArg::Over(ids(&["c002", "c001", "c002"])))
-            .unwrap();
+        let mode =
+            resolve_mode(&state, RecordModeArg::Over(ids(&["c002", "c001", "c002"]))).unwrap();
         let RecordMode::Over { clips } = mode else {
             panic!("over")
         };
@@ -897,7 +902,9 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["append1", "append2", "mkdir", "project", "ui", "notify", "capture"]
+            [
+                "append1", "append2", "mkdir", "project", "ui", "notify", "capture"
+            ]
         );
     }
 
@@ -1172,7 +1179,11 @@ mod tests {
         let out = purge(&state, &c, vec![TakeId::numbered(2)], rewrite.clone());
         assert_eq!(out.reply, None, "replied when the directories are gone");
         assert!(!out.state.project.takes.contains_key(&TakeId::numbered(2)));
-        assert!(out.state.project.takes[&TakeId::numbered(3)].replaced.is_empty());
+        assert!(
+            out.state.project.takes[&TakeId::numbered(3)]
+                .replaced
+                .is_empty()
+        );
         assert_eq!(out.state.history, rewrite.history);
         let job = JobId(1);
         assert_eq!(

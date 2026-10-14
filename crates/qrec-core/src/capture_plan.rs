@@ -207,11 +207,11 @@ pub fn choose_encoder(project: &Project, caps: &Capabilities, facts: &Facts) -> 
     if pref == EncoderPref::X264 {
         return x264();
     }
-    let configured = project
-        .recording
+    let configured = project.recording.vaapi_device.as_deref().or(facts
+        .config
+        .encoder
         .vaapi_device
-        .as_deref()
-        .or(facts.config.encoder.vaapi_device.as_deref());
+        .as_deref());
     let Some(va) = &caps.vaapi else {
         return x264();
     };
@@ -264,7 +264,10 @@ pub fn choose_camera_mode(modes: &[CameraMode], fps: Fps) -> Option<CameraMode> 
     let rate = if qualifying.is_empty() {
         pool.iter().map(|m| m.fps).max_by(|a, b| cmp_fps(*a, *b))?
     } else {
-        qualifying.iter().map(|m| m.fps).min_by(|a, b| cmp_fps(*a, *b))?
+        qualifying
+            .iter()
+            .map(|m| m.fps)
+            .min_by(|a, b| cmp_fps(*a, *b))?
     };
     pool.into_iter()
         .filter(|m| cmp_fps(m.fps, rate).is_eq())
@@ -400,7 +403,10 @@ mod tests {
             mode(1280, 720, Fps::new(30, 1), "image/jpeg"),
             mode(1280, 720, Fps::new(30, 1), "YUY2"),
         ];
-        assert_eq!(choose_camera_mode(&tie, Fps::new(30, 1)).unwrap().format, "YUY2");
+        assert_eq!(
+            choose_camera_mode(&tie, Fps::new(30, 1)).unwrap().format,
+            "YUY2"
+        );
         // Only compressed modes: still a choice.
         let h264 = vec![mode(1920, 1080, Fps::new(30, 1), "video/x-h264")];
         assert_eq!(choose_camera_mode(&h264, Fps::new(30, 1)).unwrap(), h264[0]);
@@ -422,9 +428,15 @@ mod tests {
         let names: Vec<String> = odd.scene.layers.iter().map(video_file_name).collect();
         assert_eq!(
             names,
-            ["L3-screen-HDMI_A_1__.mkv", "L4-camera-17.mkv", "L5-camera-0.mkv"]
+            [
+                "L3-screen-HDMI_A_1__.mkv",
+                "L4-camera-17.mkv",
+                "L5-camera-0.mkv"
+            ]
         );
-        let long = ProjectBuilder::new().screen_layer("L1", &"X".repeat(300)).build();
+        let long = ProjectBuilder::new()
+            .screen_layer("L1", &"X".repeat(300))
+            .build();
         let name = video_file_name(&long.scene.layers[0]);
         assert!(name.ends_with(".mkv") && name.len() <= 120, "{name}");
     }
@@ -457,7 +469,10 @@ mod tests {
         // The project's vaapi beats a config x264.
         let mut va = project.clone();
         va.recording.encoder = EncoderPref::Vaapi;
-        assert!(matches!(choose_encoder(&va, &intel, &cfg), VideoEncoder::Va { .. }));
+        assert!(matches!(
+            choose_encoder(&va, &intel, &cfg),
+            VideoEncoder::Va { .. }
+        ));
 
         // A configured node must be the node the capabilities describe.
         let mut other_node = project.clone();
