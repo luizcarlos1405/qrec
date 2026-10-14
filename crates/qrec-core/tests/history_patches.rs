@@ -36,7 +36,12 @@ fn entry_from(state: &State, edit: impl FnOnce(&mut Project)) -> HistoryEntry {
     let mut next = state.clone();
     edit(&mut next.project);
     let c = commit(state, &ctx, "edit".into(), Value::Null, next);
-    c.state.history.entries.last().cloned().expect("the edit changed something")
+    c.state
+        .history
+        .entries
+        .last()
+        .cloned()
+        .expect("the edit changed something")
 }
 
 fn render(entry: &HistoryEntry) -> String {
@@ -73,7 +78,9 @@ fn clip(id: &str, take: &str, in_: u64, out: u64) -> Clip {
 fn split_clip() {
     let e = entry(|p| {
         p.timeline.clips[0].out = 300;
-        p.timeline.clips.insert(1, clip("c9b2", "take-0001", 300, 410));
+        p.timeline
+            .clips
+            .insert(1, clip("c9b2", "take-0001", 300, 410));
     });
     insta::assert_snapshot!("split_clip", render(&e));
 }
@@ -160,10 +167,14 @@ fn autocut_settings_and_remove_a_track() {
 fn place_a_new_take() {
     let mut state = spec_like();
     let mut take = state.project.takes[&TakeId::numbered(2)].clone();
-    take.streams.iter_mut().for_each(|s| s.file = s.file.replace("take-0002", "take-0003"));
+    take.streams
+        .iter_mut()
+        .for_each(|s| s.file = s.file.replace("take-0002", "take-0003"));
     state.project.takes.insert(TakeId::numbered(3), take);
     state.project.next_take_number = 4;
-    let e = entry_from(&state, |p| p.timeline.clips.push(clip("c3e1", "take-0003", 0, 300)));
+    let e = entry_from(&state, |p| {
+        p.timeline.clips.push(clip("c3e1", "take-0003", 0, 300))
+    });
     let text = render(&e);
     assert!(!text.contains("/takes/"), "{text}");
     insta::assert_snapshot!("place_a_new_take", text);

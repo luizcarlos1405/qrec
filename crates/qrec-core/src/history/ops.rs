@@ -113,7 +113,11 @@ pub fn apply_patch(project: &Project, patch: &Patch) -> Result<Project, CoreErro
 }
 
 /// [`apply_patch`] with another check.
-pub fn apply_patch_with(project: &Project, patch: &Patch, check: Check) -> Result<Project, CoreError> {
+pub fn apply_patch_with(
+    project: &Project,
+    patch: &Patch,
+    check: Check,
+) -> Result<Project, CoreError> {
     let mut value = project_value(project);
     json_patch::patch(&mut value, patch).map_err(|e| {
         CoreError::invalid(format!("the patch doesn't apply: {}", patch_failure(&e)))
@@ -124,16 +128,18 @@ pub fn apply_patch_with(project: &Project, patch: &Patch, check: Check) -> Resul
 
 /// The project the base snapshot `base` becomes after `entries` are redone
 /// in order (rebuilding a project from `history.base.json`, A§7.7).
-pub fn replay(base: &Project, entries: &[HistoryEntry], check: Check) -> Result<Project, CoreError> {
+pub fn replay(
+    base: &Project,
+    entries: &[HistoryEntry],
+    check: Check,
+) -> Result<Project, CoreError> {
     let mut value = project_value(base);
     for entry in entries {
         step(&mut value, entry, Direction::Redo)?;
     }
     match entries.last() {
         None => Ok(base.clone()),
-        Some(last) => {
-            finish(base, value, check).map_err(|e| step_failed(last, Direction::Redo, e))
-        }
+        Some(last) => finish(base, value, check).map_err(|e| step_failed(last, Direction::Redo, e)),
     }
 }
 
@@ -210,10 +216,10 @@ pub fn undo_with(state: &State, steps: u32, check: Check) -> Result<State, CoreE
             .with_hint("`qrec history` lists the entries; the cursor is at the oldest one"));
     }
     if steps > pos {
-        return Err(CoreError::invalid(format!(
-            "can't undo {steps} steps: only {pos} to undo"
-        ))
-        .with_details(json!({ "available": pos })));
+        return Err(
+            CoreError::invalid(format!("can't undo {steps} steps: only {pos} to undo"))
+                .with_details(json!({ "available": pos })),
+        );
     }
     move_to(state, pos - steps, check)
 }
@@ -232,8 +238,9 @@ pub fn redo_with(state: &State, steps: u32, check: Check) -> Result<State, CoreE
         return Err(CoreError::usage("redo needs at least 1 step"));
     }
     if available == 0 {
-        return Err(CoreError::invalid("nothing to redo")
-            .with_hint("the cursor is at the newest entry"));
+        return Err(
+            CoreError::invalid("nothing to redo").with_hint("the cursor is at the newest entry")
+        );
     }
     if steps > available {
         return Err(CoreError::invalid(format!(
@@ -251,7 +258,8 @@ pub fn restore(state: &State, seq: u64) -> Result<State, CoreError> {
 
 /// [`restore`] with another check.
 pub fn restore_with(state: &State, seq: u64, check: Check) -> Result<State, CoreError> {
-    let target = position_of(&state.history, seq).ok_or_else(|| unknown_seq(&state.history, seq))?;
+    let target =
+        position_of(&state.history, seq).ok_or_else(|| unknown_seq(&state.history, seq))?;
     move_to(state, target, check)
 }
 
@@ -275,9 +283,15 @@ pub fn move_to(state: &State, target: usize, check: Check) -> Result<State, Core
         )));
     }
     let (dir, entries): (Direction, Vec<&HistoryEntry>) = if target < pos {
-        (Direction::Undo, history.entries[target..pos].iter().rev().collect())
+        (
+            Direction::Undo,
+            history.entries[target..pos].iter().rev().collect(),
+        )
     } else {
-        (Direction::Redo, history.entries[pos..target].iter().collect())
+        (
+            Direction::Redo,
+            history.entries[pos..target].iter().collect(),
+        )
     };
     let mut next = state.clone();
     next.history.cursor = seq_at(history, target);
@@ -322,7 +336,12 @@ pub fn compact_to(
         return None;
     }
     let mut value = project_value(current);
-    for (i, entry) in history.entries[..pos].iter().enumerate().skip(dropped).rev() {
+    for (i, entry) in history.entries[..pos]
+        .iter()
+        .enumerate()
+        .skip(dropped)
+        .rev()
+    {
         if json_patch::patch(&mut value, &entry.inverse).is_err() {
             dropped = i + 1;
             break;
@@ -421,7 +440,10 @@ mod tests {
         let one = undo_with(&last, 1, unchecked).unwrap();
         assert_eq!(one.project, states[2].project);
         assert_eq!(one.history.cursor, 2);
-        assert_eq!(one.history.entries, last.history.entries, "undo keeps the entries");
+        assert_eq!(
+            one.history.entries, last.history.entries,
+            "undo keeps the entries"
+        );
 
         let all = undo_with(&last, 3, unchecked).unwrap();
         assert_eq!(all.project, states[0].project);
@@ -450,10 +472,22 @@ mod tests {
         let err = redo_with(&last, 1, unchecked).unwrap_err();
         assert_eq!(err.message, "nothing to redo");
         let bottom = undo_with(&last, 3, unchecked).unwrap();
-        assert_eq!(undo_with(&bottom, 1, unchecked).unwrap_err().message, "nothing to undo");
-        assert_eq!(redo_with(&bottom, 5, unchecked).unwrap_err().message, "can't redo 5 steps: only 3 to redo");
-        assert_eq!(undo_with(&last, 0, unchecked).unwrap_err().code, ErrorCode::Usage);
-        assert_eq!(redo_with(&bottom, 0, unchecked).unwrap_err().code, ErrorCode::Usage);
+        assert_eq!(
+            undo_with(&bottom, 1, unchecked).unwrap_err().message,
+            "nothing to undo"
+        );
+        assert_eq!(
+            redo_with(&bottom, 5, unchecked).unwrap_err().message,
+            "can't redo 5 steps: only 3 to redo"
+        );
+        assert_eq!(
+            undo_with(&last, 0, unchecked).unwrap_err().code,
+            ErrorCode::Usage
+        );
+        assert_eq!(
+            redo_with(&bottom, 0, unchecked).unwrap_err().code,
+            ErrorCode::Usage
+        );
         let err = restore_with(&last, 9, unchecked).unwrap_err();
         assert_eq!(err.code, ErrorCode::NotFound);
         assert_eq!(err.message, "no history entry 9");
@@ -470,11 +504,17 @@ mod tests {
         let err = undo_with(&one, 2, unchecked).unwrap_err();
         assert_eq!(err.code, ErrorCode::Invalid);
         assert!(
-            err.message.starts_with("can't undo entry 1 (\"Trim c002\"): the project no longer matches the history"),
+            err.message.starts_with(
+                "can't undo entry 1 (\"Trim c002\"): the project no longer matches the history"
+            ),
             "{}",
             err.message
         );
-        assert!(err.message.contains("/timeline/clips/1/in"), "{}", err.message);
+        assert!(
+            err.message.contains("/timeline/clips/1/in"),
+            "{}",
+            err.message
+        );
         assert_eq!(err.details.as_ref().unwrap()["seq"], 1);
         // Nothing changed: the whole multi-step undo is refused.
         let err = undo_with(&last, 3, unchecked).unwrap_err();
@@ -491,9 +531,15 @@ mod tests {
             }
         }
         let err = undo_with(&last, 1, no_c001).unwrap_err();
-        assert_eq!(err.message, "can't undo entry 3 (\"Remove c001\"): c001 is not allowed");
+        assert_eq!(
+            err.message,
+            "can't undo entry 3 (\"Remove c001\"): c001 is not allowed"
+        );
         assert_eq!(err.hint.as_deref(), Some("remove it"));
-        assert_eq!(err.details.as_ref().unwrap()["cause"]["message"], "c001 is not allowed");
+        assert_eq!(
+            err.details.as_ref().unwrap()["cause"]["message"],
+            "c001 is not allowed"
+        );
         let bottom = undo_with(&last, 3, unchecked).unwrap();
         // Redo 3 ends without c001: fine, even though intermediate states had it.
         assert!(redo_with(&bottom, 3, no_c001).is_ok());
@@ -510,14 +556,20 @@ mod tests {
                 clip.out *= 2;
             }
         });
-        assert_eq!(s1.project.takes.values().next().unwrap().duration_frames, 600);
+        assert_eq!(
+            s1.project.takes.values().next().unwrap().duration_frames,
+            600
+        );
         let undone = undo_with(&s1, 1, unchecked).unwrap();
         assert_eq!(undone.project, s0.project, "durations back at 30 fps");
         let redone = redo_with(&undone, 1, unchecked).unwrap();
         assert_eq!(redone.project, s1.project);
         // A single patch applied by hand does the same.
         let entry = &s1.history.entries[0];
-        assert_eq!(apply_patch_with(&s1.project, &entry.inverse, unchecked).unwrap(), s0.project);
+        assert_eq!(
+            apply_patch_with(&s1.project, &entry.inverse, unchecked).unwrap(),
+            s0.project
+        );
     }
 
     #[test]
@@ -527,7 +579,9 @@ mod tests {
         // A take recorded after the entry (facts are persisted, not undoable).
         let mut s2 = s1.clone();
         let mut take = s2.project.takes.values().next().unwrap().clone();
-        take.streams.iter_mut().for_each(|s: &mut Stream| s.file = s.file.replace("take-0001", "take-0002"));
+        take.streams
+            .iter_mut()
+            .for_each(|s: &mut Stream| s.file = s.file.replace("take-0001", "take-0002"));
         s2.project.takes.insert("take-0002".parse().unwrap(), take);
         s2.project.next_take_number = 3;
         let undone = undo_with(&s2, 1, unchecked).unwrap();
@@ -542,10 +596,17 @@ mod tests {
         let last = &states[3];
         let rebuilt = replay(&states[0].project, &last.history.entries, unchecked).unwrap();
         assert_eq!(rebuilt, last.project);
-        assert_eq!(replay(&states[0].project, &[], unchecked).unwrap(), states[0].project);
+        assert_eq!(
+            replay(&states[0].project, &[], unchecked).unwrap(),
+            states[0].project
+        );
         // Replaying onto the wrong base fails at the first entry that doesn't fit.
         let err = replay(&last.project, &last.history.entries, unchecked).unwrap_err();
-        assert!(err.message.starts_with("can't redo entry 1"), "{}", err.message);
+        assert!(
+            err.message.starts_with("can't redo entry 1"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]
@@ -558,18 +619,29 @@ mod tests {
         .unwrap();
         let err = apply_patch_with(&s.project, &patch, unchecked).unwrap_err();
         assert_eq!(err.code, ErrorCode::Invalid);
-        assert_eq!(err.message, "the patch doesn't apply: value did not match at /name");
-        let patch: Patch =
-            serde_json::from_value(json!([{"op": "replace", "path": "/canvas/fps", "value": "fast"}])).unwrap();
+        assert_eq!(
+            err.message,
+            "the patch doesn't apply: value did not match at /name"
+        );
+        let patch: Patch = serde_json::from_value(
+            json!([{"op": "replace", "path": "/canvas/fps", "value": "fast"}]),
+        )
+        .unwrap();
         let err = apply_patch_with(&s.project, &patch, unchecked).unwrap_err();
-        assert!(err.message.starts_with("the patched project doesn't parse"), "{}", err.message);
+        assert!(
+            err.message.starts_with("the patched project doesn't parse"),
+            "{}",
+            err.message
+        );
     }
 
     /// `n` renames on top of [`start`].
     fn renames(n: usize) -> State {
         let mut state = start();
         for i in 0..n {
-            state = edit(&state, &format!("Rename {i}"), |p| p.name = format!("name {i}"));
+            state = edit(&state, &format!("Rename {i}"), |p| {
+                p.name = format!("name {i}")
+            });
         }
         state
     }
@@ -577,17 +649,33 @@ mod tests {
     #[test]
     fn compaction_keeps_the_newest_entries() {
         let state = renames(12);
-        assert!(compact_to(&state.history, &state.project, 12, 8).is_none(), "not above the limit");
+        assert!(
+            compact_to(&state.history, &state.project, 12, 8).is_none(),
+            "not above the limit"
+        );
         let (history, op) = compact_to(&state.history, &state.project, 10, 8).unwrap();
         let seqs: Vec<u64> = history.entries.iter().map(|e| e.seq).collect();
         assert_eq!(seqs, (5..=12).collect::<Vec<_>>());
-        assert_eq!((history.base_seq, history.cursor, history.next_seq), (4, 12, 13));
-        let HistoryOp::Rewrite { entries, base, base_seq, cursor, next_seq } = op else {
+        assert_eq!(
+            (history.base_seq, history.cursor, history.next_seq),
+            (4, 12, 13)
+        );
+        let HistoryOp::Rewrite {
+            entries,
+            base,
+            base_seq,
+            cursor,
+            next_seq,
+        } = op
+        else {
             panic!("compaction rewrites")
         };
         assert_eq!(entries, *history.entries);
         assert_eq!((base_seq, cursor, next_seq), (4, 12, 13));
-        assert_eq!(base.name, "name 3", "the state after the last dropped entry");
+        assert_eq!(
+            base.name, "name 3",
+            "the state after the last dropped entry"
+        );
         // The current state is still reachable from the new base, and undo
         // goes back exactly to it.
         assert_eq!(replay(&base, &entries, unchecked).unwrap(), state.project);
@@ -596,7 +684,10 @@ mod tests {
         let bottom = undo_with(&compacted, 8, unchecked).unwrap();
         assert_eq!(bottom.project, *base);
         assert_eq!(bottom.history.cursor, 4);
-        assert_eq!(undo_with(&bottom, 1, unchecked).unwrap_err().message, "nothing to undo");
+        assert_eq!(
+            undo_with(&bottom, 1, unchecked).unwrap_err().message,
+            "nothing to undo"
+        );
     }
 
     #[test]
@@ -604,12 +695,18 @@ mod tests {
         let state = renames(12);
         let undone = undo_with(&state, 10, unchecked).unwrap();
         let (history, _) = compact_to(&undone.history, &undone.project, 10, 8).unwrap();
-        assert_eq!(history.base_seq, 2, "only the 2 entries before the cursor go");
+        assert_eq!(
+            history.base_seq, 2,
+            "only the 2 entries before the cursor go"
+        );
         assert_eq!(history.cursor, 2);
         assert_eq!(history.entries.len(), 10);
         let mut compacted = undone.clone();
         compacted.history = history;
-        assert_eq!(redo_with(&compacted, 10, unchecked).unwrap().project, state.project);
+        assert_eq!(
+            redo_with(&compacted, 10, unchecked).unwrap().project,
+            state.project
+        );
         // At the very bottom nothing can be dropped.
         let bottom = undo_with(&state, 12, unchecked).unwrap();
         assert!(compact_to(&bottom.history, &bottom.project, 10, 8).is_none());
@@ -624,9 +721,14 @@ mod tests {
             t.value = json!("tampered");
         }
         let (history, op) = compact_to(&state.history, &state.project, 10, 10).unwrap();
-        assert_eq!(history.base_seq, 6, "entries up to the broken one are dropped");
+        assert_eq!(
+            history.base_seq, 6,
+            "entries up to the broken one are dropped"
+        );
         assert_eq!(history.entries.len(), 6);
-        let HistoryOp::Rewrite { base, .. } = op else { panic!() };
+        let HistoryOp::Rewrite { base, .. } = op else {
+            panic!()
+        };
         assert_eq!(base.name, "name 5");
     }
 
@@ -640,10 +742,15 @@ mod tests {
         for i in 0..3 {
             state = edit(&state, "Rename", |p| p.name = format!("n{i}"));
         }
-        assert_eq!(state.project.takes.values().next().unwrap().duration_frames, 600);
+        assert_eq!(
+            state.project.takes.values().next().unwrap().duration_frames,
+            600
+        );
         // Drops the first rename: the base is before the fps change.
         let (_, op) = compact_to(&state.history, &state.project, 4, 4).unwrap();
-        let HistoryOp::Rewrite { base, base_seq, .. } = op else { panic!() };
+        let HistoryOp::Rewrite { base, base_seq, .. } = op else {
+            panic!()
+        };
         assert_eq!(base_seq, 1);
         assert_eq!(base.canvas.fps, Fps::new(30, 1));
         assert_eq!(base.takes.values().next().unwrap().duration_frames, 300);
@@ -653,7 +760,12 @@ mod tests {
     fn rewritten_histories_rebuild_seen_ids() {
         let states = three_edits();
         let last = &states[3];
-        assert!(last.history.seen_clip_ids.iter().any(|id| id.as_str() == "c001"));
+        assert!(
+            last.history
+                .seen_clip_ids
+                .iter()
+                .any(|id| id.as_str() == "c001")
+        );
         let (history, _) = rewritten(&last.history, last.project.clone(), 3, Vec::new(), 3);
         let seen: Vec<&str> = history.seen_clip_ids.iter().map(|id| id.as_str()).collect();
         assert_eq!(seen, ["c002"], "only the base's clips are left");

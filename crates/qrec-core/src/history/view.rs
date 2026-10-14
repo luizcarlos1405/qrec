@@ -78,7 +78,10 @@ pub fn undoable_view(project: &Project) -> Value {
         map.remove("nextTakeNumber");
         if let Some(Value::Object(takes)) = map.get_mut("takes") {
             for take in takes.values_mut() {
-                let scene = take.get_mut("scene").map(Value::take).unwrap_or(Value::Null);
+                let scene = take
+                    .get_mut("scene")
+                    .map(Value::take)
+                    .unwrap_or(Value::Null);
                 let mut reduced = Map::new();
                 reduced.insert("scene".to_owned(), scene);
                 *take = Value::Object(reduced);
@@ -175,7 +178,9 @@ mod tests {
     fn members(value: &Value, path: &str, out: &mut BTreeMap<String, BTreeSet<String>>) {
         match value {
             Value::Object(map) => {
-                out.entry(path.to_owned()).or_default().extend(map.keys().cloned());
+                out.entry(path.to_owned())
+                    .or_default()
+                    .extend(map.keys().cloned());
                 for (key, child) in map {
                     members(child, &format!("{path}/{key}"), out);
                 }
@@ -200,9 +205,15 @@ mod tests {
         let project = project();
         let value = project_value(&project);
         assert_eq!(value["scene"]["layers"][0]["locked"], false);
-        assert_eq!(value["takes"]["take-0001"]["scene"]["audio"][0]["missing"], false);
+        assert_eq!(
+            value["takes"]["take-0001"]["scene"]["audio"][0]["missing"],
+            false
+        );
         assert_eq!(value["takes"]["take-0001"]["error"], Value::Null);
-        assert_eq!(value["takes"]["take-0001"]["streams"][1]["fps"], Value::Null);
+        assert_eq!(
+            value["takes"]["take-0001"]["streams"][1]["fps"],
+            Value::Null
+        );
         assert_eq!(project_from_value(value).unwrap(), project);
 
         let view = undoable_view(&project);
@@ -210,7 +221,10 @@ mod tests {
         assert!(view.get("createdAt").is_none());
         let take = view["takes"]["take-0001"].as_object().unwrap();
         assert_eq!(take.keys().collect::<Vec<_>>(), ["scene"]);
-        assert_eq!(take["scene"], project_value(&project)["takes"]["take-0001"]["scene"]);
+        assert_eq!(
+            take["scene"],
+            project_value(&project)["takes"]["take-0001"]["scene"]
+        );
     }
 
     /// Guards the member lists above: a new optional member in `model.rs`
@@ -224,7 +238,10 @@ mod tests {
         for (path, keys) in &explicit {
             let all = &with_all[path];
             let missing: Vec<&String> = all.difference(keys).collect();
-            assert!(missing.is_empty(), "{path}: not written explicitly: {missing:?}");
+            assert!(
+                missing.is_empty(),
+                "{path}: not written explicitly: {missing:?}"
+            );
         }
         // The full project has the same members everywhere (plus the
         // objects inside its non-empty `replaced` list).
@@ -241,6 +258,10 @@ mod tests {
         value["timeline"]["clips"][0]["in"] = Value::String("zero".into());
         let err = project_from_value(value).unwrap_err();
         assert_eq!(err.code, crate::ErrorCode::Invalid);
-        assert!(err.message.starts_with("the patched project doesn't parse"), "{}", err.message);
+        assert!(
+            err.message.starts_with("the patched project doesn't parse"),
+            "{}",
+            err.message
+        );
     }
 }

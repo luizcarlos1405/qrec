@@ -126,8 +126,8 @@ pub fn history_clear(state: &State, ctx: &Ctx) -> Result<Outcome, CoreError> {
     let (cleared, op) = ops::rewritten(history, state.project.clone(), cursor, Vec::new(), cursor);
     let mut next = state.clone();
     next.history = cleared;
-    let result = CmdResult::new(format!("Cleared the history ({})", entries(lost)))
-        .with_seq(Some(cursor));
+    let result =
+        CmdResult::new(format!("Cleared the history ({})", entries(lost))).with_seq(Some(cursor));
     Ok(Outcome::new(
         next,
         vec![Effect::History(op), Effect::WriteProject],
@@ -209,8 +209,7 @@ pub fn take_purge(state: &State, ctx: &Ctx, takes: Vec<TakeId>) -> Result<Outcom
 /// no job reads its files.
 fn purgeable(state: &State, id: &TakeId) -> Result<(), CoreError> {
     let take = state.project.take(id).ok_or_else(|| {
-        CoreError::not_found(format!("no take {id}"))
-            .with_hint("`qrec take list` shows the takes")
+        CoreError::not_found(format!("no take {id}")).with_hint("`qrec take list` shows the takes")
     })?;
     let n = id.number();
     if take.status == TakeStatus::Recording {
@@ -231,7 +230,9 @@ fn purgeable(state: &State, id: &TakeId) -> Result<(), CoreError> {
             "take {n} is on the timeline (clips {})",
             clips.join(", ")
         ))
-        .with_hint("remove its clips first (qrec clip remove …): only takes in the bin can be purged"));
+        .with_hint(
+            "remove its clips first (qrec clip remove …): only takes in the bin can be purged",
+        ));
     }
     if let Some(job) = job_reading(state, id, take) {
         return Err(CoreError::busy(format!("{job} is reading take {n}"))
@@ -291,14 +292,25 @@ fn id_changes(prev: &Project, next: &Project) -> (Vec<String>, Vec<String>) {
         clips.chain(layers).chain(tracks).collect()
     }
     let (before, after) = (ids(prev), ids(next));
-    let created = after.iter().filter(|id| !before.contains(id)).cloned().collect();
-    let removed = before.iter().filter(|id| !after.contains(id)).cloned().collect();
+    let created = after
+        .iter()
+        .filter(|id| !before.contains(id))
+        .cloned()
+        .collect();
+    let removed = before
+        .iter()
+        .filter(|id| !after.contains(id))
+        .cloned()
+        .collect();
     (created, removed)
 }
 
 /// The entries between two seqs (positions `from < to`), oldest first.
 fn between(history: &History, from_seq: u64, to_seq: u64) -> Vec<&HistoryEntry> {
-    match (ops::position_of(history, from_seq), ops::position_of(history, to_seq)) {
+    match (
+        ops::position_of(history, from_seq),
+        ops::position_of(history, to_seq),
+    ) {
         (Some(from), Some(to)) if from < to => history.entries[from..to].iter().collect(),
         _ => Vec::new(),
     }
@@ -328,7 +340,7 @@ fn entries(n: usize) -> String {
 }
 
 /// `take 3` or `takes 3, 4`.
-fn take_names(takes: &[TakeId]) -> String {
+pub(crate) fn take_names(takes: &[TakeId]) -> String {
     let numbers: Vec<String> = takes.iter().map(|t| t.number().to_string()).collect();
     match numbers.as_slice() {
         [one] => format!("take {one}"),
@@ -429,7 +441,10 @@ mod tests {
         assert_eq!(out.state.history.cursor, 2);
         assert_eq!(
             out.effects,
-            [Effect::History(HistoryOp::SetCursor(2)), Effect::WriteProject]
+            [
+                Effect::History(HistoryOp::SetCursor(2)),
+                Effect::WriteProject
+            ]
         );
         let r = reply(&out);
         assert_eq!(r.seq, Some(2));
@@ -440,8 +455,14 @@ mod tests {
         let out = undo_checked(&out.state, &ctx(), 2, unchecked).unwrap();
         let r = reply(&out);
         assert_eq!(r.seq, Some(0));
-        assert_eq!(r.message, "Undid 2 steps (back to before \"Split clip c001\")");
-        assert!(r.created.is_empty() && r.removed.is_empty(), "c002 came and went");
+        assert_eq!(
+            r.message,
+            "Undid 2 steps (back to before \"Split clip c001\")"
+        );
+        assert!(
+            r.created.is_empty() && r.removed.is_empty(),
+            "c002 came and went"
+        );
         assert_eq!(out.state.project, start().project);
     }
 
@@ -457,7 +478,10 @@ mod tests {
         let out = redo_checked(&out.state, &ctx(), 2, unchecked).unwrap();
         let r = reply(&out);
         assert_eq!(r.message, "Redid 2 steps (up to \"Add layer L2\")");
-        assert_eq!((r.created.clone(), r.removed.clone()), (vec!["L2".to_owned()], vec!["c002".to_owned()]));
+        assert_eq!(
+            (r.created.clone(), r.removed.clone()),
+            (vec!["L2".to_owned()], vec!["c002".to_owned()])
+        );
         assert_eq!(out.state.project, state.project);
         assert_eq!(out.state.history, state.history);
         let err = redo_checked(&out.state, &ctx(), 1, unchecked).unwrap_err();
@@ -483,8 +507,17 @@ mod tests {
             "confirmation required: restore the oldest state in the history (0): undoes 3 history entries"
         );
         let err = restore_checked(&state, &ctx(), 3, unchecked).unwrap_err();
-        assert!(err.message.ends_with("qrec.json is rewritten from it"), "{}", err.message);
-        assert_eq!(restore_checked(&state, &ctx(), 42, unchecked).unwrap_err().code, ErrorCode::NotFound);
+        assert!(
+            err.message.ends_with("qrec.json is rewritten from it"),
+            "{}",
+            err.message
+        );
+        assert_eq!(
+            restore_checked(&state, &ctx(), 42, unchecked)
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
 
         // The way out of an invalid qrec.json: restore the cursor itself.
         state.runtime.disk_invalid = Some("expected value at line 3".into());
@@ -493,7 +526,10 @@ mod tests {
         assert_eq!(out.state.project, state.project);
         assert_eq!(
             out.effects,
-            [Effect::History(HistoryOp::SetCursor(3)), Effect::WriteProject]
+            [
+                Effect::History(HistoryOp::SetCursor(3)),
+                Effect::WriteProject
+            ]
         );
         assert_eq!(reply(&out).message, "Restored entry 3 (\"Add layer L2\")");
 
@@ -501,14 +537,21 @@ mod tests {
         assert_eq!(out.state.history.cursor, 1);
         assert_eq!(reply(&out).seq, Some(1));
         let err = restore_checked(&out.state, &ctx(), 3, unchecked).unwrap_err();
-        assert!(err.message.ends_with("redoes 2 history entries"), "{}", err.message);
+        assert!(
+            err.message.ends_with("redoes 2 history entries"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]
     fn clear_keeps_the_project_and_forgets_the_entries() {
         let state = edited();
         let err = history_clear(&state, &ctx()).unwrap_err();
-        assert_eq!(err.message, "confirmation required: clear the undo history (3 history entries)");
+        assert_eq!(
+            err.message,
+            "confirmation required: clear the undo history (3 history entries)"
+        );
         assert_eq!(err.details.unwrap(), json!({"historyEntriesLost": 3}));
         let out = history_clear(&state, &confirmed()).unwrap();
         let h = &out.state.history;
@@ -528,7 +571,10 @@ mod tests {
                 Effect::WriteProject
             ]
         );
-        assert_eq!(reply(&out).message, "Cleared the history (3 history entries)");
+        assert_eq!(
+            reply(&out).message,
+            "Cleared the history (3 history entries)"
+        );
         let seen: Vec<&str> = h.seen_clip_ids.iter().map(|id| id.as_str()).collect();
         assert_eq!(seen, ["c001"]);
         // Nothing left to clear (no confirmation needed), nothing to undo.
@@ -539,7 +585,13 @@ mod tests {
         // New entries continue the seqs.
         let next = edit(&out.state, "Rename", |p| p.name = "x".into());
         assert_eq!(next.history.cursor, 4);
-        assert_eq!(undo_checked(&next, &ctx(), 1, unchecked).unwrap().state.project, state.project);
+        assert_eq!(
+            undo_checked(&next, &ctx(), 1, unchecked)
+                .unwrap()
+                .state
+                .project,
+            state.project
+        );
     }
 
     fn purge_ctx(confirmed: bool) -> Ctx {
@@ -548,8 +600,16 @@ mod tests {
         ctx.facts.take_files.insert(
             take(2),
             vec![
-                FileFact { path: "takes/take-0002/L1-screen-DP-1.mkv".into(), bytes: 412_000_000, mtime_ns: 1 },
-                FileFact { path: "takes/take-0002/A1-mic.mka".into(), bytes: 3_500_000, mtime_ns: 1 },
+                FileFact {
+                    path: "takes/take-0002/L1-screen-DP-1.mkv".into(),
+                    bytes: 412_000_000,
+                    mtime_ns: 1,
+                },
+                FileFact {
+                    path: "takes/take-0002/A1-mic.mka".into(),
+                    bytes: 3_500_000,
+                    mtime_ns: 1,
+                },
             ],
         );
         ctx
@@ -559,7 +619,12 @@ mod tests {
     fn with_take_2_history() -> State {
         let s = start();
         let s = edit(&s, "Add take 2", |p| {
-            p.timeline.clips.push(Clip { id: "c002".parse().unwrap(), take: take(2), in_: 0, out: 200 })
+            p.timeline.clips.push(Clip {
+                id: "c002".parse().unwrap(),
+                take: take(2),
+                in_: 0,
+                out: 200,
+            })
         });
         let s = edit(&s, "Remove clip c002", |p| {
             p.timeline.clips.pop();
@@ -603,26 +668,58 @@ mod tests {
         let job = crate::ids::JobId(1);
         assert_eq!(
             next.runtime.jobs[&job],
-            Job { id: job, kind: JobKind::Purge { takes: vec![take(2)] }, req: ctx().req, started: ctx().now }
+            Job {
+                id: job,
+                kind: JobKind::Purge {
+                    takes: vec![take(2)]
+                },
+                req: ctx().req,
+                started: ctx().now
+            }
         );
-        assert!(matches!(&out.effects[0], Effect::History(HistoryOp::Rewrite { base_seq: 2, .. })));
+        assert!(matches!(
+            &out.effects[0],
+            Effect::History(HistoryOp::Rewrite { base_seq: 2, .. })
+        ));
         assert_eq!(
             out.effects[1..],
-            [Effect::WriteProject, Effect::DeleteTakeDirs { job, takes: vec![take(2)] }]
+            [
+                Effect::WriteProject,
+                Effect::DeleteTakeDirs {
+                    job,
+                    takes: vec![take(2)]
+                }
+            ]
         );
         // The remaining history never brings take 2 back.
         let bottom = undo_checked(next, &ctx(), 1, unchecked).unwrap().state;
-        assert!(bottom.project.timeline.clips.iter().all(|c| c.take != take(2)));
-        assert_eq!(undo_checked(&bottom, &ctx(), 1, unchecked).unwrap_err().message, "nothing to undo");
+        assert!(
+            bottom
+                .project
+                .timeline
+                .clips
+                .iter()
+                .all(|c| c.take != take(2))
+        );
+        assert_eq!(
+            undo_checked(&bottom, &ctx(), 1, unchecked)
+                .unwrap_err()
+                .message,
+            "nothing to undo"
+        );
     }
 
     #[test]
     fn purge_refuses_what_it_must_not_delete() {
         let mut state = start();
-        let code = |s: &State, takes: Vec<TakeId>| take_purge(s, &purge_ctx(true), takes).unwrap_err();
+        let code =
+            |s: &State, takes: Vec<TakeId>| take_purge(s, &purge_ctx(true), takes).unwrap_err();
         assert_eq!(code(&state, vec![]).code, ErrorCode::Usage);
         let err = code(&state, vec![take(9)]);
-        assert_eq!((err.code, err.message.as_str()), (ErrorCode::NotFound, "no take take-0009"));
+        assert_eq!(
+            (err.code, err.message.as_str()),
+            (ErrorCode::NotFound, "no take take-0009")
+        );
         let err = code(&state, vec![take(2), take(1)]);
         assert_eq!(err.code, ErrorCode::Invalid);
         assert_eq!(err.message, "take 1 is on the timeline (clips c001)");
@@ -649,7 +746,10 @@ mod tests {
             },
         );
         let err = code(&state, vec![take(3)]);
-        assert_eq!((err.code, err.message.as_str()), (ErrorCode::Busy, "an export is reading take 3"));
+        assert_eq!(
+            (err.code, err.message.as_str()),
+            (ErrorCode::Busy, "an export is reading take 3")
+        );
 
         state.runtime.jobs.clear();
         state.runtime.jobs.insert(
@@ -659,11 +759,21 @@ mod tests {
                 kind: JobKind::Autocut {
                     cmd: Value::Null,
                     targets: vec![AutocutTarget {
-                        clip: ClipRef { id: "c0ff".parse().unwrap(), take: take(3), in_: 0, out: 10 },
+                        clip: ClipRef {
+                            id: "c0ff".parse().unwrap(),
+                            take: take(3),
+                            in_: 0,
+                            out: 10,
+                        },
                         track: "A1".parse().unwrap(),
                         key: SilenceKey("k".into()),
                     }],
-                    params: AutocutParams { threshold_db: -35.0, min_silence_ms: 400, padding_ms: 120, min_keep_ms: 200 },
+                    params: AutocutParams {
+                        threshold_db: -35.0,
+                        min_silence_ms: 400,
+                        padding_ms: 120,
+                        min_keep_ms: 200,
+                    },
                     dry_run: false,
                     pending: Default::default(),
                     ready: false,
@@ -672,7 +782,10 @@ mod tests {
                 started: ctx().now,
             },
         );
-        assert_eq!(code(&state, vec![take(3)]).message, "an autocut analysis is reading take 3");
+        assert_eq!(
+            code(&state, vec![take(3)]).message,
+            "an autocut analysis is reading take 3"
+        );
     }
 
     #[test]

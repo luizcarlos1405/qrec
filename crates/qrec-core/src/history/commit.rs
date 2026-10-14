@@ -164,7 +164,13 @@ mod tests {
         assert_eq!(c2.seq, Some(2));
         assert_eq!(c2.state.history.entries.len(), 2);
         // A removed clip could come back with undo: its id is never reused.
-        let seen: Vec<&str> = c2.state.history.seen_clip_ids.iter().map(|id| id.as_str()).collect();
+        let seen: Vec<&str> = c2
+            .state
+            .history
+            .seen_clip_ids
+            .iter()
+            .map(|id| id.as_str())
+            .collect();
         assert_eq!(seen, ["c001"]);
     }
 
@@ -305,6 +311,9 @@ mod tests {
         let mut next = c.state.clone();
         next.project.name = "again".into();
         let c2 = commit(&c.state, &ctx, "Rename again".into(), Value::Null, next);
-        assert!(matches!(c2.effects[0], Effect::History(HistoryOp::Append(_))));
+        assert!(matches!(
+            c2.effects[0],
+            Effect::History(HistoryOp::Append(_))
+        ));
     }
 }

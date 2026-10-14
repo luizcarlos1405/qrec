@@ -103,7 +103,9 @@ impl Differ {
 
     fn remove(&mut self, path: &PointerBuf) {
         self.test(path);
-        self.push(PatchOperation::Remove(RemoveOperation { path: path.clone() }));
+        self.push(PatchOperation::Remove(RemoveOperation {
+            path: path.clone(),
+        }));
     }
 
     fn add(&mut self, path: &PointerBuf, value: Value) {
@@ -291,10 +293,13 @@ mod tests {
             op_names(&forward),
             ["test /list", "replace /list", "test /name", "replace /name"]
         );
-        assert_eq!(forward.0[0], PatchOperation::Test(TestOperation {
-            path: PointerBuf::parse("/list").unwrap(),
-            value: json!([1, 2]),
-        }));
+        assert_eq!(
+            forward.0[0],
+            PatchOperation::Test(TestOperation {
+                path: PointerBuf::parse("/list").unwrap(),
+                value: json!([1, 2]),
+            })
+        );
     }
 
     #[test]
@@ -346,7 +351,10 @@ mod tests {
         );
         let (forward, _) = round_trip(&clips(&["a", "b"]), &clips(&["b", "a"]));
         assert_eq!(forward.0.len(), 3, "a swap moves one element");
-        round_trip(&clips(&["a", "b", "c", "d", "e"]), &clips(&["e", "d", "c", "b", "a"]));
+        round_trip(
+            &clips(&["a", "b", "c", "d", "e"]),
+            &clips(&["e", "d", "c", "b", "a"]),
+        );
         round_trip(&clips(&[]), &clips(&["a", "b"]));
         round_trip(&clips(&["a", "b"]), &clips(&[]));
     }
@@ -383,7 +391,10 @@ mod tests {
         let ids = |s: &str| s.chars().map(String::from).collect::<Vec<_>>();
         let lcs = |a: &str, b: &str| {
             let (a, b) = (ids(a), ids(b));
-            common_ids(&a, &b).into_iter().map(str::to_owned).collect::<String>()
+            common_ids(&a, &b)
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<String>()
         };
         assert_eq!(lcs("abcd", "abcd"), "abcd");
         assert_eq!(lcs("abcd", "bcda"), "bcd");
@@ -407,7 +418,14 @@ mod tests {
         next.takes.values_mut().next().unwrap().scene.layers[0].visible = false;
 
         let (before, after) = aligned_views(&prev, &next);
-        let keys = |v: &Value| v["takes"].as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        let keys = |v: &Value| {
+            v["takes"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
         assert_eq!(keys(&before), ["take-0002", "take-0003"]);
         assert_eq!(keys(&after), keys(&before));
         assert_eq!(before["takes"]["take-0003"], after["takes"]["take-0003"]);

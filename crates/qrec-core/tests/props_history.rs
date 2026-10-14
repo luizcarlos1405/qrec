@@ -34,26 +34,73 @@ use serde_json::{Value, json};
 
 #[derive(Debug, Clone)]
 enum Edit {
-    Split { clip: Index, at: Index },
-    Trim { clip: Index, a: Index, b: Index },
-    Move { clip: Index, to: Index },
-    Remove { clip: Index },
-    Add { take: Index, a: Index, b: Index, at: Index },
-    LayerRect { scene: Index, layer: Index, rect: (i32, i32, u32, u32) },
-    LayerOpacity { scene: Index, layer: Index, percent: u8 },
-    LayerToggle { scene: Index, layer: Index },
-    LayerOrder { scene: Index, layer: Index, to: Index },
-    LayerRemove { scene: Index, layer: Index },
+    Split {
+        clip: Index,
+        at: Index,
+    },
+    Trim {
+        clip: Index,
+        a: Index,
+        b: Index,
+    },
+    Move {
+        clip: Index,
+        to: Index,
+    },
+    Remove {
+        clip: Index,
+    },
+    Add {
+        take: Index,
+        a: Index,
+        b: Index,
+        at: Index,
+    },
+    LayerRect {
+        scene: Index,
+        layer: Index,
+        rect: (i32, i32, u32, u32),
+    },
+    LayerOpacity {
+        scene: Index,
+        layer: Index,
+        percent: u8,
+    },
+    LayerToggle {
+        scene: Index,
+        layer: Index,
+    },
+    LayerOrder {
+        scene: Index,
+        layer: Index,
+        to: Index,
+    },
+    LayerRemove {
+        scene: Index,
+        layer: Index,
+    },
     LayerAdd,
-    AudioGain { scene: Index, track: Index, gain: i8 },
-    AudioMute { scene: Index, track: Index },
-    AudioRemove { scene: Index, track: Index },
+    AudioGain {
+        scene: Index,
+        track: Index,
+        gain: i8,
+    },
+    AudioMute {
+        scene: Index,
+        track: Index,
+    },
+    AudioRemove {
+        scene: Index,
+        track: Index,
+    },
     Rename(u8),
     Background(u8),
     Fps(Fps),
     AutocutThreshold(u8),
     Countdown(u8),
-    Record { frames: u64 },
+    Record {
+        frames: u64,
+    },
     Nothing,
 }
 
@@ -180,7 +227,12 @@ fn apply_edit(p: &mut Project, edit: &Edit, ids: &mut Ids, state: &State) {
             }
             let point = c.in_ + 1 + at.index((c.len() - 1) as usize) as u64;
             clips[i].out = point;
-            let right = Clip { id: ids.clip(), take: c.take, in_: point, out: c.out };
+            let right = Clip {
+                id: ids.clip(),
+                take: c.take,
+                in_: point,
+                out: c.out,
+            };
             clips.insert(i + 1, right);
         }
         Edit::Trim { clip, a, b } => {
@@ -218,7 +270,15 @@ fn apply_edit(p: &mut Project, edit: &Edit, ids: &mut Ids, state: &State) {
             let out = in_ + 1 + b.index((duration - in_) as usize) as u64;
             let clips = &mut p.timeline.clips;
             let at = at.index(clips.len() + 1);
-            clips.insert(at, Clip { id: ids.clip(), take, in_, out });
+            clips.insert(
+                at,
+                Clip {
+                    id: ids.clip(),
+                    take,
+                    in_,
+                    out,
+                },
+            );
         }
         Edit::LayerRect { scene, layer, rect } => {
             let scene = scene_mut(p, *scene);
@@ -227,7 +287,11 @@ fn apply_edit(p: &mut Project, edit: &Edit, ids: &mut Ids, state: &State) {
                 scene.layers[i].rect = Rect::new(rect.0, rect.1, rect.2, rect.3);
             }
         }
-        Edit::LayerOpacity { scene, layer, percent } => {
+        Edit::LayerOpacity {
+            scene,
+            layer,
+            percent,
+        } => {
             let scene = scene_mut(p, *scene);
             if !scene.layers.is_empty() {
                 let i = layer.index(scene.layers.len());
@@ -263,7 +327,10 @@ fn apply_edit(p: &mut Project, edit: &Edit, ids: &mut Ids, state: &State) {
                 name: format!("Screen DP-{n}"),
                 visible: true,
                 opacity: 1.0,
-                source: VideoSource::Screen { output: format!("DP-{n}"), label: "Monitor".into() },
+                source: VideoSource::Screen {
+                    output: format!("DP-{n}"),
+                    label: "Monitor".into(),
+                },
                 rect: Rect::new(0, 0, p.canvas.width, p.canvas.height),
                 crop: Crop::default(),
                 fit: Fit::Contain,
@@ -340,7 +407,10 @@ fn structural(p: &Project) -> Result<(), CoreError> {
             .get(&c.take)
             .ok_or_else(|| CoreError::invalid(format!("clip {} uses a missing take", c.id)))?;
         if take.status != TakeStatus::Ok || c.in_ >= c.out || c.out > take.duration_frames {
-            return Err(CoreError::invalid(format!("clip {} is out of bounds", c.id)));
+            return Err(CoreError::invalid(format!(
+                "clip {} is out of bounds",
+                c.id
+            )));
         }
     }
     for scene in std::iter::once(&p.scene).chain(p.takes.values().map(|t| &t.scene)) {
@@ -375,7 +445,12 @@ fn run(project: Project, edits: &[Edit]) -> Run {
             }
             next = before.clone();
             let take = TakeId::numbered(before.project.next_take_number - 1);
-            next.project.timeline.clips.push(Clip { id: ids.clip(), take, in_: 0, out: *frames });
+            next.project.timeline.clips.push(Clip {
+                id: ids.clip(),
+                take,
+                in_: 0,
+                out: *frames,
+            });
         } else {
             apply_edit(&mut next.project, edit, &mut ids, &state);
         }
@@ -408,7 +483,11 @@ fn assert_guarded(patch: &Patch, what: &str) {
             );
         }
         if let PatchOperation::Add(add) = op {
-            let tokens: Vec<_> = add.path.tokens().map(|t| t.decoded().into_owned()).collect();
+            let tokens: Vec<_> = add
+                .path
+                .tokens()
+                .map(|t| t.decoded().into_owned())
+                .collect();
             assert!(
                 tokens.last().is_some_and(|t| t.parse::<usize>().is_ok()),
                 "{what}: add {} adds an object member",

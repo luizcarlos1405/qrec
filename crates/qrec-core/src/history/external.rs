@@ -96,7 +96,10 @@ pub fn merge_external(state: &State, file: Project) -> Result<ExternalMerge, Cor
             }
             continue;
         }
-        let merged_take = merged.takes.get_mut(id).expect("merged starts as a copy of current");
+        let merged_take = merged
+            .takes
+            .get_mut(id)
+            .expect("merged starts as a copy of current");
         merged_take.scene = merge_take(id, take, expected_duration(take), edited, &mut ignored);
     }
     merged.takes.extend(file_takes);
@@ -170,19 +173,28 @@ fn merge_take(
     scene
 }
 
-/// Sets each layer's and track's `missing` to the in-memory value (`false`
-/// when `memory` doesn't have it, or for the project scene), recording the
-/// pointers the file changed.
+/// Sets each layer's and track's `missing` to the in-memory value, recording
+/// the pointers the file changed. A layer or track that `memory` doesn't
+/// have keeps the file's value (there is no fact to keep); the project
+/// scene (`memory: None`) never has `missing` set.
 fn keep_facts(scene: &mut Scene, memory: Option<&Scene>, at: &str, ignored: &mut Vec<String>) {
     let layers: BTreeMap<&str, bool> = memory
-        .map(|m| m.layers.iter().map(|l| (l.id.as_str(), l.missing)).collect())
+        .map(|m| {
+            m.layers
+                .iter()
+                .map(|l| (l.id.as_str(), l.missing))
+                .collect()
+        })
         .unwrap_or_default();
     let tracks: BTreeMap<&str, bool> = memory
         .map(|m| m.audio.iter().map(|t| (t.id.as_str(), t.missing)).collect())
         .unwrap_or_default();
     for (i, layer) in scene.layers.iter_mut().enumerate() {
         let fact = match memory {
-            Some(_) => layers.get(layer.id.as_str()).copied().unwrap_or(layer.missing),
+            Some(_) => layers
+                .get(layer.id.as_str())
+                .copied()
+                .unwrap_or(layer.missing),
             None => false,
         };
         if layer.missing != fact {
@@ -192,7 +204,10 @@ fn keep_facts(scene: &mut Scene, memory: Option<&Scene>, at: &str, ignored: &mut
     }
     for (i, track) in scene.audio.iter_mut().enumerate() {
         let fact = match memory {
-            Some(_) => tracks.get(track.id.as_str()).copied().unwrap_or(track.missing),
+            Some(_) => tracks
+                .get(track.id.as_str())
+                .copied()
+                .unwrap_or(track.missing),
             None => false,
         };
         if track.missing != fact {
@@ -290,7 +305,11 @@ mod tests {
             out: 10,
         });
         let merge = merge_external(&state, file).unwrap();
-        assert_eq!(merge.project.takes[&take(7)], new, "a new take keeps the file's facts");
+        assert_eq!(
+            merge.project.takes[&take(7)],
+            new,
+            "a new take keeps the file's facts"
+        );
         assert_eq!(merge.project.next_take_number, 8);
         assert_eq!(merge.project.timeline.clips.len(), 2);
         assert!(merge.warnings.is_empty());

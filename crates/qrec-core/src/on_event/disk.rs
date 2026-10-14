@@ -4,12 +4,13 @@
 use serde_json::json;
 
 use crate::apply::Outcome;
+use crate::apply::history::take_names;
 use crate::ctx::Ctx;
 use crate::error::CoreError;
+use crate::history::commit;
 use crate::history::external::merge_external;
 use crate::history::ops::{self, Check};
-use crate::history::commit;
-use crate::ids::{JobId, TakeId};
+use crate::ids::JobId;
 use crate::model::Project;
 use crate::protocol::command::Command;
 use crate::protocol::effect::{Effect, LogLevel};
@@ -72,26 +73,44 @@ pub fn changed_on_disk(
     let warnings = merge.warnings.join("\n");
     match committed.seq {
         Some(seq) => {
-            let level = if warnings.is_empty() { ToastLevel::Info } else { ToastLevel::Warning };
-            let mut toast = Toast::new(level, "Merged an external edit of qrec.json")
-                .with_action("Undo", UiAction::Dispatch(Box::new(Command::Undo { steps: 1 })));
+            let level = if warnings.is_empty() {
+                ToastLevel::Info
+            } else {
+                ToastLevel::Warning
+            };
+            let mut toast = Toast::new(level, "Merged an external edit of qrec.json").with_action(
+                "Undo",
+                UiAction::Dispatch(Box::new(Command::Undo { steps: 1 })),
+            );
             if !warnings.is_empty() {
                 toast = toast.with_body(warnings.clone());
             }
             effects.push(Effect::Notify(toast));
-            effects.push(log(LogLevel::Info, format!("external edit of qrec.json merged as entry {seq}")));
+            effects.push(log(
+                LogLevel::Info,
+                format!("external edit of qrec.json merged as entry {seq}"),
+            ));
         }
         None if !warnings.is_empty() => {
             effects.push(Effect::Notify(
                 Toast::new(ToastLevel::Warning, "Ignored an external edit of qrec.json")
                     .with_body(warnings.clone()),
             ));
-            effects.push(log(LogLevel::Info, "external edit of qrec.json changed nothing undoable"));
+            effects.push(log(
+                LogLevel::Info,
+                "external edit of qrec.json changed nothing undoable",
+            ));
         }
-        None => effects.push(log(LogLevel::Debug, "external edit of qrec.json changed nothing undoable")),
+        None => effects.push(log(
+            LogLevel::Debug,
+            "external edit of qrec.json changed nothing undoable",
+        )),
     }
     if !warnings.is_empty() {
-        effects.push(log(LogLevel::Warn, format!("external edit: {}", merge.warnings.join("; "))));
+        effects.push(log(
+            LogLevel::Warn,
+            format!("external edit: {}", merge.warnings.join("; ")),
+        ));
     }
     Outcome::new(committed.state, effects, None)
 }
@@ -102,7 +121,10 @@ fn invalid_on_disk(state: &State, msg: String) -> Outcome {
     let mut next = state.clone();
     let new = state.runtime.disk_invalid.as_deref() != Some(msg.as_str());
     next.runtime.disk_invalid = Some(msg.clone());
-    let mut effects = vec![log(LogLevel::Warn, format!("qrec.json on disk is invalid: {msg}"))];
+    let mut effects = vec![log(
+        LogLevel::Warn,
+        format!("qrec.json on disk is invalid: {msg}"),
+    )];
     if new {
         effects.push(Effect::Notify(
             Toast::new(ToastLevel::Error, "qrec.json on disk is invalid").with_body(format!(
@@ -127,12 +149,19 @@ pub fn take_dirs_deleted(
         Some(JobKind::Purge { takes }) => takes.clone(),
         _ => {
             let mut out = Outcome::unchanged(state);
-            out.effects.push(log(LogLevel::Debug, format!("ignored TakeDirsDeleted for {job}: no such purge")));
+            out.effects.push(log(
+                LogLevel::Debug,
+                format!("ignored TakeDirsDeleted for {job}: no such purge"),
+            ));
             return out;
         }
     };
     let mut next = state.clone();
-    let finished = next.runtime.jobs.remove(&job).expect("the job was just found");
+    let finished = next
+        .runtime
+        .jobs
+        .remove(&job)
+        .expect("the job was just found");
     let names = take_names(&takes);
     let reply = if errors.is_empty() {
         Ok(CmdResult::new(format!("Purged {names} from disk")).with_removed(&takes))
@@ -146,14 +175,24 @@ pub fn take_dirs_deleted(
     };
     let mut effects = vec![log(
         LogLevel::Info,
-        format!("purge {job} done: {} deleted, {} errors", deleted.len(), errors.len()),
+        format!(
+            "purge {job} done: {} deleted, {} errors",
+            deleted.len(),
+            errors.len()
+        ),
     )];
     match (finished.req, reply) {
         (Some(req), reply) => effects.push(Effect::Reply { req, reply }),
-        (None, Ok(result)) => effects.push(Effect::Notify(Toast::new(ToastLevel::Success, format!("{}.", result.message)))),
+        (None, Ok(result)) => effects.push(Effect::Notify(Toast::new(
+            ToastLevel::Success,
+            format!("{}.", result.message),
+        ))),
         (None, Err(e)) => effects.push(Effect::Notify(
-            Toast::new(ToastLevel::Warning, format!("Couldn't delete every file of {names}"))
-                .with_body(e.message),
+            Toast::new(
+                ToastLevel::Warning,
+                format!("Couldn't delete every file of {names}"),
+            )
+            .with_body(e.message),
         )),
     }
     Outcome::new(next, effects, None)
@@ -166,20 +205,12 @@ fn log(level: LogLevel, message: impl Into<String>) -> Effect {
     }
 }
 
-/// `take 3` or `takes 3, 4`.
-fn take_names(takes: &[TakeId]) -> String {
-    let numbers: Vec<String> = takes.iter().map(|t| t.number().to_string()).collect();
-    match numbers.as_slice() {
-        [one] => format!("take {one}"),
-        many => format!("takes {}", many.join(", ")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::history::HistoryEntry;
-    use crate::history::ops::{undo_with, unchecked};
+    use crate::history::ops::{unchecked, undo_with};
+    use crate::ids::TakeId;
     use crate::model::TakeStatus;
     use crate::protocol::effect::HistoryOp;
     use crate::state::{Job, RecordMode, RecordPhase};
@@ -228,11 +259,17 @@ mod tests {
         assert_eq!((entry.seq, entry.label.as_str()), (1, "External edit"));
         assert_eq!(entry.cmd, json!({"external": true}));
         assert_eq!(entry.ts, ctx().now);
-        assert_eq!(out.effects[0], Effect::History(HistoryOp::Append(entry.clone())));
+        assert_eq!(
+            out.effects[0],
+            Effect::History(HistoryOp::Append(entry.clone()))
+        );
         assert_eq!(out.effects[1], Effect::WriteProject);
         let toast = toasts(&out)[0];
         assert_eq!(toast.level, ToastLevel::Info);
-        assert_eq!(toast.actions[0].action, UiAction::Dispatch(Box::new(Command::Undo { steps: 1 })));
+        assert_eq!(
+            toast.actions[0].action,
+            UiAction::Dispatch(Box::new(Command::Undo { steps: 1 }))
+        );
         assert!(out.reply.is_none());
         // Undo brings back what was there before the edit.
         let undone = undo_with(&out.state, 1, unchecked).unwrap();
@@ -243,11 +280,21 @@ mod tests {
     fn ignored_facts_are_written_back() {
         let state = state();
         let mut file = state.project.clone();
-        file.takes.get_mut(&TakeId::numbered(1)).unwrap().duration_frames = 5;
+        file.takes
+            .get_mut(&TakeId::numbered(1))
+            .unwrap()
+            .duration_frames = 5;
         let out = changed(&state, file);
-        assert!(out.state.history.entries.is_empty(), "nothing undoable changed");
+        assert!(
+            out.state.history.entries.is_empty(),
+            "nothing undoable changed"
+        );
         assert_eq!(out.state.project, state.project);
-        assert_eq!(out.effects[0], Effect::WriteProject, "the file is put right");
+        assert_eq!(
+            out.effects[0],
+            Effect::WriteProject,
+            "the file is put right"
+        );
         let toast = toasts(&out)[0];
         assert_eq!(toast.level, ToastLevel::Warning);
         assert_eq!(
@@ -261,7 +308,10 @@ mod tests {
         let mut state = state();
         state.runtime.disk_invalid = Some("bad".into());
         let out = changed(&state, state.project.clone());
-        assert_eq!(out.state.runtime.disk_invalid, None, "a valid read clears it");
+        assert_eq!(
+            out.state.runtime.disk_invalid, None,
+            "a valid read clears it"
+        );
         assert!(out.effects.is_empty());
         assert_eq!(out.state.history, state.history);
     }
@@ -270,14 +320,24 @@ mod tests {
     fn an_unreadable_file_marks_the_disk_invalid() {
         let state = state();
         let out = project_changed_on_disk(&state, &ctx(), Err("expected value at line 3".into()));
-        assert_eq!(out.state.runtime.disk_invalid.as_deref(), Some("expected value at line 3"));
+        assert_eq!(
+            out.state.runtime.disk_invalid.as_deref(),
+            Some("expected value at line 3")
+        );
         assert_eq!(out.state.project, state.project);
         assert!(!out.effects.contains(&Effect::WriteProject));
         let toast = toasts(&out)[0];
         assert_eq!(toast.level, ToastLevel::Error);
-        assert!(toast.body.as_deref().unwrap().contains("qrec history restore 0 --yes"));
+        assert!(
+            toast
+                .body
+                .as_deref()
+                .unwrap()
+                .contains("qrec history restore 0 --yes")
+        );
         // The same message again doesn't toast twice.
-        let again = project_changed_on_disk(&out.state, &ctx(), Err("expected value at line 3".into()));
+        let again =
+            project_changed_on_disk(&out.state, &ctx(), Err("expected value at line 3".into()));
         assert!(toasts(&again).is_empty());
         // A valid edit afterwards clears it and merges.
         let mut file = state.project.clone();
@@ -295,21 +355,32 @@ mod tests {
         fn bounds(p: &Project) -> Result<(), CoreError> {
             for c in &p.timeline.clips {
                 if c.out > p.takes[&c.take].duration_frames {
-                    return Err(CoreError::invalid(format!("clip {} ends after its take", c.id)));
+                    return Err(CoreError::invalid(format!(
+                        "clip {} ends after its take",
+                        c.id
+                    )));
                 }
             }
             Ok(())
         }
         let out = changed_on_disk(&state, &ctx(), Ok(Box::new(file)), bounds);
         assert_eq!(out.state.project, state.project);
-        assert_eq!(out.state.runtime.disk_invalid.as_deref(), Some("clip c001 ends after its take"));
+        assert_eq!(
+            out.state.runtime.disk_invalid.as_deref(),
+            Some("clip c001 ends after its take")
+        );
         assert!(out.state.history.entries.is_empty());
     }
 
     #[test]
     fn merges_while_recording_keep_the_take() {
         let mut state = state();
-        state.project.takes.get_mut(&TakeId::numbered(2)).unwrap().status = TakeStatus::Recording;
+        state
+            .project
+            .takes
+            .get_mut(&TakeId::numbered(2))
+            .unwrap()
+            .status = TakeStatus::Recording;
         state.runtime.record = RecordPhase::Recording {
             take: TakeId::numbered(2),
             mode: RecordMode::Append,
@@ -330,7 +401,9 @@ mod tests {
             JobId(3),
             Job {
                 id: JobId(3),
-                kind: JobKind::Purge { takes: vec![TakeId::numbered(2)] },
+                kind: JobKind::Purge {
+                    takes: vec![TakeId::numbered(2)],
+                },
                 req,
                 started: ctx().now,
             },
@@ -342,7 +415,13 @@ mod tests {
     fn a_finished_purge_replies() {
         let req = ctx().req;
         let state = purging(req.clone());
-        let out = take_dirs_deleted(&state, &ctx(), JobId(3), vec!["takes/take-0002".into()], vec![]);
+        let out = take_dirs_deleted(
+            &state,
+            &ctx(),
+            JobId(3),
+            vec!["takes/take-0002".into()],
+            vec![],
+        );
         assert!(out.state.runtime.jobs.is_empty());
         let reply = Effect::Reply {
             req: req.clone().unwrap(),
@@ -351,8 +430,18 @@ mod tests {
         assert!(out.effects.contains(&reply), "{:?}", out.effects);
         assert!(toasts(&out).is_empty(), "the requester gets the news");
 
-        let out = take_dirs_deleted(&state, &ctx(), JobId(3), vec![], vec!["EACCES: L1.mkv".into()]);
-        let Some(Effect::Reply { reply: Err(e), .. }) = out.effects.iter().find(|e| matches!(e, Effect::Reply { .. })) else {
+        let out = take_dirs_deleted(
+            &state,
+            &ctx(),
+            JobId(3),
+            vec![],
+            vec!["EACCES: L1.mkv".into()],
+        );
+        let Some(Effect::Reply { reply: Err(e), .. }) = out
+            .effects
+            .iter()
+            .find(|e| matches!(e, Effect::Reply { .. }))
+        else {
             panic!("an error reply")
         };
         assert_eq!(e.code, crate::ErrorCode::Io);
@@ -365,7 +454,13 @@ mod tests {
     #[test]
     fn a_purge_without_requester_toasts() {
         let state = purging(None);
-        let out = take_dirs_deleted(&state, &ctx(), JobId(3), vec!["takes/take-0002".into()], vec![]);
+        let out = take_dirs_deleted(
+            &state,
+            &ctx(),
+            JobId(3),
+            vec!["takes/take-0002".into()],
+            vec![],
+        );
         assert_eq!(toasts(&out)[0].title, "Purged take 2 from disk.");
         let out = take_dirs_deleted(&state, &ctx(), JobId(3), vec![], vec!["EIO".into()]);
         assert_eq!(toasts(&out)[0].level, ToastLevel::Warning);
@@ -376,6 +471,12 @@ mod tests {
         let state = state();
         let out = take_dirs_deleted(&state, &ctx(), JobId(9), vec![], vec![]);
         assert_eq!(out.state, state);
-        assert!(matches!(out.effects.as_slice(), [Effect::Log { level: LogLevel::Debug, .. }]));
+        assert!(matches!(
+            out.effects.as_slice(),
+            [Effect::Log {
+                level: LogLevel::Debug,
+                ..
+            }]
+        ));
     }
 }

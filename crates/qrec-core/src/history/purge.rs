@@ -96,8 +96,9 @@ pub fn rewrite(
     // The new base: S_front, found by walking back again.
     let mut value = current;
     for entry in entries[front..c].iter().rev() {
-        json_patch::patch(&mut value, &entry.inverse)
-            .map_err(|e| CoreError::internal(format!("purge: entry {} stopped undoing: {e}", entry.seq)))?;
+        json_patch::patch(&mut value, &entry.inverse).map_err(|e| {
+            CoreError::internal(format!("purge: entry {} stopped undoing: {e}", entry.seq))
+        })?;
     }
     let mut base = project_from_value(value)?;
     if base.canvas.fps != project.canvas.fps {
@@ -109,8 +110,14 @@ pub fn rewrite(
     let mut kept: Vec<(usize, HistoryEntry)> = Vec::new();
     for (i, entry) in entries.iter().enumerate().take(back).skip(front) {
         let mut entry = entry.clone();
-        entry.forward.0.retain(|op| !under_purged(op.path(), &purged));
-        entry.inverse.0.retain(|op| !under_purged(op.path(), &purged));
+        entry
+            .forward
+            .0
+            .retain(|op| !under_purged(op.path(), &purged));
+        entry
+            .inverse
+            .0
+            .retain(|op| !under_purged(op.path(), &purged));
         if !entry.forward.0.is_empty() || !entry.inverse.0.is_empty() {
             kept.push((i, entry));
         }
@@ -166,14 +173,21 @@ fn clip_using(value: &Value, takes: &BTreeSet<&str>) -> Option<String> {
                 .and_then(Value::as_str)
                 .is_some_and(|take| takes.contains(take))
         })
-        .map(|clip| clip.get("id").and_then(Value::as_str).unwrap_or("?").to_owned())
+        .map(|clip| {
+            clip.get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_owned()
+        })
 }
 
 /// The path is `/takes/<purged take>` or below it.
 fn under_purged(path: &json_patch::jsonptr::Pointer, takes: &BTreeSet<&str>) -> bool {
     let mut tokens = path.tokens();
     match (tokens.next(), tokens.next()) {
-        (Some(first), Some(take)) => first.decoded() == "takes" && takes.contains(take.decoded().as_ref()),
+        (Some(first), Some(take)) => {
+            first.decoded() == "takes" && takes.contains(take.decoded().as_ref())
+        }
         _ => false,
     }
 }
@@ -185,7 +199,7 @@ mod tests {
     use super::*;
     use crate::ctx::Ctx;
     use crate::history::commit;
-    use crate::history::ops::{redo_with, undo_with, unchecked};
+    use crate::history::ops::{redo_with, unchecked, undo_with};
     use crate::model::Clip;
     use crate::testkit::{self, ProjectBuilder};
 
@@ -253,7 +267,9 @@ mod tests {
     /// clip, e4 edits take 3's scene, e5 renames.
     fn history_with_take_2() -> State {
         let s = start();
-        let s = edit(&s, "Add take 2", |p| p.timeline.clips.push(clip("c002", 2, 0, 200)));
+        let s = edit(&s, "Add take 2", |p| {
+            p.timeline.clips.push(clip("c002", 2, 0, 200))
+        });
         let s = edit(&s, "Take 2 layout", |p| {
             p.takes.get_mut(&take(2)).unwrap().scene.layers[0].opacity = 0.5;
         });
@@ -279,7 +295,14 @@ mod tests {
         assert_eq!(h.cursor, 5);
         assert_eq!(h.next_seq, 6);
         assert_eq!(h.entries.iter().map(|e| e.seq).collect::<Vec<_>>(), [4, 5]);
-        let HistoryOp::Rewrite { base, base_seq, cursor, next_seq, entries } = &rewrite.op else {
+        let HistoryOp::Rewrite {
+            base,
+            base_seq,
+            cursor,
+            next_seq,
+            entries,
+        } = &rewrite.op
+        else {
             panic!("a purge rewrites the history")
         };
         assert_eq!((*base_seq, *cursor, *next_seq), (3, 5, 6));
@@ -304,7 +327,9 @@ mod tests {
         let s2 = edit(&s1, "Take 2 layout", |p| {
             p.takes.get_mut(&take(2)).unwrap().scene.layers[0].visible = false;
         });
-        let s3 = edit(&s2, "Add take 2", |p| p.timeline.clips.push(clip("c002", 2, 0, 50)));
+        let s3 = edit(&s2, "Add take 2", |p| {
+            p.timeline.clips.push(clip("c002", 2, 0, 50))
+        });
         let s4 = edit(&s3, "Rename again", |p| p.name = "b".into());
         // Back to S_1: S_3 and S_4 use take 2.
         let state = undo_with(&s4, 3, unchecked).unwrap();
@@ -312,7 +337,14 @@ mod tests {
         // e3, e4 go (they lead to states using take 2); e2 only touched
         // take 2's scene, so it ends up empty and goes too.
         assert_eq!(rewrite.entries_lost, 3);
-        assert_eq!(next.history.entries.iter().map(|e| e.seq).collect::<Vec<_>>(), [1]);
+        assert_eq!(
+            next.history
+                .entries
+                .iter()
+                .map(|e| e.seq)
+                .collect::<Vec<_>>(),
+            [1]
+        );
         assert_eq!(next.history.cursor, 1);
         assert_eq!(next.history.base_seq, 0);
         assert_eq!(reachable(&next).len(), 2);
@@ -330,9 +362,14 @@ mod tests {
         assert_eq!(rewrite.entries_lost, 0);
         assert_eq!(next.history.base_seq, 0);
         let first = &next.history.entries[0];
-        assert!(first.forward.0.iter().chain(first.inverse.0.iter()).all(|op| {
-            !op.path().as_str().starts_with("/takes/take-0002")
-        }));
+        assert!(
+            first
+                .forward
+                .0
+                .iter()
+                .chain(first.inverse.0.iter())
+                .all(|op| { !op.path().as_str().starts_with("/takes/take-0002") })
+        );
         assert_eq!(first.forward.0.len(), 2, "test + replace for take 3");
         // Hashes are those of the views without take 2.
         let mut expected = start().project;
@@ -340,7 +377,10 @@ mod tests {
         let mut view = undoable_view(&expected);
         json_patch::patch(&mut view, &first.forward).unwrap();
         assert_eq!(first.after_hash, json_hash(&view));
-        assert_eq!(next.history.entries[1].after_hash, json_hash(&undoable_view(&next.project)));
+        assert_eq!(
+            next.history.entries[1].after_hash,
+            json_hash(&undoable_view(&next.project))
+        );
         let states = reachable(&next);
         assert_eq!(states.len(), 3);
         assert_eq!(states[0].takes[&take(3)].scene.layers[0].opacity, 1.0);
@@ -362,16 +402,23 @@ mod tests {
     #[test]
     fn several_takes_at_once() {
         let state = history_with_take_2();
-        let state = edit(&state, "Add take 3", |p| p.timeline.clips.push(clip("c003", 3, 0, 100)));
+        let state = edit(&state, "Add take 3", |p| {
+            p.timeline.clips.push(clip("c003", 3, 0, 100))
+        });
         let state = edit(&state, "Remove c003", |p| {
             p.timeline.clips.pop();
         });
         let (next, rewrite) = after_purge(&state, &[take(2), take(3)]);
-        assert_eq!(rewrite.entries_lost, 7, "everything up to the removal of c003");
+        assert_eq!(
+            rewrite.entries_lost, 7,
+            "everything up to the removal of c003"
+        );
         assert!(next.history.entries.is_empty());
         assert_eq!(next.history.cursor, 7);
         assert_eq!(next.history.base_seq, 7);
-        let HistoryOp::Rewrite { base, .. } = &rewrite.op else { panic!() };
+        let HistoryOp::Rewrite { base, .. } = &rewrite.op else {
+            panic!()
+        };
         assert_eq!(**base, next.project);
     }
 
@@ -400,7 +447,8 @@ mod tests {
     #[test]
     fn replaced_clips_of_purged_takes_are_forgotten() {
         let mut project = start().project;
-        project.takes.get_mut(&take(3)).unwrap().replaced = vec![clip("c0aa", 2, 0, 10), clip("c0bb", 1, 0, 10)];
+        project.takes.get_mut(&take(3)).unwrap().replaced =
+            vec![clip("c0aa", 2, 0, 10), clip("c0bb", 1, 0, 10)];
         remove_takes(&mut project, &[take(2)]);
         assert!(!project.takes.contains_key(&take(2)));
         assert_eq!(project.takes[&take(3)].replaced, [clip("c0bb", 1, 0, 10)]);
