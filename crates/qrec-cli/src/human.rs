@@ -674,23 +674,10 @@ pub(crate) fn chord(c: &KeyChord) -> String {
     out
 }
 
-/// `qrec keys --json`: `[{"id","group","label","keys":[..],"cli","contexts"}]` (A§9.7).
+/// `qrec keys --json`: `[{"id","group","label","keys":[..],"cli","contexts"}]`,
+/// the core's own view of A§9.7 (also `Query::Keys`).
 pub(crate) fn keys_json(map: &Keymap) -> Value {
-    Value::Array(
-        map.bindings
-            .iter()
-            .map(|b| {
-                serde_json::json!({
-                    "id": b.id,
-                    "group": b.group,
-                    "label": b.label,
-                    "keys": b.keys.iter().map(chord).collect::<Vec<_>>(),
-                    "cli": b.cli,
-                    "contexts": b.contexts,
-                })
-            })
-            .collect(),
-    )
+    serde_json::to_value(qrec_core::keymap::keys_view(map)).unwrap_or(Value::Null)
 }
 
 /// What is wrong with a keymap: conflicts, then `keys.toml` errors.

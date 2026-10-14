@@ -1039,6 +1039,15 @@ fn config_reads_defaults_and_the_file() {
     let invalid = run(&mut fake, &tmp.0, "qrec config");
     assert_eq!(invalid.code, 1);
     assert!(invalid.err.contains("fsp"), "{}", invalid.err);
+    // Out of range: the same rules hosts apply when they read the file.
+    fs::write(cfg.join("config.toml"), "[autocut]\nthreshold_db = 10.0\n").unwrap();
+    let out_of_range = run(&mut fake, &tmp.0, "qrec config get theme");
+    assert_eq!(out_of_range.code, 1);
+    assert!(
+        out_of_range.err.contains("autocut.threshold_db"),
+        "{}",
+        out_of_range.err
+    );
     fs::write(cfg.join("config.toml"), "theme = [").unwrap();
     let broken = run(&mut fake, &tmp.0, "qrec config get theme");
     assert_eq!(broken.code, 1);

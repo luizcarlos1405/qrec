@@ -104,13 +104,20 @@ fn to_json(text: &str, path: &Path) -> Result<Value, CoreError> {
     Ok(Value::Object(root))
 }
 
-/// Reads and validates the user config at `path` (defaults when missing).
+/// Reads and validates the user config at `path` (defaults when missing):
+/// the shape through `UserConfig`, the ranges through the core's
+/// `config::problems` (the same rules hosts apply when they read it).
 pub(crate) fn load(path: &Path) -> Result<UserConfig, CoreError> {
     let json = to_json(&read(path)?, path)?;
-    serde_json::from_value(json).map_err(|e| {
+    let cfg: UserConfig = serde_json::from_value(json).map_err(|e| {
         CoreError::invalid(format!("{}: {e}", path.display()))
             .with_hint("`qrec config` lists the settings and their values")
-    })
+    })?;
+    match qrec_core::config::problems(&cfg).first() {
+        None => Ok(cfg),
+        Some(problem) => Err(CoreError::invalid(format!("{}: {problem}", path.display()))
+            .with_hint("fix it with `qrec config set KEY VALUE`")),
+    }
 }
 
 /// Every setting as JSON (`UserConfig` with snake_case keys).
