@@ -720,6 +720,53 @@ fn a_countdown_that_cannot_begin_fails_the_start_request() {
     assert_eq!(toasts(&out)[0].title, "Recording didn't start");
 }
 
+#[test]
+fn a_pipeline_failure_ends_the_countdown() {
+    // The sources start with the countdown; if the pipeline fails, the
+    // recording can't start: the countdown ends and the start request fails.
+    let mut headless = idle();
+    headless.runtime.host = HostKind::Headless;
+    let counting = cmd(
+        &headless,
+        Some("s1"),
+        start(RecordModeArg::Append, Some(3), true),
+    )
+    .state;
+    let RecordPhase::Countdown { timer, .. } = counting.runtime.record else {
+        panic!()
+    };
+    let out = event(
+        &counting,
+        Event::CaptureFailed {
+            take: None,
+            source: Some("L1".into()),
+            message: "portal request denied".into(),
+        },
+    );
+    assert_eq!(out.state.runtime.record, RecordPhase::Idle);
+    assert_eq!(out.state.project, counting.project, "no take was created");
+    assert!(out.effects.contains(&Effect::CancelTimer { timer }));
+    assert!(out.effects.contains(&Effect::SetLive(None)));
+    let err = reply_to(&out, "s1").unwrap_err();
+    assert_eq!(err.code, ErrorCode::CaptureFailed);
+    assert_eq!(
+        err.message,
+        "capture failed: L1 (Monitor DP-4): portal request denied"
+    );
+    assert_eq!(toasts(&out)[0].title, "Capture failed");
+    // The cancelled timer may still fire.
+    assert_ignored(&out.state, Event::TimerFired { timer });
+    // A take's failure during a countdown is stale (there is no take yet).
+    assert_ignored(
+        &counting,
+        Event::CaptureFailed {
+            take: Some(TakeId::numbered(1)),
+            source: None,
+            message: "late".into(),
+        },
+    );
+}
+
 // ------------------------------------------------------------ Starting
 
 #[test]
@@ -883,7 +930,10 @@ fn starting_capture_failed_breaks_the_take() {
         },
     );
     assert_eq!(out.state, idle());
-    assert_eq!(toasts(&out)[0].body.as_deref(), Some("L1: portal closed"));
+    assert_eq!(
+        toasts(&out)[0].body.as_deref(),
+        Some("L1 (Monitor DP-4): portal closed")
+    );
 }
 
 #[test]
@@ -1145,6 +1195,41 @@ fn stream_lost_marks_missing_and_the_last_one_stops() {
             message: "x".into(),
         },
     );
+}
+
+#[test]
+fn a_take_whose_every_source_was_lost_is_broken() {
+    // Both sources get unplugged: the last loss stops the take; the files are
+    // readable, but nothing of the take is usable.
+    let mut current = recording(true);
+    for id in ["A1", "L1"] {
+        current = event(
+            &current,
+            Event::StreamLost {
+                take: take2(),
+                stream: id.into(),
+                message: "device unplugged".into(),
+            },
+        )
+        .state;
+    }
+    assert!(matches!(
+        current.runtime.record,
+        RecordPhase::Finalizing { .. }
+    ));
+    let out = finalize(&probing(&current), 90);
+    assert_eq!(out.state.runtime.record, RecordPhase::Idle);
+    let take = &out.state.project.takes[&take2()];
+    assert_eq!(take.status, TakeStatus::Broken);
+    assert_eq!(
+        take.error.as_deref(),
+        Some("every source was lost during the take")
+    );
+    assert_eq!(take.streams.len(), 2, "the probed files stay listed");
+    assert!(take.scene.layers[0].missing && take.scene.audio[0].missing);
+    assert_eq!(out.state.project.timeline, idle().project.timeline);
+    let view = finalized_view(&reply_to(&out, "s1").unwrap());
+    assert_eq!((view.status, view.placed), (TakeStatus::Broken, false));
 }
 
 // ---------------------------------------------------------- Finalizing

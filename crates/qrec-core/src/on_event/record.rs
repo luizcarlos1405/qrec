@@ -143,8 +143,16 @@ fn capture_error(reason: &str, source: Option<&str>) -> CoreError {
 /// lead to a recording any more, so it ends and the start request fails;
 /// otherwise people are told.
 fn pipeline_failed(state: &State, ctx: &Ctx, source: Option<String>, message: String) -> Outcome {
-    let what = match &source {
-        Some(s) => format!("{s}: {message}"),
+    // The live pipeline shows the project scene.
+    let label = source.as_deref().map(|s| {
+        if scene_has(&state.project.scene, s) {
+            entry_label(&state.project.scene, s)
+        } else {
+            s.to_owned()
+        }
+    });
+    let what = match &label {
+        Some(l) => format!("{l}: {message}"),
         None => message,
     };
     let mut effects = vec![Effect::Log {
@@ -153,8 +161,7 @@ fn pipeline_failed(state: &State, ctx: &Ctx, source: Option<String>, message: St
     }];
     let mut next = state.clone();
     if matches!(state.runtime.record, RecordPhase::Countdown { .. }) {
-        let (ended, more) =
-            end_countdown(state, ctx, true, capture_error(&what, source.as_deref()));
+        let (ended, more) = end_countdown(state, ctx, true, capture_error(&what, label.as_deref()));
         next = ended;
         effects.extend(more);
     }

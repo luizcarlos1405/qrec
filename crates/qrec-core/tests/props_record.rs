@@ -125,6 +125,8 @@ enum Step {
     Lost {
         pick: Index,
     },
+    /// A failure of the whole pipeline (`CaptureFailed` without a take).
+    PipelineFailed,
     Wedged,
     Stale {
         kind: u8,
@@ -146,8 +148,12 @@ fn arb_step() -> impl Strategy<Value = Step> {
         10 => (any::<Index>(), any::<u8>()).prop_map(|(pick, variant)| Step::Deliver { pick, variant }),
         2 => (0u64..3_000).prop_map(|ms| Step::Clock { ms }),
         1 => any::<Index>().prop_map(|pick| Step::Lost { pick }),
-        // Wedges are rare: they end everything.
-        2 => any::<u8>().prop_map(|kind| if kind < 32 { Step::Wedged } else { Step::Stale { kind } }),
+        // Wedges and pipeline failures are rare: they end everything.
+        2 => any::<u8>().prop_map(|kind| match kind {
+            0..32 => Step::Wedged,
+            32..64 => Step::PipelineFailed,
+            _ => Step::Stale { kind },
+        }),
     ]
 }
 
@@ -358,6 +364,11 @@ impl Harness {
                     message: "unplugged".into(),
                 })
             }
+            Step::PipelineFailed => self.event(Event::CaptureFailed {
+                take: None,
+                source: Some("L1".into()),
+                message: "pipeline error".into(),
+            }),
             Step::Wedged => self.event(Event::EngineWedged {
                 message: "teardown timed out".into(),
             }),
