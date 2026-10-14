@@ -170,7 +170,7 @@ pub fn clip_trim(
     })?;
     let edge = |e: Edge, arg: Option<TimeArg>, keep: u64| match arg {
         Some(arg) => timeline::trim_edge(clips, i, e, &arg, timeline, fps),
-        None => Ok(keep as i64),
+        None => Ok(i64::try_from(keep).unwrap_or(i64::MAX)),
     };
     let new_in = edge(Edge::Start, start, current.in_)?;
     let new_out = edge(Edge::End, end, current.out)?;

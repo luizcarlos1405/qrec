@@ -178,10 +178,12 @@ fn selection(prev: &Project, next: &Project, selection: &[ClipId]) -> Vec<ClipId
 
 /// Frame `f` at `old` as the nearest frame at `new` (through nanoseconds,
 /// like clip boundaries are re-quantized). Values too large for
-/// nanoseconds are left alone (the caller clamps them).
+/// nanoseconds, and (invalid) zero rates, are left alone (the caller clamps).
 fn convert_frame(f: Frame, old: Fps, new: Fps) -> Frame {
-    let ns =
-        i128::from(f) * i128::from(NS_PER_SEC) * i128::from(old.den) / i128::from(old.num.max(1));
+    if [old.num, old.den, new.num, new.den].contains(&0) {
+        return f;
+    }
+    let ns = i128::from(f) * i128::from(NS_PER_SEC) * i128::from(old.den) / i128::from(old.num);
     match (i64::try_from(ns), i64::try_from(f)) {
         (Ok(_), Ok(f)) => ns_to_frame_round(frame_ns(f, old), new).max(0) as Frame,
         _ => f,
@@ -417,6 +419,7 @@ mod tests {
             convert_frame(u64::MAX, Fps::new(30, 1), Fps::new(60, 1)),
             u64::MAX
         );
+        assert_eq!(convert_frame(7, Fps::new(0, 1), Fps::new(30, 1)), 7);
     }
 
     #[test]

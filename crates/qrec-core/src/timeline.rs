@@ -20,7 +20,7 @@ use crate::ids::{ClipId, Frame, TakeId};
 use crate::model::{Clip, Fps};
 use crate::protocol::command::MoveTo;
 use crate::protocol::reply::ClipRow;
-use crate::time::{TimeArg, timecode};
+use crate::time::{Sign, TimeArg, TimeValue, timecode};
 
 /// The timeline frame where clip `index` starts (`total_frames` for `index == len`).
 pub fn position_of(clips: &[Clip], index: usize) -> Frame {
@@ -286,11 +286,7 @@ pub fn absolute_frame(arg: &TimeArg, fps: Fps, what: &str) -> Result<Frame, Core
 /// A signed frame delta (`seek --by`, relative trim edges); an unsigned value counts as `+`.
 pub fn delta_frames(arg: &TimeArg, fps: Fps) -> Result<i64, CoreError> {
     let m = magnitude(arg, fps)?;
-    Ok(if arg.sign == crate::time::Sign::Minus {
-        -m
-    } else {
-        m
-    })
+    Ok(if arg.sign == Sign::Minus { -m } else { m })
 }
 
 /// The take frame a trim argument puts `edge` of clip `i` at (A§5.2):
@@ -392,12 +388,20 @@ pub fn split_point(
     Ok(clip.in_ + (t - pos))
 }
 
+/// Timecode hours above this are `Usage` before any arithmetic (114 years;
+/// `TimeArg::magnitude_frames` multiplies them unchecked).
+const MAX_TIMECODE_HOURS: u64 = 1_000_000;
+
 /// The magnitude of a time argument in frames; values too large for the
-/// timeline are `Usage` (they would wrap).
+/// timeline are `Usage` (they would wrap or overflow).
 fn magnitude(arg: &TimeArg, fps: Fps) -> Result<i64, CoreError> {
+    let out_of_range = || CoreError::usage(format!("time {arg} is out of range"));
+    if matches!(arg.value, TimeValue::Timecode { h, .. } if h > MAX_TIMECODE_HOURS) {
+        return Err(out_of_range());
+    }
     let m = arg.magnitude_frames(fps)?;
     if m < 0 {
-        return Err(CoreError::usage(format!("time {arg} is out of range")));
+        return Err(out_of_range());
     }
     Ok(m)
 }
@@ -681,6 +685,18 @@ mod tests {
         assert_eq!(edge(Edge::Start, "0.5s", false).unwrap(), 115);
         let err = edge(Edge::Start, "18446744073709551615f", false).unwrap_err();
         assert_eq!(err.code, ErrorCode::Usage);
+        let err = edge(Edge::End, "99999999999999999:00:00:00", false).unwrap_err();
+        assert_eq!(
+            (err.code, err.message.as_str()),
+            (
+                ErrorCode::Usage,
+                "time 99999999999999999:00:00:00 is out of range"
+            )
+        );
+        assert_eq!(
+            edge(Edge::End, "999999:00:00:00", false).unwrap(),
+            100 + 999_999 * 3600 * 30
+        );
         assert_eq!(
             trim_edge(&clips, 7, Edge::Start, &t("1f"), false, F30)
                 .unwrap_err()
