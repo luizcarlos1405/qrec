@@ -15,9 +15,9 @@
 use std::collections::BTreeMap;
 
 use crate::error::CoreError;
-use crate::ids::TakeId;
-use crate::model::{Project, Scene, Take};
-use crate::requantize::rederive_durations;
+use crate::ids::{Frame, TakeId};
+use crate::model::{Project, Scene, Take, TakeStatus};
+use crate::requantize::{derive_duration_frames, rederive_durations};
 use crate::state::State;
 
 /// The merged project and the warnings to show.
@@ -57,6 +57,17 @@ pub fn merge_external(state: &State, file: Project) -> Result<ExternalMerge, Cor
         ignored.push("/createdAt".to_owned());
     }
     keep_facts(&mut scene, None, "/scene", &mut ignored);
+    // After an fps change the durations are re-derived; a file that already
+    // has the re-derived values didn't edit a fact.
+    let fps_changed = canvas.fps != current.canvas.fps;
+    let new_fps = canvas.fps;
+    let expected_duration = |take: &Take| {
+        if fps_changed && take.status != TakeStatus::Recording {
+            derive_duration_frames(take, new_fps)
+        } else {
+            take.duration_frames
+        }
+    };
 
     let mut merged = current.clone();
     merged.name = name;
@@ -86,7 +97,7 @@ pub fn merge_external(state: &State, file: Project) -> Result<ExternalMerge, Cor
             continue;
         }
         let merged_take = merged.takes.get_mut(id).expect("merged starts as a copy of current");
-        merged_take.scene = merge_take(id, take, edited, &mut ignored);
+        merged_take.scene = merge_take(id, take, expected_duration(take), edited, &mut ignored);
     }
     merged.takes.extend(file_takes);
 
@@ -103,7 +114,7 @@ pub fn merge_external(state: &State, file: Project) -> Result<ExternalMerge, Cor
             ignored.join(", ")
         ));
     }
-    if merged.canvas.fps != current.canvas.fps {
+    if fps_changed {
         rederive_durations(&mut merged);
     }
     Ok(ExternalMerge {
@@ -113,8 +124,15 @@ pub fn merge_external(state: &State, file: Project) -> Result<ExternalMerge, Cor
 }
 
 /// The scene of a take in both projects: the file's, with the in-memory
-/// `missing` flags. Records the pointers of every fact the file changed.
-fn merge_take(id: &TakeId, current: &Take, edited: Take, ignored: &mut Vec<String>) -> Scene {
+/// `missing` flags. Records the pointers of every fact the file changed
+/// (`duration` is the take's duration at the merged fps).
+fn merge_take(
+    id: &TakeId,
+    current: &Take,
+    duration: Frame,
+    edited: Take,
+    ignored: &mut Vec<String>,
+) -> Scene {
     let Take {
         status,
         recorded_at,
@@ -128,7 +146,11 @@ fn merge_take(id: &TakeId, current: &Take, edited: Take, ignored: &mut Vec<Strin
     let facts = [
         ("status", status != current.status),
         ("recordedAt", recorded_at != current.recorded_at),
-        ("durationFrames", duration_frames != current.duration_frames),
+        // Untouched (the old value) or already re-derived: not an edit.
+        (
+            "durationFrames",
+            duration_frames != current.duration_frames && duration_frames != duration,
+        ),
         ("streams", streams != current.streams),
         ("error", error != current.error),
         ("placed", placed != current.placed),
@@ -300,9 +322,23 @@ mod tests {
         let state = state();
         let mut file = state.project.clone();
         file.canvas.fps = Fps::new(60, 1);
-        let merge = merge_external(&state, file).unwrap();
+        let merge = merge_external(&state, file.clone()).unwrap();
         assert_eq!(merge.project.takes[&take(1)].duration_frames, 600);
         assert_eq!(merge.project.takes[&take(2)].duration_frames, 400);
         assert!(merge.warnings.is_empty());
+        // A file that already has the new durations edited no fact…
+        file.takes.get_mut(&take(1)).unwrap().duration_frames = 600;
+        file.takes.get_mut(&take(2)).unwrap().duration_frames = 400;
+        let merge = merge_external(&state, file.clone()).unwrap();
+        assert_eq!(merge.project, file);
+        assert!(merge.warnings.is_empty(), "{:?}", merge.warnings);
+        // …one with other durations did.
+        file.takes.get_mut(&take(2)).unwrap().duration_frames = 401;
+        let merge = merge_external(&state, file).unwrap();
+        assert_eq!(merge.project.takes[&take(2)].duration_frames, 400);
+        assert_eq!(
+            merge.warnings,
+            ["facts can't be edited by hand: ignored /takes/take-0002/durationFrames"]
+        );
     }
 }

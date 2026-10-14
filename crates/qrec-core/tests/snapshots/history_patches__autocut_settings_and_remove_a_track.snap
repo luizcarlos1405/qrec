@@ -1,0 +1,17 @@
+---
+source: crates/qrec-core/tests/history_patches.rs
+expression: render(&e)
+---
+forward:
+test    /autocut/thresholdDb -35.0
+replace /autocut/thresholdDb -40.0
+test    /autocut/track null
+replace /autocut/track "A1"
+test    /scene/audio/1 {"gainDb":0.0,"id":"A2","label":"System audio","missing":false,"muted":false,"role":"system","source":"alsa_output.monitor","syncOffsetMs":0}
+remove  /scene/audio/1
+inverse:
+test    /autocut/thresholdDb -40.0
+replace /autocut/thresholdDb -35.0
+test    /autocut/track "A1"
+replace /autocut/track null
+add     /scene/audio/1 {"gainDb":0.0,"id":"A2","label":"System audio","missing":false,"muted":false,"role":"system","source":"alsa_output.monitor","syncOffsetMs":0}
