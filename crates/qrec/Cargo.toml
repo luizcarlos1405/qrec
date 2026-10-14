@@ -13,5 +13,13 @@ path = "src/main.rs"
 [dependencies]
 qrec-cli.workspace = true
 
+[dev-dependencies]
+qrec-core = { workspace = true, features = ["testkit"] }
+qrec-shell = { workspace = true, features = ["testkit"] }
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true
+serde_json.workspace = true
+
 [lints]
 workspace = true

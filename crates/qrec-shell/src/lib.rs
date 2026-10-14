@@ -28,10 +28,13 @@ pub mod ipc;
 pub mod lock;
 pub mod media;
 pub mod msg;
+pub mod paths;
 pub mod proc;
 pub mod session;
 pub mod sources;
 pub mod store;
+#[cfg(any(test, feature = "testkit"))]
+pub mod testkit;
 pub mod timers;
 pub mod watcher;
 pub mod wire;
