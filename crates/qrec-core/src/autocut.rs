@@ -28,6 +28,11 @@ use crate::protocol::event::Interval;
 use crate::state::AutocutParams;
 use crate::time::{NS_PER_MS, duration_label, frame_ns, ns_to_frame_ceil, ns_to_frame_floor};
 
+/// The entry points other owners call: autocut after a take (`autoRunAfterTake`)
+/// and jobs that finished analyzing while a recording ran.
+pub use crate::apply::autocut::start_auto_run;
+pub use crate::on_event::autocut::apply_ready_autocuts;
+
 /// The planned cut of one clip.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -272,15 +277,30 @@ pub fn entirely_silent(params: &AutocutParams) -> String {
 /// "Autocut take 3: removed 4 silences (6.2 s)" (one take) or "Autocut 2
 /// takes: …": the history label of a run that changed clips of `takes`.
 pub fn run_label(takes: &BTreeSet<TakeId>, silences: usize, removed_ns: i64) -> String {
-    let what = match takes.iter().next() {
-        Some(take) if takes.len() == 1 => format!("take {}", take.number()),
-        _ => format!("{} takes", takes.len()),
-    };
     format!(
-        "Autocut {what}: removed {silences} {} ({})",
+        "Autocut {}: removed {silences} {} ({})",
+        takes_label(takes),
         plural(silences, "silence", "silences"),
         duration_label(removed_ns)
     )
+}
+
+/// "Dry run: autocut take 3 would remove 4 silences (6.2 s)".
+pub fn dry_run_label(takes: &BTreeSet<TakeId>, silences: usize, removed_ns: i64) -> String {
+    format!(
+        "Dry run: autocut {} would remove {silences} {} ({})",
+        takes_label(takes),
+        plural(silences, "silence", "silences"),
+        duration_label(removed_ns)
+    )
+}
+
+/// "take 3", or "2 takes".
+fn takes_label(takes: &BTreeSet<TakeId>) -> String {
+    match takes.iter().next() {
+        Some(take) if takes.len() == 1 => format!("take {}", take.number()),
+        _ => format!("{} takes", takes.len()),
+    }
 }
 
 /// A level for people, with the true minus sign (DESIGN.md): `−35 dB`, `−35.5 dB`, `0 dB`.
