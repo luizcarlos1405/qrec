@@ -63,9 +63,12 @@ impl SessionEnv {
     }
 
     /// The machine's ffmpeg and render nodes; the capabilities cache and
-    /// probe logs under `dirs`.
+    /// probe logs under `dirs`. The fake backend (tests, CI) never runs
+    /// the VA-API check, so nothing touches a GPU and exports plan the
+    /// same everywhere.
     pub fn for_dirs(dirs: UserDirs, fake_backend: bool) -> Self {
-        let caps = CapsOptions::system(Some(dirs.capabilities_cache()), Some(dirs.state.join("logs")));
+        let mut caps = CapsOptions::system(Some(dirs.capabilities_cache()), Some(dirs.state.join("logs")));
+        caps.probe_va = !fake_backend;
         Self {
             dirs,
             fake_backend,

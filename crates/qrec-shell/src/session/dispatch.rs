@@ -23,6 +23,22 @@ use crate::proc;
 /// kept changing under it; then it is saved over the change.
 const MAX_REDISPATCH: u32 = 3;
 
+/// Commands that create the project in an empty folder before they run
+/// (A§8.4): edits and recordings. UI, playback, output, undo and history
+/// commands don't: in an empty folder they get `not_project`.
+pub(super) fn creates_the_project(cmd: &Command) -> bool {
+    !matches!(cmd, Command::Init { .. })
+        && (cmd.edits_project()
+            || matches!(
+                cmd,
+                Command::RecordStart { .. } | Command::RecordToggle { .. }
+            ))
+        && !matches!(
+            cmd,
+            Command::Undo { .. } | Command::Redo { .. } | Command::HistoryClear
+        )
+}
+
 /// Keeps the reply of an internal request.
 struct Capture(Arc<Mutex<Option<Result<Value, CoreError>>>>);
 
@@ -111,8 +127,9 @@ impl Session {
             return self.reply_now(id.as_ref(), &mut to, Err(err));
         }
         let initialized = is_initialized(&self.state.project);
-        if !initialized && !matches!(cmd, Command::Init { .. }) {
-            // A§8.4: the first command in an empty folder creates the project.
+        if !initialized && creates_the_project(&cmd) {
+            // A§8.4: the first mutating command in an empty folder creates
+            // the project (other commands get the core's `not_project`).
             if let Err(e) = self.lazy_init() {
                 return self.reply_now(id.as_ref(), &mut to, Err(e));
             }

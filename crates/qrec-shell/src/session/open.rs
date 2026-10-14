@@ -103,6 +103,16 @@ pub(super) fn open(dir: &Path, opts: OpenOpts, deps: Deps, cfg: SessionConfig) -
     let check: Check = store::validated;
 
     let mut folder = classify(&paths)?;
+    if let Some(lock) = &cfg.lock {
+        let same = fs::canonicalize(lock.path()).ok() == fs::canonicalize(paths.lock_file()).ok();
+        if !same {
+            return Err(ShellError::Internal(format!(
+                "the lock {} doesn't belong to {}",
+                lock.path().display(),
+                paths.root().display()
+            )));
+        }
+    }
     let lock = match cfg.lock {
         Some(lock) => Some(lock),
         None if opts.mutating => Some(ProjectLock::try_acquire(&dir)?.ok_or_else(|| lock_held(&dir))?),

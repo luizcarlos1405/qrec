@@ -487,6 +487,81 @@ fn the_first_command_in_an_empty_folder_creates_the_project() {
 }
 
 #[test]
+fn only_mutating_commands_create_a_project() {
+    let h = Harness::new("empty");
+    let mut s = h.open(true).unwrap();
+    for cmd in [
+        Command::Select { op: SelectOp::Clear },
+        Command::Undo { steps: 1 },
+        Command::Export {
+            format: Default::default(),
+            quality: Default::default(),
+            codec: None,
+            out: None,
+        },
+    ] {
+        let name = cmd.name();
+        let err = send(&mut s, cmd, false).unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotProject, "{name}");
+    }
+    assert!(!h.dir.join("qrec.json").exists());
+    assert!(dispatch_creates(&Command::ClipRemove { clips: vec![] }));
+    assert!(dispatch_creates(&Command::RecordToggle { wait: false }));
+    assert!(!dispatch_creates(&Command::Init {
+        canvas: None,
+        name: None
+    }));
+    assert!(!dispatch_creates(&Command::HistoryRestore { seq: 0 }));
+}
+
+fn dispatch_creates(cmd: &Command) -> bool {
+    super::dispatch::creates_the_project(cmd)
+}
+
+#[test]
+fn a_host_can_queue_requests_before_the_session_exists() {
+    let h = Harness::with_sample("early");
+    let lock = crate::lock::acquire_eventually(&h.dir);
+    let (inbox, rx) = Inbox::channel();
+    // IPC accepts a connection before recovery (A§8.3 step 1).
+    let answers = Answers::default();
+    inbox.send(Msg::Request {
+        req: Request::command(
+            Command::ClipRemove {
+                clips: vec![clip("c001")],
+            },
+            false,
+        ),
+        to: answers.responder(),
+    });
+    let config = SessionConfig {
+        lock: Some(lock),
+        channel: Some((inbox, rx)),
+        ..h.config()
+    };
+    let opts = OpenOpts {
+        host: HostKind::Headless,
+        mutating: true,
+        recovery: false,
+    };
+    let mut s = Session::open_with(&h.dir, opts, h.deps(), config).unwrap();
+    assert!(s.is_host());
+    s.drain();
+    assert_eq!(answers.last().unwrap().unwrap()["seq"], 1);
+
+    // A lock of another project is refused.
+    let other = Harness::with_sample("other");
+    let foreign = crate::lock::acquire_eventually(&other.dir);
+    drop(s);
+    let config = SessionConfig {
+        lock: Some(foreign),
+        ..h.config()
+    };
+    let err = Session::open_with(&h.dir, opts, h.deps(), config).unwrap_err();
+    assert!(matches!(err, ShellError::Internal(_)), "{err:?}");
+}
+
+#[test]
 fn the_folder_rule() {
     let h = Harness::new("busy");
     fs::write(h.dir.join("notes.txt"), "hi").unwrap();
