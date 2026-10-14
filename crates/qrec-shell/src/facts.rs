@@ -6,33 +6,30 @@
 //! fake inventory (A§8.11). Owner: session.
 //!
 //! **Config.** `config.toml` is read on every gather (cached by size and
-//! mtime) so `qrec config set` reaches a running host. The shell has no
-//! TOML dependency, so it is read by [`parse_config`], a reader for the
-//! TOML subset the config uses (tables, dotted keys, strings, numbers,
-//! booleans, arrays, inline tables); an unreadable config falls back to
-//! the defaults with a warning. Once the core's `config::parse` lands it
-//! should replace it.
+//! mtime) so `qrec config set` reaches a running host, with the core's
+//! `config::parse`; an unusable config falls back to the defaults with a
+//! warning (once per change).
 //!
 //! **Devices.** [`Sources`] is the seam to device discovery: the fake
 //! inventory, or [`SystemSources`] (audio through `pactl --format=json`;
 //! screens and cameras through hooks the media owner's `sources` module
 //! fills in).
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
+use qrec_core::TakeId;
 use qrec_core::config::UserConfig;
 use qrec_core::ctx::{
-    AudioDeviceInfo, CameraInfo, CameraMode, Facts, FactsNeeded, FileFact, OutFacts, ScreenInfo,
+    AudioDeviceInfo, CameraInfo, Facts, FactsNeeded, FileFact, OutFacts, ScreenInfo,
 };
 use qrec_core::model::PROJECT_FILE;
-use qrec_core::{Fps, TakeId};
-use serde_json::{Map, Number, Value};
+use serde_json::Value;
 
+use crate::capture::fake::fake_inventory;
 use crate::paths::ProjectPaths;
 use crate::proc::{self, Limit, PACTL_TIMEOUT, Spec};
 
@@ -56,66 +53,32 @@ pub trait Sources: Send {
     fn cameras(&mut self) -> Result<Vec<CameraInfo>, String>;
 }
 
-/// The fake backend's devices (A§8.11): screens `FAKE-1`, `FAKE-2`
-/// (1280×720, side by side), camera `/dev/fake0`, mic `alsa_input.fake`,
-/// monitor `alsa_output.fake.monitor`. Mirrors the capture owner's
-/// `capture::fake::fake_inventory`.
+/// The fake backend's devices (A§8.11, `capture::fake::fake_inventory`):
+/// screens `FAKE-1`, `FAKE-2` (1280×720, side by side), camera
+/// `/dev/fake0`, mic `alsa_input.fake`, monitor `alsa_output.fake.monitor`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FakeSources;
 
-pub const FAKE_MIC: &str = "alsa_input.fake";
-pub const FAKE_MONITOR: &str = "alsa_output.fake.monitor";
-
 impl Sources for FakeSources {
     fn audio(&mut self) -> Result<AudioInventory, String> {
+        let inventory = fake_inventory();
         Ok(AudioInventory {
-            devices: vec![
-                AudioDeviceInfo {
-                    name: FAKE_MIC.to_owned(),
-                    description: "Fake mic".to_owned(),
-                    is_monitor: false,
-                },
-                AudioDeviceInfo {
-                    name: FAKE_MONITOR.to_owned(),
-                    description: "Fake system audio".to_owned(),
-                    is_monitor: true,
-                },
-            ],
-            default_mic: Some(FAKE_MIC.to_owned()),
-            default_monitor: Some(FAKE_MONITOR.to_owned()),
+            devices: inventory
+                .mics
+                .into_iter()
+                .chain(inventory.monitors)
+                .collect(),
+            default_mic: inventory.default_mic,
+            default_monitor: inventory.default_monitor,
         })
     }
 
     fn screens(&mut self) -> Result<Vec<ScreenInfo>, String> {
-        Ok((0..2)
-            .map(|i| ScreenInfo {
-                output: format!("FAKE-{}", i + 1),
-                description: format!("Fake screen {}", i + 1),
-                x: i * 1280,
-                y: 0,
-                width: 1280,
-                height: 720,
-                scale: 1.0,
-            })
-            .collect())
+        Ok(fake_inventory().screens)
     }
 
     fn cameras(&mut self) -> Result<Vec<CameraInfo>, String> {
-        let mode = |width, height, fps, format: &str| CameraMode {
-            width,
-            height,
-            fps: Fps::new(fps, 1),
-            format: format.to_owned(),
-        };
-        Ok(vec![CameraInfo {
-            device: "/dev/fake0".to_owned(),
-            label: "Fake camera".to_owned(),
-            modes: vec![
-                mode(640, 480, 30, "YUY2"),
-                mode(640, 480, 60, "YUY2"),
-                mode(1280, 720, 30, "image/jpeg"),
-            ],
-        }])
+        Ok(fake_inventory().cameras)
     }
 }
 
@@ -297,320 +260,11 @@ impl ConfigFile {
     }
 }
 
-/// Reads `config.toml` text into a `UserConfig` (missing settings take
-/// their defaults; unknown keys and wrong types are errors).
+/// Reads `config.toml` text into a `UserConfig` with the core's reader
+/// (`config::parse`: missing settings take their defaults; unknown keys,
+/// wrong types and out-of-range values are errors).
 pub fn parse_config(text: &str) -> Result<UserConfig, String> {
-    let table = toml_to_json(text).map_err(|e| format!("config.toml: {e}"))?;
-    serde_json::from_value(Value::Object(table)).map_err(|e| format!("config.toml: {e}"))
-}
-
-/// The TOML subset into a JSON object. Errors name the line.
-pub fn toml_to_json(text: &str) -> Result<Map<String, Value>, String> {
-    let mut root = Map::new();
-    let mut table: Vec<String> = Vec::new();
-    let mut tables: BTreeSet<Vec<String>> = BTreeSet::new();
-    for (i, line) in text.lines().enumerate() {
-        let n = i + 1;
-        let err = |msg: String| format!("line {n}: {msg}");
-        let mut p = Cursor::new(line);
-        p.skip_ws();
-        if p.at_end() {
-            continue;
-        }
-        if p.eat('[') {
-            if p.eat('[') {
-                return Err(err("arrays of tables aren't supported".into()));
-            }
-            p.skip_ws();
-            let path = p.key().map_err(&err)?;
-            p.skip_ws();
-            if !p.eat(']') {
-                return Err(err("expected ] after the table name".into()));
-            }
-            p.end().map_err(&err)?;
-            if !tables.insert(path.clone()) {
-                return Err(err(format!("table [{}] is defined twice", path.join("."))));
-            }
-            table_at(&mut root, &path).map_err(&err)?;
-            table = path;
-            continue;
-        }
-        let key = p.key().map_err(&err)?;
-        p.skip_ws();
-        if !p.eat('=') {
-            return Err(err("expected = after the key".into()));
-        }
-        p.skip_ws();
-        let value = p.value().map_err(&err)?;
-        p.end().map_err(&err)?;
-        let full: Vec<String> = table.iter().chain(&key).cloned().collect();
-        let (last, parents) = full.split_last().expect("keys have at least one part");
-        let parent = table_at(&mut root, parents).map_err(&err)?;
-        if parent.contains_key(last) {
-            return Err(err(format!("{} is set twice", full.join("."))));
-        }
-        parent.insert(last.clone(), value);
-    }
-    Ok(root)
-}
-
-/// The table at `path`, created as needed; a non-table in the way is an error.
-fn table_at<'a>(
-    root: &'a mut Map<String, Value>,
-    path: &[String],
-) -> Result<&'a mut Map<String, Value>, String> {
-    let mut table = root;
-    for part in path {
-        let entry = table
-            .entry(part.clone())
-            .or_insert_with(|| Value::Object(Map::new()));
-        table = entry
-            .as_object_mut()
-            .ok_or_else(|| format!("{part} is a value, not a table"))?;
-    }
-    Ok(table)
-}
-
-struct Cursor<'a> {
-    s: &'a str,
-    i: usize,
-}
-
-impl<'a> Cursor<'a> {
-    fn new(s: &'a str) -> Self {
-        Self { s, i: 0 }
-    }
-
-    fn peek(&self) -> Option<char> {
-        self.s[self.i..].chars().next()
-    }
-
-    fn bump(&mut self) -> Option<char> {
-        let c = self.peek()?;
-        self.i += c.len_utf8();
-        Some(c)
-    }
-
-    fn eat(&mut self, c: char) -> bool {
-        if self.peek() == Some(c) {
-            self.i += c.len_utf8();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn rest(&self) -> &'a str {
-        &self.s[self.i..]
-    }
-
-    fn skip_ws(&mut self) {
-        while matches!(self.peek(), Some(' ' | '\t')) {
-            self.i += 1;
-        }
-    }
-
-    /// Only whitespace or a comment left.
-    fn at_end(&self) -> bool {
-        let rest = self.rest().trim_start_matches([' ', '\t']);
-        rest.is_empty() || rest.starts_with('#')
-    }
-
-    fn end(&mut self) -> Result<(), String> {
-        self.skip_ws();
-        if self.at_end() {
-            Ok(())
-        } else {
-            Err(format!("unexpected {:?}", self.rest()))
-        }
-    }
-
-    /// `a`, `a.b`, `"quoted key".c`.
-    fn key(&mut self) -> Result<Vec<String>, String> {
-        let mut parts = Vec::new();
-        loop {
-            self.skip_ws();
-            let part = match self.peek() {
-                Some('"') => self.basic_string()?,
-                Some('\'') => self.literal_string()?,
-                Some(c) if is_bare(c) => {
-                    let start = self.i;
-                    while self.peek().is_some_and(is_bare) {
-                        self.i += 1;
-                    }
-                    self.s[start..self.i].to_owned()
-                }
-                other => return Err(format!("expected a key, found {other:?}")),
-            };
-            parts.push(part);
-            self.skip_ws();
-            if !self.eat('.') {
-                return Ok(parts);
-            }
-        }
-    }
-
-    fn value(&mut self) -> Result<Value, String> {
-        match self.peek() {
-            Some('"') => self.basic_string().map(Value::String),
-            Some('\'') => self.literal_string().map(Value::String),
-            Some('[') => self.array(),
-            Some('{') => self.inline_table(),
-            Some(_) => self.scalar(),
-            None => Err("a value is missing".into()),
-        }
-    }
-
-    fn basic_string(&mut self) -> Result<String, String> {
-        if self.rest().starts_with("\"\"\"") {
-            return Err("multi-line strings aren't supported".into());
-        }
-        self.bump();
-        let mut out = String::new();
-        loop {
-            match self.bump() {
-                None => return Err("unterminated string".into()),
-                Some('"') => return Ok(out),
-                Some('\\') => {
-                    let c = match self.bump() {
-                        Some('b') => '\u{8}',
-                        Some('t') => '\t',
-                        Some('n') => '\n',
-                        Some('f') => '\u{c}',
-                        Some('r') => '\r',
-                        Some('"') => '"',
-                        Some('\\') => '\\',
-                        Some(u @ ('u' | 'U')) => {
-                            let len = if u == 'u' { 4 } else { 8 };
-                            let hex: String = (0..len).filter_map(|_| self.bump()).collect();
-                            u32::from_str_radix(&hex, 16)
-                                .ok()
-                                .and_then(char::from_u32)
-                                .ok_or_else(|| format!("bad escape \\{u}{hex}"))?
-                        }
-                        other => return Err(format!("bad escape \\{}", other.unwrap_or(' '))),
-                    };
-                    out.push(c);
-                }
-                Some(c) => out.push(c),
-            }
-        }
-    }
-
-    fn literal_string(&mut self) -> Result<String, String> {
-        if self.rest().starts_with("'''") {
-            return Err("multi-line strings aren't supported".into());
-        }
-        self.bump();
-        let rest = self.rest();
-        let end = rest.find('\'').ok_or("unterminated string")?;
-        self.i += end + 1;
-        Ok(rest[..end].to_owned())
-    }
-
-    fn array(&mut self) -> Result<Value, String> {
-        self.bump();
-        let mut items = Vec::new();
-        loop {
-            self.skip_ws();
-            if self.eat(']') {
-                return Ok(Value::Array(items));
-            }
-            items.push(self.value()?);
-            self.skip_ws();
-            if self.eat(',') {
-                continue;
-            }
-            self.skip_ws();
-            if self.eat(']') {
-                return Ok(Value::Array(items));
-            }
-            return Err("expected , or ] in an array (arrays must fit on one line)".into());
-        }
-    }
-
-    fn inline_table(&mut self) -> Result<Value, String> {
-        self.bump();
-        let mut table = Map::new();
-        self.skip_ws();
-        if self.eat('}') {
-            return Ok(Value::Object(table));
-        }
-        loop {
-            let key = self.key()?;
-            self.skip_ws();
-            if !self.eat('=') {
-                return Err("expected = in an inline table".into());
-            }
-            self.skip_ws();
-            let value = self.value()?;
-            let (last, parents) = key.split_last().expect("keys have at least one part");
-            let parent = table_at(&mut table, parents)?;
-            if parent.insert(last.clone(), value).is_some() {
-                return Err(format!("{} is set twice", key.join(".")));
-            }
-            self.skip_ws();
-            if self.eat('}') {
-                return Ok(Value::Object(table));
-            }
-            if !self.eat(',') {
-                return Err("expected , or } in an inline table".into());
-            }
-        }
-    }
-
-    fn scalar(&mut self) -> Result<Value, String> {
-        let start = self.i;
-        while self
-            .peek()
-            .is_some_and(|c| !matches!(c, ' ' | '\t' | ',' | ']' | '}' | '#'))
-        {
-            self.bump();
-        }
-        let token = &self.s[start..self.i];
-        match token {
-            "true" => return Ok(Value::Bool(true)),
-            "false" => return Ok(Value::Bool(false)),
-            "" => return Err("a value is missing".into()),
-            _ => {}
-        }
-        let digits = token.replace('_', "");
-        let (sign, body) = match digits.strip_prefix('-') {
-            Some(rest) => (-1i64, rest),
-            None => (1, digits.strip_prefix('+').unwrap_or(&digits)),
-        };
-        let special = matches!(body, "inf" | "nan");
-        if !special && !body.starts_with(|c: char| c.is_ascii_digit()) {
-            return Err(format!("unknown value {token:?} (strings need quotes)"));
-        }
-        for (prefix, radix) in [("0x", 16), ("0o", 8), ("0b", 2)] {
-            if let Some(n) = body.strip_prefix(prefix) {
-                return i64::from_str_radix(n, radix)
-                    .map(|v| Value::from(sign * v))
-                    .map_err(|_| format!("bad number {token}"));
-            }
-        }
-        let date = body.len() > 4
-            && body.as_bytes()[4] == b'-'
-            && body[..4].bytes().all(|b| b.is_ascii_digit());
-        if date || body.contains(':') {
-            return Err(format!("dates and times aren't supported ({token})"));
-        }
-        if special || body.contains(['.', 'e', 'E']) {
-            let v: f64 = digits.parse().map_err(|_| format!("bad number {token}"))?;
-            return Number::from_f64(v)
-                .map(Value::Number)
-                .ok_or_else(|| format!("{token} isn't a usable number"));
-        }
-        digits
-            .parse::<i64>()
-            .map(Value::from)
-            .map_err(|_| format!("bad number {token}"))
-    }
-}
-
-fn is_bare(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_' || c == '-'
+    qrec_core::config::parse(text).map_err(|e| e.message)
 }
 
 // -------------------------------------------------------------------- facts
@@ -863,63 +517,11 @@ fn resolve_existing(path: &Path) -> PathBuf {
 mod tests {
     use std::os::unix::fs::symlink;
 
+    use qrec_core::Fps;
     use qrec_core::config::Theme;
-    use serde_json::json;
 
     use super::*;
-
-    #[test]
-    fn toml_subset() {
-        let text = r#"
-# comment
-theme = "dragons-keep"   # trailing comment
-a.b = 'literal \n'
-[canvas]
-fps = "30000/1001"
-width = 1_280
-[autocut]
-threshold_db = -35.5
-min_silence_ms = 0x190
-padding_ms = 1.2e2
-[ "quoted table" ]
-list = [1, "two", true, ]
-inline = { x = 1, y.z = "w" }
-esc = "tab\there é"
-"#;
-        let map = toml_to_json(text).unwrap();
-        assert_eq!(
-            Value::Object(map),
-            json!({
-                "theme": "dragons-keep",
-                "a": { "b": "literal \\n" },
-                "canvas": { "fps": "30000/1001", "width": 1280 },
-                "autocut": { "threshold_db": -35.5, "min_silence_ms": 400, "padding_ms": 120.0 },
-                "quoted table": {
-                    "list": [1, "two", true],
-                    "inline": { "x": 1, "y": { "z": "w" } },
-                    "esc": "tab\there é"
-                }
-            })
-        );
-        for (bad, needle) in [
-            ("a = 1\na = 2", "line 2: a is set twice"),
-            ("[t]\n[t]", "line 2: table [t] is defined twice"),
-            ("[[t]]", "arrays of tables"),
-            ("s = \"\"\"x", "multi-line"),
-            ("d = 1979-05-27", "dates and times"),
-            ("t = 07:32:00", "dates and times"),
-            ("x = bare", "strings need quotes"),
-            ("x = 1e", "bad number"),
-            ("x = 1 2", "unexpected"),
-            ("x", "expected ="),
-            ("x = \"open", "unterminated"),
-            ("a = 1\n[a]", "a is a value, not a table"),
-            ("x = inf", "isn't a usable number"),
-        ] {
-            let err = toml_to_json(bad).unwrap_err();
-            assert!(err.contains(needle), "{bad:?}: {err}");
-        }
-    }
+    use crate::capture::fake::{FAKE_MIC, FAKE_MONITOR};
 
     #[test]
     fn config_files() {
@@ -939,8 +541,12 @@ esc = "tab\there é"
         );
         assert_eq!(cfg.autocut.threshold_db, -40.0);
         let err = parse_config("[canvas]\nfsp = 25\n").unwrap_err();
-        assert!(err.starts_with("config.toml: unknown field `fsp`"), "{err}");
+        assert!(err.contains("fsp"), "{err}");
         assert!(parse_config("theme = 3").is_err());
+        assert!(
+            parse_config("[recording]\ncountdown_secs = 99\n").is_err(),
+            "values are range-checked"
+        );
 
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("config.toml");

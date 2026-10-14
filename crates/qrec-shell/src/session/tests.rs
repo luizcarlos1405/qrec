@@ -2,11 +2,8 @@
 //! commands dispatched against a project on disk, lazy init, the folder
 //! rule, locking, read-only opens, hello and request ids, purge ordering,
 //! crash points between the commit steps, recovery probes, capabilities,
-//! the A§7.7 rules, UI coalescing and interrupts.
-//!
-//! Tests that go through the core's validation (undo/redo/restore and
-//! external-edit merges call `validate::ensure_valid`) wait for the meta
-//! owner and are ignored until it lands.
+//! the A§7.7 rules, external-edit merges, undo/redo/restore on disk, UI
+//! coalescing and interrupts.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -19,11 +16,13 @@ use chrono::{DateTime, Utc};
 use qrec_core::apply::Outcome;
 use qrec_core::apply::project::is_initialized;
 use qrec_core::history::ops::unchecked;
+use qrec_core::model::StreamKind;
 use qrec_core::model::TakeStatus;
 use qrec_core::plans::{CapturePlan, ExportPlan, FramePlan, LiveScene};
 use qrec_core::protocol::{
-    Command, Effect, HelloInfo, HistoryOp, MoveTo, ProbeJob, ProbePurpose, Progress, SceneTarget,
-    SelectOp, Toast, VideoSourceArg, WireBody,
+    Command, Effect, HelloInfo, HistoryOp, MediaInfo, MoveTo, ProbeJob, ProbePurpose, ProbeResult,
+    Progress, RecordModeArg, RecordedStream, SceneTarget, SelectOp, Toast, VideoSourceArg,
+    WireBody,
 };
 use qrec_core::state::{HostKind, Job, JobKind, RecordPhase, SilenceKey};
 use qrec_core::{ClipId, CoreError, ErrorCode, Event, Fps, JobId, ReqId, TakeId};
@@ -826,7 +825,6 @@ fn a_crash_after_the_head_keeps_the_command() {
 }
 
 #[test]
-#[ignore = "needs core meta: merging an external edit validates the project"]
 fn a_crash_after_writing_qrec_json_is_merged_as_an_external_edit() {
     let h = Harness::with_sample("crash-project");
     let mut s = h.open(true).unwrap();
@@ -856,7 +854,6 @@ fn a_crash_after_writing_qrec_json_is_merged_as_an_external_edit() {
 }
 
 #[test]
-#[ignore = "needs core meta: merging an external edit validates the project"]
 fn a_hand_edit_found_at_open_survives_the_repairs() {
     let h = Harness::with_sample("edit-and-torn");
     {
@@ -902,7 +899,6 @@ fn a_hand_edit_found_at_open_survives_the_repairs() {
 }
 
 #[test]
-#[ignore = "needs core meta: merging an external edit validates the project"]
 fn external_edits_are_merged_and_undoable() {
     let h = Harness::with_sample("external");
     let mut s = h.open(true).unwrap();
@@ -931,7 +927,6 @@ fn external_edits_are_merged_and_undoable() {
 }
 
 #[test]
-#[ignore = "needs core meta: merging an external edit validates the project"]
 fn an_external_edit_goes_before_a_pending_command() {
     let h = Harness::with_sample("pre-check");
     let mut s = h.open(true).unwrap();
@@ -962,7 +957,6 @@ fn an_external_edit_goes_before_a_pending_command() {
 }
 
 #[test]
-#[ignore = "needs core meta: undo and redo validate the project"]
 fn undo_and_redo_move_the_cursor_on_disk() {
     let h = Harness::with_sample("undo");
     let mut s = h.open(true).unwrap();
@@ -1053,7 +1047,6 @@ fn a_corrupt_qrec_json_fails_the_open_but_not_recovery_mode() {
 }
 
 #[test]
-#[ignore = "needs core meta: a restore validates the project"]
 fn a_restore_rewrites_qrec_json_and_keeps_the_broken_one() {
     let h = Harness::with_sample("restore");
     {
@@ -1434,6 +1427,156 @@ fn the_live_pipeline_follows_the_gui_from_the_start() {
     let cli = h.open(true).unwrap();
     assert!(!h.log.has("set_live"));
     drop(cli);
+}
+
+/// What ffprobe would say about one planned stream of `frames` frames at 30 fps.
+fn probed(stream: &qrec_core::model::Stream, frames: u64) -> ProbeResult {
+    let duration_ns = frames as i64 * 1_000_000_000 / 30;
+    let info = match stream.kind {
+        StreamKind::Video => MediaInfo {
+            kind: StreamKind::Video,
+            frames: Some(frames),
+            fps: Some(Fps::new(30, 1)),
+            width: Some(1280),
+            height: Some(720),
+            sample_rate: None,
+            channels: None,
+            duration_ns: Some(duration_ns),
+            start_time_ns: 0,
+            color_range: None,
+            color_space: None,
+        },
+        StreamKind::Audio => MediaInfo {
+            kind: StreamKind::Audio,
+            frames: None,
+            fps: None,
+            width: None,
+            height: None,
+            sample_rate: Some(48_000),
+            channels: Some(1),
+            duration_ns: Some(duration_ns),
+            start_time_ns: 0,
+            color_range: None,
+            color_space: None,
+        },
+    };
+    ProbeResult {
+        id: stream.id.clone(),
+        file: stream.file.clone(),
+        info: Ok(info),
+    }
+}
+
+#[test]
+fn a_take_is_committed_before_capture_and_finalized_from_events() {
+    let h = Harness::with_sample("record");
+    let mut s = h.open(true).unwrap();
+    let start = Answers::default();
+    s.handle(Msg::Request {
+        req: Request::command(
+            Command::RecordStart {
+                mode: RecordModeArg::Append,
+                countdown: Some(0),
+                wait: false,
+            },
+            false,
+        ),
+        to: start.responder(),
+    });
+    s.drain();
+    // The take folder, then the commit, then the capture (A§7.6).
+    assert!(h.dir.join("takes/take-0002").is_dir());
+    assert_eq!(
+        h.head().project.takes[&take(2)].status,
+        TakeStatus::Recording
+    );
+    assert!(h.log.has("start take-0002"), "{:?}", h.log.lines());
+    assert!(start.last().is_none(), "answered once capture runs");
+
+    let planned = s.state().project.takes[&take(2)].streams.clone();
+    let files: Vec<String> = planned.iter().map(|st| st.file.clone()).collect();
+    s.handle(Msg::Event(Event::CaptureStarted {
+        take: take(2),
+        t0_ns: 0,
+        files: files.clone(),
+    }));
+    let started = start.last().unwrap().unwrap();
+    assert_eq!(started["result"]["take"], "take-0002");
+
+    let stop = Answers::default();
+    s.handle(Msg::Request {
+        req: Request::command(Command::RecordStop, false),
+        to: stop.responder(),
+    });
+    assert!(h.log.has("stop take-0002 cancel=false"));
+    let streams = planned
+        .iter()
+        .map(|st| RecordedStream {
+            id: st.id.clone(),
+            file: st.file.clone(),
+            start_offset_ns: 0,
+            eos: true,
+        })
+        .collect();
+    s.handle(Msg::Event(Event::CaptureStopped {
+        take: take(2),
+        streams,
+        timed_out: false,
+    }));
+    assert!(h.log.has("probe take-0002 Finalize"), "{:?}", h.log.lines());
+    s.handle(Msg::Event(Event::TakeProbed {
+        take: take(2),
+        purpose: ProbePurpose::Finalize,
+        results: planned.iter().map(|st| probed(st, 90)).collect(),
+    }));
+    s.drain();
+
+    let finalized = stop.last().expect("the stop request hears back").unwrap();
+    assert_eq!(finalized["result"]["take"], "take-0002", "{finalized}");
+    assert_eq!(finalized["result"]["status"], "ok");
+    assert!(s.state().runtime.record.is_idle());
+    let head = h.head();
+    assert_eq!(head.project.takes[&take(2)].status, TakeStatus::Ok);
+    assert!(
+        head.project
+            .timeline
+            .clips
+            .iter()
+            .any(|c| c.take == take(2))
+    );
+    let last = s.state().history.entries.last().unwrap();
+    assert_eq!(last.label, "Record take 2");
+    assert_eq!(h.history_seqs().last(), Some(&last.seq));
+    assert_eq!(s.pending_requests(), 0);
+}
+
+#[test]
+fn a_gone_requester_is_forgotten() {
+    let h = Harness::with_sample("gone");
+    let mut s = h.open(true).unwrap();
+    let start = Answers::default();
+    s.handle(Msg::Request {
+        req: Request::command(
+            Command::RecordStart {
+                mode: RecordModeArg::Append,
+                countdown: Some(0),
+                wait: false,
+            },
+            false,
+        ),
+        to: start.responder(),
+    });
+    assert_eq!(s.pending_requests(), 1);
+    let req = start.accepted.lock().unwrap()[0].clone().unwrap();
+    s.handle(Msg::Event(Event::RequesterGone { req }));
+    assert_eq!(s.pending_requests(), 0);
+    s.handle(Msg::Event(Event::CaptureStarted {
+        take: take(2),
+        t0_ns: 0,
+        files: vec![],
+    }));
+    assert!(start.last().is_none(), "nobody to answer");
+    assert!(!s.state().runtime.record.is_idle(), "the recording goes on");
 }
 
 #[test]

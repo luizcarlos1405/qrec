@@ -10,9 +10,8 @@ use std::path::{Path, PathBuf};
 
 use qrec_core::apply::project::{is_initialized, uninitialized_state};
 use qrec_core::apply::ui::live_scene;
-use qrec_core::media_argv::probe_argv;
-use qrec_core::model::{Take, TakeStatus};
-use qrec_core::protocol::{Effect, ProbeJob, ProbePurpose, Toast, ToastLevel};
+use qrec_core::on_event::record::recovery_probes;
+use qrec_core::protocol::{Effect, Toast, ToastLevel};
 use qrec_core::{CoreError, ErrorCode, Event, State};
 
 use super::Session;
@@ -284,24 +283,10 @@ impl Session {
         self.run_event(Event::Capabilities(detected.caps));
     }
 
-    /// One `Probe{Recover}` per take still `recording` (A§5.3 "Recovery").
+    /// One `Probe{Recover}` per take still `recording` (A§5.3 "Recovery",
+    /// the record owner's `recovery_probes`).
     fn start_recovery_probes(&mut self) {
-        let in_flight = self.state.runtime.record.take().cloned();
-        let probes: Vec<Effect> = self
-            .state
-            .project
-            .takes
-            .iter()
-            .filter(|(id, take)| {
-                take.status == TakeStatus::Recording && in_flight.as_ref() != Some(*id)
-            })
-            .map(|(id, take)| Effect::Probe {
-                take: id.clone(),
-                purpose: ProbePurpose::Recover,
-                jobs: probe_jobs(take),
-            })
-            .collect();
-        for probe in probes {
+        for probe in recovery_probes(&self.state) {
             if let Effect::Probe {
                 take,
                 purpose,
@@ -315,17 +300,4 @@ impl Session {
             }
         }
     }
-}
-
-/// One `ffprobe` per stream of `take` (`media_argv::probe_argv`).
-pub(super) fn probe_jobs(take: &Take) -> Vec<ProbeJob> {
-    take.streams
-        .iter()
-        .map(|s| ProbeJob {
-            id: s.id.clone(),
-            file: s.file.clone(),
-            kind: s.kind,
-            argv: probe_argv(&s.file, s.kind),
-        })
-        .collect()
 }

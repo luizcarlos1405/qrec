@@ -3,16 +3,17 @@
 //! the effective VA render node and its vendor; the h264_vaapi export
 //! check, run as a child process with a 10 s timeout (a hung GPU driver
 //! can't hang Qrec); optionally the `va*h264enc` factory bound to the node
-//! (needs GStreamer, so only hosts that record pass that hook). Cached in
-//! `$XDG_CACHE_HOME/qrec/capabilities.json`, keyed by the ffmpeg binary,
-//! the node and the libva environment. The session sends the result as
-//! `Event::Capabilities` before its first dispatch. Owner: session.
+//! ([`CapsOptions::gst_factory`], e.g. [`gst_factory_probe`] for hosts that
+//! record). Cached in `$XDG_CACHE_HOME/qrec/capabilities.json`, keyed by
+//! the ffmpeg binary, the node and the libva environment. The session
+//! sends the result as `Event::Capabilities` before its first dispatch.
+//! Owner: session.
 //!
-//! The VA node is never chosen by VA-API itself: the project's
+//! The VA node is never chosen by VA-API itself (A§2.1, the capture
+//! owner's `gpu::effective_va_device`): the project's
 //! `recording.vaapiDevice`, else the config's `encoder.vaapi_device`, else
-//! the first Intel (`0x8086`) or AMD (`0x1002`) render node. NVIDIA is
-//! used only when configured explicitly (its `renderD128` hangs the dev
-//! machine).
+//! the first Intel or AMD render node. NVIDIA is used only when configured
+//! explicitly (its `renderD128` hangs the dev machine).
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -23,12 +24,12 @@ use std::time::UNIX_EPOCH;
 use qrec_core::state::{Capabilities, FfmpegCaps, VaapiCaps};
 use serde::{Deserialize, Serialize};
 
+use crate::gpu;
 use crate::proc::{self, Limit, PROBE_TIMEOUT, Spec};
 use crate::store::fsx;
 
-pub const VENDOR_INTEL: u16 = 0x8086;
-pub const VENDOR_AMD: u16 = 0x1002;
-pub const VENDOR_NVIDIA: u16 = 0x10de;
+/// Finds the `va*h264enc` factory bound to a render node.
+pub type FactoryProbe = fn(&str) -> Option<String>;
 
 /// Where and how to detect.
 #[derive(Debug, Clone)]
@@ -45,9 +46,10 @@ pub struct CapsOptions {
     pub cache_file: Option<PathBuf>,
     /// Where the probes' stderr goes.
     pub log_dir: Option<PathBuf>,
-    /// Finds the `va*h264enc` factory bound to a node (needs GStreamer
-    /// initialized; e.g. the capture owner's `gpu::va_h264_factory_for`).
-    pub gst_factory: Option<fn(&str) -> Option<String>>,
+    /// Fills `VaapiCaps::gst_h264_factory` (hosts that record; see
+    /// [`gst_factory_probe`]). `None` leaves it unknown (capture plans
+    /// then use x264).
+    pub gst_factory: Option<FactoryProbe>,
 }
 
 impl CapsOptions {
@@ -79,8 +81,32 @@ pub struct VaConfig {
 pub struct Detected {
     pub caps: Capabilities,
     pub notes: Vec<String>,
-    /// The result came from the cache.
+    /// The ffmpeg and VA checks came from the cache.
     pub cached: bool,
+}
+
+/// `VaapiCaps::gst_h264_factory` through the capture owner's probe child
+/// (`gpu::run_probe_child`: this executable run again with
+/// `QREC_GPU_PROBE`, 10 s timeout), so GStreamer's plugin scan, which
+/// touches the GPU, never runs in the host itself. Only for a `qrec` whose
+/// `main` calls `gpu::run_probe_if_requested` first.
+pub fn gst_factory_probe(device: &str) -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let probe = gpu::Probe::VaH264Factory {
+        device: device.to_owned(),
+    };
+    match gpu::run_probe_child(&exe, &probe, None, gpu::PROBE_TIMEOUT) {
+        Ok(answer) => {
+            if let Some(error) = &answer.error {
+                tracing::warn!("the VA encoder probe for {device}: {error}");
+            }
+            answer.factory
+        }
+        Err(e) => {
+            tracing::warn!("the VA encoder probe for {device} failed: {e}");
+            None
+        }
+    }
 }
 
 /// Detects the capabilities (from the cache when nothing changed).
@@ -103,8 +129,9 @@ pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
             cached: false,
         };
     };
-    let nodes = scan_render_nodes(&opts.sys_class_drm, &opts.dev_dri);
-    let choice = effective_device(va, &nodes);
+    let nodes = gpu::scan_render_nodes(&opts.sys_class_drm, &opts.dev_dri);
+    let choice = gpu::effective_va_device(va.project.as_deref(), va.config.as_deref(), &nodes)
+        .map(|choice| (choice.device, choice.vendor));
     if let Some((device, None)) = &choice {
         notes.push(format!(
             "{device} isn't a render node this machine lists; VA-API is off"
@@ -121,11 +148,21 @@ pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
         va_device: choice.as_ref().map(|(d, _)| d.clone()),
         va_vendor: choice.as_ref().and_then(|(_, v)| *v),
         probed_va: opts.probe_va,
-        gst: opts.gst_factory.is_some(),
         libva_driver: std::env::var("LIBVA_DRIVER_NAME").ok(),
         libva_drivers_path: std::env::var("LIBVA_DRIVERS_PATH").ok(),
     };
-    if let Some(cached) = opts.cache_file.as_deref().and_then(|f| read_cache(f, &key)) {
+    if let Some(mut cached) = opts.cache_file.as_deref().and_then(|f| read_cache(f, &key)) {
+        // Only the GStreamer factory may be missing (a host that doesn't
+        // record filled the cache): ask for it alone.
+        if let (Some(find), false, Some(vaapi)) =
+            (opts.gst_factory, cached.gst_probed, cached.vaapi.as_mut())
+        {
+            vaapi.gst_h264_factory = find(&vaapi.device);
+            cached.gst_probed = true;
+            if let Some(file) = &opts.cache_file {
+                write_cache(file, &cached);
+            }
+        }
         return Detected {
             caps: Capabilities {
                 ffmpeg: Some(cached.ffmpeg),
@@ -195,7 +232,8 @@ pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
             } else {
                 let argv = va_probe_args(&device);
                 let args: Vec<&str> = argv.iter().map(String::as_str).collect();
-                let env = libva_env(vendor);
+                // An explicitly chosen NVIDIA node keeps the inherited driver (A§8.10).
+                let env = gpu::libva_driver_for(vendor).map(|d| (gpu::LIBVA_DRIVER_NAME, d));
                 match run(&args, env) {
                     Ok(out) if out.success() => true,
                     Ok(out) => {
@@ -221,7 +259,15 @@ pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
         _ => None,
     };
     if let Some(file) = &opts.cache_file {
-        write_cache(file, &key, &ffmpeg_caps, &vaapi);
+        write_cache(
+            file,
+            &CacheFile {
+                key,
+                ffmpeg: ffmpeg_caps.clone(),
+                vaapi: vaapi.clone(),
+                gst_probed: opts.gst_factory.is_some(),
+            },
+        );
     }
     Detected {
         caps: Capabilities {
@@ -231,15 +277,6 @@ pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
         },
         notes,
         cached: false,
-    }
-}
-
-/// `LIBVA_DRIVER_NAME` for a vendor's probe (A§8.10).
-fn libva_env(vendor: u16) -> Option<(&'static str, &'static str)> {
-    match vendor {
-        VENDOR_INTEL => Some(("LIBVA_DRIVER_NAME", "iHD")),
-        VENDOR_AMD => Some(("LIBVA_DRIVER_NAME", "radeonsi")),
-        _ => None,
     }
 }
 
@@ -307,72 +344,6 @@ fn resolve_program(program: &std::ffi::OsStr) -> Option<PathBuf> {
     Some(fs::canonicalize(&found).unwrap_or(found))
 }
 
-// ------------------------------------------------------------ render nodes
-
-/// A DRM render node.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RenderNode {
-    pub path: String,
-    pub vendor: Option<u16>,
-}
-
-/// The render nodes listed in `sys_class_drm`, as paths under `dev_dri`,
-/// by node number. Never opens a device.
-pub fn scan_render_nodes(sys_class_drm: &Path, dev_dri: &Path) -> Vec<RenderNode> {
-    let Ok(entries) = fs::read_dir(sys_class_drm) else {
-        return Vec::new();
-    };
-    let mut nodes: Vec<(u32, RenderNode)> = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let name = entry.file_name().into_string().ok()?;
-            let number: u32 = name.strip_prefix("renderD")?.parse().ok()?;
-            let vendor = fs::read_to_string(entry.path().join("device/vendor"))
-                .ok()
-                .and_then(|text| {
-                    let text = text.trim();
-                    let hex = text.strip_prefix("0x").unwrap_or(text);
-                    u16::from_str_radix(hex, 16).ok()
-                });
-            Some((
-                number,
-                RenderNode {
-                    path: dev_dri.join(&name).to_string_lossy().into_owned(),
-                    vendor,
-                },
-            ))
-        })
-        .collect();
-    nodes.sort_by_key(|(n, _)| *n);
-    nodes.into_iter().map(|(_, node)| node).collect()
-}
-
-/// The effective node and its vendor (A§2.1): project, config, else the
-/// first Intel or AMD node. A configured node the machine doesn't list
-/// has no vendor (VA stays off).
-pub fn effective_device(va: &VaConfig, nodes: &[RenderNode]) -> Option<(String, Option<u16>)> {
-    let configured = [&va.project, &va.config]
-        .into_iter()
-        .flatten()
-        .map(|d| d.trim())
-        .find(|d| !d.is_empty());
-    if let Some(device) = configured {
-        let canonical = fs::canonicalize(device).ok();
-        let vendor = nodes
-            .iter()
-            .find(|n| {
-                n.path == device
-                    || (canonical.is_some() && fs::canonicalize(&n.path).ok() == canonical)
-            })
-            .and_then(|n| n.vendor);
-        return Some((device.to_owned(), vendor));
-    }
-    nodes
-        .iter()
-        .find(|n| matches!(n.vendor, Some(VENDOR_INTEL | VENDOR_AMD)))
-        .map(|n| (n.path.clone(), n.vendor))
-}
-
 // ------------------------------------------------------------------ cache
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -384,7 +355,6 @@ struct CacheKey {
     va_device: Option<String>,
     va_vendor: Option<u16>,
     probed_va: bool,
-    gst: bool,
     libva_driver: Option<String>,
     libva_drivers_path: Option<String>,
 }
@@ -395,6 +365,8 @@ struct CacheFile {
     key: CacheKey,
     ffmpeg: FfmpegCaps,
     vaapi: Option<VaapiCaps>,
+    /// `vaapi.gst_h264_factory` was looked for (it may still be `None`).
+    gst_probed: bool,
 }
 
 fn read_cache(path: &Path, key: &CacheKey) -> Option<CacheFile> {
@@ -403,13 +375,8 @@ fn read_cache(path: &Path, key: &CacheKey) -> Option<CacheFile> {
     (file.key == *key).then_some(file)
 }
 
-fn write_cache(path: &Path, key: &CacheKey, ffmpeg: &FfmpegCaps, vaapi: &Option<VaapiCaps>) {
-    let file = CacheFile {
-        key: key.clone(),
-        ffmpeg: ffmpeg.clone(),
-        vaapi: vaapi.clone(),
-    };
-    let Ok(bytes) = serde_json::to_vec_pretty(&file) else {
+fn write_cache(path: &Path, file: &CacheFile) {
+    let Ok(bytes) = serde_json::to_vec_pretty(file) else {
         return;
     };
     if let Some(dir) = path.parent() {
@@ -425,6 +392,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+    use crate::gpu::{VENDOR_AMD, VENDOR_INTEL, VENDOR_NVIDIA};
 
     const ENCODERS: &str = "Encoders:\n V..... = Video\n A..... = Audio\n ------\n V....D libx264              libx264 H.264\n V....D h264_vaapi           H.264/AVC (VAAPI) (codec h264)\n VF...D png                  PNG image\n A....D aac                  AAC\n";
 
@@ -537,19 +505,33 @@ esac
         let inherited = std::env::var("LIBVA_DRIVER_NAME").unwrap_or_default();
         let probe = fs::read_to_string(tmp.path().join("va-probe")).unwrap();
         assert!(probe.starts_with(&format!("{inherited} -")), "{probe}");
-        // The project's device wins over the config's.
-        let both = VaConfig {
-            project: Some("/dev/dri/renderD129".into()),
-            config: Some("/dev/dri/renderD128".into()),
-        };
+    }
+
+    #[test]
+    fn the_gst_factory_is_looked_for_once_and_cached() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sys = fake_sysfs(tmp.path(), &[("renderD129", "0x8086")]);
+        let mut opts = options(tmp.path(), sys);
+        let plain = detect(&opts, &VaConfig::default());
+        assert_eq!(plain.caps.vaapi.as_ref().unwrap().gst_h264_factory, None);
+        let ran = runs(tmp.path());
+
+        // A host that records asks for the factory: only that runs.
+        opts.gst_factory = Some(|device| Some(format!("va-for-{device}")));
+        let recording = detect(&opts, &VaConfig::default());
+        assert!(recording.cached);
         assert_eq!(
-            effective_device(
-                &both,
-                &scan_render_nodes(&opts.sys_class_drm, &opts.dev_dri)
-            )
-            .unwrap()
-            .0,
-            "/dev/dri/renderD129"
+            recording.caps.vaapi.unwrap().gst_h264_factory.as_deref(),
+            Some("va-for-/dev/dri/renderD129")
+        );
+        assert_eq!(runs(tmp.path()), ran, "ffmpeg isn't asked again");
+
+        // Later hosts that don't record still get it from the cache.
+        opts.gst_factory = None;
+        let later = detect(&opts, &VaConfig::default());
+        assert_eq!(
+            later.caps.vaapi.unwrap().gst_h264_factory.as_deref(),
+            Some("va-for-/dev/dri/renderD129")
         );
     }
 
@@ -596,13 +578,6 @@ esac
             },
         );
         assert_eq!(unknown.caps.vaapi, None);
-
-        opts.gst_factory = Some(|device| Some(format!("va-for-{device}")));
-        let with_gst = detect(&opts, &VaConfig::default());
-        assert_eq!(
-            with_gst.caps.vaapi.unwrap().gst_h264_factory.as_deref(),
-            Some("va-for-/dev/dri/renderD130")
-        );
 
         opts.ffmpeg = "qrec-no-such-ffmpeg".into();
         let missing = detect(&opts, &VaConfig::default());
