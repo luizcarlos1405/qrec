@@ -713,7 +713,6 @@ fn frame_save_writes_a_png() {
 }
 
 #[test]
-#[ignore = "needs core meta (schema, keymap, agent guide)"]
 fn schema_keys_and_agent_guide() {
     let env = TestEnv::new();
     let dir = env.empty_dir("anywhere");

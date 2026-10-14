@@ -1014,7 +1014,6 @@ fn config_reads_defaults_and_the_file() {
 }
 
 #[test]
-#[ignore = "needs core meta (config::set)"]
 fn config_set_keeps_comments() {
     let tmp = Tmp::new();
     let cfg = tmp.dir("cfg");
@@ -1055,7 +1054,6 @@ fn config_set_keeps_comments() {
 }
 
 #[test]
-#[ignore = "needs core meta (keymap::resolve)"]
 fn keys_print_the_effective_keymap() {
     let tmp = Tmp::new();
     let cfg = tmp.dir("cfg");
