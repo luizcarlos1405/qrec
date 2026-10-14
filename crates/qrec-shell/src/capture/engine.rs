@@ -1635,17 +1635,16 @@ impl Engine {
         match &run.phase {
             Phase::New => None,
             Phase::AwaitingPortal { deadline, .. } => Some(*deadline),
+            // Probe events wake the loop as files start; the deadline is the
+            // end of the health window once all have, else the first-buffer limit.
             Phase::Starting {
                 health_until,
                 first_buffer_by,
-            } => {
-                let now = Instant::now();
-                Some(if *health_until > now {
-                    (*health_until).min(*first_buffer_by)
-                } else {
-                    *first_buffer_by
-                })
-            }
+            } => Some(if run.bins.iter().all(RecordBin::written) {
+                *health_until
+            } else {
+                *first_buffer_by
+            }),
             Phase::Recording { next_clock } => Some(*next_clock),
             Phase::Stopping { fill_by, eos_by } => {
                 let closing_done = run.bins.iter().all(|b| b.closing || b.lost.is_some());
@@ -1687,7 +1686,7 @@ impl Engine {
                         files,
                     });
                     self.emit_clock(&take, t0);
-                } else if now >= first_buffer_by {
+                } else if !all_written && now >= first_buffer_by {
                     let silent = run.bins.iter().find(|b| !b.written());
                     let label = silent.map(|b| b.label.clone());
                     let message = match silent {

@@ -160,8 +160,12 @@ impl RecProbe {
         let Some(gst::PadProbeData::Event(ev)) = &info.data else {
             return gst::PadProbeReturn::Ok;
         };
-        let gst::EventView::Segment(seg) = ev.view() else {
-            return gst::PadProbeReturn::Ok;
+        let seg = match ev.view() {
+            gst::EventView::Segment(seg) => seg,
+            // A gap carries a source running time, not file time: audiorate
+            // would fill silence up to it. The rate elements fill gaps anyway.
+            gst::EventView::Gap(_) => return gst::PadProbeReturn::Drop,
+            _ => return gst::PadProbeReturn::Ok,
         };
         let delivered = pad
             .peer()
@@ -311,8 +315,9 @@ pub(super) fn attach_video(
     let queue = make("queue", &format!("{p}-queue"))?;
     // Never block the source and the other branches: a slow encoder drops
     // old frames (videorate keeps the file CFR) instead of stalling the tee.
+    // Up to 1 s of raw frames, but never more than 256 MiB (4K at 60 fps).
     set_value(&queue, "max-size-buffers", 0u32)?;
-    set_value(&queue, "max-size-bytes", 0u32)?;
+    set_value(&queue, "max-size-bytes", 256u32 << 20)?;
     set_value(&queue, "max-size-time", 1_000_000_000u64)?;
     set_str(&queue, "leaky", "downstream")?;
     let rate = make("videorate", &format!("{p}-rate"))?;
