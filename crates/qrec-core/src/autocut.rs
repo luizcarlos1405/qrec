@@ -11,7 +11,7 @@
 //! 6. nothing kept ⇒ the clip is left unchanged and reported "entirely
 //!    silent at −35 dB": autocut never deletes a whole clip.
 //!
-//! Two precisions the property tests forced:
+//! Two precisions over A§5.7 (both pinned by `tests/props_autocut.rs`):
 //! - Overlapping or touching silences are merged before step 2. ffmpeg never
 //!   reports such pairs, but shrinking them one by one would leave a hole of
 //!   fake "speech" where they meet.
@@ -437,7 +437,14 @@ mod tests {
             vec![ms(1083, 2083)],
             "3 ms start offset + 80 ms sync offset"
         );
-        let shifted = plan_clip(&clip(0, 300), stream, track, &[ms(1000, 2000)], &params(), FPS30);
+        let shifted = plan_clip(
+            &clip(0, 300),
+            stream,
+            track,
+            &[ms(1000, 2000)],
+            &params(),
+            FPS30,
+        );
         let unshifted = cut_clip(&clip(0, 300), &[ms(1000, 2000)], &params(), FPS30);
         // Removal 1.203–1.963 s → frames [37, 58); unshifted 1.12–1.88 → [34, 56).
         assert_eq!(shifted.kept, vec![[0, 37], [58, 300]]);
@@ -456,10 +463,10 @@ mod tests {
     fn a_clip_without_silence_is_unchanged() {
         for silences in [
             vec![],
-            vec![ms(20_000, 30_000)],      // after the clip
-            vec![ms(1000, 1240)],          // ≤ 2 × padding: shrinks away
-            vec![ms(1000, 1000)],          // empty
-            vec![ms(-5000, -10)],          // before the take
+            vec![ms(20_000, 30_000)], // after the clip
+            vec![ms(1000, 1240)],     // ≤ 2 × padding: shrinks away
+            vec![ms(1000, 1000)],     // empty
+            vec![ms(-5000, -10)],     // before the take
         ] {
             let cut = cut_clip(&clip(0, 300), &silences, &params(), FPS30);
             assert_eq!(
@@ -488,7 +495,10 @@ mod tests {
         // 2 × padding long.)
         let cut = cut_clip(&clip(0, 300), &[ms(-20, 10_000)], &params(), FPS30);
         assert!(cut.keeps_nothing(), "{cut:?}");
-        assert_eq!(entirely_silent(&params()), "entirely silent at \u{2212}35 dB");
+        assert_eq!(
+            entirely_silent(&params()),
+            "entirely silent at \u{2212}35 dB"
+        );
     }
 
     #[test]
@@ -501,7 +511,10 @@ mod tests {
             removed_frames: 0,
         };
         assert_eq!(cut_clip(&clip(0, 1), &[], &params(), FPS30), whole);
-        assert_eq!(cut_clip(&clip(0, 1), &[ms(500, 2000)], &params(), FPS30), whole);
+        assert_eq!(
+            cut_clip(&clip(0, 1), &[ms(500, 2000)], &params(), FPS30),
+            whole
+        );
     }
 
     #[test]
@@ -544,13 +557,22 @@ mod tests {
         assert!(cut_clip(&clip(0, 300), &silences, &strict, FPS30).keeps_nothing());
         let silences = [ms(1000, 3900), ms(4300, 6000)];
         let cut = cut_clip(&clip(0, 300), &silences, &strict, FPS30);
-        assert_eq!(cut.kept, vec![[0, 34], [176, 300]], "one removal 1.12–5.88 s");
+        assert_eq!(
+            cut.kept,
+            vec![[0, 34], [176, 300]],
+            "one removal 1.12–5.88 s"
+        );
         assert_eq!(cut.silences, 1);
     }
 
     #[test]
     fn touching_and_overlapping_silences_are_one_silence() {
-        let apart = cut_clip(&clip(0, 300), &[ms(1000, 2000), ms(2000, 3000)], &params(), FPS30);
+        let apart = cut_clip(
+            &clip(0, 300),
+            &[ms(1000, 2000), ms(2000, 3000)],
+            &params(),
+            FPS30,
+        );
         let joined = cut_clip(&clip(0, 300), &[ms(1000, 3000)], &params(), FPS30);
         assert_eq!(apart, joined);
         let overlapping = cut_clip(
@@ -585,7 +607,12 @@ mod tests {
         // Clip [90, 150) = 3–5 s of the take. The silence 2–3.5 s starts
         // before the clip, so the clip's head is cut; padding comes from the
         // speech, not from the clip edge.
-        let cut = cut_clip(&clip(90, 150), &[ms(2000, 3500), ms(4600, 9000)], &params(), FPS30);
+        let cut = cut_clip(
+            &clip(90, 150),
+            &[ms(2000, 3500), ms(4600, 9000)],
+            &params(),
+            FPS30,
+        );
         assert_eq!(cut.kept, vec![[101, 142]]);
         assert_eq!(cut.removed(&clip(90, 150)), vec![[90, 101], [142, 150]]);
         assert_eq!(cut.silences, 2);
@@ -617,7 +644,11 @@ mod tests {
         let take_id = TakeId::numbered(1);
         let take = project.take(&take_id).unwrap();
         let a = |s: &str| s.parse::<TrackId>().unwrap();
-        assert_eq!(choose_track(&project, take, None), Some(a("A2")), "first mic");
+        assert_eq!(
+            choose_track(&project, take, None),
+            Some(a("A2")),
+            "first mic"
+        );
         assert_eq!(choose_track(&project, take, Some(&a("A3"))), Some(a("A3")));
         assert_eq!(choose_track(&project, take, Some(&a("A9"))), None);
 
@@ -671,8 +702,12 @@ mod tests {
             analysis_source(&lost, &take_id, &lost_take, None).unwrap_err(),
             "track A2 of take 1 is missing media"
         );
-        let (track, stream) = analysis_source(&project, &take_id, project.take(&take_id).unwrap(), None).unwrap();
-        assert_eq!((track.id.as_str(), stream.file.as_str()), ("A2", "takes/take-0001/A2-mic.mka"));
+        let (track, stream) =
+            analysis_source(&project, &take_id, project.take(&take_id).unwrap(), None).unwrap();
+        assert_eq!(
+            (track.id.as_str(), stream.file.as_str()),
+            ("A2", "takes/take-0001/A2-mic.mka")
+        );
     }
 
     #[test]
@@ -711,14 +746,65 @@ mod tests {
         }
         let p = params();
         let cases = [
-            ("speech sample", FPS30, (0, 210), vec![[0, 512], [2005, 3008], [3605, 5013], [6016, 7000]], p.clone()),
-            ("no padding", FPS30, (0, 210), vec![[0, 512], [2005, 3008], [3605, 5013], [6016, 7000]], AutocutParams { padding_ms: 0, ..p.clone() }),
-            ("big padding", FPS30, (0, 210), vec![[0, 512], [2005, 3008], [3605, 5013], [6016, 7000]], AutocutParams { padding_ms: 400, ..p.clone() }),
-            ("29.97 middle clip", Fps::new(30000, 1001), (45, 200), vec![[1000, 2500], [4100, 4700], [6000, 9000]], p.clone()),
-            ("25 fps long silence", Fps::new(25, 1), (0, 500), vec![[2000, 15_000]], p.clone()),
+            (
+                "speech sample",
+                FPS30,
+                (0, 210),
+                vec![[0, 512], [2005, 3008], [3605, 5013], [6016, 7000]],
+                p.clone(),
+            ),
+            (
+                "no padding",
+                FPS30,
+                (0, 210),
+                vec![[0, 512], [2005, 3008], [3605, 5013], [6016, 7000]],
+                AutocutParams {
+                    padding_ms: 0,
+                    ..p.clone()
+                },
+            ),
+            (
+                "big padding",
+                FPS30,
+                (0, 210),
+                vec![[0, 512], [2005, 3008], [3605, 5013], [6016, 7000]],
+                AutocutParams {
+                    padding_ms: 400,
+                    ..p.clone()
+                },
+            ),
+            (
+                "29.97 middle clip",
+                Fps::new(30000, 1001),
+                (45, 200),
+                vec![[1000, 2500], [4100, 4700], [6000, 9000]],
+                p.clone(),
+            ),
+            (
+                "25 fps long silence",
+                Fps::new(25, 1),
+                (0, 500),
+                vec![[2000, 15_000]],
+                p.clone(),
+            ),
             // 40 ms of speech between the last two silences pads to 280 ms < 300.
-            ("60 fps min keep", Fps::new(60, 1), (0, 600), vec![[500, 1000], [1250, 4000], [4040, 9000]], AutocutParams { min_keep_ms: 300, ..p.clone() }),
-            ("entirely silent", FPS30, (10, 50), vec![[0, 3000]], p.clone()),
+            (
+                "60 fps min keep",
+                Fps::new(60, 1),
+                (0, 600),
+                vec![[500, 1000], [1250, 4000], [4040, 9000]],
+                AutocutParams {
+                    min_keep_ms: 300,
+                    ..p.clone()
+                },
+            ),
+            (
+                "entirely silent",
+                FPS30,
+                (10, 50),
+                vec![[0, 3000]],
+                p.clone(),
+            ),
         ];
         let table: Vec<Case> = cases
             .into_iter()

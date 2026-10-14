@@ -108,7 +108,12 @@ fn arb_clip() -> impl Strategy<Value = Clip> {
 /// from before the take to past the longest clip.
 fn arb_silences() -> impl Strategy<Value = Vec<Interval>> {
     prop::collection::vec(
-        (-2_000i64..90_000, 0i64..12_000, 0i64..1_000_000, 0i64..1_000_000),
+        (
+            -2_000i64..90_000,
+            0i64..12_000,
+            0i64..1_000_000,
+            0i64..1_000_000,
+        ),
         0..12,
     )
     .prop_map(|raw| {
@@ -309,17 +314,28 @@ fn assign(project: &Project, pool: &[Vec<Interval>]) -> BTreeMap<String, Vec<Int
 
 fn ctx_for(project: &Project) -> Ctx {
     let mut ctx = testkit::ctx("2026-10-14T12:30:00Z", 99);
-    for (i, s) in project.takes.values().flat_map(|t| t.streams.iter()).enumerate() {
+    for (i, s) in project
+        .takes
+        .values()
+        .flat_map(|t| t.streams.iter())
+        .enumerate()
+    {
         ctx.facts.files.insert(
             s.file.clone(),
-            FileFact { path: s.file.clone(), bytes: 1_000 + i as u64, mtime_ns: 1 },
+            FileFact {
+                path: s.file.clone(),
+                bytes: 1_000 + i as u64,
+                mtime_ns: 1,
+            },
         );
     }
     ctx
 }
 
 /// A fake shell that answers every `DetectSilence` from `silences`.
-fn shell(silences: &BTreeMap<String, Vec<Interval>>) -> impl FnMut(&State, &Effect) -> Vec<Event> + '_ {
+fn shell(
+    silences: &BTreeMap<String, Vec<Interval>>,
+) -> impl FnMut(&State, &Effect) -> Vec<Event> + '_ {
     move |_, effect| match effect {
         Effect::DetectSilence { job, key, argv } => {
             let file = argv

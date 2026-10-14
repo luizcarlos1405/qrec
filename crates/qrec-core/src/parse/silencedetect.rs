@@ -198,7 +198,11 @@ fn parse_clock(text: &str) -> Option<i64> {
         return None;
     }
     let secs = parse_seconds(s).filter(|ns| *ns >= 0)?;
-    let minutes = h.parse::<i64>().ok()?.checked_mul(60)?.checked_add(m.parse().ok()?)?;
+    let minutes = h
+        .parse::<i64>()
+        .ok()?
+        .checked_mul(60)?
+        .checked_add(m.parse().ok()?)?;
     let total = minutes.checked_mul(60 * NS_PER_SEC)?.checked_add(secs)?;
     Some(if negative { -total } else { total })
 }
@@ -450,7 +454,11 @@ mod tests {
         );
         let per_channel =
             format!("{header}[Parsed_silencedetect_0 @ 0x1] channel: 0 | silence_start: 1\n");
-        assert!(parse_silencedetect(&per_channel).unwrap_err().contains("mono=1"));
+        assert!(
+            parse_silencedetect(&per_channel)
+                .unwrap_err()
+                .contains("mono=1")
+        );
         let bad_value = format!("{header}[Parsed_silencedetect_0 @ 0x1] silence_start: NOPTS\n");
         assert!(
             parse_silencedetect(&bad_value)
@@ -484,14 +492,21 @@ mod tests {
         assert_eq!(parse_seconds("-0.0065"), Some(-6_500_000));
         assert_eq!(parse_seconds("+1.5"), Some(1_500_000_000));
         assert_eq!(parse_seconds(".5"), Some(500_000_000));
-        assert_eq!(parse_seconds("0.0000000015"), Some(2), "rounded at the 10th digit");
+        assert_eq!(
+            parse_seconds("0.0000000015"),
+            Some(2),
+            "rounded at the 10th digit"
+        );
         assert_eq!(parse_seconds("1e-05"), Some(10_000));
         assert_eq!(parse_seconds("1.23457e+06"), Some(1_234_570 * NS_PER_SEC));
         for bad in ["", "-", ".", "NOPTS", "nan", "inf", "1.2.3", "1,5", "0x10"] {
             assert_eq!(parse_seconds(bad), None, "{bad:?}");
         }
         assert_eq!(parse_clock("00:20:50.00"), Some(1250 * NS_PER_SEC));
-        assert_eq!(parse_clock("01:00:00.5"), Some(3600 * NS_PER_SEC + NS_PER_SEC / 2));
+        assert_eq!(
+            parse_clock("01:00:00.5"),
+            Some(3600 * NS_PER_SEC + NS_PER_SEC / 2)
+        );
         assert_eq!(parse_clock("-00:00:00.02"), Some(-20_000_000));
         assert_eq!(parse_clock("N/A"), None);
         assert_eq!(parse_clock("00:00"), None);

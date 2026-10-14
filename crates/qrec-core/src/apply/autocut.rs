@@ -77,7 +77,10 @@ pub fn autocut(
             effects.extend(done.effects);
             Outcome::new(done.state, effects, Some(done.reply))
         }
-        Started::Pending { state, effects: more } => {
+        Started::Pending {
+            state,
+            effects: more,
+        } => {
             effects.extend(more);
             Outcome::new(state, effects, None)
         }
@@ -184,7 +187,10 @@ pub fn autocut_settings(
     } else {
         "Autocut settings unchanged".to_owned()
     };
-    Ok(Outcome::done(committed, CmdResult::new(message).with_result(&view)))
+    Ok(Outcome::done(
+        committed,
+        CmdResult::new(message).with_result(&view),
+    ))
 }
 
 // ------------------------------------------------------------- the job
@@ -360,8 +366,10 @@ fn clips_in_scope(project: &Project, scope: &ClipScope) -> Result<Vec<Clip>, Cor
     match scope {
         ClipScope::All => {
             if project.timeline.clips.is_empty() {
-                return Err(CoreError::invalid("nothing to autocut: the timeline is empty")
-                    .with_hint("record a take first (qrec record start)"));
+                return Err(
+                    CoreError::invalid("nothing to autocut: the timeline is empty")
+                        .with_hint("record a take first (qrec record start)"),
+                );
             }
             Ok(project.timeline.clips.clone())
         }
@@ -371,8 +379,10 @@ fn clips_in_scope(project: &Project, scope: &ClipScope) -> Result<Vec<Clip>, Cor
                     .with_hint("pass clip ids, or --all for the whole timeline"));
             }
             if let Some(unknown) = ids.iter().find(|id| project.clip(id).is_none()) {
-                return Err(CoreError::not_found(format!("no clip {unknown} on the timeline"))
-                    .with_hint("list the clips with qrec clip list"));
+                return Err(
+                    CoreError::not_found(format!("no clip {unknown} on the timeline"))
+                        .with_hint("list the clips with qrec clip list"),
+                );
             }
             let wanted: BTreeSet<&ClipId> = ids.iter().collect();
             Ok(project
@@ -592,7 +602,12 @@ mod tests {
     use crate::state::RecordPhase;
     use crate::testkit::{self, ProjectBuilder};
 
-    fn run(state: &State, ctx: &Ctx, scope: ClipScope, dry_run: bool) -> Result<Outcome, CoreError> {
+    fn run(
+        state: &State,
+        ctx: &Ctx,
+        scope: ClipScope,
+        dry_run: bool,
+    ) -> Result<Outcome, CoreError> {
         autocut(state, ctx, scope, AutocutOverrides::default(), dry_run)
     }
 
@@ -644,14 +659,21 @@ mod tests {
         // One history entry for the whole command, with the command as cmd.
         let entries = &out.state.history.entries;
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].label, "Autocut 2 takes: removed 4 silences (4.3 s)");
+        assert_eq!(
+            entries[0].label,
+            "Autocut 2 takes: removed 4 silences (4.3 s)"
+        );
         assert_eq!(
             entries[0].cmd,
             json!({"cmd": "autocut", "scope": "all", "overrides": {}, "dryRun": false})
         );
         assert!(matches!(
             out.effects.as_slice(),
-            [Effect::History(HistoryOp::Append(_)), Effect::WriteProject, ..]
+            [
+                Effect::History(HistoryOp::Append(_)),
+                Effect::WriteProject,
+                ..
+            ]
         ));
         assert!(
             !out.effects
@@ -707,7 +729,10 @@ mod tests {
         assert!(!dry_run && !ready);
         assert_eq!(pending.len(), 2);
         assert_eq!(targets.len(), 2);
-        assert_eq!(targets[0].clip, ClipRef::of(&state.project.timeline.clips[0]));
+        assert_eq!(
+            targets[0].clip,
+            ClipRef::of(&state.project.timeline.clips[0])
+        );
         assert_eq!(targets[0].track.as_str(), "A1");
         assert_eq!(cmd["cmd"], "autocut");
         assert!(cmd.get("skipped").is_none());
@@ -893,8 +918,15 @@ mod tests {
             }]
         );
         assert_eq!(view.clips.len(), 1);
-        assert!(reply.message.starts_with("Autocut take 1: removed 3 silences"));
-        assert_eq!(out.state.project.timeline.clips[2], state.project.timeline.clips[1]);
+        assert!(
+            reply
+                .message
+                .starts_with("Autocut take 1: removed 3 silences")
+        );
+        assert_eq!(
+            out.state.project.timeline.clips[2],
+            state.project.timeline.clips[1]
+        );
     }
 
     #[test]
@@ -1019,7 +1051,10 @@ mod tests {
         let err = run(&empty, &ctx, ClipScope::All, false).unwrap_err();
         assert_eq!(
             (err.code, err.message.as_str()),
-            (ErrorCode::Invalid, "nothing to autocut: the timeline is empty")
+            (
+                ErrorCode::Invalid,
+                "nothing to autocut: the timeline is empty"
+            )
         );
         // A hand-edited out-of-range setting is caught too.
         let mut odd = state.clone();
