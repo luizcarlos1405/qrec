@@ -179,7 +179,7 @@ expression: ges
       "file": "takes/take-0001/A2-system.mka",
       "startNs": 13666666666,
       "inpointNs": 15186666666,
-      "durationNs": 15233333334,
+      "durationNs": 15213333334,
       "volume": 0.5011872336272722,
       "fadeInSamples": 240,
       "fadeOutSamples": 0

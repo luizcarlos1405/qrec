@@ -24,7 +24,7 @@ use crate::protocol::effect::{Effect, LogLevel};
 use crate::protocol::reply::CmdResult;
 use crate::state::{Capabilities, Job, JobKind, State};
 use crate::time::{TimeArg, frame_ns};
-use crate::timeline::total_frames;
+use crate::timeline::{absolute_frame, total_frames};
 
 /// `qrec export`: plans the export and emits `RenderExport`.
 pub fn export(
@@ -130,15 +130,9 @@ pub fn frame_save(
     layer: Option<LayerId>,
     out: Option<String>,
 ) -> Result<Outcome, CoreError> {
-    if at.is_relative() {
-        return Err(CoreError::usage(format!(
-            "frame save needs a timeline position, not a relative time ({at})"
-        ))
-        .with_hint("e.g. --at 412f, --at 13.7s or --at 00:00:13:21"));
-    }
     let project = &state.project;
     let fps = project.canvas.fps;
-    let at = at.magnitude_frames(fps)?.max(0) as u64;
+    let at = absolute_frame(&at, fps, "frame save --at")?;
     let (take, _) = frame_source(project, at)?;
     let out = match out {
         None => frame_file_name(&project.name, &take, at, fps),

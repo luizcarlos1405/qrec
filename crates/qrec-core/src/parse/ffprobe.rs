@@ -1,9 +1,12 @@
-//! `ffprobe -of json` output → `MediaInfo` (A§9.2). Owner: output.
+//! ffprobe output parsers (A§9.2). Owner: output.
 //!
-//! Reads what `media_argv::probe_argv` asks for. ffprobe prints some numbers
-//! as JSON strings (`"nb_read_packets": "150"`, `"sample_rate": "48000"`)
-//! and others as numbers (`"width": 320`); both are accepted. `N/A`,
-//! `unknown` and missing fields are `None`.
+//! [`parse_ffprobe`] reads what `media_argv::probe_argv` asks for (`-of
+//! json`). ffprobe prints some numbers as JSON strings (`"nb_read_packets":
+//! "150"`, `"sample_rate": "48000"`) and others as numbers (`"width": 320`);
+//! both are accepted. `N/A`, `unknown` and missing fields are `None`.
+//!
+//! [`parse_segment_check`] reads `media_argv::segment_check_argv`'s packet
+//! lines: the counts an export segment is verified against (A§9.3).
 
 use serde_json::Value;
 
@@ -80,6 +83,71 @@ pub fn parse_ffprobe(json: &str, kind: StreamKind) -> Result<MediaInfo, String> 
         color_range: name(stream.get("color_range")),
         color_space: name(stream.get("color_space")),
     })
+}
+
+/// Bytes per sample of a segment's audio: stereo `pcm_s16le`.
+pub const SEGMENT_SAMPLE_BYTES: u64 = 4;
+
+/// What a rendered segment holds, from `media_argv::segment_check_argv`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SegmentCounts {
+    pub video_packets: u64,
+    /// Stereo samples of the PCM audio.
+    pub audio_samples: u64,
+}
+
+impl SegmentCounts {
+    /// `Ok` when the segment has exactly `frames` video packets and
+    /// `samples` audio samples (A§9.3); otherwise what is wrong.
+    pub fn check(&self, frames: u64, samples: u64) -> Result<(), String> {
+        let mut wrong = Vec::new();
+        if self.video_packets != frames {
+            wrong.push(format!(
+                "{} video frames instead of {frames}",
+                self.video_packets
+            ));
+        }
+        if self.audio_samples != samples {
+            wrong.push(format!(
+                "{} audio samples instead of {samples}",
+                self.audio_samples
+            ));
+        }
+        if wrong.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("the segment has {}", wrong.join(" and ")))
+        }
+    }
+}
+
+/// Parses the `codec_type,size` lines of `media_argv::segment_check_argv`.
+/// `Err` for a line that isn't one, or audio that isn't whole stereo s16
+/// samples.
+pub fn parse_segment_check(csv: &str) -> Result<SegmentCounts, String> {
+    let mut counts = SegmentCounts::default();
+    let mut audio_bytes: u64 = 0;
+    for line in csv.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let (kind, size) = line
+            .split_once(',')
+            .ok_or_else(|| format!("ffprobe printed an unexpected packet line: {line:?}"))?;
+        let size: u64 = size
+            .trim()
+            .parse()
+            .map_err(|_| format!("ffprobe printed an unexpected packet size: {line:?}"))?;
+        match kind.trim() {
+            "video" => counts.video_packets += 1,
+            "audio" => audio_bytes += size,
+            _ => {}
+        }
+    }
+    if audio_bytes % SEGMENT_SAMPLE_BYTES != 0 {
+        return Err(format!(
+            "the segment's audio is {audio_bytes} bytes, not whole stereo 16-bit samples"
+        ));
+    }
+    counts.audio_samples = audio_bytes / SEGMENT_SAMPLE_BYTES;
+    Ok(counts)
 }
 
 /// A non-negative integer printed as a number or a string.
@@ -293,6 +361,26 @@ mod tests {
         assert!(parse_ffprobe(no_size, StreamKind::Video).unwrap_err().contains("size"));
         let no_rate = r#"{"streams":[{"channels":1,"nb_read_packets":"3"}]}"#;
         assert!(parse_ffprobe(no_rate, StreamKind::Audio).unwrap_err().contains("sample rate"));
+    }
+
+    #[test]
+    fn segment_checks() {
+        let csv = "video,4394\nvideo,1789\naudio,4096\n\naudio,4096\r\naudio,2048\nvideo,881\nsubtitle,3\n";
+        let counts = parse_segment_check(csv).unwrap();
+        assert_eq!(counts, SegmentCounts { video_packets: 3, audio_samples: 2560 });
+        assert_eq!(counts.check(3, 2560), Ok(()));
+        assert_eq!(
+            counts.check(4, 2560).unwrap_err(),
+            "the segment has 3 video frames instead of 4"
+        );
+        assert_eq!(
+            counts.check(2, 2561).unwrap_err(),
+            "the segment has 3 video frames instead of 2 and 2560 audio samples instead of 2561"
+        );
+        assert_eq!(parse_segment_check("").unwrap(), SegmentCounts::default());
+        assert!(parse_segment_check("audio,6").unwrap_err().contains("whole stereo"));
+        assert!(parse_segment_check("video").unwrap_err().contains("unexpected packet line"));
+        assert!(parse_segment_check("video,N/A").unwrap_err().contains("unexpected packet size"));
     }
 
     #[test]

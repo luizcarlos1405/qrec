@@ -14,7 +14,7 @@ use crate::media_argv::{TO_SRGB_PNG, ffmpeg_prelude, file_arg, png_output_args, 
 use crate::model::{Project, StreamKind};
 use crate::plans::FramePlan;
 use crate::time::timecode;
-use crate::timeline::{clip_at, total_frames};
+use crate::timeline::{source_at, total_frames};
 
 /// The take and take frame under timeline frame `at`. `Invalid` when the
 /// timeline is empty or `at` is past its end.
@@ -24,7 +24,7 @@ pub fn frame_source(project: &Project, at: Frame) -> Result<(TakeId, Frame), Cor
     if total == 0 {
         return Err(CoreError::invalid("nothing to save: the timeline is empty"));
     }
-    let (index, offset) = clip_at(clips, at).ok_or_else(|| {
+    let (take, frame) = source_at(clips, at).ok_or_else(|| {
         CoreError::invalid(format!(
             "{} is past the end of the timeline ({})",
             timecode(at, project.canvas.fps),
@@ -32,8 +32,7 @@ pub fn frame_source(project: &Project, at: Frame) -> Result<(TakeId, Frame), Cor
         ))
         .with_hint(format!("pick a frame from 0f to {}f", total - 1))
     })?;
-    let clip = &clips[index];
-    Ok((clip.take.clone(), clip.in_ + offset))
+    Ok((take.clone(), frame))
 }
 
 /// The PNG of timeline frame `at` through the export graph as a one-frame

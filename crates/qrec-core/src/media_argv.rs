@@ -78,6 +78,29 @@ pub fn probe_argv(file: &str, kind: StreamKind) -> Vec<String> {
     argv
 }
 
+/// `ffprobe -v error -show_entries packet=codec_type,size -of csv=p=0
+/// file:<segment>`: one `video,<bytes>` or `audio,<bytes>` line per packet,
+/// without decoding anything. The shell checks every rendered segment with
+/// it before caching it (A§9.3): the video packets must be the unit's frames
+/// and the PCM audio (stereo `s16le`, 4 bytes per sample) its samples.
+/// `parse::ffprobe::parse_segment_check` reads the output.
+pub fn segment_check_argv(path: &str) -> Vec<String> {
+    let mut argv = Vec::from(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "packet=codec_type,size",
+            "-of",
+            "csv=p=0",
+        ]
+        .map(String::from),
+    );
+    argv.push(file_arg(path));
+    argv
+}
+
 /// `ffmpeg … -i file:<f> -af silencedetect=noise=<t>dB:d=<s> -vn -f null -`.
 /// `parse::silencedetect` turns its stderr into intervals.
 pub fn silence_argv(file: &str, threshold_db: f64, min_silence_ms: u32) -> Vec<String> {
@@ -261,6 +284,15 @@ mod tests {
                 probe_argv("takes/take-0001/L1-screen-DP-4.mkv", StreamKind::Video).join(" "),
                 probe_argv("takes/take-0001/A1-mic.mka", StreamKind::Audio).join(" ")
             )
+        );
+    }
+
+    #[test]
+    fn segment_check_argv_shape() {
+        let argv = segment_check_argv(".qrec/cache/segments/abc.mov");
+        assert_eq!(
+            argv.join(" "),
+            "ffprobe -v error -show_entries packet=codec_type,size -of csv=p=0 file:.qrec/cache/segments/abc.mov"
         );
     }
 
