@@ -76,7 +76,10 @@ binds {
 ```
 
 Compositor binds run in `$HOME`; the CLI then finds the single running
-Qrec (a headless recording host or, later, the GUI).
+Qrec (a headless recording host or, later, the GUI). With nothing running
+yet, `$HOME` isn't a project ("Not my swamp"): either start the first take
+from the project folder, or name it in the bind with
+`"qrec" "--project" "/home/me/videos/my-video" "record" "toggle"`.
 
 ### For LLM agents
 
@@ -100,7 +103,7 @@ my-video/
 ## Development
 
 ```sh
-cargo test --workspace                               # ~900 tests; CLI tests spawn ffmpeg
+cargo test --workspace                               # ~1,100 tests; CLI tests spawn ffmpeg
 cargo clippy --workspace --all-targets -- -D warnings
 cargo check -p qrec-core                             # the pure core on its own
 QREC_CAPTURE_BACKEND=fake qrec record start          # record test patterns, no devices
