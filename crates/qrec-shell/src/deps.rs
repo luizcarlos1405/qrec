@@ -72,6 +72,7 @@ impl CaptureEngine for NoCapture {
             take: Some(plan.take),
             source: None,
             message: "capture is not available in this build or host".to_owned(),
+            missing: None,
         });
     }
 

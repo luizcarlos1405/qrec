@@ -581,35 +581,59 @@ fn stitch_audio(format: ExportFormat) -> (&'static str, Vec<String>) {
     (encoder, args.iter().map(|a| (*a).to_owned()).collect())
 }
 
-/// ffmpeg must be detected, and the encoders this export uses present. An
-/// empty encoder list means the shell didn't list them: nothing to check.
+/// `missing_dependency` (exit 5, A§4.8) for a tool that isn't installed.
+pub(crate) fn missing_tool(tool: &str) -> CoreError {
+    let hint = match tool {
+        "ffprobe" => "install ffmpeg's ffprobe (most packages ship both); `qrec doctor` checks it",
+        _ => "install ffmpeg with libx264, libvpx-vp9 and libopus; `qrec doctor` checks it",
+    };
+    CoreError::new(
+        ErrorCode::MissingDependency,
+        format!("{tool} wasn't found"),
+    )
+    .with_hint(hint)
+}
+
+/// The detected ffmpeg, with `encoders` among its encoders, or
+/// `missing_dependency`. Exports, frame saves and silence analysis all run
+/// it. An empty encoder list means the shell didn't list them: nothing to
+/// check.
+pub(crate) fn require_ffmpeg<'a>(
+    caps: &'a Capabilities,
+    encoders: &[&str],
+) -> Result<&'a FfmpegCaps, CoreError> {
+    let ffmpeg = caps.ffmpeg.as_ref().ok_or_else(|| missing_tool("ffmpeg"))?;
+    if !ffmpeg.encoders.is_empty() {
+        if let Some(name) = encoders.iter().find(|name| !ffmpeg.encoders.contains(**name)) {
+            return Err(CoreError::new(
+                ErrorCode::MissingDependency,
+                format!("ffmpeg has no {name} encoder"),
+            )
+            .with_hint("install a full ffmpeg build; `qrec doctor` lists what is missing"));
+        }
+    }
+    Ok(ffmpeg)
+}
+
+/// ffmpeg must be detected with the encoders this export uses, and ffprobe
+/// too: every rendered segment is checked with it before the stitch (A§9.3),
+/// so without it the export would fail only after rendering everything.
 fn check_ffmpeg<'a>(
     caps: &'a Capabilities,
     encoder: &Encoder,
     format: ExportFormat,
 ) -> Result<&'a FfmpegCaps, CoreError> {
-    let ffmpeg = caps.ffmpeg.as_ref().ok_or_else(|| {
-        CoreError::new(ErrorCode::MissingDependency, "ffmpeg wasn't found").with_hint(
-            "install ffmpeg with libx264, libvpx-vp9 and libopus; `qrec doctor` checks it",
-        )
-    })?;
-    if !ffmpeg.encoders.is_empty() {
-        let video = match encoder {
-            Encoder::Vaapi { .. } => None, // verified with the VA check itself
-            other => Some(other.name()),
-        };
-        for name in video
-            .into_iter()
-            .chain(["pcm_s16le", stitch_audio(format).0])
-        {
-            if !ffmpeg.encoders.contains(name) {
-                return Err(CoreError::new(
-                    ErrorCode::MissingDependency,
-                    format!("ffmpeg has no {name} encoder"),
-                )
-                .with_hint("install a full ffmpeg build; `qrec doctor` lists what is missing"));
-            }
-        }
+    let video = match encoder {
+        Encoder::Vaapi { .. } => None, // verified with the VA check itself
+        other => Some(other.name()),
+    };
+    let encoders: Vec<&str> = video
+        .into_iter()
+        .chain(["pcm_s16le", stitch_audio(format).0])
+        .collect();
+    let ffmpeg = require_ffmpeg(caps, &encoders)?;
+    if caps.ffprobe.is_none() {
+        return Err(missing_tool("ffprobe"));
     }
     Ok(ffmpeg)
 }
@@ -1399,6 +1423,15 @@ pub(crate) mod tests {
         // An empty list means "not listed": nothing to check.
         caps.ffmpeg.as_mut().unwrap().encoders.clear();
         assert!(plan_export(&project, &caps, &o).is_ok());
+        // Every segment is checked with ffprobe before the stitch: without
+        // it the export is refused before anything renders (exit 5).
+        caps.ffprobe = None;
+        let err = plan_export(&project, &caps, &o).unwrap_err();
+        assert_eq!(
+            (err.code, err.message.as_str()),
+            (ErrorCode::MissingDependency, "ffprobe wasn't found")
+        );
+        assert!(err.hint.unwrap().contains("qrec doctor"));
         let empty = ProjectBuilder::new().build();
         assert_eq!(
             plan_export(&empty, &testkit::capabilities(), &opts("x.mp4"))

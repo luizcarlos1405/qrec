@@ -451,9 +451,15 @@ fn mtime_ns(meta: &fs::Metadata) -> i64 {
 
 /// What is at a hand-picked output path (A§5.9): its absolute form,
 /// whether something is there, and why it can't be used (inside `takes/`
-/// or `.qrec/`, `qrec.json` itself, a directory). Symlinks are resolved
-/// for the check, so a link into `takes/` is refused too. A relative path
-/// is taken relative to the project folder.
+/// or `.qrec/`, `qrec.json` itself, a directory). A relative path is taken
+/// relative to the project folder.
+///
+/// The path means what the OS says it means: `abs` keeps its `..`
+/// components (only `.` goes), the job writes exactly that path, and the
+/// checks run on where the kernel resolves it. `link/..` is the parent of
+/// the link's *target*, never lexically the folder holding `link`.
+/// Symlinks are followed for the check, so a link into `takes/` is refused
+/// too.
 pub fn out_facts(project_root: &Path, out: &str) -> OutFacts {
     let given = Path::new(out);
     let joined = if given.is_absolute() {
@@ -461,17 +467,19 @@ pub fn out_facts(project_root: &Path, out: &str) -> OutFacts {
     } else {
         project_root.join(given)
     };
-    let abs = normalize(&joined);
+    // `components` drops `.` (and repeated or trailing slashes), not `..`.
+    let abs: PathBuf = joined.components().collect();
     let meta = fs::symlink_metadata(&abs).ok();
     let mut candidates = vec![resolve_existing(&abs)];
-    // A (possibly dangling) symlink: where it points counts too.
+    // A (possibly dangling) symlink: where it points counts too. A relative
+    // target is relative to the folder the link is in, as the OS reads it.
     if meta.as_ref().is_some_and(|m| m.file_type().is_symlink())
         && let Ok(target) = fs::read_link(&abs)
     {
         let target = abs
             .parent()
             .map_or_else(|| target.clone(), |dir| dir.join(&target));
-        candidates.push(resolve_existing(&normalize(&target)));
+        candidates.push(resolve_existing(&target));
     }
     let forbidden = candidates
         .iter()
@@ -500,10 +508,23 @@ fn why_forbidden(project_root: &Path, resolved: &Path) -> Option<String> {
     }
 }
 
-/// `.` and `..` removed lexically.
-fn normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for part in path.components() {
+/// Where the OS finds `path`: its longest existing prefix resolved by the
+/// kernel (symlinks followed, and a `..` after a symlink going to the
+/// target's parent), then the components that don't exist yet. A `..` among
+/// those can't be resolved (the OS fails to open such a path); it is taken
+/// lexically, which keeps the checks on the safe side.
+fn resolve_existing(path: &Path) -> PathBuf {
+    if let Ok(full) = fs::canonicalize(path) {
+        return full;
+    }
+    let parts: Vec<Component<'_>> = path.components().collect();
+    let Some((split, base)) = (1..parts.len()).rev().find_map(|n| {
+        let prefix: PathBuf = parts[..n].iter().collect();
+        fs::canonicalize(prefix).ok().map(|base| (n, base))
+    }) else {
+        return path.to_path_buf();
+    };
+    parts[split..].iter().fold(base, |mut out, part| {
         match part {
             Component::ParentDir => {
                 out.pop();
@@ -511,25 +532,8 @@ fn normalize(path: &Path) -> PathBuf {
             Component::CurDir => {}
             other => out.push(other.as_os_str()),
         }
-    }
-    out
-}
-
-/// The path with its existing prefix resolved through symlinks.
-fn resolve_existing(path: &Path) -> PathBuf {
-    if let Ok(full) = fs::canonicalize(path) {
-        return full;
-    }
-    let mut missing = Vec::new();
-    let mut cursor = path.to_path_buf();
-    while let Some(name) = cursor.file_name().map(|n| n.to_owned()) {
-        cursor.pop();
-        missing.push(name);
-        if let Ok(base) = fs::canonicalize(&cursor) {
-            return missing.iter().rev().fold(base, |acc, part| acc.join(part));
-        }
-    }
-    path.to_path_buf()
+        out
+    })
 }
 
 #[cfg(test)]
@@ -772,5 +776,68 @@ mod tests {
         );
         // Relative paths are taken from the project folder.
         assert_eq!(check("exports/old.mp4").abs, at("exports/old.mp4"));
+    }
+
+    /// `..` after a symlinked folder is the parent of the link's target, as
+    /// the kernel resolves it, not lexically the folder holding the link.
+    #[test]
+    fn dot_dot_after_a_symlink_means_what_the_os_says() {
+        let (tmp, paths) = project_dir();
+        let root = paths.root().to_path_buf();
+        let outside = fs::canonicalize(tmp.path()).unwrap();
+        let check = |out: &Path| out_facts(&root, &out.to_string_lossy());
+
+        // lnk/dirlink -> takes/take-0002, so lnk/dirlink/.. is takes/.
+        fs::create_dir(outside.join("lnk")).unwrap();
+        symlink(root.join("takes/take-0002"), outside.join("lnk/dirlink")).unwrap();
+        let sneaky = outside.join("lnk/dirlink/../x.png");
+        let facts = check(&sneaky);
+        assert_eq!(facts.abs, sneaky.to_string_lossy(), "the path is kept as given");
+        assert!(
+            facts.forbidden.as_deref().unwrap_or("").contains("takes/"),
+            "{facts:?}"
+        );
+
+        // a/b/cur -> real/sub: a/b/cur/../stills is real/stills.
+        fs::create_dir_all(outside.join("real/sub")).unwrap();
+        fs::create_dir_all(outside.join("real/stills")).unwrap();
+        fs::create_dir_all(outside.join("a/b/stills")).unwrap();
+        symlink(outside.join("real/sub"), outside.join("a/b/cur")).unwrap();
+        let out = outside.join("a/b/cur/../stills/x.png");
+        // A file where the path reads lexically is not what it names…
+        fs::write(outside.join("a/b/stills/x.png"), "lexical").unwrap();
+        let facts = check(&out);
+        assert_eq!(
+            (facts.exists, facts.forbidden.as_deref()),
+            (false, None),
+            "{facts:?}"
+        );
+        assert_eq!(facts.abs, out.to_string_lossy());
+        // …the one where the OS resolves it is.
+        fs::write(outside.join("real/stills/x.png"), "physical").unwrap();
+        assert!(check(&out).exists);
+        assert_eq!(fs::read_to_string(&out).unwrap(), "physical");
+
+        // `.` goes, `..` stays; a `..` under a missing folder (which the OS
+        // can't open) is read lexically, so it is still refused.
+        assert_eq!(
+            check(&root.join("./exports/./a.mp4")).abs,
+            root.join("exports/a.mp4").to_string_lossy()
+        );
+        assert!(
+            check(&root.join("exports/missing/../../takes/x.mp4"))
+                .forbidden
+                .is_some()
+        );
+        // A link whose target uses `..` is resolved from the link's folder.
+        let relative = outside.join("lnk/rel.mp4");
+        symlink("dirlink/../y.mp4", &relative).unwrap();
+        assert!(
+            check(&relative)
+                .forbidden
+                .as_deref()
+                .unwrap_or("")
+                .contains("takes/")
+        );
     }
 }

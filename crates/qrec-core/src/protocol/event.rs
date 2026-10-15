@@ -21,6 +21,11 @@ pub enum Event {
         take: Option<TakeId>,
         source: Option<String>,
         message: String,
+        /// The GStreamer element that isn't installed, when that is why:
+        /// the reply is then `missing_dependency` (exit 5), not
+        /// `capture_failed`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        missing: Option<String>,
     },
     StreamLost {
         take: TakeId,

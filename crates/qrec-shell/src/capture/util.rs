@@ -10,12 +10,25 @@ use std::time::Duration;
 use gst::glib;
 use gst::prelude::*;
 
+/// How [`make`] says an element is missing; [`missing_element`] reads it.
+const MISSING_PREFIX: &str = "the GStreamer element ";
+const MISSING_SUFFIX: &str = " is missing";
+
 /// Creates `factory` named `name`, or says which element is missing.
 pub(super) fn make(factory: &str, name: &str) -> Result<gst::Element, String> {
     gst::ElementFactory::make(factory)
         .name(name)
         .build()
-        .map_err(|_| format!("the GStreamer element {factory} is missing (see `qrec doctor`)"))
+        .map_err(|_| format!("{MISSING_PREFIX}{factory}{MISSING_SUFFIX} (see `qrec doctor`)"))
+}
+
+/// The element a failure message from [`make`] (possibly prefixed with the
+/// source, `L1: …`) says isn't installed: `CaptureFailed::missing`, which
+/// the core answers with `missing_dependency` (A§4.8).
+pub(super) fn missing_element(message: &str) -> Option<String> {
+    let start = message.find(MISSING_PREFIX)? + MISSING_PREFIX.len();
+    let (factory, _) = message[start..].split_once(MISSING_SUFFIX)?;
+    (!factory.is_empty() && !factory.contains(char::is_whitespace)).then(|| factory.to_owned())
 }
 
 /// Sets a property from its string form (ints, enums by nick, flags, bools).
@@ -111,4 +124,24 @@ pub(super) fn object_path(obj: &gst::Object) -> Vec<String> {
         current = o.parent();
     }
     names
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_elements_are_read_back_from_the_message() {
+        let message = format!("{MISSING_PREFIX}videotestsrc{MISSING_SUFFIX} (see `qrec doctor`)");
+        assert_eq!(missing_element(&message).as_deref(), Some("videotestsrc"));
+        let prefixed = format!("L1 screen FAKE-1: {message}");
+        assert_eq!(missing_element(&prefixed).as_deref(), Some("videotestsrc"));
+        for other in [
+            "the take folder /p/takes/take-0003 is missing",
+            "no fake camera /dev/video0",
+            "the GStreamer element  is missing",
+        ] {
+            assert_eq!(missing_element(other), None, "{other}");
+        }
+    }
 }

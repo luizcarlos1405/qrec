@@ -274,6 +274,7 @@ impl Harness {
                 take: Some(take),
                 source: Some("L1".into()),
                 message: "device busy".into(),
+                missing: None,
             },
             Event::CaptureStopped { take, .. } => Event::CaptureStopped {
                 streams: recorded(&self.state, &take),
@@ -368,6 +369,7 @@ impl Harness {
                 take: None,
                 source: Some("L1".into()),
                 message: "pipeline error".into(),
+                missing: None,
             }),
             Step::Wedged => self.event(Event::EngineWedged {
                 message: "teardown timed out".into(),

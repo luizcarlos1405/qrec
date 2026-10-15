@@ -839,6 +839,7 @@ fn events_round_trip() {
             identity: "/usr/bin/ffmpeg".into(),
             encoders: BTreeSet::from(["libx264".to_owned()]),
         }),
+        ffprobe: Some("/usr/bin/ffprobe".into()),
         vaapi: Some(VaapiCaps {
             device: "/dev/dri/renderD129".into(),
             vendor: 0x8086,
@@ -871,11 +872,19 @@ fn events_round_trip() {
             take: Some(take(4)),
             source: Some("L2".into()),
             message: "device busy".into(),
+            missing: None,
         },
         Event::CaptureFailed {
             take: None,
             source: None,
             message: "portal denied".into(),
+            missing: None,
+        },
+        Event::CaptureFailed {
+            take: Some(take(4)),
+            source: Some("L1".into()),
+            message: "the GStreamer element videotestsrc is missing".into(),
+            missing: Some("videotestsrc".into()),
         },
         Event::StreamLost {
             take: take(4),

@@ -622,6 +622,7 @@ fn capabilities() -> Capabilities {
             // Empty: the planner doesn't check encoders it wasn't told about.
             encoders: Default::default(),
         }),
+        ffprobe: Some("ffprobe (PATH)".to_owned()),
         vaapi: None,
         cores: 4,
     }

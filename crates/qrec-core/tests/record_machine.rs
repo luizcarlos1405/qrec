@@ -741,6 +741,7 @@ fn a_pipeline_failure_ends_the_countdown() {
             take: None,
             source: Some("L1".into()),
             message: "portal request denied".into(),
+            missing: None,
         },
     );
     assert_eq!(out.state.runtime.record, RecordPhase::Idle);
@@ -763,6 +764,7 @@ fn a_pipeline_failure_ends_the_countdown() {
             take: Some(TakeId::numbered(1)),
             source: None,
             message: "late".into(),
+            missing: None,
         },
     );
 }
@@ -864,6 +866,7 @@ fn starting_capture_failed_breaks_the_take() {
             take: Some(take2()),
             source: Some("L1".into()),
             message: "portal request denied".into(),
+            missing: None,
         },
     );
     assert_eq!(out.state.runtime.record, RecordPhase::Idle);
@@ -902,6 +905,7 @@ fn starting_capture_failed_breaks_the_take() {
             take: None,
             source: None,
             message: "pipeline error".into(),
+            missing: None,
         },
     );
     assert_eq!(out.state.project.takes[&take2()].status, TakeStatus::Broken);
@@ -918,6 +922,7 @@ fn starting_capture_failed_breaks_the_take() {
             take: Some(TakeId::numbered(9)),
             source: None,
             message: "x".into(),
+            missing: None,
         },
     );
     // A live-pipeline failure while idle only tells people.
@@ -927,12 +932,63 @@ fn starting_capture_failed_breaks_the_take() {
             take: None,
             source: Some("L1".into()),
             message: "portal closed".into(),
+            missing: None,
         },
     );
     assert_eq!(out.state, idle());
     assert_eq!(
         toasts(&out)[0].body.as_deref(),
         Some("L1 (Monitor DP-4): portal closed")
+    );
+}
+
+/// A GStreamer element that isn't installed is a missing dependency (exit
+/// 5, A§4.8) whose hint names it, not `capture_failed`; the take is broken
+/// as for any start failure (SPEC §5.3 writes it before capture starts).
+#[test]
+fn a_missing_element_is_a_missing_dependency() {
+    let missing = || Event::CaptureFailed {
+        take: Some(take2()),
+        source: Some("L1".into()),
+        message: "the GStreamer element videotestsrc is missing (see `qrec doctor`)".into(),
+        missing: Some("videotestsrc".into()),
+    };
+    let out = event(&starting(false), missing());
+    assert_eq!(out.state.runtime.record, RecordPhase::Idle);
+    assert_eq!(out.state.project.takes[&take2()].status, TakeStatus::Broken);
+    let err = reply_to(&out, "s1").unwrap_err();
+    assert_eq!(
+        (err.code, err.exit_code()),
+        (ErrorCode::MissingDependency, 5)
+    );
+    assert_eq!(
+        err.message,
+        "capture failed: L1 (Monitor DP-4): the GStreamer element videotestsrc is missing (see `qrec doctor`)"
+    );
+    let hint = err.hint.unwrap();
+    assert!(hint.contains("videotestsrc") && hint.contains("qrec doctor"), "{hint}");
+
+    // The same while a countdown runs (the live pipeline failed).
+    let mut headless = idle();
+    headless.runtime.host = HostKind::Headless;
+    let counting = cmd(
+        &headless,
+        Some("s1"),
+        start(RecordModeArg::Append, Some(3), true),
+    )
+    .state;
+    let out = event(
+        &counting,
+        Event::CaptureFailed {
+            take: None,
+            source: Some("L1".into()),
+            message: "the GStreamer element pipewiresrc is missing (see `qrec doctor`)".into(),
+            missing: Some("pipewiresrc".into()),
+        },
+    );
+    assert_eq!(
+        reply_to(&out, "s1").unwrap_err().code,
+        ErrorCode::MissingDependency
     );
 }
 
@@ -1946,6 +2002,7 @@ fn events_for_other_phases_are_ignored() {
                 take: Some(stale_take.clone()),
                 source: None,
                 message: "x".into(),
+                missing: None,
             },
         ];
         if *name != "finalizing" {

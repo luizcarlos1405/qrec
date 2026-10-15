@@ -58,6 +58,7 @@ the same commands, and every edit is undoable. Always pass `--json`.
 | 5 | `missing_dependency` | a tool or GStreamer element is missing; run `qrec doctor` |
 | 6 | `busy` | recording, finalizing or exporting, or the owning host isn't responding; wait or `qrec record stop` |
 | 7 | `not_found` | unknown id, output or device; list them again |
+| 130 | `interrupted` | stopped by Ctrl+C or SIGTERM before a reply came; the hint says whether the host may still finish it (check `qrec status`) |
 
 ## Ids, times and frames
 
