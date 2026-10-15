@@ -801,7 +801,7 @@ pub fn plan_export(
     let stitch = plan_stitch(&segments, project.canvas.fps, opts.format, &opts.out);
     Ok(ExportPlan {
         out: opts.out.clone(),
-        replace: false,
+        replace: None,
         tmp_ext: opts.format.extension().to_owned(),
         segments,
         stitch,

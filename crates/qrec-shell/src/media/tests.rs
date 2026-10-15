@@ -6,10 +6,12 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::os::unix::fs::{MetadataExt, symlink};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
+use qrec_core::ctx::FileId;
 use qrec_core::export_plan::{ExportOptions, plan_export};
 use qrec_core::frame_plan::plan_frame;
 use qrec_core::hash::sha256_hex;
@@ -221,6 +223,16 @@ fn export_plan(project: &Project, out: &str, vaapi_device: Option<&str>) -> Expo
 
 fn load(dir: &Path) -> Project {
     serde_json::from_str(&fs::read_to_string(dir.join("qrec.json")).unwrap()).unwrap()
+}
+
+/// What is at `path` (`lstat`), as the shell's facts give it to the core:
+/// the one file a confirmed overwrite may replace.
+fn file_id(path: &Path) -> FileId {
+    let meta = fs::symlink_metadata(path).unwrap();
+    FileId {
+        dev: meta.dev(),
+        ino: meta.ino(),
+    }
 }
 
 /// Three takes: video + mono mic; system audio only; video + stereo audio
@@ -542,10 +554,11 @@ fn a_failed_va_segment_falls_back_to_libx264() {
 }
 
 /// A hand-picked output is replaced only when the plan says the person
-/// confirmed it (`replace`). A file that appears at an unconfirmed path
-/// while the job runs is kept, and so is the result, next to it:
-/// `OutputAppeared` names both (the core makes it `confirmation_required`,
-/// A§8.8). Whether a file was there when the job started doesn't matter.
+/// confirmed it (`replace`), and only the very file they confirmed. A file
+/// that appears at an unconfirmed path while the job runs is kept, and so
+/// is the result, next to it: `OutputAppeared` names both (the core makes
+/// it `confirmation_required`, A§8.8). Whether a file was there when the
+/// job started doesn't matter.
 #[test]
 fn hand_picked_outputs_are_replaced_only_when_confirmed() {
     let env = TestEnv::new();
@@ -556,7 +569,7 @@ fn hand_picked_outputs_are_replaced_only_when_confirmed() {
     );
     let out = env.root().join("mine.mp4");
     let plan = export_plan(&load(&dir), out.to_str().unwrap(), None);
-    assert!(!plan.replace);
+    assert_eq!(plan.replace, None);
     let mut runner = runner(&dir);
     let (inbox, rx) = Inbox::channel();
 
@@ -598,10 +611,10 @@ fn hand_picked_outputs_are_replaced_only_when_confirmed() {
 
     // Confirmed (`replace`): the file is replaced.
     let confirmed = ExportPlan {
-        replace: true,
-        ..plan
+        replace: Some(file_id(&out)),
+        ..plan.clone()
     };
-    runner.render_export(JobId(3), confirmed, inbox.clone());
+    runner.render_export(JobId(3), confirmed.clone(), inbox.clone());
     let events = events_until(&rx, WAIT, export_ended);
     assert!(
         matches!(events.last(), Some(Event::ExportFinished { path, .. }) if Path::new(path) == out),
@@ -609,6 +622,17 @@ fn hand_picked_outputs_are_replaced_only_when_confirmed() {
     );
     assert_eq!(output_counts(&out).0, 30);
     assert!(temps_in(env.root()).is_empty());
+
+    // The confirmation was for that file: another one in its place (the
+    // first export replaced it, so it is a new file) is kept.
+    runner.render_export(JobId(6), confirmed, inbox.clone());
+    let events = events_until(&rx, WAIT, export_ended);
+    let Some(Event::OutputAppeared { kept, .. }) = events.last() else {
+        panic!("{events:#?}");
+    };
+    assert_eq!(Path::new(kept), env.root().join("mine-kept.mp4"));
+    assert_eq!(output_counts(Path::new(kept)).0, 30);
+    fs::remove_file(kept).unwrap();
 
     // Frame saves follow the same rule.
     let png = env.root().join("mine.png");
@@ -638,7 +662,7 @@ fn hand_picked_outputs_are_replaced_only_when_confirmed() {
     runner.save_frame(
         JobId(5),
         FramePlan {
-            replace: true,
+            replace: Some(file_id(&png)),
             ..frame
         },
         inbox,
@@ -686,7 +710,7 @@ fn raw_plan(segment: SegmentPlan, out: &str) -> ExportPlan {
     argv.push(file_arg(out));
     ExportPlan {
         out: out.to_owned(),
-        replace: false,
+        replace: None,
         tmp_ext: "mp4".to_owned(),
         total_frames: segment.frames,
         files: BTreeSet::new(),
@@ -905,6 +929,232 @@ fn missing_sources_and_programs_fail_cleanly() {
     );
 }
 
+// ------------------------------------------------ an output folder that moves
+
+/// A segment rendered in real time (`-re`): 64×36, `frames` frames at
+/// 30 fps with silent stereo audio, taking as long as it lasts, so a test
+/// can change the file system while the job runs.
+fn slow_segment(frames: u64) -> SegmentPlan {
+    let secs = format!("{}", frames as f64 / 30.0);
+    raw_segment(
+        &[
+            "-re",
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("testsrc2=size=64x36:rate=30:duration={secs}"),
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=48000:cl=stereo",
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-t",
+            &secs,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-c:a",
+            "pcm_s16le",
+        ],
+        frames,
+    )
+}
+
+/// A project with one recorded take, and what its take folder holds.
+fn recorded_project(env: &TestEnv) -> (PathBuf, PathBuf, Vec<(String, Vec<u8>)>) {
+    let dir = env.empty_dir("swamp");
+    fixture_project(&dir, &[MediaSpec::video(320, 180, 30, 30)]);
+    let take = dir.join("takes/take-0001");
+    (dir, take.clone(), contents(&take))
+}
+
+/// Every file in `dir` with its bytes.
+fn contents(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    names_in(dir)
+        .into_iter()
+        .map(|name| {
+            let bytes = fs::read(dir.join(&name)).unwrap_or_default();
+            (name, bytes)
+        })
+        .collect()
+}
+
+/// Waits for the export's first progress: it has started rendering (its
+/// output folder is open by then).
+fn rendering(rx: &Receiver<Msg>) {
+    let first = events_until(rx, WAIT, |e| {
+        matches!(e, Event::ExportProgress { .. }) || export_ended(e)
+    });
+    assert!(
+        matches!(first.last(), Some(Event::ExportProgress { .. })),
+        "{first:#?}"
+    );
+}
+
+/// The `--out` folder swapped for a symlink into the take folder while the
+/// export renders, even with a file there the person confirmed replacing:
+/// the job writes where it started, in the folder it holds open (moved
+/// away by now), and reports that path; nothing is written into the take
+/// folder and no recording is replaced (A§8.8, SPEC §11). A folder deleted
+/// meanwhile gets nothing either: the job fails and says so.
+#[test]
+fn an_output_folder_swapped_for_a_link_while_exporting_is_never_followed() {
+    let env = TestEnv::new();
+    let (dir, take, recorded) = recorded_project(&env);
+    let mut runner = runner(&dir);
+    let (inbox, rx) = Inbox::channel();
+
+    let folder = env.root().join("x/out");
+    fs::create_dir_all(&folder).unwrap();
+    let decoy = folder.join("L1-screen-FAKE-1.mkv");
+    fs::write(&decoy, "decoy").unwrap();
+    let plan = ExportPlan {
+        replace: Some(file_id(&decoy)),
+        ..raw_plan(slow_segment(60), decoy.to_str().unwrap())
+    };
+    runner.render_export(JobId(1), plan, inbox.clone());
+    rendering(&rx);
+    let moved = env.root().join("x/moved");
+    fs::rename(&folder, &moved).unwrap();
+    symlink(&take, &folder).unwrap();
+    let events = events_until(&rx, WAIT, export_ended);
+    let Some(Event::ExportFinished { path, .. }) = events.last() else {
+        panic!("{events:#?}");
+    };
+    assert_eq!(Path::new(path), moved.join("L1-screen-FAKE-1.mkv"));
+    assert_eq!(output_counts(Path::new(path)).0, 60, "the confirmed decoy");
+    assert_eq!(contents(&take), recorded, "the take folder is untouched");
+    assert!(temps_in(&moved).is_empty(), "{:?}", names_in(&moved));
+
+    // The folder deleted, the link in its place: a new name, no --yes. (The
+    // segment renders again: nothing cached.)
+    fs::remove_dir_all(dir.join(SEGMENTS)).unwrap();
+    fs::remove_file(&folder).unwrap();
+    fs::create_dir(&folder).unwrap();
+    let out = folder.join("new.mp4");
+    runner.render_export(
+        JobId(2),
+        raw_plan(slow_segment(60), out.to_str().unwrap()),
+        inbox,
+    );
+    rendering(&rx);
+    fs::remove_dir(&folder).unwrap();
+    symlink(&take, &folder).unwrap();
+    let events = events_until(&rx, WAIT, export_ended);
+    let Some(Event::ExportFailed { message, .. }) = events.last() else {
+        panic!("{events:#?}");
+    };
+    assert!(message.contains("was deleted"), "{message}");
+    assert_eq!(contents(&take), recorded, "the take folder is untouched");
+    assert!(
+        names_in(&dir.join(SEGMENTS))
+            .iter()
+            .all(|n| !n.contains(PART_MARKER))
+    );
+}
+
+/// The output folder is checked where it really is when the job writes,
+/// not only where the command's path led when it was checked (A§5.9,
+/// A§8.8): a folder that leads into `takes/` or `.qrec/` when the job
+/// starts (a symlink swapped in after the check), the project folder's
+/// `qrec.json` reached through a link, an `exports/` that leads into a take
+/// folder, or a folder moved into one while the export renders: refused,
+/// with or without a confirmation, and nothing is written there.
+#[test]
+fn an_output_folder_inside_takes_when_the_job_writes_is_refused() {
+    let env = TestEnv::new();
+    let (dir, take, recorded) = recorded_project(&env);
+    let project_file = fs::read(dir.join("qrec.json")).unwrap();
+    let mut runner = runner(&dir);
+    let (inbox, rx) = Inbox::channel();
+    let quick = || raw_segment(&["-f", "lavfi", "-i", "testsrc2=duration=1"], 30);
+    let failed = |events: &[Event]| -> String {
+        match events.last() {
+            Some(Event::ExportFailed { message, .. } | Event::FrameFailed { message, .. }) => {
+                message.clone()
+            }
+            _ => panic!("{events:#?}"),
+        }
+    };
+
+    let into_take = env.root().join("sneaky");
+    symlink(&take, &into_take).unwrap();
+    let media = into_take.join("L1-screen-FAKE-1.mkv");
+    let plan = ExportPlan {
+        replace: Some(file_id(&media)),
+        ..raw_plan(quick(), media.to_str().unwrap())
+    };
+    runner.render_export(JobId(1), plan, inbox.clone());
+    let message = failed(&events_until(&rx, WAIT, export_ended));
+    assert!(message.contains("inside takes/"), "{message}");
+    let new = into_take.join("new.mp4");
+    runner.render_export(
+        JobId(2),
+        raw_plan(quick(), new.to_str().unwrap()),
+        inbox.clone(),
+    );
+    let message = failed(&events_until(&rx, WAIT, export_ended));
+    assert!(message.contains("inside takes/"), "{message}");
+    let png = into_take.join("x.png");
+    let frame = plan_frame(&load(&dir), 1, None, png.to_str().unwrap()).unwrap();
+    runner.save_frame(JobId(3), frame, inbox.clone());
+    let message = failed(&events_until(&rx, WAIT, frame_ended));
+    assert!(message.contains("inside takes/"), "{message}");
+
+    let into_project = env.root().join("project");
+    symlink(&dir, &into_project).unwrap();
+    let qrec_json = into_project.join("qrec.json");
+    let plan = ExportPlan {
+        replace: Some(file_id(&qrec_json)),
+        ..raw_plan(quick(), qrec_json.to_str().unwrap())
+    };
+    runner.render_export(JobId(4), plan, inbox.clone());
+    let message = failed(&events_until(&rx, WAIT, export_ended));
+    assert!(message.contains("qrec.json"), "{message}");
+    let cache = into_project.join(".qrec/x.mp4");
+    runner.render_export(
+        JobId(5),
+        raw_plan(quick(), cache.to_str().unwrap()),
+        inbox.clone(),
+    );
+    let message = failed(&events_until(&rx, WAIT, export_ended));
+    assert!(message.contains("inside .qrec/"), "{message}");
+
+    // An auto name whose exports/ leads into a take folder.
+    symlink(&take, dir.join("exports")).unwrap();
+    runner.render_export(JobId(6), raw_plan(quick(), "exports/x.mp4"), inbox.clone());
+    let message = failed(&events_until(&rx, WAIT, export_ended));
+    assert!(message.contains("inside takes/"), "{message}");
+    fs::remove_file(dir.join("exports")).unwrap();
+
+    // A folder moved into the take folder while the export renders.
+    let folder = env.root().join("out");
+    fs::create_dir(&folder).unwrap();
+    let out = folder.join("final.mp4");
+    runner.render_export(
+        JobId(7),
+        raw_plan(slow_segment(45), out.to_str().unwrap()),
+        inbox,
+    );
+    rendering(&rx);
+    fs::rename(&folder, take.join("out")).unwrap();
+    let message = failed(&events_until(&rx, WAIT, export_ended));
+    assert!(message.contains("inside takes/"), "{message}");
+    assert!(
+        names_in(&take.join("out")).is_empty(),
+        "nothing was written there"
+    );
+    fs::remove_dir(take.join("out")).unwrap();
+
+    assert_eq!(contents(&take), recorded, "the take folder is untouched");
+    assert_eq!(fs::read(dir.join("qrec.json")).unwrap(), project_file);
+    assert!(temps_in(&dir.join(".qrec")).is_empty());
+}
+
 // ----------------------------------------------------------------- frames
 
 #[test]
@@ -983,7 +1233,7 @@ fn a_failed_frame_save_reports_its_log() {
     argv.push(file_arg("frames/x.png"));
     let plan = FramePlan {
         out: "frames/x.png".to_owned(),
-        replace: false,
+        replace: None,
         tmp_ext: "png".to_owned(),
         argv,
         files: BTreeSet::new(),

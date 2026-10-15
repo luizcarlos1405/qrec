@@ -4,7 +4,10 @@
 //! - stdin is null; the child leads its own process group (`process_group(0)`)
 //!   and gets SIGKILL if the thread that spawned it dies (`PR_SET_PDEATHSIG`);
 //! - it gets nothing but its stdio (`proc::close_on_exec_from`): not even a
-//!   descriptor Qrec inherited from whoever started it;
+//!   descriptor Qrec inherited from whoever started it. The one exception is
+//!   an output's temp file ([`Spec::output`]), which an ffmpeg gets as its
+//!   descriptor 3 and opens as [`OUTPUT_FD_PATH`]: it writes that very file,
+//!   whatever its path leads to by then (A§8.8);
 //! - stdout is piped only when it is parsed, and always drained on its own
 //!   thread (ffmpeg `-progress pipe:1` blocks, or captured bytes);
 //! - stderr is appended to a log file, or captured through an anonymous
@@ -19,6 +22,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
@@ -41,6 +45,14 @@ const DRAIN_GRACE: Duration = Duration::from_secs(2);
 
 /// The most stderr kept in memory for [`Stderr::Capture`].
 const CAPTURE_STDERR_LIMIT: u64 = 1 << 20;
+
+/// The descriptor a child gets [`Spec::output`] as.
+pub(crate) const OUTPUT_FD: RawFd = 3;
+
+/// How a child names its [`Spec::output`]: through its own descriptor, so
+/// opening it (again, as the mp4 muxer does for `+faststart`) reaches that
+/// file and nothing a path could lead to.
+pub(crate) const OUTPUT_FD_PATH: &str = "/proc/self/fd/3";
 
 /// A flag that stops a job's children (cancel, or a sibling's failure).
 #[derive(Debug, Default)]
@@ -95,6 +107,9 @@ pub(crate) struct Spec<'a> {
     pub stall: Option<Duration>,
     pub stop: Option<&'a StopFlag>,
     pub kill_grace: Duration,
+    /// A file the child gets as descriptor [`OUTPUT_FD`] (the only one
+    /// past its stdio): an output's temp file (A§8.8).
+    pub output: Option<&'a File>,
 }
 
 impl<'a> Spec<'a> {
@@ -117,6 +132,7 @@ impl<'a> Spec<'a> {
             stall: None,
             stop: None,
             kill_grace: KILL_GRACE,
+            output: None,
         }
     }
 
@@ -152,6 +168,12 @@ impl<'a> Spec<'a> {
 
     pub(crate) fn kill_grace(mut self, grace: Duration) -> Self {
         self.kill_grace = grace;
+        self
+    }
+
+    /// Hands `file` to the child as descriptor [`OUTPUT_FD`].
+    pub(crate) fn output(mut self, file: &'a File) -> Self {
+        self.output = Some(file);
         self
     }
 }
@@ -288,12 +310,27 @@ pub(crate) fn start(spec: Spec<'_>) -> Result<Finished, StartError> {
     for (key, value) in &spec.env {
         cmd.env(key, value);
     }
+    let output = match spec.output.map(AsRawFd::as_raw_fd) {
+        // Stdio is set up before `pre_exec` runs: a stdio number would be
+        // gone by then (std keeps 0–2 open, so this doesn't happen).
+        Some(fd) if fd < OUTPUT_FD => {
+            return Err(
+                format!("internal error: the output of {program} is descriptor {fd}").into(),
+            );
+        }
+        other => other,
+    };
     // SAFETY: the closure runs in the forked child before exec and only
-    // makes async-signal-safe system calls (close_range or fcntl, prctl).
+    // makes async-signal-safe system calls (close_range or fcntl, dup2,
+    // prctl).
     unsafe {
-        cmd.pre_exec(|| {
-            // Only its stdio crosses: nothing Qrec inherited (A§8.7).
+        cmd.pre_exec(move || {
+            // Only its stdio crosses: nothing Qrec inherited (A§8.7)…
             crate::proc::close_on_exec_from(3);
+            // …and the output, when it has one (A§8.8).
+            if let Some(fd) = output {
+                hand_over(fd, OUTPUT_FD)?;
+            }
             // The child dies with the thread that spawned it; a SIGKILLed
             // host leaves no orphaned ffmpeg behind.
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
@@ -381,6 +418,27 @@ pub(crate) fn start(spec: Spec<'_>) -> Result<Finished, StartError> {
         parser_error,
         elapsed: shared.started.elapsed(),
     })
+}
+
+/// In the forked child: makes `fd` its descriptor `target`, open across
+/// `exec` (`dup2` clears close-on-exec on the copy; when `fd` already is
+/// `target`, it is cleared by hand). Async-signal-safe.
+fn hand_over(fd: RawFd, target: RawFd) -> io::Result<()> {
+    if fd == target {
+        // SAFETY: fcntl(2) on a descriptor number.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        // SAFETY: as above.
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    } else {
+        // SAFETY: dup2(2) on descriptor numbers; `target` is either free or
+        // one of ours already marked close-on-exec.
+        if unsafe { libc::dup2(fd, target) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 /// The deadlines of one run.
@@ -639,6 +697,39 @@ mod tests {
         .unwrap();
         assert!(done.exited_ok(), "{}", done.describe("sh"));
         assert_eq!(done.stdout, b"free\n");
+    }
+
+    /// An output's temp file reaches the child as descriptor 3, the one
+    /// exception: the child writes that very file by
+    /// [`OUTPUT_FD_PATH`], even once its path leads elsewhere (A§8.8), and
+    /// still gets nothing else Qrec holds.
+    #[test]
+    fn the_output_reaches_the_child_as_descriptor_3() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, moved) = (dir.path().join("out.part"), dir.path().join("moved"));
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        std::fs::rename(&path, &moved).unwrap();
+        std::fs::write(&path, "someone else's").unwrap();
+        let held = crate::proc::tests::inheritable_fd();
+        let script = format!(
+            "printf rendered > {OUTPUT_FD_PATH}; {}",
+            crate::proc::tests::holds_fd_script(&held)
+        );
+        let cmd = argv(&["sh", "-c", &script]);
+        let done = run(Spec::new(&cmd, Stderr::Capture)
+            .stdout(Stdout::Capture { limit: 1024 })
+            .output(&file)
+            .timeout(Duration::from_secs(10)))
+        .unwrap();
+        assert!(done.exited_ok(), "{} {}", done.describe("sh"), done.stderr);
+        assert_eq!(done.stdout, b"free\n", "nothing else crosses");
+        assert_eq!(std::fs::read_to_string(&moved).unwrap(), "rendered");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "someone else's");
     }
 
     #[test]

@@ -128,11 +128,24 @@ pub struct OutFacts {
     /// lists it (SPEC §11).
     #[serde(default)]
     pub bytes: Option<u64>,
+    /// The identity of what is at the path (`lstat`), when something is: a
+    /// confirmed overwrite replaces that file and no other (A§5.9, A§8.8).
+    #[serde(default)]
+    pub id: Option<FileId>,
     /// Why the path can't be used (A§5.9): in `takes/` or `.qrec/` (also
     /// through a symlink or bind mount there or below), `qrec.json` itself,
     /// a directory, a path that names a folder or isn't UTF-8, or a name
     /// over 255 bytes or in the temp-file shape.
     pub forbidden: Option<String>,
+}
+
+/// A file's identity on disk: its device and inode as `lstat` reports them
+/// (a symlink is a file of its own, not its target's).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FileId {
+    pub dev: u64,
+    pub ino: u64,
 }
 
 /// Size and modification time of a file.

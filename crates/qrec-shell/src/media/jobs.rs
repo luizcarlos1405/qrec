@@ -4,10 +4,14 @@
 //! then deletes its temp outputs and reports how it ended. Every temp output
 //! being written is also in a process-wide list, so a hard exit (a second
 //! signal in a headless host, A§8.6), which no job thread outlives, deletes
-//! them too ([`remove_temps_in_flight`]).
+//! them too ([`remove_temps_in_flight`]). An output's temp file is deleted
+//! through the folder the job holds open (A§8.8), never by a path that may
+//! lead elsewhere by then.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -15,6 +19,60 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use qrec_core::JobId;
 
 use super::child::StopFlag;
+use super::place::OutDir;
+
+/// A temp file a job writes, deleted if the job doesn't finish.
+#[derive(Debug, Clone)]
+pub(crate) enum Temp {
+    /// A path in the project's own folders: a segment, the concat list.
+    Path(PathBuf),
+    /// A name in an output's open folder (A§8.8).
+    In(OutDir, OsString),
+}
+
+impl PartialEq for Temp {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Temp::Path(a), Temp::Path(b)) => a == b,
+            (Temp::In(dir_a, a), Temp::In(dir_b, b)) => dir_a.same(dir_b) && a == b,
+            _ => false,
+        }
+    }
+}
+
+impl From<PathBuf> for Temp {
+    fn from(path: PathBuf) -> Self {
+        Temp::Path(path)
+    }
+}
+
+impl From<&Path> for Temp {
+    fn from(path: &Path) -> Self {
+        Temp::Path(path.to_path_buf())
+    }
+}
+
+impl From<&PathBuf> for Temp {
+    fn from(path: &PathBuf) -> Self {
+        Temp::Path(path.clone())
+    }
+}
+
+impl Temp {
+    fn remove(&self) -> io::Result<()> {
+        match self {
+            Temp::Path(path) => fs::remove_file(path),
+            Temp::In(dir, name) => dir.unlink(name),
+        }
+    }
+
+    fn shown(&self) -> PathBuf {
+        match self {
+            Temp::Path(path) => path.clone(),
+            Temp::In(dir, name) => dir.shown(name),
+        }
+    }
+}
 
 /// One job's controls, shared by its threads.
 #[derive(Debug, Default)]
@@ -22,7 +80,7 @@ pub(crate) struct JobCtl {
     cancelled: AtomicBool,
     /// Stops every child of the job: a cancel, or a failed sibling segment.
     pub stop: StopFlag,
-    temps: Mutex<Vec<PathBuf>>,
+    temps: Mutex<Vec<Temp>>,
 }
 
 impl JobCtl {
@@ -52,45 +110,51 @@ impl JobCtl {
     }
 
     /// Remembers a temp file to delete if the job doesn't finish.
-    pub(crate) fn add_temp(&self, path: PathBuf) {
-        in_flight().insert(path.clone());
+    pub(crate) fn add_temp(&self, temp: impl Into<Temp>) {
+        let temp = temp.into();
+        let mut all = in_flight();
+        if !all.contains(&temp) {
+            all.push(temp.clone());
+        }
+        drop(all);
         self.temps
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push(path);
+            .push(temp);
     }
 
     /// The temp file became an output (or is kept on purpose).
-    pub(crate) fn forget_temp(&self, path: &Path) {
+    pub(crate) fn forget_temp(&self, temp: impl Into<Temp>) {
+        let temp = temp.into();
         self.temps
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .retain(|p| p != path);
-        in_flight().remove(path);
+            .retain(|t| *t != temp);
+        in_flight().retain(|t| *t != temp);
     }
 
     /// Deletes every remembered temp file (cancel, failure).
     pub(crate) fn remove_temps(&self) {
         let temps = std::mem::take(&mut *self.temps.lock().unwrap_or_else(PoisonError::into_inner));
-        for path in temps {
-            remove_temp(&path);
-            in_flight().remove(&path);
+        for temp in temps {
+            remove_temp(&temp);
+            in_flight().retain(|t| *t != temp);
         }
     }
 }
 
 /// The temp outputs the jobs of this process are writing.
-static IN_FLIGHT: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+static IN_FLIGHT: Mutex<Vec<Temp>> = Mutex::new(Vec::new());
 
-fn in_flight() -> MutexGuard<'static, BTreeSet<PathBuf>> {
+fn in_flight() -> MutexGuard<'static, Vec<Temp>> {
     IN_FLIGHT.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn remove_temp(path: &Path) {
-    match fs::remove_file(path) {
+fn remove_temp(temp: &Temp) {
+    match temp.remove() {
         Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => tracing::warn!("can't delete the temp file {}: {e}", path.display()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => tracing::warn!("can't delete the temp file {}: {e}", temp.shown().display()),
     }
 }
 
@@ -100,8 +164,8 @@ fn remove_temp(path: &Path) {
 /// how many it deleted or found gone.
 pub fn remove_temps_in_flight() -> usize {
     let temps = std::mem::take(&mut *in_flight());
-    for path in &temps {
-        remove_temp(path);
+    for temp in &temps {
+        remove_temp(temp);
     }
     temps.len()
 }
@@ -175,6 +239,8 @@ impl Drop for RunGuard {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     #[test]
@@ -230,8 +296,8 @@ mod tests {
         let ours = || -> BTreeSet<PathBuf> {
             in_flight()
                 .iter()
+                .map(Temp::shown)
                 .filter(|p| p.starts_with(dir.path()))
-                .cloned()
                 .collect()
         };
         let ctl = JobCtl::default();
@@ -244,5 +310,42 @@ mod tests {
         assert_eq!(ours(), BTreeSet::from([path("writing")]));
         ctl.remove_temps();
         assert!(ours().is_empty(), "a job that cleaned up leaves nothing");
+    }
+
+    /// An output's temp is deleted in the folder the job opened, wherever
+    /// that folder is now and wherever its old path leads (A§8.8). (A hard
+    /// exit deletes them the same way; it isn't called here: other tests'
+    /// jobs share the process-wide list.)
+    #[test]
+    fn temps_in_an_open_folder_are_deleted_there() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (out, moved, other) = (
+            tmp.path().join("out"),
+            tmp.path().join("moved"),
+            tmp.path().join("other"),
+        );
+        fs::create_dir(&out).unwrap();
+        fs::create_dir(&other).unwrap();
+        let dir = OutDir::open(&out).unwrap();
+        for name in ["a.part", "b.part"] {
+            drop(dir.create(name.as_ref()).unwrap());
+            fs::write(other.join(name), "not a temp").unwrap();
+        }
+        let ctl = JobCtl::default();
+        ctl.add_temp(Temp::In(dir.clone(), "a.part".into()));
+        ctl.add_temp(Temp::In(dir.clone(), "b.part".into()));
+        fs::rename(&out, &moved).unwrap();
+        std::os::unix::fs::symlink(&other, &out).unwrap();
+        // One became an output: it stays.
+        ctl.forget_temp(Temp::In(dir.clone(), "b.part".into()));
+        ctl.remove_temps();
+        assert!(!moved.join("a.part").exists() && moved.join("b.part").exists());
+        assert!(other.join("a.part").exists() && other.join("b.part").exists());
+        assert!(
+            !in_flight()
+                .iter()
+                .any(|t| matches!(t, Temp::In(d, _) if d.same(&dir))),
+            "nothing left for a hard exit to delete"
+        );
     }
 }

@@ -12,7 +12,7 @@ use serde_json::json;
 use crate::apply::Outcome;
 use crate::apply::history::byte_size;
 use crate::config::UserConfig;
-use crate::ctx::Ctx;
+use crate::ctx::{Ctx, FileId};
 use crate::error::CoreError;
 use crate::export_plan::{ExportOptions, plan_export, require_ffmpeg, resolve_codec};
 use crate::frame_plan::{frame_source, plan_frame};
@@ -58,7 +58,7 @@ pub fn export(
                 ctx.utc_offset_secs,
                 format.extension(),
             ),
-            false,
+            None,
         ),
         Some(path) => checked_out(ctx, &path, "export to")?,
     };
@@ -153,7 +153,7 @@ pub fn frame_save(
     let at = absolute_frame(&at, fps, "frame save --at")?;
     let (take, _) = frame_source(project, at)?;
     let (out, replace) = match out {
-        None => (frame_file_name(&project.name, &take, at, fps), false),
+        None => (frame_file_name(&project.name, &take, at, fps), None),
         Some(path) => checked_out(ctx, &path, "save a frame to")?,
     };
     let mut plan = plan_frame(project, at, layer.as_ref(), &out)?;
@@ -194,10 +194,14 @@ fn running_export(state: &State) -> Option<JobId> {
 /// A hand-picked output path (A§5.9): inside `takes/`, `.qrec/` or
 /// `qrec.json` is `Invalid` (not confirmable); an existing file needs
 /// confirmation, which names it and its size (SPEC §11, A§4.8). Returns
-/// the absolute path to write and whether the job may replace a file
-/// there: only the one that was confirmed (A§8.8; a file that appears later
-/// ends the job with `OutputAppeared`).
-fn checked_out(ctx: &Ctx, requested: &str, verb: &str) -> Result<(String, bool), CoreError> {
+/// the absolute path to write and the file there the job may replace: the
+/// one that was confirmed, by identity (A§8.8; a file that appears later,
+/// or takes its place, ends the job with `OutputAppeared`).
+fn checked_out(
+    ctx: &Ctx,
+    requested: &str,
+    verb: &str,
+) -> Result<(String, Option<FileId>), CoreError> {
     match &ctx.facts.out {
         Some(facts) => {
             if let Some(why) = &facts.forbidden {
@@ -218,12 +222,12 @@ fn checked_out(ctx: &Ctx, requested: &str, verb: &str) -> Result<(String, bool),
                     CoreError::confirmation_required(what).with_details(json!({ "files": [file] }))
                 );
             }
-            Ok((facts.abs.clone(), facts.exists))
+            Ok((facts.abs.clone(), facts.id.filter(|_| facts.exists)))
         }
         // The shell resolves every hand-picked path; without its facts the
         // path must at least be absolute (the CLI resolves it, A§10), and
-        // only a confirmed command may replace what is there.
-        None if requested.starts_with('/') => Ok((requested.to_owned(), ctx.confirmed)),
+        // nothing there is replaced: which file was confirmed isn't known.
+        None if requested.starts_with('/') => Ok((requested.to_owned(), None)),
         None => Err(CoreError::usage(format!(
             "--out must be an absolute path, got {requested:?}"
         ))),
@@ -377,6 +381,9 @@ mod tests {
         );
     }
 
+    const OUT_ID: FileId = FileId { dev: 2049, ino: 77 };
+    const PNG_ID: FileId = FileId { dev: 2049, ino: 78 };
+
     #[test]
     fn hand_picked_outputs() {
         let state = state();
@@ -385,6 +392,7 @@ mod tests {
             abs: "/home/me/v/takes/x.mp4".into(),
             exists: false,
             bytes: None,
+            id: None,
             forbidden: Some("it is inside takes/".into()),
         });
         let err = apply(&state, &ctx, export_cmd(Some("/home/me/v/takes/x.mp4"))).unwrap_err();
@@ -407,6 +415,7 @@ mod tests {
             abs: "/home/me/out.mp4".into(),
             exists: true,
             bytes: Some(415_500_000),
+            id: Some(OUT_ID),
             forbidden: None,
         });
         let err = apply(&state, &ctx, export_cmd(Some("/home/me/out.mp4"))).unwrap_err();
@@ -438,9 +447,10 @@ mod tests {
             render_plan(&out).stitch.argv.last().unwrap(),
             "file:/home/me/out.mp4"
         );
-        assert!(
+        assert_eq!(
             render_plan(&out).replace,
-            "the confirmed file may be replaced"
+            Some(OUT_ID),
+            "the confirmed file may be replaced, and no other"
         );
 
         // A file that doesn't exist yet was never confirmed: if one appears
@@ -451,10 +461,11 @@ mod tests {
                 abs: "/home/me/new.mp4".into(),
                 exists: false,
                 bytes: None,
+                id: None,
                 forbidden: None,
             });
             let out = apply(&state, &ctx, export_cmd(Some("/home/me/new.mp4"))).unwrap();
-            assert!(!render_plan(&out).replace);
+            assert_eq!(render_plan(&out).replace, None);
             let frame = Command::FrameSave {
                 at: "10f".parse().unwrap(),
                 layer: None,
@@ -463,14 +474,18 @@ mod tests {
             let out = apply(&state, &ctx, frame).unwrap();
             assert!(matches!(
                 &out.effects[..],
-                [Effect::SaveFrame { plan, .. }] if !plan.replace
+                [Effect::SaveFrame { plan, .. }] if plan.replace.is_none()
             ));
         }
-        assert!(!render_plan(&apply(&state, &ctx, export_cmd(None)).unwrap()).replace);
+        assert_eq!(
+            render_plan(&apply(&state, &ctx, export_cmd(None)).unwrap()).replace,
+            None
+        );
         ctx.facts.out = Some(OutFacts {
             abs: "/home/me/old.png".into(),
             exists: true,
             bytes: Some(12),
+            id: Some(PNG_ID),
             forbidden: None,
         });
         let frame = Command::FrameSave {
@@ -481,7 +496,8 @@ mod tests {
         let out = apply(&state, &ctx, frame).unwrap();
         assert!(matches!(
             &out.effects[..],
-            [Effect::SaveFrame { plan, .. }] if plan.replace && plan.out == "/home/me/old.png"
+            [Effect::SaveFrame { plan, .. }]
+                if plan.replace == Some(PNG_ID) && plan.out == "/home/me/old.png"
         ));
 
         ctx.facts.out = None;
@@ -491,7 +507,10 @@ mod tests {
                 .code,
             ErrorCode::Usage
         );
-        assert!(apply(&state, &ctx, export_cmd(Some("/tmp/out.mp4"))).is_ok());
+        // Without facts nothing says which file was confirmed: none is
+        // replaced (a file there ends the job with `OutputAppeared`).
+        let out = apply(&state, &ctx, export_cmd(Some("/tmp/out.mp4"))).unwrap();
+        assert_eq!(render_plan(&out).replace, None);
     }
 
     #[test]
@@ -657,6 +676,7 @@ mod tests {
             abs: "/home/me/f.png".into(),
             exists: true,
             bytes: Some(2_048),
+            id: Some(PNG_ID),
             forbidden: None,
         });
         let err = apply(&state, &ctx, save("0f", None, Some("/home/me/f.png"))).unwrap_err();
@@ -675,6 +695,7 @@ mod tests {
             panic!()
         };
         assert_eq!(plan.out, "/home/me/f.png");
+        assert_eq!(plan.replace, Some(PNG_ID), "the file that was confirmed");
     }
 
     /// Like an export, a frame save needs ffmpeg: without it the command is

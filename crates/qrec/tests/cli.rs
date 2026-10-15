@@ -1010,6 +1010,109 @@ fn an_out_that_appears_during_the_export_needs_confirmation() {
     assert_eq!(packets(&kept), "300", "the kept export is still there");
 }
 
+/// Every file in `dir` with its bytes.
+fn contents(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    names_in(dir)
+        .into_iter()
+        .map(|name| {
+            let bytes = fs::read(dir.join(&name)).unwrap_or_default();
+            (name, bytes)
+        })
+        .collect()
+}
+
+/// The `--out` folder swapped for a symlink into the project while the
+/// export renders (into the take folder, or the project folder itself)
+/// never leads the export there: the job holds the folder it started with
+/// open and writes only in it (A§5.9, A§8.8). With `--yes` over a decoy
+/// named like a recording, the export replaces the decoy in the folder,
+/// moved away by now, and says where it is; without `--yes` a new name
+/// lands there too; a folder deleted meanwhile fails the export. The
+/// recording, the take folder and `qrec.json` stay exactly as they were
+/// (SPEC §11).
+#[test]
+fn an_out_folder_swapped_for_a_link_during_the_export_never_reaches_the_project() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "swap", &[video(300)]);
+    let take = dir.join("takes/take-0001");
+    let recorded = contents(&take);
+    // Parsed: the first command may write the same project back in Qrec's
+    // own key order.
+    let project = || -> Value {
+        let text = fs::read_to_string(dir.join("qrec.json")).expect("qrec.json is text");
+        serde_json::from_str(&text).expect("qrec.json is JSON")
+    };
+    let project_file = project();
+    let segments = dir.join(".qrec/cache/segments");
+    let rendering = || {
+        fs::read_dir(&segments).is_ok_and(|entries| {
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().contains(".qrec-part-"))
+        })
+    };
+    // The name picked, where the link leads, --yes, and whether the folder
+    // is moved away (or deleted).
+    let cases = [
+        ("L1-screen-FAKE-1.mkv", &take, true, true),
+        ("qrec.json", &dir, true, false),
+        ("new.mp4", &take, false, true),
+    ];
+    for (n, (name, target, yes, moved_away)) in cases.into_iter().enumerate() {
+        let folder = env.root().join(format!("x{n}/out"));
+        let moved = env.root().join(format!("x{n}/moved"));
+        fs::create_dir_all(&folder).unwrap();
+        if yes {
+            fs::write(folder.join(name), "decoy").unwrap();
+        }
+        let out = folder.join(name).to_str().unwrap().to_owned();
+        let mut args = vec!["--json", "export", "--quality", "draft", "--out", &out];
+        if yes {
+            args.push("--yes");
+        }
+        // Each export renders: nothing cached.
+        let _ = fs::remove_dir_all(&segments);
+        let export = thread::scope(|scope| {
+            let job = scope.spawn(|| qrec(&env, &dir, &args));
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while !rendering() {
+                assert!(
+                    !job.is_finished() && Instant::now() < deadline,
+                    "the export never rendered a segment"
+                );
+                thread::sleep(Duration::from_millis(2));
+            }
+            if moved_away {
+                fs::rename(&folder, &moved).unwrap();
+            } else {
+                fs::remove_dir_all(&folder).unwrap();
+            }
+            symlink(target, &folder).unwrap();
+            job.join().unwrap()
+        });
+        assert_eq!(
+            contents(&take),
+            recorded,
+            "case {n}: the take folder is untouched"
+        );
+        assert_eq!(project(), project_file, "case {n}: qrec.json is untouched");
+        if moved_away {
+            export.ok();
+            let path = PathBuf::from(export.reply()["data"]["result"]["path"].as_str().unwrap());
+            assert_eq!(path, moved.join(name), "case {n}");
+            let probe = ffprobe(&path);
+            assert_eq!(probe["format"]["format_name"], "mov,mp4,m4a,3gp,3g2,mj2");
+        } else {
+            assert_eq!(export.code, Some(1), "case {n}: {export:?}");
+            let error = &export.reply()["error"];
+            assert!(
+                error["message"].as_str().unwrap().contains("was deleted"),
+                "case {n}: {error}"
+            );
+        }
+    }
+}
+
 #[test]
 fn frame_save_writes_a_png() {
     let env = TestEnv::new();

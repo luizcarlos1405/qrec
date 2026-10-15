@@ -632,7 +632,10 @@ fn record_phases_round_trip() {
 fn export_plan() -> ExportPlan {
     ExportPlan {
         out: "/home/me/exports/demo.mp4".into(),
-        replace: true,
+        replace: Some(qrec_core::ctx::FileId {
+            dev: 66_306,
+            ino: 1_234_567,
+        }),
         tmp_ext: "mp4".into(),
         segments: vec![SegmentPlan {
             clips: vec![clip("c7f3")],
@@ -775,7 +778,7 @@ fn effects_round_trip() {
             job: JobId(7),
             plan: FramePlan {
                 out: "/tmp/f.png".into(),
-                replace: false,
+                replace: None,
                 tmp_ext: "png".into(),
                 argv: vec!["ffmpeg".into()],
                 files: BTreeSet::new(),

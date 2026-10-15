@@ -11,10 +11,17 @@
 //!    fsynced and renamed into the cache (never replacing a file).
 //! 3. The stitch writes the concat list, joins the segments into a temp file
 //!    in the destination folder (`ExportStitchProgress`) and the result is
-//!    renamed into place without replacing anything but a confirmed
-//!    hand-picked path (`plan.replace`). A hand-picked path that appeared
-//!    meanwhile is left alone and the result is kept next to it as
+//!    renamed into place without replacing anything but the hand-picked
+//!    file the person confirmed (`plan.replace`). A hand-picked path that
+//!    appeared meanwhile is left alone and the result is kept next to it as
 //!    `<stem>-kept.<ext>`: `OutputAppeared` (A§8.8).
+//!
+//! The destination folder is opened when the job starts and checked
+//! against what an output may not touch (`takes/`, `.qrec/`, `qrec.json`,
+//! A§5.9) on the open folder itself, then again before the temp file is
+//! created and before the final rename; everything is written through that
+//! descriptor ([`place::OutDir`]). A folder on the `--out` path swapped for
+//! a symlink while the job runs leads nowhere new.
 //!
 //! A failure stops the other segments; a cancel stops everything. Either way
 //! the job's temp files are deleted (finished segments stay cached). A
@@ -30,6 +37,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
+use qrec_core::ctx::FileId;
 use qrec_core::export_plan::without_vaapi;
 use qrec_core::parse::progress::ProgressBlock;
 use qrec_core::plans::{ExportPlan, SegmentPlan};
@@ -37,10 +45,10 @@ use qrec_core::state::{Capabilities, FfmpegCaps};
 use qrec_core::{Event, JobId};
 
 use super::Ctx;
-use super::child::{self, Ended, Finished, Spec, Stderr, Stdout};
-use super::jobs::JobCtl;
+use super::child::{self, Ended, Finished, OUTPUT_FD_PATH, Spec, Stderr, Stdout};
+use super::jobs::{JobCtl, Temp};
 use super::logs::{LogFile, TAIL_LINES};
-use super::place::{self, Destination, PlaceError, rename_noreplace, temp_path};
+use super::place::{self, Destination, OutDir, PlaceError, TempOut, rename_noreplace, temp_path};
 use super::verify;
 use crate::msg::Inbox;
 use crate::paths::path_text;
@@ -60,9 +68,14 @@ pub(crate) enum Failure {
     /// A segment of a VA-API plan failed (a `Failed`): the export can be
     /// re-planned with libx264.
     VaSegment(Box<Failure>),
-    /// The hand-picked `out` appeared while the job ran and may not be
-    /// replaced: the result was kept at `kept` (A§8.8).
-    Appeared { out: PathBuf, kept: PathBuf },
+    /// The hand-picked `out` appeared while the job ran (`bytes` is what is
+    /// there now) and may not be replaced: the result was kept at `kept`
+    /// (A§8.8).
+    Appeared {
+        out: PathBuf,
+        bytes: u64,
+        kept: PathBuf,
+    },
 }
 
 impl Failure {
@@ -123,7 +136,7 @@ pub(crate) fn run(
                     stderr_tail: Vec::new(),
                     log: String::new(),
                 },
-                Failure::Appeared { out, kept } => appeared(job, &out, &kept),
+                Failure::Appeared { out, bytes, kept } => appeared(job, &out, bytes, &kept),
             }
         }
     }
@@ -131,11 +144,11 @@ pub(crate) fn run(
 
 /// `OutputAppeared` for a hand-picked output that appeared while the job
 /// ran; the core turns it into `confirmation_required` naming both paths.
-pub(crate) fn appeared(job: JobId, out: &Path, kept: &Path) -> Event {
+pub(crate) fn appeared(job: JobId, out: &Path, bytes: u64, kept: &Path) -> Event {
     Event::OutputAppeared {
         job,
         out: path_text(out),
-        bytes: fs::symlink_metadata(out).map(|m| m.len()).unwrap_or(0),
+        bytes,
         kept: path_text(kept),
     }
 }
@@ -305,15 +318,32 @@ fn export(
     if ctl.is_cancelled() {
         return Err(Failure::Cancelled);
     }
-    match place::place(&tmp, &dest) {
+    let bytes = tmp.file.metadata().map(|m| m.len()).unwrap_or(0);
+    let path = finish(ctx, ctl, &log, &tmp, &dest)?;
+    log.note(&format!("exported {} ({bytes} bytes)", path.display()));
+    Ok((path, bytes))
+}
+
+/// The last step of an export or frame save: the destination folder is
+/// checked once more ([`landing`]), then the temp file is renamed into
+/// place in it (A§8.8). Returns where the output is.
+pub(crate) fn finish(
+    ctx: &Ctx,
+    ctl: &JobCtl,
+    log: &LogFile,
+    tmp: &TempOut,
+    dest: &Destination,
+) -> Result<PathBuf, Failure> {
+    landing(ctx, dest).map_err(|m| Failure::plain(m, log))?;
+    match place::place(&tmp.name, dest) {
         Ok(path) => {
-            ctl.forget_temp(&tmp);
-            let bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            log.note(&format!("exported {} ({bytes} bytes)", path.display()));
-            Ok((path, bytes))
+            ctl.forget_temp(temp_of(tmp));
+            Ok(path)
         }
-        Err(PlaceError::Appeared { out, kept }) => Err(kept_aside(ctl, &log, &tmp, out, kept)),
-        Err(e) => Err(Failure::plain(e.to_string(), &log)),
+        Err(PlaceError::Appeared { out, bytes, kept }) => {
+            Err(kept_aside(ctl, log, tmp, out, bytes, kept))
+        }
+        Err(e) => Err(Failure::plain(e.to_string(), log)),
     }
 }
 
@@ -321,21 +351,80 @@ fn export(
 /// `tmp` to `kept` (`<stem>-kept.<ext>`, or still `tmp` if it couldn't be
 /// moved), which is no longer a temp file of the job, and the job ends with
 /// `Appeared`.
-pub(crate) fn kept_aside(
+fn kept_aside(
     ctl: &JobCtl,
     log: &LogFile,
-    tmp: &Path,
+    tmp: &TempOut,
     out: PathBuf,
+    bytes: u64,
     kept: PathBuf,
 ) -> Failure {
-    ctl.forget_temp(tmp);
-    ctl.forget_temp(&kept);
+    ctl.forget_temp(temp_of(tmp));
     log.note(&format!(
         "{} appeared meanwhile; the result was kept as {}",
         out.display(),
         kept.display()
     ));
-    Failure::Appeared { out, kept }
+    Failure::Appeared { out, bytes, kept }
+}
+
+/// The job's record of `tmp`, deleted through its folder.
+fn temp_of(tmp: &TempOut) -> Temp {
+    Temp::In(tmp.dir.clone(), tmp.name.clone())
+}
+
+/// The job's temp output in the destination's folder (A§8.8), once the
+/// folder passed [`landing`]: a new file there (never one that was there,
+/// nor through a symlink), deleted if the job doesn't finish.
+pub(crate) fn temp_out(
+    ctx: &Ctx,
+    ctl: &JobCtl,
+    job: JobId,
+    dest: &Destination,
+    ext: &str,
+    log: &LogFile,
+) -> Result<TempOut, Failure> {
+    landing(ctx, dest).map_err(|m| Failure::plain(m, log))?;
+    let stem = place::file_stem(Path::new(dest.name()));
+    let tmp = TempOut::create(dest.dir(), &stem, job, ext).map_err(|e| {
+        Failure::plain(
+            format!(
+                "can't create a temp file in {}: {e}",
+                path_text(&dest.dir().location())
+            ),
+            log,
+        )
+    })?;
+    ctl.add_temp(temp_of(&tmp));
+    Ok(tmp)
+}
+
+/// Whether the job may write its output into the destination's folder now
+/// (A§5.9 on the open folder, A§8.8): not when the folder is, or lies in,
+/// `takes/` or `.qrec/`, nor when the output would be the project file,
+/// however a path led there (a folder swapped for a symlink after the
+/// command was checked) or wherever the folder has moved since.
+pub(crate) fn landing(ctx: &Ctx, dest: &Destination) -> Result<(), String> {
+    let dir = dest.dir();
+    let Some(real) = dir.real_path() else {
+        return Err(format!("the folder {} was deleted", path_text(dir.named())));
+    };
+    let entry = dir.entry(dest.name()).ok().flatten().map(|(id, _)| id);
+    let Some(why) =
+        crate::facts::why_landing_forbidden(ctx.root(), &dir.chain(), &real, dest.name(), entry)
+    else {
+        return Ok(());
+    };
+    let path = dest.path();
+    if dir.location() == dir.named() {
+        Err(format!("can't write {}: {why}", path_text(&path)))
+    } else {
+        Err(format!(
+            "can't write {}: its folder is {} now, and {why}",
+            path_text(&path),
+            path_text(&real)
+        ))
+    }
 }
 
 /// Renders the pending units on at most `max_parallel` threads. The first
@@ -534,7 +623,7 @@ fn stitch(
     plan: &ExportPlan,
     dest: &Destination,
     out: &Inbox,
-) -> Result<PathBuf, Failure> {
+) -> Result<TempOut, Failure> {
     let argv = &plan.stitch.argv;
     let log = ctx
         .open_log(&ctx.job_log_base(job, "stitch"), argv)
@@ -550,19 +639,15 @@ fn stitch(
         job,
         out_time_ns: 0,
     });
-    let dir = dest
-        .path()
-        .parent()
-        .ok_or_else(|| Failure::plain(format!("bad output path {}", plan.out), &log))?;
     let ext = if plan.tmp_ext.is_empty() {
         extension(&plan.out, "mp4")
     } else {
         plan.tmp_ext.clone()
     };
-    let tmp = temp_path(dir, &place::file_stem(dest.path()), job, &ext);
-    ctl.add_temp(tmp.clone());
-    let args = with_file(argv, &tmp).map_err(|m| Failure::plain(m, &log))?;
-    log.note(&format!("stitching to {}", path_text(&tmp)));
+    let tmp = temp_out(ctx, ctl, job, dest, &ext, &log)?;
+    // ffmpeg writes the temp file through its own descriptor 3 (A§8.8).
+    let args = with_file(argv, Path::new(OUTPUT_FD_PATH)).map_err(|m| Failure::plain(m, &log))?;
+    log.note(&format!("stitching to {}", path_text(&tmp.shown())));
 
     let progress_out = out.clone();
     let on_block = move |block: &ProgressBlock| {
@@ -576,6 +661,7 @@ fn stitch(
     let done = child::run(
         Spec::new(&args, Stderr::Log(log.file()))
             .cwd(ctx.root())
+            .output(&tmp.file)
             .stdout(Stdout::Progress(Box::new(on_block)))
             .stall(ctx.options.stall_timeout)
             .stop(&ctl.stop)
@@ -586,13 +672,13 @@ fn stitch(
     ctl.forget_temp(&list);
     stopped(ctl, &done)?;
     check_ffmpeg(&done, "stitch", &log)?;
-    match fs::metadata(&tmp) {
+    match tmp.file.metadata() {
         Ok(meta) if meta.len() > 0 => {}
         _ => return Err(Failure::step("stitch: ffmpeg wrote no output", &log)),
     }
     // "Your video is ready" must survive a crash right after it.
-    fs::File::open(&tmp)
-        .and_then(|f| f.sync_all())
+    tmp.file
+        .sync_all()
         .map_err(|e| Failure::plain(format!("can't sync the export: {e}"), &log))?;
     Ok(tmp)
 }
@@ -616,30 +702,46 @@ fn write_list(ctl: &JobCtl, job: JobId, list: &Path, content: &str) -> io::Resul
 }
 
 /// The output's destination: hand-picked paths are absolute (A§5.9), auto
-/// names are project-relative (`exports/…`, `frames/…`). `replace` is the
-/// plan's: whether the person confirmed replacing the file at a hand-picked
-/// path (never guessed from what is there when the job starts).
-pub(crate) fn destination(ctx: &Ctx, out: &str, replace: bool) -> Result<Destination, String> {
+/// names are project-relative (`exports/…`, `frames/…`). Its folder is
+/// opened now, for the whole job ([`OutDir`]), and must pass [`landing`].
+/// `replace` is the plan's: the file at a hand-picked path the person
+/// confirmed replacing (never guessed from what is there when the job
+/// starts).
+pub(crate) fn destination(
+    ctx: &Ctx,
+    out: &str,
+    replace: Option<FileId>,
+) -> Result<Destination, String> {
     let path = Path::new(out);
-    if path.is_absolute() {
+    let not_a_file = || format!("{out} is not a file path");
+    let (folder, name) = if path.is_absolute() {
         let parent = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
-            .ok_or_else(|| format!("{out} is not a file path"))?;
-        if !parent.is_dir() {
-            return Err(format!("the folder {} doesn't exist", path_text(parent)));
-        }
-        Ok(Destination::Chosen {
-            path: path.to_path_buf(),
-            replace,
-        })
+            .ok_or_else(not_a_file)?;
+        (
+            parent.to_path_buf(),
+            path.file_name().ok_or_else(not_a_file)?,
+        )
     } else {
         let abs = ctx.project.resolve(out).map_err(|e| e.message)?;
-        if let Some(dir) = abs.parent() {
-            fs::create_dir_all(dir).map_err(|e| format!("can't create {}: {e}", path_text(dir)))?;
-        }
-        Ok(Destination::Auto(abs))
-    }
+        let dir = abs.parent().ok_or_else(not_a_file)?.to_path_buf();
+        fs::create_dir_all(&dir).map_err(|e| format!("can't create {}: {e}", path_text(&dir)))?;
+        (dir, path.file_name().ok_or_else(not_a_file)?)
+    };
+    let dir = OutDir::open(&folder).map_err(|e| match e.raw_os_error() {
+        Some(libc::ENOENT) => format!("the folder {} doesn't exist", path_text(&folder)),
+        Some(libc::ENOTDIR) => format!("{} is not a folder", path_text(&folder)),
+        _ => format!("can't open the folder {}: {e}", path_text(&folder)),
+    })?;
+    let name = name.to_os_string();
+    let dest = if path.is_absolute() {
+        Destination::Chosen { dir, name, replace }
+    } else {
+        Destination::Auto { dir, name }
+    };
+    landing(ctx, &dest)?;
+    Ok(dest)
 }
 
 /// A project-relative path from a plan, joined with the project dir.

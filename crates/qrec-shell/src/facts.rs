@@ -16,6 +16,7 @@
 //! fills in).
 
 use std::collections::{HashSet, VecDeque};
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
@@ -25,7 +26,7 @@ use std::time::SystemTime;
 use qrec_core::TakeId;
 use qrec_core::config::UserConfig;
 use qrec_core::ctx::{
-    AudioDeviceInfo, CameraInfo, Facts, FactsNeeded, FileFact, OutFacts, ScreenInfo,
+    AudioDeviceInfo, CameraInfo, Facts, FactsNeeded, FileFact, FileId, OutFacts, ScreenInfo,
 };
 use qrec_core::model::PROJECT_FILE;
 use serde_json::Value;
@@ -453,9 +454,10 @@ fn mtime_ns(meta: &fs::Metadata) -> i64 {
 }
 
 /// What is at a hand-picked output path (A§5.9): its absolute form,
-/// whether something is there (and its size: what an overwrite loses), and
-/// why it can't be used ([`why_forbidden`]). A relative path is taken
-/// relative to the project folder.
+/// whether something is there (its size: what an overwrite loses; its
+/// identity: the one file a confirmed overwrite may replace), and why it
+/// can't be used ([`why_forbidden`]). A relative path is taken relative to
+/// the project folder.
 ///
 /// The path means what the OS says it means: `abs` keeps its `..`
 /// components (only `.` goes), the job writes exactly that path, and the
@@ -486,8 +488,33 @@ pub fn out_facts(project_root: &Path, out: &str) -> OutFacts {
         // (a symlink there is replaced, not its target), like
         // `OutputAppeared` reports it.
         bytes: meta.as_ref().map(fs::Metadata::len),
+        id: meta.as_ref().map(|m| FileId {
+            dev: m.dev(),
+            ino: m.ino(),
+        }),
         forbidden: why_forbidden(project_root, out, &abs),
     }
+}
+
+/// Why a job may not write `name` in a folder it holds open, if it may not
+/// (A§5.9, checked again when the job writes, A§8.8). The folder is known
+/// by `chain`, its identity and those of the folders above it (walked
+/// through `..` from its descriptor: where it really is, whatever a path to
+/// it leads to by now), and by `real`, its path now. Refused: the folder
+/// is, or lies in, `takes/` or `.qrec/` (by identity, by path, or as one of
+/// their folders found through symlinks or bind mounts); `name` in the
+/// project folder is `qrec.json`, `takes` or `.qrec`; `entry`, what the
+/// final rename would replace there, is the project file or a file a
+/// symlink in `takes/` or `.qrec/` leads to.
+pub(crate) fn why_landing_forbidden(
+    project_root: &Path,
+    chain: &[FileId],
+    real: &Path,
+    name: &OsStr,
+    entry: Option<FileId>,
+) -> Option<String> {
+    let chain: Vec<(u64, u64)> = chain.iter().map(|id| (id.dev, id.ino)).collect();
+    Protected::find(project_root).why_landing(&chain, real, name, entry.map(|id| (id.dev, id.ino)))
 }
 
 /// Why `abs` (`out` made absolute) can't be an output, if it can't (A§5.9):
@@ -657,6 +684,39 @@ impl Protected {
         } else {
             None
         }
+    }
+
+    /// [`why_landing_forbidden`]: `chain` holds the open folder's identity
+    /// and those above it, `real` is its path now, `entry` the identity of
+    /// what the final rename would replace in it.
+    fn why_landing(
+        &self,
+        chain: &[(u64, u64)],
+        real: &Path,
+        name: &OsStr,
+        entry: Option<(u64, u64)>,
+    ) -> Option<String> {
+        // In the project folder (however it is reached) a name means what
+        // it means there: `qrec.json`, `takes`, `.qrec`.
+        let in_root = real == self.root
+            || chain
+                .first()
+                .is_some_and(|id| identity(&self.root) == Some(*id));
+        let place = if in_root {
+            self.root.join(name)
+        } else {
+            real.join(name)
+        };
+        let is = |p: &Place| place == p.path || (entry.is_some() && p.id == entry);
+        if self.project_file.iter().any(is) {
+            return Some("that is the project file, qrec.json".to_owned());
+        }
+        let within =
+            |p: &Place| place.starts_with(&p.path) || p.id.is_some_and(|id| chain.contains(&id));
+        self.areas
+            .iter()
+            .find(|area| area.dirs.iter().any(within) || area.files.iter().any(is))
+            .map(|area| area.why.to_owned())
     }
 }
 

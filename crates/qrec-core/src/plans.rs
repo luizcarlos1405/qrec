@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::ctx::CameraMode;
+use crate::ctx::{CameraMode, FileId};
 use crate::ids::{ClipId, Frame, LayerId, TakeId, TrackId};
 use crate::layout::Placement;
 use crate::model::{Canvas, Fps, Scene, VideoSource};
@@ -24,7 +24,7 @@ pub struct ExportPlan {
     pub out: String,
     /// See [`FramePlan::replace`].
     #[serde(default)]
-    pub replace: bool,
+    pub replace: Option<FileId>,
     /// Extension of the temp output (`.<stem>.qrec-part-<pid>-<job>.<ext>`).
     pub tmp_ext: String,
     pub segments: Vec<SegmentPlan>,
@@ -76,13 +76,15 @@ pub struct FramePlan {
     /// project-relative auto name (`exports/…`, `frames/…`) that the runner
     /// bumps with `-2`, `-3`, … instead of overwriting (A§8.8).
     pub out: String,
-    /// The runner may replace a file at `out` only when this is set: a
-    /// hand-picked path that existed when the person confirmed the command
-    /// (A§5.9). Otherwise nothing at `out` is ever replaced: an auto name
-    /// moves on to `-2`, `-3`, …, and a hand-picked path that appeared while
-    /// the job ran ends it with `OutputAppeared`, the result kept (A§8.8).
+    /// The file at `out` the runner may replace, by identity: set only for
+    /// a hand-picked path that existed when the person confirmed the
+    /// command (A§5.9), and only that very file is replaced. Otherwise
+    /// nothing at `out` is ever replaced: an auto name moves on to `-2`,
+    /// `-3`, …, and a hand-picked path that appeared (or now holds another
+    /// file) while the job ran ends it with `OutputAppeared`, the result
+    /// kept (A§8.8).
     #[serde(default)]
-    pub replace: bool,
+    pub replace: Option<FileId>,
     /// Extension of the temp output (`png`).
     pub tmp_ext: String,
     /// The ffmpeg argv; the output path is the last element.

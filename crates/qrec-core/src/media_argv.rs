@@ -149,9 +149,14 @@ pub fn output_args(muxer: &str, path: &str) -> Vec<String> {
     vec!["-f".to_owned(), muxer.to_owned(), file_arg(path)]
 }
 
-/// `-f image2 -update 1 file:<path>`: one PNG (no `%d` pattern).
+/// `-c:v png -f image2 -update 1 file:<path>`: one PNG (no `%d` pattern).
+/// The encoder is named: image2 would pick it from the file's extension,
+/// and the runner hands ffmpeg its temp output as `/proc/self/fd/3`, which
+/// has none (A§8.8).
 pub fn png_output_args(path: &str) -> Vec<String> {
     vec![
+        "-c:v".to_owned(),
+        "png".to_owned(),
         "-f".to_owned(),
         "image2".to_owned(),
         "-update".to_owned(),
@@ -334,8 +339,17 @@ mod tests {
     fn outputs_end_with_the_path() {
         assert_eq!(output_args("mov", "a b.mov"), ["-f", "mov", "file:a b.mov"]);
         assert_eq!(
-            png_output_args("frames/x.png").last().unwrap(),
-            "file:frames/x.png"
+            png_output_args("frames/x.png"),
+            [
+                "-c:v",
+                "png",
+                "-f",
+                "image2",
+                "-update",
+                "1",
+                "file:frames/x.png"
+            ],
+            "the encoder is named, never guessed from the output's name"
         );
         let check = vaapi_check_argv("/dev/dri/renderD129");
         assert_eq!(check[0], "ffmpeg");

@@ -21,6 +21,8 @@ expression: render_argv(&plan.argv)
   [v]
   -frames:v
   1
+  -c:v
+  png
   -f
   image2
   -update
