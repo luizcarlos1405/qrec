@@ -236,9 +236,14 @@ impl Run {
 }
 
 fn run(fake: &mut Fake, cwd: &Path, line: &str) -> Run {
+    run_in(fake, Some(cwd), line)
+}
+
+/// [`run`] from `cwd`; `None` = a current directory that was deleted.
+fn run_in(fake: &mut Fake, cwd: Option<&Path>, line: &str) -> Run {
     let args: Vec<OsString> = line.split_whitespace().map(OsString::from).collect();
     let env = RunEnv {
-        cwd: Some(cwd.to_path_buf()),
+        cwd: cwd.map(Path::to_path_buf),
         err_tty: false,
     };
     let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -1585,6 +1590,62 @@ fn the_host_command_gets_an_absolute_project() {
         (fake.hosted[0].1.lock_fd, fake.hosted[0].1.ready_fd),
         (Some(3), Some(4))
     );
+}
+
+/// SPEC §10.2, A§8.4: an absolute `--project` names the folder, so a
+/// deleted current directory doesn't matter; only what is relative to it
+/// (no `--project`, a relative `--project` or `--out`) is refused, and the
+/// hint never asks for the `--project` that was passed.
+#[test]
+fn an_absolute_project_works_without_a_current_directory() {
+    let tmp = Tmp::new();
+    let project = tmp.project("p");
+    let mut fake = Fake::new(&tmp.dir("cfg"));
+    let line = format!("qrec --json --project {} clip list", project.display());
+    let listed = run_in(&mut fake, None, &line);
+    assert_eq!(listed.code, 0, "{}{}", listed.out, listed.err);
+    assert_eq!(fake.seen.last().unwrap().dir, project);
+
+    let out = tmp.0.join("x.mp4");
+    let export = format!(
+        "qrec --json --project {} export --out {}",
+        project.display(),
+        out.display()
+    );
+    let exported = run_in(&mut fake, None, &export);
+    assert_eq!(exported.code, 0, "{}{}", exported.out, exported.err);
+    assert_eq!(
+        fake.seen.last().unwrap().body["command"]["out"],
+        json!(out.to_str().unwrap())
+    );
+    // The hidden host command too.
+    let hosted = format!(
+        "qrec host --headless --project {}/./ --lock-fd 3 --ready-fd 4",
+        project.display()
+    );
+    assert_eq!(run_in(&mut fake, None, &hosted).code, 0);
+    assert_eq!(fake.hosted.last().unwrap().0, project);
+
+    let seen = fake.seen.len();
+    let refused = |fake: &mut Fake, line: &str, flag: &str| {
+        let run = run_in(fake, None, line);
+        assert_eq!(run.code, 1, "{line}: {}{}", run.out, run.err);
+        let error = &run.json()["error"];
+        assert_eq!(error["code"], "io", "{line}");
+        let hint = error["hint"].as_str().unwrap();
+        assert!(
+            hint.contains(&format!("absolute {flag}")),
+            "{line}: {error}"
+        );
+    };
+    refused(&mut fake, "qrec --json clip list", "--project");
+    refused(&mut fake, "qrec --json --project p clip list", "--project");
+    let relative_out = format!(
+        "qrec --json --project {} export --out x.mp4",
+        project.display()
+    );
+    refused(&mut fake, &relative_out, "--out");
+    assert_eq!(fake.seen.len(), seen, "nothing refused was sent");
 }
 
 #[test]

@@ -15,6 +15,7 @@
 //! screens and cameras through hooks the media owner's `sources` module
 //! fills in).
 
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
@@ -31,7 +32,7 @@ use serde_json::Value;
 
 use crate::capture::fake::fake_inventory;
 use crate::media::is_temp_name;
-use crate::paths::{NAME_MAX, ProjectPaths};
+use crate::paths::{NAME_MAX, ProjectPaths, path_text};
 use crate::proc::{self, Limit, PACTL_TIMEOUT, Spec};
 
 // ------------------------------------------------------------------ sources
@@ -452,19 +453,13 @@ fn mtime_ns(meta: &fs::Metadata) -> i64 {
 
 /// What is at a hand-picked output path (A§5.9): its absolute form,
 /// whether something is there (and its size: what an overwrite loses), and
-/// why it can't be used (inside `takes/` or `.qrec/`, `qrec.json` itself,
-/// a directory, a name too long or in the shape of Qrec's temp files,
-/// which host start deletes). A relative path is taken relative to the
-/// project folder.
+/// why it can't be used ([`why_forbidden`]). A relative path is taken
+/// relative to the project folder.
 ///
 /// The path means what the OS says it means: `abs` keeps its `..`
 /// components (only `.` goes), the job writes exactly that path, and the
-/// checks run on where the kernel resolves it. `link/..` is the parent of
-/// the link's *target*, never lexically the folder holding `link`.
-/// Symlinks are followed for the check, so a link into `takes/` is refused
-/// too, and so is a path into `takes/`, `.qrec/` or `qrec.json` when those
-/// are themselves symlinks (media moved to another disk): see
-/// [`why_forbidden`].
+/// checks run where the kernel resolves it. `link/..` is the parent of the
+/// link's *target*, never lexically the folder holding `link`.
 pub fn out_facts(project_root: &Path, out: &str) -> OutFacts {
     let given = Path::new(out);
     let joined = if given.is_absolute() {
@@ -472,80 +467,281 @@ pub fn out_facts(project_root: &Path, out: &str) -> OutFacts {
     } else {
         project_root.join(given)
     };
-    // `components` drops `.` (and repeated or trailing slashes), not `..`.
+    // `components` drops `.` (and repeated or trailing slashes), not `..`;
+    // `out` still says whether the path names a folder (`folder_marker`).
     let abs: PathBuf = joined.components().collect();
     let meta = fs::symlink_metadata(&abs).ok();
-    let mut candidates = vec![resolve_existing(&abs)];
-    // A (possibly dangling) symlink: where it points counts too. A relative
-    // target is relative to the folder the link is in, as the OS reads it.
-    if meta.as_ref().is_some_and(|m| m.file_type().is_symlink())
-        && let Ok(target) = fs::read_link(&abs)
-    {
-        let target = abs
-            .parent()
-            .map_or_else(|| target.clone(), |dir| dir.join(&target));
-        candidates.push(resolve_existing(&target));
-    }
-    let forbidden = candidates
-        .iter()
-        .find_map(|path| why_forbidden(project_root, path))
-        // The name the result gets (a symlink there is replaced): one in
-        // the temp shape would be swept as a stale temp (A§8.7).
-        .or_else(|| {
-            abs.file_name().filter(|name| is_temp_name(name)).map(|_| {
-                "its name has the shape of Qrec's temp files \
-                 (.<name>.qrec-part-<number>-<number>), which Qrec deletes"
-                    .to_owned()
-            })
-        });
     OutFacts {
-        abs: abs.to_string_lossy().into_owned(),
+        abs: path_text(&abs),
         exists: meta.is_some(),
         // What a confirmed overwrite replaces: the entry at `abs` itself
         // (a symlink there is replaced, not its target), like
         // `OutputAppeared` reports it.
         bytes: meta.as_ref().map(fs::Metadata::len),
-        forbidden,
+        forbidden: why_forbidden(project_root, out, &abs),
     }
 }
 
-/// Why `resolved` (a path as the kernel resolves it) can't be an output.
-///
-/// `takes/`, `.qrec/` and `qrec.json` are recognized by name under the
-/// project folder (even before they exist) and by identity (device and
-/// inode, symlinks followed): when one of them is a symlink (`takes/` moved
-/// to another disk) or bind mount, a resolved path never lies under its
-/// name, so every existing folder on the way to the output, and the output
-/// itself, is compared with them too.
-fn why_forbidden(project_root: &Path, resolved: &Path) -> Option<String> {
-    let inside = |dir: &str| resolved.starts_with(project_root.join(dir));
+/// Why `abs` (`out` made absolute) can't be an output, if it can't (A§5.9):
+/// its name is over 255 bytes; what the job touches ([`touched`]) is
+/// `qrec.json`, in `takes/` or `.qrec/` ([`Protected`]), the project folder
+/// or a directory; its name has the shape of Qrec's temp files, which host
+/// start deletes (A§8.7); `out` names a folder; or the path isn't UTF-8
+/// (the job is given it as text).
+fn why_forbidden(project_root: &Path, out: &str, abs: &Path) -> Option<String> {
     // Caught here, before rendering, instead of by the final rename.
-    let name_len = resolved.file_name().map_or(0, |n| n.len());
+    let name_len = abs.file_name().map_or(0, |n| n.len());
     if name_len > NAME_MAX {
         return Some(format!(
             "its file name is {name_len} bytes long, and file names can have at most {NAME_MAX}"
         ));
     }
-    let identity = |path: &Path| fs::metadata(path).ok().map(|m| (m.dev(), m.ino()));
-    let protected = |name: &str| identity(&project_root.join(name));
-    // The output and each existing folder above it.
-    let chain: Vec<(u64, u64)> = resolved.ancestors().filter_map(identity).collect();
-    let reaches = |name: &str| protected(name).is_some_and(|id| chain.contains(&id));
-    let is_project_file = resolved == project_root.join(PROJECT_FILE)
-        || protected(PROJECT_FILE).is_some_and(|id| identity(resolved) == Some(id));
-    if is_project_file {
-        Some("that is the project file, qrec.json".to_owned())
-    } else if inside("takes") || reaches("takes") {
-        Some("it is inside takes/, where recorded media lives".to_owned())
-    } else if inside(".qrec") || reaches(".qrec") {
-        Some("it is inside .qrec/, Qrec's own files".to_owned())
-    } else if resolved == project_root {
-        Some("it is the project folder".to_owned())
-    } else if fs::metadata(resolved).is_ok_and(|m| m.is_dir()) {
-        Some("it is a directory".to_owned())
-    } else {
-        None
+    let protected = Protected::find(project_root);
+    if let Some(why) = touched(abs).iter().find_map(|place| protected.why(place)) {
+        return Some(why);
     }
+    // The name the result gets (a symlink there is replaced): one in the
+    // temp shape would be swept as a stale temp (A§8.7).
+    if abs.file_name().is_some_and(is_temp_name) {
+        return Some(
+            "its name has the shape of Qrec's temp files \
+             (.<name>.qrec-part-<number>-<number>), which Qrec deletes"
+                .to_owned(),
+        );
+    }
+    if let Some(marker) = folder_marker(out) {
+        return Some(format!(
+            "it ends with '{marker}', so it names a folder, not a file"
+        ));
+    }
+    if abs.to_str().is_none() {
+        return Some("its path isn't valid UTF-8".to_owned());
+    }
+    None
+}
+
+/// How `out` names a folder, if it does: a trailing `/`, or a last part
+/// that is `.` or `..`. The OS never creates a file there (creating
+/// `dir/` fails with EISDIR), and neither does Qrec: without this check the
+/// trailing `/`, which `components` drops, would become a file `dir`.
+fn folder_marker(out: &str) -> Option<&'static str> {
+    match out.rsplit('/').next() {
+        Some("") => Some("/"),
+        Some(".") => Some("."),
+        Some("..") => Some(".."),
+        _ => None,
+    }
+}
+
+/// What a job writing `abs` touches, as the kernel resolves the path: the
+/// entry the final rename replaces or creates (its folder resolved, its own
+/// name kept; the temp file is written in that folder too) and, when that
+/// entry is a symlink, where the link leads (the link is what gets
+/// replaced, but a link into `takes/` is refused all the same).
+fn touched(abs: &Path) -> Vec<PathBuf> {
+    let entry = match (abs.parent(), abs.file_name()) {
+        (Some(dir), Some(name)) => resolve_existing(dir).join(name),
+        _ => resolve_existing(abs),
+    };
+    let is_link = fs::symlink_metadata(&entry).is_ok_and(|m| m.file_type().is_symlink());
+    let target = is_link.then(|| link_target(&entry));
+    std::iter::once(entry).chain(target).collect()
+}
+
+/// A file's identity: device and inode, symlinks followed.
+fn identity(path: &Path) -> Option<(u64, u64)> {
+    fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+
+/// How deep [`Area::find`] looks for folders and symlinks: Qrec's own
+/// deepest folder is `.qrec/cache/segments/` (depth 2).
+const PROTECTED_DEPTH: usize = 4;
+
+/// The most entries [`Area::find`] looks at in one area.
+const PROTECTED_ENTRIES: usize = 100_000;
+
+/// What an output may not touch (A§5.9): `qrec.json`, and `takes/` and
+/// `.qrec/` with everything in them. Each is known by name under the
+/// project folder (even before it exists) and by identity (`st_dev`,
+/// `st_ino`), and so is every folder found in `takes/` and `.qrec/` (a few
+/// levels deep, symlinks followed) and every file a symlink in them leads
+/// to. So a symlinked `takes/`, take folder, media file or `.qrec/cache`
+/// (media moved to another disk), or a bind mount of one of their folders,
+/// still guards what it holds, through the link or straight at its target.
+#[derive(Debug)]
+struct Protected {
+    root: PathBuf,
+    /// `qrec.json`, and where it leads when it is a symlink.
+    project_file: Vec<Place>,
+    /// `takes/`, then `.qrec/`.
+    areas: [Area; 2],
+}
+
+/// A protected folder or file: where it is (resolved as far as it exists)
+/// and its identity, when it exists.
+#[derive(Debug)]
+struct Place {
+    path: PathBuf,
+    id: Option<(u64, u64)>,
+}
+
+/// `takes/` or `.qrec/`: the folders in it (an output may not land in one)
+/// and the files its symlinks lead to (an output may not replace one). A
+/// regular file in a protected folder needs no entry of its own: its
+/// folder guards it.
+#[derive(Debug)]
+struct Area {
+    why: &'static str,
+    dirs: Vec<Place>,
+    files: Vec<Place>,
+}
+
+impl Protected {
+    fn find(root: &Path) -> Self {
+        let file = root.join(PROJECT_FILE);
+        let mut project_file = vec![Place {
+            id: identity(&file),
+            path: file.clone(),
+        }];
+        if fs::symlink_metadata(&file).is_ok_and(|m| m.file_type().is_symlink()) {
+            let target = link_target(&file);
+            project_file.push(Place {
+                id: identity(&target),
+                path: target,
+            });
+        }
+        Self {
+            root: root.to_path_buf(),
+            project_file,
+            areas: [
+                Area::find(
+                    &root.join("takes"),
+                    "it is inside takes/, where recorded media lives",
+                ),
+                Area::find(&root.join(".qrec"), "it is inside .qrec/, Qrec's own files"),
+            ],
+        }
+    }
+
+    /// Why an output may not touch `place` (a path as the kernel resolves
+    /// it), if it may not.
+    fn why(&self, place: &Path) -> Option<String> {
+        // The place and each existing folder above it.
+        let chain: Vec<(u64, u64)> = place.ancestors().filter_map(identity).collect();
+        let own = identity(place);
+        let is = |p: &Place| place == p.path || (p.id.is_some() && own == p.id);
+        let within =
+            |p: &Place| place.starts_with(&p.path) || p.id.is_some_and(|id| chain.contains(&id));
+        if self.project_file.iter().any(is) {
+            return Some("that is the project file, qrec.json".to_owned());
+        }
+        if let Some(area) = self
+            .areas
+            .iter()
+            .find(|area| area.dirs.iter().any(within) || area.files.iter().any(is))
+        {
+            return Some(area.why.to_owned());
+        }
+        if place == self.root {
+            Some("it is the project folder".to_owned())
+        } else if fs::metadata(place).is_ok_and(|m| m.is_dir()) {
+            Some("it is a directory".to_owned())
+        } else {
+            None
+        }
+    }
+}
+
+impl Area {
+    /// `top` (`takes/` or `.qrec/`) by name and by identity, then what is
+    /// in it: every folder (real or through a symlink, each looked into
+    /// once, [`PROTECTED_DEPTH`] levels deep) and every file a symlink leads
+    /// to. A dangling link is kept by where it points.
+    fn find(top: &Path, why: &'static str) -> Self {
+        let mut area = Area {
+            why,
+            dirs: vec![Place {
+                path: top.to_path_buf(),
+                id: identity(top),
+            }],
+            files: Vec::new(),
+        };
+        let resolved = link_target(top);
+        if resolved != top {
+            area.dirs.push(Place {
+                id: identity(&resolved),
+                path: resolved.clone(),
+            });
+        }
+        if !fs::metadata(&resolved).is_ok_and(|m| m.is_dir()) {
+            return area;
+        }
+        let mut seen: HashSet<(u64, u64)> = identity(&resolved).into_iter().collect();
+        let mut queue = VecDeque::from([(resolved, 0)]);
+        let mut budget = PROTECTED_ENTRIES;
+        while let Some((dir, depth)) = queue.pop_front() {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                if budget == 0 {
+                    tracing::warn!(
+                        "{} holds over {PROTECTED_ENTRIES} entries; outputs were checked against those",
+                        top.display()
+                    );
+                    return area;
+                }
+                budget -= 1;
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                let path = if kind.is_symlink() {
+                    link_target(&entry.path())
+                } else if kind.is_dir() {
+                    entry.path()
+                } else {
+                    continue;
+                };
+                match fs::metadata(&path) {
+                    Ok(meta) if meta.is_dir() => {
+                        let id = (meta.dev(), meta.ino());
+                        if seen.insert(id) {
+                            if depth + 1 < PROTECTED_DEPTH {
+                                queue.push_back((path.clone(), depth + 1));
+                            }
+                            area.dirs.push(Place { path, id: Some(id) });
+                        }
+                    }
+                    Ok(meta) => area.files.push(Place {
+                        path,
+                        id: Some((meta.dev(), meta.ino())),
+                    }),
+                    Err(_) => area.dirs.push(Place { path, id: None }),
+                }
+            }
+        }
+        area
+    }
+}
+
+/// Where the symlink at `path` leads, resolved as far as it exists (a
+/// dangling link still says where it points), hop by hop and at most 40
+/// hops, like the kernel. A path that isn't a symlink is just resolved.
+fn link_target(path: &Path) -> PathBuf {
+    let mut at = path.to_path_buf();
+    for _ in 0..40 {
+        if let Ok(full) = fs::canonicalize(&at) {
+            return full;
+        }
+        let Ok(target) = fs::read_link(&at) else {
+            break;
+        };
+        let dir = at
+            .parent()
+            .map_or_else(|| PathBuf::from("/"), resolve_existing);
+        at = resolve_existing(&dir.join(target));
+    }
+    resolve_existing(&at)
 }
 
 /// Where the OS finds `path`: its longest existing prefix resolved by the
@@ -984,5 +1180,132 @@ mod tests {
                 .unwrap_or("")
                 .contains("takes/")
         );
+    }
+
+    /// Links *below* `takes/` and `.qrec/` (one take folder moved to another
+    /// disk, one media file, `.qrec/cache`) guard what they lead to like the
+    /// folders themselves (A§5.9): through the link, where the path never
+    /// lies under the link's name once resolved, and straight at the
+    /// target. Otherwise a confirmed export replaces a recording, and an
+    /// unconfirmed one writes into a take folder (SPEC §11).
+    #[test]
+    fn links_below_takes_and_qrec_still_guard_what_they_hold() {
+        let (tmp, paths) = project_dir();
+        let root = paths.root().to_path_buf();
+        let disk = fs::canonicalize(tmp.path()).unwrap().join("disk");
+        fs::create_dir_all(&disk).unwrap();
+        let check = |out: &Path| out_facts(&root, &out.to_string_lossy());
+        let refused = |out: &Path, why: &str| {
+            let facts = check(out);
+            assert!(
+                facts.forbidden.as_deref().unwrap_or("").contains(why),
+                "{}: {facts:?}",
+                out.display()
+            );
+        };
+        let allowed = |out: &Path| {
+            let facts = check(out);
+            assert_eq!(facts.forbidden, None, "{}: {facts:?}", out.display());
+        };
+
+        // takes/take-0002 moved to another disk and linked back.
+        fs::write(root.join("takes/take-0002/L1-screen-FAKE-1.mkv"), "rec").unwrap();
+        fs::rename(root.join("takes/take-0002"), disk.join("take-0002")).unwrap();
+        symlink(disk.join("take-0002"), root.join("takes/take-0002")).unwrap();
+        refused(&root.join("takes/take-0002/L1-screen-FAKE-1.mkv"), "takes/");
+        refused(&root.join("takes/take-0002/new.mp4"), "takes/");
+        refused(&root.join("takes/take-0002/sub/new.mp4"), "takes/");
+        refused(Path::new("takes/take-0002/A1-mic.mka"), "takes/");
+        refused(&disk.join("take-0002/L1-screen-FAKE-1.mkv"), "takes/");
+        refused(&disk.join("take-0002/new.mp4"), "takes/");
+        allowed(&disk.join("beside.mp4"));
+
+        // One media file of a real take folder moved and linked back.
+        let take = root.join("takes/take-0007");
+        fs::write(disk.join("A1-mic.mka"), "audio").unwrap();
+        symlink(disk.join("A1-mic.mka"), take.join("A1-mic.mka")).unwrap();
+        refused(&take.join("A1-mic.mka"), "takes/");
+        refused(&disk.join("A1-mic.mka"), "takes/");
+        // A link at the output into it is refused too (it would be replaced,
+        // but it says where it leads).
+        let alias = disk.join("alias.mka");
+        symlink("A1-mic.mka", &alias).unwrap();
+        refused(&alias, "takes/");
+
+        // .qrec/cache moved and linked back; and a deeper link inside it.
+        let qrec = root.join(".qrec");
+        let cache = disk.join("cache2");
+        fs::create_dir_all(cache.join("silence")).unwrap();
+        symlink(&cache, qrec.join("cache")).unwrap();
+        let segments = disk.join("segs");
+        fs::create_dir_all(&segments).unwrap();
+        symlink(&segments, cache.join("segments")).unwrap();
+        refused(&qrec.join("cache/x.mp4"), ".qrec/");
+        refused(&qrec.join("cache/segments/x.mov"), ".qrec/");
+        refused(&cache.join("x.mp4"), ".qrec/");
+        refused(&cache.join("silence/x.json"), ".qrec/");
+        refused(&segments.join("x.mov"), ".qrec/");
+
+        // A take folder whose disk isn't there (a dangling link) still
+        // guards where it points.
+        symlink(
+            disk.join("unplugged/take-0009"),
+            root.join("takes/take-0009"),
+        )
+        .unwrap();
+        refused(&disk.join("unplugged/take-0009/x.mp4"), "takes/");
+        allowed(&disk.join("unplugged.mp4"));
+
+        // A loop of links is looked into once.
+        symlink("..", disk.join("take-0002/up")).unwrap();
+        refused(&disk.join("take-0002/new.png"), "takes/");
+        allowed(&root.join("exports/x.mp4"));
+    }
+
+    /// A path ending in `/`, `/.` or `/..` names a folder: refused
+    /// (`Invalid`) whether or not the folder exists, never written as a
+    /// file named like it.
+    #[test]
+    fn a_path_that_names_a_folder_is_refused() {
+        let (tmp, paths) = project_dir();
+        let root = paths.root().to_path_buf();
+        let outside = fs::canonicalize(tmp.path()).unwrap();
+        let why = |out: String| out_facts(&root, &out).forbidden.unwrap_or_default();
+        let at = |p: &str| format!("{}/{p}", outside.display());
+        assert!(why(at("newdir/")).contains("ends with '/'"));
+        assert!(why(at("newdir//")).contains("ends with '/'"));
+        assert!(why(at("newdir/.")).contains("ends with '.'"));
+        // `newdir/..` is the folder holding `newdir`, as the OS reads it.
+        assert!(why(at("newdir/..")).contains("directory"));
+        assert!(why(at("missing/new/..")).contains("names a folder"));
+        assert!(why("newdir/".to_owned()).contains("names a folder"));
+        fs::write(outside.join("final.webm"), "mine").unwrap();
+        assert!(why(at("final.webm/")).contains("names a folder"));
+        fs::create_dir(outside.join("existing")).unwrap();
+        assert!(why(at("existing/")).contains("directory"));
+        assert_eq!(why(at("file.mp4")), "");
+    }
+
+    /// The job is given the output path as text: in a project folder whose
+    /// path isn't UTF-8, a relative output (from the GUI or IPC) can't be
+    /// one, and is refused instead of written to a lossy look-alike.
+    #[test]
+    fn an_output_path_that_isnt_utf8_is_refused() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(tmp.path())
+            .unwrap()
+            .join(std::ffi::OsStr::from_bytes(b"pr\xffoj"));
+        fs::create_dir_all(root.join("takes")).unwrap();
+        let facts = out_facts(&root, "mine.mp4");
+        assert_eq!(
+            facts.forbidden.as_deref(),
+            Some("its path isn't valid UTF-8")
+        );
+        assert!(facts.abs.ends_with(r"pr\xFFoj/mine.mp4"), "{}", facts.abs);
+        let inside = out_facts(&root, "takes/x.mp4");
+        assert!(inside.forbidden.unwrap().contains("takes/"));
+        let outside = tmp.path().join("out.mp4");
+        assert_eq!(out_facts(&root, &outside.to_string_lossy()).forbidden, None);
     }
 }

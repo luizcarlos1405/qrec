@@ -46,17 +46,15 @@ pub(crate) fn execute(
     let g = &cli.global;
     let mut ui = Ui::new(out, err, g.json, g.quiet, g.verbose, env.err_tty);
     backend.logging(g.verbose, g.quiet);
-    // Plans only use the directory for `--out`; a project command without
-    // one fails below.
-    let planned = plan::plan(cli, env.cwd.as_deref().unwrap_or(Path::new("/")));
+    // A deleted current directory only matters for what is relative to it:
+    // `--out`, `--project`, or no `--project` at all.
+    let planned = plan::plan(cli, env.cwd.as_deref());
     let result = match planned {
         Err(e) => Err(e),
         Ok(Plan::Gui) => Err(CoreError::unavailable(GUI_NOT_BUILT)),
         Ok(Plan::Local(local)) => run_local(&local, cli, backend, env, &mut ui),
-        Ok(Plan::Project(plan)) => match env.cwd.as_deref() {
-            Some(cwd) => Ok(run_project(&plan, cli, cwd, backend, &mut ui)),
-            None => Err(no_cwd()),
-        },
+        Ok(Plan::Project(plan)) => project_dir(cli, env.cwd.as_deref())
+            .map(|(dir, explicit)| run_project(&plan, &dir, explicit, backend, &mut ui)),
     };
     let code = match result {
         Ok(code) => code,
@@ -72,7 +70,19 @@ pub(crate) fn version_data() -> Value {
 
 fn no_cwd() -> CoreError {
     CoreError::io("can't read the current directory (was it deleted?)")
-        .with_hint("cd into an existing folder, or pass --project DIR")
+        .with_hint("cd into an existing folder, or pass an absolute --project DIR")
+}
+
+/// The folder a project command starts from (A§8.4) and whether it came
+/// from `--project`: that folder, made absolute against the current
+/// directory, else the current directory. An absolute `--project` needs no
+/// current directory (it may have been deleted).
+fn project_dir(cli: &Cli, cwd: Option<&Path>) -> Result<(PathBuf, bool), CoreError> {
+    match (&cli.global.project, cwd) {
+        (Some(dir), cwd) => plan::absolute_from(cwd, dir, "--project").map(|dir| (dir, true)),
+        (None, Some(cwd)) => Ok((cwd.to_path_buf(), false)),
+        (None, None) => Err(no_cwd()),
+    }
 }
 
 // --------------------------------------------------------------- project-less
@@ -210,12 +220,7 @@ fn run_local(
             }
         }
         Local::Host(args) => {
-            let project = match (&cli.global.project, env.cwd.as_deref()) {
-                (Some(dir), Some(cwd)) => plan::absolute(cwd, dir),
-                (Some(dir), None) if dir.is_absolute() => dir.clone(),
-                (None, Some(cwd)) => cwd.to_path_buf(),
-                _ => return Err(no_cwd()),
-            };
+            let (project, _) = project_dir(cli, env.cwd.as_deref())?;
             return backend.host(&project, args);
         }
     }
@@ -285,22 +290,18 @@ impl Events for Live<'_, '_, '_> {
     }
 }
 
+/// Runs a project command from `dir` ([`project_dir`]; `explicit` when it
+/// came from `--project`).
 fn run_project(
     plan: &ProjectPlan,
-    cli: &Cli,
-    cwd: &Path,
+    dir: &Path,
+    explicit: bool,
     backend: &mut dyn Backend,
     ui: &mut Ui<'_>,
 ) -> u8 {
-    let explicit = cli
-        .global
-        .project
-        .as_deref()
-        .map(|p| plan::absolute(cwd, p));
-    let dir = explicit.clone().unwrap_or_else(|| cwd.to_path_buf());
     // `--project` names the folder; `qrec init` acts on the folder itself.
-    let allow_host_fallback = explicit.is_none() && plan.host_fallback;
-    let resolved = match resolve::resolve(&dir, allow_host_fallback, || backend.live_hosts()) {
+    let allow_host_fallback = !explicit && plan.host_fallback;
+    let resolved = match resolve::resolve(dir, allow_host_fallback, || backend.live_hosts()) {
         Ok(resolved) => resolved,
         Err(e) => return ui.fail(&e),
     };

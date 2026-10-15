@@ -236,6 +236,26 @@ fn io_error(what: String, e: &io::Error) -> CoreError {
     CoreError::io(format!("{what}: {e}"))
 }
 
+/// `path` as text for people and JSON (replies, hints, logs): its exact
+/// bytes when they are UTF-8. Otherwise each byte that isn't is written as
+/// `\xHH` (and a `\` as `\\`), so the text still names one file: a lossy
+/// `�` would name a folder that doesn't exist (a project folder whose path
+/// isn't UTF-8, A§4.9).
+pub fn path_text(path: &Path) -> String {
+    let bytes = path.as_os_str().as_bytes();
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_owned();
+    }
+    let mut text = String::with_capacity(bytes.len() + 8);
+    for chunk in bytes.utf8_chunks() {
+        text.push_str(&chunk.valid().replace('\\', r"\\"));
+        for byte in chunk.invalid() {
+            text.push_str(&format!(r"\x{byte:02X}"));
+        }
+    }
+    text
+}
+
 /// `<runtime>/<sha256 hex of the canonical project dir>.sock` (A§8.2).
 ///
 /// `canonical_project_dir` must already be canonical (`fs::canonicalize`),
@@ -732,5 +752,20 @@ mod tests {
         ] {
             assert!(p.resolve(bad).is_err(), "{bad:?} was accepted");
         }
+    }
+
+    /// Paths as text: exact when UTF-8, escaped byte by byte when not, so
+    /// two different folders never read the same (a lossy `�` would).
+    #[test]
+    fn paths_as_text_lose_nothing() {
+        assert_eq!(
+            path_text(Path::new("/v/my vídeo/a.mp4")),
+            "/v/my vídeo/a.mp4"
+        );
+        assert_eq!(path_text(Path::new(r"/v/back\slash")), r"/v/back\slash");
+        let odd = Path::new(OsStr::from_bytes(b"/tmp/pr\xffoj/\xc3(\\/x.mp4"));
+        assert_eq!(path_text(odd), r"/tmp/pr\xFFoj/\xC3(\\/x.mp4");
+        let other = Path::new(OsStr::from_bytes(b"/tmp/pr\xfeoj/\xc3(\\/x.mp4"));
+        assert_ne!(path_text(odd), path_text(other));
     }
 }

@@ -1497,6 +1497,301 @@ fn a_symlinked_takes_folder_still_guards_the_recordings() {
     assert!(path.starts_with(dir.join("exports")), "{}", path.display());
 }
 
+/// The sorted names in `dir`.
+fn names_in(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
+/// Runs `args` and asserts an `invalid` refusal (exit 1) whose message
+/// says why: never a confirmation that `--yes` would turn into an
+/// overwrite.
+#[track_caller]
+fn refused_out(env: &TestEnv, dir: &Path, args: &[&str], why: &str) {
+    let out = qrec(env, dir, args);
+    assert_eq!(out.code, Some(1), "{args:?}: {out:?}");
+    let error = &out.only_reply()["error"];
+    assert_eq!(error["code"], "invalid", "{args:?}: {error}");
+    assert!(
+        error["message"].as_str().unwrap().contains(why),
+        "{args:?}: {error}"
+    );
+}
+
+/// Links *below* `takes/` and `.qrec/` guard the recordings too (A§5.9):
+/// a take folder or a media file moved to another disk and linked back,
+/// or a linked `.qrec/cache`. An `--out` through the link or straight at
+/// its target is refused (`invalid`, exit 1), with or without `--yes`, so
+/// no export or frame replaces a recording or lands among its files
+/// (SPEC §11).
+#[test]
+fn links_below_takes_and_qrec_still_guard_the_recordings() {
+    let env = TestEnv::new();
+    let disk = env.root().join("disk");
+    fs::create_dir(&disk).unwrap();
+
+    // One take folder moved to another disk and linked back.
+    let dir = project_with(&env, "take-linked", &[video(30)]);
+    fs::rename(dir.join("takes/take-0001"), disk.join("take-0001")).unwrap();
+    symlink(disk.join("take-0001"), dir.join("takes/take-0001")).unwrap();
+    let media = disk.join("take-0001/L1-screen-FAKE-1.mkv");
+    let recorded = fs::read(&media).unwrap();
+    let files = names_in(&disk.join("take-0001"));
+    let direct = disk.join("take-0001/L1-screen-FAKE-1.mkv");
+    let new_png = disk.join("take-0001/new.png");
+    for args in [
+        &[
+            "--json",
+            "export",
+            "--out",
+            "takes/take-0001/L1-screen-FAKE-1.mkv",
+        ][..],
+        &[
+            "--json",
+            "--yes",
+            "export",
+            "--out",
+            "takes/take-0001/L1-screen-FAKE-1.mkv",
+        ],
+        &["--json", "export", "--out", "takes/take-0001/new.mp4"],
+        &[
+            "--json",
+            "frame",
+            "save",
+            "--at",
+            "3f",
+            "--out",
+            "takes/take-0001/A1-mic.mka",
+        ],
+        &[
+            "--json",
+            "--yes",
+            "export",
+            "--out",
+            direct.to_str().unwrap(),
+        ],
+        &[
+            "--json",
+            "frame",
+            "save",
+            "--at",
+            "3f",
+            "--out",
+            new_png.to_str().unwrap(),
+        ],
+    ] {
+        refused_out(&env, &dir, args, "inside takes/");
+    }
+    assert_eq!(
+        fs::read(&media).unwrap(),
+        recorded,
+        "the recording is untouched"
+    );
+    assert_eq!(
+        names_in(&disk.join("take-0001")),
+        files,
+        "nothing was added"
+    );
+    let beside = disk.join("beside.mp4");
+    qrec(
+        &env,
+        &dir,
+        &[
+            "--json",
+            "export",
+            "--quality",
+            "draft",
+            "--out",
+            beside.to_str().unwrap(),
+        ],
+    )
+    .ok();
+    assert!(beside.is_file(), "next to the moved take is fine");
+
+    // One media file of a take moved to another disk and linked back.
+    let dir = project_with(&env, "file-linked", &[video(30)]);
+    let moved = disk.join("A1-mic.mka");
+    fs::rename(dir.join("takes/take-0001/A1-mic.mka"), &moved).unwrap();
+    symlink(&moved, dir.join("takes/take-0001/A1-mic.mka")).unwrap();
+    let audio = fs::read(&moved).unwrap();
+    for args in [
+        &[
+            "--json",
+            "--yes",
+            "export",
+            "--out",
+            "takes/take-0001/A1-mic.mka",
+        ][..],
+        &[
+            "--json",
+            "--yes",
+            "export",
+            "--out",
+            moved.to_str().unwrap(),
+        ],
+        &[
+            "--json",
+            "--yes",
+            "frame",
+            "save",
+            "--at",
+            "3f",
+            "--out",
+            moved.to_str().unwrap(),
+        ],
+    ] {
+        refused_out(&env, &dir, args, "inside takes/");
+    }
+    assert_eq!(fs::read(&moved).unwrap(), audio);
+    assert!(dir.join("takes/take-0001/A1-mic.mka").is_symlink());
+
+    // .qrec/cache moved and linked back.
+    let dir = project_with(&env, "cache-linked", &[video(30)]);
+    let cache = disk.join("cache2");
+    fs::create_dir(&cache).unwrap();
+    let _ = fs::remove_dir_all(dir.join(".qrec/cache"));
+    fs::create_dir_all(dir.join(".qrec")).unwrap();
+    symlink(&cache, dir.join(".qrec/cache")).unwrap();
+    let straight = cache.join("y.mp4");
+    for args in [
+        &["--json", "export", "--out", ".qrec/cache/x.mp4"][..],
+        &["--json", "export", "--out", straight.to_str().unwrap()],
+    ] {
+        refused_out(&env, &dir, args, "inside .qrec/");
+    }
+    assert!(!cache.join("x.mp4").exists() && !straight.exists());
+    // Exports still use the cache through the link.
+    qrec(&env, &dir, &["--json", "export", "--quality", "draft"]).ok();
+    assert!(!names_in(&cache.join("segments")).is_empty());
+}
+
+/// Whether this machine lets an unprivileged user mount in a namespace of
+/// its own (`unshare -rm`).
+fn unshare_works() -> bool {
+    std::process::Command::new("unshare")
+        .args(["-rm", "true"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// A bind mount of one take folder, with no symlink anywhere, is known by
+/// identity (A§5.9): an `--out` through the mount is refused even with
+/// `--yes`, and the recording is untouched. Runs in a mount namespace
+/// (`unshare -rm`), so nothing is mounted outside the test; skipped where
+/// unprivileged user namespaces are off.
+#[test]
+fn a_bind_mounted_take_folder_still_guards_the_recordings() {
+    if !unshare_works() {
+        eprintln!("skipped: `unshare -rm` isn't allowed here");
+        return;
+    }
+    let env = TestEnv::new();
+    let dir = project_with(&env, "bound", &[video(30)]);
+    let mount = env.root().join("bm");
+    fs::create_dir(&mount).unwrap();
+    let take = dir.join("takes/take-0001");
+    let media = take.join("L1-screen-FAKE-1.mkv");
+    let recorded = fs::read(&media).unwrap();
+    let files = names_in(&take);
+    for (args, out) in [
+        (
+            &["--json", "--yes", "export", "--out"][..],
+            "L1-screen-FAKE-1.mkv",
+        ),
+        (&["--json", "export", "--out"], "new.mp4"),
+        (
+            &["--json", "frame", "save", "--at", "3f", "--out"],
+            "new.png",
+        ),
+    ] {
+        let mut command = env.command(Path::new("unshare"));
+        command
+            .current_dir(&dir)
+            .args([
+                "-rm",
+                "sh",
+                "-c",
+                r#"mount --bind "$1" "$2" && shift 2 && exec "$@""#,
+            ])
+            .arg("sh")
+            .arg(&take)
+            .arg(&mount)
+            .arg(qrec_bin())
+            .args(args)
+            .arg(mount.join(out));
+        let run = run_tool(&mut command, Duration::from_secs(120));
+        let stdout = String::from_utf8(run.stdout).unwrap();
+        assert_eq!(run.status.code(), Some(1), "{out}: {stdout}{}", run.stderr);
+        let reply: Value = serde_json::from_str(stdout.lines().last().unwrap()).unwrap();
+        assert_eq!(reply["error"]["code"], "invalid", "{reply}");
+        assert!(
+            reply["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("inside takes/"),
+            "{reply}"
+        );
+    }
+    assert_eq!(fs::read(&media).unwrap(), recorded);
+    assert_eq!(names_in(&take), files);
+}
+
+/// `--out dir/` names a folder (A§5.9): refused (`invalid`), whether the
+/// folder exists or not, for exports and frame saves; no file named like
+/// the folder appears.
+#[test]
+fn an_out_that_names_a_folder_is_refused() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "slash", &[video(30)]);
+    let newdir = env.root().join("newdir");
+    let with_slash = format!("{}/", newdir.display());
+    let with_dot = format!("{}/.", newdir.display());
+    refused_out(
+        &env,
+        &dir,
+        &["--json", "export", "--out", &with_slash],
+        "names a folder",
+    );
+    refused_out(
+        &env,
+        &dir,
+        &["--json", "frame", "save", "--at", "3f", "--out", &with_dot],
+        "names a folder",
+    );
+    assert!(!newdir.exists(), "no file named like the folder");
+    // An existing file followed by `/` isn't that file.
+    let file = env.root().join("final.webm");
+    fs::write(&file, "mine").unwrap();
+    refused_out(
+        &env,
+        &dir,
+        &[
+            "--json",
+            "--yes",
+            "export",
+            "--out",
+            &format!("{}/", file.display()),
+        ],
+        "names a folder",
+    );
+    assert_eq!(fs::read_to_string(&file).unwrap(), "mine");
+    // An existing folder is a directory, as before.
+    fs::create_dir_all(dir.join("exports")).unwrap();
+    refused_out(
+        &env,
+        &dir,
+        &["--json", "export", "--out", "exports/"],
+        "directory",
+    );
+}
+
 /// Overwriting a hand-picked `--out` is confirmed knowing what is lost:
 /// the file and its size, in the message and in `details.files` (SPEC §11,
 /// A§4.8), for exports and frame saves alike.

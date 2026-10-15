@@ -5,8 +5,10 @@
 //! Pure apart from the current directory it is given: times and canvas
 //! specs are parsed with the core's grammars (`TimeArg`, `CanvasSpec`), so
 //! a bad value is a `usage` error (exit 2) with the core's hint, and
-//! `--out`/`--project` paths are made absolute against `cwd`.
+//! `--out`/`--project` paths are made absolute against `cwd` (when there is
+//! one: a deleted current directory only matters for a relative path).
 
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
 use qrec_core::protocol::{
@@ -119,8 +121,9 @@ pub enum View {
     Record,
 }
 
-/// Maps a parsed command line to its plan. `cwd` makes `--out` absolute.
-pub fn plan(cli: &Cli, cwd: &Path) -> Result<Plan, CoreError> {
+/// Maps a parsed command line to its plan. `cwd` makes `--out` absolute;
+/// `None` (the current directory can't be read) refuses only a relative one.
+pub fn plan(cli: &Cli, cwd: Option<&Path>) -> Result<Plan, CoreError> {
     let Some(command) = &cli.command else {
         return Ok(Plan::Gui);
     };
@@ -198,7 +201,7 @@ impl Builder {
         }
     }
 
-    fn project(&self, command: &Cmd, cwd: &Path) -> Result<ProjectPlan, CoreError> {
+    fn project(&self, command: &Cmd, cwd: Option<&Path>) -> Result<ProjectPlan, CoreError> {
         use View::Command as Msg;
         let plan = match command {
             // `init` acts on the folder itself, never on a running host's
@@ -635,7 +638,7 @@ impl Builder {
         plan
     }
 
-    fn export(&self, args: &ExportArgs, cwd: &Path) -> Result<ProjectPlan, CoreError> {
+    fn export(&self, args: &ExportArgs, cwd: Option<&Path>) -> Result<ProjectPlan, CoreError> {
         if let Some(ExportCmd::Cancel) = &args.command {
             return Ok(self.command(
                 "export cancel",
@@ -729,16 +732,49 @@ pub fn absolute(cwd: &Path, path: &Path) -> PathBuf {
     out
 }
 
-/// An output path for the core: absolute (A§5.9) and UTF-8.
-fn out_path(cwd: &Path, path: &Path) -> Result<String, CoreError> {
-    let abs = absolute(cwd, path);
-    abs.to_str().map(str::to_owned).ok_or_else(|| {
+/// [`absolute`] when the current directory is known (`cwd`). Without it
+/// (it was deleted) an absolute `path` still works, and a relative one is
+/// an `io` error naming `flag` (`--project`, `--out`).
+pub fn absolute_from(cwd: Option<&Path>, path: &Path, flag: &str) -> Result<PathBuf, CoreError> {
+    match cwd {
+        Some(cwd) => Ok(absolute(cwd, path)),
+        None if path.is_absolute() => Ok(absolute(Path::new("/"), path)),
+        None => Err(CoreError::io(format!(
+            "{flag} {} is relative, and the current directory can't be read (was it deleted?)",
+            path.display()
+        ))
+        .with_hint(format!(
+            "pass an absolute {flag} path, or cd into an existing folder"
+        ))),
+    }
+}
+
+/// An output path for the core: absolute (A§5.9) and UTF-8. A path that
+/// names a folder (it ends with `/` or `/.`, which [`absolute`] drops) keeps
+/// a trailing `/`, so the host refuses it like any folder (A§5.9) instead
+/// of writing a file named like the folder.
+fn out_path(cwd: Option<&Path>, path: &Path) -> Result<String, CoreError> {
+    let abs = absolute_from(cwd, path, "--out")?;
+    let mut text = abs.to_str().map(str::to_owned).ok_or_else(|| {
         CoreError::usage(format!(
             "the output path {} is not valid UTF-8",
             abs.display()
         ))
         .with_hint("pick a file name made of UTF-8 text")
-    })
+    })?;
+    if names_a_folder(path) && !text.ends_with('/') {
+        text.push('/');
+    }
+    Ok(text)
+}
+
+/// Whether `path` names a folder by its shape, as the OS reads it: it
+/// ends with `/` or its last part is `.` (POSIX: a file can't be created
+/// as `dir/`). A last `..` is kept by [`absolute`] as it is.
+fn names_a_folder(path: &Path) -> bool {
+    let bytes = path.as_os_str().as_bytes();
+    let last = bytes.rsplit(|&b| b == b'/').next().unwrap_or_default();
+    matches!(last, b"" | b".")
 }
 
 #[cfg(test)]
@@ -758,7 +794,7 @@ mod tests {
     }
 
     fn project_plan(line: &str) -> ProjectPlan {
-        match plan(&cli(line), Path::new("/work/dir")) {
+        match plan(&cli(line), Some(Path::new("/work/dir"))) {
             Ok(Plan::Project(plan)) => plan,
             other => panic!("`{line}` planned {other:?}"),
         }
@@ -775,7 +811,7 @@ mod tests {
 
     #[test]
     fn local_commands_need_no_project() {
-        let local = |line| match plan(&cli(line), Path::new("/")) {
+        let local = |line| match plan(&cli(line), Some(Path::new("/"))) {
             Ok(Plan::Local(local)) => local,
             other => panic!("`{line}` planned {other:?}"),
         };
@@ -798,7 +834,7 @@ mod tests {
             }
         );
         assert!(matches!(local("qrec host --headless"), Local::Host(_)));
-        assert_eq!(plan(&cli("qrec"), Path::new("/")), Ok(Plan::Gui));
+        assert_eq!(plan(&cli("qrec"), Some(Path::new("/"))), Ok(Plan::Gui));
     }
 
     #[test]
@@ -853,7 +889,7 @@ mod tests {
             "qrec init --canvas 1920x1080@abc",
             "qrec project set --canvas big",
         ] {
-            let err = plan(&cli(line), Path::new("/")).unwrap_err();
+            let err = plan(&cli(line), Some(Path::new("/"))).unwrap_err();
             assert_eq!(err.code, ErrorCode::Usage, "{line}");
             assert!(err.hint.is_some(), "{line}: the core's hint is kept");
         }
@@ -1213,5 +1249,54 @@ mod tests {
         assert_eq!(absolute(cwd, Path::new("../c")), Path::new("/a/b/../c"));
         assert_eq!(absolute(cwd, Path::new("/x/./y")), Path::new("/x/y"));
         assert_eq!(absolute(cwd, Path::new(".")), Path::new("/a/b"));
+    }
+
+    /// `--out dir/` names a folder (A§5.9): the `/` that `absolute` drops is
+    /// kept, so the host refuses it instead of writing a file `dir`.
+    #[test]
+    fn an_out_that_names_a_folder_keeps_its_slash() {
+        let cwd = Some(Path::new("/a/b"));
+        let out = |p: &str| out_path(cwd, Path::new(p)).unwrap();
+        assert_eq!(out("new/"), "/a/b/new/");
+        assert_eq!(out("/x/new//"), "/x/new/");
+        assert_eq!(out("new/."), "/a/b/new/");
+        assert_eq!(out("."), "/a/b/");
+        assert_eq!(out("new/.."), "/a/b/new/..");
+        assert_eq!(out("new.mp4"), "/a/b/new.mp4");
+        assert_eq!(out("./new.mp4"), "/a/b/new.mp4");
+        assert_eq!(out("/"), "/");
+    }
+
+    /// A deleted current directory (`cwd` `None`) only matters for a
+    /// relative path; the error names the flag and the way out.
+    #[test]
+    fn without_a_current_directory_only_relative_paths_fail() {
+        assert_eq!(
+            out_path(None, Path::new("/x/./v.mp4")),
+            Ok("/x/v.mp4".to_owned())
+        );
+        assert_eq!(
+            absolute_from(None, Path::new("/p/./q"), "--project"),
+            Ok(PathBuf::from("/p/q"))
+        );
+        let err = out_path(None, Path::new("v.mp4")).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Io);
+        assert!(
+            err.message.starts_with("--out v.mp4 is relative"),
+            "{err:?}"
+        );
+        assert!(
+            err.hint.as_deref().unwrap().contains("absolute --out"),
+            "{err:?}"
+        );
+        let planned = plan(&cli("qrec export --out v.mp4"), None).unwrap_err();
+        assert_eq!(planned.code, ErrorCode::Io);
+        match plan(&cli("qrec export --out /tmp/v.mp4"), None) {
+            Ok(Plan::Project(plan)) => assert_eq!(
+                serde_json::to_value(&plan.request.body).unwrap()["command"]["out"],
+                "/tmp/v.mp4"
+            ),
+            other => panic!("{other:?}"),
+        }
     }
 }
