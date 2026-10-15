@@ -489,8 +489,9 @@ fn a_failed_open_frees_the_lock() {
     assert!(opened[0].mutating && opened[0].host == HostKind::Gui && !opened[0].recovery);
 }
 
-/// D-12: the window sends what ends the job, then closes; the host stops
-/// accepting at once and exits once the job is over.
+/// A CLI's job runs when the window closes: the host stops accepting at
+/// once (nothing of the window's was queued before the close) and exits
+/// once the job is over.
 #[test]
 fn close_stops_accepting_and_exits_once_quiet() {
     let f = fixture();
@@ -556,6 +557,273 @@ fn close_gives_up_after_the_grace() {
     assert!(took >= Duration::from_millis(600), "{took:?}");
     assert!(took < Duration::from_secs(5), "{took:?}");
     assert_eq!(job.reply()["ok"], false, "its client hears it ended");
+    assert!(f.released(), "the lock was released");
+}
+
+/// A responder that holds the session thread in `accepted` until the test
+/// lets it go (at most 10 s), so what the test queues meanwhile is
+/// certainly behind it.
+struct Held {
+    gate: Mutex<std::sync::mpsc::Receiver<()>>,
+    then: Box<dyn Responder>,
+}
+
+impl Held {
+    fn wrap(then: Box<dyn Responder>) -> (std::sync::mpsc::Sender<()>, Box<dyn Responder>) {
+        let (go, gate) = std::sync::mpsc::channel();
+        let held = Held {
+            gate: Mutex::new(gate),
+            then,
+        };
+        (go, Box::new(held))
+    }
+}
+
+impl Responder for Held {
+    fn accepted(&mut self) {
+        let _ = self
+            .gate
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(10));
+        self.then.accepted();
+    }
+
+    fn progress(&mut self, p: &Progress) {
+        self.then.progress(p);
+    }
+
+    fn reply(&mut self, r: Result<Value, CoreError>) {
+        self.then.reply(r);
+    }
+}
+
+/// The close takes the window's FIFO: requests the window submitted just
+/// before closing (D-12's "send what ends it, then close"; a debounced
+/// `SetUi` and a `Seek` flushed as it closes) all run and are answered
+/// first. The close used to skip every request after the one the Session
+/// was handling: the host saw the close after that one and exited.
+#[test]
+fn close_comes_after_what_the_window_submitted() {
+    let f = fixture();
+    let (host, port) = f.start(f.spec(quick_rules()));
+    let opener = FakeOpener::default();
+    host.open(Box::new(opener.clone()));
+    assert!(port.wait_host(Duration::from_secs(5), |e| *e == HostEvent::Opened));
+    let replies = Replies::default();
+    let (go, a) = Held::wrap(replies.responder());
+    assert!(host.submit(Request::query(Query::ClipList), a));
+    assert!(host.submit(Request::query(Query::Keys), replies.responder()));
+    let set_ui = Command::SetUi {
+        patch: UiPatch {
+            bin_open: Some(true),
+            ..UiPatch::default()
+        },
+    };
+    assert!(host.submit(Request::command(set_ui.clone(), false), replies.responder()));
+    host.close();
+    go.send(()).unwrap();
+    assert_eq!(
+        port.wait_stopped(Duration::from_secs(5)),
+        Some(HostEnd::Closed)
+    );
+    assert_eq!(
+        bodies(&opener),
+        [
+            body(WireBody::Query(Query::ClipList)),
+            body(WireBody::Query(Query::Keys)),
+            body(WireBody::Command(set_ui)),
+        ]
+    );
+    let all = replies.all();
+    assert_eq!(all.len(), 3, "{all:?}");
+    assert!(all.iter().all(Result::is_ok), "{all:?}");
+    assert!(f.released(), "the lock was released");
+}
+
+/// Every request of the window hears back once, also one the Session never
+/// handled because the host stopped first (here a signal ends it while the
+/// request is still queued): `submit` said it was delivered, so its
+/// responder must not wait forever.
+#[test]
+fn requests_the_session_never_handled_hear_why() {
+    let f = fixture();
+    let interrupts = Interrupts::new();
+    let mut spec = f.spec(quick_rules());
+    spec.interrupts = Some(interrupts.clone());
+    let (host, port) = f.start(spec);
+    let opener = FakeOpener::default();
+    host.open(Box::new(opener.clone()));
+    assert!(port.wait_host(Duration::from_secs(5), |e| *e == HostEvent::Opened));
+    let replies = Replies::default();
+    let (go, a) = Held::wrap(replies.responder());
+    assert!(host.submit(Request::query(Query::ClipList), a));
+    let late = Replies::default();
+    assert!(host.submit(Request::query(Query::Keys), late.responder()));
+    interrupts.raise();
+    assert!(wait_for(Duration::from_secs(5), || host
+        .ctl
+        .signalled_at()
+        .is_some()));
+    go.send(()).unwrap();
+    assert_eq!(
+        port.wait_stopped(Duration::from_secs(5)),
+        Some(HostEnd::Signal)
+    );
+    assert_eq!(bodies(&opener), [body(WireBody::Query(Query::ClipList))]);
+    assert_eq!(replies.all().len(), 1);
+    let heard = late.all();
+    assert_eq!(heard.len(), 1, "exactly one answer: {heard:?}");
+    let err = heard[0].as_ref().unwrap_err();
+    assert_eq!((err.code, err.message.as_str()), (ErrorCode::Io, CLOSING));
+}
+
+/// A Session that takes long to drop (its capture engine shutting down).
+struct SlowDrop {
+    inner: Box<dyn HostSession>,
+    dropping: Arc<AtomicBool>,
+    gate: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl HostSession for SlowDrop {
+    fn inbox(&self) -> crate::msg::Inbox {
+        self.inner.inbox()
+    }
+
+    fn run_until(&mut self, done: &mut dyn FnMut(&State) -> bool) {
+        self.inner.run_until(done);
+    }
+
+    fn state(&self) -> &State {
+        self.inner.state()
+    }
+}
+
+impl Drop for SlowDrop {
+    fn drop(&mut self) {
+        self.dropping.store(true, Ordering::SeqCst);
+        let _ = self
+            .gate
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(10));
+    }
+}
+
+struct SlowDropOpener {
+    dropping: Arc<AtomicBool>,
+    gate: Option<std::sync::mpsc::Receiver<()>>,
+}
+
+impl Opener for SlowDropOpener {
+    fn open(
+        &mut self,
+        dir: &Path,
+        opts: OpenOpts,
+        lock: Option<crate::host::SessionLock>,
+    ) -> Result<Box<dyn HostSession>, crate::error::ShellError> {
+        Ok(Box::new(SlowDrop {
+            inner: FakeOpener::default().open(dir, opts, lock)?,
+            dropping: Arc::clone(&self.dropping),
+            gate: Mutex::new(self.gate.take().expect("opened once")),
+        }))
+    }
+}
+
+/// While the stopping host drops its Session (seconds, for a capture
+/// engine), the window's requests are refused at once with why, instead
+/// of queueing into a Session that is going away.
+#[test]
+fn requests_while_the_session_drops_are_refused_at_once() {
+    let f = fixture();
+    let (host, port) = f.start(f.spec(quick_rules()));
+    let dropping = Arc::new(AtomicBool::new(false));
+    let (go, gate) = std::sync::mpsc::channel();
+    host.open(Box::new(SlowDropOpener {
+        dropping: Arc::clone(&dropping),
+        gate: Some(gate),
+    }));
+    assert!(port.wait_host(Duration::from_secs(5), |e| *e == HostEvent::Opened));
+    host.close();
+    assert!(wait_for(Duration::from_secs(5), || dropping.load(Ordering::SeqCst)));
+    let refused = Replies::default();
+    let delivered = host.submit(Request::query(Query::ClipList), refused.responder());
+    let heard = refused.all();
+    go.send(()).unwrap();
+    assert!(!delivered, "not delivered");
+    assert_eq!(heard.len(), 1, "answered at once: {heard:?}");
+    let err = heard[0].as_ref().unwrap_err();
+    assert_eq!(err.message, CLOSING);
+    assert_eq!(
+        port.wait_stopped(Duration::from_secs(5)),
+        Some(HostEnd::Closed)
+    );
+    assert_eq!(refused.all().len(), 1, "and only once");
+}
+
+/// The close grace is a limit, also while a crashed take's Recover probe
+/// is out (a long take on a slow disk): the Session stops waiting for it
+/// (`Msg::Abandon`) and the host goes, freeing the project; the next open
+/// recovers the take. The probe used to hold the hidden host until it
+/// answered, the lock with it.
+#[test]
+fn the_close_grace_ends_a_recovery_hold() {
+    let f = fixture();
+    let rules = ExitRules {
+        close_grace: Duration::from_millis(500),
+        ..quick_rules()
+    };
+    let (host, port) = f.start(f.spec(rules));
+    let opener = FakeOpener {
+        recovering: true,
+        ..FakeOpener::default()
+    };
+    host.open(Box::new(opener.clone()));
+    assert!(port.wait_host(Duration::from_secs(5), |e| *e == HostEvent::Opened));
+    let closed = Instant::now();
+    host.close();
+    assert_eq!(
+        port.wait_stopped(Duration::from_secs(5)),
+        Some(HostEnd::Closed)
+    );
+    let took = closed.elapsed();
+    assert!(took >= Duration::from_millis(500), "{took:?}");
+    assert!(opener.log.names().contains(&"abandon".to_owned()));
+    assert!(f.released(), "the lock was released");
+}
+
+/// D-12: closing the window drops an autocut analysis (S12's dry run, `c`):
+/// the host goes at once instead of waiting for it, and dropping the
+/// Session cancels it. The window's request for it hears why.
+#[test]
+fn close_drops_autocut_analyses() {
+    let f = fixture();
+    let rules = ExitRules {
+        close_grace: Duration::from_secs(30),
+        ..quick_rules()
+    };
+    let (host, port) = f.start(f.spec(rules));
+    let opener = FakeOpener::default();
+    host.open(Box::new(opener.clone()));
+    let analysis = Replies::default();
+    assert!(host.submit(
+        Request::command(export_ms("ms:30000:autocut"), false),
+        analysis.responder()
+    ));
+    assert!(wait_for(Duration::from_secs(5), || opener
+        .log
+        .names()
+        .contains(&"job".to_owned())));
+    let closed = Instant::now();
+    host.close();
+    assert_eq!(
+        port.wait_stopped(Duration::from_secs(5)),
+        Some(HostEnd::Closed)
+    );
+    assert!(closed.elapsed() < Duration::from_secs(5));
+    assert!(!opener.log.names().contains(&"jobDone".to_owned()));
+    assert_eq!(analysis.all().len(), 1, "{:?}", analysis.all());
+    assert!(analysis.all()[0].is_err());
     assert!(f.released(), "the lock was released");
 }
 
@@ -724,26 +992,81 @@ fn a_panic_on_the_session_thread_is_a_crash() {
     );
 }
 
-/// An error of the `first` request is toasted while the host runs: the
-/// window would otherwise show an empty swamp without saying why.
+/// An error of the `first` request is toasted while the host serves a
+/// Session: the window would otherwise show an empty swamp without saying
+/// why. Errors that only say the host ends aren't (its own event says why):
+/// any before a Session is attached, the refusal of a Session a signal
+/// interrupted, and any once the host is stopping.
 #[test]
-fn first_request_errors_are_toasted_while_the_host_runs() {
+fn first_request_errors_are_toasted_only_while_the_host_serves() {
     let port = Arc::new(FakePort::default());
     let stopping = Arc::new(AtomicBool::new(false));
+    let attached = Arc::new(AtomicBool::new(false));
+    let host = Arc::new(OnceLock::new());
+    let ctl = Arc::new(HostCtl::default());
     let mut first = FirstResponder {
         port: port.clone(),
         stopping: Arc::clone(&stopping),
+        attached: Arc::clone(&attached),
+        host: Arc::clone(&host),
     };
+    // Before a Session is attached: a server that failed or was dropped.
+    first.reply(Err(CoreError::io("the host is exiting")));
+    assert!(port.events().is_empty(), "{:?}", port.events());
+    let _ = host.set(Arc::clone(&ctl));
+    attached.store(true, Ordering::SeqCst);
     first.reply(Err(
         CoreError::io("can't write qrec.json: no space left").with_hint("free some space")
     ));
     first.reply(Err(CoreError::invalid("already a project")));
     first.reply(Ok(json!({})));
+    // The signal thread notes the signal before the Session hears it.
+    *ctl.signalled_at.lock().unwrap() = Some(Instant::now());
+    first.reply(Err(CoreError::busy(
+        "this Qrec host is stopping (it was interrupted), so init didn't run",
+    )));
+    *ctl.signalled_at.lock().unwrap() = None;
     stopping.store(true, Ordering::SeqCst);
     first.reply(Err(CoreError::busy("this Qrec host is stopping")));
     let toast = Toast::new(ToastLevel::Error, "can't write qrec.json: no space left")
         .with_body("free some space");
     assert_eq!(port.events(), [PortEvent::Toast(toast, false)]);
+}
+
+/// A start that fails after the IPC server started (a thread that can't
+/// start, a lock record that can't be written) drops the server, which
+/// answers the parked `first` with "the host is exiting": no toast, the
+/// window shows its can't-start page for the error `start` returns.
+#[test]
+fn a_start_that_fails_after_the_server_started_toasts_nothing() {
+    let f = fixture();
+    let port = Arc::new(FakePort::default());
+    let first = FirstResponder {
+        port: port.clone(),
+        stopping: Arc::new(AtomicBool::new(false)),
+        attached: Arc::new(AtomicBool::new(false)),
+        host: Arc::new(OnceLock::new()),
+    };
+    let init = Command::Init {
+        canvas: None,
+        name: None,
+    };
+    let host = Host::start_with(
+        HostKind::Gui,
+        ProjectPaths::new(&f.dir),
+        ProjectLock::try_acquire(&f.dir).unwrap().unwrap(),
+        &f.socket,
+        HostOptions::default(),
+        vec![Msg::Request {
+            req: Request::command(init, false),
+            to: Box::new(first),
+        }],
+    )
+    .unwrap();
+    // What `start` does when a step after `Host::start_with` fails.
+    drop(host);
+    assert!(f.released(), "the lock was released");
+    assert!(port.events().is_empty(), "{:?}", port.events());
 }
 
 #[test]
@@ -896,6 +1219,232 @@ fn a_signal_ends_a_gui_host_process_with_130() {
         "{events:#?}"
     );
     assert!(f.released());
+}
+
+// ------------------------------------------- a real Session, no capture
+
+/// The GUI host with a real `Session` but no GStreamer: no capture, and a
+/// media runner that never answers (an analysis or a probe still out).
+mod quiet_session {
+    use std::sync::mpsc;
+
+    use qrec_core::protocol::{AutocutOverrides, ClipScope, ProbeJob, ProbePurpose};
+    use qrec_core::state::SilenceKey;
+    use qrec_core::{JobId, TakeId};
+
+    use super::*;
+    use crate::deps::{Deps, MediaRunner, NoCapture, os_entropy, system_clock};
+    use crate::error::ShellError;
+    use crate::host::SessionLock;
+    use crate::msg::Inbox;
+    use crate::paths::UserDirs;
+    use crate::session::{Session, SessionConfig, SessionEnv};
+    use crate::store::testdata;
+    use crate::testkit::write_project;
+
+    /// Takes every job and never answers; remembers what it was asked.
+    #[derive(Clone, Default)]
+    struct SilentMedia(Arc<Mutex<Vec<String>>>);
+
+    impl SilentMedia {
+        fn calls(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+
+        fn asked(&self, prefix: &str) -> bool {
+            self.calls().iter().any(|c| c.starts_with(prefix))
+        }
+
+        fn push(&self, call: String) {
+            self.0.lock().unwrap().push(call);
+        }
+    }
+
+    impl MediaRunner for SilentMedia {
+        fn probe(&mut self, take: TakeId, purpose: ProbePurpose, _: Vec<ProbeJob>, _: Inbox) {
+            self.push(format!("probe {take} {purpose:?}"));
+        }
+
+        fn detect_silence(&mut self, job: JobId, _: SilenceKey, _: Vec<String>, _: Inbox) {
+            self.push(format!("silence {job}"));
+        }
+
+        fn render_export(&mut self, job: JobId, _: qrec_core::plans::ExportPlan, _: Inbox) {
+            self.push(format!("export {job}"));
+        }
+
+        fn save_frame(&mut self, job: JobId, _: qrec_core::plans::FramePlan, _: Inbox) {
+            self.push(format!("frame {job}"));
+        }
+
+        fn delete_take_dirs(&mut self, job: JobId, _: Vec<TakeId>, _: Inbox) {
+            self.push(format!("delete {job}"));
+        }
+
+        fn cancel(&mut self, job: JobId) {
+            self.push(format!("cancel {job}"));
+        }
+    }
+
+    /// Opens what `GuiOpener` (WP0b) opens, with [`SilentMedia`] and no
+    /// capture. With a gate, opening says it began and waits to be let go.
+    struct QuietOpener {
+        dirs: UserDirs,
+        no_sysfs: PathBuf,
+        port: Arc<dyn GuiPort>,
+        media: SilentMedia,
+        gate: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
+    }
+
+    impl QuietOpener {
+        fn new(f: &Fixture, port: Arc<dyn GuiPort>, media: SilentMedia) -> Self {
+            Self {
+                dirs: UserDirs::resolve(&f.paths_env).unwrap(),
+                no_sysfs: f.env.root().join("no-sysfs"),
+                port,
+                media,
+                gate: None,
+            }
+        }
+    }
+
+    impl Opener for QuietOpener {
+        fn open(
+            &mut self,
+            dir: &Path,
+            opts: OpenOpts,
+            lock: Option<SessionLock>,
+        ) -> Result<Box<dyn HostSession>, ShellError> {
+            if let Some((began, go)) = self.gate.take() {
+                let _ = began.send(());
+                let _ = go.recv_timeout(Duration::from_secs(10));
+            }
+            let mut env = SessionEnv::for_dirs(self.dirs.clone(), true);
+            env.caps.sys_class_drm = self.no_sysfs.clone();
+            env.caps.probe_va = false;
+            let deps = Deps {
+                capture: Box::new(NoCapture),
+                media: Box::new(self.media.clone()),
+                clock: Box::new(system_clock),
+                entropy: Box::new(os_entropy),
+            };
+            let cfg = SessionConfig {
+                lock,
+                env: Some(env),
+                notifier: Some(Box::new(PortNotifier(Arc::clone(&self.port)))),
+                observer: Some(Box::new(PortObserver(Arc::clone(&self.port)))),
+                check: Some(qrec_core::history::ops::unchecked),
+                ..SessionConfig::default()
+            };
+            Ok(Box::new(Session::open_with(dir, opts, deps, cfg)?))
+        }
+    }
+
+    fn clips(dir: &Path) -> Value {
+        let project: Value =
+            serde_json::from_slice(&fs::read(dir.join("qrec.json")).unwrap()).unwrap();
+        project["timeline"]["clips"].clone()
+    }
+
+    /// D-12 with a real Session: the window's `c` (autocut, not a dry run)
+    /// is still analyzing when it closes. The host goes at once, dropping
+    /// the Session cancels the analysis, and nothing is cut: the clips are
+    /// as they were and no history entry was written.
+    #[test]
+    fn close_drops_a_running_autocut_and_cuts_nothing() {
+        let f = fixture();
+        write_project(&f.dir, &testdata::sample_json());
+        let take = f.dir.join("takes/take-0001");
+        fs::create_dir_all(&take).unwrap();
+        fs::write(take.join("A1-mic.mka"), b"the mic").unwrap();
+        fs::write(take.join("L1-screen-FAKE-1.mkv"), b"the screen").unwrap();
+        let before = clips(&f.dir);
+        let rules = ExitRules {
+            close_grace: Duration::from_secs(30),
+            ..quick_rules()
+        };
+        let (host, port) = f.start(f.spec(rules));
+        let media = SilentMedia::default();
+        host.open(Box::new(QuietOpener::new(
+            &f,
+            port.clone() as Arc<dyn GuiPort>,
+            media.clone(),
+        )));
+        assert!(port.wait_host(Duration::from_secs(10), |e| *e == HostEvent::Opened));
+        let cut = Replies::default();
+        let autocut = Command::Autocut {
+            scope: ClipScope::All,
+            overrides: AutocutOverrides::default(),
+            dry_run: false,
+        };
+        assert!(host.submit(Request::command(autocut, false), cut.responder()));
+        assert!(
+            wait_for(Duration::from_secs(5), || media.asked("silence")),
+            "{:?}",
+            media.calls()
+        );
+        let closed = Instant::now();
+        host.close();
+        assert_eq!(
+            port.wait_stopped(Duration::from_secs(5)),
+            Some(HostEnd::Closed)
+        );
+        assert!(closed.elapsed() < Duration::from_secs(5));
+        assert!(media.asked("cancel"), "{:?}", media.calls());
+        assert_eq!(clips(&f.dir), before, "nothing was cut");
+        let history = fs::read_to_string(f.dir.join(".qrec/history.jsonl")).unwrap_or_default();
+        assert!(!history.contains("autocut"), "{history}");
+        let answers = cut.all();
+        assert_eq!(answers.len(), 1, "{answers:?}");
+        assert_eq!(answers[0].as_ref().unwrap_err().message, CLOSING);
+        assert!(f.released(), "the lock was released");
+    }
+
+    /// Ctrl+C while the window's Session opens, with a niri bind's request
+    /// waiting: the Session hears the interrupt before the window's `Init`
+    /// and refuses it. That refusal only says the host is stopping, which
+    /// `Stopped { Signal }` says already: no error toast.
+    #[test]
+    fn a_signal_while_the_session_opens_toasts_nothing() {
+        let f = fixture();
+        let interrupts = Interrupts::new();
+        let mut spec = f.spec(quick_rules());
+        spec.interrupts = Some(interrupts.clone());
+        let init = Command::Init {
+            canvas: None,
+            name: None,
+        };
+        spec.first = Some(Request::command(init, false));
+        let (host, port) = f.start(spec);
+        let cli = Waiting::send(&f.socket, "cli", WireBody::Query(Query::Status));
+        let (began, opening) = mpsc::channel();
+        let (go, gate) = mpsc::channel();
+        let mut opener =
+            QuietOpener::new(&f, port.clone() as Arc<dyn GuiPort>, SilentMedia::default());
+        opener.gate = Some((began, gate));
+        host.open(Box::new(opener));
+        opening.recv_timeout(Duration::from_secs(5)).unwrap();
+        interrupts.raise();
+        assert!(wait_for(Duration::from_secs(5), || host
+            .ctl
+            .signalled_at()
+            .is_some()));
+        go.send(()).unwrap();
+        let reply = cli.reply();
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(
+            port.wait_stopped(Duration::from_secs(10)),
+            Some(HostEnd::Signal)
+        );
+        let toasts: Vec<PortEvent> = port
+            .events()
+            .into_iter()
+            .filter(|e| matches!(e, PortEvent::Toast(..)))
+            .collect();
+        assert!(toasts.is_empty(), "{toasts:?}");
+        assert!(!f.dir.join("qrec.json").exists(), "Init never ran");
+        assert!(f.released(), "the lock was released");
+    }
 }
 
 // ------------------------------------------- a real Session, fake capture

@@ -186,7 +186,7 @@ pub(super) fn open(
     let (inbox, rx) = cfg.channel.unwrap_or_else(Inbox::channel);
     let sources: Box<dyn Sources> = match cfg.sources {
         Some(sources) => sources,
-        None if env.fake_backend => Box::new(FakeSources),
+        None if env.fake_backend => Box::new(FakeSources(env.fake_inventory)),
         None => {
             let logs = if writable {
                 paths.logs_dir()
@@ -220,6 +220,7 @@ pub(super) fn open(
         recovery_news: false,
         shutdown: false,
         interrupts: 0,
+        abandoned: false,
         recovery_until: None,
         request_saved: false,
         #[cfg(test)]

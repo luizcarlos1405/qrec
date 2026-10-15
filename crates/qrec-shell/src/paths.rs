@@ -13,6 +13,7 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use qrec_core::hash::sha256_hex;
 use qrec_core::model::PROJECT_FILE;
@@ -246,14 +247,28 @@ fn io_error(what: String, e: &io::Error) -> CoreError {
     CoreError::io(format!("{what}: {e}"))
 }
 
-/// A GUI log past this size is rotated to `<name>.1` when a GUI starts.
+/// A GUI log past this size is rotated to `<name>.1` when a GUI starts and
+/// no running GUI writes to it.
 pub const GUI_LOG_ROTATE_BYTES: u64 = 8 << 20;
 
+/// How long [`open_gui_log`] waits for another GUI's rotation of the log
+/// before it appends without its shared lock.
+const GUI_LOG_LOCK_WAIT: Duration = Duration::from_secs(1);
+
 /// Opens a GUI log ([`UserDirs::gui_log`]) to append to, never truncating
-/// it: a log past [`GUI_LOG_ROTATE_BYTES`] is moved to `<name>.1` first
-/// (replacing the older one). Writes the run's header, `=== qrec <version>
-/// pid <pid> <RFC 3339 time> <project dir> ===`. The state folder is made
-/// when missing; a new log is the user's alone (0600).
+/// it, and writes the run's header, `=== qrec <version> pid <pid> <RFC 3339
+/// time> <project dir> ===`. The state folder is made when missing; a new
+/// log is the user's alone (0600).
+///
+/// The returned file holds a shared `flock` for as long as it is open:
+/// every running GUI's log does. A log past [`GUI_LOG_ROTATE_BYTES`] is moved
+/// to `<name>.1` (replacing the older one) only by a starter that takes the
+/// exclusive lock, so never while a GUI writes to it: a second `qrec` on a
+/// project a window holds (it exits 6, D-13) appends to the live log
+/// instead, and the "host disconnected" hint keeps naming the file with the
+/// window's lines. Two starters can't both rotate: the rename happens under
+/// that exclusive lock, on the file still at `log`, and a starter whose file
+/// was moved away meanwhile opens the new one.
 pub fn open_gui_log(
     log: &Path,
     project_dir: &Path,
@@ -265,18 +280,50 @@ pub fn open_gui_log(
     if let Some(dir) = log.parent() {
         fs::create_dir_all(dir)?;
     }
-    if fs::metadata(log).is_ok_and(|m| m.len() > GUI_LOG_ROTATE_BYTES) {
-        let mut rotated = log.as_os_str().to_owned();
-        rotated.push(".1");
-        // Another GUI starting now may have moved it already; a log that
-        // can't be moved is appended to all the same.
-        let _ = fs::rename(log, rotated);
+    let open = || {
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(log)
+    };
+    let deadline = Instant::now() + GUI_LOG_LOCK_WAIT;
+    let mut rotate = true;
+    let mut file = open()?;
+    loop {
+        rotate &= Instant::now() < deadline;
+        let big = file.metadata()?.len() > GUI_LOG_ROTATE_BYTES;
+        if rotate && big && crate::lock::flock(&file, libc::LOCK_EX)? {
+            // Nobody writes to it. Rotate it if it is still the log (no
+            // other starter moved it meanwhile; one that wants to holds
+            // this lock first). A log that can't be moved is appended to
+            // all the same.
+            if is_at(&file, log) {
+                let mut rotated = log.as_os_str().to_owned();
+                rotated.push(".1");
+                rotate = fs::rename(log, rotated).is_ok();
+            }
+            file = open()?;
+            continue;
+        }
+        // The lock every running GUI holds on its log; only a starter that
+        // rotates it holds it exclusively, briefly.
+        let shared = crate::lock::flock(&file, libc::LOCK_SH)?;
+        let moved = !is_at(&file, log);
+        if shared && !moved {
+            break;
+        }
+        if Instant::now() >= deadline {
+            // Never wait longer: append without the lock.
+            break;
+        }
+        if moved {
+            // Rotated between our open and our lock: write to the new log.
+            file = open()?;
+        } else {
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(log)?;
     writeln!(
         file,
         "=== qrec {} pid {} {} {} ===",
@@ -286,6 +333,14 @@ pub fn open_gui_log(
         path_text(project_dir)
     )?;
     Ok(file)
+}
+
+/// Whether `file` is the one at `path` now (same device and inode).
+fn is_at(file: &fs::File, path: &Path) -> bool {
+    match (file.metadata(), fs::metadata(path)) {
+        (Ok(open), Ok(named)) => (open.dev(), open.ino()) == (named.dev(), named.ino()),
+        _ => false,
+    }
 }
 
 /// `path` as text for people and JSON (replies, hints, logs): its exact
@@ -680,6 +735,47 @@ mod tests {
             fs::metadata(&rotated).unwrap().len(),
             GUI_LOG_ROTATE_BYTES + 1
         );
+        assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 1);
+    }
+
+    /// A second `qrec` on a project whose window runs (it exits 6, D-13)
+    /// finds the window's log past 8 MiB: it appends to it instead of moving
+    /// the live log away, so the window's later lines still land in
+    /// `gui-<hex>.log`, the file "host disconnected" names. Once no GUI
+    /// writes to it, the next start rotates it. The second start used to
+    /// rename the live log to `.1`, where the window kept writing.
+    #[test]
+    fn a_live_gui_log_is_never_rotated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = Env::new(1000).with("HOME", tmp.path().join("home"));
+        let dirs = UserDirs::resolve(&env).unwrap();
+        let swamp = tmp.path().join("swamp");
+        let log = dirs.gui_log(&swamp);
+        let rotated =
+            log.with_file_name(format!("{}.1", log.file_name().unwrap().to_str().unwrap()));
+        let at = |s: &str| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&chrono::Local)
+        };
+        let mut window = open_gui_log(&log, &swamp, at("2026-10-15T10:00:00Z")).unwrap();
+        window.set_len(GUI_LOG_ROTATE_BYTES + 1).unwrap();
+        let second = open_gui_log(&log, &swamp, at("2026-10-15T10:05:00Z")).unwrap();
+        drop(second);
+        assert!(!rotated.exists(), "the live log stays where it is");
+        std::io::Write::write_all(&mut window, b"the window goes on\n").unwrap();
+        let text = String::from_utf8_lossy(&fs::read(&log).unwrap()).into_owned();
+        assert!(
+            text.ends_with("the window goes on\n"),
+            "{}",
+            &text[text.len() - 200..]
+        );
+        assert_eq!(text.matches("=== qrec ").count(), 2, "both headers");
+        drop(window);
+
+        // Nobody writes to it now: the next start rotates it.
+        drop(open_gui_log(&log, &swamp, at("2026-10-15T11:00:00Z")).unwrap());
+        assert!(fs::metadata(&rotated).unwrap().len() > GUI_LOG_ROTATE_BYTES);
         assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 1);
     }
 

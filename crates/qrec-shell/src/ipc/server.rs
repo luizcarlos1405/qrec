@@ -194,6 +194,7 @@ impl IpcServer {
                 parked: first,
                 urgent: 0,
             }),
+            failure: Mutex::new(None),
             accepting: AtomicBool::new(true),
             shutdown: AtomicBool::new(false),
             own_done: AtomicBool::new(false),
@@ -361,6 +362,13 @@ impl ServerSender {
     pub fn own_command_done(&self) {
         self.0.own_done.store(true, Ordering::SeqCst);
     }
+
+    /// Why requests are refused, once they are ([`IpcServer::fail`],
+    /// [`IpcServer::finish`]): the host stopped or never served a Session.
+    /// Safe to ask from a responder's `Drop`, wherever it is dropped.
+    pub fn failure(&self) -> Option<CoreError> {
+        lock(&self.0.failure).clone()
+    }
 }
 
 impl std::fmt::Debug for ServerSender {
@@ -386,6 +394,10 @@ struct Shared {
     cfg: ServerConfig,
     hook: Hook,
     link: Mutex<Link>,
+    /// The error of `Link::Failed`, behind a lock of its own: a responder
+    /// dropped while `link` is held (a message a failed send drops) can
+    /// still read it ([`ServerSender::failure`]). Locked after `link`.
+    failure: Mutex<Option<CoreError>>,
     accepting: AtomicBool,
     shutdown: AtomicBool,
     /// A CLI host's own command got its reply ([`IpcServer::own_command_done`]).
@@ -473,7 +485,8 @@ impl Shared {
             }
             // Sent under the lock so nothing overtakes the parked messages
             // `attach` flushes. A failed send drops `msg`; a dropped request
-            // answers itself (`ConnResponder::drop`).
+            // answers itself (`ConnResponder::drop`, the window's
+            // `host::gui::AnswerOnDrop`).
             Link::Attached(inbox) => inbox.send(msg),
             Link::Failed(err) => {
                 let err = err.clone();
@@ -499,6 +512,7 @@ impl Shared {
             if !replace && matches!(*link, Link::Failed(_)) {
                 return;
             }
+            *lock(&self.failure) = Some(err.clone());
             match std::mem::replace(&mut *link, Link::Failed(err.clone())) {
                 Link::Pending { parked, .. } => parked,
                 Link::Attached(_) | Link::Failed(_) => Vec::new(),

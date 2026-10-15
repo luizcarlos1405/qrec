@@ -18,6 +18,11 @@ use crate::model::{
     AutocutSettings, Canvas, Color, EncoderPref, Fps, ProjectDefaults, RecordingSettings,
 };
 
+/// The most a settings file (`config.toml`, `keys.toml`) may hold, for
+/// every reader (the hosts, the GUI, `qrec config`, `qrec keys`; A§8.2): a
+/// bigger one is refused instead of read.
+pub const MAX_FILE_BYTES: u64 = 1 << 20;
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UserConfig {

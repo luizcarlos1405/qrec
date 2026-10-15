@@ -23,10 +23,15 @@
 //!   goes and the lock is released at once (the CLI then works in-process
 //!   while the window shows the problem); `Failed`, then `Stopped`.
 //! - [`GuiHost::close`]: the window closed (after it sent what ends a
-//!   recording or a job, D-12): the host stops accepting at once and exits
-//!   once quiet, or after the close grace (60 s) whatever still runs.
+//!   recording or an export, D-12). The close takes the window's FIFO, so
+//!   everything it submitted before runs first; then the host stops
+//!   accepting and exits once quiet (autocut analyses aside: the close drops
+//!   them, D-12), or after the close grace (60 s) whatever still runs, a
+//!   recovery probe included.
 //! - [`GuiHost::submit`]: the window's own requests, in one FIFO with the
-//!   CLI's (parked until the Session is attached).
+//!   CLI's (parked until the Session is attached). Each gets exactly one
+//!   answer: one the Session never handled (the host stopped first) hears
+//!   why from [`AnswerOnDrop`].
 //!
 //! A GUI host never idles out and refuses the wire `shutdown` (D-13).
 //! Signals work as in every host (A§8.6): the first finalizes a recording
@@ -40,12 +45,12 @@
 use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 
 use crossbeam_channel::{Receiver, Sender};
-use qrec_core::protocol::{Progress, Toast, ToastLevel};
+use qrec_core::protocol::{Progress, Query, Toast, ToastLevel};
 use qrec_core::state::HostKind;
 use qrec_core::{CoreError, ErrorCode, State};
 use serde_json::Value;
@@ -112,7 +117,8 @@ pub struct GuiHostSpec {
     pub interrupts: Option<Interrupts>,
     pub rules: ExitRules,
     /// D-35: run ahead of every request the socket brings (`Init` with the
-    /// user's defaults in an empty folder). Its error, if any, is toasted.
+    /// user's defaults in an empty folder). An error the Session gives it
+    /// while the host serves is toasted ([`FirstResponder`]).
     pub first: Option<Request>,
 }
 
@@ -122,6 +128,8 @@ pub struct GuiHost {
     ctl: Arc<HostCtl>,
     control: Sender<Control>,
     opened: AtomicBool,
+    /// [`close`](Self::close) sent its [`CloseMark`].
+    closing: AtomicBool,
     finished: Arc<AtomicBool>,
     /// The `qrec-session` thread; never joined (the GTK thread never waits),
     /// `Stopped` says it is done.
@@ -175,12 +183,16 @@ impl GuiHost {
         let runtime = ensure_runtime_dir(&env)?;
         let socket = socket_path(&runtime, &dir)?;
         let stopping = Arc::new(AtomicBool::new(false));
+        let attached = Arc::new(AtomicBool::new(false));
+        let first_host = Arc::new(OnceLock::new());
         let first: Vec<Msg> = first
             .map(|req| Msg::Request {
                 req,
                 to: Box::new(FirstResponder {
                     port: Arc::clone(&port),
                     stopping: Arc::clone(&stopping),
+                    attached: Arc::clone(&attached),
+                    host: Arc::clone(&first_host),
                 }),
             })
             .into_iter()
@@ -203,6 +215,9 @@ impl GuiHost {
             opts,
             first,
         )?;
+        // Before anything can attach a Session: `first` asks it whether a
+        // signal came.
+        let _ = first_host.set(Arc::clone(&host.ctl));
         let (control, controls) = crossbeam_channel::unbounded();
         let on_signal = control.clone();
         let _ = host.ctl.on_signal.set(Box::new(move || {
@@ -214,12 +229,13 @@ impl GuiHost {
         tracing::info!("serving {} (ready)", dir.display());
         let worker = {
             let finished = Arc::clone(&finished);
+            let flags = Flags { stopping, attached };
             thread::Builder::new()
                 .name("qrec-session".into())
                 .spawn(move || {
                     // From this thread, so nothing it posts can come first.
                     port.host(HostEvent::Ready);
-                    let end = run(host, &dir, &controls, &*port, &stopping);
+                    let end = run(host, &dir, &controls, &*port, &flags);
                     finished.store(true, Ordering::SeqCst);
                     tracing::info!("the GUI host stopped ({end:?})");
                     port.host(HostEvent::Stopped { end });
@@ -231,6 +247,7 @@ impl GuiHost {
             ctl,
             control,
             opened: AtomicBool::new(false),
+            closing: AtomicBool::new(false),
             finished,
             _worker: worker,
         })
@@ -262,9 +279,16 @@ impl GuiHost {
     }
 
     /// One request of the window, in the same FIFO as the CLI's (parked
-    /// until the Session is attached). `false` when it can't be delivered:
-    /// `to` was answered with why (the host stopped).
+    /// until the Session is attached). `to` hears exactly one answer: the
+    /// Session's, or why the host stopped before the Session handled it
+    /// ([`AnswerOnDrop`]). `false` when it can't be delivered: `to` was
+    /// answered with why (the host stopped).
     pub fn submit(&self, req: Request, to: Box<dyn Responder>) -> bool {
+        let to = Box::new(AnswerOnDrop {
+            to,
+            server: self.sender.clone(),
+            answered: false,
+        });
         self.sender.send(Msg::Request { req, to })
     }
 
@@ -274,11 +298,18 @@ impl GuiHost {
         self.sender.send(Msg::RetryLive);
     }
 
-    /// The window closed: stop accepting, exit once quiet, or after the
-    /// close grace (60 s) whatever still runs; then `Stopped { Closed }`.
-    /// Before the Session is open it stops at once. Never blocks.
+    /// The window closed: after the Session handled everything the window
+    /// submitted before (the close takes the same FIFO, [`CloseMark`]),
+    /// stop accepting and exit once quiet, or after the close grace (60 s)
+    /// whatever still runs; then `Stopped { Closed }`. Before the Session
+    /// is open it stops at once. Never blocks.
     pub fn close(&self) {
-        self.ctl.request_close();
+        if !self.closing.swap(true, Ordering::SeqCst) {
+            self.sender.send(Msg::Request {
+                req: Request::query(Query::Status),
+                to: Box::new(CloseMark(Arc::clone(&self.ctl))),
+            });
+        }
         let _ = self.control.send(Control::Close);
     }
 
@@ -294,6 +325,15 @@ impl Drop for GuiHost {
     }
 }
 
+/// What the `first` request's responder learns about its host.
+struct Flags {
+    /// The host is stopping: its own event says why.
+    stopping: Arc<AtomicBool>,
+    /// A Session is attached. Every answer before that comes from the host
+    /// failing or ending (the server failed or was dropped).
+    attached: Arc<AtomicBool>,
+}
+
 /// The `qrec-session` thread: wait for open, fail, close or a signal; run
 /// it; return how the host ended (the lock is released by then).
 fn run(
@@ -301,7 +341,7 @@ fn run(
     dir: &Path,
     controls: &Receiver<Control>,
     port: &dyn GuiPort,
-    stopping: &AtomicBool,
+    flags: &Flags,
 ) -> HostEnd {
     // A signal before the hook was set doesn't come as a message.
     let next = if host.signalled() {
@@ -309,8 +349,9 @@ fn run(
     } else {
         controls.recv().unwrap_or(Control::Close)
     };
+    let stopping = &flags.stopping;
     match next {
-        Control::Open(opener) => serve(host, dir, opener, port, stopping),
+        Control::Open(opener) => serve(host, dir, opener, port, flags),
         Control::Fail(err) => {
             stopping.store(true, Ordering::SeqCst);
             tracing::warn!("the GUI host failed: {err}");
@@ -338,8 +379,9 @@ fn serve(
     dir: &Path,
     mut opener: Box<dyn Opener + Send>,
     port: &dyn GuiPort,
-    stopping: &AtomicBool,
+    flags: &Flags,
 ) -> HostEnd {
+    let stopping = &*flags.stopping;
     let opts = OpenOpts {
         host: HostKind::Gui,
         mutating: true,
@@ -364,6 +406,7 @@ fn serve(
         }
         Err(panic) => return crashed(host, None, &*panic, port, stopping),
     };
+    flags.attached.store(true, Ordering::SeqCst);
     host.attach(session.inbox());
     port.snapshot(session.rev(), Arc::new(session.state().clone()));
     port.host(HostEvent::Opened);
@@ -422,10 +465,30 @@ fn already_a_project(err: &CoreError) -> bool {
 }
 
 /// Where the `first` request's answers go: the log, and a toast for an
-/// error while the host still runs (once it stops, its own event says why).
+/// error the Session gave while the host serves. Errors that only say the
+/// host ends aren't toasted, since its own event says why: any answer
+/// before a Session is attached (a start that failed after the server
+/// started, a close, a failed open), any once the host is stopping, and
+/// the refusal of a Session interrupted by a signal (the signal thread
+/// notes the signal before it sends the `Interrupt`).
 struct FirstResponder {
     port: Arc<dyn GuiPort>,
     stopping: Arc<AtomicBool>,
+    attached: Arc<AtomicBool>,
+    /// Set by `GuiHost::start` before a Session can be attached.
+    host: Arc<OnceLock<Arc<HostCtl>>>,
+}
+
+impl FirstResponder {
+    /// The host serves a Session that wasn't interrupted.
+    fn serving(&self) -> bool {
+        self.attached.load(Ordering::SeqCst)
+            && !self.stopping.load(Ordering::SeqCst)
+            && self
+                .host
+                .get()
+                .is_none_or(|ctl| ctl.signalled_at().is_none())
+    }
 }
 
 impl Responder for FirstResponder {
@@ -441,7 +504,7 @@ impl Responder for FirstResponder {
             }
             Err(e) => {
                 tracing::warn!("the window's first request failed: {e}");
-                if !self.stopping.load(Ordering::SeqCst) {
+                if self.serving() {
                     let mut toast = Toast::new(ToastLevel::Error, e.message.clone());
                     toast.body = e.hint.clone();
                     self.port.toast(toast, false);
@@ -450,6 +513,81 @@ impl Responder for FirstResponder {
         }
     }
 }
+
+/// [`GuiHost::close`]'s place in the window's FIFO: a status query whose
+/// answer, whatever it is (an error once the host stopped), asks the host
+/// to close. So the close comes after every request the window submitted
+/// before it, as the window sent them (D-12: what ends a recording or an
+/// export, then the close).
+struct CloseMark(Arc<HostCtl>);
+
+impl Responder for CloseMark {
+    fn accepted(&mut self) {}
+
+    fn progress(&mut self, _p: &Progress) {}
+
+    fn reply(&mut self, _r: Result<Value, CoreError>) {
+        self.0.request_close();
+    }
+}
+
+impl Drop for CloseMark {
+    /// Dropped unanswered, the host is ending anyway; asking again is free.
+    fn drop(&mut self) {
+        self.0.request_close();
+    }
+}
+
+/// The window's responder as its host hands it on ([`GuiHost::submit`]):
+/// it forwards everything and lets one answer through. Dropped unanswered
+/// — still queued, parked or waiting for a late reply when the Session
+/// stopped, or a send that failed — it answers with why the host stopped
+/// (the server's failure). So every request of the window hears back
+/// exactly once (msg.rs), like an IPC client's (`ConnResponder`).
+pub(crate) struct AnswerOnDrop {
+    to: Box<dyn Responder>,
+    server: ServerSender,
+    answered: bool,
+}
+
+impl Responder for AnswerOnDrop {
+    fn accepted(&mut self) {
+        self.to.accepted();
+    }
+
+    fn progress(&mut self, p: &Progress) {
+        if !self.answered {
+            self.to.progress(p);
+        }
+    }
+
+    fn reply(&mut self, r: Result<Value, CoreError>) {
+        if !std::mem::replace(&mut self.answered, true) {
+            self.to.reply(r);
+        }
+    }
+
+    fn reply_late(&mut self, r: Result<Value, CoreError>) {
+        if !std::mem::replace(&mut self.answered, true) {
+            self.to.reply_late(r);
+        }
+    }
+}
+
+impl Drop for AnswerOnDrop {
+    fn drop(&mut self) {
+        if !std::mem::replace(&mut self.answered, true) {
+            let why = self
+                .server
+                .failure()
+                .unwrap_or_else(|| CoreError::io(UNANSWERED));
+            self.to.reply(Err(why));
+        }
+    }
+}
+
+/// What a window's request the host dropped hears when nothing said why.
+const UNANSWERED: &str = "the Qrec host stopped before it answered";
 
 /// The Session's [`StateObserver`] of a GUI host (H-6): every state goes to
 /// the port, cloned into an `Arc` (cheap at Qrec's sizes, G§3.5).

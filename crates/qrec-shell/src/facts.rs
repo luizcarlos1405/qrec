@@ -35,9 +35,8 @@ use qrec_core::ctx::{
 };
 use qrec_core::model::PROJECT_FILE;
 use qrec_core::protocol::{Toast, ToastLevel};
-use serde_json::Value;
 
-use crate::capture::fake::fake_inventory;
+use crate::capture::fake::{FakeInventoryKind, fake_inventory_of};
 use crate::media::{is_temp_name, take_contents};
 use crate::paths::{NAME_MAX, ProjectPaths, path_text};
 use crate::proc::{self, Limit, PACTL_TIMEOUT, Spec};
@@ -48,12 +47,25 @@ use crate::sources::{self, SourceInventory};
 /// What audio devices exist and which are the defaults.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AudioInventory {
-    /// Every source (inputs and monitors).
+    /// Every source: mics, monitors and the other inputs.
     pub devices: Vec<AudioDeviceInfo>,
     /// The default input, an `alsa_input.*` source.
     pub default_mic: Option<String>,
     /// The default sink's monitor.
     pub default_monitor: Option<String>,
+}
+
+/// The audio facts of a discovery: every [`Sources`] gives them this way
+/// (one `pactl` parser, `sources::parse_pactl_audio`), so a GUI host and a
+/// CLI or headless host label and check the same `--source` alike.
+impl From<&SourceInventory> for AudioInventory {
+    fn from(inventory: &SourceInventory) -> Self {
+        AudioInventory {
+            devices: inventory.audio_devices(),
+            default_mic: inventory.default_mic.clone(),
+            default_monitor: inventory.default_monitor.clone(),
+        }
+    }
 }
 
 /// Device discovery behind the facts.
@@ -63,32 +75,26 @@ pub trait Sources: Send {
     fn cameras(&mut self) -> Result<Vec<CameraInfo>, String>;
 }
 
-/// The fake backend's devices (A§8.11, `capture::fake::fake_inventory`):
+/// The fake backend's devices (A§8.11, `capture::fake::fake_inventory_of`):
 /// screens `FAKE-1`, `FAKE-2` (1280×720, side by side), camera
-/// `/dev/fake0`, mic `alsa_input.fake`, monitor `alsa_output.fake.monitor`.
+/// `/dev/fake0`, mic `alsa_input.fake`, monitor `alsa_output.fake.monitor`;
+/// the kind says which names and sizes they carry (`QREC_FAKE_INVENTORY`,
+/// which only [`SessionEnv::from_process`](crate::session::SessionEnv::from_process)
+/// reads: an in-process test gets the plain inventory unless it asks).
 #[derive(Debug, Clone, Copy, Default)]
-pub struct FakeSources;
+pub struct FakeSources(pub FakeInventoryKind);
 
 impl Sources for FakeSources {
     fn audio(&mut self) -> Result<AudioInventory, String> {
-        let inventory = fake_inventory();
-        Ok(AudioInventory {
-            devices: inventory
-                .mics
-                .into_iter()
-                .chain(inventory.monitors)
-                .collect(),
-            default_mic: inventory.default_mic,
-            default_monitor: inventory.default_monitor,
-        })
+        Ok(AudioInventory::from(&SourceInventory::fake_of(self.0)))
     }
 
     fn screens(&mut self) -> Result<Vec<ScreenInfo>, String> {
-        Ok(fake_inventory().screens)
+        Ok(fake_inventory_of(self.0).screens)
     }
 
     fn cameras(&mut self) -> Result<Vec<CameraInfo>, String> {
-        Ok(fake_inventory().cameras)
+        Ok(fake_inventory_of(self.0).cameras)
     }
 }
 
@@ -144,7 +150,7 @@ impl Sources for SystemSources {
         let log = self.log();
         let info = Self::pactl(log.as_ref(), &["--format=json", "info"])?;
         let sources = Self::pactl(log.as_ref(), &["--format=json", "list", "sources"])?;
-        parse_pactl(&info, &sources)
+        audio_facts(&sources, &info)
     }
 
     fn screens(&mut self) -> Result<Vec<ScreenInfo>, String> {
@@ -287,15 +293,11 @@ impl SharedSources {
 impl Sources for SharedSources {
     fn audio(&mut self) -> Result<AudioInventory, String> {
         let inventory = self.inventory();
-        let empty = inventory.mics.is_empty() && inventory.monitors.is_empty();
+        let empty = inventory.audio_devices().is_empty();
         if let Some(why) = Self::failure(&inventory, "audio", empty) {
             return Err(why);
         }
-        Ok(AudioInventory {
-            devices: inventory.audio_devices(),
-            default_mic: inventory.default_mic.clone(),
-            default_monitor: inventory.default_monitor.clone(),
-        })
+        Ok(AudioInventory::from(&*inventory))
     }
 
     fn screens(&mut self) -> Result<Vec<ScreenInfo>, String> {
@@ -315,59 +317,16 @@ impl Sources for SharedSources {
     }
 }
 
-/// `pactl --format=json info` + `list sources` → the inventory. Mics are
-/// `alsa_input.*` only (SPEC §5.1); monitors are `*.monitor` (or have a
-/// `monitor_source`).
-pub fn parse_pactl(info: &str, sources: &str) -> Result<AudioInventory, String> {
-    let info: Value = serde_json::from_str(info).map_err(|e| format!("pactl info: {e}"))?;
-    let list: Value =
-        serde_json::from_str(sources).map_err(|e| format!("pactl list sources: {e}"))?;
-    let list = list
-        .as_array()
-        .ok_or_else(|| "pactl list sources: not a JSON array".to_owned())?;
-    let devices: Vec<AudioDeviceInfo> = list
-        .iter()
-        .filter_map(|s| {
-            let name = s.get("name")?.as_str()?.to_owned();
-            let description = s
-                .get("description")
-                .and_then(Value::as_str)
-                .unwrap_or(&name)
-                .to_owned();
-            let monitors_a_sink = s
-                .get("monitor_source")
-                .and_then(Value::as_str)
-                .is_some_and(|m| !m.is_empty() && m != "n/a");
-            Some(AudioDeviceInfo {
-                is_monitor: name.ends_with(".monitor") || monitors_a_sink,
-                name,
-                description,
-            })
-        })
-        .collect();
-    let has = |name: &str| devices.iter().any(|d| d.name == name);
-    let is_mic = |d: &AudioDeviceInfo| !d.is_monitor && d.name.starts_with("alsa_input.");
-    let default_source = info.get("default_source_name").and_then(Value::as_str);
-    let default_mic = default_source
-        .filter(|name| name.starts_with("alsa_input.") && has(name))
-        .map(str::to_owned)
-        .or_else(|| devices.iter().find(|d| is_mic(d)).map(|d| d.name.clone()));
-    let default_monitor = info
-        .get("default_sink_name")
-        .and_then(Value::as_str)
-        .map(|sink| format!("{sink}.monitor"))
-        .filter(|name| has(name))
-        .or_else(|| {
-            devices
-                .iter()
-                .find(|d| d.is_monitor)
-                .map(|d| d.name.clone())
-        });
-    Ok(AudioInventory {
-        devices,
-        default_mic,
-        default_monitor,
-    })
+/// The audio facts of what `pactl --format=json list sources` and `pactl
+/// --format=json info` printed ([`SystemSources`]): the shared parser
+/// (`sources::parse_pactl_audio`) through a [`SourceInventory`], exactly as
+/// [`SharedSources`] gives them. Mics are `alsa_input.*` only (SPEC §5.1),
+/// monitors `*.monitor`, other inputs neither; a `(null)` description falls
+/// back to the device's properties.
+pub fn audio_facts(sources_json: &str, info_json: &str) -> Result<AudioInventory, String> {
+    let mut inventory = SourceInventory::default();
+    inventory.set_audio(sources::parse_pactl_audio(sources_json, info_json)?);
+    Ok(AudioInventory::from(&inventory))
 }
 
 // ------------------------------------------------------------------- config
@@ -1168,39 +1127,81 @@ mod tests {
         }
     }
 
+    /// What `pactl` printed on the dev machine, trimmed: a mic and a monitor
+    /// whose descriptions it can't encode ("(null)"), a Bluetooth headset
+    /// and an HDMI monitor.
+    const PACTL_SOURCES: &str = r#"[
+        {"name":"alsa_output.hdmi.monitor","description":"Monitor of HDMI","monitor_source":"alsa_output.hdmi","properties":{}},
+        {"name":"alsa_input.laptop.mic","description":"Laptop mic","monitor_source":"","properties":{}},
+        {"name":"alsa_output.usb-yeti.analog-stereo.monitor","description":"(null)","monitor_source":"alsa_output.usb-yeti.analog-stereo","properties":{"device.description":"Yeti Nano"}},
+        {"name":"alsa_input.usb-yeti.analog-stereo","description":"(null)","monitor_source":"","properties":{"device.description":"Yeti Nano"}},
+        {"name":"bluez_input.00_11","description":"Headset","monitor_source":"","properties":{}}
+    ]"#;
+    const PACTL_INFO: &str = r#"{"default_sink_name":"alsa_output.usb-yeti.analog-stereo","default_source_name":"alsa_input.usb-yeti.analog-stereo"}"#;
+
+    /// Every host reads audio facts with one parser: the GUI's cached
+    /// `SharedSources` and the CLI's and headless hosts' `SystemSources`
+    /// give equal facts for what `pactl` printed. So a `--source` labels and
+    /// checks alike whichever host serves it: a "(null)" description becomes
+    /// the device's name ("Yeti Nano", not "(null)"), and a Bluetooth input
+    /// stays known (its description is the track's label) though it is
+    /// never offered as a mic.
     #[test]
-    fn pactl_inventory() {
-        let info = r#"{"default_sink_name":"alsa_output.usb-yeti.analog-stereo","default_source_name":"alsa_input.usb-yeti.analog-stereo"}"#;
-        let sources = r#"[
-            {"name":"alsa_output.hdmi.monitor","description":"Monitor of HDMI","monitor_source":"alsa_output.hdmi"},
-            {"name":"alsa_input.laptop.mic","description":"Laptop mic","monitor_source":""},
-            {"name":"alsa_output.usb-yeti.analog-stereo.monitor","description":"Monitor of Yeti","monitor_source":"alsa_output.usb-yeti.analog-stereo"},
-            {"name":"alsa_input.usb-yeti.analog-stereo","description":"Yeti Nano","monitor_source":""},
-            {"name":"bluez_input.headset","description":"Headset","monitor_source":""}
-        ]"#;
-        let inv = parse_pactl(info, sources).unwrap();
-        assert_eq!(inv.devices.len(), 5);
+    fn every_host_gets_the_same_audio_facts() {
+        let system = audio_facts(PACTL_SOURCES, PACTL_INFO).unwrap();
+        let mut shared = SharedSources::with_discovery(|| {
+            let mut inventory = SourceInventory::default();
+            inventory.set_audio(sources::parse_pactl_audio(PACTL_SOURCES, PACTL_INFO).unwrap());
+            inventory
+        });
+        assert_eq!(shared.audio().unwrap(), system);
+
+        let described = |name: &str| {
+            system
+                .devices
+                .iter()
+                .find(|d| d.name == name)
+                .map(|d| (d.description.as_str(), d.is_monitor))
+        };
         assert_eq!(
-            inv.default_mic.as_deref(),
+            described("alsa_input.usb-yeti.analog-stereo"),
+            Some(("Yeti Nano", false))
+        );
+        assert_eq!(
+            described("alsa_output.usb-yeti.analog-stereo.monitor"),
+            Some(("Monitor of Yeti Nano", true))
+        );
+        assert_eq!(described("bluez_input.00_11"), Some(("Headset", false)));
+        assert_eq!(system.devices.len(), 5);
+        assert_eq!(
+            system.default_mic.as_deref(),
             Some("alsa_input.usb-yeti.analog-stereo")
         );
         assert_eq!(
-            inv.default_monitor.as_deref(),
+            system.default_monitor.as_deref(),
             Some("alsa_output.usb-yeti.analog-stereo.monitor")
         );
-        assert!(inv.devices[0].is_monitor && !inv.devices[1].is_monitor);
+        // Never offered or listed as a mic (SPEC §5.1).
+        let listed = shared.inventory();
+        assert!(
+            listed
+                .mics
+                .iter()
+                .all(|m| m.name.starts_with("alsa_input."))
+        );
+        assert!(listed.to_json().get("otherInputs").is_none());
 
-        // A monitor as the default source isn't a mic; a missing sink monitor
-        // falls back to the first monitor.
+        // A monitor as the default source isn't a mic; a missing sink
+        // monitor falls back to the first monitor.
         let info =
             r#"{"default_sink_name":"gone","default_source_name":"alsa_output.hdmi.monitor"}"#;
-        let inv = parse_pactl(info, sources).unwrap();
+        let inv = audio_facts(PACTL_SOURCES, info).unwrap();
         assert_eq!(inv.default_mic.as_deref(), Some("alsa_input.laptop.mic"));
         assert_eq!(
             inv.default_monitor.as_deref(),
             Some("alsa_output.hdmi.monitor")
         );
-        assert!(parse_pactl("{}", "{}").is_err());
+        assert!(audio_facts("{}", "{}").is_err());
     }
 
     /// A [`SharedSources`] whose discovery counts its runs and returns the
@@ -1332,7 +1333,7 @@ mod tests {
         let mut gatherer = FactsGatherer::new(
             paths.clone(),
             ConfigFile::new(config),
-            Box::new(FakeSources),
+            Box::new(FakeSources::default()),
         );
 
         let none = gatherer.gather(&FactsNeeded::default());

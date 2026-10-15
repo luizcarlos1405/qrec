@@ -171,7 +171,7 @@ fn try_flock(file: &File) -> io::Result<bool> {
 }
 
 /// `flock(op | LOCK_NB)`: `Ok(false)` when someone else holds it.
-fn flock(file: &File, op: libc::c_int) -> io::Result<bool> {
+pub(crate) fn flock(file: &File, op: libc::c_int) -> io::Result<bool> {
     loop {
         // SAFETY: flock only reads the descriptor number, which `file` keeps open.
         let rc = unsafe { libc::flock(file.as_raw_fd(), op | libc::LOCK_NB) };

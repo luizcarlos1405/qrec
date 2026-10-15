@@ -164,10 +164,29 @@ pub fn write_project(dir: &Path, project: &Value) {
     fs::write(&path, text).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
 }
 
-fn link(source: &Path, target: &Path) {
-    if fs::hard_link(source, target).is_err() {
-        fs::copy(source, target)
-            .unwrap_or_else(|e| panic!("copy {} to {}: {e}", source.display(), target.display()));
+/// A hard link to a cached fixture (`fixture`), or a copy when the cache is
+/// on another file system. `target` must not exist, and the copy only ever
+/// creates a new file: copying onto a link to the cached file would open
+/// the shared cache itself for writing and truncate it, for every later
+/// test in every process.
+pub(super) fn link(source: &Path, target: &Path) {
+    assert!(
+        fs::symlink_metadata(target).is_err(),
+        "{} already exists: fixtures write into an empty folder",
+        target.display()
+    );
+    if fs::hard_link(source, target).is_ok() {
+        return;
+    }
+    let copied = fs::File::open(source).and_then(|mut from| {
+        let mut to = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(target)?;
+        std::io::copy(&mut from, &mut to)
+    });
+    if let Err(e) = copied {
+        panic!("copy {} to {}: {e}", source.display(), target.display());
     }
 }
 
@@ -176,6 +195,29 @@ mod tests {
     use super::*;
     use crate::testkit::TestEnv;
     use qrec_core::{Project, StreamKind, TakeId, TakeStatus};
+
+    /// Linking onto a file that is already there (a fixture written twice
+    /// into one folder) stops with a clear message and leaves the cached
+    /// file alone. It used to copy the cache onto its own hard link, which
+    /// truncated the shared cache to 0 bytes for every later test.
+    #[test]
+    fn linking_twice_never_truncates_the_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The cache and the project on one file system: a real hard link.
+        let cached = tmp.path().join("cached.mkv");
+        fs::write(&cached, b"twenty bytes of media").unwrap();
+        let target = tmp.path().join("L1-screen-FAKE-1.mkv");
+        link(&cached, &target);
+        let again = std::panic::catch_unwind(|| link(&cached, &target));
+        let message = again.unwrap_err();
+        let message = message
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .unwrap_or_default();
+        assert!(message.contains("already exists"), "{message}");
+        assert_eq!(fs::read(&cached).unwrap(), b"twenty bytes of media");
+        assert_eq!(fs::read(&target).unwrap(), b"twenty bytes of media");
+    }
 
     #[test]
     fn fixture_project_is_a_valid_project() {

@@ -7,7 +7,10 @@
 //!   the GStreamer init watchdog when the `gst` feature is on; otherwise, or
 //!   when that fails, `/sys/class/video4linux` (names only, no modes).
 //! - Audio: `pactl --format=json` (3 s each): mics are `alsa_input.*` only
-//!   (SPEC §5.1), monitors are `*.monitor`.
+//!   (SPEC §5.1), monitors are `*.monitor`; other inputs (`bluez_input.*`,
+//!   echo-cancel, virtual sources) are never offered as mics but stay known,
+//!   so a `--source` naming one keeps its description ([`parse_pactl_audio`],
+//!   the one parser behind every host's audio facts).
 //! - `QREC_CAPTURE_BACKEND=fake`: the fake inventory of A§8.11 (screens
 //!   `FAKE-1`, `FAKE-2` at 1280×720, camera `/dev/fake0`, mic
 //!   `alsa_input.fake`, monitor `alsa_output.fake.monitor`); nothing real is
@@ -60,6 +63,12 @@ pub struct SourceInventory {
     /// What couldn't be discovered and why (e.g. "pactl wasn't found").
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Inputs that are neither mics nor monitors (`bluez_input.*`,
+    /// echo-cancel, virtual sources): never listed or offered as a mic
+    /// (SPEC §5.1), but in [`audio_devices`](Self::audio_devices), so a
+    /// `--source` naming one keeps its description.
+    #[serde(skip)]
+    pub other_inputs: Vec<AudioDeviceInfo>,
 }
 
 /// Which kinds of sources to discover (a clip split needs none, an
@@ -102,7 +111,7 @@ impl SourceInventory {
     /// problems become `warnings` and empty lists.
     pub fn discover(what: Discover) -> Self {
         if fake_backend() {
-            return Self::fake().only(what);
+            return Self::fake_of(crate::capture::FakeInventoryKind::from_env()).only(what);
         }
         let mut inventory = SourceInventory::default();
         if what.screens {
@@ -120,23 +129,35 @@ impl SourceInventory {
         }
         if what.audio {
             match discover_audio() {
-                Ok(audio) => {
-                    inventory.default_mic = audio.default_mic();
-                    inventory.default_monitor = audio.default_monitor();
-                    inventory.mics = audio.mics;
-                    inventory.monitors = audio.monitors;
-                }
+                Ok(audio) => inventory.set_audio(audio),
                 Err(e) => inventory.warnings.push(format!("audio: {e}")),
             }
         }
         inventory
     }
 
+    /// The audio part of a discovery: its mics, monitors, other inputs and
+    /// defaults.
+    pub fn set_audio(&mut self, audio: AudioDiscovery) {
+        self.default_mic = audio.default_mic();
+        self.default_monitor = audio.default_monitor();
+        self.mics = audio.mics;
+        self.monitors = audio.monitors;
+        self.other_inputs = audio.other_inputs;
+    }
+
     /// The fake backend's devices (A§8.11): two 1280×720 screens side by
-    /// side, one camera, one mic and one system-audio monitor.
+    /// side, one camera, one mic and one system-audio monitor, with the
+    /// plain names ([`fake_of`](Self::fake_of) for another kind).
     pub fn fake() -> Self {
+        Self::fake_of(crate::capture::FakeInventoryKind::Plain)
+    }
+
+    /// [`fake`](Self::fake) with the names and sizes of `kind`
+    /// (`QREC_FAKE_INVENTORY`, which the caller read if it should).
+    pub fn fake_of(kind: crate::capture::FakeInventoryKind) -> Self {
         // One definition, shared with the fake capture engine.
-        let fake = crate::capture::fake_inventory();
+        let fake = crate::capture::fake_inventory_of(kind);
         SourceInventory {
             screens: fake.screens,
             cameras: fake.cameras,
@@ -145,6 +166,7 @@ impl SourceInventory {
             default_mic: fake.default_mic,
             default_monitor: fake.default_monitor,
             warnings: Vec::new(),
+            other_inputs: Vec::new(),
         }
     }
 
@@ -159,6 +181,7 @@ impl SourceInventory {
         if !what.audio {
             self.mics.clear();
             self.monitors.clear();
+            self.other_inputs.clear();
             self.default_mic = None;
             self.default_monitor = None;
         }
@@ -182,9 +205,14 @@ impl SourceInventory {
         self.monitors.iter().find(|d| d.name == name).cloned()
     }
 
-    /// `Facts::audio_devices`: mics, then monitors.
+    /// `Facts::audio_devices`: mics, then monitors, then the other inputs.
     pub fn audio_devices(&self) -> Vec<AudioDeviceInfo> {
-        self.mics.iter().chain(&self.monitors).cloned().collect()
+        self.mics
+            .iter()
+            .chain(&self.monitors)
+            .chain(&self.other_inputs)
+            .cloned()
+            .collect()
     }
 
     pub fn screen(&self, output: &str) -> Option<&ScreenInfo> {
@@ -761,6 +789,8 @@ pub const GST_STUCK: &str =
 pub struct AudioDiscovery {
     pub mics: Vec<AudioDeviceInfo>,
     pub monitors: Vec<AudioDeviceInfo>,
+    /// Inputs that are neither (`SourceInventory::other_inputs`).
+    pub other_inputs: Vec<AudioDeviceInfo>,
     pub default_source: Option<String>,
     pub default_sink: Option<String>,
 }
@@ -788,12 +818,22 @@ impl AudioDiscovery {
 /// `pactl --format=json list sources` and `pactl --format=json info`.
 pub fn discover_audio() -> Result<AudioDiscovery, String> {
     let sources = run_tool(&["pactl", "--format=json", "list", "sources"], TOOL_TIMEOUT)?;
-    let (mics, monitors) = parse_pactl_sources(&sources)?;
     let info = run_tool(&["pactl", "--format=json", "info"], TOOL_TIMEOUT)?;
-    let (default_source, default_sink) = parse_pactl_defaults(&info);
+    parse_pactl_audio(&sources, &info)
+}
+
+/// The audio discovery from what `pactl --format=json list sources` and
+/// `pactl --format=json info` printed: the one parser behind every host's
+/// audio facts (`SourceInventory::discover`, the GUI's `SharedSources`, the
+/// Session's `SystemSources`), so they agree on names, descriptions and
+/// roles.
+pub fn parse_pactl_audio(sources: &str, info: &str) -> Result<AudioDiscovery, String> {
+    let (mics, monitors, other_inputs) = split_pactl_sources(sources)?;
+    let (default_source, default_sink) = parse_pactl_defaults(info);
     Ok(AudioDiscovery {
         mics,
         monitors,
+        other_inputs,
         default_source,
         default_sink,
     })
@@ -805,20 +845,23 @@ pub fn discover_audio() -> Result<AudioDiscovery, String> {
 pub fn parse_pactl_sources(
     json: &str,
 ) -> Result<(Vec<AudioDeviceInfo>, Vec<AudioDeviceInfo>), String> {
+    let (mics, monitors, _others) = split_pactl_sources(json)?;
+    Ok((mics, monitors))
+}
+
+/// [`parse_pactl_sources`] plus the other inputs.
+fn split_pactl_sources(json: &str) -> Result<SplitSources, String> {
     let value: Value = serde_json::from_str(json)
         .map_err(|e| format!("pactl printed something that isn't JSON: {e}"))?;
     let sources = value
         .as_array()
         .ok_or("pactl's source list isn't a JSON array")?;
-    let (mut mics, mut monitors) = (Vec::new(), Vec::new());
+    let (mut mics, mut monitors, mut others) = (Vec::new(), Vec::new(), Vec::new());
     for source in sources {
         let Some(name) = source["name"].as_str() else {
             continue;
         };
         let is_monitor = name.ends_with(".monitor");
-        if !is_monitor && !name.starts_with("alsa_input.") {
-            continue;
-        }
         let device = AudioDeviceInfo {
             name: name.to_owned(),
             description: description(source, name, is_monitor),
@@ -826,12 +869,21 @@ pub fn parse_pactl_sources(
         };
         if is_monitor {
             monitors.push(device);
-        } else {
+        } else if name.starts_with("alsa_input.") {
             mics.push(device);
+        } else {
+            others.push(device);
         }
     }
-    Ok((mics, monitors))
+    Ok((mics, monitors, others))
 }
+
+/// Mics, monitors and other inputs.
+type SplitSources = (
+    Vec<AudioDeviceInfo>,
+    Vec<AudioDeviceInfo>,
+    Vec<AudioDeviceInfo>,
+);
 
 fn description(source: &Value, name: &str, is_monitor: bool) -> String {
     let usable = |v: &Value| {
@@ -1033,6 +1085,7 @@ mod tests {
                 device("alsa_output.pci.monitor", true),
                 device("alsa_output.usb-Yeti.analog-stereo.monitor", true),
             ],
+            other_inputs: Vec::new(),
             default_source: source,
             default_sink: sink,
         };

@@ -15,8 +15,9 @@ use qrec_core::config::UserConfig;
 pub use crate::facts::ConfigFile;
 
 /// The most `config.toml` and `keys.toml` may hold: the GTK thread reads
-/// them before the window maps (GUI R1).
-pub const MAX_BYTES: u64 = 1 << 20;
+/// them before the window maps (GUI R1). Every reader's bound
+/// (`qrec_core::config::MAX_FILE_BYTES`).
+pub const MAX_BYTES: u64 = qrec_core::config::MAX_FILE_BYTES;
 
 /// `config.toml` at `path` as the GUI reads it at startup: its settings,
 /// or the defaults when there is none or it can't be used, and the

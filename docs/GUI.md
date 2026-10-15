@@ -167,7 +167,7 @@ requirement review's numbering; H-n are host and engine calls.
 | D-09 | `n` / `ui.snapping` also governs canvas snapping. No bypass modifier: nudge with the arrows instead. | WP4 |
 | D-10 | `Tab` switches Live/Program in the main window; inside overlays and text fields it moves focus (GTK). Region focus cycling is the new keymap bindings `region.next` (`F6`) and `region.prev` (`Shift+F6`), group View, rebindable: header → transport → timeline toolbar → timeline → panel → bin when open (BRIEF §6). Quit is the binding `app.quit` (`Ctrl+Q`). | WP0a, WP0b |
 | D-11 | Key precedence is the algorithm in G§3.8. Chrome buttons are `focus-on-click = false`, so a click never makes `Space` or `Enter` activate a button. The bin list's `↑` `↓` `Enter` `Space` (Q6) and the keys inside overlays (`Tab`, `Enter`, `↑` `↓` in a list) are widget keys, not bindings, like typing in a field. | WP0b |
-| D-12 | Window close and `app.quit`. Countdown: `RecordCancel`. Starting or Recording: `RecordStop`; the window stays (finalizing) and closes once Idle. Export running: modal "Quit while exporting?" with Keep exporting (focused) and Cancel export and quit. Autocut analysis: dropped. Recovery probe: wait (≤ 60 s). | WP0b, WP6 |
+| D-12 | Window close and `app.quit`. Countdown: `RecordCancel`. Starting or Recording: `RecordStop`; the window stays (finalizing) and closes once Idle. Export running: modal "Quit while exporting?" with Keep exporting (focused) and Cancel export and quit. Autocut analysis: dropped (the closing host doesn't wait for it and dropping its Session cancels it: nothing is cut, also for the "autocut after every take" analysis of the take just stopped). Recovery probe: wait (≤ 60 s; then the host stops waiting and the next open recovers the take). | WP0b, WP6 |
 | D-13 | A second GUI on a project a GUI holds gets the page "This project is open in another Qrec window" (pid) and Quit (exit 6). GUI hosts refuse the wire `shutdown` with `busy` "the Qrec window holds this project; close it there". | WP0a, WP0b |
 | D-14 | The GUI never adopts another folder's project: no live-host fallback and no ancestor project. A folder inside a project gets X2 with the extra line "It's inside the project <dir>; run qrec there." | WP0b |
 | D-15 | Autocut page (S12). The sliders are a draft: tuning writes no history. At most one dry run is in flight: a change made while one runs is kept and sent when its reply arrives (newest wins, 250 ms debounce). While a dry run runs, the summary title shows a 16 px spinner and "Analyzing…"; clip plates show the analyzing spinner only for `Autocut` jobs with `dry_run: false`. Apply = `AutocutSettings{patch}` with the changed fields (only if any changed), then `Autocut{scope, dry_run: false}`: two entries, the cut undoes first. Cancel and `Esc` dispatch nothing. "Run autocut after every take" dispatches `AutocutSettings{auto_run_after_take}` at once. "Detect silence on" is part of the draft (`track`). | WP5 |
@@ -252,7 +252,9 @@ qrec (bin) ──► qrec-cli ────────────────�
      opened for append, with a header line `=== qrec <version> pid <pid>
      <RFC 3339> <dir> ===`, rotated to `.log.1` past 8 MiB and never
      truncated: a second GUI on the same project (which exits 6) doesn't
-     erase the first one's log, and GUIs on two projects never share one;
+     erase or move the first one's log (every GUI holds a shared `flock` on
+     its log; a start rotates only under the exclusive one), and GUIs on two
+     projects never share one;
    - `info`, `debug` with `-v`; warnings also on stderr; `OWN_CRATES`
      includes `qrec_gui`;
    - `host_log` (`cli_host.rs`, the CLI's "host disconnected" hint) names
@@ -328,12 +330,26 @@ impl GuiHost {
     pub fn start(spec: GuiHostSpec, port: Arc<dyn GuiPort>) -> Result<GuiHost, CoreError>; // worker: lock record, socket, IPC, signals; requests queue
     pub fn open(&self, opener: Box<dyn Opener + Send>);        // spawns qrec-session; Opened or OpenFailed
     pub fn fail(&self, err: CoreError);                        // every queued and later request gets `err`; stop; release the lock; Failed, then Stopped
-    pub fn submit(&self, req: Request, to: Box<dyn Responder>) -> bool; // the IPC FIFO; parked until attach
+    pub fn submit(&self, req: Request, to: Box<dyn Responder>) -> bool; // the IPC FIFO; parked until attach; exactly one answer
     pub fn retry_live(&self);                                  // posts Msg::RetryLive (D-50)
-    pub fn close(&self);                                       // stop accepting; exit once quiet (≤ 60 s); then Stopped
+    pub fn close(&self);                                       // behind earlier submits: stop accepting; exit once quiet (≤ 60 s); then Stopped
     pub fn is_finished(&self) -> bool;
 }
 ```
+
+- `close` takes the window's FIFO (a status query whose answer asks the
+  host to close), so everything the window submitted before runs first: a
+  debounced `SetUi` or `Seek` flushed as it closes, D-12's stop, D-16's
+  N commands. `submit` wraps `to` (`AnswerOnDrop`): a request the Session
+  never handled because the host stopped first (still queued, parked or
+  waiting for a late reply) answers with why, so a `Store::dispatch_with`
+  `done` (G§3.7) always runs. Once the host finishes, requests are refused
+  at once with that reason. (WP0a review.)
+- The `first` request's error is toasted only while the host serves its
+  Session: not before one is attached (a start that failed after the
+  server started, a close, a failed open), not for the refusal of a
+  Session a signal interrupted, not once stopping (`Stopped` and the other
+  host events say why). (WP0a review.)
 
 - `start` runs `Host::start(HostKind::Gui, …)` (A§8.3 step 1), with
   `first` pushed to the queue before the socket is renamed into place.
@@ -351,9 +367,12 @@ impl GuiHost {
   bool`. `decide` for a GUI host:
   - never `Unused` and never `Idle`;
   - `close_requested && quiet` → `Exit(HostEnd::Closed)` (new variant,
-    exit 0);
-  - `close_requested` for 60 s → `Exit(HostEnd::Closed)` anyway: dropping
-    the Session cancels jobs and finalizes a take within its own deadlines;
+    exit 0); autocut analyses don't count once the close came (D-12:
+    dropped; dropping the Session cancels them, so nothing is cut);
+  - `close_requested` for 60 s → `Exit(HostEnd::Closed)` anyway: the
+    Session stops waiting for a recovery probe too (`Msg::Abandon`; the
+    next open recovers that take), and dropping it cancels jobs and
+    finalizes a take within its own deadlines;
   - signals as for every host: 15 s grace, the second signal `hard_exit`s
     (A§8.6).
 - **Wire `shutdown`** to a GUI host gets `busy` (D-13). The IPC server
@@ -370,7 +389,9 @@ impl GuiHost {
 
 - `Deps.capture`: `GstCaptureEngine::spawn(EngineOptions { side:
   Some(side_tx), devices: Some(Arc::new(LiveDevices)), preview,
-  cast_grace: 60 s, ..EngineOptions::new(dir, Backend::from_env(), &dirs)
+  cast_grace: 60 s, fake: FakeHooks::from_env() (the fake backend; G§8.4's
+  hooks: `EngineOptions::new` takes none, so in-process tests never see an
+  exported one), ..EngineOptions::new(dir, Backend::from_env(), &dirs)
   })` with `preview = capture::PREVIEW_SINK_SUPPORTED.then(||
   PreviewOutput { sink: live_sink, max_size })`. Before WP1 sets that
   constant, the engine's RGBA appsink feeds `SideEvent::Preview` and
@@ -395,16 +416,26 @@ impl GuiHost {
 ```rust
 pub enum Holder { Free(ProjectLock), Host { hello: HelloInfo, socket: PathBuf }, Starting, Unresponsive(Option<LockRecord>) }
 pub fn find_holder(dir: &Path, env: &Env) -> Result<Holder, CoreError>;               // try_acquire, else hello (2 s)
-pub fn stop_recording(socket: &Path, timeout: Duration) -> Result<Value, CoreError>;  // RecordStop; waits for TakeFinalizedView
+pub enum Stopped { Finalized(TakeFinalizedView), Cancelled(String) }
+pub fn stop_recording(socket: &Path, timeout: Duration) -> Result<Stopped, CoreError>; // RecordStop; the finalized take, or no take
 pub fn request_shutdown(socket: &Path) -> Result<(), CoreError>;
 pub fn wait_for_lock(dir: &Path, timeout: Duration) -> Result<ProjectLock, CoreError>; // try_acquire every 50 ms
 ```
+
+`stop_recording` answers `Finalized` once the take is finalized, or at once
+`Cancelled("Countdown cancelled")` when the holder was still counting down
+(or "Recording cancelled before it started" for a start that waited for a
+recovery): no take was made, and Stop & open goes on with
+`request_shutdown` and `wait_for_lock` as usual. (Changed in the WP0a
+review: it returned the raw `CmdResult`, documented as always a finalized
+take.)
 
 | Holder | GUI |
 | --- | --- |
 | Free | `GuiHost::start` |
 | a GUI host | D-13 page, exit 6 |
-| `hello.record` not Idle | X1: elapsed from `Recording.elapsed_ns`, `hello` every 1 s. Stop & open → `stop_recording` (≤ 60 s) → `request_shutdown` → `wait_for_lock` (≤ 20 s). Quit → exit 6, the recording continues |
+| `hello.record` Countdown | no take yet: like starting, `hello` every 50 ms (for up to `remaining` + 3 s) until it records (the next row) or is idle |
+| `hello.record` Starting, Recording or Finalizing | X1: elapsed from `Recording.elapsed_ns`, `hello` every 1 s. Stop & open → `stop_recording` (≤ 60 s) → `request_shutdown` → `wait_for_lock` (≤ 20 s). Quit → exit 6, the recording continues |
 | an export job | D-29 page; percent from `export_progress_view` over `hello.jobs`, polled every 500 ms. Wait → until no jobs, then `request_shutdown` (headless) or wait for the CLI host to exit, then `wait_for_lock`. Quit → exit 6 |
 | idle | `request_shutdown` → `wait_for_lock` |
 | starting or stopping | retry every 50 ms for 3 s, then not responding |
@@ -1342,6 +1373,8 @@ pub fn enabled(state: &State, cmd: &Command) -> Result<(), String>;   // keymap:
 | `take_color(take)` | index (n − 1) mod 8 into moss, donkey, onion, mud, lily, ginger, dragon, fairy |
 | `peak(db)` | "−12.4", "0.0"; "—" below −60 |
 | `display_path(path, project_dir, home)` | inside the project → relative ("exports/…"); under `home` → "~/…"; else as given |
+| `local_hm(at, utc_offset_secs)` | "14:12", with the offset in force at `at` (the GUI asks its zone per instant) |
+| `local_when(at, now)` | "today at 15:02", "Oct 14 at 15:02", "Oct 14, 2025 at 15:02" (both `DateTime<FixedOffset>`, each on the clock of its own instant) |
 
 Plus `KeyChord::cap_legends()` (WP0a, `keymap.rs`): modifiers first as
 separate caps ("Ctrl", "Alt", "Shift", "Super"), then the key: letters
@@ -1453,6 +1486,11 @@ Status string (right side): "Snapping on" / "Snapping off", then
   the "Not built yet" toast (G§1.1).
 - Narrow layout only: a layers button (`qrec-layers-symbolic`, 32×32, left
   of Record) toggles `Overlay::LayersSheet`; tooltip "Onion layers".
+  `header(&State, &GuiFacts, &Keymap, narrow: bool) -> HeaderView`: the
+  GUI passes `LocalUi.layout == Narrow`, since `GuiFacts` (shared with the
+  hint bar) has no layout, and `layers_button` = `narrow` (built by WP0a).
+  (Changed in the WP0a review: `header` had no input that said the layout
+  was narrow, so the button could never show.)
 
 ### G§4.5 `view::timeline` and `view::ruler` (WP3)
 
@@ -1766,7 +1804,15 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     for tooShort; Recovered (neutral) for ok and recovered; else Unused
     (neutral).
   - Mono line "<duration> · <local HH:MM of recordedAt> · <size>"
-    (duration "—" when broken).
+    (duration "—" when broken). The local time uses the UTC offset in
+    force when the take was recorded, not the one now:
+    `bin_rows(&State, sizes: &BTreeMap<TakeId, u64>, offsets:
+    &BTreeMap<TakeId, i32>, fallback_offset_secs: i32)`, where the GUI
+    fills `offsets` per take from its zone
+    (`Local.offset_from_utc_datetime(&recorded_at.naive_utc())`) and
+    `fallback_offset_secs` is the offset now; `bin::recorded_hm` (WP0a)
+    gives the "14:12". (Changed in the WP0a review: one `utc_offset_secs`
+    for every take showed a take recorded before a DST change an hour off.)
   - Secondary line (D-18), first that applies:
 
     | Take | Line |
@@ -1792,12 +1838,21 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     Purge `TakePurge{takes}` (the modal comes from
     `confirmation_required`).
 - **Export**:
-  - Captions: MP4 "H.264 + AAC 192 kbps · VA-API on renderD129" when
-    `capabilities.vaapi.ffmpeg_h264` (the node's basename), else "H.264 +
-    AAC 192 kbps · software encode (x264)"; WebM "VP9 + Opus 128 kbps ·
-    software encode"; WebM with AV1 "AV1 + Opus 128 kbps · software encode
-    (libsvtav1)". The AV1 switch is disabled without `libsvtav1` in the
-    ffmpeg encoders: "This ffmpeg has no libsvtav1".
+  - Captions, `caption(format, codec, &State, &UserConfig)` (built by
+    WP0a; the GUI passes the user config it read at startup, the one it
+    gives `Ctx::preview`): MP4 "H.264 + AAC 192 kbps · VA-API on
+    renderD129" (the node's basename) when
+    `export_plan::export_vaapi(project, config, capabilities)` names a
+    node, else "H.264 + AAC 192 kbps · software encode (x264)". That is the
+    rule the export encodes by (the effective encoder isn't x264, the node
+    is the pinned one, its chain works), so x264 preferred by
+    `config.toml` or the project, or a pin on another node, reads x264
+    even where VA-API works. (Changed in the WP0a review: the caption was
+    keyed on `capabilities.vaapi.ffmpeg_h264` alone and took only the
+    capabilities.) WebM "VP9 + Opus 128 kbps · software encode"; WebM with
+    AV1 "AV1 + Opus 128 kbps · software encode (libsvtav1)". The AV1
+    switch is disabled without `libsvtav1` in the ffmpeg encoders: "This
+    ffmpeg has no libsvtav1".
   - Output preview: `naming::export_file_name(name, local now)`.
   - Summary "1920×1080 · 30 fps · 00:04:06:11 · 10 clips".
   - Running, from `on_event::output::export_readout` (WP0a):
@@ -1840,15 +1895,24 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
 
 ### G§4.9 `view::confirm` (WP6) and `view::notices` (WP0a)
 
-`confirm::modal(&Command, &CoreError, &State) -> ModalContent { title:
-"Get out of my swamp?", lead, body, list: Vec<(String, Option<String>)>,
-confirm }`:
+`confirm::modal(&Command, &CoreError, &State, &ConfirmFacts) ->
+ModalContent { title: "Get out of my swamp?", lead, body, list:
+Vec<(String, Option<String>)>, cancel, confirm }`. `ConfirmFacts { files:
+BTreeMap<String, SeenFile { display, modified }>, now }` is what the GUI
+knows that the core doesn't, by the path `details.files[].path` gives:
+`display` = `format::display_path(path, project_dir, home)`, `modified` =
+the mtime it stats on a worker (`None` if that failed), and `now`, both
+`DateTime<FixedOffset>` on the local clock of their own instant (so a DST
+change between them doesn't shift the time shown). Modals that name no
+existing file take `ConfirmFacts::default()`. (Changed in the WP0a review:
+`modal(&Command, &CoreError, &State)` had no mtime, home or local time for
+the overwrite copy, which WP0a now builds.)
 
 | Command | Lead / body / list / button |
 | --- | --- |
 | `TakePurge` (`details {files, historyEntriesLost, oldestKept}`) | "Purge take 2 and take 4 from disk?" (one: "Purge take 4 from disk?"; ≥ 3: "Purge 3 takes from disk?") / "This permanently deletes 10 files (184.1 MB). It can't be undone, and the 6 history entries that mention these takes are removed too." (the clause is dropped at 0 entries) / files with sizes / "Purge 2 takes" or "Purge take 4" |
 | `ProjectSet` with an fps change (Settings › Project; `details {clips:[{id,before,after}], removedClips}`) | "Change the canvas to 25 fps?" / "Clip bounds are re-quantized to the new frame rate. These 10 clips move by up to 1 frame:" (+ "c1b6 becomes empty and is removed." per removed clip) / every clip "c7f3 · take 1 · [0, 410) → [0, 342)" (8 visible, then it scrolls) / "Change fps" |
-| `Export` or `FrameSave` overwrite (`details {files:[{path,bytes}]}` + the GUI's stat of the mtime on a worker) | "Replace talk-final.mp4?" / "~/Videos/talk-final.mp4 already exists (91.2 MB, modified today at 15:02). Exporting here overwrites it." ("Saving the frame here overwrites it.") / — / "Replace file" |
+| `Export` or `FrameSave` overwrite (`details {files:[{path,bytes}]}` + `ConfirmFacts`) | "Replace talk-final.mp4?" / "~/Videos/talk-final.mp4 already exists (91.2 MB, modified today at 15:02). Exporting here overwrites it." ("Saving the frame here overwrites it."; another day "modified Oct 14 at 15:02", another year "Oct 14, 2025 at 15:02", `format::local_when`; an unknown size or mtime is left out, and an unknown display the path as given) / — / "Replace file" |
 | `HistoryClear` (WP9) | "Clear undo history?" / "This removes 128 undo steps from .qrec/history.jsonl. The timeline stays as it is, but you can't undo anything done before now." / — / "Clear history" |
 | anything else | the error message as lead / — / — / "Continue" |
 
@@ -2698,7 +2762,9 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
     its `WAYLAND_DISPLAY` would reach the user's session. Never the user's
     `wayland-1`.
 - **Client env.** The `TestEnv` vars (`HOME`, `XDG_*`,
-  `QREC_RUNTIME_DIR`, `QREC_CAPTURE_BACKEND=fake`);
+  `QREC_RUNTIME_DIR`, `QREC_CAPTURE_BACKEND=fake`, `TZ=UTC0`: the fixture's
+  recording times are UTC, so the bin's local HH:MM reads BRIEF's 14:31 …
+  14:06 on any machine; added in the WP0a review);
   `WAYLAND_DISPLAY=<nested>`; `GDK_BACKEND=wayland`;
   `GSETTINGS_BACKEND=memory`; `GSETTINGS_SCHEMA_DIR` built like the spike;
   `GTK_A11Y=none` except for the a11y walk; a private `dbus-daemon` with no
@@ -2764,7 +2830,10 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
     - `.qrec/ui.json` presets (playhead, selection, zoom, scroll, canvas
       mode, bin) written per case before launch.
   - `Take10Landed`: `Base` plus take 10 (donkey, 4,842 frames, placed as
-    the 11th clip), for S05b.
+    the 11th clip), for S05b, with take 10's placement as the history's
+    one entry ("Record take 10", `cmd` `{"event":"takeFinalized"}`, the
+    cursor on it; the base is the timeline before it), so `[D] Discard
+    last take` is emphasized (G§4.3). (Added in the WP0a review.)
   - `MissingL2`: `Base` with take 5's L2 marked `missing` (S13b's
     "Missing in this take" row, C16's missing-media clip).
   - `Smoke`: `Base`'s scene and takes with a 3-clip, 90-frame timeline, so
@@ -2785,9 +2854,11 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   `DP-4`, `HDMI-A-1` and `/dev/video0`; test patterns instead of the
   generated screen and webcam images; file sizes; elapsed and ETA times;
   the export caption "software encode (x264)" (the fake backend probes no
-  VA device; the VA-API caption is a `view::export` snapshot); take 2 reads
-  "Removed from the timeline." because the fixture writes no history
-  ("Discarded with D." is a `view::bin` snapshot).
+  VA device; the VA-API caption is a `view::export` test); take 2 reads
+  "Removed from the timeline." because the fixture writes no history but
+  `Take10Landed`'s one entry ("Discarded with D." is a `view::bin`
+  snapshot). Recording times aren't a difference: the client env pins
+  `TZ=UTC0`, so they read BRIEF's on any machine.
 
 **Cases** (the owner's `crates/qrec/tests/gui_<area>.rs`, `#[ignore]`):
 

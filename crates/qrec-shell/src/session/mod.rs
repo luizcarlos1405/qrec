@@ -110,6 +110,10 @@ pub struct Session {
     recovery_news: bool,
     shutdown: bool,
     interrupts: u32,
+    /// The host stopped waiting for this Session's own work
+    /// ([`Msg::Abandon`]): a recovery probe still out no longer holds
+    /// [`Session::run_until`].
+    abandoned: bool,
     /// A request's change was saved (committed). Recovery mode keeps
     /// events' changes in memory only until then (A§7.7).
     request_saved: bool,
@@ -181,6 +185,16 @@ impl Session {
             Msg::Interrupt => self.handle_interrupt(),
             Msg::Shutdown => self.shutdown = true,
             Msg::RetryLive => self.retry_live(),
+            Msg::Abandon => {
+                if !self.state.runtime.recovering.is_empty() {
+                    tracing::warn!(
+                        "the host stops waiting for the recovery of {} take(s); the next open \
+                         recovers them",
+                        self.state.runtime.recovering.len()
+                    );
+                }
+                self.abandoned = true;
+            }
         }
         self.tick();
     }
@@ -270,15 +284,18 @@ impl Session {
     /// once no recovery probe is out either: like a running job, a recovery
     /// is work a host waits for, so it never exits and drops the answer
     /// (A§5.3, A§8.6). The media runner always answers within its timeouts.
-    /// After an interrupt it ends as soon as `done` holds: the host's own
-    /// grace period decides then (A§8.6), and the next open recovers the
-    /// take again.
+    /// After an interrupt, or once the host gave up waiting
+    /// ([`Msg::Abandon`]: a GUI host's close grace ran out), it ends as soon
+    /// as `done` holds: the host's own grace period decides then (A§8.6),
+    /// and the next open recovers the take again.
     pub fn run_until(&mut self, mut done: impl FnMut(&State) -> bool) {
         loop {
             self.tick();
             // Always asked: a recovery still out only keeps the run going.
             let finished = done(&self.state);
-            let recovering = !self.state.runtime.recovering.is_empty() && self.interrupts == 0;
+            let recovering = !self.state.runtime.recovering.is_empty()
+                && self.interrupts == 0
+                && !self.abandoned;
             if finished && !recovering {
                 return;
             }

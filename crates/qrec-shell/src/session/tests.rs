@@ -2327,6 +2327,44 @@ fn run_until_asks_its_caller_while_a_recovery_is_out() {
     );
 }
 
+/// A GUI host whose close grace ran out gives up on the recovery
+/// (`Msg::Abandon`): the run ends as soon as its `done` holds, with the
+/// probe still out (the take stays `recording`; the next open recovers it).
+/// Without it the probe held the hidden host for as long as it ran.
+#[test]
+fn abandon_ends_a_run_a_recovery_holds() {
+    let h = Harness::new("abandoned-recovery");
+    write_crashed_take(&h);
+    let mut s = h.open(true).unwrap();
+    assert_eq!(s.recovering().len(), 1);
+    let inbox = s.inbox();
+    let jobs = recovery_probe_jobs(&s, &take(2));
+    let (abandoned, too_late) = std::sync::mpsc::channel::<()>();
+    let helper = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        inbox.send(Msg::Abandon);
+        // Answered only if the run never ended (a failing test, not a hang).
+        if too_late.recv_timeout(Duration::from_secs(5)).is_err() {
+            inbox.event(Event::TakeProbed {
+                take: take(2),
+                purpose: ProbePurpose::Recover,
+                results: jobs.iter().map(|j| probed_job(j, 90)).collect(),
+            });
+        }
+    });
+    let started = Instant::now();
+    s.run_until(|_| true);
+    let took = started.elapsed();
+    let _ = abandoned.send(());
+    helper.join().unwrap();
+    assert!(took < Duration::from_secs(2), "{took:?}");
+    assert_eq!(s.recovering().len(), 1, "still out: the next open retries");
+    assert_eq!(
+        s.state().project.takes[&take(2)].status,
+        TakeStatus::Recording
+    );
+}
+
 #[test]
 fn capabilities_are_known_before_the_first_dispatch() {
     let h = Harness::with_sample("caps");

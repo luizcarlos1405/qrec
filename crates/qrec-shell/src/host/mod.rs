@@ -32,11 +32,15 @@
 //!
 //! **Exit rules** (GUI, docs/GUI.md G§3.4.1): a window holds the host, so it
 //! never idles out and refuses `shutdown`; it exits once its window asked to
-//! close ([`gui::GuiHost::close`]: it stops accepting at once) and it is
-//! quiet, or 60 s after that request whatever still runs (dropping the
-//! Session cancels jobs and finalizes a take within their own deadlines).
-//! Signals as for every host; the second one hard-exits like a headless
-//! host. [`takeover`] makes another host let go of the project first.
+//! close ([`gui::GuiHost::close`]: the request rides the window's FIFO, so
+//! what the window sent before runs first; then the host stops accepting)
+//! and it is quiet, autocut analyses aside (the close drops them, D-12), or
+//! 60 s after that request whatever still runs: the Session then stops
+//! waiting for a recovery probe too (`Msg::Abandon`; the next open recovers
+//! the take), and dropping it cancels jobs and finalizes a take within their
+//! own deadlines. Signals as for every host; the second one hard-exits like
+//! a headless host. [`takeover`] makes another host let go of the project
+//! first.
 //!
 //! The Session only re-evaluates the exit rules when it handles a message,
 //! so a waker thread sends a cheap nudge (a `Query::Status` nobody waits
@@ -58,7 +62,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{SubsecRound, Utc};
 use qrec_core::protocol::{Command, Progress, Query};
-use qrec_core::state::{HostKind, JobKind};
+use qrec_core::state::{HostKind, JobKind, Runtime};
 use qrec_core::{CoreError, State};
 use serde_json::Value;
 
@@ -277,6 +281,21 @@ pub(crate) enum Decision {
     Exit(HostEnd),
     /// Keep running; look again at this time (if any).
     Wait(Option<Instant>),
+}
+
+/// What a GUI host whose window closed still waits for (G§3.4.1, D-12): a
+/// recording, a recovery probe and every job but an autocut analysis, which
+/// the close drops (finishing it would cut clips after the window is gone;
+/// dropping the Session cancels its ffmpeg runs). That includes the
+/// analysis that "autocut after every take" starts when the take the
+/// window stopped is placed: the take stays, uncut.
+pub(crate) fn busy_after_close(runtime: &Runtime) -> bool {
+    !runtime.record.is_idle()
+        || !runtime.recovering.is_empty()
+        || runtime
+            .jobs
+            .values()
+            .any(|job| !matches!(job.kind, JobKind::Autocut { .. }))
 }
 
 /// The A§8.6 exit rules as a pure function.
@@ -705,8 +724,10 @@ impl Host {
         let mut end = None;
         let mut stopping_noted = false;
         let mut closing_noted = false;
+        let mut abandoned = false;
         let mut spontaneous = 0u32;
         let gui = self.kind == HostKind::Gui;
+        let inbox = session.inbox();
         self.waker.wake_now();
         loop {
             let mut done = |state: &State| {
@@ -733,7 +754,14 @@ impl Host {
                         .any(|job| matches!(job.kind, JobKind::Export { .. })),
                 );
                 // Recording, jobs, or a startup recovery still out (A§8.6).
-                let busy = state.runtime.is_busy();
+                // A closing window drops its autocut analyses (D-12): they
+                // don't keep its host, and dropping the Session cancels
+                // their ffmpeg runs before anything is cut.
+                let busy = if close_requested.is_some() {
+                    busy_after_close(&state.runtime)
+                } else {
+                    state.runtime.is_busy()
+                };
                 if busy {
                     state_quiet_since = None;
                 } else if state_quiet_since.is_none() {
@@ -763,6 +791,15 @@ impl Host {
                 // after one that said stop (A§5.3: a recovery still out).
                 match decide(&inputs, &self.rules) {
                     Decision::Exit(why) => {
+                        // The close grace ran out while work is still out:
+                        // the Session stops waiting for it too, or a
+                        // recovery probe would hold its run past the grace
+                        // (A§5.3; the next open recovers that take).
+                        let quiet = !busy && stats.open == 0;
+                        if why == HostEnd::Closed && !quiet && !abandoned {
+                            abandoned = true;
+                            inbox.send(Msg::Abandon);
+                        }
                         end = Some(why);
                         true
                     }
@@ -819,9 +856,11 @@ impl Host {
         self.server.send(Msg::Shutdown);
     }
 
-    /// The window asked to close (G§3.4.1): the record says `stopping` and
-    /// the socket goes; the GUI already sent what ends a recording or a job
-    /// (D-12), the rules wait until that is over.
+    /// The window asked to close (G§3.4.1), once the Session handled what
+    /// the window sent before: the record says `stopping` and the socket
+    /// goes; the GUI already sent what ends a recording or an export
+    /// (D-12), the rules wait until that is over and drop autocut
+    /// analyses ([`busy_after_close`]).
     fn on_close_request(&self) {
         self.mark_stopping();
         self.server.stop_accepting();
@@ -834,12 +873,18 @@ impl Host {
     }
 
     /// The exit sequence (A§8.3 step 3): record `stopping`, stop accepting
-    /// and unlink the socket, drop the Session (requests it still held are
-    /// answered), let replies flush (≤ `flush_timeout`, ≤ 1 s for a host
-    /// hurried by a second signal), then release the lock by closing it.
+    /// and unlink the socket, refuse what comes from now on with `why`,
+    /// drop the Session (requests it still held answer from their
+    /// responders' `Drop`, msg.rs), let replies flush (≤ `flush_timeout`,
+    /// ≤ 1 s for a host hurried by a second signal), then release the lock
+    /// by closing it.
     pub fn finish(self, session: Option<Box<dyn HostSession>>, why: CoreError) {
         self.mark_stopping();
         self.server.stop_accepting();
+        // Dropping the Session can take seconds (the capture engine's
+        // shutdown); a window's request meanwhile hears `why` at once
+        // instead of queueing into a Session about to go.
+        self.server.fail(why.clone());
         drop(session);
         let hurried = self.ctl.hurried_at().is_some();
         if hurried {

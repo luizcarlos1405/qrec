@@ -2,8 +2,7 @@
 //! folder rule, sends the request and renders the reply with the exit
 //! code of SPEC §14 / A§4.8.
 
-use std::fs;
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use clap::CommandFactory;
@@ -138,13 +137,7 @@ fn run_local(
         }
         Local::Keys => {
             let path = backend.config_dir()?.join("keys.toml");
-            let text = match fs::read_to_string(&path) {
-                Ok(text) => text,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
-                Err(e) => {
-                    return Err(CoreError::io(format!("can't read {}: {e}", path.display())));
-                }
-            };
+            let text = backend.settings_text(&path)?.unwrap_or_default();
             let map = qrec_core::keymap::resolve(&text);
             if ui.json {
                 for problem in human::key_problems(&map) {
@@ -159,7 +152,8 @@ fn run_local(
         }
         Local::ConfigList => {
             let path = config::file(&backend.config_dir()?);
-            let cfg = config::load(&path)?;
+            let text = backend.settings_text(&path)?.unwrap_or_default();
+            let cfg = config::load(&text, &path)?;
             let values = config::values(&cfg);
             if ui.json {
                 ui.print_ok(&json!({ "file": path.display().to_string(), "config": values }));
@@ -172,7 +166,8 @@ fn run_local(
         }
         Local::ConfigGet(key) => {
             let path = config::file(&backend.config_dir()?);
-            let value = config::get(&config::load(&path)?, key)?;
+            let text = backend.settings_text(&path)?.unwrap_or_default();
+            let value = config::get(&config::load(&text, &path)?, key)?;
             if ui.json {
                 ui.print_ok(&json!({ "key": key, "value": value }));
             } else {
@@ -181,7 +176,8 @@ fn run_local(
         }
         Local::ConfigSet { key, value } => {
             let path = config::file(&backend.config_dir()?);
-            let new = config::set(&path, key, value)?;
+            let text = backend.settings_text(&path)?.unwrap_or_default();
+            let new = config::set(&path, &text, key, value)?;
             if ui.json {
                 ui.print_ok(&json!({
                     "key": key, "value": new, "file": path.display().to_string()

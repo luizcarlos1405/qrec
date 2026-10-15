@@ -21,7 +21,9 @@ use qrec_core::model::{Project, ProjectDefaults};
 use qrec_core::protocol::{
     Command as CoreCommand, HelloInfo, Progress, ProgressPhase, Query, WireBody,
 };
-use qrec_core::state::{History, HostKind, Job, JobKind, RecordMode, RecordPhase, UiState};
+use qrec_core::state::{
+    AutocutParams, History, HostKind, Job, JobKind, RecordMode, RecordPhase, UiState,
+};
 use qrec_core::{CoreError, Ctx, Event, Facts, JobId, ReqId, State, TakeId};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -334,7 +336,11 @@ impl FakeLog {
 ///   `ExportCancel` and `Msg::Interrupt` cancel jobs (unless `stubborn`);
 /// - `RecordStart`/`RecordToggle` record until `RecordStop` (waiters with
 ///   `wait` get the finalized reply), except while an export runs: they
-///   get the core's `Busy` (`export_blocks_recording`, A§5.3).
+///   get the core's `Busy` (`export_blocks_recording`, A§5.3);
+/// - `ms:N:autocut` is a `JobKind::Autocut` job (an analysis);
+/// - with `recovering`, a crashed take's Recover probe is out and never
+///   answered: like the real Session's, the run doesn't end while it is,
+///   unless an interrupt or `Msg::Abandon` came.
 ///
 /// `done` is evaluated only after a handled message — the strictest reading
 /// of `run_until` — so hosts must nudge it; after 30 s without a message it
@@ -350,6 +356,8 @@ pub(crate) struct FakeSession {
     jobs: Vec<FakeJob>,
     record_waiters: Vec<Box<dyn Responder>>,
     stubborn: bool,
+    /// An interrupt or `Msg::Abandon` came: a recovery holds the run no more.
+    let_go: bool,
 }
 
 struct FakeJob {
@@ -380,7 +388,14 @@ impl FakeSession {
             jobs: Vec::new(),
             record_waiters: Vec::new(),
             stubborn,
+            let_go: false,
         }
+    }
+
+    /// A crashed take's Recover probe is out (and never answered).
+    pub fn recovering(mut self) -> Self {
+        self.state.runtime.recovering.insert(TakeId::numbered(7));
+        self
     }
 
     fn hello(&self) -> HelloInfo {
@@ -421,6 +436,7 @@ impl FakeSession {
             Msg::Event(event) => self.event(event),
             Msg::Interrupt => {
                 self.log.push(json!({ "event": "interrupt" }));
+                self.let_go = true;
                 if !self.stubborn {
                     self.cancel_jobs("interrupted");
                 }
@@ -428,6 +444,10 @@ impl FakeSession {
             Msg::Shutdown => self.log.push(json!({ "event": "shutdown" })),
             Msg::DiskChanged => self.log.push(json!({ "event": "diskChanged" })),
             Msg::RetryLive => self.log.push(json!({ "event": "retryLive" })),
+            Msg::Abandon => {
+                self.log.push(json!({ "event": "abandon" }));
+                self.let_go = true;
+            }
         }
     }
 
@@ -468,7 +488,18 @@ impl FakeSession {
             CoreCommand::RecordStop | CoreCommand::RecordToggle { .. } if recording => {
                 self.state.runtime.record = RecordPhase::Idle;
                 self.log.push(json!({ "event": "finalized" }));
-                let done = Self::handled(json!({ "finalized": true }));
+                // A `CmdResult` whose result is the `TakeFinalizedView`.
+                let done = Self::handled(json!({
+                    "finalized": true,
+                    "message": "Take 1 finalized",
+                    "result": {
+                        "take": "take-0001",
+                        "status": "ok",
+                        "durationFrames": 30,
+                        "placed": true,
+                        "clips": ["c1"],
+                    },
+                }));
                 for mut waiter in self.record_waiters.drain(..) {
                     waiter.reply(Ok(done.clone()));
                 }
@@ -528,6 +559,20 @@ impl FakeSession {
                 stitch_total_ns: 0,
                 stitch_done_ns: 0,
                 stitching: false,
+            }
+        } else if flags.contains(&"autocut") {
+            JobKind::Autocut {
+                cmd: json!({ "cmd": "autocut" }),
+                targets: Vec::new(),
+                params: AutocutParams {
+                    threshold_db: -35.0,
+                    min_silence_ms: 400,
+                    padding_ms: 120,
+                    min_keep_ms: 200,
+                },
+                dry_run: true,
+                pending: Default::default(),
+                ready: false,
             }
         } else {
             JobKind::Purge { takes: Vec::new() }
@@ -632,7 +677,8 @@ impl HostSession for FakeSession {
             match self.rx.recv_timeout(Duration::from_secs(30)) {
                 Ok(msg) => {
                     self.handle(msg);
-                    if done(&self.state) {
+                    let held = !self.state.runtime.recovering.is_empty() && !self.let_go;
+                    if done(&self.state) && !held {
                         return;
                     }
                 }
@@ -660,6 +706,9 @@ pub(crate) struct FakeOpener {
     pub delay: Duration,
     /// The project the Session starts with (default: a new empty one).
     pub project: Option<Project>,
+    /// The Session starts recovering a crashed take whose probe never
+    /// answers ([`FakeSession::recovering`]).
+    pub recovering: bool,
 }
 
 impl FakeOpener {
@@ -693,13 +742,18 @@ impl Opener for FakeOpener {
         if let Some(e) = &self.fail {
             return Err(ShellError::Core(e.clone()));
         }
-        Ok(Box::new(FakeSession::new(
+        let session = FakeSession::new(
             dir,
             opts.host,
             self.log.clone(),
             self.stubborn,
             self.project.clone(),
-        )))
+        );
+        Ok(Box::new(if self.recovering {
+            session.recovering()
+        } else {
+            session
+        }))
     }
 }
 

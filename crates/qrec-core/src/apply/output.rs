@@ -11,19 +11,17 @@ use serde_json::json;
 
 use crate::apply::Outcome;
 use crate::apply::history::byte_size;
-use crate::config::UserConfig;
 use crate::ctx::{Ctx, FileId};
 use crate::error::CoreError;
-use crate::export_plan::{ExportOptions, plan_export, require_ffmpeg, resolve_codec};
+use crate::export_plan::{ExportOptions, export_vaapi, plan_export, require_ffmpeg, resolve_codec};
 use crate::frame_plan::{frame_source, plan_frame};
 use crate::ids::{JobId, LayerId};
-use crate::model::{EncoderPref, Project};
 use crate::naming::{export_file_name, frame_file_name};
 use crate::on_event::output::export_progress_view;
 use crate::protocol::command::{ExportFormat, Quality, VideoCodec};
 use crate::protocol::effect::{Effect, LogLevel};
 use crate::protocol::reply::CmdResult;
-use crate::state::{Capabilities, Job, JobKind, State};
+use crate::state::{Job, JobKind, State};
 use crate::time::{TimeArg, frame_ns};
 use crate::timeline::{absolute_frame, total_frames};
 
@@ -68,7 +66,7 @@ pub fn export(
         quality,
         codec,
         out,
-        allow_vaapi: allow_vaapi(project, &ctx.facts.config, caps),
+        allow_vaapi: export_vaapi(project, &ctx.facts.config, caps).is_some(),
     };
     let mut plan = plan_export(project, caps, &opts)?;
     plan.replace = replace;
@@ -234,35 +232,13 @@ fn checked_out(
     }
 }
 
-/// The VA export chain may be used when the effective encoder (A§2.1) isn't
-/// x264 and the VA node the shell verified is the effective device. Whether
-/// the chain works on this machine is `VaapiCaps::ffmpeg_h264`, checked by
-/// the planner.
-fn allow_vaapi(project: &Project, config: &UserConfig, caps: &Capabilities) -> bool {
-    let preference = match project.recording.encoder {
-        EncoderPref::Auto => config.encoder.preference,
-        explicit => explicit,
-    };
-    if preference == EncoderPref::X264 {
-        return false;
-    }
-    let device = project
-        .recording
-        .vaapi_device
-        .as_ref()
-        .or(config.encoder.vaapi_device.as_ref());
-    match (&caps.vaapi, device) {
-        (Some(va), Some(device)) => va.device == *device,
-        (Some(_), None) => true,
-        (None, _) => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::UserConfig;
     use crate::ctx::OutFacts;
     use crate::ids::{ReqId, TakeId};
+    use crate::model::EncoderPref;
     use crate::protocol::command::Command;
     use crate::state::{RecordMode, RecordPhase, VaapiCaps};
     use crate::testkit::{self, ProjectBuilder};
@@ -513,6 +489,8 @@ mod tests {
         assert_eq!(render_plan(&out).replace, None);
     }
 
+    /// The export encodes on VA-API only where `export_vaapi` says so,
+    /// which the GUI's caption asks too (`view::export::caption`).
     #[test]
     fn effective_encoder() {
         let mut state = state();
@@ -524,38 +502,47 @@ mod tests {
         });
         let mut config = UserConfig::default();
         let caps = state.runtime.capabilities.clone();
-        assert!(allow_vaapi(&state.project, &config, &caps));
+        let node = |state: &State, config: &UserConfig| {
+            export_vaapi(&state.project, config, &caps).map(|va| va.device.clone())
+        };
+        assert_eq!(
+            node(&state, &config).as_deref(),
+            Some("/dev/dri/renderD129")
+        );
         config.encoder.preference = EncoderPref::X264;
-        assert!(
-            !allow_vaapi(&state.project, &config, &caps),
-            "config prefers x264"
-        );
+        assert_eq!(node(&state, &config), None, "config prefers x264");
         state.project.recording.encoder = EncoderPref::Vaapi;
-        assert!(
-            allow_vaapi(&state.project, &config, &caps),
-            "the project wins"
-        );
+        assert!(node(&state, &config).is_some(), "the project wins");
         config.encoder.vaapi_device = Some("/dev/dri/renderD128".into());
-        assert!(
-            !allow_vaapi(&state.project, &config, &caps),
-            "verified another node"
-        );
+        assert_eq!(node(&state, &config), None, "verified another node");
         state.project.recording.vaapi_device = Some("/dev/dri/renderD129".into());
-        assert!(allow_vaapi(&state.project, &config, &caps));
-        let ctx = testkit::ctx(NOW, 1);
-        let out = apply(&state, &ctx, export_cmd(None)).unwrap();
+        assert!(node(&state, &config).is_some(), "the project's pin wins");
+        let mut broken = caps.clone();
+        broken.vaapi.as_mut().unwrap().ffmpeg_h264 = false;
         assert!(
-            render_plan(&out).segments[0]
-                .argv
-                .contains(&"h264_vaapi".to_owned())
+            export_vaapi(&state.project, &config, &broken).is_none(),
+            "the VA chain doesn't work"
         );
+
+        let encoder = |state: &State, ctx: &Ctx| {
+            let out = apply(state, ctx, export_cmd(None)).unwrap();
+            let argv = &render_plan(&out).segments[0].argv;
+            ["h264_vaapi", "libx264"]
+                .into_iter()
+                .find(|e| argv.iter().any(|a| a == e))
+                .unwrap()
+        };
+        let mut ctx = testkit::ctx(NOW, 1);
+        ctx.facts.config = config.clone();
+        assert_eq!(encoder(&state, &ctx), "h264_vaapi");
         state.project.recording.encoder = EncoderPref::X264;
-        let out = apply(&state, &ctx, export_cmd(None)).unwrap();
-        assert!(
-            render_plan(&out).segments[0]
-                .argv
-                .contains(&"libx264".to_owned())
-        );
+        assert_eq!(encoder(&state, &ctx), "libx264");
+        // The user config's preference reaches the export through its facts.
+        state.project.recording.encoder = EncoderPref::Auto;
+        ctx.facts.config.encoder.preference = EncoderPref::X264;
+        assert_eq!(encoder(&state, &ctx), "libx264");
+        ctx.facts.config.encoder.preference = EncoderPref::Auto;
+        assert_eq!(encoder(&state, &ctx), "h264_vaapi");
     }
 
     #[test]

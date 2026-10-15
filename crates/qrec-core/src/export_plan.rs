@@ -69,6 +69,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::config::UserConfig;
 use crate::error::{CoreError, ErrorCode};
 use crate::hash::sha256_hex;
 use crate::ids::{ClipId, Frame, TakeId};
@@ -77,10 +78,12 @@ use crate::media_argv::{
     TAG_BT709, VAAPI_UPLOAD, color_args, ffmpeg_prelude, file_arg, number, output_args,
     seconds_arg, vaapi_device_args, vaapi_h264_args,
 };
-use crate::model::{AudioTrack, Canvas, Fps, Layer, Project, Stream, StreamKind, Take};
+use crate::model::{
+    AudioTrack, Canvas, EncoderPref, Fps, Layer, Project, Stream, StreamKind, Take,
+};
 use crate::plans::{ExportPlan, SegmentPlan, StitchPlan};
 use crate::protocol::command::{ExportFormat, Quality, VideoCodec};
-use crate::state::{Capabilities, FfmpegCaps};
+use crate::state::{Capabilities, FfmpegCaps, VaapiCaps};
 use crate::time::{NS_PER_MS, NS_PER_SEC, frame_ns};
 
 /// Bumped whenever generated argv change meaning (part of every cache key).
@@ -109,8 +112,42 @@ pub struct ExportOptions {
     /// (`exports/…`) for auto names.
     pub out: String,
     /// Use the VA export chain when `caps.vaapi.ffmpeg_h264`; false re-plans
-    /// with libx264 after a VA failure.
+    /// with libx264 after a VA failure. An export sets it from
+    /// [`export_vaapi`].
     pub allow_vaapi: bool,
+}
+
+/// The VA-API node an H.264 export of `project` encodes on, or `None` for
+/// libx264 (A§2.1, A§9.3): the effective encoder (the project's, else the
+/// user config's preference) isn't x264, the node the shell verified is the
+/// effective device (the project's pin, else the config's; no pin takes
+/// it), and its ffmpeg chain works (`VaapiCaps::ffmpeg_h264`). The export
+/// (`apply::output::export`) and the GUI's caption of it
+/// (`view::export::caption`) both ask this, so the caption names the
+/// encoder the export uses. A VA segment that fails at run time still
+/// switches the export to libx264 ([`without_vaapi`]).
+pub fn export_vaapi<'a>(
+    project: &Project,
+    config: &UserConfig,
+    caps: &'a Capabilities,
+) -> Option<&'a VaapiCaps> {
+    let va = caps.vaapi.as_ref().filter(|va| va.ffmpeg_h264)?;
+    let preference = match project.recording.encoder {
+        EncoderPref::Auto => config.encoder.preference,
+        explicit => explicit,
+    };
+    if preference == EncoderPref::X264 {
+        return None;
+    }
+    let pinned = project
+        .recording
+        .vaapi_device
+        .as_ref()
+        .or(config.encoder.vaapi_device.as_ref());
+    match pinned {
+        Some(device) if va.device != *device => None,
+        _ => Some(va),
+    }
 }
 
 /// A maximal run of continuous clips (same take, `out == next.in`).

@@ -8,9 +8,12 @@
 //!   its jobs), one that is starting or stopping (ask again in 50 ms; after
 //!   3 s it isn't responding), or one that doesn't answer.
 //! - A recording (X1, "Stop & open"): [`stop_recording`] (`RecordStop`,
-//!   its reply once the take is finalized, ≤ 60 s), then
+//!   its reply once the take is finalized, ≤ 60 s; at once, with no take,
+//!   when the holder was still counting down: [`Stopped`]), then
 //!   [`request_shutdown`], then [`wait_for_lock`] (≤ 20 s). "Quit" leaves
-//!   the recording alone.
+//!   the recording alone. A holder in its countdown has no take yet: the
+//!   window asks `hello` again like for one that is starting, until it
+//!   records (X1) or is idle.
 //! - An export (D-29): `hello` every 500 ms until no job runs (the percent
 //!   from `export_progress_view` over `hello.jobs`), then
 //!   [`request_shutdown`] (a headless host; a CLI command's host exits by
@@ -28,7 +31,8 @@ use std::time::{Duration, Instant};
 
 use qrec_core::CoreError;
 use qrec_core::protocol::{
-    Command, HelloInfo, WIRE_VERSION, WireBody, WireMessage, WireRequest, from_wire,
+    Command, HelloInfo, TakeFinalizedView, WIRE_VERSION, WireBody, WireMessage, WireRequest,
+    from_wire,
 };
 use serde_json::Value;
 
@@ -115,21 +119,55 @@ pub fn unresponsive(dir: &Path) -> Holder {
     Holder::Unresponsive(lockfile::read_live(dir).ok().flatten())
 }
 
-/// The X1 "Stop & open": `RecordStop` to the host on `socket` and its
-/// reply, which comes once the take is finalized (the `CmdResult` whose
-/// `result` is a `TakeFinalizedView`). The host's own errors come back as
-/// they are (`invalid` "not recording" when the take ended meanwhile);
-/// no reply within `timeout` is `busy`.
-pub fn stop_recording(socket: &Path, timeout: Duration) -> Result<Value, CoreError> {
+/// What the X1 "Stop & open" did ([`stop_recording`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stopped {
+    /// The take was finalized (the reply came once it was): what it became.
+    Finalized(TakeFinalizedView),
+    /// No take was being recorded yet: the holder was counting down (or its
+    /// start still waited for a startup recovery), and the stop cancelled
+    /// that at once. The holder's message: "Countdown cancelled",
+    /// "Recording cancelled before it started".
+    Cancelled(String),
+}
+
+/// The X1 "Stop & open": `RecordStop` to the host on `socket`. Its reply
+/// comes once the take is finalized ([`Stopped::Finalized`]), or at once
+/// when the holder was still counting down: the countdown is cancelled
+/// and no take is made ([`Stopped::Cancelled`]). The host's own errors come
+/// back as they are (`invalid` "not recording" when the take ended
+/// meanwhile); no reply within `timeout` is `busy`.
+pub fn stop_recording(socket: &Path, timeout: Duration) -> Result<Stopped, CoreError> {
     let body = WireBody::Command(Command::RecordStop);
     match exchange(socket, &body, Instant::now() + timeout) {
-        Ok(reply) => reply,
+        Ok(reply) => stopped(reply?),
         Err(Failure::Timeout) => Err(CoreError::busy(format!(
             "the recording didn't stop within {} s",
             timeout.as_secs_f64()
         ))
         .with_hint("the recorder may be stuck; Qrec recovers its take once that process is gone")),
         Err(failure) => Err(failure.into_error("stopping the recording")),
+    }
+}
+
+/// A `RecordStop`'s `CmdResult`: a `TakeFinalizedView` as its `result`, or
+/// no result when it cancelled what hadn't started.
+fn stopped(reply: Value) -> Result<Stopped, CoreError> {
+    match reply.get("result") {
+        None | Some(Value::Null) => Ok(Stopped::Cancelled(
+            reply
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        )),
+        Some(result) => serde_json::from_value(result.clone())
+            .map(Stopped::Finalized)
+            .map_err(|e| {
+                CoreError::io(format!(
+                    "stopping the recording: the host's reply isn't a finalized take: {e}"
+                ))
+            }),
     }
 }
 

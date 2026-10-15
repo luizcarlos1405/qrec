@@ -884,8 +884,9 @@ always finds the take their start began. A probe still out, whether
 commands still wait for it or not, is work like a running job: a host
 isn't idle meanwhile (A§8.6) and `Session::run_until` doesn't return
 before its answer, so no host exits and drops it (the runner always
-answers, A§8.7) — unless the host was interrupted: then its 15 s grace
-decides, and the next open recovers the take. `run_until` still asks its
+answers, A§8.7) — unless the host was interrupted, or a GUI host's close
+grace ran out (it sends `Msg::Abandon`): then the host's own grace decides,
+and the next open recovers the take. `run_until` still asks its
 host's `done` after every message meanwhile: that is where an in-process
 host passes its command's reply on (A§8.5), so the reply of a stop, which
 didn't wait, is printed at once, the recovery's toasts after it.
@@ -1351,7 +1352,7 @@ rewrites every file with its next commit, and the replies they send are
   facts need (A§4.2, A§8.12; a GUI's come from a cache, below).
   ```rust
   pub enum Msg { Request { req: Request, to: Box<dyn Responder> }, Event(Event),
-                 DiskChanged, Interrupt, Shutdown, RetryLive }
+                 DiskChanged, Interrupt, Shutdown, RetryLive, Abandon }
   #[derive(Clone)] pub struct Inbox(crossbeam_channel::Sender<Msg>);
   pub trait Responder: Send { fn accepted(&mut self); fn progress(&mut self, p: &Progress);
                               fn reply(&mut self, r: Result<serde_json::Value, CoreError>);
@@ -1360,7 +1361,13 @@ rewrites every file with its next commit, and the replies they send are
   Every request gets one answer: `reply` for its own outcome (also when it
   ran later, held for a recovery, A§5.3), `reply_late` for an
   `Effect::Reply` that an event's outcome sends (a started or finalized
-  take, a finished export; GUI H-7). The core toasts every late `Err`
+  take, a finished export; GUI H-7). A request the Session never handled
+  (still queued, parked or waiting for a late reply when its host stops) is
+  dropped, so the responders someone waits on answer from their own `Drop`
+  (`ConnResponder`, `ProxyResponder`, the GUI host's `AnswerOnDrop`).
+  `Abandon` tells a Session its host stopped waiting (a GUI host's close
+  grace ran out): `run_until` then ends with a recovery probe still out
+  (A§5.3). The core toasts every late `Err`
   itself (an `on_event` outcome that replies one also has a `Notify`, held
   by `tests/props_late_errors.rs`), so the GUI only logs late errors and
   toasts immediate ones. `RetryLive` is the GUI's live-preview retry: the
@@ -1435,13 +1442,22 @@ which an IPC responder keeps to post `RequesterGone` when its client leaves.
 Runtime dir: `$QREC_RUNTIME_DIR`, else `$XDG_RUNTIME_DIR/qrec`, else
 `/tmp/qrec-<uid>`; created 0700, then `lstat`-checked (real dir, our uid,
 0700) or refused. Config `$XDG_CONFIG_HOME/qrec` (`config.toml`,
-`keys.toml`: read whole by `config_file` and `keys_file`, at most 1 MiB and
-regular files only), state `$XDG_STATE_HOME/qrec` (portal tokens 0600;
+`keys.toml`: read whole, at most 1 MiB (`config::MAX_FILE_BYTES`) and
+regular files only, a FIFO refused at once instead of waited on, by
+`config_file::read_text`: the Sessions and the GUI through `config_file`
+and `keys_file`, `qrec config` and `qrec keys` through
+`Backend::settings_text`, which a build without the shell implements by
+checking the file before it opens it; only `gpu.rs`'s early
+`config_va_device` reads `config.toml` itself, with its own 64 MiB bound
+and also regular files only), state `$XDG_STATE_HOME/qrec` (portal tokens 0600;
 `gui-<first 12 hex of sha256(canonical project dir)>.log`, 0600, the log of
 the GUI windows of one project: each window appends a header line `=== qrec
 <version> pid <pid> <RFC 3339 time> <dir> ===` and its own lines, never
-truncating, and moves a log past 8 MiB to `.log.1` first; "host
-disconnected" names it for a GUI host), cache `$XDG_CACHE_HOME/qrec`
+truncating, and holds a shared `flock` on it while it runs; a start moves a
+log past 8 MiB to `.log.1` first, but only under the exclusive lock, so
+never while a window writes to it (a second `qrec` on a held project
+appends instead) and never twice at once; "host disconnected" names it for
+a GUI host), cache `$XDG_CACHE_HOME/qrec`
 (capabilities). Socket:
 `<runtime>/<sha256(canonical project dir) hex>.sock`; refuse paths over 107
 bytes. The publish name (A§8.3 step 1) is never longer, so every socket path
@@ -1516,9 +1532,13 @@ it through a `GuiPort`, docs/GUI.md G§3.4.1). `GuiHost::start` runs step 1
 on a worker of the window, under the lock the window took (free, or after a
 takeover, A§8.6): the folder rule again (another process may have filled an
 empty folder: `not_project`), the record says `starting`, the socket is
-published, the window's `first` request (`Init` in an empty folder; its
-error is toasted, unless it is "already a project") is parked in the server
-before its acceptor runs, so it reaches the Session ahead of every client's
+published, the window's `first` request (`Init` in an empty folder; an
+error the Session gives it while the host serves is toasted, unless it is
+"already a project"; errors that only say the host ends aren't: any before
+a Session is attached, the refusal of a Session a signal interrupted, and
+any once the host is stopping, since `Stopped` says why) is parked in the
+server before its acceptor runs, so it reaches the Session ahead of every
+client's
 request (one that connects meanwhile waits in the listen backlog), signals
 are watched, the record says `ready`. Its thread `qrec-session` then waits
 for `open` (the Session opens there with a share of the lock and is
@@ -1527,9 +1547,14 @@ missing dependency), `close` or a signal. `fail` and an open that fails
 answer every queued and later request with that error, remove the socket and
 release the lock at once, so the CLI works in-process while the window says
 why. The window's own requests (`GuiHost::submit`) join the CLI's in the
-server's one FIFO, and `PortObserver` and `PortNotifier` hand its Session's
-states (A§8.1) and toasts (the startup recovery's marked as such) to the
-port. The port hears `Ready`; then `Opened`, `OpenFailed`, `Failed` or
+server's one FIFO, each answered exactly once: one the Session never
+handled (still queued, parked or waiting for a late reply when the host
+stops) answers from its wrapper's `Drop` (`AnswerOnDrop`) with why the
+host stopped, and once the host finishes, requests are refused at once
+with that reason (`Host::finish` fails the server before it drops the
+Session, which can take seconds). `PortObserver` and `PortNotifier` hand
+its Session's states (A§8.1) and toasts (the startup recovery's marked as
+such) to the port. The port hears `Ready`; then `Opened`, `OpenFailed`, `Failed` or
 `Crashed` (a panic on the session thread: requests get `internal`);
 `Stopped` last, once the lock is released.
 
@@ -1635,15 +1660,21 @@ nothing of anyone else's may be tied to it for long:
 - Exit (GUI): a window holds the host, so it never ends for being unused
   or idle, and it refuses `shutdown` (`busy` "the Qrec window holds this
   project; close it there", GUI D-13). `GuiHost::close` (the window closed,
-  after it sent what ends a recording or a job, GUI D-12) makes the record
-  say `stopping` and stops accepting at once; the host exits
-  (`HostEnd::Closed`, exit 0) once nothing is busy and no connection is
-  open, or `ExitRules::close_grace` (60 s) after the close whatever still
-  runs: dropping the Session cancels jobs and finalizes a take within their
-  own deadlines. Before its Session opens, a close or the first signal
-  stops it at once, and what was queued gets the reason. UI-state commands
-  are never held for a recovery (A§5.3, GUI D-47), so the window stays live
-  while one runs.
+  after it sent what ends a recording or an export, GUI D-12) takes the
+  window's FIFO (a status query whose answer asks to close), so everything
+  the window submitted before runs first; then the record says `stopping`
+  and the host stops accepting. It exits (`HostEnd::Closed`, exit 0) once
+  nothing is busy and no connection is open — autocut analyses don't
+  count: the close drops them (D-12; dropping the Session cancels their
+  ffmpeg runs before anything is cut, also the analysis "autocut after
+  every take" starts for the last take), though one a CLI still waits for
+  keeps its connection open — or `ExitRules::close_grace` (60 s) after the
+  close whatever still runs: the Session then stops waiting for a recovery
+  probe too (`Msg::Abandon`, A§5.3), and dropping it cancels jobs and
+  finalizes a take within their own deadlines. Before its Session opens, a
+  close or the first signal stops it at once, and what was queued gets the
+  reason. UI-state commands are never held for a recovery (A§5.3, GUI
+  D-47), so the window stays live while one runs.
 - Signals in every host: the first SIGTERM/SIGINT/SIGHUP dispatches
   `RecordStop` (finalize, not cancel) and cancels jobs; exit when idle or
   after 15 s (a recovery probe still out counts as busy only that long).
@@ -1699,9 +1730,14 @@ nothing of anyone else's may be tied to it for long:
   as not responding, `unresponsive`: the lock record while its pid runs); or
   its socket took the connection but `hello` got no answer (`Unresponsive`).
   A recording (SPEC §4.3, Stop & open): `stop_recording` (`RecordStop`,
-  whose reply comes once the take is finalized; ≤ 60 s, else `busy`), then
+  whose reply comes once the take is finalized, `Stopped::Finalized`; ≤ 60
+  s, else `busy`; when the holder still counts down, the stop cancels the
+  countdown and the reply comes at once, `Stopped::Cancelled`, with no
+  take), then
   `request_shutdown`, then `wait_for_lock` (`try_acquire` every 50 ms,
-  ≤ 20 s, else `busy` naming the holder); Quit leaves it recording. An
+  ≤ 20 s, else `busy` naming the holder); Quit leaves it recording. A
+  holder in its countdown has no take to show yet: the window asks `hello`
+  again, like for one starting, until it records or is idle. An
   export: wait until the holder's `hello` lists no job (every 500 ms; the
   percent from `export_progress_view` over its jobs), then
   `request_shutdown` (a CLI command's own host exits by itself) and
@@ -2002,7 +2038,13 @@ Screens from `wl_output` v4 `name`/`description` + geometry within 2 s
 (fallback `niri msg --json outputs`); cameras via GStreamer's DeviceMonitor
 (`Video/Source`, no capture; without GStreamer, or when it fails,
 `/sys/class/video4linux`: names, no modes); audio via `pactl --format=json`
-(mics are `alsa_input.*` only; monitors are `*.monitor`). `doctor` checks
+(mics are `alsa_input.*` only; monitors are `*.monitor`; other inputs such
+as `bluez_input.*` are never listed or offered as mics but stay in the
+audio facts, so a `--source` naming one keeps its description; a `(null)`
+description falls back to the device's properties). One parser,
+`sources::parse_pactl_audio`, gives every host its audio facts (the GUI's
+`SharedSources` and the CLI's and headless hosts' `SystemSources` agree).
+`doctor` checks
 every SPEC §3.3 item (+ `pactl`, `gst.h264parse`, a ScreenCast portal ≥ v4
 that captures monitors, and the optional `portal.registry`), prints a hint
 per failure and the niri bind snippet (SPEC §10.2); exit 5 when a required
@@ -2143,7 +2185,10 @@ pub struct StitchPlan { pub list_path: String, pub list_content: String, pub arg
     reorder), so after such a unit the next segment's first DTS collide in
     the stitch, ffmpeg bumps them by one tick each and the MP4's sample
     table comes out up to two frames short.
-- **VA export chain** (only when `caps.vaapi.ffmpeg_h264`):
+- **VA export chain** (only when `export_plan::export_vaapi(project,
+  config, caps)` names the node: the effective encoder of A§2.1 isn't x264,
+  the verified node is the effective device, and `caps.vaapi.ffmpeg_h264`;
+  the GUI's export caption asks the same function, docs/GUI.md G§4.8):
   `-init_hw_device vaapi=va:<device> -filter_hw_device va … [v]format=nv12,hwupload[vv]
   -c:v h264_vaapi -rc_mode CQP -qp <q>`, child env `LIBVA_DRIVER_NAME` per
   A§8.10. One encoder per export: if a VA segment fails, the whole export is
@@ -2350,7 +2395,7 @@ strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
 | Fake capture | `QREC_CAPTURE_BACKEND=fake` record start/stop end to end (M2) |
 | Parity | GES vs frame plan: SSIM ≥ 0.98 **per layer rect**, plus a frame-ID fixture (frame index drawn as binary bars) asserting the exact source frame in both renderers; at another recorded rate, export segments, frame saves and GES all show `shown_frame` (A§9.3) in units starting anywhere |
 | Late errors | `tests/props_late_errors.rs`: an `on_event` outcome that replies `Err` to a requester also has a `Notify` (A§8.1), over random requests answered late, out of order or as failures, plus a table of every known path |
-| GUI host | `host/gui_tests.rs`: `GuiHost` with a fake `GuiPort` and Session (`ipc::testing`) and shortened `ExitRules`: no idle exit, `first` ahead of early requests, one FIFO, `fail`, a failed open, close, signals (the second in a child process), the `shutdown` refusal, a crash; and once with a real Session on the fake capture backend (the port as its observer and notifier: `first` initializes an empty folder, a CLI take records, the window's stop is answered after its state, close); `host/takeover_tests.rs` against hosts with a fake Session, and Stop & open on a real fake-backend recording (`crates/qrec/tests/cli.rs`) |
+| GUI host | `host/gui_tests.rs`: `GuiHost` with a fake `GuiPort` and Session (`ipc::testing`) and shortened `ExitRules`: no idle exit, `first` ahead of early requests, one FIFO, `fail`, a failed open, close (after what the window submitted before it; dropping autocut analyses; the grace ending a recovery hold), every window request answered once (also unhandled ones, and at once while the Session drops), `first`'s toasts only while serving, signals (the second in a child process), the `shutdown` refusal, a crash; with a real Session and no capture (a closing window's autocut cuts nothing; a signal while it opens toasts nothing); and once with a real Session on the fake capture backend (the port as its observer and notifier: `first` initializes an empty folder, a CLI take records, the window's stop is answered after its state, close); `host/takeover_tests.rs` against hosts with a fake Session, and Stop & open on a real fake-backend recording and countdown (`crates/qrec/tests/cli.rs`) |
 | Session for the GUI | `session/tests.rs`: the observer's snapshots (commands, `RecordClock`, export progress, before their replies), `reply_late` only for `Effect::Reply`, D-47 (UI commands answered while edits wait for a recovery), `RetryLive` in order with `SetLive`; `SharedSources` never discovering on the session thread once cached; `laneMute` through `.qrec/ui.json` |
 | View models | `insta` per `view` module over `testkit::design_state()` and its owner's variants (docs/GUI.md G§8.1) |
 | GUI | headless screenshots against the design fixture and the end-to-end smoke run (docs/GUI.md G§8.4–G§8.5; not built yet) |
@@ -2366,9 +2411,11 @@ c7f3 … c3e9, 7,391 frames, playhead 2437; `DESIGN_*` constants);
 `perf_project(clips)` is a long timeline.
 
 **`qrec_shell::testkit`** (feature `testkit`): `TestEnv::new()` — a temp dir
-that sets `HOME`, `QREC_RUNTIME_DIR`, `XDG_{CONFIG,STATE,CACHE,RUNTIME}_HOME`
-and `QREC_CAPTURE_BACKEND=fake` for every spawned `qrec` (tests never touch
-the developer's config, tokens or running GUI); `.qrec()` returns an
+that sets `HOME`, `QREC_RUNTIME_DIR`, `XDG_{CONFIG,STATE,CACHE,RUNTIME}_HOME`,
+`QREC_CAPTURE_BACKEND=fake` and `TZ=UTC0` (local times read as UTC on any
+machine, so the design fixture's UTC times show as BRIEF's) for every
+spawned `qrec` (tests never touch the developer's config, tokens or
+running GUI); `.qrec()` returns an
 `assert_cmd::Command`. Other inherited `QREC_*` variables are dropped, so a
 fake hook (below) applies only where a test sets it. `MediaSpec { video:
 Option<(w, h, fps, frames)>, audio: Option<{ sample_rate, channels,
@@ -2381,14 +2428,24 @@ the design sample with fixture media on the fake backend's sources
 (`FAKE-1`, `/dev/fake0`, `alsa_input.fake`, `alsa_output.fake.monitor`;
 screens 640×360, the camera 320×240; A1's speech placed so `qrec autocut`
 finds BRIEF §3.3's and §3.6's silences) and no history, as `Base`,
-`Take10Landed`, `MissingL2` or `Smoke`; `perf_fixture(dir, clips)`,
+`Take10Landed` (with take 10's placement as its one history entry, the
+cursor on it), `MissingL2` or `Smoke`, always into an empty folder (the
+take files are hard links to the shared cache, made only as new files, so
+nothing writes through them; an empty cached file is generated again);
+`perf_fixture(dir, clips)`,
 `playback_fixture(dir)` and `write_ui(dir, &UiState)` (a case's
 `.qrec/ui.json`) go with it.
 
-**Fake hooks** (`capture::fake::FakeHooks`, docs/GUI.md G§8.4): read from
-the environment (the engine's by `EngineOptions::new`, the inventory's by
-discovery) and honored only with the fake backend; a value that doesn't
-parse is ignored with a warning.
+**Fake hooks** (`capture::fake::FakeHooks`, docs/GUI.md G§8.4): honored only
+with the fake backend; a value that doesn't parse is ignored with a
+warning. Only code that runs as the process reads them from the
+environment: the binary's hosts (`FakeHooks::from_env` into
+`EngineOptions::fake`), `SessionEnv::from_process` (the inventory kind its
+`FakeSources` use), discovery (`SourceInventory::discover`) and the GUI's
+opener. `EngineOptions::new`, `SessionEnv::for_dirs`, `FakeSources` and
+`SourceInventory::fake` take none, so an engine or Session a test builds in
+its own process sees a hook only when the test sets it, whatever the
+developer exported for manual shots.
 - `QREC_FAKE_EOS_DELAY_MS=<ms>`: a stopped take's `CaptureStopped` comes
   that much later; past its EOS timeout the take ends `timed_out` (broken
   with `EOS_TIMEOUT_REASON`, "the recording didn't stop within 10 s").

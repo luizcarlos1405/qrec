@@ -324,6 +324,8 @@ pub fn fixtures_dir() -> PathBuf {
 
 /// The fixture file for `spec`, generated with ffmpeg on first use and
 /// cached by the hash of the spec. Treat it as read-only: tests share it.
+/// An empty cached file (one something wrote through a link to it) is
+/// generated again.
 pub fn fixture(spec: &MediaSpec) -> PathBuf {
     spec.check();
     let dir = fixtures_dir();
@@ -332,13 +334,14 @@ pub fn fixture(spec: &MediaSpec) -> PathBuf {
         sha256_hex(spec.cache_key().as_bytes()),
         spec.extension()
     ));
-    if path.is_file() {
+    let cached = |path: &Path| fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() > 0);
+    if cached(&path) {
         return path;
     }
     let _guard = GENERATING
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if path.is_file() {
+    if cached(&path) {
         return path;
     }
     let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -484,6 +487,26 @@ mod tests {
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 0.005
+    }
+
+    /// A cached file something truncated (written through a link to it) is
+    /// a miss: it is generated again, instead of handing every later test
+    /// empty media.
+    #[test]
+    fn an_empty_cached_fixture_is_generated_again() {
+        // A spec no other test uses: this one may empty its file.
+        let spec = MediaSpec::audio(48_000, 1, 1_237, &[(0, 1_237)]);
+        let file = fixture(&spec);
+        let len = fs::metadata(&file).unwrap().len();
+        assert!(len > 0);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_len(0)
+            .unwrap();
+        assert_eq!(fixture(&spec), file);
+        assert_eq!(fs::metadata(&file).unwrap().len(), len);
     }
 
     #[test]

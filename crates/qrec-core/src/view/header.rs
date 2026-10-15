@@ -1,6 +1,7 @@
 //! The header bar (G§4.4, C04, C01 Record, C05): title and subtitle, the
 //! record button, the export slot, the mode switch. Owner: WP6. Stub until
-//! WP6 lands: the signatures are final, the bodies return defaults.
+//! WP6 lands: the signatures are final, the bodies return defaults, except
+//! `layers_button` (WP0a: it follows the layout the GUI passes, `narrow`).
 
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +20,8 @@ pub struct HeaderView {
     pub export: ExportSlot,
     /// The 2 px `record` line under the header (recording, finalizing).
     pub record_line: bool,
-    /// The narrow layout's layers button (G§3.15).
+    /// The narrow layout's layers button (G§3.15): shown exactly when
+    /// [`header`] is told the layout is narrow.
     pub layers_button: bool,
 }
 
@@ -83,8 +85,35 @@ pub struct ExportSlot {
     pub keys: Vec<Vec<String>>,
 }
 
-/// The header for `state`.
-pub fn header(state: &State, facts: &GuiFacts, keymap: &Keymap) -> HeaderView {
+/// The header for `state`. `narrow`: the window is in the Narrow layout
+/// (G§3.15, `LocalUi.layout`), which adds the layers button; nothing else
+/// the header gets says so.
+pub fn header(state: &State, facts: &GuiFacts, keymap: &Keymap, narrow: bool) -> HeaderView {
     let _ = (state, facts, keymap);
-    HeaderView::default()
+    HeaderView {
+        layers_button: narrow,
+        ..HeaderView::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keymap;
+    use crate::testkit;
+    use crate::view::OverlayKind;
+
+    /// The layers button is the narrow layout's, open sheet or not: the
+    /// facts the header shares with the hint bar can't say the layout.
+    #[test]
+    fn the_layers_button_follows_the_layout() {
+        let state = testkit::design_state();
+        let keymap = keymap::resolve("");
+        let mut facts = GuiFacts::default();
+        assert!(header(&state, &facts, &keymap, true).layers_button);
+        assert!(!header(&state, &facts, &keymap, false).layers_button);
+        facts.top_overlay = Some(OverlayKind::LayersSheet);
+        assert!(header(&state, &facts, &keymap, true).layers_button);
+        assert!(!header(&state, &facts, &keymap, false).layers_button);
+    }
 }

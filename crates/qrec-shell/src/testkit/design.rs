@@ -17,22 +17,30 @@
 //! (`L1-screen-FAKE-1.mkv`, `L2-camera-0.mkv`, `A1-mic.mka`,
 //! `A2-system.mka`) and their facts describe the generated media (screens
 //! 640×360, the camera 320×240), not BRIEF's native sizes. No history is
-//! written (take 2 reads "Removed from the timeline." in the bin).
+//! written (take 2 reads "Removed from the timeline." in the bin), except
+//! `Take10Landed`'s one entry: take 10's placement, the cursor on it (S05b).
+//!
+//! Each fixture writes into an empty folder (it panics otherwise): its take
+//! files are hard links to the shared cache (`target/qrec-fixtures/`), which
+//! nothing may write through.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use qrec_core::TakeId;
 use qrec_core::capture_plan::{audio_file_name, video_file_name};
+use qrec_core::history;
 use qrec_core::model::{AudioRole, Clip, Fps, Project, Rect, StreamKind, Take, VideoSource};
-use qrec_core::state::UiState;
+use qrec_core::state::{History, HostKind, UiState};
 use qrec_core::testkit::{ProjectBuilder, design_project, perf_project};
 use qrec_core::time::{NS_PER_MS, frame_ns};
+use qrec_core::{State, TakeId};
 
 use super::media::{MediaSpec, fixture};
-use super::project::write_project;
+use super::project::{link, write_project};
 use crate::capture::fake::{FAKE_CAMERA, FAKE_MIC, FAKE_MONITOR, FAKE_SCREENS};
+use crate::paths::ProjectPaths;
+use crate::store::format;
 
 /// Which state of BRIEF's sample project (G§8.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -97,6 +105,7 @@ fn design_silences_ms(take: u32) -> &'static [(u64, u64)] {
 /// `alsa_input.fake`, A2 "System audio" on `alsa_output.fake.monitor`), with
 /// the media of every take. Returns the project as written.
 pub fn design_fixture(dir: &Path, variant: DesignVariant) -> Project {
+    assert_empty(dir);
     let mut project = design_project();
     match variant {
         DesignVariant::Base => {}
@@ -133,6 +142,9 @@ pub fn design_fixture(dir: &Path, variant: DesignVariant) -> Project {
     };
     write_media(dir, &mut project, &media);
     save(dir, &project);
+    if variant == DesignVariant::Take10Landed {
+        write_take_10_history(dir, &project);
+    }
     project
 }
 
@@ -141,6 +153,7 @@ pub fn design_fixture(dir: &Path, variant: DesignVariant) -> Project {
 /// take uses the same media (one cached file per kind, linked eight times);
 /// A1 speaks 9 s, then is silent 1 s.
 pub fn perf_fixture(dir: &Path, clips: usize) -> Project {
+    assert_empty(dir);
     let mut project = perf_project(clips);
     on_fake_sources(&mut project);
     let media = Media {
@@ -163,6 +176,7 @@ pub fn perf_fixture(dir: &Path, clips: usize) -> Project {
 /// 30 fps, plus a mic and system audio: one 60 s take placed whole. Heavy:
 /// the first call generates about a minute of 1440p video.
 pub fn playback_fixture(dir: &Path) -> Project {
+    assert_empty(dir);
     let mut project = ProjectBuilder::new()
         .name("playback")
         .canvas(1920, 1080, Fps::new(30, 1))
@@ -231,6 +245,54 @@ fn land_take_10(project: &mut Project) {
         out: TAKE_10_FRAMES,
     });
     project.next_take_number = 11;
+}
+
+/// Take 10's placement as the project's one history entry, the cursor on it
+/// (S05b: "Discard last take" is emphasized while the cursor entry is a
+/// take placement, G§4.3). The base is the project before `c5e1` landed
+/// (take 10 already in the pool: takes are facts, never in the patches);
+/// the entry is what finalizing take 10 commits ("Record take 10", `cmd`
+/// `{"event":"takeFinalized","take":"take-0010"}`, at 14:38); the commit
+/// record names `qrec.json` as written.
+fn write_take_10_history(dir: &Path, project: &Project) {
+    let mut landed_before = project.clone();
+    landed_before
+        .timeline
+        .clips
+        .retain(|c| c.id.as_str() != TAKE_10_CLIP);
+    let state =
+        |project: Project| State::new(project, History::new(), UiState::default(), HostKind::Gui);
+    let prev = state(landed_before);
+    let ctx = qrec_core::testkit::ctx("2026-10-14T14:38:00Z", 0);
+    let cmd = serde_json::json!({ "event": "takeFinalized", "take": TakeId::numbered(10) });
+    let committed = history::commit(
+        &prev,
+        &ctx,
+        "Record take 10".to_owned(),
+        cmd,
+        state(project.clone()),
+    );
+    let history = &committed.state.history;
+    let entry = history.entries.last().expect("take 10's entry");
+    let paths = ProjectPaths::new(dir);
+    let write = |path: PathBuf, bytes: Vec<u8>| {
+        fs::write(&path, bytes).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+    };
+    fs::create_dir_all(paths.qrec_dir()).expect("create .qrec");
+    write(paths.history_base(), format::base_bytes(0, &prev.project));
+    write(paths.history_file(), format::history_bytes([entry]));
+    let written = fs::read(paths.project_file()).expect("read qrec.json");
+    write(
+        paths.history_head(),
+        format::head_bytes(
+            history.cursor,
+            history.base_seq,
+            history.next_seq,
+            &format::sha(&written),
+            &committed.state.project,
+        ),
+    );
+    write(paths.history_cursor(), format::cursor_bytes(history.cursor));
 }
 
 /// The design scene's sources become the fake backend's: screens `DP-4` and
@@ -366,12 +428,15 @@ fn save(dir: &Path, project: &Project) {
     );
 }
 
-/// A hard link to the cached fixture (a copy across file systems).
-fn link(source: &Path, target: &Path) {
-    if fs::hard_link(source, target).is_err() {
-        fs::copy(source, target)
-            .unwrap_or_else(|e| panic!("copy {} to {}: {e}", source.display(), target.display()));
-    }
+/// Fixtures write into an empty folder: their take files are links to the
+/// shared cache, never written through ([`link`]).
+fn assert_empty(dir: &Path) {
+    let mut entries = fs::read_dir(dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
+    assert!(
+        entries.next().is_none(),
+        "{} isn't empty: fixtures write into an empty folder",
+        dir.display()
+    );
 }
 
 #[cfg(test)]
@@ -505,6 +570,72 @@ mod tests {
             .collect();
         assert_eq!(clips, [("c7f3", 30), ("c1b2", 30), ("c3e9", 30)]);
         assert_eq!(smoke.takes.len(), 9);
+    }
+
+    /// Take10Landed carries take 10's placement as its history's one entry,
+    /// with the cursor on it, so S05b's hint bar emphasizes "Discard last
+    /// take" (G§4.3). The store reads it back as a clean commit: no external
+    /// edit, nothing to repair, and undoing it takes `c5e1` off. Base keeps
+    /// no history.
+    #[test]
+    fn take_10_landed_has_its_placement_in_the_history() {
+        use crate::store::load::{LoadOpts, load};
+        let env = TestEnv::new();
+        let dir = env.empty_dir("landed-history");
+        let project = design_fixture(&dir, DesignVariant::Take10Landed);
+        let paths = ProjectPaths::new(fs::canonicalize(&dir).unwrap());
+        let opts = LoadOpts {
+            recovery: false,
+            check: qrec_core::history::ops::unchecked,
+        };
+        let loaded = load(&paths, &opts).unwrap();
+        assert!(loaded.external.is_none(), "{:?}", loaded.notes);
+        assert!(!loaded.needs_repair, "{:?}", loaded.notes);
+        assert!(loaded.notes.is_empty(), "{:?}", loaded.notes);
+        assert_eq!(loaded.project, project);
+        let history = &loaded.history;
+        assert_eq!(history.entries.len(), 1);
+        let entry = &history.entries[0];
+        assert_eq!(history.cursor, entry.seq);
+        assert_eq!(entry.label, "Record take 10");
+        assert_eq!(
+            entry.cmd,
+            serde_json::json!({ "event": "takeFinalized", "take": "take-0010" })
+        );
+        let base: format::BaseFile =
+            serde_json::from_slice(&fs::read(paths.history_base()).unwrap()).unwrap();
+        let ids: Vec<&str> = base
+            .project
+            .timeline
+            .clips
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect();
+        assert_eq!(ids.len(), 10);
+        assert!(!ids.contains(&TAKE_10_CLIP));
+
+        let base_dir = env.empty_dir("base-history");
+        design_fixture(&base_dir, DesignVariant::Base);
+        assert!(!base_dir.join(".qrec/history.jsonl").exists());
+    }
+
+    /// A fixture writes into an empty folder only: a second one on the same
+    /// folder stops before it links anything (its files would land on the
+    /// first one's links to the shared cache).
+    #[test]
+    fn a_fixture_needs_an_empty_folder() {
+        let env = TestEnv::new();
+        let dir = env.empty_dir("twice");
+        design_fixture(&dir, DesignVariant::Smoke);
+        let before = fs::read(dir.join("qrec.json")).unwrap();
+        let again = std::panic::catch_unwind(|| design_fixture(&dir, DesignVariant::MissingL2));
+        let message = again.unwrap_err();
+        let message = message
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .unwrap_or_default();
+        assert!(message.contains("isn't empty"), "{message}");
+        assert_eq!(fs::read(dir.join("qrec.json")).unwrap(), before);
     }
 
     #[test]

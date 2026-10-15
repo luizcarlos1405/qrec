@@ -142,6 +142,17 @@ pub trait Backend {
     /// `config.toml` and `keys.toml` live.
     fn config_dir(&mut self) -> Result<PathBuf, CoreError>;
 
+    /// The text of a settings file there (`config.toml`, `keys.toml`):
+    /// `Ok(None)` when there is none. Read the way every host reads it
+    /// (A§8.2): a regular file of at most 1 MiB; a FIFO, a device or a bigger
+    /// file is an error, never waited on or read whole. Default: checked
+    /// before it is opened (a build without the shell); the `qrec` binary
+    /// opens it non-blocking like its hosts do
+    /// (`qrec_shell::config_file::read_text`).
+    fn settings_text(&mut self, path: &Path) -> Result<Option<String>, CoreError> {
+        crate::config::read_settings(path)
+    }
+
     /// The hosts that answer `hello` on `<runtime>/*.sock` (A§8.4): the
     /// fallback project when the current folder isn't one.
     fn live_hosts(&mut self) -> Result<Vec<HelloInfo>, CoreError>;

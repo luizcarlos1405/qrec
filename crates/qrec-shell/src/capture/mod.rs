@@ -80,9 +80,7 @@ use crate::paths::UserDirs;
 
 #[cfg(feature = "gst")]
 pub use engine::{FakeFailure, GstCaptureEngine};
-pub use fake::{
-    FakeHooks, FakeInventory, FakeInventoryKind, FakePortal, fake_inventory, fake_inventory_of,
-};
+pub use fake::{FakeHooks, FakeInventory, FakeInventoryKind, FakePortal, fake_inventory_of};
 /// A live source's state: the view models' type (`qrec_core::view`), so the
 /// GUI shows what the engine reports without converting it.
 pub use qrec_core::view::LiveSourceState;
@@ -339,12 +337,11 @@ pub struct EngineOptions {
 }
 
 impl EngineOptions {
-    /// The fake backend reads its test hooks from the environment.
+    /// Options with no test hooks, whatever the environment says: code that
+    /// runs as the process (the binary's hosts, the GUI's opener) sets
+    /// `fake` from [`FakeHooks::from_env`], so an engine a test builds in
+    /// its own process sees only the hooks that test sets (A§11).
     pub fn new(project_dir: impl Into<PathBuf>, backend: Backend, dirs: &UserDirs) -> Self {
-        let fake = match backend {
-            Backend::Fake => FakeHooks::from_env(),
-            Backend::Real => FakeHooks::default(),
-        };
         Self {
             project_dir: project_dir.into(),
             backend,
@@ -356,7 +353,7 @@ impl EngineOptions {
             #[cfg(feature = "gst")]
             preview: None,
             cast_grace: Duration::ZERO,
-            fake,
+            fake: FakeHooks::default(),
         }
     }
 }
@@ -431,6 +428,53 @@ mod unit_tests {
         assert_eq!(real.fake, FakeHooks::default(), "only the fake backend");
         #[cfg(feature = "gst")]
         assert!(real.preview.is_none());
+    }
+
+    /// While a developer has a fake hook exported (for the manual shots,
+    /// G§8.4), the engines, Sessions and fake devices a test builds in its
+    /// own process see none of it (A§11): only what runs as the process
+    /// reads the hooks. Checked in a child of this test binary with every
+    /// hook set. They used to take them from the environment, so an
+    /// exported `QREC_FAKE_PORTAL=deny` refused every in-process recording.
+    #[test]
+    fn in_process_fakes_ignore_the_hooks_in_the_environment() {
+        use crate::facts::{FakeSources, Sources};
+        const CHILD: &str = "QREC_TEST_HOOKS_CHILD";
+        const NAME: &str =
+            "capture::unit_tests::in_process_fakes_ignore_the_hooks_in_the_environment";
+        if std::env::var_os(CHILD).is_some() {
+            let env = crate::testkit::TestEnv::new();
+            let dirs = UserDirs::resolve(&env.paths_env()).unwrap();
+            let opts = EngineOptions::new("/p", Backend::Fake, &dirs);
+            assert_eq!(opts.fake, FakeHooks::default());
+            let session = crate::session::SessionEnv::for_dirs(dirs, true);
+            assert_eq!(session.fake_inventory, FakeInventoryKind::Plain);
+            let mut sources = FakeSources(session.fake_inventory);
+            assert_eq!(sources.screens().unwrap()[0].description, "Fake screen 1");
+            assert_eq!(sources.screens().unwrap()[0].width, 1280);
+            let plain = crate::sources::SourceInventory::fake();
+            assert_eq!(plain.screens[1].description, "Fake screen 2");
+            // What runs as the process still reads them.
+            assert_eq!(FakeHooks::from_env().portal, Some(FakePortal::Deny));
+            assert_eq!(FakeHooks::from_env().record_offset_frames, 4842);
+            assert_eq!(FakeInventoryKind::from_env(), FakeInventoryKind::Design);
+            return;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+            .env(CHILD, "1")
+            .env(fake::FAKE_PORTAL_ENV, "deny")
+            .env(fake::FAKE_INVENTORY_ENV, "design")
+            .env(fake::FAKE_EOS_DELAY_ENV, "5000")
+            .env(fake::FAKE_RECORD_OFFSET_ENV, "4842")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     #[test]

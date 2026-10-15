@@ -1,7 +1,8 @@
 //! The fake backend's test hooks (docs/GUI.md G§8.4) on the real engine:
 //! real GStreamer pipelines fed by `videotestsrc`/`audiotestsrc`, never the
 //! portal, devices or a GPU. Each test sets [`EngineOptions::fake`] itself
-//! (the variables are read by `EngineOptions::new`).
+//! (`EngineOptions::new` sets none; the binary reads the variables with
+//! `FakeHooks::from_env`).
 
 use std::fs;
 use std::path::PathBuf;
@@ -13,6 +14,7 @@ use qrec_core::plans::{AudioRecord, CapturePlan, LiveScene, VideoEncoder, VideoR
 use qrec_core::{Event, Fps, TakeId};
 
 use super::fake::{FAKE_MIC, FakeHooks, FakePortal};
+use super::spec::SourceSpec;
 use super::{Backend, EngineOptions, GstCaptureEngine, SideEvent};
 use crate::deps::CaptureEngine;
 use crate::gst_init::testing::{assert_quiet_since, problems, serial};
@@ -261,6 +263,25 @@ fn the_fake_portal_refuses_the_fake_screens() {
             }
         };
         assert!(refused.contains(why), "{refused}");
+        // The engine handles one command at a time: the refusal's rebuild ran
+        // with the command that brought the error, before this inspect. The
+        // pipeline exists, with the mic and the preview, without the screen.
+        let info = h.engine.inspect();
+        assert!(
+            info.generation.is_some(),
+            "{portal:?}: no live pipeline after the refusal: {info:?}"
+        );
+        assert_eq!(
+            info.sources,
+            vec![SourceSpec::Audio {
+                device: FAKE_MIC.into()
+            }],
+            "{portal:?}"
+        );
+        assert!(
+            info.preview,
+            "{portal:?}: the preview runs without the refused layer"
+        );
     }
 }
 

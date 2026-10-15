@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use qrec_core::CoreError;
-use qrec_core::config::UserConfig;
+use qrec_core::config::{MAX_FILE_BYTES, UserConfig};
 use serde_json::{Map, Value};
 
 /// The config file in Qrec's config dir.
@@ -21,13 +21,46 @@ pub(crate) fn file(config_dir: &Path) -> PathBuf {
     config_dir.join("config.toml")
 }
 
-/// The file's text, empty when it doesn't exist.
-fn read(path: &Path) -> Result<String, CoreError> {
-    match fs::read_to_string(path) {
-        Ok(text) => Ok(text),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(CoreError::io(format!("can't read {}: {e}", path.display()))),
+/// The text of a settings file (`config.toml`, `keys.toml`), `None` when
+/// there is none, read like the hosts read it (A§8.2): a regular file of at
+/// most `MAX_FILE_BYTES` (1 MiB). Anything else is an error that says so,
+/// never waited on (a FIFO would block a plain read) or read whole. The
+/// `Backend::settings_text` of a build without the shell; the `qrec`
+/// binary opens it non-blocking (`qrec_shell::config_file::read_text`).
+pub fn read_settings(path: &Path) -> Result<Option<String>, CoreError> {
+    let cant =
+        |e: &dyn std::fmt::Display| CoreError::io(format!("can't read {}: {e}", path.display()));
+    let too_big = |bytes: u64| {
+        CoreError::io(format!(
+            "{} is {bytes} bytes; settings files can be at most {MAX_FILE_BYTES} bytes (1 MiB)",
+            path.display()
+        ))
+    };
+    let regular = |meta: &fs::Metadata| {
+        if !meta.is_file() {
+            return Err(cant(&"it isn't a regular file"));
+        }
+        if meta.len() > MAX_FILE_BYTES {
+            return Err(too_big(meta.len()));
+        }
+        Ok(())
+    };
+    // Checked before it is opened: opening a FIFO waits for a writer.
+    match fs::metadata(path) {
+        Ok(meta) => regular(&meta)?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(cant(&e)),
     }
+    let file = fs::File::open(path).map_err(|e| cant(&e))?;
+    regular(&file.metadata().map_err(|e| cant(&e))?)?;
+    let mut text = String::new();
+    io::Read::read_to_string(&mut io::Read::take(file, MAX_FILE_BYTES + 1), &mut text)
+        .map_err(|e| cant(&e))?;
+    // It may have grown since the `stat`.
+    if text.len() as u64 > MAX_FILE_BYTES {
+        return Err(too_big(text.len() as u64));
+    }
+    Ok(Some(text))
 }
 
 /// Parses TOML into the document type the core's `config::set` edits.
@@ -104,11 +137,11 @@ fn to_json(text: &str, path: &Path) -> Result<Value, CoreError> {
     Ok(Value::Object(root))
 }
 
-/// Reads and validates the user config at `path` (defaults when missing):
-/// the shape through `UserConfig`, the ranges through the core's
+/// Validates the user config `text` read from `path` (empty: the
+/// defaults): the shape through `UserConfig`, the ranges through the core's
 /// `config::problems` (the same rules hosts apply when they read it).
-pub(crate) fn load(path: &Path) -> Result<UserConfig, CoreError> {
-    let json = to_json(&read(path)?, path)?;
+pub(crate) fn load(text: &str, path: &Path) -> Result<UserConfig, CoreError> {
+    let json = to_json(text, path)?;
     let cfg: UserConfig = serde_json::from_value(json).map_err(|e| {
         CoreError::invalid(format!("{}: {e}", path.display()))
             .with_hint("`qrec config` lists the settings and their values")
@@ -159,10 +192,10 @@ pub(crate) fn get(cfg: &UserConfig, key: &str) -> Result<Value, CoreError> {
 }
 
 /// Sets `key` to `value` in the file at `path` (created when missing),
-/// keeping its comments, and returns the new value.
-pub(crate) fn set(path: &Path, key: &str, value: &str) -> Result<Value, CoreError> {
-    let text = read(path)?;
-    let mut doc = document(&text, path, qrec_core::config::set)?;
+/// whose text is `text` (empty when there is none), keeping its comments,
+/// and returns the new value.
+pub(crate) fn set(path: &Path, text: &str, key: &str, value: &str) -> Result<Value, CoreError> {
+    let mut doc = document(text, path, qrec_core::config::set)?;
     qrec_core::config::set(&mut doc, key, value)?;
     let new_text = doc.to_string();
     let cfg: UserConfig = serde_json::from_value(to_json(&new_text, path)?)

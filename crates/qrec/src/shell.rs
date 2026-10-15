@@ -273,6 +273,12 @@ impl Backend for Shell {
         Ok(self.dirs()?.config)
     }
 
+    /// The hosts' own bounded reader (A§8.2): `qrec config` and `qrec keys`
+    /// read the settings files the way every host does.
+    fn settings_text(&mut self, path: &Path) -> Result<Option<String>, CoreError> {
+        qrec_shell::config_file::read_text(path).map_err(CoreError::io)
+    }
+
     fn live_hosts(&mut self) -> Result<Vec<HelloInfo>, CoreError> {
         let runtime = self.dirs()?.runtime;
         Ok(ipc::resolve::live_hosts(&runtime, ipc::HELLO_TIMEOUT))
@@ -534,8 +540,13 @@ impl Opener for ShellOpener {
         let capture: Box<dyn CaptureEngine> = if opts.mutating && opts.host.records() {
             // GStreamer starts with the first live scene or take, so commands
             // that only need ffmpeg never initialize it.
-            let mut engine = EngineOptions::new(dir, capture::Backend::from_env(), &env.dirs);
+            let backend = capture::Backend::from_env();
+            let mut engine = EngineOptions::new(dir, backend, &env.dirs);
             engine.devices = Some(Arc::new(LiveDevices));
+            // The fake backend's test hooks are this process's (G§8.4).
+            if backend == capture::Backend::Fake {
+                engine.fake = capture::FakeHooks::from_env();
+            }
             capture::new_engine(engine)
         } else {
             Box::new(NoCapture)

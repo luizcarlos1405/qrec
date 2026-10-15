@@ -1627,6 +1627,86 @@ fn config_set_keeps_comments() {
     );
 }
 
+/// A FIFO named `path` (`mkfifo`).
+fn fifo(path: &Path) {
+    let status = std::process::Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(status.success(), "mkfifo {}", path.display());
+}
+
+/// `line` with the default backend reader, on a thread: `None` when it
+/// didn't finish within 5 s (a read that blocks). The FIFOs in `cfg` then
+/// get a writer that closes at once, so the stuck read ends.
+fn run_within(cfg: &Path, cwd: &Path, line: &'static str) -> Option<Run> {
+    use std::os::unix::fs::OpenOptionsExt;
+    /// `O_NONBLOCK` on Linux: a FIFO writer that never waits for a reader.
+    const O_NONBLOCK: i32 = 0o4000;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (cfg_dir, cwd) = (cfg.to_path_buf(), cwd.to_path_buf());
+    std::thread::spawn(move || {
+        let mut fake = Fake::new(&cfg_dir);
+        let _ = tx.send(run(&mut fake, &cwd, line));
+    });
+    let ran = rx.recv_timeout(std::time::Duration::from_secs(5)).ok();
+    if ran.is_none() {
+        for name in ["keys.toml", "config.toml"] {
+            let _ = fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(O_NONBLOCK)
+                .open(cfg.join(name));
+        }
+    }
+    ran
+}
+
+/// `qrec keys` and `qrec config` read the settings files the way the hosts
+/// do (A§8.2): a FIFO is refused at once instead of blocking the command
+/// for good, and a file over 1 MiB is refused instead of read whole (and
+/// never written over by `config set`). They used to read with
+/// `fs::read_to_string`, which waits on a FIFO forever.
+#[test]
+fn settings_files_are_read_bounded() {
+    let tmp = Tmp::new();
+    let cfg = tmp.dir("cfg");
+    fifo(&cfg.join("keys.toml"));
+    fifo(&cfg.join("config.toml"));
+    for line in [
+        "qrec keys --json",
+        "qrec config --json",
+        "qrec config get theme --json",
+        "qrec config set theme dark --json",
+    ] {
+        let ran = run_within(&cfg, &tmp.0, line).unwrap_or_else(|| panic!("{line} blocked"));
+        let reply = ran.json();
+        assert_eq!(reply["ok"], false, "{line}: {reply}");
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("isn't a regular file"),
+            "{line}: {message}"
+        );
+    }
+
+    let big = vec![b'#'; qrec_core::config::MAX_FILE_BYTES as usize + 1];
+    fs::remove_file(cfg.join("config.toml")).unwrap();
+    fs::write(cfg.join("config.toml"), &big).unwrap();
+    for line in [
+        "qrec config get theme --json",
+        "qrec config set theme dark --json",
+    ] {
+        let ran = run_within(&cfg, &tmp.0, line).unwrap_or_else(|| panic!("{line} blocked"));
+        let reply = ran.json();
+        let message = reply["error"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("can be at most"), "{line}: {reply}");
+    }
+    assert_eq!(
+        fs::read(cfg.join("config.toml")).unwrap(),
+        big,
+        "not written over"
+    );
+}
+
 #[test]
 fn keys_print_the_effective_keymap() {
     let tmp = Tmp::new();

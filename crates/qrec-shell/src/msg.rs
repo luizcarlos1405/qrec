@@ -51,6 +51,11 @@ pub enum Msg {
     /// `CaptureEngine::retry_live`, in order with the `SetLive`s and
     /// `StartCapture`s it sends. Not a command: it changes no state.
     RetryLive,
+    /// The host stops waiting for the Session's own work (a GUI host whose
+    /// close grace ran out, GUI G§3.4.1): `run_until` ends as soon as its
+    /// `done` holds, also while a recovery probe is out (the next open
+    /// probes that take again, A§5.3). Changes no state.
+    Abandon,
 }
 
 impl std::fmt::Debug for Msg {
@@ -65,6 +70,7 @@ impl std::fmt::Debug for Msg {
             Msg::Interrupt => f.write_str("Interrupt"),
             Msg::Shutdown => f.write_str("Shutdown"),
             Msg::RetryLive => f.write_str("RetryLive"),
+            Msg::Abandon => f.write_str("Abandon"),
         }
     }
 }
@@ -99,7 +105,14 @@ impl Inbox {
 /// IPC connection (`WireMessage` lines) or the GUI.
 ///
 /// Every request gets exactly one answer, through [`Responder::reply`] or
-/// [`Responder::reply_late`].
+/// [`Responder::reply_late`]. The Session answers every request it
+/// handles; one it never handles (still queued, parked or waiting for a
+/// late reply when its host stops, or a send that failed) is dropped, so a
+/// responder somebody waits on answers from its own `Drop` when it was
+/// dropped unanswered: an IPC connection's (`ConnResponder`), an in-process
+/// command's proxy (`ProxyResponder`), and the window's, which its host
+/// wraps (`host::gui::AnswerOnDrop`). Responders nobody waits on (a host's
+/// nudge) needn't.
 pub trait Responder: Send {
     /// The request parsed and was queued (`{"id","accepted":true}`).
     fn accepted(&mut self);

@@ -4339,7 +4339,7 @@ fn qrec_without_a_command() {
 /// becomes ours (G§3.4.3).
 #[test]
 fn a_gui_takes_over_a_headless_recording() {
-    use qrec_shell::host::takeover::{self, Holder};
+    use qrec_shell::host::takeover::{self, Holder, Stopped};
     use qrec_shell::lock::ProjectLock;
     let env = TestEnv::new();
     let dir = env.empty_dir("x1");
@@ -4364,10 +4364,12 @@ fn a_gui_takes_over_a_headless_recording() {
     thread::sleep(Duration::from_millis(1500));
 
     let stopped = takeover::stop_recording(&socket, takeover::STOP_TIMEOUT).unwrap();
-    let finalized = &stopped["result"];
-    assert_eq!(finalized["take"], "take-0001", "{stopped}");
-    assert_eq!(finalized["status"], "ok", "{stopped}");
-    assert_eq!(finalized["placed"], true, "{stopped}");
+    let Stopped::Finalized(finalized) = stopped else {
+        panic!("the take was finalized: {stopped:?}");
+    };
+    assert_eq!(finalized.take.as_str(), "take-0001", "{finalized:?}");
+    assert_eq!(finalized.status, qrec_core::model::TakeStatus::Ok);
+    assert!(finalized.placed, "{finalized:?}");
     takeover::request_shutdown(&socket).unwrap();
     let lock = takeover::wait_for_lock(&dir, takeover::LOCK_TIMEOUT).unwrap();
     wait_until_no_host(&env);
@@ -4377,6 +4379,119 @@ fn a_gui_takes_over_a_headless_recording() {
     assert_eq!(project["timeline"]["clips"].as_array().unwrap().len(), 1);
     drop(lock);
     assert_eq!(take_row(&env, &dir, "take-0001")["clips"], 1);
+}
+
+/// X1's Stop & open while the recorder still counts down (a niri bind with
+/// the project's countdown): the stop cancels the countdown and answers at
+/// once with no take (`Stopped::Cancelled`), the host shuts down and the
+/// lock is the window's. No take was made, and the start heard why. The
+/// reply used to be documented as a finalized take.
+#[test]
+fn a_gui_takes_over_a_headless_countdown() {
+    use qrec_shell::host::takeover::{self, Holder, Stopped};
+    use qrec_shell::lock::ProjectLock;
+    let env = TestEnv::new();
+    let dir = env.empty_dir("x1-countdown");
+    qrec(&env, &dir, &["init", "--canvas", "640x360@30"]).ok();
+    qrec(
+        &env,
+        &dir,
+        &["scene", "layer", "add", "screen", "--output", "FAKE-1"],
+    )
+    .ok();
+    qrec(&env, &dir, &["scene", "audio", "add", "mic"]).ok();
+    // Its reply comes once capture runs, after the countdown.
+    let mut start = env.command(&qrec_bin());
+    let mut start = start
+        .current_dir(&dir)
+        .args(["record", "start", "--countdown", "10", "--json"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let counting = Instant::now() + Duration::from_secs(8);
+    loop {
+        let status = qrec(&env, &dir, &["status", "--json"]);
+        if status.code == Some(0)
+            && status.reply()["data"]["runtime"]["record"]["phase"] == "countdown"
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < counting,
+            "the host never counted down: {status:?}"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    let dir = fs::canonicalize(&dir).unwrap();
+    let Holder::Host { hello, socket } = takeover::find_holder(&dir, &env.paths_env()).unwrap()
+    else {
+        panic!("the recorder holds the project");
+    };
+    assert_eq!(hello.host.as_str(), "headless");
+    let record = serde_json::to_value(&hello.record).unwrap();
+    assert_eq!(record["phase"], "countdown", "{record}");
+
+    let asked = Instant::now();
+    let stopped = takeover::stop_recording(&socket, takeover::STOP_TIMEOUT).unwrap();
+    assert!(asked.elapsed() < Duration::from_secs(5), "answered at once");
+    assert_eq!(stopped, Stopped::Cancelled("Countdown cancelled".into()));
+    takeover::request_shutdown(&socket).unwrap();
+    let lock = takeover::wait_for_lock(&dir, takeover::LOCK_TIMEOUT).unwrap();
+    wait_until_no_host(&env);
+    assert!(ProjectLock::is_held(&dir).unwrap(), "the lock is ours");
+    let project: Value = serde_json::from_slice(&fs::read(dir.join("qrec.json")).unwrap()).unwrap();
+    assert_eq!(project["takes"], json!({}), "no take was made");
+    assert_eq!(project["timeline"]["clips"], json!([]));
+    drop(lock);
+    // The start's client heard its countdown was cancelled.
+    let gone = Instant::now() + Duration::from_secs(10);
+    while start.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < gone, "the start never ended");
+        thread::sleep(Duration::from_millis(50));
+    }
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut start.stdout.take().unwrap(), &mut out).unwrap();
+    assert!(out.contains("countdown cancelled"), "{out}");
+}
+
+/// `qrec keys` and `qrec config` read the settings files with the hosts'
+/// own bounded reader (A§8.2): a FIFO is refused at once, never waited on.
+/// They used to read with `fs::read_to_string`, which blocks on a FIFO for
+/// good.
+#[test]
+fn settings_fifos_are_refused_at_once() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("anywhere");
+    let config = env.config_home().join("qrec");
+    fs::create_dir_all(&config).unwrap();
+    for name in ["keys.toml", "config.toml"] {
+        let status = std::process::Command::new("mkfifo")
+            .arg(config.join(name))
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    for args in [
+        &["keys", "--json"][..],
+        &["config", "get", "theme", "--json"][..],
+    ] {
+        let mut command = env.command(&qrec_bin());
+        command.current_dir(&dir).args(args);
+        let started = Instant::now();
+        let out = run_tool(&mut command, Duration::from_secs(20));
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{args:?} waited"
+        );
+        assert_ne!(out.status.code(), Some(0), "{args:?}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("isn't a regular file"),
+            "{args:?}: {stdout}"
+        );
+    }
 }
 
 /// `QREC_FAKE_INVENTORY=design`: the fake sources carry BRIEF's labels and

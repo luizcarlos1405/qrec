@@ -103,7 +103,10 @@ impl TestEnv {
         self.runtime_root.path().join("qrec")
     }
 
-    /// The variables applied to every command, in a fixed order.
+    /// The variables applied to every command, in a fixed order. `TZ=UTC0`
+    /// (a POSIX zone, no zoneinfo file needed): spawned processes read local
+    /// times as UTC whatever the machine's zone, so the design fixture's UTC
+    /// recording times show as BRIEF's (G§8.4).
     pub fn vars(&self) -> Vec<(&'static str, OsString)> {
         vec![
             ("HOME", self.home().into()),
@@ -113,6 +116,7 @@ impl TestEnv {
             ("XDG_RUNTIME_DIR", self.xdg_runtime_dir().into()),
             ("QREC_RUNTIME_DIR", self.runtime_dir().into()),
             ("QREC_CAPTURE_BACKEND", "fake".into()),
+            ("TZ", "UTC0".into()),
         ]
     }
 
@@ -220,15 +224,17 @@ mod tests {
         let env = TestEnv::new();
         let output = env
             .command(Path::new("sh"))
-            .args(["-c", "printf '%s\\n' \"$HOME\" \"$XDG_CONFIG_HOME\" \"$XDG_STATE_HOME\" \"$XDG_CACHE_HOME\" \"$XDG_RUNTIME_DIR\" \"$QREC_RUNTIME_DIR\" \"$QREC_CAPTURE_BACKEND\""])
+            .args(["-c", "printf '%s\\n' \"$HOME\" \"$XDG_CONFIG_HOME\" \"$XDG_STATE_HOME\" \"$XDG_CACHE_HOME\" \"$XDG_RUNTIME_DIR\" \"$QREC_RUNTIME_DIR\" \"$QREC_CAPTURE_BACKEND\" \"$TZ\"; date +%H:%M -d @52320"])
             .output()
             .expect("run sh");
         assert!(output.status.success());
-        let lines: Vec<String> = String::from_utf8(output.stdout)
+        let mut lines: Vec<String> = String::from_utf8(output.stdout)
             .unwrap()
             .lines()
             .map(String::from)
             .collect();
+        // Local time is UTC, whatever the machine's zone (G§8.4).
+        assert_eq!(lines.pop().as_deref(), Some("14:32"));
         let expected: Vec<String> = env
             .vars()
             .into_iter()
@@ -236,6 +242,7 @@ mod tests {
             .collect();
         assert_eq!(lines, expected);
         assert_eq!(lines[6], "fake");
+        assert_eq!(lines[7], "UTC0");
         assert!(Path::new(&lines[0]).starts_with(env.root()));
         // Room for `<64 hex>.sock` under the 107-byte socket limit.
         assert!(env.runtime_dir().as_os_str().len() + 1 + 64 + ".sock".len() <= 107);

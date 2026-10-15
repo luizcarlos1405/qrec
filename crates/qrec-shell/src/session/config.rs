@@ -11,6 +11,7 @@ use qrec_core::protocol::Toast;
 use qrec_core::protocol::ToastLevel;
 
 use crate::caps::CapsOptions;
+use crate::capture::FakeInventoryKind;
 use crate::error::ShellError;
 use crate::facts::{ConfigFile, Sources};
 use crate::lock::ProjectLock;
@@ -87,6 +88,10 @@ pub struct SessionEnv {
     pub dirs: UserDirs,
     /// `QREC_CAPTURE_BACKEND=fake`: device facts come from the fake inventory.
     pub fake_backend: bool,
+    /// Which fake inventory (`QREC_FAKE_INVENTORY`, read by
+    /// [`from_process`](Self::from_process) only, so a Session a test opens
+    /// in its own process gets the plain one unless the test asks, A§11).
+    pub fake_inventory: FakeInventoryKind,
     pub caps: CapsOptions,
     /// `config.toml` (`dirs.config_file()`). Clones share what was read and
     /// reported: Sessions of one process opened with the same one warn
@@ -100,13 +105,15 @@ impl SessionEnv {
     pub fn from_process() -> Result<Self, ShellError> {
         let dirs = UserDirs::resolve(&Env::from_process())?;
         let fake = std::env::var(BACKEND_ENV).is_ok_and(|v| v == "fake");
-        Ok(Self::for_dirs(dirs, fake))
+        let mut env = Self::for_dirs(dirs, fake);
+        env.fake_inventory = FakeInventoryKind::from_env();
+        Ok(env)
     }
 
     /// The machine's ffmpeg and render nodes; the capabilities cache and
     /// probe logs under `dirs`. The fake backend (tests, CI) never runs
     /// the VA-API check, so nothing touches a GPU and exports plan the
-    /// same everywhere.
+    /// same everywhere. The plain fake inventory.
     pub fn for_dirs(dirs: UserDirs, fake_backend: bool) -> Self {
         let mut caps = CapsOptions::system(
             Some(dirs.capabilities_cache()),
@@ -117,6 +124,7 @@ impl SessionEnv {
             config: ConfigFile::new(dirs.config_file()),
             dirs,
             fake_backend,
+            fake_inventory: FakeInventoryKind::Plain,
             caps,
         }
     }

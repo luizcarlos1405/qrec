@@ -1,12 +1,16 @@
 //! The fake capture backend's devices (`QREC_CAPTURE_BACKEND=fake`, A§8.11).
 //!
 //! Discovery under the fake backend returns exactly these devices (the
-//! `sources` module and `Facts` use [`fake_inventory`]); the engine turns
+//! `sources` module and `Facts` use [`fake_inventory_of`]); the engine turns
 //! them into `videotestsrc`/`audiotestsrc` sources and never touches the
 //! portal, cameras or PulseAudio.
 //!
-//! **Test hooks** ([`FakeHooks`], docs/GUI.md G§8.4), read from the
-//! environment and honored only with the fake backend:
+//! **Test hooks** ([`FakeHooks`], docs/GUI.md G§8.4), honored only with the
+//! fake backend. Only code that runs as the process reads them from the
+//! environment (the binary's hosts and discovery, the GUI's opener:
+//! [`FakeHooks::from_env`], [`FakeInventoryKind::from_env`],
+//! `SessionEnv::from_process`); engines and Sessions a test builds in its
+//! own process get none unless it sets them (A§11):
 //!
 //! - `QREC_FAKE_EOS_DELAY_MS=<ms>`: a stopped take's files close that much
 //!   later, so it stays finalizing (S05); past its EOS timeout it ends
@@ -35,8 +39,9 @@ pub const FAKE_RECORD_OFFSET_ENV: &str = "QREC_FAKE_RECORD_OFFSET_FRAMES";
 pub const FAKE_INVENTORY_ENV: &str = "QREC_FAKE_INVENTORY";
 
 /// The fake backend's test hooks (docs/GUI.md G§8.4). The engine takes them
-/// from `EngineOptions::fake`, which [`FakeHooks::from_env`] fills for the
-/// fake backend; the real backend never looks at them.
+/// from `EngineOptions::fake` (none by default), which the binary's hosts
+/// and the GUI's opener fill with [`FakeHooks::from_env`] for the fake
+/// backend; the real backend never looks at them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FakeHooks {
     /// How much later than its EOS a stopped take's files count as closed.
@@ -232,14 +237,6 @@ pub struct FakeInventory {
     pub default_monitor: Option<String>,
 }
 
-/// Screens `FAKE-1`, `FAKE-2` (1280×720, side by side), camera
-/// `/dev/fake0`, mic `alsa_input.fake`, monitor `alsa_output.fake.monitor`;
-/// with `QREC_FAKE_INVENTORY=design`, the brief's names and sizes
-/// ([`fake_inventory_of`]).
-pub fn fake_inventory() -> FakeInventory {
-    fake_inventory_of(FakeInventoryKind::from_env())
-}
-
 /// The design brief's devices (BRIEF §3.1): the monitors' names and sizes,
 /// then the camera's, the mic's and system audio's names.
 const DESIGN_SCREENS: [(&str, (u32, u32)); 2] = [
@@ -250,7 +247,11 @@ const DESIGN_CAMERA: &str = "Logitech C920";
 const DESIGN_MIC: &str = "Yeti Nano";
 const DESIGN_MONITOR: &str = "Built-in Audio Analog Stereo";
 
-/// [`fake_inventory`] of one kind. The design kind only renames and
+/// The fake devices of one kind: screens `FAKE-1`, `FAKE-2` (1280×720,
+/// side by side), camera `/dev/fake0`, mic `alsa_input.fake`, monitor
+/// `alsa_output.fake.monitor`; the design kind (`QREC_FAKE_INVENTORY=design`,
+/// read by whoever runs as the process) carries the brief's names and
+/// sizes. The design kind only renames and
 /// resizes what discovery reports: output names, device paths, camera
 /// modes and the engine's test patterns (1280×720, the same 16:9) stay.
 pub fn fake_inventory_of(kind: FakeInventoryKind) -> FakeInventory {

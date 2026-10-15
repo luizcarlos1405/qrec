@@ -150,8 +150,11 @@ fn stop_and_open_finalizes_the_take() {
         matches!(hello.record, RecordPhase::Recording { .. }),
         "{hello:?}"
     );
-    let finalized = stop_recording(&socket, STOP_TIMEOUT).unwrap();
-    assert_eq!(finalized["finalized"], true, "{finalized}");
+    let Stopped::Finalized(take) = stop_recording(&socket, STOP_TIMEOUT).unwrap() else {
+        panic!("the take was finalized");
+    };
+    assert_eq!(take.take.as_str(), "take-0001");
+    assert!(take.placed);
     request_shutdown(&socket).unwrap();
     let _lock = wait_for_lock(&f.dir, LOCK_TIMEOUT).unwrap();
     assert_eq!(host.join().unwrap(), 0);
@@ -164,6 +167,23 @@ fn stop_and_open_finalizes_the_take() {
     assert_eq!(err.code, ErrorCode::Invalid);
     request_shutdown(&f.socket).unwrap();
     assert_eq!(host.join().unwrap(), 0);
+}
+
+/// A `RecordStop` that cancelled what hadn't started (a countdown) made no
+/// take: its `CmdResult` has no result. One whose result isn't a finalized
+/// take is an error, never read as one.
+#[test]
+fn a_stop_without_a_take_is_cancelled() {
+    let cancelled = serde_json::json!({
+        "seq": null, "created": [], "removed": [],
+        "message": "Countdown cancelled", "result": null,
+    });
+    assert_eq!(
+        stopped(cancelled).unwrap(),
+        Stopped::Cancelled("Countdown cancelled".into())
+    );
+    let odd = serde_json::json!({ "message": "?", "result": { "take": 7 } });
+    assert_eq!(stopped(odd).unwrap_err().code, ErrorCode::Io);
 }
 
 /// D-29: the window polls `hello` until the export is over, then shuts the

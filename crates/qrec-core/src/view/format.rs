@@ -5,6 +5,8 @@
 //! 1,000,000 bytes), `×` is U+00D7 and `·` U+00B7. Key caps come from
 //! `keymap::KeyChord::cap_legends`.
 
+use chrono::{DateTime, Datelike, FixedOffset, Utc};
+
 use crate::ids::{Frame, TakeId};
 use crate::model::{Canvas, Clip, Fps};
 use crate::timeline::total_frames;
@@ -166,6 +168,37 @@ pub fn display_path(path: &str, project_dir: &str, home: Option<&str>) -> String
     }
 }
 
+/// `at` on the wall clock `utc_offset_secs` east of UTC (an offset chrono
+/// can't take counts as UTC).
+fn local(at: DateTime<Utc>, utc_offset_secs: i32) -> DateTime<FixedOffset> {
+    let offset = FixedOffset::east_opt(utc_offset_secs)
+        .unwrap_or_else(|| FixedOffset::east_opt(0).expect("UTC is a valid offset"));
+    at.with_timezone(&offset)
+}
+
+/// A local wall-clock time: "14:12". The offset is the one in force at
+/// `at` (the GUI asks its zone for each instant: a take recorded before a
+/// DST change has another offset than now).
+pub fn local_hm(at: DateTime<Utc>, utc_offset_secs: i32) -> String {
+    local(at, utc_offset_secs).format("%H:%M").to_string()
+}
+
+/// When something happened, inside a sentence: "today at 15:02", "Oct 14
+/// at 15:02", "Oct 14, 2025 at 15:02" (another year). Both times are on
+/// the local clock of their own instant (each carries the offset in force
+/// then); "today" is `now`'s date.
+pub fn local_when(at: DateTime<FixedOffset>, now: DateTime<FixedOffset>) -> String {
+    let today = now.date_naive();
+    let time = at.format("%H:%M");
+    if at.date_naive() == today {
+        format!("today at {time}")
+    } else if at.year() == today.year() {
+        format!("{} at {time}", at.format("%b %-d"))
+    } else {
+        format!("{} at {time}", at.format("%b %-d, %Y"))
+    }
+}
+
 /// A core message as a title or a sentence: its first letter uppercased
 /// ("no clip c9 on the timeline" → "No clip c9 on the timeline").
 pub fn capitalized(text: &str) -> String {
@@ -307,6 +340,28 @@ mod tests {
             .map(|(what, out)| format!("{what:<28} {out}\n"))
             .collect();
         insta::assert_snapshot!("formats", text);
+    }
+
+    /// Local times take the offset in force at their own instant: take 4
+    /// recorded at 14:12 EDT reads 14:12 after the clocks went back too.
+    #[test]
+    fn local_times() {
+        let utc = |s: &str| s.parse::<DateTime<Utc>>().unwrap();
+        let local = |s: &str| DateTime::parse_from_rfc3339(s).unwrap();
+        let take_4 = utc("2026-10-14T18:12:00Z");
+        assert_eq!(local_hm(take_4, -4 * 3600), "14:12");
+        assert_eq!(local_hm(take_4, -5 * 3600), "13:12");
+        assert_eq!(local_hm(take_4, 0), "18:12");
+        assert_eq!(local_hm(take_4, 1 << 30), "18:12", "no such offset: UTC");
+
+        let now = local("2026-11-02T09:00:00-05:00");
+        let when = |at: &str| local_when(local(at), now);
+        assert_eq!(when("2026-11-02T00:00:00-05:00"), "today at 00:00");
+        assert_eq!(when("2026-11-01T23:59:00-05:00"), "Nov 1 at 23:59");
+        assert_eq!(when("2026-10-14T15:02:00-04:00"), "Oct 14 at 15:02");
+        assert_eq!(when("2025-10-14T15:02:00-04:00"), "Oct 14, 2025 at 15:02");
+        // Another offset at the file's instant: its own wall clock.
+        assert_eq!(when("2026-11-02T08:30:00+00:00"), "today at 08:30");
     }
 
     #[test]

@@ -1,7 +1,9 @@
 //! `keys.toml` (A§9.7): reading it for the GUI's startup (docs/GUI.md
-//! G§3.3 step 1, then `keymap::resolve`) and for `qrec keys` (the
-//! Session's facts), within the bounds of [`config_file::read_text`].
-//! Editing bindings comes with the GUI's Settings pages. Owner: meta.
+//! G§3.3 step 1, then `keymap::resolve`) and for `Query::Keys` (the
+//! Session's facts), within the bounds of [`config_file::read_text`]. The
+//! CLI's `qrec keys` reads it with that same reader, through
+//! `Backend::settings_text`. Editing bindings comes with the GUI's Settings
+//! pages. Owner: meta.
 
 use std::path::Path;
 
