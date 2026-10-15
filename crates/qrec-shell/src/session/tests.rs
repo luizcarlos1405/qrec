@@ -180,6 +180,8 @@ struct Harness {
     toasts: Arc<Mutex<Vec<Toast>>>,
     /// How the fake media runner answers recovery probes ([`FakeMedia`]).
     recover: Option<u64>,
+    /// How projects from disk are checked (default: not at all).
+    check: crate::store::Check,
 }
 
 impl Harness {
@@ -193,6 +195,7 @@ impl Harness {
             log: Log::default(),
             toasts: Arc::default(),
             recover: None,
+            check: unchecked,
         }
     }
 
@@ -223,7 +226,7 @@ impl Harness {
             notifier: Some(Box::new(move |t: &Toast| {
                 toasts.lock().unwrap().push(t.clone())
             })),
-            check: Some(unchecked),
+            check: Some(self.check),
             // The fake runner answers recovery at once or never.
             recovery_wait: Some(Duration::from_millis(200)),
             ..SessionConfig::default()
@@ -945,6 +948,99 @@ fn a_hand_edit_found_at_open_survives_the_repairs() {
             .iter()
             .map(|e| e.seq)
             .collect::<Vec<_>>()
+    );
+}
+
+/// A hand edit that is valid alone but not once merged (facts in memory
+/// win, A§7.4) is never written over by the open's repairs (A§7.7, SPEC
+/// §16): it stays as it is, user edits wait, closing writes nothing, and a
+/// restore keeps a copy. The open used to rewrite it from the commit record
+/// when the store needed repair (here a torn history line), keeping no copy.
+#[test]
+fn a_hand_edit_that_fails_to_merge_is_never_written_over() {
+    let mut h = Harness::with_sample("unmergeable");
+    h.check = crate::store::validated;
+    {
+        let mut s = h.open(true).unwrap();
+        send(
+            &mut s,
+            Command::ClipRemove {
+                clips: vec![clip("c001")],
+            },
+            false,
+        )
+        .unwrap();
+    }
+    // A torn line from a crash: the next open has files to repair.
+    let mut history = fs::read(h.paths().history_file()).unwrap();
+    history.extend_from_slice(b"{\"seq\":");
+    fs::write(h.paths().history_file(), &history).unwrap();
+    // Valid alone; once merged the take keeps its 300 frames, and the clip
+    // that now ends at 500 doesn't fit.
+    let mut json: Value =
+        serde_json::from_slice(&fs::read(h.dir.join("qrec.json")).unwrap()).unwrap();
+    json["name"] = "my hand edit".into();
+    json["takes"]["take-0001"]["durationFrames"] = 500.into();
+    json["timeline"]["clips"][0]["out"] = 500.into();
+    write_project(&h.dir, &json);
+    let edited = fs::read(h.dir.join("qrec.json")).unwrap();
+    let head = fs::read(h.paths().history_head()).unwrap();
+
+    let mut s = h.open(true).unwrap();
+    let why = s
+        .state()
+        .runtime
+        .disk_invalid
+        .clone()
+        .expect("it didn't merge");
+    assert!(why.contains("ends at frame 500"), "{why}");
+    assert_eq!(fs::read(h.dir.join("qrec.json")).unwrap(), edited);
+    assert_eq!(fs::read(h.paths().history_head()).unwrap(), head);
+    assert_eq!(fs::read(h.paths().history_file()).unwrap(), history);
+    assert!(s.store.is_dirty(), "the repair waits");
+    let titles = h.toast_titles();
+    assert!(
+        !titles.contains(&"Qrec repaired the project's files".to_owned()),
+        "{titles:?}"
+    );
+    assert!(
+        titles.contains(&"The project's files need repair".to_owned()),
+        "{titles:?}"
+    );
+    assert!(
+        titles.contains(&"qrec.json on disk is invalid".to_owned()),
+        "{titles:?}"
+    );
+
+    // User edits wait until the file is fixed or restored…
+    let rename = Command::ProjectSet {
+        name: Some("z".into()),
+        canvas: None,
+        background: None,
+        countdown_secs: None,
+        encoder: None,
+        vaapi_device: qrec_core::protocol::Nullable::Keep,
+    };
+    let err = send(&mut s, rename, false).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Invalid);
+    assert!(
+        err.message.starts_with("qrec.json on disk is invalid"),
+        "{err:?}"
+    );
+    // …and neither they nor closing the host write over it.
+    drop(s);
+    assert_eq!(fs::read(h.dir.join("qrec.json")).unwrap(), edited);
+    assert_eq!(fs::read(h.paths().history_head()).unwrap(), head);
+
+    // A confirmed restore keeps a copy before it rewrites the file.
+    let mut s = h.open(true).unwrap();
+    let cursor = s.state().history.cursor;
+    send(&mut s, Command::HistoryRestore { seq: cursor }, true).unwrap();
+    assert_eq!(corrupt_copies(&h), [edited]);
+    assert_eq!(s.state().runtime.disk_invalid, None);
+    assert_eq!(
+        fs::read(h.dir.join("qrec.json")).unwrap(),
+        format::project_bytes(&s.state().project)
     );
 }
 

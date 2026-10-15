@@ -979,9 +979,11 @@ that saves (a `History` op or `WriteProject`), in order:
 An outcome that saves nothing writes nothing, even when the files need
 repair: a failed commit or a repair the load found makes the next commit
 that saves rewrite the history file, `qrec.json` and the head, and a host's
-open (outside recovery mode) writes the repair right away. A Session that
-goes away with a dirty store tries one last full write (never in recovery
-mode, never over a `qrec.json` that failed to load). Non-undoable
+open (outside recovery mode) writes the repair right away, unless its
+`qrec.json` didn't merge (A§7.7): that file is never written over in place,
+so the repair waits for the write that moves it aside or copies it first. A
+Session that goes away with a dirty store tries one last full write (never in
+recovery mode, never over a `qrec.json` that failed to load). Non-undoable
 writes do steps 2–3. On open (lock held): drop history lines with
 `seq ≥ nextSeq`; drop a torn last line; a bad line elsewhere ⇒ `Invalid`
 with its line number. If `sha256(qrec.json) == H` the state is clean;
@@ -1008,7 +1010,10 @@ made but couldn't be saved", not `ok`.
   history restore <cursor> --yes`"; queries work; a later valid read clears
   it. Writes that must save facts (begin take, finalization, recovery) first
   move the invalid file to `.qrec/rejected/qrec-YYYYMMDD-HHMMSS.json` (never
-  overwritten) and say so in a toast.
+  overwritten) and say so in a toast. A host whose open finds a file that is
+  valid alone but not once merged (A§7.4: facts in memory win) is in the
+  same state, and its open writes none of the repairs the load found
+  (A§7.6): the toast says the files need repair.
 - Opening: a corrupt file makes `Session::open` fail with `Invalid` and that
   hint, except with `OpenOpts { recovery: true }` (used by `qrec history` and
   `qrec history restore`), which loads `history.head.json` + history and
