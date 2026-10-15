@@ -155,6 +155,24 @@ impl Answers {
     }
 }
 
+/// The harness's notifier: every toast, and the titles of the startup
+/// recovery's.
+struct SeenToasts {
+    all: Arc<Mutex<Vec<Toast>>>,
+    recovery: Arc<Mutex<Vec<String>>>,
+}
+
+impl Notifier for SeenToasts {
+    fn notify(&mut self, toast: &Toast) {
+        self.all.lock().unwrap().push(toast.clone());
+    }
+
+    fn notify_recovery(&mut self, toast: &Toast) {
+        self.recovery.lock().unwrap().push(toast.title.clone());
+        self.notify(toast);
+    }
+}
+
 struct Recorder(Answers);
 
 impl Responder for Recorder {
@@ -178,6 +196,9 @@ struct Harness {
     dir: PathBuf,
     log: Log,
     toasts: Arc<Mutex<Vec<Toast>>>,
+    /// The titles of the toasts sent as the startup recovery's
+    /// (`Notifier::notify_recovery`); they are in `toasts` too.
+    recovery_toasts: Arc<Mutex<Vec<String>>>,
     /// How the fake media runner answers recovery probes ([`FakeMedia`]).
     recover: Option<u64>,
     /// How projects from disk are checked (default: not at all).
@@ -196,6 +217,7 @@ impl Harness {
             dir,
             log: Log::default(),
             toasts: Arc::default(),
+            recovery_toasts: Arc::default(),
             recover: None,
             check: unchecked,
             // The fake runner answers recovery at once or never.
@@ -224,11 +246,11 @@ impl Harness {
     }
 
     fn config(&self) -> SessionConfig {
-        let toasts = Arc::clone(&self.toasts);
         SessionConfig {
             env: Some(self.session_env()),
-            notifier: Some(Box::new(move |t: &Toast| {
-                toasts.lock().unwrap().push(t.clone())
+            notifier: Some(Box::new(SeenToasts {
+                all: Arc::clone(&self.toasts),
+                recovery: Arc::clone(&self.recovery_toasts),
             })),
             check: Some(self.check),
             recovery_wait: Some(self.recovery_wait),
@@ -2230,6 +2252,75 @@ fn a_slow_recovery_keeps_the_host_running_until_it_is_answered() {
     assert!(started.elapsed() >= Duration::from_millis(250));
     assert_eq!(s.state().project.takes[&take(2)].status, TakeStatus::Ok);
     assert!(s.recovering().is_empty() && s.is_idle());
+}
+
+/// While a crashed take's Recover probe is out, `run_until` keeps asking
+/// its caller's `done`, where an in-process host passes its command's reply
+/// on (A§8.5): a stop, which never waits for the recovery (A§5.3), is
+/// answered and seen at once. The run still ends only once the probe is
+/// answered (A§8.6), and only the recovery's toasts are the host's own news
+/// (an in-process command shows them after its reply). `done` used to go
+/// unasked until the probe was back, so the stop's answer waited for it.
+#[test]
+fn run_until_asks_its_caller_while_a_recovery_is_out() {
+    let h = Harness::new("asks-while-recovering");
+    write_crashed_take(&h);
+    let mut s = h.open(true).unwrap();
+    assert_eq!(s.recovering().len(), 1);
+    let stop = Answers::default();
+    s.inbox().send(Msg::Request {
+        req: Request::command(Command::RecordStop, false),
+        to: stop.responder(),
+    });
+    // Another event's toast, while the recovery is out.
+    s.inbox().event(Event::EngineWedged {
+        message: String::new(),
+    });
+    let inbox = s.inbox();
+    let jobs = recovery_probe_jobs(&s, &take(2));
+    let answered = Arc::new(Mutex::new(None));
+    let (saw, sees) = std::sync::mpsc::channel::<()>();
+    let late = {
+        let answered = Arc::clone(&answered);
+        std::thread::spawn(move || {
+            // The probe comes back once `done` saw the stop's answer (or,
+            // too late, after 5 s).
+            let _ = sees.recv_timeout(Duration::from_secs(5));
+            *answered.lock().unwrap() = Some(Instant::now());
+            inbox.event(Event::TakeProbed {
+                take: take(2),
+                purpose: ProbePurpose::Recover,
+                results: jobs.iter().map(|j| probed_job(j, 90)).collect(),
+            });
+        })
+    };
+    let mut seen = None;
+    s.run_until(|_| {
+        if seen.is_none() && stop.last().is_some() {
+            seen = Some(Instant::now());
+            let _ = saw.send(());
+        }
+        true
+    });
+    late.join().unwrap();
+    let answered = answered.lock().unwrap().expect("the probe was answered");
+    let seen = seen.expect("`done` saw the stop's answer");
+    assert!(seen < answered, "seen while the probe was out");
+    let err = stop.last().unwrap().unwrap_err();
+    assert_eq!(err.message, "not recording", "{err:?}");
+    // The run ended once the take was recovered.
+    assert!(s.recovering().is_empty() && s.is_idle());
+    assert_eq!(s.state().project.takes[&take(2)].status, TakeStatus::Ok);
+    let titles = h.toast_titles();
+    assert!(
+        titles.contains(&"The capture engine is stuck".to_owned()),
+        "{titles:?}"
+    );
+    assert_eq!(
+        *h.recovery_toasts.lock().unwrap(),
+        ["Recovered take 2 from the bog."],
+        "{titles:?}"
+    );
 }
 
 #[test]

@@ -215,6 +215,7 @@ pub(super) fn open(
         parked: Vec::new(),
         next_req: 0,
         notifier: cfg.notifier.unwrap_or_else(|| Box::new(LogNotifier)),
+        recovery_news: false,
         shutdown: false,
         interrupts: 0,
         recovery_until: None,
@@ -361,13 +362,12 @@ impl Session {
         };
         let toast =
             Toast::new(ToastLevel::Warning, title).with_body(format!("{}{then}", notes.join("\n")));
-        self.notifier.notify(&toast);
+        self.notify(&toast);
     }
 
     pub(super) fn notify_error(&mut self, title: &str, body: &str) {
         tracing::error!("{title}: {body}");
-        self.notifier
-            .notify(&Toast::new(ToastLevel::Error, title).with_body(body));
+        self.notify(&Toast::new(ToastLevel::Error, title).with_body(body));
     }
 
     /// `Event::Capabilities` before the first dispatch (A§3). It reads the

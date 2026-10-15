@@ -10,7 +10,7 @@ use chrono::SubsecRound;
 use qrec_core::apply::project::is_initialized;
 use qrec_core::config::UserConfig;
 use qrec_core::ctx::{Ctx, Facts, FactsNeeded};
-use qrec_core::protocol::{Command, HelloInfo, Query, WireBody};
+use qrec_core::protocol::{Command, HelloInfo, ProbePurpose, Query, WireBody};
 use qrec_core::state::JobKind;
 use qrec_core::{
     CmdResult, CoreError, ErrorCode, Event, ReqId, apply, facts_needed, facts_needed_for_event,
@@ -343,6 +343,17 @@ impl Session {
 
     /// Feeds one event to the core and runs its outcome.
     pub(super) fn run_event(&mut self, ev: Event) {
+        // What the startup recovery finds is the host's own news, which an
+        // in-process command still shows after its reply (A§8.6).
+        let recovery = matches!(
+            ev,
+            Event::TakeProbed {
+                purpose: ProbePurpose::Recover,
+                ..
+            }
+        );
+        let outer = self.recovery_news;
+        self.recovery_news = outer || recovery;
         let mut attempts = 0;
         loop {
             attempts += 1;
@@ -357,10 +368,11 @@ impl Session {
                 &mut None,
                 attempts > MAX_REDISPATCH,
             ) {
-                Ran::Done => return,
+                Ran::Done => break,
                 Ran::ExternalFirst => continue,
             }
         }
+        self.recovery_news = outer;
     }
 
     /// The watcher saw `qrec.json` change (A§8.9): unless it is this host's

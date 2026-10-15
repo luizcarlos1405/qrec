@@ -33,6 +33,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use qrec_core::apply::project::is_initialized;
+use qrec_core::protocol::Toast;
 use qrec_core::state::JobKind;
 use qrec_core::{ReqId, State, TakeId};
 
@@ -96,6 +97,9 @@ pub struct Session {
     recovery_until: Option<Instant>,
     next_req: u64,
     notifier: Box<dyn Notifier>,
+    /// Set while the outcome of a startup recovery runs: its toasts are the
+    /// host's own news ([`Notifier::notify_recovery`]).
+    recovery_news: bool,
     shutdown: bool,
     interrupts: u32,
     /// A request's change was saved (committed). Recovery mode keeps
@@ -203,18 +207,23 @@ impl Session {
     }
 
     /// Drains the inbox until `done(state)` holds (CLI and hosts). `done`
-    /// is checked after every message and at least every [`POLL`], once no
-    /// recovery probe is outstanding: like a running job, a recovery is
-    /// work a host waits for, so it never exits and drops the answer
+    /// is asked after every message and at least every [`POLL`], also while
+    /// a recovery probe is out: its caller passes on what came from there
+    /// (an in-process command's reply is printed as soon as it comes, A§8.5,
+    /// and a stop never waits for the recovery, A§5.3). The run ends only
+    /// once no recovery probe is out either: like a running job, a recovery
+    /// is work a host waits for, so it never exits and drops the answer
     /// (A§5.3, A§8.6). The media runner always answers within its timeouts.
-    /// After an interrupt `done` is checked all the same: the host's own
+    /// After an interrupt it ends as soon as `done` holds: the host's own
     /// grace period decides then (A§8.6), and the next open recovers the
     /// take again.
     pub fn run_until(&mut self, mut done: impl FnMut(&State) -> bool) {
         loop {
             self.tick();
-            let waits = !self.state.runtime.recovering.is_empty() && self.interrupts == 0;
-            if !waits && done(&self.state) {
+            // Always asked: a recovery still out only keeps the run going.
+            let finished = done(&self.state);
+            let recovering = !self.state.runtime.recovering.is_empty() && self.interrupts == 0;
+            if finished && !recovering {
                 return;
             }
             let wait = self.next_deadline().map_or(POLL, |due| {
@@ -307,6 +316,15 @@ impl Session {
     fn alloc_req(&mut self) -> ReqId {
         self.next_req += 1;
         ReqId(format!("r{}", self.next_req))
+    }
+
+    /// Shows a toast; one of the startup recovery as such (A§5.3).
+    pub(super) fn notify(&mut self, toast: &Toast) {
+        if self.recovery_news {
+            self.notifier.notify_recovery(toast);
+        } else {
+            self.notifier.notify(toast);
+        }
     }
 }
 

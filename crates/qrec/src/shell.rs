@@ -15,10 +15,11 @@
 //!   clock and OS entropy. Hosts hand their Session a share of the project
 //!   lock they hold.
 //! - Toasts of an in-process host go to the CLI (stderr, or JSON notice
-//!   lines); a headless host's go to its log. A `config.toml` that can't
-//!   be used is reported once per run, before the request is routed
-//!   (whichever host answers it), and the Sessions of the run share that
-//!   reader, so they don't say it again (A§4.2).
+//!   lines; after the command's reply only the startup recovery's); a
+//!   headless host's go to its log. A `config.toml` that can't be used is
+//!   reported once per run, before the request is routed (whichever host
+//!   answers it), and the Sessions of the run share that reader, so they
+//!   don't say it again (A§4.2).
 //! - `doctor` and `sources list` are the media owner's report and inventory
 //!   (the fake inventory under the fake backend).
 //! - Logging: `tracing` to stderr, filtered by `-q`/`-v` (or `QREC_LOG`).
@@ -337,20 +338,48 @@ fn route_opts(opts: &RouteOpts) -> host::RouteOpts {
 /// the CLI's [`Events`]. Toasts are passed on with the next event and when
 /// the request ends, so they come out in order with progress and before the
 /// reply. Once the command's own reply is out, the host's later toasts are
-/// about requests of other clients it still serves: they aren't shown.
+/// about requests of other clients it still serves: they aren't shown,
+/// except the startup recovery's, which the process finishes for itself
+/// after a reply that didn't wait for it (A§5.3, A§8.6).
 struct Bridge<'e> {
     events: &'e mut dyn Events,
-    notices: mpsc::Receiver<Toast>,
+    notices: mpsc::Receiver<Notice>,
     replied: bool,
 }
 
 impl Bridge<'_> {
     fn flush(&mut self) {
-        while let Ok(toast) = self.notices.try_recv() {
-            if !self.replied {
-                self.events.notice(&toast);
+        while let Ok(notice) = self.notices.try_recv() {
+            if !self.replied || notice.recovery {
+                self.events.notice(&notice.toast);
             }
         }
+    }
+}
+
+/// A toast of an in-process host, and whether it is the startup
+/// recovery's (`Notifier::notify_recovery`).
+struct Notice {
+    toast: Toast,
+    recovery: bool,
+}
+
+/// An in-process host's toasts, sent to the CLI's [`Bridge`].
+struct ToCli(mpsc::Sender<Notice>);
+
+impl Notifier for ToCli {
+    fn notify(&mut self, toast: &Toast) {
+        let _ = self.0.send(Notice {
+            toast: toast.clone(),
+            recovery: false,
+        });
+    }
+
+    fn notify_recovery(&mut self, toast: &Toast) {
+        let _ = self.0.send(Notice {
+            toast: toast.clone(),
+            recovery: true,
+        });
     }
 }
 
@@ -395,7 +424,7 @@ impl RequestEvents for Bridge<'_> {
 struct ShellOpener {
     /// Where an in-process host's toasts go (the CLI shows them); `None`:
     /// the log (a headless host).
-    notices: Option<mpsc::Sender<Toast>>,
+    notices: Option<mpsc::Sender<Notice>>,
     /// The run's shared `config.toml` ([`Shell::config_file`]); `None`:
     /// each Session reads its own (a headless host opens one).
     config: Option<ConfigFile>,
@@ -440,11 +469,10 @@ impl Opener for ShellOpener {
             clock: Box::new(system_clock),
             entropy: Box::new(os_entropy),
         };
-        let notifier = self.notices.clone().map(|notices| {
-            Box::new(move |toast: &Toast| {
-                let _ = notices.send(toast.clone());
-            }) as Box<dyn Notifier>
-        });
+        let notifier = self
+            .notices
+            .clone()
+            .map(|notices| Box::new(ToCli(notices)) as Box<dyn Notifier>);
         let cfg = SessionConfig {
             lock,
             env: Some(env),
