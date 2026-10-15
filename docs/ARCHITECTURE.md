@@ -761,11 +761,11 @@ waits), and `ExportCancel` without a job aborts the waiting `Export`s
 Commands whose wait is over run before any later message but a signal
 (which drops them, A§8.6), also before a tick released them, so a stop
 always finds the take their start began. A probe still out after that is
-work like a running job: a host
-isn't idle meanwhile (A§8.6) and `Session::run_until` doesn't return before
-its answer, so no host exits and drops it (the runner always answers,
-A§8.7) — unless the host was interrupted: then its 15 s grace decides, and
-the next open recovers the take.
+work like a running job: a host isn't idle meanwhile (A§8.6) and
+`Session::run_until` doesn't return before its answer, so no host exits
+and drops it (the runner always answers, A§8.7) — unless the host was
+interrupted: then its 15 s grace decides, and the next open recovers the
+take.
 
 **CaptureFailed vs StreamLost** (engine contract, A§8.11): after
 CaptureStarted, an error attributable to one branch (its source, encoder,
@@ -1020,18 +1020,18 @@ repair: a failed commit or a repair the load found makes the next commit
 that saves rewrite the history file, `qrec.json` and the head, and a host's
 open (outside recovery mode) writes the repair right away (and an
 unreadable `ui.json`; its toast says the files were repaired only when it
-wrote them), unless its
-`qrec.json` didn't merge (A§7.7): that file is never written over in place,
-so the repair waits for the write that moves it aside or copies it first. A
-Session that goes away with a dirty store tries one last full write (in
-recovery mode only once a request saved, A§7.7; never over a `qrec.json`
-that failed to load). Non-undoable writes do steps 2–3. On open (lock
-held): drop history lines with `seq ≥ nextSeq`; drop a torn last line; a
-bad line elsewhere ⇒ `Invalid` with its line number; derive an unreadable
-`history.base.json` (or a missing one under entries) from the project at
-the cursor (A§7.3) and write it as a repair; a base whose seq isn't the
-head's `baseSeq` (a rewrite that didn't finish) wins and the head is
-written again. If `sha256(qrec.json) == H` the state is clean.
+wrote them), unless its `qrec.json` didn't merge (A§7.7): that file is
+never written over in place, so the repair waits for the write that moves
+it aside or copies it first. A Session that goes away with a dirty store
+tries one last full write (in recovery mode only once a request saved,
+A§7.7; never over a `qrec.json` that failed to load). Non-undoable writes
+do steps 2–3. On open (lock held): drop history lines with
+`seq ≥ nextSeq`; drop a torn last line; a bad line elsewhere ⇒ `Invalid`
+with its line number; derive an unreadable `history.base.json` (or a
+missing one under entries) from the project at the cursor (A§7.3) and
+write it as a repair; a base whose seq isn't the head's `baseSeq` (a
+rewrite that didn't finish) wins and the head is written again. If
+`sha256(qrec.json) == H` the state is clean.
 Otherwise a valid file whose undoable view is the `afterHash` of the
 uncommitted lines (they follow the head: the first is its `nextSeq`, then
 one after the other, after a history ending at its cursor), and that still
@@ -1095,9 +1095,9 @@ rewrites every file with its next commit, and the replies they send are
   forward patches (without a usable base there is nothing to recover from,
   and the error says whether the base is missing or unreadable; an open
   that had the head derived a lost base, A§7.3, so this rarely happens).
-  Patches carry no take facts and the base usually predates
-  the takes, so each take found under `takes/` joins the pool right before
-  the first entry that uses it (its clip or its scene), `recording`, with
+  Patches carry no take facts and the base usually predates the takes, so
+  each take found under `takes/` joins the pool right before the first
+  entry that uses it (its clip or its scene), `recording`, with
   the project scene of that moment (what `begin_take` copied) and `placed`
   if that entry put its clip on the timeline; takes no entry uses go to the
   bin. `nextTakeNumber` goes past every take any entry names (SPEC §5.3.1:

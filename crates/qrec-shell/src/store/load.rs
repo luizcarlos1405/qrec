@@ -816,7 +816,7 @@ fn read_ui(paths: &ProjectPaths, notes: &mut Vec<String>) -> (UiState, bool) {
             Ok(ui) => (ui, false),
             Err(e) => {
                 notes.push(format!(
-                    "replaced an unreadable .qrec/ui.json with the default view: {e}"
+                    "ignored an unreadable .qrec/ui.json (the view starts from its defaults): {e}"
                 ));
                 (UiState::default(), true)
             }

@@ -312,7 +312,8 @@ pub fn send_request(
             // its startup recovery and doesn't let a stop cancel it).
             // Closing the connection drops it there, instead of letting it
             // start a take the person stopped.
-            tracing::warn!(
+            // The CLI says the command was interrupted (`-v` shows why).
+            tracing::info!(
                 "the host found nothing to stop while the start waits; detaching so it drops the start"
             );
             return Ok(Sent::Interrupted);
