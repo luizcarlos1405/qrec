@@ -18,7 +18,7 @@ _Ogres have layers. So do your recordings._
 | --- | --- |
 | M1 Core + CLI | Done: project model, folder rule, every timeline operation, undo/redo with persistent history, autocut, export (MP4/WebM, VP9/AV1), frame save, `--json` |
 | M2 Capture engine + hosts | Done: GStreamer engine (screens through the portal, cameras, mics, system audio), fake backend, headless host, IPC, locking, crash recovery, `doctor` |
-| M0 Spikes | Export ↔ GES parity verified (per-layer SSIM ≥ 0.986, exact frames). Portal restore tokens and real-device A/V sync need a manual run (below) |
+| M0 Spikes | Export ↔ GES parity verified (per-layer SSIM ≥ 0.986, exact frames). Portal restore tokens, screen/system-audio sync and a 10-minute take verified on real hardware; the camera clap test needs a person (below) |
 | M3 Design | Swamp Night vertical slice in `design/qrec.pen`, **approved** 2026-10-15 (contrast decisions in DESIGN.md) |
 | M4 GUI | In progress: GTK4/libadwaita implementation of the approved slice |
 | M5 Polish | Keymap, cheat-sheet data, themes as tokens and Nix packaging are in; GUI parts wait for M4 |
@@ -123,14 +123,37 @@ software, and ships GStreamer without the `nvcodec`/`qsv` plugins.
 
 ## Manual checks on real hardware
 
-Automated tests use the fake backend. These need a person at the machine:
+Automated tests use the fake backend. These need the real machine; the
+results are from the dev machine (niri, PipeWire 1.6.6, GStreamer 1.26,
+2026-10-15):
 
 1. **Portal restore tokens (M0a):** `qrec scene layer add screen --output <name>`,
    `qrec record start`, pick the monitor in the portal dialog, stop. Repeat
    `record start` — no dialog should appear. Then try it from a niri bind
    (headless host) and after a reboot.
+   *Result:* the second take started in ~0.75 s with no dialog. The niri bind
+   and reboot cases are still to try.
 2. **A/V sync (M0b):** two screens + camera + mic + system audio; clap on
    camera; export and check the clap's audio and video land on the same frame.
    Adjust per-track `qrec scene audio set A1 --sync-offset-ms N` if not.
+   *Result:* screen vs system audio, measured with a flash+beep clip played
+   by `ffplay`: a constant offset within each playback (audio 42–52 ms
+   ahead in a screen + system take, 75 ms with camera and mic running too),
+   no drift within a run. The offset includes the player's own output
+   latency, so it isn't Qrec's. The clap test (camera + mic) still needs a
+   person.
 3. **Long take:** a 10-minute take, then `qrec export`; check duration and sync.
+   *Result:* screen + camera + mic + system audio for 10 min 0.8 s: take
+   `ok`, 18,024 frames (exact), every file to the end (screen 600.80 s,
+   camera 600.27 s after a 0.53 s start, both audio tracks 600.77 s), the
+   stop immediate, the export 18,024 frames with 600.8 s of audio. The
+   flash runs at the start and the end measured 75 and 143 ms; each run is
+   a separate player launch on a sink whose latency PipeWire changed in
+   between, so this can't separate drift from playback latency. The stream
+   lengths match the clock within 30 ms over 600 s.
 4. `qrec doctor` on the machine reports every dependency and the VA node.
+   *Result:* every check passes (VA on `renderD129`).
+
+A still screen used to stop the screen stream for good (PipeWire 1.6's
+`pipewiresrc` keepalive) and broke long takes; see A§8.11 "Still screens".
+A camera that hangs mid-take is now lost after 3 s instead (SPEC §16).
