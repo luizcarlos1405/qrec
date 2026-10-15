@@ -1155,7 +1155,9 @@ filled to T1 before EOS.
   frozen frame.
 - Audio: `queue ! audioconvert ! audioresample ! audiorate skip-to-first=true
   ! audio/x-raw,rate=48000 ! flacenc ! matroskamux offset-to-zero=true !
-  filesink`.
+  filesink`. A stream shorter than one FLAC block (4608 samples) is padded
+  with silence to 120 ms before EOS: flacenc sets its caps with its first
+  block, and an earlier EOS pushes the segment before the caps *(measured)*.
 - `pipewiresrc keepalive-time=<floor(1000·den/num)>` so a static screen still
   produces frames to the end (screencasts are damage-driven).
 - Encoders: `x264enc pass=qual quantizer=18 speed-preset=veryfast
