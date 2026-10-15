@@ -156,6 +156,28 @@ pub fn take_purge(state: &State, ctx: &Ctx, takes: Vec<TakeId>) -> Result<Outcom
     for id in &takes {
         purgeable(state, id)?;
     }
+    let names = take_names(&takes);
+    // A purge deletes the regular files of each take's own folder and
+    // never follows a symlink: one that would leave media or folders behind
+    // is refused before anything changes, instead of dropping the take and
+    // its history while its files stay (A§5.6).
+    let left: Vec<&str> = takes
+        .iter()
+        .filter_map(|t| ctx.facts.take_left.get(t))
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    if !left.is_empty() {
+        return Err(CoreError::invalid(format!(
+            "can't purge {names} from disk: {}",
+            left.join("; ")
+        ))
+        .with_hint(
+            "a purge deletes only the regular files in a take's own folder and never \
+             follows a symlink: move or delete what is listed yourself, then purge again",
+        )
+        .with_details(json!({ "takes": takes, "left": left })));
+    }
     let rewrite = purge::purge_rewrite(state, &takes)?;
     let files: Vec<&FileFact> = takes
         .iter()
@@ -163,7 +185,6 @@ pub fn take_purge(state: &State, ctx: &Ctx, takes: Vec<TakeId>) -> Result<Outcom
         .flatten()
         .collect();
     let bytes: u64 = files.iter().map(|f| f.bytes).sum();
-    let names = take_names(&takes);
     if !ctx.confirmed {
         let mut what = format!(
             "purge {names} from disk ({} {}, {})",
@@ -792,6 +813,40 @@ mod tests {
             code(&state, vec![take(3)]).message,
             "an autocut analysis is reading take 3"
         );
+    }
+
+    /// A purge that would leave something on disk (a symlinked take folder
+    /// or `takes/`, a link or folder among its files) is refused before
+    /// anything changes, confirmed or not: the confirmation can only list
+    /// what really goes (SPEC §11, A§5.6).
+    #[test]
+    fn purge_refuses_what_it_would_leave_behind() {
+        let state = with_take_2_history();
+        for confirmed in [false, true] {
+            let mut ctx = purge_ctx(confirmed);
+            ctx.facts.take_files.insert(take(2), vec![]);
+            ctx.facts.take_left.insert(
+                take(2),
+                vec!["takes/take-0002/ is a symlink (not followed)".to_owned()],
+            );
+            let err = take_purge(&state, &ctx, vec![take(2)]).unwrap_err();
+            assert_eq!(err.code, ErrorCode::Invalid, "confirmed: {confirmed}");
+            assert_eq!(
+                err.message,
+                "can't purge take 2 from disk: takes/take-0002/ is a symlink (not followed)"
+            );
+            assert!(err.hint.unwrap().contains("never follows a symlink"));
+            assert_eq!(
+                err.details.unwrap(),
+                json!({
+                    "takes": ["take-0002"],
+                    "left": ["takes/take-0002/ is a symlink (not followed)"]
+                })
+            );
+        }
+        // Without leftovers the same purge goes ahead.
+        let out = take_purge(&state, &purge_ctx(true), vec![take(2)]).unwrap();
+        assert!(!out.state.project.takes.contains_key(&take(2)));
     }
 
     #[test]

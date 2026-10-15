@@ -60,8 +60,13 @@ pub struct Facts {
     pub cameras: Vec<CameraInfo>,
     /// `Export`/`FrameSave` with `--out`.
     pub out: Option<OutFacts>,
-    /// Purge confirmation: the files of each take with their sizes.
+    /// Purge confirmation: the files of each take the purge deletes (the
+    /// regular files in its folder, never through a symlink), with sizes.
     pub take_files: BTreeMap<TakeId, Vec<FileFact>>,
+    /// Purge: what it would leave on disk in a take's folder, said for
+    /// people (a symlinked `takes/` or take folder, or a symlink, folder or
+    /// special file in it). Such a purge is refused before anything changes.
+    pub take_left: BTreeMap<TakeId, Vec<String>>,
     /// 1 + the highest `takes/take-N` folder on disk.
     pub min_take_number: u32,
     /// Size and mtime of project files, keyed by project-relative path (silence keys).

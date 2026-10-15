@@ -690,6 +690,60 @@ fn purging_a_take_needs_yes() {
     assert_eq!(takes.reply()["data"].as_array().unwrap().len(), 1);
 }
 
+/// A take whose folder was moved to another disk and linked back can't be
+/// purged: the purge never follows a symlink, so it would delete nothing.
+/// It is refused (`invalid`, exit 1) before anything changes, with or
+/// without `--yes`, instead of a confirmation listing files it won't delete
+/// and a purge that drops the take and its history while they stay
+/// (SPEC §11, A§5.6). Once the link is gone, the purge goes ahead.
+#[test]
+fn a_take_whose_folder_is_a_link_is_not_purged_halfway() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "purge-link", &[video(30), video(30)]);
+    let disk = env.root().join("disk");
+    fs::create_dir(&disk).unwrap();
+    qrec(&env, &dir, &["clip", "remove", "c002"]).ok();
+    fs::rename(dir.join("takes/take-0002"), disk.join("take-0002")).unwrap();
+    symlink(disk.join("take-0002"), dir.join("takes/take-0002")).unwrap();
+    let files = names_in(&disk.join("take-0002"));
+    let history = qrec(&env, &dir, &["history", "--json"]).reply()["data"].clone();
+
+    for args in [
+        &["take", "purge", "take-0002", "--json"][..],
+        &["take", "purge", "take-0002", "--yes", "--json"],
+    ] {
+        let out = qrec(&env, &dir, args);
+        assert_eq!(out.code, Some(1), "{args:?}: {out:?}");
+        let error = &out.only_reply()["error"];
+        assert_eq!(error["code"], "invalid", "{error}");
+        assert_eq!(
+            error["message"],
+            "can't purge take 2 from disk: takes/take-0002/ is a symlink (not followed)"
+        );
+        assert_eq!(
+            error["details"]["left"],
+            json!(["takes/take-0002/ is a symlink (not followed)"])
+        );
+    }
+    assert_eq!(names_in(&disk.join("take-0002")), files, "nothing deleted");
+    let takes = qrec(&env, &dir, &["take", "list", "--json"]);
+    assert_eq!(takes.reply()["data"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        qrec(&env, &dir, &["history", "--json"]).reply()["data"],
+        history,
+        "the history is kept"
+    );
+
+    // Its files deleted by hand and the link removed: the purge drops it.
+    fs::remove_file(dir.join("takes/take-0002")).unwrap();
+    let out = qrec(&env, &dir, &["take", "purge", "take-0002", "--json"]);
+    assert_eq!(out.code, Some(4), "{out:?}");
+    assert_eq!(out.only_reply()["error"]["details"]["files"], json!([]));
+    qrec(&env, &dir, &["take", "purge", "take-0002", "--yes"]).ok();
+    let takes = qrec(&env, &dir, &["take", "list", "--json"]);
+    assert_eq!(takes.reply()["data"].as_array().unwrap().len(), 1);
+}
+
 /// A purge that can't be saved deletes nothing, changes nothing and says
 /// so (A§5.6, A§7.6). It used to reply "purged take 1 from the project, but
 /// some files could not be deleted … delete the leftover files by hand"
@@ -2723,6 +2777,71 @@ fn a_project_folder_that_isnt_utf8_exports_and_saves_frames() {
     let hint = error["hint"].as_str().unwrap();
     assert!(hint.contains(&format!("{shown}/.qrec/logs/")), "{error}");
     assert!(!failed.stdout.contains('\u{FFFD}'), "{}", failed.stdout);
+}
+
+/// SPEC §10.2, A§8.4: an absolute `--project` names the project folder,
+/// so commands (an export with an absolute `--out` too) work from a
+/// current directory that was deleted; without `--project` the error says
+/// to pass an absolute one, not the flag that was already there.
+#[test]
+fn an_absolute_project_works_from_a_deleted_folder() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "far", &[video(30)]);
+    let gone = env.root().join("gone");
+    let from_gone = |args: &[&str]| {
+        fs::create_dir_all(&gone).unwrap();
+        let mut command = env.command(Path::new("sh"));
+        command
+            .current_dir(env.root())
+            .args(["-c", r#"cd "$1" && rmdir "$1" && shift && exec "$@""#, "sh"])
+            .arg(&gone)
+            .arg(qrec_bin())
+            .args(args);
+        let out = run_tool(&mut command, Duration::from_secs(120));
+        Out {
+            code: out.status.code(),
+            stdout: String::from_utf8(out.stdout).expect("stdout is UTF-8"),
+            stderr: out.stderr,
+        }
+    };
+    let project = dir.to_str().unwrap();
+    let listed = from_gone(&["--json", "--project", project, "clip", "list"]);
+    listed.ok();
+    assert_eq!(listed.only_reply()["data"][0]["id"], "c001");
+    let out = env.root().join("far.mp4");
+    from_gone(&[
+        "--json",
+        "--project",
+        project,
+        "export",
+        "--quality",
+        "draft",
+        "--out",
+        out.to_str().unwrap(),
+    ])
+    .ok();
+    assert!(out.is_file());
+
+    let lost = from_gone(&["--json", "clip", "list"]);
+    assert_eq!(lost.code, Some(1), "{lost:?}");
+    let error = &lost.only_reply()["error"];
+    assert_eq!(error["code"], "io");
+    assert!(
+        error["hint"]
+            .as_str()
+            .unwrap()
+            .contains("absolute --project"),
+        "{error}"
+    );
+    let relative = from_gone(&["--json", "--project", project, "export", "--out", "x.mp4"]);
+    assert_eq!(relative.code, Some(1), "{relative:?}");
+    assert!(
+        relative.only_reply()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("--out x.mp4 is relative"),
+        "{relative:?}"
+    );
 }
 
 /// The pid of the host serving `dir` (`qrec status`).

@@ -31,7 +31,7 @@ use qrec_core::model::PROJECT_FILE;
 use serde_json::Value;
 
 use crate::capture::fake::fake_inventory;
-use crate::media::is_temp_name;
+use crate::media::{is_temp_name, take_contents};
 use crate::paths::{NAME_MAX, ProjectPaths, path_text};
 use crate::proc::{self, Limit, PACTL_TIMEOUT, Spec};
 
@@ -375,9 +375,11 @@ impl FactsGatherer {
             facts.out = Some(out_facts(self.paths.root(), out));
         }
         for take in &need.take_files {
-            facts
-                .take_files
-                .insert(take.clone(), take_files(&self.paths, take));
+            let (files, left) = take_files(&self.paths, take);
+            facts.take_files.insert(take.clone(), files);
+            if !left.is_empty() {
+                facts.take_left.insert(take.clone(), left);
+            }
         }
         if need.take_dirs {
             facts.min_take_number = min_take_number(&self.paths);
@@ -407,25 +409,24 @@ pub fn min_take_number(paths: &ProjectPaths) -> u32 {
         .unwrap_or(1)
 }
 
-/// The regular files in `takes/<take>/` with their sizes (symlinks and
-/// folders aren't followed: purge deletes only regular files).
-pub fn take_files(paths: &ProjectPaths, take: &TakeId) -> Vec<FileFact> {
-    let Ok(entries) = fs::read_dir(paths.take_dir(take)) else {
-        return Vec::new();
-    };
-    let mut files: Vec<FileFact> = entries
-        .filter_map(Result::ok)
-        .filter_map(|e| {
-            let meta = e.path().symlink_metadata().ok()?;
-            meta.file_type().is_file().then(|| FileFact {
-                path: format!("{}/{}", take_rel(take), e.file_name().to_string_lossy()),
-                bytes: meta.len(),
-                mtime_ns: mtime_ns(&meta),
-            })
+/// What a purge of `take` deletes (its regular files, with sizes) and what
+/// it would leave on disk, found the way the purge walks the take folder
+/// (`media::take_contents`: `O_NOFOLLOW`, regular files only), so the
+/// confirmation lists exactly what is deleted (A§5.6). A symlinked
+/// `takes/` or take folder is never followed: its files aren't listed, and
+/// it is what is left.
+pub fn take_files(paths: &ProjectPaths, take: &TakeId) -> (Vec<FileFact>, Vec<String>) {
+    let contents = take_contents(paths.root(), take);
+    let files = contents
+        .files
+        .into_iter()
+        .map(|(name, bytes, mtime_ns)| FileFact {
+            path: format!("{}/{}", take_rel(take), name.to_string_lossy()),
+            bytes,
+            mtime_ns,
         })
         .collect();
-    files.sort_by(|a, b| a.path.cmp(&b.path));
-    files
+    (files, contents.left)
 }
 
 fn take_rel(take: &TakeId) -> String {
@@ -933,6 +934,11 @@ mod tests {
                 ("takes/take-0002/A1-mic.mka", 5),
                 ("takes/take-0002/recorder.log", 1)
             ]
+        );
+        // The link isn't deleted by a purge: it is what would be left.
+        assert_eq!(
+            facts.take_left[&TakeId::numbered(2)],
+            ["takes/take-0002/link is a symlink"]
         );
         assert_eq!(facts.files["takes/take-0002/A1-mic.mka"].bytes, 5);
         assert!(facts.files["takes/take-0002/A1-mic.mka"].mtime_ns > 0);

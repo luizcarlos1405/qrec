@@ -4,15 +4,108 @@
 //! folder is never followed), only regular files are unlinked (through the
 //! directory fd, so nothing outside it can be reached), then the empty
 //! folder is removed. Anything else is left alone and reported.
+//!
+//! [`take_contents`] walks a take folder the same way before the purge is
+//! confirmed: the confirmation lists exactly the files deleted, and a purge
+//! that would leave something behind is refused before anything changes.
 
-use std::ffi::{CStr, CString, OsStr};
-use std::fs::File;
+use std::ffi::{CStr, CString, OsStr, OsString};
+use std::fs::{self, File};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use qrec_core::TakeId;
+
+/// What a purge of one take deletes, and what it would leave on disk,
+/// found the way [`delete_take_dirs`] walks (`O_NOFOLLOW`, `lstat`).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TakeContents {
+    /// The regular files in `takes/<take>/`: name, size, mtime (ns).
+    pub files: Vec<(OsString, u64, i64)>,
+    /// What the purge would leave behind, said for people, e.g.
+    /// "takes/take-0002/ is a symlink (not followed)".
+    pub left: Vec<String>,
+}
+
+/// The contents of `takes/<take>/` as a purge sees them (A§5.6): its
+/// regular files, and everything it would leave behind (a symlinked or
+/// unreadable `takes/` or take folder, a symlink, folder or special file
+/// in it). A take whose folder is gone has neither.
+pub fn take_contents(project: &Path, take: &TakeId) -> TakeContents {
+    let mut contents = TakeContents::default();
+    let name = take.as_str();
+    if !is_take_name(name) {
+        contents
+            .left
+            .push(format!("{name:?} is not a take folder name"));
+        return contents;
+    }
+    let rel = format!("takes/{name}/");
+    let takes_path = project.join("takes");
+    let takes_dir = match open_dir(None, &takes_path) {
+        Ok(fd) => fd,
+        Err(e) if e.raw_os_error() == Some(libc::ENOENT) => return contents,
+        Err(e) => {
+            if exists_through(&takes_path.join(name)) {
+                let link = fs::symlink_metadata(&takes_path).is_ok_and(|m| m.is_symlink());
+                let why = describe_open_error(&e, link);
+                contents
+                    .left
+                    .push(format!("takes/ {why}, and {rel} is behind it"));
+            }
+            return contents;
+        }
+    };
+    let dir = match open_dir(Some(&takes_dir), Path::new(name)) {
+        Ok(fd) => fd,
+        Err(e) if e.raw_os_error() == Some(libc::ENOENT) => return contents,
+        Err(e) => {
+            let link = matches!(
+                file_type_at(&takes_dir, OsStr::new(name)),
+                Ok(FileType::Other("a symlink"))
+            );
+            contents
+                .left
+                .push(format!("{rel} {}", describe_open_error(&e, link)));
+            return contents;
+        }
+    };
+    let entries = match list_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            contents.left.push(format!("{rel} can't be listed: {e}"));
+            return contents;
+        }
+    };
+    for entry in entries {
+        let shown = format!("{rel}{}", entry.to_string_lossy());
+        match file_type_at(&dir, &entry) {
+            Ok(FileType::Regular { bytes, mtime_ns }) => {
+                contents.files.push((entry, bytes, mtime_ns));
+            }
+            Ok(FileType::Gone) => {}
+            Ok(FileType::Other(kind)) => contents.left.push(format!("{shown} is {kind}")),
+            Err(e) => contents
+                .left
+                .push(format!("{shown} can't be inspected: {e}")),
+        }
+    }
+    contents
+}
+
+/// Whether something is at `path`, symlinks followed (read only): what is
+/// behind a `takes/` the purge doesn't enter.
+fn exists_through(path: &Path) -> bool {
+    match fs::metadata(path) {
+        Ok(_) => true,
+        Err(e) => !matches!(
+            e.kind(),
+            io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+        ),
+    }
+}
 
 /// Deletes `takes/<take>/` for every take. Returns the deleted paths
 /// (project-relative: each file, then `takes/<take>/`) and one message per
@@ -25,9 +118,15 @@ pub(crate) fn delete_take_dirs(project: &Path, takes: &[TakeId]) -> (Vec<String>
         Ok(fd) => fd,
         Err(e) if e.raw_os_error() == Some(libc::ENOENT) => return (deleted, errors),
         Err(e) => {
-            let link = std::fs::symlink_metadata(&takes_path).is_ok_and(|m| m.is_symlink());
+            let link = fs::symlink_metadata(&takes_path).is_ok_and(|m| m.is_symlink());
             let why = describe_open_error(&e, link);
-            errors.extend(takes.iter().map(|t| format!("takes/{t}/: takes/ {why}")));
+            // A take with nothing behind such a `takes/` is already gone.
+            errors.extend(
+                takes
+                    .iter()
+                    .filter(|t| exists_through(&takes_path.join(t.as_str())))
+                    .map(|t| format!("takes/{t}/: takes/ {why}")),
+            );
             return (deleted, errors);
         }
     };
@@ -82,7 +181,7 @@ fn delete_one(
     for entry in entries {
         let shown = format!("{rel}{}", entry.to_string_lossy());
         match file_type_at(&dir, &entry) {
-            Ok(FileType::Regular) => match unlink_at(&dir, &entry, 0) {
+            Ok(FileType::Regular { .. }) => match unlink_at(&dir, &entry, 0) {
                 Ok(()) => deleted.push(shown),
                 Err(e) => errors.push(format!("{shown}: can't delete it: {e}")),
             },
@@ -172,7 +271,11 @@ fn list_dir(dir: &OwnedFd) -> io::Result<Vec<std::ffi::OsString>> {
 }
 
 enum FileType {
-    Regular,
+    /// A regular file, its size and mtime (ns).
+    Regular {
+        bytes: u64,
+        mtime_ns: i64,
+    },
     Gone,
     Other(&'static str),
 }
@@ -200,7 +303,13 @@ fn file_type_at(dir: &OwnedFd, name: &OsStr) -> io::Result<FileType> {
         };
     }
     Ok(match st.st_mode & libc::S_IFMT {
-        libc::S_IFREG => FileType::Regular,
+        libc::S_IFREG => FileType::Regular {
+            bytes: u64::try_from(st.st_size).unwrap_or(0),
+            mtime_ns: st
+                .st_mtime
+                .saturating_mul(1_000_000_000)
+                .saturating_add(st.st_mtime_nsec),
+        },
         libc::S_IFDIR => FileType::Other("a folder"),
         libc::S_IFLNK => FileType::Other("a symlink"),
         _ => FileType::Other("a special file"),
@@ -302,6 +411,76 @@ mod tests {
         assert!(deleted.is_empty());
         assert!(errors[0].contains("takes/ is a symlink"), "{errors:?}");
         assert!(takes.join("take-0001/sub").exists());
+    }
+
+    /// What the confirmation lists is what the delete deletes: the same
+    /// walk, so a symlinked take folder or `takes/` lists no files (they
+    /// stay) and says what is left instead (A§5.6).
+    #[test]
+    fn contents_are_what_the_delete_sees() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let outside = root.join("outside");
+        fs::create_dir_all(outside.join("take-0002")).unwrap();
+        fs::write(outside.join("take-0002/A1-mic.mka"), "audio").unwrap();
+        let takes = root.join("takes");
+        fs::create_dir_all(takes.join("take-0001/sub")).unwrap();
+        fs::write(takes.join("take-0001/L1-screen-DP-4.mkv"), "video").unwrap();
+        fs::write(takes.join("take-0001/recorder.log"), "log").unwrap();
+        fs::create_dir_all(takes.join("take-0003")).unwrap();
+        fs::write(takes.join("take-0003/A1-mic.mka"), "12345").unwrap();
+        symlink(outside.join("take-0002"), takes.join("take-0002")).unwrap();
+        symlink(
+            outside.join("take-0002/A1-mic.mka"),
+            takes.join("take-0003/link.mka"),
+        )
+        .unwrap();
+
+        let names = |c: &TakeContents| -> Vec<(String, u64)> {
+            c.files
+                .iter()
+                .map(|(n, bytes, _)| (n.to_string_lossy().into_owned(), *bytes))
+                .collect()
+        };
+        let one = take_contents(root, &take(1));
+        assert_eq!(
+            names(&one),
+            [
+                ("L1-screen-DP-4.mkv".to_owned(), 5),
+                ("recorder.log".to_owned(), 3)
+            ]
+        );
+        assert!(one.files.iter().all(|(_, _, mtime)| *mtime > 0));
+        assert_eq!(one.left, ["takes/take-0001/sub is a folder"]);
+        let two = take_contents(root, &take(2));
+        assert!(two.files.is_empty(), "nothing behind the link is listed");
+        assert_eq!(two.left, ["takes/take-0002/ is a symlink (not followed)"]);
+        let three = take_contents(root, &take(3));
+        assert_eq!(names(&three), [("A1-mic.mka".to_owned(), 5)]);
+        assert_eq!(three.left, ["takes/take-0003/link.mka is a symlink"]);
+        assert_eq!(take_contents(root, &take(9)), TakeContents::default());
+
+        // The delete agrees: it deletes the listed files and leaves the rest.
+        let (deleted, errors) = delete_take_dirs(root, &[take(2)]);
+        assert!(deleted.is_empty());
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(outside.join("take-0002/A1-mic.mka").exists());
+
+        // A symlinked takes/: what is behind it stays, and is said; a take
+        // with nothing behind it has nothing to leave (or report).
+        let other = tempfile::tempdir().unwrap();
+        symlink(&takes, other.path().join("takes")).unwrap();
+        let through = take_contents(other.path(), &take(1));
+        assert!(through.files.is_empty());
+        assert_eq!(
+            through.left,
+            ["takes/ is a symlink (not followed), and takes/take-0001/ is behind it"]
+        );
+        assert_eq!(
+            take_contents(other.path(), &take(9)),
+            TakeContents::default()
+        );
+        assert_eq!(delete_take_dirs(other.path(), &[take(9)]), (vec![], vec![]));
     }
 
     #[test]

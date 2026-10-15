@@ -53,6 +53,8 @@ pub use logs::{KEEP_LOGS, prune_logs};
 /// Never-overwrite renames, also for migration backups (A§8.8), and what a
 /// temp output's name looks like (the host-start sweep, A§8.7).
 pub use place::{PART_MARKER, is_temp_name, rename_noreplace};
+/// What a purge deletes and leaves, for its confirmation (A§5.6).
+pub use purge::{TakeContents, take_contents};
 
 pub(crate) use child::{
     Spec as ChildSpec, Stderr as ChildStderr, Stdout as ChildStdout, run as run_child,
