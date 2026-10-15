@@ -529,10 +529,10 @@ fn attach(
                 | gst::PadProbeType::EVENT_DOWNSTREAM,
             move |_pad, info| {
                 match &info.data {
-                    Some(gst::PadProbeData::Buffer(_)) | Some(gst::PadProbeData::BufferList(_)) => {
-                        if !probe.written.swap(true, Ordering::SeqCst) {
-                            let _ = tx.send(Cmd::Probe(tag, ProbeEvent::FirstWrite(probe.index)));
-                        }
+                    Some(gst::PadProbeData::Buffer(_)) | Some(gst::PadProbeData::BufferList(_))
+                        if !probe.written.swap(true, Ordering::SeqCst) =>
+                    {
+                        let _ = tx.send(Cmd::Probe(tag, ProbeEvent::FirstWrite(probe.index)));
                     }
                     Some(gst::PadProbeData::Event(ev)) if ev.type_() == gst::EventType::Eos => {
                         let _ = tx.send(Cmd::Probe(tag, ProbeEvent::SinkEos(probe.index)));
