@@ -328,9 +328,11 @@ fn reference_ges(project: &Project) -> GesTimeline {
     let top = layers.len() - 1;
     let mut video = Vec::new();
     for (in_, pos, n) in units(project) {
-        for (index, (_, file, placement, alpha)) in layers.iter().enumerate() {
+        for (index, (id, file, placement, alpha)) in layers.iter().enumerate() {
             let start = frame_ns(pos as i64, fps) as u64;
             video.push(GesVideoClip {
+                take: TakeId::numbered(1),
+                layer: id.parse().expect("a layer id"),
                 file: file.clone(),
                 layer_priority: (top - index) as u32,
                 start_ns: start,
@@ -675,6 +677,8 @@ fn audio_clips_play_with_their_volume_and_fades() {
     .unwrap();
     let second = 1_000_000_000;
     let faded = GesAudioClip {
+        take: TakeId::numbered(1),
+        track: "A1".parse().expect("a track id"),
         file: "A1-mic.mka".into(),
         start_ns: 0,
         inpoint_ns: second / 2,

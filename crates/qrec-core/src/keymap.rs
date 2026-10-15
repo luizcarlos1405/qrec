@@ -1,14 +1,18 @@
 //! Keyboard shortcuts (A§9.7, SPEC §10). Owner: meta.
 //!
 //! [`resolve`] builds the effective [`Keymap`]: the default table (SPEC
-//! §10.2, plus Backspace for remove and the canvas nudges of SPEC §12)
-//! with the `keys.toml` overrides applied and the conflicts found.
-//! [`hints`] picks the status-bar hints for a [`HintContext`];
-//! [`action_for`] / [`command_for`] turn a binding into the `Command` it runs
-//! in a state (shared by the GUI and the palette); [`palette`] lists every
-//! binding with its keys, CLI form and availability; [`cheat_sheet`] and
-//! [`keys_view`] are the human and JSON forms of `qrec keys`, and
-//! [`problems`] words the conflicts and `keys.toml` errors for notices.
+//! §10.2, plus Backspace for remove, the canvas nudges of SPEC §12 and the
+//! window's region focus and quit keys, GUI D-10) with the `keys.toml`
+//! overrides applied and the conflicts found. [`hints`] picks the
+//! status-bar hints for a [`HintContext`]; [`action_for`] / [`command_for`]
+//! turn a binding into the `Command` it runs in a state (shared by the GUI
+//! and the palette), and [`gate_reason`] says why the gates every command
+//! shares refuse one; [`palette`] lists every binding with its keys, CLI
+//! form and availability; [`cheat_sheet`] and [`keys_view`] are the human
+//! and JSON forms of `qrec keys`, and [`problems`] words the conflicts and
+//! `keys.toml` errors for notices. [`usable_keys`] are a binding's keys
+//! that run (conflicting ones drop out); [`KeyChord::cap_legends`] is how
+//! the GUI's key caps show one.
 //!
 //! **Chord grammar** (`keys.toml`, `qrec keys --json`): modifiers `ctrl`,
 //! `alt`, `shift`, `super` joined with `+`, then a GDK keyval name:
@@ -44,12 +48,12 @@ use crate::ids::{ClipId, Frame};
 use crate::model::{Clip, Rect};
 use crate::protocol::command::{
     AutocutOverrides, ClipScope, Command, ExportFormat, LayerPatch, MoveTo, Nullable, Quality,
-    RecordModeArg, SeekTarget, SelectOp, ShuttleDir, UiPatch,
+    RecordModeArg, SceneTarget, SeekTarget, SelectOp, ShuttleDir, UiPatch,
 };
 use crate::state::{CanvasMode, HostKind, JobKind, RecordPhase, State};
 use crate::time::{NS_PER_SEC, Sign, TimeArg, TimeValue};
 use crate::timeline::{clip_at, position_of, total_frames};
-use crate::ui_normalize::{canvas_scene, canvas_target};
+use crate::ui_normalize::{NO_EDIT_TARGET, edit_target};
 
 /// One key combination.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -380,6 +384,38 @@ impl KeyChord {
         })
     }
 
+    /// The legends of the key caps that show the chord in the GUI (C02,
+    /// G§4.2): each modifier on a cap of its own (`Ctrl`, `Alt`, `Shift`,
+    /// `Super`, in that order), then the key: letters uppercase, characters
+    /// as typed (`minus` as the true minus `−`), named keys short (`Esc`,
+    /// `Enter`, `Space`, `Del`, `Backspace`, `PgUp`, `←`, `F6`).
+    pub fn cap_legends(&self) -> Vec<String> {
+        let mut caps: Vec<String> = [
+            (self.ctrl, "Ctrl"),
+            (self.alt, "Alt"),
+            (self.shift, "Shift"),
+            (self.super_, "Super"),
+        ]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, name)| name.to_owned())
+        .collect();
+        let key = match key_kind(&self.key) {
+            KeyKind::Letter => self.key.to_ascii_uppercase(),
+            KeyKind::Char if self.key == "minus" => "\u{2212}".to_owned(),
+            KeyKind::Char => CHAR_KEYS
+                .iter()
+                .find(|(name, _)| *name == self.key)
+                .map_or_else(|| self.key.clone(), |(_, c)| c.to_string()),
+            KeyKind::Named => NAMED_KEYS
+                .iter()
+                .find(|(name, _, _)| *name == self.key)
+                .map_or_else(|| self.key.clone(), |(_, shown, _)| (*shown).to_owned()),
+        };
+        caps.push(key);
+        caps
+    }
+
     /// How the chord is shown to people: `r`, `Ctrl+Z`, `Shift+←`, `Esc`, `Alt+[`.
     pub fn display(&self) -> String {
         let mut out = String::new();
@@ -529,6 +565,11 @@ const DEFAULTS: &[Def] = &[
     def("keys.help", "View", "Cheat sheet", &["question"], Some("qrec keys"), &[Global, Recording]),
     def("palette.open", "View", "Command palette", &["ctrl+k", "colon"], None, &[Global, Recording]),
     def("settings.open", "View", "Settings", &["ctrl+comma"], Some("qrec config"), &[Global]),
+    // Window focus and quitting (GUI D-10): header → transport → timeline
+    // toolbar → timeline → panel → bin; Ctrl+Q also works in overlays.
+    def("region.next", "View", "Focus the next region", &["F6"], None, &[Global, Recording]),
+    def("region.prev", "View", "Focus the previous region", &["shift+F6"], None, &[Global, Recording]),
+    def("app.quit", "View", "Quit", &["ctrl+q"], None, &[Global, Recording, Overlay]),
     // Canvas (SPEC §12)
     def("layer.nudge-left", "Canvas", "Nudge layer left 1 px", &["Left"], CLI_NUDGE_LAYER, &[Canvas]),
     def("layer.nudge-right", "Canvas", "Nudge layer right 1 px", &["Right"], CLI_NUDGE_LAYER, &[Canvas]),
@@ -720,8 +761,10 @@ pub fn lookup<'a>(map: &'a Keymap, chord: &KeyChord, ctx: KeyContext) -> Option<
     }
 }
 
-/// The chords of `binding` that aren't part of a conflict.
-fn usable_keys<'a>(map: &Keymap, binding: &'a Binding) -> Vec<&'a KeyChord> {
+/// The chords of `binding` that aren't part of a conflict: what hints,
+/// tooltips and the palette show (rebound keys show, conflicting ones drop
+/// out because they never run).
+pub fn usable_keys<'a>(map: &Keymap, binding: &'a Binding) -> Vec<&'a KeyChord> {
     let conflicted: Vec<&KeyChord> = map
         .conflicts
         .iter()
@@ -1038,15 +1081,21 @@ pub fn action_for(id: &str, state: &State) -> Option<Action> {
         "take.discard-last" => discard_last(state),
         "cancel" => cancel(state),
         "play.toggle" => play_toggle(state),
-        "shuttle.reverse" => needs_clips(state, || Command::Shuttle {
-            dir: ShuttleDir::Reverse,
-        }),
+        "shuttle.reverse" => playback(
+            state,
+            Command::Shuttle {
+                dir: ShuttleDir::Reverse,
+            },
+        ),
         "shuttle.stop" => run(Command::Shuttle {
             dir: ShuttleDir::Stop,
         }),
-        "shuttle.forward" => needs_clips(state, || Command::Shuttle {
-            dir: ShuttleDir::Forward,
-        }),
+        "shuttle.forward" => playback(
+            state,
+            Command::Shuttle {
+                dir: ShuttleDir::Forward,
+            },
+        ),
         "seek.prev-frame" => seek_by(Sign::Minus, TimeValue::Frames(1)),
         "seek.next-frame" => seek_by(Sign::Plus, TimeValue::Frames(1)),
         "seek.back" => seek_by(Sign::Minus, TimeValue::Seconds(NS_PER_SEC as u64)),
@@ -1152,7 +1201,7 @@ pub fn action_for(id: &str, state: &State) -> Option<Action> {
             },
         }),
         "zoom.in" | "zoom.out" | "zoom.selection" | "keys.help" | "palette.open"
-        | "settings.open" => Action::Gui,
+        | "settings.open" | "region.next" | "region.prev" | "app.quit" => Action::Gui,
         "layer.nudge-left" => nudge_layer(state, -1, 0),
         "layer.nudge-right" => nudge_layer(state, 1, 0),
         "layer.nudge-up" => nudge_layer(state, 0, -1),
@@ -1173,11 +1222,19 @@ fn run(cmd: Command) -> Action {
     Action::Run(cmd)
 }
 
-/// The gates `apply` enforces for every command (A§5.3, A§8.5, A§7.7).
-fn gate(state: &State, cmd: Command) -> Action {
+/// Why `Space`, `J` and `L` don't play in Live mode (GUI D-01): the canvas
+/// shows the live sources there. `qrec play` still switches to Program.
+pub const PLAY_IN_LIVE: &str = "Switch to Program (Tab) to play the timeline";
+
+/// Why the gates `apply` enforces for every command (A§5.3, A§8.5, A§7.7)
+/// would refuse `cmd` in `state`, in words for people: the record phase,
+/// the GUI host, an invalid `qrec.json` on disk. `None` when they let it
+/// through (the command itself may still fail). The GUI enables controls
+/// with it (`view::enabled`, D-43).
+pub fn gate_reason(state: &State, cmd: &Command) -> Option<String> {
     let phase = &state.runtime.record;
     if !phase.is_idle() && !cmd.allowed_while_recording(phase) {
-        return Action::Unavailable(match phase {
+        return Some(match phase {
             RecordPhase::Countdown { .. } => "Not during the countdown".to_owned(),
             RecordPhase::Finalizing { take, .. } => {
                 format!("Not while take {} is finalizing", take.number())
@@ -1186,12 +1243,20 @@ fn gate(state: &State, cmd: Command) -> Action {
         });
     }
     if cmd.gui_only() && state.runtime.host != HostKind::Gui {
-        return Action::Unavailable("Needs the Qrec window".to_owned());
+        return Some("Needs the Qrec window".to_owned());
     }
     if state.runtime.disk_invalid.is_some() && cmd.edits_project() {
-        return Action::Unavailable("qrec.json on disk is invalid".to_owned());
+        return Some("qrec.json on disk is invalid".to_owned());
     }
-    Action::Run(cmd)
+    None
+}
+
+/// `cmd` unless a gate refuses it ([`gate_reason`]).
+fn gate(state: &State, cmd: Command) -> Action {
+    match gate_reason(state, &cmd) {
+        Some(why) => Action::Unavailable(why),
+        None => Action::Run(cmd),
+    }
 }
 
 fn needs_clips(state: &State, cmd: impl FnOnce() -> Command) -> Action {
@@ -1304,8 +1369,24 @@ fn play_toggle(state: &State) -> Action {
     if state.runtime.playing {
         run(Command::Pause)
     } else {
-        needs_clips(state, || Command::Play)
+        playback(state, Command::Play)
     }
+}
+
+/// `Play` or a shuttle: needs clips, passes the gates, and only plays on
+/// the Program canvas (D-01). A refusing gate (recording, no GUI host)
+/// says why first: switching to Program wouldn't help then.
+fn playback(state: &State, cmd: Command) -> Action {
+    if state.project.timeline.clips.is_empty() {
+        return Action::Unavailable("The timeline is empty".to_owned());
+    }
+    if let Some(why) = gate_reason(state, &cmd) {
+        return Action::Unavailable(why);
+    }
+    if state.ui.canvas_mode == CanvasMode::Live {
+        return Action::Unavailable(PLAY_IN_LIVE.to_owned());
+    }
+    run(cmd)
 }
 
 /// The selected clips that are on the timeline, in timeline order.
@@ -1451,17 +1532,22 @@ fn autocut(state: &State, dry_run: bool) -> Action {
     })
 }
 
-/// Arrow keys on the canvas move the selected layer of the scene the canvas
-/// edits (`ui_normalize::canvas_target`: the project scene in Live mode,
-/// the take of the selected clip or the clip under the playhead in Program
-/// mode), unless it is locked.
+/// Arrow keys on the canvas move the selected layer of the scene the
+/// person edits (`ui_normalize::edit_target`, D-06: the project scene in
+/// Live mode, the take of the first selected clip in Program mode), unless
+/// it is locked. Program mode with nothing selected is read-only.
 fn nudge_layer(state: &State, dx: i32, dy: i32) -> Action {
+    let Some(target) = edit_target(&state.project, &state.ui) else {
+        return Action::Unavailable(NO_EDIT_TARGET.to_owned());
+    };
     let Some(layer_id) = &state.ui.selected_layer else {
         return Action::Unavailable("Select a layer on the canvas".to_owned());
     };
-    let target = canvas_target(&state.project, &state.ui);
-    let scene = canvas_scene(&state.project, &state.ui);
-    let Some(layer) = scene.layer(layer_id) else {
+    let scene = match &target {
+        SceneTarget::Project => Some(&state.project.scene),
+        SceneTarget::Take(take) => state.project.take(take).map(|t| &t.scene),
+    };
+    let Some(layer) = scene.and_then(|s| s.layer(layer_id)) else {
         return Action::Unavailable(format!("Layer {layer_id} isn't in this scene"));
     };
     if layer.locked {
@@ -1548,7 +1634,6 @@ pub fn palette(map: &Keymap, state: &State) -> Vec<PaletteRow> {
 mod tests {
     use super::*;
     use crate::ids::{LayerId, TakeId};
-    use crate::protocol::command::SceneTarget;
     use crate::state::{Job, RecordMode};
     use crate::testkit::{self, ProjectBuilder};
 
@@ -2249,6 +2334,13 @@ mod tests {
     #[test]
     fn commands_for_view_and_playback() {
         let mut state = editing_state();
+        assert_eq!(
+            command_for("canvas.mode", &state),
+            Some(Command::SetCanvasMode {
+                mode: CanvasMode::Program
+            })
+        );
+        state.ui.canvas_mode = CanvasMode::Program;
         assert_eq!(command_for("play.toggle", &state), Some(Command::Play));
         state.runtime.playing = true;
         assert_eq!(command_for("play.toggle", &state), Some(Command::Pause));
@@ -2267,7 +2359,7 @@ mod tests {
         assert_eq!(
             command_for("canvas.mode", &state),
             Some(Command::SetCanvasMode {
-                mode: CanvasMode::Program
+                mode: CanvasMode::Live
             })
         );
         assert_eq!(
@@ -2298,7 +2390,7 @@ mod tests {
     }
 
     #[test]
-    fn layer_nudges_edit_the_canvas_scene() {
+    fn layer_nudges_edit_the_edit_target() {
         let mut state = editing_state();
         assert_eq!(
             action_for("layer.nudge-left", &state),
@@ -2306,44 +2398,56 @@ mod tests {
         );
         state.ui.selected_layer = Some(LayerId::numbered(1));
         let rect = |x: i32, y: i32| Rect::new(x, y, 1920, 1080);
+        let nudge = |target: SceneTarget, x: i32, y: i32| Command::LayerSet {
+            target,
+            layer: LayerId::numbered(1),
+            patch: LayerPatch {
+                rect: Some(rect(x, y)),
+                ..LayerPatch::default()
+            },
+        };
         assert_eq!(
             command_for("layer.nudge-left-10", &state),
-            Some(Command::LayerSet {
-                target: SceneTarget::Project,
-                layer: LayerId::numbered(1),
-                patch: LayerPatch {
-                    rect: Some(rect(-10, 0)),
-                    ..LayerPatch::default()
-                },
-            })
+            Some(nudge(SceneTarget::Project, -10, 0)),
+            "Live mode edits the project scene"
         );
+        // D-06: Program mode with nothing selected is read-only, though the
+        // canvas shows the take under the playhead; the palette says why.
         state.ui.canvas_mode = CanvasMode::Program;
         state.ui.playhead = 260;
+        let nudges: Vec<&str> = DEFAULTS
+            .iter()
+            .map(|d| d.id)
+            .filter(|id| id.starts_with("layer.nudge-"))
+            .collect();
+        assert_eq!(nudges.len(), 8);
+        for id in &nudges {
+            assert_eq!(
+                action_for(id, &state),
+                Some(Action::Unavailable(NO_EDIT_TARGET.into())),
+                "{id}"
+            );
+        }
+        let rows = palette(&resolve(""), &state);
+        for row in rows.iter().filter(|r| nudges.contains(&r.id.as_str())) {
+            assert!(!row.enabled, "{}", row.id);
+            assert_eq!(
+                row.reason.as_deref(),
+                Some("Select a clip to edit its take layout")
+            );
+        }
+        // A selection makes its take editable: the first selected clip's,
+        // in timeline order.
+        state.ui.selection = ids(&["c003"]);
         assert_eq!(
             command_for("layer.nudge-down", &state),
-            Some(Command::LayerSet {
-                target: SceneTarget::Take(TakeId::numbered(2)),
-                layer: LayerId::numbered(1),
-                patch: LayerPatch {
-                    rect: Some(rect(0, 1)),
-                    ..LayerPatch::default()
-                },
-            }),
-            "Program mode edits the take under the playhead"
+            Some(nudge(SceneTarget::Take(TakeId::numbered(2)), 0, 1))
         );
-        // The same scene the canvas shows (ui_normalize::canvas_target): the
-        // selected clip's take first, the last take at the end of the timeline.
-        state.ui.selection = ids(&["c001"]);
-        assert!(matches!(
+        state.ui.selection = ids(&["c003", "c001"]);
+        assert_eq!(
             command_for("layer.nudge-up", &state),
-            Some(Command::LayerSet { target: SceneTarget::Take(t), .. }) if t == TakeId::numbered(1)
-        ));
-        state.ui.selection.clear();
-        state.ui.playhead = 450;
-        assert!(matches!(
-            command_for("layer.nudge-up", &state),
-            Some(Command::LayerSet { target: SceneTarget::Take(t), .. }) if t == TakeId::numbered(2)
-        ));
+            Some(nudge(SceneTarget::Take(TakeId::numbered(1)), 0, -1))
+        );
         state.ui.selected_layer = Some(LayerId::numbered(7));
         assert_eq!(
             action_for("layer.nudge-up", &state),
@@ -2353,7 +2457,7 @@ mod tests {
         state
             .project
             .takes
-            .get_mut(&TakeId::numbered(2))
+            .get_mut(&TakeId::numbered(1))
             .unwrap()
             .scene
             .layers[0]
@@ -2361,6 +2465,231 @@ mod tests {
         assert_eq!(
             action_for("layer.nudge-down", &state),
             Some(Action::Unavailable("Layer L1 is locked".into()))
+        );
+    }
+
+    #[test]
+    fn playback_keys_need_the_program_canvas() {
+        // D-01: Space, J and L don't play in Live mode.
+        let mut state = editing_state();
+        assert_eq!(state.ui.canvas_mode, CanvasMode::Live);
+        for id in ["play.toggle", "shuttle.reverse", "shuttle.forward"] {
+            assert_eq!(
+                action_for(id, &state),
+                Some(Action::Unavailable(PLAY_IN_LIVE.into())),
+                "{id}"
+            );
+        }
+        assert_eq!(PLAY_IN_LIVE, "Switch to Program (Tab) to play the timeline");
+        assert_eq!(
+            command_for("shuttle.stop", &state),
+            Some(Command::Shuttle {
+                dir: ShuttleDir::Stop
+            }),
+            "stopping is harmless"
+        );
+        let rows = palette(&resolve(""), &state);
+        let play = rows.iter().find(|r| r.id == "play.toggle").unwrap();
+        assert!(!play.enabled);
+        assert_eq!(play.reason.as_deref(), Some(PLAY_IN_LIVE));
+
+        state.ui.canvas_mode = CanvasMode::Program;
+        assert_eq!(command_for("play.toggle", &state), Some(Command::Play));
+        assert_eq!(
+            command_for("shuttle.reverse", &state),
+            Some(Command::Shuttle {
+                dir: ShuttleDir::Reverse
+            })
+        );
+        assert_eq!(
+            command_for("shuttle.forward", &state),
+            Some(Command::Shuttle {
+                dir: ShuttleDir::Forward
+            })
+        );
+        // A refusing gate says why first, in either mode.
+        state.runtime.record = RecordPhase::Recording {
+            take: TakeId::numbered(3),
+            mode: RecordMode::Append,
+            elapsed_ns: 0,
+            waiters: vec![],
+        };
+        for mode in [CanvasMode::Program, CanvasMode::Live] {
+            state.ui.canvas_mode = mode;
+            assert_eq!(
+                action_for("shuttle.forward", &state),
+                Some(Action::Unavailable("Not while recording".into())),
+                "{mode:?}"
+            );
+        }
+        let empty = testkit::state(ProjectBuilder::new().mic("A1", "mic").build());
+        assert_eq!(
+            action_for("play.toggle", &empty),
+            Some(Action::Unavailable("The timeline is empty".into()))
+        );
+    }
+
+    #[test]
+    fn gate_reasons_follow_apply() {
+        let mut state = editing_state();
+        let split = Command::ClipSplit {
+            clip: None,
+            at: TimeArg::frames(10),
+            timeline: true,
+        };
+        assert_eq!(gate_reason(&state, &split), None);
+        assert_eq!(gate_reason(&state, &Command::Play), None);
+        state.runtime.record = RecordPhase::Countdown {
+            remaining: 3,
+            mode: RecordMode::Append,
+            timer: crate::ids::TimerId(1),
+            start_req: None,
+            wait: false,
+        };
+        assert_eq!(
+            gate_reason(&state, &split).as_deref(),
+            Some("Not during the countdown")
+        );
+        assert_eq!(
+            gate_reason(&state, &Command::Select { op: SelectOp::Next }),
+            None,
+            "UI commands run while recording"
+        );
+        state.runtime.record = RecordPhase::Finalizing {
+            take: TakeId::numbered(3),
+            mode: RecordMode::Append,
+            cancelled: false,
+            stop_reqs: vec![],
+            waiters: vec![],
+            discard: None,
+        };
+        assert_eq!(
+            gate_reason(&state, &split).as_deref(),
+            Some("Not while take 3 is finalizing")
+        );
+        assert_eq!(gate_reason(&state, &Command::TakeDiscardLast), None);
+        state.runtime.record = RecordPhase::Idle;
+        state.runtime.host = HostKind::Cli;
+        assert_eq!(
+            gate_reason(&state, &Command::Pause).as_deref(),
+            Some("Needs the Qrec window")
+        );
+        state.runtime.host = HostKind::Gui;
+        state.runtime.disk_invalid = Some("bad".into());
+        assert_eq!(
+            gate_reason(&state, &split).as_deref(),
+            Some("qrec.json on disk is invalid")
+        );
+        assert_eq!(gate_reason(&state, &Command::Pause), None);
+    }
+
+    #[test]
+    fn cap_legends_name_each_key() {
+        let caps = |s: &str| chord(s).cap_legends();
+        assert_eq!(caps("r"), ["R"], "letters are uppercase");
+        assert_eq!(caps("ctrl+shift+z"), ["Ctrl", "Shift", "Z"]);
+        assert_eq!(
+            caps("ctrl+alt+shift+super+x"),
+            ["Ctrl", "Alt", "Shift", "Super", "X"],
+            "modifiers first, in a fixed order"
+        );
+        assert_eq!(caps("minus"), ["\u{2212}"], "the true minus");
+        assert_eq!(caps("equal"), ["="]);
+        assert_eq!(caps("backslash"), ["\\"]);
+        assert_eq!(caps("less"), ["<"]);
+        assert_eq!(caps("alt+bracketleft"), ["Alt", "["]);
+        assert_eq!(caps("alt+braceright"), ["Alt", "}"]);
+        assert_eq!(caps("ctrl+comma"), ["Ctrl", ","]);
+        assert_eq!(caps("question"), ["?"]);
+        assert_eq!(caps("1"), ["1"]);
+        for (key, shown) in [
+            ("Escape", "Esc"),
+            ("Return", "Enter"),
+            ("space", "Space"),
+            ("Tab", "Tab"),
+            ("Delete", "Del"),
+            ("BackSpace", "Backspace"),
+            ("Home", "Home"),
+            ("End", "End"),
+            ("Page_Up", "PgUp"),
+            ("Page_Down", "PgDn"),
+            ("Left", "←"),
+            ("Right", "→"),
+            ("Up", "↑"),
+            ("Down", "↓"),
+            ("F6", "F6"),
+        ] {
+            assert_eq!(caps(key), [shown], "{key}");
+        }
+        assert_eq!(caps("shift+F6"), ["Shift", "F6"]);
+        assert_eq!(caps("shift+Left"), ["Shift", "←"]);
+    }
+
+    #[test]
+    fn snapshot_cap_legends() {
+        // Every default chord, as the GUI's key caps show it (G§4.2).
+        let map = resolve("");
+        let mut text = String::new();
+        for b in &map.bindings {
+            let chords: Vec<String> = b
+                .keys
+                .iter()
+                .map(|k| {
+                    let caps = k.cap_legends();
+                    let key = caps.last().expect("a chord always has its key");
+                    assert!(
+                        key.chars().count() == 1
+                            || key.starts_with(|c: char| c.is_ascii_uppercase()),
+                        "{}: {key:?} looks like a raw key name",
+                        b.id
+                    );
+                    caps.iter().map(|c| format!("[{c}]")).collect()
+                })
+                .collect();
+            text.push_str(&format!("{:<22} {}\n", b.id, chords.join("  ")));
+        }
+        insta::assert_snapshot!("cap_legends", text);
+    }
+
+    #[test]
+    fn window_keys() {
+        // D-10: region focus cycling and quitting are rebindable bindings
+        // that the GUI performs itself.
+        let map = resolve("");
+        let keys = |id: &str| -> Vec<String> {
+            map.binding(id)
+                .unwrap()
+                .keys
+                .iter()
+                .map(KeyChord::to_string)
+                .collect()
+        };
+        assert_eq!(keys("region.next"), ["F6"]);
+        assert_eq!(keys("region.prev"), ["shift+F6"]);
+        assert_eq!(keys("app.quit"), ["ctrl+q"]);
+        let state = editing_state();
+        for id in ["region.next", "region.prev", "app.quit"] {
+            let b = map.binding(id).unwrap();
+            assert_eq!(action_for(id, &state), Some(Action::Gui), "{id}");
+            assert_eq!(b.group, "View");
+            assert_eq!(b.cli, None);
+            assert!(b.active_in(KeyContext::Recording), "{id}");
+        }
+        assert_eq!(
+            lookup(&map, &chord("ctrl+q"), KeyContext::Overlay)
+                .unwrap()
+                .id,
+            "app.quit",
+            "quitting works over an overlay"
+        );
+        assert_eq!(lookup(&map, &chord("F6"), KeyContext::Overlay), None);
+        let map = resolve("[bindings]\nregion.next = \"ctrl+F6\"\n");
+        assert!(map.errors.is_empty(), "{:?}", map.errors);
+        assert_eq!(
+            lookup(&map, &chord("ctrl+F6"), KeyContext::Timeline)
+                .unwrap()
+                .id,
+            "region.next"
         );
     }
 

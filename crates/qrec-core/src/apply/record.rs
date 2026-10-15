@@ -310,6 +310,7 @@ pub(crate) fn begin_take(
             error: None,
             placed: false,
             replaced: Vec::new(),
+            recovered: false,
         },
     );
     next.project.next_take_number = number.saturating_add(1);

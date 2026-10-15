@@ -355,6 +355,7 @@ fn all_commands() -> Vec<Command> {
                 bin_open: Some(true),
                 snapping: Some(false),
                 solo: Nullable::Set(TrackId::numbered(1)),
+                lane_mute: Some(BTreeSet::from([TrackId::numbered(2), TrackId::numbered(1)])),
                 selected_layer: Nullable::Clear,
                 panels: Some(BTreeMap::from([
                     ("bin".to_owned(), 280.0),
@@ -1127,6 +1128,8 @@ fn views_and_plans_round_trip() {
         canvas: project().canvas,
         duration_ns: 1_000_000_000,
         video: vec![GesVideoClip {
+            take: take(1),
+            layer: LayerId::numbered(2),
             file: "a.mkv".into(),
             layer_priority: 1,
             start_ns: 0,
@@ -1144,6 +1147,8 @@ fn views_and_plans_round_trip() {
             alpha: 0.5,
         }],
         audio: vec![GesAudioClip {
+            take: take(1),
+            track: TrackId::numbered(1),
             file: "a.mka".into(),
             start_ns: 0,
             inpoint_ns: 0,
@@ -1218,6 +1223,7 @@ fn views_and_plans_round_trip() {
         clips: 2,
         unused: false,
         error: None,
+        recovered: true,
     });
     round_trip(&ExportDone {
         path: "/x.mp4".into(),

@@ -1266,12 +1266,33 @@ fn schema_keys_and_agent_guide() {
         rows.iter().any(|r| r["cli"] == "qrec record toggle"),
         "{rows:?}"
     );
+    // The window's own keys (GUI D-10) are bindings too, without a CLI form.
+    for (id, key) in [
+        ("region.next", "F6"),
+        ("region.prev", "shift+F6"),
+        ("app.quit", "ctrl+q"),
+    ] {
+        let row = rows
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("no {id} in {rows:?}"));
+        assert_eq!(row["keys"], json!([key]), "{id}");
+        assert_eq!(row["cli"], Value::Null, "{id}");
+    }
     let human = qrec(&env, &dir, &["keys"]);
     human.ok();
     assert!(human.stdout.contains("qrec record toggle"));
+    for id in ["region.next", "region.prev", "app.quit"] {
+        assert!(human.stdout.contains(id), "{id}: {}", human.stdout);
+    }
     let guide = qrec(&env, &dir, &["agent-guide"]);
     guide.ok();
     assert!(guide.stdout.contains("--json"), "{}", guide.stdout);
+    assert!(
+        guide.stdout.contains("| Ctrl+Q | Quit |"),
+        "{}",
+        guide.stdout
+    );
     let json = qrec(&env, &dir, &["agent-guide", "--json"]);
     assert!(json.only_reply()["data"].as_str().unwrap().contains("qrec"));
 }

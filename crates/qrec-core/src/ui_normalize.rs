@@ -15,12 +15,16 @@
 //! - the playhead stays within `[0, total_frames]`;
 //! - `selected_layer` and `solo` are cleared when they don't exist in the
 //!   scene the canvas targets ([`canvas_target`]);
+//! - `lane_mute` keeps only the tracks some scene has (the project scene or
+//!   a take's): the timeline's lanes are the union of those (D-08);
 //! - values a hand-edited `ui.json` can break (zoom, scroll, panel sizes)
 //!   fall back to their defaults.
+//!
+//! [`edit_target`] says which scene the person edits (D-06).
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::ids::{ClipId, Frame};
+use crate::ids::{ClipId, Frame, TrackId};
 use crate::model::{Clip, Fps, Project, Scene};
 use crate::protocol::command::SceneTarget;
 use crate::state::{CanvasMode, UiState};
@@ -64,7 +68,13 @@ pub fn ui_normalize(prev: &Project, next: &Project, ui: &UiState) -> UiState {
     if out.solo.as_ref().is_some_and(|t| scene.track(t).is_none()) {
         out.solo = None;
     }
+    out.lane_mute.retain(|t| any_scene_has_track(next, t));
     out
+}
+
+/// Whether the project scene or any take scene has track `id`.
+fn any_scene_has_track(project: &Project, id: &TrackId) -> bool {
+    project.scene.track(id).is_some() || project.takes.values().any(|t| t.scene.track(id).is_some())
 }
 
 /// The scene the canvas shows and edits (SPEC §12): the project scene in
@@ -76,11 +86,7 @@ pub fn canvas_target(project: &Project, ui: &UiState) -> SceneTarget {
         return SceneTarget::Project;
     }
     let clips = &project.timeline.clips;
-    let clip = ui
-        .selection
-        .iter()
-        .filter_map(|id| timeline::index_of(clips, id))
-        .min()
+    let clip = first_selected(project, ui)
         .or_else(|| timeline::clip_at(clips, ui.playhead).map(|(i, _)| i))
         .or_else(|| clips.len().checked_sub(1))
         .map(|i| &clips[i]);
@@ -88,6 +94,35 @@ pub fn canvas_target(project: &Project, ui: &UiState) -> SceneTarget {
         Some(c) if project.takes.contains_key(&c.take) => SceneTarget::Take(c.take.clone()),
         _ => SceneTarget::Project,
     }
+}
+
+/// Why a layout edit is unavailable when [`edit_target`] is `None` (D-06);
+/// the Onion layers panel shows it as its subtitle (S07).
+pub const NO_EDIT_TARGET: &str = "Select a clip to edit its take layout";
+
+/// The scene layout edits go to (D-06): the project scene in Live mode; in
+/// Program mode the take of the first selected clip (timeline order).
+/// `None` in Program mode with nothing selected: the canvas then shows the
+/// take under the playhead read-only, and layer edits (nudges, drags, the
+/// inspector) are unavailable.
+pub fn edit_target(project: &Project, ui: &UiState) -> Option<SceneTarget> {
+    if ui.canvas_mode == CanvasMode::Live {
+        return Some(SceneTarget::Project);
+    }
+    let clip = &project.timeline.clips[first_selected(project, ui)?];
+    project
+        .takes
+        .contains_key(&clip.take)
+        .then(|| SceneTarget::Take(clip.take.clone()))
+}
+
+/// The timeline index of the first selected clip that is on the timeline.
+fn first_selected(project: &Project, ui: &UiState) -> Option<usize> {
+    let clips = &project.timeline.clips;
+    ui.selection
+        .iter()
+        .filter_map(|id| timeline::index_of(clips, id))
+        .min()
 }
 
 /// The scene of [`canvas_target`].
@@ -492,6 +527,72 @@ mod tests {
     }
 
     #[test]
+    fn lane_mutes_keep_the_tracks_some_scene_has() {
+        let p = project(&[clip("c1", 1, 0, 100), clip("c2", 2, 0, 100)]);
+        let ui = UiState {
+            lane_mute: [1, 2, 9].into_iter().map(TrackId::numbered).collect(),
+            ..UiState::default()
+        };
+        let out = ui_normalize(&p, &p, &ui);
+        let muted = |ui: &UiState| -> Vec<String> {
+            ui.lane_mute.iter().map(ToString::to_string).collect()
+        };
+        assert_eq!(muted(&out), ["A1", "A2"], "A9 is in no scene");
+        // A2 leaves the project scene but take 1 still has it: it stays.
+        let mut q = p.clone();
+        q.scene.audio.retain(|a| a.id.as_str() == "A1");
+        assert_eq!(muted(&ui_normalize(&p, &q, &out)), ["A1", "A2"]);
+        // Gone from every scene: dropped, whatever the canvas shows.
+        for take in q.takes.values_mut() {
+            take.scene.audio.retain(|a| a.id.as_str() == "A1");
+        }
+        let mut program = out.clone();
+        program.canvas_mode = CanvasMode::Program;
+        assert_eq!(muted(&ui_normalize(&p, &q, &program)), ["A1"]);
+    }
+
+    #[test]
+    fn edit_target_follows_the_mode_and_the_selection() {
+        let p = project(&[clip("c1", 1, 0, 100), clip("c2", 2, 0, 100)]);
+        let mut ui = UiState::default();
+        assert_eq!(edit_target(&p, &ui), Some(SceneTarget::Project));
+        ui.selection = ids(&["c2"]);
+        assert_eq!(
+            edit_target(&p, &ui),
+            Some(SceneTarget::Project),
+            "Live edits the project scene whatever is selected"
+        );
+        ui.canvas_mode = CanvasMode::Program;
+        assert_eq!(
+            edit_target(&p, &ui),
+            Some(SceneTarget::Take(TakeId::numbered(2)))
+        );
+        // The first selected clip in timeline order, like the canvas.
+        ui.selection = ids(&["c2", "c1"]);
+        assert_eq!(
+            edit_target(&p, &ui),
+            Some(SceneTarget::Take(TakeId::numbered(1)))
+        );
+        assert_eq!(
+            Some(canvas_target(&p, &ui)),
+            edit_target(&p, &ui),
+            "with an edit target the canvas shows that scene"
+        );
+        // Program with nothing selected is read-only (D-06), though the
+        // canvas still shows the take under the playhead.
+        ui.selection.clear();
+        ui.playhead = 150;
+        assert_eq!(edit_target(&p, &ui), None);
+        assert_eq!(
+            canvas_target(&p, &ui),
+            SceneTarget::Take(TakeId::numbered(2))
+        );
+        // A stale selection selects nothing.
+        ui.selection = ids(&["c9"]);
+        assert_eq!(edit_target(&p, &ui), None);
+    }
+
+    #[test]
     fn normalizing_twice_changes_nothing() {
         let prev = project(&[clip("c1", 1, 0, 10), clip("c2", 1, 10, 20)]);
         let next = project(&[clip("cx", 2, 0, 200), clip("c2", 1, 10, 20)]);
@@ -499,9 +600,11 @@ mod tests {
         ui.canvas_mode = CanvasMode::Program;
         ui.selected_layer = Some(LayerId::numbered(2));
         ui.playhead = 5000;
+        ui.lane_mute = [2, 5].into_iter().map(TrackId::numbered).collect();
         let once = ui_normalize(&prev, &next, &ui);
         assert_eq!(sel(&once), ["cx", "c2"]);
         assert_eq!(once.selected_layer, None, "take 2 has no L2");
+        assert_eq!(once.lane_mute, [TrackId::numbered(2)].into());
         assert_eq!(ui_normalize(&next, &next, &once), once);
     }
 }

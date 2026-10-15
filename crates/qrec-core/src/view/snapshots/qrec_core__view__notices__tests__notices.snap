@@ -1,0 +1,126 @@
+---
+source: crates/qrec-core/src/view/notices.rs
+expression: notices
+---
+[
+  [
+    "error_notice(select, NotFound)",
+    {
+      "level": "warning",
+      "title": "No clip c404 on the timeline",
+      "body": "list the clips with qrec clip list",
+      "actions": []
+    }
+  ],
+  [
+    "error_notice(clipSplit, Invalid)",
+    {
+      "level": "warning",
+      "title": "00:00:13:20 is already the cut between c7f3 and c8a1; nothing to split",
+      "body": null,
+      "actions": []
+    }
+  ],
+  [
+    "error_notice(export, Busy)",
+    {
+      "level": "warning",
+      "title": "An export is already running (job-1)",
+      "body": "wait for it to finish or cancel it with `qrec export cancel`",
+      "actions": []
+    }
+  ],
+  [
+    "error_notice(takePurge, ConfirmationRequired)",
+    null
+  ],
+  [
+    "error_notice(recordToggle, CaptureFailed)",
+    {
+      "level": "error",
+      "title": "Capture failed: L1 (GIGA-BYTE GS27QA): access denied",
+      "body": "check L1 (GIGA-BYTE GS27QA); qrec doctor lists capture problems",
+      "actions": []
+    }
+  ],
+  [
+    "error_notice(export, Io)",
+    {
+      "level": "error",
+      "title": "Export failed: ffmpeg exited with status 1",
+      "body": null,
+      "actions": []
+    }
+  ],
+  [
+    "unavailable_notice(cancel, \"Nothing to cancel\")",
+    null
+  ],
+  [
+    "unavailable_notice(play.toggle, \"Switch to Program (Tab) to play the timeline\")",
+    {
+      "level": "info",
+      "title": "Switch to Program (Tab) to play the timeline",
+      "body": null,
+      "actions": []
+    }
+  ],
+  [
+    "unavailable_notice(record.toggle, \"Wait for the export to finish\")",
+    {
+      "level": "warning",
+      "title": "Can't record while exporting",
+      "body": "Recording works again once the export finishes or you cancel it.",
+      "actions": [
+        "showExport"
+      ]
+    }
+  ],
+  [
+    "unavailable_notice(record.over, \"Select the clips to record over\")",
+    {
+      "level": "warning",
+      "title": "Can't record while exporting",
+      "body": "Recording works again once the export finishes or you cancel it.",
+      "actions": [
+        "showExport"
+      ]
+    }
+  ],
+  [
+    "unavailable_notice(history.undo, \"Nothing to undo\")",
+    {
+      "level": "info",
+      "title": "Nothing to undo",
+      "body": null,
+      "actions": []
+    }
+  ],
+  [
+    "unavailable_notice(layer.nudge-left, \"Select a clip to edit its take layout\")",
+    {
+      "level": "info",
+      "title": "Select a clip to edit its take layout",
+      "body": null,
+      "actions": []
+    }
+  ],
+  [
+    "unavailable_notice(palette.open, \"\")",
+    {
+      "level": "info",
+      "title": "Not built yet",
+      "body": "The command palette comes with milestone M5.",
+      "actions": []
+    }
+  ],
+  [
+    "unavailable_notice(keys.help, \"\")",
+    {
+      "level": "info",
+      "title": "Not built yet",
+      "body": "The cheat sheet comes with milestone M5.",
+      "actions": []
+    }
+  ]
+]

@@ -1,0 +1,54 @@
+---
+source: crates/qrec-core/src/view/format.rs
+expression: text
+---
+timecode(2437)               00:01:21:07
+timecode(7391)               00:04:06:11
+size(12_345)                 12 KB
+size(1)                      1 KB
+size(0)                      0 KB
+size(999_499)                999 KB
+size(999_500)                1.0 MB
+size(129_000_000)            129.0 MB
+size(436_400_000)            436.4 MB
+size(88_412_345)             88.4 MB
+size(999_960_000)            1.0 GB
+size(1_234_000_000)          1.2 GB
+size(5_600_000_000_000)      5.6 TB
+gain_db(0.0)                 0.0 dB
+gain_db(-6.0)                −6.0 dB
+gain_db(3.0)                 3.0 dB
+gain_db(-0.04)               0.0 dB
+offset_ms(0)                 +0 ms
+offset_ms(80)                +80 ms
+offset_ms(-20)               −20 ms
+count(3449)                  3,449
+count(7391)                  7,391
+count(999)                   999
+count(1234567)               1,234,567
+hms(38)                      00:00:38
+hms(91)                      00:01:31
+hms(3725)                    01:02:05
+fps(30)                      30 fps
+fps(30000/1001)              29.97 fps
+fps(24000/1001)              23.976 fps
+fps(25/2)                    12.5 fps
+canvas                       1920×1080 · 30 fps
+clips_summary                10 clips · 00:04:06:11
+clips_summary(1)             1 clip · 00:00:13:20
+clips_summary(none)          No clips yet
+take_color(1)                moss
+take_color(8)                fairy
+take_color(9)                moss
+take_color(10)               donkey
+peak(-12.43)                 −12.4
+peak(0.0)                    0.0
+peak(-60.0)                  −60.0
+peak(-60.01)                 —
+peak(NaN)                    —
+display_path(in project)     exports/talk.mp4
+display_path(relative)       exports/rust-traits-talk-20261014-153012.mp4
+display_path(under home)     ~/Videos/talk-final.mp4
+display_path(home)           ~
+display_path(elsewhere)      /tmp/x.mp4
+display_path(prefix only)    /home/meow/x.mp4

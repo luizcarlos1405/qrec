@@ -207,6 +207,7 @@ fn record_take(p: &mut Project, frames: u64) -> Option<TakeId> {
         error: None,
         placed: true,
         replaced: Vec::new(),
+        recovered: false,
     };
     p.takes.insert(id.clone(), take);
     p.next_take_number = n + 1;

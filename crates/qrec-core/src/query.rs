@@ -110,6 +110,7 @@ pub fn take_list(state: &State, unused_only: bool) -> Result<Value, CoreError> {
                 clips: clip_count(project, id),
                 unused: in_bin(project, id),
                 error: take.error.clone(),
+                recovered: take.recovered,
             };
             (!unused_only || row.unused).then_some(row)
         })
@@ -136,6 +137,7 @@ pub fn take_show(state: &State, take: &TakeId) -> Result<Value, CoreError> {
         map.insert("error".into(), json!(found.error));
         map.insert("placed".into(), json!(found.placed));
         map.insert("replaced".into(), to_json(&found.replaced)?);
+        map.insert("recovered".into(), json!(found.recovered));
         map.insert("unused".into(), json!(in_bin(project, take)));
         map.insert("clips".into(), to_json(&clips)?);
     }
@@ -287,6 +289,15 @@ mod tests {
             ]
         );
         assert_eq!(rows[2].status, TakeStatus::TooShort);
+        assert!(rows.iter().all(|r| !r.recovered));
+        s.project
+            .takes
+            .get_mut(&TakeId::numbered(3))
+            .unwrap()
+            .recovered = true;
+        let rows = take_list(&s, false).unwrap();
+        assert_eq!(rows[2]["recovered"], true);
+        assert_eq!(rows[0]["recovered"], false);
         let bin = query(&s, &ctx(), &Query::TakeList { unused_only: true }).unwrap();
         let ids: Vec<&str> = bin
             .as_array()
@@ -347,6 +358,7 @@ mod tests {
         assert_eq!(value["placed"], false);
         assert_eq!(value["error"], Value::Null);
         assert_eq!(value["replaced"], json!([]));
+        assert_eq!(value["recovered"], false);
         assert_eq!(value["unused"], false);
         assert_eq!(value["streams"].as_array().unwrap().len(), 2);
         assert_eq!(value["scene"]["layers"][0]["id"], "L1");

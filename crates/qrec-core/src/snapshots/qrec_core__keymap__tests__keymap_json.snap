@@ -573,6 +573,46 @@ expression: "keys_view(&resolve(\"\"))"
     ]
   },
   {
+    "id": "region.next",
+    "group": "View",
+    "label": "Focus the next region",
+    "keys": [
+      "F6"
+    ],
+    "cli": null,
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "region.prev",
+    "group": "View",
+    "label": "Focus the previous region",
+    "keys": [
+      "shift+F6"
+    ],
+    "cli": null,
+    "contexts": [
+      "global",
+      "recording"
+    ]
+  },
+  {
+    "id": "app.quit",
+    "group": "View",
+    "label": "Quit",
+    "keys": [
+      "ctrl+q"
+    ],
+    "cli": null,
+    "contexts": [
+      "global",
+      "recording",
+      "overlay"
+    ]
+  },
+  {
     "id": "layer.nudge-left",
     "group": "Canvas",
     "label": "Nudge layer left 1 px",

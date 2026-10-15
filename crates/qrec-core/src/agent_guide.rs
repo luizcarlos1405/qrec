@@ -72,6 +72,9 @@ const KEY_TABLE: &[&str] = &[
     "bin.toggle",
 ];
 
+/// Keys that only act on the window (no CLI form), listed after the table.
+const WINDOW_KEYS: &[&str] = &["region.next", "region.prev", "app.quit"];
+
 const INTRO: &str = "\
 # Qrec agent guide
 
@@ -130,9 +133,9 @@ const BODY: &str = "
 - Takes `take-0001` (numbers are never reused), clips `c7f3`, layers `L1`,
   audio tracks `A1`. Never guess ids: read them from `qrec clip list --json`
   (`[{id, take, in, out, start, duration}]`), `qrec take list --json`
-  (`[{id, status, recordedAt, durationFrames, clips, unused, error}]`) and
-  `qrec status --json`. New ids arrive in `data.created`; a split keeps the
-  left part's id.
+  (`[{id, status, recordedAt, durationFrames, clips, unused, error,
+  recovered}]`) and `qrec status --json`. New ids arrive in `data.created`;
+  a split keeps the left part's id.
 - Positions are integer frames at the canvas fps. A clip is the half-open
   range `[in, out)` of its take; the timeline plays clips back to back
   (`start` = timeline frame of the clip's first frame).
@@ -282,6 +285,20 @@ lists all of them, with ids for `~/.config/qrec/keys.toml`):
             );
         }
     }
+    out.push_str(
+        "
+Some keys only act on the window and have no CLI form:
+
+| Key | Action |
+| --- | --- |
+",
+    );
+    for id in WINDOW_KEYS {
+        if let Some(b) = map.binding(id) {
+            let keys: Vec<String> = b.keys.iter().map(keymap::KeyChord::display).collect();
+            let _ = writeln!(out, "| {} | {} |", keys.join(" "), b.label);
+        }
+    }
     let _ = write!(
         out,
         "
@@ -342,6 +359,14 @@ mod tests {
             assert!(guide.contains(b.cli.unwrap()), "{id}");
         }
         assert!(guide.contains("| r | Start / stop recording | `qrec record toggle` |"));
+        for id in WINDOW_KEYS {
+            let b = map.binding(id).unwrap_or_else(|| panic!("no binding {id}"));
+            assert_eq!(b.cli, None, "{id} is window-only");
+            assert!(guide.contains(&format!("| {} |", b.label)), "{id}");
+        }
+        assert!(guide.contains("| F6 | Focus the next region |"));
+        assert!(guide.contains("| Shift+F6 | Focus the previous region |"));
+        assert!(guide.contains("| Ctrl+Q | Quit |"));
         assert!(guide.contains(keymap::NIRI_SNIPPET));
         for key in config::KEYS {
             assert!(guide.contains(&format!("`{}`", key.key)), "{}", key.key);

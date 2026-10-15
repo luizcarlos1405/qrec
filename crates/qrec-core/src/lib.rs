@@ -42,6 +42,7 @@ pub mod time;
 pub mod timeline;
 pub mod ui_normalize;
 pub mod validate;
+pub mod view;
 
 pub use apply::{Outcome, apply, facts_needed};
 pub use ctx::{Ctx, Facts, FactsNeeded, IdGen};

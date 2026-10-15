@@ -1,0 +1,420 @@
+---
+source: crates/qrec-core/src/view/blocking.rs
+expression: pages
+---
+[
+  [
+    {
+      "page": "missingDeps",
+      "report": "✗ gtk4paintablesink: missing (GStreamer GTK 4 video sink)\n  hint: nix develop"
+    },
+    5,
+    {
+      "title": "The swamp is missing something",
+      "lines": [
+        "Qrec can't start until these are installed. Run qrec doctor in a terminal for the same report."
+      ],
+      "monospace": "✗ gtk4paintablesink: missing (GStreamer GTK 4 video sink)\n  hint: nix develop",
+      "buttons": [
+        {
+          "label": "Check again",
+          "action": "checkAgain",
+          "primary": true,
+          "busy": false
+        },
+        {
+          "label": "Quit",
+          "action": "quit",
+          "primary": false,
+          "busy": false
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "page": "cliRecording",
+      "take": 11,
+      "elapsedSecs": 72,
+      "stopping": false
+    },
+    6,
+    {
+      "title": "A take is being recorded from the CLI.",
+      "lines": [
+        "Take 11 started from the terminal 00:01:12 ago. Stop it to open the project here. Quit leaves it recording."
+      ],
+      "monospace": null,
+      "buttons": [
+        {
+          "label": "Stop & open",
+          "action": "stopAndOpen",
+          "primary": true,
+          "busy": false
+        },
+        {
+          "label": "Quit",
+          "action": "quit",
+          "primary": false,
+          "busy": false
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "page": "cliRecording",
+      "take": 11,
+      "elapsedSecs": 75,
+      "stopping": true
+    },
+    6,
+    {
+      "title": "A take is being recorded from the CLI.",
+      "lines": [
+        "Take 11 started from the terminal 00:01:15 ago. Stop it to open the project here. Quit leaves it recording."
+      ],
+      "monospace": null,
+      "buttons": [
+        {
+          "label": "Stopping…",
+          "action": "stopAndOpen",
+          "primary": true,
+          "busy": true
+        },
+        {
+          "label": "Quit",
+          "action": "quit",
+          "primary": false,
+          "busy": false
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "page": "exportWait",
+      "name": "exports/rust-traits-talk-20261014-153012.mp4",
+      "percent": 43,
+      "waiting": false
+    },
+    6,
+    {
+      "title": "An export from the CLI is running.",
+      "lines": [
+        "exports/rust-traits-talk-20261014-153012.mp4 · 43 %"
+      ],
+      "monospace": null,
+      "buttons": [
+        {
+          "label": "Wait",
+          "action": "wait",
+          "primary": true,
+          "busy": false
+        },
+        {
+          "label": "Quit",
+          "action": "quit",
+          "primary": false,
+          "busy": false
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "page": "exportWait",
+      "name": "exports/rust-traits-talk-20261014-153012.mp4",
+      "percent": null,
+      "waiting": true
+    },
+    6,
+    {
+      "title": "An export from the CLI is running.",
+      "lines": [
+        "exports/rust-traits-talk-20261014-153012.mp4"
+      ],
+      "monospace": null,
+      "buttons": [
+        {
+          "label": "Waiting…",
+          "action": "wait",
+          "primary": true,
+          "busy": true
+        },
+        {
+          "label": "Quit",
+          "action": "quit",
+          "primary": false,
+          "busy": false
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "page": "notMySwamp",
+      "dir": "~/Downloads",
+      "inside": null
+    },
+    3,
+    {
+      "title": "Not my swamp: this folder isn't empty and has no qrec.json",
+      "lines": [
+        "Start Qrec in an empty folder to create a project, or in a folder that has qrec.json."
+      ],
+      "monospace": "~/Downloads",
+      "buttons": [
+        {
+          "label": "Quit",
+          "action": "quit",
+          "primary": false,
+          "busy": false
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "page": "notMySwamp",
+      "dir": "~/videos/rust-traits-talk/exports",
+      "inside": "~/videos/rust-traits-talk"
+    },
+    3,
+    {
+      "title": "Not my swamp: this folder isn't empty and has no qrec.json",
+      "lines": [
+        "Start Qrec in an empty folder to create a project, or in a folder that has qrec.json.",
+        "It's inside the project ~/videos/rust-traits-talk; run qrec there."
+      ],
+      "monospace": "~/videos/rust-traits-talk/exports",
+      "buttons": [
+        {
+          "label": "Quit",
+          "action": "quit",
+          "primary": false,
+          "busy": false
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "page": "unreadable",
+      "error": {
+        "code": "invalid",
+        "message": "qrec.json is invalid: /timeline/clips/4/out: 1400 > 1377",
+        "hint": "fix it, or rebuild it from the history with `qrec history restore 212 --yes`"
+      }
+    },
+    1,
+    {
+      "title": "qrec.json can't be read",
+      "lines": [
+        "qrec.json is invalid: /timeline/clips/4/out: 1400 > 1377",
+        "Restore the last good state from history:"
+      ],
+      "monospace": "qrec history restore 212 --yes",
+      "buttons": [
+        {
+          "label": "Quit",
+          "action": "quit",
+          "primary": false,
+          "busy": false
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "page": "unreadable",
+      "error": {
+        "code": "invalid",
+        "message": "qrec.json is missing",
+        "hint": "fix it, or rebuild it from the history with `qrec history restore 1 --yes`"
+      }
+    },
+    1,
+    {
+      "title": "qrec.json is missing",
+      "lines": [
+        "Rebuild it from the history:"
+      ],
+      "monospace": "qrec history restore 1 --yes",
+      "buttons": [
+        {
+          "label": "Quit",
+          "action": "quit",
+          "primary": false,
+          "busy": false
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "page": "unreadable",
+      "error": {
+        "code": "invalid",
+        "message": "qrec.json is not valid JSON: EOF at line 1"
+      }
+    },
+    1,
+    {
+      "title": "qrec.json can't be read",
+      "lines": [
+        "qrec.json is not valid JSON: EOF at line 1"
+      ],
+      "monospace": null,
+      "buttons": [
+        {
+          "label": "Quit",
+          "action": "quit",
+          "primary": false,
+          "busy": false
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "page": "heldByWindow",
+      "pid": 4242
+    },
+    6,
+    {
+      "title": "This project is open in another Qrec window",
+      "lines": [
+        "Switch to that window (process 4242), or close it and start Qrec here again."
+      ],
+      "monospace": null,
+      "buttons": [
+        {
+          "label": "Quit",
+          "action": "quit",
+          "primary": false,
+          "busy": false
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "page": "notResponding",
+      "pid": 4242,
+      "kind": "headless host",
+      "since": "15:02"
+    },
+    6,
+    {
+      "title": "The Qrec process holding this project isn't responding",
+      "lines": [
+        "Process 4242 (headless host) has held it since 15:02."
+      ],
+      "monospace": null,
+      "buttons": [
+        {
+          "label": "Quit",
+          "action": "quit",
+          "primary": false,
+          "busy": false
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "page": "notResponding",
+      "pid": null,
+      "kind": null,
+      "since": null
+    },
+    6,
+    {
+      "title": "The Qrec process holding this project isn't responding",
+      "lines": [
+        "A process holds it."
+      ],
+      "monospace": null,
+      "buttons": [
+        {
+          "label": "Quit",
+          "action": "quit",
+          "primary": false,
+          "busy": false
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "page": "gstStuck"
+    },
+    5,
+    {
+      "title": "GStreamer didn't start",
+      "lines": [
+        "It didn't finish starting within 30 s. Run qrec doctor in a terminal, then start Qrec again."
+      ],
+      "monospace": null,
+      "buttons": [
+        {
+          "label": "Quit",
+          "action": "quit",
+          "primary": false,
+          "busy": false
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "page": "folderUnreadable",
+      "dir": "/srv/locked",
+      "error": "permission denied (os error 13)"
+    },
+    1,
+    {
+      "title": "Can't open this folder",
+      "lines": [
+        "Permission denied (os error 13)"
+      ],
+      "monospace": "/srv/locked",
+      "buttons": [
+        {
+          "label": "Quit",
+          "action": "quit",
+          "primary": false,
+          "busy": false
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "page": "hostFailed",
+      "error": {
+        "code": "io",
+        "message": "can't create .qrec/: read-only file system",
+        "hint": "check the folder's permissions"
+      }
+    },
+    1,
+    {
+      "title": "Qrec can't open this project",
+      "lines": [
+        "Can't create .qrec/: read-only file system",
+        "Check the folder's permissions"
+      ],
+      "monospace": null,
+      "buttons": [
+        {
+          "label": "Quit",
+          "action": "quit",
+          "primary": false,
+          "busy": false
+        }
+      ]
+    }
+  ]
+]

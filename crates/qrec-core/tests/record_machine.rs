@@ -9,7 +9,7 @@ use qrec_core::capture_plan::plan_files;
 use qrec_core::ctx::Ctx;
 use qrec_core::ids::{ClipId, JobId, ReqId, TakeId, TimerId};
 use qrec_core::model::{Clip, Fps, Project, StreamKind, TakeStatus};
-use qrec_core::on_event::record::{recovery_probes, start_recovery};
+use qrec_core::on_event::record::{EOS_TIMEOUT_REASON, recovery_probes, start_recovery};
 use qrec_core::parse::ffprobe::parse_ffprobe;
 use qrec_core::protocol::command::{Command, InsertAt, RecordModeArg};
 use qrec_core::protocol::effect::{Effect, LogLevel, ProbePurpose};
@@ -1532,10 +1532,8 @@ fn capture_stopped_timeout_breaks_the_take() {
     assert_eq!(out.state.runtime.record, RecordPhase::Idle);
     let take = &out.state.project.takes[&take2()];
     assert_eq!(take.status, TakeStatus::Broken);
-    assert_eq!(
-        take.error.as_deref(),
-        Some("the recording didn't stop within 10 s")
-    );
+    assert_eq!(take.error.as_deref(), Some(EOS_TIMEOUT_REASON));
+    assert_eq!(EOS_TIMEOUT_REASON, "the recording didn't stop within 10 s");
     for who in ["t1", "s1"] {
         let result = reply_to(&out, who).unwrap();
         assert_eq!(
@@ -2021,8 +2019,18 @@ fn recovery_probes_leftover_takes() {
     let out = recover(&state, 300);
     let t = &out.state.project.takes[&take3];
     assert_eq!(
-        (t.status, t.duration_frames, t.placed),
-        (TakeStatus::Ok, 300, false)
+        (t.status, t.duration_frames, t.placed, t.recovered),
+        (TakeStatus::Ok, 300, false, true)
+    );
+    assert!(
+        !out.state.project.takes[&TakeId::numbered(1)].recovered,
+        "only the recovered take"
+    );
+    let saved: serde_json::Value = serde_json::to_value(&out.state.project).unwrap();
+    assert_eq!(saved["takes"]["take-0003"]["recovered"], true);
+    assert!(
+        saved["takes"]["take-0001"].get("recovered").is_none(),
+        "written only when set"
     );
     assert_eq!(
         out.state.project.timeline, state.project.timeline,
@@ -2047,6 +2055,7 @@ fn recovery_probes_leftover_takes() {
         short.state.project.takes[&take3].status,
         TakeStatus::TooShort
     );
+    assert!(short.state.project.takes[&take3].recovered);
 
     let unreadable = event(
         &state,
@@ -2058,6 +2067,7 @@ fn recovery_probes_leftover_takes() {
     );
     let t = &unreadable.state.project.takes[&take3];
     assert_eq!(t.status, TakeStatus::Broken);
+    assert!(!t.recovered, "a broken take wasn't recovered");
     assert!(t.streams.is_empty());
     assert_eq!(toasts(&unreadable)[0].title, "Take 3 couldn't be recovered");
 

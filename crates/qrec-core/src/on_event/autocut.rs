@@ -249,16 +249,24 @@ pub(crate) struct Finished {
 }
 
 impl Finished {
-    /// Replies to `req`, or shows the toast when nobody waits.
+    /// Replies to `req`, or shows the toast when nobody waits. A failure
+    /// shows the toast to people as well: a GUI only logs an error that
+    /// comes late (H-7).
     pub(crate) fn deliver(self, req: Option<&ReqId>) -> (State, Vec<Effect>) {
         let mut effects = self.effects;
-        effects.push(match req {
-            Some(req) => Effect::Reply {
-                req: req.clone(),
-                reply: self.reply,
-            },
-            None => Effect::Notify(self.toast),
-        });
+        match req {
+            Some(req) => {
+                let failed = self.reply.is_err();
+                effects.push(Effect::Reply {
+                    req: req.clone(),
+                    reply: self.reply,
+                });
+                if failed {
+                    effects.push(Effect::Notify(self.toast));
+                }
+            }
+            None => effects.push(Effect::Notify(self.toast)),
+        }
         (self.state, effects)
     }
 }

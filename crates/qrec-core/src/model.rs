@@ -531,6 +531,11 @@ pub struct Take {
     /// Clips a record-over replaced; discarding the take puts them back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replaced: Vec<Clip>,
+    /// Startup recovery (A§5.3) finished this take after Qrec closed while
+    /// it was recording; set when it ends `ok` or `tooShort`. A fact, like
+    /// `placed`: hand edits can't change it and `SceneApply` never copies it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub recovered: bool,
 }
 
 impl Take {

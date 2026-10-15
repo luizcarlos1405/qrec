@@ -63,6 +63,8 @@ pub fn plan_ges(project: &Project) -> GesTimeline {
                 continue;
             };
             video.push(GesVideoClip {
+                take: unit.take.clone(),
+                layer: input.layer.id.clone(),
                 file: input.stream.file.clone(),
                 layer_priority: (top - input.index) as u32,
                 start_ns: start as u64,
@@ -87,6 +89,8 @@ pub fn plan_ges(project: &Project) -> GesTimeline {
             let fade_in = unit.in_ != 0 && start == unit_start;
             let fade_out = unit.out < take.duration_frames && start + duration == unit_end;
             audio.push(GesAudioClip {
+                take: unit.take.clone(),
+                track: input.track.id.clone(),
                 file: input.stream.file.clone(),
                 start_ns: start as u64,
                 inpoint_ns: inpoint as u64,
@@ -165,6 +169,11 @@ mod tests {
         assert_eq!(ges.duration_ns, frame_ns(410 + 457 + 110, F30) as u64);
         // Video: the camera of the first unit starts one frame late.
         let camera = &ges.video[1];
+        assert_eq!(
+            (camera.take.as_str(), camera.layer.as_str()),
+            ("take-0001", "L2"),
+            "clips name their take and layer"
+        );
         assert_eq!(camera.layer_priority, 0, "the camera is on top");
         assert_eq!((camera.start_ns, camera.inpoint_ns), (33_333_333, 0));
         assert_eq!(
@@ -175,7 +184,24 @@ mod tests {
         assert_eq!(ges.video[3].inpoint_ns, frame_ns(454, F30) as u64);
         // Audio: the mic is 3 ms + 20 ms late at the take start.
         let mic = &ges.audio[0];
+        assert_eq!((mic.take.as_str(), mic.track.as_str()), ("take-0001", "A1"));
         assert_eq!((mic.start_ns, mic.inpoint_ns), (23_000_000, 0));
+        let tracks: Vec<(&str, &str)> = ges
+            .audio
+            .iter()
+            .map(|a| (a.take.as_str(), a.track.as_str()))
+            .collect();
+        assert_eq!(
+            tracks,
+            [
+                ("take-0001", "A1"),
+                ("take-0001", "A2"),
+                ("take-0001", "A1"),
+                ("take-0001", "A2"),
+                ("take-0002", "A2"),
+            ],
+            "take 2's muted mic isn't played"
+        );
         assert_eq!((mic.fade_in_samples, mic.fade_out_samples), (0, 240));
         assert!((ges.audio[1].volume - 0.501_187).abs() < 1e-6);
         assert_eq!(

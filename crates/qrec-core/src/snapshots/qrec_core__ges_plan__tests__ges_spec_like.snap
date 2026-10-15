@@ -15,6 +15,8 @@ expression: ges
   "durationNs": 32566666666,
   "video": [
     {
+      "take": "take-0001",
+      "layer": "L1",
       "file": "takes/take-0001/L1-screen-DP-4.mkv",
       "layerPriority": 1,
       "startNs": 0,
@@ -37,6 +39,8 @@ expression: ges
       "alpha": 1.0
     },
     {
+      "take": "take-0001",
+      "layer": "L2",
       "file": "takes/take-0001/L2-camera-0.mkv",
       "layerPriority": 0,
       "startNs": 33333333,
@@ -59,6 +63,8 @@ expression: ges
       "alpha": 0.8
     },
     {
+      "take": "take-0001",
+      "layer": "L1",
       "file": "takes/take-0001/L1-screen-DP-4.mkv",
       "layerPriority": 1,
       "startNs": 13666666666,
@@ -81,6 +87,8 @@ expression: ges
       "alpha": 1.0
     },
     {
+      "take": "take-0001",
+      "layer": "L2",
       "file": "takes/take-0001/L2-camera-0.mkv",
       "layerPriority": 0,
       "startNs": 13666666666,
@@ -103,6 +111,8 @@ expression: ges
       "alpha": 0.8
     },
     {
+      "take": "take-0002",
+      "layer": "L1",
       "file": "takes/take-0002/L1-screen-DP-4.mkv",
       "layerPriority": 1,
       "startNs": 28900000000,
@@ -125,6 +135,8 @@ expression: ges
       "alpha": 1.0
     },
     {
+      "take": "take-0002",
+      "layer": "L2",
       "file": "takes/take-0002/L2-camera-0.mkv",
       "layerPriority": 0,
       "startNs": 28900000000,
@@ -149,6 +161,8 @@ expression: ges
   ],
   "audio": [
     {
+      "take": "take-0001",
+      "track": "A1",
       "file": "takes/take-0001/A1-mic.mka",
       "startNs": 23000000,
       "inpointNs": 0,
@@ -158,6 +172,8 @@ expression: ges
       "fadeOutSamples": 240
     },
     {
+      "take": "take-0001",
+      "track": "A2",
       "file": "takes/take-0001/A2-system.mka",
       "startNs": 0,
       "inpointNs": 20000000,
@@ -167,6 +183,8 @@ expression: ges
       "fadeOutSamples": 240
     },
     {
+      "take": "take-0001",
+      "track": "A1",
       "file": "takes/take-0001/A1-mic.mka",
       "startNs": 13666666666,
       "inpointNs": 15143666666,
@@ -176,6 +194,8 @@ expression: ges
       "fadeOutSamples": 0
     },
     {
+      "take": "take-0001",
+      "track": "A2",
       "file": "takes/take-0001/A2-system.mka",
       "startNs": 13666666666,
       "inpointNs": 15186666666,
@@ -185,6 +205,8 @@ expression: ges
       "fadeOutSamples": 0
     },
     {
+      "take": "take-0002",
+      "track": "A2",
       "file": "takes/take-0002/A2-system.mka",
       "startNs": 28900000000,
       "inpointNs": 3333333333,

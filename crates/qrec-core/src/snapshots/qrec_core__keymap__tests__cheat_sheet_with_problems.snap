@@ -56,6 +56,9 @@ View
   ?                     Cheat sheet                                keys.help
   Ctrl+K  :             Command palette                            palette.open
   Ctrl+,                Settings                                   settings.open
+  F6                    Focus the next region                      region.next
+  Shift+F6              Focus the previous region                  region.prev
+  Ctrl+Q                Quit                                       app.quit
 
 Canvas
   ←                     Nudge layer left 1 px                      layer.nudge-left

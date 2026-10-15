@@ -200,9 +200,11 @@ pub fn set_canvas_mode(state: &State, _ctx: &Ctx, mode: CanvasMode) -> Result<Ou
     }))
 }
 
-/// Zoom, scroll, panels, bin, snapping, solo, selected layer (R). Absent
-/// fields are kept; `panels` entries are merged into the stored ones.
-/// `solo` and `selected_layer` must exist in the scene the canvas targets.
+/// Zoom, scroll, panels, bin, snapping, solo, lane mutes, selected layer
+/// (R). Absent fields are kept; `panels` entries are merged into the stored
+/// ones. `solo` and `selected_layer` must exist in the scene the canvas
+/// targets. `lane_mute` replaces the whole set; ids that no scene has are
+/// dropped (`ui_normalize`), not refused, so a stale GUI never fails.
 pub fn set_ui(state: &State, _ctx: &Ctx, patch: UiPatch) -> Result<Outcome, CoreError> {
     let mut ui = state.ui.clone();
     let mut changed: Vec<&str> = Vec::new();
@@ -261,6 +263,10 @@ pub fn set_ui(state: &State, _ctx: &Ctx, patch: UiPatch) -> Result<Outcome, Core
             ui.solo = Some(track);
             changed.push("solo");
         }
+    }
+    if let Some(muted) = patch.lane_mute {
+        ui.lane_mute = muted;
+        changed.push("lane mutes");
     }
     match patch.selected_layer {
         Nullable::Keep => {}
@@ -379,7 +385,7 @@ fn clip_under_playhead(state: &State) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use serde_json::Value;
 
@@ -833,6 +839,7 @@ mod tests {
             bin_open: Some(true),
             snapping: Some(false),
             solo: Nullable::Set(TrackId::numbered(1)),
+            lane_mute: Some(BTreeSet::from([TrackId::numbered(1)])),
             selected_layer: Nullable::Set(LayerId::numbered(1)),
             panels: Some(panels),
         };
@@ -927,6 +934,55 @@ mod tests {
         assert_eq!(
             (err.code, err.message.as_str()),
             (ErrorCode::NotFound, "no layer L9 in take 2's scene")
+        );
+    }
+
+    #[test]
+    fn lane_mute_round_trips_through_ui_json() {
+        let s = state();
+        let mute = |ids: &[u32]| UiPatch {
+            lane_mute: Some(ids.iter().map(|n| TrackId::numbered(*n)).collect()),
+            ..UiPatch::default()
+        };
+        // A7 is in no scene: dropped rather than refused.
+        let out = run(
+            &s,
+            Command::SetUi {
+                patch: mute(&[1, 7]),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            out.state.ui.lane_mute,
+            BTreeSet::from([TrackId::numbered(1)])
+        );
+        assert_eq!(out.effects, [Effect::WriteUi]);
+        assert_eq!(
+            out.reply.as_ref().unwrap().as_ref().unwrap().message,
+            "Updated lane mutes"
+        );
+        // What the shell writes to `.qrec/ui.json` reads back the same.
+        let file = serde_json::to_string_pretty(&out.state.ui).unwrap();
+        assert!(file.contains("\"laneMute\": [\n    \"A1\"\n  ]"), "{file}");
+        let read: crate::state::UiState = serde_json::from_str(&file).unwrap();
+        assert_eq!(read, out.state.ui);
+        // The scenes and the export don't change: no project write, no history.
+        assert_eq!(out.state.project, s.project);
+        assert!(out.state.history.entries.is_empty());
+        // The set is replaced whole: [] unmutes every lane; the same set again
+        // still writes nothing new.
+        let again = run(&out.state, Command::SetUi { patch: mute(&[1]) }).unwrap();
+        assert!(again.effects.is_empty());
+        let none = run(&out.state, Command::SetUi { patch: mute(&[]) }).unwrap();
+        assert!(none.state.ui.lane_mute.is_empty());
+        assert_eq!(none.effects, [Effect::WriteUi]);
+        // Mutes work in Program mode on lanes of other takes too.
+        let mut program = s.clone();
+        program.ui.canvas_mode = CanvasMode::Program;
+        let out = run(&program, Command::SetUi { patch: mute(&[1]) }).unwrap();
+        assert_eq!(
+            out.state.ui.lane_mute,
+            BTreeSet::from([TrackId::numbered(1)])
         );
     }
 }

@@ -181,19 +181,29 @@ pub fn take_dirs_deleted(
             errors.len()
         ),
     )];
+    let leftovers = |e: &CoreError| {
+        Toast::new(
+            ToastLevel::Warning,
+            format!("Couldn't delete every file of {names}"),
+        )
+        .with_body(&e.message)
+    };
     match (finished.req, reply) {
-        (Some(req), reply) => effects.push(Effect::Reply { req, reply }),
+        (Some(req), Ok(result)) => effects.push(Effect::Reply {
+            req,
+            reply: Ok(result),
+        }),
+        // People always hear it: a GUI only logs an error that comes late (H-7).
+        (Some(req), Err(e)) => {
+            let toast = leftovers(&e);
+            effects.push(Effect::Reply { req, reply: Err(e) });
+            effects.push(Effect::Notify(toast));
+        }
         (None, Ok(result)) => effects.push(Effect::Notify(Toast::new(
             ToastLevel::Success,
             format!("{}.", result.message),
         ))),
-        (None, Err(e)) => effects.push(Effect::Notify(
-            Toast::new(
-                ToastLevel::Warning,
-                format!("Couldn't delete every file of {names}"),
-            )
-            .with_body(e.message),
-        )),
+        (None, Err(e)) => effects.push(Effect::Notify(leftovers(&e))),
     }
     Outcome::new(next, effects, None)
 }
@@ -235,16 +245,16 @@ pub fn purge_failed(state: &State, _ctx: &Ctx, job: JobId, message: String) -> O
         LogLevel::Warn,
         format!("purge {job} not saved: nothing deleted ({message})"),
     )];
-    match finished.req {
-        Some(req) => effects.push(Effect::Reply {
+    // People always hear it: a GUI only logs an error that comes late (H-7).
+    let toast =
+        Toast::new(ToastLevel::Warning, format!("Couldn't purge {names}")).with_body(&err.message);
+    if let Some(req) = finished.req {
+        effects.push(Effect::Reply {
             req,
             reply: Err(err),
-        }),
-        None => effects.push(Effect::Notify(
-            Toast::new(ToastLevel::Warning, format!("Couldn't purge {names}"))
-                .with_body(err.message),
-        )),
+        });
     }
+    effects.push(Effect::Notify(toast));
     Outcome::new(next, effects, None)
 }
 
@@ -499,6 +509,12 @@ mod tests {
             e.message,
             "purged take 2 from the project, but some files could not be deleted: EACCES: L1.mkv"
         );
+        // The error comes late: the person hears it too (H-7).
+        let toast = toasts(&out)[0];
+        assert_eq!(
+            (toast.level, toast.title.as_str()),
+            (ToastLevel::Warning, "Couldn't delete every file of take 2")
+        );
     }
 
     #[test]
@@ -551,7 +567,13 @@ mod tests {
         assert!(hint.contains("qrec take list"), "{hint}");
         assert!(hint.contains("takes/take-0002/"), "{hint}");
         assert!(!hint.starts_with("delete the leftover files"), "{hint}");
-        assert!(toasts(&out).is_empty(), "the requester gets the news");
+        // The person hears it too: a GUI only logs a late error (H-7).
+        let toast = toasts(&out)[0];
+        assert_eq!(
+            (toast.level, toast.title.as_str()),
+            (ToastLevel::Warning, "Couldn't purge take 2")
+        );
+        assert_eq!(toast.body.as_deref(), Some(e.message.as_str()));
 
         // Nobody waits: a warning toast says the same.
         let out = purge_failed(&purging(None), &ctx(), JobId(3), "EIO".into());

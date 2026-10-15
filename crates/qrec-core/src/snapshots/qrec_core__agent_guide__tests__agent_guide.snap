@@ -67,9 +67,9 @@ the same commands, and every edit is undoable. Always pass `--json`.
 - Takes `take-0001` (numbers are never reused), clips `c7f3`, layers `L1`,
   audio tracks `A1`. Never guess ids: read them from `qrec clip list --json`
   (`[{id, take, in, out, start, duration}]`), `qrec take list --json`
-  (`[{id, status, recordedAt, durationFrames, clips, unused, error}]`) and
-  `qrec status --json`. New ids arrive in `data.created`; a split keeps the
-  left part's id.
+  (`[{id, status, recordedAt, durationFrames, clips, unused, error,
+  recovered}]`) and `qrec status --json`. New ids arrive in `data.created`;
+  a split keeps the left part's id.
 - Positions are integer frames at the canvas fps. A clip is the half-open
   range `[in, out)` of its take; the timeline plays clips back to back
   (`start` = timeline frame of the clip's first frame).
@@ -195,6 +195,14 @@ lists all of them, with ids for `~/.config/qrec/keys.toml`):
 | p | Save the frame at the playhead (PNG) | `qrec frame save --at <t>` |
 | Ctrl+E | Export… | `qrec export` |
 | b | Toggle the bin | `qrec take list --unused` |
+
+Some keys only act on the window and have no CLI form:
+
+| Key | Action |
+| --- | --- |
+| F6 | Focus the next region |
+| Shift+F6 | Focus the previous region |
+| Ctrl+Q | Quit |
 
 Global binds for recording while another app has focus (niri; `qrec doctor`
 prints them too):

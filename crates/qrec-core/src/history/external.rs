@@ -4,9 +4,9 @@
 //! fields count (`name, canvas, scene, recording, autocut, timeline,
 //! takes[*].scene`). Takes are facts: takes missing from the file are kept,
 //! takes only in the file are added, and for takes in both the in-memory
-//! `status, streams, durationFrames, recordedAt, error, placed, replaced`
-//! win. `nextTakeNumber` never goes down. The take being recorded is kept
-//! exactly as in memory.
+//! `status, streams, durationFrames, recordedAt, error, placed, replaced,
+//! recovered` win. `nextTakeNumber` never goes down. The take being
+//! recorded is kept exactly as in memory.
 //!
 //! The `missing` flags of layers and tracks are facts too (A§5.1: a patch
 //! never contains facts): a take scene keeps the in-memory flag of every
@@ -168,6 +168,7 @@ fn merge_take(
         error,
         placed,
         replaced,
+        recovered,
     } = edited;
     let facts = [
         ("status", status != current.status),
@@ -185,6 +186,7 @@ fn merge_take(
             "replaced",
             replaced != current.replaced && replaced != retimed.replaced,
         ),
+        ("recovered", recovered != current.recovered),
     ];
     for (field, changed) in facts {
         if changed {
@@ -315,6 +317,32 @@ mod tests {
                  /takes/take-0001/scene/layers/0/missing"
             ]
         );
+    }
+
+    #[test]
+    fn recovered_is_a_fact_hand_edits_cant_change() {
+        let mut state = state();
+        state.project.takes.get_mut(&take(2)).unwrap().recovered = true;
+        // The file clears it on take 2 and claims it for take 1.
+        let mut file = state.project.clone();
+        file.takes.get_mut(&take(2)).unwrap().recovered = false;
+        file.takes.get_mut(&take(1)).unwrap().recovered = true;
+        file.name = "renamed".into();
+        let merge = merge_external(&state, file).unwrap();
+        assert!(merge.project.takes[&take(2)].recovered);
+        assert!(!merge.project.takes[&take(1)].recovered);
+        assert_eq!(merge.project.name, "renamed", "the rest of the edit stands");
+        assert_eq!(
+            merge.warnings,
+            [
+                "facts can't be edited by hand: ignored /takes/take-0001/recovered, \
+                 /takes/take-0002/recovered"
+            ]
+        );
+        // The file says what memory says: no warning.
+        let merge = merge_external(&state, state.project.clone()).unwrap();
+        assert!(merge.warnings.is_empty());
+        assert!(merge.project.takes[&take(2)].recovered);
     }
 
     #[test]

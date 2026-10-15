@@ -74,6 +74,7 @@ expression: summary(&live)
   "ui": {
     "binOpen": false,
     "canvasMode": "live",
+    "laneMute": [],
     "panels": {},
     "playhead": 0,
     "scrollPx": 0.0,

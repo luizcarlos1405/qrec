@@ -62,6 +62,10 @@ pub struct UiState {
     pub zoom: Option<f64>,
     pub scroll_px: f64,
     pub solo: Option<TrackId>,
+    /// Lanes muted for playback only (the lane header's `M`, D-08): the
+    /// player leaves these tracks out; scenes and exports are unaffected.
+    /// Set whole by `SetUi`; ids that no scene has are dropped.
+    pub lane_mute: BTreeSet<TrackId>,
     pub panels: BTreeMap<String, f64>,
 }
 
@@ -78,6 +82,7 @@ impl Default for UiState {
             zoom: None,
             scroll_px: 0.0,
             solo: None,
+            lane_mute: BTreeSet::new(),
             panels: BTreeMap::new(),
         }
     }
@@ -579,10 +584,23 @@ mod tests {
         let ui: UiState = serde_json::from_str("{}").unwrap();
         assert!(ui.snapping);
         assert_eq!(ui, UiState::default());
+        assert!(ui.lane_mute.is_empty(), "an older ui.json mutes nothing");
         assert_eq!(
             serde_json::to_value(CanvasMode::Program).unwrap(),
             "program"
         );
+    }
+
+    #[test]
+    fn lane_mute_is_a_sorted_camel_case_set() {
+        let ui: UiState = serde_json::from_str(r#"{"laneMute":["A2","A1","A2"]}"#).unwrap();
+        assert_eq!(
+            ui.lane_mute.iter().map(TrackId::as_str).collect::<Vec<_>>(),
+            ["A1", "A2"]
+        );
+        let json = serde_json::to_value(&ui).unwrap();
+        assert_eq!(json["laneMute"], serde_json::json!(["A1", "A2"]));
+        assert_eq!(serde_json::from_value::<UiState>(json).unwrap(), ui);
     }
 
     #[test]

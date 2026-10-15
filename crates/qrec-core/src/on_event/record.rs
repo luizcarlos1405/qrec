@@ -27,7 +27,6 @@ use crate::apply::record::{
     countdown_progress, discard_last, end_countdown, finalize_progress, join_ids, ordered,
     started_result, stop_capture, unique,
 };
-use crate::capture_plan::EOS_TIMEOUT_MS;
 use crate::ctx::{Ctx, IdGen};
 use crate::error::{CoreError, ErrorCode};
 use crate::history;
@@ -47,6 +46,11 @@ use crate::timeline;
 /// Record progress goes to `wait` requesters when the pipeline clock enters
 /// the first of these slots of a new second (see [`announces_second`]).
 pub const RECORD_PROGRESS_NS: u64 = 500_000_000;
+
+/// The `error` of a take whose files didn't close within the EOS timeout
+/// (`capture_plan::EOS_TIMEOUT_MS`): the bin words it "Files didn't close
+/// within 10 s." (D-18).
+pub const EOS_TIMEOUT_REASON: &str = "the recording didn't stop within 10 s";
 
 /// Starting ⇒ Recording; record the streams' start offsets (persist: a
 /// take recovered after a crash keeps them, SPEC §5.2); reply
@@ -343,10 +347,7 @@ pub fn capture_stopped(
         return ignore(state, format!("CaptureStopped for {take}"));
     }
     if timed_out {
-        let reason = format!(
-            "the recording didn't stop within {} s",
-            EOS_TIMEOUT_MS / 1000
-        );
+        let reason = EOS_TIMEOUT_REASON.to_owned();
         let err = CoreError::capture_failed(reason.clone());
         return end_broken(state, ctx, state.clone(), &take, &reason, &err);
     }
@@ -775,6 +776,13 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
         } else {
             Ok(CmdResult::new(format!("take {n} was not placed")))
         };
+        if let Err(e) = &reply {
+            // A GUI only logs an error that comes late (H-7).
+            notes.push(Effect::Notify(
+                Toast::new(ToastLevel::Warning, format!("Take {n} wasn't discarded"))
+                    .with_body(e.message.clone()),
+            ));
+        }
         if let Some(req) = req {
             effects.push(Effect::Reply { req, reply });
         }
@@ -814,8 +822,9 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
     Outcome::new(current, ordered(effects), None)
 }
 
-/// Recovery (A§5.3): readable ⇒ `ok` (or `tooShort` under 10 frames), bin,
-/// "Recovered take 7 from the bog."; otherwise `broken`. Never places clips.
+/// Recovery (A§5.3): readable ⇒ `ok` (or `tooShort` under 10 frames),
+/// marked `recovered`, bin, "Recovered take 7 from the bog."; otherwise
+/// `broken`. Never places clips.
 /// A probe that failed on its own (ffprobe missing, timed out) says nothing
 /// about the files: the take stays `recording` for the next host start.
 /// `current` is `state` with the take's recovery no longer in flight.
@@ -856,6 +865,7 @@ fn recover(state: &State, current: State, take: &TakeId, results: &[ProbeResult]
         Ok(frames) => {
             t.duration_frames = frames;
             t.error = None;
+            t.recovered = true;
             let recovered = format!("Recovered take {n} from the bog.");
             if frames < MIN_TAKE_FRAMES {
                 t.status = TakeStatus::TooShort;
@@ -1478,6 +1488,18 @@ mod tests {
         // Never twice in one second, never backwards.
         assert!(!announces_second(1_000_000_000, 1_400_000_000));
         assert!(!announces_second(2_000_000_000, 1_000_000_000));
+    }
+
+    #[test]
+    fn the_eos_timeout_reason_names_the_timeout() {
+        use crate::capture_plan::EOS_TIMEOUT_MS;
+        assert_eq!(
+            EOS_TIMEOUT_REASON,
+            format!(
+                "the recording didn't stop within {} s",
+                EOS_TIMEOUT_MS / 1000
+            )
+        );
     }
 
     #[test]

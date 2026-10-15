@@ -7,6 +7,7 @@
 //! the table, its requester gets the reply and the person a toast.
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::apply::Outcome;
@@ -27,8 +28,10 @@ pub const STDERR_TAIL_LINES: usize = 30;
 
 /// The progress of an export job: `0.9·Σseg_done/total + 0.1·stitch` in
 /// frames of `total_frames`, ETA from the time since it started, label
-/// "Rendering clip 4/12" or "Stitching". `None` for other jobs.
-pub(crate) fn export_progress_view(job: &Job, now: DateTime<Utc>) -> Option<Progress> {
+/// "Rendering clip 4/12" or "Stitching". `None` for other jobs. A GUI
+/// shows a running export from any host with it (`hello.jobs`, the export
+/// slot, the export panel's [`export_readout`]).
+pub fn export_progress_view(job: &Job, now: DateTime<Utc>) -> Option<Progress> {
     let JobKind::Export {
         total_frames,
         seg_frames,
@@ -77,6 +80,62 @@ pub(crate) fn export_progress_view(job: &Job, now: DateTime<Utc>) -> Option<Prog
         eta_secs,
         label,
         take: None,
+    })
+}
+
+/// What the export panel and the header's export slot read while an
+/// export runs (S15b, G§4.8): "42%", "3,449 / 7,391 frames", "Rendering
+/// clip 6/10", "Elapsed 00:00:38 · About 00:00:52 left".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExportReadout {
+    /// [`export_progress_view`]'s `done` (rendering weighs 90 %, the stitch
+    /// 10 %) as a whole percent of `total`, rounded to the nearest; 100
+    /// only once everything is done.
+    pub percent: u8,
+    /// Frames rendered so far, `Σ min(seg_done, seg_frames)`: the frames
+    /// line (the stitch isn't counted).
+    pub rendered: u64,
+    pub total: u64,
+    /// "Rendering clip 6/10" or "Stitching".
+    pub label: String,
+    pub elapsed_secs: u64,
+    /// `None` until something is done.
+    pub eta_secs: Option<u64>,
+}
+
+/// The readout of a running export at `now`; `None` for other jobs.
+pub fn export_readout(job: &Job, now: DateTime<Utc>) -> Option<ExportReadout> {
+    let progress = export_progress_view(job, now)?;
+    let JobKind::Export {
+        seg_frames,
+        seg_done,
+        ..
+    } = &job.kind
+    else {
+        return None;
+    };
+    let rendered = seg_done
+        .iter()
+        .zip(seg_frames)
+        .map(|(done, frames)| (*done).min(*frames))
+        .sum();
+    let (done, total) = (u128::from(progress.done), u128::from(progress.total));
+    let percent = if total == 0 {
+        0
+    } else if done >= total {
+        100
+    } else {
+        // Nearest whole percent, half up; never 100 before the end.
+        ((200 * done + total) / (2 * total)).min(99) as u8
+    };
+    Some(ExportReadout {
+        percent,
+        rendered,
+        total: progress.total,
+        label: progress.label,
+        elapsed_secs: (now - job.started).num_seconds().max(0) as u64,
+        eta_secs: progress.eta_secs,
     })
 }
 
@@ -611,6 +670,153 @@ mod tests {
             &out.state.runtime.jobs[&JobId(1)].kind,
             JobKind::Export { seg_done, .. } if seg_done == &vec![10, 0]
         ));
+    }
+
+    fn at(time: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(time)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn readouts_match_the_export_panel() {
+        // BRIEF S15b: "42%", "Rendering clip 6/10", "3,449 / 7,391 frames",
+        // "Elapsed 00:00:38 · About 00:00:52 left" (one segment per clip,
+        // rendered in parallel: five finished, five under way).
+        let seg_frames = vec![410, 457, 268, 307, 238, 249, 155, 1092, 1110, 3105];
+        let stitch_total_ns = 246_366_666_666;
+        let mut job = Job {
+            id: JobId(3),
+            kind: JobKind::Export {
+                out: "exports/rust-traits-talk-20261014-153012.mp4".into(),
+                files: Default::default(),
+                total_frames: 7391,
+                seg_frames: seg_frames.clone(),
+                seg_done: vec![410, 457, 268, 307, 238, 200, 100, 900, 400, 169],
+                stitch_total_ns,
+                stitch_done_ns: 0,
+                stitching: false,
+            },
+            req: None,
+            started: at("2026-10-14T15:30:12Z"),
+        };
+        let now = at("2026-10-14T15:30:50Z");
+        assert_eq!(
+            export_readout(&job, now),
+            Some(ExportReadout {
+                percent: 42,
+                rendered: 3449,
+                total: 7391,
+                label: "Rendering clip 6/10".into(),
+                elapsed_secs: 38,
+                eta_secs: Some(52),
+            })
+        );
+        assert_eq!(
+            export_progress_view(&job, now).map(|p| p.done),
+            Some(3104),
+            "rendering weighs 90 %: 41.997 % reads 42 %"
+        );
+        let mut stitch = |done_ns: u64| {
+            if let JobKind::Export {
+                seg_done,
+                stitching,
+                stitch_done_ns,
+                ..
+            } = &mut job.kind
+            {
+                seg_done.clone_from(&seg_frames);
+                *stitching = true;
+                *stitch_done_ns = done_ns;
+            }
+            export_readout(&job, now).unwrap()
+        };
+        let half = stitch(stitch_total_ns / 2);
+        assert_eq!(
+            (half.label.as_str(), half.rendered, half.percent),
+            ("Stitching", 7391, 95)
+        );
+        assert_eq!(stitch(stitch_total_ns - 1).percent, 99, "never 100 early");
+        assert_eq!(stitch(stitch_total_ns).percent, 100);
+        // Nothing done yet: no ETA.
+        let fresh = Job {
+            kind: JobKind::Export {
+                out: "exports/a.mp4".into(),
+                files: Default::default(),
+                total_frames: 90,
+                seg_frames: vec![90],
+                seg_done: vec![0],
+                stitch_total_ns: 3_000_000_000,
+                stitch_done_ns: 0,
+                stitching: false,
+            },
+            ..job.clone()
+        };
+        let readout = export_readout(&fresh, now).unwrap();
+        assert_eq!(
+            (readout.percent, readout.eta_secs, readout.label.as_str()),
+            (0, None, "Rendering clip 1/1")
+        );
+        // Other jobs have no readout.
+        let frame = Job {
+            kind: JobKind::FrameSave {
+                out: "frames/a.png".into(),
+                files: Default::default(),
+            },
+            ..job
+        };
+        assert_eq!(export_readout(&frame, now), None);
+    }
+
+    #[test]
+    fn the_design_export_reads_like_s15b() {
+        // The design timeline renders in 9 units: c2d0 and c2d1 (a split)
+        // are one run of take 5, so the label counts 9, not BRIEF's 10.
+        let state = testkit::design_state();
+        let ctx = testkit::ctx("2026-10-14T15:30:12Z", 1);
+        let cmd = Command::Export {
+            format: ExportFormat::Mp4,
+            quality: Quality::Standard,
+            codec: None,
+            out: None,
+        };
+        let mut state = apply(&state, &ctx, cmd).unwrap().state;
+        let job = *state.runtime.jobs.keys().next().unwrap();
+        let JobKind::Export { seg_frames, .. } = &state.runtime.jobs[&job].kind else {
+            panic!("not an export");
+        };
+        assert_eq!(seg_frames, &[410, 457, 268, 307, 238, 249, 155, 2202, 3105]);
+        for (segment, frames_done) in [
+            (0, 410),
+            (1, 457),
+            (2, 268),
+            (3, 307),
+            (4, 238),
+            (5, 100),
+            (6, 50),
+            (7, 1200),
+            (8, 419),
+        ] {
+            let event = Event::ExportProgress {
+                job,
+                segment,
+                frames_done,
+            };
+            state = on_event(&state, &ctx, event).state;
+        }
+        let readout =
+            export_readout(&state.runtime.jobs[&job], at("2026-10-14T15:30:50Z")).unwrap();
+        assert_eq!(
+            (
+                readout.percent,
+                readout.rendered,
+                readout.total,
+                readout.label.as_str(),
+                readout.elapsed_secs,
+                readout.eta_secs
+            ),
+            (42, 3449, 7391, "Rendering clip 6/9", 38, Some(52))
+        );
     }
 
     fn frame_ns_of(state: &State) -> u64 {

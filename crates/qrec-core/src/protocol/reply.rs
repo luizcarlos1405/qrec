@@ -101,6 +101,9 @@ pub struct TakeRow {
     /// No clip uses it (it is in the bin).
     pub unused: bool,
     pub error: Option<String>,
+    /// Startup recovery finished it after Qrec closed mid-take.
+    #[serde(default)]
+    pub recovered: bool,
 }
 
 /// One row of `Query::ClipList`.

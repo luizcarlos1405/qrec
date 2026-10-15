@@ -27,6 +27,7 @@ expression: summary(&out)
   "ui": {
     "binOpen": false,
     "canvasMode": "program",
+    "laneMute": [],
     "panels": {},
     "playhead": 0,
     "scrollPx": 0.0,

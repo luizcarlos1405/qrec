@@ -537,6 +537,10 @@ expression: project_schema()
           "format": "date-time",
           "type": "string"
         },
+        "recovered": {
+          "description": "Startup recovery (A§5.3) finished this take after Qrec closed while\nit was recording; set when it ends `ok` or `tooShort`. A fact, like\n`placed`: hand edits can't change it and `SceneApply` never copies it.",
+          "type": "boolean"
+        },
         "replaced": {
           "description": "Clips a record-over replaced; discarding the take puts them back.",
           "items": {

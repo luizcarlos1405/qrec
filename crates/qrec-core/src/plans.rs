@@ -180,6 +180,10 @@ pub struct GesTimeline {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GesVideoClip {
+    /// The take and the layer the clip shows (the player drops or labels
+    /// clips by them; the renderer only needs the file).
+    pub take: TakeId,
+    pub layer: LayerId,
     pub file: String,
     pub layer_priority: u32,
     pub start_ns: u64,
@@ -192,6 +196,10 @@ pub struct GesVideoClip {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GesAudioClip {
+    /// The take and the audio track the clip plays (the player leaves out
+    /// muted or unsoloed tracks by these, GUI D-08).
+    pub take: TakeId,
+    pub track: TrackId,
     pub file: String,
     pub start_ns: u64,
     pub inpoint_ns: u64,

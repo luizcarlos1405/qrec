@@ -745,6 +745,7 @@ fn readd(project: &mut Project, found: &FoundTake) {
             error: None,
             placed: false,
             replaced: Vec::new(),
+            recovered: false,
         },
     );
 }

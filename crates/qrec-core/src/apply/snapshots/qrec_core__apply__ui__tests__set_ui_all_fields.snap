@@ -10,12 +10,15 @@ expression: summary(&out)
   "reply": {
     "Ok": {
       "created": [],
-      "message": "Updated zoom, scroll, bin, snapping, solo, selected layer, panels",
+      "message": "Updated zoom, scroll, bin, snapping, solo, lane mutes, selected layer, panels",
       "removed": [],
       "result": {
         "ui": {
           "binOpen": true,
           "canvasMode": "live",
+          "laneMute": [
+            "A1"
+          ],
           "panels": {
             "layers": 352.0
           },
@@ -34,6 +37,9 @@ expression: summary(&out)
   "ui": {
     "binOpen": true,
     "canvasMode": "live",
+    "laneMute": [
+      "A1"
+    ],
     "panels": {
       "layers": 352.0
     },

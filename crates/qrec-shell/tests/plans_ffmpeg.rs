@@ -273,6 +273,7 @@ impl Fixture {
                 error: None,
                 placed: true,
                 replaced: Vec::new(),
+                recovered: false,
             };
             take.duration_frames = derive_duration_frames(&take, fps);
             project.takes.insert(fx.take_id(), take);
@@ -382,6 +383,7 @@ fn mixed_rate_fixture(tag: &str, recorded: Fps, canvas: Fps) -> Fixture {
         error: None,
         placed: true,
         replaced: Vec::new(),
+        recovered: false,
     };
     take.duration_frames = derive_duration_frames(&take, canvas);
     project.takes.insert(fx.take_id(), take);

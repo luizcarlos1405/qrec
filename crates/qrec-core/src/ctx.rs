@@ -33,6 +33,27 @@ pub struct Ctx {
     pub facts: Facts,
 }
 
+impl Ctx {
+    /// A context for previewing a command on a copy of the state, whose
+    /// outcome is looked at and thrown away (a GUI gesture computing the
+    /// layout its release would give, G§3.7): `now`, UTC, fixed entropy,
+    /// not confirmed (a destructive command answers `confirmation_required`
+    /// instead of acting), no requester, and no facts but the user config.
+    pub fn preview(now: DateTime<Utc>, config: &UserConfig) -> Ctx {
+        Ctx {
+            now,
+            utc_offset_secs: 0,
+            entropy: 0,
+            confirmed: false,
+            req: None,
+            facts: Facts {
+                config: config.clone(),
+                ..Facts::default()
+            },
+        }
+    }
+}
+
 // ---------------------------------------------------------------- facts
 
 /// I/O-derived inputs. The shell gathers only what `facts_needed` asks for;
@@ -350,6 +371,85 @@ pub fn next_take_number(project: &Project, facts: &Facts) -> u32 {
 mod tests {
     use super::*;
     use crate::testkit;
+
+    #[test]
+    fn previews_compute_an_outcome_without_side_inputs() {
+        use crate::protocol::command::{Command, MoveTo};
+        let state = testkit::state(
+            testkit::ProjectBuilder::new()
+                .screen_layer("L1", "DP-1")
+                .take("take-0001", 300)
+                .clip("c001", "take-0001", 0, 100)
+                .clip("c002", "take-0001", 150, 300)
+                .build(),
+        );
+        let now = state.project.created_at;
+        let mut config = UserConfig::default();
+        config.ui.reduced_motion = true;
+        let ctx = Ctx::preview(now, &config);
+        assert_eq!(
+            (ctx.now, ctx.req.clone(), ctx.confirmed),
+            (now, None, false)
+        );
+        assert_eq!(ctx.facts.config, config);
+        assert_eq!(ctx.facts.files, BTreeMap::new());
+        // A move drag's release, previewed: the order it would give.
+        let out = crate::apply(
+            &state,
+            &ctx,
+            Command::ClipMove {
+                clips: vec![ClipId::from_raw("c002")],
+                to: MoveTo::Index(0),
+            },
+        )
+        .unwrap();
+        let order: Vec<&str> = out
+            .state
+            .project
+            .timeline
+            .clips
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect();
+        assert_eq!(order, ["c002", "c001"]);
+        // The same preview twice is the same outcome (fixed entropy).
+        let again = crate::apply(
+            &state,
+            &Ctx::preview(now, &config),
+            Command::ClipSplit {
+                clip: None,
+                at: crate::time::TimeArg::frames(50),
+                timeline: true,
+            },
+        )
+        .unwrap();
+        let twice = crate::apply(
+            &state,
+            &Ctx::preview(now, &config),
+            Command::ClipSplit {
+                clip: None,
+                at: crate::time::TimeArg::frames(50),
+                timeline: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(again.state, twice.state);
+        // Destructive commands only ask.
+        let err = crate::apply(
+            &state,
+            &ctx,
+            Command::ProjectSet {
+                name: None,
+                canvas: Some("@25".parse().unwrap()),
+                background: None,
+                countdown_secs: None,
+                encoder: None,
+                vaapi_device: crate::protocol::command::Nullable::Keep,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.code, crate::ErrorCode::ConfirmationRequired);
+    }
 
     #[test]
     fn ids_are_deterministic() {

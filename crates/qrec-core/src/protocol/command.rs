@@ -11,7 +11,7 @@
 //! [`Command::allowed_while_recording`], …).
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 
@@ -304,6 +304,23 @@ impl Command {
         matches!(
             self,
             Command::Seek { .. } | Command::Play | Command::Pause | Command::Shuttle { .. }
+        )
+    }
+
+    /// A UI-state command: it changes only `State::ui` and
+    /// `runtime.playing`, never the project, the history or a take. A
+    /// recovery hold never parks these (D-47); parked commands resolve the
+    /// selection and the playhead when they run.
+    pub fn ui_only(&self) -> bool {
+        matches!(
+            self,
+            Command::Select { .. }
+                | Command::Seek { .. }
+                | Command::SetUi { .. }
+                | Command::SetCanvasMode { .. }
+                | Command::Play
+                | Command::Pause
+                | Command::Shuttle { .. }
         )
     }
 
@@ -882,6 +899,10 @@ pub struct UiPatch {
     pub snapping: Option<bool>,
     #[serde(default, skip_serializing_if = "Nullable::is_keep")]
     pub solo: Nullable<TrackId>,
+    /// The whole set of lanes muted for playback (D-08), replacing the
+    /// stored one; ids that no scene has are dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane_mute: Option<BTreeSet<TrackId>>,
     #[serde(default, skip_serializing_if = "Nullable::is_keep")]
     pub selected_layer: Nullable<LayerId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -964,5 +985,59 @@ mod tests {
         assert_eq!(Nullable::<i32>::Clear.apply(Some(0)), None);
         assert_eq!(Nullable::<i32>::Keep.apply(Some(0)), Some(0));
         assert!(serde_json::to_string(&Nullable::<i32>::Keep).is_err());
+    }
+
+    #[test]
+    fn lane_mute_is_set_whole() {
+        let patch: UiPatch = serde_json::from_str(r#"{"laneMute":["A2","A1"]}"#).unwrap();
+        assert_eq!(
+            patch.lane_mute,
+            Some(BTreeSet::from([TrackId::numbered(1), TrackId::numbered(2)]))
+        );
+        let none: UiPatch = serde_json::from_str("{}").unwrap();
+        assert_eq!(none.lane_mute, None, "absent keeps the stored set");
+        let cleared: UiPatch = serde_json::from_str(r#"{"laneMute":[]}"#).unwrap();
+        assert_eq!(cleared.lane_mute, Some(BTreeSet::new()), "[] unmutes all");
+        assert_eq!(
+            serde_json::to_string(&patch).unwrap(),
+            r#"{"laneMute":["A1","A2"]}"#
+        );
+    }
+
+    #[test]
+    fn ui_only_commands() {
+        let ui = [
+            Command::Select { op: SelectOp::Next },
+            Command::Seek {
+                to: SeekTarget::Start,
+            },
+            Command::SetUi {
+                patch: UiPatch::default(),
+            },
+            Command::SetCanvasMode {
+                mode: CanvasMode::Program,
+            },
+            Command::Play,
+            Command::Pause,
+            Command::Shuttle {
+                dir: ShuttleDir::Stop,
+            },
+        ];
+        for cmd in &ui {
+            assert!(cmd.ui_only(), "{}", cmd.name());
+            assert!(!cmd.is_undoable() && !cmd.edits_project(), "{}", cmd.name());
+        }
+        for cmd in [
+            Command::ClipSplit {
+                clip: None,
+                at: TimeArg::frames(3),
+                timeline: true,
+            },
+            Command::RecordToggle { wait: false },
+            Command::Undo { steps: 1 },
+            Command::ExportCancel { job: None },
+        ] {
+            assert!(!cmd.ui_only(), "{}", cmd.name());
+        }
     }
 }
