@@ -440,12 +440,13 @@ pub struct HostOptions {
     /// Interrupts counted before this host's work began (e.g. when the CLI
     /// started); later ones are the "first" and "second" signals.
     pub signal_baseline: usize,
-    /// The second signal. `None`: SIGKILL the child process groups, then a
-    /// headless (or GUI) host unlinks its socket and `_exit(130)`s
-    /// ([`signals::hard_exit`]); an in-process CLI host stops serving as
-    /// soon as its jobs report their end (at most `hurry_grace` later), so
-    /// its command still prints its final result, and a watchdog
-    /// `_exit(130)`s [`HURRY_WATCHDOG`] later if the process is still there.
+    /// The second signal. `None`: a headless (or GUI) host unlinks its
+    /// socket, SIGKILLs the child process groups, deletes their temp outputs
+    /// and `_exit(130)`s ([`signals::hard_exit`]); an in-process CLI host
+    /// SIGKILLs the child process groups and stops serving as soon as its
+    /// jobs report their end (at most `hurry_grace` later), so its command
+    /// still prints its final result, and a watchdog `_exit(130)`s
+    /// [`HURRY_WATCHDOG`] later if the process is still there.
     pub on_second_signal: Option<Box<dyn FnOnce() + Send>>,
 }
 

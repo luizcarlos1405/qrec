@@ -1226,9 +1226,10 @@ nothing of anyone else's may be tied to it for long:
   `_exit(130)`s; startup recovery handles the take. An in-process command
   (someone reads its output) instead stops serving as soon as its jobs
   report the end of their killed children (they delete their temps), at
-  most 2 s later (`ExitRules::hurry_grace`), so it still ends the normal
-  way below; a watchdog `_exit(130)`s 5 s after the second signal if the
-  process is still there.
+  most 2 s later (`ExitRules::hurry_grace`; whatever is left is killed and
+  its temps deleted then), so it still ends the normal way below; a
+  watchdog `_exit(130)`s 5 s after the second signal if the process is
+  still there.
 - Client CLI: SIGINT/SIGTERM (signal-hook) → `Msg::Interrupt`. In-process: the
   first cancels running jobs (SIGTERM to each child group, SIGKILL after 2 s),
   deletes temp outputs, exits 130; the second SIGKILLs them at once, and the
