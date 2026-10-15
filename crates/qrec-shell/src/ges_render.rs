@@ -13,6 +13,10 @@
 //! - the video track is restricted to the canvas size and rate, the audio
 //!   track to 48 kHz stereo.
 //!
+//! [`rebuild_into`] does the same to an existing timeline, in place: the
+//! GUI's Program player ([`crate::player`]) keeps one timeline and pipeline
+//! and rebuilds it for every new plan.
+//!
 //! Recorded files are Matroska, whose timestamps are whole milliseconds: a
 //! frame stamped up to 0.5 ms *after* its exact time would leave the
 //! previous frame overlapping the start of the output frame by that much,
@@ -297,23 +301,82 @@ pub fn build(
     init()?;
     let timeline = ges::Timeline::new();
     timeline.set_auto_transition(false);
-    let caps = |text: String| {
-        text.parse::<gst::Caps>()
-            .map_err(|_| GesError::Build(format!("invalid restriction caps {text:?}")))
-    };
     let video = ges::VideoTrack::new();
-    video.set_restriction_caps(&caps(video_restriction(&plan.canvas))?);
+    video.set_restriction_caps(&restriction(video_restriction(&plan.canvas))?);
     timeline
         .add_track(&video)
         .map_err(|e| GesError::Build(format!("can't add the video track: {e}")))?;
     if tracks == Tracks::All {
         let audio = ges::AudioTrack::new();
-        audio.set_restriction_caps(&caps(audio_restriction())?);
+        audio.set_restriction_caps(&restriction(audio_restriction())?);
         timeline
             .add_track(&audio)
             .map_err(|e| GesError::Build(format!("can't add the audio track: {e}")))?;
     }
+    fill(&timeline, plan, project_dir, tracks)?;
+    if !timeline.commit_sync() {
+        tracing::debug!("ges: the first commit changed nothing");
+    }
+    Ok(timeline)
+}
 
+/// Rebuilds `timeline` (one [`build`] made) in place from `plan`, for the
+/// GUI's Program player (docs/GUI.md G§3.10), which keeps one timeline and
+/// pipeline for its whole life: every layer goes, the video track's
+/// restriction caps follow the plan's canvas (size and rate) when they
+/// changed, and the clips are added as [`build`] adds them, on the tracks
+/// the timeline has. The caller commits (the player waits for that with a
+/// deadline). On an error the timeline is left empty.
+pub fn rebuild_into(
+    timeline: &ges::Timeline,
+    plan: &GesTimeline,
+    project_dir: &Path,
+) -> Result<(), GesError> {
+    init()?;
+    clear(timeline)?;
+    let mut tracks = Tracks::Video;
+    for track in timeline.tracks() {
+        let kind = track.track_type();
+        if kind.contains(ges::TrackType::VIDEO) {
+            let caps = restriction(video_restriction(&plan.canvas))?;
+            if track.restriction_caps().as_ref() != Some(&caps) {
+                tracing::debug!("ges: the video track becomes {caps}");
+                track.set_restriction_caps(&caps);
+            }
+        } else if kind.contains(ges::TrackType::AUDIO) {
+            tracks = Tracks::All;
+        }
+    }
+    fill(timeline, plan, project_dir, tracks).inspect_err(|_| {
+        if let Err(e) = clear(timeline) {
+            tracing::warn!("ges: {e}");
+        }
+    })
+}
+
+/// Restriction caps from their text.
+fn restriction(text: String) -> Result<gst::Caps, GesError> {
+    text.parse::<gst::Caps>()
+        .map_err(|_| GesError::Build(format!("invalid restriction caps {text:?}")))
+}
+
+/// Removes every layer of `timeline` (and so every clip).
+fn clear(timeline: &ges::Timeline) -> Result<(), GesError> {
+    for layer in timeline.layers() {
+        timeline
+            .remove_layer(&layer)
+            .map_err(|e| GesError::Build(format!("can't clear the timeline: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Adds the layers and clips of `plan` to `timeline`, which has no layer.
+fn fill(
+    timeline: &ges::Timeline,
+    plan: &GesTimeline,
+    project_dir: &Path,
+    tracks: Tracks,
+) -> Result<(), GesError> {
     let video_layers = plan
         .video
         .iter()
@@ -350,10 +413,7 @@ pub fn build(
     for (clip, lane) in audio.iter().zip(lanes) {
         add_audio(&audio_layers[lane], clip, project_dir, &mut assets)?;
     }
-    if !timeline.commit_sync() {
-        tracing::debug!("ges: the first commit changed nothing");
-    }
-    Ok(timeline)
+    Ok(())
 }
 
 /// Discovered files, so each one is probed once.
@@ -910,7 +970,7 @@ fn rgb_frame(sample: gst::Sample) -> Result<RgbFrame, GesError> {
 }
 
 /// Sets `element` to NULL on a helper thread, waiting at most `timeout`.
-fn set_null_with_deadline(element: gst::Element, timeout: Duration) -> bool {
+pub(crate) fn set_null_with_deadline(element: gst::Element, timeout: Duration) -> bool {
     let (tx, rx) = mpsc::channel();
     let spawned = thread::Builder::new()
         .name("qrec-ges-teardown".into())
@@ -983,4 +1043,4 @@ mod tests {
 
 #[cfg(test)]
 #[path = "ges_render_tests.rs"]
-mod parity_tests;
+pub(crate) mod parity_tests;

@@ -27,8 +27,8 @@ use crate::gst_init::testing::{assert_quiet_since, problems, serial};
 use crate::testkit::{MediaSpec, TestEnv, fixture, fixtures_dir, run_tool, write_project};
 
 const FFMPEG_TIMEOUT: Duration = Duration::from_secs(120);
-const CANVAS: (u32, u32) = (320, 180);
-const FPS: Fps = Fps::new(30, 1);
+pub(crate) const CANVAS: (u32, u32) = (320, 180);
+pub(crate) const FPS: Fps = Fps::new(30, 1);
 const TAKE_FRAMES: u64 = 90;
 /// Bars of the frame-ID video: bit `i` of the frame index, left to right.
 const ID_BITS: u32 = 8;
@@ -39,7 +39,7 @@ const CLIPS: [(u64, u64); 3] = [(10, 40), (55, 80), (80, 90)];
 /// `frames` frames whose luma shows the frame index as `ID_BITS` vertical
 /// bars (white = 1), H.264 limited-range BT.709 in Matroska (millisecond
 /// timestamps, like recordings). Cached next to the testkit fixtures.
-fn frame_id_fixture(width: u32, height: u32, fps: Fps, frames: u64) -> PathBuf {
+pub(crate) fn frame_id_fixture(width: u32, height: u32, fps: Fps, frames: u64) -> PathBuf {
     let key = format!(
         "qrec frame-id v1 {width}x{height} {}/{} {frames}",
         fps.num, fps.den
@@ -130,7 +130,7 @@ impl Rgb {
 }
 
 /// The index drawn by the frame-ID layer at `rect`, read from bar centers.
-fn read_frame_id(red: impl Fn(u32, u32) -> u8, rect: Rect) -> u64 {
+pub(crate) fn read_frame_id(red: impl Fn(u32, u32) -> u8, rect: Rect) -> u64 {
     let y = rect.y as u32 + rect.h / 2;
     (0..ID_BITS).fold(0, |id, bit| {
         let x = rect.x as u32 + ((2 * bit + 1) * rect.w) / (2 * ID_BITS);
@@ -171,13 +171,13 @@ fn ssim(a: &Path, b: &Path, rect: Rect) -> f64 {
 
 /// A take with a testsrc2 screen (L1, cropped, 80 % opacity, bottom) and a
 /// frame-ID camera (L2, top), placed on the timeline as two clips.
-struct ParityProject {
-    _env: TestEnv,
-    dir: PathBuf,
-    project: Project,
+pub(crate) struct ParityProject {
+    pub(crate) _env: TestEnv,
+    pub(crate) dir: PathBuf,
+    pub(crate) project: Project,
 }
 
-fn parity_project() -> ParityProject {
+pub(crate) fn parity_project() -> ParityProject {
     let env = TestEnv::new();
     let dir = env.empty_dir("parity");
     let take_dir = dir.join("takes/take-0001");
@@ -291,7 +291,7 @@ fn units(project: &Project) -> Vec<(u64, u64, u64)> {
 }
 
 /// The take frame under timeline frame `at`.
-fn take_frame(project: &Project, at: u64) -> u64 {
+pub(crate) fn take_frame(project: &Project, at: u64) -> u64 {
     units(project)
         .into_iter()
         .find(|&(_, pos, n)| at >= pos && at < pos + n)
@@ -300,7 +300,7 @@ fn take_frame(project: &Project, at: u64) -> u64 {
 }
 
 /// Each visible layer of the take with its placement (z-order, bottom first).
-fn placements(project: &Project) -> Vec<(String, String, Placement, f64)> {
+pub(crate) fn placements(project: &Project) -> Vec<(String, String, Placement, f64)> {
     let take = project.take(&TakeId::numbered(1)).unwrap();
     take.scene
         .layers
@@ -623,14 +623,14 @@ fn ges_shows_the_nearest_frame_of_another_recorded_rate() {
 }
 
 /// The peak of `samples` (interleaved F32 stereo) in frames `[from, to)`.
-fn peak(samples: &[f32], from: usize, to: usize) -> f32 {
+pub(crate) fn peak(samples: &[f32], from: usize, to: usize) -> f32 {
     samples[from * 2..to * 2]
         .iter()
         .fold(0.0, |m, s| m.max(s.abs()))
 }
 
 /// The first `frames` audio frames the timeline plays (F32LE stereo, 48 kHz).
-fn play_audio(timeline: &ges::Timeline, frames: usize) -> Vec<f32> {
+pub(crate) fn play_audio(timeline: &ges::Timeline, frames: usize) -> Vec<f32> {
     let pipeline = preview_pipeline(timeline, ges::PipelineFlags::FULL_PREVIEW).unwrap();
     let caps = gst::Caps::builder("audio/x-raw")
         .field("format", "F32LE")
@@ -753,5 +753,121 @@ fn audio_clips_play_with_their_volume_and_fades() {
     assert!((steady - 0.25).abs() < 0.02, "steady {steady}");
     let mixed = peak(&samples, 26_400, 31_200);
     assert!((mixed - 0.375).abs() < 0.03, "mixed {mixed}");
+    assert_quiet_since(quiet);
+}
+
+/// A `width`×`height` canvas at `fps` on black.
+pub(crate) fn canvas(width: u32, height: u32, fps: Fps) -> Canvas {
+    serde_json::from_value(json!({
+        "width": width, "height": height,
+        "fps": { "num": fps.num, "den": fps.den }, "background": "#000000",
+    }))
+    .expect("a valid canvas")
+}
+
+/// `(clips with video, clips with audio)` on `timeline`'s layers.
+fn clip_kinds(timeline: &ges::Timeline) -> (usize, usize) {
+    let clips: Vec<ges::Clip> = timeline
+        .layers()
+        .iter()
+        .flat_map(|layer| layer.clips())
+        .collect();
+    let has = |clip: &ges::Clip, kind: glib::Type| {
+        clip.find_track_element(None::<&ges::Track>, kind).is_some()
+    };
+    let video = ges::VideoSource::static_type();
+    let audio = ges::AudioSource::static_type();
+    (
+        clips.iter().filter(|c| has(c, video)).count(),
+        clips.iter().filter(|c| has(c, audio)).count(),
+    )
+}
+
+/// The Program player's in-place rebuild (GUI G§3.10): the clips, the video
+/// restriction (size and rate) and the sound follow the new plan; a lane
+/// muted for playback (D-08, `without_tracks`) isn't heard; a missing file
+/// fails and leaves the timeline empty.
+#[test]
+fn rebuild_into_replaces_a_timeline_in_place() {
+    use std::collections::BTreeSet;
+
+    use qrec_core::ges_plan::without_tracks;
+
+    let _serial = serial();
+    let quiet = problems();
+    let env = TestEnv::new();
+    let dir = env.empty_dir("rebuild");
+    fs::copy(frame_id_fixture(160, 120, FPS, 60), dir.join("L1.mkv")).unwrap();
+    // A 440 Hz tone at 0.5 the whole time, as A1 and as A2.
+    let tone = fixture(&MediaSpec::audio(48_000, 1, 2000, &[(0, 2000)]));
+    fs::copy(&tone, dir.join("A1.mka")).unwrap();
+    fs::copy(&tone, dir.join("A2.mka")).unwrap();
+    let second = 1_000_000_000;
+    let full = |w: u32, h: u32| Placement {
+        src: qrec_core::layout::SourceRegion {
+            x: 0,
+            y: 0,
+            w: 160,
+            h: 120,
+        },
+        dst: Rect::new(0, 0, w, h),
+    };
+    let audio = |track: &str, volume: f64| GesAudioClip {
+        take: TakeId::numbered(1),
+        track: track.parse().expect("a track id"),
+        file: format!("{track}.mka"),
+        start_ns: 0,
+        inpoint_ns: 0,
+        duration_ns: second,
+        volume,
+        fade_in_samples: 0,
+        fade_out_samples: 0,
+    };
+    let plan = GesTimeline {
+        canvas: canvas(160, 120, FPS),
+        duration_ns: second,
+        video: vec![GesVideoClip {
+            take: TakeId::numbered(1),
+            layer: "L1".parse().expect("a layer id"),
+            file: "L1.mkv".into(),
+            layer_priority: 0,
+            start_ns: 0,
+            inpoint_ns: 0,
+            duration_ns: second,
+            placement: full(160, 120),
+            alpha: 1.0,
+        }],
+        audio: vec![audio("A1", 0.5), audio("A2", 0.25)],
+    };
+    let timeline = build(&plan, &dir, Tracks::All).unwrap();
+    // The video clip and the canvas background; both audio clips.
+    assert_eq!(clip_kinds(&timeline), (2, 2));
+
+    // A1 muted for playback, at a quarter of the size and another rate.
+    let muted = BTreeSet::from(["A1".parse().expect("a track id")]);
+    let mut smaller = without_tracks(plan.clone(), None, &muted);
+    smaller.canvas = canvas(80, 60, Fps::new(25, 1));
+    smaller.video[0].placement = full(80, 60);
+    rebuild_into(&timeline, &smaller, &dir).unwrap();
+    timeline.commit_sync();
+    assert_eq!(clip_kinds(&timeline), (2, 1));
+    let video = timeline
+        .tracks()
+        .into_iter()
+        .find(|t| t.track_type() == ges::TrackType::VIDEO)
+        .expect("a video track");
+    let expected: gst::Caps = video_restriction(&smaller.canvas).parse().unwrap();
+    assert_eq!(video.restriction_caps(), Some(expected));
+    // Only A2 plays: 0.5 × 0.25.
+    let samples = play_audio(&timeline, 48_000 / 2);
+    let level = peak(&samples, 4_800, 24_000);
+    assert!((level - 0.125).abs() < 0.02, "A2 alone peaks at {level}");
+
+    // A missing file: an error, and nothing left on the timeline.
+    let mut broken = plan.clone();
+    broken.video[0].file = "nope.mkv".into();
+    let err = rebuild_into(&timeline, &broken, &dir).unwrap_err();
+    assert!(err.to_string().ends_with("nope.mkv is missing"), "{err}");
+    assert!(timeline.layers().is_empty());
     assert_quiet_since(quiet);
 }
