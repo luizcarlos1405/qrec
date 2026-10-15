@@ -758,9 +758,10 @@ them: `RecordStop`, `RecordCancel` and `RecordToggle` abort every waiting
 before it started"; a toggle that finds no start waiting is a start and
 waits), and `ExportCancel` without a job aborts the waiting `Export`s
 (`Invalid` "export cancelled"; a job id only names a running export).
-Commands whose wait is over run before any later message, also before a
-tick released them, so a stop always finds the take their start began. A
-probe still out after that is work like a running job: a host
+Commands whose wait is over run before any later message but a signal
+(which drops them, A§8.6), also before a tick released them, so a stop
+always finds the take their start began. A probe still out after that is
+work like a running job: a host
 isn't idle meanwhile (A§8.6) and `Session::run_until` doesn't return before
 its answer, so no host exits and drops it (the runner always answers,
 A§8.7) — unless the host was interrupted: then its 15 s grace decides, and

@@ -152,8 +152,11 @@ impl Session {
         }
         // Commands whose wait for a recovery is over run before anything
         // that came after them, also when no tick released them yet (a stop
-        // must find the take their start began, A§5.3).
-        self.release_parked();
+        // must find the take their start began, A§5.3). A signal still
+        // drops them: they hadn't started (A§8.6).
+        if !matches!(msg, Msg::Interrupt) {
+            self.release_parked();
+        }
         match msg {
             Msg::Request { req, to } => self.handle_request(req, to),
             Msg::Event(ev) => self.handle_event(ev),

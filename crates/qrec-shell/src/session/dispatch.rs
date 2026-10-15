@@ -55,7 +55,7 @@ fn aborts(stop: &Command, parked: &Command) -> bool {
 }
 
 /// What a start aborted before it ran hears (like "countdown cancelled").
-pub(super) const START_ABORTED: &str = "recording cancelled before it started";
+const START_ABORTED: &str = "recording cancelled before it started";
 
 /// What the aborted command and the caller hear.
 fn aborted(stop: &Command) -> (CoreError, CmdResult) {
@@ -197,6 +197,9 @@ impl Session {
         }
         // A stop never waits for the recovery, so it acts on what waits too:
         // a start or export it would otherwise let run afterwards (A§5.3).
+        // Commands wait only while the open's recovery holds them, before
+        // any command ran: no take or export runs then, so aborting what
+        // waits is all the stop does.
         if let Some(result) = self.abort_parked(&cmd) {
             let reply = serde_json::to_value(result).unwrap_or(Value::Null);
             return self.reply_now(id.as_ref(), &mut to, Ok(reply));
