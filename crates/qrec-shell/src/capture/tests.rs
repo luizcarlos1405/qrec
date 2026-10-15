@@ -20,7 +20,7 @@ use qrec_core::{Event, Fps, TakeId};
 use serde_json::Value;
 
 use super::fake::{FAKE_CAMERA, FAKE_MIC, FAKE_MONITOR};
-use super::{Backend, EngineOptions, FakeFailure, GstCaptureEngine, SideEvent};
+use super::{Backend, EngineOptions, FakeFailure, GstCaptureEngine, STALL_LIMIT, SideEvent};
 use crate::deps::CaptureEngine;
 use crate::gst_init::testing::{assert_quiet_since, problems, serial};
 use crate::msg::{Inbox, Msg};
@@ -394,6 +394,19 @@ fn records_screens_cameras_and_audio_in_sync() {
     ] {
         assert!(log.contains(needle), "{needle:?} missing from:\n{log}");
     }
+    // FAKE-1 is still: it sent one frame before T0, and the screen bridge's
+    // keepalive sent all the others, up to T1 (A§8.11), so closing its bin
+    // filled no more than a frame or two.
+    let closed = log
+        .lines()
+        .find(|l| l.contains("L1: closed after"))
+        .unwrap_or_else(|| panic!("no close line for L1 in:\n{log}"));
+    let filled: u64 = closed
+        .split(", ")
+        .find_map(|part| part.strip_suffix(" fill frames"))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("{closed}"));
+    assert!(filled <= 2, "{closed}");
 }
 
 #[test]
@@ -717,6 +730,72 @@ fn a_lost_source_is_stream_lost_and_the_rest_keeps_recording() {
     );
     assert!(mic_dur > system_dur + 0.4, "{mic_dur} vs {system_dur}");
     assert!((screen_dur - mic_dur).abs() < 0.12);
+}
+
+#[test]
+fn a_camera_that_hangs_is_lost_instead_of_filled_at_the_stop() {
+    let _serial = serial();
+    let mut h = Harness::new();
+    let dir = h.take_dir(1);
+    let plan = plan(
+        1,
+        &dir,
+        vec![screen("L1", "FAKE-1"), camera("L2", FAKE_CAMERA)],
+        vec![audio("A1", FAKE_MIC, "mic")],
+    );
+    h.start(&plan);
+    h.started();
+    std::thread::sleep(Duration::from_millis(500));
+
+    // The camera hangs: no error, no EOS, just no frames.
+    let hung = Instant::now();
+    h.engine
+        .inject_fake_failure(FAKE_CAMERA, FakeFailure::Stall);
+    let (ev, _) = h.wait_for("StreamLost", |e| matches!(e, Event::StreamLost { .. }));
+    let after = hung.elapsed();
+    let Event::StreamLost {
+        stream, message, ..
+    } = ev
+    else {
+        unreachable!()
+    };
+    assert_eq!(stream, "L2");
+    assert!(message.contains("stopped sending frames"), "{message}");
+    // Lost once it was silent for STALL_LIMIT, counted from its last frame
+    // (up to a frame and the pipeline latency before the hang) and checked
+    // at the clock ticks.
+    assert!(
+        after >= STALL_LIMIT - Duration::from_millis(200)
+            && after < STALL_LIMIT + Duration::from_secs(2),
+        "{after:?}"
+    );
+
+    std::thread::sleep(Duration::from_millis(500));
+    h.engine.stop(&plan.take, false);
+    let (streams, timed_out, skipped) = h.stopped();
+    assert!(!timed_out, "{skipped:?}");
+    // The still screen (only the keepalive's frames) was never stalled.
+    assert!(
+        !skipped
+            .iter()
+            .any(|e| matches!(e, Event::StreamLost { .. })),
+        "{skipped:?}"
+    );
+    assert!(streams.iter().all(|s| s.eos), "{streams:?}");
+    // The camera's file ends where it hung, unfilled; the others ran on.
+    let (_, screen_dur) = check_video(&h.file(&streams[0].file), 1280, 720);
+    let (_, camera_dur) = check_video(&h.file(&streams[1].file), 640, 480);
+    let mic_dur = check_audio(&h.file(&streams[2].file), 1);
+    assert!(
+        screen_dur > camera_dur + 3.0,
+        "{screen_dur} vs {camera_dur}"
+    );
+    assert!(
+        (screen_dur - mic_dur).abs() < 0.12,
+        "{screen_dur} vs {mic_dur}"
+    );
+    let log = fs::read_to_string(h.file("takes/take-0001/recorder.log")).unwrap();
+    assert!(log.contains("L2 lost: no frames from"), "{log}");
 }
 
 #[test]

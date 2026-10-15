@@ -2374,6 +2374,12 @@ fn a_project_rebuilt_from_the_history_gets_its_takes_back() {
     stop.ok();
     let frames = stop.only_reply()["data"]["result"]["durationFrames"].clone();
     wait_until_no_host(&env);
+    let streams = |dir: &Path| {
+        let show = qrec(&env, dir, &["take", "show", "take-0001", "--json"]);
+        show.ok();
+        show.reply()["data"]["streams"].clone()
+    };
+    let recorded = streams(&dir);
     let status = qrec(&env, &dir, &["status", "--json"]);
     let cursor = status.reply()["data"]["history"]["cursor"].to_string();
     // qrec.json and the commit record are gone: only the base (older than
@@ -2399,6 +2405,18 @@ fn a_project_rebuilt_from_the_history_gets_its_takes_back() {
     assert_eq!(take["status"], "ok", "{take}");
     assert_eq!(take["durationFrames"], frames);
     assert_eq!(take["clips"], 1);
+    // Take facts aren't in the history: the start offsets came back from
+    // the take's recorder.log, so the take is as long as it was recorded.
+    let rebuilt = streams(&dir);
+    let offsets = |streams: &Value| {
+        streams
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| (s["id"].clone(), s["startOffsetNs"].clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(offsets(&rebuilt), offsets(&recorded), "{rebuilt}");
     qrec(&env, &dir, &["status"]).ok();
     wait_until_no_host(&env);
 }

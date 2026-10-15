@@ -105,7 +105,7 @@ fn cast_probe() {
                 }
             });
             // The first buffer's video meta and memories. QREC_PROBE_FIXMEM
-            // sizes dmabuf memories (`dmabuf::resize_dmabufs`), and
+            // sizes dmabuf memories (`bridge::resize_dmabufs`), and
             // QREC_PROBE_CPUREAD maps the first frames and times a copy.
             let fixmem = var("QREC_PROBE_FIXMEM").is_some();
             let cpuread = var("QREC_PROBE_CPUREAD").is_some();
@@ -136,7 +136,7 @@ fn cast_probe() {
                         }
                     }
                     if fixmem
-                        && let Err(e) = super::dmabuf::resize_dmabufs(buffer.make_mut(), &allocator)
+                        && let Err(e) = super::bridge::resize_dmabufs(buffer.make_mut(), &allocator)
                     {
                         println!("  resize: {e}");
                     }

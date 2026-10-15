@@ -844,7 +844,9 @@ didn't wait, is printed at once, the recovery's toasts after it.
 
 **CaptureFailed vs StreamLost** (engine contract, A§8.11): after
 CaptureStarted, an error attributable to one branch (its source, encoder,
-muxer or filesink) EOSes that branch and emits `StreamLost`. `CaptureFailed`
+muxer or filesink) EOSes that branch and emits `StreamLost`, and so does a
+video stream that passed no frame for `STALL_LIMIT` (3 s: a camera that
+hangs without an error; checked at every `RecordClock` tick). `CaptureFailed`
 is for the start/health window and pipeline-wide errors.
 
 ### A§5.4 Scene and project commands
@@ -1267,9 +1269,14 @@ rewrites every file with its next commit, and the replies they send are
   put an old take's clip on a new recording). The Recover probe finalizes
   the takes found; in recovery mode commands wait for those probes (and a
   host stays up for them, A§8.6), so the restore writes a project that
-  validates. Start offsets aren't in the files: a recovered take can come
-  out shorter than recorded, and then a restore whose clips no longer fit
-  fails naming the clip (restore an older entry).
+  validates. Start offsets aren't in the media files; a take found on disk
+  gets them back from its `recorder.log` (`<id>: <file> startOffsetNs=<n>`
+  lines, logged once recording starts and again at the stop, A§8.11; the
+  last line of a file wins, the first 1 MiB is read), so it comes out as
+  long as it was recorded. A stream the log doesn't name (a take that
+  crashed before it started recording, a lost log) starts at 0; such a take
+  can come out shorter than recorded, and then a restore whose clips no
+  longer fit fails naming the clip (restore an older entry).
 
 ---
 
@@ -1723,7 +1730,12 @@ passes, even past T1: a stop while Starting (a double-tap of `r`) would
 otherwise close bins that got nothing, and those write a header-only file
 nothing can read, which turned a too-short take into a `broken` one
 *(measured)*. Such a bin waits for that first buffer until the start's
-first-buffer deadline, then closes like the others.
+first-buffer deadline, then closes like the others. Once every bin passed
+its first buffer (`CaptureStarted`), `recorder.log` gets one
+`<id>: <file> startOffsetNs=<n>` line per stream, and the stop summary
+repeats them with `eos=`: the only copy of the offsets outside `qrec.json`,
+which a rebuild reads (A§7.7; `spec::start_offset_line` /
+`logged_start_offsets`).
 - Video: `queue ! videorate skip-to-first=true ! video/x-raw,framerate=N/D !
   videoconvert ! video/x-raw,format=I420|NV12,colorimetry=bt709 ! <encoder>
   ! h264parse ! matroskamux offset-to-zero=true ! filesink`. Without
@@ -1736,22 +1748,48 @@ first-buffer deadline, then closes like the others.
   FLAC block (4608 samples) is padded with silence to 120 ms before EOS:
   flacenc sets its caps with its first block, and an earlier EOS pushes the
   segment before the caps *(measured)*.
-- `pipewiresrc keepalive-time=<floor(1000·den/num)>` so a static screen still
-  produces frames to the end (screencasts are damage-driven).
-- Screen branch: `pipewiresrc ! capsfilter ! appsink` → `appsrc !
-  videoconvert …` (`capture::dmabuf`). niri offers DMA-BUF only (BGRx with
-  modifiers; shared memory fails with "no more input formats") *(measured,
-  niri 2026-08, PipeWire 1.6.6, GStreamer 1.26)*. The capsfilter (its caps set
-  after linking, which DMA_DRM caps would fail) takes **linear** DMA-BUF
-  (`XR24/AR24/XB24/AB24`) or shared memory (GNOME, KDE). Linear frames are
-  CPU-mappable (a 2560×1440 frame copies in ~2 ms); GL import samples black
-  and the tiled/compressed layouts lose their extra planes in pipewiresrc,
-  and `vapostproc` can't import `XR24` *(measured)*. pipewiresrc wraps niri's
-  frames in 1-byte memories (PipeWire's data size), so the bridge resizes each
-  dmabuf memory to the buffer object's size (`lseek(fd, 0, SEEK_END)`) and
-  pushes it on as the plain format (`XR24` → `BGRx`) with its timestamps.
-  `cast_probe` (an ignored test) reruns these experiments against a real
-  portal session.
+- Screen branch: `pipewiresrc ! capsfilter ! appsink` → bridge → `appsrc !
+  videoconvert …` (`capture::bridge`; the appsink is `async=false`, so the
+  pipeline plays without waiting for a screen's first frame, and a screen
+  that sends none fails the first-buffer check, naming it). niri offers
+  DMA-BUF only (BGRx with modifiers; shared memory fails with "no more input
+  formats") *(measured, niri 2026-08, PipeWire 1.6.6, GStreamer 1.26)*. The
+  capsfilter (its caps set after linking, which DMA_DRM caps would fail)
+  takes **linear** DMA-BUF (`XR24/AR24/XB24/AB24`) or shared memory (GNOME,
+  KDE). Linear frames are CPU-mappable (a 2560×1440 frame copies in ~2 ms);
+  GL import samples black and the tiled/compressed layouts lose their extra
+  planes in pipewiresrc, and `vapostproc` can't import `XR24` *(measured)*.
+  pipewiresrc wraps niri's frames in 1-byte memories (PipeWire's data size),
+  so the bridge resizes each dmabuf memory to the buffer object's size
+  (`lseek(fd, 0, SEEK_END)`). It converts each frame to I420 bt709 (a pooled
+  buffer, ~4.5 ms for 2560×1440 on one thread *(measured)*) while
+  pipewiresrc still holds it, so the compositor never renders into a frame
+  being read, and pushes it on with its timestamps (`videoconvert` then
+  passes it through). `cast_probe` (an ignored test) reruns these
+  experiments against a real portal session.
+- **Still screens** (screencasts are damage-driven: no damage, no frames).
+  Never `pipewiresrc keepalive-time`: PipeWire 1.6 stamps its keepalive
+  buffer with the absolute clock time, and basesrc waits for that time
+  (hundreds of hours) before pushing it, so the branch stalls for good the
+  first time the screen is still for a frame period; a 10-minute take then
+  ended with ~18,000 fill frames that couldn't be encoded within the EOS
+  timeout *(measured)*. Instead the bridge's keepalive thread pushes the last
+  converted frame again (a new buffer over the same memory, so no
+  conversion), stamped with the running time, whenever nothing was pushed for
+  one frame period of the canvas rate; pushed PTS only grow. A record bin thus
+  gets its first frame within a frame of T0 and needs no fill at T1. The
+  thread ends at EOS or when the appsrc is gone, and every wait has a
+  timeout.
+- **Stalls.** A camera can hang without an error (uvcvideo USB errors). Its
+  bin would then wait for a T1 it never reaches and be filled at the stop
+  for as long as the hang lasted, more frames than the EOS timeout lets it
+  encode, and the whole take would end `broken` *(the failure the
+  still-screen stall above produced)*. So while recording, a video stream
+  whose last passed frame is more than `STALL_LIMIT` (3 s) old is lost
+  (`StreamLost`, SPEC §16: its file ends where it hung, unfilled, and the
+  layer is marked missing), and a stop fills at most that much. Still
+  screens never stall (the keepalive); audio isn't watched (a stop doesn't
+  fill it). `FakeFailure::Stall` hangs a fake source for the tests.
 - Encoders: `x264enc pass=qual quantizer=18 speed-preset=veryfast
   tune=zerolatency key-int-max=<round(fps)>` (without `pass=qual` x264enc
   records 2 Mbit/s CBR); VA: the resolved factory with `rate-control=cqp
@@ -1767,6 +1805,9 @@ first-buffer deadline, then closes like the others.
   `audiotestsrc is-live=true` (a tone with periodic silence), never touches the
   portal, and fakes discovery: screens `FAKE-1`, `FAKE-2` (1280×720), camera
   `/dev/fake0`, mic `alsa_input.fake`, monitor `alsa_output.fake.monitor`.
+  Fake screens are BGRx through the same bridge as real ones; `FAKE-1` is a
+  still test card sent once (like a damage-driven compositor), so every
+  later frame of it is the keepalive's, and `FAKE-2` is a moving ball.
 
 ### A§8.12 Sources and doctor
 

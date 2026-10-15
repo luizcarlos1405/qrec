@@ -8,13 +8,21 @@
 use qrec_core::Fps;
 use qrec_core::ctx::{AudioDeviceInfo, CameraInfo, CameraMode, ScreenInfo};
 
-/// The fake screens' output names.
+/// The fake screens' output names: `FAKE-1` is a still test card,
+/// `FAKE-2` a moving ball ([`fake_screen_is_still`]).
 pub const FAKE_SCREENS: [&str; 2] = ["FAKE-1", "FAKE-2"];
 /// Every fake screen's size.
 pub const FAKE_SCREEN_SIZE: (u32, u32) = (1280, 720);
-/// The rate fake screens produce frames at (the record bin's `videorate`
-/// turns it into the canvas rate).
+/// The rate a moving fake screen produces frames at (the record bin's
+/// `videorate` turns it into the canvas rate).
 pub const FAKE_SCREEN_FPS: Fps = Fps::new(60, 1);
+
+/// Whether a fake screen shows a still picture. Like a damage-driven
+/// compositor, it sends that frame once; the screen bridge's keepalive
+/// sends every later one (A§8.11). Every fake screen but `FAKE-2` is still.
+pub fn fake_screen_is_still(output: &str) -> bool {
+    !output.ends_with('2')
+}
 /// The fake camera.
 pub const FAKE_CAMERA: &str = "/dev/fake0";
 /// The fake mic (an `alsa_input.*` source).

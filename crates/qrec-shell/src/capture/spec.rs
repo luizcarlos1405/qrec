@@ -208,11 +208,11 @@ pub fn audio_label(rec: &AudioRecord) -> String {
     format!("{} audio {}", rec.id, rec.device)
 }
 
-/// `pipewiresrc keepalive-time`: one frame period in ms, `floor(1000·den/num)`,
-/// so a static screen still produces frames to the end of a take.
-pub fn keepalive_ms(fps: Fps) -> u32 {
-    let ms = 1000u64 * u64::from(fps.den) / u64::from(fps.num.max(1));
-    ms.clamp(1, u64::from(u32::MAX)) as u32
+/// How long a screen may go without a frame before the screen bridge
+/// sends its last one again: one frame period, so a still screen still
+/// produces frames to the end of a take (A§8.11).
+pub fn keepalive_period(fps: Fps) -> std::time::Duration {
+    std::time::Duration::from_nanos(frame_duration_ns(fps))
 }
 
 /// One frame at `fps`, in ns (`frame_ns(1)`).
@@ -272,6 +272,46 @@ pub fn encoder_input_format(encoder: &VideoEncoder) -> &'static str {
         VideoEncoder::Va { .. } => "NV12",
         VideoEncoder::X264 { .. } => "I420",
     }
+}
+
+/// A `recorder.log` line with one stream's `startOffsetNs`:
+/// `<id>: <file> startOffsetNs=<n>`. The engine logs it for every stream
+/// once recording starts (the offsets are known then) and again at the
+/// stop, so a take rebuilt from the files gets its offsets back
+/// ([`logged_start_offsets`], A§7.7): take facts aren't in the history.
+pub fn start_offset_line(id: &str, file: &str, start_offset_ns: i64) -> String {
+    format!("{id}: {file} {START_OFFSET_KEY}{start_offset_ns}")
+}
+
+const START_OFFSET_KEY: &str = "startOffsetNs=";
+
+/// Every stream's `startOffsetNs` in a `recorder.log`, by its file
+/// (`takes/take-0001/L1-screen-DP-4.mkv`), from the lines
+/// [`start_offset_line`] writes (the last one of a file wins). Other lines,
+/// and offsets that aren't a count of ns ≥ 0, are skipped.
+pub fn logged_start_offsets(log: &str) -> std::collections::BTreeMap<String, i64> {
+    let mut offsets = std::collections::BTreeMap::new();
+    for line in log.lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        // `<timestamp> <id>: <file> startOffsetNs=<n> [eos=…]`
+        let Some(at) = words.iter().position(|w| w.ends_with(':')) else {
+            continue;
+        };
+        let (Some(file), Some(value)) = (
+            words.get(at + 1),
+            words
+                .get(at + 2)
+                .and_then(|w| w.strip_prefix(START_OFFSET_KEY)),
+        ) else {
+            continue;
+        };
+        if let Ok(ns) = value.parse::<i64>()
+            && ns >= 0
+        {
+            offsets.insert((*file).to_owned(), ns);
+        }
+    }
+    offsets
 }
 
 /// `audiotestsrc wave=ticks` settings for a fake tone: sine periods per tick
@@ -469,11 +509,52 @@ mod tests {
     }
 
     #[test]
+    fn start_offsets_come_back_from_the_recorder_log() {
+        let l1 = "takes/take-0001/L1-screen-DP-4.mkv";
+        let a1 = "takes/take-0001/A1-mic.mka";
+        assert_eq!(
+            start_offset_line("L1", l1, 379_829),
+            format!("L1: {l1} startOffsetNs=379829")
+        );
+        // A log as the engine writes it: the lines at the start, other
+        // lines, the summary at the stop (same values, plus `eos`).
+        let log = [
+            format!("2026-10-15T13:25:00.871Z attached at T0 = 67619293 ns: {l1}, {a1}"),
+            "2026-10-15T13:25:01.402Z recording".to_owned(),
+            format!(
+                "2026-10-15T13:25:01.402Z {}",
+                start_offset_line("L1", l1, 379_829)
+            ),
+            format!(
+                "2026-10-15T13:25:01.402Z {}",
+                start_offset_line("A1", a1, 2_380_707)
+            ),
+            "2026-10-15T13:25:25.539Z L1: closed after 1190 buffers (last at T0 + 24634.735 ms), 0 fill frames, EOS sent".to_owned(),
+            format!(
+                "2026-10-15T13:25:25.586Z {} eos=true",
+                start_offset_line("L1", l1, 379_829)
+            ),
+            // Not offsets: skipped.
+            "2026-10-15T13:25:25.586Z A2: takes/take-0001/A2.mka startOffsetNs=-5".to_owned(),
+            "2026-10-15T13:25:25.586Z A3: takes/take-0001/A3.mka startOffsetNs=lots".to_owned(),
+            "garbage".to_owned(),
+            String::new(),
+        ]
+        .join("\n");
+        let offsets = logged_start_offsets(&log);
+        assert_eq!(
+            offsets.into_iter().collect::<Vec<_>>(),
+            [(a1.to_owned(), 2_380_707), (l1.to_owned(), 379_829)]
+        );
+    }
+
+    #[test]
     fn element_settings_follow_the_architecture() {
-        assert_eq!(keepalive_ms(Fps::new(30, 1)), 33);
-        assert_eq!(keepalive_ms(Fps::new(30000, 1001)), 33);
-        assert_eq!(keepalive_ms(Fps::new(60, 1)), 16);
-        assert_eq!(keepalive_ms(Fps::new(240, 1)), 4);
+        let ms = |fps: Fps| keepalive_period(fps).as_millis();
+        assert_eq!(ms(Fps::new(30, 1)), 33);
+        assert_eq!(ms(Fps::new(30000, 1001)), 33);
+        assert_eq!(ms(Fps::new(60, 1)), 16);
+        assert_eq!(ms(Fps::new(240, 1)), 4);
         assert_eq!(frame_duration_ns(Fps::new(30, 1)), 33_333_333);
 
         let (factory, props) = encoder_settings(&screen("L1", "DP-4"));

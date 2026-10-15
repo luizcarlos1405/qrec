@@ -5,6 +5,7 @@
 //!
 //! ```text
 //! video: src [! caps] [! jpegdec] ! videoconvert ! video/x-raw,format=I420,colorimetry=bt709 ! tee
+//! screen: src ! caps ! appsink → bridge (I420, keepalive) → appsrc ! videoconvert ! … ! tee
 //! audio: src [! caps] ! audioconvert [! level] ! tee
 //! tee ! fakesink sync=false async=false        (always)
 //! tee ! queue ! videocrop ! compositor.sink_N   (preview, per visible layer)
@@ -25,11 +26,11 @@ use qrec_core::layout::place;
 use qrec_core::model::Layer;
 use qrec_core::plans::LiveScene;
 
-use super::dmabuf;
+use super::bridge;
 use super::engine::Cmd;
-use super::fake::{FAKE_SCREEN_FPS, FAKE_SCREEN_SIZE, FakeTone, fake_tone};
+use super::fake::{FAKE_SCREEN_FPS, FAKE_SCREEN_SIZE, FakeTone, fake_screen_is_still, fake_tone};
 use super::portal::ScreenShare;
-use super::spec::{SourceSpec, keepalive_ms, tick_settings};
+use super::spec::{SourceSpec, keepalive_period, tick_settings};
 use super::util::{capsfilter, make, set_str, set_value};
 use super::{Backend, LevelReading, PreviewFrame, SideEvent};
 
@@ -211,26 +212,27 @@ fn add_source(
     let mut chain: Vec<gst::Element> = Vec::new();
     let src = match (ctx.backend, spec) {
         (Backend::Fake, SourceSpec::Screen { output }) => {
+            // Like a screencast: BGRx frames through the screen bridge, and
+            // a still screen sends its frame once (damage-driven), so every
+            // later frame of it is the bridge's keepalive.
             let src = make("videotestsrc", &name("src")).map_err(err)?;
             set_value(&src, "is-live", true).map_err(err)?;
-            let pattern = if output.ends_with('2') {
-                "ball"
-            } else {
-                "smpte"
-            };
-            set_str(&src, "pattern", pattern).map_err(err)?;
+            let still = fake_screen_is_still(output);
+            set_str(&src, "pattern", if still { "smpte" } else { "ball" }).map_err(err)?;
+            if still {
+                first_buffer_only(&src);
+            }
             let (w, h) = FAKE_SCREEN_SIZE;
-            chain.push(src.clone());
-            chain.push(
-                capsfilter(
-                    &name("caps"),
-                    &format!(
-                        "video/x-raw,width={w},height={h},framerate={}/{}",
-                        FAKE_SCREEN_FPS.num, FAKE_SCREEN_FPS.den
-                    ),
-                )
-                .map_err(err)?,
-            );
+            let caps = capsfilter(
+                &name("caps"),
+                &format!(
+                    "video/x-raw,format=BGRx,width={w},height={h},framerate={}/{}",
+                    FAKE_SCREEN_FPS.num, FAKE_SCREEN_FPS.den
+                ),
+            )
+            .map_err(err)?;
+            let feed = bridged(pipeline, &[&src, &caps], &name, ctx).map_err(err)?;
+            chain.push(feed);
             src
         }
         (Backend::Fake, SourceSpec::Camera { mode, .. }) => {
@@ -272,9 +274,10 @@ fn add_source(
             set_value(&src, "fd", cast.fd_raw()).map_err(err)?;
             set_value(&src, "path", cast.node_id.to_string()).map_err(err)?;
             set_value(&src, "do-timestamp", true).map_err(err)?;
-            if src.find_property("keepalive-time").is_some() {
-                set_value(&src, "keepalive-time", keepalive_ms(ctx.fps) as i32).map_err(err)?;
-            }
+            // Never `keepalive-time`: PipeWire 1.6 stamps the keepalive
+            // buffer with the absolute clock time and basesrc waits for it,
+            // stalling the branch for good; the bridge keeps a still screen
+            // going instead (A§8.11).
             if src.find_property("client-name").is_some() {
                 set_value(&src, "client-name", "Qrec").map_err(err)?;
             }
@@ -283,35 +286,14 @@ fn add_source(
             if src.find_property("on-disconnect").is_some() {
                 set_str(&src, "on-disconnect", "error").map_err(err)?;
             }
-            // pipewiresrc ! capsfilter ! appsink → appsrc ! (the rest): the
-            // bridge turns linear DMA-BUF frames into plain mappable ones
-            // (A§8.11, `dmabuf`). The capsfilter gets its DMA_DRM caps only
-            // after linking, which they would fail.
+            // The capsfilter gets its DMA_DRM caps only after linking, which
+            // they would fail.
             let accept = make("capsfilter", &name("accept")).map_err(err)?;
-            let sink = gst_app::AppSink::builder()
-                .name(name("bridge-sink"))
-                .sync(false)
-                .max_buffers(2)
-                .drop(true)
-                .build();
-            let feed = gst_app::AppSrc::builder()
-                .name(name("bridge-src"))
-                .is_live(true)
-                .format(gst::Format::Time)
-                .do_timestamp(false)
-                .max_buffers(2)
-                .leaky_type(gst_app::AppLeakyType::Downstream)
-                .build();
-            pipeline
-                .add_many([&src, &accept, sink.upcast_ref::<gst::Element>()])
-                .map_err(|e| err(format!("can't build the screen branch: {e}")))?;
-            gst::Element::link_many([&src, &accept, sink.upcast_ref::<gst::Element>()])
-                .map_err(|e| err(format!("can't link the screen branch: {e}")))?;
-            let caps = gst::Caps::from_str(dmabuf::SCREEN_CAPS)
+            let feed = bridged(pipeline, &[&src, &accept], &name, ctx).map_err(err)?;
+            let caps = gst::Caps::from_str(bridge::SCREEN_CAPS)
                 .map_err(|e| err(format!("bad screencast caps: {e}")))?;
             accept.set_property("caps", &caps);
-            dmabuf::bridge(&sink, &feed);
-            chain.push(feed.upcast());
+            chain.push(feed);
             src
         }
         (Backend::Real, SourceSpec::Camera { device, mode }) => {
@@ -395,6 +377,67 @@ fn add_source(
         size: None,
         dead: None,
     })
+}
+
+/// `upstream… ! appsink` → [`bridge::bridge`] → `appsrc`: adds and links
+/// `upstream` (a screen's elements) and the appsink, starts the bridge
+/// and returns the appsrc, where the rest of the branch starts.
+fn bridged(
+    pipeline: &gst::Pipeline,
+    upstream: &[&gst::Element],
+    name: &dyn Fn(&str) -> String,
+    ctx: &BuildCtx<'_>,
+) -> Result<gst::Element, String> {
+    let sink = gst_app::AppSink::builder()
+        .name(name("bridge-sink"))
+        .sync(false)
+        // The pipeline plays without waiting for a first frame (a screen
+        // that sends none fails the first-buffer check, naming it).
+        .async_(false)
+        .max_buffers(2)
+        .drop(true)
+        // The bridge reads each frame and lets go of it at once.
+        .enable_last_sample(false)
+        .build();
+    let feed = gst_app::AppSrc::builder()
+        .name(name("bridge-src"))
+        .is_live(true)
+        .format(gst::Format::Time)
+        .do_timestamp(false)
+        // Two frames, whatever their size; the oldest goes first.
+        .max_buffers(2)
+        .max_bytes(0)
+        .leaky_type(gst_app::AppLeakyType::Downstream)
+        .build();
+    let elements: Vec<&gst::Element> = upstream
+        .iter()
+        .copied()
+        .chain([sink.upcast_ref::<gst::Element>()])
+        .collect();
+    pipeline
+        .add_many(elements.iter().copied())
+        .map_err(|e| format!("can't build the screen branch: {e}"))?;
+    gst::Element::link_many(elements.iter().copied())
+        .map_err(|e| format!("can't link the screen branch: {e}"))?;
+    // Dropping the handle detaches the keepalive; it ends with the branch.
+    bridge::bridge(&sink, &feed, keepalive_period(ctx.fps), name("keepalive"))?;
+    Ok(feed.upcast())
+}
+
+/// Lets only the first buffer of `src` through (a damage-driven
+/// compositor sends a still screen once).
+fn first_buffer_only(src: &gst::Element) {
+    let Some(pad) = src.static_pad("src") else {
+        return;
+    };
+    let sent = std::sync::atomic::AtomicBool::new(false);
+    pad.add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+        if sent.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            gst::PadProbeReturn::Drop
+        } else {
+            gst::PadProbeReturn::Ok
+        }
+    });
 }
 
 /// `audiotestsrc is-live=true wave=ticks`: a tone at the start of every

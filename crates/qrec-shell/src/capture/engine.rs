@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use gst::prelude::*;
 use qrec_core::ctx::CameraMode;
-use qrec_core::model::VideoSource;
+use qrec_core::model::{StreamKind, VideoSource};
 use qrec_core::plans::{CapturePlan, LiveScene};
 use qrec_core::protocol::RecordedStream;
 use qrec_core::{Event, Fps, TakeId};
@@ -56,12 +56,13 @@ use super::live::{BuildCtx, BuildError, Live, LiveKey, level_reading};
 use super::portal::{OpenRequest, PortalWorker, ScreenShare};
 use super::record::{RecordBin, attach_audio, attach_video};
 use super::spec::{
-    CameraKey, SourceSpec, audio_label, plan_sources, record_file_rel, scene_sources, video_label,
+    CameraKey, SourceSpec, audio_label, plan_sources, record_file_rel, scene_sources,
+    start_offset_line, video_label,
 };
 use super::util::{error_text, missing_element, object_path, running_time, set_null_with_deadline};
 use super::{
-    Backend, CLOCK_INTERVAL, EngineOptions, FILL_GRACE, PIPELINE_START_TIMEOUT, SideEvent,
-    TEARDOWN_TIMEOUT,
+    Backend, CLOCK_INTERVAL, EngineOptions, FILL_GRACE, PIPELINE_START_TIMEOUT, STALL_LIMIT,
+    SideEvent, TEARDOWN_TIMEOUT,
 };
 use crate::deps::CaptureEngine;
 use crate::gst_init::{self, InitError};
@@ -139,6 +140,8 @@ pub enum FakeFailure {
     Error,
     /// The source ends its stream (EOS), like a closed screencast.
     Eos,
+    /// The source goes silent without an error, like a camera that hangs.
+    Stall,
 }
 
 /// The GStreamer capture engine. Cheap to call from the session thread.
@@ -1569,8 +1572,9 @@ impl Engine {
         let ok = self.teardown_bins(&mut run.bins, true);
         for s in &streams {
             run.log.line(format!(
-                "{}: {} startOffsetNs={} eos={}",
-                s.id, s.file, s.start_offset_ns, s.eos
+                "{} eos={}",
+                start_offset_line(s.id.as_str(), &s.file, s.start_offset_ns),
+                s.eos
             ));
         }
         run.log.line(format!(
@@ -1656,6 +1660,11 @@ impl Engine {
             FakeFailure::Eos => {
                 let _ = branch.src.send_event(gst::event::Eos::new());
             }
+            FakeFailure::Stall => {
+                if let Some(pad) = branch.src.static_pad("src") {
+                    pad.add_probe(gst::PadProbeType::BUFFER, |_, _| gst::PadProbeReturn::Drop);
+                }
+            }
         }
     }
 
@@ -1722,6 +1731,14 @@ impl Engine {
                         .map(|b| (b.id.clone(), b.start_offset_ns(run.t0)))
                         .collect();
                     run.log.line("recording");
+                    // A rebuild reads them back (A§7.7).
+                    for bin in &run.bins {
+                        run.log.line(start_offset_line(
+                            bin.id.as_str(),
+                            &bin.file,
+                            bin.start_offset_ns(run.t0),
+                        ));
+                    }
                     let take = run.plan.take.clone();
                     let t0 = run.t0;
                     self.emit(Event::CaptureStarted {
@@ -1755,6 +1772,7 @@ impl Engine {
                     run.phase = Phase::Recording { next_clock: next };
                     let (take, t0) = (run.plan.take.clone(), run.t0);
                     self.emit_clock(&take, t0);
+                    self.check_stalls();
                 }
             }
             Phase::Stopping {
@@ -1776,6 +1794,42 @@ impl Engine {
                     self.check_stopped();
                 }
             }
+        }
+    }
+
+    /// Recording: a video stream that passed no frame for [`STALL_LIMIT`]
+    /// is lost like an unplugged one (SPEC §16). A camera can hang without
+    /// an error; its bin would otherwise be filled for as long as the hang
+    /// lasted at the stop, more frames than the EOS timeout lets it encode
+    /// (a still screen never gets here: the bridge's keepalive, A§8.11).
+    fn check_stalls(&mut self) {
+        let Some(now) = self.live.as_ref().and_then(|l| running_time(&l.pipeline)) else {
+            return;
+        };
+        let Some(run) = &self.take else { return };
+        let watched: Vec<(Option<u64>, bool)> = run
+            .bins
+            .iter()
+            .map(|b| {
+                let watch = b.kind == StreamKind::Video && b.lost.is_none() && !b.closing;
+                (b.probe.lock().last, watch)
+            })
+            .collect();
+        let lost: Vec<(usize, String)> = stalled(&watched, now, STALL_LIMIT)
+            .into_iter()
+            .map(|(i, silent)| {
+                let bin = &run.bins[i];
+                let message = format!(
+                    "no frames from {} for {:.1} s: {}",
+                    bin.label,
+                    silent.as_secs_f64(),
+                    stall_reason(&run.plan, bin.id.as_str())
+                );
+                (i, message)
+            })
+            .collect();
+        for (i, message) in lost {
+            self.branch_lost(&[i], message);
         }
     }
 
@@ -1818,6 +1872,36 @@ impl Engine {
     }
 }
 
+/// The bins (by index) whose last frame is more than `limit` older than
+/// the running time `now`, with how long they've been silent. Each bin is
+/// `(running time of its last passed frame, watched)`; a bin that passed
+/// none yet is the first-buffer check's business, not this.
+fn stalled(bins: &[(Option<u64>, bool)], now: u64, limit: Duration) -> Vec<(usize, Duration)> {
+    bins.iter()
+        .enumerate()
+        .filter_map(|(i, &(last, watched))| {
+            let silent = Duration::from_nanos(now.saturating_sub(last?));
+            (watched && silent > limit).then_some((i, silent))
+        })
+        .collect()
+}
+
+/// Why a video stream went silent mid-take, for its `StreamLost` message.
+fn stall_reason(plan: &CapturePlan, id: &str) -> &'static str {
+    match plan
+        .video
+        .iter()
+        .find(|v| v.id.as_str() == id)
+        .map(|v| &v.source)
+    {
+        Some(VideoSource::Screen { .. }) => "the screen share stopped sending frames",
+        _ => {
+            "the camera stopped sending frames; it may have been unplugged or hung (unplug and \
+             replug it; `journalctl -k | grep uvcvideo` shows driver errors)"
+        }
+    }
+}
+
 /// What usually keeps a source silent through the start window (A§5.3), for
 /// the `capture_failed` message.
 fn silence_reason(plan: &CapturePlan, id: &str) -> &'static str {
@@ -1835,5 +1919,35 @@ fn silence_reason(plan: &CapturePlan, id: &str) -> &'static str {
             "the screen share sent no frames; the portal may have stopped it or the output may be off"
         }
         None => "the audio device sent no samples; it may be unplugged or suspended",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_watched_bins_silent_past_the_limit_are_stalled() {
+        let ms = |n: u64| n * 1_000_000;
+        let limit = Duration::from_secs(3);
+        let now = ms(10_000);
+        let bins = [
+            // Silent 3.5 s: stalled.
+            (Some(ms(6_500)), true),
+            // Silent exactly the limit: not yet.
+            (Some(ms(7_000)), true),
+            // A frame 10 ms ago.
+            (Some(ms(9_990)), true),
+            // Silent, but not watched (audio, lost or closing).
+            (Some(ms(1_000)), false),
+            // No frame yet: the first-buffer check's business.
+            (None, true),
+            // A frame "after" now (clock skew): not silent.
+            (Some(ms(10_500)), true),
+        ];
+        assert_eq!(
+            stalled(&bins, now, limit),
+            [(0, Duration::from_millis(3_500))]
+        );
     }
 }

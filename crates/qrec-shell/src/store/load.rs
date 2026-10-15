@@ -45,6 +45,7 @@ use serde_json::Value;
 
 use super::Check;
 use super::format::{self, Head, ParsedHistory};
+use crate::capture::spec::logged_start_offsets;
 use crate::error::ShellError;
 use crate::paths::ProjectPaths;
 
@@ -631,13 +632,21 @@ struct FoundTake {
     recorded_at: Option<DateTime<Utc>>,
 }
 
-/// The take folders `project` doesn't have, with their media files.
+/// The most of a take's `recorder.log` read for its start offsets (the
+/// engine writes a few KiB).
+const MAX_RECORDER_LOG_BYTES: u64 = 1 << 20;
+
+/// The take folders `project` doesn't have, with their media files and
+/// the start offsets their `recorder.log` names (others start at 0).
 fn takes_on_disk(paths: &ProjectPaths, project: &Project) -> Vec<FoundTake> {
     super::take_dirs(paths)
         .into_iter()
         .filter(|id| !project.takes.contains_key(id))
         .map(|id| {
             let dir = paths.take_dir(&id);
+            let offsets = recorder_log(&dir.join("recorder.log"))
+                .map(|log| logged_start_offsets(&log))
+                .unwrap_or_default();
             let mut streams: Vec<Stream> = fs::read_dir(&dir)
                 .into_iter()
                 .flatten()
@@ -651,15 +660,16 @@ fn takes_on_disk(paths: &ProjectPaths, project: &Project) -> Vec<FoundTake> {
                         _ => return None,
                     };
                     let stream_id = name.split('-').next()?.to_owned();
+                    let file = format!("takes/{id}/{name}");
                     Some(Stream {
                         id: stream_id,
                         kind,
-                        file: format!("takes/{id}/{name}"),
+                        start_offset_ns: offsets.get(&file).copied().unwrap_or(0),
+                        file,
                         width: None,
                         height: None,
                         sample_rate: None,
                         channels: None,
-                        start_offset_ns: 0,
                         duration_ns: None,
                         frames: None,
                         fps: None,
@@ -678,6 +688,20 @@ fn takes_on_disk(paths: &ProjectPaths, project: &Project) -> Vec<FoundTake> {
             }
         })
         .collect()
+}
+
+/// A take's `recorder.log` (its first [`MAX_RECORDER_LOG_BYTES`]), or
+/// `None` when it can't be read (a take without one starts its streams at
+/// 0).
+fn recorder_log(path: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    fs::File::open(path)
+        .ok()?
+        .take(MAX_RECORDER_LOG_BYTES)
+        .read_to_string(&mut text)
+        .ok()?;
+    Some(text)
 }
 
 /// Adds `found` to the pool as a take still `recording` (for the Recover

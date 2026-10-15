@@ -39,10 +39,10 @@ pub mod fake;
 pub mod spec;
 pub mod tokens;
 
+#[cfg(feature = "gst")]
+mod bridge;
 #[cfg(all(test, feature = "gst"))]
 mod cast_probe;
-#[cfg(feature = "gst")]
-mod dmabuf;
 #[cfg(feature = "gst")]
 mod engine;
 #[cfg(feature = "gst")]
@@ -85,6 +85,11 @@ pub const CLOCK_INTERVAL: Duration = Duration::from_millis(250);
 /// After a stop, how long a bin waits for its source to reach T1 before it
 /// is closed anyway (a stalled source).
 pub const FILL_GRACE: Duration = Duration::from_millis(500);
+
+/// While recording, a video stream that passes no frame for this long is
+/// lost (`StreamLost`, SPEC §16): a camera that hangs without an error.
+/// It also bounds what a stop fills: never minutes of frames.
+pub const STALL_LIMIT: Duration = Duration::from_secs(3);
 
 /// How long a new live pipeline may take to reach PLAYING.
 pub const PIPELINE_START_TIMEOUT: Duration = Duration::from_secs(5);
