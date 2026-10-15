@@ -236,19 +236,20 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         #[cfg(test)]
-        if self.crashed {
-            return;
-        }
+        let crashed = self.crashed;
+        #[cfg(not(test))]
+        let crashed = false;
         // Facts an event couldn't save (a failed commit keeps them in memory
         // and the store dirty) get one last try before the host goes away;
         // never over a qrec.json that failed to load (A§7.7).
-        if self.store.is_dirty()
+        if !crashed
+            && self.store.is_dirty()
             && !self.opts.recovery
             && self.state.runtime.disk_invalid.is_none()
             && is_initialized(&self.state.project)
             && let Err(e) = self.store.write_all(&self.state)
         {
-            tracing::error!("unsaved changes to the project are lost: {e}");
+            tracing::error!("couldn't save the project before closing it: {e}");
         }
         if let Err(e) = self.store.flush_ui(&self.state.ui, Instant::now(), true) {
             tracing::warn!("can't write .qrec/ui.json: {e}");
