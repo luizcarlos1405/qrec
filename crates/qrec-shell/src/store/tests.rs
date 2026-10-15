@@ -659,6 +659,35 @@ fn a_rebuilt_take_joins_the_pool_where_its_history_needs_it() {
     assert_eq!(loaded.project.next_take_number, 2);
 }
 
+/// SPEC §5.3.1: take numbers are never reused. A project rebuilt from
+/// `.qrec/` alone, whose take folders are gone too, starts numbering after
+/// every take its history names: the base predates them, and a new take
+/// numbered like an old one would get the old entries' clips on redo.
+#[test]
+fn a_rebuilt_project_never_reuses_a_take_number_its_history_names() {
+    let (tmp, _store, _states) = recorded_after_the_base();
+    let paths = ProjectPaths::new(tmp.path());
+    let base: BaseFile = serde_json::from_slice(&fs::read(paths.history_base()).unwrap()).unwrap();
+    assert_eq!(base.project.next_take_number, 1, "the base predates take 1");
+    assert!(!paths.takes_dir().exists(), "no take folder to count");
+    fs::remove_file(paths.history_head()).unwrap();
+    fs::remove_file(paths.project_file()).unwrap();
+
+    let loaded = load(&paths, &recovery()).unwrap();
+    assert!(loaded.readded.is_empty());
+    assert_eq!(
+        loaded.project.next_take_number, 2,
+        "take 1 is named by the history: {:?}",
+        loaded.notes
+    );
+    let named = loaded
+        .history
+        .entries
+        .iter()
+        .any(|e| e.label == "Record take 1");
+    assert!(named, "{:?}", loaded.history.entries);
+}
+
 #[test]
 fn an_outcome_that_saves_nothing_never_writes_even_when_dirty() {
     let (tmp, mut store, s0) = initialized();

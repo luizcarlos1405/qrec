@@ -1035,9 +1035,12 @@ made but couldn't be saved", not `ok`.
   the first entry that uses it (its clip or its scene), `recording`, with
   the project scene of that moment (what `begin_take` copied) and `placed`
   if that entry put its clip on the timeline; takes no entry uses go to the
-  bin. The Recover probe finalizes them; in recovery mode commands wait for
-  those probes (and a host stays up for them, A§8.6), so the restore writes
-  a project that validates. Start offsets aren't in the files: a recovered
+  bin. `nextTakeNumber` goes past every take any entry names (SPEC §5.3.1:
+  a number is never reused, even when its folder is gone, or a redo would
+  put an old take's clip on a new recording). The Recover probe finalizes
+  the takes found; in recovery mode commands wait for those probes (and a
+  host stays up for them, A§8.6), so the restore writes a project that
+  validates. Start offsets aren't in the files: a recovered
   take can come out shorter than recorded, and then a restore whose clips
   no longer fit fails naming the clip (restore an older entry).
 

@@ -375,6 +375,7 @@ fn without_head(
 /// patches of that scene still apply. It comes back `recording`, without
 /// media facts: the Recover probe finalizes it (A§5.3), and until then the
 /// project doesn't validate (a restore waits for the probes, A§7.7).
+/// `nextTakeNumber` goes past every take the history names, found or not.
 fn rebuild(
     paths: &ProjectPaths,
     base: Option<(Option<u64>, Project)>,
@@ -391,6 +392,14 @@ fn rebuild(
     };
     let base_seq = base_seq.unwrap_or(0);
     let mut project = base_project.clone();
+    // Take numbers are never reused (SPEC §5.3.1): the base's counter
+    // predates the takes its history names, whose folders may be gone, so a
+    // new recording must not get one of their numbers (a redo of their
+    // entries would put their clips on it).
+    let entries: Vec<&HistoryEntry> = parsed.entries.iter().filter(|e| e.seq > base_seq).collect();
+    if let Some(highest) = highest_take_named(&entries) {
+        project.next_take_number = project.next_take_number.max(highest.saturating_add(1));
+    }
     let mut on_disk = takes_on_disk(paths, &project);
     let mut readded: Vec<TakeId> = Vec::new();
     let mut kept: Vec<HistoryEntry> = Vec::new();
@@ -545,6 +554,38 @@ fn readd(project: &mut Project, found: &FoundTake) {
             replaced: Vec::new(),
         },
     );
+}
+
+/// The highest take number `entries` name anywhere: in a path under
+/// `/takes/<take>` or a value (a clip's take), forward or inverse, or in
+/// the command (`{"event":"takeFinalized","take":…}`).
+fn highest_take_named(entries: &[&HistoryEntry]) -> Option<u32> {
+    fn walk(value: &Value, highest: &mut Option<u32>) {
+        match value {
+            Value::String(s) => {
+                let name = match s.strip_prefix("/takes/") {
+                    Some(rest) => rest.split('/').next().unwrap_or(rest),
+                    None => s.as_str(),
+                };
+                if let Ok(take) = name.parse::<TakeId>() {
+                    *highest = (*highest).max(Some(take.number()));
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|v| walk(v, highest)),
+            Value::Object(members) => members.values().for_each(|v| walk(v, highest)),
+            _ => {}
+        }
+    }
+    let mut highest = None;
+    for entry in entries {
+        walk(&entry.cmd, &mut highest);
+        for patch in [&entry.forward, &entry.inverse] {
+            if let Ok(value) = serde_json::to_value(patch) {
+                walk(&value, &mut highest);
+            }
+        }
+    }
+    highest
 }
 
 /// Whether redoing `entry` uses `take`: an op under `/takes/<take>`, or a
