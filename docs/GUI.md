@@ -28,6 +28,15 @@ Nothing in `qrec-gui` exists yet.
 The integrator asks the product owner (PO) on day 1. Nothing waits for an
 answer unless the table says it blocks.
 
+**Answers (2026-10-15):** 0.1 approved (and `gstreamer-allocators` 0.25
+after the fact); 0.2 approved as drawn, so WP8, WP9 and the S24 overlay
+build the drawn frames, and the interim pages only stand in until they
+merge; 0.6: the PO keeps two pen.dev documents open and another one is
+often active, so it doesn't block: agents read `design/qrec.pen` through
+the MCP only while `get_app_state` shows it active, and never switch the
+active document; the art export asks the PO for a short window with it
+active. 0.3–0.5: the defaults.
+
 | # | Ask | Blocks | Default until answered |
 | --- | --- | --- | --- |
 | 0.1 | A§1.2: add `gtk4` 0.11.5, `libadwaita` 0.9.2, `pango` 0.22.9 (G§6.1) and raise `rust-version` from 1.85 to 1.92 | WP0b and everything after it | WP0a runs (it adds no dependency) |
@@ -197,7 +206,7 @@ requirement review's numbering; H-n are host and engine calls.
 | D-48 | **PO** Settings in M4: the dialog with its five tabs as drawn (S18b); only Project is enabled; the others are disabled with the tooltip "Not built yet" until WP9. | WP6 |
 | D-49 | Export panel: Setup, Done and Failed trap focus (Overlay keys; an outside click closes them). Running is passive: no focus trap and no click-catcher, keys and clicks reach the window (S15b: the S06 hints stay live), and `Esc`, `Ctrl+E` or the header slot close it. | WP0b, WP7 |
 | D-50 | Retrying the live preview (S24 "Try again", gated) goes through the Session: `GuiHost::retry_live()` posts `Msg::RetryLive`, which the session thread turns into `CaptureEngine::retry_live`, ordered with `SetLive` and `StartCapture` and logged. | WP0a, WP1 |
-| H-1 | Live preview: a `gtk4paintablesink` created on the GTK thread and handed to the engine (A§12, SPEC §5.2), composited at the preview size (≤ 960×540 × the device scale), BGRx. The RGBA appsink path stays for tests and as the picture before WP1 merges. | WP1 |
+| H-1 | Live preview: a `gtk4paintablesink` created on the GTK thread and handed to the engine (SPEC §5.2), composited at the preview size (≤ 960×540 × the device scale), BGRx. The RGBA appsink path stays for tests and as the picture before WP1 merges. | WP1 |
 | H-2 | Program playback: one GES timeline and pipeline per session, edited in place and committed; a second `gtk4paintablesink`. | WP1 |
 | H-3 | The GUI renders with GSK GL: `GDK_DISABLE=vulkan` is set unless the user set `GDK_DISABLE` or `GSK_RENDERER`, in which case both are left alone and doctor notes it (G§3.13). | WP0a |
 | H-4 | A GUI host keeps portal casts open for 60 s after the live pipeline stops (`EngineOptions.cast_grace`), so `Tab` back to Live doesn't re-open screencasts. | WP1 |
