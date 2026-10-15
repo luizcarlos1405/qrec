@@ -8,7 +8,7 @@ The GTK GUI is designed in pen.dev before any UI code is written ([SPEC](../SPEC
 
 ## Open the design
 
-- The design is the **untitled document open in pen.dev** right now (`~/.pencil/documents/7490704c-a18f-46f0-a8dd-cd1e0fe53abc/untitled.pen`). Save it as **`design/qrec.pen`**, the path that SPEC, CLAUDE.md and the token files use. Open it with pen.dev; it isn't a text file.
+- The design is **`design/qrec.pen`** (open it with pen.dev; it isn't a text file). The product owner approved it on 2026-10-15.
 - Frames are named `Sxx · Title · Swamp Night`. The node ids below identify them in the document.
 - The PNGs in [`screens/`](screens/) are 1:1 exports: 1600×1000, except S13b (384×920) and S15c (1040×769).
 - All sample data is synthetic (BRIEF §3). The screen content and the webcam person are AI-generated images. The icon, the REC glyph and the illustrations are generated SVGs.
@@ -92,7 +92,15 @@ Both files were generated from the pen.dev variables on 2026-10-14, and every co
   - S23 Missing dependency `eIdTG` · S24 Portal-denied error `g2i1Br` · S25 Toasts `PK7Ru`
   - X1 CLI recording at GUI start `wsZqr` · X2 Not my swamp `h0SuZd` · X3 Project can't be read `cUduQ`
 
-## Decisions for you
+## Decisions (product owner, 2026-10-15)
+
+**The slice is approved.** The product owner's answers:
+
+- **Color proposals P1–P8: accepted, with one rule:** "the best contrast, not the highest, but good contrast according to norms and recommendations." Each value is the smallest OKLCH-lightness shift that meets WCAG 2.2 AA with a 0.05 margin on every background the token is drawn on, hover states included. In Swamp Night this changes `record-text` (`#FC6555` → `#FF7868`), `border-strong` (`#6B7D5D` → `#6C7E5E`) and `mud` (`#7E5C3D` → `#7F5D3E`). The final values and the reasons are in [DESIGN.md](../DESIGN.md) → Colors → Decisions.
+- **Product questions Q1–Q11, engineering calls and polishing calls:** accepted as mocked. Q9 (follow GNOME's light/dark) wasn't designed, so v1 keeps the theme a manual choice in Settings, Swamp Night by default.
+
+The tables below keep what was asked.
+
 
 ### 1. Color proposals P1–P8
 

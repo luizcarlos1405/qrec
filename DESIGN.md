@@ -17,9 +17,9 @@ colors:
   text-on-accent: "#12170F"
   text-on-record: "#12170F"
   accent-text: "#8FC43A"
-  record-text: "#FC6555"
+  record-text: "#FF7868"
   warning-text: "#D98A2B"
-  border-strong: "#6B7D5D"
+  border-strong: "#6C7E5E"
   field: "#12170F"
   keycap: "#3A4430"
   hover: "#E8E6C80D"
@@ -41,7 +41,7 @@ colors:
   meter-yellow: "#E3B23C"
   meter-red: "#E5483B"
   success: "#8FC43A"
-  mud: "#7E5C3D"
+  mud: "#7F5D3E"
   mud-bubble: "#A68669"
   video-scrim: "#0000009E"
   video-text: "#F5F2DF"
@@ -86,16 +86,16 @@ colors:
   day-text: "#2A2A18"
   day-muted: "#635F41"
   day-accent: "#446E04"
-  day-accent-2: "#A87811"
+  day-accent-2: "#A77710"
   day-record: "#CF3B3C"
   day-warning: "#B8661A"
   day-wood: "#7A5532"
   day-text-on-accent: "#FAF8EA"
   day-text-on-record: "#FAF8EA"
-  day-accent-text: "#446E04"
-  day-record-text: "#BF2A2F"
-  day-warning-text: "#9A5103"
-  day-border-strong: "#88815B"
+  day-accent-text: "#416904"
+  day-record-text: "#B72028"
+  day-warning-text: "#914C04"
+  day-border-strong: "#87805A"
   day-field: "#FAF8EA"
   day-keycap: "#FFFEF6"
   day-hover: "#2A2A180D"
@@ -106,15 +106,15 @@ colors:
   day-scrim: "#2A2A1873"
   day-scrim-strong: "#F1EEDAF2"
   day-shadow: "#2A2A18"
-  day-playhead: "#A87811"
-  day-snap-guide: "#A87811"
+  day-playhead: "#A77710"
+  day-snap-guide: "#A77710"
   day-caret: "#446E04"
   day-ghost-fill: "#CF3B3C29"
   day-hatch-stripe: "#B8661A99"
   day-wave: "#635F41"
   day-wave-dim: "#635F4159"
   day-meter-green: "#446E04"
-  day-meter-yellow: "#A87811"
+  day-meter-yellow: "#A77710"
   day-meter-red: "#CF3B3C"
   day-success: "#446E04"
   day-mud: "#7A5532"
@@ -145,7 +145,7 @@ colors:
   day-project-canvas: "#000000"
   day-warning-20: "#B8661A33"
   day-warning-16: "#B8661A29"
-  day-accent-2-20: "#A8781133"
+  day-accent-2-20: "#A7771033"
   day-video-text-20: "#F5F2DF33"
   day-text-35: "#2A2A1859"
   day-bg-55: "#F1EEDA8C"
@@ -168,10 +168,10 @@ colors:
   keep-wood: "#5A4636"
   keep-text-on-accent: "#151316"
   keep-text-on-record: "#151316"
-  keep-accent-text: "#F3578B"
-  keep-record-text: "#FD5648"
+  keep-accent-text: "#FF6797"
+  keep-record-text: "#FE6E5F"
   keep-warning-text: "#F28C28"
-  keep-border-strong: "#77707C"
+  keep-border-strong: "#78717D"
   keep-field: "#151316"
   keep-keycap: "#3F3B42"
   keep-hover: "#EDE6E80D"
@@ -193,7 +193,7 @@ colors:
   keep-meter-yellow: "#EDC658"
   keep-meter-red: "#FF3B30"
   keep-success: "#62C26C"
-  keep-mud: "#735E4D"
+  keep-mud: "#745F4E"
   keep-mud-bubble: "#9B8777"
   keep-video-scrim: "#0000009E"
   keep-video-text: "#F5F2DF"
@@ -236,7 +236,7 @@ colors:
   ogre-raised: "#3F5A1B"
   ogre-border: "#5E7F2A"
   ogre-text: "#F4EDD0"
-  ogre-muted: "#CFC69B"
+  ogre-muted: "#D0C79C"
   ogre-accent: "#B5D334"
   ogre-accent-2: "#E7C86A"
   ogre-record: "#E8432F"
@@ -244,10 +244,10 @@ colors:
   ogre-wood: "#7A4E2A"
   ogre-text-on-accent: "#1E2A0E"
   ogre-text-on-record: "#091003"
-  ogre-accent-text: "#B5D334"
-  ogre-record-text: "#FEB3A5"
-  ogre-warning-text: "#FFB66B"
-  ogre-border-strong: "#88AC58"
+  ogre-accent-text: "#BFDE42"
+  ogre-record-text: "#FEC3B7"
+  ogre-warning-text: "#FFB76D"
+  ogre-border-strong: "#8AAE5A"
   ogre-field: "#1E2A0E"
   ogre-keycap: "#51692D"
   ogre-hover: "#F4EDD00D"
@@ -263,13 +263,13 @@ colors:
   ogre-caret: "#B5D334"
   ogre-ghost-fill: "#E8432F29"
   ogre-hatch-stripe: "#D98A2B99"
-  ogre-wave: "#CFC69B"
-  ogre-wave-dim: "#CFC69B59"
+  ogre-wave: "#D0C79C"
+  ogre-wave-dim: "#D0C79C59"
   ogre-meter-green: "#B5D334"
   ogre-meter-yellow: "#E7C86A"
   ogre-meter-red: "#E8432F"
   ogre-success: "#B5D334"
-  ogre-mud: "#936541"
+  ogre-mud: "#956642"
   ogre-mud-bubble: "#BC906F"
   ogre-video-scrim: "#0000009E"
   ogre-video-text: "#F5F2DF"
@@ -302,8 +302,8 @@ colors:
   ogre-text-35: "#F4EDD059"
   ogre-bg-55: "#1E2A0E8C"
   ogre-record-25: "#E8432F40"
-  ogre-muted-40: "#CFC69B66"
-  ogre-muted-20: "#CFC69B33"
+  ogre-muted-40: "#D0C79C66"
+  ogre-muted-20: "#D0C79C33"
   ogre-text-on-record-45: "#09100373"
   ogre-text-on-accent-45: "#1E2A0E73"
 typography:
@@ -630,7 +630,7 @@ The palette is restrained but committed. Bog-tinted neutrals fill the screen, an
 - **Swamp gas** (`warning`): silence hatch, warning icons, conflicts. Its text form is `warning-text`.
 - **Outhouse door** (`wood`): the dark sediment band in the mud export bar and the material in illustrations (the signpost, the outhouse door). `mud` is wood lightened to read against `bg`.
 
-### Theme tokens (SPEC §15.2, with proposals marked ◆)
+### Theme tokens (SPEC §15.2; ◆ marks the decided P1–P8 values)
 
 | Token | Role | Swamp Night | Swamp Day | Dragon's Keep | Ogre Mode |
 | --- | --- | --- | --- | --- | --- |
@@ -639,9 +639,9 @@ The palette is restrained but committed. Bog-tinted neutrals fill the screen, an
 | `raised` | Popovers, menus, toasts, dialogs, palette, clip body under thumbnails | `#27321F` | `#FAF8EA` | `#2C2830` | `#3F5A1B` |
 | `border` | Hairline separators between regions and inside lists (decorative, 1 px) | `#3A4A2C` | `#C9C29A` | `#433C47` | `#5E7F2A` |
 | `text` | Primary text and icons | `#E8E6C8` | `#2A2A18` | `#EDE6E8` | `#F4EDD0` |
-| `muted` | Secondary text, ruler labels, waveforms, placeholder text | `#9BA582` | `#635F41` ◆P1<br>spec `#6E6A4B` | `#A49AA5` | `#CFC69B` ◆P2<br>spec `#C2B98F` |
+| `muted` | Secondary text, ruler labels, waveforms, placeholder text | `#9BA582` | `#635F41` ◆P1<br>spec `#6E6A4B` | `#A49AA5` | `#D0C79C` ◆P2<br>spec `#C2B98F` |
 | `accent` | Selection, focus ring, primary button fill, switches on, insertion caret | `#8FC43A` | `#446E04` ◆P3<br>spec `#4F7A19` | `#E0457B` | `#B5D334` |
-| `accent-2` | Time and alignment indicators: playhead, snap guides (never text) | `#E3B23C` | `#A87811` ◆P5<br>spec `#B5831A` | `#F28C28` | `#E7C86A` |
+| `accent-2` | Time and alignment indicators: playhead, snap guides (never text) | `#E3B23C` | `#A77710` ◆P5<br>spec `#B5831A` | `#F28C28` | `#E7C86A` |
 | `record` | REC badge, Record/Stop button, destructive buttons, ghost clip, meter clip zone | `#E5483B` | `#CF3B3C` ◆P4<br>spec `#C8352A` | `#FF3B30` | `#E8432F` |
 | `warning` | Silence hatch, warning icons and chip tints, conflicts | `#D98A2B` | `#B8661A` | `#F28C28` | `#D98A2B` |
 | `wood` | Mud sediment band in the export bar, illustration material | `#6B4A2B` | `#7A5532` | `#5A4636` | `#7A4E2A` |
@@ -654,10 +654,10 @@ Derived tokens are computed from the base tokens, never picked by eye. Alpha tok
 | --- | --- | --- | --- | --- | --- | --- |
 | `text-on-accent` | Label and icon on an accent fill | first of bg / raised / white / ink reaching ≥ 4.5:1 | `#12170F` | `#FAF8EA` | `#151316` | `#1E2A0E` |
 | `text-on-record` | Label and glyph on a record fill (REC badge, Record, destructive) | first of bg / raised / white / ink reaching ≥ 4.5:1 | `#12170F` | `#FAF8EA` | `#151316` | `#091003` |
-| `accent-text` | Accent used as text or a <=20 px icon (links, selected labels) | base hue, OKLCH lightness shifted until ≥ 4.5:1 on bg/surface/raised | `#8FC43A` | `#446E04` | `#F3578B` ◆P7 | `#B5D334` |
-| `record-text` | Record used as text or a <=20 px icon (Purge, errors, Cancel countdown) | base hue, OKLCH lightness shifted until ≥ 4.5:1 on bg/surface/raised | `#FC6555` ◆P6 | `#BF2A2F` ◆P6 | `#FD5648` ◆P6 | `#FEB3A5` ◆P6 |
-| `warning-text` | Warning used as text or a <=20 px icon (conflicts, too-short chip) | base hue, OKLCH lightness shifted until ≥ 4.5:1 on bg/surface/raised | `#D98A2B` | `#9A5103` ◆P8 | `#F28C28` | `#FFB66B` ◆P8 |
-| `border-strong` | Outline of interactive controls: fields, toggles off, slider track, checkboxes | border, lightness shifted until ≥ 3:1 on bg/surface/raised | `#6B7D5D` | `#88815B` | `#77707C` | `#88AC58` |
+| `accent-text` | Accent used as text or a <=20 px icon (links, selected labels) | base hue, smallest OKLCH lightness shift reaching ≥ 4.55:1 on bg/surface/raised and under `hover` (R6) | `#8FC43A` | `#416904` | `#FF6797` ◆P7 | `#BFDE42` |
+| `record-text` | Record used as text or a <=20 px icon (Purge, errors, Cancel countdown) | base hue, smallest OKLCH lightness shift reaching ≥ 4.55:1 on bg/surface/raised and under `hover` (R6) | `#FF7868` ◆P6 | `#B72028` ◆P6 | `#FE6E5F` ◆P6 | `#FEC3B7` ◆P6 |
+| `warning-text` | Warning used as text or a <=20 px icon (conflicts, too-short chip) | base hue, smallest OKLCH lightness shift reaching ≥ 4.55:1 on bg/surface/raised and under `hover` (R6) | `#D98A2B` | `#914C04` ◆P8 | `#F28C28` | `#FFB76D` ◆P8 |
+| `border-strong` | Outline of interactive controls: fields, toggles off, slider track, checkboxes | border, smallest lightness shift reaching ≥ 3.05:1 on field/surface/raised | `#6C7E5E` | `#87805A` | `#78717D` | `#8AAE5A` |
 | `field` | Input well fill (spin fields, search, entries) | = bg (Day: raised) | `#12170F` | `#FAF8EA` | `#151316` | `#1E2A0E` |
 | `keycap` | Key-cap chip face | raised mixed with 10% text (Day: warm white) | `#3A4430` | `#FFFEF6` | `#3F3B42` | `#51692D` |
 | `hover` | Hover overlay on flat buttons and rows | text @ 5% | `#E8E6C80D` | `#2A2A180D` | `#EDE6E80D` | `#F4EDD00D` |
@@ -668,18 +668,18 @@ Derived tokens are computed from the base tokens, never picked by eye. Alpha tok
 | `scrim` | Backdrop behind modals, palette and settings | bg @ 80% (Day: text @ 45%) | `#12170FCC` | `#2A2A1873` | `#151316CC` | `#1E2A0ECC` |
 | `scrim-strong` | Backdrop of the cheat sheet overlay | bg @ 94% (Day 95%) | `#12170FF0` | `#F1EEDAF2` | `#151316F0` | `#1E2A0EF0` |
 | `shadow` | Shadow color for floating layers (alpha per elevation) | = black (Day: text) | `#000000` | `#2A2A18` | `#000000` | `#000000` |
-| `playhead` | Playhead line and head | = accent-2 | `#E3B23C` | `#A87811` | `#F28C28` | `#E7C86A` |
-| `snap-guide` | Canvas snap guides and timeline snap flash | = accent-2 | `#E3B23C` | `#A87811` | `#F28C28` | `#E7C86A` |
+| `playhead` | Playhead line and head | = accent-2 | `#E3B23C` | `#A77710` | `#F28C28` | `#E7C86A` |
+| `snap-guide` | Canvas snap guides and timeline snap flash | = accent-2 | `#E3B23C` | `#A77710` | `#F28C28` | `#E7C86A` |
 | `caret` | Drag-move insertion caret | = accent | `#8FC43A` | `#446E04` | `#E0457B` | `#B5D334` |
 | `ghost-fill` | Recording ghost clip fill (stroke uses record, dashed) | record @ 16% | `#E5483B29` | `#CF3B3C29` | `#FF3B3029` | `#E8432F29` |
 | `hatch-stripe` | Silence-region hatch stripes (edges use warning, solid 1 px) | warning @ 60% | `#D98A2B99` | `#B8661A99` | `#F28C2899` | `#D98A2B99` |
-| `wave` | Waveform fill | = muted | `#9BA582` | `#635F41` | `#A49AA5` | `#CFC69B` |
-| `wave-dim` | Waveform of a muted or non-soloed lane | muted @ 35% | `#9BA58259` | `#635F4159` | `#A49AA559` | `#CFC69B59` |
+| `wave` | Waveform fill | = muted | `#9BA582` | `#635F41` | `#A49AA5` | `#D0C79C` |
+| `wave-dim` | Waveform of a muted or non-soloed lane | muted @ 35% | `#9BA58259` | `#635F4159` | `#A49AA559` | `#D0C79C59` |
 | `meter-green` | Level meter, -60 to -18 dBFS | = accent (Keep: own green) | `#8FC43A` | `#446E04` | `#62C26C` | `#B5D334` |
-| `meter-yellow` | Level meter, -18 to -6 dBFS | = accent-2 (Keep: own yellow) | `#E3B23C` | `#A87811` | `#EDC658` | `#E7C86A` |
+| `meter-yellow` | Level meter, -18 to -6 dBFS | = accent-2 (Keep: own yellow) | `#E3B23C` | `#A77710` | `#EDC658` | `#E7C86A` |
 | `meter-red` | Level meter, -6 to 0 dBFS and clip latch | = record | `#E5483B` | `#CF3B3C` | `#FF3B30` | `#E8432F` |
 | `success` | Success icon (export done, check passed) | = meter-green | `#8FC43A` | `#446E04` | `#62C26C` | `#B5D334` |
-| `mud` | Export progress fill ("mud") | wood, lightened until ≥ 3:1 on bg | `#7E5C3D` | `#7A5532` | `#735E4D` | `#936541` |
+| `mud` | Export progress fill ("mud") | wood, lightened until ≥ 3:1 on bg | `#7F5D3E` | `#7A5532` | `#745F4E` | `#956642` |
 | `mud-bubble` | Bubbles rising in the mud (decorative) | mud, +0.14 OKLCH lightness | `#A68669` | `#A27F5F` | `#9B8777` | `#BC906F` |
 | `video-scrim` | Plate under badges and text drawn over video (theme-independent) | black @ 62% | `#0000009E` | `#0000009E` | `#0000009E` | `#0000009E` |
 | `video-text` | Text drawn on video-scrim (theme-independent) | constant | `#F5F2DF` | `#F5F2DF` | `#F5F2DF` | `#F5F2DF` |
@@ -691,13 +691,13 @@ Derived tokens are computed from the base tokens, never picked by eye. Alpha tok
 | `project-canvas` | Preview fill: the project's canvas background from `qrec.json` (theme-independent, like video) | project data; `#000000` for the sample project | `#000000` | `#000000` | `#000000` | `#000000` |
 | `warning-20` | `M` (mute) toggle fill when on: track toggle, lane header | warning @ 20% | `#D98A2B33` | `#B8661A33` | `#F28C2833` | `#D98A2B33` |
 | `warning-16` | Keybinding conflict banner fill (Settings, Keyboard) | warning @ 16% | `#D98A2B29` | `#B8661A29` | `#F28C2829` | `#D98A2B29` |
-| `accent-2-20` | `S` (solo) toggle fill when on; current-frame band at frame zoom | accent-2 @ 20% | `#E3B23C33` | `#A8781133` | `#F28C2833` | `#E7C86A33` |
+| `accent-2-20` | `S` (solo) toggle fill when on; current-frame band at frame zoom | accent-2 @ 20% | `#E3B23C33` | `#A7771033` | `#F28C2833` | `#E7C86A33` |
 | `video-text-20` | Countdown ring track over video | video-text @ 20% | `#F5F2DF33` | `#F5F2DF33` | `#F5F2DF33` | `#F5F2DF33` |
 | `text-35` | Clip hover stroke; the 1 px edge marker of sliver clips | text @ 35% | `#E8E6C859` | `#2A2A1859` | `#EDE6E859` | `#F4EDD059` |
 | `bg-55` | Autocut preview dim over the video row and the other lanes | bg @ 55% | `#12170F8C` | `#F1EEDA8C` | `#1513168C` | `#1E2A0E8C` |
 | `record-25` | Finalizing ghost stripes ("Saving…") | record @ 25% | `#E5483B40` | `#CF3B3C40` | `#FF3B3040` | `#E8432F40` |
-| `muted-40` | Hatch over a clip being replaced (record over) | muted @ 40% | `#9BA58266` | `#635F4166` | `#A49AA566` | `#CFC69B66` |
-| `muted-20` | Light hatch (C19 Hatch/Muted 20) | muted @ 20% | `#9BA58233` | `#635F4133` | `#A49AA533` | `#CFC69B33` |
+| `muted-40` | Hatch over a clip being replaced (record over) | muted @ 40% | `#9BA58266` | `#635F4166` | `#A49AA566` | `#D0C79C66` |
+| `muted-20` | Light hatch (C19 Hatch/Muted 20) | muted @ 20% | `#9BA58233` | `#635F4133` | `#A49AA533` | `#D0C79C33` |
 | `text-on-record-45` | On-fill key cap stroke inside Record and destructive buttons | text-on-record @ 45% | `#12170F73` | `#FAF8EA73` | `#15131673` | `#09100373` |
 | `text-on-accent-45` | On-fill key cap stroke inside primary buttons | text-on-accent @ 45% | `#12170F73` | `#FAF8EA73` | `#15131673` | `#1E2A0E73` |
 
@@ -738,42 +738,45 @@ Where take colors appear: the 4 px stripe on top of video clips; the audio segme
 
 ### Contrast audit
 
-These are WCAG 2.2 ratios with the proposals applied. "(spec x ✗)" shows the ratio with the original §15.2 value. Text needs 4.5:1. UI indicators, focus and graphical objects need 3:1 (SC 1.4.11). The `mud` row compares `wood` used directly, which is why `mud` is derived; `wood` itself is unchanged.
+These are WCAG 2.2 ratios of the decided values, regenerated from `design/tokens/qrec-tokens.json`. Text needs 4.5:1, in every state it can be drawn in (hover included, SC 1.4.3). UI indicators, focus and graphical objects need 3:1 (SC 1.4.11). The decided values keep a 0.05 margin above both. The `mud` row compares `mud`, which is derived from `wood` for this reason.
 
 | Pair (foreground on background) | Need | Swamp Night | Swamp Day | Dragon's Keep | Ogre Mode |
 | --- | --- | --- | --- | --- | --- |
 | `text` on `bg` | 4.5:1 | 14.36 | 12.46 | 15.03 | 12.83 |
 | `text` on `surface` | 4.5:1 | 12.63 | 11.21 | 13.56 | 9.38 |
 | `text` on `raised` | 4.5:1 | 10.62 | 13.64 | 11.76 | 6.64 |
-| `muted` on `bg` | 4.5:1 | 7.01 | 5.54 | 6.81 | 8.76 |
-| `muted` on `surface` | 4.5:1 | 6.17 | 4.98 (spec 4.23 ✗) | 6.14 | 6.40 |
-| `muted` on `raised` | 4.5:1 | 5.18 | 6.07 | 5.33 | 4.54 (spec 3.95 ✗) |
-| `muted` on `hover` over `surface` | 4.5:1 | 5.42 | 4.56 (spec 3.87 ✗) | 5.43 | 5.56 |
+| `muted` on `bg` | 4.5:1 | 7.01 | 5.54 | 6.81 | 8.85 |
+| `muted` on `surface` | 4.5:1 | 6.17 | 4.98 | 6.14 | 6.47 |
+| `muted` on `raised` | 4.5:1 | 5.18 | 6.07 | 5.33 | 4.58 |
+| `muted` on `hover` over `surface` | 4.5:1 | 5.42 | 4.56 | 5.43 | 5.62 |
 | `text` on `selected` over `surface` | 4.5:1 | 9.10 | 9.33 | 11.43 | 6.65 |
 | `text` on `selected` over `raised` | 4.5:1 | 7.73 | 11.25 | 9.91 | 5.01 |
-| `accent-text` on `bg` | 4.5:1 | 8.76 | 5.17 (spec 4.35 ✗) | 5.76 | 8.85 |
-| `accent-text` on `surface` | 4.5:1 | 7.71 | 4.65 (spec 3.91 ✗) | 5.19 (spec 4.21 ✗) | 6.47 |
-| `accent-text` on `raised` | 4.5:1 | 6.48 | 5.66 | 4.50 (spec 3.65 ✗) | 4.59 |
-| `record-text` on `bg` | 4.5:1 | 6.17 | 5.01 (spec 4.497 ✗) | 5.81 | 8.76 (spec 3.79 ✗) |
-| `record-text` on `surface` | 4.5:1 | 5.43 (spec 4.05 ✗) | 4.51 (spec 4.04 ✗) | 5.24 | 6.41 (spec 2.77 ✗) |
-| `record-text` on `raised` | 4.5:1 | 4.56 (spec 3.41 ✗) | 5.49 | 4.54 (spec 4.07 ✗) | 4.54 (spec 1.96 ✗) |
-| `warning-text` on `bg` | 4.5:1 | 6.60 | 5.06 (spec 3.63 ✗) | 7.53 | 8.73 |
-| `warning-text` on `surface` | 4.5:1 | 5.80 | 4.55 (spec 3.26 ✗) | 6.79 | 6.38 (spec 4.00 ✗) |
-| `warning-text` on `raised` | 4.5:1 | 4.88 | 5.54 (spec 3.97 ✗) | 5.89 | 4.52 (spec 2.83 ✗) |
+| `accent-text` on `bg` | 4.5:1 | 8.76 | 5.54 | 6.72 | 9.87 |
+| `accent-text` on `surface` | 4.5:1 | 7.71 | 4.98 | 6.06 | 7.21 |
+| `accent-text` on `raised` | 4.5:1 | 6.48 | 6.06 | 5.26 | 5.11 |
+| `accent-text` under `hover` (min of `surface`, `raised`: flat buttons) | 4.5:1 | 5.67 | 4.56 | 4.57 | 4.56 |
+| `record-text` on `bg` | 4.5:1 | 7.05 | 5.53 | 6.70 | 9.84 |
+| `record-text` on `surface` | 4.5:1 | 6.20 | 4.97 | 6.04 | 7.19 |
+| `record-text` on `raised` | 4.5:1 | 5.21 | 6.05 | 5.24 | 5.10 |
+| `record-text` under `hover` (min of `surface`, `raised`: flat buttons) | 4.5:1 | 4.55 | 4.55 | 4.55 | 4.55 |
+| `warning-text` on `bg` | 4.5:1 | 6.60 | 5.55 | 7.53 | 8.79 |
+| `warning-text` on `surface` | 4.5:1 | 5.80 | 4.99 | 6.79 | 6.43 |
+| `warning-text` on `raised` | 4.5:1 | 4.88 | 6.08 | 5.89 | 4.55 |
+| `warning-text` under `hover` over `surface` (rows on `raised` follow R2) | 4.5:1 | 5.10 | 4.57 | 6.01 | 5.58 |
 | `text-on-accent` on `accent` (primary button) | 4.5:1 | 8.76 | 5.66 | 4.67 | 8.85 |
 | `text-on-record` on `record` (REC badge, Record, destructive) | 4.5:1 | 4.61 | 4.53 | 5.21 | 4.85 |
 | `text` on `keycap` (key-cap legend) | 4.5:1 | 8.09 | 14.39 | 8.92 | 5.24 |
-| `muted` on `field` (placeholder) | 4.5:1 | 7.01 | 6.07 | 6.81 | 8.76 |
+| `muted` on `field` (placeholder) | 4.5:1 | 7.01 | 6.07 | 6.81 | 8.85 |
 | `video-text` on `video-scrim` over white video (worst case) | 4.5:1 | 5.50 | 5.50 | 5.50 | 5.50 |
 | `focus-ring` vs `bg`/`surface`/`raised` (min) | 3:1 | 6.48 | 4.65 | 3.65 | 4.59 |
-| `border-strong` vs `bg`/`surface`/`raised` (min) | 3:1 | 3.02 | 3.03 | 3.02 | 3.01 |
-| `playhead` vs `bg` (lanes) and `surface` (ruler), min | 3:1 | 8.15 | 3.02 (spec 2.60 ✗) | 6.79 | 6.75 |
+| `border-strong` vs `field`/`surface`/`raised` (min) | 3:1 | 3.06 | 3.07 | 3.07 | 3.08 |
+| `playhead` vs `bg` (lanes) and `surface` (ruler), min | 3:1 | 8.15 | 3.06 | 6.79 | 6.75 |
 | `accent` stroke vs `selected` tint (min of surface/raised) | 3:1 | 4.72 | 3.87 | 3.08 | 3.46 |
 | `record` vs `bg` (ghost clip outline, meter clip zone) | 3:1 | 4.61 | 4.14 | 5.21 | 3.79 |
-| `mud` vs `bg` (export bar track) | 3:1 | 3.02 (spec 2.28 ✗) | 5.67 | 3.02 (spec 2.08 ✗) | 3.00 (spec 2.12 ✗) |
+| `mud` vs `bg` (export bar track) | 3:1 | 3.06 | 5.67 | 3.07 | 3.06 |
 | `warning` (hatch edge) vs `bg` | 3:1 | 6.60 | 3.63 | 7.53 | 5.47 |
-| `wave` vs `bg` | 3:1 | 7.01 | 5.54 | 6.81 | 8.76 |
-| `meter-*` vs `bg` (min of three) | 3:1 | 4.61 | 3.36 | 5.21 | 3.79 |
+| `wave` vs `bg` | 3:1 | 7.01 | 5.54 | 6.81 | 8.85 |
+| `meter-*` vs `bg` (min of three) | 3:1 | 4.61 | 3.40 | 5.21 | 3.79 |
 | `take-*` vs `bg` (min of eight) | 3:1 | 3.86 | 3.10 | 3.96 | 3.70 |
 
 **Recording vs accent for color-blind users.** These are CIEDE2000 distances after Machado 2009 simulation at full severity. The target is ≥ 10 under protan and deutan. Tritanopia is reported only; it is very rare, and the shape, pulse and label cover it.
@@ -781,25 +784,30 @@ These are WCAG 2.2 ratios with the proposals applied. "(spec x ✗)" shows the r
 | Check | Swamp Night | Swamp Day | Dragon's Keep | Ogre Mode |
 | --- | --- | --- | --- | --- |
 | `accent` vs `record`, as specified | ΔE 63.2 · protan 28.8 · deutan 12.0 · tritan 55.1 | ΔE 56.0 · protan 12.6 · deutan 4.6 · tritan 49.9 | ΔE 21.0 · protan 29.6 · deutan 18.6 · tritan 7.4 | ΔE 60.5 · protan 33.3 · deutan 17.2 · tritan 46.3 |
-| `accent` vs `record`, with proposals | ΔE 63.2 · protan 28.8 · deutan 12.0 · tritan 55.1 | ΔE 57.9 · protan 11.2 · deutan 10.7 · tritan 50.5 | ΔE 21.0 · protan 29.6 · deutan 18.6 · tritan 7.4 | ΔE 60.5 · protan 33.3 · deutan 17.2 · tritan 46.3 |
-| Luminance ratio `accent`:`record` (with proposals) | 1.90 | 1.25 | 1.12 | 2.34 |
+| `accent` vs `record`, decided | ΔE 63.2 · protan 28.8 · deutan 12.0 · tritan 55.1 | ΔE 57.9 · protan 11.2 · deutan 10.7 · tritan 50.5 | ΔE 21.0 · protan 29.6 · deutan 18.6 · tritan 7.4 | ΔE 60.5 · protan 33.3 · deutan 17.2 · tritan 46.3 |
+| Luminance ratio `accent`:`record` (decided) | 1.90 | 1.25 | 1.12 | 2.34 |
 
 Dragon's Keep keeps a small tritan distance (pink accent next to red record), mitigated by ● + flicker + "REC". No change is proposed there.
 
-### Proposals for the product owner
+### Decisions (product owner, 2026-10-15)
 
-Each proposal is the **smallest** change that makes a failing pair pass. P1–P5 adjust a §15.2 value. P6–P8 add a text-safe variant and leave the base color untouched for fills. pen.dev and the frontmatter already use the proposed values, so the designs meet AA. Declining one means changing a single variable back and following the "If declined" rule.
+The product owner accepted P1–P8 with one rule: **the best contrast, not the highest, but good contrast by the norms.** Each final value is the smallest OKLCH-lightness shift of the proposal (hue and chroma kept) that meets WCAG 2.2 AA with a 0.05 rounding margin on every background the token is drawn on, hover states included (SC 1.4.3 applies in every state): text forms reach ≥ 4.55:1, indicators and control outlines ≥ 3.05:1. Nothing is pushed toward AAA.
 
-| ID | Theme | Token | Spec value | Proposed | ΔE00 (how visible) | Fails as specified | After | If declined |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| P1 | Swamp Day | `muted` | `#6E6A4B` | `#635F41` | 4.1 | on `surface` 4.23; on hover-over-surface 3.87 | 4.98 / 4.56 | Never set `muted` text on `surface` in Swamp Day; panel secondary text uses `text` at caption size |
-| P2 | Ogre Mode | `muted` | `#C2B98F` | `#CFC69B` | 3.4 | on `raised` 3.95 | 4.54 | Popovers, toasts and palette in Ogre Mode use `text` for secondary lines |
-| P3 | Swamp Day | `accent` | `#4F7A19` | `#446E04` | 4.4 | as text on `bg` 4.35, on `surface` 3.91; deutan ΔE vs `record` 4.6 | 5.17 / 4.65; deutan 10.7 (with P4) | Keep `accent` for fills and add `accent-text` `#467008`; the accent/record CVD gap then needs a different `record` proposal |
-| P4 | Swamp Day | `record` | `#C8352A` | `#CF3B3C` | 4.3 | protan/deutan ΔE vs `accent` 12.6 / 4.6 | 11.2 / 10.7 (with P3); label on fill 4.53 | REC relies on ● shape, pulse and the word REC only (SPEC already requires these) |
-| P5 | Swamp Day | `accent-2` | `#B5831A` | `#A87811` | 4.1 | playhead on `bg` 2.89, on `surface` 2.60 (non-text needs 3:1) | 3.36 / 3.02 | Draw the Day playhead 2 px with a 1 px `text` keyline |
-| P6 | all | `record-text` (new) | — | Night `#FC6555` · Day `#BF2A2F` · Keep `#FD5648` · Ogre `#FEB3A5` | n/a (new token) | `record` as text: Night on `surface` 4.05, Day on `surface` 4.04, Keep on `raised` 4.07, Ogre on `bg`/`surface`/`raised` 3.79/2.77/1.96 | ≥ 4.5 everywhere | Never color text or small icons `record`; use `text` beside a record-filled glyph |
-| P7 | Dragon's Keep | `accent-text` (new) | — | `#F3578B` | n/a (new token) | `accent` as text on `surface` 4.21, on `raised` 3.65 | ≥ 4.5 | Links and selected labels use `text` + underline in Dragon's Keep |
-| P8 | Swamp Day, Ogre Mode | `warning-text` (new) | — | Day `#9A5103` · Ogre `#FFB66B` | n/a (new token) | `warning` as text: Day 3.26 on `surface`; Ogre 2.83 on `raised` | ≥ 4.5 | Warnings show a `warning` triangle icon (≥ 3:1) with `text` labels |
+| ID | Theme | Token | Spec | Proposed | Final | Binding pair (final) |
+| --- | --- | --- | --- | --- | --- | --- |
+| P1 | Swamp Day | `muted` | `#6E6A4B` | `#635F41` | `#635F41` | on `hover` over `surface` 4.56 |
+| P2 | Ogre Mode | `muted` | `#C2B98F` | `#CFC69B` | `#D0C79C` | on `raised` 4.58 |
+| P3 | Swamp Day | `accent` (fills) · `accent-text` | `#4F7A19` | `#446E04` | `#446E04` · `accent-text` `#416904` | `accent-text` under `hover` over `surface` 4.56 |
+| P4 | Swamp Day | `record` | `#C8352A` | `#CF3B3C` | `#CF3B3C` | label on fill 4.53: passes AA; not darkened further, which would shrink the deutan gap to `accent` |
+| P5 | Swamp Day | `accent-2` (playhead, snap, meter yellow) | `#B5831A` | `#A87811` | `#A77710` | playhead on `surface` 3.06 |
+| P6 | all | `record-text` | — | Night `#FC6555` · Day `#BF2A2F` · Keep `#FD5648` · Ogre `#FEB3A5` | Night `#FF7868` · Day `#B72028` · Keep `#FE6E5F` · Ogre `#FEC3B7` | under `hover` over `raised` (flat destructive buttons in dialogs) 4.55 in all four |
+| P7 | Dragon's Keep | `accent-text` | — | `#F3578B` | `#FF6797` | under `hover` over `raised` 4.57 |
+| P8 | Swamp Day, Ogre Mode | `warning-text` | — | Day `#9A5103` · Ogre `#FFB66B` | Day `#914C04` · Ogre `#FFB76D` | Day under `hover` over `surface` 4.57 · Ogre on `raised` 4.55 |
+| — | all | `border-strong` (control outlines) | — | Night `#6B7D5D` · Day `#88815B` · Keep `#77707C` · Ogre `#88AC58` | Night `#6C7E5E` · Day `#87805A` · Keep `#78717D` · Ogre `#8AAE5A` | 3.06–3.08 (was 3.01–3.03) |
+| — | Ogre Mode | `accent-text` | — | `#B5D334` | `#BFDE42` | under `hover` over `raised` 4.56 |
+| — | Night, Keep, Ogre | `mud` (export bar track) | — | Night `#7E5C3D` · Keep `#735E4D` · Ogre `#936541` | Night `#7F5D3E` · Keep `#745F4E` · Ogre `#956642` | vs `bg` ≥ 3.05 (was 3.00–3.02) |
+
+Only `record-text` and `border-strong` change in Swamp Night, the theme of the approved slice; the others wait for the theme pass.
 
 ### Usage rules (no PO decision needed)
 
@@ -808,6 +816,7 @@ Each proposal is the **smallest** change that makes a failing pair pass. P1–P5
 - **R3 Text forms.** Any text or icon ≤ 20 px drawn on `bg`, `surface` or `raised` uses `accent-text`, `record-text` or `warning-text`, never the base color. Base colors are for fills, strokes, meters and large glyphs.
 - **R4 `accent-2` never carries text.** Pair the playhead timecode flag as `text` on `raised` with a 1 px `playhead` stroke.
 - **R5 Over video,** use `video-scrim` and `video-text` in every theme. Video content is theme-independent.
+- **R6 Hover keeps contrast.** Flat buttons and links drawn in a text form keep it under the `hover` overlay; the decided values pass there too, so no separate hover color is needed.
 
 ### Named Rules
 

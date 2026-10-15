@@ -19,8 +19,8 @@ _Ogres have layers. So do your recordings._
 | M1 Core + CLI | Done: project model, folder rule, every timeline operation, undo/redo with persistent history, autocut, export (MP4/WebM, VP9/AV1), frame save, `--json` |
 | M2 Capture engine + hosts | Done: GStreamer engine (screens through the portal, cameras, mics, system audio), fake backend, headless host, IPC, locking, crash recovery, `doctor` |
 | M0 Spikes | Export ↔ GES parity verified (per-layer SSIM ≥ 0.986, exact frames). Portal restore tokens and real-device A/V sync need a manual run (below) |
-| M3 Design | Swamp Night vertical slice done in pen.dev, **waiting for product-owner review** |
-| M4 GUI | Not started on purpose: SPEC §15.1 requires approved designs first |
+| M3 Design | Swamp Night vertical slice in `design/qrec.pen`, **approved** 2026-10-15 (contrast decisions in DESIGN.md) |
+| M4 GUI | In progress: GTK4/libadwaita implementation of the approved slice |
 | M5 Polish | Keymap, cheat-sheet data, themes as tokens and Nix packaging are in; GUI parts wait for M4 |
 
 ## Build and run

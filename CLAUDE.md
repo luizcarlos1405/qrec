@@ -35,8 +35,11 @@ cargo insta review               # accept/reject snapshot changes
 - Don't initialize GStreamer for commands that only need ffmpeg. Never let
   VA-API choose its own device: NVIDIA's renderD128 hangs on the dev machine
   (ARCHITECTURE §8.7).
-- `qrec-gui` (GTK views) is blocked until the pen.dev designs in
-  `design/qrec.pen` are approved by the product owner (SPEC §15.1).
+- `qrec-gui` (GTK views) follows the pen.dev designs in `design/qrec.pen`,
+  approved by the product owner on 2026-10-15 (SPEC §15.1). The Swamp Night
+  slice is the reference; other themes are token swaps (`design/tokens/`).
+- Scratch work (manual checks, recordings, experiments) goes in the
+  gitignored `tmp/` at the repo root, never in `/tmp` paths others share.
 - JSON is camelCase; error codes are snake_case; CLI `--json` output is
   exactly one object (or JSON lines for streaming commands).
 - Tests: planners get `insta` snapshots, invariants get `proptest`

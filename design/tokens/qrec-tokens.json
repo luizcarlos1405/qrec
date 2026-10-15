@@ -1,7 +1,7 @@
 {
   "name": "Qrec design tokens",
   "source": "design/qrec.pen (pen.dev variables, read with GetVariables)",
-  "generated": "2026-10-14",
+  "generated": "2026-10-15",
   "note": "Generated file. Change the variable in design/qrec.pen, then regenerate. Colors are #RRGGBB or #RRGGBBAA. Numbers are logical px. Roles, derivations and contrast results: DESIGN.md, Colors.",
   "themes": [
     "swamp-night",
@@ -45,7 +45,7 @@
       "swamp-night": "#9BA582",
       "swamp-day": "#635F41",
       "dragons-keep": "#A49AA5",
-      "ogre-mode": "#CFC69B"
+      "ogre-mode": "#D0C79C"
     },
     "accent": {
       "swamp-night": "#8FC43A",
@@ -55,7 +55,7 @@
     },
     "accent-2": {
       "swamp-night": "#E3B23C",
-      "swamp-day": "#A87811",
+      "swamp-day": "#A77710",
       "dragons-keep": "#F28C28",
       "ogre-mode": "#E7C86A"
     },
@@ -91,27 +91,27 @@
     },
     "accent-text": {
       "swamp-night": "#8FC43A",
-      "swamp-day": "#446E04",
-      "dragons-keep": "#F3578B",
-      "ogre-mode": "#B5D334"
+      "swamp-day": "#416904",
+      "dragons-keep": "#FF6797",
+      "ogre-mode": "#BFDE42"
     },
     "record-text": {
-      "swamp-night": "#FC6555",
-      "swamp-day": "#BF2A2F",
-      "dragons-keep": "#FD5648",
-      "ogre-mode": "#FEB3A5"
+      "swamp-night": "#FF7868",
+      "swamp-day": "#B72028",
+      "dragons-keep": "#FE6E5F",
+      "ogre-mode": "#FEC3B7"
     },
     "warning-text": {
       "swamp-night": "#D98A2B",
-      "swamp-day": "#9A5103",
+      "swamp-day": "#914C04",
       "dragons-keep": "#F28C28",
-      "ogre-mode": "#FFB66B"
+      "ogre-mode": "#FFB76D"
     },
     "border-strong": {
-      "swamp-night": "#6B7D5D",
-      "swamp-day": "#88815B",
-      "dragons-keep": "#77707C",
-      "ogre-mode": "#88AC58"
+      "swamp-night": "#6C7E5E",
+      "swamp-day": "#87805A",
+      "dragons-keep": "#78717D",
+      "ogre-mode": "#8AAE5A"
     },
     "field": {
       "swamp-night": "#12170F",
@@ -175,13 +175,13 @@
     },
     "playhead": {
       "swamp-night": "#E3B23C",
-      "swamp-day": "#A87811",
+      "swamp-day": "#A77710",
       "dragons-keep": "#F28C28",
       "ogre-mode": "#E7C86A"
     },
     "snap-guide": {
       "swamp-night": "#E3B23C",
-      "swamp-day": "#A87811",
+      "swamp-day": "#A77710",
       "dragons-keep": "#F28C28",
       "ogre-mode": "#E7C86A"
     },
@@ -207,13 +207,13 @@
       "swamp-night": "#9BA582",
       "swamp-day": "#635F41",
       "dragons-keep": "#A49AA5",
-      "ogre-mode": "#CFC69B"
+      "ogre-mode": "#D0C79C"
     },
     "wave-dim": {
       "swamp-night": "#9BA58259",
       "swamp-day": "#635F4159",
       "dragons-keep": "#A49AA559",
-      "ogre-mode": "#CFC69B59"
+      "ogre-mode": "#D0C79C59"
     },
     "meter-green": {
       "swamp-night": "#8FC43A",
@@ -223,7 +223,7 @@
     },
     "meter-yellow": {
       "swamp-night": "#E3B23C",
-      "swamp-day": "#A87811",
+      "swamp-day": "#A77710",
       "dragons-keep": "#EDC658",
       "ogre-mode": "#E7C86A"
     },
@@ -240,10 +240,10 @@
       "ogre-mode": "#B5D334"
     },
     "mud": {
-      "swamp-night": "#7E5C3D",
+      "swamp-night": "#7F5D3E",
       "swamp-day": "#7A5532",
-      "dragons-keep": "#735E4D",
-      "ogre-mode": "#936541"
+      "dragons-keep": "#745F4E",
+      "ogre-mode": "#956642"
     },
     "mud-bubble": {
       "swamp-night": "#A68669",
@@ -409,7 +409,7 @@
     },
     "accent-2-20": {
       "swamp-night": "#E3B23C33",
-      "swamp-day": "#A8781133",
+      "swamp-day": "#A7771033",
       "dragons-keep": "#F28C2833",
       "ogre-mode": "#E7C86A33"
     },
@@ -441,13 +441,13 @@
       "swamp-night": "#9BA58266",
       "swamp-day": "#635F4166",
       "dragons-keep": "#A49AA566",
-      "ogre-mode": "#CFC69B66"
+      "ogre-mode": "#D0C79C66"
     },
     "muted-20": {
       "swamp-night": "#9BA58233",
       "swamp-day": "#635F4133",
       "dragons-keep": "#A49AA533",
-      "ogre-mode": "#CFC69B33"
+      "ogre-mode": "#D0C79C33"
     },
     "text-on-record-45": {
       "swamp-night": "#12170F73",

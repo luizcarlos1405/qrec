@@ -30,9 +30,9 @@
   --qrec-text-on-accent:     #12170F;
   --qrec-text-on-record:     #12170F;
   --qrec-accent-text:        #8FC43A;
-  --qrec-record-text:        #FC6555;
+  --qrec-record-text:        #FF7868;
   --qrec-warning-text:       #D98A2B;
-  --qrec-border-strong:      #6B7D5D;
+  --qrec-border-strong:      #6C7E5E;
   --qrec-field:              #12170F;
   --qrec-keycap:             #3A4430;
   --qrec-hover:              #E8E6C80D;
@@ -54,7 +54,7 @@
   --qrec-meter-yellow:       #E3B23C;
   --qrec-meter-red:          #E5483B;
   --qrec-success:            #8FC43A;
-  --qrec-mud:                #7E5C3D;
+  --qrec-mud:                #7F5D3E;
   --qrec-mud-bubble:         #A68669;
   --qrec-video-scrim:        #0000009E;
   --qrec-video-text:         #F5F2DF;
