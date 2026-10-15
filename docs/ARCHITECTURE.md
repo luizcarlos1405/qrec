@@ -1174,10 +1174,11 @@ first-buffer deadline, then closes like the others.
   frozen frame.
 - Audio: `queue ! audioconvert ! audioresample ! audiorate skip-to-first=true
   ! audio/x-raw,rate=48000 ! flacenc blocksize=4608 ! matroskamux
-  offset-to-zero=true ! filesink` (the block size is pinned: a crashed file's
-  length is its packets × 4608, A§2.2). A stream shorter than one FLAC block (4608 samples) is padded
-  with silence to 120 ms before EOS: flacenc sets its caps with its first
-  block, and an earlier EOS pushes the segment before the caps *(measured)*.
+  offset-to-zero=true ! filesink` (the block size is pinned: a crashed
+  file's length is its packets × 4608, A§2.2). A stream shorter than one
+  FLAC block (4608 samples) is padded with silence to 120 ms before EOS:
+  flacenc sets its caps with its first block, and an earlier EOS pushes the
+  segment before the caps *(measured)*.
 - `pipewiresrc keepalive-time=<floor(1000·den/num)>` so a static screen still
   produces frames to the end (screencasts are damage-driven).
 - Encoders: `x264enc pass=qual quantizer=18 speed-preset=veryfast
