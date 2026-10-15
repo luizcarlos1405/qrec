@@ -1,5 +1,6 @@
 //! `Effect::RenderExport` → `ExportProgress`… then `ExportFinished` |
-//! `ExportFailed` | `ExportCancelled` (A§9.3, SPEC §13.1).
+//! `ExportFailed` | `ExportCancelled` | `OutputAppeared` (A§9.3, SPEC
+//! §13.1).
 //!
 //! 1. Segments whose cache file (`.qrec/cache/segments/<key>.<ext>`) exists
 //!    are skipped; identical keys are rendered once.
@@ -10,7 +11,9 @@
 //!    fsynced and renamed into the cache (never replacing a file).
 //! 3. The stitch writes the concat list, joins the segments into a temp file
 //!    in the destination folder (`ExportStitchProgress`) and the result is
-//!    renamed into place without replacing anything (A§8.8).
+//!    renamed into place without replacing anything but a confirmed
+//!    hand-picked path (`plan.replace`). A hand-picked path that appeared
+//!    meanwhile leaves the result where it is: `OutputAppeared` (A§8.8).
 //!
 //! A failure stops the other segments; a cancel stops everything. Either way
 //! the job's temp files are deleted (finished segments stay cached). A
@@ -54,6 +57,9 @@ pub(crate) enum Failure {
     /// A segment of a VA-API plan failed (a `Failed`): the export can be
     /// re-planned with libx264.
     VaSegment(Box<Failure>),
+    /// The hand-picked `out` appeared while the job ran and may not be
+    /// replaced: the result was kept at `kept` (A§8.8).
+    Appeared { out: PathBuf, kept: PathBuf },
 }
 
 impl Failure {
@@ -114,8 +120,20 @@ pub(crate) fn run(
                     stderr_tail: Vec::new(),
                     log: String::new(),
                 },
+                Failure::Appeared { out, kept } => appeared(job, &out, &kept),
             }
         }
+    }
+}
+
+/// `OutputAppeared` for a hand-picked output that appeared while the job
+/// ran; the core turns it into `confirmation_required` naming both paths.
+pub(crate) fn appeared(job: JobId, out: &Path, kept: &Path) -> Event {
+    Event::OutputAppeared {
+        job,
+        out: out.to_string_lossy().into_owned(),
+        bytes: fs::symlink_metadata(out).map(|m| m.len()).unwrap_or(0),
+        kept: kept.to_string_lossy().into_owned(),
     }
 }
 
@@ -223,7 +241,7 @@ fn export(
             &log,
         ));
     }
-    let dest = destination(ctx, &plan.out).map_err(|m| Failure::plain(m, &log))?;
+    let dest = destination(ctx, &plan.out, plan.replace).map_err(|m| Failure::plain(m, &log))?;
     log.note(&format!("destination {:?}", dest));
 
     // Unique keys, cache hits first.
@@ -288,14 +306,21 @@ fn export(
             log.note(&format!("exported {} ({bytes} bytes)", path.display()));
             Ok((path, bytes))
         }
-        Err(e @ PlaceError::Appeared { .. }) => {
-            if let PlaceError::Appeared { kept, .. } = &e {
-                ctl.forget_temp(kept);
-            }
-            Err(Failure::plain(e.to_string(), &log))
-        }
+        Err(PlaceError::Appeared { out, kept }) => Err(kept_aside(ctl, &log, out, kept)),
         Err(e) => Err(Failure::plain(e.to_string(), &log)),
     }
+}
+
+/// The hand-picked output appeared meanwhile: the result stays at `kept`
+/// (no longer a temp file of the job) and the job ends with `Appeared`.
+pub(crate) fn kept_aside(ctl: &JobCtl, log: &LogFile, out: PathBuf, kept: PathBuf) -> Failure {
+    ctl.forget_temp(&kept);
+    log.note(&format!(
+        "{} appeared meanwhile; the result was kept as {}",
+        out.display(),
+        kept.display()
+    ));
+    Failure::Appeared { out, kept }
 }
 
 /// Renders the pending units on at most `max_parallel` threads. The first
@@ -576,8 +601,10 @@ fn write_list(ctl: &JobCtl, job: JobId, list: &Path, content: &str) -> io::Resul
 }
 
 /// The output's destination: hand-picked paths are absolute (A§5.9), auto
-/// names are project-relative (`exports/…`, `frames/…`).
-pub(crate) fn destination(ctx: &Ctx, out: &str) -> Result<Destination, String> {
+/// names are project-relative (`exports/…`, `frames/…`). `replace` is the
+/// plan's: whether the person confirmed replacing the file at a hand-picked
+/// path (never guessed from what is there when the job starts).
+pub(crate) fn destination(ctx: &Ctx, out: &str, replace: bool) -> Result<Destination, String> {
     let path = Path::new(out);
     if path.is_absolute() {
         let parent = path
@@ -587,8 +614,6 @@ pub(crate) fn destination(ctx: &Ctx, out: &str) -> Result<Destination, String> {
         if !parent.is_dir() {
             return Err(format!("the folder {} doesn't exist", parent.display()));
         }
-        // It existed when the job started, so the core had a confirmation.
-        let replace = fs::symlink_metadata(path).is_ok();
         Ok(Destination::Chosen {
             path: path.to_path_buf(),
             replace,

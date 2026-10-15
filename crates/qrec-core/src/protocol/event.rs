@@ -95,6 +95,16 @@ pub enum Event {
         message: String,
         log: String,
     },
+    /// Ends an export or a frame save: a hand-picked `out` that the job
+    /// may not replace (`plan.replace` is false) appeared while it ran, so
+    /// the result was kept at `kept` (A§8.8). `bytes` is the size of the
+    /// file now at `out`.
+    OutputAppeared {
+        job: JobId,
+        out: String,
+        bytes: u64,
+        kept: String,
+    },
     TakeDirsDeleted {
         job: JobId,
         deleted: Vec<String>,

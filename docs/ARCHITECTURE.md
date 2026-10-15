@@ -558,6 +558,7 @@ pub enum Event {
     ExportCancelled { job: JobId },
     FrameSaved { job: JobId, path: String },
     FrameFailed { job: JobId, message: String, log: String },
+    OutputAppeared { job: JobId, out: String, bytes: u64, kept: String }, // A§8.8, ends either job
     TakeDirsDeleted { job: JobId, deleted: Vec<String>, errors: Vec<String> },
     ProjectChangedOnDisk { project: Result<Box<Project>, String> }, // parsed + migrated by the shell
     RequesterGone { req: ReqId },                                  // IPC client disconnected
@@ -792,7 +793,14 @@ writes and reports) and the checks run where the kernel resolves it, so
 `link/..` is the parent of the link's target, never lexically the folder
 holding `link`.
 `facts.out.forbidden` (inside `takes/`, `.qrec/` or `qrec.json`) ⇒ `Invalid`
-(not confirmable); `exists && !confirmed` ⇒ `confirmation_required`.
+(not confirmable); `exists && !confirmed` ⇒ `confirmation_required`. The
+plan's `replace` is `exists && confirmed`: the runner may replace only the
+file the person confirmed. `OutputAppeared` (a hand-picked `out` appeared
+while the job ran, A§8.8) ends the job with `confirmation_required` (exit 4)
+naming both paths, `details: {files:[{path,bytes}], kept}`, hint "rename
+<kept>, or run the command again with --yes to replace <out>", and a
+warning toast ("Export kept aside" / "Frame kept aside") with Open folder /
+Copy path for the kept file.
 Frame saves need ffmpeg like exports (`missing_dependency` before the job
 starts); exports also need ffprobe, which checks every segment (A§9.3).
 Auto names: `exports/<stem>-YYYYMMDD-HHMMSS.<ext>` and
@@ -1124,8 +1132,13 @@ in A§9.3). Logs: `.qrec/logs/YYYYMMDD-HHMMSS-<pid>-j<job>-<step>.log`
 Temp outputs live in the destination directory as
 `.<stem>.qrec-part-<pid>-<job>.<ext>`; the final step is
 `renameat2(RENAME_NOREPLACE)` (fallback `link` + `unlink`). Auto names loop
-`-2`, `-3`, … on EEXIST; a hand-picked unconfirmed `--out` that appeared
-meanwhile ⇒ keep the temp, fail `confirmation_required` naming both paths.
+`-2`, `-3`, … on EEXIST; a hand-picked `--out` is replaced only when the
+plan says so (`replace`: it existed at dispatch and the person confirmed,
+A§5.9 — never guessed from the file system when the job starts). A
+hand-picked unconfirmed `--out` that appeared meanwhile ⇒ keep the temp
+(it is the result now) and end the job with
+`OutputAppeared { out, bytes, kept }`, which the core turns into
+`confirmation_required` naming both paths (exit 4).
 `ExportFinished`/`FrameSaved` carry the real path. Migration backups use the
 same no-replace rule.
 
@@ -1270,7 +1283,7 @@ Every ffmpeg/ffprobe command line is built in the core (SPEC §3.1):
 ### A§9.3 Export plan (`export_plan.rs`)
 
 ```rust
-pub struct ExportPlan { pub out: String, pub tmp_ext: String, pub segments: Vec<SegmentPlan>,
+pub struct ExportPlan { pub out: String, pub replace: bool /* A§8.8 */, pub tmp_ext: String, pub segments: Vec<SegmentPlan>,
                         pub stitch: StitchPlan, pub total_frames: u64, pub files: BTreeSet<String> }
 pub struct SegmentPlan { pub clips: Vec<ClipId>, pub take: TakeId, pub in_: Frame, pub out: Frame,
                          pub frames: u64, pub samples: u64, pub key: String, pub path: String, pub argv: Vec<String> }
@@ -1281,15 +1294,34 @@ pub struct StitchPlan { pub list_path: String, pub list_content: String, pub arg
   `clips[i].out == clips[i+1].in`) become one segment, so a split never
   changes the output and its cache key survives. Property:
   `plan_export(split(p)) == plan_export(p)` (and the same for GES).
+- **Frame selection** (one rule for export, frame save and GES): take frame
+  `f` shows recorded frame `shown_frame(f) = ⌈x − ½⌉`, `x = (f/C −
+  startOffsetNs·10⁻⁹)·R`: the frame nearest to the canvas frame's time in
+  the file, the earlier one on a tie, in exact rational arithmetic (so it
+  never depends on where a unit starts). `first_showing(j) = ⌊C·((j − ½)/R
+  + startOffset)⌋ + 1` is the first take frame showing `j` or later. At the
+  canvas rate this is `f − off` with `off = round(startOffsetNs/frame)`.
 - **Video inputs** *(measured; the old setpts/sub-frame plan was wrong in 30
-  of 66 segments)*: per visible layer with media, `off =
-  ns_to_frame_round(startOffsetNs)`. For a unit `[in, out)` with `n` frames:
-  `k0 = in − off` (if the recorded fps ≠ canvas fps:
-  `k0 = round((frame_ns(in) − startOffsetNs) / frame_ns_rec(1))`),
-  `lead = max(0, −k0)`, `k0 = max(0, k0)`. Input:
-  `-ss <frame_ns_rec(k0) − 2 ms>` (omitted when ≤ 0; the 2 ms absorbs MKV's
-  ms timestamps) `-i file:<f>`. Chain:
-  `[i:v]fps=<num>/<den>,setpts=PTS-STARTPTS+<lead>,crop=<src.w>:<src.h>:<src.x>:<src.y>,scale=<dst.w>:<dst.h>:flags=bilinear,format=yuva420p[,lutyuv=a=val*<opacity>][li]`.
+  of 66 segments)*: per visible layer with media, for a unit `[in, out)`
+  with `n` frames: `lead = max(0, first_showing(0) − in)`,
+  `k0 = shown_frame(in + lead)`. Input: `-ss <frame_ns_rec(k0) − 2 ms>`
+  (omitted when ≤ 0; the 2 ms absorbs MKV's ms timestamps) `-i file:<f>`.
+  Chain: `[i:v]<head>,crop=<src.w>:<src.h>:<src.x>:<src.y>,scale=<dst.w>:<dst.h>:flags=bilinear,format=yuva420p[,lutyuv=a=val*<opacity>][li]`.
+  At the canvas rate `<head>` = `fps=<num>/<den>,setpts=PTS-STARTPTS+<lead>`
+  (frame `k0 + i` is unit frame `lead + i`). At another recorded rate that
+  head re-based the stream at `k0` and let `fps` pick frames on a grid
+  shifted by `k0`'s rounding: frame saves differed from the export, a
+  trimmed start moved every frame of a clip by a canvas frame, and units
+  showed frames that weren't the nearest. There `<head>` puts every recorded
+  frame where the rule starts it:
+  `settb=1/1000000,setpts='max(floor((a*round((T+<ss>)*<Rn>/<Rd>)+b)/q)+c,0)*<Cd>*1000000/<Cn>',settb=<Cd>/<Cn>,fps=<Cn>/<Cd>`
+  — `j = round((T + ss)·R)` from the frame's time in the file (`ss` the
+  input seek, 0 without one; Matroska stamps are within 1 ms), its start
+  `⌊(a·j + b)/q⌋ + c = first_showing(j) − in`, then `fps` holds each frame
+  until the next starts. With `C/R = p/q'` reduced and `Y = ⌊2q'·C·
+  startOffset⌋`: `a = 2p`, `b = Y − p`, `q = 2q'`, `c = 1 − in` (whole
+  numbers that ffmpeg's doubles evaluate exactly). The end of the stream
+  maps to `first_showing(frames)`, so the background shows from there.
   `bilinear` matches GES's compositor best *(measured)*; `lutyuv` avoids an
   RGB round trip.
 - **Compositing:** `color=c=<bg>:s=<W>x<H>:r=<num>/<den>[base]`, then
@@ -1309,6 +1341,13 @@ pub struct StitchPlan { pub list_path: String, pub list_content: String, pub arg
   `afade=t=in:ns=240` unless the unit starts at `in == 0`, and
   `afade=t=out:ss=<S−240>:ns=240` unless it ends at `durationFrames`. No
   audible track ⇒ `anullsrc=r=48000:cl=stereo,atrim=end_sample=<S>`.
+- **Filter graphs:** the video chains (ending in `[v]`, or `[vv]` for VA)
+  and the audio chains (ending in `[a]`) are two `-filter_complex` graphs,
+  video first, then `-map [v] -map [a]`. In one graph, ffmpeg 8.1.2
+  sometimes never finished a unit with several layers and tracks: once the
+  video output ended the audio output stopped being fed, while `-progress`
+  kept reporting (3 % of runs of a 3-layer, 2-track unit; 0 of 400 with
+  two graphs, which decode to the same frames and samples) *(measured)*.
 - **Segment codecs:** H.264 segments are `.mov` with `pcm_s16le` (MKV
   timestamps make the stitched MP4 VFR-looking); VP9/AV1 segments are `.mkv`.
   The shell verifies each segment (`ffprobe -count_packets`: video packets
@@ -1321,7 +1360,12 @@ pub struct StitchPlan { pub list_path: String, pub list_content: String, pub arg
   - h264_vaapi: `-rc_mode CQP -qp 26` / `22` / `19`
   - libvpx-vp9: `-crf 36/32/28 -b:v 0 -row-mt 1 -deadline good -cpu-used 5/4/2`
   - libsvtav1: `-preset 10/8/6 -crf 38/35/30`
-  - all H.264: `-pix_fmt yuv420p -profile:v high`; keyframe at each segment start.
+  - all H.264: `-bf 0 -pix_fmt yuv420p -profile:v high`; keyframe at each
+    segment start. No B-frames *(measured)*: with them a segment's DTS start
+    a reorder delay early, except in a 1–2-frame segment (nothing to
+    reorder), so after such a unit the next segment's first DTS collide in
+    the stitch, ffmpeg bumps them by one tick each and the MP4's sample
+    table comes out up to two frames short.
 - **VA export chain** (only when `caps.vaapi.ffmpeg_h264`):
   `-init_hw_device vaapi=va:<device> -filter_hw_device va … [v]format=nv12,hwupload[vv]
   -c:v h264_vaapi -rc_mode CQP -qp <q>`, child env `LIBVA_DRIVER_NAME` per
@@ -1332,7 +1376,14 @@ pub struct StitchPlan { pub list_path: String, pub list_content: String, pub arg
   rendered once.
 - **Stitch:** concat demuxer list in the segments dir (file names only),
   `-c:v copy`, audio encoded once (`aac -b:a 192k` + `-movflags +faststart`
-  for MP4; `libopus -b:a 128k` for WebM), `-f mp4|webm`, output last.
+  for MP4; `libopus -b:a 128k` for WebM), `-f mp4|webm`, output last. Each
+  `file '<key>.<ext>'` line is followed by `duration <s>` = `us(end) −
+  us(start)`, the unit's timeline boundaries in microseconds (rounded; the
+  list's precision), so every segment starts within 0.5 µs of its timeline
+  time *(measured)*. Without it the demuxer adds up the segments' container
+  durations, which Matroska rounds to milliseconds: the copied VP9/AV1 video
+  drifted from the once-encoded audio by up to 0.5 ms per unit (+49 ms after
+  150 autocut fragments).
 
 ### A§9.4 Frame plan (`frame_plan.rs`)
 
@@ -1340,7 +1391,11 @@ The playhead's frame through the same graph as a one-frame unit (`n = 1`,
 no audio), then `scale=out_color_matrix=bt709:out_range=pc,format=rgb24,setparams=color_trc=iec61966-2-1`
 (an sRGB PNG) `-frames:v 1 -f image2 -update 1`, to
 `frames/<stem>-<take>-<HHMMSSFF>.png`. `--layer L2`: the stream's raw frame at
-native resolution (same frame selection, no crop or scale).
+native resolution (same frame selection, no crop or scale). Because the
+frame selection doesn't depend on where a unit starts (A§9.3), the
+one-frame unit at the playhead shows exactly the export's frame, at any
+recorded rate *(measured: frame-ID fixtures at 25→30, 30→60, 50→30 and
+29.97→25 fps)*.
 
 ### A§9.5 Capture plan (`capture_plan.rs`)
 
@@ -1372,7 +1427,15 @@ pub struct GesAudioClip { pub file: String, pub start_ns: u64, pub inpoint_ns: u
 
 Same render units, frame selection and lead as A§9.3:
 `inpoint_ns = frame_ns_rec(k0)`, `start_ns = frame_ns(pos + lead)`,
-`duration_ns = frame_ns(pos + n) − start_ns`. Video: a `videocrop` effect
+`duration_ns = frame_ns(pos + n) − start_ns`. A layer recorded at another
+rate instead gets `inpoint_ns = max(0, frame_ns(in + lead) − startOffsetNs +
+⌊frame_ns_rec(1)/2⌋ − 3 ms)`: aligned with the take's time wherever the
+unit starts (from `k0` it was off by `k0`'s rounding); GES shows the last
+frame started, so half a recorded frame later makes that the nearest one;
+−3 ms undoes the renderer's 2 ms Matroska nudge and keeps a stamp
+truncated to the millisecond from winning a tie the export gives to the
+earlier frame *(measured with GES: 25 fps camera on a 30 fps canvas)*.
+Near a tie (within ~1 ms) GES may still differ by one frame. Video: a `videocrop` effect
 from `placement.src` and always `posx/posy/width/height` from
 `placement.dst`. Audio track caps `audio/x-raw,rate=48000,channels=2`;
 fades are 240-sample linear ramps on the source's `volume` through a
@@ -1456,7 +1519,7 @@ strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
 | Shell | store order and crash points, lock/socket protocol, history persistence, IPC round trip, process runner timeouts |
 | CLI integration | `crates/qrec/tests/<area>.rs` with `assert_cmd` |
 | Fake capture | `QREC_CAPTURE_BACKEND=fake` record start/stop end to end (M2) |
-| Parity | GES vs frame plan: SSIM ≥ 0.98 **per layer rect**, plus a frame-ID fixture (frame index drawn as binary bars) asserting the exact source frame in both renderers |
+| Parity | GES vs frame plan: SSIM ≥ 0.98 **per layer rect**, plus a frame-ID fixture (frame index drawn as binary bars) asserting the exact source frame in both renderers; at another recorded rate, export segments, frame saves and GES all show `shown_frame` (A§9.3) in units starting anywhere |
 
 **`qrec_core::testkit`** (feature `testkit`, also under `cfg(test)`; pure):
 `ctx(now, entropy)`, `ProjectBuilder` (`.canvas()`, `.screen_layer()`,

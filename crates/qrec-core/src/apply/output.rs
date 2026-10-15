@@ -49,12 +49,15 @@ pub fn export(
                 .with_hint("record a take or add one from the bin first"),
         );
     }
-    let out = match out {
-        None => export_file_name(
-            &project.name,
-            ctx.now,
-            ctx.utc_offset_secs,
-            format.extension(),
+    let (out, replace) = match out {
+        None => (
+            export_file_name(
+                &project.name,
+                ctx.now,
+                ctx.utc_offset_secs,
+                format.extension(),
+            ),
+            false,
         ),
         Some(path) => checked_out(ctx, &path, "export to")?,
     };
@@ -66,7 +69,8 @@ pub fn export(
         out,
         allow_vaapi: allow_vaapi(project, &ctx.facts.config, caps),
     };
-    let plan = plan_export(project, caps, &opts)?;
+    let mut plan = plan_export(project, caps, &opts)?;
+    plan.replace = replace;
 
     let mut next = state.clone();
     let id = next.runtime.alloc_job_id();
@@ -147,11 +151,12 @@ pub fn frame_save(
     let fps = project.canvas.fps;
     let at = absolute_frame(&at, fps, "frame save --at")?;
     let (take, _) = frame_source(project, at)?;
-    let out = match out {
-        None => frame_file_name(&project.name, &take, at, fps),
+    let (out, replace) = match out {
+        None => (frame_file_name(&project.name, &take, at, fps), false),
         Some(path) => checked_out(ctx, &path, "save a frame to")?,
     };
-    let plan = plan_frame(project, at, layer.as_ref(), &out)?;
+    let mut plan = plan_frame(project, at, layer.as_ref(), &out)?;
+    plan.replace = replace;
     require_ffmpeg(&state.runtime.capabilities, &["png"])?;
 
     let mut next = state.clone();
@@ -187,8 +192,10 @@ fn running_export(state: &State) -> Option<JobId> {
 
 /// A hand-picked output path (A§5.9): inside `takes/`, `.qrec/` or
 /// `qrec.json` is `Invalid` (not confirmable); an existing file needs
-/// confirmation. Returns the absolute path to write.
-fn checked_out(ctx: &Ctx, requested: &str, verb: &str) -> Result<String, CoreError> {
+/// confirmation. Returns the absolute path to write and whether the job may
+/// replace a file there: only the one that was confirmed (A§8.8; a file
+/// that appears later ends the job with `OutputAppeared`).
+fn checked_out(ctx: &Ctx, requested: &str, verb: &str) -> Result<(String, bool), CoreError> {
     match &ctx.facts.out {
         Some(facts) => {
             if let Some(why) = &facts.forbidden {
@@ -203,11 +210,12 @@ fn checked_out(ctx: &Ctx, requested: &str, verb: &str) -> Result<String, CoreErr
                         .with_details(json!({ "files": [{ "path": facts.abs }] })),
                 );
             }
-            Ok(facts.abs.clone())
+            Ok((facts.abs.clone(), facts.exists))
         }
         // The shell resolves every hand-picked path; without its facts the
-        // path must at least be absolute (the CLI resolves it, A§10).
-        None if requested.starts_with('/') => Ok(requested.to_owned()),
+        // path must at least be absolute (the CLI resolves it, A§10), and
+        // only a confirmed command may replace what is there.
+        None if requested.starts_with('/') => Ok((requested.to_owned(), ctx.confirmed)),
         None => Err(CoreError::usage(format!(
             "--out must be an absolute path, got {requested:?}"
         ))),
@@ -408,6 +416,49 @@ mod tests {
             render_plan(&out).stitch.argv.last().unwrap(),
             "file:/home/me/out.mp4"
         );
+        assert!(
+            render_plan(&out).replace,
+            "the confirmed file may be replaced"
+        );
+
+        // A file that doesn't exist yet was never confirmed: if one appears
+        // while the job runs, the runner keeps it (A§8.8), even with --yes.
+        for confirmed in [false, true] {
+            ctx.confirmed = confirmed;
+            ctx.facts.out = Some(OutFacts {
+                abs: "/home/me/new.mp4".into(),
+                exists: false,
+                forbidden: None,
+            });
+            let out = apply(&state, &ctx, export_cmd(Some("/home/me/new.mp4"))).unwrap();
+            assert!(!render_plan(&out).replace);
+            let frame = Command::FrameSave {
+                at: "10f".parse().unwrap(),
+                layer: None,
+                out: Some("/home/me/new.png".into()),
+            };
+            let out = apply(&state, &ctx, frame).unwrap();
+            assert!(matches!(
+                &out.effects[..],
+                [Effect::SaveFrame { plan, .. }] if !plan.replace
+            ));
+        }
+        assert!(!render_plan(&apply(&state, &ctx, export_cmd(None)).unwrap()).replace);
+        ctx.facts.out = Some(OutFacts {
+            abs: "/home/me/old.png".into(),
+            exists: true,
+            forbidden: None,
+        });
+        let frame = Command::FrameSave {
+            at: "10f".parse().unwrap(),
+            layer: None,
+            out: Some("/home/me/old.png".into()),
+        };
+        let out = apply(&state, &ctx, frame).unwrap();
+        assert!(matches!(
+            &out.effects[..],
+            [Effect::SaveFrame { plan, .. }] if plan.replace && plan.out == "/home/me/old.png"
+        ));
 
         ctx.facts.out = None;
         assert_eq!(

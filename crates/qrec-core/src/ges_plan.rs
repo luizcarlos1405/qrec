@@ -3,7 +3,15 @@
 //! Same render units, layer inputs, frame selection and lead as the export
 //! plan (A§9.3), so preview and export show the same frames:
 //! `inpoint_ns = frame_ns_rec(k0)`, `start_ns = frame_ns(pos + lead)`,
-//! `duration_ns = frame_ns(pos + n) − start_ns`. Video clips carry their
+//! `duration_ns = frame_ns(pos + n) − start_ns`. A layer recorded at another
+//! rate instead starts at the file time of its first canvas frame, so its
+//! frames line up with the take's time wherever the unit starts (from `k0`
+//! they would be off by `k0`'s rounding, up to half a recorded frame): GES
+//! shows the last frame started, so the in-point is half a recorded frame
+//! later to make that the nearest one, and 3 ms earlier to undo the
+//! renderer's 2 ms Matroska nudge and keep a stamp truncated to the
+//! millisecond from winning a tie that the export gives to the earlier
+//! frame (`mixed_rate_inpoint`). Video clips carry their
 //! placement (the renderer adds a `videocrop` from `placement.src` and sets
 //! `posx/posy/width/height` from `placement.dst`); `layer_priority` 0 is the
 //! top of the take scene. Audio clips start where their file time is 0 when
@@ -16,10 +24,14 @@
 //! The export shows the same thing there: the background (`eof_action=pass`)
 //! and silence (`apad`).
 
-use crate::export_plan::{FADE_SAMPLES, layer_inputs, render_units, track_inputs, unit_samples};
-use crate::model::Project;
+use crate::export_plan::{
+    FADE_SAMPLES, LayerInput, SEEK_BACKOFF_NS, layer_inputs, render_units, track_inputs,
+    unit_samples,
+};
+use crate::ids::Frame;
+use crate::model::{Fps, Project};
 use crate::plans::{GesAudioClip, GesTimeline, GesVideoClip};
-use crate::time::frame_ns;
+use crate::time::{NS_PER_MS, frame_ns};
 use crate::timeline::total_frames;
 
 /// The timeline as GES clips: same render units, frame selection and lead
@@ -39,7 +51,10 @@ pub fn plan_ges(project: &Project) -> GesTimeline {
         let top = take.scene.layers.len().saturating_sub(1);
         for input in layer_inputs(take, canvas, unit.in_, n) {
             let start = frame_ns((unit.position + input.selection.lead) as i64, fps);
-            let inpoint = frame_ns(input.selection.k0 as i64, input.recorded);
+            let inpoint = match input.selection.retime {
+                None => frame_ns(input.selection.k0 as i64, input.recorded),
+                Some(_) => mixed_rate_inpoint(&input, unit.in_, fps),
+            };
             let media_end = input
                 .stream
                 .frames
@@ -90,6 +105,20 @@ pub fn plan_ges(project: &Project) -> GesTimeline {
     }
 }
 
+/// How much earlier than "nearest" a layer at another rate switches frames
+/// in GES: the renderer's 2 ms Matroska in-point nudge (like the export's
+/// seek back-off) and 1 ms for stamps truncated to the millisecond.
+const MIXED_RATE_MARGIN_NS: i64 = SEEK_BACKOFF_NS + NS_PER_MS;
+
+/// The in-point of a layer recorded at another rate: the file time of the
+/// clip's first canvas frame (`in + lead`) plus half a recorded frame, less
+/// [`MIXED_RATE_MARGIN_NS`] (module docs). Never before the file's start.
+fn mixed_rate_inpoint(input: &LayerInput<'_>, in_: Frame, fps: Fps) -> i64 {
+    let first = frame_ns((in_ + input.selection.lead) as i64, fps);
+    let half_frame = frame_ns(1, input.recorded) / 2;
+    (first - input.stream.start_offset_ns + half_frame - MIXED_RATE_MARGIN_NS).max(0)
+}
+
 /// The duration a clip can have: `wanted`, cut at the media's end when it
 /// is known. `None` when nothing is left.
 fn clamp(wanted: i64, inpoint: i64, media_end: Option<i64>) -> Option<i64> {
@@ -100,7 +129,6 @@ fn clamp(wanted: i64, inpoint: i64, media_end: Option<i64>) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Fps;
     use crate::testkit::ProjectBuilder;
 
     const F30: Fps = Fps::new(30, 1);
@@ -224,6 +252,55 @@ mod tests {
         assert_eq!(clamp(10, 5, Some(12)), Some(7));
         assert_eq!(clamp(10, 12, Some(12)), None);
         assert_eq!(clamp(10, 0, None), Some(10));
+    }
+
+    /// A layer recorded at another rate follows the take's time in every
+    /// unit, wherever the unit starts. Modelling the renderer (in-point
+    /// nudged 2 ms later, the last frame stamped at or before the output
+    /// frame's time, stamps truncated to the millisecond like the recorder's
+    /// Matroska), each canvas frame shows the export's frame (`shown_frame`).
+    #[test]
+    fn layers_at_another_rate_follow_the_take_time() {
+        use crate::export_plan::shown_frame;
+        for (recorded, canvas) in [
+            (Fps::new(25, 1), F30),
+            (F30, Fps::new(60, 1)),
+            (Fps::new(50, 1), F30),
+            (Fps::new(60, 1), F30),
+        ] {
+            let project = ProjectBuilder::new()
+                .canvas(320, 180, canvas)
+                .screen_layer("L1", "DP-1")
+                .take("take-0001", 400)
+                .with_take("take-0001", |take| {
+                    take.streams[0].fps = Some(recorded);
+                    take.streams[0].frames = None;
+                })
+                .clip("c1", "take-0001", 0, 37)
+                .clip("c2", "take-0001", 101, 160)
+                .clip("c3", "take-0001", 201, 202)
+                .clip("c4", "take-0001", 203, 260)
+                .clip("c5", "take-0001", 102, 103)
+                .build();
+            let ges = plan_ges(&project);
+            assert_eq!(ges.video.len(), 5);
+            let stamp = |j: i64| frame_ns(j, recorded) / NS_PER_MS * NS_PER_MS;
+            let mut position = 0u64;
+            for (clip, unit) in ges.video.iter().zip(&project.timeline.clips) {
+                for t in 0..unit.len() {
+                    let at = frame_ns((position + t) as i64, canvas);
+                    let file = clip.inpoint_ns as i64 + SEEK_BACKOFF_NS + at - clip.start_ns as i64;
+                    let shows = (0..).take_while(|&j| stamp(j) <= file).last().unwrap();
+                    assert_eq!(
+                        shows,
+                        shown_frame(recorded, 0, canvas, (unit.in_ + t) as i64),
+                        "{recorded} on {canvas}: take frame {}",
+                        unit.in_ + t
+                    );
+                }
+                position += unit.len();
+            }
+        }
     }
 
     #[test]

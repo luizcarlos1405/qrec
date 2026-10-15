@@ -780,6 +780,80 @@ fn export_end_to_end_never_overwrites() {
     );
 }
 
+/// A hand-picked `--out` that someone else creates while the export runs
+/// is kept, and so is the export, next to it; the command then needs
+/// confirmation (exit 4, both paths named), like an `--out` that existed
+/// before (A§8.8, SPEC §11).
+#[test]
+fn an_out_that_appears_during_the_export_needs_confirmation() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "race", &[video(300)]);
+    let out = env.root().join("race.mp4");
+    let out_arg = out.to_str().unwrap();
+    let segments = dir.join(".qrec/cache/segments");
+    let rendering = || {
+        fs::read_dir(&segments).is_ok_and(|entries| {
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().contains(".qrec-part-"))
+        })
+    };
+    let export = thread::scope(|scope| {
+        let job = scope.spawn(|| {
+            qrec(
+                &env,
+                &dir,
+                &["export", "--quality", "draft", "--out", out_arg, "--json"],
+            )
+        });
+        // Once the export renders, someone else writes the file.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !rendering() {
+            assert!(
+                !job.is_finished() && Instant::now() < deadline,
+                "the export never rendered a segment"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        fs::write(&out, "someone else's").unwrap();
+        job.join().unwrap()
+    });
+    assert_eq!(
+        export.code,
+        Some(4),
+        "stdout:\n{}\nstderr:\n{}",
+        export.stdout,
+        export.stderr
+    );
+    let error = &export.reply()["error"];
+    assert_eq!(error["code"], "confirmation_required");
+    let kept = PathBuf::from(error["details"]["kept"].as_str().unwrap());
+    assert_eq!(
+        error["details"]["files"],
+        json!([{ "path": out_arg, "bytes": 14 }])
+    );
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.starts_with(&format!("confirmation required: {out_arg} appeared"))
+            && message.ends_with(&format!("kept as {}", kept.display())),
+        "{message}"
+    );
+    assert!(error["hint"].as_str().unwrap().contains("--yes"));
+    assert_eq!(fs::read_to_string(&out).unwrap(), "someone else's");
+    assert_eq!(kept.parent(), Some(env.root()));
+    let probe = ffprobe(&kept);
+    let video_stream = probe["streams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["codec_type"] == "video")
+        .unwrap();
+    assert_eq!(
+        video_stream["nb_read_packets"], "300",
+        "the export was kept whole"
+    );
+}
+
 #[test]
 fn frame_save_writes_a_png() {
     let env = TestEnv::new();

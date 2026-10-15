@@ -39,9 +39,10 @@ pub trait MediaRunner: Send {
     fn probe(&mut self, take: TakeId, purpose: ProbePurpose, jobs: Vec<ProbeJob>, out: Inbox);
     /// → `SilenceDetected` | `SilenceFailed`.
     fn detect_silence(&mut self, job: JobId, key: SilenceKey, argv: Vec<String>, out: Inbox);
-    /// → `ExportProgress`… then `ExportFinished` | `ExportFailed` | `ExportCancelled`.
+    /// → `ExportProgress`… then `ExportFinished` | `ExportFailed` |
+    /// `ExportCancelled` | `OutputAppeared`.
     fn render_export(&mut self, job: JobId, plan: ExportPlan, out: Inbox);
-    /// → `FrameSaved` | `FrameFailed`.
+    /// → `FrameSaved` | `FrameFailed` | `OutputAppeared`.
     fn save_frame(&mut self, job: JobId, plan: FramePlan, out: Inbox);
     /// → `TakeDirsDeleted`.
     fn delete_take_dirs(&mut self, job: JobId, takes: Vec<TakeId>, out: Inbox);

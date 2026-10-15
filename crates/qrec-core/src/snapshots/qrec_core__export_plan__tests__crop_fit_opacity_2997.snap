@@ -20,6 +20,7 @@ expression: "render_argv(&plan.segments[0].argv)"
     [0:v]fps=30000/1001,setpts=PTS-STARTPTS,crop=1258:710:20:10,scale=640:362:flags=bilinear,format=yuva420p,lutyuv=a=val*0.5[l0]
     [base][l0]overlay=x=-32:y=76:eof_action=pass[o0]
     [o0]trim=end_frame=30,setsar=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709[v]
+  -filter_complex
     anullsrc=r=48000:cl=stereo,atrim=end_sample=48048[a]
   -map
   [v]
@@ -31,6 +32,8 @@ expression: "render_argv(&plan.segments[0].argv)"
   medium
   -crf
   20
+  -bf
+  0
   -pix_fmt
   yuv420p
   -profile:v
@@ -47,4 +50,4 @@ expression: "render_argv(&plan.segments[0].argv)"
   pcm_s16le
   -f
   mov
-  file:.qrec/cache/segments/65d8a819b7d2c4aaf902e104b66109c50500699f80bad0b6c0fda813620f52c2.mov
+  file:.qrec/cache/segments/5f9853da906858da39dbd5bfffd40f4bfb64c01f232bf85a65ae02f6709cd758.mov
