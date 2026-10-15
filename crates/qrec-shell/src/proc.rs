@@ -868,8 +868,13 @@ pub(crate) fn close_on_exec_from(first: RawFd) {
     } else {
         1024
     };
-    let top = RawFd::try_from(top).unwrap_or(RawFd::MAX);
-    for fd in first..top {
+    mark_close_on_exec(first..RawFd::try_from(top).unwrap_or(RawFd::MAX));
+}
+
+/// [`close_on_exec_from`] without `close_range`: `fcntl(F_SETFD)` on each
+/// open descriptor in `fds`.
+fn mark_close_on_exec(fds: std::ops::Range<RawFd>) {
+    for fd in fds {
         // SAFETY: fcntl(2) on a descriptor number; a closed one is EBADF.
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
         if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
@@ -1173,6 +1178,29 @@ pub(crate) mod tests {
         // Still open here: only the child's copy was closed at exec.
         // SAFETY: fcntl query on our descriptor.
         assert!(unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) } >= 0);
+    }
+
+    /// The sweep a kernel without `close_range(CLOSE_RANGE_CLOEXEC)` gets:
+    /// open descriptors in the range become close-on-exec, others are left
+    /// alone. (Only this test's own descriptor: other tests running
+    /// meanwhile hold theirs.)
+    #[test]
+    fn the_fallback_sweep_marks_open_descriptors() {
+        let fd = inheritable_fd();
+        let raw = fd.as_raw_fd();
+        // SAFETY: fcntl queries on our descriptor.
+        let flags = || unsafe { libc::fcntl(raw, libc::F_GETFD) };
+        assert_eq!(flags() & libc::FD_CLOEXEC, 0);
+        mark_close_on_exec(raw + 1..raw + 1);
+        assert_eq!(flags() & libc::FD_CLOEXEC, 0, "outside the range");
+        mark_close_on_exec(raw..raw + 1);
+        assert_ne!(flags() & libc::FD_CLOEXEC, 0);
+        let script = holds_fd_script(&fd);
+        let plain = std::process::Command::new("sh")
+            .args(["-c", &script])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&plain.stdout), "free\n");
     }
 
     fn alive(pid: u32) -> bool {
