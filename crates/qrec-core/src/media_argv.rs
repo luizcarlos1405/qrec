@@ -42,20 +42,23 @@ pub fn ffmpeg_prelude(progress: bool) -> Vec<String> {
 /// The stream fields every probe asks for. `duration` (stream), the
 /// Matroska `DURATION` tag and the format duration are fallbacks for each
 /// other: Matroska has no stream duration, and a file cut short by a crash
-/// has neither tag nor format duration.
+/// has neither tag nor format duration. Then the length comes from the
+/// packets `-count_packets` counts (A§2.2): video frames, or for audio
+/// (`codec_name` FLAC) `capture_plan::FLAC_BLOCK_SAMPLES` per packet.
 const PROBE_STREAM_ENTRIES: &str =
     "nb_read_packets,r_frame_rate,width,height,pix_fmt,color_range,color_space";
 
 /// `ffprobe -v error -select_streams v:0 -count_packets -show_entries
 /// stream=nb_read_packets,r_frame_rate,width,height,pix_fmt,color_range,color_space,duration:stream_tags=DURATION:format=start_time,duration
-/// -of json file:<f>`; audio selects `a:0` and adds `sample_rate,channels`.
-/// `parse::ffprobe::parse_ffprobe` reads the output.
+/// -of json file:<f>`; audio selects `a:0` and adds
+/// `codec_name,sample_rate,channels`. `parse::ffprobe::parse_ffprobe` reads
+/// the output.
 pub fn probe_argv(file: &str, kind: StreamKind) -> Vec<String> {
     let (select, stream_entries) = match kind {
         StreamKind::Video => ("v:0", format!("{PROBE_STREAM_ENTRIES},duration")),
         StreamKind::Audio => (
             "a:0",
-            format!("{PROBE_STREAM_ENTRIES},sample_rate,channels,duration"),
+            format!("{PROBE_STREAM_ENTRIES},codec_name,sample_rate,channels,duration"),
         ),
     };
     let mut argv = Vec::from(
@@ -273,7 +276,7 @@ mod tests {
         assert!(
             probe_argv("a.mka", StreamKind::Audio)
                 .iter()
-                .any(|a| a.contains("sample_rate,channels,duration"))
+                .any(|a| a.contains("codec_name,sample_rate,channels,duration"))
         );
         insta::assert_snapshot!(
             "probe_argv",

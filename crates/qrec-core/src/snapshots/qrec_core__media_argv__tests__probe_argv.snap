@@ -3,4 +3,4 @@ source: crates/qrec-core/src/media_argv.rs
 expression: "format!(\"{}\\n{}\",\nprobe_argv(\"takes/take-0001/L1-screen-DP-4.mkv\", StreamKind::Video).join(\" \"),\nprobe_argv(\"takes/take-0001/A1-mic.mka\", StreamKind::Audio).join(\" \"))"
 ---
 ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets,r_frame_rate,width,height,pix_fmt,color_range,color_space,duration:stream_tags=DURATION:format=start_time,duration -of json file:takes/take-0001/L1-screen-DP-4.mkv
-ffprobe -v error -select_streams a:0 -count_packets -show_entries stream=nb_read_packets,r_frame_rate,width,height,pix_fmt,color_range,color_space,sample_rate,channels,duration:stream_tags=DURATION:format=start_time,duration -of json file:takes/take-0001/A1-mic.mka
+ffprobe -v error -select_streams a:0 -count_packets -show_entries stream=nb_read_packets,r_frame_rate,width,height,pix_fmt,color_range,color_space,codec_name,sample_rate,channels,duration:stream_tags=DURATION:format=start_time,duration -of json file:takes/take-0001/A1-mic.mka

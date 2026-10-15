@@ -31,6 +31,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use crossbeam_channel::Sender;
 use gst::prelude::*;
 use qrec_core::Fps;
+use qrec_core::capture_plan::FLAC_BLOCK_SAMPLES;
 use qrec_core::model::StreamKind;
 use qrec_core::plans::{AudioRecord, VideoRecord};
 
@@ -461,6 +462,10 @@ pub(super) fn attach_audio(
         &format!("audio/x-raw,rate={sample_rate}"),
     )?;
     let encoder = make("flacenc", &format!("{p}-encoder"))?;
+    // Every frame but the last of a file that ends normally holds this many
+    // samples, so a file cut short by a crash (no duration) is as long as
+    // its packets say (A§2.2). It is flacenc's default; pinned here.
+    set_value(&encoder, "blocksize", FLAC_BLOCK_SAMPLES)?;
     let elements = [queue, convert, resample, rate, rate_caps, encoder];
     attach(
         pipeline,

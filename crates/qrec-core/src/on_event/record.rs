@@ -31,15 +31,15 @@ use crate::capture_plan::EOS_TIMEOUT_MS;
 use crate::ctx::{Ctx, IdGen};
 use crate::error::CoreError;
 use crate::history;
-use crate::ids::{ClipId, TakeId, TimerId};
+use crate::ids::{ClipId, Frame, TakeId, TimerId};
 use crate::media_argv::probe_argv;
-use crate::model::{Clip, Scene, Stream, StreamKind, Take, TakeStatus};
+use crate::model::{Clip, Fps, Scene, Stream, StreamKind, Take, TakeStatus};
 use crate::protocol::effect::{Effect, LogLevel, ProbeJob, ProbePurpose};
 use crate::protocol::event::{MediaInfo, ProbeResult, RecordedStream};
 use crate::protocol::progress::{Progress, ProgressPhase};
 use crate::protocol::reply::{CmdResult, TakeFinalizedView};
 use crate::protocol::toast::{Toast, ToastLevel};
-use crate::requantize::derive_duration_frames;
+use crate::requantize::derived_duration;
 use crate::state::{DiscardRequest, RecordMode, RecordPhase, State};
 use crate::time::{duration_label, frames_to_ns};
 use crate::timeline;
@@ -601,11 +601,13 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
         return end_broken(state, ctx, state.clone(), take, &reason, &err);
     };
     fill_media(t, results);
-    if let Some(reason) = unusable(t) {
-        let err = CoreError::capture_failed(format!("take {n} is broken: {reason}"));
-        return end_broken(state, ctx, next, take, &reason, &err);
-    }
-    let frames = derive_duration_frames(t, fps);
+    let frames = match usable_length(t, fps) {
+        Ok(frames) => frames,
+        Err(reason) => {
+            let err = CoreError::capture_failed(format!("take {n} is broken: {reason}"));
+            return end_broken(state, ctx, next, take, &reason, &err);
+        }
+    };
     t.duration_frames = frames;
     t.status = TakeStatus::Ok;
     t.error = None;
@@ -768,22 +770,24 @@ fn recover(state: &State, take: &TakeId, results: &[ProbeResult]) -> Outcome {
         return ignore(state, format!("TakeProbed(recover) for the unknown {take}"));
     };
     fill_media(t, results);
-    let toast = if let Some(reason) = unusable(t) {
-        mark_broken(t, &format!("recovery failed: {reason}"));
-        Toast::new(ToastLevel::Error, format!("Take {n} couldn't be recovered"))
-            .with_body(format!("It is marked broken: {reason}."))
-    } else {
-        let frames = derive_duration_frames(t, fps);
-        t.duration_frames = frames;
-        t.error = None;
-        let recovered = format!("Recovered take {n} from the bog.");
-        if frames < MIN_TAKE_FRAMES {
-            t.status = TakeStatus::TooShort;
-            Toast::new(ToastLevel::Info, recovered)
-                .with_body("It was shorter than Lord Farquaad, so it stays in the bin.")
-        } else {
-            t.status = TakeStatus::Ok;
-            Toast::new(ToastLevel::Success, recovered).with_body("It is in the bin.")
+    let toast = match usable_length(t, fps) {
+        Err(reason) => {
+            mark_broken(t, &format!("recovery failed: {reason}"));
+            Toast::new(ToastLevel::Error, format!("Take {n} couldn't be recovered"))
+                .with_body(format!("It is marked broken: {reason}."))
+        }
+        Ok(frames) => {
+            t.duration_frames = frames;
+            t.error = None;
+            let recovered = format!("Recovered take {n} from the bog.");
+            if frames < MIN_TAKE_FRAMES {
+                t.status = TakeStatus::TooShort;
+                Toast::new(ToastLevel::Info, recovered)
+                    .with_body("It was shorter than Lord Farquaad, so it stays in the bin.")
+            } else {
+                t.status = TakeStatus::Ok;
+                Toast::new(ToastLevel::Success, recovered).with_body("It is in the bin.")
+            }
         }
     };
     let persisted = history::persist(state, next);
@@ -924,6 +928,17 @@ fn unusable(take: &Take) -> Option<String> {
         return Some("every source was lost during the take".to_owned());
     }
     None
+}
+
+/// A probed take's `durationFrames` at `fps` (A§2.2), or why it can't be
+/// used ([`unusable`]). A take whose length its files don't tell (audio
+/// without a duration) is broken, never a silent 0-frame `tooShort`.
+fn usable_length(take: &Take, fps: Fps) -> Result<Frame, String> {
+    if let Some(reason) = unusable(take) {
+        return Err(reason);
+    }
+    derived_duration(take, fps)
+        .ok_or_else(|| "the recorded files don't tell how long the take is".to_owned())
 }
 
 /// A video stream needs packets and a size; audio needs a rate and channels.

@@ -10,7 +10,8 @@ use qrec_core::ctx::Ctx;
 use qrec_core::ids::{ClipId, JobId, ReqId, TakeId, TimerId};
 use qrec_core::model::{Clip, Fps, Project, StreamKind, TakeStatus};
 use qrec_core::on_event::record::recovery_probes;
-use qrec_core::protocol::command::{Command, RecordModeArg};
+use qrec_core::parse::ffprobe::parse_ffprobe;
+use qrec_core::protocol::command::{Command, InsertAt, RecordModeArg};
 use qrec_core::protocol::effect::{Effect, LogLevel, ProbePurpose};
 use qrec_core::protocol::event::{Event, MediaInfo, ProbeResult, RecordedStream};
 use qrec_core::protocol::progress::ProgressPhase;
@@ -1968,6 +1969,157 @@ fn start_offsets_are_facts_from_the_start_and_survive_a_crash() {
         TakeStatus::Ok
     );
     assert_eq!(offsets(&recovered.state), measured);
+}
+
+/// What ffprobe 8.1.2 (`probe_argv`) prints for the mic of an audio-only
+/// take whose host was SIGKILLed after ~3.4 s: matroskamux never wrote a
+/// duration (no stream, tag or format duration), 36 FLAC frames.
+const CRASHED_MIC: &str = r#"{"programs":[],"stream_groups":[],"streams":[{"codec_name":"flac",
+    "sample_rate":"48000","channels":1,"r_frame_rate":"0/0","nb_read_packets":"36","tags":{}}],
+    "format":{"start_time":"0.000000"}}"#;
+
+/// An audio-only project whose take 1 was recording when its host died
+/// (its offset was measured when the capture started).
+fn crashed_audio_only() -> State {
+    let mut state = testkit::state(
+        ProjectBuilder::new()
+            .mic("A1", "alsa_input.mic")
+            .take("take-0001", 0)
+            .build(),
+    );
+    let take = state.project.takes.get_mut(&TakeId::numbered(1)).unwrap();
+    take.status = TakeStatus::Recording;
+    for s in &mut take.streams {
+        s.sample_rate = None;
+        s.channels = None;
+        s.duration_ns = None;
+        s.start_offset_ns = 4_000_000;
+    }
+    state
+}
+
+/// The `TakeProbed{Recover}` of `state`'s leftover take, every file
+/// answering `json`.
+fn recovered_from(state: &State, json: &str) -> Outcome {
+    let probes = recovery_probes(state);
+    let [Effect::Probe { take, jobs, .. }] = probes.as_slice() else {
+        panic!("{probes:?}")
+    };
+    let results = jobs
+        .iter()
+        .map(|j| ProbeResult {
+            id: j.id.clone(),
+            file: j.file.clone(),
+            info: parse_ffprobe(json, j.kind),
+        })
+        .collect();
+    event(
+        state,
+        Event::TakeProbed {
+            take: take.clone(),
+            purpose: ProbePurpose::Recover,
+            results,
+        },
+    )
+}
+
+#[test]
+fn an_audio_only_take_cut_short_by_a_crash_is_recovered_whole() {
+    let state = crashed_audio_only();
+    let take1 = TakeId::numbered(1);
+    let out = recovered_from(&state, CRASHED_MIC);
+    let t = &out.state.project.takes[&take1];
+    // 36 FLAC frames × 4608 samples = 3.456 s, after the 4 ms offset: 103
+    // frames at 30 fps, not a 0-frame tooShort.
+    assert_eq!(t.streams[0].duration_ns, Some(3_456_000_000));
+    assert_eq!(t.streams[0].start_offset_ns, 4_000_000);
+    assert_eq!(
+        (t.status, t.duration_frames, t.error.as_deref()),
+        (TakeStatus::Ok, 103, None)
+    );
+    assert_eq!(toasts(&out)[0].title, "Recovered take 1 from the bog.");
+    // A usable take: it can go on the timeline.
+    let added = cmd(
+        &out.state,
+        Some("a1"),
+        Command::ClipAdd {
+            take: take1.clone(),
+            at: InsertAt::End,
+        },
+    );
+    let clips = &added.state.project.timeline.clips;
+    assert_eq!(
+        (
+            clips.len(),
+            clips[0].take.clone(),
+            clips[0].in_,
+            clips[0].out
+        ),
+        (1, take1, 0, 103)
+    );
+}
+
+#[test]
+fn a_take_whose_length_is_unknown_is_broken_not_too_short() {
+    // An audio stream that says nothing about its length (no duration, no
+    // FLAC packets to count) is readable but can't be placed: the take is
+    // broken with a reason, never a silent 0-frame tooShort.
+    let unknown =
+        r#"{"streams":[{"codec_name":"opus","sample_rate":"48000","channels":1}],"format":{}}"#;
+    let out = recovered_from(&crashed_audio_only(), unknown);
+    let t = &out.state.project.takes[&TakeId::numbered(1)];
+    assert_eq!((t.status, t.duration_frames), (TakeStatus::Broken, 0));
+    assert_eq!(
+        t.error.as_deref(),
+        Some("recovery failed: the recorded files don't tell how long the take is")
+    );
+    assert_eq!(toasts(&out)[0].title, "Take 1 couldn't be recovered");
+
+    // The same when finalizing a take that stopped normally.
+    let project = ProjectBuilder::new()
+        .mic("A1", "alsa_input.mic")
+        .take("take-0001", 300)
+        .build();
+    let state = testkit::state(project);
+    let started = cmd(&state, Some("s1"), append()).state;
+    let files = files(&started);
+    let recording = event(
+        &started,
+        Event::CaptureStarted {
+            take: take2(),
+            t0_ns: 5,
+            files,
+            start_offset_ns: Default::default(),
+        },
+    )
+    .state;
+    let stopped = probing(&finalizing_from(&recording));
+    let results = stopped.project.takes[&take2()]
+        .streams
+        .iter()
+        .map(|s| ProbeResult {
+            id: s.id.clone(),
+            file: s.file.clone(),
+            info: parse_ffprobe(unknown, s.kind),
+        })
+        .collect();
+    let out = event(
+        &stopped,
+        Event::TakeProbed {
+            take: take2(),
+            purpose: ProbePurpose::Finalize,
+            results,
+        },
+    );
+    let t = &out.state.project.takes[&take2()];
+    assert_eq!(t.status, TakeStatus::Broken);
+    assert_eq!(
+        t.error.as_deref(),
+        Some("the recorded files don't tell how long the take is")
+    );
+    let view = finalized_view(&reply_to(&out, "t1").unwrap());
+    assert_eq!(view.status, TakeStatus::Broken);
+    assert!(out.state.runtime.record.is_idle());
 }
 
 // ------------------------------------------------------- stale events

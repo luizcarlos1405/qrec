@@ -168,6 +168,12 @@ For each non-missing video stream with `off = ns_to_frame_round(startOffsetNs)`:
 `durationFrames` is the minimum over those streams. Audio-only takes use
 `ns_to_frame_floor(startOffsetNs + durationNs)` of the shortest track. It is
 re-derived whenever the canvas fps changes (including undo/redo of one).
+An audio `durationNs` is the container's; a file cut short by a crash has
+none, so it comes from the packets too: FLAC frames of 4608 samples
+(`capture_plan::FLAC_BLOCK_SAMPLES`, the `blocksize` the engine pins; only
+the last frame of a normally closed file is shorter) *(measured: 36 packets
+= 3.456 s, as decoded)*. A finished take whose length its files don't tell
+is `broken` with that reason, never a 0-frame `tooShort`.
 
 ### A§2.3 Validation (`validate::validate(&Project) -> Vec<Issue>`)
 
@@ -1155,8 +1161,9 @@ filled to T1 before EOS.
   `skip-to-first`, a bin attached after N s of Live mode starts with N s of
   frozen frame.
 - Audio: `queue ! audioconvert ! audioresample ! audiorate skip-to-first=true
-  ! audio/x-raw,rate=48000 ! flacenc ! matroskamux offset-to-zero=true !
-  filesink`. A stream shorter than one FLAC block (4608 samples) is padded
+  ! audio/x-raw,rate=48000 ! flacenc blocksize=4608 ! matroskamux
+  offset-to-zero=true ! filesink` (the block size is pinned: a crashed file's
+  length is its packets × 4608, A§2.2). A stream shorter than one FLAC block (4608 samples) is padded
   with silence to 120 ms before EOS: flacenc sets its caps with its first
   block, and an earlier EOS pushes the segment before the caps *(measured)*.
 - `pipewiresrc keepalive-time=<floor(1000·den/num)>` so a static screen still
@@ -1220,8 +1227,11 @@ Every ffmpeg/ffprobe command line is built in the core (SPEC §3.1):
   (with its temp path).
 - `probe_argv(file, kind)`: video `ffprobe -v error -select_streams v:0
   -count_packets -show_entries stream=nb_read_packets,r_frame_rate,width,height,pix_fmt,color_range,color_space:format=start_time
-  -of json`; audio adds `sample_rate,channels,duration`. Parsers live in
-  `parse/ffprobe.rs` (pure).
+  -of json`; audio adds `codec_name,sample_rate,channels,duration`. Parsers
+  live in `parse/ffprobe.rs` (pure). A duration is the stream's, the
+  `DURATION` tag or the format's; without any (a crash) it comes from the
+  counted packets: video frames at `r_frame_rate`, FLAC frames × 4608
+  samples (A§2.2).
 - `silence_argv(file, threshold_db, min_silence_ms)`: `ffmpeg … -i file:<f>
   -af silencedetect=noise=<t>dB:d=<s> -vn -f null -`; `parse/silencedetect.rs`
   turns stderr into intervals (a trailing silence without `silence_end` ends
