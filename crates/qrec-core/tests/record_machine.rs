@@ -1,6 +1,8 @@
 //! The recording state machine (A§5.3), driven row by row through `apply`
 //! and `on_event` with fake shell events, plus discard (A§5.5) and recovery.
 
+use std::collections::BTreeMap;
+
 use pretty_assertions::assert_eq;
 use qrec_core::apply::record::ENGINE_STUCK;
 use qrec_core::capture_plan::plan_files;
@@ -169,6 +171,7 @@ fn recording(wait: bool) -> State {
             take: take2(),
             t0_ns: 5,
             files,
+            start_offset_ns: Default::default(),
         },
     )
     .state
@@ -409,6 +412,7 @@ fn the_live_pipeline_follows_the_phase() {
             take: take2(),
             t0_ns: 1,
             files,
+            start_offset_ns: Default::default(),
         },
     );
     assert_eq!(live(&out), []);
@@ -450,6 +454,7 @@ fn the_live_pipeline_follows_the_phase() {
                 take: take2(),
                 t0_ns: 1,
                 files: vec![],
+                start_offset_ns: Default::default(),
             },
         )
         .state,
@@ -779,6 +784,7 @@ fn starting_capture_started() {
             take: take2(),
             t0_ns: 77,
             files: files.clone(),
+            start_offset_ns: Default::default(),
         },
     );
     assert_eq!(
@@ -811,6 +817,7 @@ fn starting_capture_started() {
             take: take2(),
             t0_ns: 77,
             files: vec![],
+            start_offset_ns: Default::default(),
         },
     );
     assert!(replies(&out).is_empty());
@@ -835,6 +842,7 @@ fn starting_capture_started() {
             take: TakeId::numbered(9),
             t0_ns: 1,
             files: vec![],
+            start_offset_ns: Default::default(),
         },
     );
     assert_ignored(
@@ -843,6 +851,7 @@ fn starting_capture_started() {
             take: take2(),
             t0_ns: 1,
             files: vec![],
+            start_offset_ns: Default::default(),
         },
     );
     assert_ignored(
@@ -851,6 +860,7 @@ fn starting_capture_started() {
             take: take2(),
             t0_ns: 1,
             files: vec![],
+            start_offset_ns: Default::default(),
         },
     );
 }
@@ -1557,6 +1567,7 @@ fn record_over_replaces_the_run() {
             take: take2(),
             t0_ns: 1,
             files: vec![],
+            start_offset_ns: Default::default(),
         },
     )
     .state;
@@ -1596,6 +1607,7 @@ fn record_over_a_changed_target_appends() {
                 take: take2(),
                 t0_ns: 1,
                 files: vec![],
+                start_offset_ns: Default::default(),
             },
         )
         .state,
@@ -1662,6 +1674,7 @@ fn discard_after_record_over_puts_the_clips_back() {
             take: take2(),
             t0_ns: 1,
             files: vec![],
+            start_offset_ns: Default::default(),
         },
     )
     .state;
@@ -1694,6 +1707,7 @@ fn discard_skips_takes_that_were_never_placed() {
             take: take3.clone(),
             t0_ns: 1,
             files: vec![],
+            start_offset_ns: Default::default(),
         },
     )
     .state;
@@ -1897,6 +1911,65 @@ fn recovery_probes_leftover_takes() {
     );
 }
 
+#[test]
+fn start_offsets_are_facts_from_the_start_and_survive_a_crash() {
+    let state = starting(false);
+    let files = files(&state);
+    let out = event(
+        &state,
+        Event::CaptureStarted {
+            take: take2(),
+            t0_ns: 77,
+            files,
+            start_offset_ns: BTreeMap::from([
+                ("L1".to_owned(), 15_261_442),
+                ("A1".to_owned(), 3_906_126),
+                ("L9".to_owned(), 1),
+            ]),
+        },
+    );
+    let offsets = |s: &State| -> Vec<(String, i64)> {
+        s.project.takes[&take2()]
+            .streams
+            .iter()
+            .map(|st| (st.id.clone(), st.start_offset_ns))
+            .collect()
+    };
+    let measured = [("L1".to_owned(), 15_261_442), ("A1".to_owned(), 3_906_126)];
+    assert_eq!(offsets(&out.state), measured);
+    assert!(
+        out.effects.contains(&Effect::WriteProject),
+        "persisted at once: {:?}",
+        out.effects
+    );
+    assert!(
+        out.effects.iter().any(|e| matches!(
+            e,
+            Effect::Log { level: LogLevel::Warn, message } if message.contains("unknown stream L9")
+        )),
+        "{:?}",
+        out.effects
+    );
+
+    // The host dies while recording. The next host opens what was written
+    // and recovers the take: the measured offsets stay.
+    let reopened = testkit::state(out.state.project.clone());
+    assert_eq!(recovery_probes(&reopened).len(), 1);
+    let recovered = event(
+        &reopened,
+        Event::TakeProbed {
+            take: take2(),
+            purpose: ProbePurpose::Recover,
+            results: probed(&reopened, &take2(), 90),
+        },
+    );
+    assert_eq!(
+        recovered.state.project.takes[&take2()].status,
+        TakeStatus::Ok
+    );
+    assert_eq!(offsets(&recovered.state), measured);
+}
+
 // ------------------------------------------------------- stale events
 
 #[test]
@@ -1921,6 +1994,7 @@ fn events_for_other_phases_are_ignored() {
                 take: stale_take.clone(),
                 t0_ns: 0,
                 files: vec![],
+                start_offset_ns: Default::default(),
             },
             Event::CaptureStopped {
                 take: stale_take.clone(),
@@ -1975,6 +2049,7 @@ fn shell(state: &State, effect: &Effect) -> Vec<Event> {
             take: plan.take.clone(),
             t0_ns: 1_000,
             files: plan_files(plan),
+            start_offset_ns: Default::default(),
         }],
         Effect::StopCapture { take, .. } => vec![Event::CaptureStopped {
             take: take.clone(),

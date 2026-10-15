@@ -534,7 +534,8 @@ pub struct ProbeJob { pub id: String, pub file: String, pub kind: StreamKind, pu
 ```rust
 pub enum Event {
     Capabilities(Capabilities),
-    CaptureStarted { take: TakeId, t0_ns: u64, files: Vec<String> },
+    CaptureStarted { take: TakeId, t0_ns: u64, files: Vec<String>,
+                     start_offset_ns: BTreeMap<String, i64> }, // per stream id, measured (SPEC §5.2)
     CaptureFailed { take: Option<TakeId>, source: Option<String>, message: String },
     StreamLost { take: TakeId, stream: String, message: String },
     RecordClock { take: TakeId, elapsed_ns: u64 },          // ~4 Hz, pipeline clock
@@ -661,7 +662,7 @@ including `Play`, `Undo` and `Export`, is `Busy` (SPEC §5.3.3).
 | Idle | Stop/Cancel | `Invalid` "not recording" |
 | Countdown | TimerFired (current timer) | next tick, or begin take ⇒ Starting |
 | Countdown | Stop/Toggle/Cancel | `CancelTimer` ⇒ Idle; start req gets `Invalid` "countdown cancelled"; caller gets Ok |
-| Starting | CaptureStarted | ⇒ Recording; reply start req `RecordStartedView` (unless `wait`) |
+| Starting | CaptureStarted | ⇒ Recording; record the streams' `startOffsetNs` (persist: every bin passed its first buffer, and a crash never reaches `CaptureStopped`); reply start req `RecordStartedView` (unless `wait`) |
 | Starting | CaptureFailed | take `broken` (+`error`) ⇒ Idle; reply start req `capture_failed` |
 | Starting | Stop/Toggle | `StopCapture{cancel:false}` ⇒ Finalizing; start req gets its started reply |
 | Starting / Recording | Cancel | `StopCapture{cancel:true}` ⇒ Finalizing(cancelled) |
@@ -670,7 +671,7 @@ including `Play`, `Undo` and `Export`, is `Busy` (SPEC §5.3.3).
 | Recording | StreamLost | mark layer/track `missing` (persist); last stream lost ⇒ act as Stop |
 | Finalizing | Stop | join the stop waiters; Start/Toggle/Cancel ⇒ `Busy` "finalizing take N" |
 | Finalizing | TakeDiscardLast | remember `discard` (applied after placement, A§5.5) |
-| Finalizing | CaptureStopped | `timed_out` ⇒ `broken`; else record offsets, `Probe{Finalize}` |
+| Finalizing | CaptureStopped | `timed_out` ⇒ `broken`; else record offsets (the same values, or the first ones for a take stopped while Starting), `Probe{Finalize}` |
 | Finalizing | TakeProbed | see below ⇒ Idle |
 | any | EngineWedged | take `broken`; future starts fail with "the capture engine is stuck (GPU driver?); restart Qrec" |
 

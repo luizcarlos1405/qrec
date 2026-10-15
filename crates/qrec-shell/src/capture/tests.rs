@@ -290,7 +290,13 @@ fn records_screens_cameras_and_audio_in_sync() {
     );
     let started_at = Instant::now();
     h.start(&plan);
-    let Event::CaptureStarted { take, files, .. } = h.started() else {
+    let Event::CaptureStarted {
+        take,
+        files,
+        start_offset_ns,
+        ..
+    } = h.started()
+    else {
         unreachable!()
     };
     // The health window passed before CaptureStarted.
@@ -366,6 +372,13 @@ fn records_screens_cameras_and_audio_in_sync() {
     let offsets: Vec<i64> = streams.iter().map(|s| s.start_offset_ns).collect();
     let spread = offsets.iter().max().unwrap() - offsets.iter().min().unwrap();
     assert!(spread < 70_000_000, "start offsets {offsets:?}");
+    // The offsets were already known (and reported) when the take started,
+    // so a take recovered after a crash keeps them.
+    let at_stop: std::collections::BTreeMap<String, i64> = streams
+        .iter()
+        .map(|s| (s.id.clone(), s.start_offset_ns))
+        .collect();
+    assert_eq!(start_offset_ns, at_stop);
 
     let log = fs::read_to_string(h.file("takes/take-0001/recorder.log")).unwrap();
     for needle in [

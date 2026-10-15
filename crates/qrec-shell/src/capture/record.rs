@@ -235,6 +235,14 @@ impl RecordBin {
         self.probe.lock().first
     }
 
+    /// `startOffsetNs` (SPEC §5.2): the running time of the first passed
+    /// buffer minus T0; 0 before one passed.
+    pub fn start_offset_ns(&self, t0: u64) -> i64 {
+        self.first_running().map_or(0, |first| {
+            i64::try_from(first.saturating_sub(t0)).unwrap_or(i64::MAX)
+        })
+    }
+
     /// Unlinks the bin from its tee as soon as the tee pad is idle (no
     /// buffer in flight), then reports `Unlinked`. Idempotent.
     pub fn begin_close(&mut self, tx: &Sender<Cmd>, tag: u64) {

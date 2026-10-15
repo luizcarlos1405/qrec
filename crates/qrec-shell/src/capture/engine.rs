@@ -12,8 +12,9 @@
 //! - **Starting**: record bins are attached at T0 (the running time after
 //!   attaching). `CaptureStarted` is sent once every filesink wrote its
 //!   first buffer and the health window (`health_check_ms`) passed without
-//!   errors; no data within `first_buffer_ms`, or any error, is
-//!   `CaptureFailed` naming the source.
+//!   errors, with each stream's `startOffsetNs` (known from its first
+//!   buffer, so a crash later doesn't lose them); no data within
+//!   `first_buffer_ms`, or any error, is `CaptureFailed` naming the source.
 //! - **Recording**: `RecordClock` every 250 ms from the pipeline clock; an
 //!   error attributable to one branch (its source or anything in its bin)
 //!   EOSes that branch and sends `StreamLost`; a pipeline-wide error loses
@@ -1516,9 +1517,7 @@ impl Engine {
             .map(|b| RecordedStream {
                 id: b.id.clone(),
                 file: b.file.clone(),
-                start_offset_ns: b
-                    .first_running()
-                    .map_or(0, |first| first.saturating_sub(run.t0) as i64),
+                start_offset_ns: b.start_offset_ns(run.t0),
                 eos: b.eos,
             })
             .collect();
@@ -1677,6 +1676,14 @@ impl Engine {
                         next_clock: now + CLOCK_INTERVAL,
                     };
                     let files: Vec<String> = run.bins.iter().map(|b| b.file.clone()).collect();
+                    // Every bin passed its first buffer (it wrote one): the
+                    // offsets are known now, not only at the stop (a crash
+                    // never gets there).
+                    let start_offset_ns = run
+                        .bins
+                        .iter()
+                        .map(|b| (b.id.clone(), b.start_offset_ns(run.t0)))
+                        .collect();
                     run.log.line("recording");
                     let take = run.plan.take.clone();
                     let t0 = run.t0;
@@ -1684,6 +1691,7 @@ impl Engine {
                         take: take.clone(),
                         t0_ns: t0,
                         files,
+                        start_offset_ns,
                     });
                     self.emit_clock(&take, t0);
                 } else if !all_written && now >= first_buffer_by {

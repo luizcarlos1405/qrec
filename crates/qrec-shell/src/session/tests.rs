@@ -1533,6 +1533,7 @@ fn a_take_is_committed_before_capture_and_finalized_from_events() {
         take: take(2),
         t0_ns: 0,
         files: files.clone(),
+        start_offset_ns: Default::default(),
     }));
     let started = start.last().unwrap().unwrap();
     assert_eq!(started["result"]["take"], "take-0002");
@@ -1608,6 +1609,7 @@ fn a_gone_requester_is_forgotten() {
         take: take(2),
         t0_ns: 0,
         files: vec![],
+        start_offset_ns: Default::default(),
     }));
     assert!(start.last().is_none(), "nobody to answer");
     assert!(!s.state().runtime.record.is_idle(), "the recording goes on");
