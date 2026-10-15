@@ -9,6 +9,8 @@
 //!   the oldest kept entry. Carrying its own seq keeps it meaningful when a
 //!   crash lands between a history rewrite and the commit record. A bare
 //!   project (no wrapper) is accepted too; its seq then comes from the head.
+//! - `.qrec/history.cursor`: the head's cursor as text (`12\n`), for readers
+//!   (SPEC §6.2, §8.1); never read back.
 
 use qrec_core::hash::sha256_hex;
 use qrec_core::history::HistoryEntry;
@@ -95,6 +97,11 @@ pub fn base_bytes(base_seq: u64, project: &Project) -> Vec<u8> {
         serde_json::to_vec(&BaseRef { base_seq, project }).expect("bases always serialize");
     bytes.push(b'\n');
     bytes
+}
+
+/// `.qrec/history.cursor`: the current seq and a newline (SPEC §8.1).
+pub fn cursor_bytes(cursor: u64) -> Vec<u8> {
+    format!("{cursor}\n").into_bytes()
 }
 
 /// One history line, newline included.
@@ -209,11 +216,16 @@ pub fn parse_history(bytes: &[u8]) -> Result<ParsedHistory, CoreError> {
                 continue;
             }
             Err(e) => {
+                // Every open reads the whole history (`qrec history` too), so
+                // the way out is the file itself.
                 return Err(CoreError::new(
                     ErrorCode::Invalid,
                     format!(".qrec/history.jsonl line {number} is corrupt: {e}"),
                 )
-                .with_hint("fix or delete that line; `qrec history` lists the entries that load"));
+                .with_hint(format!(
+                    "no command can open the project until line {number} of .qrec/history.jsonl \
+                     is fixed or deleted (deleting it loses that undo step)"
+                )));
             }
         };
         if let Some(prev) = entries.last()
@@ -279,6 +291,13 @@ mod tests {
                 .starts_with(".qrec/history.jsonl line 2 is corrupt"),
             "{}",
             err.message
+        );
+        // `qrec history` reads the same file: the hint can't send people there.
+        let hint = err.hint.unwrap();
+        assert!(!hint.contains("qrec history"), "{hint}");
+        assert!(
+            hint.contains("line 2 of .qrec/history.jsonl is fixed or deleted"),
+            "{hint}"
         );
 
         // A bad last line followed by a torn tail: the bad line isn't last.

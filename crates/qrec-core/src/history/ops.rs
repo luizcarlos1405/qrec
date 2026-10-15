@@ -823,8 +823,14 @@ mod tests {
         // Undo, redo and multi-step moves: the facts follow the fps.
         let undone = undo_with(&s2, 2, validated).unwrap();
         assert_eq!(undone.project, s0.project);
-        assert_eq!(redo_with(&undone, 1, validated).unwrap().project, s1.project);
-        assert_eq!(redo_with(&undone, 2, validated).unwrap().project, s2.project);
+        assert_eq!(
+            redo_with(&undone, 1, validated).unwrap().project,
+            s1.project
+        );
+        assert_eq!(
+            redo_with(&undone, 2, validated).unwrap().project,
+            s2.project
+        );
         assert_eq!(restore_with(&s2, 0, validated).unwrap().project, s0.project);
         // Replaying from the base (A§7.7) too.
         let replayed = replay(&s0.project, &s2.history.entries, validated).unwrap();

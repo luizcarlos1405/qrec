@@ -13,10 +13,13 @@
 //! file is the project, the history lines are kept and the cursor is the
 //! entry whose `afterHash` matches the file.
 //!
-//! Recovery mode (`qrec history`, `qrec history restore`) never reads
-//! `qrec.json` as the project: it uses `head.project`, else a valid
-//! `qrec.json`, else the base replayed with the forward patches, with the
-//! takes found under `takes/` added back for the Recover probe.
+//! Recovery mode (`qrec history`, `qrec history restore`) never loads an
+//! unusable `qrec.json`: it uses `head.project`, else a valid `qrec.json`,
+//! else the base replayed with the forward patches, with the takes found
+//! under `takes/` added back for the Recover probe. A missing or invalid
+//! file only sets `disk_invalid`; a valid one that differs from the head
+//! is an external edit like on any open (SPEC §8.1: it becomes an
+//! "External edit" entry first, so a restore can be undone back to it).
 
 use std::fs;
 use std::io;
@@ -27,9 +30,10 @@ use qrec_core::hash::json_hash;
 use qrec_core::history::HistoryEntry;
 use qrec_core::history::ops::{apply_patch_with, unchecked};
 use qrec_core::history::view::undoable_view;
-use qrec_core::model::{Project, Scene, Stream, StreamKind, Take, TakeStatus};
+use qrec_core::model::{Project, Stream, StreamKind, Take, TakeStatus};
 use qrec_core::state::{History, UiState};
 use qrec_core::{CoreError, ErrorCode, TakeId};
+use serde_json::Value;
 
 use super::Check;
 use super::format::{self, Head, ParsedHistory};
@@ -86,16 +90,22 @@ pub fn load(paths: &ProjectPaths, opts: &LoadOpts) -> Result<Loaded, ShellError>
 
     if opts.recovery {
         if let Some(head) = head {
-            let disk_invalid = match &file_sha {
-                None => Some("qrec.json is missing".to_owned()),
-                Some(sha) if *sha == head.project_sha256 => None,
-                Some(_) => Some(
-                    "qrec.json doesn't match the history (recovery mode doesn't load it)"
-                        .to_owned(),
-                ),
-            };
+            let clean = file_sha.as_deref() == Some(head.project_sha256.as_str());
             let mut loaded = with_head(head, base, parsed, ui, notes);
-            loaded.disk_invalid = disk_invalid;
+            match file.as_deref() {
+                None => loaded.disk_invalid = Some("qrec.json is missing".to_owned()),
+                Some(_) if clean => {}
+                Some(bytes) => match parse_file(bytes, opts.check) {
+                    // A valid hand edit is merged first, as on any open.
+                    Ok(migrated) => {
+                        loaded.migrated_from = migrated_original(&migrated, Some(bytes));
+                        if migrated.project != loaded.project {
+                            loaded.external = Some(Ok(Box::new(migrated.project)));
+                        }
+                    }
+                    Err(e) => loaded.disk_invalid = Some(file_problem(&e)),
+                },
+            }
             loaded.accepted_sha = file_sha;
             return Ok(loaded);
         }
@@ -112,7 +122,7 @@ pub fn load(paths: &ProjectPaths, opts: &LoadOpts) -> Result<Loaded, ShellError>
                     file_sha,
                 ));
             }
-            Some(Err(e)) => format!("qrec.json is invalid: {}", e.message),
+            Some(Err(e)) => file_problem(&e),
             None => "qrec.json is missing".to_owned(),
         };
         let mut loaded = rebuild(paths, base, parsed, ui, notes)?;
@@ -172,13 +182,17 @@ fn invalid_file(e: &CoreError, restore_seq: Option<u64>) -> CoreError {
         ),
         None => "fix it; there is no history to rebuild it from".to_owned(),
     };
-    let message = e.message.strip_prefix("qrec.json ").map_or_else(
-        || format!("qrec.json is invalid: {}", e.message),
-        |rest| format!("qrec.json {rest}"),
-    );
-    let mut err = CoreError::new(ErrorCode::Invalid, message).with_hint(hint);
+    let mut err = CoreError::new(ErrorCode::Invalid, file_problem(e)).with_hint(hint);
     err.details = e.details.clone();
     err
+}
+
+/// Why `qrec.json` can't be loaded, starting with `qrec.json`.
+fn file_problem(e: &CoreError) -> String {
+    e.message.strip_prefix("qrec.json ").map_or_else(
+        || format!("qrec.json is invalid: {}", e.message),
+        |rest| format!("qrec.json {rest}"),
+    )
 }
 
 fn parse_file(bytes: &[u8], check: Check) -> Result<qrec_core::migrate::Migrated, CoreError> {
@@ -353,6 +367,14 @@ fn without_head(
 
 /// No head and no usable `qrec.json`: the base replayed with every forward
 /// patch that still applies, plus the takes found under `takes/`.
+///
+/// Take facts aren't in the patches (A§7.2), and the base usually predates
+/// the takes, so each take on disk joins the pool right before the first
+/// entry that uses it (its clip, or its scene), with the scene the project
+/// had then: what `begin_take` copied when it was recorded, so later
+/// patches of that scene still apply. It comes back `recording`, without
+/// media facts: the Recover probe finalizes it (A§5.3), and until then the
+/// project doesn't validate (a restore waits for the probes, A§7.7).
 fn rebuild(
     paths: &ProjectPaths,
     base: Option<(Option<u64>, Project)>,
@@ -369,22 +391,28 @@ fn rebuild(
     };
     let base_seq = base_seq.unwrap_or(0);
     let mut project = base_project.clone();
-    let readded = readd_takes(paths, &mut project);
-    if !readded.is_empty() {
-        notes.push(format!(
-            "added back {} take(s) found under takes/: {}",
-            readded.len(),
-            readded
-                .iter()
-                .map(TakeId::as_str)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
+    let mut on_disk = takes_on_disk(paths, &project);
+    let mut readded: Vec<TakeId> = Vec::new();
     let mut kept: Vec<HistoryEntry> = Vec::new();
     for entry in parsed.entries.into_iter().filter(|e| e.seq > base_seq) {
+        let (used, later): (Vec<FoundTake>, Vec<FoundTake>) = on_disk
+            .into_iter()
+            .partition(|take| mentions(&entry, &take.id));
+        on_disk = later;
+        for take in &used {
+            readd(&mut project, take);
+            readded.push(take.id.clone());
+        }
         match apply_patch_with(&project, &entry.forward, unchecked) {
-            Ok(next) => {
+            Ok(mut next) => {
+                // The entry that first puts a take's clip on the timeline is
+                // its placement (discard-last finds it by `placed`, A§5.5).
+                for take in &used {
+                    let placed = next.timeline.clips.iter().any(|c| c.take == take.id);
+                    if let Some(t) = next.takes.get_mut(&take.id) {
+                        t.placed = placed;
+                    }
+                }
                 project = next;
                 kept.push(entry);
             }
@@ -396,6 +424,23 @@ fn rebuild(
                 break;
             }
         }
+    }
+    // Takes no kept entry uses: in the bin, with the latest scene.
+    for take in &on_disk {
+        readd(&mut project, take);
+        readded.push(take.id.clone());
+    }
+    readded.sort();
+    if !readded.is_empty() {
+        notes.push(format!(
+            "added back {} take(s) found under takes/: {}",
+            readded.len(),
+            readded
+                .iter()
+                .map(TakeId::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
     let cursor = kept.last().map_or(base_seq, |e| e.seq);
     let next_seq = (cursor + 1).max(base_seq + 1);
@@ -425,82 +470,100 @@ fn rebuild(
     })
 }
 
-/// Adds every `takes/take-N` folder the project doesn't know as a take
-/// still `recording`, with a stream per media file (`L1-….mkv` is video,
-/// `A1-….mka` audio), for the Recover probe to finalize.
-fn readd_takes(paths: &ProjectPaths, project: &mut Project) -> Vec<TakeId> {
-    let mut added = Vec::new();
-    for id in super::take_dirs(paths) {
-        if project.takes.contains_key(&id) {
-            continue;
-        }
-        let dir = paths.take_dir(&id);
-        let mut streams: Vec<Stream> = fs::read_dir(&dir)
-            .into_iter()
-            .flatten()
-            .filter_map(Result::ok)
-            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
-            .filter_map(|e| {
-                let name = e.file_name().into_string().ok()?;
-                let kind = match name.rsplit_once('.')?.1 {
-                    "mkv" => StreamKind::Video,
-                    "mka" => StreamKind::Audio,
-                    _ => return None,
-                };
-                let stream_id = name.split('-').next()?.to_owned();
-                Some(Stream {
-                    id: stream_id,
-                    kind,
-                    file: format!("takes/{id}/{name}"),
-                    width: None,
-                    height: None,
-                    sample_rate: None,
-                    channels: None,
-                    start_offset_ns: 0,
-                    duration_ns: None,
-                    frames: None,
-                    fps: None,
+/// A `takes/take-N` folder the project doesn't know.
+struct FoundTake {
+    id: TakeId,
+    /// One per media file (`L1-….mkv` is video, `A1-….mka` audio), by id.
+    streams: Vec<Stream>,
+    recorded_at: Option<DateTime<Utc>>,
+}
+
+/// The take folders `project` doesn't have, with their media files.
+fn takes_on_disk(paths: &ProjectPaths, project: &Project) -> Vec<FoundTake> {
+    super::take_dirs(paths)
+        .into_iter()
+        .filter(|id| !project.takes.contains_key(id))
+        .map(|id| {
+            let dir = paths.take_dir(&id);
+            let mut streams: Vec<Stream> = fs::read_dir(&dir)
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+                .filter_map(|e| {
+                    let name = e.file_name().into_string().ok()?;
+                    let kind = match name.rsplit_once('.')?.1 {
+                        "mkv" => StreamKind::Video,
+                        "mka" => StreamKind::Audio,
+                        _ => return None,
+                    };
+                    let stream_id = name.split('-').next()?.to_owned();
+                    Some(Stream {
+                        id: stream_id,
+                        kind,
+                        file: format!("takes/{id}/{name}"),
+                        width: None,
+                        height: None,
+                        sample_rate: None,
+                        channels: None,
+                        start_offset_ns: 0,
+                        duration_ns: None,
+                        frames: None,
+                        fps: None,
+                    })
                 })
-            })
-            .collect();
-        streams.sort_by(|a, b| a.id.cmp(&b.id));
-        let recorded_at = fs::metadata(&dir)
-            .and_then(|m| m.modified())
-            .map(DateTime::<Utc>::from)
-            .unwrap_or(project.created_at);
-        let scene = Scene {
-            layers: project
-                .scene
-                .layers
-                .iter()
-                .filter(|l| streams.iter().any(|s| s.id == l.id.as_str()))
-                .cloned()
-                .collect(),
-            audio: project
-                .scene
-                .audio
-                .iter()
-                .filter(|t| streams.iter().any(|s| s.id == t.id.as_str()))
-                .cloned()
-                .collect(),
-        };
-        project.next_take_number = project.next_take_number.max(id.number() + 1);
-        project.takes.insert(
-            id.clone(),
-            Take {
-                status: TakeStatus::Recording,
-                recorded_at,
-                duration_frames: 0,
-                scene,
+                .collect();
+            streams.sort_by(|a, b| a.id.cmp(&b.id));
+            let recorded_at = fs::metadata(&dir)
+                .and_then(|m| m.modified())
+                .map(DateTime::<Utc>::from)
+                .ok();
+            FoundTake {
+                id,
                 streams,
-                error: None,
-                placed: false,
-                replaced: Vec::new(),
-            },
-        );
-        added.push(id);
+                recorded_at,
+            }
+        })
+        .collect()
+}
+
+/// Adds `found` to the pool as a take still `recording` (for the Recover
+/// probe to finalize), with the project's scene as it is now, like
+/// `begin_take` copies it.
+fn readd(project: &mut Project, found: &FoundTake) {
+    project.next_take_number = project.next_take_number.max(found.id.number() + 1);
+    project.takes.insert(
+        found.id.clone(),
+        Take {
+            status: TakeStatus::Recording,
+            recorded_at: found.recorded_at.unwrap_or(project.created_at),
+            duration_frames: 0,
+            scene: project.scene.clone(),
+            streams: found.streams.clone(),
+            error: None,
+            placed: false,
+            replaced: Vec::new(),
+        },
+    );
+}
+
+/// Whether redoing `entry` uses `take`: an op under `/takes/<take>`, or a
+/// value naming it (a clip placed on it). Patches never hold take facts
+/// (A§7.2), so this is how the first entry that needs the take is found.
+fn mentions(entry: &HistoryEntry, take: &TakeId) -> bool {
+    fn walk(value: &Value, id: &str, prefix: &str) -> bool {
+        match value {
+            Value::String(s) => {
+                s == id
+                    || s.strip_prefix(prefix)
+                        .is_some_and(|rest| rest == id || rest.starts_with(&format!("{id}/")))
+            }
+            Value::Array(items) => items.iter().any(|v| walk(v, id, prefix)),
+            Value::Object(members) => members.values().any(|v| walk(v, id, prefix)),
+            _ => false,
+        }
     }
-    added
+    serde_json::to_value(&entry.forward).is_ok_and(|v| walk(&v, take.as_str(), "/takes/"))
 }
 
 // ------------------------------------------------------------------- files

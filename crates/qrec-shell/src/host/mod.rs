@@ -12,7 +12,9 @@
 //! replies → drop the lock.
 //!
 //! **Exit rules** (A§8.6, Headless and Cli): exit once Idle (not recording,
-//! no jobs) with no open connection has held for 2 s; a headless host that
+//! no jobs, no take waiting for its Recover probe, so a crashed take's
+//! recovery is finished and saved instead of killed with the host) with no
+//! open connection has held for 2 s; a headless host that
 //! never got a request exits 60 s after `ready`; an in-process CLI host whose
 //! own command finished exits at once if nobody else used it. `shutdown`:
 //! stop accepting, finalize a recording, let jobs finish, exit. The first
@@ -37,6 +39,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use chrono::{SubsecRound, Utc};
+use qrec_core::on_event::record::recovering;
 use qrec_core::protocol::{Command, Progress, Query};
 use qrec_core::state::HostKind;
 use qrec_core::{CoreError, State};
@@ -192,7 +195,7 @@ impl HostEnd {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ExitInputs {
     pub now: Instant,
-    /// Recording (any phase but Idle) or running jobs.
+    /// Recording (any phase but Idle), running jobs or takes being recovered.
     pub busy: bool,
     /// Open IPC connections.
     pub open: usize,
@@ -544,7 +547,9 @@ impl Host {
             let mut done = |state: &State| {
                 let now = Instant::now();
                 let own_done = own.as_mut().map(|own| own());
-                let busy = !state.runtime.record.is_idle() || !state.runtime.jobs.is_empty();
+                let busy = !state.runtime.record.is_idle()
+                    || !state.runtime.jobs.is_empty()
+                    || recovering(state);
                 if busy {
                     state_quiet_since = None;
                 } else if state_quiet_since.is_none() {

@@ -5,7 +5,7 @@
 //! the A§7.7 rules, external-edit merges, undo/redo/restore on disk, UI
 //! coalescing and interrupts.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -1118,6 +1118,335 @@ fn a_restore_rewrites_qrec_json_and_keeps_the_broken_one() {
         fs::read(h.dir.join(".qrec").join(&copies[0])).unwrap(),
         b"{ oops"
     );
+}
+
+fn recovery(mutating: bool) -> OpenOpts {
+    OpenOpts {
+        host: HostKind::Cli,
+        mutating,
+        recovery: true,
+    }
+}
+
+/// Every file of the project but the lock and the logs, with its bytes.
+fn snapshot(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let relative = path.strip_prefix(root).unwrap().to_path_buf();
+            if relative == Path::new(".qrec/lock") || relative.starts_with(".qrec/logs") {
+                continue;
+            }
+            if entry.file_type().unwrap().is_dir() {
+                walk(root, &path, out);
+            } else {
+                out.insert(relative, fs::read(&path).unwrap());
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    walk(dir, dir, &mut out);
+    out
+}
+
+/// The `.qrec/qrec.corrupt-*` copies' contents.
+fn corrupt_copies(h: &Harness) -> Vec<Vec<u8>> {
+    fs::read_dir(h.dir.join(".qrec"))
+        .unwrap()
+        .map(|e| e.unwrap())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("qrec.corrupt-"))
+        .map(|e| fs::read(e.path()).unwrap())
+        .collect()
+}
+
+#[test]
+fn an_unconfirmed_restore_never_touches_the_files() {
+    // Whatever the load finds to repair, a restore that doesn't run writes
+    // nothing, and a confirmed one keeps the broken file's own bytes
+    // (SPEC §11, §16; A§7.7).
+    let broken: &[u8] = b"{\"version\":1,\"name\":\"my unsaved hand edit\", ";
+    for case in [
+        "torn-line",
+        "uncommitted-line",
+        "no-head",
+        "nothing-to-repair",
+    ] {
+        let h = Harness::with_sample(&format!("unconfirmed-{case}"));
+        {
+            let mut s = h.open(true).unwrap();
+            for id in ["c001", "c002"] {
+                send(
+                    &mut s,
+                    Command::ClipRemove {
+                        clips: vec![clip(id)],
+                    },
+                    false,
+                )
+                .unwrap();
+            }
+        }
+        let history = h.paths().history_file();
+        let mut lines = fs::read(&history).unwrap();
+        match case {
+            // A crash in the middle of an append…
+            "torn-line" => lines.extend_from_slice(b"{\"seq\":3,\"ts\":\"2026-10-1"),
+            // …or between the history line and the commit record.
+            "uncommitted-line" => {
+                let last = String::from_utf8(lines.clone()).unwrap();
+                let mut entry: Value = serde_json::from_str(last.lines().last().unwrap()).unwrap();
+                entry["seq"] = 3.into();
+                lines.extend_from_slice(format!("{entry}\n").as_bytes());
+            }
+            "no-head" => fs::remove_file(h.paths().history_head()).unwrap(),
+            _ => {}
+        }
+        fs::write(&history, lines).unwrap();
+        fs::write(h.dir.join("qrec.json"), broken).unwrap();
+
+        let before = snapshot(&h.dir);
+        h.toasts.lock().unwrap().clear();
+        let mut s = h.open_opts(recovery(true)).unwrap();
+        let err = send(&mut s, Command::HistoryRestore { seq: 1 }, false).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ConfirmationRequired, "{case}");
+        if case != "nothing-to-repair" {
+            assert_eq!(
+                h.toast_titles(),
+                ["The project's files need repair"],
+                "{case}: nothing is repaired yet"
+            );
+        }
+        assert!(
+            err.message
+                .ends_with("the unusable qrec.json on disk is replaced (a copy goes to .qrec/)"),
+            "{case}: {}",
+            err.message
+        );
+        drop(s);
+        assert!(snapshot(&h.dir) == before, "{case}: nothing was written");
+
+        let mut s = h.open_opts(recovery(true)).unwrap();
+        send(&mut s, Command::HistoryRestore { seq: 1 }, true).unwrap();
+        assert_eq!(corrupt_copies(&h), [broken], "{case}: the user's own bytes");
+        assert_eq!(
+            fs::read(h.dir.join("qrec.json")).unwrap(),
+            format::project_bytes(&s.state().project),
+            "{case}"
+        );
+        drop(s);
+        let s = h.open(true).unwrap();
+        assert_eq!(s.state().history.cursor, 1, "{case}");
+        assert_eq!(h.history_seqs(), [1, 2], "{case}: repaired by the restore");
+    }
+}
+
+/// Records take 2 through the capture and probe events (the fake deps
+/// record nothing) and returns its streams.
+fn record_take_2(s: &mut Session) -> Vec<qrec_core::model::Stream> {
+    let start = Command::RecordStart {
+        mode: RecordModeArg::Append,
+        countdown: Some(0),
+        wait: false,
+    };
+    request(s, WireBody::Command(start), false);
+    let planned = s.state().project.takes[&take(2)].streams.clone();
+    let files: Vec<String> = planned.iter().map(|st| st.file.clone()).collect();
+    s.handle(Msg::Event(Event::CaptureStarted {
+        take: take(2),
+        t0_ns: 0,
+        files,
+    }));
+    request(s, WireBody::Command(Command::RecordStop), false);
+    let streams = planned
+        .iter()
+        .map(|st| RecordedStream {
+            id: st.id.clone(),
+            file: st.file.clone(),
+            start_offset_ns: 0,
+            eos: true,
+        })
+        .collect();
+    s.handle(Msg::Event(Event::CaptureStopped {
+        take: take(2),
+        streams,
+        timed_out: false,
+    }));
+    s.handle(Msg::Event(Event::TakeProbed {
+        take: take(2),
+        purpose: ProbePurpose::Finalize,
+        results: planned.iter().map(|st| probed(st, 90)).collect(),
+    }));
+    s.drain();
+    assert_eq!(s.state().project.takes[&take(2)].status, TakeStatus::Ok);
+    s.state().project.takes[&take(2)].streams.clone()
+}
+
+#[test]
+fn a_restore_rebuilt_from_the_history_waits_for_the_recovered_takes() {
+    let h = Harness::with_sample("rebuild");
+    // Take 2 is recorded after the base (A§7.7's usual case): only qrec.json
+    // and the commit record know its facts.
+    let streams = {
+        let mut s = h.open(true).unwrap();
+        record_take_2(&mut s)
+    };
+    for st in &streams {
+        fs::write(h.dir.join(&st.file), b"media").unwrap();
+    }
+    let head = h.head();
+    let recorded = head.project.takes[&take(2)].clone();
+    fs::write(h.dir.join("qrec.json"), b"garbage").unwrap();
+    fs::remove_file(h.paths().history_head()).unwrap();
+    let recover = |s: &mut Session| {
+        assert!(h.log.has("probe take-0002 Recover"), "{:?}", h.log.lines());
+        s.handle(Msg::Event(Event::TakeProbed {
+            take: take(2),
+            purpose: ProbePurpose::Recover,
+            results: streams.iter().map(|st| probed(st, 90)).collect(),
+        }));
+        s.drain();
+    };
+    let restore = WireBody::Command(Command::HistoryRestore { seq: head.cursor });
+
+    // Not confirmed: it waits for the probe, then asks; nothing is written.
+    let before = snapshot(&h.dir);
+    let mut s = h.open_opts(recovery(true)).unwrap();
+    let answers = request(&mut s, restore.clone(), false);
+    assert!(answers.last().is_none(), "waits for take 2's Recover probe");
+    assert!(!s.is_idle());
+    recover(&mut s);
+    let err = answers.last().unwrap().unwrap_err();
+    assert_eq!(err.code, ErrorCode::ConfirmationRequired);
+    drop(s);
+    assert!(snapshot(&h.dir) == before, "nothing was written");
+
+    // Confirmed: the restore sees the recovered take and writes a project
+    // that validates, after keeping the broken file.
+    h.log.clear();
+    let mut s = h.open_opts(recovery(true)).unwrap();
+    let answers = request(&mut s, restore, true);
+    assert!(answers.last().is_none());
+    recover(&mut s);
+    answers.last().unwrap().unwrap();
+    assert_eq!(corrupt_copies(&h), [b"garbage".to_vec()]);
+    drop(s);
+
+    let s = h.open(true).unwrap();
+    let project = &s.state().project;
+    qrec_core::validate::ensure_valid(project).unwrap();
+    let t2 = &project.takes[&take(2)];
+    assert_eq!((t2.status, t2.duration_frames), (TakeStatus::Ok, 90));
+    assert_eq!(t2.scene, recorded.scene, "the scene it was recorded with");
+    assert!(t2.placed);
+    assert!(project.timeline.clips.iter().any(|c| c.take == take(2)));
+    assert_eq!(s.state().history.cursor, head.cursor);
+}
+
+#[test]
+fn a_restore_merges_a_valid_hand_edit_first() {
+    let h = Harness::with_sample("restore-edit");
+    {
+        let mut s = h.open(true).unwrap();
+        for id in ["c001", "c002"] {
+            send(
+                &mut s,
+                Command::ClipRemove {
+                    clips: vec![clip(id)],
+                },
+                false,
+            )
+            .unwrap();
+        }
+    }
+    let mut json: Value =
+        serde_json::from_slice(&fs::read(h.dir.join("qrec.json")).unwrap()).unwrap();
+    json["name"] = "my hand edit".into();
+    write_project(&h.dir, &json);
+
+    let before = snapshot(&h.dir);
+    let mut s = h.open_opts(recovery(true)).unwrap();
+    let err = send(&mut s, Command::HistoryRestore { seq: 1 }, false).unwrap_err();
+    assert_eq!(
+        err.message,
+        "confirmation required: restore entry 1 (\"Remove clip c001\"): undoes 2 history entries"
+    );
+    drop(s);
+    assert!(snapshot(&h.dir) == before, "nothing was written");
+
+    let mut s = h.open_opts(recovery(true)).unwrap();
+    send(&mut s, Command::HistoryRestore { seq: 1 }, true).unwrap();
+    assert!(corrupt_copies(&h).is_empty(), "a valid file isn't broken");
+    assert!(
+        !h.toast_titles()
+            .contains(&"Kept the broken qrec.json".to_owned())
+    );
+    drop(s);
+    // SPEC §8.1: the edit is an entry of its own, so it can be redone.
+    let mut s = h.open(true).unwrap();
+    let labels: Vec<&str> = s
+        .state()
+        .history
+        .entries
+        .iter()
+        .map(|e| e.label.as_str())
+        .collect();
+    assert_eq!(labels.last().copied(), Some("External edit"));
+    assert_eq!(s.state().history.cursor, 1);
+    send(&mut s, Command::Redo { steps: 2 }, false).unwrap();
+    assert_eq!(s.state().project.name, "my hand edit");
+}
+
+#[test]
+fn a_reader_shows_a_hand_edit_without_making_up_history() {
+    let h = Harness::with_sample("reader-edit");
+    {
+        let mut s = h.open(true).unwrap();
+        send(
+            &mut s,
+            Command::ClipRemove {
+                clips: vec![clip("c001")],
+            },
+            false,
+        )
+        .unwrap();
+    }
+    let mut json: Value =
+        serde_json::from_slice(&fs::read(h.dir.join("qrec.json")).unwrap()).unwrap();
+    json["recording"]["countdownSecs"] = 9.into();
+    write_project(&h.dir, &json);
+    let before = snapshot(&h.dir);
+
+    for opts in [
+        OpenOpts {
+            host: HostKind::Cli,
+            mutating: false,
+            recovery: false,
+        },
+        recovery(false),
+    ] {
+        let s = h.open_opts(opts).unwrap();
+        let state = s.state();
+        assert_eq!(
+            state.project.recording.countdown_secs, 9,
+            "what the file says"
+        );
+        // No "External edit" entry that `qrec history` and restore don't know.
+        assert_eq!(
+            (state.history.cursor, state.history.next_seq),
+            (1, 2),
+            "{opts:?}"
+        );
+        assert_eq!(state.history.entries.len(), 1);
+        assert_eq!(state.runtime.disk_invalid, None);
+        drop(s);
+    }
+    assert!(h.toast_titles().is_empty(), "{:?}", h.toast_titles());
+    assert!(snapshot(&h.dir) == before);
+
+    // The next host records it.
+    let s = h.open(true).unwrap();
+    let last = s.state().history.entries.last().unwrap();
+    assert_eq!((last.seq, last.label.as_str()), (2, "External edit"));
 }
 
 #[test]

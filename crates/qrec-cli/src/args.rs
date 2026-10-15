@@ -766,7 +766,9 @@ pub enum HistoryCmd {
     /// Undo or redo to entry SEQ; needs --yes. Also recovers a corrupt qrec.json.
     ///
     /// When qrec.json can't be read, this rebuilds it from the history (the
-    /// broken file is kept as .qrec/qrec.corrupt-<time>.json).
+    /// broken file is kept as .qrec/qrec.corrupt-<time>.json). A valid hand
+    /// edit of qrec.json is first recorded as an "External edit" entry, so a
+    /// later redo brings it back. Without --yes nothing is written.
     Restore(HistoryRestoreArgs),
     /// Delete the undo/redo history (the project stays as it is); needs --yes.
     Clear,

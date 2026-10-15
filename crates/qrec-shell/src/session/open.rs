@@ -2,17 +2,25 @@
 //! (A§8.3), loading and reconciling the files (A§7.6, A§7.7), capabilities
 //! before the first dispatch (A§8.10), recovery probes (A§5.3) and the
 //! watcher (A§8.9).
+//!
+//! Opening writes nothing a reader or an unconfirmed command could lose:
+//! a read-only open writes nothing at all, a recovery open (`qrec history
+//! restore`) keeps every change in memory until the restore saves, and a
+//! host's open only repairs what the load found (and merges a valid hand
+//! edit as an "External edit" entry).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use qrec_core::apply::project::{is_initialized, uninitialized_state};
 use qrec_core::apply::ui::live_scene;
-use qrec_core::on_event::record::recovery_probes;
+use qrec_core::history::external::merged_preview;
+use qrec_core::model::Project;
+use qrec_core::on_event::record::{recovery_probes, takes_to_recover};
 use qrec_core::protocol::{Effect, Toast, ToastLevel};
-use qrec_core::{CoreError, ErrorCode, Event, State};
+use qrec_core::{CoreError, ErrorCode, Event, State, TakeId};
 
 use super::Session;
 use super::config::{LogNotifier, SessionConfig, SessionEnv};
@@ -196,6 +204,8 @@ pub(super) fn open(
         timers,
         watcher: None,
         pending: BTreeMap::new(),
+        parked: Vec::new(),
+        probing: BTreeSet::new(),
         next_req: 0,
         notifier: cfg.notifier.unwrap_or_else(|| Box::new(LogNotifier)),
         shutdown: false,
@@ -216,24 +226,35 @@ pub(super) fn open(
         }
     }
 
+    // Writes nothing: an outcome without history ops or `WriteProject`
+    // never saves, even when the load found files to repair.
     session.detect_capabilities(&env);
 
     // An external edit (or a crash between writing qrec.json and the
     // commit record) is merged before anything else (A§7.6). Its commit
-    // also rewrites whatever the load found to repair.
+    // also rewrites whatever the load found to repair. A reader can't
+    // record history (no lock): it shows the merged project and leaves the
+    // "External edit" entry to the next host (A§8.4).
     if let Some(external) = loaded.as_ref().and_then(|l| l.external.clone()) {
-        session.run_event(Event::ProjectChangedOnDisk { project: external });
+        if writable {
+            session.run_event(Event::ProjectChangedOnDisk { project: external });
+        } else {
+            session.preview_external(external);
+        }
     }
     // A consistent commit record from the start. Recovery mode leaves the
     // files alone until its first write (the restore) rewrites them all.
     let initialized = is_initialized(&session.state.project);
-    if writable && initialized && !opts.recovery && session.store.is_dirty() {
-        if let Err(e) = session.store.write_all(&session.state) {
+    if writable && initialized && !opts.recovery {
+        if session.store.is_dirty()
+            && let Err(e) = session.store.write_all(&session.state)
+        {
             session.notify_error("Couldn't repair the project files", &e.to_string());
         }
+        session.store.sync_cursor_file(session.state.history.cursor);
     }
     if writable && is_initialized(&session.state.project) {
-        session.start_recovery_probes();
+        session.sync_recovery_probes();
     }
     if writable && !opts.recovery {
         match watcher::watch(&session.dir, session.inbox.clone()) {
@@ -257,8 +278,17 @@ impl Session {
             tracing::warn!("{}: {note}", self.dir.display());
         }
         if !loaded.notes.is_empty() && self.store.writable() {
-            let toast = Toast::new(ToastLevel::Warning, "Qrec repaired the project's files")
-                .with_body(loaded.notes.join("\n"));
+            // Recovery mode repairs nothing until the restore saves (A§7.7).
+            let (title, then) = if self.opts.recovery {
+                (
+                    "The project's files need repair",
+                    "\nA confirmed restore rewrites them.",
+                )
+            } else {
+                ("Qrec repaired the project's files", "")
+            };
+            let toast = Toast::new(ToastLevel::Warning, title)
+                .with_body(format!("{}{then}", loaded.notes.join("\n")));
             self.notifier.notify(&toast);
         }
     }
@@ -283,21 +313,47 @@ impl Session {
         self.run_event(Event::Capabilities(detected.caps));
     }
 
-    /// One `Probe{Recover}` per take still `recording` (A§5.3 "Recovery",
-    /// the record owner's `recovery_probes`).
-    fn start_recovery_probes(&mut self) {
+    /// One `Probe{Recover}` per take still `recording` that isn't being
+    /// captured (A§5.3 "Recovery", the record owner's `recovery_probes`),
+    /// once per take: at open, and for takes that turn up later (an
+    /// external edit can add one). A host stays up until they are answered
+    /// (`recovering`, A§8.6).
+    pub(super) fn sync_recovery_probes(&mut self) {
+        let waiting: BTreeSet<TakeId> = takes_to_recover(&self.state)
+            .map(|(id, _)| id.clone())
+            .collect();
+        self.probing.retain(|take| waiting.contains(take));
         for probe in recovery_probes(&self.state) {
             if let Effect::Probe {
                 take,
                 purpose,
                 jobs,
             } = probe
+                && self.probing.insert(take.clone())
             {
                 tracing::info!("recovering {take}: probing {} file(s)", jobs.len());
                 self.deps
                     .media
                     .probe(take, purpose, jobs, self.inbox.clone());
             }
+        }
+    }
+
+    /// A read-only open found a valid hand edit (A§8.4): show the project a
+    /// host would merge, with the history as it is on disk. No entry is
+    /// made up (nothing can be saved here), so the cursor and seqs agree
+    /// with `qrec history`; the next host records the edit.
+    fn preview_external(&mut self, file: Result<Box<Project>, String>) {
+        let preview = file.and_then(|file| merged_preview(&self.state, *file, self.check));
+        match preview {
+            Ok(project) if project != self.state.project => {
+                tracing::info!(
+                    "qrec.json was edited by hand; the next change records it as an External edit"
+                );
+                self.state.project = project;
+            }
+            Ok(_) => {}
+            Err(why) => self.state.runtime.disk_invalid = Some(why),
         }
     }
 }

@@ -281,8 +281,9 @@ fn check_socket_len(path: &Path) -> Result<(), CoreError> {
     Ok(())
 }
 
-/// The fixed layout of a project folder (SPEC §6.2; the commit record of
-/// A§7.6 replaces SPEC's `history.cursor`).
+/// The fixed layout of a project folder (SPEC §6.2). The commit record of
+/// A§7.6 is `history.head.json`; `history.cursor` is SPEC's copy of the
+/// cursor for readers, written after it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectPaths {
     root: PathBuf,
@@ -356,6 +357,12 @@ impl ProjectPaths {
     /// `.qrec/history.base.json`: the project before the oldest kept entry.
     pub fn history_base(&self) -> PathBuf {
         self.qrec_dir().join("history.base.json")
+    }
+
+    /// `.qrec/history.cursor`: the current seq (SPEC §6.2, §8.1), a copy of
+    /// the head's cursor for readers; Qrec never reads it back.
+    pub fn history_cursor(&self) -> PathBuf {
+        self.qrec_dir().join("history.cursor")
     }
 
     /// `.qrec/ui.json`: selection, playhead, zoom and panels; never undoable.
@@ -639,7 +646,7 @@ mod tests {
     fn project_layout() {
         let p = ProjectPaths::new("/v/my-video");
         let take: TakeId = "take-0001".parse().unwrap();
-        let cases: [(PathBuf, &str); 24] = [
+        let cases: [(PathBuf, &str); 25] = [
             (p.project_file(), "qrec.json"),
             (p.project_tmp(), "qrec.json.tmp"),
             (p.takes_dir(), "takes"),
@@ -652,6 +659,7 @@ mod tests {
             (p.history_file(), ".qrec/history.jsonl"),
             (p.history_head(), ".qrec/history.head.json"),
             (p.history_base(), ".qrec/history.base.json"),
+            (p.history_cursor(), ".qrec/history.cursor"),
             (p.ui_file(), ".qrec/ui.json"),
             (p.logs_dir(), ".qrec/logs"),
             (

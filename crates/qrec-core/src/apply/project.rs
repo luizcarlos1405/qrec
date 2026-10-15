@@ -1175,7 +1175,9 @@ mod tests {
         assert_eq!(undone.project, state.project, "every fact back at 30 fps");
         let mut view = undoable_view(&undone.project);
         assert_eq!(view, undoable_view(&state.project));
-        let redone = crate::apply::history::redo(&undone, &ctx(), 1).unwrap().state;
+        let redone = crate::apply::history::redo(&undone, &ctx(), 1)
+            .unwrap()
+            .state;
         assert_eq!(redone.project, at60.project);
         let restored = crate::apply::history::history_restore(&redone, &confirmed(), 0)
             .unwrap()

@@ -10,16 +10,21 @@
 //! recovery mode, migration backups (`.qrec/qrec.v{N}.json.bak`, never
 //! overwritten) and rejected files (`.qrec/rejected/`).
 //!
-//! **Commit order** ([`Store::commit`]), per outcome:
+//! **Commit order** ([`Store::commit`]), per outcome that saves (history
+//! ops or `WriteProject`; an outcome that saves nothing writes nothing,
+//! even when the files need repair):
 //! 1. history: the line (or the whole file, and the base on `Rewrite`);
 //! 2. `qrec.json`;
-//! 3. `history.head.json`, the commit point.
+//! 3. `history.head.json`, the commit point;
+//! 4. `history.cursor`, SPEC §6.2/§8.1's copy of the cursor for readers
+//!    (derived from the head, never read back).
 //!
 //! The session runs the effects that touch the world only after that.
 //! A crash between any two steps leaves something [`load`] turns back into
 //! a consistent state: an uncommitted history line has `seq ≥ nextSeq`
 //! and is dropped; a `qrec.json` newer than the head is an external edit
-//! of `head.project` that the core merges ("External edit").
+//! of `head.project` that the core merges ("External edit"); a stale
+//! `history.cursor` is rewritten by the next open or commit.
 
 pub mod format;
 pub mod fsx;
@@ -113,8 +118,10 @@ pub struct Store {
     pending_base: Option<(u64, Project)>,
     /// A migrated file's original, saved before the next project write.
     pending_backup: Option<(u32, Vec<u8>)>,
-    /// A commit failed (or the files need repair): the next one rewrites
-    /// the history file, `qrec.json` and the head whatever it changed.
+    /// A commit failed, the files need repair or a change was kept in
+    /// memory (recovery mode): the next commit that saves rewrites the
+    /// history file, `qrec.json` and the head whatever it changed. It never
+    /// makes an outcome that saves nothing write.
     dirty: bool,
     ui_last: Option<Instant>,
     ui_pending: bool,
@@ -170,6 +177,12 @@ impl Store {
         self.dirty
     }
 
+    /// The state moved on without a commit (recovery mode keeps changes in
+    /// memory until the restore, A§7.7): the next commit writes everything.
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
     /// Adopts what [`load`] found: the accepted hash, a pending migration
     /// backup, and whether the files need rewriting.
     pub fn adopt(&mut self, loaded: &Loaded) {
@@ -187,7 +200,11 @@ impl Store {
     /// base on `Rewrite`), `qrec.json`, then the head. `project` says the
     /// outcome had `WriteProject`; history ops always rewrite `qrec.json`
     /// too, so the head never describes a file that wasn't written. Does
-    /// nothing in a read-only store.
+    /// nothing in a read-only store, nor for an outcome without history ops
+    /// or `WriteProject`, even a dirty store's: repairs are written by the
+    /// next change that saves (or by [`Store::write_all`]), never by an
+    /// event that saves nothing, so an unconfirmed restore can't replace
+    /// `qrec.json` (A§7.7, SPEC §11).
     pub fn commit(
         &mut self,
         prev: &State,
@@ -195,7 +212,7 @@ impl Store {
         ops: &[&HistoryOp],
         project: bool,
     ) -> Result<(), CommitError> {
-        if !self.writable || (ops.is_empty() && !project && !self.dirty) {
+        if !self.writable || (ops.is_empty() && !project) {
             return Ok(());
         }
         let result = self.commit_steps(prev, next, ops);
@@ -215,6 +232,7 @@ impl Store {
         self.crash_point(Step::Project)?;
         self.write_head(&next.history, &next.project)?;
         self.crash_point(Step::Head)?;
+        self.write_cursor_file(next.history.cursor);
         Ok(())
     }
 
@@ -333,6 +351,30 @@ impl Store {
                 what: format!("write {}", path.display()),
                 source,
             })
+    }
+
+    /// Step 4: `.qrec/history.cursor`, the current seq as SPEC §6.2 and
+    /// §8.1 promise it to readers. The head stays the commit record (A§7.6):
+    /// this copy is never read back, so failing to write it is logged and
+    /// doesn't undo the commit.
+    fn write_cursor_file(&self, cursor: u64) {
+        let path = self.paths.history_cursor();
+        if let Err(e) = fsx::replace(&path, &format::cursor_bytes(cursor), fsx::Sync::None) {
+            tracing::warn!("can't write {}: {e}", path.display());
+        }
+    }
+
+    /// Rewrites `.qrec/history.cursor` when it doesn't hold `cursor` (a
+    /// project saved before the file existed, or a crash right after the
+    /// head). Nothing in a read-only store.
+    pub fn sync_cursor_file(&self, cursor: u64) {
+        if !self.writable {
+            return;
+        }
+        let current = fs::read(self.paths.history_cursor()).ok();
+        if current.as_deref() != Some(format::cursor_bytes(cursor).as_slice()) {
+            self.write_cursor_file(cursor);
+        }
     }
 
     /// Writes the history file, base, `qrec.json` and head from `state`
