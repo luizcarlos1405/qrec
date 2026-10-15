@@ -267,9 +267,17 @@ impl Harness {
     /// holds a copy of every descriptor, a just-dropped session's lock
     /// (`O_CLOEXEC`) included. Use [`Harness::open_once`] to expect `Busy`.
     fn open_opts(&self, opts: OpenOpts) -> Result<Session, ShellError> {
+        Self::retry_busy(|| self.open_once(opts))
+    }
+
+    /// Runs `open` again while it fails with a `Busy` lock, for a moment
+    /// ([`Harness::open_opts`]).
+    fn retry_busy(
+        mut open: impl FnMut() -> Result<Session, ShellError>,
+    ) -> Result<Session, ShellError> {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            match self.open_once(opts) {
+            match open() {
                 Err(ShellError::Core(e))
                     if e.code == ErrorCode::Busy && Instant::now() < deadline =>
                 {
@@ -2234,6 +2242,156 @@ fn capabilities_are_known_before_the_first_dispatch() {
     assert_eq!(caps.vaapi, None, "tests never look at a GPU");
     assert!(caps.cores >= 1);
     assert!(h.env.cache_home().join("qrec/capabilities.json").is_file());
+}
+
+/// Writes the user's `config.toml` for the sessions `h` opens.
+fn write_config(h: &Harness, text: &str) -> PathBuf {
+    let dir = h.env.config_home().join("qrec");
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    fs::write(&path, text).unwrap();
+    path
+}
+
+/// The bodies of the "config.toml is invalid" toasts so far (warnings).
+fn config_warnings(h: &Harness) -> Vec<String> {
+    h.toasts
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|t| t.title == crate::facts::CONFIG_INVALID)
+        .map(|t| {
+            assert_eq!(t.level, qrec_core::protocol::ToastLevel::Warning);
+            t.body.clone().unwrap_or_default()
+        })
+        .collect()
+}
+
+/// A valid `[canvas]` and one misspelled key: the whole file is unusable.
+const TYPO_CONFIG: &str =
+    "[canvas]\nwidth = 1280\nheight = 720\nfps = \"25\"\n\n[autocut]\ntreshold_db = -40\n";
+
+/// A `config.toml` that can't be used gives the defaults, and people hear
+/// it once per change of the file. The open reads it first (the
+/// capability check) and used to swallow the problem, so the first
+/// command ran on the defaults without a word: one misspelled key dropped
+/// every setting silently.
+#[test]
+fn a_config_that_cant_be_used_is_reported_once_per_change() {
+    let h = Harness::new("broken-config");
+    let config = write_config(&h, TYPO_CONFIG);
+    let mut s = h.open(true).unwrap();
+    let said = config_warnings(&h);
+    assert_eq!(said.len(), 1, "reported as the project opens: {said:?}");
+    assert!(
+        said[0].contains("treshold_db") && said[0].ends_with("; using the default settings"),
+        "{}",
+        said[0]
+    );
+    send(
+        &mut s,
+        Command::Init {
+            canvas: None,
+            name: None,
+        },
+        false,
+    )
+    .unwrap();
+    let canvas = &s.state().project.canvas;
+    assert_eq!(
+        (canvas.width, canvas.height, canvas.fps),
+        (1920, 1080, Fps::new(30, 1)),
+        "the defaults"
+    );
+    request(
+        &mut s,
+        WireBody::Query(qrec_core::protocol::Query::Status),
+        false,
+    );
+    assert_eq!(config_warnings(&h).len(), 1, "once per change of the file");
+
+    // Each change that is still unusable is reported again: by a query...
+    fs::write(&config, "[canvas]\nwidth = 99\n").unwrap();
+    request(
+        &mut s,
+        WireBody::Query(qrec_core::protocol::Query::Status),
+        false,
+    );
+    let said = config_warnings(&h);
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert!(said[1].contains("width"), "{}", said[1]);
+    // ...or by a command's facts.
+    fs::write(&config, "theme = \"ogre\"\n").unwrap();
+    let select = || Command::Select {
+        op: SelectOp::Clear,
+    };
+    send(&mut s, select(), false).unwrap();
+    send(&mut s, select(), false).unwrap();
+    let said = config_warnings(&h);
+    assert_eq!(said.len(), 3, "{said:?}");
+    assert!(said[2].contains("`ogre`"), "{}", said[2]);
+
+    // Fixed: used, and nothing more is said.
+    fs::write(&config, "[canvas]\nwidth = 1280\nheight = 720\n").unwrap();
+    send(&mut s, select(), false).unwrap();
+    assert_eq!(s.facts.config().canvas.width, 1280);
+    assert_eq!(config_warnings(&h).len(), 3);
+
+    // A reader (a query in another process) hears it too.
+    fs::write(&config, TYPO_CONFIG).unwrap();
+    let reader = h.open(false).unwrap();
+    assert!(!reader.is_host());
+    assert_eq!(config_warnings(&h).len(), 4);
+}
+
+/// The Sessions one process opens with the same [`SessionEnv`] share the
+/// config file: a CLI run that initializes an empty folder opens one for
+/// `Init` and one for its command, and says it once.
+#[test]
+fn sessions_that_share_the_config_report_it_once() {
+    let h = Harness::new("shared-config");
+    write_config(&h, TYPO_CONFIG);
+    let shared = h.session_env();
+    let open = |env: SessionEnv| {
+        let opts = OpenOpts {
+            host: HostKind::Cli,
+            mutating: true,
+            recovery: false,
+        };
+        Harness::retry_busy(|| {
+            let config = SessionConfig {
+                env: Some(env.clone()),
+                ..h.config()
+            };
+            Session::open_with(&h.dir, opts, h.deps(), config)
+        })
+        .unwrap()
+    };
+    let mut first = open(shared.clone());
+    send(
+        &mut first,
+        Command::Init {
+            canvas: None,
+            name: None,
+        },
+        false,
+    )
+    .unwrap();
+    drop(first);
+    let mut second = open(shared.clone());
+    send(
+        &mut second,
+        Command::Select {
+            op: SelectOp::Clear,
+        },
+        false,
+    )
+    .unwrap();
+    drop(second);
+    assert_eq!(config_warnings(&h).len(), 1);
+    // Another process (its own reader) says it again.
+    drop(open(h.session_env()));
+    assert_eq!(config_warnings(&h).len(), 2);
 }
 
 #[test]

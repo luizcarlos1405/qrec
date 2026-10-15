@@ -196,7 +196,7 @@ pub(super) fn open(
             Box::new(SystemSources::new(Some(logs)))
         }
     };
-    let facts = FactsGatherer::new(paths.clone(), env.config_file(), sources);
+    let facts = FactsGatherer::new(paths.clone(), env.config.clone(), sources);
     let timers = Timers::new(inbox.clone());
     let mut session = Session {
         dir,
@@ -370,9 +370,11 @@ impl Session {
             .notify(&Toast::new(ToastLevel::Error, title).with_body(body));
     }
 
-    /// `Event::Capabilities` before the first dispatch (A§3).
+    /// `Event::Capabilities` before the first dispatch (A§3). It reads the
+    /// config first, so a `config.toml` that can't be used is reported as
+    /// the project opens (A§4.2).
     fn detect_capabilities(&mut self, env: &SessionEnv) {
-        let (config, _) = self.facts.config();
+        let config = self.user_config();
         let va = VaConfig {
             project: self.state.project.recording.vaapi_device.clone(),
             config: config.encoder.vaapi_device.clone(),

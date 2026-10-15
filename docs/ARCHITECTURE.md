@@ -376,6 +376,24 @@ pub struct FactsNeeded {
 for a clip split), then calls `apply`. Under `QREC_CAPTURE_BACKEND=fake`
 device facts come from the fake inventory (A§8.12).
 
+`Facts.config` is `config.toml` read with `config::parse` (A§9.8), again
+whenever its size or mtime changed, so `qrec config set` reaches a running
+host. A file that can't be used (bad TOML, an unknown key such as a typo, a
+wrong type, a value out of range, a file or folder that can't be read) gives
+the defaults for every setting, and people are told: a warning toast
+"config.toml is invalid" whose body is the problem and "; using the
+default settings", once per change of the file. The shell's `ConfigFile`
+keeps the problem until a reporter takes it, so a read that doesn't report
+(the open's capability check, a query) never swallows it: the Session says
+it as the project opens, or at the first query or dispatch that reads a
+changed file. Its clones share what was read and said, so the Sessions of
+one process opened with the same `SessionEnv::config` say it once between
+them. Toasts reach the GUI, a headless host's log, or the CLI (stderr;
+`--json`: one `{"event":"notice",…}` line, A§4.9); the CLI also checks the
+file before routing each request, so a run warns once whichever host
+answers (a live GUI or headless host, the one a recording spawns), and an
+empty folder's lazy init (two Sessions) still warns once.
+
 ### A§4.3 Ids, time, confirmation
 
 - `IdGen::new(ctx.entropy)` yields clip ids `"c" + 3 hex` from
@@ -1800,7 +1818,10 @@ pub fn set(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> Result<(
 ```
 
 `qrec config set` edits with `toml_edit`, so comments and order survive; the
-shell only reads and atomically writes the file.
+shell only reads and atomically writes the file. Hosts read it as
+`Facts.config`: a file `parse` refuses gives all the defaults, and people
+get a "config.toml is invalid" warning once per change of the file
+(A§4.2), so a typo never drops the settings silently.
 
 ### A§9.9 Naming (`naming.rs`)
 

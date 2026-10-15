@@ -7,8 +7,10 @@
 //!
 //! **Config.** `config.toml` is read on every gather (cached by size and
 //! mtime) so `qrec config set` reaches a running host, with the core's
-//! `config::parse`; an unusable config falls back to the defaults with a
-//! warning (once per change).
+//! `config::parse`. A config that can't be used falls back to the
+//! defaults, and its problem waits in the [`ConfigFile`] until the Session
+//! reports it (a warning toast, once per change of the file): reading the
+//! config never swallows it.
 //!
 //! **Devices.** [`Sources`] is the seam to device discovery: the fake
 //! inventory, or [`SystemSources`] (audio through `pactl --format=json`;
@@ -20,6 +22,7 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
 use qrec_core::TakeId;
@@ -28,6 +31,7 @@ use qrec_core::ctx::{
     AudioDeviceInfo, CameraInfo, Facts, FactsNeeded, FileFact, OutFacts, ScreenInfo,
 };
 use qrec_core::model::PROJECT_FILE;
+use qrec_core::protocol::{Toast, ToastLevel};
 use serde_json::Value;
 
 use crate::capture::fake::fake_inventory;
@@ -212,56 +216,105 @@ pub fn parse_pactl(info: &str, sources: &str) -> Result<AudioInventory, String> 
 // ------------------------------------------------------------------- config
 
 /// `config.toml`, re-read when its size or mtime changes.
-#[derive(Debug)]
+///
+/// A file that can't be used (bad TOML, an unknown key, a wrong type, a
+/// value out of range, or one that can't be read) gives the defaults, and
+/// its problem waits for [`ConfigFile::take_problem`]: reading the config
+/// ([`ConfigFile::get`]) never consumes it, so whoever reports it (the
+/// Session, A§4.2) does, once per change of the file, however many reads
+/// came first. Clones share all of it: the Sessions one process opens with
+/// clones report a file once between them.
+#[derive(Debug, Clone)]
 pub struct ConfigFile {
     path: PathBuf,
-    stamp: Option<(u64, SystemTime)>,
+    read: Arc<Mutex<ConfigRead>>,
+}
+
+/// What the last read of a [`ConfigFile`] found.
+#[derive(Debug, Default)]
+struct ConfigRead {
+    /// What `stat` said then; `None` before the first read.
+    seen: Option<Seen>,
     config: UserConfig,
+    /// Why that file can't be used, until someone takes it to report it.
     problem: Option<String>,
+}
+
+/// What `stat` says about `config.toml`, compared to know when to read it again.
+#[derive(Debug, Clone, PartialEq)]
+enum Seen {
+    /// No file: the defaults, and nothing to say about it.
+    Missing,
+    /// `stat` failed otherwise (a config folder that can't be searched).
+    Unreadable(String),
+    /// A file of this size and mtime.
+    File(u64, SystemTime),
 }
 
 impl ConfigFile {
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
-            stamp: None,
-            config: UserConfig::default(),
-            problem: None,
+            read: Arc::default(),
         }
     }
 
-    /// The current config (defaults when missing or unreadable) and, when
-    /// it was (re)read and is unusable, why.
-    pub fn get(&mut self) -> (UserConfig, Option<String>) {
-        let stamp = fs::metadata(&self.path)
-            .ok()
-            .and_then(|m| Some((m.len(), m.modified().ok()?)));
-        if stamp.is_none() {
-            self.stamp = None;
-            self.problem = None;
-            self.config = UserConfig::default();
-            return (self.config.clone(), None);
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn lock(&self) -> MutexGuard<'_, ConfigRead> {
+        self.read.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The config to use now: the file's, or the defaults when there is
+    /// none or it can't be used (then [`ConfigFile::take_problem`] says why).
+    pub fn get(&self) -> UserConfig {
+        let seen = match fs::metadata(&self.path) {
+            Ok(m) => Seen::File(m.len(), m.modified().unwrap_or(SystemTime::UNIX_EPOCH)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Seen::Missing,
+            Err(e) => Seen::Unreadable(e.to_string()),
+        };
+        let mut read = self.lock();
+        if read.seen.as_ref() == Some(&seen) {
+            return read.config.clone();
         }
-        if stamp == self.stamp {
-            return (self.config.clone(), None);
-        }
-        self.stamp = stamp;
-        let read = fs::read_to_string(&self.path)
-            .map_err(|e| format!("can't read {}: {e}", self.path.display()));
-        match read.and_then(|text| parse_config(&text)) {
+        let parsed = match &seen {
+            Seen::Missing => Ok(UserConfig::default()),
+            Seen::Unreadable(e) => Err(format!("can't read {}: {e}", self.path.display())),
+            Seen::File(..) => fs::read_to_string(&self.path)
+                .map_err(|e| format!("can't read {}: {e}", self.path.display()))
+                .and_then(|text| parse_config(&text)),
+        };
+        read.seen = Some(seen);
+        match parsed {
             Ok(config) => {
-                self.config = config;
-                self.problem = None;
-                (self.config.clone(), None)
+                read.config = config;
+                read.problem = None;
             }
             Err(problem) => {
-                self.config = UserConfig::default();
-                let message = format!("{problem}; using the default settings");
-                self.problem = Some(message.clone());
-                (self.config.clone(), Some(message))
+                read.config = UserConfig::default();
+                read.problem = Some(format!("{problem}; using the default settings"));
             }
         }
+        read.config.clone()
     }
+
+    /// Why the file [`ConfigFile::get`] last read can't be used, once per
+    /// change of the file: the caller reports it. `None` once taken, and
+    /// for a file that is fine (again) or missing.
+    pub fn take_problem(&self) -> Option<String> {
+        self.lock().problem.take()
+    }
+}
+
+/// The title of the warning about a `config.toml` that can't be used.
+pub const CONFIG_INVALID: &str = "config.toml is invalid";
+
+/// The warning toast for a [`ConfigFile::take_problem`] (it says why, and
+/// that the defaults are used).
+pub fn config_problem_toast(problem: String) -> Toast {
+    Toast::new(ToastLevel::Warning, CONFIG_INVALID).with_body(problem)
 }
 
 /// Reads `config.toml` text into a `UserConfig` with the core's reader
@@ -292,29 +345,35 @@ impl std::fmt::Debug for FactsGatherer {
 }
 
 /// Facts plus what went wrong getting them (for the log; the core turns
-/// missing facts into errors of its own).
+/// missing facts into errors of its own). A `config.toml` that can't be
+/// used isn't among the warnings: [`FactsGatherer::take_config_problem`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Gathered {
     pub facts: Facts,
     pub warnings: Vec<String>,
-    /// `config.toml` was just (re)read and is unusable (reported once per change).
-    pub config_problem: Option<String>,
 }
 
 impl FactsGatherer {
-    /// `paths.root()` must be canonical (output paths are compared with it).
-    pub fn new(paths: ProjectPaths, config_file: PathBuf, sources: Box<dyn Sources>) -> Self {
+    /// `paths.root()` must be canonical (output paths are compared with
+    /// it). `config` may be shared with other Sessions ([`ConfigFile`]).
+    pub fn new(paths: ProjectPaths, config: ConfigFile, sources: Box<dyn Sources>) -> Self {
         Self {
             paths,
-            keys_file: config_file.with_file_name("keys.toml"),
-            config: ConfigFile::new(config_file),
+            keys_file: config.path().with_file_name("keys.toml"),
+            config,
             sources,
         }
     }
 
     /// The config alone (every dispatch needs it).
-    pub fn config(&mut self) -> (UserConfig, Option<String>) {
+    pub fn config(&self) -> UserConfig {
         self.config.get()
+    }
+
+    /// Why the config last read can't be used, once per change of the
+    /// file ([`ConfigFile::take_problem`]): the caller reports it.
+    pub fn take_config_problem(&self) -> Option<String> {
+        self.config.take_problem()
     }
 
     /// The text of `keys.toml` (`Facts::keys_toml`, for `Query::Keys`):
@@ -334,9 +393,8 @@ impl FactsGatherer {
     /// Gathers exactly what `need` asks for, plus the config.
     pub fn gather(&mut self, need: &FactsNeeded) -> Gathered {
         let mut warnings = Vec::new();
-        let (config, config_problem) = self.config.get();
         let mut facts = Facts {
-            config,
+            config: self.config.get(),
             ..Facts::default()
         };
         if need.folder_name {
@@ -392,11 +450,7 @@ impl FactsGatherer {
                 Err(e) => warnings.push(format!("{file}: {e}")),
             }
         }
-        Gathered {
-            facts,
-            warnings,
-            config_problem,
-        }
+        Gathered { facts, warnings }
     }
 }
 
@@ -782,7 +836,7 @@ fn resolve_existing(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{PermissionsExt, symlink};
 
     use qrec_core::Fps;
     use qrec_core::config::Theme;
@@ -817,19 +871,88 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("config.toml");
-        let mut file = ConfigFile::new(path.clone());
-        assert_eq!(
-            file.get(),
-            (UserConfig::default(), None),
-            "no file: defaults"
-        );
+        let file = ConfigFile::new(path.clone());
+        assert_eq!(file.get(), UserConfig::default(), "no file: defaults");
+        assert_eq!(file.take_problem(), None);
         fs::write(&path, "[canvas]\nfps = 60\n").unwrap();
-        assert_eq!(file.get().0.canvas.fps, Fps::new(60, 1));
+        assert_eq!(file.get().canvas.fps, Fps::new(60, 1));
+        assert_eq!(file.take_problem(), None);
         fs::write(&path, "[canvas]\nfps = \"sixty\"\n").unwrap();
-        let (cfg, problem) = file.get();
-        assert_eq!(cfg, UserConfig::default());
-        assert!(problem.unwrap().ends_with("using the default settings"));
-        assert_eq!(file.get().1, None, "reported once");
+        assert_eq!(file.get(), UserConfig::default());
+        assert_eq!(file.get(), UserConfig::default(), "read again: cached");
+        let problem = file.take_problem().unwrap();
+        assert!(problem.ends_with("using the default settings"), "{problem}");
+        assert_eq!(file.take_problem(), None, "taken once per change");
+        assert_eq!(file.get(), UserConfig::default());
+        assert_eq!(
+            file.take_problem(),
+            None,
+            "the same file isn't reported again"
+        );
+    }
+
+    /// Reading the config never consumes its problem: it waits for whoever
+    /// reports it (the Session), once per change of the file, and clones
+    /// share it (the Sessions of one process report a file once).
+    #[test]
+    fn a_config_problem_waits_for_its_reporter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        // A valid [canvas] and one misspelled key: the whole file is unusable.
+        fs::write(
+            &path,
+            "[canvas]\nwidth = 1280\nheight = 720\nfps = \"25\"\n\n[autocut]\ntreshold_db = -40\n",
+        )
+        .unwrap();
+        let file = ConfigFile::new(path.clone());
+        let other = file.clone();
+        for _ in 0..3 {
+            assert_eq!(file.get(), UserConfig::default());
+            assert_eq!(other.get(), UserConfig::default());
+        }
+        let problem = other.take_problem().unwrap();
+        assert!(problem.contains("treshold_db"), "{problem}");
+        assert!(
+            problem.ends_with("; using the default settings"),
+            "{problem}"
+        );
+        assert_eq!(file.take_problem(), None, "clones share the report");
+
+        // A fix before anyone reported it: nothing left to say.
+        fs::write(&path, "[canvas]\nwidth = 99\n").unwrap();
+        assert_eq!(file.get(), UserConfig::default(), "out of range");
+        fs::write(&path, "[canvas]\nwidth = 1280\nheight = 720\n").unwrap();
+        assert_eq!(file.get().canvas.width, 1280);
+        assert_eq!(file.take_problem(), None);
+        // Broken again (another size, so another stamp): reported again.
+        fs::write(&path, "[canvas]\nwidth = 99\nheight = 720\n").unwrap();
+        assert_eq!(file.get(), UserConfig::default());
+        let problem = file.take_problem().unwrap();
+        assert!(problem.contains("width"), "{problem}");
+        // Gone: the defaults, and nothing to report.
+        fs::remove_file(&path).unwrap();
+        assert_eq!(file.get(), UserConfig::default());
+        assert_eq!(file.take_problem(), None);
+
+        // A config that can't be read at all is reported too.
+        fs::create_dir(&path).unwrap();
+        assert_eq!(file.get(), UserConfig::default());
+        let problem = file.take_problem().unwrap();
+        assert!(problem.starts_with("can't read "), "{problem}");
+        // So is one in a folder that can't be searched: that isn't "no file".
+        let locked = tmp.path().join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let hidden = ConfigFile::new(locked.join("config.toml"));
+        let enforced =
+            fs::metadata(hidden.path()).is_err_and(|e| e.kind() == io::ErrorKind::PermissionDenied);
+        assert_eq!(hidden.get(), UserConfig::default());
+        let problem = hidden.take_problem();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        if enforced {
+            let problem = problem.unwrap();
+            assert!(problem.starts_with("can't read "), "{problem}");
+        }
     }
 
     #[test]
@@ -898,7 +1021,11 @@ mod tests {
         .unwrap();
         let config = tmp.path().join("config.toml");
         fs::write(&config, "[recording]\ncountdown_secs = 3\n").unwrap();
-        let mut gatherer = FactsGatherer::new(paths.clone(), config, Box::new(FakeSources));
+        let mut gatherer = FactsGatherer::new(
+            paths.clone(),
+            ConfigFile::new(config),
+            Box::new(FakeSources),
+        );
 
         let none = gatherer.gather(&FactsNeeded::default());
         assert_eq!(none.facts.config.recording.countdown_secs, 3);
