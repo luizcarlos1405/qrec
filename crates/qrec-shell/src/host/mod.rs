@@ -207,6 +207,10 @@ pub(crate) struct ExitInputs {
     /// In-process CLI host: whether its own command got its reply.
     pub own_done: Option<bool>,
     pub ready_at: Instant,
+    /// The host already decided to exit for this reason and stopped
+    /// accepting (A§8.3 step 3): nobody new can come, so it exits as soon
+    /// as the requests it admitted meanwhile are answered.
+    pub stopping: Option<HostEnd>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +236,13 @@ pub(crate) fn decide(i: &ExitInputs, rules: &ExitRules) -> Decision {
     if i.shutdown {
         return if quiet {
             Decision::Exit(HostEnd::Shutdown)
+        } else {
+            Decision::Wait(None)
+        };
+    }
+    if let Some(why) = i.stopping {
+        return if quiet {
+            Decision::Exit(why)
         } else {
             Decision::Wait(None)
         };
@@ -530,6 +541,13 @@ impl Host {
     /// Runs the Session until the exit rules say stop. `own` (in-process CLI
     /// host) is polled after each message and says whether the host's own
     /// command got its reply.
+    ///
+    /// Exiting is atomic for clients (A§8.3 step 3): once the rules say
+    /// stop, the record says `stopping` and the server stops accepting
+    /// (late clients get `ENOENT` or a reset and route again, safely: their
+    /// request never ran), then the Session keeps running until every
+    /// request admitted before that is answered and flushed. Nothing a
+    /// client was told `accepted` is dropped.
     pub fn serve(
         &self,
         session: &mut dyn HostSession,
@@ -537,6 +555,7 @@ impl Host {
     ) -> HostEnd {
         let mut state_quiet_since = Some(self.ready_at);
         let mut end = None;
+        let mut stopping: Option<HostEnd> = None;
         let mut stopping_noted = false;
         let mut spontaneous = 0u32;
         self.waker.wake_now();
@@ -544,7 +563,8 @@ impl Host {
             let mut done = |state: &State| {
                 let now = Instant::now();
                 let own_done = own.as_mut().map(|own| own());
-                let busy = !state.runtime.record.is_idle() || !state.runtime.jobs.is_empty();
+                // Recording, jobs, or a startup recovery still out (A§8.6).
+                let busy = state.runtime.is_busy();
                 if busy {
                     state_quiet_since = None;
                 } else if state_quiet_since.is_none() {
@@ -566,6 +586,7 @@ impl Host {
                     signalled_at: self.ctl.signalled_at(),
                     own_done,
                     ready_at: self.ready_at,
+                    stopping,
                 };
                 match decide(&inputs, &self.rules) {
                     Decision::Exit(why) => {
@@ -582,8 +603,18 @@ impl Host {
             };
             let started = Instant::now();
             session.run_until(&mut done);
-            if let Some(why) = end {
-                return why;
+            if let Some(why) = end.take() {
+                if stopping.is_some() || why == HostEnd::SignalTimeout {
+                    return why;
+                }
+                // Stop accepting first, then answer whatever got in before
+                // that (the acceptor is joined, so every admitted
+                // connection is counted as open from here on).
+                self.mark_stopping();
+                self.server.stop_accepting();
+                stopping = Some(why);
+                self.waker.wake_now();
+                continue;
             }
             // The Session returned without our rules saying so (it stopped
             // itself, e.g. after `Msg::Shutdown`). Keep it running while it

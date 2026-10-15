@@ -51,7 +51,7 @@ impl TestEnv {
             .prefix("qrec-test-")
             .tempdir()
             .expect("create the test env dir");
-        // Short and private: `<runtime>/<64 hex>.sock.<pid>` must fit in 107 bytes.
+        // Short and private: `<runtime>/<64 hex>.sock` must fit in 107 bytes.
         let runtime_root = tempfile::Builder::new()
             .prefix("qrt-")
             .tempdir_in("/tmp")
@@ -232,8 +232,8 @@ mod tests {
         assert_eq!(lines, expected);
         assert_eq!(lines[6], "fake");
         assert!(Path::new(&lines[0]).starts_with(env.root()));
-        // Room for `<64 hex>.sock.<pid>` under the 107-byte socket limit.
-        assert!(env.runtime_dir().as_os_str().len() + 1 + 64 + ".sock.4194304".len() <= 107);
+        // Room for `<64 hex>.sock` under the 107-byte socket limit.
+        assert!(env.runtime_dir().as_os_str().len() + 1 + 64 + ".sock".len() <= 107);
     }
 
     #[test]

@@ -32,6 +32,9 @@ pub const ENV_KEYS: [&str; 6] = [
 /// including the terminating NUL.
 pub const MAX_SOCKET_PATH: usize = 107;
 
+/// The longest file name, in bytes, Linux file systems take (`NAME_MAX`).
+pub const NAME_MAX: usize = 255;
+
 /// A snapshot of the environment variables in [`ENV_KEYS`] plus the real
 /// uid. Build it with [`Env::from_process`] in binaries and with
 /// [`Env::new`] + [`Env::with`] in tests.
@@ -251,18 +254,24 @@ pub fn socket_path(runtime: &Path, canonical_project_dir: &Path) -> Result<PathB
     Ok(path)
 }
 
-/// `<socket>.<pid>`: the name a host binds before renaming it over the
-/// socket path, so the socket appears atomically (A§8.3). Also length-checked.
+/// `<first 40 bytes of the socket's stem>.<pid>.tmp`, next to the socket:
+/// the name a host binds before renaming it over the socket path, so the
+/// socket appears atomically (A§8.3 step 1). For a `<64 hex>.sock` socket
+/// it is always shorter than the socket path itself, so every path
+/// [`socket_path`] accepts can be published, whatever the pid. Also
+/// length-checked (other names, e.g. in tests).
 pub fn socket_publish_path(socket: &Path, pid: u32) -> Result<PathBuf, CoreError> {
-    let mut name = socket.as_os_str().to_owned();
-    name.push(format!(".{pid}"));
-    let path = PathBuf::from(name);
+    let name = socket.file_name().map(OsStr::as_bytes).unwrap_or_default();
+    let stem = name.strip_suffix(b".sock").unwrap_or(name);
+    let mut temp = stem[..stem.len().min(40)].to_vec();
+    temp.extend_from_slice(format!(".{pid}.tmp").as_bytes());
+    let path = socket.with_file_name(OsStr::from_bytes(&temp));
     check_socket_len(&path)?;
     Ok(path)
 }
 
 /// Whether a runtime-dir entry is a host socket (`<64 hex>.sock`), for
-/// finding running hosts. Publish names (`….sock.<pid>`) don't match.
+/// finding running hosts. Publish names (`<40 hex>.<pid>.tmp`) don't match.
 pub fn is_socket_name(name: &OsStr) -> bool {
     name.as_bytes().strip_suffix(b".sock").is_some_and(|hex| {
         hex.len() == 64 && hex.iter().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
@@ -303,9 +312,12 @@ impl ProjectPaths {
         self.root.join(PROJECT_FILE)
     }
 
-    /// `qrec.json.tmp`: written, fsynced and renamed over `qrec.json`.
+    /// `.qrec/qrec.json.tmp`: written, fsynced and renamed over `qrec.json`.
+    /// It lives in `.qrec/` (same file system, so the rename stays atomic)
+    /// so that a folder being initialized never shows anything but `.qrec/`
+    /// to another command's folder rule (A§8.4).
     pub fn project_tmp(&self) -> PathBuf {
-        self.root.join(format!("{PROJECT_FILE}.tmp"))
+        self.qrec_dir().join(format!("{PROJECT_FILE}.tmp"))
     }
 
     /// `takes/`.
@@ -606,7 +618,11 @@ mod tests {
         );
 
         let publish = socket_publish_path(&path, 4242).unwrap();
-        assert_eq!(publish, Path::new(&format!("{expected}.4242")));
+        let digest = sha256_hex(b"/home/shrek/swamp");
+        assert_eq!(
+            publish,
+            Path::new(&format!("/run/user/1000/qrec/{}.4242.tmp", &digest[..40]))
+        );
         assert!(!is_socket_name(publish.file_name().unwrap()));
         assert!(!is_socket_name(OsStr::new("notes.sock")));
 
@@ -631,8 +647,14 @@ mod tests {
         assert!(err.message.contains("108 bytes"), "{}", err.message);
         assert!(err.hint.unwrap().contains("QREC_RUNTIME_DIR"));
 
-        // The publish name is longer than the socket itself.
-        assert!(socket_publish_path(&path, 1).is_err());
+        // Every socket path that fits can be published, whatever the pid
+        // (the temp name used to be `<socket>.<pid>`, up to 11 bytes longer,
+        // so hosts failed on 97–107-byte paths depending on their pid).
+        for pid in [1, 4242, 4_194_304, u32::MAX] {
+            let temp = socket_publish_path(&path, pid).unwrap();
+            assert!(temp.as_os_str().len() < path.as_os_str().len(), "{temp:?}");
+            assert_eq!(temp.parent(), path.parent());
+        }
     }
 
     #[test]
@@ -641,7 +663,7 @@ mod tests {
         let take: TakeId = "take-0001".parse().unwrap();
         let cases: [(PathBuf, &str); 24] = [
             (p.project_file(), "qrec.json"),
-            (p.project_tmp(), "qrec.json.tmp"),
+            (p.project_tmp(), ".qrec/qrec.json.tmp"),
             (p.takes_dir(), "takes"),
             (p.take_dir(&take), "takes/take-0001"),
             (p.recorder_log(&take), "takes/take-0001/recorder.log"),

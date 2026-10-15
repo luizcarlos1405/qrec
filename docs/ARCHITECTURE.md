@@ -230,6 +230,8 @@ pub struct Runtime {
     pub next_id: u64,                    // allocates JobId and TimerId
     pub playing: bool,
     pub disk_invalid: Option<String>,    // qrec.json on disk failed to load (A§7.7)
+    pub engine_stuck: Option<String>,    // the capture engine wedged (A§5.3)
+    pub recovering: BTreeSet<TakeId>,    // startup recovery probes still out (A§5.3)
 }
 
 #[serde(tag = "phase", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -556,7 +558,13 @@ pub enum Event {
     RequesterGone { req: ReqId },                                  // IPC client disconnected
 }
 pub struct RecordedStream { pub id: String, pub file: String, pub start_offset_ns: i64, pub eos: bool }
-pub struct ProbeResult { pub id: String, pub file: String, pub info: Result<MediaInfo, String> }
+pub struct ProbeResult { pub id: String, pub file: String, pub info: Result<MediaInfo, ProbeError> }
+pub struct ProbeError { pub kind: ProbeFailure, pub message: String }
+pub enum ProbeFailure {
+    Media,       // missing, empty or unreadable file: ffprobe judged it (a fact)
+    MissingTool, // ffprobe can't be run (not installed): nothing is known about the file
+    Tool,        // ffprobe timed out or was stopped, or the prober failed: nothing is known
+}
 pub struct MediaInfo { pub kind: StreamKind, pub frames: Option<u64>, pub fps: Option<Fps>,
                        pub width: Option<u32>, pub height: Option<u32>, pub sample_rate: Option<u32>,
                        pub channels: Option<u32>, pub duration_ns: Option<i64>, pub start_time_ns: i64,
@@ -597,7 +605,9 @@ host → client  {"id":"7","accepted":true}
                {"id":"7","reply":{"ok":false,"error":{"code":"not_found","message":"…","hint":"…"}}}
 ```
 
-`hello` → `{pid, projectDir, host: "gui"|"headless"|"cli", record: RecordPhase, jobs, version}`.
+`hello` → `{pid, projectDir, host: "gui"|"headless"|"cli", record: RecordPhase, jobs, version}`,
+plus `projectDirHex` (the folder's exact bytes) when its path isn't UTF-8:
+`projectDir` is then only its display form, and clients use the bytes (A§8.4).
 `shutdown` → the host stops accepting, lets jobs finish, exits (A§8.6).
 The shell's `ReqId(u64)` is allocated per request by the Session; client
 ids stay inside the IPC layer. `--json` prints `to_wire(&result)` — the
@@ -690,11 +700,25 @@ still matches and is contiguous (recording `Take.replaced`), else appends
 with a toast "record-over target changed; take appended at the end". Set
 `Take.placed`. Then the pending discard (A§5.5), the ready autocut jobs
 (A§5.7), then `autocut.autoRunAfterTake` starts a job for the new clip. Reply
-to every stop request and waiter with `TakeFinalizedView`.
+to every stop request and waiter with `TakeFinalizedView`. A broken take's
+`error` names what the probe said about each stream.
 
-**Recovery** (`Session::open` with the lock): each take still `recording`
-gets `Probe{Recover}`; readable ⇒ `ok`, bin, toast "Recovered take 7 from
-the bog."; otherwise `broken`.
+**A probe that failed on its own** (`ProbeFailure::MissingTool` or `Tool`:
+ffprobe isn't installed, timed out, the prober died) says nothing about the
+files, so it changes no fact: the take stays `recording` with its streams and
+offsets, the phase goes back to Idle, stop requests and waiters get
+`missing_dependency` (exit 5, hint: install ffprobe, `qrec doctor`) or `io`,
+a pending discard hears "take N was not placed", toast + log name the real
+cause. Startup recovery finalizes the take (into the bin) once the probe
+works.
+
+**Recovery** (`Session::open` with the lock, `on_event::record::start_recovery`):
+each take still `recording` gets `Probe{Recover}` and is in
+`runtime.recovering` until its `TakeProbed(Recover)` comes back (whatever it
+says); a host isn't idle meanwhile (A§8.6), so an in-process command waits
+for the recovery it started. Readable ⇒ `ok`, bin, toast "Recovered take 7
+from the bog."; unreadable ⇒ `broken`; a probe that failed on its own ⇒ the
+take stays `recording` (warning toast) for the next start.
 
 **CaptureFailed vs StreamLost** (engine contract, A§8.11): after
 CaptureStarted, an error attributable to one branch (its source, encoder,

@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 
 use qrec_core::apply::project::{is_initialized, uninitialized_state};
 use qrec_core::apply::ui::live_scene;
-use qrec_core::on_event::record::recovery_probes;
-use qrec_core::protocol::{Effect, Toast, ToastLevel};
+use qrec_core::on_event::record::start_recovery;
+use qrec_core::protocol::{Toast, ToastLevel};
 use qrec_core::{CoreError, ErrorCode, Event, State};
 
 use super::Session;
@@ -90,9 +90,9 @@ fn canonical_dir(dir: &Path) -> Result<PathBuf, ShellError> {
     Ok(canonical)
 }
 
-/// `Busy` naming the host when its record says who it is.
+/// `Busy` naming the host when its record says who it is (and it still runs).
 fn lock_held(dir: &Path) -> ShellError {
-    let who = match lockfile::read(dir) {
+    let who = match lockfile::read_live(dir) {
         Ok(Some(record)) => format!("a {} host (pid {})", record.kind.as_str(), record.pid),
         _ => "another Qrec process".to_owned(),
     };
@@ -284,20 +284,13 @@ impl Session {
     }
 
     /// One `Probe{Recover}` per take still `recording` (A§5.3 "Recovery",
-    /// the record owner's `recovery_probes`).
+    /// the record owner's `start_recovery`). Each take stays in
+    /// `runtime.recovering` until its result is applied, so the host keeps
+    /// running until then (A§8.6), an in-process command too.
     fn start_recovery_probes(&mut self) {
-        for probe in recovery_probes(&self.state) {
-            if let Effect::Probe {
-                take,
-                purpose,
-                jobs,
-            } = probe
-            {
-                tracing::info!("recovering {take}: probing {} file(s)", jobs.len());
-                self.deps
-                    .media
-                    .probe(take, purpose, jobs, self.inbox.clone());
-            }
+        let outcome = start_recovery(&self.state);
+        if !outcome.effects.is_empty() {
+            self.run_outcome(outcome, None, &mut None, true);
         }
     }
 }

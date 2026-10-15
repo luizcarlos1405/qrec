@@ -1,7 +1,7 @@
 //! Socket publishing under the lock (A§8.3 step 1): unlink `<hash>.sock`,
-//! bind `<hash>.sock.<pid>`, listen, `rename` it to `<hash>.sock`, so the
-//! socket appears atomically and a client never connects to a half-set-up
-//! host. Only the lock holder unlinks its socket (step 2): unpublishing
+//! bind `<40 hex of the hash>.<pid>.tmp` (never longer than the socket
+//! path), listen, `rename` it to `<hash>.sock`, so the socket appears
+//! atomically and a client never connects to a half-set-up host. Only the lock holder unlinks its socket (step 2): unpublishing
 //! removes the path only while it is still the socket this host bound.
 //! Scanners never delete anything. Owner: store.
 

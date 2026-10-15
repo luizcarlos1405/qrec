@@ -792,6 +792,7 @@ mod tests {
         let hello = HelloInfo {
             pid: 9,
             project_dir: "/v/swamp".into(),
+            project_dir_hex: None,
             host: HostKind::Gui,
             record: RecordPhase::Idle,
             jobs: vec![],

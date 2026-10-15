@@ -75,6 +75,7 @@ mod tests {
         let hello = HelloInfo {
             pid: 42,
             project_dir: "/p".into(),
+            project_dir_hex: None,
             host: HostKind::Gui,
             record: RecordPhase::Idle,
             jobs: vec![],

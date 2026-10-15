@@ -20,8 +20,10 @@
 //!
 //! Scanning never deletes anything (A§8.3 step 2).
 
+use std::ffi::OsString;
 use std::fs;
 use std::io;
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
@@ -42,18 +44,33 @@ const MAX_SCAN: usize = 64;
 pub enum Folder {
     /// It holds `qrec.json`.
     Project,
+    /// No `qrec.json`, but `.qrec/` holds a history: the project lost its
+    /// file and is restored from the history (A§7.7), never initialized again.
+    MissingFile,
     /// Strictly empty (hidden entries count as content).
     Empty,
     /// Anything else: "Not my swamp".
     Other,
 }
 
+/// The files whose presence in `.qrec/` marks a project's history.
+const HISTORY_FILES: [&str; 3] = ["history.head.json", "history.jsonl", "history.base.json"];
+
 /// Classifies `dir`. With `qrec_dir_is_empty`, a folder whose only entry
-/// is the `.qrec/` directory counts as empty: the re-check under the lock
-/// while initializing, after `mkdir .qrec` (A§8.4 init order).
+/// is the `.qrec/` directory (without a history) counts as empty: the
+/// re-check under the lock while initializing, after `mkdir .qrec` (A§8.4
+/// init order).
 pub fn classify(dir: &Path, qrec_dir_is_empty: bool) -> io::Result<Folder> {
     if fs::symlink_metadata(dir.join(PROJECT_FILE)).is_ok() {
         return Ok(Folder::Project);
+    }
+    let qrec = dir.join(".qrec");
+    if qrec.is_dir()
+        && HISTORY_FILES
+            .iter()
+            .any(|name| fs::symlink_metadata(qrec.join(name)).is_ok())
+    {
+        return Ok(Folder::MissingFile);
     }
     let mut entries = fs::read_dir(dir)?;
     let Some(first) = entries.next() else {
@@ -88,8 +105,9 @@ pub struct ResolvedProject {
     /// Canonical, so it maps to one socket.
     pub dir: PathBuf,
     pub source: ProjectSource,
-    /// `qrec.json` exists; `false` for a strictly empty folder (it becomes
-    /// a project on the first change or with `qrec init`).
+    /// A project (`qrec.json` exists, or `.qrec/` holds the history of one
+    /// that lost it); `false` for a strictly empty folder (it becomes a
+    /// project on the first change or with `qrec init`).
     pub initialized: bool,
 }
 
@@ -121,14 +139,16 @@ pub fn resolve_project(
         };
         let dir = fs::canonicalize(&given).map_err(|e| unusable(&given, &e))?;
         return match classify(&dir, true).map_err(|e| unusable(&dir, &e))? {
-            Folder::Project => Ok(resolved(dir, ProjectSource::Flag, true)),
+            Folder::Project | Folder::MissingFile => Ok(resolved(dir, ProjectSource::Flag, true)),
             Folder::Empty => Ok(resolved(dir, ProjectSource::Flag, false)),
             Folder::Other => Err(CoreError::not_project()),
         };
     }
     if let Ok(dir) = fs::canonicalize(cwd) {
         match classify(&dir, true) {
-            Ok(Folder::Project) => return Ok(resolved(dir, ProjectSource::Cwd, true)),
+            Ok(Folder::Project | Folder::MissingFile) => {
+                return Ok(resolved(dir, ProjectSource::Cwd, true));
+            }
             Ok(Folder::Empty) => return Ok(resolved(dir, ProjectSource::Cwd, false)),
             Ok(Folder::Other) | Err(_) => {}
         }
@@ -144,7 +164,8 @@ pub fn resolve_project(
     match hosts.as_slice() {
         [] => Err(CoreError::not_project()),
         [host] => {
-            let dir = PathBuf::from(&host.project_dir);
+            // The exact path, also when it isn't UTF-8.
+            let dir = PathBuf::from(OsString::from_vec(host.project_dir_bytes()));
             let initialized = fs::symlink_metadata(dir.join(PROJECT_FILE)).is_ok();
             Ok(resolved(
                 dir,
@@ -366,11 +387,48 @@ mod tests {
         drop((host, second));
     }
 
+    /// A folder that isn't UTF-8 serves a host like any other: a command
+    /// from elsewhere uses that exact folder, not its lossy display name.
+    #[test]
+    fn a_live_host_in_a_folder_that_isnt_utf8_is_found() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let junk = tmp.path().join("junk");
+        fs::create_dir(&junk).unwrap();
+        fs::write(junk.join("x"), "").unwrap();
+        let odd = tmp
+            .path()
+            .join(std::ffi::OsStr::from_bytes(b"\xff\xfe-bad"));
+        fs::create_dir(&odd).unwrap();
+        project(&odd);
+        let runtime = socket_dir();
+        let host = start_live_host(runtime.path(), &odd);
+        let r = resolve_project(None, &junk, runtime.path()).unwrap();
+        assert_eq!(r.dir, fs::canonicalize(&odd).unwrap());
+        assert!(r.initialized);
+        drop(host);
+    }
+
+    #[test]
+    fn a_project_that_lost_its_file_is_still_a_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        fs::create_dir_all(dir.join(".qrec")).unwrap();
+        fs::create_dir(dir.join("takes")).unwrap();
+        assert_eq!(classify(dir, true).unwrap(), Folder::Other);
+        fs::write(dir.join(".qrec/history.jsonl"), "").unwrap();
+        assert_eq!(classify(dir, true).unwrap(), Folder::MissingFile);
+        let r = resolve_project(Some(dir), dir, &dir.join("run")).unwrap();
+        assert_eq!((r.source, r.initialized), (ProjectSource::Flag, true));
+    }
+
     /// A server for `dir` on its real socket name in `runtime`.
     fn start_live_host(runtime: &Path, dir: &Path) -> crate::ipc::testing::TestServer {
         let canonical = fs::canonicalize(dir).unwrap();
         let t = start_server(runtime, |cfg| {
-            cfg.project_dir = canonical.to_string_lossy().into_owned();
+            let (shown, exact) = HelloInfo::dir_fields(canonical.as_os_str().as_encoded_bytes());
+            cfg.project_dir = shown;
+            cfg.project_dir_hex = exact;
         });
         // Move it to the hashed name the scanner looks for.
         let socket = socket_path(runtime, &canonical).unwrap();

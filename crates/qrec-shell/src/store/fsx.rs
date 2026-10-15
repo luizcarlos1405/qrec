@@ -33,7 +33,13 @@ pub fn tmp_path(path: &Path) -> PathBuf {
 /// optionally fsync the directory. Readers see the old or the new file,
 /// never a mix.
 pub fn replace(path: &Path, bytes: &[u8], sync: Sync) -> io::Result<()> {
-    let tmp = tmp_path(path);
+    replace_via(path, &tmp_path(path), bytes, sync)
+}
+
+/// [`replace`] with the temp file at `tmp`, which must be on the same file
+/// system (`qrec.json` is written through `.qrec/qrec.json.tmp`, so the
+/// project folder never shows a stray entry to the folder rule, A§8.4).
+pub fn replace_via(path: &Path, tmp: &Path, bytes: &[u8], sync: Sync) -> io::Result<()> {
     let result = (|| {
         let mut file = OpenOptions::new()
             .write(true)
@@ -41,16 +47,16 @@ pub fn replace(path: &Path, bytes: &[u8], sync: Sync) -> io::Result<()> {
             .truncate(true)
             .mode(0o644)
             .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-            .open(&tmp)?;
+            .open(tmp)?;
         file.write_all(bytes)?;
         if sync != Sync::None {
             file.sync_all()?;
         }
         drop(file);
-        fs::rename(&tmp, path)
+        fs::rename(tmp, path)
     })();
     if result.is_err() {
-        let _ = fs::remove_file(&tmp);
+        let _ = fs::remove_file(tmp);
     }
     result?;
     if sync == Sync::FileAndDir {

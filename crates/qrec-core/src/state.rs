@@ -256,6 +256,11 @@ pub struct Runtime {
     /// start until Qrec restarts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_stuck: Option<String>,
+    /// Takes whose startup recovery probe (A§5.3 "Recovery") is still out:
+    /// set by `on_event::record::start_recovery`, cleared by their
+    /// `TakeProbed(Recover)`. A host isn't idle while one is (A§8.6).
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub recovering: BTreeSet<TakeId>,
 }
 
 impl Runtime {
@@ -271,7 +276,14 @@ impl Runtime {
             playing: false,
             disk_invalid: None,
             engine_stuck: None,
+            recovering: BTreeSet::new(),
         }
+    }
+
+    /// Recording, running jobs or recovery probes out: work a host must
+    /// finish before it exits (A§8.6).
+    pub fn is_busy(&self) -> bool {
+        !self.record.is_idle() || !self.jobs.is_empty() || !self.recovering.is_empty()
     }
 
     pub fn alloc_job_id(&mut self) -> JobId {

@@ -1138,7 +1138,7 @@ fn takes_still_recording_are_probed_when_a_host_opens() {
     let ro = h.open(false).unwrap();
     assert!(!h.log.has("probe"), "readers don't recover takes");
     drop(ro);
-    let s = h.open(true).unwrap();
+    let mut s = h.open(true).unwrap();
     assert!(
         h.log
             .has("probe take-0002 Recover takes/take-0002/L1-screen-FAKE-1.mkv,takes/take-0002/A1-mic.mka"),
@@ -1148,6 +1148,42 @@ fn takes_still_recording_are_probed_when_a_host_opens() {
     assert_eq!(
         s.state().project.takes[&take(2)].status,
         TakeStatus::Recording
+    );
+    // The probe is out: the host isn't idle, so even an in-process command
+    // waits for it instead of exiting with the result undelivered (A§8.6).
+    assert_eq!(
+        s.state().runtime.recovering,
+        [take(2)].into_iter().collect::<BTreeSet<_>>()
+    );
+    assert!(!s.is_idle());
+    // A command meanwhile doesn't start a second probe.
+    send(&mut s, Command::Undo { steps: 1 }, false).ok();
+    assert_eq!(
+        h.log
+            .lines()
+            .iter()
+            .filter(|l| l.starts_with("probe "))
+            .count(),
+        1
+    );
+
+    // The result is applied and saved.
+    let streams = s.state().project.takes[&take(2)].streams.clone();
+    s.handle(Msg::Event(Event::TakeProbed {
+        take: take(2),
+        purpose: ProbePurpose::Recover,
+        results: streams.iter().map(|st| probed(st, 90)).collect(),
+    }));
+    s.drain();
+    assert!(s.state().runtime.recovering.is_empty());
+    assert!(s.is_idle());
+    assert_eq!(s.state().project.takes[&take(2)].status, TakeStatus::Ok);
+    assert_eq!(h.head().project.takes[&take(2)].status, TakeStatus::Ok);
+    assert!(
+        h.toast_titles()
+            .contains(&"Recovered take 2 from the bog.".to_owned()),
+        "{:?}",
+        h.toast_titles()
     );
 }
 
@@ -1284,6 +1320,52 @@ fn deleting_waits_for_a_durable_commit() {
     let head = h.head();
     assert_eq!(head.project.name, "renamed");
     assert_eq!(head.project, s.state().project);
+}
+
+/// An in-process (or headless) host can't save a change "later": it exits
+/// right after. A command whose commit fails gets the real cause and
+/// changes nothing (it used to say "the change was made … it is saved
+/// with the next change", then lose it).
+#[test]
+fn a_change_a_short_lived_host_cant_save_is_not_made() {
+    let h = Harness::with_sample("unwritable");
+    let mut s = h.open(true).unwrap();
+    let before = s.state().clone();
+    let qrec = h.dir.join(".qrec");
+    let rename = |name: &str| Command::ProjectSet {
+        name: Some(name.into()),
+        canvas: None,
+        background: None,
+        countdown_secs: None,
+        encoder: None,
+        vaapi_device: qrec_core::protocol::Nullable::Keep,
+    };
+    fs::set_permissions(&qrec, fs::Permissions::from_mode(0o500)).unwrap();
+    let reply = send(&mut s, rename("lost"), false);
+    fs::set_permissions(&qrec, fs::Permissions::from_mode(0o755)).unwrap();
+    let err = reply.unwrap_err();
+    assert_eq!(err.code, ErrorCode::Io);
+    assert!(
+        err.message
+            .starts_with("the change couldn't be saved to disk, so it wasn't made:"),
+        "{err:?}"
+    );
+    assert!(err.message.contains("Permission denied"), "{err:?}");
+    assert!(
+        !err.hint.as_deref().unwrap().contains("next change"),
+        "{err:?}"
+    );
+    assert_eq!(s.state().project, before.project, "not made in memory");
+    assert_eq!(s.state().history, before.history);
+
+    // The next change is the next seq, and the files hold no trace of the
+    // lost one.
+    send(&mut s, rename("kept"), false).unwrap();
+    assert!(!s.store.is_dirty());
+    let head = h.head();
+    assert_eq!(head.project.name, "kept");
+    assert_eq!(head.project, s.state().project);
+    assert_eq!(h.history_seqs(), [before.history.next_seq]);
 }
 
 #[test]

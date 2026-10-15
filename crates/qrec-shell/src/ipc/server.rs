@@ -22,6 +22,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::net::Shutdown;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -49,6 +50,8 @@ const GONE_CHECK: Duration = Duration::from_millis(200);
 pub struct ServerConfig {
     /// The canonical project directory (`HelloInfo::project_dir`).
     pub project_dir: String,
+    /// Its exact bytes when they aren't UTF-8 (`HelloInfo::project_dir_hex`).
+    pub project_dir_hex: Option<String>,
     pub host: HostKind,
     pub pid: u32,
     /// The Qrec version (`HelloInfo::version`).
@@ -66,8 +69,10 @@ pub struct ServerConfig {
 impl ServerConfig {
     /// The A§8.3 limits for this process.
     pub fn new(project_dir: &Path, host: HostKind) -> Self {
+        let (dir, dir_hex) = HelloInfo::dir_fields(project_dir.as_os_str().as_bytes());
         Self {
-            project_dir: project_dir.to_string_lossy().into_owned(),
+            project_dir: dir,
+            project_dir_hex: dir_hex,
             host,
             pid: std::process::id(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -84,6 +89,7 @@ impl ServerConfig {
         HelloInfo {
             pid: self.pid,
             project_dir: self.project_dir.clone(),
+            project_dir_hex: self.project_dir_hex.clone(),
             host: self.host,
             record: RecordPhase::Idle,
             jobs: Vec::new(),

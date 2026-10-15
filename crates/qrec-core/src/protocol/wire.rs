@@ -104,12 +104,40 @@ impl WireMessage {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HelloInfo {
     pub pid: u32,
+    /// The canonical project folder, for people (lossy when the path isn't
+    /// UTF-8: then [`HelloInfo::project_dir_hex`] has the real one).
     pub project_dir: String,
+    /// The folder's exact bytes, in hex, only when they aren't UTF-8: a
+    /// client that uses this host's project (A§8.4) rebuilds the path from
+    /// them ([`HelloInfo::project_dir_bytes`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_dir_hex: Option<String>,
     pub host: HostKind,
     pub record: RecordPhase,
     pub jobs: Vec<Job>,
     /// The Qrec version of the host.
     pub version: String,
+}
+
+impl HelloInfo {
+    /// `(project_dir, project_dir_hex)` for a folder whose path is `bytes`.
+    pub fn dir_fields(bytes: &[u8]) -> (String, Option<String>) {
+        match std::str::from_utf8(bytes) {
+            Ok(text) => (text.to_owned(), None),
+            Err(_) => (
+                String::from_utf8_lossy(bytes).into_owned(),
+                Some(crate::hash::to_hex(bytes)),
+            ),
+        }
+    }
+
+    /// The project folder's exact path bytes.
+    pub fn project_dir_bytes(&self) -> Vec<u8> {
+        self.project_dir_hex
+            .as_deref()
+            .and_then(crate::hash::from_hex)
+            .unwrap_or_else(|| self.project_dir.as_bytes().to_vec())
+    }
 }
 
 /// `{"ok":true,"data":…}` or `{"ok":false,"error":{"code","message","hint"?,"details"?}}`:

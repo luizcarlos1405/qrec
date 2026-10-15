@@ -19,7 +19,9 @@ use qrec_core::media_argv::{
 use qrec_core::model::{Clip, Project, StreamKind};
 use qrec_core::parse::ffprobe::parse_segment_check;
 use qrec_core::plans::{ExportPlan, FramePlan, SegmentPlan, StitchPlan};
-use qrec_core::protocol::{ExportFormat, Interval, ProbeJob, ProbePurpose, Quality, VideoCodec};
+use qrec_core::protocol::{
+    ExportFormat, Interval, ProbeError, ProbeFailure, ProbeJob, ProbePurpose, Quality, VideoCodec,
+};
 use qrec_core::state::{Capabilities, FfmpegCaps, SilenceKey, VaapiCaps};
 use qrec_core::time::NS_PER_SEC;
 use qrec_core::{ClipId, Event, JobId, LayerId, TakeId};
@@ -943,7 +945,79 @@ fn probing_a_missing_file_is_an_error_result() {
         (results[0].id.as_str(), results[0].file.as_str()),
         ("L1", file)
     );
-    assert_eq!(results[0].info, Err(format!("{file} is missing")));
+    assert_eq!(
+        results[0].info,
+        Err(ProbeError::media(format!("{file} is missing")))
+    );
+}
+
+/// What one probe of `argv` on a small non-empty file in `dir` says.
+fn probe_with(dir: &Path, options: MediaOptions, argv: Vec<String>) -> ProbeError {
+    let file = "takes/take-0001/L1-screen-DP-4.mkv";
+    fs::create_dir_all(dir.join("takes/take-0001")).unwrap();
+    fs::write(dir.join(file), b"not matroska at all").unwrap();
+    let mut runner = FfmpegRunner::with_options(dir, options);
+    let (inbox, rx) = Inbox::channel();
+    let jobs = vec![ProbeJob {
+        id: "L1".into(),
+        file: file.into(),
+        kind: StreamKind::Video,
+        argv,
+    }];
+    runner.probe(TakeId::numbered(1), ProbePurpose::Finalize, jobs, inbox);
+    let events = events_until(&rx, WAIT, |e| matches!(e, Event::TakeProbed { .. }));
+    let Some(Event::TakeProbed { results, .. }) = events.last() else {
+        panic!("{events:#?}");
+    };
+    results[0].info.clone().unwrap_err()
+}
+
+/// A probe that failed on its own (no ffprobe, a hung one) says so: the
+/// core must not mark a good take broken on it. ffprobe rejecting the file
+/// is about the media.
+#[test]
+fn probe_failures_say_whether_the_file_or_the_tool_failed() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("swamp");
+    let file = "takes/take-0001/L1-screen-DP-4.mkv";
+
+    let mut argv = probe_argv(file, StreamKind::Video);
+    argv[0] = "/nonexistent/qrec-test/ffprobe".into();
+    let missing = probe_with(&dir, options(), argv);
+    assert_eq!(missing.kind, ProbeFailure::MissingTool, "{missing:?}");
+    assert!(missing.message.contains("wasn't found"), "{missing:?}");
+
+    let hung = MediaOptions {
+        probe_timeout: Duration::from_millis(300),
+        ..options()
+    };
+    let started = Instant::now();
+    let timed_out = probe_with(&dir, hung, strings(&["sh", "-c", "exec sleep 30", file]));
+    assert_eq!(timed_out.kind, ProbeFailure::Tool, "{timed_out:?}");
+    assert!(timed_out.message.contains("timed out"), "{timed_out:?}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+
+    let garbage = probe_with(&dir, options(), probe_argv(file, StreamKind::Video));
+    assert_eq!(garbage.kind, ProbeFailure::Media, "{garbage:?}");
+}
+
+/// A§8.7: ffprobe gets 20 s; only big files get more, in proportion.
+#[test]
+fn probe_timeouts_grow_with_the_file_not_with_any_file() {
+    let o = MediaOptions::default();
+    let base = o.probe_timeout;
+    assert_eq!(o.scaled(base, 0), base);
+    let mb = o.scaled(base, 1 << 20);
+    assert!(
+        mb >= base && mb < base + Duration::from_millis(50),
+        "{mb:?}"
+    );
+    assert_eq!(o.scaled(base, 1 << 30), base + Duration::from_secs(30));
+    assert_eq!(
+        o.scaled(base, (5u64 << 30) / 2),
+        base + Duration::from_secs(75)
+    );
+    assert!(o.scaled(base, u64::MAX) > base, "no overflow");
 }
 
 #[test]

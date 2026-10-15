@@ -41,7 +41,7 @@ use crate::msg::{Inbox, Msg, Request, Responder};
 use crate::paths::{Env, ProjectPaths, ensure_runtime_dir, socket_path};
 use crate::testkit::TestEnv;
 
-/// A private (0700) dir under `/tmp` with room for `<64 hex>.sock.<pid>`
+/// A private (0700) dir under `/tmp` with room for `<64 hex>.sock`
 /// names, like a runtime dir.
 pub(crate) fn socket_dir() -> TempDir {
     use std::os::unix::fs::PermissionsExt;
@@ -339,6 +339,7 @@ pub(crate) struct FakeSession {
     inbox: Inbox,
     rx: Receiver<Msg>,
     dir: String,
+    dir_hex: Option<String>,
     log: FakeLog,
     next_req: u64,
     jobs: Vec<FakeJob>,
@@ -367,7 +368,8 @@ impl FakeSession {
             state: State::new(project, History::new(), UiState::default(), host),
             inbox,
             rx,
-            dir: dir.to_string_lossy().into_owned(),
+            dir: HelloInfo::dir_fields(dir.as_os_str().as_encoded_bytes()).0,
+            dir_hex: HelloInfo::dir_fields(dir.as_os_str().as_encoded_bytes()).1,
             log,
             next_req: 0,
             jobs: Vec::new(),
@@ -380,6 +382,7 @@ impl FakeSession {
         HelloInfo {
             pid: std::process::id(),
             project_dir: self.dir.clone(),
+            project_dir_hex: self.dir_hex.clone(),
             host: self.state.runtime.host,
             record: self.state.runtime.record.clone(),
             jobs: self.state.runtime.jobs.values().cloned().collect(),
@@ -689,6 +692,14 @@ pub(crate) const RULES: &str = "QREC_IPC_TEST_RULES";
 pub(crate) const REQUEST: &str = "QREC_IPC_TEST_REQUEST";
 pub(crate) const PROJECT: &str = "QREC_IPC_TEST_PROJECT";
 pub(crate) const STUBBORN: &str = "QREC_IPC_TEST_STUBBORN";
+/// A headless child whose Session fails to open like a corrupt `qrec.json`.
+pub(crate) const OPEN_FAIL: &str = "QREC_IPC_TEST_OPEN_FAIL";
+
+/// What a [`OPEN_FAIL`] host's Session says (the A§7.7 error and hint).
+pub(crate) fn corrupt_project_error() -> CoreError {
+    CoreError::invalid("qrec.json is not valid JSON: EOF while parsing a value at line 2 column 0")
+        .with_hint("fix it, or rebuild it from the history with `qrec history restore 1 --yes`")
+}
 
 /// [`child_entry`]'s full name, for `--exact`.
 const CHILD_TEST: &str = "ipc::testing::child_entry";
@@ -800,6 +811,9 @@ fn child_headless(log: &Path) -> u8 {
     };
     let mut opener = FakeOpener::to_file(log);
     opener.stubborn = std::env::var_os(STUBBORN).is_some();
+    if std::env::var_os(OPEN_FAIL).is_some() {
+        opener.fail = Some(corrupt_project_error());
+    }
     opener
         .log
         .push(json!({ "event": "hostStart", "role": "headless" }));

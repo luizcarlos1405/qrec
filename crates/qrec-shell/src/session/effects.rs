@@ -12,6 +12,10 @@
 //!   `DeleteTakeDirs`) don't run when it failed; the core gets the failure
 //!   as an event instead. A failed `CreateTakeDir` fails that take's
 //!   capture the same way.
+//! - A request whose commit fails in a short-lived host (in-process CLI,
+//!   headless) changes nothing: it gets the error with its cause and the
+//!   state stays as it was (that host can't save it "later"). A GUI keeps
+//!   the change in memory and saves it with the next one.
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -20,12 +24,12 @@ use chrono::Duration;
 use qrec_core::apply::Outcome;
 use qrec_core::apply::project::is_initialized;
 use qrec_core::protocol::{Effect, HistoryOp, LogLevel, Toast, ToastLevel, UiAction};
+use qrec_core::state::HostKind;
 use qrec_core::{CoreError, Event, ReqId, TakeId};
 use serde_json::Value;
 
 use super::{Session, with_current};
 use crate::msg::Responder;
-#[cfg(test)]
 use crate::store::CommitError;
 
 /// What became of an outcome.
@@ -140,21 +144,35 @@ impl Session {
         }
 
         let was_initialized = is_initialized(&self.state.project);
-        let commit = self.store.commit(&self.state, &next, &ops, write_project);
-        self.state = next;
-        let committed = match commit {
-            Ok(()) => true,
+        let failure = match self.store.commit(&self.state, &next, &ops, write_project) {
+            Ok(()) => None,
             #[cfg(test)]
             Err(CommitError::Crashed(_)) => {
                 // The "process" died here: nothing else runs, nobody hears back.
+                self.state = next;
                 self.crashed = true;
                 return Ran::Done;
             }
             Err(e) => {
                 self.notify_error("Couldn't save the project", &e.to_string());
-                false
+                Some(e)
             }
         };
+        if let Some(e) = &failure
+            && to.is_some()
+            && self.state.runtime.host != HostKind::Gui
+        {
+            // A short-lived host (an in-process command, a headless
+            // recorder) can't promise to save the change later: the request
+            // fails and changes nothing, in memory or on disk (the next
+            // commit rewrites the files from the state as it was).
+            let err = self.save_error(e, false);
+            let mut responder = to.take();
+            self.reply_now(req, &mut responder, Err(err));
+            return Ran::Done;
+        }
+        let committed = failure.is_none();
+        self.state = next;
         if committed && !was_initialized && is_initialized(&self.state.project) {
             // A§8.4: `takes/` is made right after the first commit.
             if let Err(e) = self.store.ensure_takes_dir() {
@@ -170,9 +188,9 @@ impl Session {
         // The reply waits for the commit (A§7.6 step 4). The requester is
         // registered first, so progress and late replies among the effects
         // reach it.
-        let reply = match reply {
-            Some(Ok(_)) if !committed => Some(Err(self.save_error())),
-            other => other,
+        let reply = match (reply, &failure) {
+            (Some(Ok(_)), Some(e)) => Some(Err(self.save_error(e, true))),
+            (other, _) => other,
         };
         if let Some(id) = req
             && let Some(responder) = to.take()
@@ -193,9 +211,24 @@ impl Session {
         Ran::Done
     }
 
-    fn save_error(&self) -> CoreError {
-        CoreError::io("the change was made but couldn't be saved to disk")
-            .with_hint("check free disk space and permissions; it is saved with the next change")
+    /// The reply to a change whose commit failed, with the real cause.
+    /// `kept`: the change stays in memory (a GUI host saves it with the
+    /// next change); otherwise it was not made at all.
+    fn save_error(&self, e: &CommitError, kept: bool) -> CoreError {
+        if kept {
+            CoreError::io(format!(
+                "the change was made but couldn't be saved to disk: {e}"
+            ))
+            .with_hint("check free disk space and permissions; Qrec keeps it in memory and saves it with the next change")
+        } else {
+            CoreError::io(format!(
+                "the change couldn't be saved to disk, so it wasn't made: {e}"
+            ))
+            .with_hint(format!(
+                "check that {} is writable and has free space, then run the command again",
+                self.dir.display()
+            ))
+        }
     }
 
     /// One effect after the commit.

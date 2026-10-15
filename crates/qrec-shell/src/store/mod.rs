@@ -84,7 +84,7 @@ pub enum CommitError {
 impl CommitError {
     pub fn to_core(&self) -> CoreError {
         CoreError::io(format!("couldn't save the project: {self}"))
-            .with_hint("check free disk space and permissions; the change is kept in memory and saved with the next one")
+            .with_hint("check free disk space and the project folder's permissions")
     }
 }
 
@@ -310,8 +310,15 @@ impl Store {
         }
         let bytes = format::project_bytes(project);
         let path = self.paths.project_file();
-        fsx::replace(&path, &bytes, fsx::Sync::FileAndDir)
-            .map_err(io_err(format!("write {}", path.display())))?;
+        // Through `.qrec/qrec.json.tmp`: a folder being initialized shows
+        // only `.qrec/` to other commands' folder rule (A§8.4).
+        fsx::replace_via(
+            &path,
+            &self.paths.project_tmp(),
+            &bytes,
+            fsx::Sync::FileAndDir,
+        )
+        .map_err(io_err(format!("write {}", path.display())))?;
         self.last_sha = Some(format::sha(&bytes));
         Ok(())
     }

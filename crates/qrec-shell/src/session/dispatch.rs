@@ -3,6 +3,7 @@
 //! through `effects::run_outcome`. An empty folder is initialized lazily
 //! before its first command (A§8.4).
 
+use std::os::unix::ffi::OsStrExt;
 use std::sync::{Arc, Mutex};
 
 use chrono::SubsecRound;
@@ -79,9 +80,12 @@ impl Session {
 
     /// `hello` (A§4.9).
     fn hello(&self) -> Value {
+        // The exact bytes too when the path isn't UTF-8 (A§8.4).
+        let (project_dir, project_dir_hex) = HelloInfo::dir_fields(self.dir.as_os_str().as_bytes());
         let info = HelloInfo {
             pid: std::process::id(),
-            project_dir: self.dir.to_string_lossy().into_owned(),
+            project_dir,
+            project_dir_hex,
             host: self.state.runtime.host,
             record: self.state.runtime.record.clone(),
             jobs: self.state.runtime.jobs.values().cloned().collect(),
