@@ -28,7 +28,12 @@ crates/
   qrec/        the `qrec` binary
 ```
 
-`qrec → qrec-cli → qrec-shell → qrec-core`, `qrec → qrec-gui → qrec-shell`.
+`qrec → qrec-cli → qrec-core`, `qrec → qrec-shell → qrec-core`,
+`qrec → qrec-gui → qrec-shell`. `qrec-cli` doesn't depend on the shell: it
+maps arguments, resolves the folder (A§8.4) and renders replies, and reaches
+everything else (routing, hosts, Ctrl+C, `doctor`, `sources list`, `qrec
+host --headless`) through its `Backend` port, which `crates/qrec/src/shell.rs`
+implements over `qrec-shell`.
 **`qrec-core` depends on no other workspace crate**, not even in dev-deps.
 
 ### A§1.2 Dependencies (pinned in the root `Cargo.toml`)
@@ -52,12 +57,15 @@ Agents never add or bump dependencies; they ask. CI asserts
 | notify | 8 (inotify) | shell |
 | wayland-client | 0.31 (wl_output names) | shell |
 | rustix | 1.1 `process, termios` (setsid, kill, process groups) | shell |
-| libc | 0.2 (`renameat2`, `SO_PEERCRED`, `prctl`) | shell |
+| libc | 0.2 (`renameat2`, `SO_PEERCRED`, `prctl`, `flock`, `sigaction`) | shell |
 | tempfile, getrandom, dirs, which, tracing(-subscriber), anyhow | | shell, cli |
 | clap 4.6 (derive), clap_complete | | cli |
 | assert_cmd, predicates | tests | qrec |
 
-File locking uses std `File::try_lock` (flock), no extra crate.
+File locking is `flock(2)` through libc: std's `File::try_lock` needs Rust
+1.89, above the workspace MSRV (1.85). Signals: libc `sigaction` handlers
+write to a self-pipe that a thread turns into `host::signals::Interrupts`
+(no signal-hook).
 
 ### A§1.3 Purity rules for `qrec-core` (enforced)
 
@@ -69,7 +77,9 @@ File locking uses std `File::try_lock` (flock), no extra crate.
 - chrono is built without `clock`; CI also runs `cargo check -p qrec-core`
   alone so workspace feature unification can't hide a `Utc::now()`.
 - Paths in the core are `String`s: project-relative and `/`-separated,
-  except the absolute `out` of an export or frame save (A§5.9).
+  except a hand-picked `out` of an export or frame save, which is absolute
+  (A§5.9). An auto name stays project-relative (`exports/…`, `frames/…`):
+  that is how the runner tells it apart and bumps it `-2`, `-3` (A§8.8).
 - Everything else arrives as data: in a `Command`, in `Ctx` (time,
   entropy, confirmation, `Facts`) or in an `Event`.
 
@@ -188,11 +198,15 @@ is `broken` with that reason, never a 0-frame `tooShort`.
 Errors make a project invalid:
 - `version == CURRENT_VERSION`; `nextTakeNumber` > every take number.
 - Clips: unique ids; take exists with status `ok`; `0 ≤ in < out ≤ durationFrames`.
-- Scenes: unique layer/track ids; `0 ≤ opacity ≤ 1`; `rect.w, rect.h ≥ 1`;
+- Scenes: layer and track ids unique in one namespace per scene (a stream's
+  id is its layer's or track's); `0 ≤ opacity ≤ 1`; `rect.w, rect.h ≥ 1`;
   gain within ±60 dB; `|syncOffsetMs| ≤ 5000`.
-- Streams: `file` must be `takes/<takeId>/<name>` with `<name>` matching
-  `^[A-Za-z0-9._-]+$` (guards purge, A§5.6); non-recording takes have media
-  fields for their kind.
+- Streams: ids unique per take; `file` must be `takes/<takeId>/<name>` with
+  `<name>` matching `^[A-Za-z0-9._-]+$` and not `.` or `..` (guards purge,
+  A§5.6). Finalized takes (`ok`, `tooShort`) have the media fields of their
+  kind for every stream a non-missing layer or track uses; `recording` and
+  `broken` takes and missing sources may lack them (a take that broke at
+  start was never probed, and undo must still validate).
 - Canvas: even `16 ≤ w, h ≤ 8192`; `fps.num, fps.den > 0`, fps ≤ 240.
 - `countdownSecs ≤ 10`; autocut numbers in range (threshold −90…0 dB,
   ms values ≤ 60 000).
@@ -281,7 +295,8 @@ pub struct VaapiCaps {
 
 pub struct Job { pub id: JobId, pub kind: JobKind, pub req: Option<ReqId>, pub started: DateTime<Utc> }
 pub enum JobKind {
-    Autocut { cmd: serde_json::Value, targets: Vec<AutocutTarget>, params: AutocutParams,
+    Autocut { cmd: serde_json::Value /* + "skipped" until it completes, A§5.7 */,
+              targets: Vec<AutocutTarget>, params: AutocutParams,
               dry_run: bool, pending: BTreeSet<SilenceKey>, ready: bool },
     Export { out: String, files: BTreeSet<String>, total_frames: u64,
              seg_frames: Vec<u64>, seg_done: Vec<u64>, stitch_total_ns: u64, stitch_done_ns: u64,
@@ -323,6 +338,7 @@ pub struct Outcome {
 }
 
 pub fn facts_needed(state: &State, cmd: &Command) -> FactsNeeded;
+pub fn facts_needed_for_event(state: &State, ev: &Event) -> FactsNeeded;
 pub fn apply(state: &State, ctx: &Ctx, cmd: Command) -> Result<Outcome, CoreError>;
 pub fn on_event(state: &State, ctx: &Ctx, ev: Event) -> Outcome;
 pub fn query(state: &State, ctx: &Ctx, q: &Query) -> Result<serde_json::Value, CoreError>;
@@ -345,6 +361,7 @@ stored in `State` or persisted. Canvas layer drags follow the same rule.
 #[derive(Default)]
 pub struct Facts {
     pub config: UserConfig,                         // always filled (defaults if no file)
+    pub keys_toml: String,                          // keys.toml text, for Query::Keys ("" if none)
     pub folder_name: Option<String>,                // Init
     pub default_mic: Option<AudioDeviceInfo>,       // AudioAdd mic without source
     pub default_monitor: Option<AudioDeviceInfo>,   // AudioAdd system without source
@@ -374,8 +391,12 @@ pub struct FactsNeeded {
 ```
 
 `Session::dispatch` calls `facts_needed`, gathers exactly that (no `pactl`
-for a clip split), then calls `apply`. Under `QREC_CAPTURE_BACKEND=fake`
-device facts come from the fake inventory (A§8.12).
+for a clip split), then calls `apply`. Events do the same through
+`facts_needed_for_event` before `on_event`: the last countdown tick gets
+the begin-take facts (take number, camera modes), `TakeProbed{Finalize}`
+the file facts an `autoRunAfterTake` autocut needs. Under
+`QREC_CAPTURE_BACKEND=fake` device facts come from the fake inventory
+(A§8.12).
 
 `Facts.config` is `config.toml` read with `config::parse` (A§9.8), again
 whenever its size or mtime changed, so `qrec config set` reaches a running
@@ -441,9 +462,9 @@ need confirmation, `G` = GUI host only, `R` = allowed while recording (A§5.3).
 | `RecordStart` | `mode: RecordModeArg`, `countdown: Option<u32>`, `wait` | A | `qrec record start [--over <clip>… \| --over-selection] [--countdown N] [--wait]` |
 | `RecordStop` / `RecordCancel` | – | A, R | `qrec record stop` / `cancel` |
 | `RecordToggle` | `wait` | A, R | `qrec record toggle [--wait]` |
-| `TakeDiscardLast` | – | U, R (Finalizing) | `qrec take discard-last` |
+| `TakeDiscardLast` | – | U, R and A (Finalizing: replies after placement) | `qrec take discard-last` |
 | `TakePurge` | `takes` | A, `!`, not undoable | `qrec take purge <take>… --yes` |
-| `ClipAdd` | `take`, `at: InsertAt` | U | `qrec clip add <take> [--at N \| --after <clip>]` |
+| `ClipAdd` | `take`, `at: InsertAt` | U | `qrec clip add <take> [--at N \| --after <clip> \| --after-selection]` |
 | `ClipMove` | `clips`, `to: MoveTo` | U | `qrec clip move <clip>… (--to N \| --by ±N \| --before C \| --after C)` |
 | `ClipTrim` | `clip`, `start: Option<TimeArg>`, `end: Option<TimeArg>`, `timeline` | U | `qrec clip trim <clip> [--start T] [--end T] [--timeline]` |
 | `ClipSplit` | `clip: Option<ClipId>`, `at: TimeArg`, `timeline` | U | `qrec clip split <clip> --at T` / `--timeline --at T` |
@@ -487,14 +508,21 @@ pub struct UiPatch { zoom: Nullable<f64>, scroll_px, bin_open, snapping, solo: N
 ```
 
 Scene rules: `LayerAdd`/`AudioAdd` accept only `SceneTarget::Project`
-(a take's media is a fact). `LayerRemove`/`AudioRemove` on a take remove
-the layer from that snapshot only; the stream stays, and a later
-`SceneApply` from the project re-adds layers that have a stream.
+(a take's media is a fact), and a take's sources never change (`AudioSet`
+with a source on a take is `Invalid`). A source already in the scene is
+`Invalid` (`LayerAdd`, `AudioAdd`, `AudioSet`: a camera opens once, portal
+tokens are keyed by output); a sink's monitor can't be a mic (SPEC §5.1).
+A take still `recording` can't be edited (`Invalid`). `LayerRemove`/
+`AudioRemove` on a take remove the entry from that snapshot only; the
+stream stays, and a later `SceneApply` from the project re-adds it.
 `SceneApply` matches by id and copies layout fields only (`rect, crop,
 opacity, visible, fit`, z-order of matched layers; `gainDb, muted,
-syncOffsetMs` of tracks); it never copies `missing` or sources, and adds
-to a take only layers whose stream exists. `AudioRemove` of the track named
-by `autocut.track` also sets it to null in the same entry.
+syncOffsetMs` of tracks); it never copies `missing` or sources, adds to a
+take only the layers and tracks it has a stream for (their `missing` says
+whether that stream has media), and `AllTakes` skips takes still
+recording. `AudioRemove` of the project-scene track named by
+`autocut.track` also sets it to null in the same entry. `LayerOrder` past
+the top means the top.
 
 ### A§4.5 Queries, replies, progress, toasts
 
@@ -530,6 +558,14 @@ Typed result views (in `protocol/reply.rs`, all camelCase):
 `ExportDone { path, bytes, frames }`, `FrameSavedView { path }`,
 `TakeFinalizedView { take, status, durationFrames, placed, clips }`,
 `RecordStartedView { take, mode, files }`.
+`Query::State` → `{project, ui, history: {cursor, baseSeq, nextSeq,
+entries: [HistoryRow]}, runtime}`: the whole state but the patches and
+`seenClipIds` (`qrec status --json` adds the host, A§10).
+
+A patch command with no field set (`ProjectSet`, `LayerSet`, `AudioSet`,
+`AutocutSettings`) is `Usage` "nothing to change"; a command that changes
+nothing replies Ok with `seq: null` and appends no entry (`HistoryClear` on
+an empty history: Ok, no confirmation asked).
 
 ### A§4.6 Effects
 
@@ -652,9 +688,14 @@ host → client  {"id":"7","accepted":true}
 `hello` → `{pid, projectDir, host: "gui"|"headless"|"cli", record: RecordPhase, jobs, version}`,
 plus `projectDirHex` (the folder's exact bytes) when its path isn't UTF-8:
 `projectDir` is then only its display form, and clients use the bytes (A§8.4).
-`shutdown` → the host stops accepting, lets jobs finish, exits (A§8.6).
-The shell's `ReqId(u64)` is allocated per request by the Session; client
-ids stay inside the IPC layer. `--json` prints `to_wire(&result)` — the
+Until the host's Session opens, its server answers `hello` itself (idle, no
+jobs), so a host busy recovering never looks stuck. A host running another
+Qrec version gets a stderr notice ("the running … host (pid N) is qrec X;
+this is qrec Y") and is used all the same.
+`shutdown` → the host stops accepting, finalizes a recording
+(`RecordStop`), lets jobs finish, exits (A§8.6).
+The Session allocates a `ReqId` per request (a string: `r1`, `r2`, …);
+client ids stay inside the IPC layer. `--json` prints `to_wire(&result)` — the
 same `{"ok":…}` object — and streaming commands print progress lines
 (`{"event":"progress",…}`) before it. Every run ends stdout with exactly one
 such object: help and the version are `{"ok":true,"data":<help text>}` and
@@ -678,7 +719,13 @@ pub struct Committed { pub state: State, pub effects: Vec<Effect>, pub seq: Opti
 
 `commit` runs `ui_normalize`, diffs the undoable views (A§7.2); if they're
 equal it appends nothing; otherwise it appends an entry and emits
-`History(Append)` + `WriteProject` (+ `WriteUi` if the UI changed).
+`History(Append)` + `WriteProject` (+ `WriteUi` if the UI changed). An
+append that compacts the history (A§7.3) emits one `History(Rewrite)`,
+which holds the new entry, instead of the `Append`. `commit` and `persist`
+are the only source of `SetLive`: they emit it whenever
+`apply::ui::live_scene` changes (the project scene while the GUI shows the
+Live canvas, with preview; or while `record != Idle` in any host, preview
+only in GUI Live mode); handlers add `StartCapture`/`StopCapture` after it.
 **Facts first:** a step that changes facts *and* makes an edit (take
 finalization, recovery) first applies the facts with `persist`, then the
 edit with `commit`, so a patch never contains facts (`missing`, statuses,
@@ -720,13 +767,15 @@ including `Play`, `Undo` and `Export`, is `Busy` (SPEC §5.3.3).
 | Countdown | Stop/Toggle/Cancel | `CancelTimer` ⇒ Idle; start req gets `Invalid` "countdown cancelled"; caller gets Ok |
 | Starting | CaptureStarted | ⇒ Recording; record the streams' `startOffsetNs` (persist: every bin passed its first buffer, and a crash never reaches `CaptureStopped`); reply start req `RecordStartedView` (unless `wait`) |
 | Starting | CaptureFailed | take `broken` (+`error`) ⇒ Idle; reply start req `capture_failed` (`missing_dependency` when `missing` names an element that isn't installed) |
+| Recording / Finalizing | CaptureFailed (pipeline-wide) | take `broken` ⇒ Idle; while Recording `wait` requesters get `capture_failed`, while Finalizing stop requests and waiters get the broken `TakeFinalizedView` |
+| Idle / Countdown | CaptureFailed (no take: the live pipeline) | toast; a countdown ends and its start req gets `capture_failed` |
 | Starting | Stop/Toggle | `StopCapture{cancel:false}` ⇒ Finalizing; start req gets its started reply |
 | Starting / Recording | Cancel | `StopCapture{cancel:true}` ⇒ Finalizing(cancelled) |
 | Recording | Stop/Toggle | `StopCapture{cancel:false}` ⇒ Finalizing; the caller waits for the finalized reply |
 | Recording | RecordClock | update `elapsed_ns`; `Progress{phase:Record}` to `wait` requesters (≥ 500 ms apart) |
 | Recording | StreamLost | mark layer/track `missing` (persist); last stream lost ⇒ act as Stop |
 | Finalizing | Stop | join the stop waiters; Start/Toggle/Cancel ⇒ `Busy` "finalizing take N" |
-| Finalizing | TakeDiscardLast | remember `discard` (applied after placement, A§5.5) |
+| Finalizing | TakeDiscardLast | remember `discard` (applied after placement, A§5.5); a second one while one is queued ⇒ `Busy` |
 | Finalizing | CaptureStopped | `timed_out` ⇒ `broken`; else record offsets (the same values, or the first ones for a take stopped while Starting), `Probe{Finalize}` |
 | Finalizing | TakeProbed | see below ⇒ Idle |
 | any | EngineWedged | take `broken`; future starts fail with "the capture engine is stuck (GPU driver?); restart Qrec" |
@@ -737,7 +786,9 @@ effects `CreateTakeDir`, `WriteProject`, then `SetLive` (if needed) and
 `StartCapture(plan)`.
 
 **TakeProbed (Finalize), in order:** fill media info, mark unreadable
-streams `missing` (persist); zero readable streams ⇒ `broken` + toast;
+streams `missing` (persist); zero readable streams, or only streams of
+sources lost during the take ("every source was lost during the take"), ⇒
+`broken` + toast;
 `durationFrames < 10` ⇒ `tooShort`, bin, toast "That was shorter than Lord
 Farquaad. Take moved to the bin."; cancelled ⇒ `ok`, bin, no clip; otherwise
 `ok` and place it with `commit` ("Record take N",
@@ -762,7 +813,8 @@ works.
 **Recovery** (`Session::open` with the lock, `on_event::record::start_recovery`):
 each take still `recording` gets `Probe{Recover}` and is in
 `runtime.recovering` until its `TakeProbed(Recover)` comes back (whatever it
-says). Readable ⇒ `ok`, bin, toast "Recovered take 7 from the bog.";
+says). Readable ⇒ `ok` (`tooShort` under 10 frames), bin, toast
+"Recovered take 7 from the bog.";
 unreadable ⇒ `broken`; a probe that failed on its own ⇒ the take stays
 `recording` (warning toast) for the next start. Commands wait for the
 answers (at most `RECOVERY_WAIT`, 60 s after the open) before they run, so
@@ -813,16 +865,20 @@ Target: the highest-numbered take with `placed == true` (tooShort, broken,
 cancelled and still-recording takes are skipped). If clips reference it,
 remove them all in one entry "Discard take N"; if it was a record-over and
 none of `Take.replaced`'s clip ids is on the timeline, those clips are put
-back at the position of the first removed clip in the same entry. If no clip
-references it: `NotFound` "Take N is already in the bin" — `d` never reaches
-older takes. In Finalizing the discard is applied right after placement
-("Record take N" then "Discard take N", both undoable); if the take wasn't
-placed, reply Ok "take N was not placed".
+back at the position of the first removed clip in the same entry (only
+clips whose take is still `ok`, clamped to its current `durationFrames`).
+If no clip references it: `NotFound` "Take N is already in the bin" — `d`
+never reaches older takes. In Finalizing the discard is applied right after
+placement ("Record take N" then "Discard take N", both undoable); if the
+take wasn't placed, reply Ok "take N was not placed".
 
 ### A§5.6 Purge
 
 Only takes that no clip references and that aren't `recording`; `Busy` while
-any job's `files` include a file of the take. Confirmation `details`: the
+any job's `files` include a file of the take, an autocut job targets one of
+its clips (autocut jobs list no files) or a purge of it runs. The purged
+takes' clips also leave every other take's `Take.replaced`, so a later
+discard can't bring them back. Confirmation `details`: the
 files with sizes (`facts.take_files`), the number of history entries lost and
 the oldest surviving label. Effects in order: `History(Rewrite)` (A§7.5),
 `WriteProject`, then `DeleteTakeDirs` — the shell deletes exactly
@@ -848,13 +904,17 @@ take was purged.
 Plan (pure, `autocut.rs`), per clip and track:
 1. Silences arrive in **file time**; shift to take time
    `t = x + startOffsetNs + syncOffsetMs·10⁶`.
-2. Shrink each by `paddingMs` on both sides; drop empty ones.
+2. Merge overlapping or touching silences (shrinking them one by one would
+   leave fake speech where they meet), then shrink each by `paddingMs` on
+   both sides; drop empty ones.
 3. Kept = clip range minus shrunk silences.
-4. Drop kept fragments shorter than `minKeepMs`.
+4. Drop leftover fragments shorter than `minKeepMs` (a clip no shrunk
+   silence reaches stays whole, however short).
 5. Snap outward to frames (`in = ns_to_frame_floor`, `out = ns_to_frame_ceil`),
    clamp to the clip, merge touching fragments.
 6. Nothing kept ⇒ the clip is left unchanged and reported "entirely silent at
-   −35 dB" (autocut never deletes a whole clip).
+   −35 dB" when the silences cover it, else "nothing of 200 ms or more to
+   keep" (autocut never deletes a whole clip).
 
 Track: override → `autocut.track` → first `mic` of the take scene → first
 track; a take without it is skipped (warning in the result).
@@ -862,12 +922,20 @@ track; a take without it is skipped (warning in the result).
 Flow: `Autocut` snapshots params and targets (`AutocutTarget` with a
 `ClipRef`), emits `DetectSilence` for keys not in `runtime.silence`
 (argv from `media_argv`), and completes when all keys are known:
-- If `record != Idle`, mark the job `ready` and apply after placement.
+- If `record != Idle`, mark the job `ready`. Ready jobs are applied when the
+  phase returns to Idle, whether or not the take was placed; any still
+  `ready` are applied before another run completes or a real run starts
+  (oldest first, one entry each).
 - Apply only to targets whose current clip equals its `ClipRef`; others go to
   `result.skipped` ("changed while analyzing").
 - One history entry for the whole command ("Autocut take 3: removed 4
   silences (6.2 s)"); the first fragment keeps the clip id; if nothing
   changes, no entry. `dryRun` returns `AutocutPlanView` without applying.
+- No clip analyzed and an analysis failed ⇒ `missing_dependency` without
+  ffmpeg, else `io` (hint: the ffmpeg log), with the plan in `details`;
+  clips only skipped for project reasons (no such track, missing media or
+  file) ⇒ Ok "Nothing to cut: …". Clips skipped before completion ride in
+  the job's `cmd` under `skipped`, stripped from the history entry.
 Properties: kept ⊇ every padded-speech region of a fragment ≥ `minKeepMs`;
 fragments stay inside the clip; a clip without silence is unchanged.
 
@@ -881,8 +949,14 @@ ETA from `ctx.now − started`, `label` "Rendering clip 4/12" / "Stitching".
 `RequesterGone`: clear `job.req`; in Headless/Cli hosts cancel the jobs that
 requester started if no other requester waits (exports and frame saves are
 cancelled, autocut analysis dropped, a purge finishes); never stop a
-recording. Only a GUI keeps an orphaned job (`HostKind::keeps_orphaned_jobs`);
-the CLI's interrupted hint follows the same rule (A§8.6).
+recording. A cancelled export ends with `ExportCancelled`, a frame save
+with `FrameFailed { message: "cancelled" }` and an analysis with
+`SilenceFailed { message: "cancelled" }` (they have no cancel event);
+exports and frame saves stay in the job table until then, so purge still
+sees their files busy, while an autocut job leaves at once and its late
+results are ignored. Only a GUI keeps an orphaned job
+(`HostKind::keeps_orphaned_jobs`); the CLI's interrupted hint follows the
+same rule (A§8.6).
 
 ### A§5.9 Export and frame-save commands
 
@@ -948,11 +1022,25 @@ Copy path; frame toast: path with Copy image / Open folder.
 
 `ui_normalize(prev: &Project, next: &Project, ui: &UiState) -> UiState` runs
 in every `commit`/`persist`: drop selection ids not on the timeline and sort
-the rest by index; after a record-over select the new clip; when autocut
-replaced a selected clip select all its fragments; clear `selected_layer` and
-`solo` when they no longer exist in the scene `canvas_mode` targets; on an
-fps change convert `playhead` and `zoom` through nanoseconds and clamp the
-playhead to the timeline length.
+the rest by index; after a record-over select the new clip; a removed run
+that held a selected clip passes the selection to the clips put in its
+place (discard putting replaced clips back), and a selected clip that shrank
+and is followed by clips carved from its old range passes it to them
+(autocut fragments, a split's right half); clear `selected_layer` and `solo`
+when they no longer exist in the scene the canvas targets
+(`canvas_target`: Live ⇒ the project scene; Program ⇒ the take of the
+first selected clip, else of the clip under the playhead — the last clip's
+at the end — else the project scene); on an fps change convert `playhead`
+and `zoom` through nanoseconds and clamp the playhead to the timeline
+length.
+
+UI commands: `RangeTo(c)` selects the smallest run holding the selection
+and `c`; `Prev`/`Next` with nothing selected pick the clip under the
+playhead; `SetUi.panels` entries merge into the stored map. `Play` and
+`Shuttle` switch the canvas to Program (playback renders there): at the end
+playback restarts at 0, an empty timeline is `Invalid`, reverse at 0 stops;
+switching to Live and a starting countdown or take stop it. The core keeps
+only `runtime.playing`; the GUI's player owns the shuttle speed.
 
 ---
 
@@ -978,7 +1066,7 @@ pub struct HistoryEntry {
     pub seq: u64, pub ts: DateTime<Utc>, pub label: String,
     pub cmd: serde_json::Value,           // the Command, {"event":…} or {"external":true}
     pub forward: json_patch::Patch, pub inverse: json_patch::Patch,
-    pub after_hash: String,               // informational: hash of the view after (shown by `qrec history`)
+    pub after_hash: String,               // hash of the view after: shown by `qrec history`, and how an open places the cursor (A§7.6)
 }
 ```
 
@@ -1005,7 +1093,9 @@ Diff (`history/diff.rs`, custom, not `json_patch::diff`):
 - Arrays of objects with `id` (`timeline.clips`, `scene.layers`,
   `scene.audio`) are diffed by id with an LCS: removed ids ⇒ `test`+`remove`,
   inserted ⇒ `add` at the final index, moved ⇒ remove + add; matching ids are
-  diffed field by field. Other arrays are replaced whole.
+  diffed field by field. Other arrays are replaced whole, and so are objects
+  whose members differ (a source switching `kind`), so no patch adds or
+  removes an object member.
 - Each `replace`/`remove` is **immediately preceded** by a `test` of the value
   at that path in the intermediate document (ops are generated by applying
   them one by one to a scratch copy). A failed test ⇒ the state drifted ⇒
@@ -1017,8 +1107,9 @@ Diff (`history/diff.rs`, custom, not `json_patch::diff`):
 ### A§7.3 Compaction, clear, restore
 
 Above 5,000 entries the oldest are dropped down to 4,000; `history.base.json`
-becomes the project before the oldest kept entry (walking inverses back from
-the current state) and `base_seq` its seq. The same walk
+(`{"baseSeq","project"}`; a bare project is still read, its seq taken from
+the head) becomes the project before the oldest kept entry (walking
+inverses back from the current state) and `base_seq` its seq. The same walk
 (`history::ops::derive_base`) gives back a base that is lost: an unreadable
 `history.base.json`, or a missing one under a history with entries, is
 derived on open from the project at the cursor and written with the open's
@@ -1038,6 +1129,9 @@ On `ProjectChangedOnDisk(Ok(file))` the core merges:
   in the file are added; for takes in both, the current `status, streams,
   durationFrames, recordedAt, error, placed, replaced` win (warning listing
   ignored pointers); the in-flight take is always kept as in memory.
+  Layer and track `missing` flags are facts too: a take scene keeps the
+  in-memory flag of every entry it already had, and the project scene never
+  gets one.
 - Re-derive durations if fps changed, validate the merged project, append an
   "External edit" entry (diff of views) and emit `WriteProject` of the merge.
 
@@ -1052,7 +1146,9 @@ since the current state doesn't). In the redo tail let
 `j = min{i > cursor : S_i references T}` and drop `e_j … e_n`. In kept
 entries remove ops under `/takes/T/…` with their guarding tests; entries left
 empty are dropped; recompute `after_hash`. If no state references T, only the
-`/takes/T` ops are removed. Emitted as `HistoryOp::Rewrite`.
+`/takes/T` ops are removed. An entry whose patch no longer applies is
+dropped with everything beyond it (it couldn't be undone or redone
+anyway), as in compaction. Emitted as `HistoryOp::Rewrite`.
 
 ### A§7.6 Persistence order and the commit record
 
@@ -1067,10 +1163,16 @@ that saves (a `History` op or `WriteProject`), in order:
 2. `qrec.json`: tmp → fsync → `rename` → fsync(dir). The tmp is
    `.qrec/qrec.json.tmp` (same file system), so a folder being initialized
    shows nothing but `.qrec/` to another command's folder rule (A§8.4).
-3. `history.head.json`: tmp → rename. **This is the commit point.** Then
-   `history.cursor` (a failure there is logged, not a failed commit).
+3. `history.head.json`: tmp → fsync → rename → fsync(`.qrec/`). **This is
+   the commit point.** Then `history.cursor` (a failure there is logged,
+   not a failed commit).
 4. Only then the effects that touch the world: `StartCapture`,
    `DeleteTakeDirs`, `Reply`, `Notify`, jobs.
+
+Take folders (`CreateTakeDir`) are made before step 1 (after the A§8.9
+check). A `StartCapture` whose folder couldn't be made or whose commit
+isn't durable doesn't run: the core gets `CaptureFailed { take }` instead
+(a purge's `DeleteTakeDirs` gets `PurgeFailed`, A§5.6).
 
 An outcome that saves nothing writes nothing, even when the files need
 repair: a failed commit or a repair the load found makes the next commit
@@ -1099,7 +1201,10 @@ finalized take, its clip) and rewrites the head as a repair. Any other
 valid file is an external edit against `head.project` (so is a commit
 without a line, facts only, interrupted there: the head's facts win and
 the Recover probe re-derives a take's); an unparsable or invalid one takes
-A§7.7.
+A§7.7. Without a head (a project written by hand, a lost head) a valid
+`qrec.json` is the project, the history lines are kept and the cursor is
+the newest entry whose `afterHash` is the file's view (else the base's,
+else the last entry, noted); the head is rebuilt as a repair.
 
 **A failed commit** (disk full, permissions): a command's change didn't
 happen. The Session keeps the previous state, runs none of the outcome's
@@ -1199,6 +1304,7 @@ pub struct Deps {
 }
 impl Session {
     pub fn open(dir: &Path, opts: OpenOpts, deps: Deps) -> Result<Session, ShellError>;
+    pub fn open_with(dir: &Path, opts: OpenOpts, deps: Deps, cfg: SessionConfig) -> Result<Session, ShellError>;
     pub fn inbox(&self) -> Inbox;
     pub fn handle(&mut self, msg: Msg);
     pub fn run_until(&mut self, done: impl FnMut(&State) -> bool);   // CLI and hosts
@@ -1218,6 +1324,11 @@ pub trait MediaRunner: Send {
 `Session::handle(Request)`: allocate `ReqId`, `facts_needed` → gather facts →
 `apply` → run effects (A§7.6 order) → `Responder`. Events go to `on_event`.
 Fake `Deps` make the Session testable without GStreamer or ffmpeg.
+`SessionConfig { lock, channel, env, notifier, sources, recovery_wait }`: a
+host passes the lock it holds (A§8.3 step 1) and the inbox its server
+already fills; without a lock, a mutating open takes it (`Busy` when held).
+During a responder's calls `session::current_request()` is its `ReqId`,
+which an IPC responder keeps to post `RequesterGone` when its client leaves.
 
 ### A§8.2 Paths (`paths.rs`)
 
@@ -1286,7 +1397,10 @@ Cli) and serves the socket.
    its core, which refuses it at once like every host's, A§5.3), and new
    jobs once its command is answered (A§8.5). Past the deadline the CLI
    says so (`Busy` "the project is held by another qrec command (pid N),
-   which doesn't record").
+   which doesn't record"). A client keeps its connection open until the
+   reply: closing or half-closing it means the requester is gone
+   (`RequesterGone`, A§5.8). A request that stays silent is checked with
+   `hello` every 30 s.
 7. Peers must have our uid (`SO_PEERCRED`). Request lines are capped at 1 MiB
    with a 5 s read timeout; each connection has a bounded 64-message queue
    (progress coalesced, replies never dropped) and a 10 s write timeout.
@@ -1301,10 +1415,13 @@ path from `projectDirHex` when it isn't UTF-8) → exit 3 (several hosts:
 `Usage` listing them). `qrec init` never takes the host step: its target is
 the folder itself, so a folder that is neither empty nor a project is exit 3
 whatever runs elsewhere. Init order: `mkdir .qrec` → lock → re-check the
-folder rule (a folder whose only entry is `.qrec/` counts as empty) → write
-`qrec.json` + head → `mkdir takes`. In an empty folder only a command
-with `Command::creates_project()` (project set, layer and audio edits,
-autocut settings, record start/toggle) sends `Init` first (the CLI's
+folder rule (a folder whose only entry is a `.qrec/` without a history
+counts as empty, here and in the resolution above: another command may be
+initializing it, and two commands started together in a fresh folder must
+not race to exit 3) → write `qrec.json` + head → `mkdir takes`. In an
+empty folder only a command with `Command::creates_project()` (project
+set, layer and audio edits, autocut settings, record start/toggle) sends
+`Init` first (the CLI's
 `OnEmpty::Init`, the Session's lazy init); every other command gets
 `not_project` "this folder has no Qrec project yet" (`apply::no_project_yet`,
 exit 3) from the CLI before anything is opened or written, and queries are
@@ -1378,13 +1495,15 @@ nothing of anyone else's may be tied to it for long:
 
 - Exit (Headless and Cli): once Idle + no running jobs + no recovery probe
   out (`runtime.recovering`, `Runtime::is_busy`) + no open connections has
-  held for 2 s, or (Headless) 60 s after `ready` without a request. An
+  held for 2 s, or (Headless) 60 s after `ready` without a command or query
+  (`hello` and `shutdown` don't count). An
   in-process command's host exits as soon as its command is answered,
   nothing is busy and no connection is open, whoever else used it (A§8.5;
   it still finishes the startup recovery it began, A§5.3: its answer would
   otherwise be lost and the take would stay `recording`; the command's
   reply is printed meanwhile, the recovery's toasts after it). `shutdown`
-  requests: stop accepting, let jobs finish, exit.
+  requests: stop accepting, finalize a recording (`RecordStop`), let jobs
+  finish, exit.
 - Signals in every host: the first SIGTERM/SIGINT/SIGHUP dispatches
   `RecordStop` (finalize, not cancel) and cancels jobs; exit when idle or
   after 15 s (a recovery probe still out counts as busy only that long).
@@ -1403,10 +1522,10 @@ nothing of anyone else's may be tied to it for long:
   left is killed and its temps deleted then), so it still ends the normal
   way below; a watchdog `_exit(130)`s 5 s after the second signal if the
   process is still there.
-- Client CLI: SIGINT/SIGTERM (signal-hook) → `Msg::Interrupt`. In-process: the
-  first cancels running jobs (SIGTERM to each child group, SIGKILL after 2 s),
-  deletes temp outputs, exits 130; the second SIGKILLs them at once, and the
-  run still ends as below with exit 130.
+- Client CLI: SIGINT/SIGTERM (`host::signals`, A§1.2) → `Msg::Interrupt`.
+  In-process: the first cancels running jobs (SIGTERM to each child group,
+  SIGKILL after 2 s), deletes temp outputs, exits 130; the second SIGKILLs
+  them at once, and the run still ends as below with exit 130.
   IPC-routed: Ctrl+C closes the connection and exits 130; for `record --wait`
   the first Ctrl+C sends `RecordStop` on a second connection and keeps
   streaming until finalized, a second detaches (two presses count as two
@@ -1440,8 +1559,11 @@ nothing of anyone else's may be tied to it for long:
 
 ### A§8.7 Process runner (`proc.rs`) and logs
 
-One runner for every child: stdin null, `process_group(0)`, stdout piped only
-when parsed (drained on its own thread), stderr appended to a log file, and
+Two runners apply these rules: `proc.rs` (the session's: capability
+checks, `pactl` facts) and `media/child.rs` (the media runner, `sources`,
+`doctor`). Every child: stdin null, `process_group(0)`, stdout piped only
+when parsed (drained on its own thread), stderr appended to a log file
+(an anonymous temp file for project-less runs: `sources list`, `doctor`), and
 nothing else (but an output's temp file, which the ffmpeg writing it keeps
 under the same descriptor number, A§8.8): in `pre_exec`, every descriptor
 from 3 up is made
@@ -1467,10 +1589,13 @@ watchdog (no `-progress` block for 60 s ⇒ kill, "ffmpeg stalled"). Kill:
 SIGTERM to the group, SIGKILL after 2 s, wait ≤ 2 s more, then hand the
 child to a reaper thread and fail the job — the session thread never blocks in
 `wait()`. Success = exit 0 and `progress=end` (and, for segments, the counts
-in A§9.3). Logs: `.qrec/logs/YYYYMMDD-HHMMSS-<pid>-j<job>-<step>.log`
-(O_EXCL); at host start prune to the newest 200 and delete temp files
-older than 1 h in `exports/`, `frames/`, `.qrec/cache/segments/` and the
-silence cache. A temp file is a regular file whose whole name has the
+in A§9.3). Logs: `.qrec/logs/YYYYMMDD-HHMMSS-<pid>[-j<job>]-<step>.log`
+(O_EXCL; `-j<job>` only for a job's steps: a probe's is
+`…-<pid>-probe-<take>-<stream>.log`); at host start prune to the newest 200
+and delete temp files older than 1 h in `exports/`, `frames/`,
+`.qrec/cache/segments/` and the silence cache
+(`.qrec/cache/silence/<key>.json`: analysis results, reused for the same
+`SilenceKey`). A temp file is a regular file whose whole name has the
 shape A§8.8 gives temps, `.<stem>.qrec-part-<pid>-<job>` plus an optional
 `.<ext>` (`media::is_temp_name`), never any name that merely contains
 `.qrec-part-`: exports, frames and results kept aside (`<stem>-kept.<ext>`)
@@ -1527,10 +1652,12 @@ written by path.
 Watch the project **directory** (`IN_CLOSE_WRITE|IN_MOVED_TO|IN_CREATE|IN_DELETE`),
 filter on `qrec.json`, debounce 200 ms, then compare the bytes' sha256 with
 the hash of what the host last wrote: equal ⇒ ignore (our own write);
-different ⇒ parse + migrate + post `ProjectChangedOnDisk`. Just before each
-`qrec.json` rename the host re-checks the file against that hash; if it
-changed, the external edit is processed first and the request re-dispatched
-against the new state (no effect of the old outcome has run yet).
+different ⇒ parse + migrate + post `ProjectChangedOnDisk`. Before an
+outcome writes anything (its take folders, the history, `qrec.json`) the
+host re-checks the file against that hash; if it changed, the external edit
+is processed first and the request re-dispatched against the new state (no
+effect of the old outcome has run yet). After 3 re-dispatches in a row the
+outcome is saved over the change.
 
 ### A§8.10 GPU safety and GStreamer init
 
@@ -1551,7 +1678,13 @@ against the new state (no effect of the old outcome has run yet).
   matching each one's `device-path` to the node — never by name (the first
   usable node gets plain `vah264enc`).
 - Probes that touch a render node (the h264_vaapi check, doctor) run as
-  child processes with a 10 s timeout.
+  child processes with a 10 s timeout. `main` calls
+  `gpu::run_probe_if_requested()` before anything else: a `qrec` re-run
+  with `QREC_GPU_PROBE=va-h264-factory:<node>` (and that node's
+  `LIBVA_DRIVER_NAME`) is the probe child that finds the `va*h264enc` bound
+  to the node (`VaapiCaps::gst_h264_factory`), prints it and exits. Only Gui
+  and Headless hosts run it. Under `QREC_CAPTURE_BACKEND=fake` no render
+  node is probed at all (no factory, no h264_vaapi check, none in `doctor`).
 - The Nix package ships gst-plugins-bad without `nvcodec` and `qsv`, which
   hang the plugin scan on the dev machine.
 
@@ -1620,18 +1753,24 @@ first-buffer deadline, then closes like the others.
 ```rust
 pub struct SourceInventory { pub screens: Vec<ScreenInfo>, pub cameras: Vec<CameraInfo>,
                              pub mics: Vec<AudioDeviceInfo>, pub monitors: Vec<AudioDeviceInfo>,
-                             pub default_mic: Option<String>, pub default_monitor: Option<String> }
+                             pub default_mic: Option<String>, pub default_monitor: Option<String>,
+                             pub warnings: Vec<String> /* what couldn't be discovered; omitted when empty */ }
 pub struct DoctorReport { pub checks: Vec<Check>, pub niri_snippet: String, pub va: Option<VaReport> }
 pub struct Check { pub id: String, pub required: bool, pub ok: bool, pub detail: String, pub hint: Option<String> }
 ```
 
-Screens from `wl_output` v4 `name`/`description` + geometry (fallback
-`niri msg --json outputs`); cameras via GStreamer's DeviceMonitor
-(`Video/Source`, no capture); audio via `pactl --format=json` (mics are
-`alsa_input.*` only; monitors are `*.monitor`). `doctor` checks every SPEC §3.3
-item (+ `pactl`), prints a hint per failure and the niri bind snippet
-(SPEC §10.2); exit 5 when a required check fails; the GUI's "The swamp is
-missing something" screen renders the same report.
+Screens from `wl_output` v4 `name`/`description` + geometry within 2 s
+(fallback `niri msg --json outputs`); cameras via GStreamer's DeviceMonitor
+(`Video/Source`, no capture; without GStreamer, or when it fails,
+`/sys/class/video4linux`: names, no modes); audio via `pactl --format=json`
+(mics are `alsa_input.*` only; monitors are `*.monitor`). `doctor` checks
+every SPEC §3.3 item (+ `pactl`, `gst.h264parse`, a ScreenCast portal ≥ v4
+that captures monitors, and the optional `portal.registry`), prints a hint
+per failure and the niri bind snippet (SPEC §10.2); exit 5 when a required
+check fails; the GUI's "The swamp is missing something" screen renders the
+same report.
+Under `QREC_CAPTURE_BACKEND=fake` the portal, sound-server and real-source
+element checks are optional and `videotestsrc`/`audiotestsrc` required.
 
 ---
 
@@ -1659,9 +1798,9 @@ Every ffmpeg/ffprobe command line is built in the core (SPEC §3.1):
   (with its temp path, or `/proc/self/fd/<n>` for an output's temp file,
   A§8.8).
 - `probe_argv(file, kind)`: video `ffprobe -v error -select_streams v:0
-  -count_packets -show_entries stream=nb_read_packets,r_frame_rate,width,height,pix_fmt,color_range,color_space:format=start_time
-  -of json`; audio adds `codec_name,sample_rate,channels,duration`. Parsers
-  live in `parse/ffprobe.rs` (pure). A duration is the stream's, the
+  -count_packets -show_entries stream=nb_read_packets,r_frame_rate,width,height,pix_fmt,color_range,color_space,duration:stream_tags=DURATION:format=start_time,duration
+  -of json`; audio selects `a:0` and adds `codec_name,sample_rate,channels`.
+  Parsers live in `parse/ffprobe.rs` (pure). A duration is the stream's, the
   `DURATION` tag or the format's; without any (a crash) it comes from the
   counted packets: video frames at `r_frame_rate`, FLAC frames × 4608
   samples (A§2.2).
@@ -1718,10 +1857,13 @@ pub struct StitchPlan { pub list_path: String, pub list_content: String, pub arg
   RGB round trip.
 - **Compositing:** `color=c=<bg>:s=<W>x<H>:r=<num>/<den>[base]`, then
   `overlay=x=<dst.x>:y=<dst.y>:eof_action=pass` per layer in z-order, then
-  `trim=end_frame=<n>,setsar=1,format=yuv420p[v]`. Length is enforced in the
-  graph — never `-frames:v` or `-t` (they truncate the audio at 29.97 fps)
-  *(measured)*. Color: `-color_range tv -colorspace bt709 -color_primaries
-  bt709 -color_trc bt709`.
+  `trim=end_frame=<n>,setsar=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709[v]`.
+  Length is enforced in the graph — never `-frames:v` or `-t` (they
+  truncate the audio at 29.97 fps) *(measured)*. Color: `-color_range tv -colorspace bt709 -color_primaries
+  bt709 -color_trc bt709`; ffmpeg 8.1.2 negotiates the graph with range and
+  matrix but takes primaries and transfer from the frames, hence the
+  `setparams` (tagging range or matrix there too draws the background with
+  BT.601 coefficients) *(measured)*.
 - **Audio inputs:** per unmuted track with media: seek
   `t = frame_ns(in) − startOffsetNs − syncOffsetMs·10⁶`; `t > 0` ⇒ `-ss t`;
   `t < 0` ⇒ `adelay=<samples>S:all=1`. Chain:
@@ -1740,10 +1882,12 @@ pub struct StitchPlan { pub list_path: String, pub list_content: String, pub arg
   video output ended the audio output stopped being fed, while `-progress`
   kept reporting (3 % of runs of a 3-layer, 2-track unit; 0 of 400 with
   two graphs, which decode to the same frames and samples) *(measured)*.
-- **Segment codecs:** H.264 segments are `.mov` with `pcm_s16le` (MKV
-  timestamps make the stitched MP4 VFR-looking); VP9/AV1 segments are `.mkv`.
-  The shell verifies each segment (`ffprobe -count_packets`: video packets
-  == n, decoded samples == S) before renaming it into
+- **Segment codecs:** every segment's audio is `pcm_s16le`; H.264 segments
+  are `.mov` (MKV timestamps make the stitched MP4 VFR-looking), VP9/AV1
+  segments `.mkv`. The shell verifies each segment without decoding
+  (`segment_check_argv`: `ffprobe -v error -show_entries
+  packet=codec_type,size -of csv=p=0`; video packets == n, PCM bytes / 4
+  == S) before renaming it into
   `.qrec/cache/segments/<key>.<ext>`; a mismatch fails the export. So the
   planner requires `caps.ffprobe` as well as ffmpeg and its encoders
   (`missing_dependency` before anything renders).
@@ -1752,9 +1896,11 @@ pub struct StitchPlan { pub list_path: String, pub list_content: String, pub arg
   - h264_vaapi: `-rc_mode CQP -qp 26` / `22` / `19`
   - libvpx-vp9: `-crf 36/32/28 -b:v 0 -row-mt 1 -deadline good -cpu-used 5/4/2`
   - libsvtav1: `-preset 10/8/6 -crf 38/35/30`
-  - all H.264: `-bf 0 -pix_fmt yuv420p -profile:v high`; keyframe at each
-    segment start. No B-frames *(measured)*: with them a segment's DTS start
-    a reorder delay early, except in a 1–2-frame segment (nothing to
+  - all H.264: `-bf 0 -profile:v high`, plus `-pix_fmt yuv420p` for
+    libx264 only (h264_vaapi takes hwupload frames; ffmpeg 8.1.2 warns the
+    option conflicts *(measured)*); keyframe at each segment start. No
+    B-frames *(measured)*: with them a segment's DTS start a reorder delay
+    early, except in a 1–2-frame segment (nothing to
     reorder), so after such a unit the next segment's first DTS collide in
     the stitch, ffmpeg bumps them by one tick each and the MP4's sample
     table comes out up to two frames short.
@@ -1780,8 +1926,10 @@ pub struct StitchPlan { pub list_path: String, pub list_content: String, pub arg
 ### A§9.4 Frame plan (`frame_plan.rs`)
 
 The playhead's frame through the same graph as a one-frame unit (`n = 1`,
-no audio), then `scale=out_color_matrix=bt709:out_range=pc,format=rgb24,setparams=color_trc=iec61966-2-1`
-(an sRGB PNG) `-frames:v 1 -c:v png -f image2 -update 1`, to
+no audio), then `scale=out_color_matrix=bt709:out_range=pc,format=rgb24,setparams=color_primaries=bt709:color_trc=iec61966-2-1`
+(an sRGB PNG: with the primaries ffmpeg writes `sRGB`/`cHRM`/`gAMA` chunks,
+not a `cICP` with unspecified primaries *(measured)*)
+`-frames:v 1 -c:v png -f image2 -update 1`, to
 `frames/<stem>-<take>-<HHMMSSFF>.png`. `--layer L2`: the stream's raw frame at
 native resolution (same frame selection, no crop or scale). Because the
 frame selection doesn't depend on where a unit starts (A§9.3), the
@@ -1831,8 +1979,13 @@ Near a tie (within ~1 ms) GES may still differ by one frame. Video: a `videocrop
 from `placement.src` and always `posx/posy/width/height` from
 `placement.dst`. Audio track caps `audio/x-raw,rate=48000,channels=2`;
 fades are 240-sample linear ramps on the source's `volume` through a
-`GstInterpolationControlSource`. The parity test (A§11) checks GES against
-the frame plan.
+`GstInterpolationControlSource`. `layer_priority` 0 is the take scene's top
+layer. A clip is cut at its stream's known end (`frames` for video,
+`durationNs` for audio: GES refuses `inpoint + duration` past the media)
+and left out when nothing remains, where the export shows the background
+and silence. An audio clip fades in or out only where it is playing at the
+unit's cut (the export fades the unit's mix). The parity test (A§11)
+checks GES against the frame plan.
 
 ### A§9.7 Keymap (`keymap.rs`)
 
@@ -1847,11 +2000,16 @@ pub struct Keymap { pub bindings: Vec<Binding>, pub conflicts: Vec<Conflict>, pu
 pub struct Conflict { pub chord: KeyChord, pub ids: Vec<String>, pub context: KeyContext }
 pub fn resolve(keys_toml: &str) -> Keymap;
 pub fn hints(ctx: HintContext, map: &Keymap) -> Vec<Hint>;  // "r record · o record over · s split · c autocut · ? all keys"
-pub fn command_for(id: &str, state: &State) -> Option<Command>;  // shared by the GUI and the palette
+pub fn action_for(id: &str, state: &State) -> Option<Action>;   // Run(Command) | Gui | Unavailable(reason)
+pub fn command_for(id: &str, state: &State) -> Option<Command>;  // action_for's Run; shared by the GUI and the palette
 ```
 
 Grammar `ctrl+shift+z`; shift is recorded only for letters and named keys
-(`<` is `less`). The default table is SPEC §10.2 plus Backspace for remove.
+(`<` is `less`). The default table is SPEC §10.2 plus Backspace for remove
+and the SPEC §12 canvas arrow nudges. `Alt+[`/`Alt+]` trim the start/end
+inward by one frame; with Shift they arrive as `alt+braceleft`/
+`alt+braceright` and trim 10. A chord two bindings share in one context is
+a `Conflict`: `lookup` runs neither.
 `keys.toml`: `[bindings]` id → string or array. `qrec keys --json` prints
 `[{"id","group","label","keys":[..],"cli","contexts"}]`.
 
@@ -1865,7 +2023,11 @@ pub struct UserConfig { pub theme: Theme, pub canvas: CanvasDefaults, pub record
 // recording: countdown_secs        autocut: auto_run_after_take, threshold_db, min_silence_ms, padding_ms, min_keep_ms
 // encoder: preference, vaapi_device    ui: scale, reduced_motion, sounds
 // theme: "swamp-night" | "swamp-day" | "dragons-keep" | "ogre-mode"
+pub fn parse(text: &str) -> Result<UserConfig, CoreError>;        // missing keys default; unknown keys, wrong types, out of range ⇒ Invalid
+pub fn problems(cfg: &UserConfig) -> Vec<String>;                 // what is wrong with the values (empty when valid)
 pub fn get(cfg: &UserConfig, key: &str) -> Result<toml::Value, CoreError>;
+pub fn get_json(cfg: &UserConfig, key: &str) -> Result<serde_json::Value, CoreError>; // null for an unset optional key
+pub fn list(cfg: &UserConfig) -> Vec<ConfigEntry>;                // { key, value } for every setting
 pub fn set(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> Result<(), CoreError>; // validated by re-parsing
 ```
 
@@ -1911,7 +2073,8 @@ strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
 - Extensions to SPEC §14 (for GUI parity): `qrec project set`,
   `qrec autocut settings`, `qrec export cancel`, `qrec history clear`,
   `qrec completions`, `--codec`, `seek --to start|end`,
-  `scene layer set --name/--locked`, hidden `qrec host --headless`.
+  `scene layer set --name/--locked`, `clip add --after-selection`, hidden
+  `qrec host --headless`.
 - Human output: short sentences and aligned tables; export shows one updating
   progress line (phase, percent, ETA); toasts on stderr.
 
