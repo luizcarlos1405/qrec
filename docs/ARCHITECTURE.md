@@ -377,6 +377,24 @@ pub struct FactsNeeded {
 for a clip split), then calls `apply`. Under `QREC_CAPTURE_BACKEND=fake`
 device facts come from the fake inventory (A§8.12).
 
+`Facts.config` is `config.toml` read with `config::parse` (A§9.8), again
+whenever its size or mtime changed, so `qrec config set` reaches a running
+host. A file that can't be used (bad TOML, an unknown key such as a typo, a
+wrong type, a value out of range, a file or folder that can't be read) gives
+the defaults for every setting, and people are told: a warning toast
+"config.toml is invalid" whose body is the problem and "; using the
+default settings", once per change of the file. The shell's `ConfigFile`
+keeps the problem until a reporter takes it, so a read that doesn't report
+(the open's capability check, a query) never swallows it: the Session says
+it as the project opens, or at the first query or dispatch that reads a
+changed file. Its clones share what was read and said, so the Sessions of
+one process opened with the same `SessionEnv::config` say it once between
+them. Toasts reach the GUI, a headless host's log, or the CLI (stderr;
+`--json`: one `{"event":"notice",…}` line, A§4.9); the CLI also checks the
+file before routing each request, so a run warns once whichever host
+answers (a live GUI or headless host, the one a recording spawns), and an
+empty folder's lazy init (two Sessions) still warns once.
+
 ### A§4.3 Ids, time, confirmation
 
 - `IdGen::new(ctx.entropy)` yields clip ids `"c" + 3 hex` from
@@ -1298,13 +1316,17 @@ backups either). A valid hand edit a read-only open finds is shown as the
 project a host would merge (`history::external::merged_preview`), with the
 history as it is on disk: no "External edit" entry, cursor or seq is made
 up, and no merge is announced; the next host records it (A§7.4).
-`--over-selection` with no live host ⇒ `Unavailable`. A current directory
-that can't be read (it was deleted) only matters for what is relative to
-it: an absolute `--project` (and `--out`) works without one, like `qrec
-host`; no `--project` is `io` "can't read the current directory (was it
-deleted?)" with the hint "cd into an existing folder, or pass an absolute
---project DIR", and a relative `--project` or `--out` is `io` naming the
-flag.
+`--over-selection` and `--after-selection` with no live host ⇒
+`Unavailable`, whose hint offers the GUI or naming the clips ("open the
+project in the Qrec GUI and select clips there, or name them with --over
+<clip>…" / "…or insert it with --after <clip> or --at <index>"), never a
+recording: a host that records answers both `busy` (A§5.3). A current
+directory that can't be read (it was deleted) only matters for what is
+relative to it: an absolute `--project` (and `--out`) works without one,
+like `qrec host`; no `--project` is `io` "can't read the current directory
+(was it deleted?)" with the hint "cd into an existing folder, or pass an
+absolute --project DIR", and a relative `--project` or `--out` is `io`
+naming the flag.
 
 ### A§8.5 In-process commands
 
@@ -1313,7 +1335,10 @@ With no host, a command runs in-process and its process **is** the host
 async ones (export, frame save, autocut with analysis, purge) keep serving
 IPC so other commands run against the same Session (SPEC §13.1 "editing can
 continue"). `seek`/`play`/`pause`/`shuttle` without a GUI host ⇒
-`Unavailable`.
+`Unavailable`: with no host at all, the CLI's hint is "open the project
+in the Qrec GUI (run qrec in its folder) and try again", the core's own
+for another host; no other host answers them (a recording's refuses
+`play` as `busy`, and `seek`/`pause` as `Unavailable`).
 
 Such a host belongs to a command someone is waiting for in a terminal, so
 nothing of anyone else's may be tied to it for long:
@@ -1836,7 +1861,10 @@ pub fn set(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> Result<(
 ```
 
 `qrec config set` edits with `toml_edit`, so comments and order survive; the
-shell only reads and atomically writes the file.
+shell only reads and atomically writes the file. Hosts read it as
+`Facts.config`: a file `parse` refuses gives all the defaults, and people
+get a "config.toml is invalid" warning once per change of the file
+(A§4.2), so a typo never drops the settings silently.
 
 ### A§9.9 Naming (`naming.rs`)
 

@@ -10,7 +10,7 @@ use qrec_core::protocol::ToastLevel;
 
 use crate::caps::CapsOptions;
 use crate::error::ShellError;
-use crate::facts::Sources;
+use crate::facts::{ConfigFile, Sources};
 use crate::lock::ProjectLock;
 use crate::msg::{Inbox, Msg};
 use crate::paths::{Env, UserDirs};
@@ -52,6 +52,11 @@ pub struct SessionEnv {
     /// `QREC_CAPTURE_BACKEND=fake`: device facts come from the fake inventory.
     pub fake_backend: bool,
     pub caps: CapsOptions,
+    /// `config.toml` (`dirs.config_file()`). Clones share what was read and
+    /// reported: Sessions of one process opened with the same one warn
+    /// about a file that can't be used once between them (a CLI run that
+    /// initializes an empty folder opens two, A§4.2).
+    pub config: ConfigFile,
 }
 
 impl SessionEnv {
@@ -73,6 +78,7 @@ impl SessionEnv {
         );
         caps.probe_va = !fake_backend;
         Self {
+            config: ConfigFile::new(dirs.config_file()),
             dirs,
             fake_backend,
             caps,

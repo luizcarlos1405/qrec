@@ -309,6 +309,123 @@ fn config_lives_in_the_isolated_config_home() {
     assert_eq!(unknown.code, Some(2));
 }
 
+/// Everything the headless hosts of the project in `dir` logged.
+fn host_logs(dir: &Path) -> String {
+    let mut text = String::new();
+    for entry in fs::read_dir(dir.join(".qrec/logs")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.to_string_lossy().ends_with("-host.log") {
+            text.push_str(&fs::read_to_string(&path).unwrap());
+        }
+    }
+    text
+}
+
+/// A `config.toml` that can't be used (one misspelled key, a value out of
+/// range) gives the default settings, and the person is told once per run,
+/// whichever host answers: a warning on stderr, or one notice line under
+/// `--json` (A§4.2, A§4.9). It used to be silent: the open read the file
+/// first and dropped the warning, so `init` made a 1920x1080 @ 30 project
+/// without a word, and a recording's host logged nothing either.
+#[test]
+fn a_config_that_cant_be_used_is_reported_once_per_run() {
+    let env = TestEnv::new();
+    let config_dir = env.config_home().join("qrec");
+    fs::create_dir_all(&config_dir).unwrap();
+    let config = config_dir.join("config.toml");
+    let settings = "[canvas]\nwidth = 640\nheight = 360\nfps = \"25\"\n\n[autocut]\n";
+    fs::write(&config, format!("{settings}treshold_db = -40\n")).unwrap();
+    // The config warnings of a `--json` run: every stderr line is a notice.
+    let warnings = |out: &Out| -> Vec<Value> {
+        out.stderr
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap_or_else(|e| panic!("{l}: {e}")))
+            .filter(|notice| notice["title"] == "config.toml is invalid")
+            .collect()
+    };
+
+    let a = env.empty_dir("a");
+    let init = qrec(&env, &a, &["--json", "init"]);
+    init.ok();
+    let canvas = &init.only_reply()["data"]["result"]["canvas"];
+    assert_eq!(
+        (canvas["width"].as_u64(), canvas["height"].as_u64()),
+        (Some(1920), Some(1080)),
+        "the defaults"
+    );
+    let said = warnings(&init);
+    assert_eq!(said.len(), 1, "{}", init.stderr);
+    assert_eq!(said[0]["event"], "notice");
+    assert_eq!(said[0]["level"], "warning");
+    let body = said[0]["body"].as_str().unwrap();
+    assert!(
+        body.contains("treshold_db") && body.ends_with("; using the default settings"),
+        "{body}"
+    );
+
+    // An empty folder's first change creates the project first: two
+    // requests, one warning.
+    let b = env.empty_dir("b");
+    let add = qrec(
+        &env,
+        &b,
+        &[
+            "--json", "scene", "layer", "add", "screen", "--output", "FAKE-1",
+        ],
+    );
+    add.ok();
+    assert_eq!(warnings(&add).len(), 1, "{}", add.stderr);
+
+    // People read it on stderr, for a query too.
+    let status = qrec(&env, &a, &["status"]);
+    status.ok();
+    assert!(
+        status.stderr.starts_with(
+            "qrec: warning: config.toml is invalid\n  config.toml line 7: unknown field `treshold_db`"
+        ),
+        "{}",
+        status.stderr
+    );
+    assert_eq!(status.stderr.matches("config.toml is invalid").count(), 1);
+
+    // A recording's host says it in its log, and the person who started it
+    // hears it too, as does a command routed to that host.
+    let start = qrec(&env, &b, &["--json", "record", "start"]);
+    start.ok();
+    assert_eq!(warnings(&start).len(), 1, "{}", start.stderr);
+    let log = host_logs(&b);
+    assert!(log.contains("config.toml is invalid"), "{log}");
+    let routed = qrec(&env, &b, &["--json", "status"]);
+    routed.ok();
+    assert_eq!(routed.reply()["data"]["host"], "headless");
+    assert_eq!(warnings(&routed).len(), 1, "{}", routed.stderr);
+    qrec(&env, &b, &["record", "cancel"]).ok();
+    wait_until_no_host(&env);
+
+    // A value out of range is the same.
+    fs::write(&config, "[canvas]\nwidth = 99\n").unwrap();
+    let c = env.empty_dir("c");
+    let small = qrec(&env, &c, &["--json", "init"]);
+    small.ok();
+    let said = warnings(&small);
+    assert_eq!(said.len(), 1, "{}", small.stderr);
+    assert!(
+        said[0]["body"].as_str().unwrap().contains("width"),
+        "{said:?}"
+    );
+
+    // Fixed: the settings are used, and nothing is said.
+    fs::write(&config, format!("{settings}threshold_db = -40\n")).unwrap();
+    let d = env.empty_dir("d");
+    let fixed = qrec(&env, &d, &["--json", "init"]);
+    fixed.ok();
+    assert_eq!(fixed.stderr, "");
+    let project = &fixed.only_reply()["data"]["result"];
+    assert_eq!(project["canvas"]["width"], 640);
+    assert_eq!(project["canvas"]["fps"], json!({"num": 25, "den": 1}));
+    assert_eq!(project["autocut"]["thresholdDb"], -40.0);
+}
+
 // ------------------------------------------------------------ project commands
 
 #[test]
@@ -1305,6 +1422,61 @@ fn wait_until_no_host(env: &TestEnv) {
         assert!(Instant::now() < deadline, "the headless host didn't exit");
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Commands only a live host answers (seek, play, pause, the selection
+/// flags) say what works when none runs: the GUI, or naming the clips.
+/// Never "start a recording", as they used to: a host that records answers
+/// none of them (only a GUI host runs seek/play/pause, A§8.5, and while a
+/// take records only the R commands run, A§5.3).
+#[test]
+fn commands_that_need_a_host_never_suggest_a_recording() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("needs-gui");
+    qrec(&env, &dir, &["init", "--canvas", "640x360@30"]).ok();
+    qrec(
+        &env,
+        &dir,
+        &["scene", "layer", "add", "screen", "--output", "FAKE-1"],
+    )
+    .ok();
+    let json = |args: &[&str]| qrec(&env, &dir, &[&["--json"][..], args].concat());
+    let gui = "open the project in the Qrec GUI (run qrec in its folder) and try again";
+    for (args, hint) in [
+        (&["seek", "--to", "1f"][..], gui),
+        (&["play"], gui),
+        (&["pause"], gui),
+        (
+            &["record", "start", "--over-selection"],
+            "open the project in the Qrec GUI and select clips there, or name them with --over <clip>…",
+        ),
+        (
+            &["clip", "add", "take-0001", "--after-selection"],
+            "open the project in the Qrec GUI and select clips there, or insert it with --after <clip> or --at <index>",
+        ),
+    ] {
+        let out = json(args);
+        assert_eq!(out.code, Some(1), "{args:?}: {out:?}");
+        let error = &out.only_reply()["error"];
+        assert_eq!(error["code"], "unavailable", "{args:?}");
+        assert_eq!(error["hint"], hint, "{args:?}");
+    }
+
+    // What the old hint offered doesn't work: with a take recording, each
+    // is refused by the recording's host.
+    json(&["record", "start"]).ok();
+    for (args, code) in [
+        (&["seek", "--to", "1f"][..], "unavailable"),
+        (&["pause"], "unavailable"),
+        (&["play"], "busy"),
+        (&["record", "start", "--over-selection"], "busy"),
+        (&["clip", "add", "take-0001", "--after-selection"], "busy"),
+    ] {
+        let out = json(args);
+        assert_eq!(out.only_reply()["error"]["code"], code, "{args:?}: {out:?}");
+    }
+    qrec(&env, &dir, &["record", "cancel"]).ok();
+    wait_until_no_host(&env);
 }
 
 // ------------------------------------------------------- review round 1

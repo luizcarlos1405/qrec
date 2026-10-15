@@ -15,7 +15,10 @@
 //!   clock and OS entropy. Hosts hand their Session a share of the project
 //!   lock they hold.
 //! - Toasts of an in-process host go to the CLI (stderr, or JSON notice
-//!   lines); a headless host's go to its log.
+//!   lines); a headless host's go to its log. A `config.toml` that can't
+//!   be used is reported once per run, before the request is routed
+//!   (whichever host answers it), and the Sessions of the run share that
+//!   reader, so they don't say it again (A§4.2).
 //! - `doctor` and `sources list` are the media owner's report and inventory
 //!   (the fake inventory under the fake backend).
 //! - Logging: `tracing` to stderr, filtered by `-q`/`-v` (or `QREC_LOG`).
@@ -34,6 +37,7 @@ use qrec_core::state::HostKind;
 use qrec_shell::capture::{self, EngineOptions};
 use qrec_shell::deps::{CaptureEngine, Deps, NoCapture, OpenOpts, os_entropy, system_clock};
 use qrec_shell::doctor::{self, DoctorOptions};
+use qrec_shell::facts::{ConfigFile, config_problem_toast};
 use qrec_shell::gpu::GpuInputs;
 use qrec_shell::host::signals::{self, HOST_SIGNALS, Interrupts};
 use qrec_shell::host::{
@@ -63,6 +67,10 @@ pub struct Shell {
     verbosity: Option<(u8, bool)>,
     logging_ready: bool,
     interrupts: Option<Interrupts>,
+    /// `config.toml` as every Session of this run reads it, so one that
+    /// can't be used is reported once per run: an empty folder's lazy init
+    /// opens a Session before the command's own (A§4.2, A§8.4).
+    config: Option<ConfigFile>,
 }
 
 impl Shell {
@@ -76,7 +84,20 @@ impl Shell {
             verbosity: None,
             logging_ready: false,
             interrupts: None,
+            config: None,
         }
+    }
+
+    /// The run's [`ConfigFile`], made on first use; `None` without user
+    /// dirs (then no Session opens either).
+    fn config_file(&mut self) -> Option<ConfigFile> {
+        if self.config.is_none() {
+            self.config = self
+                .dirs()
+                .ok()
+                .map(|dirs| ConfigFile::new(dirs.config_file()));
+        }
+        self.config.clone()
     }
 
     /// Installs the log subscriber the first time a command needs the
@@ -218,9 +239,21 @@ impl Backend for Shell {
                 env: Vec::new(),
             }
         });
+        // A config.toml that can't be used is said once per run, whichever
+        // host answers: also a live one, or the headless host a recording
+        // spawns, whose own warning goes to the GUI or its log (A§4.2). The
+        // Sessions this run opens share the file, so they don't repeat it.
+        let config = self.config_file();
+        if let Some(problem) = config.as_ref().and_then(|file| {
+            file.get();
+            file.take_problem()
+        }) {
+            events.notice(&config_problem_toast(problem));
+        }
         let (notices, received) = mpsc::channel();
         let mut opener = ShellOpener {
             notices: Some(notices),
+            config,
         };
         let cx = RequestContext {
             env: &self.env,
@@ -272,7 +305,10 @@ impl Backend for Shell {
 
     fn host(&mut self, project: &Path, args: &HostArgs) -> Result<u8, CoreError> {
         self.init_logging(Role::Host);
-        let mut opener = ShellOpener { notices: None };
+        let mut opener = ShellOpener {
+            notices: None,
+            config: None,
+        };
         let args = HeadlessArgs {
             project: project.to_path_buf(),
             lock_fd: args.lock_fd,
@@ -360,6 +396,9 @@ struct ShellOpener {
     /// Where an in-process host's toasts go (the CLI shows them); `None`:
     /// the log (a headless host).
     notices: Option<mpsc::Sender<Toast>>,
+    /// The run's shared `config.toml` ([`Shell::config_file`]); `None`:
+    /// each Session reads its own (a headless host opens one).
+    config: Option<ConfigFile>,
 }
 
 impl Opener for ShellOpener {
@@ -370,6 +409,13 @@ impl Opener for ShellOpener {
         lock: Option<SessionLock>,
     ) -> Result<Box<dyn HostSession>, ShellError> {
         let mut env = SessionEnv::from_process()?;
+        // The same file for every Session of this run, so a broken one is
+        // reported once (the path check only guards against a mix-up).
+        if let Some(config) = self.config.clone()
+            && config.path() == env.config.path()
+        {
+            env.config = config;
+        }
         // Hosts that record find the `va*h264enc` bound to their render node
         // in a probe child (`main` runs it); never under the fake backend,
         // which records without a GPU.

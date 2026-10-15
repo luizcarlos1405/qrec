@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex};
 
 use chrono::SubsecRound;
 use qrec_core::apply::project::is_initialized;
+use qrec_core::config::UserConfig;
 use qrec_core::ctx::{Ctx, Facts, FactsNeeded};
-use qrec_core::protocol::{Command, HelloInfo, Query, Toast, ToastLevel, WireBody};
+use qrec_core::protocol::{Command, HelloInfo, Query, WireBody};
 use qrec_core::state::JobKind;
 use qrec_core::{
     CmdResult, CoreError, ErrorCode, Event, ReqId, apply, facts_needed, facts_needed_for_event,
@@ -20,6 +21,7 @@ use serde_json::{Value, json};
 use super::effects::{Origin, Ran};
 use super::open::{Folder, classify};
 use super::{Session, with_current};
+use crate::facts::config_problem_toast;
 use crate::msg::{Request, Responder};
 use crate::proc;
 
@@ -146,7 +148,7 @@ impl Session {
     }
 
     fn answer_query(&mut self, id: &ReqId, query: &Query) -> Result<Value, CoreError> {
-        let (config, _) = self.facts.config();
+        let config = self.user_config();
         let keys_toml = if matches!(query, Query::Keys) {
             self.facts.keys_toml()
         } else {
@@ -423,18 +425,37 @@ impl Session {
         }
     }
 
-    /// Gathers facts; problems go to the log (a broken config also to a toast, once).
+    /// Gathers facts; problems go to the log, a `config.toml` that can't be
+    /// used to a toast ([`Session::report_config_problem`]).
     pub(super) fn gather(&mut self, need: &FactsNeeded) -> Facts {
         let gathered = self.facts.gather(need);
         for warning in &gathered.warnings {
             tracing::warn!("facts: {warning}");
         }
-        if let Some(problem) = gathered.config_problem {
-            self.notifier.notify(
-                &Toast::new(ToastLevel::Warning, "config.toml is invalid").with_body(problem),
-            );
-        }
+        self.report_config_problem();
         gathered.facts
+    }
+
+    /// The user config alone (a query, the capability check), reported
+    /// like [`Session::gather`] does.
+    pub(super) fn user_config(&mut self) -> UserConfig {
+        let config = self.facts.config();
+        self.report_config_problem();
+        config
+    }
+
+    /// A `config.toml` that can't be used is ignored for the defaults
+    /// (A§4.2), and people hear it: one warning toast per change of the
+    /// file, whichever read saw it first (the open, a query or a dispatch;
+    /// the Sessions of a process that share the [`ConfigFile`] say it once
+    /// between them). Toasts reach the GUI, the CLI's stderr (`--json`:
+    /// notice lines) or a headless host's log.
+    ///
+    /// [`ConfigFile`]: crate::facts::ConfigFile
+    fn report_config_problem(&mut self) {
+        if let Some(problem) = self.facts.take_config_problem() {
+            self.notifier.notify(&config_problem_toast(problem));
+        }
     }
 
     pub(super) fn reply_now(
