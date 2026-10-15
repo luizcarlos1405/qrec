@@ -4,7 +4,8 @@
 module boundaries, exact types, protocols and the rules every module
 follows. Where they disagree, `SPEC.md` wins and this file gets fixed.
 
-**References:** `SPEC §N` points at SPEC.md, `A§N` at this file.
+**References:** `SPEC §N` points at SPEC.md, `A§N` at this file, `G§N`
+and the decisions `GUI D-N`, `GUI H-N` at docs/GUI.md.
 
 v2 folds in a five-lens review (spec coverage, state/history, shell and
 processes, media, implementability). Several media rules below were
@@ -19,12 +20,13 @@ they are marked *(measured)* and must not be "simplified" away.
 
 ```
 crates/
-  qrec-core/   pure functional core: model, protocol, planners, state machine
+  qrec-core/   pure functional core: model, protocol, planners, state machine,
+               the GUI's view models (view/)
   qrec-shell/  imperative shell: Session, files, history store, lock, IPC,
-               hosts, process runner, ffmpeg/ffprobe, GStreamer capture,
-               portal, sources, doctor
+               hosts (the GUI's too), process runner, ffmpeg/ffprobe,
+               GStreamer capture, portal, sources, doctor
   qrec-cli/    clap definitions → Request; output formatting; exit codes
-  qrec-gui/    GTK views (blocked until the pen.dev designs are approved)
+  qrec-gui/    GTK views (docs/GUI.md; a placeholder crate so far)
   qrec/        the `qrec` binary
 ```
 
@@ -32,9 +34,17 @@ crates/
 `qrec → qrec-gui → qrec-shell`. `qrec-cli` doesn't depend on the shell: it
 maps arguments, resolves the folder (A§8.4) and renders replies, and reaches
 everything else (routing, hosts, Ctrl+C, `doctor`, `sources list`, `qrec
-host --headless`) through its `Backend` port, which `crates/qrec/src/shell.rs`
-implements over `qrec-shell`.
+host --headless`, the window) through its `Backend` port, which
+`crates/qrec/src/shell.rs` implements over `qrec-shell`.
 **`qrec-core` depends on no other workspace crate**, not even in dev-deps.
+
+The GUI is no longer blocked: the Swamp Night slice of the pen.dev designs
+was approved on 2026-10-15 (SPEC §15.1), and `docs/GUI.md` is the GUI's plan
+and contract. `qrec-gui` owns every GTK call and changes State only with
+Commands. Its view models are pure, in `qrec-core/src/view/` (`State` and a
+few numbers the GUI knows in, final strings, flags and geometry out; A§1.3
+applies), and its host is GTK-free, in `qrec-shell/src/host/gui.rs`
+(A§8.3, A§8.6).
 
 ### A§1.2 Dependencies (pinned in the root `Cargo.toml`)
 
@@ -107,15 +117,28 @@ crates/qrec-core/src/
     parse/{ffprobe,progress}.rs                                   owner: output
   validate.rs migrate.rs schema.rs query.rs keymap.rs config.rs
     agent_guide.rs                                                owner: meta
+  view/                                                           owners: G§3.17
 crates/qrec-shell/src/
   lib.rs paths.rs msg.rs deps.rs wire.rs testkit/                foundation (skeleton)
   store/ lock.rs host/{lockfile,publish}.rs watcher.rs           owner: store
   session/ facts.rs caps.rs timers.rs proc.rs                    owner: session
-  ipc/ host/{headless,cli_host,signals,spawn}.rs                 owner: ipc
+  ipc/ host/{headless,cli_host,gui,takeover,signals,spawn}.rs     owner: ipc
   media/ sources.rs doctor.rs                                     owner: media
-  capture/ gpu.rs gst_init.rs ges_render.rs                       owner: capture
+  capture/ gpu.rs gst_init.rs ges_render.rs player.rs             owner: capture
+  config_file.rs keys_file.rs                                     owner: meta
 crates/qrec-cli/, crates/qrec/                                    owner: cli
+crates/qrec-gui/                                                  owners: G§3.16
 ```
+
+The GUI's files keep the owner of their area: the GUI host and the
+takeover (`host/{gui,takeover}.rs`) are ipc's, the Program player
+(`player.rs`) is capture's, the preview cache and take sizes
+(`media/{preview,sizes}.rs`) are media's, and the bounded readers of
+`config.toml` and `keys.toml` (`config_file.rs`, `keys_file.rs`) are meta's.
+The core's `view/` modules and `qrec-gui` belong to the GUI's work
+packages, which edit only the files docs/GUI.md G§3.16–G§3.17 give them;
+G§7.0 adds `view/mod.rs`, the `capture/mod.rs` types and the module lists
+to the shared files.
 
 Tests live with their owner: unit tests in the module, properties in
 `crates/qrec-core/tests/props_<area>.rs`, CLI tests in
@@ -142,9 +165,16 @@ Additions to the SPEC §6.3 shape (all optional, omitted when default):
 | `Take.error` | string | why a take is broken |
 | `Take.placed` | bool | finalization placed clips; drives discard-last (A§5.5) |
 | `Take.replaced` | `Vec<Clip>` | clips a record-over replaced; discard puts them back (A§5.5) |
+| `Take.recovered` | bool | startup recovery finished the take after Qrec closed mid-take (A§5.3): set when it ends `ok` or `tooShort`; a fact like `placed` (A§7.4); in `TakeRow` and `take show`'s JSON |
 | `Stream.durationNs` | i64 | probed duration (audio-only takes, re-derivation) |
 | `Stream.frames` | u64 | video packet count from `ffprobe -count_packets` (A§2.2) |
 | `Stream.fps` | Fps | the recorded rate of a video stream |
+
+They stay in schema v1: each came before the first release, without a
+`version` bump. `Take.recovered` came last (for the GUI's bin): a dev
+build from before it rejects a file that has it (`deny_unknown_fields`),
+which is accepted before the first release. The first schema change after
+the first release bumps `version` with a migration (SPEC §6.3, A§13).
 
 `Stream` is one flat struct (`id, kind, file, width?, height?, sampleRate?,
 channels?, startOffsetNs, durationNs?, frames?, fps?`); media fields are
@@ -242,6 +272,7 @@ pub struct UiState {
     pub zoom: Option<f64>,               // px per frame; None = fit
     pub scroll_px: f64,
     pub solo: Option<TrackId>,
+    pub lane_mute: BTreeSet<TrackId>,    // "laneMute": lanes muted for playback only (below)
     pub panels: BTreeMap<String, f64>,
 }
 
@@ -315,6 +346,13 @@ pub enum CanvasMode { Live, Program }
 Snapshots (`insta`) of `Outcome`s require `Debug, Clone, PartialEq,
 Serialize, Deserialize` on every state, protocol and plan type.
 
+`laneMute` is the timeline lanes' `M` (`solo` is their `S`; GUI D-08), for
+playback only: the Program player (docs/GUI.md G§3.10, not built yet)
+leaves those tracks out, while a scene's `AudioTrack.muted` (the Onion
+layers panel's `M`) changes the export. `SetUi` replaces the whole set, ids
+no scene has are dropped (A§5.10), and a `ui.json` without it mutes
+nothing.
+
 ---
 
 ## A§4 The dispatch protocol
@@ -351,7 +389,9 @@ can't fail: failures become state plus `Notify` and `Reply` errors.
 timer or job doesn't match the current phase or job table.
 
 **Gestures** (SPEC §7.1 undo groups): during a drag the GUI calls the pure
-`apply` on a cloned `State`, renders the result and discards the effects.
+`apply` on a cloned `State` (with `Ctx::preview(now, &config)`: no
+requester, not confirmed, fixed entropy, no facts but the config), renders
+the result and discards the effects.
 On release it dispatches exactly one `Command`. Transient state is never
 stored in `State` or persisted. Canvas layer drags follow the same rule.
 
@@ -401,20 +441,21 @@ the file facts an `autoRunAfterTake` autocut needs. Under
 `Facts.config` is `config.toml` read with `config::parse` (A§9.8), again
 whenever its size or mtime changed, so `qrec config set` reaches a running
 host. A file that can't be used (bad TOML, an unknown key such as a typo, a
-wrong type, a value out of range, a file or folder that can't be read) gives
-the defaults for every setting, and people are told: a warning toast
-"config.toml is invalid" whose body is the problem and "; using the
-default settings", once per change of the file. The shell's `ConfigFile`
-keeps the problem until a reporter takes it, so a read that doesn't report
-(the open's capability check, a query) never swallows it: the Session says
-it as the project opens, or at the first query or dispatch that reads a
-changed file. Its clones share what was read and said, so the Sessions of
-one process opened with the same `SessionEnv::config` say it once between
-them. Toasts reach the GUI, a headless host's log, or the CLI (stderr;
-`--json`: one `{"event":"notice",…}` line, A§4.9); the CLI also checks the
-file before routing each request, so a run warns once whichever host
-answers (a live GUI or headless host, the one a recording spawns), and an
-empty folder's lazy init (two Sessions) still warns once.
+wrong type, a value out of range, a file or folder that can't be read, one
+that isn't a regular file or holds over 1 MiB: `config_file::read_text`, so
+a FIFO never blocks) gives the defaults for every setting, and people are
+told: a warning toast "config.toml is invalid" whose body is the problem and
+"; using the default settings", once per change of the file. The shell's
+`ConfigFile` keeps the problem until a reporter takes it, so a read that
+doesn't report (the open's capability check, a query) never swallows it: the
+Session says it as the project opens, or at the first query or dispatch that
+reads a changed file. Its clones share what was read and said, so the
+Sessions of one process opened with the same `SessionEnv::config` say it
+once between them. Toasts reach the GUI, a headless host's log, or the CLI
+(stderr; `--json`: one `{"event":"notice",…}` line, A§4.9); the CLI also
+checks the file before routing each request, so a run warns once whichever
+host answers (a live GUI or headless host, the one a recording spawns), and
+an empty folder's lazy init (two Sessions) still warns once.
 
 ### A§4.3 Ids, time, confirmation
 
@@ -481,7 +522,7 @@ need confirmation, `G` = GUI host only, `R` = allowed while recording (A§5.3).
 | `Play` / `Pause` | – | G (Pause also R) | `qrec play` / `qrec pause` |
 | `Shuttle` | `dir: Reverse\|Stop\|Forward` | G | — (`j`/`k`/`l`) |
 | `SetCanvasMode` | `mode` | R | — (`Tab`) |
-| `SetUi` | `patch: UiPatch` | R | — (zoom, scroll, panels, bin, snapping, solo, selected layer) |
+| `SetUi` | `patch: UiPatch` | R | — (zoom, scroll, panels, bin, snapping, solo, lane mutes, selected layer) |
 
 ```rust
 pub enum SceneTarget { Project, Take(TakeId) }          // "project" | "take-0001"
@@ -504,6 +545,7 @@ pub enum ExportFormat { Mp4, Webm }                      // default mp4
 pub enum Quality { Draft, Standard, High }               // default standard
 pub enum VideoCodec { H264, Vp9, Av1 }                   // mp4 ⇒ h264 only; webm ⇒ vp9 (default) | av1; else Usage
 pub struct UiPatch { zoom: Nullable<f64>, scroll_px, bin_open, snapping, solo: Nullable<TrackId>,
+                     lane_mute: Option<BTreeSet<TrackId>> /* the whole set */,
                      selected_layer: Nullable<LayerId>, panels: Option<BTreeMap<String, f64>> }
 ```
 
@@ -693,7 +735,8 @@ jobs), so a host busy recovering never looks stuck. A host running another
 Qrec version gets a stderr notice ("the running … host (pid N) is qrec X;
 this is qrec Y") and is used all the same.
 `shutdown` → the host stops accepting, finalizes a recording
-(`RecordStop`), lets jobs finish, exits (A§8.6).
+(`RecordStop`), lets jobs finish, exits (A§8.6); a GUI host refuses it
+(`busy`: only closing its window ends it).
 The Session allocates a `ReqId` per request (a string: `r1`, `r2`, …);
 client ids stay inside the IPC layer. `--json` prints `to_wire(&result)` — the
 same `{"ok":…}` object — and streaming commands print progress lines
@@ -776,7 +819,7 @@ including `Play`, `Undo` and `Export`, is `Busy` (SPEC §5.3.3).
 | Recording | StreamLost | mark layer/track `missing` (persist); last stream lost ⇒ act as Stop |
 | Finalizing | Stop | join the stop waiters; Start/Toggle/Cancel ⇒ `Busy` "finalizing take N" |
 | Finalizing | TakeDiscardLast | remember `discard` (applied after placement, A§5.5); a second one while one is queued ⇒ `Busy` |
-| Finalizing | CaptureStopped | `timed_out` ⇒ `broken`; else record offsets (the same values, or the first ones for a take stopped while Starting), `Probe{Finalize}` |
+| Finalizing | CaptureStopped | `timed_out` ⇒ `broken` (`EOS_TIMEOUT_REASON`: "the recording didn't stop within 10 s"); else record offsets (the same values, or the first ones for a take stopped while Starting), `Probe{Finalize}` |
 | Finalizing | TakeProbed | see below ⇒ Idle |
 | any | EngineWedged | take `broken`; future starts fail with "the capture engine is stuck (GPU driver?); restart Qrec" |
 
@@ -813,8 +856,8 @@ works.
 **Recovery** (`Session::open` with the lock, `on_event::record::start_recovery`):
 each take still `recording` gets `Probe{Recover}` and is in
 `runtime.recovering` until its `TakeProbed(Recover)` comes back (whatever it
-says). Readable ⇒ `ok` (`tooShort` under 10 frames), bin, toast
-"Recovered take 7 from the bog.";
+says). Readable ⇒ `ok` (`tooShort` under 10 frames) and `recovered`
+(A§2), bin, toast "Recovered take 7 from the bog.";
 unreadable ⇒ `broken`; a probe that failed on its own ⇒ the take stays
 `recording` (warning toast) for the next start. Commands wait for the
 answers (at most `RECOVERY_WAIT`, 60 s after the open) before they run, so
@@ -830,6 +873,11 @@ them: `RecordStop`, `RecordCancel` and `RecordToggle` abort every waiting
 before it started"; a toggle that finds no start waiting is a start and
 waits), and `ExportCancel` without a job aborts the waiting `Export`s
 (`Invalid` "export cancelled"; a job id only names a running export).
+UI-state commands never wait either (`Command::ui_only`: `Select`, `Seek`,
+`SetUi`, `SetCanvasMode`, `Play`, `Pause`, `Shuttle`, which change only
+`ui` and `runtime.playing`; GUI D-47), so a window stays live meanwhile;
+the parked commands keep their order and resolve the selection and the
+playhead when they run, like every command at its turn.
 Commands whose wait is over run before any later message but a signal
 (which drops them, A§8.6), also before a tick released them, so a stop
 always finds the take their start began. A probe still out, whether
@@ -947,7 +995,9 @@ One export at a time (`Busy`); `ExportCancel{job: None}` cancels it;
 `FrameSave` may run alongside. Each job holds what it reads (`files`) and
 its own plan (a snapshot), so editing continues during an export
 (SPEC §13.1). Export progress = `0.9·Σseg_done/total + 0.1·stitch`,
-ETA from `ctx.now − started`, `label` "Rendering clip 4/12" / "Stitching".
+ETA from `ctx.now − started`, `label` "Rendering clip 4/12" / "Stitching"
+(`on_event::output::export_progress_view`, which a window also applies to
+the jobs of another host's `hello`).
 `RequesterGone`: clear `job.req`; in Headless/Cli hosts cancel the jobs that
 requester started if no other requester waits (exports and frame saves are
 cancelled, autocut analysis dropped, a purge finishes); never stop a
@@ -1032,17 +1082,23 @@ and is followed by clips carved from its old range passes it to them
 when they no longer exist in the scene the canvas targets
 (`canvas_target`: Live ⇒ the project scene; Program ⇒ the take of the
 first selected clip, else of the clip under the playhead — the last clip's
-at the end — else the project scene); on an fps change convert `playhead`
-and `zoom` through nanoseconds and clamp the playhead to the timeline
-length.
+at the end — else the project scene); keep only the `lane_mute` ids some
+scene has (the project's or a take's: the timeline's lanes); on an fps
+change convert `playhead` and `zoom` through nanoseconds and clamp the
+playhead to the timeline length. `edit_target` is the scene layout edits
+go to (GUI D-06): Live ⇒ the project scene; Program ⇒ the take of the
+first selected clip, else `None`: the canvas still shows the take under the
+playhead, read-only (`NO_EDIT_TARGET` says why).
 
-UI commands: `RangeTo(c)` selects the smallest run holding the selection
-and `c`; `Prev`/`Next` with nothing selected pick the clip under the
-playhead; `SetUi.panels` entries merge into the stored map. `Play` and
-`Shuttle` switch the canvas to Program (playback renders there): at the end
-playback restarts at 0, an empty timeline is `Invalid`, reverse at 0 stops;
-switching to Live and a starting countdown or take stop it. The core keeps
-only `runtime.playing`; the GUI's player owns the shuttle speed.
+UI commands: `RangeTo(c)` selects the smallest run holding the selection and
+`c`; `Prev`/`Next` with nothing selected pick the clip under the playhead;
+`SetUi.panels` entries merge into the stored map, and `SetUi.lane_mute`
+replaces the set (ids no scene has are dropped, not refused, so a stale
+window never fails). `Play` and `Shuttle` switch the canvas to Program
+(playback renders there): at the end playback restarts at 0, an empty
+timeline is `Invalid`, reverse at 0 stops; switching to Live and a starting
+countdown or take stop it. The core keeps only `runtime.playing`; the GUI's
+player owns the shuttle speed.
 
 ---
 
@@ -1129,8 +1185,9 @@ On `ProjectChangedOnDisk(Ok(file))` the core merges:
 - `nextTakeNumber = max(file, current)`; takes missing from the file are kept
   (warning: "takes can only be removed with `qrec take purge`"); takes only
   in the file are added; for takes in both, the current `status, streams,
-  durationFrames, recordedAt, error, placed, replaced` win (warning listing
-  ignored pointers); the in-flight take is always kept as in memory.
+  durationFrames, recordedAt, error, placed, replaced, recovered` win
+  (warning listing ignored pointers); the in-flight take is always kept as
+  in memory.
   Layer and track `missing` flags are facts too: a take scene keeps the
   in-memory flag of every entry it already had, and the project scene never
   gets one.
@@ -1290,21 +1347,46 @@ rewrites every file with its next commit, and the replies they send are
 
 - In every host the `Session` lives on **one session thread** draining a
   `crossbeam_channel::Receiver<Msg>`; it never blocks on I/O other than its
-  own small atomic writes.
+  own small atomic writes and the bounded device discovery a command's
+  facts need (A§4.2, A§8.12; a GUI's come from a cache, below).
   ```rust
   pub enum Msg { Request { req: Request, to: Box<dyn Responder> }, Event(Event),
-                 DiskChanged, Interrupt, Shutdown }
+                 DiskChanged, Interrupt, Shutdown, RetryLive }
   #[derive(Clone)] pub struct Inbox(crossbeam_channel::Sender<Msg>);
   pub trait Responder: Send { fn accepted(&mut self); fn progress(&mut self, p: &Progress);
-                              fn reply(&mut self, r: Result<serde_json::Value, CoreError>); }
+                              fn reply(&mut self, r: Result<serde_json::Value, CoreError>);
+                              fn reply_late(&mut self, r: Result<serde_json::Value, CoreError>) { self.reply(r) } }
   ```
+  Every request gets one answer: `reply` for its own outcome (also when it
+  ran later, held for a recovery, A§5.3), `reply_late` for an
+  `Effect::Reply` that an event's outcome sends (a started or finalized
+  take, a finished export; GUI H-7). The core toasts every late `Err`
+  itself (an `on_event` outcome that replies one also has a `Notify`, held
+  by `tests/props_late_errors.rs`), so the GUI only logs late errors and
+  toasts immediate ones. `RetryLive` is the GUI's live-preview retry: the
+  session thread calls `CaptureEngine::retry_live` (forget the sources the
+  portal refused and those that died, and rebuild; the default, and the
+  engine so far, does nothing), in order with the `SetLive`s and
+  `StartCapture`s it sent, and logs it; it changes no state.
 - Workers are std threads that only talk to the session through `Inbox`:
   process runners, timers, the inotify watcher, IPC connections, and the
   capture engine thread. No tokio; ashpd runs under `futures_lite::block_on`
   on the capture thread. GStreamer bus messages reach the engine thread via
   `bus.set_sync_handler`, so no GLib main loop is needed outside the GUI.
-- The GUI (later) runs the session thread too and receives `Arc<State>`
-  snapshots on the GTK main context.
+- A GUI host runs the session thread too (`qrec-session`, A§8.3). Its
+  `SessionConfig.observer` (`StateObserver::changed(rev, &State)`, GUI H-6)
+  sees every state the Session holds: right after each assignment of it,
+  durable or not (every outcome of a command or an event, runtime-only ones
+  too: `RecordClock`, export progress, `playing`, recovery, autocut; a
+  change kept in memory in recovery mode), and the opened state before
+  `open_with` returns; always before that outcome's toasts, progress and
+  replies, so a reply never reaches the window before the state it
+  describes. `rev` counts the calls (`Session::rev`); an event the core
+  ignores still hands over a state, maybe an equal one. The observer runs on
+  the session thread and returns at once: the GUI's
+  (`host::gui::PortObserver`) clones the state into an `Arc` for its queue
+  (about 45 µs for a 300-clip project in a debug build *(measured)*; each
+  call is timed, and the first and any over 1 ms are logged at debug level).
 
 ```rust
 pub struct Deps {
@@ -1320,6 +1402,7 @@ impl Session {
     pub fn handle(&mut self, msg: Msg);
     pub fn run_until(&mut self, done: impl FnMut(&State) -> bool);   // CLI and hosts
     pub fn state(&self) -> &State;
+    pub fn rev(&self) -> u64;                                        // states the observer saw
 }
 pub struct OpenOpts { pub host: HostKind, pub mutating: bool, pub recovery: bool }
 pub trait MediaRunner: Send {
@@ -1335,9 +1418,15 @@ pub trait MediaRunner: Send {
 `Session::handle(Request)`: allocate `ReqId`, `facts_needed` → gather facts →
 `apply` → run effects (A§7.6 order) → `Responder`. Events go to `on_event`.
 Fake `Deps` make the Session testable without GStreamer or ffmpeg.
-`SessionConfig { lock, channel, env, notifier, sources, recovery_wait }`: a
-host passes the lock it holds (A§8.3 step 1) and the inbox its server
-already fills; without a lock, a mutating open takes it (`Busy` when held).
+`SessionConfig { lock, channel, env, notifier, observer, sources,
+recovery_wait }`: a host passes the lock it holds (A§8.3 step 1) and the
+inbox its server already fills; without a lock, a mutating open takes it
+(`Busy` when held). A GUI passes `facts::SharedSources` as `sources` (GUI
+H-5): the device facts a worker of the window discovered last (`refresh`
+discovers on the caller's thread; an empty cache discovers once, on the
+thread that asks first, and a caller that comes during a refresh waits for
+it), so `LayerAdd`, `AudioAdd` and a take's start never wait for `pactl`,
+Wayland or the camera monitor on the session thread once a discovery ran.
 During a responder's calls `session::current_request()` is its `ReqId`,
 which an IPC responder keeps to post `RequesterGone` when its client leaves.
 
@@ -1345,9 +1434,15 @@ which an IPC responder keeps to post `RequesterGone` when its client leaves.
 
 Runtime dir: `$QREC_RUNTIME_DIR`, else `$XDG_RUNTIME_DIR/qrec`, else
 `/tmp/qrec-<uid>`; created 0700, then `lstat`-checked (real dir, our uid,
-0700) or refused. Config `$XDG_CONFIG_HOME/qrec`, state
-`$XDG_STATE_HOME/qrec` (portal tokens 0600, `last-session.log`), cache
-`$XDG_CACHE_HOME/qrec` (capabilities). Socket:
+0700) or refused. Config `$XDG_CONFIG_HOME/qrec` (`config.toml`,
+`keys.toml`: read whole by `config_file` and `keys_file`, at most 1 MiB and
+regular files only), state `$XDG_STATE_HOME/qrec` (portal tokens 0600;
+`gui-<first 12 hex of sha256(canonical project dir)>.log`, 0600, the log of
+the GUI windows of one project: each window appends a header line `=== qrec
+<version> pid <pid> <RFC 3339 time> <dir> ===` and its own lines, never
+truncating, and moves a log past 8 MiB to `.log.1` first; "host
+disconnected" names it for a GUI host), cache `$XDG_CACHE_HOME/qrec`
+(capabilities). Socket:
 `<runtime>/<sha256(canonical project dir) hex>.sock`; refuse paths over 107
 bytes. The publish name (A§8.3 step 1) is never longer, so every socket path
 that fits works for hosts too, whatever their pid.
@@ -1415,6 +1510,28 @@ Cli) and serves the socket.
 7. Peers must have our uid (`SO_PEERCRED`). Request lines are capped at 1 MiB
    with a 5 s read timeout; each connection has a bounded 64-message queue
    (progress coalesced, replies never dropped) and a 10 s write timeout.
+
+**GUI host** (`host::gui::GuiHost`, GTK-free; the window drives it and hears
+it through a `GuiPort`, docs/GUI.md G§3.4.1). `GuiHost::start` runs step 1
+on a worker of the window, under the lock the window took (free, or after a
+takeover, A§8.6): the folder rule again (another process may have filled an
+empty folder: `not_project`), the record says `starting`, the socket is
+published, the window's `first` request (`Init` in an empty folder; its
+error is toasted, unless it is "already a project") is parked in the server
+before its acceptor runs, so it reaches the Session ahead of every client's
+request (one that connects meanwhile waits in the listen backlog), signals
+are watched, the record says `ready`. Its thread `qrec-session` then waits
+for `open` (the Session opens there with a share of the lock and is
+attached; the window gets its first snapshot), `fail` (GStreamer stuck, a
+missing dependency), `close` or a signal. `fail` and an open that fails
+answer every queued and later request with that error, remove the socket and
+release the lock at once, so the CLI works in-process while the window says
+why. The window's own requests (`GuiHost::submit`) join the CLI's in the
+server's one FIFO, and `PortObserver` and `PortNotifier` hand its Session's
+states (A§8.1) and toasts (the startup recovery's marked as such) to the
+port. The port hears `Ready`; then `Opened`, `OpenFailed`, `Failed` or
+`Crashed` (a panic on the session thread: requests get `internal`);
+`Stopped` last, once the lock is released.
 
 ### A§8.4 Project resolution and init
 
@@ -1515,6 +1632,18 @@ nothing of anyone else's may be tied to it for long:
   reply is printed meanwhile, the recovery's toasts after it). `shutdown`
   requests: stop accepting, finalize a recording (`RecordStop`), let jobs
   finish, exit.
+- Exit (GUI): a window holds the host, so it never ends for being unused
+  or idle, and it refuses `shutdown` (`busy` "the Qrec window holds this
+  project; close it there", GUI D-13). `GuiHost::close` (the window closed,
+  after it sent what ends a recording or a job, GUI D-12) makes the record
+  say `stopping` and stops accepting at once; the host exits
+  (`HostEnd::Closed`, exit 0) once nothing is busy and no connection is
+  open, or `ExitRules::close_grace` (60 s) after the close whatever still
+  runs: dropping the Session cancels jobs and finalizes a take within their
+  own deadlines. Before its Session opens, a close or the first signal
+  stops it at once, and what was queued gets the reason. UI-state commands
+  are never held for a recovery (A§5.3, GUI D-47), so the window stays live
+  while one runs.
 - Signals in every host: the first SIGTERM/SIGINT/SIGHUP dispatches
   `RecordStop` (finalize, not cancel) and cancels jobs; exit when idle or
   after 15 s (a recovery probe still out counts as busy only that long).
@@ -1562,11 +1691,25 @@ nothing of anyone else's may be tied to it for long:
   written with `writeln!`; `BrokenPipe` exits quietly, any other write
   error (a full disk) is said on stderr and makes a run that would exit 0
   exit 1.
-- GUI start with a live non-GUI host: recording ⇒ SPEC §4.3 modal (Stop &
-  open: `RecordStop`, wait for its reply, `shutdown`, wait ≤ 20 s for the
-  lock); running job ⇒ "An export from the CLI is running (43 %)" with Wait
-  and Quit; idle ⇒ `shutdown` and wait. The GTK app uses
-  `ApplicationFlags::NON_UNIQUE` and `run_with_args(&[])` after clap.
+- GUI start with the lock held (`host::takeover`; the window's pages drive
+  it, docs/GUI.md G§3.4.3). `find_holder` takes the lock when it is free,
+  else asks `hello` (2 s) on this runtime's socket, then on the one the lock
+  record names: a host answers (its kind, record phase and jobs); or none
+  does yet, starting or stopping (ask again every 50 ms; after 3 s it counts
+  as not responding, `unresponsive`: the lock record while its pid runs); or
+  its socket took the connection but `hello` got no answer (`Unresponsive`).
+  A recording (SPEC §4.3, Stop & open): `stop_recording` (`RecordStop`,
+  whose reply comes once the take is finalized; ≤ 60 s, else `busy`), then
+  `request_shutdown`, then `wait_for_lock` (`try_acquire` every 50 ms,
+  ≤ 20 s, else `busy` naming the holder); Quit leaves it recording. An
+  export: wait until the holder's `hello` lists no job (every 500 ms; the
+  percent from `export_progress_view` over its jobs), then
+  `request_shutdown` (a CLI command's own host exits by itself) and
+  `wait_for_lock`. Idle: `request_shutdown` (2 s; a host already gone is
+  fine) and `wait_for_lock`. A GUI holder refuses `shutdown`, so a second
+  window on its project quits (exit 6). Each request goes on a connection
+  of its own. The GTK app uses `ApplicationFlags::NON_UNIQUE` and
+  `run_with_args(&[])` after clap.
 
 ### A§8.7 Process runner (`proc.rs`) and logs
 
@@ -1612,6 +1755,15 @@ shape A§8.8 gives temps, `.<stem>.qrec-part-<pid>-<job>` plus an optional
 `.qrec-part-`: exports, frames and results kept aside (`<stem>-kept.<ext>`)
 are never deleted. Auto names can't take that shape (`file_stem`, A§9.9)
 and a hand-picked `--out` in it is refused (A§5.9).
+
+The GUI's thumbnail, frame and waveform runs (`media::preview`, docs/GUI.md
+G§3.11; a stub so far: it ignores requests and runs nothing) follow these
+rules with one rolling log instead of one per run: `.qrec/logs/preview.log`,
+each stderr line prefixed `[<pid> <kind>]`, moved to `preview.1.log` past
+8 MiB; a failed run also writes its last 30 lines to its own
+`…-<pid>-preview-<kind>.log`. They come with a prune that counts only the
+timestamp-named logs and leaves `preview*.log` alone (today it counts every
+`*.log`), so preview runs never evict export and host logs.
 
 ### A§8.8 Output files: never overwrite
 
@@ -1681,6 +1833,12 @@ outcome is saved over the change.
   configured. When an NVIDIA device exists and isn't chosen, also set
   `__EGL_VENDOR_LIBRARY_FILENAMES` (Mesa) and `VK_DRIVER_FILES` /
   `VK_ICD_FILENAMES` (chosen vendor) unless the user set them (GUI).
+  The GUI also gets `GDK_DISABLE=vulkan` (GUI H-3), so GTK renders with
+  GSK GL: Mesa's Vulkan loader opens every render node, NVIDIA's included,
+  while it enumerates devices, even with the driver pinned *(measured,
+  docs/GUI.md G§3.13)*. A user who set `GDK_DISABLE` or `GSK_RENDERER`
+  keeps both as they are, and every command notes it (`doctor` prints the
+  note).
 - In the same step (`gpu::plan_gst_env`): `GST_REGISTRY_1_0` becomes
   `$XDG_CACHE_HOME/qrec/gstreamer-registry-<arch>.bin` unless the user set
   it, so other GStreamer apps never make Qrec's registry stale and the
@@ -1713,6 +1871,7 @@ pub trait CaptureEngine: Send {
     fn start(&mut self, plan: CapturePlan, out: Inbox);           // attach record bins at T0
     fn stop(&mut self, take: &TakeId, cancel: bool);              // EOS record bins, detach
     fn shutdown(&mut self);
+    fn retry_live(&mut self, out: Inbox) {}                       // the GUI's retry (Msg::RetryLive, A§8.1)
 }
 pub struct LiveScene { pub canvas: Canvas, pub scene: Scene, pub preview: bool }
 ```
@@ -1724,7 +1883,10 @@ Stop: EOS within 10 s, teardown within 5 s; a missed teardown ⇒
 `EngineWedged` (a headless host then exits via `process::exit`). Level meters
 and the preview paintable go to the GUI over a side channel, never through
 `on_event`. `record start` while the GUI isn't in Live mode starts the
-pipeline first. Paths in the plan are joined with the project dir.
+pipeline first. Paths in the plan are joined with the project dir. What
+else the GUI gets (a preview sink of its own, each live source's state,
+`LiveControl` for layer drags, a cast grace, the meter monitor) is in
+docs/GUI.md G§3.9; so far those are types and stubs that do nothing.
 
 **Record bins** *(measured)*: T0 = the pipeline running time chosen at start;
 a buffer probe on each bin's sink pad drops buffers with PTS < T0 and
@@ -1822,7 +1984,8 @@ record reads them back (A§7.7; `spec::start_offset_line`,
   `/dev/fake0`, mic `alsa_input.fake`, monitor `alsa_output.fake.monitor`.
   Fake screens are BGRx through the same bridge as real ones; `FAKE-1` is a
   still test card sent once (like a damage-driven compositor), so every
-  later frame of it is the keepalive's, and `FAKE-2` is a moving ball.
+  later frame of it is the keepalive's, and `FAKE-2` is a moving ball. Its
+  test hooks (`QREC_FAKE_*`) are in A§11.
 
 ### A§8.12 Sources and doctor
 
@@ -2035,11 +2198,15 @@ otherwise Va when `caps.vaapi.gst_h264_factory` is known; else X264.
 
 ```rust
 pub struct GesTimeline { pub canvas: Canvas, pub duration_ns: u64, pub video: Vec<GesVideoClip>, pub audio: Vec<GesAudioClip> }
-pub struct GesVideoClip { pub file: String, pub layer_priority: u32, pub start_ns: u64, pub inpoint_ns: u64,
-                          pub duration_ns: u64, pub placement: Placement, pub alpha: f64 }
-pub struct GesAudioClip { pub file: String, pub start_ns: u64, pub inpoint_ns: u64, pub duration_ns: u64,
-                          pub volume: f64, pub fade_in_samples: u32, pub fade_out_samples: u32 }
+pub struct GesVideoClip { pub take: TakeId, pub layer: LayerId, pub file: String, pub layer_priority: u32,
+                          pub start_ns: u64, pub inpoint_ns: u64, pub duration_ns: u64, pub placement: Placement, pub alpha: f64 }
+pub struct GesAudioClip { pub take: TakeId, pub track: TrackId, pub file: String, pub start_ns: u64, pub inpoint_ns: u64,
+                          pub duration_ns: u64, pub volume: f64, pub fade_in_samples: u32, pub fade_out_samples: u32 }
 ```
+
+`take` and `layer`/`track` say what a clip shows or plays, so the GUI's
+player can leave out muted lanes (A§3 `laneMute`); the renderer only needs
+the file.
 
 Same render units, frame selection and lead as A§9.3:
 `inpoint_ns = frame_ns_rec(k0)`, `start_ns = frame_ns(pos + lead)`,
@@ -2078,14 +2245,24 @@ pub fn resolve(keys_toml: &str) -> Keymap;
 pub fn hints(ctx: HintContext, map: &Keymap) -> Vec<Hint>;  // "r record · o record over · s split · c autocut · ? all keys"
 pub fn action_for(id: &str, state: &State) -> Option<Action>;   // Run(Command) | Gui | Unavailable(reason)
 pub fn command_for(id: &str, state: &State) -> Option<Command>;  // action_for's Run; shared by the GUI and the palette
+pub fn gate_reason(state: &State, cmd: &Command) -> Option<String>; // why apply's shared gates (phase, GUI host, disk) refuse cmd
+pub fn usable_keys<'a>(map: &Keymap, b: &'a Binding) -> Vec<&'a KeyChord>; // its chords outside conflicts
+impl KeyChord { pub fn cap_legends(&self) -> Vec<String>; }     // the GUI's key caps: ["Ctrl", "Shift", "Z"]
 ```
 
 Grammar `ctrl+shift+z`; shift is recorded only for letters and named keys
-(`<` is `less`). The default table is SPEC §10.2 plus Backspace for remove
-and the SPEC §12 canvas arrow nudges. `Alt+[`/`Alt+]` trim the start/end
+(`<` is `less`). The default table is SPEC §10.2 plus Backspace for remove,
+the SPEC §12 canvas arrow nudges, and the window's `region.next` (`F6`),
+`region.prev` (`Shift+F6`) and `app.quit` (`Ctrl+Q`, also over overlays),
+which are `Gui` actions (GUI D-10). `Alt+[`/`Alt+]` trim the start/end
 inward by one frame; with Shift they arrive as `alt+braceleft`/
 `alt+braceright` and trim 10. A chord two bindings share in one context is
-a `Conflict`: `lookup` runs neither.
+a `Conflict`: `lookup` runs neither. In Live mode `play.toggle`,
+`shuttle.reverse` and `shuttle.forward` are `Unavailable` "Switch to
+Program (Tab) to play the timeline" (GUI D-01; an empty timeline or a
+refusing gate says so first; the `Play` command itself still switches,
+A§5.10), and the layer nudges move a layer of `edit_target`'s scene, or are
+`Unavailable` "Select a clip to edit its take layout" (GUI D-06, A§5.10).
 `keys.toml`: `[bindings]` id → string or array. `qrec keys --json` prints
 `[{"id","group","label","keys":[..],"cli","contexts"}]`.
 
@@ -2146,6 +2323,12 @@ strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
   read-only Session's `runtime.host` is `cli`, but it holds no lock, A§8.3).
 - Project-less: `--help`, `version`, `doctor`, `sources list`, `schema`,
   `keys`, `agent-guide`, `config`, `completions <shell>`.
+- `qrec` without a command opens the window on `--project DIR` (made
+  absolute) or the cwd, as is (`Backend::gui`: the window applies its own
+  folder rule, GUI D-14), and exits with its code; under `--json` it is
+  `usage` "the GUI has no --json output; give a command" (exit 2). Until the
+  binary runs `qrec-gui`, it logs to the project's GUI log (A§8.2), then
+  answers `unavailable` "The Qrec GUI is not built yet…".
 - Extensions to SPEC §14 (for GUI parity): `qrec project set`,
   `qrec autocut settings`, `qrec export cancel`, `qrec history clear`,
   `qrec completions`, `--codec`, `seek --to start|end`,
@@ -2166,33 +2349,64 @@ strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
 | CLI integration | `crates/qrec/tests/<area>.rs` with `assert_cmd` |
 | Fake capture | `QREC_CAPTURE_BACKEND=fake` record start/stop end to end (M2) |
 | Parity | GES vs frame plan: SSIM ≥ 0.98 **per layer rect**, plus a frame-ID fixture (frame index drawn as binary bars) asserting the exact source frame in both renderers; at another recorded rate, export segments, frame saves and GES all show `shown_frame` (A§9.3) in units starting anywhere |
+| Late errors | `tests/props_late_errors.rs`: an `on_event` outcome that replies `Err` to a requester also has a `Notify` (A§8.1), over random requests answered late, out of order or as failures, plus a table of every known path |
+| GUI host | `host/gui_tests.rs`: `GuiHost` with a fake `GuiPort` and Session (`ipc::testing`) and shortened `ExitRules`: no idle exit, `first` ahead of early requests, one FIFO, `fail`, a failed open, close, signals (the second in a child process), the `shutdown` refusal, a crash; `host/takeover_tests.rs` against hosts with a fake Session, and Stop & open on a real fake-backend recording (`crates/qrec/tests/cli.rs`) |
+| Session for the GUI | `session/tests.rs`: the observer's snapshots (commands, `RecordClock`, export progress, before their replies), `reply_late` only for `Effect::Reply`, D-47 (UI commands answered while edits wait for a recovery), `RetryLive` in order with `SetLive`; `SharedSources` never discovering on the session thread once cached |
+| View models | `insta` per `view` module over `testkit::design_state()` and its owner's variants (docs/GUI.md G§8.1) |
+| GUI | headless screenshots against the design fixture and the end-to-end smoke run (docs/GUI.md G§8.4–G§8.5; not built yet) |
 
 **`qrec_core::testkit`** (feature `testkit`, also under `cfg(test)`; pure):
 `ctx(now, entropy)`, `ProjectBuilder` (`.canvas()`, `.screen_layer()`,
 `.mic()`, `.take(id, frames)`, `.clip(id, take, in, out)`, `.build()`),
 `state(project)`, `drive(&State, &[Command], fake_shell) -> State`, proptest
-strategies for projects and commands.
+strategies for projects and commands. `design_project()` and
+`design_state()` are the sample every GUI design shows (design/BRIEF.md §3:
+`rust-traits-talk`, takes 1–9 with their statuses and facts, the 10 clips
+c7f3 … c3e9, 7,391 frames, playhead 2437; `DESIGN_*` constants);
+`perf_project(clips)` is a long timeline.
 
 **`qrec_shell::testkit`** (feature `testkit`): `TestEnv::new()` — a temp dir
 that sets `HOME`, `QREC_RUNTIME_DIR`, `XDG_{CONFIG,STATE,CACHE,RUNTIME}_HOME`
 and `QREC_CAPTURE_BACKEND=fake` for every spawned `qrec` (tests never touch
 the developer's config, tokens or running GUI); `.qrec()` returns an
-`assert_cmd::Command`. `MediaSpec { video: Option<(w, h, fps, frames)>,
-audio: Option<{ sample_rate, channels, speech_ms: [(start, end)] }> }` and
+`assert_cmd::Command`. Other inherited `QREC_*` variables are dropped, so a
+fake hook (below) applies only where a test sets it. `MediaSpec { video:
+Option<(w, h, fps, frames)>, audio: Option<{ sample_rate, channels,
+speech_ms: [(start, end)] }> }` and
 `fixture(&MediaSpec) -> PathBuf`, generated with ffmpeg (`testsrc2`, `sine`
 gated by speech intervals) and cached in `target/qrec-fixtures/<hash>.<ext>`
 via tmp + rename. `fixture_project(&dir, takes)` writes a project whose takes
-point at fixture media.
+point at fixture media. `design::design_fixture(dir, DesignVariant)` writes
+the design sample with fixture media on the fake backend's sources
+(`FAKE-1`, `/dev/fake0`, `alsa_input.fake`, `alsa_output.fake.monitor`;
+screens 640×360, the camera 320×240; A1's speech placed so `qrec autocut`
+finds BRIEF §3.3's and §3.6's silences) and no history, as `Base`,
+`Take10Landed`, `MissingL2` or `Smoke`; `perf_fixture(dir, clips)`,
+`playback_fixture(dir)` and `write_ui(dir, &UiState)` (a case's
+`.qrec/ui.json`) go with it.
+
+**Fake hooks** (`capture::fake::FakeHooks`, docs/GUI.md G§8.4): read from
+the environment (the engine's by `EngineOptions::new`, the inventory's by
+discovery) and honored only with the fake backend; a value that doesn't
+parse is ignored with a warning.
+- `QREC_FAKE_EOS_DELAY_MS=<ms>`: a stopped take's `CaptureStopped` comes
+  that much later; past its EOS timeout the take ends `timed_out` (broken
+  with `EOS_TIMEOUT_REASON`, "the recording didn't stop within 10 s").
+- `QREC_FAKE_PORTAL=deny|cancel`: the fake screens go through a fake portal
+  that refuses them (denied, or the dialog closed), answered like the real
+  one's refusals.
+- `QREC_FAKE_RECORD_OFFSET_FRAMES=<n>`: every `RecordClock` reads n frames
+  more, as if the take had started earlier.
+- `QREC_FAKE_INVENTORY=design`: discovery reports BRIEF's labels and sizes
+  ("GIGA-BYTE GS27QA" 2560×1440, "Dell U2720Q" 3840×2160, "Logitech C920",
+  "Yeti Nano", "Built-in Audio Analog Stereo"); names, paths, modes and
+  the test patterns stay.
 
 ---
 
-## A§12 GUI (blocked)
+## A§12 GUI
 
-`qrec-gui` stays a stub until `design/qrec.pen` is approved (SPEC §15.1).
-Then: the Session on its thread with `Arc<State>` snapshots on the GTK main
-context; every input becomes a `Command`; `gtk4paintablesink` for Live and
-Program; theme tokens from `crates/qrec-gui/resources/theme/*.css`;
-`ApplicationFlags::NON_UNIQUE`; gestures per A§4.1.
+See `docs/GUI.md`, the GUI's plan and contract; it replaces this section.
 
 ---
 
@@ -2213,3 +2427,10 @@ Program; theme tokens from `crates/qrec-gui/resources/theme/*.css`;
    blocked during an export), print their result as soon as they have it,
    and take no new job once answered.
 7. Export quality presets for Draft and High (A§9.3).
+8. UI-state commands (`Command::ui_only`) are never held for a startup
+   recovery, so they can overtake edits that wait for it; those resolve
+   the selection and the playhead when they run (A§5.3, GUI D-47).
+9. `Take.recovered` joined schema v1 without a `version` bump: dev builds
+   from before it reject a project that has it; the first schema change
+   after the first release bumps `version` with a migration (A§2,
+   docs/GUI.md G§9 R24).
