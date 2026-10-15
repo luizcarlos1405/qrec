@@ -625,6 +625,41 @@ fn errors_map_to_exit_codes() {
 }
 
 #[test]
+fn huge_numbers_in_arguments_are_usage_errors() {
+    // These overflowed while parsing: a panic (exit 101) with no JSON.
+    let tmp = Tmp::new();
+    let project = tmp.project("p");
+    let empty = tmp.dir("e");
+    for (cwd, line) in [
+        (
+            &project,
+            "qrec clip split c001 --at 5124096:00:00.000 --json",
+        ),
+        (
+            &project,
+            "qrec clip trim c001 --end -5124095:34:33.999 --json",
+        ),
+        (
+            &project,
+            "qrec seek --to 99999999999999999999:00:00.000 --json",
+        ),
+        (&empty, "qrec init --canvas 1920x1080@500000000.5 --json"),
+        (&project, "qrec project set --canvas @4995004.995005 --json"),
+        (&project, "qrec config set canvas.fps 4324.967296 --json"),
+    ] {
+        let mut fake = Fake::new(&tmp.dir("cfg"));
+        let out = run(&mut fake, cwd, line);
+        assert_eq!(out.code, 2, "{line}: {}{}", out.out, out.err);
+        assert_eq!(out.json()["error"]["code"], "usage", "{line}");
+        assert!(fake.commands().is_empty(), "{line} reached the backend");
+    }
+    assert!(
+        !tmp.dir("cfg").join("config.toml").exists(),
+        "the bad rate wasn't written"
+    );
+}
+
+#[test]
 fn confirmations_need_yes() {
     let tmp = Tmp::new();
     let project = tmp.project("p");

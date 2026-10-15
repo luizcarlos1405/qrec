@@ -15,7 +15,7 @@ use qrec_core::{
 };
 use serde_json::{Value, json};
 
-use super::effects::Ran;
+use super::effects::{Origin, Ran};
 use super::open::{Folder, classify};
 use super::{Session, with_current};
 use crate::msg::{Request, Responder};
@@ -171,7 +171,13 @@ impl Session {
                 Ok(outcome) => outcome,
                 Err(e) => return self.reply_now(id.as_ref(), &mut to, Err(e)),
             };
-            match self.run_outcome(outcome, id.as_ref(), &mut to, attempts > MAX_REDISPATCH) {
+            match self.run_outcome(
+                outcome,
+                Origin::Command,
+                id.as_ref(),
+                &mut to,
+                attempts > MAX_REDISPATCH,
+            ) {
                 Ran::Done => return,
                 // An external edit was merged first: run the command again
                 // against the merged state (nothing of the old outcome ran).
@@ -220,7 +226,13 @@ impl Session {
             let facts = self.gather(&need);
             let ctx = self.ctx(None, false, facts);
             let outcome = on_event(&self.state, &ctx, ev.clone());
-            match self.run_outcome(outcome, None, &mut None, attempts > MAX_REDISPATCH) {
+            match self.run_outcome(
+                outcome,
+                Origin::Event,
+                None,
+                &mut None,
+                attempts > MAX_REDISPATCH,
+            ) {
                 Ran::Done => return,
                 Ran::ExternalFirst => continue,
             }

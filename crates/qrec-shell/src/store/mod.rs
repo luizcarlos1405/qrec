@@ -82,10 +82,27 @@ pub enum CommitError {
 }
 
 impl CommitError {
-    pub fn to_core(&self) -> CoreError {
-        CoreError::io(format!("couldn't save the project: {self}"))
-            .with_hint("check free disk space and permissions; the change is kept in memory and saved with the next one")
+    /// `qrec.json` had been replaced when the commit failed: only the
+    /// commit record (step 3) is missing.
+    pub fn wrote_project(&self) -> bool {
+        matches!(
+            self,
+            CommitError::Io {
+                step: Step::Head,
+                ..
+            }
+        )
     }
+}
+
+/// The store's own bookkeeping before a commit ([`Store::mark`],
+/// [`Store::drop_commit`]).
+#[derive(Debug, Clone)]
+pub struct CommitMark {
+    has_base: bool,
+    pending_base: Option<(u64, Project)>,
+    dirty: bool,
+    has_history: bool,
 }
 
 /// What `qrec.json` holds right now, compared with what the host wrote.
@@ -333,6 +350,68 @@ impl Store {
                 what: format!("write {}", path.display()),
                 source,
             })
+    }
+
+    /// What [`Store::drop_commit`] puts back; taken before a commit.
+    pub fn mark(&self) -> CommitMark {
+        CommitMark {
+            has_base: self.has_base,
+            pending_base: self.pending_base.clone(),
+            dirty: self.dirty,
+            has_history: self.paths.history_file().is_file(),
+        }
+    }
+
+    /// After a failed [`Store::commit`] whose change is dropped (never one
+    /// with a history `Rewrite`: the base it replaced can't be put back),
+    /// puts the files back to `prev`, the state the head still describes,
+    /// as far as the next open and the next commit care:
+    /// - a `qrec.json` it already replaced (only the head failed) is
+    ///   written back, else an open would merge it as an external edit;
+    /// - a base it wrote for a project that had none is removed (the next
+    ///   commit writes the right one);
+    /// - the history file is rewritten without the line it appended (or
+    ///   with the redo tail it dropped), or removed if the commit made it.
+    ///   When that fails the store stays dirty: an open drops lines at or
+    ///   past the head's `nextSeq` and the next commit rewrites the file.
+    ///
+    /// `Err` when `qrec.json` can't be written back: it holds the change.
+    pub fn drop_commit(
+        &mut self,
+        mark: CommitMark,
+        prev: &State,
+        failed: &CommitError,
+    ) -> Result<(), CommitError> {
+        self.dirty = true;
+        if failed.wrote_project() {
+            self.write_project(&prev.project)?;
+        }
+        if !mark.has_base && self.has_base {
+            match fs::remove_file(self.paths.history_base()) {
+                Ok(()) => self.has_base = false,
+                Err(e) => tracing::warn!("can't remove the base of a dropped change: {e}"),
+            }
+        }
+        self.pending_base = mark.pending_base;
+        if !mark.dirty {
+            // The files matched `prev` before the commit: once the history
+            // does again, nothing is left to repair.
+            let path = self.paths.history_file();
+            let put_back = if mark.has_history {
+                let history = format::history_bytes(prev.history.entries.iter());
+                fsx::replace(&path, &history, fsx::Sync::File)
+            } else {
+                fs::remove_file(&path).or_else(|e| match e.kind() {
+                    io::ErrorKind::NotFound => Ok(()),
+                    _ => Err(e),
+                })
+            };
+            match put_back {
+                Ok(()) => self.dirty = false,
+                Err(e) => tracing::debug!("can't put the history back yet: {e}"),
+            }
+        }
+        Ok(())
     }
 
     /// Writes the history file, base, `qrec.json` and head from `state`

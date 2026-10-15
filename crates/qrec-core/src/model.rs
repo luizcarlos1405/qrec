@@ -14,6 +14,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::error::CoreError;
 use crate::ids::{ClipId, Frame, LayerId, TakeId, TrackId};
+use crate::validate::MAX_FPS;
 
 /// The schema version this build reads and writes.
 pub const CURRENT_VERSION: u32 = 1;
@@ -152,6 +153,9 @@ impl FromStr for Fps {
 
     /// Accepts `30`, `30/1`, `30000/1001` and decimals. The NTSC decimals
     /// (`23.976`, `29.97`, `47.952`, `59.94`, `119.88`) map to `N·1000/1001`.
+    /// Anything that isn't a rate above 0 and at most [`MAX_FPS`] is `Usage`;
+    /// a decimal is range-checked before its digits become a fraction, so
+    /// no input can overflow (or, in release builds, wrap into a valid rate).
     fn from_str(s: &str) -> Result<Self, CoreError> {
         let bad = || CoreError::usage(format!("invalid frame rate {s:?} (examples: 30, 29.97, 30000/1001)"));
         let s = s.trim();
@@ -162,19 +166,25 @@ impl FromStr for Fps {
                 return Err(bad());
             }
             let value: f64 = s.parse().map_err(|_| bad())?;
+            if !(value > 0.0 && value <= MAX_FPS) {
+                return Err(bad());
+            }
             let ntsc = (value * 1001.0 / 1000.0).round();
             if ntsc >= 1.0 && (ntsc * 1000.0 / 1001.0 - value).abs() < 0.0015 && (value - value.round()).abs() > 0.001 {
-                Fps::new(ntsc as u32 * 1000, 1001)
+                // `ntsc` ≤ 241 here, so the cast and the product are exact.
+                Fps::new((ntsc as u32).checked_mul(1000).ok_or_else(bad)?, 1001)
             } else {
+                // `int` ≤ 240 and `frac` < 10⁶ here; checked all the same.
                 let den = 10u32.pow(frac.len() as u32);
-                let num = int.parse::<u32>().map_err(|_| bad())? * den + frac.parse::<u32>().map_err(|_| bad())?;
+                let frac = frac.parse::<u32>().map_err(|_| bad())?;
+                let num = int.parse::<u32>().ok().and_then(|int| int.checked_mul(den)?.checked_add(frac)).ok_or_else(bad)?;
                 let g = gcd(num, den);
                 Fps::new(num / g, den / g)
             }
         } else {
             Fps::new(s.parse().map_err(|_| bad())?, 1)
         };
-        if fps.num == 0 || fps.den == 0 || fps.as_f64() > 240.0 {
+        if fps.num == 0 || fps.den == 0 || fps.as_f64() > MAX_FPS {
             return Err(bad());
         }
         Ok(fps)
@@ -596,6 +606,57 @@ mod tests {
         assert!("1000".parse::<Fps>().is_err());
         assert_eq!(Fps::new(30000, 1001).nominal(), 30);
         assert_eq!(Fps::new(30000, 1001).to_string(), "30000/1001");
+    }
+
+    #[test]
+    fn huge_decimal_rates_are_usage_errors() {
+        // These overflowed u32 while becoming a fraction: a panic in debug
+        // builds, and in release builds a wrapped value that passed the
+        // range check ("4324.967296" became 30/1, "4295.000000" 511/15625).
+        for s in [
+            "500000000.5",
+            "4995004.995005",
+            "4324.967296",
+            "4295.000000",
+            "4290677.322677",
+            "5000.123456",
+            "9999999999.999999",
+            "240.000001",
+        ] {
+            let err = s.parse::<Fps>().unwrap_err();
+            assert_eq!(err.code, crate::error::ErrorCode::Usage, "{s}");
+        }
+        assert_eq!("240.000000".parse::<Fps>().unwrap(), Fps::new(240, 1));
+        assert_eq!("0.5".parse::<Fps>().unwrap(), Fps::new(1, 2));
+    }
+
+    proptest::proptest! {
+        /// A decimal parses iff it is a rate above 0 and at most 240, to
+        /// itself or to the NTSC rate it names; nothing panics.
+        #[test]
+        fn decimal_rates_parse_to_their_value(int in "[0-9]{1,10}", frac in "[0-9]{1,6}") {
+            let s = format!("{int}.{frac}");
+            let value: f64 = s.parse().unwrap();
+            let in_range = value > 0.0 && value <= MAX_FPS;
+            match s.parse::<Fps>() {
+                Ok(fps) => {
+                    proptest::prop_assert!(in_range, "{} parsed as {}", s, fps);
+                    proptest::prop_assert!((fps.as_f64() - value).abs() < 0.0015, "{} parsed as {}", s, fps);
+                }
+                Err(e) => {
+                    proptest::prop_assert!(!in_range, "{} rejected: {}", s, e);
+                    proptest::prop_assert_eq!(e.code, crate::error::ErrorCode::Usage);
+                }
+            }
+        }
+
+        /// Any text is a rate or a usage error, never a panic.
+        #[test]
+        fn any_text_parses_or_is_a_usage_error(s in "[0-9./ ]{0,24}|\\PC{0,24}") {
+            if let Err(e) = s.parse::<Fps>() {
+                proptest::prop_assert_eq!(e.code, crate::error::ErrorCode::Usage);
+            }
+        }
     }
 
     #[test]

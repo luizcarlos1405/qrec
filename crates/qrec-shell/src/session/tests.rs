@@ -28,7 +28,7 @@ use qrec_core::state::{HostKind, Job, JobKind, RecordPhase, SilenceKey};
 use qrec_core::{ClipId, CoreError, ErrorCode, Event, Fps, JobId, ReqId, TakeId};
 use serde_json::Value;
 
-use super::effects::Ran;
+use super::effects::{Origin, Ran};
 use super::*;
 use crate::deps::{CaptureEngine, Deps, MediaRunner, OpenOpts};
 use crate::host::lockfile::{self, LockRecord};
@@ -1200,7 +1200,10 @@ fn a_take_folder_that_exists_fails_the_capture_instead_of_starting_it() {
 
     fs::create_dir_all(h.dir.join("takes/take-0002")).unwrap();
     let outcome = begin(&s, 2);
-    assert_eq!(s.run_outcome(outcome, None, &mut None, false), Ran::Done);
+    assert_eq!(
+        s.run_outcome(outcome, Origin::Event, None, &mut None, false),
+        Ran::Done
+    );
     assert!(!h.log.has("start"), "never started");
     assert!(
         h.head().project.takes.contains_key(&take(2)),
@@ -1219,7 +1222,7 @@ fn a_take_folder_that_exists_fails_the_capture_instead_of_starting_it() {
     }
 
     let outcome = begin(&s, 3);
-    s.run_outcome(outcome, None, &mut None, false);
+    s.run_outcome(outcome, Origin::Event, None, &mut None, false);
     assert!(h.dir.join("takes/take-0003").is_dir());
     assert_eq!(h.log.lines().last().unwrap(), "start take-0003");
     assert!(
@@ -1247,7 +1250,7 @@ fn deleting_waits_for_a_durable_commit() {
         ],
         None,
     );
-    s.run_outcome(outcome, None, &mut None, false);
+    s.run_outcome(outcome, Origin::Event, None, &mut None, false);
     fs::set_permissions(&qrec, fs::Permissions::from_mode(0o755)).unwrap();
 
     assert!(
@@ -1284,6 +1287,202 @@ fn deleting_waits_for_a_durable_commit() {
     let head = h.head();
     assert_eq!(head.project.name, "renamed");
     assert_eq!(head.project, s.state().project);
+}
+
+/// Makes `dir` read-only; `false` (nothing to test) when that doesn't stop
+/// this process from writing there (root).
+fn make_read_only(dir: &Path) -> bool {
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o555)).unwrap();
+    let probe = dir.join(".write-probe");
+    if fs::write(&probe, b"").is_ok() {
+        let _ = fs::remove_file(&probe);
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
+        return false;
+    }
+    true
+}
+
+fn make_writable(dir: &Path) {
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn a_command_that_cant_be_saved_changes_nothing() {
+    let h = Harness::with_sample("unsaved");
+    let mut s = h.open(true).unwrap();
+    let before = clip_layout(&s);
+    if !make_read_only(&h.dir) {
+        return;
+    }
+    // qrec.json can't be replaced (step 2): the command didn't happen.
+    let err = send(
+        &mut s,
+        Command::ClipRemove {
+            clips: vec![clip("c001")],
+        },
+        false,
+    )
+    .unwrap_err();
+    make_writable(&h.dir);
+    assert_eq!(err.code, ErrorCode::Io);
+    assert!(
+        err.message
+            .starts_with("couldn't save the project, so nothing changed: write "),
+        "{}",
+        err.message
+    );
+    assert!(
+        err.hint
+            .as_deref()
+            .unwrap()
+            .ends_with("then run the command again"),
+        "{err:?}"
+    );
+    assert_eq!(clip_layout(&s), before, "the state is as it was");
+    assert_eq!(s.state().history.cursor, 0);
+    // …and so are the files: the appended history line is gone again.
+    assert_eq!(h.history_seqs(), Vec::<u64>::new());
+    assert_eq!(h.head().project, s.state().project);
+    assert!(!s.store.is_dirty());
+
+    // The next change saves only itself: the dropped one never comes back.
+    send(
+        &mut s,
+        Command::ClipRemove {
+            clips: vec![clip("c002")],
+        },
+        false,
+    )
+    .unwrap();
+    assert_eq!(clip_layout(&s), [("c001".to_owned(), 0, 100)]);
+    assert_eq!(h.head().project, s.state().project);
+    assert_eq!(h.history_seqs(), [1]);
+    drop(s);
+    let s = h.open(true).unwrap();
+    assert_eq!(clip_layout(&s), [("c001".to_owned(), 0, 100)]);
+}
+
+#[test]
+fn a_dropped_change_is_taken_back_out_of_qrec_json() {
+    // CLI hosts exit right after replying; the next open must not find
+    // the dropped change in qrec.json (it would merge it as an edit).
+    let h = Harness::with_sample("unsaved-head");
+    let mut s = h.open(true).unwrap();
+    let qrec = h.dir.join(".qrec");
+    if !make_read_only(&qrec) {
+        return;
+    }
+    // The history line and qrec.json are written; the head (step 3) isn't.
+    let err = send(
+        &mut s,
+        Command::ClipRemove {
+            clips: vec![clip("c001")],
+        },
+        false,
+    )
+    .unwrap_err();
+    make_writable(&qrec);
+    assert!(
+        err.message
+            .starts_with("couldn't save the project, so nothing changed"),
+        "{}",
+        err.message
+    );
+    assert_eq!(
+        fs::read(h.dir.join("qrec.json")).unwrap(),
+        format::project_bytes(&s.state().project),
+        "qrec.json describes the state again"
+    );
+    assert_eq!(s.state().project.timeline.clips.len(), 2);
+    drop(s);
+
+    let s = h.open(true).unwrap();
+    assert_eq!(s.state().project.timeline.clips.len(), 2);
+    assert!(
+        s.state()
+            .history
+            .entries
+            .iter()
+            .all(|e| e.label != "External edit"),
+        "{:?}",
+        s.state().history.entries
+    );
+}
+
+#[test]
+fn a_dropped_first_commit_leaves_no_base_behind() {
+    // The base written for the project's first commit describes that
+    // commit's project; when the commit is dropped, so is the base.
+    let h = Harness::new("unsaved-init");
+    let mut s = h.open(true).unwrap();
+    let init = |canvas: &str| Command::Init {
+        canvas: Some(canvas.parse().unwrap()),
+        name: None,
+    };
+    if !make_read_only(&h.dir) {
+        return;
+    }
+    let err = send(&mut s, init("1280x720@25"), false).unwrap_err();
+    make_writable(&h.dir);
+    assert!(
+        err.message
+            .starts_with("couldn't save the project, so nothing changed"),
+        "{}",
+        err.message
+    );
+    assert!(!is_initialized(&s.state().project));
+    assert!(!h.paths().history_base().exists());
+
+    send(&mut s, init("640x360@30"), false).unwrap();
+    let base: BaseFile =
+        serde_json::from_slice(&fs::read(h.paths().history_base()).unwrap()).unwrap();
+    assert_eq!(base.project, s.state().project);
+    assert_eq!(base.project.canvas.width, 640);
+}
+
+#[test]
+fn replies_after_an_unsaved_event_say_so() {
+    // Events keep their facts in memory (saved with the next commit), and
+    // a request they answer hears that it isn't saved yet.
+    let h = Harness::with_sample("unsaved-event");
+    let mut s = h.open(true).unwrap();
+    let waiting = Answers::default();
+    s.pending.insert(ReqId("r9".into()), waiting.responder());
+    let mut next = s.state().clone();
+    next.project.name = "renamed".into();
+    let outcome = Outcome::new(
+        next,
+        vec![
+            Effect::WriteProject,
+            Effect::Reply {
+                req: ReqId("r9".into()),
+                reply: Ok(qrec_core::CmdResult::new("Done")),
+            },
+        ],
+        None,
+    );
+    if !make_read_only(&h.dir) {
+        return;
+    }
+    s.run_outcome(outcome, Origin::Event, None, &mut None, false);
+    make_writable(&h.dir);
+    let err = waiting.last().unwrap().unwrap_err();
+    assert_eq!(err.code, ErrorCode::Io);
+    assert!(
+        err.message
+            .starts_with("the change was made but couldn't be saved: "),
+        "{}",
+        err.message
+    );
+    assert!(
+        err.hint
+            .as_deref()
+            .unwrap()
+            .contains("loses it if it exits"),
+        "{err:?}"
+    );
+    assert_eq!(s.state().project.name, "renamed", "kept in memory");
+    assert!(s.store.is_dirty());
 }
 
 #[test]
@@ -1353,6 +1552,7 @@ fn an_invalid_file_is_moved_aside_before_facts_are_saved() {
     next.project.takes.get_mut(&take(1)).unwrap().status = TakeStatus::Broken;
     s.run_outcome(
         Outcome::new(next, vec![Effect::WriteProject], None),
+        Origin::Event,
         None,
         &mut None,
         false,
@@ -1391,7 +1591,13 @@ fn clearing_disk_invalid_keeps_a_copy_of_the_broken_file() {
         Effect::History(HistoryOp::SetCursor(cursor)),
         Effect::WriteProject,
     ];
-    s.run_outcome(Outcome::new(next, effects, None), None, &mut None, false);
+    s.run_outcome(
+        Outcome::new(next, effects, None),
+        Origin::Event,
+        None,
+        &mut None,
+        false,
+    );
     let copies: Vec<String> = fs::read_dir(h.dir.join(".qrec"))
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())

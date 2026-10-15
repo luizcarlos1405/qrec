@@ -230,43 +230,45 @@ impl IdGen {
     }
 }
 
-/// The next layer id `L{n}`: `n = 1 + max` over the project scene, every
-/// take scene (and its streams) and every layer id seen in history.
+/// The next layer id `L{n}`: `n = 1 + max` over the ids of the project
+/// scene, every take scene (and its streams) and every id seen in history.
+/// Layers and tracks share a scene's ids, so a track named `L{n}` counts
+/// too. Nothing is above a hand-edited `L4294967295`: then `n` is the
+/// lowest number none of them uses, so an id is never reused.
 pub fn next_layer_id(state: &State) -> LayerId {
     let parse = |s: &str| s.parse::<LayerId>().ok().and_then(|id| id.number());
-    LayerId::numbered(
-        1 + max_scene_number(state, parse, |scene| {
-            scene.layers.iter().filter_map(|l| l.id.number()).max()
-        }),
-    )
+    LayerId::numbered(next_number(&scene_numbers(state, parse)))
 }
 
 /// The next audio track id `A{n}`: like [`next_layer_id`] for tracks.
 pub fn next_track_id(state: &State) -> TrackId {
     let parse = |s: &str| s.parse::<TrackId>().ok().and_then(|id| id.number());
-    TrackId::numbered(
-        1 + max_scene_number(state, parse, |scene| {
-            scene.audio.iter().filter_map(|t| t.id.number()).max()
-        }),
-    )
+    TrackId::numbered(next_number(&scene_numbers(state, parse)))
 }
 
-fn max_scene_number(
-    state: &State,
-    parse: impl Fn(&str) -> Option<u32>,
-    in_scene: impl Fn(&crate::model::Scene) -> Option<u32>,
-) -> u32 {
+/// One above every number in `used` or, when that would pass `u32::MAX`,
+/// the lowest number `used` lacks. Numbers start at 1.
+fn next_number(used: &BTreeSet<u32>) -> u32 {
+    used.last()
+        .map_or(Some(1), |max| max.checked_add(1))
+        .or_else(|| (1..=u32::MAX).find(|n| !used.contains(n)))
+        .unwrap_or(1)
+}
+
+/// Every number `parse` finds among the layer and track ids of the project
+/// scene and every take scene, the take streams and the `"id"`s in history.
+fn scene_numbers(state: &State, parse: impl Fn(&str) -> Option<u32>) -> BTreeSet<u32> {
+    let mut used = BTreeSet::new();
+    let in_scene = |scene: &crate::model::Scene, used: &mut BTreeSet<u32>| {
+        let layers = scene.layers.iter().map(|l| l.id.as_str());
+        let tracks = scene.audio.iter().map(|t| t.id.as_str());
+        used.extend(layers.chain(tracks).filter_map(&parse));
+    };
     let project = &state.project;
-    let mut max = in_scene(&project.scene).unwrap_or(0);
+    in_scene(&project.scene, &mut used);
     for take in project.takes.values() {
-        max = max.max(in_scene(&take.scene).unwrap_or(0));
-        max = max.max(
-            take.streams
-                .iter()
-                .filter_map(|s| parse(&s.id))
-                .max()
-                .unwrap_or(0),
-        );
+        in_scene(&take.scene, &mut used);
+        used.extend(take.streams.iter().filter_map(|s| parse(&s.id)));
     }
     for entry in state.history.entries.iter() {
         for op in entry.forward.0.iter().chain(entry.inverse.0.iter()) {
@@ -277,33 +279,29 @@ fn max_scene_number(
                 _ => continue,
             };
             if op.path().back().is_some_and(|t| t.decoded() == "id") {
-                max = max.max(value.as_str().and_then(&parse).unwrap_or(0));
+                used.extend(value.as_str().and_then(&parse));
             }
-            max = max.max(max_object_id(value, &parse));
+            object_ids(value, &parse, &mut used);
         }
     }
-    max
+    used
 }
 
-/// The largest number among `"id"` members of objects inside `value`.
-fn max_object_id(value: &Value, parse: &impl Fn(&str) -> Option<u32>) -> u32 {
+/// Adds the number of every `"id"` member of the objects inside `value`.
+fn object_ids(value: &Value, parse: &impl Fn(&str) -> Option<u32>, used: &mut BTreeSet<u32>) {
     match value {
         Value::Object(map) => {
-            let own = map
-                .get("id")
-                .and_then(Value::as_str)
-                .and_then(parse)
-                .unwrap_or(0);
-            map.values()
-                .map(|v| max_object_id(v, parse))
-                .fold(own, u32::max)
+            used.extend(map.get("id").and_then(Value::as_str).and_then(parse));
+            for v in map.values() {
+                object_ids(v, parse, used);
+            }
         }
-        Value::Array(items) => items
-            .iter()
-            .map(|v| max_object_id(v, parse))
-            .max()
-            .unwrap_or(0),
-        _ => 0,
+        Value::Array(items) => {
+            for v in items {
+                object_ids(v, parse, used);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -313,7 +311,7 @@ pub fn next_take_number(project: &Project, facts: &Facts) -> u32 {
     let in_pool = project
         .takes
         .keys()
-        .map(|t| t.number() + 1)
+        .map(|t| t.number().saturating_add(1))
         .max()
         .unwrap_or(1);
     project
@@ -432,6 +430,10 @@ mod tests {
         assert_eq!(next_layer_id(&state), LayerId::numbered(10));
         assert_eq!(next_track_id(&state), TrackId::numbered(8));
 
+        // Tracks share the layers' ids: a track named like a layer counts.
+        state.project.scene.audio[0].id = "L12".parse().unwrap();
+        assert_eq!(next_layer_id(&state), LayerId::numbered(13));
+
         let project = testkit::ProjectBuilder::new().take("take-0003", 50).build();
         let mut facts = Facts::default();
         assert_eq!(next_take_number(&project, &facts), 4);
@@ -439,5 +441,44 @@ mod tests {
         assert_eq!(next_take_number(&project, &facts), 9);
         let empty = testkit::ProjectBuilder::new().build();
         assert_eq!(next_take_number(&empty, &Facts::default()), 1);
+    }
+
+    #[test]
+    fn hand_edited_maximum_ids_dont_overflow() {
+        // Valid hand-edited ids (`1 + max` overflowed u32: a panic that
+        // took the host down, or a wrapped `L0`).
+        let project = testkit::ProjectBuilder::new()
+            .screen_layer("L4294967295", "DP-1")
+            .camera_layer("L1", "/dev/video0")
+            .mic("A4294967295", "alsa_input.mic")
+            .system("A2", "alsa_output.monitor")
+            .build();
+        assert!(crate::validate::ensure_valid(&project).is_ok());
+        let mut state = testkit::state(project);
+        assert_eq!(next_layer_id(&state), LayerId::numbered(2));
+        assert_eq!(next_track_id(&state), TrackId::numbered(1));
+        // The lowest number nothing uses, history included.
+        state.project.scene.layers[1].id = "L3".parse().unwrap();
+        assert_eq!(next_layer_id(&state), LayerId::numbered(1));
+        let entry = crate::history::HistoryEntry {
+            seq: 1,
+            ts: state.project.created_at,
+            label: "Remove layer L1".into(),
+            cmd: serde_json::json!({"cmd": "layerRemove"}),
+            forward: json_patch::Patch(vec![]),
+            inverse: serde_json::from_value(serde_json::json!([
+                {"op": "add", "path": "/scene/layers/0", "value": {"id": "L1", "name": "x"}},
+                {"op": "add", "path": "/scene/layers/1", "value": {"id": "L2", "name": "y"}}
+            ]))
+            .unwrap(),
+            after_hash: String::new(),
+        };
+        state.history.append(entry);
+        assert_eq!(next_layer_id(&state), LayerId::numbered(4));
+
+        let mut max = testkit::ProjectBuilder::new().take("take-0003", 50).build();
+        let take = max.takes.remove(&TakeId::numbered(3)).unwrap();
+        max.takes.insert("take-4294967295".parse().unwrap(), take);
+        assert_eq!(next_take_number(&max, &Facts::default()), u32::MAX);
     }
 }

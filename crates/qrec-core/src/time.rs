@@ -53,11 +53,13 @@ pub fn ns_to_frame_ceil(ns: i64, fps: Fps) -> i64 {
     div_floor(ns as i128 * fps.num as i128 + unit - 1, unit) as i64
 }
 
-/// The frame whose start is nearest to `ns`.
+/// The frame whose start is nearest to `ns`. The frame starts are compared
+/// in 128 bits: near `i64::MAX` the next frame starts past the `i64` range.
 pub fn ns_to_frame_round(ns: i64, fps: Fps) -> i64 {
     let f = ns_to_frame_floor(ns, fps);
-    let (start, next) = (frame_ns(f, fps), frame_ns(f + 1, fps));
-    if (ns - start) * 2 >= next - start { f + 1 } else { f }
+    let start_of = |f: i64| div_floor(f as i128 * NS_PER_SEC as i128 * fps.den as i128, fps.num as i128);
+    let (start, next) = (start_of(f), start_of(f + 1));
+    if (ns as i128 - start) * 2 >= next - start { f + 1 } else { f }
 }
 
 /// `HH:MM:SS:FF` at the nominal rate (non-drop-frame).
@@ -189,7 +191,10 @@ impl TimeArg {
     /// Resolves against `base`: absolute values replace it, relative values move it.
     pub fn resolve(&self, base: i64, fps: Fps) -> Result<i64, CoreError> {
         let v = self.signed_frames(fps)?;
-        Ok(if self.is_relative() { base + v } else { v })
+        if !self.is_relative() {
+            return Ok(v);
+        }
+        base.checked_add(v).ok_or_else(|| CoreError::usage(format!("time {self} is too large")))
     }
 }
 
@@ -236,6 +241,9 @@ impl FromStr for TimeArg {
             CoreError::usage(format!("invalid time {input:?}"))
                 .with_hint("use frames (412f), seconds (13.7s), a timecode (00:00:13:21 or 00:00:13.700), optionally with + or -")
         };
+        // Numbers past u64 (and nanoseconds past u64) are `Usage` here,
+        // never an overflow (debug builds) or a wrapped time (release).
+        let too_large = || CoreError::usage(format!("time {} is too large", input.trim()));
         let s = input.trim();
         let (sign, body) = match s.as_bytes().first() {
             Some(b'+') => (Sign::Plus, &s[1..]),
@@ -246,15 +254,15 @@ impl FromStr for TimeArg {
             if !all_digits(n) {
                 return Err(usage());
             }
-            TimeValue::Frames(n.parse().map_err(|_| usage())?)
+            TimeValue::Frames(n.parse().map_err(|_| too_large())?)
         } else if let Some(n) = body.strip_suffix('s') {
             let (int, frac) = n.split_once('.').unwrap_or((n, ""));
             if !all_digits(int) {
                 return Err(usage());
             }
             let frac_ns = if frac.is_empty() && !n.contains('.') { 0 } else { parse_fraction_ns(frac).ok_or_else(usage)? };
-            let secs: u64 = int.parse().map_err(|_| usage())?;
-            TimeValue::Seconds(secs.checked_mul(NS_PER_SEC as u64).and_then(|v| v.checked_add(frac_ns)).ok_or_else(usage)?)
+            let secs: u64 = int.parse().map_err(|_| too_large())?;
+            TimeValue::Seconds(secs.checked_mul(NS_PER_SEC as u64).and_then(|v| v.checked_add(frac_ns)).ok_or_else(too_large)?)
         } else if body.contains(':') {
             let parts: Vec<&str> = body.split(':').collect();
             match parts.as_slice() {
@@ -263,7 +271,7 @@ impl FromStr for TimeArg {
                     if m >= 60 || s >= 60 {
                         return Err(usage());
                     }
-                    TimeValue::Timecode { h: h.parse().map_err(|_| usage())?, m, s, f: f.parse().map_err(|_| usage())? }
+                    TimeValue::Timecode { h: h.parse().map_err(|_| too_large())?, m, s, f: f.parse().map_err(|_| usage())? }
                 }
                 [h, m, sf] if all_digits(h) && m.len() == 2 && all_digits(m) => {
                     let (s, frac) = sf.split_once('.').ok_or_else(usage)?;
@@ -271,12 +279,18 @@ impl FromStr for TimeArg {
                         return Err(usage());
                     }
                     let (h, m, s): (u64, u64, u64) =
-                        (h.parse().map_err(|_| usage())?, m.parse().map_err(|_| usage())?, s.parse().map_err(|_| usage())?);
+                        (h.parse().map_err(|_| too_large())?, m.parse().map_err(|_| usage())?, s.parse().map_err(|_| usage())?);
                     if m >= 60 || s >= 60 {
                         return Err(usage());
                     }
                     let frac_ns = parse_fraction_ns(frac).ok_or_else(usage)?;
-                    TimeValue::Clock((h * 3600 + m * 60 + s) * NS_PER_SEC as u64 + frac_ns)
+                    let ns = h
+                        .checked_mul(3600)
+                        .and_then(|v| v.checked_add(m * 60 + s))
+                        .and_then(|v| v.checked_mul(NS_PER_SEC as u64))
+                        .and_then(|v| v.checked_add(frac_ns))
+                        .ok_or_else(too_large)?;
+                    TimeValue::Clock(ns)
                 }
                 _ => return Err(usage()),
             }
@@ -375,14 +389,46 @@ mod tests {
     fn huge_values_are_usage_errors() {
         // Large but representable values are fine (callers clamp them).
         assert!(parse("999999:00:00:00").magnitude_frames(F30).is_ok());
-        for big in ["99999999999999999:00:00:00", "18446744073709551615f", "18446744073709551s"] {
+        assert!(parse("2562047:00:00.000").magnitude_frames(F30).is_ok());
+        for big in [
+            "99999999999999999:00:00:00",
+            "18446744073709551615f",
+            "18446744073709551s",
+            "99999999999999999999f",
+            "99999999999999999999s",
+            // Fits u64 nanoseconds, not i64: rejected while converting.
+            "5124095:00:00.000",
+            // HH:MM:SS.fff past u64 nanoseconds: these overflowed (a panic
+            // in debug builds; release builds wrapped 5124096 h to 25 min).
+            "5124096:00:00.000",
+            "5124095:34:33.999",
+            "-5124096:00:00.000",
+            "99999999999999999999:00:00.000",
+            // Past i64 nanoseconds: representable, too large to convert.
+            "9223372036.854775808s",
+        ] {
             // Rejected either while parsing or while converting, never a panic.
             let err = big
                 .parse::<TimeArg>()
                 .and_then(|t| t.magnitude_frames(F30))
                 .unwrap_err();
             assert_eq!(err.code, crate::error::ErrorCode::Usage, "{big}");
+            assert!(err.message.contains("too large"), "{big}: {}", err.message);
         }
+        // The last nanosecond of the i64 range converts (the frame after it
+        // starts past i64, which rounding compares in 128 bits).
+        let last = i64::MAX as u64;
+        assert_eq!(parse("9223372036.854775807s").value, TimeValue::Seconds(last));
+        assert_eq!(parse("2562047:47:16.854775807").value, TimeValue::Clock(last));
+        for edge in ["9223372036.854775807s", "2562047:47:16.854775807"] {
+            for fps in [F30, F2997, Fps::new(240, 1), Fps::new(1, 1)] {
+                let frames = parse(edge).magnitude_frames(fps).unwrap();
+                assert_eq!(frames, ns_to_frame_round(i64::MAX, fps), "{edge} at {fps}");
+            }
+        }
+        assert_eq!(parse("+9223372036854775807f").resolve(0, F30).unwrap(), i64::MAX);
+        let err = parse("+9223372036854775807f").resolve(1, F30).unwrap_err();
+        assert_eq!(err.code, crate::error::ErrorCode::Usage);
     }
 
     #[test]
@@ -391,6 +437,26 @@ mod tests {
             assert_eq!(parse(s).to_string(), s);
         }
         assert_eq!(serde_json::to_string(&parse("13.7s")).unwrap(), "\"13.7s\"");
+    }
+
+    /// The nanoseconds a seconds or clock argument names, computed in 128
+    /// bits (a reference for the parser); `None` for frames and timecodes.
+    fn reference_ns(text: &str) -> Option<u128> {
+        let body = text.trim_start_matches(['+', '-']);
+        let (whole, frac) = if let Some(secs) = body.strip_suffix('s') {
+            let (int, frac) = secs.split_once('.').unwrap_or((secs, ""));
+            (int.parse::<u128>().ok()?, frac)
+        } else {
+            let parts: Vec<&str> = body.split(':').collect();
+            let [h, m, sf] = parts.as_slice() else {
+                return None;
+            };
+            let (sec, frac) = sf.split_once('.')?;
+            let secs = h.parse::<u128>().ok()? * 3600 + m.parse::<u128>().ok()? * 60 + sec.parse::<u128>().ok()?;
+            (secs, frac)
+        };
+        let frac_ns: u128 = if frac.is_empty() { 0 } else { format!("{frac:0<9}").parse().ok()? };
+        Some(whole * 1_000_000_000 + frac_ns)
     }
 
     fn any_fps() -> impl Strategy<Value = Fps> {
@@ -417,6 +483,46 @@ mod tests {
             prop_assert_eq!(ns_to_frame_ceil(ns, fps), f);
             prop_assert_eq!(ns_to_frame_ceil(ns + 1, fps), f + 1);
             prop_assert_eq!(ns_to_frame_round(ns, fps), f);
+        }
+
+        /// Every time argument, however large, parses and converts to
+        /// frames or is a usage error: no overflow panics, no wrapped times.
+        #[test]
+        fn time_arguments_never_overflow(
+            text in "[+-]?[0-9]{1,24}(f|s|\\.[0-9]{1,9}s|:[0-5][0-9]:[0-5][0-9](:[0-9]{1,3}|\\.[0-9]{1,9}))",
+            fps in any_fps(),
+        ) {
+            let parsed = text.parse::<TimeArg>();
+            if let Some(exact) = reference_ns(&text) {
+                // Seconds and clock values are exact, or too large for u64.
+                match &parsed {
+                    Ok(arg) => {
+                        let ns = match arg.value {
+                            TimeValue::Seconds(ns) | TimeValue::Clock(ns) => ns,
+                            other => panic!("{text} parsed as {other:?}"),
+                        };
+                        prop_assert_eq!(u128::from(ns), exact, "{}", text);
+                    }
+                    Err(e) => {
+                        prop_assert!(exact > u128::from(u64::MAX), "{} rejected: {}", text, e);
+                        prop_assert!(e.message.contains("too large"), "{}: {}", text, e);
+                    }
+                }
+            }
+            match parsed {
+                Ok(arg) => match arg.signed_frames(fps) {
+                    Ok(frames) => {
+                        // A converted clock or seconds value is the nearest frame.
+                        if let TimeValue::Seconds(ns) | TimeValue::Clock(ns) = arg.value {
+                            let ns = i64::try_from(ns).unwrap();
+                            prop_assert_eq!(frames.unsigned_abs(), ns_to_frame_round(ns, fps).unsigned_abs());
+                        }
+                        prop_assert!(arg.resolve(0, fps).is_ok());
+                    }
+                    Err(e) => prop_assert_eq!(e.code, crate::error::ErrorCode::Usage),
+                },
+                Err(e) => prop_assert_eq!(e.code, crate::error::ErrorCode::Usage),
+            }
         }
 
         #[test]

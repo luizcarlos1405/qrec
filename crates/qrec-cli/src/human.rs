@@ -370,7 +370,8 @@ pub(crate) fn clip_list(rows: &[ClipRow]) -> Vec<String> {
             Align::Right,
         ],
     );
-    let total: u64 = rows.iter().map(|c| c.duration).sum();
+    // Saturating: the rows come from a host, and a sum must not panic.
+    let total = rows.iter().map(|c| c.duration).fold(0, u64::saturating_add);
     lines.push(format!(
         "{} clip{}, {}",
         rows.len(),
@@ -440,7 +441,11 @@ pub(crate) fn autocut_plan(plan: &AutocutPlanView, dry_run: bool) -> Vec<String>
     }
     if dry_run {
         let silences: usize = plan.clips.iter().map(|c| c.silences).sum();
-        let removed: u64 = plan.clips.iter().map(|c| c.removed_frames).sum();
+        let removed = plan
+            .clips
+            .iter()
+            .map(|c| c.removed_frames)
+            .fold(0, u64::saturating_add);
         lines.push(if silences == 0 {
             "Nothing to cut.".to_owned()
         } else {
@@ -891,6 +896,16 @@ mod tests {
             ]
         );
         assert_eq!(clip_list(&[]), ["The timeline is empty."]);
+        // Lengths a host reports are summed without overflowing.
+        let huge: Vec<ClipRow> = serde_json::from_value(json!([
+            {"id": "c1", "take": "take-0001", "in": 0, "out": u64::MAX, "start": 0, "duration": u64::MAX},
+            {"id": "c2", "take": "take-0001", "in": 0, "out": u64::MAX, "start": u64::MAX, "duration": u64::MAX}
+        ]))
+        .unwrap();
+        assert_eq!(
+            clip_list(&huge).last().unwrap(),
+            &format!("2 clips, {}f", u64::MAX)
+        );
 
         let rows = [
             history_row(1, "Add layer L1", false),

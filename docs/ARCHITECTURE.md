@@ -183,6 +183,11 @@ Errors make a project invalid:
 - Canvas: even `16 ≤ w, h ≤ 8192`; `fps.num, fps.den > 0`, fps ≤ 240.
 - `countdownSecs ≤ 10`; autocut numbers in range (threshold −90…0 dB,
   ms values ≤ 60 000).
+- Lengths: a take's `durationFrames` and the timeline's total length (at
+  the canvas fps) and every stream's `startOffsetNs`, `durationNs` and
+  `frames` (at its fps) are at most 2⁶⁰ ns (about 36 years), so sums of
+  clip lengths and offsets plus durations can't overflow on a valid
+  project, however it was edited.
 
 Warnings: a take-scene layer/track without a stream ("missing media");
 `autocut.track` not in the project scene ("takes lacking it are skipped").
@@ -917,6 +922,19 @@ Non-undoable writes do steps 2–3. On open (lock held): drop history lines with
 with its line number. If `sha256(qrec.json) == H` the state is clean;
 otherwise a valid file is an external edit against `head.project` (covers a
 crash between 2 and 3); an unparsable or invalid one takes A§7.7.
+
+**A failed commit** (disk full, permissions): a command's change didn't
+happen. The Session keeps the previous state, runs none of the outcome's
+effects and puts back what the commit wrote: a `qrec.json` that step 2
+already replaced (else the next open would merge it as an external edit),
+the history line (else the next open drops it as uncommitted) and a first
+base. It answers `io` "couldn't save the project, so nothing changed" — an
+in-process CLI host exits right after it replies, so a change can't wait in
+memory for a later save. An event's outcome carries facts (a finished take,
+a recovery), and a history `Rewrite` (purge, clear, compaction) can't put
+its base file back: those are kept in memory, the store rewrites every file
+with its next commit, and the replies they send are `io` "the change was
+made but couldn't be saved", not `ok`.
 
 ### A§7.7 Invalid or corrupt `qrec.json`
 
