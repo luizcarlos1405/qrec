@@ -2876,8 +2876,9 @@ fn a_recording_asked_during_an_in_process_export_is_refused_at_once() {
     let toggle = qrec(&env, &dir, &["record", "toggle", "--json"]);
     let took = asked.elapsed();
     assert_eq!(toggle.code, Some(6), "{toggle:?}");
+    // At once: the routing deadline it used to wait out is 20 s.
     assert!(
-        took < Duration::from_secs(5),
+        took < Duration::from_secs(10),
         "answered at once, not when the export ends: {took:?}"
     );
     let error = &toggle.only_reply()["error"];

@@ -1181,14 +1181,17 @@ Cli) and serves the socket.
 5. **Spawn hand-off** (`record start`/`toggle` with no host): the CLI takes
    the lock and spawns `qrec host --headless --project DIR --lock-fd 3
    --ready-fd 4` (fds dup'ed in `pre_exec`, CLOEXEC cleared, `setsid`, stdio
-   to `.qrec/logs/…-host.log`). flock belongs to the open file description,
-   so the child keeps it; the CLI closes its fd and **never unlocks**. The
-   host writes one JSON line on fd 4 (`{"ok":true}` once listening, or the
-   `CoreError`); EOF ⇒ the CLI reports the host log path. It keeps fd 4 until
-   its Session opened: if that fails (a corrupt `qrec.json`, A§7.7) it writes
-   the error as a second line before freeing the lock, so a CLI whose
-   request found the host gone reports that error and its hint (plus the
-   log path), not "exited right after starting".
+   to `.qrec/logs/…-host.log`, every descriptor above 4 close-on-exec:
+   nothing the CLI inherited from its own caller, such as a pipe that caller
+   reads to its end or a key-bind script's `flock`, reaches the detached
+   host to live as long as the take, A§8.7). flock belongs to the open file
+   description, so the child keeps it; the CLI closes its fd and **never
+   unlocks**. The host writes one JSON line on fd 4 (`{"ok":true}` once
+   listening, or the `CoreError`); EOF ⇒ the CLI reports the host log path.
+   It keeps fd 4 until its Session opened: if that fails (a corrupt
+   `qrec.json`, A§7.7) it writes the error as a second line before freeing
+   the lock, so a CLI whose request found the host gone reports that error
+   and its hint (plus the log path), not "exited right after starting".
 6. **Protocol safety:** the host sends `{"id","accepted":true}` once parsed.
    EOF before `accepted` ⇒ the request never ran: route again after 50 ms,
    like for a starting or stopping host, until the deadline (given once
@@ -1328,7 +1331,14 @@ nothing of anyone else's may be tied to it for long:
 ### A§8.7 Process runner (`proc.rs`) and logs
 
 One runner for every child: stdin null, `process_group(0)`, stdout piped only
-when parsed (drained on its own thread), stderr appended to a log file.
+when parsed (drained on its own thread), stderr appended to a log file, and
+nothing else: in `pre_exec`, every descriptor from 3 up is made
+close-on-exec (`proc::close_on_exec_from`: `close_range(…,
+CLOSE_RANGE_CLOEXEC)`, else an `fcntl` sweep below `RLIMIT_NOFILE`; never
+closed outright, so std still hears a failed `exec`). Rust opens everything
+close-on-exec already; this also keeps out what Qrec itself inherited from
+whoever started it. The headless host spawn (A§8.3 step 5) and the GPU
+probe child do the same.
 Timeouts: ffprobe 20 s, pactl 3 s, VA/encoder probes 10 s, `wl-copy` 5 s
 (`--type image/png`, stdin from the PNG file). ffprobe and silencedetect get
 30 s more per GiB of input, in proportion (`-count_packets` reads the whole

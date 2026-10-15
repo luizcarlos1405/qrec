@@ -1761,7 +1761,7 @@ fn a_recording_never_runs_in_a_cli_commands_host() {
 fn a_recording_asked_while_a_cli_command_exports_is_refused_at_once() {
     let f = fixture();
     let log = f.env.root().join("cli-export.jsonl");
-    let export = WireBody::Command(export_spec("ms:6000:export"));
+    let export = WireBody::Command(export_spec("ms:10000:export"));
     let mut command = Reap {
         child: Some(cli_child(&f, &log, &export)),
         pid: None,
@@ -1777,7 +1777,6 @@ fn a_recording_asked_while_a_cli_command_exports_is_refused_at_once() {
         && h.jobs
             .iter()
             .any(|j| matches!(j.kind, JobKind::Export { .. })))));
-    let exporting = Instant::now();
     let toggle = WireBody::Command(qrec_core::Command::RecordToggle { wait: false });
     let start = WireBody::Command(qrec_core::Command::RecordStart {
         mode: RecordModeArg::Append,
@@ -1785,22 +1784,21 @@ fn a_recording_asked_while_a_cli_command_exports_is_refused_at_once() {
         wait: false,
     });
     for body in [toggle, start] {
-        let asked = Instant::now();
         let mut recorder = Reap {
             child: Some(cli_child(&f, &log, &body)),
             pid: None,
         };
         let recorder_pid = recorder.child.as_ref().unwrap().id();
         assert_eq!(
-            wait_exit(recorder.child.as_mut().unwrap(), Duration::from_secs(10)),
+            wait_exit(recorder.child.as_mut().unwrap(), Duration::from_secs(20)),
             Some(6),
             "{:#?}",
             read_events(&log)
         );
-        assert!(
-            asked.elapsed() < Duration::from_secs(3),
-            "answered at once, not when the export ends: {:?}",
-            asked.elapsed()
+        assert_eq!(
+            command.child.as_mut().unwrap().try_wait().unwrap(),
+            None,
+            "answered while the export runs, not once it ended"
         );
         let done = events_named(&log, "cliDone");
         let reply = &done
@@ -1814,10 +1812,6 @@ fn a_recording_asked_while_a_cli_command_exports_is_refused_at_once() {
             "wait for it to finish, or cancel it with qrec export cancel"
         );
     }
-    assert!(
-        exporting.elapsed() < Duration::from_secs(5),
-        "both answered while the export ran"
-    );
     // A client that sends it anyway isn't bounced: the host's core refuses
     // it, accepted and answered at once.
     let raw = send(
