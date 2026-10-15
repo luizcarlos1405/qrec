@@ -15,9 +15,9 @@
 use std::collections::BTreeMap;
 
 use crate::error::CoreError;
-use crate::ids::{Frame, TakeId};
-use crate::model::{Project, Scene, Take, TakeStatus};
-use crate::requantize::{derive_duration_frames, rederive_durations};
+use crate::ids::TakeId;
+use crate::model::{Project, Scene, Take};
+use crate::requantize::retime_takes;
 use crate::state::State;
 
 /// The merged project and the warnings to show.
@@ -29,9 +29,11 @@ pub struct ExternalMerge {
 }
 
 /// Merges the undoable fields of `file` into the current project; facts
-/// (take status, streams, durations, …) stay as in memory (A§7.4). Take
-/// durations are re-derived when the canvas fps changed. The caller
-/// validates the result and commits it as an "External edit" entry.
+/// (take status, streams, durations, …) stay as in memory (A§7.4). When the
+/// canvas fps changed, the in-memory take facts are retimed from the old
+/// rate (`retime_takes`: durations re-derived, `Take.replaced`
+/// re-quantized). The caller validates the result and commits it as an
+/// "External edit" entry.
 pub fn merge_external(state: &State, file: Project) -> Result<ExternalMerge, CoreError> {
     let current = &state.project;
     let in_flight = state.runtime.record.take();
@@ -57,17 +59,15 @@ pub fn merge_external(state: &State, file: Project) -> Result<ExternalMerge, Cor
         ignored.push("/createdAt".to_owned());
     }
     keep_facts(&mut scene, None, "/scene", &mut ignored);
-    // After an fps change the durations are re-derived; a file that already
-    // has the re-derived values didn't edit a fact.
-    let fps_changed = canvas.fps != current.canvas.fps;
-    let new_fps = canvas.fps;
-    let expected_duration = |take: &Take| {
-        if fps_changed && take.status != TakeStatus::Recording {
-            derive_duration_frames(take, new_fps)
-        } else {
-            take.duration_frames
-        }
-    };
+    // After an fps change the take facts are retimed; a file that already
+    // has the retimed values (e.g. Qrec's own write, merged after a crash
+    // before the commit record) didn't edit a fact.
+    let retimed = (canvas.fps != current.canvas.fps).then(|| {
+        let mut project = current.clone();
+        project.canvas.fps = canvas.fps;
+        retime_takes(&mut project, current.canvas.fps);
+        project
+    });
 
     let mut merged = current.clone();
     merged.name = name;
@@ -96,12 +96,19 @@ pub fn merge_external(state: &State, file: Project) -> Result<ExternalMerge, Cor
             }
             continue;
         }
+        let expected = retimed
+            .as_ref()
+            .and_then(|p| p.takes.get(id))
+            .unwrap_or(take);
         let merged_take = merged
             .takes
             .get_mut(id)
             .expect("merged starts as a copy of current");
-        merged_take.scene = merge_take(id, take, expected_duration(take), edited, &mut ignored);
+        merged_take.scene = merge_take(id, take, expected, edited, &mut ignored);
     }
+    // The in-memory takes' facts are still at the old rate; the takes only
+    // in the file come with their own.
+    retime_takes(&mut merged, current.canvas.fps);
     merged.takes.extend(file_takes);
 
     if !kept.is_empty() {
@@ -117,22 +124,38 @@ pub fn merge_external(state: &State, file: Project) -> Result<ExternalMerge, Cor
             ignored.join(", ")
         ));
     }
-    if fps_changed {
-        rederive_durations(&mut merged);
-    }
     Ok(ExternalMerge {
         project: merged,
         warnings,
     })
 }
 
+/// What a reader that can't record history (a read-only open, A§8.4) shows
+/// for a hand edit of `qrec.json`: the project a host would merge
+/// ([`merge_external`]), checked, with the history left as it is on disk.
+/// The edit becomes an "External edit" entry only when a host merges it
+/// (A§7.4), so a reader never reports an entry or cursor that doesn't
+/// exist. `Err` says why a host would refuse the file (A§7.7).
+pub fn merged_preview(
+    state: &State,
+    file: Project,
+    check: crate::history::ops::Check,
+) -> Result<Project, String> {
+    if file == state.project {
+        return Ok(file);
+    }
+    let merge = merge_external(state, file).map_err(|e| e.message)?;
+    check(&merge.project).map_err(|e| e.message)?;
+    Ok(merge.project)
+}
+
 /// The scene of a take in both projects: the file's, with the in-memory
 /// `missing` flags. Records the pointers of every fact the file changed
-/// (`duration` is the take's duration at the merged fps).
+/// (`retimed` is the take with its facts at the merged fps).
 fn merge_take(
     id: &TakeId,
     current: &Take,
-    duration: Frame,
+    retimed: &Take,
     edited: Take,
     ignored: &mut Vec<String>,
 ) -> Scene {
@@ -149,15 +172,19 @@ fn merge_take(
     let facts = [
         ("status", status != current.status),
         ("recordedAt", recorded_at != current.recorded_at),
-        // Untouched (the old value) or already re-derived: not an edit.
+        // Untouched (the old value) or already retimed: not an edit.
         (
             "durationFrames",
-            duration_frames != current.duration_frames && duration_frames != duration,
+            duration_frames != current.duration_frames
+                && duration_frames != retimed.duration_frames,
         ),
         ("streams", streams != current.streams),
         ("error", error != current.error),
         ("placed", placed != current.placed),
-        ("replaced", replaced != current.replaced),
+        (
+            "replaced",
+            replaced != current.replaced && replaced != retimed.replaced,
+        ),
     ];
     for (field, changed) in facts {
         if changed {

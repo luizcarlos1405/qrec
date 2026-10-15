@@ -489,18 +489,30 @@ pub fn timer_fired(state: &State, ctx: &Ctx, timer: TimerId) -> Outcome {
 /// `Probe{Recover}` per take still `recording` that isn't being captured.
 /// The shell runs these after `Session::open` takes the lock.
 pub fn recovery_probes(state: &State) -> Vec<Effect> {
-    let in_flight = state.runtime.record.take();
-    state
-        .project
-        .takes
-        .iter()
-        .filter(|(id, t)| t.status == TakeStatus::Recording && in_flight != Some(*id))
+    takes_to_recover(state)
         .map(|(id, t)| Effect::Probe {
             take: id.clone(),
             purpose: ProbePurpose::Recover,
             jobs: probe_jobs(t),
         })
         .collect()
+}
+
+/// The takes still `recording` that aren't being captured: what a host's
+/// Recover probes are for (A§5.3 "Recovery").
+pub fn takes_to_recover(state: &State) -> impl Iterator<Item = (&TakeId, &Take)> {
+    let in_flight = state.runtime.record.take();
+    state
+        .project
+        .takes
+        .iter()
+        .filter(move |(id, t)| t.status == TakeStatus::Recording && in_flight != Some(*id))
+}
+
+/// A take waits for its Recover probe: a host doesn't exit before it is
+/// probed (A§8.6), and in recovery mode a restore waits for it (A§7.7).
+pub fn recovering(state: &State) -> bool {
+    takes_to_recover(state).next().is_some()
 }
 
 /// One `ffprobe` per stream of `take` (`media_argv::probe_argv`).

@@ -91,11 +91,15 @@ pub fn restore_checked(
     let what = describe(history, seq);
     if !ctx.confirmed {
         let (undo, redo) = (pos.saturating_sub(target), target.saturating_sub(pos));
-        let effect = match (undo, redo) {
+        let mut effect = match (undo, redo) {
             (0, 0) => "qrec.json is rewritten from it".to_owned(),
             (n, 0) => format!("undoes {}", entries(n)),
             (_, n) => format!("redoes {}", entries(n)),
         };
+        if state.runtime.disk_invalid.is_some() {
+            // A§7.7: the shell copies it aside first; say what gets replaced.
+            effect.push_str("; the unusable qrec.json on disk is replaced (a copy goes to .qrec/)");
+        }
         return Err(
             CoreError::confirmation_required(format!("restore {what}: {effect}")).with_details(
                 json!({ "seq": seq, "label": label_of(history, seq), "undo": undo, "redo": redo }),

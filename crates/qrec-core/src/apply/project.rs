@@ -1126,22 +1126,91 @@ mod tests {
         assert_eq!(out.state.project.takes[&take_id(1)].duration_frames, 600);
     }
 
+    /// Take 2 recorded over c00b (take 1, frames 30..60); take 3 has no media
+    /// info (like the SPEC §6.3 example), so its length can't be derived.
+    fn with_record_over() -> State {
+        let mut project = ProjectBuilder::new()
+            .screen_layer("L1", "DP-1")
+            .mic("A1", "alsa_input.mic")
+            .take("take-0001", 300)
+            .take("take-0002", 90)
+            .take("take-0003", 90)
+            .clip("c00a", "take-0001", 0, 30)
+            .clip("c003", "take-0002", 0, 90)
+            .clip("c00c", "take-0001", 60, 300)
+            .clip("c004", "take-0003", 0, 90)
+            .build();
+        let t2 = project.takes.get_mut(&take_id(2)).unwrap();
+        t2.placed = true;
+        t2.replaced = vec![crate::model::Clip {
+            id: "c00b".parse().unwrap(),
+            take: take_id(1),
+            in_: 30,
+            out: 60,
+        }];
+        for stream in &mut project.takes.get_mut(&take_id(3)).unwrap().streams {
+            stream.frames = None;
+            stream.duration_ns = None;
+            stream.fps = None;
+        }
+        testkit::state(project)
+    }
+
     #[test]
     fn undoing_an_fps_change_restores_bounds_and_durations() {
-        // What the history owner does on undo: apply the inverse patch, then
-        // re-derive the take facts for the restored fps.
-        let state = with_takes();
-        let out = canvas_only(&state, &confirmed(), "@60").unwrap();
-        let entry = &out.state.history.entries[0];
-        let mut view = undoable_view(&out.state.project);
-        json_patch::patch(&mut view, &entry.inverse).unwrap();
-        assert_eq!(view, undoable_view(&state.project));
+        // Through the history owner's undo and redo (A§2.2: durations are
+        // re-derived on undo/redo of an fps change; A§5.5: `replaced` must
+        // keep pointing at the frames the record-over replaced).
+        let state = with_record_over();
+        let at60 = canvas_only(&state, &confirmed(), "@60").unwrap().state;
+        let t2 = &at60.project.takes[&take_id(2)];
+        assert_eq!(
+            (t2.replaced[0].in_, t2.replaced[0].out),
+            (60, 120),
+            "the plan re-quantizes replaced clips"
+        );
+        assert_eq!(at60.project.takes[&take_id(3)].duration_frames, 180);
 
-        let mut value = project_value(&out.state.project);
-        json_patch::patch(&mut value, &entry.inverse).unwrap();
-        let mut undone: Project = serde_json::from_value(value).unwrap();
-        requantize::retime_takes(&mut undone, Fps::new(60, 1));
-        assert_eq!(undone, state.project);
+        let undone = crate::apply::history::undo(&at60, &ctx(), 1).unwrap().state;
+        assert_eq!(undone.project, state.project, "every fact back at 30 fps");
+        let mut view = undoable_view(&undone.project);
+        assert_eq!(view, undoable_view(&state.project));
+        let redone = crate::apply::history::redo(&undone, &ctx(), 1).unwrap().state;
+        assert_eq!(redone.project, at60.project);
+        let restored = crate::apply::history::history_restore(&redone, &confirmed(), 0)
+            .unwrap()
+            .state;
+        assert_eq!(restored.project, state.project);
+
+        // Discarding take 2 after the undo puts back frames 30..60, not 60..120.
+        let discarded = crate::apply::record::take_discard_last(&undone, &ctx()).unwrap();
+        assert_eq!(
+            bounds(&discarded.state.project),
+            [
+                ("c00a", 0, 30),
+                ("c00b", 30, 60),
+                ("c00c", 60, 300),
+                ("c004", 0, 90)
+            ]
+        );
+        // The patch alone restores the undoable view; facts come from retiming.
+        let entry = &at60.history.entries[0];
+        view = project_value(&at60.project);
+        json_patch::patch(&mut view, &entry.inverse).unwrap();
+        let patched: Project = serde_json::from_value(view).unwrap();
+        assert_ne!(patched.takes, state.project.takes, "the patch has no facts");
+    }
+
+    #[test]
+    fn undoing_a_lower_fps_keeps_takes_without_media_info_long_enough() {
+        // 30 → 15 fps halves take 3 (no media info) to 45 frames; undo must
+        // convert it back, or c004 (0..90 at 30 fps) wouldn't fit any more.
+        let state = with_record_over();
+        let at15 = canvas_only(&state, &confirmed(), "@15").unwrap().state;
+        assert_eq!(at15.project.takes[&take_id(3)].duration_frames, 45);
+        let undone = crate::apply::history::undo(&at15, &ctx(), 1).unwrap().state;
+        assert_eq!(undone.project.takes[&take_id(3)].duration_frames, 90);
+        assert_eq!(undone.project, state.project);
     }
 
     #[test]

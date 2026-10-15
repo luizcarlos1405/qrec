@@ -790,3 +790,99 @@ proptest! {
         }
     }
 }
+
+// ------------------------------------------------------------ take facts
+
+/// Rates between which every frame number that is even at 30 fps maps
+/// exactly, so retiming take facts there and back must be the identity.
+fn arb_whole_fps() -> impl Strategy<Value = Fps> {
+    prop::sample::select(vec![
+        Fps::new(15, 1),
+        Fps::new(30, 1),
+        Fps::new(60, 1),
+        Fps::new(120, 1),
+    ])
+}
+
+/// At 30 fps: take 1 (media info) on the timeline; take 2 recorded over two
+/// split clips of take 1 (`replaced`); take 3 without media info (the
+/// SPEC §6.3 shape), so its length can only be converted. Bounds are even.
+fn facts_project(len: u64, cut: u64) -> State {
+    let (len, cut) = (len * 2, (cut % len) * 2);
+    let mut p = ProjectBuilder::new()
+        .screen_layer("L1", "DP-1")
+        .mic("A1", "alsa_input.mic")
+        .take("take-0001", len + 40)
+        .take("take-0002", 20)
+        .take("take-0003", len)
+        .clip("c001", "take-0001", 0, cut.max(2))
+        .clip("c002", "take-0002", 0, 20)
+        .clip("c003", "take-0001", cut + 40, len + 40)
+        .clip("c004", "take-0003", 0, len)
+        .build();
+    let t2 = p.takes.get_mut(&TakeId::numbered(2)).unwrap();
+    t2.placed = true;
+    t2.replaced = vec![
+        Clip {
+            id: "c00a".parse().unwrap(),
+            take: TakeId::numbered(1),
+            in_: cut,
+            out: cut + 20,
+        },
+        Clip {
+            id: "c00b".parse().unwrap(),
+            take: TakeId::numbered(1),
+            in_: cut + 20,
+            out: cut + 40,
+        },
+    ];
+    for s in &mut p.takes.get_mut(&TakeId::numbered(3)).unwrap().streams {
+        (s.frames, s.duration_ns, s.fps) = (None, None, None);
+    }
+    testkit::state(p)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+
+    /// Undo, redo and restore across canvas fps changes bring back every
+    /// take fact of the state they reach (A§2.2): durations (converted for
+    /// takes without media info) and the clips a record-over replaced.
+    #[test]
+    fn fps_changes_undo_and_redo_every_take_fact(
+        len in 1u64..120,
+        cut in any::<u64>(),
+        rates in prop::collection::vec(arb_whole_fps(), 1..6),
+        to in any::<Index>(),
+    ) {
+        let ctx = testkit::ctx("2026-10-14T12:30:00Z", 1);
+        let mut state = facts_project(len, cut);
+        let mut states = vec![state.project.clone()];
+        for fps in rates {
+            let mut next = state.clone();
+            let plan = qrec_core::requantize::requantize(&next.project, fps);
+            qrec_core::requantize::apply_requantized(&mut next.project, &plan);
+            let c = commit(&state, &ctx, format!("{fps:?}"), Value::Null, next);
+            if c.seq.is_some() {
+                states.push(c.state.project.clone());
+            }
+            state = c.state;
+        }
+        let n = states.len() - 1;
+        let mut s = state.clone();
+        for expected in states.iter().rev().skip(1) {
+            s = ops::undo_with(&s, 1, ops::validated).unwrap();
+            prop_assert_eq!(&s.project, expected);
+        }
+        if n > 0 {
+            let top = ops::redo_with(&s, n as u32, ops::validated).unwrap();
+            prop_assert_eq!(&top.project, &state.project);
+            let bottom = ops::undo_with(&top, n as u32, ops::validated).unwrap();
+            prop_assert_eq!(&bottom.project, &states[0]);
+        }
+        let pos = to.index(n + 1);
+        let seq = ops::seq_at(&state.history, pos);
+        let restored = ops::restore_with(&state, seq, ops::validated).unwrap();
+        prop_assert_eq!(&restored.project, &states[pos]);
+    }
+}
