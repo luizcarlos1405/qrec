@@ -12,6 +12,16 @@
 //!   `DeleteTakeDirs`) don't run when it failed; the core gets the failure
 //!   as an event instead. A failed `CreateTakeDir` fails that take's
 //!   capture the same way.
+//! - A command whose change can't be saved didn't happen (A§7.6: the head
+//!   is the commit point): the state stays as it was, none of its effects
+//!   run and its requester gets an `io` error saying nothing changed. A
+//!   CLI host exits right after its reply, so the change can't wait in
+//!   memory for a later save. The exception is a history `Rewrite`
+//!   (purge, clear, compaction), whose base file can't be put back: it is
+//!   kept like an event's facts.
+//! - An event's outcome carries facts (a finished take, a recovery), so it
+//!   is kept in memory and the store saves it with the next commit; replies
+//!   it sends say the change isn't saved yet.
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -25,8 +35,7 @@ use serde_json::Value;
 
 use super::{Session, with_current};
 use crate::msg::Responder;
-#[cfg(test)]
-use crate::store::CommitError;
+use crate::store::{CommitError, CommitMark};
 
 /// What became of an outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,12 +47,22 @@ pub(super) enum Ran {
     ExternalFirst,
 }
 
+/// Where an outcome comes from, which decides what a failed commit does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Origin {
+    /// `apply` of a command: an unsaved change is dropped.
+    Command,
+    /// `on_event`: facts are kept and saved with the next commit.
+    Event,
+}
+
 impl Session {
     /// Runs `outcome`; `req`/`to` are the request it answers (if any).
     /// `force` skips the external-edit check (after repeated re-dispatches).
     pub(super) fn run_outcome(
         &mut self,
         outcome: Outcome,
+        origin: Origin,
         req: Option<&ReqId>,
         to: &mut Option<Box<dyn Responder>>,
         force: bool,
@@ -140,21 +159,43 @@ impl Session {
         }
 
         let was_initialized = is_initialized(&self.state.project);
+        let needs_save = write_project || !ops.is_empty();
+        let droppable = origin == Origin::Command
+            && needs_save
+            && !reclaimed
+            && !ops.iter().any(|op| matches!(op, HistoryOp::Rewrite { .. }));
+        let mark = droppable.then(|| self.store.mark());
         let commit = self.store.commit(&self.state, &next, &ops, write_project);
+        #[cfg(test)]
+        if let Err(CommitError::Crashed(_)) = &commit {
+            // The "process" died here: nothing else runs, nobody hears back.
+            self.state = next;
+            self.crashed = true;
+            return Ran::Done;
+        }
+        if let Err(e) = &commit
+            && let Some(mark) = mark
+            && self.drop_unsaved(mark, e)
+        {
+            // The state stays as it was and none of the effects run.
+            let err = CoreError::io(format!("couldn't save the project, so nothing changed: {e}"))
+                .with_hint("free disk space or fix the project folder's permissions, then run the command again");
+            self.reply_now(req, to, Err(err));
+            return Ran::Done;
+        }
         self.state = next;
-        let committed = match commit {
-            Ok(()) => true,
-            #[cfg(test)]
-            Err(CommitError::Crashed(_)) => {
-                // The "process" died here: nothing else runs, nobody hears back.
-                self.crashed = true;
-                return Ran::Done;
-            }
+        let unsaved = match &commit {
+            Ok(()) => None,
             Err(e) => {
                 self.notify_error("Couldn't save the project", &e.to_string());
-                false
+                // Kept in memory: replies say so instead of "ok".
+                needs_save.then(|| {
+                    CoreError::io(format!("the change was made but couldn't be saved: {e}"))
+                        .with_hint("free disk space or fix the project folder's permissions; this Qrec process saves it with its next change, and loses it if it exits before then")
+                })
             }
         };
+        let committed = commit.is_ok();
         if committed && !was_initialized && is_initialized(&self.state.project) {
             // A§8.4: `takes/` is made right after the first commit.
             if let Err(e) = self.store.ensure_takes_dir() {
@@ -170,9 +211,9 @@ impl Session {
         // The reply waits for the commit (A§7.6 step 4). The requester is
         // registered first, so progress and late replies among the effects
         // reach it.
-        let reply = match reply {
-            Some(Ok(_)) if !committed => Some(Err(self.save_error())),
-            other => other,
+        let reply = match (reply, &unsaved) {
+            (Some(Ok(_)), Some(err)) => Some(Err(err.clone())),
+            (reply, _) => reply,
         };
         if let Some(id) = req
             && let Some(responder) = to.take()
@@ -180,7 +221,7 @@ impl Session {
             self.pending.insert(id.clone(), responder);
         }
         for effect in effects {
-            self.run_world_effect(effect, committed, &failed_takes);
+            self.run_world_effect(effect, committed, unsaved.as_ref(), &failed_takes);
         }
         if let Some(reply) = reply {
             let reply = reply.map(|result| serde_json::to_value(result).unwrap_or(Value::Null));
@@ -193,16 +234,27 @@ impl Session {
         Ran::Done
     }
 
-    fn save_error(&self) -> CoreError {
-        CoreError::io("the change was made but couldn't be saved to disk")
-            .with_hint("check free disk space and permissions; it is saved with the next change")
+    /// After a failed commit of a command: puts back what it wrote
+    /// (`Store::drop_commit`). `false` when `qrec.json` already holds the
+    /// change and can't be put back: then the change is kept instead, as
+    /// after a crash between the project and the head writes (A§7.6).
+    fn drop_unsaved(&mut self, mark: CommitMark, failed: &CommitError) -> bool {
+        match self.store.drop_commit(mark, &self.state, failed) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::error!("can't put qrec.json back after a failed save: {e}");
+                false
+            }
+        }
     }
 
-    /// One effect after the commit.
+    /// One effect after the commit. `unsaved` is the error replies get
+    /// instead of "ok" when the commit failed.
     fn run_world_effect(
         &mut self,
         effect: Effect,
         committed: bool,
+        unsaved: Option<&CoreError>,
         failed_takes: &BTreeMap<TakeId, String>,
     ) {
         let inbox = self.inbox.clone();
@@ -267,8 +319,12 @@ impl Session {
             },
             Effect::Reply { req, reply } => match self.pending.remove(&req) {
                 Some(mut to) => {
-                    let reply =
-                        reply.map(|result| serde_json::to_value(result).unwrap_or(Value::Null));
+                    let reply = match (reply, unsaved) {
+                        (Ok(_), Some(err)) => Err(err.clone()),
+                        (reply, _) => {
+                            reply.map(|result| serde_json::to_value(result).unwrap_or(Value::Null))
+                        }
+                    };
                     with_current(&req, || to.reply(reply));
                 }
                 None => tracing::debug!("a reply for {req}, which nobody waits for"),

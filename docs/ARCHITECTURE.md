@@ -911,6 +911,19 @@ with its line number. If `sha256(qrec.json) == H` the state is clean;
 otherwise a valid file is an external edit against `head.project` (covers a
 crash between 2 and 3); an unparsable or invalid one takes A§7.7.
 
+**A failed commit** (disk full, permissions): a command's change didn't
+happen. The Session keeps the previous state, runs none of the outcome's
+effects and puts back what the commit wrote: a `qrec.json` that step 2
+already replaced (else the next open would merge it as an external edit),
+the history line (else the next open drops it as uncommitted) and a first
+base. It answers `io` "couldn't save the project, so nothing changed" — an
+in-process CLI host exits right after it replies, so a change can't wait in
+memory for a later save. An event's outcome carries facts (a finished take,
+a recovery), and a history `Rewrite` (purge, clear, compaction) can't put
+its base file back: those are kept in memory, the store rewrites every file
+with its next commit, and the replies they send are `io` "the change was
+made but couldn't be saved", not `ok`.
+
 ### A§7.7 Invalid or corrupt `qrec.json`
 
 - Host running: `runtime.disk_invalid = Some(msg)`; user mutating commands

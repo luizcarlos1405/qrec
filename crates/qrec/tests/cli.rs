@@ -338,6 +338,68 @@ fn the_first_change_creates_the_project() {
 }
 
 #[test]
+fn a_change_that_cant_be_saved_is_not_made() {
+    // An in-process CLI host exits right after it replies: a change it
+    // couldn't save is gone, so the reply must not say it was made and
+    // gets saved "with the next change".
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |dir: &Path, mode: u32| {
+        fs::set_permissions(dir, fs::Permissions::from_mode(mode)).unwrap();
+    };
+    let env = TestEnv::new();
+    let dir = env.empty_dir("ro");
+    qrec(&env, &dir, &["init", "-q"]).ok();
+    qrec(&env, &dir, &["project", "set", "--encoder", "x264", "-q"]).ok();
+    mode(&dir, 0o555);
+    if fs::write(dir.join(".probe"), b"").is_ok() {
+        // Root writes anyway: nothing to test.
+        let _ = fs::remove_file(dir.join(".probe"));
+        return mode(&dir, 0o755);
+    }
+    let out = qrec(
+        &env,
+        &dir,
+        &["project", "set", "--name", "renamed", "--json"],
+    );
+    mode(&dir, 0o755);
+    assert_eq!(out.code, Some(1), "{out:?}");
+    let error = out.only_reply()["error"].clone();
+    assert_eq!(error["code"], "io");
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("couldn't save the project, so nothing changed: write "),
+        "{message}"
+    );
+    assert!(
+        error["hint"]
+            .as_str()
+            .unwrap()
+            .ends_with("run the command again"),
+        "{error}"
+    );
+    assert!(
+        !error.to_string().contains("saved with the next"),
+        "{error}"
+    );
+
+    // The next command finds the project as it was, and saves only itself.
+    qrec(&env, &dir, &["project", "set", "--countdown", "1", "-q"]).ok();
+    let status = qrec(&env, &dir, &["status", "--json"]);
+    status.ok();
+    assert_eq!(status.only_reply()["data"]["project"]["name"], "ro");
+    let history = qrec(&env, &dir, &["history", "--json"]);
+    history.ok();
+    let labels: Vec<String> = history.reply()["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["label"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(labels.len(), 2, "{labels:?}");
+    assert!(!labels.iter().any(|l| l.contains("renamed")), "{labels:?}");
+}
+
+#[test]
 fn scene_commands_return_seqs_and_ids() {
     let env = TestEnv::new();
     let dir = env.empty_dir("scene");
