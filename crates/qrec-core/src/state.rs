@@ -422,6 +422,10 @@ impl ClipRef {
 pub struct Capabilities {
     /// `None` until detected; `Some` before the first dispatch.
     pub ffmpeg: Option<FfmpegCaps>,
+    /// The `ffprobe` binary on `PATH` (export segment checks, take probes),
+    /// resolved by the shell; `None` when it isn't installed.
+    #[serde(default)]
+    pub ffprobe: Option<String>,
     pub vaapi: Option<VaapiCaps>,
     pub cores: u32,
 }

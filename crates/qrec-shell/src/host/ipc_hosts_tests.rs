@@ -511,6 +511,46 @@ fn backend(f: &Fixture, opener: &mut FakeOpener, req: &Request, events: &mut Eve
     )
 }
 
+/// Interrupted in-process, the answer the Session gave anyway (here its
+/// cancelled job's error) still reaches the caller, so the CLI can end
+/// `--json` output with it (A§8.6).
+#[test]
+fn an_interrupted_request_keeps_the_reply_it_got() {
+    let f = fixture();
+    let req = Request::command(export(20_000), false);
+    let program = HostProgram::current_exe().unwrap();
+    let interrupts = Interrupts::new();
+    let raiser = interrupts.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(300));
+        raiser.raise();
+    });
+    let mut opener = FakeOpener::default();
+    let cx = RequestContext {
+        env: &f.paths_env,
+        opener: &mut opener,
+        host_program: &program,
+        interrupts: &interrupts,
+        rules: quick_rules(),
+        on_second_signal: None,
+    };
+    let mut events = Events::default();
+    let finish = request(
+        cx,
+        &f.dir,
+        req.clone(),
+        &RouteOpts::for_request(&req),
+        &mut events,
+    );
+    match finish {
+        Finish::Interrupted {
+            reply: Some(Err(e)),
+        } => assert_eq!(e.message, "interrupted"),
+        other => panic!("expected the interrupted job's reply, got {other:?}"),
+    }
+    assert_eq!(events.routed, [None], "it ran in this process");
+}
+
 #[test]
 fn the_backend_entry_reports_where_each_request_ran() {
     let f = fixture();

@@ -50,7 +50,7 @@ pub fn state(project: Project) -> State {
     state
 }
 
-/// ffmpeg 8.1.2 with the encoders Qrec uses; no VA-API.
+/// ffmpeg 8.1.2 with the encoders Qrec uses, and ffprobe; no VA-API.
 pub fn capabilities() -> Capabilities {
     let encoders: BTreeSet<String> = [
         "libx264",
@@ -60,6 +60,7 @@ pub fn capabilities() -> Capabilities {
         "libopus",
         "pcm_s16le",
         "flac",
+        "png",
     ]
     .map(String::from)
     .into();
@@ -69,6 +70,7 @@ pub fn capabilities() -> Capabilities {
             identity: "/usr/bin/ffmpeg".to_owned(),
             encoders,
         }),
+        ffprobe: Some("/usr/bin/ffprobe".to_owned()),
         vaapi: None,
         cores: 8,
     }

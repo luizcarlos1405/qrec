@@ -164,8 +164,13 @@ pub enum Finish {
     NoHost,
     /// Ctrl+C (exit 130): in-process, jobs were cancelled; routed, the
     /// connection was closed (the host may still finish the request);
-    /// `--wait`, the second Ctrl+C detached.
-    Interrupted,
+    /// `--wait`, the second Ctrl+C detached. `reply` is the answer that
+    /// came anyway (an in-process command that finished or committed before
+    /// the signal, or that failed because its jobs were cancelled), so the
+    /// CLI can still report it.
+    Interrupted {
+        reply: Option<Result<Value, CoreError>>,
+    },
 }
 
 /// What a request reports while it runs.
@@ -217,7 +222,7 @@ pub fn request(
                 .unwrap_or_else(|| Err(CoreError::internal("the request ended without a reply"))),
         ),
         Ran::NoHost => Finish::NoHost,
-        Ran::Interrupted => Finish::Interrupted,
+        Ran::Interrupted => Finish::Interrupted { reply: sink.reply },
     }
 }
 

@@ -188,6 +188,7 @@ fn caps(vaapi_device: Option<&str>) -> Capabilities {
             identity: ffmpeg_identity(),
             encoders: BTreeSet::new(),
         }),
+        ffprobe: Some("ffprobe".to_owned()),
         vaapi: vaapi_device.map(|device| VaapiCaps {
             device: device.to_owned(),
             vendor: 0x8086,

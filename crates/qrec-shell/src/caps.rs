@@ -36,6 +36,8 @@ pub type FactoryProbe = fn(&str) -> Option<String>;
 pub struct CapsOptions {
     /// The ffmpeg to detect (looked up on `PATH` like the media runner does).
     pub ffmpeg: OsString,
+    /// The ffprobe the media runner runs (looked up on `PATH` the same way).
+    pub ffprobe: OsString,
     /// Where render nodes are listed (`/sys/class/drm`)…
     pub sys_class_drm: PathBuf,
     /// …and where their device files are (`/dev/dri`).
@@ -57,6 +59,7 @@ impl CapsOptions {
     pub fn system(cache_file: Option<PathBuf>, log_dir: Option<PathBuf>) -> Self {
         Self {
             ffmpeg: "ffmpeg".into(),
+            ffprobe: "ffprobe".into(),
             sys_class_drm: "/sys/class/drm".into(),
             dev_dri: "/dev/dri".into(),
             probe_va: true,
@@ -109,11 +112,19 @@ pub fn gst_factory_probe(device: &str) -> Option<String> {
     }
 }
 
-/// Detects the capabilities (from the cache when nothing changed).
+/// Detects the capabilities (from the cache when nothing changed). ffprobe
+/// is only looked up on `PATH` (nothing runs), so it is never cached.
 pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
     let cores = std::thread::available_parallelism()
         .map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX));
     let mut notes = Vec::new();
+    let ffprobe = resolve_program(&opts.ffprobe).map(|p| p.to_string_lossy().into_owned());
+    if ffprobe.is_none() {
+        notes.push(format!(
+            "{} is not installed (or not on PATH): exports and take probes won't work",
+            opts.ffprobe.to_string_lossy()
+        ));
+    }
     let Some(ffmpeg) = resolve_program(&opts.ffmpeg) else {
         notes.push(format!(
             "{} is not installed (or not on PATH): exports, frames and autocut won't work",
@@ -122,6 +133,7 @@ pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
         return Detected {
             caps: Capabilities {
                 ffmpeg: None,
+                ffprobe,
                 vaapi: None,
                 cores,
             },
@@ -166,6 +178,7 @@ pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
         return Detected {
             caps: Capabilities {
                 ffmpeg: Some(cached.ffmpeg),
+                ffprobe,
                 vaapi: cached.vaapi,
                 cores,
             },
@@ -272,6 +285,7 @@ pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
     Detected {
         caps: Capabilities {
             ffmpeg: Some(ffmpeg_caps),
+            ffprobe,
             vaapi,
             cores,
         },
@@ -405,9 +419,18 @@ esac
         fs::read_to_string(dir.join("runs")).map_or(0, |s| s.lines().count())
     }
 
+    /// An executable `ffprobe` that does nothing.
+    fn fake_ffprobe(dir: &Path) -> PathBuf {
+        let script = dir.join("ffprobe");
+        fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
     fn options(dir: &Path, sys: PathBuf) -> CapsOptions {
         CapsOptions {
             ffmpeg: fake_ffmpeg(dir).into_os_string(),
+            ffprobe: fake_ffprobe(dir).into_os_string(),
             sys_class_drm: sys,
             dev_dri: "/dev/dri".into(),
             probe_va: true,
@@ -458,11 +481,36 @@ esac
         let logs = fs::read_dir(tmp.path().join("logs")).unwrap().count();
         assert_eq!(logs, 1, "one log for the three probes");
 
+        assert_eq!(
+            found.caps.ffprobe.as_deref(),
+            Some(
+                fs::canonicalize(&opts.ffprobe)
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+
         // Nothing changed: the cache answers without running anything.
         let again = detect(&opts, &VaConfig::default());
         assert!(again.cached);
         assert_eq!(again.caps, found.caps);
         assert_eq!(runs(tmp.path()), 3);
+
+        // ffprobe is looked up every time, cache or not (exports need it).
+        let mut no_probe = opts.clone();
+        no_probe.ffprobe = "qrec-no-such-ffprobe".into();
+        let missing = detect(&no_probe, &VaConfig::default());
+        assert!(missing.cached);
+        assert_eq!(missing.caps.ffprobe, None);
+        assert!(
+            missing
+                .notes
+                .iter()
+                .any(|n| n.contains("qrec-no-such-ffprobe")),
+            "{:?}",
+            missing.notes
+        );
 
         // A configured node changes the key and is probed (NVIDIA too, when chosen).
         let nvidia = VaConfig {
@@ -556,6 +604,10 @@ esac
         opts.ffmpeg = "qrec-no-such-ffmpeg".into();
         let missing = detect(&opts, &VaConfig::default());
         assert_eq!((missing.caps.ffmpeg, missing.caps.vaapi), (None, None));
+        assert!(
+            missing.caps.ffprobe.is_some(),
+            "ffprobe is looked up anyway"
+        );
         assert!(missing.notes[0].contains("not installed"));
     }
 

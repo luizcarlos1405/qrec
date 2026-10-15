@@ -83,7 +83,8 @@ Qrec (a headless recording host or, later, the GUI).
 `qrec agent-guide` prints a concise guide. Every command takes `--json` and
 prints exactly one `{"ok":…}` object; exit codes are 0 ok, 1 error,
 2 usage, 3 not a project, 4 confirmation required, 5 missing dependency,
-6 busy, 7 not found. `qrec schema` prints the JSON Schema of `qrec.json`.
+6 busy, 7 not found, 130 interrupted. `qrec schema` prints the JSON Schema
+of `qrec.json`.
 
 ## Project folder
 

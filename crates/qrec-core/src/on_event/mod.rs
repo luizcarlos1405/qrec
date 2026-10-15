@@ -35,7 +35,8 @@ pub fn on_event(state: &State, ctx: &Ctx, ev: Event) -> Outcome {
             take,
             source,
             message,
-        } => record::capture_failed(state, ctx, take, source, message),
+            missing,
+        } => record::capture_failed(state, ctx, take, source, message, missing),
         Event::StreamLost {
             take,
             stream,
@@ -151,6 +152,7 @@ mod tests {
                 identity: "/bin/ffmpeg".into(),
                 encoders: Default::default(),
             }),
+            ffprobe: None,
             vaapi: None,
             cores: 16,
         };

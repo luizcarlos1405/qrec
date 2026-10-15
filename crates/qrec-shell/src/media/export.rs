@@ -176,6 +176,7 @@ fn identity_caps(identity: String) -> Capabilities {
             identity,
             encoders: BTreeSet::new(),
         }),
+        ffprobe: None,
         vaapi: None,
         cores: 0,
     }

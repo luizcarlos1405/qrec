@@ -483,6 +483,7 @@ fn start_failures_name_the_source() {
         take,
         source,
         message,
+        missing,
     } = ev
     else {
         unreachable!()
@@ -493,6 +494,7 @@ fn start_failures_name_the_source() {
         "{source:?}"
     );
     assert!(message.contains("no fake camera"), "{message}");
+    assert_eq!(missing, None, "nothing is missing from GStreamer");
 
     // Never overwrite: an existing target file fails the start untouched.
     let dir = h.take_dir(2);
@@ -563,6 +565,30 @@ fn start_failures_name_the_source() {
     h.engine.stop(&plan5.take, false);
     let (streams, timed_out, _) = h.stopped();
     assert!(!timed_out && streams[0].eos);
+
+    // An element that isn't installed is named, so the core answers
+    // missing_dependency (exit 5) instead of capture_failed.
+    let dir = h.take_dir(6);
+    let mut va = screen("L1", "FAKE-1");
+    va.encoder = VideoEncoder::Va {
+        factory: "qrecnosuchh264enc".into(),
+        qp: 18,
+    };
+    h.start(&plan(6, &dir, vec![va], vec![]));
+    let (ev, _) = h.wait_for("CaptureFailed", |e| {
+        matches!(e, Event::CaptureFailed { .. })
+    });
+    let Event::CaptureFailed {
+        message, missing, ..
+    } = ev
+    else {
+        unreachable!()
+    };
+    assert!(
+        message.contains("qrecnosuchh264enc is missing"),
+        "{message}"
+    );
+    assert_eq!(missing.as_deref(), Some("qrecnosuchh264enc"));
 }
 
 #[test]

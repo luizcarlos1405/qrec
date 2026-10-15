@@ -462,6 +462,71 @@ fn hyphen_values_parse_as_values() {
     );
 }
 
+/// A§10: numeric arguments allow hyphen values, so a negative value reaches
+/// its value parser and gets a range error, not clap's "unexpected argument
+/// '-1'" with a `-- -1` tip that doesn't work for options.
+#[test]
+fn negative_numbers_reach_their_value_parser() {
+    for (line, value) in [
+        ("qrec scene layer set L1 --opacity -0.5", "-0.5"),
+        ("qrec scene layer set L1 --crop -1,0,0,0", "-1,0,0,0"),
+        ("qrec scene layer order L1 --to -1", "-1"),
+        ("qrec clip add take-0001 --at -1", "-1"),
+        ("qrec clip move c1 --to -1", "-1"),
+        ("qrec undo -1", "-1"),
+        ("qrec redo -2", "-2"),
+        ("qrec history --limit -1", "-1"),
+        ("qrec history restore -1", "-1"),
+        ("qrec project set --countdown -1", "-1"),
+        ("qrec record start --countdown -1", "-1"),
+        ("qrec autocut --min-silence-ms -5", "-5"),
+        ("qrec autocut --padding-ms -5", "-5"),
+        ("qrec autocut --min-keep-ms -5", "-5"),
+        ("qrec autocut settings --min-silence-ms -5", "-5"),
+        ("qrec autocut settings --padding-ms -5", "-5"),
+        ("qrec autocut settings --min-keep-ms -5", "-5"),
+    ] {
+        let err = parse(line).unwrap_err();
+        let text = err.to_string();
+        assert_eq!(err.kind(), ErrorKind::ValueValidation, "`{line}`: {text}");
+        assert!(
+            text.contains(&format!("invalid value '{value}'")),
+            "`{line}`: {text}"
+        );
+        assert_eq!(err.exit_code(), 2, "`{line}`");
+    }
+    let (_, out, _) = run("qrec --json scene layer set L1 --opacity -0.5");
+    let reply: Value = serde_json::from_str(&out).unwrap();
+    let message = reply["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("is not an opacity") && !message.contains("unexpected argument"),
+        "{message}"
+    );
+    // A flag where the value should be is still a missing value.
+    assert_eq!(
+        usage_error("qrec scene layer set L1 --opacity --name x"),
+        ErrorKind::InvalidValue
+    );
+    assert_eq!(
+        usage_error("qrec clip move c1 --to --by 1"),
+        ErrorKind::InvalidValue
+    );
+}
+
+/// SPEC §13.1: recording is blocked during an export; the help says so
+/// instead of "recording waits".
+#[test]
+fn export_help_says_recording_is_refused() {
+    let (code, out, _) = run("qrec export --help");
+    assert_eq!(code, 0);
+    let text = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(!text.contains("recording waits"), "{out}");
+    assert!(
+        text.contains("`qrec record start` is refused (busy, exit 6) until the export ends"),
+        "{out}"
+    );
+}
+
 #[test]
 fn parsed_values_are_typed() {
     assert_eq!(
@@ -743,6 +808,8 @@ fn malformed_lines_are_usage_errors() {
         ),
         ("qrec history restore", MissingRequiredArgument),
         ("qrec history --limit 3 clear", ArgumentConflict),
+        // An empty window would read as "No history yet." (like `undo 0`).
+        ("qrec history --limit 0", ValueValidation),
         ("qrec config set theme", MissingRequiredArgument),
         ("qrec completions tcsh", InvalidValue),
         ("qrec host", MissingRequiredArgument),
@@ -868,11 +935,9 @@ fn help_and_version_print_normally() {
         "the hidden host command is listed:\n{out}"
     );
 
-    let (code, json_help, _) = run("qrec --json --help");
-    assert_eq!((code, json_help), (0, out));
-
     let version = format!("qrec {}\n", env!("CARGO_PKG_VERSION"));
     assert_eq!(run("qrec --version"), (0, version.clone(), String::new()));
+    assert_eq!(run("qrec -V"), (0, version.clone(), String::new()));
     assert_eq!(run("qrec version"), (0, version, String::new()));
     let (code, out, _) = run("qrec version --json");
     assert_eq!(code, 0);
@@ -887,6 +952,44 @@ fn help_and_version_print_normally() {
     let (code, out, _) = run("qrec clip split --help");
     assert_eq!(code, 0);
     assert!(out.contains("Usage: qrec clip split"), "{out}");
+}
+
+/// SPEC §14: with --json every command prints exactly one JSON object,
+/// help and the version included.
+#[test]
+fn help_and_version_under_json_are_one_object() {
+    for (line, human) in [
+        ("qrec --json --help", "qrec --help"),
+        ("qrec --json -h", "qrec -h"),
+        ("qrec --json help", "qrec help"),
+    ] {
+        let (_, help, _) = run(human);
+        let (code, out, err) = run(line);
+        assert_eq!((code, err.as_str()), (0, ""), "{line}");
+        assert_eq!(out.lines().count(), 1, "{line}: {out}");
+        let reply: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(reply, json!({"ok": true, "data": help}), "{line}");
+    }
+    for line in [
+        "qrec --json help clip split",
+        "qrec clip split --help --json",
+    ] {
+        let (code, out, _) = run(line);
+        assert_eq!(code, 0, "{line}");
+        let reply: Value = serde_json::from_str(&out).unwrap();
+        let text = reply["data"].as_str().unwrap();
+        assert!(text.contains("Usage: qrec clip split"), "{line}: {text}");
+        assert!(!text.contains("\u{1b}["), "{line}: colors in {text:?}");
+    }
+    // The flag form of `qrec version --json`.
+    let (_, version, _) = run("qrec version --json");
+    for line in [
+        "qrec --json --version",
+        "qrec --json -V",
+        "qrec --version --json",
+    ] {
+        assert_eq!(run(line), (0, version.clone(), String::new()), "{line}");
+    }
 }
 
 #[test]

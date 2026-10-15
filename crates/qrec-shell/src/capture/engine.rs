@@ -54,7 +54,7 @@ use super::record::{RecordBin, attach_audio, attach_video};
 use super::spec::{
     CameraKey, SourceSpec, audio_label, plan_sources, record_file_rel, scene_sources, video_label,
 };
-use super::util::{error_text, object_path, running_time, set_null_with_deadline};
+use super::util::{error_text, missing_element, object_path, running_time, set_null_with_deadline};
 use super::{
     Backend, CLOCK_INTERVAL, EngineOptions, FILL_GRACE, PIPELINE_START_TIMEOUT, SideEvent,
     TEARDOWN_TIMEOUT,
@@ -223,6 +223,7 @@ impl CaptureEngine for GstCaptureEngine {
                 take: Some(take),
                 source: None,
                 message: "the capture engine isn't running".into(),
+                missing: None,
             });
         }
     }
@@ -927,6 +928,7 @@ impl Engine {
             engine.emit(Event::CaptureFailed {
                 take: Some(take.clone()),
                 source,
+                missing: missing_element(&message),
                 message,
             });
         };
@@ -1198,6 +1200,7 @@ impl Engine {
         self.emit(Event::CaptureFailed {
             take: Some(run.plan.take.clone()),
             source,
+            missing: missing_element(&message),
             message,
         });
         if !ok {

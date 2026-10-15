@@ -13,7 +13,7 @@ use crate::apply::Outcome;
 use crate::config::UserConfig;
 use crate::ctx::Ctx;
 use crate::error::CoreError;
-use crate::export_plan::{ExportOptions, plan_export, resolve_codec};
+use crate::export_plan::{ExportOptions, plan_export, require_ffmpeg, resolve_codec};
 use crate::frame_plan::{frame_source, plan_frame};
 use crate::ids::{JobId, LayerId};
 use crate::model::{EncoderPref, Project};
@@ -132,7 +132,10 @@ pub fn export_cancel(state: &State, _ctx: &Ctx, job: Option<JobId>) -> Result<Ou
     ))
 }
 
-/// `qrec frame save --at T [--layer L] [--out P]`.
+/// `qrec frame save --at T [--layer L] [--out P]`. The frame is rendered
+/// by ffmpeg, which has no cache to fall back on: without it (or its PNG
+/// encoder) the command is refused with `missing_dependency` (exit 5)
+/// before a job starts, like an export.
 pub fn frame_save(
     state: &State,
     ctx: &Ctx,
@@ -149,6 +152,7 @@ pub fn frame_save(
         Some(path) => checked_out(ctx, &path, "save a frame to")?,
     };
     let plan = plan_frame(project, at, layer.as_ref(), &out)?;
+    require_ffmpeg(&state.runtime.capabilities, &["png"])?;
 
     let mut next = state.clone();
     let id = next.runtime.alloc_job_id();
@@ -587,5 +591,44 @@ mod tests {
             panic!()
         };
         assert_eq!(plan.out, "/home/me/f.png");
+    }
+
+    /// Like an export, a frame save needs ffmpeg: without it the command is
+    /// `missing_dependency` (exit 5) and no job starts (SPEC §14, A§4.8).
+    #[test]
+    fn frame_save_without_ffmpeg_is_a_missing_dependency() {
+        let save = Command::FrameSave {
+            at: "10f".parse().unwrap(),
+            layer: None,
+            out: None,
+        };
+        let ctx = testkit::ctx(NOW, 1);
+        let mut state = state();
+        state.runtime.capabilities.ffmpeg = None;
+        let err = apply(&state, &ctx, save.clone()).unwrap_err();
+        assert_eq!(
+            (err.code, err.message.as_str(), err.exit_code()),
+            (ErrorCode::MissingDependency, "ffmpeg wasn't found", 5)
+        );
+        assert!(err.hint.unwrap().contains("qrec doctor"));
+
+        let mut state = self::state();
+        let ffmpeg = state.runtime.capabilities.ffmpeg.as_mut().unwrap();
+        ffmpeg.encoders.remove("png");
+        let err = apply(&state, &ctx, save.clone()).unwrap_err();
+        assert_eq!(
+            (err.code, err.message.as_str()),
+            (ErrorCode::MissingDependency, "ffmpeg has no png encoder")
+        );
+        // An empty list means the shell didn't list them.
+        state
+            .runtime
+            .capabilities
+            .ffmpeg
+            .as_mut()
+            .unwrap()
+            .encoders
+            .clear();
+        assert!(apply(&state, &ctx, save).is_ok());
     }
 }

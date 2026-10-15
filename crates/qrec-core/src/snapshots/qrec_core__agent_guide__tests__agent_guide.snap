@@ -19,7 +19,8 @@ the same commands, and every edit is undoable. Always pass `--json`.
   project: pass `--project DIR` or run them there.
 - Elsewhere, without `--project`, commands use the single running Qrec (so
   compositor key binds work from `$HOME`; several running ones are a usage
-  error that lists them). With none running they exit 3 with
+  error that lists them), except `qrec init`, which only acts on its own
+  folder. With none running they exit 3 with
   "Not my swamp: this folder isn't empty and has no qrec.json".
 - These work anywhere: `--help`, `version`, `doctor`, `sources list`, `schema`,
   `keys`, `agent-guide`, `config`, `completions`.
@@ -58,6 +59,7 @@ the same commands, and every edit is undoable. Always pass `--json`.
 | 5 | `missing_dependency` | a tool or GStreamer element is missing; run `qrec doctor` |
 | 6 | `busy` | recording, finalizing or exporting, or the owning host isn't responding; wait or `qrec record stop` |
 | 7 | `not_found` | unknown id, output or device; list them again |
+| 130 | `interrupted` | stopped by Ctrl+C or SIGTERM before a reply came; the hint says whether the host may still finish it (check `qrec status`) |
 
 ## Ids, times and frames
 

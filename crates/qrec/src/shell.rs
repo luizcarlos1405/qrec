@@ -243,7 +243,7 @@ impl Backend for Shell {
         match finish {
             host::Finish::Reply(reply) => Finish::Reply(reply),
             host::Finish::NoHost => Finish::NoHost,
-            host::Finish::Interrupted => Finish::Interrupted,
+            host::Finish::Interrupted { reply } => Finish::Interrupted { reply },
         }
     }
 

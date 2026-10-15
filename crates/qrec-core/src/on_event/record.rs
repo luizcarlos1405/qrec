@@ -27,7 +27,7 @@ use crate::apply::record::{
 };
 use crate::capture_plan::EOS_TIMEOUT_MS;
 use crate::ctx::{Ctx, IdGen};
-use crate::error::CoreError;
+use crate::error::{CoreError, ErrorCode};
 use crate::history;
 use crate::ids::{ClipId, TakeId, TimerId};
 use crate::media_argv::probe_argv;
@@ -103,22 +103,24 @@ pub fn capture_started(
 
 /// Start/health-window or pipeline-wide failure (A§5.3): the take is
 /// `broken` (+`error`) ⇒ Idle; the start request and `wait` requesters get
-/// `capture_failed` (the hint names the source); stop requests get the
-/// broken `TakeFinalizedView`. A pipeline failure during a countdown ends
-/// the countdown the same way; one while Idle (the live preview) only tells
-/// people.
+/// `capture_failed` (the hint names the source), or `missing_dependency`
+/// when a GStreamer element isn't installed (`missing`); stop requests get
+/// the broken `TakeFinalizedView`. A pipeline failure during a countdown
+/// ends the countdown the same way; one while Idle (the live preview) only
+/// tells people.
 pub fn capture_failed(
     state: &State,
     ctx: &Ctx,
     take: Option<TakeId>,
     source: Option<String>,
     message: String,
+    missing: Option<String>,
 ) -> Outcome {
     let current = state.runtime.record.take().cloned();
     let target = match (&take, current) {
         (Some(t), Some(c)) if *t == c => c,
         (None, Some(c)) => c,
-        (None, None) => return pipeline_failed(state, ctx, source, message),
+        (None, None) => return pipeline_failed(state, ctx, source, message, missing),
         (Some(t), _) => return ignore(state, format!("CaptureFailed for {t}")),
     };
     let label = source.as_deref().map(|s| source_label(state, &target, s));
@@ -126,23 +128,37 @@ pub fn capture_failed(
         Some(l) => format!("{l}: {message}"),
         None => message,
     };
-    let err = capture_error(&reason, label.as_deref());
+    let err = capture_error(&reason, label.as_deref(), missing.as_deref());
     end_broken(state, ctx, state.clone(), &target, &reason, &err)
 }
 
-/// `capture failed: <reason>`, with a hint naming the failing source.
-fn capture_error(reason: &str, source: Option<&str>) -> CoreError {
+/// `capture failed: <reason>`, with a hint naming the failing source; a
+/// GStreamer element that isn't installed is a missing dependency (exit 5,
+/// A§4.8) whose hint names it.
+fn capture_error(reason: &str, source: Option<&str>, missing: Option<&str>) -> CoreError {
+    let message = format!("capture failed: {reason}");
+    if let Some(element) = missing {
+        return CoreError::new(ErrorCode::MissingDependency, message).with_hint(format!(
+            "install the GStreamer plugin that provides {element}; qrec doctor lists what is missing"
+        ));
+    }
     let hint = match source {
         Some(s) => format!("check {s}; qrec doctor lists capture problems"),
         None => "qrec doctor lists capture problems".to_owned(),
     };
-    CoreError::capture_failed(format!("capture failed: {reason}")).with_hint(hint)
+    CoreError::capture_failed(message).with_hint(hint)
 }
 
 /// A failure of the live pipeline with no take in flight: a countdown can't
 /// lead to a recording any more, so it ends and the start request fails;
 /// otherwise people are told.
-fn pipeline_failed(state: &State, ctx: &Ctx, source: Option<String>, message: String) -> Outcome {
+fn pipeline_failed(
+    state: &State,
+    ctx: &Ctx,
+    source: Option<String>,
+    message: String,
+    missing: Option<String>,
+) -> Outcome {
     // The live pipeline shows the project scene.
     let label = source.as_deref().map(|s| {
         if scene_has(&state.project.scene, s) {
@@ -161,7 +177,8 @@ fn pipeline_failed(state: &State, ctx: &Ctx, source: Option<String>, message: St
     }];
     let mut next = state.clone();
     if matches!(state.runtime.record, RecordPhase::Countdown { .. }) {
-        let (ended, more) = end_countdown(state, ctx, true, capture_error(&what, label.as_deref()));
+        let err = capture_error(&what, label.as_deref(), missing.as_deref());
+        let (ended, more) = end_countdown(state, ctx, true, err);
         next = ended;
         effects.extend(more);
     }

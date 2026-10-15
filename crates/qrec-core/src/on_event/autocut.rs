@@ -28,6 +28,7 @@ use crate::autocut::{
 };
 use crate::ctx::{Ctx, IdGen};
 use crate::error::CoreError;
+use crate::export_plan::missing_tool;
 use crate::history::commit;
 use crate::ids::{ClipId, JobId, ReqId};
 use crate::model::{Clip, Project, StreamKind};
@@ -298,9 +299,19 @@ pub(crate) fn finish(state: &State, ctx: &Ctx, job: Snapshot) -> Finished {
         .iter()
         .find(|s| s.reason.starts_with(ANALYSIS_FAILED));
     if let (true, Some(first)) = (plan.clips.is_empty(), failed) {
-        let err = CoreError::io(first.reason.clone())
-            .with_hint("the ffmpeg log is in .qrec/logs/")
-            .with_details(plan_json(&plan));
+        // Without ffmpeg nothing could be analyzed: a missing dependency
+        // (exit 5), not an I/O failure. It can't be refused up front:
+        // silences the shell has cached need no ffmpeg.
+        let err = match &state.runtime.capabilities.ffmpeg {
+            None => CoreError {
+                message: first.reason.clone(),
+                ..missing_tool("ffmpeg")
+            },
+            Some(_) => {
+                CoreError::io(first.reason.clone()).with_hint("the ffmpeg log is in .qrec/logs/")
+            }
+        }
+        .with_details(plan_json(&plan));
         return unchanged(state, Err(err.clone()), failure_toast(&err));
     }
 
@@ -890,6 +901,37 @@ mod tests {
         let details = err.details.as_ref().unwrap();
         assert_eq!(details["skipped"].as_array().unwrap().len(), 2);
         assert_eq!(done.state.project, state.project);
+        assert!(done.state.runtime.jobs.is_empty());
+    }
+
+    /// Without ffmpeg every analysis fails: that is a missing dependency
+    /// (exit 5, A§4.8), not an I/O error. Cached silences would still have
+    /// worked, so it can only be told once the analysis failed.
+    #[test]
+    fn analysis_without_ffmpeg_is_a_missing_dependency() {
+        let (mut state, ctx) = analyzing(true);
+        state.runtime.capabilities.ffmpeg = None;
+        let reason = "ffmpeg wasn't found (is it installed and on PATH?)";
+        let first = failed(&state, &ctx, MIC1, reason);
+        let done = failed(&first.state, &ctx, MIC2, reason);
+        let (_, reply) = reply_of(&done).unwrap();
+        let err = reply.as_ref().unwrap_err();
+        assert_eq!(
+            (err.code, err.exit_code()),
+            (ErrorCode::MissingDependency, 5)
+        );
+        assert_eq!(err.message, format!("silence analysis failed: {reason}"));
+        assert!(
+            err.hint.as_deref().unwrap().contains("qrec doctor"),
+            "{err:?}"
+        );
+        assert_eq!(
+            err.details.as_ref().unwrap()["skipped"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
         assert!(done.state.runtime.jobs.is_empty());
     }
 

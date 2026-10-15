@@ -241,6 +241,7 @@ impl Session {
                             take: Some(plan.take),
                             source: None,
                             message,
+                            missing: None,
                         });
                     }
                     None => self.deps.capture.start(plan, inbox),

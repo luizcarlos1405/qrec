@@ -74,12 +74,11 @@ pub fn run_process(backend: &mut dyn Backend) -> ExitCode {
     let json = wants_json(&args);
     let code = match parse(args.clone()) {
         Ok(cli) => exec::execute(&cli, backend, &env, &mut io::stdout(), &mut io::stderr()),
-        Err(err) if json && err.use_stderr() => usage_json(&err, &args, &mut io::stdout()),
+        Err(err) if json => clap_json(&err, &args, &mut io::stdout(), &mut io::stderr()),
         Err(err) => {
-            // Help and version go to stdout, errors to stderr. A closed
-            // stdout (`qrec --help | head -1`) is not an error.
-            let _ = err.print();
-            clap_exit_code(&err)
+            // Help and version go to stdout, errors to stderr.
+            let printed = err.print();
+            clap_exit_code(&err, printed, &mut io::stderr())
         }
     };
     ExitCode::from(code)
@@ -113,15 +112,15 @@ pub fn run_with_backend<I: IntoIterator<Item = OsString>>(
     let json = wants_json(&args);
     match parse(args.clone()) {
         Ok(cli) => exec::execute(&cli, backend, env, out, err),
-        Err(e) if json && e.use_stderr() => usage_json(&e, &args, out),
+        Err(e) if json => clap_json(&e, &args, out, err),
         Err(e) => {
             let text = e.render().to_string();
-            let _ = if e.use_stderr() {
+            let printed = if e.use_stderr() {
                 err.write_all(text.as_bytes())
             } else {
-                out.write_all(text.as_bytes())
+                out.write_all(text.as_bytes()).and_then(|()| out.flush())
             };
-            clap_exit_code(&e)
+            clap_exit_code(&e, printed, err)
         }
     }
 }
@@ -173,23 +172,56 @@ fn wants_json(args: &[OsString]) -> bool {
         .any(|a| *a == "--json")
 }
 
-fn clap_exit_code(err: &clap::Error) -> u8 {
+/// The exit code after printing a clap error (2), or help or the version
+/// (0). Help that stdout couldn't take for another reason than a closed
+/// pipe (`qrec --help | head -1` is fine; a full disk isn't) fails the run
+/// with exit 1, said on stderr (A§8.6).
+fn clap_exit_code(err: &clap::Error, printed: io::Result<()>, stderr: &mut dyn Write) -> u8 {
     if err.use_stderr() {
-        ErrorCode::Usage.exit_code()
-    } else {
-        0
+        return ErrorCode::Usage.exit_code();
+    }
+    match printed {
+        Err(e) if e.kind() != io::ErrorKind::BrokenPipe => {
+            let notice = output::human_notice(&output::lost_output(&e));
+            let _ = stderr.write_all(notice.as_bytes());
+            ErrorCode::Io.exit_code()
+        }
+        _ => 0,
     }
 }
 
-/// A clap error under `--json`: exactly `{"ok":false,"error":{"code":"usage","message":…}}`.
-fn usage_json(err: &clap::Error, args: &[OsString], out: &mut dyn Write) -> u8 {
-    let message = if output::is_help_on_missing(err) {
-        missing_subcommand_message(args)
-    } else {
-        output::clap_error_message(err)
+/// What clap stopped at, under `--json`: exactly one object, like every
+/// command (SPEC §14). Help and the version are answers,
+/// `{"ok":true,"data":<help text>}` and `{"ok":true,"data":{"version":…}}`
+/// (what `qrec version --json` prints); everything else is
+/// `{"ok":false,"error":{"code":"usage","message":…}}` (exit 2).
+fn clap_json(
+    err: &clap::Error,
+    args: &[OsString],
+    out: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> u8 {
+    let mut ui = output::Ui::new(out, stderr, true, false, 0, false);
+    let code = match err.kind() {
+        clap::error::ErrorKind::DisplayVersion => {
+            ui.print_ok(&exec::version_data());
+            0
+        }
+        clap::error::ErrorKind::DisplayHelp => {
+            // Rendered without colors.
+            ui.print_ok(&serde_json::Value::String(err.render().to_string()));
+            0
+        }
+        _ => {
+            let message = if output::is_help_on_missing(err) {
+                missing_subcommand_message(args)
+            } else {
+                output::clap_error_message(err)
+            };
+            ui.fail(&CoreError::usage(message))
+        }
     };
-    let _ = output::write_err(out, &CoreError::usage(message));
-    ErrorCode::Usage.exit_code()
+    ui.finish(code)
 }
 
 /// "'qrec scene' requires a subcommand: layer, audio, apply" for a bare group.

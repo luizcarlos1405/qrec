@@ -7,14 +7,16 @@
 //!   humans; under `--json` only `{"event":"notice",…}` lines.
 //!
 //! Writes never panic: a closed stdout (`qrec clip list | head -1`) stops
-//! further output quietly and the command still finishes (A§8.6).
+//! further output quietly and the command still finishes (A§8.6). Any other
+//! failure to write stdout (a full disk) also stops output, and the run then
+//! exits 1 saying why ([`Ui::finish`]).
 
 use std::fmt::Write as _;
 use std::io::{self, Write};
 
 use clap::error::ErrorKind;
-use qrec_core::CoreError;
 use qrec_core::protocol::{Progress, ProgressPhase, Toast, ToastLevel};
+use qrec_core::{CoreError, ErrorCode};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -42,11 +44,6 @@ pub(crate) fn err_line(error: &CoreError) -> String {
     json_text(&WireErr { ok: false, error })
 }
 
-/// Writes `{"ok":false,"error":error}` and a newline.
-pub(crate) fn write_err(out: &mut dyn Write, error: &CoreError) -> io::Result<()> {
-    write_text_line(out, &err_line(error))
-}
-
 fn json_text<T: Serialize>(value: &T) -> String {
     serde_json::to_string(value).unwrap_or_else(|e| {
         // Every value printed here is plain data; a failure is a bug, and it
@@ -57,12 +54,6 @@ fn json_text<T: Serialize>(value: &T) -> String {
             serde_json::to_string(&error).unwrap_or_else(|_| "{}".into())
         )
     })
-}
-
-fn write_text_line(out: &mut dyn Write, line: &str) -> io::Result<()> {
-    out.write_all(line.as_bytes())?;
-    out.write_all(b"\n")?;
-    out.flush()
 }
 
 /// `{"event":<event>,…fields of value}`: `value` must serialize as an
@@ -138,33 +129,43 @@ pub(crate) fn is_help_on_missing(err: &clap::Error) -> bool {
 
 // ------------------------------------------------------------------ streams
 
-/// A stream that stops writing after its first failure (a closed pipe):
-/// output is best effort, never a panic.
+/// A stream that stops writing after its first failure, never panicking. A
+/// closed pipe (`qrec clip list | head -1`) is not an error (A§8.6); any
+/// other failure (a full disk, an I/O error) is kept for [`Ui::finish`].
 pub(crate) struct Stream<'a> {
     inner: &'a mut dyn Write,
-    broken: bool,
+    /// The first failed write; nothing is written after it.
+    failed: Option<io::Error>,
 }
 
 impl<'a> Stream<'a> {
     pub(crate) fn new(inner: &'a mut dyn Write) -> Self {
         Self {
             inner,
-            broken: false,
+            failed: None,
         }
     }
 
     /// Writes `text` as is and flushes.
     pub(crate) fn write(&mut self, text: &str) {
-        if self.broken {
+        if self.failed.is_some() {
             return;
         }
         let result = self
             .inner
             .write_all(text.as_bytes())
             .and_then(|()| self.inner.flush());
-        if result.is_err() {
-            self.broken = true;
+        if let Err(e) = result {
+            self.failed = Some(e);
         }
+    }
+
+    /// Why output was lost: the first write error, unless it was a closed
+    /// pipe, which only means the reader has seen enough.
+    pub(crate) fn error(&self) -> Option<&io::Error> {
+        self.failed
+            .as_ref()
+            .filter(|e| e.kind() != io::ErrorKind::BrokenPipe)
     }
 
     /// Writes `text` and a newline.
@@ -304,6 +305,28 @@ impl<'a> Ui<'a> {
             self.err.write(&text);
         }
     }
+
+    /// The exit code of a run that ends with `code`. Output stdout couldn't
+    /// take for another reason than a closed pipe (a full disk, an I/O
+    /// error) means the result is lost: the run says so on stderr and exits
+    /// 1 instead of reporting success (A§8.6: only `BrokenPipe` is quiet).
+    pub(crate) fn finish(&mut self, code: u8) -> u8 {
+        self.end_progress();
+        let Some(toast) = self.out.error().map(lost_output) else {
+            return code;
+        };
+        self.notice(&toast);
+        if code == 0 {
+            ErrorCode::Io.exit_code()
+        } else {
+            code
+        }
+    }
+}
+
+/// The notice for output stdout couldn't take.
+pub(crate) fn lost_output(error: &io::Error) -> Toast {
+    Toast::new(ToastLevel::Error, format!("can't write to stdout: {error}"))
 }
 
 /// An error for people: the message (exactly, e.g. the folder rule's),
@@ -722,10 +745,65 @@ mod tests {
         let mut ui = Ui::new(&mut out, &mut err, false, false, 0, false);
         ui.print("one");
         ui.print("two");
-        assert!(ui.out.broken);
+        assert!(ui.out.failed.is_some());
+        assert!(ui.out.error().is_none(), "a closed pipe isn't an error");
         assert_eq!(ui.fail(&CoreError::busy("recording")), 6);
+        assert_eq!(ui.finish(0), 0, "a closed stdout still exits 0");
         drop(ui);
         assert_eq!(String::from_utf8(err).unwrap(), "recording\n");
+    }
+
+    /// A stdout that fails with ENOSPC (`qrec schema > /dev/full`).
+    struct Full {
+        writes: usize,
+    }
+
+    impl Write for Full {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            Err(io::Error::from(io::ErrorKind::StorageFull))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_failed_stdout_fails_the_run() {
+        let (mut out, mut err) = (Full { writes: 0 }, Vec::new());
+        let mut ui = Ui::new(&mut out, &mut err, false, false, 0, false);
+        ui.print("one");
+        ui.print("two");
+        assert_eq!(ui.finish(0), 1, "the result was lost: exit 1, not 0");
+        drop(ui);
+        assert_eq!(out.writes, 1, "nothing is written after the first failure");
+        let err = String::from_utf8(err).unwrap();
+        assert!(
+            err.starts_with("qrec: error: can't write to stdout: ") && err.lines().count() == 1,
+            "{err}"
+        );
+
+        let (mut out, mut err) = (Full { writes: 0 }, Vec::new());
+        let mut ui = Ui::new(&mut out, &mut err, false, false, 0, false);
+        ui.print("one");
+        assert_eq!(ui.finish(7), 7, "a failing command keeps its own code");
+
+        // Under --json stderr stays JSON lines.
+        let (mut out, mut err) = (Full { writes: 0 }, Vec::new());
+        let mut ui = Ui::new(&mut out, &mut err, true, true, 0, false);
+        ui.print_ok(&json!({"version": "1"}));
+        assert_eq!(ui.finish(0), 1);
+        drop(ui);
+        let line: Value = serde_json::from_str(String::from_utf8(err).unwrap().trim()).unwrap();
+        assert_eq!(line["event"], "notice");
+        assert_eq!(line["level"], "error");
+        assert!(
+            line["title"]
+                .as_str()
+                .unwrap()
+                .starts_with("can't write to stdout: "),
+            "{line}"
+        );
     }
 
     #[test]
