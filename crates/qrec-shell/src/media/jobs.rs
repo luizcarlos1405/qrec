@@ -303,7 +303,7 @@ mod tests {
         let ctl = JobCtl::default();
         ctl.add_temp(path("writing"));
         ctl.add_temp(path("placed"));
-        ctl.forget_temp(&path("placed"));
+        ctl.forget_temp(path("placed"));
         let other = JobCtl::default();
         other.add_temp(path("removed"));
         other.remove_temps();

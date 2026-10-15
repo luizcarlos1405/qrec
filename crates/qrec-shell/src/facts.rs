@@ -1335,6 +1335,55 @@ mod tests {
         allowed(&root.join("exports/x.mp4"));
     }
 
+    /// What a job checks on the folder it holds open when it writes
+    /// (A§8.8): the identities from that folder up, even when its path says
+    /// nothing (a bind mount, a folder moved since); its path now; the name
+    /// it writes in the project folder; and the file it would replace.
+    #[test]
+    fn an_open_folder_is_checked_by_identity_path_and_name() {
+        let (tmp, paths) = project_dir();
+        let root = paths.root().to_path_buf();
+        let outside = fs::canonicalize(tmp.path()).unwrap();
+        let file_id = |meta: fs::Metadata| FileId {
+            dev: meta.dev(),
+            ino: meta.ino(),
+        };
+        let chain = |dir: &Path| -> Vec<FileId> {
+            dir.ancestors()
+                .map(|p| file_id(fs::metadata(p).unwrap()))
+                .collect()
+        };
+        let check = |dir: &Path, real: &Path, name: &str, entry: Option<FileId>| {
+            why_landing_forbidden(&root, &chain(dir), real, OsStr::new(name), entry)
+        };
+        let says_nothing = Path::new("/mnt/qrec-nowhere/out");
+        let take = root.join("takes/take-0002");
+        fs::create_dir_all(take.join("sub")).unwrap();
+        for dir in [take.clone(), take.join("sub"), root.join("takes")] {
+            let why = check(&dir, says_nothing, "x.mp4", None).unwrap_or_default();
+            assert!(why.contains("takes/"), "{}: {why}", dir.display());
+        }
+        let why = check(&root.join(".qrec"), says_nothing, "x.mp4", None).unwrap_or_default();
+        assert!(why.contains(".qrec/"), "{why}");
+        // The project folder: its own names are refused, others are fine.
+        for name in ["qrec.json", "takes", ".qrec"] {
+            assert!(check(&root, says_nothing, name, None).is_some(), "{name}");
+        }
+        assert_eq!(check(&root, says_nothing, "final.mp4", None), None);
+        // Beside the project anything goes, unless what would be replaced
+        // is the project file itself (a hard link to it).
+        assert_eq!(check(&outside, &outside, "qrec.json", None), None);
+        fs::hard_link(root.join("qrec.json"), outside.join("copy.json")).unwrap();
+        let entry = Some(file_id(
+            fs::symlink_metadata(outside.join("copy.json")).unwrap(),
+        ));
+        let why = check(&outside, &outside, "copy.json", entry).unwrap_or_default();
+        assert!(why.contains("qrec.json"), "{why}");
+        // A path now under takes/ is refused whatever the identities say.
+        let why = check(&outside, &take, "x.mp4", None).unwrap_or_default();
+        assert!(why.contains("takes/"), "{why}");
+    }
+
     /// A path ending in `/`, `/.` or `/..` names a folder: refused
     /// (`Invalid`) whether or not the folder exists, never written as a
     /// file named like it.

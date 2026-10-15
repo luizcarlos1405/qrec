@@ -9,7 +9,9 @@
 //! effect gets exactly one terminal event, even when a worker panics. The
 //! argv come from the core (A§9.2) and run with the project folder as their
 //! working directory (their paths are project-relative); the runner only
-//! replaces the last element (the output path) with a temp path.
+//! replaces the last element (the output path) with a temp path: for an
+//! export or a frame, `/proc/self/fd/<n>`, the descriptor of the temp file
+//! it created in the destination folder it holds open (A§8.8, `place`).
 //!
 //! [`FfmpegRunner::new`] builds the runner for a project; hosts also call
 //! [`housekeeping`] once at start (prune logs, sweep stale temp files).

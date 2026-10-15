@@ -361,7 +361,8 @@ pub struct AudioDeviceInfo { pub name: String, pub description: String, pub is_m
 pub struct ScreenInfo { pub output: String, pub description: String, pub x: i32, pub y: i32, pub width: u32, pub height: u32, pub scale: f64 }
 pub struct CameraInfo { pub device: String, pub label: String, pub modes: Vec<CameraMode> }
 pub struct CameraMode { pub width: u32, pub height: u32, pub fps: Fps, pub format: String }
-pub struct OutFacts { pub abs: String, pub exists: bool, pub bytes: Option<u64> /* lstat size when it exists */, pub forbidden: Option<String> /* why: in takes/ or .qrec/ (also through a link or bind mount, A§5.9), qrec.json, a directory, a path naming a folder or not UTF-8, a name over 255 bytes or in the temp-file shape (A§8.7) */ }
+pub struct OutFacts { pub abs: String, pub exists: bool, pub bytes: Option<u64> /* lstat size when it exists */, pub id: Option<FileId> /* lstat identity when it exists: the one file a confirmed overwrite may replace (A§5.9) */, pub forbidden: Option<String> /* why: in takes/ or .qrec/ (also through a link or bind mount, A§5.9), qrec.json, a directory, a path naming a folder or not UTF-8, a name over 255 bytes or in the temp-file shape (A§8.7) */ }
+pub struct FileId { pub dev: u64, pub ino: u64 }    // st_dev, st_ino (lstat: a symlink is a file of its own)
 pub struct FileFact { pub path: String, pub bytes: u64, pub mtime_ns: i64 }
 
 #[derive(Default)]
@@ -866,7 +867,8 @@ the CLI's interrupted hint follows the same rule (A§8.6).
 
 `out` from the CLI is already absolute (resolved against the CLI's cwd).
 It means what the OS says: `..` stays in `facts.out.abs` (the path the job
-writes and reports) and the checks run where the kernel resolves it, so
+opens its folder by and reports while it still leads there) and the checks
+run where the kernel resolves it, so
 `link/..` is the parent of the link's target, never lexically the folder
 holding `link`. What is checked is what the job touches: the entry the
 final rename replaces or creates (its folder resolved, symlinks and `..`
@@ -892,8 +894,20 @@ isn't plugged in) still guards where it points. `exists && !confirmed` ⇒
 `confirmation_required` "overwrite <abs> (<size>)" with `details:
 {files:[{path,bytes}]}` (`facts.out.bytes`, the `lstat` size: a symlink at
 `out` is what gets replaced, not its target).
-The plan's `replace` is `exists && confirmed`: the
-runner may replace only the file the person confirmed. `OutputAppeared` (a
+The plan's `replace` is, when `exists && confirmed`, the confirmed file's
+identity (`facts.out.id`: `st_dev`, `st_ino` from `lstat`): the runner
+replaces that file and no other. Another file at `out` by the time the job
+ends (the confirmed one moved away or replaced) counts as one that appeared.
+These checks run on paths when the command is dispatched; the job runs them
+again on the folder it holds open when it writes (A§8.8): at its start,
+before the temp file is created and before the final rename, the open
+folder (by identity, walked up through `..` from its descriptor, and by its
+path now) may not be or lie in `takes/` or `.qrec/`, nor may the name in
+the project folder be `qrec.json`, `takes` or `.qrec`, or else the job
+fails (`ExportFailed`/`FrameFailed`) before it writes anything there. So a
+folder on the path swapped for a symlink after the check can't lead an
+output into the project, and auto names (`exports/`, `frames/` behind a
+link) get the same check. `OutputAppeared` (a
 hand-picked `out` appeared while the job ran, A§8.8) ends the job with
 `confirmation_required` (exit 4) naming both paths, `details:
 {files:[{path,bytes}], kept}` (`kept` is `<stem>-kept.<ext>` next to `out`),
@@ -1394,7 +1408,9 @@ nothing of anyone else's may be tied to it for long:
 
 One runner for every child: stdin null, `process_group(0)`, stdout piped only
 when parsed (drained on its own thread), stderr appended to a log file, and
-nothing else: in `pre_exec`, every descriptor from 3 up is made
+nothing else (but an output's temp file, which the ffmpeg writing it keeps
+under the same descriptor number, A§8.8): in `pre_exec`, every descriptor
+from 3 up is made
 close-on-exec (`proc::close_on_exec_from`: `close_range(…,
 CLOSE_RANGE_CLOEXEC)`, else an `fcntl` sweep below `RLIMIT_NOFILE`; never
 closed outright, so std still hears a failed `exec`). Rust opens everything
@@ -1402,7 +1418,8 @@ close-on-exec already; this also keeps out what Qrec itself inherited from
 whoever started it. The headless host spawn (A§8.3 step 5) and the GPU
 probe child do the same.
 Arguments are passed byte for byte (`OsString`): the media runner replaces a
-plan's last element with `file:<temp path>` (and the segment check's input)
+plan's last element with `file:<temp path>` (a segment's; and the segment
+check's input) or `file:/proc/self/fd/<n>` (an export's or frame's, A§8.8)
 keeping the path's exact bytes, so a project folder whose path isn't UTF-8
 renders like any other. Paths the shell reports (`ExportFinished`,
 `FrameSaved`, `OutputAppeared`, log paths in hints and `details.log`) are
@@ -1435,8 +1452,10 @@ A hand-picked name over 255 bytes is refused up front (`facts.out.forbidden`,
 A§5.9). The final step is
 `renameat2(RENAME_NOREPLACE)` (fallback `link` + `unlink`). Auto names loop
 `-2`, `-3`, … on EEXIST; a hand-picked `--out` is replaced only when the
-plan says so (`replace`: it existed at dispatch and the person confirmed,
-A§5.9 — never guessed from the file system when the job starts). A
+plan says so (`replace`: the file that existed at dispatch and the person
+confirmed, by identity, A§5.9 — never guessed from the file system when the
+job starts), and only while the entry there is still that file
+(`fstatat(AT_SYMLINK_NOFOLLOW)`). A
 hand-picked unconfirmed `--out` that appeared meanwhile ⇒ keep the result
 (it is the result now): the temp is renamed, without replacing anything,
 to `<stem>-kept.<ext>` next to `out` (then `-kept-2`, `-kept-3`, …; the stem
@@ -1446,6 +1465,28 @@ ends with `OutputAppeared { out, bytes, kept }`, which the core turns into
 `confirmation_required` naming both paths (exit 4).
 `ExportFinished`/`FrameSaved` carry the real path. Migration backups use the
 same no-replace rule.
+
+**The destination folder is held open.** When an export or frame save
+starts it opens the folder `out` names (`O_PATH | O_DIRECTORY`, symlinks
+followed as the OS reads the path then) and never looks it up by path
+again: the temp file is created in it with `openat(O_CREAT | O_EXCL |
+O_NOFOLLOW)` (a new file, never one that was there, never through a
+symlink); ffmpeg keeps that file's descriptor (only its close-on-exec flag
+is cleared in the child, so nothing of the child's own is moved) and writes
+`/proc/self/fd/<n>` (so re-opening it, as the mp4 muxer does for
+`+faststart`, reaches the same file, and every muxer and encoder is named
+in the argv, never inferred from a name, A§9.2); the size and PNG checks
+and the `fsync` use the job's own descriptor; and the final
+`renameat2`, a result kept aside and a temp's deletion (cancel, failure,
+hard exit) are relative to the folder's descriptor. The folder is checked
+against `takes/`, `.qrec/` and `qrec.json` at the start, before the temp
+is created and before the final rename (A§5.9). A folder on the path
+swapped for a symlink while the job runs leads the output nowhere new: it
+lands in the folder the job opened, reported under the path the plan gave
+while that still leads there and where the folder is now otherwise; a
+folder deleted meanwhile fails the job ("the folder … was deleted").
+Segment temps and the concat list live in the project's own cache and are
+written by path.
 
 ### A§8.9 External edits watcher
 
@@ -1578,9 +1619,11 @@ Every ffmpeg/ffprobe command line is built in the core (SPEC §3.1):
   `-hide_banner -nostdin -nostats -loglevel info -y`, plus `-progress pipe:1`
   for jobs that report progress.
 - The **output path is the last element**, preceded by an explicit muxer
-  (`-f mov|mp4|webm|matroska`, or `-f image2 -update 1` for PNG); every path
+  (`-f mov|mp4|webm|matroska`, or `-c:v png -f image2 -update 1` for PNG)
+  and explicit encoders, never inferred from the output's name; every path
   is prefixed with `file:`. The runner may replace only that last element
-  (with its temp path).
+  (with its temp path, or `/proc/self/fd/<n>` for an output's temp file,
+  A§8.8).
 - `probe_argv(file, kind)`: video `ffprobe -v error -select_streams v:0
   -count_packets -show_entries stream=nb_read_packets,r_frame_rate,width,height,pix_fmt,color_range,color_space:format=start_time
   -of json`; audio adds `codec_name,sample_rate,channels,duration`. Parsers
@@ -1598,7 +1641,7 @@ Every ffmpeg/ffprobe command line is built in the core (SPEC §3.1):
 ### A§9.3 Export plan (`export_plan.rs`)
 
 ```rust
-pub struct ExportPlan { pub out: String, pub replace: bool /* A§8.8 */, pub tmp_ext: String, pub segments: Vec<SegmentPlan>,
+pub struct ExportPlan { pub out: String, pub replace: Option<FileId> /* A§5.9, A§8.8 */, pub tmp_ext: String, pub segments: Vec<SegmentPlan>,
                         pub stitch: StitchPlan, pub total_frames: u64, pub files: BTreeSet<String> }
 pub struct SegmentPlan { pub clips: Vec<ClipId>, pub take: TakeId, pub in_: Frame, pub out: Frame,
                          pub frames: u64, pub samples: u64, pub key: String, pub path: String, pub argv: Vec<String> }
@@ -1704,7 +1747,7 @@ pub struct StitchPlan { pub list_path: String, pub list_content: String, pub arg
 
 The playhead's frame through the same graph as a one-frame unit (`n = 1`,
 no audio), then `scale=out_color_matrix=bt709:out_range=pc,format=rgb24,setparams=color_trc=iec61966-2-1`
-(an sRGB PNG) `-frames:v 1 -f image2 -update 1`, to
+(an sRGB PNG) `-frames:v 1 -c:v png -f image2 -update 1`, to
 `frames/<stem>-<take>-<HHMMSSFF>.png`. `--layer L2`: the stream's raw frame at
 native resolution (same frame selection, no crop or scale). Because the
 frame selection doesn't depend on where a unit starts (A§9.3), the

@@ -45,7 +45,7 @@ use qrec_core::state::{Capabilities, FfmpegCaps};
 use qrec_core::{Event, JobId};
 
 use super::Ctx;
-use super::child::{self, Ended, Finished, OUTPUT_FD_PATH, Spec, Stderr, Stdout};
+use super::child::{self, Ended, Finished, Spec, Stderr, Stdout};
 use super::jobs::{JobCtl, Temp};
 use super::logs::{LogFile, TAIL_LINES};
 use super::place::{self, Destination, OutDir, PlaceError, TempOut, rename_noreplace, temp_path};
@@ -406,8 +406,15 @@ pub(crate) fn temp_out(
 /// command was checked) or wherever the folder has moved since.
 pub(crate) fn landing(ctx: &Ctx, dest: &Destination) -> Result<(), String> {
     let dir = dest.dir();
-    let Some(real) = dir.real_path() else {
-        return Err(format!("the folder {} was deleted", path_text(dir.named())));
+    let real = match dir.real_path() {
+        Ok(Some(real)) => real,
+        Ok(None) => return Err(format!("the folder {} was deleted", path_text(dir.named()))),
+        Err(e) => {
+            return Err(format!(
+                "can't tell where the folder {} is: {e}",
+                path_text(dir.named())
+            ));
+        }
     };
     let entry = dir.entry(dest.name()).ok().flatten().map(|(id, _)| id);
     let Some(why) =
@@ -645,8 +652,9 @@ fn stitch(
         plan.tmp_ext.clone()
     };
     let tmp = temp_out(ctx, ctl, job, dest, &ext, &log)?;
-    // ffmpeg writes the temp file through its own descriptor 3 (A§8.8).
-    let args = with_file(argv, Path::new(OUTPUT_FD_PATH)).map_err(|m| Failure::plain(m, &log))?;
+    // ffmpeg writes the temp file through its descriptor (A§8.8).
+    let args =
+        with_file(argv, &child::output_path(&tmp.file)).map_err(|m| Failure::plain(m, &log))?;
     log.note(&format!("stitching to {}", path_text(&tmp.shown())));
 
     let progress_out = out.clone();

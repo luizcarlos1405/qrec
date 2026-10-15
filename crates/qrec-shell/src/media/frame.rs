@@ -8,13 +8,12 @@
 
 use std::fs::File;
 use std::os::unix::fs::FileExt;
-use std::path::Path;
 
 use qrec_core::plans::FramePlan;
 use qrec_core::{Event, JobId};
 
 use super::Ctx;
-use super::child::{self, OUTPUT_FD_PATH, Spec, Stderr, Stdout};
+use super::child::{self, Spec, Stderr, Stdout};
 use super::export::{
     Failure, appeared, check_ffmpeg, destination, extension, finish, missing_input, stopped,
     temp_out, with_file,
@@ -79,8 +78,9 @@ fn save(
         plan.tmp_ext.clone()
     };
     let tmp = temp_out(ctx, ctl, job, &dest, &ext, &log)?;
-    // ffmpeg writes the temp file through its own descriptor 3 (A§8.8).
-    let args = with_file(argv, Path::new(OUTPUT_FD_PATH)).map_err(|m| Failure::plain(m, &log))?;
+    // ffmpeg writes the temp file through its descriptor (A§8.8).
+    let args =
+        with_file(argv, &child::output_path(&tmp.file)).map_err(|m| Failure::plain(m, &log))?;
     log.note(&format!("rendering to {}", path_text(&tmp.shown())));
 
     // Plans normally ask for `-progress pipe:1`; without it only the exit

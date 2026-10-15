@@ -151,8 +151,8 @@ pub fn output_args(muxer: &str, path: &str) -> Vec<String> {
 
 /// `-c:v png -f image2 -update 1 file:<path>`: one PNG (no `%d` pattern).
 /// The encoder is named: image2 would pick it from the file's extension,
-/// and the runner hands ffmpeg its temp output as `/proc/self/fd/3`, which
-/// has none (A§8.8).
+/// and the runner hands ffmpeg its temp output as `/proc/self/fd/<n>`,
+/// which has none (A§8.8).
 pub fn png_output_args(path: &str) -> Vec<String> {
     vec![
         "-c:v".to_owned(),

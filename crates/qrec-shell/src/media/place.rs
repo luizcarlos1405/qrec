@@ -9,7 +9,8 @@
 //! An output's folder is opened once, when the job starts ([`OutDir`]), and
 //! everything after that names it by that descriptor, never by a path
 //! again: the temp file is created in it (`O_EXCL | O_NOFOLLOW`), ffmpeg
-//! writes through that very file (its descriptor 3), and the final rename,
+//! writes through that very file (`/proc/self/fd/<n>` of the descriptor it
+//! keeps), and the final rename,
 //! a result kept aside and a temp's deletion all happen in it. A folder on
 //! the path swapped for a symlink while the job runs (into `takes/`, say)
 //! can't redirect any of it; the job checks the open folder itself against
@@ -198,12 +199,11 @@ impl OutDir {
 
     /// Where the folder is now (the kernel's own path for the descriptor),
     /// or `None` once it was deleted.
-    pub(crate) fn real_path(&self) -> Option<PathBuf> {
-        let st = fstat(self.raw()).ok()?;
-        if st.st_nlink == 0 {
-            return None;
+    pub(crate) fn real_path(&self) -> io::Result<Option<PathBuf>> {
+        if fstat(self.raw())?.st_nlink == 0 {
+            return Ok(None);
         }
-        fs::read_link(format!("/proc/self/fd/{}", self.raw())).ok()
+        fs::read_link(format!("/proc/self/fd/{}", self.raw())).map(Some)
     }
 
     /// The folder's path to report: the plan's while that still leads
@@ -217,7 +217,10 @@ impl OutDir {
         if here.is_some() && named == here {
             return self.named.clone();
         }
-        self.real_path().unwrap_or_else(|| self.named.clone())
+        match self.real_path() {
+            Ok(Some(real)) => real,
+            _ => self.named.clone(),
+        }
     }
 
     /// The path to report for `name` in this folder ([`OutDir::location`]).
@@ -900,7 +903,7 @@ mod tests {
         // The folder moves away and a symlink takes its place.
         fs::rename(&folder, &moved).unwrap();
         symlink(&elsewhere, &folder).unwrap();
-        assert_eq!(dir.real_path().unwrap(), moved);
+        assert_eq!(dir.real_path().unwrap(), Some(moved.clone()));
         assert_eq!(dir.chain()[0], lstat_id(&moved));
         let tmp_name = temp_in(&dir, "precious", 1, "export");
         assert!(moved.join(&tmp_name).is_file());
@@ -931,7 +934,7 @@ mod tests {
 
         // Deleted: nothing can be created in it any more.
         fs::remove_dir_all(&moved).unwrap();
-        assert_eq!(dir.real_path(), None);
+        assert_eq!(dir.real_path().unwrap(), None);
         assert!(dir.create(os("x.mp4")).is_err());
         assert_eq!(names(&elsewhere), ["precious.mkv"]);
     }
