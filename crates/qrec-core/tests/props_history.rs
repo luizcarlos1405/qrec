@@ -5,7 +5,8 @@
 //! - patch size grows with the number of changed clips, not with the
 //!   timeline length;
 //! - after a purge no reachable state references the take;
-//! - compaction preserves the current state.
+//! - compaction preserves the current state, and a lost base is derived
+//!   from the state at the cursor.
 //!
 //! Edits are applied through pure helpers below and finished with
 //! `history::commit`, like the command handlers do; a "record" edit first
@@ -756,6 +757,33 @@ proptest! {
             let top = ops::redo_with(&bottom, new_pos as u32, structural).unwrap();
             prop_assert_eq!(&top.project, &state.project);
         }
+    }
+
+    /// A lost or unreadable `history.base.json` is derived from the state at
+    /// the cursor (A§7.7 rebuilds from it): the first state, every entry
+    /// kept, and the cursor's state replayed from it.
+    #[test]
+    fn a_lost_base_is_derived_from_the_cursor(
+        start in arb_start(),
+        edits in prop::collection::vec(arb_edit(), 1..20),
+        undo in any::<Index>(),
+    ) {
+        let Run { state, states } = run(start, &edits);
+        let n = state.history.entries.len();
+        let state = match undo.index(n + 1) {
+            0 => state,
+            k => ops::undo_with(&state, k as u32, structural).unwrap(),
+        };
+        let (history, base) = ops::derive_base(&state.history, &state.project).unwrap();
+        prop_assert_eq!(&history.entries, &state.history.entries);
+        prop_assert_eq!(
+            (history.base_seq, history.cursor, history.next_seq),
+            (state.history.base_seq, state.history.cursor, state.history.next_seq)
+        );
+        assert_same(&base, &states[&0], "the base is the first state");
+        let pos = cursor_position(&history).unwrap();
+        let rebuilt = ops::replay(&base, &history.entries[..pos], structural).unwrap();
+        prop_assert_eq!(&rebuilt, &state.project);
     }
 
     /// An external edit is merged as one entry that undo takes back.

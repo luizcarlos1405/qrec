@@ -139,7 +139,7 @@ pub struct Store {
     writable: bool,
     /// sha256 of the `qrec.json` bytes this host last wrote or accepted.
     last_sha: Option<String>,
-    /// `history.base.json` exists.
+    /// `history.base.json` holds a usable base.
     has_base: bool,
     /// A base to write with the next history step.
     pending_base: Option<(u64, Project)>,
@@ -214,12 +214,14 @@ impl Store {
     }
 
     /// Adopts what [`load`] found: the accepted hash, a pending migration
-    /// backup, and whether the files need rewriting.
+    /// backup, whether a usable base is on disk (an unreadable one is
+    /// none: its replacement is pending) and whether the files need
+    /// rewriting.
     pub fn adopt(&mut self, loaded: &Loaded) {
         self.last_sha = loaded.accepted_sha.clone();
         self.pending_backup = loaded.migrated_from.clone();
         self.pending_base = loaded.base_to_write.clone();
-        self.has_base = self.paths.history_base().is_file();
+        self.has_base = loaded.has_base;
         self.dirty =
             loaded.needs_repair || self.pending_base.is_some() || self.pending_backup.is_some();
     }

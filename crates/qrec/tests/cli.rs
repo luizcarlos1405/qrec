@@ -2988,3 +2988,48 @@ fn a_restore_that_cant_be_saved_keeps_the_broken_file() {
     assert_eq!(project["scene"]["layers"][0]["id"], "L1", "{project}");
     assert_eq!(project["scene"]["audio"], json!([]), "{project}");
 }
+
+/// An unreadable `.qrec/history.base.json` is rebuilt by the next command,
+/// which says so once, so the history can still rebuild a lost `qrec.json`
+/// (A§7.7). It used to be called repaired by every command and never
+/// written, and `history restore` then said there was nothing to recover
+/// from.
+#[test]
+fn an_unreadable_history_base_is_rebuilt_by_the_next_command() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("unreadable-base");
+    qrec(&env, &dir, &["init"]).ok();
+    qrec(
+        &env,
+        &dir,
+        &["scene", "layer", "add", "screen", "--output", "FAKE-1"],
+    )
+    .ok();
+    let base_file = dir.join(".qrec/history.base.json");
+    fs::write(&base_file, "garbage\n").unwrap();
+
+    let first = qrec(&env, &dir, &["--json", "project", "set", "--name", "a"]);
+    first.ok();
+    assert!(
+        first.stderr.contains("Qrec repaired the project's files")
+            && first
+                .stderr
+                .contains("rebuilt the unreadable .qrec/history.base.json"),
+        "{}",
+        first.stderr
+    );
+    let base: Value = serde_json::from_slice(&fs::read(&base_file).unwrap()).unwrap();
+    assert!(base["project"]["scene"].is_object(), "{base}");
+    let second = qrec(&env, &dir, &["--json", "project", "set", "--name", "b"]);
+    second.ok();
+    assert!(!second.stderr.contains("repaired"), "{}", second.stderr);
+
+    fs::remove_file(dir.join("qrec.json")).unwrap();
+    fs::remove_file(dir.join(".qrec/history.head.json")).unwrap();
+    qrec(&env, &dir, &["history", "restore", "3", "--yes"]).ok();
+    let status = qrec(&env, &dir, &["status", "--json"]);
+    status.ok();
+    let project = &status.reply()["data"]["project"];
+    assert_eq!(project["name"], "b", "{project}");
+    assert_eq!(project["scene"]["layers"][0]["id"], "L1", "{project}");
+}

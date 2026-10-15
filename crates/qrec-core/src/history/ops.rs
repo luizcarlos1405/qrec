@@ -354,28 +354,59 @@ pub fn compact_to(
         return None;
     }
     let pos = cursor_position(history).ok()?;
-    let mut dropped = len.saturating_sub(keep).min(pos);
+    let dropped = len.saturating_sub(keep).min(pos);
     if dropped == 0 {
         return None;
     }
-    let mut value = project_value(current);
-    for (i, entry) in history.entries[..pos]
-        .iter()
-        .enumerate()
-        .skip(dropped)
-        .rev()
-    {
-        if json_patch::patch(&mut value, &entry.inverse).is_err() {
-            dropped = i + 1;
-            break;
-        }
-    }
-    let mut base = project_from_value(value).ok()?;
-    // The base's take facts are still the current ones (patches don't carry them).
-    retime_takes(&mut base, current.canvas.fps);
+    let (base, dropped) = walk_back(history, current, pos, dropped)?;
     let base_seq = history.entries[dropped - 1].seq;
     let entries = history.entries[dropped..].to_vec();
     Some(rewritten(history, base, base_seq, entries, history.cursor))
+}
+
+/// The base of a history whose `history.base.json` is lost or unreadable
+/// (A§7.7 rebuilds from it): the project before its oldest entry, found
+/// like compaction's base, by walking the inverses back from `current` (the
+/// state at the cursor). Take facts are the current ones (A§7.3). An entry
+/// whose inverse no longer applies is dropped with everything older (it
+/// could not be undone anyway): the base is then the state right after it.
+/// Returns the history (without the dropped entries) and its base; `None`
+/// when the cursor isn't in the history or the walk doesn't end in a
+/// project.
+pub fn derive_base(history: &History, current: &Project) -> Option<(History, Project)> {
+    let pos = cursor_position(history).ok()?;
+    let (base, reached) = walk_back(history, current, pos, 0)?;
+    let (base_seq, entries) = match reached {
+        0 => (history.base_seq, history.entries.to_vec()),
+        n => (history.entries[n - 1].seq, history.entries[n..].to_vec()),
+    };
+    let (history, _) = rewritten(history, base.clone(), base_seq, entries, history.cursor);
+    Some((history, base))
+}
+
+/// Walks the inverses back from `current`, the state at position `pos`,
+/// towards position `stop`: the project at the oldest position reached
+/// (its take facts retimed to its fps, like undo does) and that position.
+/// An entry whose inverse no longer applies ends the walk right after it.
+fn walk_back(
+    history: &History,
+    current: &Project,
+    pos: usize,
+    stop: usize,
+) -> Option<(Project, usize)> {
+    let mut value = project_value(current);
+    let mut reached = pos;
+    for (i, entry) in history.entries[stop..pos].iter().enumerate().rev() {
+        // A failed patch is reverted: `value` stays the state after it.
+        if json_patch::patch(&mut value, &entry.inverse).is_err() {
+            break;
+        }
+        reached = stop + i;
+    }
+    let mut project = project_from_value(value).ok()?;
+    // Its take facts are still the current ones (patches don't carry them).
+    retime_takes(&mut project, current.canvas.fps);
+    Some((project, reached))
 }
 
 /// A history with these entries and base, and the `Rewrite` op that
@@ -754,6 +785,50 @@ mod tests {
             panic!()
         };
         assert_eq!(base.name, "name 5");
+    }
+
+    #[test]
+    fn a_lost_base_is_derived_from_the_cursor() {
+        let state = renames(5);
+        let (history, base) = derive_base(&state.history, &state.project).unwrap();
+        assert_eq!(base, start().project, "the project before entry 1");
+        assert_eq!(history.entries, state.history.entries, "nothing dropped");
+        assert_eq!(
+            (history.base_seq, history.cursor, history.next_seq),
+            (0, 5, 6)
+        );
+        assert_eq!(
+            replay(&base, &history.entries, unchecked).unwrap(),
+            state.project
+        );
+        // From an undone cursor: the base is the same, the redo tail stays.
+        let undone = undo_with(&state, 2, unchecked).unwrap();
+        let (history, base) = derive_base(&undone.history, &undone.project).unwrap();
+        assert_eq!(base, start().project);
+        assert_eq!((history.entries.len(), history.cursor), (5, 3));
+        // Without entries the base is the project itself.
+        let fresh = start();
+        let (history, base) = derive_base(&fresh.history, &fresh.project).unwrap();
+        assert_eq!(base, fresh.project);
+        assert!(history.entries.is_empty());
+    }
+
+    #[test]
+    fn a_derived_base_drops_entries_that_no_longer_undo() {
+        let mut state = renames(12);
+        // Entry 6's inverse expects "name 5" before it: break it.
+        let entries = Arc::make_mut(&mut state.history.entries);
+        if let json_patch::PatchOperation::Test(t) = &mut entries[5].inverse.0[0] {
+            t.value = json!("tampered");
+        }
+        let (history, base) = derive_base(&state.history, &state.project).unwrap();
+        assert_eq!(history.base_seq, 6, "up to the broken entry");
+        assert_eq!(history.entries.len(), 6);
+        assert_eq!((history.cursor, history.next_seq), (12, 13));
+        assert_eq!(base.name, "name 5");
+        let mut derived = state.clone();
+        derived.history = history;
+        assert_eq!(undo_with(&derived, 6, unchecked).unwrap().project, base);
     }
 
     #[test]

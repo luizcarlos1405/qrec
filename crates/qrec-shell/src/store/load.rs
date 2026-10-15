@@ -23,6 +23,11 @@
 //! file only sets `disk_invalid`; a valid one that differs from the head
 //! is an external edit like on any open (SPEC §8.1: it becomes an
 //! "External edit" entry first, so a restore can be undone back to it).
+//!
+//! Either way an unreadable `history.base.json`, or a missing one under a
+//! history with entries, is derived from the project at the cursor
+//! (`history::ops::derive_base`, A§7.3) for the repair to write, so the
+//! history can still rebuild the project (A§7.7).
 
 use std::fs;
 use std::io;
@@ -31,7 +36,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use qrec_core::hash::json_hash;
 use qrec_core::history::HistoryEntry;
-use qrec_core::history::ops::{apply_patch_with, unchecked};
+use qrec_core::history::ops::{apply_patch_with, derive_base, unchecked};
 use qrec_core::history::view::undoable_view;
 use qrec_core::model::{Project, Stream, StreamKind, Take, TakeStatus};
 use qrec_core::state::{History, UiState};
@@ -73,6 +78,11 @@ pub struct Loaded {
     pub needs_repair: bool,
     /// A base the first write must store (`history.base.json`).
     pub base_to_write: Option<(u64, Project)>,
+    /// `history.base.json` holds a usable base (not a missing or unreadable
+    /// one, which `base_to_write` replaces when the history needs one).
+    pub has_base: bool,
+    /// `.qrec/ui.json` couldn't be read: a host's open writes it again.
+    pub ui_unreadable: bool,
     /// Takes found under `takes/` and added back (`recording`) to a rebuilt project.
     pub readded: Vec<TakeId>,
     /// What was repaired or assumed, for the log.
@@ -84,100 +94,167 @@ pub struct Loaded {
 pub fn load(paths: &ProjectPaths, opts: &LoadOpts) -> Result<Loaded, ShellError> {
     let mut notes = Vec::new();
     let head = read_head(paths, &mut notes)?;
-    let base = read_base(paths, &mut notes)?;
+    let found = read_base(paths)?;
+    let lost_base = found.as_ref().err().copied();
+    let base = found.ok();
     let parsed = read_history(paths)?;
-    let ui = read_ui(paths, &mut notes);
+    let (ui, ui_unreadable) = read_ui(paths, &mut notes);
     let file = read_optional(&paths.project_file())
         .map_err(|e| ShellError::io(format!("read {}", paths.project_file().display()), e))?;
     let file_sha = file.as_deref().map(format::sha);
 
-    if opts.recovery {
-        if let Some(head) = head {
-            let clean = file_sha.as_deref() == Some(head.project_sha256.as_str());
-            let usable = match file.as_deref() {
-                None => Err("qrec.json is missing".to_owned()),
-                Some(_) if clean => Ok(None),
-                Some(bytes) => parse_file(bytes, opts.check)
-                    .map(Some)
-                    .map_err(|e| file_problem(&e)),
-            };
-            let candidate = usable.as_ref().ok().and_then(Option::as_ref);
-            let mut loaded =
-                with_head(head, base, parsed, ui, notes, candidate.map(|m| &m.project));
-            match usable {
-                Err(why) => loaded.disk_invalid = Some(why),
-                Ok(None) => {}
-                // A valid hand edit is merged first, as on any open (Qrec's
-                // own unfinished commit was finished by `with_head`).
-                Ok(Some(migrated)) => {
-                    loaded.migrated_from = migrated_original(&migrated, file.as_deref());
-                    if migrated.project != loaded.project {
-                        loaded.external = Some(Ok(Box::new(migrated.project)));
+    let mut loaded = 'loaded: {
+        if opts.recovery {
+            if let Some(head) = head {
+                let clean = file_sha.as_deref() == Some(head.project_sha256.as_str());
+                let usable = match file.as_deref() {
+                    None => Err("qrec.json is missing".to_owned()),
+                    Some(_) if clean => Ok(None),
+                    Some(bytes) => parse_file(bytes, opts.check)
+                        .map(Some)
+                        .map_err(|e| file_problem(&e)),
+                };
+                let candidate = usable.as_ref().ok().and_then(Option::as_ref);
+                let mut loaded =
+                    with_head(head, base, parsed, ui, notes, candidate.map(|m| &m.project));
+                match usable {
+                    Err(why) => loaded.disk_invalid = Some(why),
+                    Ok(None) => {}
+                    // A valid hand edit is merged first, as on any open
+                    // (Qrec's own unfinished commit was finished by
+                    // `with_head`).
+                    Ok(Some(migrated)) => {
+                        loaded.migrated_from = migrated_original(&migrated, file.as_deref());
+                        if migrated.project != loaded.project {
+                            loaded.external = Some(Ok(Box::new(migrated.project)));
+                        }
                     }
                 }
+                loaded.accepted_sha = file_sha;
+                break 'loaded loaded;
             }
+            let why = match file.as_deref().map(|bytes| parse_file(bytes, opts.check)) {
+                Some(Ok(migrated)) => {
+                    let original = migrated_original(&migrated, file.as_deref());
+                    break 'loaded without_head(
+                        migrated.project,
+                        original,
+                        base,
+                        parsed,
+                        ui,
+                        notes,
+                        file_sha,
+                    );
+                }
+                Some(Err(e)) => file_problem(&e),
+                None => "qrec.json is missing".to_owned(),
+            };
+            let Some(base) = base else {
+                return Err(nothing_to_recover(lost_base).into());
+            };
+            let mut loaded = rebuild(paths, base, parsed, ui, notes);
+            loaded.disk_invalid = Some(why);
             loaded.accepted_sha = file_sha;
-            return Ok(loaded);
+            break 'loaded loaded;
         }
-        let why = match file.as_deref().map(|bytes| parse_file(bytes, opts.check)) {
-            Some(Ok(migrated)) => {
-                let original = migrated_original(&migrated, file.as_deref());
-                return Ok(without_head(
-                    migrated.project,
-                    original,
-                    base,
-                    parsed,
-                    ui,
-                    notes,
-                    file_sha,
-                ));
-            }
-            Some(Err(e)) => file_problem(&e),
-            None => "qrec.json is missing".to_owned(),
-        };
-        let mut loaded = rebuild(paths, base, parsed, ui, notes)?;
-        loaded.disk_invalid = Some(why);
-        loaded.accepted_sha = file_sha;
-        return Ok(loaded);
-    }
 
-    let restore_seq = head.as_ref().map(|h| h.cursor).or_else(|| {
-        let base_seq = base.as_ref().map(|(seq, _)| seq.unwrap_or(0));
-        parsed.entries.last().map(|e| e.seq).or(base_seq)
-    });
-    let Some(bytes) = file else {
-        return Err(missing_file(restore_seq).into());
-    };
-    let migrated = parse_file(&bytes, opts.check).map_err(|e| invalid_file(&e, restore_seq))?;
-    let original = migrated_original(&migrated, Some(&bytes));
-    let Some(head) = head else {
-        return Ok(without_head(
-            migrated.project,
-            original,
+        let restore_seq = head.as_ref().map(|h| h.cursor).or_else(|| {
+            let base_seq = base.as_ref().map(|(seq, _)| seq.unwrap_or(0));
+            parsed.entries.last().map(|e| e.seq).or(base_seq)
+        });
+        let Some(bytes) = file else {
+            return Err(missing_file(restore_seq).into());
+        };
+        let migrated = parse_file(&bytes, opts.check).map_err(|e| invalid_file(&e, restore_seq))?;
+        let original = migrated_original(&migrated, Some(&bytes));
+        let Some(head) = head else {
+            break 'loaded without_head(
+                migrated.project,
+                original,
+                base,
+                parsed,
+                ui,
+                notes,
+                file_sha,
+            );
+        };
+        let file_project = migrated.project;
+        let clean = file_sha.as_deref() == Some(head.project_sha256.as_str())
+            || file_project == head.project;
+        let mut loaded = with_head(
+            head,
             base,
             parsed,
             ui,
             notes,
-            file_sha,
-        ));
+            (!clean).then_some(&file_project),
+        );
+        // Not Qrec's own unfinished commit (which `with_head` finished): an
+        // edit for the core to merge.
+        loaded.external = (loaded.project != file_project).then(|| Ok(Box::new(file_project)));
+        loaded.accepted_sha = file_sha;
+        loaded.migrated_from = original;
+        loaded
     };
-    let file_project = migrated.project;
-    let clean =
-        file_sha.as_deref() == Some(head.project_sha256.as_str()) || file_project == head.project;
-    let mut loaded = with_head(
-        head,
-        base,
-        parsed,
-        ui,
-        notes,
-        (!clean).then_some(&file_project),
-    );
-    // Not Qrec's own unfinished commit (which `with_head` finished): an
-    // edit for the core to merge.
-    loaded.external = (loaded.project != file_project).then(|| Ok(Box::new(file_project)));
-    loaded.accepted_sha = file_sha;
-    loaded.migrated_from = original;
+    loaded.ui_unreadable = ui_unreadable;
+    if let Some(lost) = lost_base {
+        derive_lost_base(&mut loaded, lost);
+    }
     Ok(loaded)
+}
+
+/// A history whose `history.base.json` is unreadable, or missing while it
+/// has entries, gets its base back (A§7.7 rebuilds the project from it):
+/// derived from the project at the cursor by walking the inverses back
+/// (`history::ops::derive_base`, like compaction, A§7.3) and written with
+/// the open's repairs. Entries whose inverse no longer applies are dropped
+/// with everything older (they couldn't be undone anyway).
+fn derive_lost_base(loaded: &mut Loaded, lost: LostBase) {
+    if lost == LostBase::Missing && loaded.history.entries.is_empty() {
+        // The next commit writes the first base (`Store::write_history`).
+        return;
+    }
+    if loaded.base_to_write.is_some() {
+        // A base is written anyway (the history starts over).
+        return;
+    }
+    let what = match lost {
+        LostBase::Missing => "missing",
+        LostBase::Unreadable => "unreadable",
+    };
+    match derive_base(&loaded.history, &loaded.project) {
+        Some((history, base)) => {
+            let dropped = loaded.history.entries.len() - history.entries.len();
+            let mut note = format!(
+                "rebuilt the {what} .qrec/history.base.json from the history (the project at entry {})",
+                history.base_seq
+            );
+            if dropped > 0 {
+                note.push_str(&format!(
+                    "; dropped the {dropped} oldest entries, which no longer undo"
+                ));
+            }
+            loaded.notes.push(note);
+            loaded.history = history;
+            loaded.base_to_write = Some((loaded.history.base_seq, base));
+            loaded.needs_repair = true;
+        }
+        None => loaded.notes.push(format!(
+            "the {what} .qrec/history.base.json couldn't be rebuilt from the history, so the project can't be rebuilt from it"
+        )),
+    }
+}
+
+/// Recovery mode with no commit record, no usable `qrec.json` and no base.
+fn nothing_to_recover(lost: Option<LostBase>) -> CoreError {
+    let base = match lost {
+        Some(LostBase::Unreadable) => ".qrec/history.base.json is unreadable",
+        _ => "there is no .qrec/history.base.json",
+    };
+    CoreError::invalid(format!(
+        "nothing to recover from: qrec.json is unusable, there is no .qrec/history.head.json and {base}"
+    ))
+    .with_hint("restore qrec.json from a backup")
 }
 
 /// `seen_clip_ids` from the base snapshot (or the project when there is none).
@@ -250,13 +327,15 @@ fn with_head(
         .as_ref()
         .and_then(|(seq, _)| *seq)
         .unwrap_or(head.base_seq);
+    let mut needs_repair = parsed.dropped_torn;
     if base_seq != head.base_seq {
         notes.push(format!(
             "history base {base_seq} differs from the commit record's {}; a history rewrite didn't finish",
             head.base_seq
         ));
+        // The commit record is written again with the base's seq.
+        needs_repair = true;
     }
-    let mut needs_repair = parsed.dropped_torn;
     if parsed.dropped_torn {
         notes.push("dropped a torn last line of .qrec/history.jsonl".to_owned());
     }
@@ -327,6 +406,8 @@ fn with_head(
         migrated_from: None,
         needs_repair,
         base_to_write,
+        has_base: base.is_some(),
+        ui_unreadable: false,
         readded: Vec::new(),
         notes,
     }
@@ -401,15 +482,11 @@ fn without_head(
             "no .qrec/history.head.json: rebuilt the commit record from qrec.json".to_owned(),
         );
     }
+    // A history without its base gets one derived (`derive_lost_base`).
     let base_to_write = match (&base_project, entries.is_empty()) {
         (None, true) => Some((base_seq, project.clone())),
         _ => None,
     };
-    if base_project.is_none() && !entries.is_empty() {
-        notes.push(
-            "no .qrec/history.base.json: the project can't be rebuilt from the history".to_owned(),
-        );
-    }
     let history = History {
         entries: Arc::new(entries),
         cursor,
@@ -428,6 +505,8 @@ fn without_head(
         migrated_from,
         needs_repair: true,
         base_to_write,
+        has_base: base_project.is_some(),
+        ui_unreadable: false,
         readded: Vec::new(),
         notes,
     }
@@ -448,18 +527,11 @@ fn without_head(
 /// `nextTakeNumber` goes past every take the history names, found or not.
 fn rebuild(
     paths: &ProjectPaths,
-    base: Option<(Option<u64>, Project)>,
+    (base_seq, base_project): (Option<u64>, Project),
     parsed: ParsedHistory,
     ui: UiState,
     mut notes: Vec<String>,
-) -> Result<Loaded, ShellError> {
-    let Some((base_seq, base_project)) = base else {
-        return Err(CoreError::invalid(
-            "nothing to recover from: qrec.json is unusable and there is no .qrec/history.head.json or .qrec/history.base.json",
-        )
-        .with_hint("restore qrec.json from a backup")
-        .into());
-    };
+) -> Loaded {
     let base_seq = base_seq.unwrap_or(0);
     let mut project = base_project.clone();
     // Take numbers are never reused (SPEC §5.3.1): the base's counter
@@ -534,7 +606,7 @@ fn rebuild(
         seen_clip_ids: Arc::default(),
     };
     let history = with_seen_ids(history, Some(&base_project), &project);
-    Ok(Loaded {
+    Loaded {
         project,
         history,
         ui,
@@ -544,9 +616,11 @@ fn rebuild(
         migrated_from: None,
         needs_repair: true,
         base_to_write: None,
+        has_base: true,
+        ui_unreadable: false,
         readded,
         notes,
-    })
+    }
 }
 
 /// A `takes/take-N` folder the project doesn't know.
@@ -705,21 +779,26 @@ fn read_head(paths: &ProjectPaths, notes: &mut Vec<String>) -> Result<Option<Hea
     }
 }
 
-fn read_base(
-    paths: &ProjectPaths,
-    notes: &mut Vec<String>,
-) -> Result<Option<(Option<u64>, Project)>, ShellError> {
+/// Why there is no base to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LostBase {
+    Missing,
+    /// There, but it doesn't parse as a base.
+    Unreadable,
+}
+
+/// A base read from `history.base.json`: its seq (if it has one) and project.
+type BaseRead = (Option<u64>, Project);
+
+/// `history.base.json`: the base, or why there is none to use.
+fn read_base(paths: &ProjectPaths) -> Result<Result<BaseRead, LostBase>, ShellError> {
     let path = paths.history_base();
     let Some(bytes) =
         read_optional(&path).map_err(|e| ShellError::io(format!("read {}", path.display()), e))?
     else {
-        return Ok(None);
+        return Ok(Err(LostBase::Missing));
     };
-    let base = format::parse_base(&bytes);
-    if base.is_none() {
-        notes.push("ignored an unreadable .qrec/history.base.json".to_owned());
-    }
-    Ok(base)
+    Ok(format::parse_base(&bytes).ok_or(LostBase::Unreadable))
 }
 
 fn read_history(paths: &ProjectPaths) -> Result<ParsedHistory, ShellError> {
@@ -730,12 +809,18 @@ fn read_history(paths: &ProjectPaths) -> Result<ParsedHistory, ShellError> {
     Ok(format::parse_history(&bytes)?)
 }
 
-fn read_ui(paths: &ProjectPaths, notes: &mut Vec<String>) -> UiState {
+/// The UI state, and whether `ui.json` was there but unreadable.
+fn read_ui(paths: &ProjectPaths, notes: &mut Vec<String>) -> (UiState, bool) {
     match read_optional(&paths.ui_file()) {
-        Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-            notes.push(format!("ignored an unreadable .qrec/ui.json: {e}"));
-            UiState::default()
-        }),
-        _ => UiState::default(),
+        Ok(Some(bytes)) => match serde_json::from_slice(&bytes) {
+            Ok(ui) => (ui, false),
+            Err(e) => {
+                notes.push(format!(
+                    "replaced an unreadable .qrec/ui.json with the default view: {e}"
+                ));
+                (UiState::default(), true)
+            }
+        },
+        _ => (UiState::default(), false),
     }
 }

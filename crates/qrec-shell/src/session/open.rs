@@ -267,16 +267,9 @@ pub(super) fn open(
                     "qrec.json didn't merge: the project's files are left as they are until it is fixed or restored"
                 );
             }
-        } else if session.store.is_dirty() {
-            repair = match session.store.write_all(&session.state) {
-                Ok(()) => Repair::Done,
-                Err(e) => {
-                    session.notify_error("Couldn't repair the project files", &e.to_string());
-                    Repair::Failed
-                }
-            };
         } else {
-            repair = Repair::Done;
+            let ui = loaded.as_ref().is_some_and(|l| l.ui_unreadable);
+            repair = session.write_repairs(ui);
         }
         session.store.sync_cursor_file(session.state.history.cursor);
     }
@@ -314,8 +307,10 @@ pub(super) fn open(
 /// What a host's open did about the repairs the load found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Repair {
-    /// Written (or nothing needed writing).
+    /// Written.
     Done,
+    /// Nothing to write: the notes only say what couldn't be repaired.
+    Nothing,
     /// The write failed (an error toast said so).
     Failed,
     /// Not written: recovery mode, or a `qrec.json` that didn't merge.
@@ -323,12 +318,34 @@ enum Repair {
 }
 
 impl Session {
+    /// A host's open writes the repairs the load found (A§7.6): the files
+    /// when the store is dirty, and `ui.json` when it was unreadable.
+    fn write_repairs(&mut self, ui: bool) -> Repair {
+        let mut wrote = false;
+        if self.store.is_dirty() {
+            if let Err(e) = self.store.write_all(&self.state) {
+                self.notify_error("Couldn't repair the project files", &e.to_string());
+                return Repair::Failed;
+            }
+            wrote = true;
+        }
+        if ui {
+            match self.store.want_ui_write(&self.state.ui, Instant::now()) {
+                Ok(()) => wrote = true,
+                Err(e) => tracing::warn!("can't write .qrec/ui.json: {e}"),
+            }
+        }
+        if wrote { Repair::Done } else { Repair::Nothing }
+    }
+
     /// The toast for what the load found (its notes are logged already).
+    /// It says the files were repaired only when the open wrote them.
     fn report_load(&mut self, notes: &[String], repair: Repair) {
         // Recovery mode repairs nothing until the restore saves, and a
         // qrec.json that didn't merge is never written over (A§7.7).
         let (title, then) = match repair {
             Repair::Done => ("Qrec repaired the project's files", String::new()),
+            Repair::Nothing => ("Qrec found problems in the project's files", String::new()),
             Repair::Failed => return,
             Repair::Held if self.opts.recovery => (
                 "The project's files need repair",

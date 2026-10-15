@@ -960,7 +960,12 @@ Diff (`history/diff.rs`, custom, not `json_patch::diff`):
 
 Above 5,000 entries the oldest are dropped down to 4,000; `history.base.json`
 becomes the project before the oldest kept entry (walking inverses back from
-the current state) and `base_seq` its seq. `Clear` (`!`): no entries, base =
+the current state) and `base_seq` its seq. The same walk
+(`history::ops::derive_base`) gives back a base that is lost: an unreadable
+`history.base.json`, or a missing one under a history with entries, is
+derived on open from the project at the cursor and written with the open's
+repairs (A§7.6); an entry whose inverse no longer applies is dropped with
+everything older, as in compaction. `Clear` (`!`): no entries, base =
 current project, `base_seq = cursor`. `Restore <seq>` (`!`) = undo/redo to it;
 restoring the cursor itself applies no patch but its project is validated
 all the same (it is what gets written, A§7.7).
@@ -1012,14 +1017,20 @@ that saves (a `History` op or `WriteProject`), in order:
 An outcome that saves nothing writes nothing, even when the files need
 repair: a failed commit or a repair the load found makes the next commit
 that saves rewrite the history file, `qrec.json` and the head, and a host's
-open (outside recovery mode) writes the repair right away, unless its
+open (outside recovery mode) writes the repair right away (and an
+unreadable `ui.json`; its toast says the files were repaired only when it
+wrote them), unless its
 `qrec.json` didn't merge (A§7.7): that file is never written over in place,
 so the repair waits for the write that moves it aside or copies it first. A
 Session that goes away with a dirty store tries one last full write (in
 recovery mode only once a request saved, A§7.7; never over a `qrec.json`
 that failed to load). Non-undoable writes do steps 2–3. On open (lock
 held): drop history lines with `seq ≥ nextSeq`; drop a torn last line; a
-bad line elsewhere ⇒ `Invalid` with its line number. If `sha256(qrec.json) == H` the state is clean.
+bad line elsewhere ⇒ `Invalid` with its line number; derive an unreadable
+`history.base.json` (or a missing one under entries) from the project at
+the cursor (A§7.3) and write it as a repair; a base whose seq isn't the
+head's `baseSeq` (a rewrite that didn't finish) wins and the head is
+written again. If `sha256(qrec.json) == H` the state is clean.
 Otherwise a valid file whose undoable view is the `afterHash` of the
 uncommitted lines (they follow the head: the first is its `nextSeq`, then
 one after the other, after a history ending at its cursor), and that still
@@ -1080,7 +1091,10 @@ rewrites every file with its next commit, and the replies they send are
   that would save without replacing it is refused. Restore copies the
   corrupt file to `.qrec/qrec.corrupt-<ts>.json` before writing.
 - If the head file is missing too, rebuild from `history.base.json` +
-  forward patches. Patches carry no take facts and the base usually predates
+  forward patches (without a usable base there is nothing to recover from,
+  and the error says whether the base is missing or unreadable; an open
+  that had the head derived a lost base, A§7.3, so this rarely happens).
+  Patches carry no take facts and the base usually predates
   the takes, so each take found under `takes/` joins the pool right before
   the first entry that uses it (its clip or its scene), `recording`, with
   the project scene of that moment (what `begin_take` copied) and `placed`

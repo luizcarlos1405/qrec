@@ -434,6 +434,7 @@ fn rewrites_store_the_base_with_its_seq_and_survive_a_crash() {
         "{:?}",
         loaded.notes
     );
+    assert!(loaded.needs_repair, "the commit record is written again");
 
     // Undoing the kept entry lands exactly on the stored base.
     let reopened = State {
@@ -443,6 +444,77 @@ fn rewrites_store_the_base_with_its_seq_and_survive_a_crash() {
     let undone = qrec_core::history::ops::undo_with(&reopened, 1, unchecked).unwrap();
     assert_eq!(undone.project, base.project);
     assert_eq!(undone.history.cursor, 2);
+}
+
+/// An unreadable `history.base.json` (or a missing one, with entries) is
+/// derived again from the project at the cursor and written with the
+/// repairs, so the history can still rebuild the project (A§7.7). It used
+/// to be ignored, never written again (`has_base` saw the file), and a
+/// recovery said there was no base.
+#[test]
+fn a_lost_base_is_derived_from_the_cursor_and_written() {
+    let (tmp, mut store, s0) = initialized();
+    let (s1, ops, project) = edit(&s0, "Remove c001", remove_first_clip);
+    commit(&mut store, &s0, &s1, &ops, project).unwrap();
+    let (s2, ops, project) = edit(&s1, "Trim", trim(250));
+    commit(&mut store, &s1, &s2, &ops, project).unwrap();
+    let paths = ProjectPaths::new(tmp.path());
+    let original = fs::read(paths.history_base()).unwrap();
+    let base_project = s0.project.clone();
+
+    for (lost, what) in [(Some(&b"garbage\n"[..]), "unreadable"), (None, "missing")] {
+        match lost {
+            Some(bytes) => fs::write(paths.history_base(), bytes).unwrap(),
+            None => fs::remove_file(paths.history_base()).unwrap(),
+        }
+        for opts in [opts(), recovery()] {
+            let loaded = load(&paths, &opts).unwrap();
+            assert!(!loaded.has_base, "{what}");
+            assert_eq!(
+                loaded.base_to_write,
+                Some((0, base_project.clone())),
+                "{what}"
+            );
+            assert!(loaded.needs_repair, "{what}");
+            assert_eq!(loaded.history.entries.len(), 2, "{what}");
+            let note = format!("rebuilt the {what} .qrec/history.base.json from the history");
+            assert!(
+                loaded.notes.iter().any(|n| n.starts_with(&note)),
+                "{what}: {:?}",
+                loaded.notes
+            );
+        }
+        // The open's repair writes the same base again.
+        let loaded = load(&paths, &opts()).unwrap();
+        let mut store = Store::new(paths.clone(), true);
+        store.adopt(&loaded);
+        let reopened = State {
+            history: loaded.history.clone(),
+            ..state(loaded.project.clone())
+        };
+        store.write_all(&reopened).unwrap();
+        assert_eq!(fs::read(paths.history_base()).unwrap(), original, "{what}");
+        let again = load(&paths, &opts()).unwrap();
+        assert!(again.has_base && !again.needs_repair, "{what}");
+        assert!(again.notes.is_empty(), "{what}: {:?}", again.notes);
+    }
+
+    // The history rebuilds the project from it.
+    fs::remove_file(paths.history_head()).unwrap();
+    fs::remove_file(paths.project_file()).unwrap();
+    let rebuilt = load(&paths, &recovery()).unwrap();
+    assert_eq!(rebuilt.history.cursor, 2);
+    assert_eq!(rebuilt.project, s2.project);
+
+    // With nothing else to recover from, an unreadable base is named so.
+    fs::write(paths.history_base(), b"garbage\n").unwrap();
+    let err = CoreError::from(load(&paths, &recovery()).unwrap_err());
+    assert!(
+        err.message
+            .ends_with("and .qrec/history.base.json is unreadable"),
+        "{}",
+        err.message
+    );
 }
 
 #[test]

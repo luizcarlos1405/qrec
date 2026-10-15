@@ -1152,6 +1152,54 @@ fn a_hand_edit_found_at_open_survives_the_repairs() {
     );
 }
 
+/// An unreadable `.qrec/history.base.json` is rebuilt from the history and
+/// written by the next host's open, which says so once (A§7.6). It used to
+/// be reported as repaired by every open and never written. A repair toast
+/// now means the open wrote something: an unreadable `ui.json` is written
+/// again too, and a problem it can't fix isn't called repaired.
+#[test]
+fn an_unreadable_history_base_is_rebuilt_once() {
+    let h = Harness::with_sample("unreadable-base");
+    {
+        let mut s = h.open(true).unwrap();
+        for id in ["c001", "c002"] {
+            send(
+                &mut s,
+                Command::ClipRemove {
+                    clips: vec![clip(id)],
+                },
+                false,
+            )
+            .unwrap();
+        }
+    }
+    let base = h.paths().history_base();
+    let original = fs::read(&base).unwrap();
+    fs::write(&base, b"garbage\n").unwrap();
+    fs::write(h.paths().ui_file(), b"{ not ui").unwrap();
+    h.toasts.lock().unwrap().clear();
+
+    let s = h.open(true).unwrap();
+    let toasts = h.toasts.lock().unwrap().clone();
+    assert_eq!(toasts.len(), 1, "{toasts:?}");
+    assert_eq!(toasts[0].title, "Qrec repaired the project's files");
+    let body = toasts[0].body.clone().unwrap();
+    assert!(
+        body.contains("rebuilt the unreadable .qrec/history.base.json from the history"),
+        "{body}"
+    );
+    assert!(body.contains(".qrec/ui.json"), "{body}");
+    assert_eq!(fs::read(&base).unwrap(), original, "the same base again");
+    let ui: Value = serde_json::from_slice(&fs::read(h.paths().ui_file()).unwrap()).unwrap();
+    assert!(ui.is_object(), "{ui}");
+    drop(s);
+
+    h.toasts.lock().unwrap().clear();
+    let s = h.open(true).unwrap();
+    assert!(h.toast_titles().is_empty(), "{:?}", h.toast_titles());
+    drop(s);
+}
+
 /// A hand edit that is valid alone but not once merged (facts in memory
 /// win, A§7.4) is never written over by the open's repairs (A§7.7, SPEC
 /// §16): it stays as it is, user edits wait, closing writes nothing, and a
