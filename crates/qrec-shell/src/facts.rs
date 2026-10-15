@@ -472,8 +472,15 @@ pub fn out_facts(project_root: &Path, out: &str) -> OutFacts {
     // `out` still says whether the path names a folder (`folder_marker`).
     let abs: PathBuf = joined.components().collect();
     let meta = fs::symlink_metadata(&abs).ok();
+    let mut shown = path_text(&abs);
+    // Such a path is refused; it is shown the way it names the folder.
+    match folder_marker(out) {
+        Some("/") if !shown.ends_with('/') => shown.push('/'),
+        Some(".") => shown.push_str("/."),
+        _ => {}
+    }
     OutFacts {
-        abs: path_text(&abs),
+        abs: shown,
         exists: meta.is_some(),
         // What a confirmed overwrite replaces: the entry at `abs` itself
         // (a symlink there is replaced, not its target), like
@@ -1279,6 +1286,9 @@ mod tests {
         let why = |out: String| out_facts(&root, &out).forbidden.unwrap_or_default();
         let at = |p: &str| format!("{}/{p}", outside.display());
         assert!(why(at("newdir/")).contains("ends with '/'"));
+        // Shown the way it names the folder.
+        assert_eq!(out_facts(&root, &at("newdir/")).abs, at("newdir/"));
+        assert_eq!(out_facts(&root, &at("newdir/.")).abs, at("newdir/."));
         assert!(why(at("newdir//")).contains("ends with '/'"));
         assert!(why(at("newdir/.")).contains("ends with '.'"));
         // `newdir/..` is the folder holding `newdir`, as the OS reads it.

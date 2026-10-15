@@ -352,7 +352,8 @@ pub struct Facts {
     pub screens: Vec<ScreenInfo>,                   // LayerAdd screen (label, size; unknown → NotFound)
     pub cameras: Vec<CameraInfo>,                   // LayerAdd camera
     pub out: Option<OutFacts>,                      // Export/FrameSave with --out
-    pub take_files: BTreeMap<TakeId, Vec<FileFact>>,// purge confirmation
+    pub take_files: BTreeMap<TakeId, Vec<FileFact>>,// purge confirmation: the files it deletes
+    pub take_left: BTreeMap<TakeId, Vec<String>>,   // purge: what it would leave on disk (A§5.6)
     pub min_take_number: u32,                       // 1 + highest takes/take-N folder
     pub files: BTreeMap<String, FileFact>,          // size/mtime for silence keys
 }
@@ -360,7 +361,7 @@ pub struct AudioDeviceInfo { pub name: String, pub description: String, pub is_m
 pub struct ScreenInfo { pub output: String, pub description: String, pub x: i32, pub y: i32, pub width: u32, pub height: u32, pub scale: f64 }
 pub struct CameraInfo { pub device: String, pub label: String, pub modes: Vec<CameraMode> }
 pub struct CameraMode { pub width: u32, pub height: u32, pub fps: Fps, pub format: String }
-pub struct OutFacts { pub abs: String, pub exists: bool, pub bytes: Option<u64> /* lstat size when it exists */, pub forbidden: Option<String> /* why: inside takes/ or .qrec/ (also through a symlinked one), qrec.json, a directory, a name over 255 bytes or in the temp-file shape (A§8.7) */ }
+pub struct OutFacts { pub abs: String, pub exists: bool, pub bytes: Option<u64> /* lstat size when it exists */, pub forbidden: Option<String> /* why: in takes/ or .qrec/ (also through a link or bind mount, A§5.9), qrec.json, a directory, a path naming a folder or not UTF-8, a name over 255 bytes or in the temp-file shape (A§8.7) */ }
 pub struct FileFact { pub path: String, pub bytes: u64, pub mtime_ns: i64 }
 
 #[derive(Default)]
@@ -794,7 +795,15 @@ files with sizes (`facts.take_files`), the number of history entries lost and
 the oldest surviving label. Effects in order: `History(Rewrite)` (A§7.5),
 `WriteProject`, then `DeleteTakeDirs` — the shell deletes exactly
 `takes/<takeId>/` (O_NOFOLLOW, regular files only, then rmdir) only after the
-commit is durable. Not undoable. A purge whose commit fails changes nothing
+commit is durable. Not undoable. The facts come from that same walk
+(`media::take_contents`), so `take_files` lists exactly the files deleted,
+never what is behind a symlinked `takes/` or take folder. What the walk would
+leave on disk (`facts.take_left`: a symlinked or unreadable `takes/` or take
+folder with something behind it, or a symlink, folder or special file in the
+take folder) makes the purge `Invalid` before anything changes, confirmed or
+not: "can't purge take 2 from disk: takes/take-0002/ is a symlink (not
+followed)", `details: {takes, left}`, hint to move or delete those entries by
+hand first. A purge never drops a take and its history while its media stays. A purge whose commit fails changes nothing
 (A§7.6: the store puts the base it replaced back) and replies `io`
 "couldn't save the project, so nothing changed"; if its files can't be put
 back it is kept in memory, the shell deletes nothing and sends
@@ -848,18 +857,30 @@ the CLI's interrupted hint follows the same rule (A§8.6).
 It means what the OS says: `..` stays in `facts.out.abs` (the path the job
 writes and reports) and the checks run where the kernel resolves it, so
 `link/..` is the parent of the link's target, never lexically the folder
-holding `link`.
-`facts.out.forbidden` (inside `takes/` or `.qrec/`, `qrec.json`, a
-directory, a name over 255 bytes, or a name in the temp-file shape
-`.<stem>.qrec-part-<pid>-<job>[.<ext>]` that host start would sweep, A§8.7)
-⇒ `Invalid` (not confirmable). `takes/`, `.qrec/` and `qrec.json` are
-matched by name under the project folder and by identity (`st_dev`,
-`st_ino`, symlinks followed) against the output and every existing folder
-above it, so a symlinked `takes/` (media moved to another disk) or a bind
-mount still guards the recordings, through the link or straight at its
-target. `exists && !confirmed` ⇒ `confirmation_required` "overwrite <abs>
-(<size>)" with `details: {files:[{path,bytes}]}` (`facts.out.bytes`, the
-`lstat` size: a symlink at `out` is what gets replaced, not its target).
+holding `link`. What is checked is what the job touches: the entry the
+final rename replaces or creates (its folder resolved, symlinks and `..`
+followed, its own name kept; the temp file lands in that folder too) and,
+when that entry is a symlink, where the link leads.
+`facts.out.forbidden` (in `takes/` or `.qrec/`, `qrec.json`, the project
+folder, a directory, a path that names a folder — it ends with `/`, `.` or
+`..`; the CLI keeps the trailing `/` when it makes `--out` absolute — a
+path that isn't UTF-8, a name over 255 bytes, or a name in the temp-file
+shape `.<stem>.qrec-part-<pid>-<job>[.<ext>]` that host start would sweep,
+A§8.7) ⇒ `Invalid` (not confirmable). `qrec.json`, `takes/` and `.qrec/`
+are matched by name under the project folder and by identity (`st_dev`,
+`st_ino`, symlinks followed), and so is everything found in `takes/` and
+`.qrec/` (`facts::Protected`, a few levels deep): every folder, real or
+behind a symlink (a take folder, `.qrec/cache`), and every file a symlink
+there leads to (a media file moved to another disk). A touched place is
+refused when it is one of those files or lies in one of those folders by
+path or by the identity of it or of any existing folder above it. So a
+symlinked `takes/`, take folder, media file or `.qrec/cache`, or a bind
+mount of any of their folders, still guards the recordings, through the
+link or mount or straight at its target, and a dangling link (a disk that
+isn't plugged in) still guards where it points. `exists && !confirmed` ⇒
+`confirmation_required` "overwrite <abs> (<size>)" with `details:
+{files:[{path,bytes}]}` (`facts.out.bytes`, the `lstat` size: a symlink at
+`out` is what gets replaced, not its target).
 The plan's `replace` is `exists && confirmed`: the
 runner may replace only the file the person confirmed. `OutputAppeared` (a
 hand-picked `out` appeared while the job ran, A§8.8) ends the job with
@@ -1230,7 +1251,13 @@ backups either). A valid hand edit a read-only open finds is shown as the
 project a host would merge (`history::external::merged_preview`), with the
 history as it is on disk: no "External edit" entry, cursor or seq is made
 up, and no merge is announced; the next host records it (A§7.4).
-`--over-selection` with no live host ⇒ `Unavailable`.
+`--over-selection` with no live host ⇒ `Unavailable`. A current directory
+that can't be read (it was deleted) only matters for what is relative to
+it: an absolute `--project` (and `--out`) works without one, like `qrec
+host`; no `--project` is `io` "can't read the current directory (was it
+deleted?)" with the hint "cd into an existing folder, or pass an absolute
+--project DIR", and a relative `--project` or `--out` is `io` naming the
+flag.
 
 ### A§8.5 In-process commands
 
@@ -1319,6 +1346,13 @@ nothing of anyone else's may be tied to it for long:
 
 One runner for every child: stdin null, `process_group(0)`, stdout piped only
 when parsed (drained on its own thread), stderr appended to a log file.
+Arguments are passed byte for byte (`OsString`): the media runner replaces a
+plan's last element with `file:<temp path>` (and the segment check's input)
+keeping the path's exact bytes, so a project folder whose path isn't UTF-8
+renders like any other. Paths the shell reports (`ExportFinished`,
+`FrameSaved`, `OutputAppeared`, log paths in hints and `details.log`) are
+exact, or written `\xHH` byte by byte where they aren't UTF-8
+(`paths::path_text`), never with a lossy `�`.
 Timeouts: ffprobe 20 s, pactl 3 s, VA/encoder probes 10 s, `wl-copy` 5 s
 (`--type image/png`, stdin from the PNG file). ffprobe and silencedetect get
 30 s more per GiB of input, in proportion (`-count_packets` reads the whole
@@ -1720,11 +1754,17 @@ strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
 
 - Global flags: `--project DIR`, `--json`, `--yes`, `-q`, `-v`. Numeric and
   time arguments allow hyphen values (`--by -1`, `--gain-db -3`), so a
-  negative count or index gets its range error (`--to -1`, `undo -1`). clap
+  negative count, index or seq gets its range error (`undo -1`: "-1 is not
+  in 1..=…"; `--to -1`, `--at -1`, `history restore -1`: "-1 is not in
+  0..=…"), never "invalid digit found in string", which stays for what
+  isn't a number. clap
   errors under `--json` print `{"ok":false,"error":{"code":"usage",…}}`,
   exit 2; `--help`, `help` and `--version` under `--json` print one
   `{"ok":true,…}` object (A§4.9).
-- `--out` is resolved against the CLI's cwd before sending.
+- `--out` is resolved against the CLI's cwd before sending, keeping a
+  trailing `/` (`dir/` or `dir/.` names a folder, which the host refuses,
+  A§5.9). Without a readable cwd only an absolute `--out` or `--project`
+  works (A§8.4).
 - `qrec autocut` without `--clips`/`--all` sends `ClipScope::All`.
 - `qrec status --json` returns `Query::State` plus host info.
 - Project-less: `--help`, `version`, `doctor`, `sources list`, `schema`,

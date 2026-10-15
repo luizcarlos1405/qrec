@@ -128,9 +128,10 @@ pub struct OutFacts {
     /// lists it (SPEC §11).
     #[serde(default)]
     pub bytes: Option<u64>,
-    /// Why the path can't be used: inside `takes/` or `.qrec/` (also through
-    /// a symlinked folder), `qrec.json` itself, a directory, or a name over
-    /// 255 bytes.
+    /// Why the path can't be used (A§5.9): in `takes/` or `.qrec/` (also
+    /// through a symlink or bind mount there or below), `qrec.json` itself,
+    /// a directory, a path that names a folder or isn't UTF-8, or a name
+    /// over 255 bytes or in the temp-file shape.
     pub forbidden: Option<String>,
 }
 
