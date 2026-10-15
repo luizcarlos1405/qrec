@@ -463,29 +463,62 @@ fn invalid_or_missing_files_fail_with_the_restore_hint() {
 }
 
 #[test]
-fn recovery_mode_uses_the_head_and_never_the_file() {
+fn recovery_mode_uses_the_head_and_never_an_unusable_file() {
     let (tmp, mut store, s0) = initialized();
     let (s1, ops, project) = edit(&s0, "Remove c001", remove_first_clip);
     commit(&mut store, &s0, &s1, &ops, project).unwrap();
     let paths = ProjectPaths::new(tmp.path());
     let loaded = load(&paths, &recovery()).unwrap();
     assert_eq!(loaded.disk_invalid, None, "the file matches the head");
+    assert_eq!(loaded.external, None);
 
     fs::write(paths.project_file(), b"garbage").unwrap();
     let loaded = load(&paths, &recovery()).unwrap();
     assert_eq!(loaded.project, s1.project);
     assert_eq!(loaded.history.cursor, 1);
+    assert_eq!(loaded.external, None);
     assert!(
         loaded
             .disk_invalid
             .as_deref()
             .unwrap()
-            .contains("doesn't match the history")
+            .starts_with("qrec.json is not valid JSON"),
+        "{:?}",
+        loaded.disk_invalid
     );
     assert_eq!(
         loaded.accepted_sha.as_deref(),
         Some(format::sha(b"garbage").as_str())
     );
+
+    fs::remove_file(paths.project_file()).unwrap();
+    let loaded = load(&paths, &recovery()).unwrap();
+    assert_eq!(loaded.disk_invalid.as_deref(), Some("qrec.json is missing"));
+}
+
+#[test]
+fn recovery_mode_merges_a_valid_hand_edit_like_any_open() {
+    let (tmp, mut store, s0) = initialized();
+    let (s1, ops, project) = edit(&s0, "Remove c001", remove_first_clip);
+    commit(&mut store, &s0, &s1, &ops, project).unwrap();
+    let paths = ProjectPaths::new(tmp.path());
+
+    // Same project, other formatting: nothing to merge.
+    let compact = serde_json::to_vec(&s1.project).unwrap();
+    fs::write(paths.project_file(), &compact).unwrap();
+    let loaded = load(&paths, &recovery()).unwrap();
+    assert_eq!((loaded.external, loaded.disk_invalid), (None, None));
+
+    // A valid edit is an external edit for the session to merge (SPEC §8.1),
+    // not a broken file to copy aside and replace.
+    let mut edited = s1.project.clone();
+    edited.name = "my hand edit".into();
+    fs::write(paths.project_file(), format::project_bytes(&edited)).unwrap();
+    let loaded = load(&paths, &recovery()).unwrap();
+    assert_eq!(loaded.disk_invalid, None);
+    assert_eq!(loaded.external, Some(Ok(Box::new(edited.clone()))));
+    assert_eq!(loaded.project, s1.project, "the head, to merge into");
+    assert_eq!(loaded, load(&paths, &opts()).unwrap(), "like a normal open");
 }
 
 #[test]
@@ -535,9 +568,13 @@ fn recovery_rebuilds_from_the_base_and_re_adds_takes() {
             .disk_invalid
             .as_deref()
             .unwrap()
-            .starts_with("qrec.json is invalid")
+            .starts_with("qrec.json is not valid JSON"),
+        "{:?}",
+        loaded.disk_invalid
     );
     assert!(loaded.needs_repair);
+    assert!(!take.placed, "no entry placed it: it goes to the bin");
+    assert_eq!(take.scene, loaded.project.scene, "the latest scene");
 
     // Nothing at all to recover from.
     fs::remove_file(paths.history_base()).unwrap();
@@ -547,6 +584,133 @@ fn recovery_rebuilds_from_the_base_and_re_adds_takes() {
         "{}",
         err.message
     );
+}
+
+/// A project whose base predates its only take, like every project
+/// recorded after `qrec init`: e1 adds the screen layer, the take enters
+/// the pool as a fact (no entry), e2 places its clip ("Record take 1"),
+/// e3 edits the take's own scene.
+fn recorded_after_the_base() -> (tempfile::TempDir, Store, Vec<State>) {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::create_dir(tmp.path().join(".qrec")).unwrap();
+    let mut store = Store::new(ProjectPaths::new(tmp.path()), true);
+    let full = sample_project();
+    let mut empty = full.clone();
+    empty.takes.clear();
+    empty.timeline.clips.clear();
+    empty.scene.layers.clear();
+    empty.next_take_number = 1;
+    let s0 = state(empty);
+    store.write_all(&s0).unwrap();
+    let (s1, ops, project) = edit(&s0, "Add layer L1", |p| {
+        p.scene.layers = full.scene.layers.clone()
+    });
+    commit(&mut store, &s0, &s1, &ops, project).unwrap();
+    // begin_take: the take is a fact, saved without an entry.
+    let mut taken = s1.clone();
+    let mut take = full.takes.values().next().unwrap().clone();
+    take.scene = s1.project.scene.clone();
+    taken
+        .project
+        .takes
+        .insert("take-0001".parse().unwrap(), take);
+    taken.project.next_take_number = 2;
+    commit(&mut store, &s1, &taken, &[], true).unwrap();
+    let (s2, ops, project) = edit(&taken, "Record take 1", |p| {
+        p.timeline.clips = full.timeline.clips[..1].to_vec()
+    });
+    commit(&mut store, &taken, &s2, &ops, project).unwrap();
+    let (s3, ops, project) = edit(&s2, "Fade take 1's screen", |p| {
+        let take = p.takes.values_mut().next().unwrap();
+        take.scene.layers[0].opacity = 0.5;
+    });
+    commit(&mut store, &s2, &s3, &ops, project).unwrap();
+    (tmp, store, vec![s0, s1, s2, s3])
+}
+
+#[test]
+fn a_rebuilt_take_joins_the_pool_where_its_history_needs_it() {
+    let (tmp, _store, states) = recorded_after_the_base();
+    let paths = ProjectPaths::new(tmp.path());
+    let take_id: qrec_core::TakeId = "take-0001".parse().unwrap();
+    let base: BaseFile = serde_json::from_slice(&fs::read(paths.history_base()).unwrap()).unwrap();
+    assert!(base.project.takes.is_empty(), "the base predates the take");
+    let dir = paths.take_dir(&take_id);
+    fs::create_dir_all(&dir).unwrap();
+    for name in ["L1-screen-FAKE-1.mkv", "A1-mic.mka"] {
+        fs::write(dir.join(name), b"x").unwrap();
+    }
+    fs::remove_file(paths.history_head()).unwrap();
+    fs::write(paths.project_file(), b"garbage").unwrap();
+
+    let loaded = load(&paths, &recovery()).unwrap();
+    let last = &states[3].project;
+    assert_eq!(loaded.history.cursor, 3, "{:?}", loaded.notes);
+    assert_eq!(loaded.project.timeline, last.timeline);
+    assert_eq!(loaded.readded, vec![take_id.clone()]);
+    let take = &loaded.project.takes[&take_id];
+    // The scene the project had when the take was recorded, so e3 (a patch
+    // of that scene, guarded by tests of its old values) still applies.
+    assert_eq!(take.scene, last.takes[&take_id].scene);
+    assert_eq!(take.scene.layers[0].opacity, 0.5);
+    assert!(take.placed, "e2 placed it: discard-last can find it");
+    assert_eq!(take.status, qrec_core::model::TakeStatus::Recording);
+    assert_eq!(take.duration_frames, 0, "the Recover probe measures it");
+    assert_eq!(loaded.project.next_take_number, 2);
+}
+
+#[test]
+fn an_outcome_that_saves_nothing_never_writes_even_when_dirty() {
+    let (tmp, mut store, s0) = initialized();
+    let paths = ProjectPaths::new(tmp.path());
+    fs::write(paths.project_file(), b"{ a broken hand edit").unwrap();
+    store.mark_dirty();
+    let mut next = s0.clone();
+    next.runtime.capabilities.cores = 3;
+    commit(&mut store, &s0, &next, &[], false).unwrap();
+    assert_eq!(
+        fs::read(paths.project_file()).unwrap(),
+        b"{ a broken hand edit",
+        "a capabilities event, a clock tick… write nothing"
+    );
+    assert!(
+        store.is_dirty(),
+        "the next change that saves rewrites everything"
+    );
+    // The next change that saves does.
+    let (s1, ops, project) = edit(&s0, "Remove c001", remove_first_clip);
+    commit(&mut store, &s0, &s1, &ops, project).unwrap();
+    assert!(!store.is_dirty());
+    assert_eq!(
+        fs::read(paths.project_file()).unwrap(),
+        format::project_bytes(&s1.project)
+    );
+}
+
+#[test]
+fn the_cursor_file_follows_every_commit() {
+    let (tmp, mut store, s0) = initialized();
+    let paths = ProjectPaths::new(tmp.path());
+    let cursor = || fs::read_to_string(paths.history_cursor()).unwrap();
+    assert_eq!(cursor(), "0\n", "SPEC §8.1: the current seq");
+    let (s1, ops, project) = edit(&s0, "Remove c001", remove_first_clip);
+    commit(&mut store, &s0, &s1, &ops, project).unwrap();
+    assert_eq!(cursor(), "1\n");
+    let undone = qrec_core::history::ops::undo_with(&s1, 1, unchecked).unwrap();
+    commit(&mut store, &s1, &undone, &[HistoryOp::SetCursor(0)], true).unwrap();
+    assert_eq!(cursor(), "0\n");
+    // A copy for readers: stale or missing, it is put right, never read.
+    fs::write(paths.history_cursor(), b"7\n").unwrap();
+    assert_eq!(load(&paths, &opts()).unwrap().history.cursor, 0);
+    store.sync_cursor_file(0);
+    assert_eq!(cursor(), "0\n");
+    fs::remove_file(paths.history_cursor()).unwrap();
+    store.sync_cursor_file(0);
+    assert_eq!(cursor(), "0\n");
+    let reader = Store::new(paths.clone(), false);
+    fs::remove_file(paths.history_cursor()).unwrap();
+    reader.sync_cursor_file(0);
+    assert!(!paths.history_cursor().exists(), "readers write nothing");
 }
 
 #[test]

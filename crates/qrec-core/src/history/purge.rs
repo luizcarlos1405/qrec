@@ -26,7 +26,7 @@ use crate::history::view::{project_from_value, project_value, undoable_view};
 use crate::ids::TakeId;
 use crate::model::Project;
 use crate::protocol::effect::HistoryOp;
-use crate::requantize::rederive_durations;
+use crate::requantize::retime_takes;
 use crate::state::{History, State};
 
 /// What a purge does to the history.
@@ -101,9 +101,8 @@ pub fn rewrite(
         })?;
     }
     let mut base = project_from_value(value)?;
-    if base.canvas.fps != project.canvas.fps {
-        rederive_durations(&mut base);
-    }
+    // Its take facts are still the current ones (patches don't carry them).
+    retime_takes(&mut base, project.canvas.fps);
     remove_takes(&mut base, takes);
 
     // Kept entries without the purged takes' ops; empty ones go too.

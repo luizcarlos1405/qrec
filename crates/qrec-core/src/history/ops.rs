@@ -8,10 +8,17 @@
 //! its seq).
 //!
 //! Patches are applied to `view::project_value`, the result is
-//! deserialized, take durations are re-derived when the canvas fps changed
-//! (A§2.2) and the project is checked. The command handlers check with
+//! deserialized and the project is checked. Take facts aren't in the
+//! patches (A§7.2), so when the canvas fps changed they are retimed from
+//! the old rate (`requantize::retime_takes`, A§2.2): durations re-derived
+//! (converted through nanoseconds for takes without media info) and
+//! `Take.replaced` re-quantized, so discard-last after an undone or redone
+//! fps change puts back the right frames. The command handlers check with
 //! [`validated`] (A§2.3); the `*_with` variants take the check as an
 //! argument for callers that replay states validated when they were made.
+//! A restore to the cursor itself applies no patch but is checked all the
+//! same: it is the way out of a broken `qrec.json` (A§7.7) and must never
+//! write a project that doesn't validate.
 
 use std::sync::Arc;
 
@@ -23,7 +30,7 @@ use crate::history::HistoryEntry;
 use crate::history::view::{project_from_value, project_value};
 use crate::model::Project;
 use crate::protocol::effect::HistoryOp;
-use crate::requantize::rederive_durations;
+use crate::requantize::retime_takes;
 use crate::state::{History, State};
 
 /// Compaction starts above this many entries (A§7.3)…
@@ -143,13 +150,12 @@ pub fn replay(
     }
 }
 
-/// Deserializes a patched value, re-derives durations after an fps change
+/// Deserializes a patched value, retimes the take facts after an fps
+/// change (they are still at `project`'s rate: patches never carry them)
 /// and runs `check`.
 fn finish(project: &Project, value: Value, check: Check) -> Result<Project, CoreError> {
     let mut next = project_from_value(value)?;
-    if next.canvas.fps != project.canvas.fps {
-        rederive_durations(&mut next);
-    }
+    retime_takes(&mut next, project.canvas.fps);
     check(&next)?;
     Ok(next)
 }
@@ -178,6 +184,20 @@ fn drifted(entry: &HistoryEntry, dir: Direction, e: &PatchError) -> CoreError {
     ))
     .with_hint("qrec.json was changed outside Qrec's history; `qrec history` lists the entries")
     .with_details(json!({ "seq": entry.seq, "label": entry.label, "path": e.path.as_str() }))
+}
+
+/// The project at the cursor itself doesn't validate (a restore of the
+/// current entry, e.g. one rebuilt from the history, A§7.7).
+fn invalid_at(history: &History, seq: u64, e: CoreError) -> CoreError {
+    let what = match history.entries.iter().find(|e| e.seq == seq) {
+        Some(entry) => format!("entry {seq} (\"{}\")", entry.label),
+        None => format!("the oldest state in the history ({seq})"),
+    };
+    CoreError::invalid(format!("can't restore {what}: {}", e.message))
+        .with_hint(
+            "`qrec history` lists the entries: restore one from before the problem, or fix it after restoring",
+        )
+        .with_details(json!({ "seq": seq, "cause": e }))
 }
 
 /// The patched project doesn't parse or doesn't validate.
@@ -274,6 +294,8 @@ pub fn unknown_seq(history: &History, seq: u64) -> CoreError {
 
 /// The state with the cursor at position `target`: the entries between
 /// the cursor and `target` are undone or redone in order, all or nothing.
+/// Staying at the cursor (a restore of the current entry) applies nothing
+/// but still checks the project: it is what gets written.
 pub fn move_to(state: &State, target: usize, check: Check) -> Result<State, CoreError> {
     let history = &state.history;
     let pos = cursor_position(history)?;
@@ -296,6 +318,7 @@ pub fn move_to(state: &State, target: usize, check: Check) -> Result<State, Core
     let mut next = state.clone();
     next.history.cursor = seq_at(history, target);
     let Some(last) = entries.last() else {
+        check(&next.project).map_err(|e| invalid_at(history, next.history.cursor, e))?;
         return Ok(next);
     };
     let mut value = project_value(&state.project);
@@ -348,9 +371,8 @@ pub fn compact_to(
         }
     }
     let mut base = project_from_value(value).ok()?;
-    if base.canvas.fps != current.canvas.fps {
-        rederive_durations(&mut base);
-    }
+    // The base's take facts are still the current ones (patches don't carry them).
+    retime_takes(&mut base, current.canvas.fps);
     let base_seq = history.entries[dropped - 1].seq;
     let entries = history.entries[dropped..].to_vec();
     Some(rewritten(history, base, base_seq, entries, history.cursor))
@@ -392,7 +414,9 @@ mod tests {
     use crate::ctx::Ctx;
     use crate::history::commit;
     use crate::history::view::undoable_view;
-    use crate::model::{Fps, Stream};
+    use crate::ids::TakeId;
+    use crate::model::{Clip, Fps, Stream};
+    use crate::requantize::{apply_requantized, rederive_durations, requantize};
     use crate::testkit::{self, ProjectBuilder};
 
     fn ctx() -> Ctx {
@@ -754,6 +778,109 @@ mod tests {
         assert_eq!(base_seq, 1);
         assert_eq!(base.canvas.fps, Fps::new(30, 1));
         assert_eq!(base.takes.values().next().unwrap().duration_frames, 300);
+    }
+
+    /// take-0002 recorded over c00b (take-0001, 100..150) and has no media
+    /// info (its length can't be derived, only converted).
+    fn record_over() -> State {
+        let mut project = ProjectBuilder::new()
+            .screen_layer("L1", "DP-1")
+            .take("take-0001", 300)
+            .take("take-0002", 100)
+            .clip("c001", "take-0001", 0, 100)
+            .clip("c002", "take-0002", 0, 100)
+            .clip("c003", "take-0001", 150, 300)
+            .build();
+        let t2 = project.takes.get_mut(&TakeId::numbered(2)).unwrap();
+        t2.placed = true;
+        t2.replaced = vec![Clip {
+            id: "c00b".parse().unwrap(),
+            take: TakeId::numbered(1),
+            in_: 100,
+            out: 150,
+        }];
+        for stream in &mut t2.streams {
+            (stream.frames, stream.duration_ns, stream.fps) = (None, None, None);
+        }
+        testkit::state(project)
+    }
+
+    fn at_fps(fps: Fps) -> impl FnOnce(&mut Project) {
+        move |p: &mut Project| {
+            let plan = requantize(p, fps);
+            apply_requantized(p, &plan);
+        }
+    }
+
+    #[test]
+    fn an_fps_change_retimes_every_take_fact_both_ways() {
+        let s0 = record_over();
+        let s1 = edit(&s0, "60 fps", at_fps(Fps::new(60, 1)));
+        let t2 = &s1.project.takes[&TakeId::numbered(2)];
+        assert_eq!((t2.duration_frames, t2.replaced[0].in_), (200, 200));
+        let s2 = edit(&s1, "Rename", |p| p.name = "after".into());
+
+        // Undo, redo and multi-step moves: the facts follow the fps.
+        let undone = undo_with(&s2, 2, validated).unwrap();
+        assert_eq!(undone.project, s0.project);
+        assert_eq!(
+            redo_with(&undone, 1, validated).unwrap().project,
+            s1.project
+        );
+        assert_eq!(
+            redo_with(&undone, 2, validated).unwrap().project,
+            s2.project
+        );
+        assert_eq!(restore_with(&s2, 0, validated).unwrap().project, s0.project);
+        // Replaying from the base (A§7.7) too.
+        let replayed = replay(&s0.project, &s2.history.entries, validated).unwrap();
+        assert_eq!(replayed, s2.project);
+
+        // Down to 15 fps and back: take-0002's 100 frames become 50, then 100
+        // again (before, they stayed 50 and c002 0..100 no longer fit).
+        let s3 = edit(&s0, "15 fps", at_fps(Fps::new(15, 1)));
+        assert_eq!(s3.project.takes[&TakeId::numbered(2)].duration_frames, 50);
+        assert_eq!(undo_with(&s3, 1, validated).unwrap().project, s0.project);
+
+        // A compacted base from before the fps change has the facts at its fps.
+        let r1 = edit(&s0, "Rename", |p| p.name = "first".into());
+        let r2 = edit(&r1, "60 fps", at_fps(Fps::new(60, 1)));
+        let r3 = edit(&r2, "Rename", |p| p.name = "last".into());
+        let (_, op) = compact_to(&r3.history, &r3.project, 2, 2).unwrap();
+        let HistoryOp::Rewrite { base, base_seq, .. } = op else {
+            panic!("compaction rewrites")
+        };
+        assert_eq!(base_seq, 1);
+        assert_eq!(*base, r1.project);
+    }
+
+    #[test]
+    fn restoring_the_cursor_checks_the_project() {
+        let last = three_edits().pop().unwrap();
+        fn refuse(_: &Project) -> Result<(), CoreError> {
+            Err(CoreError::invalid(
+                "invalid project: clip c002 uses take-0001, which is recording (/timeline/clips/0)",
+            ))
+        }
+        let err = restore_with(&last, 3, refuse).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Invalid);
+        assert_eq!(
+            err.message,
+            "can't restore entry 3 (\"Remove c001\"): invalid project: clip c002 uses \
+             take-0001, which is recording (/timeline/clips/0)"
+        );
+        assert!(err.hint.unwrap().contains("`qrec history`"));
+        assert_eq!(err.details.unwrap()["seq"], 3);
+        // The base too, and fine projects pass.
+        let bottom = undo_with(&last, 3, unchecked).unwrap();
+        let err = restore_with(&bottom, 0, refuse).unwrap_err();
+        assert!(
+            err.message
+                .starts_with("can't restore the oldest state in the history (0)"),
+            "{}",
+            err.message
+        );
+        assert_eq!(restore_with(&last, 3, unchecked).unwrap(), last);
     }
 
     #[test]

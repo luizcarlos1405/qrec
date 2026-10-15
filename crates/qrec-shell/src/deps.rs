@@ -27,8 +27,9 @@ pub struct OpenOpts {
     pub host: HostKind,
     /// The caller will change the project: take the lock, recover takes.
     pub mutating: bool,
-    /// Load `history.head.json` + history and never read `qrec.json`
-    /// (`qrec history`, `qrec history restore`, A§7.7).
+    /// Load `history.head.json` + history and never load an unusable
+    /// `qrec.json`; nothing is written until a request saves (`qrec
+    /// history`, `qrec history restore`, A§7.7).
     pub recovery: bool,
 }
 

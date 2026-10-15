@@ -975,7 +975,7 @@ fn record_start_and_stop_with_the_fake_backend() {
 
 /// Waits until every host of `env` exited (its socket went away, A§8.6).
 fn wait_until_no_host(env: &TestEnv) {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(20);
     let sockets = || {
         fs::read_dir(env.runtime_dir())
             .map(|entries| {
@@ -1312,4 +1312,237 @@ fn an_interrupted_export_still_ends_with_one_object() {
     );
     let exports = fs::read_dir(dir.join("exports")).map_or(0, |d| d.count());
     assert_eq!(exports, 0, "no export and no temp file is left");
+}
+
+// ------------------------------------------------------- history recovery
+
+/// `qrec init`, then two entries: 1 (encoder) and 2 (countdown).
+fn two_entries(env: &TestEnv, name: &str) -> PathBuf {
+    let dir = env.empty_dir(name);
+    qrec(env, &dir, &["init", "-q"]).ok();
+    qrec(env, &dir, &["project", "set", "--encoder", "x264", "-q"]).ok();
+    qrec(env, &dir, &["project", "set", "--countdown", "3", "-q"]).ok();
+    dir
+}
+
+/// The `.qrec/qrec.corrupt-*` copies' contents.
+fn corrupt_copies(dir: &Path) -> Vec<Vec<u8>> {
+    fs::read_dir(dir.join(".qrec"))
+        .unwrap()
+        .map(|e| e.unwrap())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("qrec.corrupt-"))
+        .map(|e| fs::read(e.path()).unwrap())
+        .collect()
+}
+
+/// Edits `qrec.json` by hand (valid JSON, Qrec's formatting).
+fn hand_edit(dir: &Path, edit: impl FnOnce(&mut Value)) {
+    let path = dir.join("qrec.json");
+    let mut json: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    edit(&mut json);
+    fs::write(&path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+}
+
+#[test]
+fn an_unconfirmed_restore_leaves_a_broken_project_alone() {
+    let env = TestEnv::new();
+    let dir = two_entries(&env, "unconfirmed");
+    // A crash in the middle of an append, then a broken hand edit: the
+    // store needs repair and qrec.json is unusable.
+    let history = dir.join(".qrec/history.jsonl");
+    let mut lines = fs::read(&history).unwrap();
+    lines.extend_from_slice(b"{\"seq\":3,\"ts\":\"2026-10-1");
+    fs::write(&history, lines).unwrap();
+    let broken: &[u8] = b"{\"version\":1,\"name\":\"my unsaved hand edit\", ";
+    fs::write(dir.join("qrec.json"), broken).unwrap();
+
+    let refused = qrec(&env, &dir, &["history", "restore", "1", "--json"]);
+    assert_eq!(refused.code, Some(4), "{}", refused.stderr);
+    assert_eq!(
+        fs::read(dir.join("qrec.json")).unwrap(),
+        broken,
+        "SPEC §11: without --yes nothing runs"
+    );
+    assert!(corrupt_copies(&dir).is_empty());
+    assert!(!dir.join(".qrec/rejected").exists());
+
+    qrec(&env, &dir, &["history", "restore", "1", "--yes", "--json"]).ok();
+    assert_eq!(
+        corrupt_copies(&dir),
+        [broken.to_vec()],
+        "the user's own bytes"
+    );
+    let status = qrec(&env, &dir, &["status", "--json"]);
+    status.ok();
+    assert_eq!(status.reply()["data"]["history"]["cursor"], 1);
+}
+
+#[test]
+fn a_project_rebuilt_from_the_history_gets_its_takes_back() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("rebuild");
+    qrec(&env, &dir, &["init", "--canvas", "640x360@30", "-q"]).ok();
+    qrec(
+        &env,
+        &dir,
+        &[
+            "scene", "layer", "add", "screen", "--output", "FAKE-1", "-q",
+        ],
+    )
+    .ok();
+    qrec(&env, &dir, &["record", "start", "--json"]).ok();
+    thread::sleep(Duration::from_millis(1500));
+    let stop = qrec(&env, &dir, &["record", "stop", "--json"]);
+    stop.ok();
+    let frames = stop.only_reply()["data"]["result"]["durationFrames"].clone();
+    wait_until_no_host(&env);
+    let status = qrec(&env, &dir, &["status", "--json"]);
+    let cursor = status.reply()["data"]["history"]["cursor"].to_string();
+    // qrec.json and the commit record are gone: only the base (older than
+    // the take) and the history are left (A§7.7).
+    fs::write(dir.join("qrec.json"), b"garbage").unwrap();
+    fs::remove_file(dir.join(".qrec/history.head.json")).unwrap();
+
+    let refused = qrec(&env, &dir, &["history", "restore", &cursor, "--json"]);
+    assert_eq!(refused.code, Some(4), "{}", refused.stderr);
+    assert_eq!(fs::read(dir.join("qrec.json")).unwrap(), b"garbage");
+
+    let restore = qrec(
+        &env,
+        &dir,
+        &["history", "restore", &cursor, "--yes", "--json"],
+    );
+    restore.ok();
+    assert_eq!(corrupt_copies(&dir), [b"garbage".to_vec()]);
+    // The take was recovered before the restore wrote: a normal open works.
+    let takes = qrec(&env, &dir, &["take", "list", "--json"]);
+    takes.ok();
+    let take = &takes.reply()["data"][0];
+    assert_eq!(take["status"], "ok", "{take}");
+    assert_eq!(take["durationFrames"], frames);
+    assert_eq!(take["clips"], 1);
+    qrec(&env, &dir, &["status"]).ok();
+    wait_until_no_host(&env);
+}
+
+#[test]
+fn a_restore_keeps_a_valid_hand_edit_as_an_entry() {
+    let env = TestEnv::new();
+    let dir = two_entries(&env, "hand-edit");
+    hand_edit(&dir, |json| json["name"] = "my hand edit".into());
+    let refused = qrec(&env, &dir, &["history", "restore", "1", "--json"]);
+    assert_eq!(refused.code, Some(4));
+    assert!(
+        refused.reply()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("undoes 2 history entries"),
+        "the edit is an entry to undo: {}",
+        refused.stdout
+    );
+    qrec(&env, &dir, &["history", "restore", "1", "--yes", "-q"]).ok();
+    assert!(corrupt_copies(&dir).is_empty(), "a valid file isn't broken");
+    let history = qrec(&env, &dir, &["history", "--json"]);
+    let rows = history.reply()["data"].as_array().unwrap().clone();
+    assert_eq!(rows.last().unwrap()["label"], "External edit");
+    qrec(&env, &dir, &["redo", "2", "-q"]).ok();
+    let status = qrec(&env, &dir, &["status", "--json"]);
+    assert_eq!(status.reply()["data"]["project"]["name"], "my hand edit");
+}
+
+#[test]
+fn readers_report_only_the_history_on_disk() {
+    let env = TestEnv::new();
+    let dir = two_entries(&env, "reader");
+    hand_edit(&dir, |json| json["recording"]["countdownSecs"] = 9.into());
+    let before = fs::read(dir.join("qrec.json")).unwrap();
+    let status = qrec(&env, &dir, &["status", "--json"]);
+    status.ok();
+    assert!(
+        !status.stderr.contains("Merged an external edit"),
+        "{}",
+        status.stderr
+    );
+    let data = &status.reply()["data"];
+    assert_eq!(data["project"]["recording"]["countdownSecs"], 9);
+    assert_eq!(data["history"]["cursor"], 2);
+    assert_eq!(data["history"]["nextSeq"], 3);
+    let history = qrec(&env, &dir, &["history", "--json"]);
+    let rows = history.reply()["data"].as_array().unwrap().clone();
+    let current: Vec<&Value> = rows.iter().filter(|r| r["current"] == true).collect();
+    assert_eq!(current.len(), 1);
+    assert_eq!(current[0]["seq"], 2, "the same cursor as status");
+    assert_eq!(fs::read(dir.join("qrec.json")).unwrap(), before);
+    // The next change records the edit for real.
+    qrec(&env, &dir, &["project", "set", "--name", "renamed", "-q"]).ok();
+    let history = qrec(&env, &dir, &["history", "--json"]);
+    let labels: Vec<Value> = history.reply()["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["label"].clone())
+        .collect();
+    assert_eq!(labels[2], "External edit");
+}
+
+#[test]
+fn a_corrupt_history_line_names_the_way_out() {
+    let env = TestEnv::new();
+    let dir = two_entries(&env, "corrupt-line");
+    let history = dir.join(".qrec/history.jsonl");
+    let text = fs::read_to_string(&history).unwrap();
+    let mut lines: Vec<&str> = text.lines().collect();
+    lines[0] = "{not json";
+    fs::write(&history, format!("{}\n", lines.join("\n"))).unwrap();
+    for args in [["status", "--json"], ["history", "--json"]] {
+        let out = qrec(&env, &dir, &args);
+        assert_eq!(out.code, Some(1));
+        let error = out.reply()["error"].clone();
+        assert!(
+            error["message"].as_str().unwrap().contains("line 1"),
+            "{error}"
+        );
+        let hint = error["hint"].as_str().unwrap();
+        assert!(!hint.contains("qrec history"), "{args:?} fails too: {hint}");
+        assert!(hint.contains(".qrec/history.jsonl"), "{hint}");
+    }
+}
+
+#[test]
+fn a_command_finishes_recovering_a_crashed_take_before_it_exits() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "crashed", &[video(30), video(30)]);
+    // Take 2 as a crash leaves it: still `recording`, no media facts, no clip.
+    hand_edit(&dir, |json| {
+        let clips = json["timeline"]["clips"].as_array_mut().unwrap();
+        clips.retain(|c| c["take"] != "take-0002");
+        let take = &mut json["takes"]["take-0002"];
+        take["status"] = "recording".into();
+        take["durationFrames"] = 0.into();
+        take["placed"] = false.into();
+        for stream in take["streams"].as_array_mut().unwrap() {
+            let stream = stream.as_object_mut().unwrap();
+            stream.retain(|k, _| ["id", "kind", "file", "startOffsetNs"].contains(&k.as_str()));
+        }
+    });
+    // Any command's in-process host starts the Recover probe; it must not
+    // exit (killing ffprobe) before the take is recovered and saved (A§8.6).
+    qrec(&env, &dir, &["project", "set", "--name", "after", "-q"]).ok();
+    let json: Value = serde_json::from_slice(&fs::read(dir.join("qrec.json")).unwrap()).unwrap();
+    let take = &json["takes"]["take-0002"];
+    assert_eq!(take["status"], "ok", "{take}");
+    assert_eq!(take["durationFrames"], 30);
+    assert_eq!(json["name"], "after");
+}
+
+#[test]
+fn the_history_cursor_file_holds_the_current_seq() {
+    let env = TestEnv::new();
+    let dir = two_entries(&env, "cursor-file");
+    let cursor = || fs::read_to_string(dir.join(".qrec/history.cursor")).unwrap();
+    assert_eq!(cursor(), "2\n", "SPEC §6.2, §8.1");
+    qrec(&env, &dir, &["undo", "-q"]).ok();
+    assert_eq!(cursor(), "1\n");
+    let status = qrec(&env, &dir, &["status", "--json"]);
+    assert_eq!(status.reply()["data"]["history"]["cursor"], 1);
 }

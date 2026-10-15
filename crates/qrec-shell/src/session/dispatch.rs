@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use chrono::SubsecRound;
 use qrec_core::apply::project::is_initialized;
 use qrec_core::ctx::{Ctx, Facts, FactsNeeded};
+use qrec_core::on_event::record::recovering;
 use qrec_core::protocol::{Command, HelloInfo, Query, Toast, ToastLevel, WireBody};
 use qrec_core::state::JobKind;
 use qrec_core::{
@@ -39,6 +40,17 @@ pub(super) fn creates_the_project(cmd: &Command) -> bool {
             cmd,
             Command::Undo { .. } | Command::Redo { .. } | Command::HistoryClear
         )
+}
+
+/// A command that waits for the takes being recovered (recovery mode,
+/// A§7.7): a restore of a project rebuilt from the history must see the
+/// facts their Recover probes find, or its clips would use takes that are
+/// still `recording`.
+pub(super) struct Parked {
+    id: Option<ReqId>,
+    cmd: Command,
+    confirmed: bool,
+    to: Option<Box<dyn Responder>>,
 }
 
 /// Keeps the reply of an internal request.
@@ -137,6 +149,17 @@ impl Session {
             ));
             return self.reply_now(id.as_ref(), &mut to, Err(err));
         }
+        if self.opts.recovery && recovering(&self.state) {
+            // Resumed by `after_message` once every Recover probe answered.
+            tracing::info!("{} waits for the takes being recovered", cmd.name());
+            self.parked.push(Parked {
+                id,
+                cmd,
+                confirmed,
+                to,
+            });
+            return;
+        }
         let initialized = is_initialized(&self.state.project);
         if !initialized && creates_the_project(&cmd) {
             // A§8.4: the first mutating command in an empty folder creates
@@ -186,6 +209,17 @@ impl Session {
         }
     }
 
+    /// Runs a parked command now.
+    pub(super) fn resume(&mut self, parked: Parked) {
+        let Parked {
+            id,
+            cmd,
+            confirmed,
+            to,
+        } = parked;
+        self.dispatch(id, cmd, confirmed, to);
+    }
+
     /// `Command::Init` before the first command of an empty folder.
     fn lazy_init(&mut self) -> Result<(), CoreError> {
         let slot = Arc::new(Mutex::new(None));
@@ -211,8 +245,10 @@ impl Session {
 
     pub(super) fn handle_event(&mut self, ev: Event) {
         if let Event::RequesterGone { req } = &ev {
-            // Its connection is gone: nothing more can be sent to it.
+            // Its connection is gone: nothing more can be sent to it, and a
+            // command it left waiting doesn't run.
             self.pending.remove(req);
+            self.parked.retain(|p| p.id.as_ref() != Some(req));
         }
         self.run_event(ev);
     }

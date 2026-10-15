@@ -25,13 +25,15 @@ mod open;
 mod tests;
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError};
+use qrec_core::apply::project::is_initialized;
+use qrec_core::on_event::record::recovering;
 use qrec_core::state::JobKind;
-use qrec_core::{ReqId, State};
+use qrec_core::{ReqId, State, TakeId};
 
 pub use config::{BACKEND_ENV, LogNotifier, Notifier, SessionConfig, SessionEnv};
 
@@ -84,6 +86,11 @@ pub struct Session {
     watcher: Option<Watcher>,
     /// Requests waiting for a late `Effect::Reply`.
     pending: BTreeMap<ReqId, Box<dyn Responder>>,
+    /// Commands of a recovery-mode session waiting for the Recover probes
+    /// of the takes being recovered (A§7.7), in arrival order.
+    parked: Vec<dispatch::Parked>,
+    /// Takes whose Recover probe is running (one per take per session).
+    probing: BTreeSet<TakeId>,
     next_req: u64,
     notifier: Box<dyn Notifier>,
     shutdown: bool,
@@ -144,7 +151,21 @@ impl Session {
             Msg::Interrupt => self.handle_interrupt(),
             Msg::Shutdown => self.shutdown = true,
         }
+        self.after_message();
         self.tick();
+    }
+
+    /// Probes takes that turned up waiting for recovery, and runs the
+    /// parked commands once no take is (A§7.7).
+    fn after_message(&mut self) {
+        if self.store.writable() && is_initialized(&self.state.project) {
+            self.sync_recovery_probes();
+        }
+        if !self.parked.is_empty() && !recovering(&self.state) {
+            for parked in std::mem::take(&mut self.parked) {
+                self.resume(parked);
+            }
+        }
     }
 
     /// Drains the inbox until `done(state)` holds (CLI and hosts). `done`
@@ -203,17 +224,20 @@ impl Session {
         self.interrupts
     }
 
-    /// Requests still waiting for their reply.
+    /// Requests still waiting for their reply (parked ones included).
     pub fn pending_requests(&self) -> usize {
-        self.pending.len()
+        self.pending.len() + self.parked.len()
     }
 
-    /// Not recording, no jobs and no request waiting: a headless or CLI host
-    /// may exit (after its own grace period, A§8.6).
+    /// Not recording, no jobs, no take waiting for its Recover probe and no
+    /// request waiting: a headless or CLI host may exit (after its own grace
+    /// period, A§8.6).
     pub fn is_idle(&self) -> bool {
         self.state.runtime.record.is_idle()
             && self.state.runtime.jobs.is_empty()
+            && !recovering(&self.state)
             && self.pending.is_empty()
+            && self.parked.is_empty()
     }
 
     /// When [`Session::tick`] has work (a coalesced `ui.json` write).

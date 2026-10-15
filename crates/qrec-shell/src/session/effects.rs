@@ -7,7 +7,11 @@
 //!   caller runs the request again against the merged state.
 //! - A `qrec.json` that failed to load is never overwritten silently
 //!   (A§7.7): a restore copies it to `.qrec/qrec.corrupt-<ts>.json`, a
-//!   write of facts moves it to `.qrec/rejected/`.
+//!   write of facts moves it to `.qrec/rejected/`. Both key on whether the
+//!   commit writes `qrec.json` at all (history ops or `WriteProject`).
+//! - Recovery mode writes nothing until a request saves: events' changes
+//!   stay in memory for the restore's commit, and while `qrec.json` is
+//!   unusable only the restore that replaces it saves.
 //! - Effects that need the commit to be durable (`StartCapture`,
 //!   `DeleteTakeDirs`) don't run when it failed; the core gets the failure
 //!   as an event instead. A failed `CreateTakeDir` fails that take's
@@ -30,7 +34,7 @@ use chrono::Duration;
 use qrec_core::apply::Outcome;
 use qrec_core::apply::project::is_initialized;
 use qrec_core::protocol::{Effect, HistoryOp, LogLevel, Toast, ToastLevel, UiAction};
-use qrec_core::{CoreError, Event, ReqId, TakeId};
+use qrec_core::{CoreError, Event, ReqId, State, TakeId};
 use serde_json::Value;
 
 use super::{Session, with_current};
@@ -80,13 +84,11 @@ impl Session {
             })
             .collect();
         let write_project = effects.contains(&Effect::WriteProject);
+        // What `Store::commit` writes: history ops always rewrite qrec.json.
+        let saves = write_project || !ops.is_empty();
         let writable = self.store.writable();
 
-        if writable
-            && (write_project || !ops.is_empty())
-            && !force
-            && is_initialized(&self.state.project)
-        {
+        if writable && saves && !force && is_initialized(&self.state.project) {
             if let Some(file) = self.store.disk_changed(self.check) {
                 tracing::info!("qrec.json changed on disk: merging it before this change");
                 self.store.accept_disk(&file);
@@ -94,6 +96,28 @@ impl Session {
                     project: file.project,
                 });
                 return Ran::ExternalFirst;
+            }
+        }
+
+        // A§7.7: recovery mode (`qrec history restore`) leaves the files
+        // alone until a request saves. An event's change (a merged hand
+        // edit, a recovered take) is kept in memory for the restore to
+        // save; while qrec.json is unusable, only the request that replaces
+        // it (the restore) may save at all.
+        if writable && saves && self.opts.recovery {
+            if req.is_none() && to.is_none() {
+                return self.keep_in_memory(next, effects);
+            }
+            if let (Some(why), Some(_)) =
+                (&self.state.runtime.disk_invalid, &next.runtime.disk_invalid)
+            {
+                let err = CoreError::invalid(format!("qrec.json on disk is unusable: {why}"))
+                    .with_hint(format!(
+                        "restore it first with `qrec history restore {} --yes`",
+                        self.state.history.cursor
+                    ));
+                self.reply_now(req, to, Err(err));
+                return Ran::Done;
             }
         }
 
@@ -117,7 +141,7 @@ impl Session {
 
         // A§7.7: a qrec.json that failed to load is kept, never overwritten.
         let mut reclaimed = false;
-        if writable && write_project && self.state.runtime.disk_invalid.is_some() {
+        if writable && saves && self.state.runtime.disk_invalid.is_some() {
             let stamp = self.stamp();
             if next.runtime.disk_invalid.is_none() {
                 match self.store.copy_disk_file_aside(&stamp) {
@@ -159,9 +183,8 @@ impl Session {
         }
 
         let was_initialized = is_initialized(&self.state.project);
-        let needs_save = write_project || !ops.is_empty();
         let droppable = origin == Origin::Command
-            && needs_save
+            && saves
             && !reclaimed
             && !ops.iter().any(|op| matches!(op, HistoryOp::Rewrite { .. }));
         let mark = droppable.then(|| self.store.mark());
@@ -189,7 +212,7 @@ impl Session {
             Err(e) => {
                 self.notify_error("Couldn't save the project", &e.to_string());
                 // Kept in memory: replies say so instead of "ok".
-                needs_save.then(|| {
+                saves.then(|| {
                     CoreError::io(format!("the change was made but couldn't be saved: {e}"))
                         .with_hint("free disk space or fix the project folder's permissions; this Qrec process saves it with its next change, and loses it if it exits before then")
                 })
@@ -246,6 +269,30 @@ impl Session {
                 false
             }
         }
+    }
+
+    /// Recovery mode: an event's change stays in memory (the store is
+    /// dirty, so the restore's commit writes it). Effects that need a
+    /// durable commit don't run, as after a failed one; `ui.json` isn't
+    /// written either, and toasts only go to the log: nothing they announce
+    /// is saved unless the restore runs (A§7.6 step 4).
+    fn keep_in_memory(&mut self, next: State, effects: Vec<Effect>) -> Ran {
+        tracing::info!("recovery mode: a change is kept in memory until the restore saves it");
+        self.store.mark_dirty();
+        self.state = next;
+        let no_failed_takes = BTreeMap::new();
+        for effect in effects {
+            match effect {
+                Effect::WriteUi => {}
+                Effect::Notify(toast) => tracing::info!(
+                    "{} {}",
+                    toast.title,
+                    toast.body.as_deref().unwrap_or_default()
+                ),
+                effect => self.run_world_effect(effect, false, None, &no_failed_takes),
+            }
+        }
+        Ran::Done
     }
 
     /// One effect after the commit. `unsaved` is the error replies get

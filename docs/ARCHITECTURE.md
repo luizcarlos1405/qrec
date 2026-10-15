@@ -168,6 +168,13 @@ For each non-missing video stream with `off = ns_to_frame_round(startOffsetNs)`:
 `durationFrames` is the minimum over those streams. Audio-only takes use
 `ns_to_frame_floor(startOffsetNs + durationNs)` of the shortest track. It is
 re-derived whenever the canvas fps changes (including undo/redo of one).
+Facts aren't in history patches (A§7.2), so whatever reaches another fps
+through the history (undo, redo, restore, replay, compaction and purge
+bases, external merges) retimes the take facts from the rate they are at
+(`requantize::retime_takes`): durations re-derived, takes without media
+info (the SPEC §6.3 shape) converted through nanoseconds, and
+`Take.replaced` re-quantized like the timeline (A§5.4), so discard-last
+puts back the frames a record-over replaced.
 
 ### A§2.3 Validation (`validate::validate(&Project) -> Vec<Issue>`)
 
@@ -885,7 +892,9 @@ Diff (`history/diff.rs`, custom, not `json_patch::diff`):
 Above 5,000 entries the oldest are dropped down to 4,000; `history.base.json`
 becomes the project before the oldest kept entry (walking inverses back from
 the current state) and `base_seq` its seq. `Clear` (`!`): no entries, base =
-current project, `base_seq = cursor`. `Restore <seq>` (`!`) = undo/redo to it.
+current project, `base_seq = cursor`. `Restore <seq>` (`!`) = undo/redo to it;
+restoring the cursor itself applies no patch but its project is validated
+all the same (it is what gets written, A§7.7).
 
 ### A§7.4 External edits (merge, not adoption)
 
@@ -916,16 +925,24 @@ empty are dropped; recompute `after_hash`. If no state references T, only the
 ### A§7.6 Persistence order and the commit record
 
 `.qrec/history.head.json` is the commit record:
-`{"cursor":N,"baseSeq":B,"nextSeq":K,"projectSha256":H,"project":{…}}`
-(there is no `history.cursor` file). Per outcome, in order:
+`{"cursor":N,"baseSeq":B,"nextSeq":K,"projectSha256":H,"project":{…}}`.
+`.qrec/history.cursor` is SPEC §6.2/§8.1's "current seq" (`N\n`), a copy of
+the head's cursor for readers: written right after the head, never read
+back, rewritten by the next commit or host open when stale. Per outcome
+that saves (a `History` op or `WriteProject`), in order:
 1. History: `Append` = one line via `O_APPEND` + `fdatasync`; redo-tail drop
    and `Rewrite` = tmp + rename (and `history.base.json`).
 2. `qrec.json`: tmp → fsync → `rename` → fsync(dir).
-3. `history.head.json`: tmp → rename. **This is the commit point.**
+3. `history.head.json`: tmp → rename. **This is the commit point.** Then
+   `history.cursor` (a failure there is logged, not a failed commit).
 4. Only then the effects that touch the world: `StartCapture`,
    `DeleteTakeDirs`, `Reply`, `Notify`, jobs.
 
-Non-undoable writes do steps 2–3. On open (lock held): drop history lines with
+An outcome that saves nothing writes nothing, even when the files need
+repair: a failed commit or a repair the load found makes the next commit
+that saves rewrite the history file, `qrec.json` and the head, and a host's
+open (outside recovery mode) writes the repair right away. Non-undoable
+writes do steps 2–3. On open (lock held): drop history lines with
 `seq ≥ nextSeq`; drop a torn last line; a bad line elsewhere ⇒ `Invalid`
 with its line number. If `sha256(qrec.json) == H` the state is clean;
 otherwise a valid file is an external edit against `head.project` (covers a
@@ -954,11 +971,30 @@ made but couldn't be saved", not `ok`.
   overwritten) and say so in a toast.
 - Opening: a corrupt file makes `Session::open` fail with `Invalid` and that
   hint, except with `OpenOpts { recovery: true }` (used by `qrec history` and
-  `qrec history restore`), which loads `history.head.json` + history and never
-  reads `qrec.json`. Restore copies the corrupt file to
-  `.qrec/qrec.corrupt-<ts>.json` before writing. If the head file is missing
-  too, rebuild from `history.base.json` + forward patches and re-add takes
-  found under `takes/` through the Recover probe.
+  `qrec history restore`), which loads `history.head.json` + history and
+  never loads an unusable `qrec.json`: a missing or invalid one only sets
+  `disk_invalid`. A valid file that differs from the head is a hand edit and
+  is merged first, like on any open (SPEC §8.1: an "External edit" entry, so
+  the restore can be redone back to it; it is not "broken").
+- Recovery mode writes none of the project's state (history, `qrec.json`,
+  head, `ui.json`) until a request saves (SPEC §11: an unconfirmed restore
+  leaves them as they were; only child-process logs are written). Events'
+  changes (that merge, recovered takes) stay in memory for the restore's
+  commit, which rewrites everything, and their toasts only go to the log;
+  while `qrec.json` is unusable a request that would save without replacing
+  it is refused. Restore copies the corrupt file to
+  `.qrec/qrec.corrupt-<ts>.json` before writing.
+- If the head file is missing too, rebuild from `history.base.json` +
+  forward patches. Patches carry no take facts and the base usually predates
+  the takes, so each take found under `takes/` joins the pool right before
+  the first entry that uses it (its clip or its scene), `recording`, with
+  the project scene of that moment (what `begin_take` copied) and `placed`
+  if that entry put its clip on the timeline; takes no entry uses go to the
+  bin. The Recover probe finalizes them; in recovery mode commands wait for
+  those probes (and a host stays up for them, A§8.6), so the restore writes
+  a project that validates. Start offsets aren't in the files: a recovered
+  take can come out shorter than recorded, and then a restore whose clips
+  no longer fit fails naming the clip (restore an older entry).
 
 ---
 
@@ -1071,8 +1107,12 @@ step: its target is the folder itself, so a folder that is neither empty
 nor a project is exit 3 whatever runs elsewhere. Init order: `mkdir .qrec` → lock →
 re-check the folder rule (a folder whose only entry is `.qrec/` counts as
 empty) → write `qrec.json` + head → `mkdir takes`. Read-only commands take no
-lock and write nothing (no migration backups either). `--over-selection` with
-no live host ⇒ `Unavailable`.
+lock and write nothing (no migration backups either). A valid hand edit a
+read-only open finds is shown as the project a host would merge
+(`history::external::merged_preview`), with the history as it is on disk:
+no "External edit" entry, cursor or seq is made up, and no merge is
+announced; the next host records it (A§7.4). `--over-selection` with no live
+host ⇒ `Unavailable`.
 
 ### A§8.5 In-process commands
 
@@ -1085,9 +1125,12 @@ continue"). `seek`/`play`/`pause`/`shuttle` without a GUI host ⇒
 
 ### A§8.6 Hosts: exit, signals, GUI start
 
-- Exit (Headless and Cli): once Idle + no running jobs + no open connections
-  has held for 2 s, or (Headless) 60 s after `ready` without a request.
-  `shutdown` requests: stop accepting, let jobs finish, exit.
+- Exit (Headless and Cli): once Idle + no running jobs + no take waiting for
+  its Recover probe (`on_event::record::recovering`) + no open connections
+  has held for 2 s, or (Headless) 60 s after `ready` without a request. An
+  in-process CLI host thus finishes the recovery it started instead of
+  killing the probe. `shutdown` requests: stop accepting, let jobs finish,
+  exit.
 - Signals in every host: the first SIGTERM/SIGINT/SIGHUP dispatches
   `RecordStop` (finalize, not cancel) and cancels jobs; exit when idle or
   after 15 s. A second signal: SIGKILL child process groups, `_exit(130)`;
