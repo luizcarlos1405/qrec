@@ -1302,6 +1302,13 @@ pub struct StitchPlan { pub list_path: String, pub list_content: String, pub arg
   `afade=t=in:ns=240` unless the unit starts at `in == 0`, and
   `afade=t=out:ss=<S−240>:ns=240` unless it ends at `durationFrames`. No
   audible track ⇒ `anullsrc=r=48000:cl=stereo,atrim=end_sample=<S>`.
+- **Filter graphs:** the video chains (ending in `[v]`, or `[vv]` for VA)
+  and the audio chains (ending in `[a]`) are two `-filter_complex` graphs,
+  video first, then `-map [v] -map [a]`. In one graph, ffmpeg 8.1.2
+  sometimes never finished a unit with several layers and tracks: once the
+  video output ended the audio output stopped being fed, while `-progress`
+  kept reporting (3 % of runs of a 3-layer, 2-track unit; 0 of 400 with
+  two graphs, which decode to the same frames and samples) *(measured)*.
 - **Segment codecs:** H.264 segments are `.mov` with `pcm_s16le` (MKV
   timestamps make the stitched MP4 VFR-looking); VP9/AV1 segments are `.mkv`.
   The shell verifies each segment (`ffprobe -count_packets`: video packets

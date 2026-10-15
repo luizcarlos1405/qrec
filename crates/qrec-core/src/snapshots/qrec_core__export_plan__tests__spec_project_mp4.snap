@@ -8,8 +8,8 @@ total_frames: 867
 files: {"takes/take-0001/A1-mic.mka", "takes/take-0001/A2-system.mka", "takes/take-0001/L1-screen-DP-4.mkv", "takes/take-0001/L2-camera-0.mkv"}
 
 segment 0: take-0001 [0, 410) clips=c7f3 frames=410 samples=656000
-key: 9c9f7ebb0dda1c6d9dd9e398ed28acd8c1ec0bc3e0446d9364b7a7d060e94db1
-path: .qrec/cache/segments/9c9f7ebb0dda1c6d9dd9e398ed28acd8c1ec0bc3e0446d9364b7a7d060e94db1.mov
+key: 32001b41dd56624e5e732ea146d087acb26cf2064c36d1850c2a72bb0babeaf5
+path: .qrec/cache/segments/32001b41dd56624e5e732ea146d087acb26cf2064c36d1850c2a72bb0babeaf5.mov
 argv:
   ffmpeg
   -hide_banner
@@ -37,6 +37,7 @@ argv:
     [base][l0]overlay=x=0:y=0:eof_action=pass[o0]
     [o0][l1]overlay=x=1498:y=754:eof_action=pass[o1]
     [o1]trim=end_frame=410,setsar=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709[v]
+  -filter_complex
     [2:a]aresample=48000,pan=stereo|c0=c0|c1=c0,volume=0dB,adelay=1104S:all=1[a0]
     [3:a]aresample=48000,aformat=channel_layouts=stereo,volume=-6dB[a1]
     [a0][a1]amix=inputs=2:normalize=0:duration=longest,apad,atrim=end_sample=656000,afade=t=out:ss=655760:ns=240[a]
@@ -68,11 +69,11 @@ argv:
   pcm_s16le
   -f
   mov
-  file:.qrec/cache/segments/9c9f7ebb0dda1c6d9dd9e398ed28acd8c1ec0bc3e0446d9364b7a7d060e94db1.mov
+  file:.qrec/cache/segments/32001b41dd56624e5e732ea146d087acb26cf2064c36d1850c2a72bb0babeaf5.mov
 
 segment 1: take-0001 [455, 912) clips=c8a1 frames=457 samples=731200
-key: f9aaae48903b6860fe86c7f7ea6f468070a7739574da4dc4e1c6ffab208b84a0
-path: .qrec/cache/segments/f9aaae48903b6860fe86c7f7ea6f468070a7739574da4dc4e1c6ffab208b84a0.mov
+key: d5a45654a8861088aecb93da6ceece8fc81687175263dc89e7535e557f4484ce
+path: .qrec/cache/segments/d5a45654a8861088aecb93da6ceece8fc81687175263dc89e7535e557f4484ce.mov
 argv:
   ffmpeg
   -hide_banner
@@ -106,6 +107,7 @@ argv:
     [base][l0]overlay=x=0:y=0:eof_action=pass[o0]
     [o0][l1]overlay=x=1498:y=754:eof_action=pass[o1]
     [o1]trim=end_frame=457,setsar=1,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709[v]
+  -filter_complex
     [2:a]aresample=48000,pan=stereo|c0=c0|c1=c0,volume=0dB[a0]
     [3:a]aresample=48000,aformat=channel_layouts=stereo,volume=-6dB[a1]
     [a0][a1]amix=inputs=2:normalize=0:duration=longest,apad,atrim=end_sample=731200,afade=t=in:ns=240[a]
@@ -137,13 +139,13 @@ argv:
   pcm_s16le
   -f
   mov
-  file:.qrec/cache/segments/f9aaae48903b6860fe86c7f7ea6f468070a7739574da4dc4e1c6ffab208b84a0.mov
+  file:.qrec/cache/segments/d5a45654a8861088aecb93da6ceece8fc81687175263dc89e7535e557f4484ce.mov
 
-stitch list .qrec/cache/segments/stitch-f2d56630bfdf1dce.ffconcat:
+stitch list .qrec/cache/segments/stitch-26be6c6cf49b6fdc.ffconcat:
 ffconcat version 1.0
-file '9c9f7ebb0dda1c6d9dd9e398ed28acd8c1ec0bc3e0446d9364b7a7d060e94db1.mov'
+file '32001b41dd56624e5e732ea146d087acb26cf2064c36d1850c2a72bb0babeaf5.mov'
 duration 13.666667
-file 'f9aaae48903b6860fe86c7f7ea6f468070a7739574da4dc4e1c6ffab208b84a0.mov'
+file 'd5a45654a8861088aecb93da6ceece8fc81687175263dc89e7535e557f4484ce.mov'
 duration 15.233333
 argv:
   ffmpeg
@@ -158,7 +160,7 @@ argv:
   -f
   concat
   -i
-  file:.qrec/cache/segments/stitch-f2d56630bfdf1dce.ffconcat
+  file:.qrec/cache/segments/stitch-26be6c6cf49b6fdc.ffconcat
   -map
   0:v:0
   -map

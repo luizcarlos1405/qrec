@@ -167,12 +167,15 @@ fn without_clip_ids(mut plan: ExportPlan) -> ExportPlan {
     plan
 }
 
-fn graph(argv: &[String]) -> &str {
-    let at = argv
-        .iter()
-        .position(|a| a == "-filter_complex")
-        .expect("a filter graph");
-    &argv[at + 1]
+/// The segment's filter graphs (video, then audio) joined with `;`.
+fn graph(argv: &[String]) -> String {
+    let graphs: Vec<&str> = argv
+        .windows(2)
+        .filter(|w| w[0] == "-filter_complex")
+        .map(|w| w[1].as_str())
+        .collect();
+    assert_eq!(graphs.len(), 2, "a video and an audio graph");
+    graphs.join(";")
 }
 
 proptest! {

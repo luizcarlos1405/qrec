@@ -20,6 +20,12 @@
 //! - **Lengths** are enforced in the graph (`trim=end_frame`,
 //!   `atrim=end_sample`), never with `-frames:v`/`-t`, which cut the audio
 //!   short at 29.97 fps.
+//! - **Filter graphs:** a segment's video chains and audio chains are two
+//!   `-filter_complex` graphs (video first). In one graph, a segment with
+//!   several layers and tracks sometimes never finished: once the video
+//!   output ended, the audio output stopped being fed while `-progress` kept
+//!   reporting (3 % of runs of a 3-layer, 2-track unit; none in 400 with two
+//!   graphs, which decode to the same frames and samples).
 //! - **Placement in the stitch:** the concat demuxer starts each segment
 //!   where the previous ones end by *their container durations*, which
 //!   Matroska rounds to milliseconds (a 23-frame VP9 segment at 30 fps lasts
@@ -812,7 +818,6 @@ fn plan_segment(
         }
         _ => "[v]",
     };
-    chains.extend(audio.chains);
 
     let mut argv = ffmpeg_prelude(true);
     if let Encoder::Vaapi { device } = encoder {
@@ -820,9 +825,12 @@ fn plan_segment(
     }
     argv.extend(video.inputs);
     argv.extend(audio.inputs);
+    // Two filter graphs, the video's first (module docs, "Filter graphs").
     argv.extend([
         "-filter_complex".to_owned(),
         chains.join(";"),
+        "-filter_complex".to_owned(),
+        audio.chains.join(";"),
         "-map".to_owned(),
         video_out.to_owned(),
         "-map".to_owned(),
@@ -1684,17 +1692,52 @@ pub(crate) mod tests {
         assert_eq!(layers, ["L1"]);
         assert!(track_inputs(take, F30, 0).is_empty());
         let plan = plan_export(&project, &testkit::capabilities(), &opts("x.mp4")).unwrap();
-        let graph = &plan.segments[0].argv[plan.segments[0]
-            .argv
-            .iter()
-            .position(|a| a == "-filter_complex")
-            .unwrap()
-            + 1];
-        assert!(
-            graph.contains("anullsrc=r=48000:cl=stereo,atrim=end_sample=160000[a]"),
-            "{graph}"
+        let audio = filter_graphs(&plan.segments[0].argv)[1];
+        assert_eq!(
+            audio,
+            "anullsrc=r=48000:cl=stereo,atrim=end_sample=160000[a]"
         );
         assert_eq!(plan.files.len(), 1);
+    }
+
+    /// The `-filter_complex` graphs of an argv, in order.
+    fn filter_graphs(argv: &[String]) -> Vec<&str> {
+        argv.windows(2)
+            .filter(|w| w[0] == "-filter_complex")
+            .map(|w| w[1].as_str())
+            .collect()
+    }
+
+    /// Every segment has its video and its audio in two separate filter
+    /// graphs, video first (module docs, "Filter graphs"): one graph that
+    /// ends the video while it still feeds the audio can leave ffmpeg
+    /// running forever.
+    #[test]
+    fn segments_keep_video_and_audio_in_separate_graphs() {
+        let project = spec_project();
+        for (caps, format, codec) in [
+            (testkit::capabilities(), ExportFormat::Mp4, VideoCodec::H264),
+            (va_caps(), ExportFormat::Mp4, VideoCodec::H264),
+            (testkit::capabilities(), ExportFormat::Webm, VideoCodec::Vp9),
+        ] {
+            let mut o = opts("x");
+            (o.format, o.codec) = (format, codec);
+            let plan = plan_export(&project, &caps, &o).unwrap();
+            for s in &plan.segments {
+                let graphs = filter_graphs(&s.argv);
+                assert_eq!(graphs.len(), 2, "{:?}", s.argv);
+                let (video, audio) = (graphs[0], graphs[1]);
+                assert!(video.ends_with("[v]") || video.ends_with("[vv]"), "{video}");
+                assert!(!video.contains(":a]") && !video.contains("[a"), "{video}");
+                assert!(audio.ends_with("[a]"), "{audio}");
+                assert!(!audio.contains(":v]"), "{audio}");
+                assert!(
+                    graphs.iter().all(|g| !g.is_empty()),
+                    "an empty graph in {:?}",
+                    s.argv
+                );
+            }
+        }
     }
 
     #[test]
@@ -1736,9 +1779,7 @@ pub(crate) mod tests {
         let graphs: Vec<String> = plan
             .segments
             .iter()
-            .map(|s| {
-                s.argv[s.argv.iter().position(|a| a == "-filter_complex").unwrap() + 1].clone()
-            })
+            .map(|s| filter_graphs(&s.argv)[1].to_owned())
             .collect();
         assert!(
             graphs[0].ends_with("apad,atrim=end_sample=64000,afade=t=out:ss=63760:ns=240[a]"),
