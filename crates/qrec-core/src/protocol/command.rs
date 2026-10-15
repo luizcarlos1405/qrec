@@ -68,10 +68,7 @@ pub enum Command {
         to: usize,
     },
     /// U. On a take: removes the layer from that snapshot only; the stream stays.
-    LayerRemove {
-        target: SceneTarget,
-        layer: LayerId,
-    },
+    LayerRemove { target: SceneTarget, layer: LayerId },
     /// U. Only `SceneTarget::Project`.
     AudioAdd {
         target: SceneTarget,
@@ -86,19 +83,11 @@ pub enum Command {
         patch: AudioPatch,
     },
     /// U. Removing the `autocut.track` track also sets it to null.
-    AudioRemove {
-        target: SceneTarget,
-        track: TrackId,
-    },
+    AudioRemove { target: SceneTarget, track: TrackId },
     /// U. Copies layout fields between scenes, matched by id.
-    SceneApply {
-        from: SceneTarget,
-        to: SceneDest,
-    },
+    SceneApply { from: SceneTarget, to: SceneDest },
     /// U.
-    AutocutSettings {
-        patch: AutocutPatch,
-    },
+    AutocutSettings { patch: AutocutPatch },
     /// A.
     RecordStart {
         mode: RecordModeArg,
@@ -123,10 +112,7 @@ pub enum Command {
         takes: Vec<TakeId>,
     },
     /// U.
-    ClipAdd {
-        take: TakeId,
-        at: InsertAt,
-    },
+    ClipAdd { take: TakeId, at: InsertAt },
     /// U.
     ClipMove {
         #[serde(default)]
@@ -171,9 +157,7 @@ pub enum Command {
         steps: u32,
     },
     /// `!`.
-    HistoryRestore {
-        seq: u64,
-    },
+    HistoryRestore { seq: u64 },
     /// `!`.
     HistoryClear,
     /// A, `!` (hand-picked existing `out`). `out` is absolute.
@@ -186,9 +170,7 @@ pub enum Command {
         out: Option<String>,
     },
     /// `job: None` cancels the running export.
-    ExportCancel {
-        job: Option<JobId>,
-    },
+    ExportCancel { job: Option<JobId> },
     /// A, `!`. `at` is a timeline frame; `out` is absolute.
     FrameSave {
         at: TimeArg,
@@ -196,29 +178,19 @@ pub enum Command {
         out: Option<String>,
     },
     /// R.
-    Select {
-        op: SelectOp,
-    },
+    Select { op: SelectOp },
     /// G, R.
-    Seek {
-        to: SeekTarget,
-    },
+    Seek { to: SeekTarget },
     /// G.
     Play,
     /// G, R.
     Pause,
     /// G.
-    Shuttle {
-        dir: ShuttleDir,
-    },
+    Shuttle { dir: ShuttleDir },
     /// R.
-    SetCanvasMode {
-        mode: CanvasMode,
-    },
+    SetCanvasMode { mode: CanvasMode },
     /// R.
-    SetUi {
-        patch: UiPatch,
-    },
+    SetUi { patch: UiPatch },
 }
 
 fn one() -> u32 {

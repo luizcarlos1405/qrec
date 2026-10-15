@@ -162,7 +162,9 @@ impl fmt::Display for JobId {
 pub struct TimerId(pub u64);
 
 /// The id of a request (CLI invocation, IPC request, GUI action). Chosen by the shell.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(transparent)]
 pub struct ReqId(pub String);
 

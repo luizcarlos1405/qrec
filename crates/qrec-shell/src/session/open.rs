@@ -364,7 +364,9 @@ impl Session {
             if left.is_zero() {
                 tracing::warn!(
                     "still recovering {} after {} s; the project opens meanwhile",
-                    self.state.runtime.recovering
+                    self.state
+                        .runtime
+                        .recovering
                         .iter()
                         .map(TakeId::as_str)
                         .collect::<Vec<_>>()

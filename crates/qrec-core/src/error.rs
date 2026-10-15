@@ -105,7 +105,12 @@ pub const NOT_MY_SWAMP: &str = "Not my swamp: this folder isn't empty and has no
 
 impl CoreError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
-        Self { code, message: message.into(), hint: None, details: None }
+        Self {
+            code,
+            message: message.into(),
+            hint: None,
+            details: None,
+        }
     }
 
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
@@ -152,13 +157,17 @@ impl CoreError {
 
     /// `confirmation required: <what will be lost>` (SPEC §11).
     pub fn confirmation_required(what: impl AsRef<str>) -> Self {
-        Self::new(ErrorCode::ConfirmationRequired, format!("confirmation required: {}", what.as_ref()))
-            .with_hint("pass --yes to confirm")
+        Self::new(
+            ErrorCode::ConfirmationRequired,
+            format!("confirmation required: {}", what.as_ref()),
+        )
+        .with_hint("pass --yes to confirm")
     }
 
     pub fn not_project() -> Self {
-        Self::new(ErrorCode::NotProject, NOT_MY_SWAMP)
-            .with_hint("run qrec in a folder with qrec.json or in an empty folder, or pass --project DIR")
+        Self::new(ErrorCode::NotProject, NOT_MY_SWAMP).with_hint(
+            "run qrec in a folder with qrec.json or in an empty folder, or pass --project DIR",
+        )
     }
 
     pub fn exit_code(&self) -> u8 {
@@ -175,7 +184,10 @@ mod tests {
         assert_eq!(CoreError::usage("x").exit_code(), 2);
         assert_eq!(CoreError::not_project().exit_code(), 3);
         assert_eq!(CoreError::confirmation_required("x").exit_code(), 4);
-        assert_eq!(CoreError::new(ErrorCode::MissingDependency, "x").exit_code(), 5);
+        assert_eq!(
+            CoreError::new(ErrorCode::MissingDependency, "x").exit_code(),
+            5
+        );
         assert_eq!(CoreError::busy("x").exit_code(), 6);
         assert_eq!(CoreError::not_found("x").exit_code(), 7);
         assert_eq!(CoreError::invalid("x").exit_code(), 1);

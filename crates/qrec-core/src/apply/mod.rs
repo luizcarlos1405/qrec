@@ -200,8 +200,11 @@ fn check_initialized(state: &State, cmd: &Command) -> Result<(), CoreError> {
     if project::is_initialized(&state.project) || matches!(cmd, Command::Init { .. }) {
         return Ok(());
     }
-    Err(CoreError::new(crate::ErrorCode::NotProject, "this folder has no Qrec project yet")
-        .with_hint("run `qrec init`, or any editing command, to create one here"))
+    Err(CoreError::new(
+        crate::ErrorCode::NotProject,
+        "this folder has no Qrec project yet",
+    )
+    .with_hint("run `qrec init`, or any editing command, to create one here"))
 }
 
 /// A§5.3: while not `Idle`, only the commands marked R run; the rest are `Busy`.

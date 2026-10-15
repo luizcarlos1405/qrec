@@ -29,7 +29,11 @@ fn write_canonical(value: &Value, out: &mut Vec<u8>) {
                 if i > 0 {
                     out.push(b',');
                 }
-                out.extend_from_slice(serde_json::to_string(key).expect("string serializes").as_bytes());
+                out.extend_from_slice(
+                    serde_json::to_string(key)
+                        .expect("string serializes")
+                        .as_bytes(),
+                );
                 out.push(b':');
                 write_canonical(&map[key], out);
             }
@@ -45,7 +49,11 @@ fn write_canonical(value: &Value, out: &mut Vec<u8>) {
             }
             out.push(b']');
         }
-        scalar => out.extend_from_slice(serde_json::to_string(scalar).expect("scalar serializes").as_bytes()),
+        scalar => out.extend_from_slice(
+            serde_json::to_string(scalar)
+                .expect("scalar serializes")
+                .as_bytes(),
+        ),
     }
 }
 
@@ -73,12 +81,18 @@ mod tests {
     fn key_order_does_not_matter() {
         let a = json!({"b": 1, "a": [1, {"y": true, "x": null}]});
         let b = json!({"a": [1, {"x": null, "y": true}], "b": 1});
-        assert_eq!(canonical_json(&a), br#"{"a":[1,{"x":null,"y":true}],"b":1}"#);
+        assert_eq!(
+            canonical_json(&a),
+            br#"{"a":[1,{"x":null,"y":true}],"b":1}"#
+        );
         assert_eq!(json_hash(&a), json_hash(&b));
     }
 
     #[test]
     fn known_digest() {
-        assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 }

@@ -18,7 +18,11 @@ pub const NS_PER_MS: i64 = 1_000_000;
 
 fn div_floor(a: i128, b: i128) -> i128 {
     let q = a / b;
-    if (a % b != 0) && ((a < 0) != (b < 0)) { q - 1 } else { q }
+    if (a % b != 0) && ((a < 0) != (b < 0)) {
+        q - 1
+    } else {
+        q
+    }
 }
 
 fn div_round(a: i128, b: i128) -> i128 {
@@ -33,7 +37,10 @@ fn div_round(a: i128, b: i128) -> i128 {
 /// at about one cut in three (measured with ges-launch 1.26). Durations of
 /// ranges are always `frame_ns(end) − frame_ns(start)`; never sum ns durations.
 pub fn frame_ns(f: i64, fps: Fps) -> i64 {
-    div_floor(f as i128 * NS_PER_SEC as i128 * fps.den as i128, fps.num as i128) as i64
+    div_floor(
+        f as i128 * NS_PER_SEC as i128 * fps.den as i128,
+        fps.num as i128,
+    ) as i64
 }
 
 /// The duration of `frames` frames starting at frame 0, in nanoseconds.
@@ -57,9 +64,18 @@ pub fn ns_to_frame_ceil(ns: i64, fps: Fps) -> i64 {
 /// in 128 bits: near `i64::MAX` the next frame starts past the `i64` range.
 pub fn ns_to_frame_round(ns: i64, fps: Fps) -> i64 {
     let f = ns_to_frame_floor(ns, fps);
-    let start_of = |f: i64| div_floor(f as i128 * NS_PER_SEC as i128 * fps.den as i128, fps.num as i128);
+    let start_of = |f: i64| {
+        div_floor(
+            f as i128 * NS_PER_SEC as i128 * fps.den as i128,
+            fps.num as i128,
+        )
+    };
     let (start, next) = (start_of(f), start_of(f + 1));
-    if (ns as i128 - start) * 2 >= next - start { f + 1 } else { f }
+    if (ns as i128 - start) * 2 >= next - start {
+        f + 1
+    } else {
+        f
+    }
 }
 
 /// `HH:MM:SS:FF` at the nominal rate (non-drop-frame).
@@ -133,15 +149,24 @@ pub struct TimeArg {
 
 impl TimeArg {
     pub const fn frames(n: u64) -> Self {
-        Self { sign: Sign::Absolute, value: TimeValue::Frames(n) }
+        Self {
+            sign: Sign::Absolute,
+            value: TimeValue::Frames(n),
+        }
     }
 
     pub const fn plus_frames(n: u64) -> Self {
-        Self { sign: Sign::Plus, value: TimeValue::Frames(n) }
+        Self {
+            sign: Sign::Plus,
+            value: TimeValue::Frames(n),
+        }
     }
 
     pub const fn minus_frames(n: u64) -> Self {
-        Self { sign: Sign::Minus, value: TimeValue::Frames(n) }
+        Self {
+            sign: Sign::Minus,
+            value: TimeValue::Frames(n),
+        }
     }
 
     pub fn is_relative(&self) -> bool {
@@ -194,7 +219,8 @@ impl TimeArg {
         if !self.is_relative() {
             return Ok(v);
         }
-        base.checked_add(v).ok_or_else(|| CoreError::usage(format!("time {self} is too large")))
+        base.checked_add(v)
+            .ok_or_else(|| CoreError::usage(format!("time {self} is too large")))
     }
 }
 
@@ -211,10 +237,24 @@ impl fmt::Display for TimeArg {
             TimeValue::Clock(ns) => {
                 let secs = ns / NS_PER_SEC as u64;
                 let frac = ns % NS_PER_SEC as u64;
-                write!(f, "{:02}:{:02}:{:02}", secs / 3600, (secs / 60) % 60, secs % 60)?;
+                write!(
+                    f,
+                    "{:02}:{:02}:{:02}",
+                    secs / 3600,
+                    (secs / 60) % 60,
+                    secs % 60
+                )?;
                 let frac = format!("{frac:09}");
                 let trimmed = frac.trim_end_matches('0');
-                write!(f, ".{}", if trimmed.len() < 3 { &frac[..3] } else { trimmed })
+                write!(
+                    f,
+                    ".{}",
+                    if trimmed.len() < 3 {
+                        &frac[..3]
+                    } else {
+                        trimmed
+                    }
+                )
             }
             TimeValue::Timecode { h, m, s, f: ff } => write!(f, "{h:02}:{m:02}:{s:02}:{ff:02}"),
         }
@@ -260,26 +300,53 @@ impl FromStr for TimeArg {
             if !all_digits(int) {
                 return Err(usage());
             }
-            let frac_ns = if frac.is_empty() && !n.contains('.') { 0 } else { parse_fraction_ns(frac).ok_or_else(usage)? };
+            let frac_ns = if frac.is_empty() && !n.contains('.') {
+                0
+            } else {
+                parse_fraction_ns(frac).ok_or_else(usage)?
+            };
             let secs: u64 = int.parse().map_err(|_| too_large())?;
-            TimeValue::Seconds(secs.checked_mul(NS_PER_SEC as u64).and_then(|v| v.checked_add(frac_ns)).ok_or_else(too_large)?)
+            TimeValue::Seconds(
+                secs.checked_mul(NS_PER_SEC as u64)
+                    .and_then(|v| v.checked_add(frac_ns))
+                    .ok_or_else(too_large)?,
+            )
         } else if body.contains(':') {
             let parts: Vec<&str> = body.split(':').collect();
             match parts.as_slice() {
-                [h, m, s, f] if all_digits(h) && m.len() == 2 && s.len() == 2 && all_digits(m) && all_digits(s) && all_digits(f) && f.len() <= 3 => {
-                    let (m, s): (u8, u8) = (m.parse().map_err(|_| usage())?, s.parse().map_err(|_| usage())?);
+                [h, m, s, f]
+                    if all_digits(h)
+                        && m.len() == 2
+                        && s.len() == 2
+                        && all_digits(m)
+                        && all_digits(s)
+                        && all_digits(f)
+                        && f.len() <= 3 =>
+                {
+                    let (m, s): (u8, u8) = (
+                        m.parse().map_err(|_| usage())?,
+                        s.parse().map_err(|_| usage())?,
+                    );
                     if m >= 60 || s >= 60 {
                         return Err(usage());
                     }
-                    TimeValue::Timecode { h: h.parse().map_err(|_| too_large())?, m, s, f: f.parse().map_err(|_| usage())? }
+                    TimeValue::Timecode {
+                        h: h.parse().map_err(|_| too_large())?,
+                        m,
+                        s,
+                        f: f.parse().map_err(|_| usage())?,
+                    }
                 }
                 [h, m, sf] if all_digits(h) && m.len() == 2 && all_digits(m) => {
                     let (s, frac) = sf.split_once('.').ok_or_else(usage)?;
                     if s.len() != 2 || !all_digits(s) {
                         return Err(usage());
                     }
-                    let (h, m, s): (u64, u64, u64) =
-                        (h.parse().map_err(|_| too_large())?, m.parse().map_err(|_| usage())?, s.parse().map_err(|_| usage())?);
+                    let (h, m, s): (u64, u64, u64) = (
+                        h.parse().map_err(|_| too_large())?,
+                        m.parse().map_err(|_| usage())?,
+                        s.parse().map_err(|_| usage())?,
+                    );
                     if m >= 60 || s >= 60 {
                         return Err(usage());
                     }
@@ -295,7 +362,8 @@ impl FromStr for TimeArg {
                 _ => return Err(usage()),
             }
         } else if all_digits(body) || body.parse::<f64>().is_ok() {
-            return Err(CoreError::usage(format!("time {input:?} has no unit")).with_hint("add f (frames) or s (seconds), e.g. 412f or 13.7s"));
+            return Err(CoreError::usage(format!("time {input:?} has no unit"))
+                .with_hint("add f (frames) or s (seconds), e.g. 412f or 13.7s"));
         } else {
             return Err(usage());
         };
@@ -312,7 +380,8 @@ impl Serialize for TimeArg {
 impl<'de> Deserialize<'de> for TimeArg {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
-        s.parse().map_err(|e: CoreError| serde::de::Error::custom(e.message))
+        s.parse()
+            .map_err(|e: CoreError| serde::de::Error::custom(e.message))
     }
 }
 
@@ -346,11 +415,39 @@ mod tests {
     fn grammar() {
         assert_eq!(parse("412f"), TimeArg::frames(412));
         assert_eq!(parse("+1f"), TimeArg::plus_frames(1));
-        assert_eq!(parse("-2s").value, TimeValue::Seconds(2 * NS_PER_SEC as u64));
+        assert_eq!(
+            parse("-2s").value,
+            TimeValue::Seconds(2 * NS_PER_SEC as u64)
+        );
         assert_eq!(parse("13.7s").value, TimeValue::Seconds(13_700_000_000));
-        assert_eq!(parse("00:00:13:21").value, TimeValue::Timecode { h: 0, m: 0, s: 13, f: 21 });
-        assert_eq!(parse("00:00:13.700").value, TimeValue::Clock(13_700_000_000));
-        for bad in ["", "f", "12", "1.5", "1.5f", "-", "1:2:3", "00:60:00:00", "00:00:13.", "13.s", "abc", "1x", "00:00:13.1234567890"] {
+        assert_eq!(
+            parse("00:00:13:21").value,
+            TimeValue::Timecode {
+                h: 0,
+                m: 0,
+                s: 13,
+                f: 21
+            }
+        );
+        assert_eq!(
+            parse("00:00:13.700").value,
+            TimeValue::Clock(13_700_000_000)
+        );
+        for bad in [
+            "",
+            "f",
+            "12",
+            "1.5",
+            "1.5f",
+            "-",
+            "1:2:3",
+            "00:60:00:00",
+            "00:00:13.",
+            "13.s",
+            "abc",
+            "1x",
+            "00:00:13.1234567890",
+        ] {
             assert!(bad.parse::<TimeArg>().is_err(), "{bad:?} should fail");
         }
         let err = "412".parse::<TimeArg>().unwrap_err();
@@ -418,22 +515,40 @@ mod tests {
         // The last nanosecond of the i64 range converts (the frame after it
         // starts past i64, which rounding compares in 128 bits).
         let last = i64::MAX as u64;
-        assert_eq!(parse("9223372036.854775807s").value, TimeValue::Seconds(last));
-        assert_eq!(parse("2562047:47:16.854775807").value, TimeValue::Clock(last));
+        assert_eq!(
+            parse("9223372036.854775807s").value,
+            TimeValue::Seconds(last)
+        );
+        assert_eq!(
+            parse("2562047:47:16.854775807").value,
+            TimeValue::Clock(last)
+        );
         for edge in ["9223372036.854775807s", "2562047:47:16.854775807"] {
             for fps in [F30, F2997, Fps::new(240, 1), Fps::new(1, 1)] {
                 let frames = parse(edge).magnitude_frames(fps).unwrap();
                 assert_eq!(frames, ns_to_frame_round(i64::MAX, fps), "{edge} at {fps}");
             }
         }
-        assert_eq!(parse("+9223372036854775807f").resolve(0, F30).unwrap(), i64::MAX);
+        assert_eq!(
+            parse("+9223372036854775807f").resolve(0, F30).unwrap(),
+            i64::MAX
+        );
         let err = parse("+9223372036854775807f").resolve(1, F30).unwrap_err();
         assert_eq!(err.code, crate::error::ErrorCode::Usage);
     }
 
     #[test]
     fn display_round_trips() {
-        for s in ["412f", "+1f", "-2s", "13.7s", "00:00:13:21", "00:00:13.700", "-00:00:01:00", "0.000000001s"] {
+        for s in [
+            "412f",
+            "+1f",
+            "-2s",
+            "13.7s",
+            "00:00:13:21",
+            "00:00:13.700",
+            "-00:00:01:00",
+            "0.000000001s",
+        ] {
             assert_eq!(parse(s).to_string(), s);
         }
         assert_eq!(serde_json::to_string(&parse("13.7s")).unwrap(), "\"13.7s\"");
@@ -452,10 +567,16 @@ mod tests {
                 return None;
             };
             let (sec, frac) = sf.split_once('.')?;
-            let secs = h.parse::<u128>().ok()? * 3600 + m.parse::<u128>().ok()? * 60 + sec.parse::<u128>().ok()?;
+            let secs = h.parse::<u128>().ok()? * 3600
+                + m.parse::<u128>().ok()? * 60
+                + sec.parse::<u128>().ok()?;
             (secs, frac)
         };
-        let frac_ns: u128 = if frac.is_empty() { 0 } else { format!("{frac:0<9}").parse().ok()? };
+        let frac_ns: u128 = if frac.is_empty() {
+            0
+        } else {
+            format!("{frac:0<9}").parse().ok()?
+        };
         Some(whole * 1_000_000_000 + frac_ns)
     }
 

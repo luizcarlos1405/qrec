@@ -12,7 +12,13 @@ fn spec_example_round_trips() {
     assert_eq!(project.timeline.clips.len(), 2);
     let take = project.take(&TakeId::numbered(1)).expect("take-0001");
     assert_eq!(take.status, TakeStatus::Ok);
-    assert_eq!(take.streams.iter().filter(|s| s.kind == StreamKind::Audio).count(), 2);
+    assert_eq!(
+        take.streams
+            .iter()
+            .filter(|s| s.kind == StreamKind::Audio)
+            .count(),
+        2
+    );
 
     let original: serde_json::Value = serde_json::from_str(SPEC_EXAMPLE).unwrap();
     let reserialized = serde_json::to_value(&project).unwrap();
@@ -23,7 +29,9 @@ fn spec_example_round_trips() {
 fn unknown_fields_are_rejected() {
     let mut value: serde_json::Value = serde_json::from_str(SPEC_EXAMPLE).unwrap();
     value["canvas"]["fsp"] = serde_json::json!(30);
-    let err = serde_json::from_value::<Project>(value).unwrap_err().to_string();
+    let err = serde_json::from_value::<Project>(value)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("fsp"), "{err}");
 
     let mut value: serde_json::Value = serde_json::from_str(SPEC_EXAMPLE).unwrap();

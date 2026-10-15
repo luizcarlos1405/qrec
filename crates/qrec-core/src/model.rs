@@ -56,7 +56,11 @@ pub struct ProjectDefaults {
 
 impl Project {
     /// A new, empty project. `created_at` is truncated to whole seconds.
-    pub fn new(name: impl Into<String>, created_at: DateTime<Utc>, defaults: &ProjectDefaults) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        created_at: DateTime<Utc>,
+        defaults: &ProjectDefaults,
+    ) -> Self {
         use chrono::SubsecRound;
         Self {
             version: CURRENT_VERSION,
@@ -99,7 +103,12 @@ pub struct Canvas {
 
 impl Default for Canvas {
     fn default() -> Self {
-        Self { width: 1920, height: 1080, fps: Fps::new(30, 1), background: Color::black() }
+        Self {
+            width: 1920,
+            height: 1080,
+            fps: Fps::new(30, 1),
+            background: Color::black(),
+        }
     }
 }
 
@@ -144,7 +153,11 @@ impl<'de> Deserialize<'de> for Fps {
 
 impl fmt::Display for Fps {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.den == 1 { write!(f, "{}", self.num) } else { write!(f, "{}/{}", self.num, self.den) }
+        if self.den == 1 {
+            write!(f, "{}", self.num)
+        } else {
+            write!(f, "{}/{}", self.num, self.den)
+        }
     }
 }
 
@@ -157,12 +170,23 @@ impl FromStr for Fps {
     /// a decimal is range-checked before its digits become a fraction, so
     /// no input can overflow (or, in release builds, wrap into a valid rate).
     fn from_str(s: &str) -> Result<Self, CoreError> {
-        let bad = || CoreError::usage(format!("invalid frame rate {s:?} (examples: 30, 29.97, 30000/1001)"));
+        let bad = || {
+            CoreError::usage(format!(
+                "invalid frame rate {s:?} (examples: 30, 29.97, 30000/1001)"
+            ))
+        };
         let s = s.trim();
         let fps = if let Some((n, d)) = s.split_once('/') {
-            Fps::new(n.trim().parse().map_err(|_| bad())?, d.trim().parse().map_err(|_| bad())?)
+            Fps::new(
+                n.trim().parse().map_err(|_| bad())?,
+                d.trim().parse().map_err(|_| bad())?,
+            )
         } else if let Some((int, frac)) = s.split_once('.') {
-            if int.is_empty() || frac.is_empty() || frac.len() > 6 || !(int.bytes().chain(frac.bytes())).all(|b| b.is_ascii_digit()) {
+            if int.is_empty()
+                || frac.is_empty()
+                || frac.len() > 6
+                || !(int.bytes().chain(frac.bytes())).all(|b| b.is_ascii_digit())
+            {
                 return Err(bad());
             }
             let value: f64 = s.parse().map_err(|_| bad())?;
@@ -170,14 +194,21 @@ impl FromStr for Fps {
                 return Err(bad());
             }
             let ntsc = (value * 1001.0 / 1000.0).round();
-            if ntsc >= 1.0 && (ntsc * 1000.0 / 1001.0 - value).abs() < 0.0015 && (value - value.round()).abs() > 0.001 {
+            if ntsc >= 1.0
+                && (ntsc * 1000.0 / 1001.0 - value).abs() < 0.0015
+                && (value - value.round()).abs() > 0.001
+            {
                 // `ntsc` ≤ 241 here, so the cast and the product are exact.
                 Fps::new((ntsc as u32).checked_mul(1000).ok_or_else(bad)?, 1001)
             } else {
                 // `int` ≤ 240 and `frac` < 10⁶ here; checked all the same.
                 let den = 10u32.pow(frac.len() as u32);
                 let frac = frac.parse::<u32>().map_err(|_| bad())?;
-                let num = int.parse::<u32>().ok().and_then(|int| int.checked_mul(den)?.checked_add(frac)).ok_or_else(bad)?;
+                let num = int
+                    .parse::<u32>()
+                    .ok()
+                    .and_then(|int| int.checked_mul(den)?.checked_add(frac))
+                    .ok_or_else(bad)?;
                 let g = gcd(num, den);
                 Fps::new(num / g, den / g)
             }
@@ -219,11 +250,14 @@ impl FromStr for Color {
     type Err = CoreError;
 
     fn from_str(s: &str) -> Result<Self, CoreError> {
-        let ok = s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit());
+        let ok =
+            s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit());
         if ok {
             Ok(Self(s.to_ascii_uppercase()))
         } else {
-            Err(CoreError::usage(format!("invalid color {s:?} (expected #RRGGBB)")))
+            Err(CoreError::usage(format!(
+                "invalid color {s:?} (expected #RRGGBB)"
+            )))
         }
     }
 }
@@ -231,7 +265,8 @@ impl FromStr for Color {
 impl<'de> Deserialize<'de> for Color {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
-        s.parse().map_err(|e: CoreError| serde::de::Error::custom(e.message))
+        s.parse()
+            .map_err(|e: CoreError| serde::de::Error::custom(e.message))
     }
 }
 
@@ -304,7 +339,12 @@ pub struct Layer {
 
 /// What a layer captures.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum VideoSource {
     /// A monitor, captured through the ScreenCast portal. `output` is the bare
     /// output name (`DP-4`), never the description.
@@ -422,7 +462,11 @@ pub struct RecordingSettings {
 
 impl Default for RecordingSettings {
     fn default() -> Self {
-        Self { countdown_secs: 0, encoder: EncoderPref::Auto, vaapi_device: None }
+        Self {
+            countdown_secs: 0,
+            encoder: EncoderPref::Auto,
+            vaapi_device: None,
+        }
     }
 }
 

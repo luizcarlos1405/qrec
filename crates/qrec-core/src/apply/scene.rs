@@ -1234,7 +1234,11 @@ mod tests {
         // A GUI host in Live mode also gets the live pipeline update.
         assert!(matches!(
             out.effects[..],
-            [Effect::History(_), Effect::WriteProject, Effect::SetLive(Some(_))]
+            [
+                Effect::History(_),
+                Effect::WriteProject,
+                Effect::SetLive(Some(_))
+            ]
         ));
         assert_eq!(
             out.state.history.entries[0].label,
