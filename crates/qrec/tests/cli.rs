@@ -810,3 +810,183 @@ fn record_start_and_stop_with_the_fake_backend() {
         thread::sleep(Duration::from_millis(100));
     }
 }
+
+// ------------------------------------------------------- crashes and taps
+
+/// The pid of the host serving `dir` (`qrec status`).
+fn host_pid(env: &TestEnv, dir: &Path) -> u32 {
+    let status = qrec(env, dir, &["status", "--json"]);
+    status.ok();
+    let data = &status.reply()["data"];
+    assert_eq!(data["host"], "headless", "{data}");
+    data["pid"].as_u64().expect("a host has a pid") as u32
+}
+
+/// SIGKILLs `pid` (a crash: nothing is finalized) and waits until it is gone.
+fn crash(pid: u32) {
+    let killed = run_tool(
+        std::process::Command::new("kill").args(["-KILL", &pid.to_string()]),
+        Duration::from_secs(10),
+    );
+    assert!(killed.status.success(), "kill: {}", killed.stderr);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let gone = || {
+        fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| stat.contains(") Z "))
+    };
+    while !gone() {
+        assert!(Instant::now() < deadline, "host {pid} didn't die");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The take as `qrec take show --json` prints it.
+fn take_show(env: &TestEnv, dir: &Path, take: &str) -> Value {
+    let out = qrec(env, dir, &["take", "show", take, "--json"]);
+    out.ok();
+    out.reply()["data"].clone()
+}
+
+#[test]
+fn an_audio_only_take_cut_short_by_a_crash_is_recovered_by_the_next_command() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("crash-audio");
+    qrec(&env, &dir, &["init", "--canvas", "640x360@30"]).ok();
+    qrec(&env, &dir, &["scene", "audio", "add", "mic"]).ok();
+    qrec(&env, &dir, &["record", "start", "--json"]).ok();
+    thread::sleep(Duration::from_millis(2500));
+    crash(host_pid(&env, &dir));
+
+    // A one-shot command recovers the take before it runs (SPEC §5.3.7),
+    // so the take is usable at once.
+    let add = qrec(&env, &dir, &["clip", "add", "take-0001", "--json"]);
+    add.ok();
+    assert_eq!(add.reply()["data"]["created"].as_array().unwrap().len(), 1);
+    assert!(
+        add.stderr.contains("Recovered take 1 from the bog."),
+        "{}",
+        add.stderr
+    );
+
+    // matroskamux never wrote a duration; the length comes from the FLAC
+    // packets (4608 samples each at 48 kHz), not 0 frames.
+    let take = take_show(&env, &dir, "take-0001");
+    assert_eq!(take["status"], "ok", "{take}");
+    let probe = ffprobe(&dir.join("takes/take-0001/A1-mic.mka"));
+    assert!(
+        probe["format"]["duration"].is_null(),
+        "a crashed file has no duration: {probe}"
+    );
+    let packets: i64 = probe["streams"][0]["nb_read_packets"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let offset = take["streams"][0]["startOffsetNs"].as_i64().unwrap();
+    let expected = (offset + packets * 96_000_000) * 30 / 1_000_000_000;
+    assert_eq!(take["durationFrames"].as_i64(), Some(expected), "{take}");
+    assert!(expected >= 45, "~2.5 s were recorded: {take}");
+}
+
+#[test]
+fn a_take_recovered_after_a_crash_keeps_its_start_offsets() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("crash-offsets");
+    qrec(&env, &dir, &["init", "--canvas", "640x360@30"]).ok();
+    qrec(
+        &env,
+        &dir,
+        &["scene", "layer", "add", "screen", "--output", "FAKE-2"],
+    )
+    .ok();
+    qrec(&env, &dir, &["scene", "audio", "add", "mic"]).ok();
+    qrec(&env, &dir, &["record", "start", "--json"]).ok();
+    thread::sleep(Duration::from_millis(2000));
+    crash(host_pid(&env, &dir));
+
+    let rename = qrec(&env, &dir, &["project", "set", "--name", "after the crash"]);
+    rename.ok();
+    assert!(
+        rename.stderr.contains("Recovered take 1 from the bog."),
+        "{}",
+        rename.stderr
+    );
+    let take = take_show(&env, &dir, "take-0001");
+    assert_eq!(take["status"], "ok", "{take}");
+    assert!(take["durationFrames"].as_u64().unwrap() >= 30, "{take}");
+    // Each stream keeps the offset the engine measured when it started
+    // (recorder.log: "<id>: first buffer at T0 + <ms> ms").
+    let log = fs::read_to_string(dir.join("takes/take-0001/recorder.log")).unwrap();
+    let streams = take["streams"].as_array().unwrap();
+    assert_eq!(streams.len(), 2, "{take}");
+    for stream in streams {
+        let id = stream["id"].as_str().unwrap();
+        let prefix = format!(" {id}: first buffer at T0 + ");
+        let line = log
+            .lines()
+            .find(|l| l.contains(&prefix))
+            .unwrap_or_else(|| panic!("no first buffer of {id} in:\n{log}"));
+        let ms: f64 = line
+            .split(&prefix)
+            .nth(1)
+            .unwrap()
+            .trim_end_matches(" ms")
+            .parse()
+            .unwrap();
+        let offset = stream["startOffsetNs"].as_i64().unwrap();
+        assert!(offset > 0, "{id}: {stream}");
+        assert!(
+            (offset as f64 - ms * 1e6).abs() <= 1_000.0,
+            "{id}: {offset} ns vs {ms} ms in recorder.log"
+        );
+    }
+}
+
+#[test]
+fn a_double_tap_of_record_toggle_is_too_short_not_broken() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("double-tap");
+    qrec(&env, &dir, &["init", "--canvas", "640x360@30"]).ok();
+    qrec(
+        &env,
+        &dir,
+        &["scene", "layer", "add", "screen", "--output", "FAKE-1"],
+    )
+    .ok();
+    qrec(&env, &dir, &["scene", "audio", "add", "mic"]).ok();
+
+    // Two presses of a key bound to `qrec record toggle`, no host running:
+    // the second one stops the take while it is still starting.
+    let taps: Vec<Out> = thread::scope(|s| {
+        let presses: Vec<_> = (0..2)
+            .map(|_| s.spawn(|| qrec(&env, &dir, &["record", "toggle", "--json"])))
+            .collect();
+        presses.into_iter().map(|p| p.join().unwrap()).collect()
+    });
+    for tap in &taps {
+        tap.ok();
+    }
+    let stop = taps
+        .iter()
+        .find(|t| t.reply()["data"]["result"]["status"].is_string())
+        .unwrap_or_else(|| panic!("no finalized reply: {taps:?}"));
+    let view = &stop.reply()["data"]["result"];
+    // Never broken: every file is readable, the take is just short.
+    assert_ne!(view["status"], "broken", "{view}");
+    let take = take_show(&env, &dir, "take-0001");
+    assert_eq!(take["status"], view["status"], "{take}");
+    assert_eq!(take["error"], Value::Null, "{take}");
+    let streams = take["streams"].as_array().unwrap();
+    assert_eq!(streams.len(), 2, "no stream left as unreadable: {take}");
+    for stream in streams {
+        let file = dir.join(stream["file"].as_str().unwrap());
+        assert!(
+            ffprobe(&file)["streams"][0].is_object(),
+            "{}",
+            file.display()
+        );
+    }
+    if view["status"] == "tooShort" {
+        let message = stop.reply()["data"]["message"].as_str().unwrap().to_owned();
+        assert!(message.contains("was too short"), "{message}");
+    }
+}
