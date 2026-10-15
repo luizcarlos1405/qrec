@@ -263,7 +263,7 @@ pub(super) fn open(
     if writable && initialized && !opts.recovery {
         if session.state.runtime.disk_invalid.is_some() {
             if session.store.is_dirty() {
-                tracing::warn!(
+                tracing::info!(
                     "qrec.json didn't merge: the project's files are left as they are until it is fixed or restored"
                 );
             }

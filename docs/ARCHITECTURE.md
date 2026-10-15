@@ -995,10 +995,9 @@ open (outside recovery mode) writes the repair right away, unless its
 so the repair waits for the write that moves it aside or copies it first. A
 Session that goes away with a dirty store tries one last full write (in
 recovery mode only once a request saved, A§7.7; never over a `qrec.json`
-that failed to load). Non-undoable
-writes do steps 2–3. On open (lock held): drop history lines with
-`seq ≥ nextSeq`; drop a torn last line; a bad line elsewhere ⇒ `Invalid`
-with its line number. If `sha256(qrec.json) == H` the state is clean.
+that failed to load). Non-undoable writes do steps 2–3. On open (lock
+held): drop history lines with `seq ≥ nextSeq`; drop a torn last line; a
+bad line elsewhere ⇒ `Invalid` with its line number. If `sha256(qrec.json) == H` the state is clean.
 Otherwise a valid file whose undoable view is the `afterHash` of the
 uncommitted lines (they follow the head: the first is its `nextSeq`, then
 one after the other, after a history ending at its cursor), and that still
@@ -1066,9 +1065,9 @@ rewrites every file with its next commit, and the replies they send are
   put an old take's clip on a new recording). The Recover probe finalizes
   the takes found; in recovery mode commands wait for those probes (and a
   host stays up for them, A§8.6), so the restore writes a project that
-  validates. Start offsets aren't in the files: a recovered
-  take can come out shorter than recorded, and then a restore whose clips
-  no longer fit fails naming the clip (restore an older entry).
+  validates. Start offsets aren't in the files: a recovered take can come
+  out shorter than recorded, and then a restore whose clips no longer fit
+  fails naming the clip (restore an older entry).
 
 ---
 
