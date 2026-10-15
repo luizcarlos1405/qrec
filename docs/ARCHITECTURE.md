@@ -183,6 +183,11 @@ Errors make a project invalid:
 - Canvas: even `16 ≤ w, h ≤ 8192`; `fps.num, fps.den > 0`, fps ≤ 240.
 - `countdownSecs ≤ 10`; autocut numbers in range (threshold −90…0 dB,
   ms values ≤ 60 000).
+- Lengths: a take's `durationFrames` and the timeline's total length (at
+  the canvas fps) and every stream's `startOffsetNs`, `durationNs` and
+  `frames` (at its fps) are at most 2⁶⁰ ns (about 36 years), so sums of
+  clip lengths and offsets plus durations can't overflow on a valid
+  project, however it was edited.
 
 Warnings: a take-scene layer/track without a stream ("missing media");
 `autocut.track` not in the project scene ("takes lacking it are skipped").

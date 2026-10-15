@@ -14,8 +14,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::CoreError;
 use crate::ids::TakeId;
 use crate::model::{
-    AutocutSettings, CURRENT_VERSION, Canvas, Project, Scene, StreamKind, Take, TakeStatus,
+    AutocutSettings, CURRENT_VERSION, Canvas, Fps, Project, Scene, StreamKind, Take, TakeStatus,
 };
+use crate::time::NS_PER_SEC;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +58,23 @@ pub const MAX_GAIN_DB: f64 = 60.0;
 pub const MAX_SYNC_OFFSET_MS: i32 = 5000;
 pub const MIN_THRESHOLD_DB: f64 = -90.0;
 pub const MAX_AUTOCUT_MS: u32 = 60_000;
+/// The longest a take, the timeline or a stream time may be: 2⁶⁰ ns,
+/// about 36 years. Sums of clip lengths and offsets plus durations of a
+/// valid project then stay far inside `u64` and `i64`, so a hand-edited
+/// length can't make a command overflow.
+pub const MAX_DURATION_NS: i64 = 1 << 60;
+
+/// Why a length is refused (see [`MAX_DURATION_NS`]).
+const TOO_LONG: &str = "more than Qrec handles (about 36 years)";
+
+/// `frames` frames at `fps` last at most [`MAX_DURATION_NS`]. Exact for
+/// every frame count and rate (128-bit); a rate without a positive
+/// numerator is reported elsewhere and passes here.
+pub fn frames_fit(frames: u64, fps: Fps) -> bool {
+    fps.num == 0
+        || u128::from(frames) * NS_PER_SEC as u128 * u128::from(fps.den) / u128::from(fps.num)
+            <= MAX_DURATION_NS as u128
+}
 
 /// Escapes one JSON Pointer reference token (RFC 6901).
 fn token(s: &str) -> String {
@@ -99,7 +117,10 @@ impl Issues {
 ///   `sampleRate`/`channels`) for every stream a non-missing layer or track
 ///   of the take scene uses — `recording` and `broken` takes and missing
 ///   sources may lack them;
-/// - clips: unique ids; the take exists and is `ok`; `0 ≤ in < out ≤ durationFrames`.
+/// - clips: unique ids; the take exists and is `ok`; `0 ≤ in < out ≤ durationFrames`;
+/// - lengths: a take's `durationFrames` and the timeline's length (at the
+///   canvas fps), and every stream's `startOffsetNs`, `durationNs` and
+///   `frames` (at its own fps) are at most [`MAX_DURATION_NS`].
 ///
 /// Warnings: a take-scene layer or track without a stream ("missing
 /// media"); `autocut.track` not in the project scene ("takes lacking it are
@@ -128,7 +149,7 @@ pub fn validate(project: &Project) -> Vec<Issue> {
     }
     autocut(&mut issues, &project.autocut, &project.scene);
     for (id, take) in &project.takes {
-        take_issues(&mut issues, id, take);
+        take_issues(&mut issues, id, take, project.canvas.fps);
     }
     let highest = project.takes.keys().max_by_key(|id| id.number());
     if let Some(highest) = highest.filter(|h| project.next_take_number <= h.number()) {
@@ -308,8 +329,14 @@ fn valid_file_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
-fn take_issues(issues: &mut Issues, id: &TakeId, take: &Take) {
+fn take_issues(issues: &mut Issues, id: &TakeId, take: &Take, canvas_fps: Fps) {
     let path = format!("/takes/{}", token(id.as_str()));
+    if !frames_fit(take.duration_frames, canvas_fps) {
+        issues.error(
+            format!("{path}/durationFrames"),
+            format!("{id} is {} frames long, {TOO_LONG}", take.duration_frames),
+        );
+    }
     scene(
         issues,
         &format!("{path}/scene"),
@@ -340,6 +367,34 @@ fn take_issues(issues: &mut Issues, id: &TakeId, take: &Take) {
                 format!(
                     "stream {} file {:?} must be {prefix}<name> with <name> made of letters, digits, '.', '_' and '-'",
                     stream.id, stream.file
+                ),
+            );
+        }
+        let max = MAX_DURATION_NS.unsigned_abs();
+        if stream.start_offset_ns.unsigned_abs() > max {
+            issues.error(
+                format!("{}/startOffsetNs", at()),
+                format!(
+                    "stream {} of {id} starts {} ns from the take's start, {TOO_LONG}",
+                    stream.id, stream.start_offset_ns
+                ),
+            );
+        }
+        if let Some(ns) = stream.duration_ns.filter(|ns| ns.unsigned_abs() > max) {
+            issues.error(
+                format!("{}/durationNs", at()),
+                format!("stream {} of {id} lasts {ns} ns, {TOO_LONG}", stream.id),
+            );
+        }
+        if let Some(frames) = stream
+            .frames
+            .filter(|&f| !frames_fit(f, stream.fps.unwrap_or(canvas_fps)))
+        {
+            issues.error(
+                format!("{}/frames", at()),
+                format!(
+                    "stream {} of {id} has {frames} frames, {TOO_LONG}",
+                    stream.id
                 ),
             );
         }
@@ -385,6 +440,16 @@ fn take_issues(issues: &mut Issues, id: &TakeId, take: &Take) {
 }
 
 fn timeline(issues: &mut Issues, project: &Project) {
+    let clips = &project.timeline.clips;
+    let total = clips
+        .iter()
+        .try_fold(0u64, |sum, clip| sum.checked_add(clip.len()));
+    if !total.is_some_and(|total| frames_fit(total, project.canvas.fps)) {
+        issues.error(
+            "/timeline/clips",
+            format!("the timeline's {} clips add up to {TOO_LONG}", clips.len()),
+        );
+    }
     let mut ids: BTreeMap<&str, usize> = BTreeMap::new();
     for (i, clip) in project.timeline.clips.iter().enumerate() {
         let at = || format!("/timeline/clips/{i}");
@@ -645,6 +710,56 @@ mod tests {
                 "error at /timeline/clips/2/id: duplicate clip id c001 (also at /timeline/clips/0)",
                 "error at /timeline/clips/3/take: clip c009 uses take-0009, which doesn't exist",
                 "error at /timeline/clips/3: clip c009 range [5, 5) is empty",
+            ]
+        );
+    }
+
+    #[test]
+    fn lengths_past_the_maximum_are_errors() {
+        // Hand-edited lengths whose sums overflowed: `status`, `clip list`
+        // and every commit panicked on a project that passed validation.
+        let mut p = project();
+        let take = p.takes.get_mut(&TakeId::numbered(1)).unwrap();
+        take.duration_frames = u64::MAX;
+        take.streams[0].start_offset_ns = i64::MIN;
+        take.streams[1].frames = Some(u64::MAX);
+        take.streams[2].duration_ns = Some(i64::MAX);
+        p.timeline.clips[0].out = u64::MAX;
+        p.timeline.clips.push(p.timeline.clips[0].clone());
+        p.timeline.clips[2].id = ClipId::from_raw("c003");
+        assert_eq!(
+            summary(&p),
+            [
+                "error at /takes/take-0001/durationFrames: take-0001 is 18446744073709551615 frames long, more than Qrec handles (about 36 years)",
+                "error at /takes/take-0001/streams/0/startOffsetNs: stream L1 of take-0001 starts -9223372036854775808 ns from the take's start, more than Qrec handles (about 36 years)",
+                "error at /takes/take-0001/streams/1/frames: stream L2 of take-0001 has 18446744073709551615 frames, more than Qrec handles (about 36 years)",
+                "error at /takes/take-0001/streams/2/durationNs: stream A1 of take-0001 lasts 9223372036854775807 ns, more than Qrec handles (about 36 years)",
+                "error at /timeline/clips: the timeline's 3 clips add up to more than Qrec handles (about 36 years)",
+            ]
+        );
+
+        // The bound is 2⁶⁰ ns: 34 587 645 138 frames at 30 fps, not one more.
+        let fps = Fps::new(30, 1);
+        assert!(frames_fit(34_587_645_138, fps));
+        assert!(!frames_fit(34_587_645_139, fps));
+        assert!(!frames_fit(u64::MAX, Fps::new(1, u32::MAX)), "no overflow");
+        assert!(
+            frames_fit(u64::MAX, Fps::new(0, 1)),
+            "a canvas error instead"
+        );
+        let mut p = project();
+        assert_eq!(p.canvas.fps, fps);
+        p.takes
+            .get_mut(&TakeId::numbered(1))
+            .unwrap()
+            .duration_frames = 34_587_645_138;
+        p.timeline.clips[0].out = 34_587_645_138 - 150;
+        assert_eq!(summary(&p), Vec::<String>::new());
+        p.timeline.clips[0].out += 1;
+        assert_eq!(
+            summary(&p),
+            [
+                "error at /timeline/clips: the timeline's 2 clips add up to more than Qrec handles (about 36 years)"
             ]
         );
     }

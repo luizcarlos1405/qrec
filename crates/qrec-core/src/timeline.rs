@@ -23,21 +23,28 @@ use crate::protocol::reply::ClipRow;
 use crate::time::{Sign, TimeArg, TimeValue, timecode};
 
 /// The timeline frame where clip `index` starts (`total_frames` for `index == len`).
+///
+/// Sums here saturate: a valid project's timeline is far shorter than
+/// `u64` (A§2.3 bounds it), and a state that never went through validation
+/// must not panic a query either.
 pub fn position_of(clips: &[Clip], index: usize) -> Frame {
-    clips[..index.min(clips.len())].iter().map(Clip::len).sum()
+    clips[..index.min(clips.len())]
+        .iter()
+        .map(Clip::len)
+        .fold(0, Frame::saturating_add)
 }
 
 /// The timeline length in frames.
 pub fn total_frames(clips: &[Clip]) -> Frame {
-    clips.iter().map(Clip::len).sum()
+    clips.iter().map(Clip::len).fold(0, Frame::saturating_add)
 }
 
 /// The clip under timeline frame `frame` and the offset into it; `None` at
 /// or past the end.
 pub fn clip_at(clips: &[Clip], frame: Frame) -> Option<(usize, Frame)> {
-    let mut start = 0;
+    let mut start: Frame = 0;
     for (i, clip) in clips.iter().enumerate() {
-        let end = start + clip.len();
+        let end = start.saturating_add(clip.len());
         if frame < end {
             return Some((i, frame - start));
         }
@@ -61,9 +68,9 @@ pub fn index_of(clips: &[Clip], id: &ClipId) -> Option<usize> {
 pub fn edit_points(clips: &[Clip]) -> Vec<Frame> {
     let mut points = Vec::with_capacity(clips.len() + 1);
     points.push(0);
-    let mut end = 0;
+    let mut end: Frame = 0;
     for clip in clips {
-        end += clip.len();
+        end = end.saturating_add(clip.len());
         if points.last() != Some(&end) {
             points.push(end);
         }
@@ -315,7 +322,7 @@ pub fn trim_edge(
         return Ok(offset(clip.in_, t as i64));
     }
     let pos = position_of(clips, i);
-    let end = pos + clip.len();
+    let end = pos.saturating_add(clip.len());
     if t < pos || t > end {
         return Err(CoreError::invalid(format!(
             "{} is outside clip {} ({}–{} on the timeline)",
@@ -375,7 +382,7 @@ pub fn split_point(
         return Ok(clip.in_ + t);
     }
     let pos = position_of(clips, i);
-    let end = pos + clip.len();
+    let end = pos.saturating_add(clip.len());
     if t <= pos || t >= end {
         return Err(CoreError::invalid(format!(
             "can't split clip {} at {}: the cut must be inside the clip ({}–{} on the timeline)",
@@ -388,8 +395,8 @@ pub fn split_point(
     Ok(clip.in_ + (t - pos))
 }
 
-/// Timecode hours above this are `Usage` before any arithmetic (114 years;
-/// `TimeArg::magnitude_frames` multiplies them unchecked).
+/// Timecode hours above this are `Usage` before any arithmetic (114 years,
+/// far past any timeline).
 const MAX_TIMECODE_HOURS: u64 = 1_000_000;
 
 /// The magnitude of a time argument in frames; values too large for the
@@ -479,6 +486,29 @@ mod tests {
         assert_eq!(index_of(&clips, &cid("c9")), None);
         let row = clip_row(&clips, 2);
         assert_eq!((row.start, row.duration, row.in_, row.out), (15, 20, 5, 25));
+    }
+
+    #[test]
+    fn sums_saturate_instead_of_overflowing() {
+        // Lengths only an unvalidated state can hold (A§2.3 bounds them):
+        // `status`, `clip list` and every commit's UI normalization used
+        // to panic on them.
+        let max = u64::MAX;
+        let clips = [clip("c1", 0, max), clip("c2", 0, max), clip("c3", 0, max)];
+        assert_eq!(total_frames(&clips), max);
+        assert_eq!(position_of(&clips, 2), max);
+        assert_eq!(clip_row(&clips, 2).start, max);
+        assert_eq!(clip_at(&clips, max - 1), Some((0, max - 1)));
+        assert_eq!(clip_at(&clips, max), None);
+        assert_eq!(edit_points(&clips), vec![0, max]);
+        let at = split_point(&clips, 2, &t("5f"), false, F30).unwrap();
+        assert_eq!(at, 5);
+        assert_eq!(
+            split_point(&clips, 2, &t("5f"), true, F30)
+                .unwrap_err()
+                .code,
+            ErrorCode::Invalid
+        );
     }
 
     #[test]
