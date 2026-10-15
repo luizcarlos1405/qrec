@@ -242,6 +242,8 @@ pub struct Runtime {
     pub next_id: u64,                    // allocates JobId and TimerId
     pub playing: bool,
     pub disk_invalid: Option<String>,    // qrec.json on disk failed to load (A§7.7)
+    pub engine_stuck: Option<String>,    // the capture engine wedged (A§5.3)
+    pub recovering: BTreeSet<TakeId>,    // startup recovery probes still out (A§5.3)
 }
 
 #[serde(tag = "phase", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -352,7 +354,7 @@ pub struct AudioDeviceInfo { pub name: String, pub description: String, pub is_m
 pub struct ScreenInfo { pub output: String, pub description: String, pub x: i32, pub y: i32, pub width: u32, pub height: u32, pub scale: f64 }
 pub struct CameraInfo { pub device: String, pub label: String, pub modes: Vec<CameraMode> }
 pub struct CameraMode { pub width: u32, pub height: u32, pub fps: Fps, pub format: String }
-pub struct OutFacts { pub abs: String, pub exists: bool, pub forbidden: Option<String> /* why: inside takes/, .qrec/, or qrec.json */ }
+pub struct OutFacts { pub abs: String, pub exists: bool, pub forbidden: Option<String> /* why: inside takes/, .qrec/, qrec.json, or a name over 255 bytes */ }
 pub struct FileFact { pub path: String, pub bytes: u64, pub mtime_ns: i64 }
 
 #[derive(Default)]
@@ -561,7 +563,7 @@ pub enum Event {
     ExportProgress { job: JobId, segment: usize, frames_done: u64 },
     ExportStitchProgress { job: JobId, out_time_ns: u64 },
     ExportFinished { job: JobId, path: String, bytes: u64 },
-    ExportFailed { job: JobId, message: String, stderr_tail: Vec<String>, log: String },
+    ExportFailed { job: JobId, message: String, stderr_tail: Vec<String>, log: String }, // log "" = none written: nothing names it
     ExportCancelled { job: JobId },
     FrameSaved { job: JobId, path: String },
     FrameFailed { job: JobId, message: String, log: String },
@@ -571,7 +573,13 @@ pub enum Event {
     RequesterGone { req: ReqId },                                  // IPC client disconnected
 }
 pub struct RecordedStream { pub id: String, pub file: String, pub start_offset_ns: i64, pub eos: bool }
-pub struct ProbeResult { pub id: String, pub file: String, pub info: Result<MediaInfo, String> }
+pub struct ProbeResult { pub id: String, pub file: String, pub info: Result<MediaInfo, ProbeError> }
+pub struct ProbeError { pub kind: ProbeFailure, pub message: String }
+pub enum ProbeFailure {
+    Media,       // missing, empty or unreadable file: ffprobe judged it (a fact)
+    MissingTool, // ffprobe can't be run (not installed): nothing is known about the file
+    Tool,        // ffprobe timed out or was stopped, or the prober failed: nothing is known
+}
 pub struct MediaInfo { pub kind: StreamKind, pub frames: Option<u64>, pub fps: Option<Fps>,
                        pub width: Option<u32>, pub height: Option<u32>, pub sample_rate: Option<u32>,
                        pub channels: Option<u32>, pub duration_ns: Option<i64>, pub start_time_ns: i64,
@@ -613,7 +621,9 @@ host → client  {"id":"7","accepted":true}
                {"id":"7","reply":{"ok":false,"error":{"code":"not_found","message":"…","hint":"…"}}}
 ```
 
-`hello` → `{pid, projectDir, host: "gui"|"headless"|"cli", record: RecordPhase, jobs, version}`.
+`hello` → `{pid, projectDir, host: "gui"|"headless"|"cli", record: RecordPhase, jobs, version}`,
+plus `projectDirHex` (the folder's exact bytes) when its path isn't UTF-8:
+`projectDir` is then only its display form, and clients use the bytes (A§8.4).
 `shutdown` → the host stops accepting, lets jobs finish, exits (A§8.6).
 The shell's `ReqId(u64)` is allocated per request by the Session; client
 ids stay inside the IPC layer. `--json` prints `to_wire(&result)` — the
@@ -709,11 +719,25 @@ still matches and is contiguous (recording `Take.replaced`), else appends
 with a toast "record-over target changed; take appended at the end". Set
 `Take.placed`. Then the pending discard (A§5.5), the ready autocut jobs
 (A§5.7), then `autocut.autoRunAfterTake` starts a job for the new clip. Reply
-to every stop request and waiter with `TakeFinalizedView`.
+to every stop request and waiter with `TakeFinalizedView`. A broken take's
+`error` names what the probe said about each stream.
 
-**Recovery** (`Session::open` with the lock): each take still `recording`
-gets `Probe{Recover}`; readable ⇒ `ok`, bin, toast "Recovered take 7 from
-the bog."; otherwise `broken`.
+**A probe that failed on its own** (`ProbeFailure::MissingTool` or `Tool`:
+ffprobe isn't installed, timed out, the prober died) says nothing about the
+files, so it changes no fact: the take stays `recording` with its streams and
+offsets, the phase goes back to Idle, stop requests and waiters get
+`missing_dependency` (exit 5, hint: install ffprobe, `qrec doctor`) or `io`,
+a pending discard hears "take N was not placed", toast + log name the real
+cause. Startup recovery finalizes the take (into the bin) once the probe
+works.
+
+**Recovery** (`Session::open` with the lock, `on_event::record::start_recovery`):
+each take still `recording` gets `Probe{Recover}` and is in
+`runtime.recovering` until its `TakeProbed(Recover)` comes back (whatever it
+says); a host isn't idle meanwhile (A§8.6), so an in-process command waits
+for the recovery it started. Readable ⇒ `ok`, bin, toast "Recovered take 7
+from the bog."; unreadable ⇒ `broken`; a probe that failed on its own ⇒ the
+take stays `recording` (warning toast) for the next start.
 
 **CaptureFailed vs StreamLost** (engine contract, A§8.11): after
 CaptureStarted, an error attributable to one branch (its source, encoder,
@@ -799,15 +823,15 @@ It means what the OS says: `..` stays in `facts.out.abs` (the path the job
 writes and reports) and the checks run where the kernel resolves it, so
 `link/..` is the parent of the link's target, never lexically the folder
 holding `link`.
-`facts.out.forbidden` (inside `takes/`, `.qrec/` or `qrec.json`) ⇒ `Invalid`
-(not confirmable); `exists && !confirmed` ⇒ `confirmation_required`. The
-plan's `replace` is `exists && confirmed`: the runner may replace only the
-file the person confirmed. `OutputAppeared` (a hand-picked `out` appeared
-while the job ran, A§8.8) ends the job with `confirmation_required` (exit 4)
-naming both paths, `details: {files:[{path,bytes}], kept}`, hint "rename
-<kept>, or run the command again with --yes to replace <out>", and a
-warning toast ("Export kept aside" / "Frame kept aside") with Open folder /
-Copy path for the kept file.
+`facts.out.forbidden` (inside `takes/`, `.qrec/` or `qrec.json`, or a name
+over 255 bytes) ⇒ `Invalid` (not confirmable); `exists && !confirmed` ⇒
+`confirmation_required`. The plan's `replace` is `exists && confirmed`: the
+runner may replace only the file the person confirmed. `OutputAppeared` (a
+hand-picked `out` appeared while the job ran, A§8.8) ends the job with
+`confirmation_required` (exit 4) naming both paths, `details:
+{files:[{path,bytes}], kept}`, hint "rename <kept>, or run the command again
+with --yes to replace <out>", and a warning toast ("Export kept aside" /
+"Frame kept aside") with Open folder / Copy path for the kept file.
 Frame saves need ffmpeg like exports (`missing_dependency` before the job
 starts); exports also need ffprobe, which checks every segment (A§9.3).
 Auto names: `exports/<stem>-YYYYMMDD-HHMMSS.<ext>` and
@@ -932,7 +956,9 @@ back, rewritten by the next commit or host open when stale. Per outcome
 that saves (a `History` op or `WriteProject`), in order:
 1. History: `Append` = one line via `O_APPEND` + `fdatasync`; redo-tail drop
    and `Rewrite` = tmp + rename (and `history.base.json`).
-2. `qrec.json`: tmp → fsync → `rename` → fsync(dir).
+2. `qrec.json`: tmp → fsync → `rename` → fsync(dir). The tmp is
+   `.qrec/qrec.json.tmp` (same file system), so a folder being initialized
+   shows nothing but `.qrec/` to another command's folder rule (A§8.4).
 3. `history.head.json`: tmp → rename. **This is the commit point.** Then
    `history.cursor` (a failure there is logged, not a failed commit).
 4. Only then the effects that touch the world: `StartCapture`,
@@ -941,7 +967,9 @@ that saves (a `History` op or `WriteProject`), in order:
 An outcome that saves nothing writes nothing, even when the files need
 repair: a failed commit or a repair the load found makes the next commit
 that saves rewrite the history file, `qrec.json` and the head, and a host's
-open (outside recovery mode) writes the repair right away. Non-undoable
+open (outside recovery mode) writes the repair right away. A Session that
+goes away with a dirty store tries one last full write (never in recovery
+mode, never over a `qrec.json` that failed to load). Non-undoable
 writes do steps 2–3. On open (lock held): drop history lines with
 `seq ≥ nextSeq`; drop a torn last line; a bad line elsewhere ⇒ `Invalid`
 with its line number. If `sha256(qrec.json) == H` the state is clean;
@@ -1057,7 +1085,8 @@ Runtime dir: `$QREC_RUNTIME_DIR`, else `$XDG_RUNTIME_DIR/qrec`, else
 `$XDG_STATE_HOME/qrec` (portal tokens 0600, `last-session.log`), cache
 `$XDG_CACHE_HOME/qrec` (capabilities). Socket:
 `<runtime>/<sha256(canonical project dir) hex>.sock`; refuse paths over 107
-bytes.
+bytes. The publish name (A§8.3 step 1) is never longer, so every socket path
+that fits works for hosts too, whatever their pid.
 
 ### A§8.3 Lock and socket protocol
 
@@ -1066,32 +1095,46 @@ Cli) and serves the socket.
 1. **Start:** open `.qrec/lock` (O_CLOEXEC), `try_lock` (exclusive, never
    blocking). Held ⇒ route (step 4). Under the lock: write
    `{pid, kind, socket, since, state:"starting"}` to the lock file, unlink
-   `<hash>.sock`, bind `<hash>.sock.<pid>`, listen, `rename` it to
-   `<hash>.sock` (atomic publish), set `state:"ready"`. This happens before
+   `<hash>.sock`, bind `<first 40 hex of the hash>.<pid>.tmp` (shorter than
+   the socket path), listen, `rename` it to `<hash>.sock` (atomic publish),
+   set `state:"ready"`. This happens before
    recovery and `gst::init()`; early requests queue in the inbox. The host
    then opens its Session with a second descriptor of the lock (`dup`, same
    open file description): a second `open` + `flock` in the same process
    would be refused, and dropping the Session only closes its copy.
 2. Only the lock holder unlinks its socket. Scanners never delete anything.
-3. **Exit:** `state:"stopping"` → stop accepting → unlink the socket →
-   flush replies → exit (closing the lock fd releases the lock). Routing
-   clients treat `starting` and `stopping` alike: retry.
+3. **Exit:** stop accepting → unlink the socket → `state:"stopping"` →
+   flush replies → exit (closing the lock fd releases the lock). The exit
+   rules only fire with no connection open, and the server stops accepting
+   only while that still holds, under the lock admission takes: a host never
+   admits (tells `accepted`) a client and then drops its request. A client
+   the acceptor took but didn't admit sees EOF before `accepted` (step 6).
+   Routing clients treat `starting` and `stopping` alike: retry.
 4. **CLI routing** (deadline 3 s; 20 s for `record *`): connect. On
    ENOENT/ECONNREFUSED try the lock; if acquired, become the host (in-process,
    or hand off to a spawned headless host). If not, read the lock file: when
    `ready`, connect to its socket; otherwise retry every 50 ms. `hello` timeout
    2 s ⇒ `Busy` "host pid N is not responding"; deadline ⇒ `Busy` naming pid,
-   kind and start time.
+   kind and start time. A record outlives its host (it says `stopping`, or
+   whatever a crash left), so these name a pid only while that process still
+   runs and started before the record (not a reused pid); otherwise "another
+   process holds the project lock … but runs no Qrec host".
 5. **Spawn hand-off** (`record start`/`toggle` with no host): the CLI takes
    the lock and spawns `qrec host --headless --project DIR --lock-fd 3
    --ready-fd 4` (fds dup'ed in `pre_exec`, CLOEXEC cleared, `setsid`, stdio
    to `.qrec/logs/…-host.log`). flock belongs to the open file description,
    so the child keeps it; the CLI closes its fd and **never unlocks**. The
    host writes one JSON line on fd 4 (`{"ok":true}` once listening, or the
-   `CoreError`); EOF ⇒ the CLI reports the host log path.
+   `CoreError`); EOF ⇒ the CLI reports the host log path. It keeps fd 4 until
+   its Session opened: if that fails (a corrupt `qrec.json`, A§7.7) it writes
+   the error as a second line before freeing the lock, so a CLI whose
+   request found the host gone reports that error and its hint (plus the
+   log path), not "exited right after starting".
 6. **Protocol safety:** the host sends `{"id","accepted":true}` once parsed.
-   EOF before `accepted` ⇒ re-route once; EOF after ⇒ exit 1 "host
-   disconnected" with the log path (never retry: it may have run).
+   EOF before `accepted` ⇒ the request never ran: route again, like for a
+   starting or stopping host, until the deadline (given once more from the
+   first bounce); EOF after ⇒ exit 1 "host disconnected" with the log path
+   (never retry: it may have run).
 7. Peers must have our uid (`SO_PEERCRED`). Request lines are capped at 1 MiB
    with a 5 s read timeout; each connection has a bounded 64-message queue
    (progress coalesced, replies never dropped) and a 10 s write timeout.
@@ -1101,18 +1144,24 @@ Cli) and serves the socket.
 `--project DIR` → cwd if it holds `qrec.json` or is strictly empty → if an
 ancestor holds `qrec.json`, exit 3 with "you're inside project <dir>; run
 there or pass --project <dir>" → the single live host found by `hello` on
-`<runtime>/*.sock` (stderr: `qrec: using project <dir> (pid N)`) → exit 3
-(several hosts: `Usage` listing them). `qrec init` never takes the host
-step: its target is the folder itself, so a folder that is neither empty
-nor a project is exit 3 whatever runs elsewhere. Init order: `mkdir .qrec` → lock →
-re-check the folder rule (a folder whose only entry is `.qrec/` counts as
-empty) → write `qrec.json` + head → `mkdir takes`. Read-only commands take no
-lock and write nothing (no migration backups either). A valid hand edit a
-read-only open finds is shown as the project a host would merge
-(`history::external::merged_preview`), with the history as it is on disk:
-no "External edit" entry, cursor or seq is made up, and no merge is
-announced; the next host records it (A§7.4). `--over-selection` with no live
-host ⇒ `Unavailable`.
+`<runtime>/*.sock` (stderr: `qrec: using project <dir> (pid N)`; the exact
+path from `projectDirHex` when it isn't UTF-8) → exit 3 (several hosts:
+`Usage` listing them). `qrec init` never takes the host step: its target is
+the folder itself, so a folder that is neither empty nor a project is exit 3
+whatever runs elsewhere. Init order: `mkdir .qrec` → lock → re-check the
+folder rule (a folder whose only entry is `.qrec/` counts as empty) → write
+`qrec.json` + head → `mkdir takes`. A folder without `qrec.json` whose
+`.qrec/` holds a history (`history.head.json`, `history.jsonl` or
+`history.base.json`) is a project that lost its file, whatever else is in
+it: it is that project (from the cwd or `--project`), never "Not my swamp"
+and never initialized again; `qrec history [restore]` work on it in recovery
+mode (A§7.7) and other commands get the A§7.7 `Invalid` with the restore
+hint. Read-only commands take no lock and write nothing (no migration
+backups either). A valid hand edit a read-only open finds is shown as the
+project a host would merge (`history::external::merged_preview`), with the
+history as it is on disk: no "External edit" entry, cursor or seq is made
+up, and no merge is announced; the next host records it (A§7.4).
+`--over-selection` with no live host ⇒ `Unavailable`.
 
 ### A§8.5 In-process commands
 
@@ -1125,12 +1174,12 @@ continue"). `seek`/`play`/`pause`/`shuttle` without a GUI host ⇒
 
 ### A§8.6 Hosts: exit, signals, GUI start
 
-- Exit (Headless and Cli): once Idle + no running jobs + no take waiting for
-  its Recover probe (`on_event::record::recovering`) + no open connections
-  has held for 2 s, or (Headless) 60 s after `ready` without a request. An
-  in-process CLI host thus finishes the recovery it started instead of
-  killing the probe. `shutdown` requests: stop accepting, let jobs finish,
-  exit.
+- Exit (Headless and Cli): once Idle + no running jobs + no recovery probe
+  out (`runtime.recovering`, `Runtime::is_busy`) + no open connections has
+  held for 2 s, or (Headless) 60 s after `ready` without a request. An
+  in-process command whose host nobody else used exits as soon as it is
+  answered and nothing is busy (so it finishes the startup recovery it
+  began, A§5.3). `shutdown` requests: stop accepting, let jobs finish, exit.
 - Signals in every host: the first SIGTERM/SIGINT/SIGHUP dispatches
   `RecordStop` (finalize, not cancel) and cancels jobs; exit when idle or
   after 15 s. A second signal: SIGKILL child process groups, `_exit(130)`;
@@ -1140,9 +1189,10 @@ continue"). `seek`/`play`/`pause`/`shuttle` without a GUI host ⇒
   deletes temp outputs, exits 130; the second SIGKILLs and exits 130.
   IPC-routed: Ctrl+C closes the connection and exits 130; for `record --wait`
   the first Ctrl+C sends `RecordStop` on a second connection and keeps
-  streaming until finalized, a second detaches. Under `--json` an
-  interrupted run still ends stdout with one object: the reply when one came
-  before the signal (a command that finished or committed), else
+  streaming until finalized, a second detaches (two presses count as two
+  even when they arrive together). Under `--json` an interrupted run still
+  ends stdout with one object: the reply when one came before the signal (a
+  command that finished or committed), else
   `{"ok":false,"error":{"code":"interrupted",…}}` whose hint says whether
   the host may still finish it, with the host's own error (e.g. "export
   cancelled") in `details.reply`; people get a warning on stderr. Stdout is
@@ -1160,7 +1210,9 @@ continue"). `seek`/`play`/`pause`/`shuttle` without a GUI host ⇒
 One runner for every child: stdin null, `process_group(0)`, stdout piped only
 when parsed (drained on its own thread), stderr appended to a log file.
 Timeouts: ffprobe 20 s, pactl 3 s, VA/encoder probes 10 s, `wl-copy` 5 s
-(`--type image/png`, stdin from the PNG file). Long ffmpeg jobs have a stall
+(`--type image/png`, stdin from the PNG file). ffprobe and silencedetect get
+30 s more per GiB of input, in proportion (`-count_packets` reads the whole
+file), so small files get exactly the base. Long ffmpeg jobs have a stall
 watchdog (no `-progress` block for 60 s ⇒ kill, "ffmpeg stalled"). Kill:
 SIGTERM to the group, SIGKILL after 2 s, wait ≤ 2 s more, then hand the
 child to a reaper thread and fail the job — the session thread never blocks in
@@ -1173,7 +1225,10 @@ in A§9.3). Logs: `.qrec/logs/YYYYMMDD-HHMMSS-<pid>-j<job>-<step>.log`
 ### A§8.8 Output files: never overwrite
 
 Temp outputs live in the destination directory as
-`.<stem>.qrec-part-<pid>-<job>.<ext>`; the final step is
+`.<stem>.qrec-part-<pid>-<job>.<ext>`, the stem cut so the name fits in
+`NAME_MAX` (255 bytes): any destination name that fits gets a temp that fits.
+A hand-picked name over 255 bytes is refused up front (`facts.out.forbidden`,
+A§5.9). The final step is
 `renameat2(RENAME_NOREPLACE)` (fallback `link` + `unlink`). Auto names loop
 `-2`, `-3`, … on EEXIST; a hand-picked `--out` is replaced only when the
 plan says so (`replace`: it existed at dispatch and the person confirmed,

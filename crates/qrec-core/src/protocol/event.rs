@@ -138,7 +138,77 @@ pub struct RecordedStream {
 pub struct ProbeResult {
     pub id: String,
     pub file: String,
-    pub info: Result<MediaInfo, String>,
+    pub info: Result<MediaInfo, ProbeError>,
+}
+
+/// Why a `ProbeJob` has no `MediaInfo` (A§4.7, A§5.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProbeError {
+    pub kind: ProbeFailure,
+    pub message: String,
+}
+
+/// Whose fault a failed probe is: the file's (a fact about the take) or
+/// the probe's own (nothing is known about the file).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProbeFailure {
+    /// Missing, empty or unreadable media: ffprobe ran and couldn't use it.
+    Media,
+    /// ffprobe isn't installed (or can't be run at all).
+    MissingTool,
+    /// ffprobe didn't finish (timed out, cancelled) or the prober itself
+    /// failed (no log file, no worker thread).
+    Tool,
+}
+
+impl ProbeError {
+    pub fn media(message: impl Into<String>) -> Self {
+        Self {
+            kind: ProbeFailure::Media,
+            message: message.into(),
+        }
+    }
+
+    pub fn missing_tool(message: impl Into<String>) -> Self {
+        Self {
+            kind: ProbeFailure::MissingTool,
+            message: message.into(),
+        }
+    }
+
+    pub fn tool(message: impl Into<String>) -> Self {
+        Self {
+            kind: ProbeFailure::Tool,
+            message: message.into(),
+        }
+    }
+
+    /// The probe says nothing about the file: it must not change the
+    /// take's facts.
+    pub fn is_tool_failure(&self) -> bool {
+        self.kind != ProbeFailure::Media
+    }
+}
+
+/// A bare message is a media failure (what the file says).
+impl From<String> for ProbeError {
+    fn from(message: String) -> Self {
+        Self::media(message)
+    }
+}
+
+impl From<&str> for ProbeError {
+    fn from(message: &str) -> Self {
+        Self::media(message)
+    }
+}
+
+impl std::fmt::Display for ProbeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
 }
 
 /// What `ffprobe` says about a stream (`parse::ffprobe`).

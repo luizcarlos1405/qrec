@@ -1,14 +1,17 @@
 //! Which project a command uses (SPEC §4.4 folder rule, A§8.4):
 //! `--project DIR`, else the current directory, when it holds `qrec.json`
-//! or is strictly empty; inside a project's subfolder, exit 3 pointing at
-//! the project; without `--project` (and except for `qrec init`, which
-//! acts on the folder itself), the single running host; else exit 3 "Not
-//! my swamp".
+//! (or a `.qrec/` history: a project that lost its file, A§7.7) or is
+//! strictly empty; inside a project's subfolder, exit 3 pointing at the
+//! project; without `--project` (and except for `qrec init`, which acts
+//! on the folder itself), the single running host (its exact path, also
+//! when it isn't UTF-8); else exit 3 "Not my swamp".
 //!
 //! Reading a folder never changes it: resolution writes nothing.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io;
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 
 use qrec_core::protocol::HelloInfo;
@@ -19,11 +22,30 @@ use qrec_core::{CoreError, PROJECT_FILE};
 pub enum Folder {
     /// It holds `qrec.json`.
     Project,
-    /// Strictly empty (hidden files count), or holding only `.qrec/` (an
-    /// interrupted `init`, A§8.4): it becomes a project on the first change.
+    /// No `qrec.json`, but `.qrec/` holds the project's history: a project
+    /// whose file was deleted. It is restored from that history (`qrec
+    /// history restore`, A§7.7), never called someone else's folder nor
+    /// initialized again.
+    MissingFile,
+    /// Strictly empty (hidden files count), or holding only `.qrec/` without
+    /// a history (an interrupted `init`, A§8.4): it becomes a project on the
+    /// first change.
     Empty,
     /// Anything else.
     Other,
+}
+
+/// The history files whose presence in `.qrec/` marks a project (the
+/// Session's own folder rule, A§7.7).
+const HISTORY_FILES: [&str; 3] = ["history.head.json", "history.jsonl", "history.base.json"];
+
+/// `.qrec/` is a directory holding a history.
+fn has_history(dir: &Path) -> bool {
+    let qrec = dir.join(".qrec");
+    qrec.is_dir()
+        && HISTORY_FILES
+            .iter()
+            .any(|name| fs::symlink_metadata(qrec.join(name)).is_ok())
 }
 
 /// The project folder a command runs against.
@@ -71,6 +93,9 @@ pub fn classify(dir: &Path) -> Result<Folder, CoreError> {
     if dir.join(PROJECT_FILE).exists() {
         return Ok(Folder::Project);
     }
+    if has_history(dir) {
+        return Ok(Folder::MissingFile);
+    }
     let entries = fs::read_dir(dir)
         .map_err(|e| CoreError::io(format!("can't list {}: {e}", dir.display())))?;
     let mut only_qrec_dir = true;
@@ -116,7 +141,11 @@ pub fn resolve(
         })
     };
     match classify(dir)? {
-        Folder::Project => return local(Target::Project(dir.to_path_buf())),
+        // A project that lost its qrec.json is still the project: the
+        // Session says how to restore it, `qrec history` reads its history.
+        Folder::Project | Folder::MissingFile => {
+            return local(Target::Project(dir.to_path_buf()));
+        }
         Folder::Empty => return local(Target::Empty(dir.to_path_buf())),
         Folder::Other => {}
     }
@@ -130,7 +159,9 @@ pub fn resolve(
     match hosts.as_slice() {
         [] => Err(CoreError::not_project()),
         [host] => Ok(Resolved {
-            target: Target::Project(PathBuf::from(&host.project_dir)),
+            // The exact path, also when it isn't UTF-8 (`projectDir` is only
+            // its display form then).
+            target: Target::Project(PathBuf::from(OsString::from_vec(host.project_dir_bytes()))),
             notice: Some(format!(
                 "using project {} (pid {})",
                 host.project_dir, host.pid
@@ -178,6 +209,7 @@ mod tests {
         HelloInfo {
             pid,
             project_dir: dir.into(),
+            project_dir_hex: None,
             host: HostKind::Gui,
             record: RecordPhase::Idle,
             jobs: vec![],
@@ -313,6 +345,63 @@ mod tests {
 
         let failed = resolve(&busy, true, || Err(CoreError::io("runtime dir"))).unwrap_err();
         assert_eq!(failed.code, ErrorCode::Io);
+    }
+
+    /// A host whose folder isn't UTF-8 sends its exact bytes: the project
+    /// used is that folder, not the lossy display string (A§8.4).
+    #[test]
+    fn a_host_folder_that_isnt_utf8_is_used_exactly() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = tempdir();
+        let busy = tmp.path().join("home");
+        fs::create_dir(&busy).unwrap();
+        fs::write(busy.join(".bashrc"), "").unwrap();
+        let bytes = b"/v/\xff\xfe-bad";
+        let (display, hex) = HelloInfo::dir_fields(bytes);
+        assert!(hex.is_some());
+        let host = HelloInfo {
+            project_dir: display.clone(),
+            project_dir_hex: hex,
+            ..hello("unused", 7)
+        };
+        let one = resolve(&busy, true, || Ok(vec![host])).unwrap();
+        assert_eq!(
+            one.target,
+            Target::Project(PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
+        );
+        assert_eq!(
+            one.notice.unwrap(),
+            format!("using project {display} (pid 7)")
+        );
+    }
+
+    /// A project whose qrec.json was deleted still has its history in
+    /// `.qrec/`: it is that project (restorable), not someone else's folder
+    /// and not an empty one to initialize again (A§7.7).
+    #[test]
+    fn a_project_that_lost_its_file_is_still_the_project() {
+        for others in [&[][..], &["takes", "exports"][..]] {
+            for history in ["history.head.json", "history.jsonl", "history.base.json"] {
+                let tmp = tempdir();
+                let dir = tmp.path();
+                fs::create_dir(dir.join(".qrec")).unwrap();
+                for other in others {
+                    fs::create_dir(dir.join(other)).unwrap();
+                }
+                fs::write(dir.join(".qrec").join(history), "{}").unwrap();
+                assert_eq!(classify(dir).unwrap(), Folder::MissingFile, "{history}");
+                for allow_host_fallback in [false, true] {
+                    let resolved =
+                        resolve(dir, allow_host_fallback, || panic!("no host lookup")).unwrap();
+                    assert_eq!(resolved.target, Target::Project(dir.to_path_buf()));
+                }
+            }
+        }
+        // `.qrec/` without a history is an init that stopped half-way.
+        let tmp = tempdir();
+        fs::create_dir_all(tmp.path().join(".qrec/logs")).unwrap();
+        fs::write(tmp.path().join(".qrec/lock"), "").unwrap();
+        assert_eq!(classify(tmp.path()).unwrap(), Folder::Empty);
     }
 
     fn tempdir() -> TempDir {

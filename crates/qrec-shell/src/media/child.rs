@@ -238,11 +238,33 @@ struct Drained {
     parser_error: Option<String>,
 }
 
+/// Why a child couldn't be started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StartError {
+    pub message: String,
+    /// The program isn't installed (or not on `PATH`): a missing dependency.
+    pub not_found: bool,
+}
+
+impl From<String> for StartError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            not_found: false,
+        }
+    }
+}
+
 /// Runs a child to completion (or to its deadline). `Err` only when it
 /// can't be started.
 pub(crate) fn run(spec: Spec<'_>) -> Result<Finished, String> {
+    start(spec).map_err(|e| e.message)
+}
+
+/// [`run`], saying whether a failed start means the program is missing.
+pub(crate) fn start(spec: Spec<'_>) -> Result<Finished, StartError> {
     let Some((program, args)) = spec.argv.split_first() else {
-        return Err("internal error: an empty command line".to_owned());
+        return Err("internal error: an empty command line".to_owned().into());
     };
     let mut cmd = Command::new(program);
     cmd.args(args).stdin(Stdio::null()).process_group(0);
@@ -287,7 +309,10 @@ pub(crate) fn run(spec: Spec<'_>) -> Result<Finished, String> {
         _ => cmd.stdout(Stdio::piped()),
     };
 
-    let mut child = cmd.spawn().map_err(|e| spawn_error(program, &e))?;
+    let mut child = cmd.spawn().map_err(|e| StartError {
+        message: spawn_error(program, &e),
+        not_found: e.kind() == io::ErrorKind::NotFound,
+    })?;
     let shared = Arc::new(Shared {
         started: Instant::now(),
         last_progress_ms: AtomicU64::new(0),

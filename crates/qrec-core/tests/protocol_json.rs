@@ -1303,6 +1303,7 @@ fn wire_examples_parse() {
     let hello = HelloInfo {
         pid: 4242,
         project_dir: "/home/me/demo".into(),
+        project_dir_hex: None,
         host: HostKind::Headless,
         record: RecordPhase::Idle,
         jobs: vec![],

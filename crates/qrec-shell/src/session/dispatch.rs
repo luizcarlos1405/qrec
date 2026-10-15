@@ -3,12 +3,12 @@
 //! through `effects::run_outcome`. An empty folder is initialized lazily
 //! before its first command (A§8.4).
 
+use std::os::unix::ffi::OsStrExt;
 use std::sync::{Arc, Mutex};
 
 use chrono::SubsecRound;
 use qrec_core::apply::project::is_initialized;
 use qrec_core::ctx::{Ctx, Facts, FactsNeeded};
-use qrec_core::on_event::record::recovering;
 use qrec_core::protocol::{Command, HelloInfo, Query, Toast, ToastLevel, WireBody};
 use qrec_core::state::JobKind;
 use qrec_core::{
@@ -91,9 +91,12 @@ impl Session {
 
     /// `hello` (A§4.9).
     fn hello(&self) -> Value {
+        // The exact bytes too when the path isn't UTF-8 (A§8.4).
+        let (project_dir, project_dir_hex) = HelloInfo::dir_fields(self.dir.as_os_str().as_bytes());
         let info = HelloInfo {
             pid: std::process::id(),
-            project_dir: self.dir.to_string_lossy().into_owned(),
+            project_dir,
+            project_dir_hex,
             host: self.state.runtime.host,
             record: self.state.runtime.record.clone(),
             jobs: self.state.runtime.jobs.values().cloned().collect(),
@@ -149,7 +152,7 @@ impl Session {
             ));
             return self.reply_now(id.as_ref(), &mut to, Err(err));
         }
-        if self.opts.recovery && recovering(&self.state) {
+        if self.opts.recovery && !self.state.runtime.recovering.is_empty() {
             // Resumed by `after_message` once every Recover probe answered.
             tracing::info!("{} waits for the takes being recovered", cmd.name());
             self.parked.push(Parked {

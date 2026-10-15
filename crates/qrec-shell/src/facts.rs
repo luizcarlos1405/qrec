@@ -30,7 +30,7 @@ use qrec_core::model::PROJECT_FILE;
 use serde_json::Value;
 
 use crate::capture::fake::fake_inventory;
-use crate::paths::ProjectPaths;
+use crate::paths::{NAME_MAX, ProjectPaths};
 use crate::proc::{self, Limit, PACTL_TIMEOUT, Spec};
 
 // ------------------------------------------------------------------ sources
@@ -493,6 +493,13 @@ pub fn out_facts(project_root: &Path, out: &str) -> OutFacts {
 
 fn why_forbidden(project_root: &Path, resolved: &Path) -> Option<String> {
     let inside = |dir: &str| resolved.starts_with(project_root.join(dir));
+    // Caught here, before rendering, instead of by the final rename.
+    let name_len = resolved.file_name().map_or(0, |n| n.len());
+    if name_len > NAME_MAX {
+        return Some(format!(
+            "its file name is {name_len} bytes long, and file names can have at most {NAME_MAX}"
+        ));
+    }
     if resolved == project_root.join(PROJECT_FILE) {
         Some("that is the project file, qrec.json".to_owned())
     } else if inside("takes") {
@@ -750,6 +757,23 @@ mod tests {
         let outside = root.parent().unwrap().join("out.mp4");
         let ok = check(&outside.to_string_lossy());
         assert_eq!((ok.exists, ok.forbidden), (false, None));
+        // A name the file system can't take is refused before rendering;
+        // the longest one it takes is fine.
+        let longest = root
+            .parent()
+            .unwrap()
+            .join(format!("{}.mp4", "y".repeat(251)));
+        assert_eq!(check(&longest.to_string_lossy()).forbidden, None);
+        let too_long = root
+            .parent()
+            .unwrap()
+            .join(format!("{}.mp4", "y".repeat(252)));
+        assert!(
+            check(&too_long.to_string_lossy())
+                .forbidden
+                .unwrap()
+                .contains("256 bytes long")
+        );
 
         // A symlink into takes/ is followed.
         let link = root.parent().unwrap().join("sneaky.mp4");

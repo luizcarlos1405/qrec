@@ -241,6 +241,7 @@ fn hello(dir: &Path, host: HostKind, pid: u32) -> HelloInfo {
     HelloInfo {
         pid,
         project_dir: dir.display().to_string(),
+        project_dir_hex: None,
         host,
         record: RecordPhase::Idle,
         jobs: vec![],

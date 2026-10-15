@@ -1546,3 +1546,319 @@ fn the_history_cursor_file_holds_the_current_seq() {
     let status = qrec(&env, &dir, &["status", "--json"]);
     assert_eq!(status.reply()["data"]["history"]["cursor"], 1);
 }
+
+// ------------------------------------------------------------- robustness
+
+/// Runs every command line at once, each in its own `qrec` process.
+fn all_at_once(env: &TestEnv, dir: &Path, lines: &[Vec<String>]) -> Vec<Out> {
+    thread::scope(|scope| {
+        let runs: Vec<_> = lines
+            .iter()
+            .map(|line| {
+                scope.spawn(move || {
+                    let args: Vec<&str> = line.iter().map(String::as_str).collect();
+                    qrec(env, dir, &args)
+                })
+            })
+            .collect();
+        runs.into_iter().map(|run| run.join().unwrap()).collect()
+    })
+}
+
+fn line(parts: &[&str]) -> Vec<String> {
+    parts.iter().map(|p| (*p).to_owned()).collect()
+}
+
+/// Commands started together each run exactly once and succeed, whichever
+/// process ends up hosting the project: a host that decides to exit stops
+/// accepting before it answers what it already admitted, and the clients it
+/// bounces route again (A§8.3). In a fresh folder none of them takes a
+/// project being initialized for someone else's folder (A§8.4). They used
+/// to fail with `busy` (exit 6), `io` "dropped this request" or exit 3.
+#[test]
+fn commands_started_together_all_run_once() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "together", &[video(30)]);
+    let mut changes = 0;
+    for round in 0..3 {
+        // Distinct, non-zero values: each one is a change.
+        let lines: Vec<Vec<String>> = (0..8)
+            .map(|i| {
+                let gain = format!("-{}.{}", round + 1, i + 1);
+                line(&["scene", "audio", "set", "A1", "--gain-db", &gain, "--json"])
+            })
+            .collect();
+        for out in all_at_once(&env, &dir, &lines) {
+            assert_eq!(out.code, Some(0), "round {round}: {out:?}");
+            assert_eq!(out.only_reply()["ok"], true, "{out:?}");
+        }
+        changes += 8;
+    }
+    let history = qrec(&env, &dir, &["history", "--limit", "100", "--json"]);
+    history.ok();
+    assert_eq!(
+        history.reply()["data"].as_array().unwrap().len(),
+        changes,
+        "every change ran once"
+    );
+
+    for round in 0..2 {
+        let fresh = env.empty_dir(&format!("fresh-{round}"));
+        let lines: Vec<Vec<String>> = (0..8)
+            .map(|i| {
+                let db = format!("-{}", 30 + i);
+                line(&["autocut", "settings", "--threshold-db", &db, "--json"])
+            })
+            .collect();
+        for out in all_at_once(&env, &fresh, &lines) {
+            assert_eq!(out.code, Some(0), "fresh folder {round}: {out:?}");
+        }
+        // qrec.json's temp file lives in .qrec/, never beside it.
+        let names: Vec<String> = fs::read_dir(&fresh)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(!names.iter().any(|n| n.ends_with(".tmp")), "{names:?}");
+    }
+}
+
+/// The fixture's take 2 as a crash leaves it: still `recording`, its
+/// streams not probed, no clip. Its files are fine.
+fn crash_take_two(dir: &Path, mut project: Value) {
+    let take = &mut project["takes"]["take-0002"];
+    take["status"] = json!("recording");
+    take["durationFrames"] = json!(0);
+    take.as_object_mut().unwrap().remove("placed");
+    for stream in take["streams"].as_array_mut().unwrap() {
+        stream
+            .as_object_mut()
+            .unwrap()
+            .retain(|k, _| ["id", "kind", "file", "startOffsetNs"].contains(&k.as_str()));
+    }
+    project["timeline"]["clips"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|c| c["take"] != "take-0002");
+    qrec_shell::testkit::write_project(dir, &project);
+}
+
+fn take_row(env: &TestEnv, dir: &Path, take: &str) -> Value {
+    let list = qrec(env, dir, &["take", "list", "--json"]);
+    list.ok();
+    list.reply()["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == take)
+        .unwrap_or_else(|| panic!("no {take} in {}", list.stdout))
+        .clone()
+}
+
+/// After a crash, the next command that opens the project (an in-process
+/// one) finishes the recovery it starts before its host exits: the take is
+/// recovered and the person hears it (A§5.3 "Recovery", A§8.6). It used to
+/// stay `recording` until some long-lived host ran.
+#[test]
+fn the_next_command_recovers_a_crashed_take() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("crash");
+    let project = fixture_project(&dir, &[video(60), video(45)]);
+    crash_take_two(&dir, project);
+    assert_eq!(take_row(&env, &dir, "take-0002")["status"], "recording");
+
+    let edit = qrec(
+        &env,
+        &dir,
+        &["scene", "audio", "set", "A1", "--gain-db", "-3"],
+    );
+    edit.ok();
+    assert!(
+        edit.stderr.contains("Recovered take 2 from the bog"),
+        "{}",
+        edit.stderr
+    );
+    let row = take_row(&env, &dir, "take-0002");
+    assert_eq!(row["status"], "ok", "{row}");
+    assert_eq!(row["durationFrames"], 45, "{row}");
+    assert_eq!(row["unused"], true, "recovered into the bin");
+    qrec(&env, &dir, &["clip", "add", "take-0002", "--json"]).ok();
+}
+
+/// ffprobe missing when a take stops: the take keeps its facts (still
+/// `recording`, nothing marked missing), `record stop` says what is
+/// missing (exit 5), and the next command with ffprobe back recovers it.
+/// It used to be marked broken for good, with exit 0.
+#[test]
+fn a_missing_ffprobe_never_breaks_a_take() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("noprobe");
+    qrec(&env, &dir, &["init", "--canvas", "320x180@30"]).ok();
+    qrec(
+        &env,
+        &dir,
+        &["scene", "layer", "add", "screen", "--output", "FAKE-1"],
+    )
+    .ok();
+    // A PATH with a shell but no ffmpeg or ffprobe.
+    let bin = env.root().join("no-ffprobe");
+    fs::create_dir(&bin).unwrap();
+    let path = std::env::var_os("PATH").unwrap();
+    for tool in ["sh", "env"] {
+        let found = std::env::split_paths(&path)
+            .map(|d| d.join(tool))
+            .find(|p| p.is_file())
+            .unwrap_or_else(|| panic!("no {tool} on PATH"));
+        std::os::unix::fs::symlink(found, bin.join(tool)).unwrap();
+    }
+    let no_ffprobe: &[(&str, &OsStr)] = &[("PATH", bin.as_os_str())];
+    qrec_with(&env, &dir, &["record", "start", "--json"], no_ffprobe).ok();
+    thread::sleep(Duration::from_millis(1500));
+    let stop = qrec_with(&env, &dir, &["record", "stop", "--json"], no_ffprobe);
+    assert_eq!(stop.code, Some(5), "{stop:?}");
+    let error = &stop.reply()["error"];
+    assert_eq!(error["code"], "missing_dependency", "{error}");
+    assert!(
+        error["message"].as_str().unwrap().contains("ffprobe"),
+        "{error}"
+    );
+
+    let project: Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("qrec.json")).unwrap()).unwrap();
+    let take = &project["takes"]["take-0001"];
+    assert_eq!(take["status"], "recording", "{take}");
+    assert!(!take["streams"].as_array().unwrap().is_empty(), "{take}");
+    assert_ne!(take["scene"]["layers"][0]["missing"], true, "{take}");
+
+    // The recording host idles out; then, with ffprobe back, the next
+    // command recovers the take.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while fs::read_dir(env.runtime_dir())
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .any(|e| e.file_name().to_string_lossy().ends_with(".sock"))
+        })
+        .unwrap_or(false)
+    {
+        assert!(Instant::now() < deadline, "the headless host didn't exit");
+        thread::sleep(Duration::from_millis(100));
+    }
+    let edit = qrec(&env, &dir, &["project", "set", "--countdown", "0"]);
+    edit.ok();
+    assert!(
+        edit.stderr.contains("Recovered take 1 from the bog"),
+        "{}",
+        edit.stderr
+    );
+    assert_eq!(take_row(&env, &dir, "take-0001")["status"], "ok");
+}
+
+/// A deleted qrec.json is restored from the history in `.qrec/` (A§7.7):
+/// `history` lists it and `history restore` rebuilds the same file, also
+/// with `--project` and with nothing but `.qrec/` left. Other commands say
+/// how. It used to be "Not my swamp" (exit 3), or with only `.qrec/` left
+/// an empty history and a hint naming the command that had just failed.
+#[test]
+fn a_deleted_qrec_json_is_restored_from_the_history() {
+    let env = TestEnv::new();
+    for keep_takes in [true, false] {
+        let name = if keep_takes { "lost" } else { "lost-bare" };
+        let dir = project_with(&env, name, &[video(90)]);
+        qrec(&env, &dir, &["clip", "split", "c001", "--at", "30f"]).ok();
+        let original = fs::read(dir.join("qrec.json")).unwrap();
+        fs::remove_file(dir.join("qrec.json")).unwrap();
+        if !keep_takes {
+            fs::remove_dir_all(dir.join("takes")).unwrap();
+        }
+
+        let other = qrec(&env, &dir, &["clip", "list", "--json"]);
+        assert_eq!(other.code, Some(1), "{other:?}");
+        let error = &other.reply()["error"];
+        assert_eq!(error["code"], "invalid", "{error}");
+        assert!(
+            error["hint"]
+                .as_str()
+                .unwrap()
+                .contains("history restore 1 --yes"),
+            "{error}"
+        );
+
+        let history = qrec(&env, &dir, &["history", "--json"]);
+        history.ok();
+        let rows = history.reply()["data"].as_array().unwrap().clone();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["seq"], 1);
+
+        let elsewhere = env.empty_dir(&format!("{name}-cwd"));
+        let project = dir.to_string_lossy().into_owned();
+        qrec(
+            &env,
+            &elsewhere,
+            &["--project", &project, "history", "--json"],
+        )
+        .ok();
+        let restore = qrec(
+            &env,
+            &elsewhere,
+            &[
+                "--project",
+                &project,
+                "--yes",
+                "history",
+                "restore",
+                "1",
+                "--json",
+            ],
+        );
+        restore.ok();
+        assert_eq!(fs::read(dir.join("qrec.json")).unwrap(), original);
+        if keep_takes {
+            assert_eq!(clip_ids(&env, &dir).len(), 2);
+        }
+    }
+}
+
+/// A host whose project folder isn't UTF-8 is found from elsewhere and its
+/// exact folder is used (A§8.4): "using project …", then the answer, never
+/// "Not my swamp".
+#[test]
+fn a_live_host_in_a_folder_that_isnt_utf8_is_used() {
+    use std::os::unix::ffi::OsStrExt;
+    let env = TestEnv::new();
+    let dir = env
+        .root()
+        .join("projects")
+        .join(std::ffi::OsStr::from_bytes(b"\xff\xfe-bad"));
+    fs::create_dir(&dir).unwrap();
+    qrec(&env, &dir, &["init", "--canvas", "160x90@30"]).ok();
+    let mut host = env.command(Path::new(env!("CARGO_BIN_EXE_qrec")));
+    let mut host = host
+        .current_dir(&dir)
+        .args(["host", "--headless", "--project"])
+        .arg(&dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let elsewhere = env.empty_dir("elsewhere");
+    fs::write(elsewhere.join("notes.txt"), "").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        let status = qrec(&env, &elsewhere, &["status", "--json"]);
+        if status.code == Some(0) || Instant::now() >= deadline {
+            break status;
+        }
+        thread::sleep(Duration::from_millis(100));
+    };
+    // It idles out 2 s after serving; never leave it behind.
+    let gone = Instant::now() + Duration::from_secs(10);
+    while host.try_wait().unwrap().is_none() && Instant::now() < gone {
+        thread::sleep(Duration::from_millis(100));
+    }
+    let _ = host.kill();
+    let _ = host.wait();
+    assert_eq!(status.code, Some(0), "{status:?}");
+    assert!(status.stderr.contains("using project"), "{}", status.stderr);
+    assert_eq!(status.reply()["data"]["host"], "headless");
+}

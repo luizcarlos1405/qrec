@@ -9,7 +9,7 @@
 //! host's open only repairs what the load found (and merges a valid hand
 //! edit as an "External edit" entry).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -18,12 +18,13 @@ use qrec_core::apply::project::{is_initialized, uninitialized_state};
 use qrec_core::apply::ui::live_scene;
 use qrec_core::history::external::merged_preview;
 use qrec_core::model::Project;
-use qrec_core::on_event::record::{recovery_probes, takes_to_recover};
-use qrec_core::protocol::{Effect, Toast, ToastLevel};
-use qrec_core::{CoreError, ErrorCode, Event, State, TakeId};
+use qrec_core::on_event::record::start_recovery;
+use qrec_core::protocol::{Toast, ToastLevel};
+use qrec_core::{CoreError, ErrorCode, Event, State};
 
 use super::Session;
 use super::config::{LogNotifier, SessionConfig, SessionEnv};
+use super::effects::Origin;
 use crate::caps::{self, VaConfig};
 use crate::deps::{Deps, OpenOpts};
 use crate::error::ShellError;
@@ -98,9 +99,9 @@ fn canonical_dir(dir: &Path) -> Result<PathBuf, ShellError> {
     Ok(canonical)
 }
 
-/// `Busy` naming the host when its record says who it is.
+/// `Busy` naming the host when its record says who it is (and it still runs).
 fn lock_held(dir: &Path) -> ShellError {
-    let who = match lockfile::read(dir) {
+    let who = match lockfile::read_live(dir) {
         Ok(Some(record)) => format!("a {} host (pid {})", record.kind.as_str(), record.pid),
         _ => "another Qrec process".to_owned(),
     };
@@ -205,7 +206,6 @@ pub(super) fn open(
         watcher: None,
         pending: BTreeMap::new(),
         parked: Vec::new(),
-        probing: BTreeSet::new(),
         next_req: 0,
         notifier: cfg.notifier.unwrap_or_else(|| Box::new(LogNotifier)),
         shutdown: false,
@@ -254,7 +254,7 @@ pub(super) fn open(
         session.store.sync_cursor_file(session.state.history.cursor);
     }
     if writable && is_initialized(&session.state.project) {
-        session.sync_recovery_probes();
+        session.start_recovery_probes();
     }
     if writable && !opts.recovery {
         match watcher::watch(&session.dir, session.inbox.clone()) {
@@ -313,29 +313,14 @@ impl Session {
         self.run_event(Event::Capabilities(detected.caps));
     }
 
-    /// One `Probe{Recover}` per take still `recording` that isn't being
-    /// captured (A§5.3 "Recovery", the record owner's `recovery_probes`),
-    /// once per take: at open, and for takes that turn up later (an
-    /// external edit can add one). A host stays up until they are answered
-    /// (`recovering`, A§8.6).
-    pub(super) fn sync_recovery_probes(&mut self) {
-        let waiting: BTreeSet<TakeId> = takes_to_recover(&self.state)
-            .map(|(id, _)| id.clone())
-            .collect();
-        self.probing.retain(|take| waiting.contains(take));
-        for probe in recovery_probes(&self.state) {
-            if let Effect::Probe {
-                take,
-                purpose,
-                jobs,
-            } = probe
-                && self.probing.insert(take.clone())
-            {
-                tracing::info!("recovering {take}: probing {} file(s)", jobs.len());
-                self.deps
-                    .media
-                    .probe(take, purpose, jobs, self.inbox.clone());
-            }
+    /// One `Probe{Recover}` per take still `recording` (A§5.3 "Recovery",
+    /// the record owner's `start_recovery`). Each take stays in
+    /// `runtime.recovering` until its result is applied, so the host keeps
+    /// running until then (A§8.6), an in-process command too.
+    fn start_recovery_probes(&mut self) {
+        let outcome = start_recovery(&self.state);
+        if !outcome.effects.is_empty() {
+            self.run_outcome(outcome, Origin::Event, None, &mut None, true);
         }
     }
 

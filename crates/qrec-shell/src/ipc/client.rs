@@ -280,10 +280,16 @@ pub fn send_request(
     loop {
         let count = opts.interrupts.count();
         if count > seen {
+            // Every press counts, also two that land in one poll slice.
+            let presses = count - seen;
             seen = count;
             if opts.stop_on_interrupt && accepted && !stop_sent {
                 stop_sent = true;
                 send_record_stop(socket);
+                if presses >= 2 {
+                    // The second press detaches (the take still finalizes).
+                    return Ok(Sent::Interrupted);
+                }
             } else {
                 // Dropping the exchange closes the connection.
                 return Ok(Sent::Interrupted);
@@ -492,7 +498,8 @@ pub fn route(r: &Router<'_>) -> Result<Routed, RouteError> {
                 Err(HelloError::Timeout) => {
                     let rec = record
                         .clone()
-                        .or_else(|| lockfile::read(dir).ok().flatten());
+                        .or_else(|| lockfile::read(dir).ok().flatten())
+                        .filter(LockRecord::is_live);
                     return Err(RouteError::Failed(not_responding(rec.as_ref())));
                 }
                 Err(
@@ -521,7 +528,9 @@ pub fn route(r: &Router<'_>) -> Result<Routed, RouteError> {
         }
         let now = Instant::now();
         if now >= r.deadline {
-            return Err(RouteError::Failed(lock_held_too_long(record.as_ref())));
+            // A record outlives its host: name only a holder that still runs.
+            let holder = record.as_ref().filter(|rec| rec.is_live());
+            return Err(RouteError::Failed(lock_held_too_long(holder)));
         }
         let pause = r.retry.min(r.deadline - now);
         if r.interrupts.wait_past(r.baseline, pause) > r.baseline {

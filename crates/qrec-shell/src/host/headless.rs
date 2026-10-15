@@ -73,14 +73,14 @@ pub fn run_headless(
         Ok(host) => host,
         Err(e) => {
             log(&format!("can't start: {e}"));
-            if let Some(ready) = ready.take() {
+            if let Some(mut ready) = ready.take() {
                 ready.send(Err(&e));
             }
             return 1;
         }
     };
     log(&format!("serving {} (ready)", host.paths.root().display()));
-    if let Some(ready) = ready.take() {
+    if let Some(ready) = ready.as_mut() {
         ready.send(Ok(()));
     }
     let open = OpenOpts {
@@ -97,11 +97,18 @@ pub fn run_headless(
         Err(e) => {
             let e = e.to_core();
             log(&format!("can't open the project: {e}"));
+            // The spawner's request may come after this host is gone: the
+            // cause goes down the ready pipe too, before the lock is freed.
+            if let Some(mut ready) = ready.take() {
+                ready.send(Err(&e));
+            }
             host.server.fail(e.clone());
             host.finish(None, e);
             return 1;
         }
     };
+    // Opened: the spawner reads nothing more (EOF).
+    drop(ready);
     host.attach(session.inbox());
     let end = host.serve(&mut *session, None);
     let signalled = host.signalled() || end.signalled();
@@ -129,7 +136,8 @@ fn start(args: &HeadlessArgs, env: &Env, opts: HostOptions) -> Result<Host, Core
         })?,
     };
     match classify(&dir, true) {
-        Ok(Folder::Project | Folder::Empty) => {}
+        // A project that lost its qrec.json opens to say how to restore it.
+        Ok(Folder::Project | Folder::MissingFile | Folder::Empty) => {}
         Ok(Folder::Other) => return Err(CoreError::not_project()),
         Err(e) => return Err(CoreError::io(format!("can't read {}: {e}", dir.display()))),
     }
@@ -153,7 +161,9 @@ fn inherited_fd(fd: RawFd, flag: &str) -> Result<OwnedFd, CoreError> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
-/// The write end of the ready pipe (A§8.3 step 5).
+/// The write end of the ready pipe (A§8.3 step 5): `{"ok":true}` once
+/// listening (or the start error), then, if opening the Session fails, that
+/// error as a second line. Closed when dropped.
 struct ReadyPipe(File);
 
 impl ReadyPipe {
@@ -161,8 +171,8 @@ impl ReadyPipe {
         inherited_fd(fd, "--ready-fd").map(|fd| ReadyPipe(File::from(fd)))
     }
 
-    /// One line, then close. A parent that already gave up is ignored.
-    fn send(mut self, result: Result<(), &CoreError>) {
+    /// One line. A parent that already gave up is ignored.
+    fn send(&mut self, result: Result<(), &CoreError>) {
         let line = match result {
             Ok(()) => json!({ "ok": true }),
             Err(err) => json!({ "ok": false, "error": err }),

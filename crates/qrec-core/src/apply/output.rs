@@ -200,8 +200,9 @@ fn checked_out(ctx: &Ctx, requested: &str, verb: &str) -> Result<(String, bool),
         Some(facts) => {
             if let Some(why) = &facts.forbidden {
                 return Err(
-                    CoreError::invalid(format!("can't {verb} {}: {why}", facts.abs))
-                        .with_hint("pick a path outside takes/ and .qrec/"),
+                    CoreError::invalid(format!("can't {verb} {}: {why}", facts.abs)).with_hint(
+                        "pick a file outside takes/ and .qrec/ whose name is at most 255 bytes",
+                    ),
                 );
             }
             if facts.exists && !ctx.confirmed {

@@ -39,7 +39,6 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use chrono::{SubsecRound, Utc};
-use qrec_core::on_event::record::recovering;
 use qrec_core::protocol::{Command, Progress, Query};
 use qrec_core::state::HostKind;
 use qrec_core::{CoreError, State};
@@ -533,6 +532,13 @@ impl Host {
     /// Runs the Session until the exit rules say stop. `own` (in-process CLI
     /// host) is polled after each message and says whether the host's own
     /// command got its reply.
+    ///
+    /// Exiting is atomic for clients (A§8.3 step 3): the rules only say
+    /// stop with no connection open, and the server stops accepting only
+    /// while that still holds, under the lock admission takes. Late clients
+    /// get `ENOENT`, a reset or EOF before `accepted` and route again,
+    /// safely: their request never ran. Nothing a client was told
+    /// `accepted` is dropped.
     pub fn serve(
         &self,
         session: &mut dyn HostSession,
@@ -547,9 +553,8 @@ impl Host {
             let mut done = |state: &State| {
                 let now = Instant::now();
                 let own_done = own.as_mut().map(|own| own());
-                let busy = !state.runtime.record.is_idle()
-                    || !state.runtime.jobs.is_empty()
-                    || recovering(state);
+                // Recording, jobs, or a startup recovery still out (A§8.6).
+                let busy = state.runtime.is_busy();
                 if busy {
                     state_quiet_since = None;
                 } else if state_quiet_since.is_none() {
@@ -587,8 +592,21 @@ impl Host {
             };
             let started = Instant::now();
             session.run_until(&mut done);
-            if let Some(why) = end {
-                return why;
+            if let Some(why) = end.take() {
+                // Out of time after a signal: go, whoever is connected.
+                if why == HostEnd::SignalTimeout {
+                    return why;
+                }
+                // The rules saw no open connection; stop accepting only if
+                // that still holds, atomically with admission, so no client
+                // is admitted (told `accepted`) by a host that then drops
+                // its request. One that got in first is served; then the
+                // rules decide again.
+                if self.server.stop_accepting_if_idle() {
+                    self.mark_stopping();
+                    return why;
+                }
+                continue;
             }
             // The Session returned without our rules saying so (it stopped
             // itself, e.g. after `Msg::Shutdown`). Keep it running while it

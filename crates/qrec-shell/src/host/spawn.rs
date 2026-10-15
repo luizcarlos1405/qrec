@@ -8,8 +8,11 @@
 //! `.qrec/logs/<stamp>-<pid>-host.log`. flock belongs to the open file
 //! description, so the child keeps the lock: the CLI closes its fd and
 //! **never unlocks**. The host writes one JSON line on fd 4 (`{"ok":true}`
-//! once listening, or the error) and closes it; EOF without a line means it
-//! died, and the CLI points at the log.
+//! once listening, or the error); EOF without a line means it died, and
+//! the CLI points at the log. After `{"ok":true}` the host keeps fd 4 until
+//! its Session opened: if that fails it writes the error as a second line
+//! before exiting, so a CLI whose request missed the dying host still
+//! reports the real cause ([`SpawnedHost::open_error`]).
 
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
@@ -67,11 +70,29 @@ impl HostProgram {
 }
 
 /// A host that reported ready.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct SpawnedHost {
     pub pid: u32,
     /// Its stdout/stderr.
     pub log: PathBuf,
+    /// The rest of the ready pipe: after `{"ok":true}` the host writes the
+    /// error its Session failed to open with (if it did), then closes it.
+    ready: ReadyReader,
+}
+
+impl SpawnedHost {
+    /// Why the host couldn't open the project, when it said so on the ready
+    /// pipe before exiting (a corrupt `qrec.json`, A§7.7). Waits up to
+    /// `wait` for the line or the pipe's end.
+    pub fn open_error(&mut self, wait: Duration) -> Option<CoreError> {
+        match self
+            .ready
+            .next(Instant::now() + wait, &Interrupts::new(), 0)
+        {
+            Ready::Failed(err) => Some(err),
+            Ready::Ok | Ready::Eof | Ready::Timeout | Ready::Interrupted => None,
+        }
+    }
 }
 
 /// Why the hand-off failed.
@@ -166,12 +187,17 @@ pub fn spawn_headless(
     })?;
     let pid = child.id();
     let log_path = rename_log(paths, &stamp, pid, log_path);
-    let outcome = wait_ready(&ready_read, deadline, interrupts, baseline);
+    let mut ready = ReadyReader::new(ready_read);
+    let outcome = ready.next(deadline, interrupts, baseline);
     let see_log = || format!("see {}", log_path.display());
     match outcome {
         Ready::Ok => {
             reap_later(child);
-            Ok(SpawnedHost { pid, log: log_path })
+            Ok(SpawnedHost {
+                pid,
+                log: log_path,
+                ready,
+            })
         }
         Ready::Failed(err) => {
             reap_later(child);
@@ -279,63 +305,77 @@ enum Ready {
     Interrupted,
 }
 
-/// Reads the host's one ready line.
-fn wait_ready(
-    read: &OwnedFd,
-    deadline: Instant,
-    interrupts: &Interrupts,
-    baseline: usize,
-) -> Ready {
-    let mut line = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        if interrupts.count() > baseline {
-            return Ready::Interrupted;
+/// The read end of the ready pipe: one JSON line at a time (bytes after a
+/// line wait for the next call).
+#[derive(Debug)]
+struct ReadyReader {
+    fd: OwnedFd,
+    pending: Vec<u8>,
+}
+
+impl ReadyReader {
+    fn new(fd: OwnedFd) -> Self {
+        Self {
+            fd,
+            pending: Vec::new(),
         }
-        let now = Instant::now();
-        if now >= deadline {
-            return Ready::Timeout;
-        }
-        let slice = READY_SLICE.min(deadline - now);
-        let mut pfd = libc::pollfd {
-            fd: read.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: one valid pollfd.
-        let rc = unsafe { libc::poll(&mut pfd, 1, slice.as_millis().max(1) as libc::c_int) };
-        if rc < 0 {
-            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
-                continue;
+    }
+
+    /// Reads the host's next line.
+    fn next(&mut self, deadline: Instant, interrupts: &Interrupts, baseline: usize) -> Ready {
+        let mut chunk = [0u8; 4096];
+        loop {
+            if let Some(end) = self.pending.iter().position(|&b| b == b'\n') {
+                let line: Vec<u8> = self.pending.drain(..=end).collect();
+                return parse_ready(&line[..end]);
             }
-            return Ready::Eof;
-        }
-        if rc == 0 {
-            continue;
-        }
-        // SAFETY: reading into a valid local buffer from our pipe.
-        let n = unsafe { libc::read(read.as_raw_fd(), chunk.as_mut_ptr().cast(), chunk.len()) };
-        if n < 0 {
-            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
-                continue;
+            if self.pending.len() > MAX_READY_LINE {
+                return Ready::Failed(CoreError::io(
+                    "the background host's ready line is too long",
+                ));
             }
-            return Ready::Eof;
-        }
-        if n == 0 {
-            return if line.is_empty() {
-                Ready::Eof
-            } else {
-                parse_ready(&line)
+            if interrupts.count() > baseline {
+                return Ready::Interrupted;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Ready::Timeout;
+            }
+            let slice = READY_SLICE.min(deadline - now);
+            let mut pfd = libc::pollfd {
+                fd: self.fd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
             };
-        }
-        line.extend_from_slice(&chunk[..n as usize]);
-        if let Some(end) = line.iter().position(|&b| b == b'\n') {
-            return parse_ready(&line[..end]);
-        }
-        if line.len() > MAX_READY_LINE {
-            return Ready::Failed(CoreError::io(
-                "the background host's ready line is too long",
-            ));
+            // SAFETY: one valid pollfd.
+            let rc = unsafe { libc::poll(&mut pfd, 1, slice.as_millis().max(1) as libc::c_int) };
+            if rc < 0 {
+                if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Ready::Eof;
+            }
+            if rc == 0 {
+                continue;
+            }
+            // SAFETY: reading into a valid local buffer from our pipe.
+            let n =
+                unsafe { libc::read(self.fd.as_raw_fd(), chunk.as_mut_ptr().cast(), chunk.len()) };
+            if n < 0 {
+                if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Ready::Eof;
+            }
+            if n == 0 {
+                return if self.pending.is_empty() {
+                    Ready::Eof
+                } else {
+                    let line = std::mem::take(&mut self.pending);
+                    parse_ready(&line)
+                };
+            }
+            self.pending.extend_from_slice(&chunk[..n as usize]);
         }
     }
 }

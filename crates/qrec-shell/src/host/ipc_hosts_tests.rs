@@ -551,6 +551,143 @@ fn an_interrupted_request_keeps_the_reply_it_got() {
     assert_eq!(events.routed, [None], "it ran in this process");
 }
 
+/// A Session that plays a client arriving right as its host decides to
+/// exit: the first time `done` says stop, a request is sent and admitted
+/// before `run_until` returns.
+struct LateClient {
+    inner: Box<dyn HostSession>,
+    socket: PathBuf,
+    client: Option<thread::JoinHandle<Vec<Value>>>,
+}
+
+impl HostSession for LateClient {
+    fn inbox(&self) -> crate::msg::Inbox {
+        self.inner.inbox()
+    }
+
+    fn run_until(&mut self, done: &mut dyn FnMut(&State) -> bool) {
+        let socket = self.socket.clone();
+        let client = &mut self.client;
+        self.inner.run_until(&mut |state| {
+            let stop = done(state);
+            if stop && client.is_none() {
+                let socket = socket.clone();
+                let body = serde_json::to_value(WireBody::Command(set_ui())).unwrap();
+                *client = Some(thread::spawn(move || {
+                    raw_exchange(&socket, &request_line("late", body))
+                }));
+                // Admitted, read and queued for the Session meanwhile.
+                thread::sleep(Duration::from_millis(300));
+            }
+            stop
+        });
+    }
+
+    fn state(&self) -> &State {
+        self.inner.state()
+    }
+}
+
+/// A§8.3 step 3: a request admitted between the exit decision and the end
+/// of accepting gets its real reply; the host never drops a request it
+/// told `accepted` (it used to: "the host dropped this request without an
+/// answer").
+#[test]
+fn a_request_that_arrives_as_the_host_exits_is_answered() {
+    let f = fixture();
+    let lock = ProjectLock::try_acquire(&f.dir).unwrap().unwrap();
+    let opts = HostOptions {
+        rules: quick_rules(),
+        ..HostOptions::default()
+    };
+    let host = Host::start(HostKind::Cli, f.paths(), lock, &f.socket, opts).unwrap();
+    let open = OpenOpts {
+        host: HostKind::Cli,
+        mutating: true,
+        recovery: false,
+    };
+    let inner = FakeOpener::default()
+        .open(&f.dir, open, Some(host.session_lock().unwrap()))
+        .unwrap();
+    host.attach(inner.inbox());
+    let mut session = LateClient {
+        inner,
+        socket: f.socket.clone(),
+        client: None,
+    };
+    // Its own command is done and nobody else used it: it decides to exit.
+    let end = host.serve(&mut session, Some(&mut || true));
+    assert_eq!(end, HostEnd::Idle);
+    let client = session.client.take().expect("the late client ran");
+    host.finish(Some(Box::new(session)), qrec_core::CoreError::io("exiting"));
+    let lines = client.join().unwrap();
+    assert_eq!(lines[0]["accepted"], true, "{lines:?}");
+    assert_eq!(lines[1]["reply"]["ok"], true, "{lines:?}");
+    assert_eq!(
+        lines[1]["reply"]["data"]["handledBy"],
+        std::process::id(),
+        "{lines:?}"
+    );
+    assert!(!f.socket.exists());
+    assert!(
+        wait_for(Duration::from_secs(2), || !f.lock_held()),
+        "the lock was released"
+    );
+}
+
+/// A host that closes the request connection before `accepted` (it was
+/// exiting) never ran it: the CLI routes again until the deadline instead
+/// of giving up after one bounce with `busy` (A§8.3 steps 4 and 6).
+#[test]
+fn requests_bounced_by_exiting_hosts_are_routed_again() {
+    use std::sync::atomic::AtomicUsize;
+    let f = fixture();
+    let runtime = f.socket.parent().unwrap().to_path_buf();
+    let name = f.socket.file_name().unwrap().to_string_lossy().into_owned();
+    let hello = json!({
+        "pid": std::process::id(),
+        "projectDir": f.dir,
+        "host": "cli",
+        "record": { "phase": "idle" },
+        "jobs": [],
+        "version": env!("CARGO_PKG_VERSION"),
+    });
+    let bounced = std::sync::Arc::new(AtomicUsize::new(0));
+    let seen = std::sync::Arc::clone(&bounced);
+    let _server = crate::ipc::testing::raw_server(&runtime, &name, move |line, stream| {
+        let id = crate::ipc::testing::line_id(&line);
+        let request: Value = serde_json::from_slice(&line).unwrap();
+        let send = |msg: qrec_core::protocol::WireMessage| {
+            crate::ipc::testing::send_line(&stream, &serde_json::to_value(msg).unwrap());
+        };
+        if request["body"] == "hello" {
+            send(qrec_core::protocol::WireMessage::reply(
+                id,
+                &Ok(hello.clone()),
+            ));
+        } else if seen.fetch_add(1, Ordering::SeqCst) < 3 {
+            // Closed before `accepted`: what a host that stops accepting does.
+            drop(stream);
+        } else {
+            send(qrec_core::protocol::WireMessage::accepted(id.clone()));
+            send(qrec_core::protocol::WireMessage::reply(
+                id,
+                &Ok(json!({ "answered": true })),
+            ));
+        }
+    });
+    let mut events = Events::default();
+    let mut unused = FakeOpener::default();
+    let req = Request::command(set_ui(), false);
+    let finish = backend(&f, &mut unused, &req, &mut events);
+    assert!(
+        matches!(&finish, Finish::Reply(Ok(v)) if v["answered"] == true),
+        "{finish:?}"
+    );
+    assert_eq!(bounced.load(Ordering::SeqCst), 4);
+    assert!(unused.opened.lock().unwrap().is_empty());
+}
+
 #[test]
 fn the_backend_entry_reports_where_each_request_ran() {
     let f = fixture();
@@ -1073,6 +1210,50 @@ fn record_start_without_a_host_spawns_a_headless_one() {
     // Idle again: it exits on its own.
     assert!(wait_for(Duration::from_secs(10), || !f.lock_held()));
     assert!(wait_for(Duration::from_secs(5), || !alive(host_pid)));
+}
+
+/// `record start` spawns a host whose Session can't open (a corrupt
+/// qrec.json): the CLI reports that error and its restore hint, whether its
+/// request reached the host before it exited or only found it gone (the
+/// host also says why on the ready pipe). It used to answer a generic
+/// "the background host exited right after starting" about a time in four.
+#[test]
+fn record_start_reports_why_the_spawned_host_could_not_open() {
+    for round in 0..3 {
+        let f = fixture();
+        let log = f.env.root().join(format!("open-fail-{round}.jsonl"));
+        let start = WireBody::Command(qrec_core::Command::RecordStart {
+            mode: RecordModeArg::Append,
+            countdown: None,
+            wait: false,
+        });
+        let mut cli = child_command(&f.env, "cli", &log)
+            .env(REQUEST, serde_json::to_string(&start).unwrap())
+            .env(PROJECT, &f.dir)
+            .env(RULES, rules_env(&quick_rules()))
+            .env(crate::ipc::testing::OPEN_FAIL, "1")
+            .current_dir(&f.dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let code = wait_exit(&mut cli, Duration::from_secs(40));
+        let done = events_named(&log, "cliDone");
+        let reply = &done[0]["reply"];
+        let expected = crate::ipc::testing::corrupt_project_error();
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert_eq!(reply["error"]["code"], "invalid", "{reply}");
+        assert_eq!(reply["error"]["message"], expected.message, "{reply}");
+        assert!(
+            reply["error"]["hint"]
+                .as_str()
+                .unwrap()
+                .contains("qrec history restore 1 --yes"),
+            "{reply}"
+        );
+        assert_eq!(code, Some(1));
+        assert!(wait_for(Duration::from_secs(5), || !f.lock_held()));
+    }
 }
 
 #[test]

@@ -449,7 +449,7 @@ fn run_request(
         Err(e) => return reply_err(sink.out(), e),
     };
     let mut deadline = Instant::now() + opts.deadline;
-    let mut rerouted = false;
+    let mut extended = false;
     let mut spawned: Option<SpawnedHost> = None;
     // Which host `sink.routed` last heard about (a re-route may find the same).
     let mut reported: Option<Option<u32>> = None;
@@ -474,10 +474,15 @@ fn run_request(
                 match send_request(&host_socket, req, sink.out(), &send) {
                     Ok(Sent::Replied) => return Ran::Replied,
                     Ok(Sent::Interrupted) => return Ran::Interrupted,
-                    // EOF before `accepted`: it never ran; route once more.
-                    Err(SendError::NotAccepted) if !rerouted => {
-                        rerouted = true;
-                        deadline = Instant::now() + opts.deadline;
+                    // EOF before `accepted`: it never ran (the host stopped
+                    // accepting as we connected). Route again, like for a
+                    // host that is starting or stopping, until the deadline
+                    // (given once more from the first bounce) passes.
+                    Err(SendError::NotAccepted) if Instant::now() < deadline || !extended => {
+                        if !extended {
+                            extended = true;
+                            deadline = deadline.max(Instant::now() + opts.deadline);
+                        }
                     }
                     Err(e) => {
                         let log = host_log(&paths, cx.env, hello.as_deref(), spawned.as_ref());
@@ -519,10 +524,28 @@ fn run_request(
                 }
                 Fallback::SpawnHeadless => {
                     drop(lock);
-                    let mut err = CoreError::io("the background host exited right after starting");
-                    if let Some(host) = &spawned {
-                        err = err.with_hint(format!("see {}", host.log.display()));
-                    }
+                    // The host we spawned is gone. If its Session couldn't
+                    // open (a corrupt qrec.json), it said why on the ready
+                    // pipe before freeing the lock: that is the answer.
+                    let err = match spawned.as_mut() {
+                        Some(host) => {
+                            let see = format!("see {}", host.log.display());
+                            match host.open_error(Duration::from_millis(500)) {
+                                Some(err) => {
+                                    let hint = match err.hint.as_deref() {
+                                        Some(hint) => format!("{hint}; {see}"),
+                                        None => see,
+                                    };
+                                    err.with_hint(hint)
+                                }
+                                None => {
+                                    CoreError::io("the background host exited right after starting")
+                                        .with_hint(see)
+                                }
+                            }
+                        }
+                        None => CoreError::io("the background host exited right after starting"),
+                    };
                     return reply_err(sink.out(), err);
                 }
                 Fallback::InProcess => {
@@ -611,9 +634,10 @@ fn run_in_process(
     } = *at;
     let dir = paths.root();
     // A§8.4 init order: the folder rule again, under the lock (`.qrec/`
-    // alone counts as empty).
+    // alone counts as empty; with a history, it is a project that lost its
+    // qrec.json: `history restore` rebuilds it, A§7.7).
     match classify(dir, true) {
-        Ok(Folder::Project | Folder::Empty) => {}
+        Ok(Folder::Project | Folder::MissingFile | Folder::Empty) => {}
         Ok(Folder::Other) => return reply_err(out, CoreError::not_project()),
         Err(e) => {
             return reply_err(
@@ -867,6 +891,7 @@ mod tests {
         let hello = HelloInfo {
             pid: 42,
             project_dir: "/p".into(),
+            project_dir_hex: None,
             host: HostKind::Headless,
             record: qrec_core::RecordPhase::Idle,
             jobs: vec![],

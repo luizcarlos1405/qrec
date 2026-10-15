@@ -7,10 +7,10 @@ use qrec_core::capture_plan::plan_files;
 use qrec_core::ctx::Ctx;
 use qrec_core::ids::{ClipId, JobId, ReqId, TakeId, TimerId};
 use qrec_core::model::{Clip, Fps, Project, StreamKind, TakeStatus};
-use qrec_core::on_event::record::recovery_probes;
+use qrec_core::on_event::record::{recovery_probes, start_recovery};
 use qrec_core::protocol::command::{Command, RecordModeArg};
 use qrec_core::protocol::effect::{Effect, LogLevel, ProbePurpose};
-use qrec_core::protocol::event::{Event, MediaInfo, ProbeResult, RecordedStream};
+use qrec_core::protocol::event::{Event, MediaInfo, ProbeError, ProbeResult, RecordedStream};
 use qrec_core::protocol::progress::ProgressPhase;
 use qrec_core::protocol::reply::{CmdResult, RecordStartedView, TakeFinalizedView};
 use qrec_core::protocol::toast::{Toast, ToastLevel};
@@ -1953,6 +1953,217 @@ fn recovery_probes_leftover_takes() {
             purpose: ProbePurpose::Recover,
             results: vec![],
         },
+    );
+}
+
+/// Take 3 left `recording` by a crash, its streams not probed yet.
+fn crashed() -> (State, TakeId) {
+    let mut state = idle();
+    let take3 = TakeId::numbered(3);
+    let mut leftover = state.project.takes[&TakeId::numbered(1)].clone();
+    leftover.status = TakeStatus::Recording;
+    leftover.duration_frames = 0;
+    for s in &mut leftover.streams {
+        s.file = s.file.replace("take-0001", "take-0003");
+        s.width = None;
+        s.height = None;
+        s.frames = None;
+        s.fps = None;
+        s.sample_rate = None;
+        s.channels = None;
+        s.duration_ns = None;
+    }
+    state.project.takes.insert(take3.clone(), leftover);
+    state.project.next_take_number = 4;
+    (state, take3)
+}
+
+/// A host that started recovery is busy until every probe came back, so an
+/// in-process command doesn't exit before the take is recovered (A§8.6).
+#[test]
+fn recovery_in_flight_keeps_the_host_busy_until_its_probe_returns() {
+    let (state, take3) = crashed();
+    assert!(!state.runtime.is_busy());
+    let started = start_recovery(&state);
+    assert_eq!(
+        started.state.runtime.recovering,
+        [take3.clone()].into_iter().collect()
+    );
+    assert!(started.state.runtime.is_busy());
+    assert_eq!(started.state.project, state.project, "nothing to save yet");
+    assert!(!started.effects.contains(&Effect::WriteProject));
+    let probes: Vec<_> = started
+        .effects
+        .iter()
+        .filter(|e| matches!(e, Effect::Probe { .. }))
+        .collect();
+    assert!(
+        matches!(probes.as_slice(), [Effect::Probe { take, purpose: ProbePurpose::Recover, .. }] if *take == take3),
+        "{:?}",
+        started.effects
+    );
+    // Never probed twice while one is out.
+    assert!(recovery_probes(&started.state).is_empty());
+    assert!(start_recovery(&started.state).effects.is_empty());
+
+    // Whatever comes back ends the recovery: readable…
+    let back = |results: Vec<ProbeResult>| {
+        event(
+            &started.state,
+            Event::TakeProbed {
+                take: take3.clone(),
+                purpose: ProbePurpose::Recover,
+                results,
+            },
+        )
+    };
+    let ok = back(probed(&started.state, &take3, 300));
+    assert!(ok.state.runtime.recovering.is_empty());
+    assert!(!ok.state.runtime.is_busy());
+    assert_eq!(ok.state.project.takes[&take3].status, TakeStatus::Ok);
+    // …unreadable…
+    let broken = back(vec![]);
+    assert!(broken.state.runtime.recovering.is_empty());
+    assert_eq!(
+        broken.state.project.takes[&take3].status,
+        TakeStatus::Broken
+    );
+    // …a tool failure…
+    let missing = back(
+        started.state.project.takes[&take3]
+            .streams
+            .iter()
+            .map(|s| ProbeResult {
+                id: s.id.clone(),
+                file: s.file.clone(),
+                info: Err(ProbeError::missing_tool("ffprobe wasn't found")),
+            })
+            .collect(),
+    );
+    assert!(missing.state.runtime.recovering.is_empty());
+    // …or a stale answer (the take was recovered meanwhile).
+    let mut recovered = started.state.clone();
+    recovered.project.takes.get_mut(&take3).unwrap().status = TakeStatus::Ok;
+    let stale = event(
+        &recovered,
+        Event::TakeProbed {
+            take: take3.clone(),
+            purpose: ProbePurpose::Recover,
+            results: vec![],
+        },
+    );
+    assert!(stale.state.runtime.recovering.is_empty());
+    assert_eq!(stale.state.project, recovered.project);
+}
+
+fn tool_failed(state: &State, take: &TakeId, error: &ProbeError) -> Vec<ProbeResult> {
+    state.project.takes[take]
+        .streams
+        .iter()
+        .map(|s| ProbeResult {
+            id: s.id.clone(),
+            file: s.file.clone(),
+            info: Err(error.clone()),
+        })
+        .collect()
+}
+
+/// A probe that failed on its own (ffprobe missing or hung) says nothing
+/// about the files: the take keeps its facts and stays `recording` for the
+/// next host start, and stop requests hear `missing_dependency` (exit 5).
+#[test]
+fn a_probe_tool_failure_never_breaks_a_take() {
+    let waiting = probing(&finalizing_from(&recording(false)));
+    let before = waiting.project.takes[&take2()].clone();
+    let missing = ProbeError::missing_tool("ffprobe wasn't found (is it installed and on PATH?)");
+    let out = event(
+        &waiting,
+        Event::TakeProbed {
+            take: take2(),
+            purpose: ProbePurpose::Finalize,
+            results: tool_failed(&waiting, &take2(), &missing),
+        },
+    );
+    let t = &out.state.project.takes[&take2()];
+    assert_eq!(*t, before, "no fact changed");
+    assert_eq!(t.status, TakeStatus::Recording);
+    assert!(t.scene.layers.iter().all(|l| !l.missing));
+    assert!(t.scene.audio.iter().all(|a| !a.missing));
+    assert_eq!(out.state.runtime.record, RecordPhase::Idle);
+    assert_eq!(
+        out.state.project.timeline, waiting.project.timeline,
+        "nothing placed"
+    );
+    let err = reply_to(&out, "t1").unwrap_err();
+    assert_eq!(err.code, ErrorCode::MissingDependency);
+    assert_eq!(err.exit_code(), 5);
+    assert!(err.message.contains("ffprobe wasn't found"), "{err:?}");
+    assert!(
+        err.hint.as_deref().unwrap().contains("qrec doctor"),
+        "{err:?}"
+    );
+    assert_eq!(toasts(&out)[0].title, "Take 2 wasn't finalized");
+    // The next host start recovers it.
+    assert_eq!(recovery_probes(&out.state).len(), 1);
+
+    // A hung ffprobe (timed out): the same, as an io error.
+    let hung = ProbeError::tool("ffprobe timed out after 20 s");
+    let mut results = probed(&waiting, &take2(), 90);
+    results[0].info = Err(hung);
+    let out = event(
+        &waiting,
+        Event::TakeProbed {
+            take: take2(),
+            purpose: ProbePurpose::Finalize,
+            results,
+        },
+    );
+    assert_eq!(out.state.project.takes[&take2()], before);
+    assert_eq!(reply_to(&out, "t1").unwrap_err().code, ErrorCode::Io);
+
+    // A file ffprobe could read but not use is a fact: broken, with why.
+    let mut results = probed(&waiting, &take2(), 90);
+    for r in &mut results {
+        r.info = Err("Invalid data found when processing input".into());
+    }
+    let out = event(
+        &waiting,
+        Event::TakeProbed {
+            take: take2(),
+            purpose: ProbePurpose::Finalize,
+            results,
+        },
+    );
+    let t = &out.state.project.takes[&take2()];
+    assert_eq!(t.status, TakeStatus::Broken);
+    assert!(
+        t.error
+            .as_deref()
+            .unwrap()
+            .contains("L1: Invalid data found when processing input"),
+        "{:?}",
+        t.error
+    );
+
+    // Recovery postpones the same way.
+    let (state, take3) = crashed();
+    let recovering = start_recovery(&state).state;
+    let out = event(
+        &recovering,
+        Event::TakeProbed {
+            take: take3.clone(),
+            purpose: ProbePurpose::Recover,
+            results: tool_failed(&recovering, &take3, &missing),
+        },
+    );
+    assert_eq!(out.state.project, state.project, "no fact changed");
+    assert!(!out.effects.contains(&Effect::WriteProject));
+    assert!(out.state.runtime.recovering.is_empty());
+    assert_eq!(toasts(&out)[0].title, "Take 3 isn't recovered yet");
+    assert_eq!(
+        recovery_probes(&out.state).len(),
+        1,
+        "tried again next time"
     );
 }
 

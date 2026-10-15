@@ -7,7 +7,7 @@
 //! the table, its requester gets the reply and the person a toast.
 
 use chrono::{DateTime, Utc};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::apply::Outcome;
 use crate::ctx::Ctx;
@@ -207,28 +207,61 @@ pub fn export_failed(
         );
     };
     let tail = last_lines(stderr_tail);
+    let log_path = written_log(log_path);
     let mut next = state.clone();
     next.runtime.jobs.remove(&job);
     let mut effects = Vec::new();
     if let Some(req) = &entry.req {
-        let error = CoreError::io(format!("export failed: {message}"))
-            .with_hint(format!("the full ffmpeg log is {log_path}"))
-            .with_details(json!({ "log": log_path, "stderrTail": tail }));
+        let error = with_log(
+            CoreError::io(format!("export failed: {message}")),
+            log_path.as_deref(),
+            json!({ "log": log_path, "stderrTail": tail }),
+        );
         effects.push(Effect::Reply {
             req: req.clone(),
             reply: Err(error),
         });
     }
-    effects.push(Effect::Notify(
-        Toast::new(ToastLevel::Error, "Export failed")
-            .with_body(failure_body(&message, &tail))
-            .with_action("Open log", UiAction::OpenPath(log_path.clone())),
-    ));
+    effects.push(Effect::Notify(open_log_action(
+        Toast::new(ToastLevel::Error, "Export failed").with_body(failure_body(&message, &tail)),
+        log_path.as_deref(),
+    )));
     effects.push(log(
         LogLevel::Error,
-        format!("{job}: export failed: {message} (log: {log_path})"),
+        format!(
+            "{job}: export failed: {message}{}",
+            log_note(log_path.as_deref())
+        ),
     ));
     Outcome::new(next, effects, None)
+}
+
+/// The log a failed job wrote; the shell sends an empty path when it
+/// couldn't create one (a read-only project folder, a worker that died):
+/// then no hint, detail or action points at it.
+fn written_log(log_path: String) -> Option<String> {
+    (!log_path.is_empty()).then_some(log_path)
+}
+
+/// `error` with "the full ffmpeg log is …" and `details` when there is a log.
+fn with_log(error: CoreError, log_path: Option<&str>, details: Value) -> CoreError {
+    let error = error.with_details(details);
+    match log_path {
+        Some(path) => error.with_hint(format!("the full ffmpeg log is {path}")),
+        None => error,
+    }
+}
+
+/// The toast's "Open log" action, when there is a log to open.
+fn open_log_action(toast: Toast, log_path: Option<&str>) -> Toast {
+    match log_path {
+        Some(path) => toast.with_action("Open log", UiAction::OpenPath(path.to_owned())),
+        None => toast,
+    }
+}
+
+fn log_note(log_path: Option<&str>) -> String {
+    log_path.map_or_else(String::new, |path| format!(" (log: {path})"))
 }
 
 pub fn export_cancelled(state: &State, ctx: &Ctx, job: JobId) -> Outcome {
@@ -298,26 +331,31 @@ pub fn frame_failed(
             format!("FrameFailed for {job}, which isn't a running frame save"),
         );
     };
+    let log_path = written_log(log_path);
     let mut next = state.clone();
     next.runtime.jobs.remove(&job);
     let mut effects = Vec::new();
     if let Some(req) = &entry.req {
-        let error = CoreError::io(format!("saving the frame failed: {message}"))
-            .with_hint(format!("the full ffmpeg log is {log_path}"))
-            .with_details(json!({ "log": log_path }));
+        let error = with_log(
+            CoreError::io(format!("saving the frame failed: {message}")),
+            log_path.as_deref(),
+            json!({ "log": log_path }),
+        );
         effects.push(Effect::Reply {
             req: req.clone(),
             reply: Err(error),
         });
     }
-    effects.push(Effect::Notify(
-        Toast::new(ToastLevel::Error, "Couldn't save the frame")
-            .with_body(message.clone())
-            .with_action("Open log", UiAction::OpenPath(log_path.clone())),
-    ));
+    effects.push(Effect::Notify(open_log_action(
+        Toast::new(ToastLevel::Error, "Couldn't save the frame").with_body(message.clone()),
+        log_path.as_deref(),
+    )));
     effects.push(log(
         LogLevel::Error,
-        format!("{job}: frame save failed: {message} (log: {log_path})"),
+        format!(
+            "{job}: frame save failed: {message}{}",
+            log_note(log_path.as_deref())
+        ),
     ));
     Outcome::new(next, effects, None)
 }
@@ -832,6 +870,80 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    /// A job that couldn't create its log (a read-only project folder) sends
+    /// an empty path: nothing may point at a log that doesn't exist.
+    #[test]
+    fn failures_without_a_log_point_at_none() {
+        let ctx = testkit::ctx(START, 2);
+        let state = exporting(HostKind::Cli);
+        let no_log = |out: &Outcome| {
+            let Effect::Reply { reply: Err(e), .. } = &out.effects[0] else {
+                panic!("{:?}", out.effects)
+            };
+            assert_eq!(e.hint, None, "{e:?}");
+            assert!(e.details.as_ref().unwrap()["log"].is_null(), "{e:?}");
+            let Effect::Notify(toast) = &out.effects[1] else {
+                panic!("{:?}", out.effects)
+            };
+            assert!(toast.actions.is_empty(), "{toast:?}");
+            let Effect::Log { message, .. } = &out.effects[2] else {
+                panic!("{:?}", out.effects)
+            };
+            assert!(!message.contains("(log: )"), "{message}");
+        };
+        let message = "can't create a log in /p/.qrec/logs: Permission denied (os error 13)";
+        let out = on_event(
+            &state,
+            &ctx,
+            Event::ExportFailed {
+                job: JobId(1),
+                message: message.into(),
+                stderr_tail: vec![],
+                log: String::new(),
+            },
+        );
+        no_log(&out);
+        let cmd = Command::FrameSave {
+            at: "5f".parse().unwrap(),
+            layer: None,
+            out: None,
+        };
+        let saving = apply(&exporting(HostKind::Gui), &ctx, cmd).unwrap().state;
+        let out = on_event(
+            &saving,
+            &ctx,
+            Event::FrameFailed {
+                job: JobId(2),
+                message: message.into(),
+                log: String::new(),
+            },
+        );
+        no_log(&out);
+        // With a log, the hint, the detail and the action name it.
+        let out = on_event(
+            &state,
+            &ctx,
+            Event::ExportFailed {
+                job: JobId(1),
+                message: "boom".into(),
+                stderr_tail: vec![],
+                log: "/p/.qrec/logs/x.log".into(),
+            },
+        );
+        let Effect::Reply { reply: Err(e), .. } = &out.effects[0] else {
+            panic!()
+        };
+        assert_eq!(
+            e.hint.as_deref(),
+            Some("the full ffmpeg log is /p/.qrec/logs/x.log")
+        );
+        assert_eq!(e.details.as_ref().unwrap()["log"], "/p/.qrec/logs/x.log");
+        let Effect::Notify(toast) = &out.effects[1] else {
+            panic!()
+        };
+        assert_eq!(toast.actions[0].label, "Open log");
     }
 
     #[test]

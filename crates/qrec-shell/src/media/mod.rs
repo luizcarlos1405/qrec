@@ -40,7 +40,7 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use qrec_core::plans::{ExportPlan, FramePlan};
-use qrec_core::protocol::{ProbeJob, ProbePurpose, ProbeResult};
+use qrec_core::protocol::{ProbeError, ProbeJob, ProbePurpose, ProbeResult};
 use qrec_core::state::SilenceKey;
 use qrec_core::{Event, JobId, TakeId};
 
@@ -92,10 +92,12 @@ impl Default for MediaOptions {
 }
 
 impl MediaOptions {
-    /// `base` plus `per_gib` for every started GiB of `bytes`.
+    /// `base` plus `per_gib` in proportion to `bytes` (half a GiB adds
+    /// half of it), so small files get exactly the A§8.7 timeout.
     pub(crate) fn scaled(&self, base: Duration, bytes: u64) -> Duration {
-        let gib = bytes.div_ceil(1 << 30);
-        base + self.per_gib * u32::try_from(gib).unwrap_or(u32::MAX)
+        let extra_ns = self.per_gib.as_nanos().saturating_mul(u128::from(bytes)) >> 30;
+        let extra = Duration::from_nanos(u64::try_from(extra_ns).unwrap_or(u64::MAX));
+        base.saturating_add(extra)
     }
 }
 
@@ -216,7 +218,8 @@ impl MediaRunner for FfmpegRunner {
                     .map(|(id, file)| ProbeResult {
                         id: id.clone(),
                         file: file.clone(),
-                        info: Err(message.clone()),
+                        // The worker failed, not the file.
+                        info: Err(ProbeError::tool(message.clone())),
                     })
                     .collect(),
             },

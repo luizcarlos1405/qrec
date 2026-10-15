@@ -25,15 +25,14 @@ mod open;
 mod tests;
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use qrec_core::apply::project::is_initialized;
-use qrec_core::on_event::record::recovering;
 use qrec_core::state::JobKind;
-use qrec_core::{ReqId, State, TakeId};
+use qrec_core::{ReqId, State};
 
 pub use config::{BACKEND_ENV, LogNotifier, Notifier, SessionConfig, SessionEnv};
 
@@ -89,8 +88,6 @@ pub struct Session {
     /// Commands of a recovery-mode session waiting for the Recover probes
     /// of the takes being recovered (A§7.7), in arrival order.
     parked: Vec<dispatch::Parked>,
-    /// Takes whose Recover probe is running (one per take per session).
-    probing: BTreeSet<TakeId>,
     next_req: u64,
     notifier: Box<dyn Notifier>,
     shutdown: bool,
@@ -155,13 +152,9 @@ impl Session {
         self.tick();
     }
 
-    /// Probes takes that turned up waiting for recovery, and runs the
-    /// parked commands once no take is (A§7.7).
+    /// Runs the parked commands once no take is being recovered (A§7.7).
     fn after_message(&mut self) {
-        if self.store.writable() && is_initialized(&self.state.project) {
-            self.sync_recovery_probes();
-        }
-        if !self.parked.is_empty() && !recovering(&self.state) {
+        if !self.parked.is_empty() && self.state.runtime.recovering.is_empty() {
             for parked in std::mem::take(&mut self.parked) {
                 self.resume(parked);
             }
@@ -229,15 +222,11 @@ impl Session {
         self.pending.len() + self.parked.len()
     }
 
-    /// Not recording, no jobs, no take waiting for its Recover probe and no
-    /// request waiting: a headless or CLI host may exit (after its own grace
-    /// period, A§8.6).
+    /// Not recording, no jobs, no recovery probe out and no request waiting
+    /// (parked ones included): a headless or CLI host may exit (after its own
+    /// grace period, A§8.6).
     pub fn is_idle(&self) -> bool {
-        self.state.runtime.record.is_idle()
-            && self.state.runtime.jobs.is_empty()
-            && !recovering(&self.state)
-            && self.pending.is_empty()
-            && self.parked.is_empty()
+        !self.state.runtime.is_busy() && self.pending.is_empty() && self.parked.is_empty()
     }
 
     /// When [`Session::tick`] has work (a coalesced `ui.json` write).
@@ -260,6 +249,22 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
+        #[cfg(test)]
+        let crashed = self.crashed;
+        #[cfg(not(test))]
+        let crashed = false;
+        // Facts an event couldn't save (a failed commit keeps them in memory
+        // and the store dirty) get one last try before the host goes away;
+        // never over a qrec.json that failed to load (A§7.7).
+        if !crashed
+            && self.store.is_dirty()
+            && !self.opts.recovery
+            && self.state.runtime.disk_invalid.is_none()
+            && is_initialized(&self.state.project)
+            && let Err(e) = self.store.write_all(&self.state)
+        {
+            tracing::error!("couldn't save the project before closing it: {e}");
+        }
         if let Err(e) = self.store.flush_ui(&self.state.ui, Instant::now(), true) {
             tracing::warn!("can't write .qrec/ui.json: {e}");
         }

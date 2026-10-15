@@ -345,8 +345,15 @@ impl Store {
         }
         let bytes = format::project_bytes(project);
         let path = self.paths.project_file();
-        fsx::replace(&path, &bytes, fsx::Sync::FileAndDir)
-            .map_err(io_err(format!("write {}", path.display())))?;
+        // Through `.qrec/qrec.json.tmp`: a folder being initialized shows
+        // only `.qrec/` to other commands' folder rule (A§8.4).
+        fsx::replace_via(
+            &path,
+            &self.paths.project_tmp(),
+            &bytes,
+            fsx::Sync::FileAndDir,
+        )
+        .map_err(io_err(format!("write {}", path.display())))?;
         self.last_sha = Some(format::sha(&bytes));
         Ok(())
     }

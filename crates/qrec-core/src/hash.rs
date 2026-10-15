@@ -54,6 +54,16 @@ pub fn json_hash(value: &Value) -> String {
     sha256_hex(&canonical_json(value))
 }
 
+/// Lowercase hex of `bytes` (e.g. a path that isn't UTF-8, A§4.9 `hello`).
+pub fn to_hex(bytes: &[u8]) -> String {
+    hex::encode(bytes)
+}
+
+/// The bytes of a hex string; `None` when it isn't hex.
+pub fn from_hex(text: &str) -> Option<Vec<u8>> {
+    hex::decode(text).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

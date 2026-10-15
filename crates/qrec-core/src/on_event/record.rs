@@ -33,7 +33,7 @@ use crate::ids::{ClipId, TakeId, TimerId};
 use crate::media_argv::probe_argv;
 use crate::model::{Clip, Scene, Stream, StreamKind, Take, TakeStatus};
 use crate::protocol::effect::{Effect, LogLevel, ProbeJob, ProbePurpose};
-use crate::protocol::event::{MediaInfo, ProbeResult, RecordedStream};
+use crate::protocol::event::{MediaInfo, ProbeError, ProbeFailure, ProbeResult, RecordedStream};
 use crate::protocol::progress::{Progress, ProgressPhase};
 use crate::protocol::reply::{CmdResult, TakeFinalizedView};
 use crate::protocol::toast::{Toast, ToastLevel};
@@ -384,7 +384,11 @@ pub fn capture_stopped(
 /// which answers `StartCapture` with `CaptureFailed` (the take breaks).
 pub fn engine_wedged(state: &State, ctx: &Ctx, message: String) -> Outcome {
     let mut stuck = state.clone();
-    stuck.runtime.engine_stuck = Some(if message.is_empty() { ENGINE_STUCK.to_owned() } else { message.clone() });
+    stuck.runtime.engine_stuck = Some(if message.is_empty() {
+        ENGINE_STUCK.to_owned()
+    } else {
+        message.clone()
+    });
     let state = &stuck;
     let log = Effect::Log {
         level: LogLevel::Error,
@@ -436,13 +440,16 @@ pub fn take_probed(
             _ => ignore(state, format!("TakeProbed(finalize) for {take}")),
         },
         ProbePurpose::Recover => {
+            // Its probe is back, whatever it says: nothing is in flight.
+            let mut current = state.clone();
+            current.runtime.recovering.remove(&take);
             let stale = state.project.take(&take).is_none_or(|t| {
                 t.status != TakeStatus::Recording || state.runtime.record.take() == Some(&take)
             });
             if stale {
-                return ignore(state, format!("TakeProbed(recover) for {take}"));
+                return ignore(&current, format!("TakeProbed(recover) for {take}"));
             }
-            recover(state, &take, &results)
+            recover(state, current, &take, &results)
         }
     }
 }
@@ -503,10 +510,19 @@ pub fn timer_fired(state: &State, ctx: &Ctx, timer: TimerId) -> Outcome {
 }
 
 /// The probes startup recovery runs (A§5.3 "Recovery"): one
-/// `Probe{Recover}` per take still `recording` that isn't being captured.
-/// The shell runs these after `Session::open` takes the lock.
+/// `Probe{Recover}` per take still `recording` that isn't being captured
+/// and isn't being recovered already.
 pub fn recovery_probes(state: &State) -> Vec<Effect> {
-    takes_to_recover(state)
+    let in_flight = state.runtime.record.take();
+    state
+        .project
+        .takes
+        .iter()
+        .filter(|(id, t)| {
+            t.status == TakeStatus::Recording
+                && in_flight != Some(*id)
+                && !state.runtime.recovering.contains(*id)
+        })
         .map(|(id, t)| Effect::Probe {
             take: id.clone(),
             purpose: ProbePurpose::Recover,
@@ -515,21 +531,25 @@ pub fn recovery_probes(state: &State) -> Vec<Effect> {
         .collect()
 }
 
-/// The takes still `recording` that aren't being captured: what a host's
-/// Recover probes are for (A§5.3 "Recovery").
-pub fn takes_to_recover(state: &State) -> impl Iterator<Item = (&TakeId, &Take)> {
-    let in_flight = state.runtime.record.take();
-    state
-        .project
-        .takes
-        .iter()
-        .filter(move |(id, t)| t.status == TakeStatus::Recording && in_flight != Some(*id))
-}
-
-/// A take waits for its Recover probe: a host doesn't exit before it is
-/// probed (A§8.6), and in recovery mode a restore waits for it (A§7.7).
-pub fn recovering(state: &State) -> bool {
-    takes_to_recover(state).next().is_some()
+/// Startup recovery (A§5.3 "Recovery"), run by the shell once
+/// `Session::open` holds the lock: the [`recovery_probes`], each take
+/// marked in `runtime.recovering` until its `TakeProbed(Recover)` comes
+/// back, so a host never exits with a recovery in flight (A§8.6) and an
+/// in-process command finishes the recovery it started.
+pub fn start_recovery(state: &State) -> Outcome {
+    let mut next = state.clone();
+    let mut effects = Vec::new();
+    for probe in recovery_probes(state) {
+        if let Effect::Probe { take, jobs, .. } = &probe {
+            next.runtime.recovering.insert(take.clone());
+            effects.push(Effect::Log {
+                level: LogLevel::Info,
+                message: format!("recovering {take}: probing {} file(s)", jobs.len()),
+            });
+        }
+        effects.push(probe);
+    }
+    Outcome::new(next, effects, None)
 }
 
 /// One `ffprobe` per stream of `take` (`media_argv::probe_argv`).
@@ -612,8 +632,12 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
         let err = CoreError::internal(reason.clone());
         return end_broken(state, ctx, state.clone(), take, &reason, &err);
     };
-    fill_media(t, results);
+    if let Some(failure) = tool_failure(results) {
+        return end_unprobed(state, ctx, take, failure);
+    }
+    let lost = fill_media(t, results);
     if let Some(reason) = unusable(t) {
+        let reason = explained(reason, &lost);
         let err = CoreError::capture_failed(format!("take {n} is broken: {reason}"));
         return end_broken(state, ctx, next, take, &reason, &err);
     }
@@ -642,6 +666,7 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
     // Facts first: media info, missing flags, status, placed/replaced, Idle.
     let facts = history::persist(state, next);
     let mut effects = facts.effects;
+    effects.extend(lost_log(take, &lost));
     let mut current = facts.state;
     let mut notes = Vec::new();
     let length = duration_label(frames_to_ns(frames, fps));
@@ -772,20 +797,43 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
 
 /// Recovery (A§5.3): readable ⇒ `ok` (or `tooShort` under 10 frames), bin,
 /// "Recovered take 7 from the bog."; otherwise `broken`. Never places clips.
-fn recover(state: &State, take: &TakeId, results: &[ProbeResult]) -> Outcome {
+/// A probe that failed on its own (ffprobe missing, timed out) says nothing
+/// about the files: the take stays `recording` for the next host start.
+/// `current` is `state` with the take's recovery no longer in flight.
+fn recover(state: &State, current: State, take: &TakeId, results: &[ProbeResult]) -> Outcome {
     let n = take.number();
     let fps = state.project.canvas.fps;
-    let mut next = state.clone();
-    let Some(t) = next.project.takes.get_mut(take) else {
-        return ignore(state, format!("TakeProbed(recover) for the unknown {take}"));
+    if let Some(failure) = tool_failure(results) {
+        let effects = vec![
+            Effect::Log {
+                level: LogLevel::Warn,
+                message: format!(
+                    "{take}: recovery postponed: {}; it stays `recording` until the probe works",
+                    failure.message
+                ),
+            },
+            Effect::Notify(
+                Toast::new(ToastLevel::Warning, format!("Take {n} isn't recovered yet"))
+                    .with_body(format!(
+                        "{}. Its files are kept; Qrec tries again the next time it opens the project.",
+                        failure.message
+                    )),
+            ),
+        ];
+        return Outcome::new(current, effects, None);
+    }
+    let mut next = current;
+    let Some(mut t) = next.project.takes.get(take).cloned() else {
+        return ignore(&next, format!("TakeProbed(recover) for the unknown {take}"));
     };
-    fill_media(t, results);
-    let toast = if let Some(reason) = unusable(t) {
-        mark_broken(t, &format!("recovery failed: {reason}"));
+    let lost = fill_media(&mut t, results);
+    let toast = if let Some(reason) = unusable(&t) {
+        let reason = explained(reason, &lost);
+        mark_broken(&mut t, &format!("recovery failed: {reason}"));
         Toast::new(ToastLevel::Error, format!("Take {n} couldn't be recovered"))
             .with_body(format!("It is marked broken: {reason}."))
     } else {
-        let frames = derive_duration_frames(t, fps);
+        let frames = derive_duration_frames(&t, fps);
         t.duration_frames = frames;
         t.error = None;
         let recovered = format!("Recovered take {n} from the bog.");
@@ -798,8 +846,10 @@ fn recover(state: &State, take: &TakeId, results: &[ProbeResult]) -> Outcome {
             Toast::new(ToastLevel::Success, recovered).with_body("It is in the bin.")
         }
     };
+    next.project.takes.insert(take.clone(), t);
     let persisted = history::persist(state, next);
     let mut effects = persisted.effects;
+    effects.extend(lost_log(take, &lost));
     effects.push(Effect::Log {
         level: LogLevel::Info,
         message: format!("{take}: recovery: {}", toast.title),
@@ -885,6 +935,72 @@ fn end_broken(
     Outcome::new(ready.state, ordered(effects), None)
 }
 
+/// The finalize probe failed on its own (ffprobe missing or timed out):
+/// nothing is known about the files, so none of the take's facts change.
+/// It stays `recording`, with its streams and offsets, for startup recovery
+/// to finish once the probe works (A§5.3 "Recovery"); the phase goes back
+/// to Idle. Stop requests and waiters get the error (`missing_dependency`
+/// for a missing ffprobe), a pending discard hears the take wasn't placed,
+/// and the ready autocut jobs run.
+fn end_unprobed(prev: &State, ctx: &Ctx, take: &TakeId, failure: &ProbeError) -> Outcome {
+    let n = take.number();
+    let mut next = prev.clone();
+    let phase = std::mem::take(&mut next.runtime.record);
+    let persisted = history::persist(prev, next);
+    let mut effects = persisted.effects;
+    effects.push(Effect::Log {
+        level: LogLevel::Error,
+        message: format!(
+            "{take} wasn't finalized: {}; it stays `recording` until the probe works",
+            failure.message
+        ),
+    });
+    if let RecordPhase::Finalizing {
+        stop_reqs,
+        waiters,
+        discard,
+        ..
+    } = phase
+    {
+        let err = unprobed_error(n, failure);
+        for req in unique(stop_reqs.iter().chain(&waiters)) {
+            effects.push(Effect::Reply {
+                req,
+                reply: Err(err.clone()),
+            });
+        }
+        if let Some(DiscardRequest { req: Some(req) }) = discard {
+            effects.push(Effect::Reply {
+                req,
+                reply: Ok(CmdResult::new(format!("take {n} was not placed"))),
+            });
+        }
+    }
+    let ready = autocut_hooks::apply_ready_autocuts(&persisted.state, ctx);
+    effects.extend(ready.effects);
+    effects.push(Effect::Notify(
+        Toast::new(ToastLevel::Error, format!("Take {n} wasn't finalized")).with_body(format!(
+            "{}. Its files are kept; Qrec finalizes it (into the bin) the next time it opens the project.",
+            failure.message
+        )),
+    ));
+    Outcome::new(ready.state, ordered(effects), None)
+}
+
+/// What stop requests hear when the finalize probe failed on its own.
+fn unprobed_error(n: u32, failure: &ProbeError) -> CoreError {
+    let message = format!("take {n} wasn't finalized: {}", failure.message);
+    let kept = "its files are kept, and Qrec finalizes it the next time it opens the project \
+                (any command that changes the project)";
+    match failure.kind {
+        ProbeFailure::MissingTool => CoreError::new(ErrorCode::MissingDependency, message)
+            .with_hint(format!(
+                "install ffprobe (it comes with ffmpeg) and check with `qrec doctor`; {kept}"
+            )),
+        ProbeFailure::Media | ProbeFailure::Tool => CoreError::io(message).with_hint(kept),
+    }
+}
+
 /// `broken` with `error`; streams without media leave the take and their
 /// layers/tracks are marked `missing`. Probed streams keep their facts.
 fn mark_broken(take: &mut Take, reason: &str) {
@@ -904,25 +1020,75 @@ fn mark_broken(take: &mut Take, reason: &str) {
 
 // ----------------------------------------------------------- media facts
 
+/// The first probe that failed on its own rather than on its file (a
+/// missing ffprobe first): such a result says nothing about the media, so
+/// it must not change the take's facts.
+fn tool_failure(results: &[ProbeResult]) -> Option<&ProbeError> {
+    let mut failures = results
+        .iter()
+        .filter_map(|r| r.info.as_ref().err())
+        .filter(|e| e.is_tool_failure());
+    let first = failures.next()?;
+    Some(
+        std::iter::once(first)
+            .chain(failures)
+            .find(|e| e.kind == ProbeFailure::MissingTool)
+            .unwrap_or(first),
+    )
+}
+
 /// Fills each stream from its probe result; streams without a usable
-/// result leave `streams` and are marked `missing`.
-fn fill_media(take: &mut Take, results: &[ProbeResult]) {
+/// result leave `streams` and are marked `missing`. Returns why each one
+/// left (`L1: <what ffprobe said>`).
+fn fill_media(take: &mut Take, results: &[ProbeResult]) -> Vec<String> {
     let mut kept = Vec::with_capacity(take.streams.len());
+    let mut lost = Vec::new();
     for mut stream in std::mem::take(&mut take.streams) {
-        let info = results
-            .iter()
-            .find(|r| r.id == stream.id)
-            .and_then(|r| r.info.as_ref().ok())
-            .filter(|info| readable(info, stream.kind));
-        match info {
-            Some(info) => {
+        let result = results.iter().find(|r| r.id == stream.id);
+        let usable = match result.map(|r| &r.info) {
+            Some(Ok(info)) if readable(info, stream.kind) => Ok(info),
+            Some(Ok(_)) => Err(format!("no usable {} stream", kind_name(stream.kind))),
+            Some(Err(e)) => Err(e.message.clone()),
+            None => Err("it wasn't probed".to_owned()),
+        };
+        match usable {
+            Ok(info) => {
                 fill(&mut stream, info);
                 kept.push(stream);
             }
-            None => set_missing(&mut take.scene, &stream.id),
+            Err(why) => {
+                set_missing(&mut take.scene, &stream.id);
+                lost.push(format!("{}: {why}", stream.id));
+            }
         }
     }
     take.streams = kept;
+    lost
+}
+
+fn kind_name(kind: StreamKind) -> &'static str {
+    match kind {
+        StreamKind::Video => "video",
+        StreamKind::Audio => "audio",
+    }
+}
+
+/// A broken take's reason with what each probe said:
+/// `none of the recorded files could be read (L1: …; A1: …)`.
+fn explained(reason: String, lost: &[String]) -> String {
+    if lost.is_empty() {
+        reason
+    } else {
+        format!("{reason} ({})", lost.join("; "))
+    }
+}
+
+/// A warning naming the streams that left the take and why.
+fn lost_log(take: &TakeId, lost: &[String]) -> Option<Effect> {
+    (!lost.is_empty()).then(|| Effect::Log {
+        level: LogLevel::Warn,
+        message: format!("{take}: unreadable streams: {}", lost.join("; ")),
+    })
 }
 
 /// Why a probed take has nothing to use: none of its files could be read
@@ -1119,7 +1285,7 @@ mod tests {
         take
     }
 
-    fn result(id: &str, info: Result<MediaInfo, String>) -> ProbeResult {
+    fn result(id: &str, info: Result<MediaInfo, ProbeError>) -> ProbeResult {
         ProbeResult {
             id: id.to_owned(),
             file: format!("takes/take-0002/{id}"),

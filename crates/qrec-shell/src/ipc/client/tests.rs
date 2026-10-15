@@ -316,6 +316,39 @@ fn record_wait_ctrl_c_stops_then_detaches() {
         == 2));
     raiser.raise();
     assert_eq!(client.join().unwrap(), Ok(Sent::Interrupted));
+
+    // Two Ctrl+C back to back (inside one poll slice) are two presses:
+    // stop once, then detach, without waiting for the finalized take.
+    let interrupts = Interrupts::new();
+    let mut opts = quick(&interrupts);
+    opts.stop_on_interrupt = true;
+    let raiser = interrupts.clone();
+    let socket = t.socket.clone();
+    let request = Request::command(
+        Command::RecordStart {
+            mode: RecordModeArg::Append,
+            countdown: None,
+            wait: true,
+        },
+        false,
+    );
+    let before = t.server.stats().requests;
+    let client =
+        thread::spawn(move || send_request(&socket, &request, &mut Collect::default(), &opts));
+    assert!(wait_for(Duration::from_secs(5), || t
+        .server
+        .stats()
+        .requests
+        > before));
+    thread::sleep(Duration::from_millis(100));
+    raiser.raise();
+    raiser.raise();
+    let started = Instant::now();
+    assert_eq!(client.join().unwrap(), Ok(Sent::Interrupted));
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(wait_for(Duration::from_secs(5), || stops
+        .load(std::sync::atomic::Ordering::SeqCst)
+        == 3));
 }
 
 // ------------------------------------------------------------------ routing
@@ -463,6 +496,42 @@ fn a_lock_held_too_long_is_busy_naming_the_holder() {
     .unwrap();
     std::fs::write(p.paths.lock_file(), b"").unwrap();
     let err = match route(&router(&p, RouteMode::Lock, 200, &interrupts)) {
+        Err(RouteError::Failed(e)) => e,
+        other => panic!("{other:?}"),
+    };
+    assert!(err.message.contains("runs no Qrec host"), "{}", err.message);
+    drop(lock);
+}
+
+/// A record outlives its host (`stopping` after a clean exit, anything after
+/// a crash). When some other process holds the flock, the deadline error
+/// names no dead pid and never says to `kill` it (A§8.3 step 4).
+#[test]
+fn a_stale_record_is_not_named_as_the_holder() {
+    let p = project();
+    let lock = hold_lock(p.paths.root());
+    let mut gone = std::process::Command::new("true").spawn().unwrap();
+    let dead = gone.id();
+    gone.wait().unwrap();
+    let mut rec = record(HostKind::Headless, &p.socket, HostState::Stopping);
+    rec.pid = dead;
+    lockfile::write(&lock, &rec).unwrap();
+    let interrupts = Interrupts::new();
+    let err = match route(&router(&p, RouteMode::Lock, 300, &interrupts)) {
+        Err(RouteError::Failed(e)) => e,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(err.code, ErrorCode::Busy);
+    assert!(err.message.contains("runs no Qrec host"), "{}", err.message);
+    let hint = err.hint.unwrap_or_default();
+    assert!(!err.message.contains(&dead.to_string()), "{}", err.message);
+    assert!(!hint.contains("kill"), "{hint}");
+
+    // A pid that now belongs to a process started after the record.
+    rec.pid = std::process::id();
+    rec.since = "2001-01-01T00:00:00Z".parse().unwrap();
+    lockfile::write(&lock, &rec).unwrap();
+    let err = match route(&router(&p, RouteMode::NoLock, 200, &interrupts)) {
         Err(RouteError::Failed(e)) => e,
         other => panic!("{other:?}"),
     };

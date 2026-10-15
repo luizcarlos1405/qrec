@@ -12,21 +12,31 @@ use std::path::{Path, PathBuf};
 
 use qrec_core::JobId;
 
+use crate::paths::NAME_MAX;
+
 /// The marker in every temp name; host start sweeps old ones (A§8.7).
 pub const PART_MARKER: &str = ".qrec-part-";
 
 /// How many `-N` names an auto name tries.
 const MAX_SUFFIX: u32 = 10_000;
 
-/// `<dir>/.<stem>.qrec-part-<pid>-<job>.<ext>`.
+/// `<dir>/.<stem>.qrec-part-<pid>-<job>.<ext>`. The stem is cut (on a char
+/// boundary) so the name fits in [`NAME_MAX`]: any destination name that
+/// fits gets a temp file that fits too (the final rename keeps the exact
+/// name the person picked).
 pub(crate) fn temp_path(dir: &Path, stem: &str, job: JobId, ext: &str) -> PathBuf {
     let ext = ext.trim_start_matches('.');
-    let name = if ext.is_empty() {
-        format!(".{stem}{PART_MARKER}{}-{}", std::process::id(), job.0)
+    let suffix = if ext.is_empty() {
+        format!("{PART_MARKER}{}-{}", std::process::id(), job.0)
     } else {
-        format!(".{stem}{PART_MARKER}{}-{}.{ext}", std::process::id(), job.0)
+        format!("{PART_MARKER}{}-{}.{ext}", std::process::id(), job.0)
     };
-    dir.join(name)
+    let room = NAME_MAX.saturating_sub(1 + suffix.len());
+    let mut cut = stem.len().min(room);
+    while !stem.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    dir.join(format!(".{}{suffix}", &stem[..cut]))
 }
 
 /// The file name of `path` without its extension (`clip` for `a/clip.mp4`).
@@ -214,6 +224,41 @@ mod tests {
         assert!(name.contains(PART_MARKER));
         assert_eq!(file_stem(Path::new("/p/exports/a.b.mp4")), "a.b");
         assert_eq!(file_stem(Path::new("/")), "qrec");
+    }
+
+    /// A hand-picked name of up to 255 bytes is valid, so its temp file
+    /// must be too: the stem is cut, never the marker, job or extension.
+    #[test]
+    fn temp_names_of_long_outputs_fit_in_name_max() {
+        let dir = tempfile::tempdir().unwrap();
+        for stem in ["y".repeat(251), "é".repeat(120), "x".repeat(300)] {
+            for job in [JobId(1), JobId(u64::MAX)] {
+                let tmp = temp_path(dir.path(), &stem, job, "mp4");
+                let name = tmp.file_name().unwrap().to_str().unwrap();
+                assert!(name.len() <= NAME_MAX, "{} bytes", name.len());
+                assert!(name.starts_with(&format!(".{}", &stem[..10])), "{name}");
+                assert!(
+                    name.ends_with(&format!(
+                        "{PART_MARKER}{}-{}.mp4",
+                        std::process::id(),
+                        job.0
+                    )),
+                    "{name}"
+                );
+                // The file system takes it.
+                fs::write(&tmp, b"x").unwrap();
+                fs::remove_file(&tmp).unwrap();
+            }
+        }
+        // Short names are kept whole.
+        let tmp = temp_path(dir.path(), "short", JobId(2), "png");
+        assert!(
+            tmp.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with(".short.qrec-part-")
+        );
     }
 
     #[test]
