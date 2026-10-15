@@ -1017,6 +1017,62 @@ fn record_start_and_stop_with_the_fake_backend() {
     wait_until_no_host(&env);
 }
 
+/// A take finalization whose commit record couldn't be written (A§7.6:
+/// the history line and qrec.json were, the head wasn't) is finished by
+/// the next open: the take is `ok` with its clip and nothing is called
+/// invalid. It used to come back `recording`, and the next command said
+/// Qrec's own qrec.json was invalid, then dropped the clip and the entry.
+#[test]
+fn a_take_finalized_without_its_commit_record_is_finished_by_the_next_open() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("unfinished");
+    qrec(&env, &dir, &["init", "--canvas", "640x360@30"]).ok();
+    qrec(
+        &env,
+        &dir,
+        &["scene", "layer", "add", "screen", "--output", "FAKE-1"],
+    )
+    .ok();
+    qrec(&env, &dir, &["record", "start", "--json"]).ok();
+    thread::sleep(Duration::from_millis(1500));
+    // From now on only the commit record (history.head.json) can't be
+    // written: its temp file's name is taken by a folder.
+    let blocker = dir.join(".qrec/history.head.json.tmp");
+    fs::create_dir(&blocker).unwrap();
+    let stop = qrec(&env, &dir, &["record", "stop", "--json"]);
+    assert_eq!(stop.code, Some(1), "{stop:?}");
+    let error = stop.only_reply()["error"].clone();
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("the change was made but couldn't be saved"),
+        "{error}"
+    );
+    // The headless host exits (its last write fails the same way).
+    wait_until_no_host(&env);
+    fs::remove_dir(&blocker).unwrap();
+
+    let row = take_row(&env, &dir, "take-0001");
+    assert_eq!(row["status"], "ok", "{row}");
+    assert_eq!(row["clips"], 1, "{row}");
+    let edit = qrec(&env, &dir, &["project", "set", "--name", "x"]);
+    edit.ok();
+    assert!(!edit.stderr.contains("invalid"), "{}", edit.stderr);
+    assert_eq!(clip_ids(&env, &dir).len(), 1, "the clip is still placed");
+    let history = qrec(&env, &dir, &["history", "--json"]);
+    history.ok();
+    let labels: Vec<String> = history.reply()["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["label"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(labels.contains(&"Record take 1".to_owned()), "{labels:?}");
+    assert!(!labels.iter().any(|l| l == "External edit"), "{labels:?}");
+    assert!(!dir.join(".qrec/rejected").exists());
+}
+
 /// Waits until every host of `env` exited (its socket went away, A§8.6).
 fn wait_until_no_host(env: &TestEnv) {
     let deadline = Instant::now() + Duration::from_secs(20);

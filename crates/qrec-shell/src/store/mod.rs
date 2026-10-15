@@ -22,8 +22,10 @@
 //! The session runs the effects that touch the world only after that.
 //! A crash between any two steps leaves something [`load`] turns back into
 //! a consistent state: an uncommitted history line has `seq ≥ nextSeq`
-//! and is dropped; a `qrec.json` newer than the head is an external edit
-//! of `head.project` that the core merges ("External edit"); a stale
+//! and is dropped, unless `qrec.json` is the project it led to (its
+//! `afterHash`): then the commit is finished (a crash between 2 and 3); any
+//! other `qrec.json` newer than the head is an external edit of
+//! `head.project` that the core merges ("External edit"); a stale
 //! `history.cursor` is rewritten by the next open or commit.
 
 pub mod format;

@@ -993,9 +993,18 @@ recovery mode only once a request saved, A§7.7; never over a `qrec.json`
 that failed to load). Non-undoable
 writes do steps 2–3. On open (lock held): drop history lines with
 `seq ≥ nextSeq`; drop a torn last line; a bad line elsewhere ⇒ `Invalid`
-with its line number. If `sha256(qrec.json) == H` the state is clean;
-otherwise a valid file is an external edit against `head.project` (covers a
-crash between 2 and 3); an unparsable or invalid one takes A§7.7.
+with its line number. If `sha256(qrec.json) == H` the state is clean.
+Otherwise a valid file whose undoable view is the `afterHash` of the
+uncommitted lines (they follow the head: the first is its `nextSeq`, then
+one after the other, after a history ending at its cursor), and that still
+has every take the head knows, is that commit's own write (a crash, or a
+failed head write, between 2 and 3): load finishes the commit — keeps those
+lines and the cursor at the last, takes the file with its facts (a
+finalized take, its clip) and rewrites the head as a repair. Any other
+valid file is an external edit against `head.project` (so is a commit
+without a line, facts only, interrupted there: the head's facts win and
+the Recover probe re-derives a take's); an unparsable or invalid one takes
+A§7.7.
 
 **A failed commit** (disk full, permissions): a command's change didn't
 happen. The Session keeps the previous state, runs none of the outcome's

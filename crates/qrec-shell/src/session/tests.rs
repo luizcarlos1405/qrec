@@ -982,7 +982,7 @@ fn a_crash_after_the_head_keeps_the_command() {
 }
 
 #[test]
-fn a_crash_after_writing_qrec_json_is_merged_as_an_external_edit() {
+fn a_crash_after_writing_qrec_json_finishes_the_command() {
     let h = Harness::with_sample("crash-project");
     let mut s = h.open(true).unwrap();
     s.store.crash_after = Some(Step::Project);
@@ -993,6 +993,7 @@ fn a_crash_after_writing_qrec_json_is_merged_as_an_external_edit() {
         }),
         false,
     );
+    let label = s.state().history.entries.last().unwrap().label.clone();
     drop(s);
 
     let s = h.open(true).unwrap();
@@ -1001,12 +1002,94 @@ fn a_crash_after_writing_qrec_json_is_merged_as_an_external_edit() {
         [("c002".to_owned(), 150, 300)],
         "the file's change is kept"
     );
-    let last = s.state().history.entries.last().unwrap();
-    assert_eq!(last.label, "External edit");
-    assert_eq!(h.head().cursor, last.seq);
+    // As the command itself, not as an "External edit" of it (A§7.6).
+    let entries = &s.state().history.entries;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].label, label);
+    assert_eq!(h.head().cursor, entries[0].seq);
+    assert_eq!(h.history_seqs(), [entries[0].seq]);
     assert_eq!(
         fs::read(h.dir.join("qrec.json")).unwrap(),
         format::project_bytes(&s.state().project)
+    );
+}
+
+/// A take finalization whose head write failed (or that crashed right
+/// before it, A§7.6) is finished by the next open with what `qrec.json`
+/// holds: the take `ok` with its media and its clip, under its own "Record
+/// take N" entry. The file used to be merged as a hand edit whose facts
+/// lost to the head's (`recording`, 0 frames) while its clip used the take,
+/// so the project was reported invalid and the placement was dropped.
+#[test]
+fn a_finalization_saved_to_qrec_json_but_not_committed_is_finished() {
+    let mut h = Harness::with_sample("unfinished-take");
+    h.check = crate::store::validated;
+    let mut s = h.open(true).unwrap();
+    let start = Command::RecordStart {
+        mode: RecordModeArg::Append,
+        countdown: Some(0),
+        wait: false,
+    };
+    request(&mut s, WireBody::Command(start), false);
+    let planned = s.state().project.takes[&take(2)].streams.clone();
+    s.handle(Msg::Event(Event::CaptureStarted {
+        take: take(2),
+        t0_ns: 0,
+        files: planned.iter().map(|st| st.file.clone()).collect(),
+        start_offset_ns: Default::default(),
+    }));
+    request(&mut s, WireBody::Command(Command::RecordStop), false);
+    let streams = planned
+        .iter()
+        .map(|st| RecordedStream {
+            id: st.id.clone(),
+            file: st.file.clone(),
+            start_offset_ns: 0,
+            eos: true,
+        })
+        .collect();
+    s.handle(Msg::Event(Event::CaptureStopped {
+        take: take(2),
+        streams,
+        timed_out: false,
+    }));
+    // The process dies between writing qrec.json and the commit record.
+    s.store.crash_after = Some(Step::Project);
+    s.handle(Msg::Event(Event::TakeProbed {
+        take: take(2),
+        purpose: ProbePurpose::Finalize,
+        results: planned.iter().map(|st| probed(st, 90)).collect(),
+    }));
+    drop(s);
+    assert_eq!(
+        h.head().project.takes[&take(2)].status,
+        TakeStatus::Recording,
+        "the commit record never heard of it"
+    );
+
+    let s = h.open(true).unwrap();
+    assert_eq!(s.state().runtime.disk_invalid, None);
+    let t = &s.state().project.takes[&take(2)];
+    assert_eq!((t.status, t.duration_frames), (TakeStatus::Ok, 90));
+    assert!(
+        s.state()
+            .project
+            .timeline
+            .clips
+            .iter()
+            .any(|c| c.take == take(2)),
+        "its clip is placed"
+    );
+    let last = s.state().history.entries.last().unwrap();
+    assert_eq!(last.label, "Record take 2");
+    let head = h.head();
+    assert_eq!(head.cursor, last.seq);
+    assert_eq!(head.project, s.state().project);
+    assert!(s.recovering().is_empty(), "nothing to recover");
+    let titles = h.toast_titles();
+    assert!(
+        !titles.contains(&"qrec.json on disk is invalid".to_owned()),
+        "{titles:?}"
     );
 }
 
