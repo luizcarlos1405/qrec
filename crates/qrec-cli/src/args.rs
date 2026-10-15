@@ -28,8 +28,9 @@ PROJECT FOLDER
   files such as .git count); an empty folder becomes a project with `qrec
   init` or on the first change. Without --project, a current directory that
   is neither falls back to the single running Qrec host (so compositor key
-  binds work from $HOME), except inside a project's subfolder. When no
-  project is found the command exits 3 with
+  binds work from $HOME), except inside a project's subfolder and for `qrec
+  init`, which only acts on its own folder. When no project is found the
+  command exits 3 with
     \"Not my swamp: this folder isn't empty and has no qrec.json\"
   Commands that need no project work anywhere: --help, version, doctor,
   sources list, schema, keys, agent-guide, config, completions.
@@ -55,7 +56,7 @@ DESTRUCTIVE ACTIONS
 EXIT CODES
   0 ok, 1 error, 2 usage error, 3 not a project folder / folder not empty,
   4 confirmation required, 5 missing dependency, 6 busy (recording or
-  exporting), 7 not found (bad id).";
+  exporting), 7 not found (bad id), 130 interrupted (Ctrl+C or SIGTERM).";
 
 /// The `qrec` command line.
 #[derive(Clone, Debug, PartialEq, Parser)]

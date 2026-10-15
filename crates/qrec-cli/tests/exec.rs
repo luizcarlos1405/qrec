@@ -365,7 +365,11 @@ fn init_never_goes_to_a_running_host() {
     let human = run(&mut fake, &busy, "qrec init");
     assert_eq!(human.code, 3);
     assert!(human.err.starts_with(NOT_MY_SWAMP), "{}", human.err);
-    assert!(fake.seen.is_empty(), "nothing was sent to {}", other.display());
+    assert!(
+        fake.seen.is_empty(),
+        "nothing was sent to {}",
+        other.display()
+    );
     assert_eq!(fake.host_lookups, 0, "init never looks for a host");
     assert_eq!(
         fs::read_dir(&busy).unwrap().count(),
@@ -853,9 +857,7 @@ fn ctrl_c_after_the_reply_still_shows_it() {
             reply: Some(Ok(done.clone())),
         },
     };
-    let mut fake = Fake::new(&tmp.dir("cfg"))
-        .script(script())
-        .script(script());
+    let mut fake = Fake::new(&tmp.dir("cfg")).script(script()).script(script());
     let json_run = run(&mut fake, &project, "qrec --json autocut");
     assert_eq!(json_run.code, EXIT_INTERRUPTED);
     assert_eq!(json_run.json(), json!({"ok": true, "data": done}));

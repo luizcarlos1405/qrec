@@ -291,10 +291,8 @@ mod tests {
         assert_eq!(one.target, Target::Project("/v/swamp".into()));
         assert_eq!(one.notice.unwrap(), "using project /v/swamp (pid 42)");
 
-        let err = resolve(&busy, true, || {
-            Ok(vec![hello("/v/a", 1), hello("/v/b", 2)])
-        })
-        .unwrap_err();
+        let err =
+            resolve(&busy, true, || Ok(vec![hello("/v/a", 1), hello("/v/b", 2)])).unwrap_err();
         assert_eq!(err.code, ErrorCode::Usage);
         assert!(
             err.message
@@ -304,8 +302,10 @@ mod tests {
         );
 
         // --project and `qrec init` never fall back.
-        let no_fallback =
-            resolve(&busy, false, || panic!("no host lookup without the fallback")).unwrap_err();
+        let no_fallback = resolve(&busy, false, || {
+            panic!("no host lookup without the fallback")
+        })
+        .unwrap_err();
         assert_eq!(
             (no_fallback.code, no_fallback.message.as_str()),
             (ErrorCode::NotProject, NOT_MY_SWAMP)

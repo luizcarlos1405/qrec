@@ -247,6 +247,7 @@ pub struct ClipRef { pub id: ClipId, pub take: TakeId, pub in_: Frame, pub out: 
 
 pub struct Capabilities {
     pub ffmpeg: Option<FfmpegCaps>,      // None until detected; Some(..) before the first dispatch
+    pub ffprobe: Option<String>,         // resolved on PATH at every detection (never cached); None: not installed
     pub vaapi: Option<VaapiCaps>,
     pub cores: u32,
 }
@@ -535,7 +536,8 @@ pub struct ProbeJob { pub id: String, pub file: String, pub kind: StreamKind, pu
 pub enum Event {
     Capabilities(Capabilities),
     CaptureStarted { take: TakeId, t0_ns: u64, files: Vec<String> },
-    CaptureFailed { take: Option<TakeId>, source: Option<String>, message: String },
+    CaptureFailed { take: Option<TakeId>, source: Option<String>, message: String,
+                    missing: Option<String> },              // a GStreamer element that isn't installed
     StreamLost { take: TakeId, stream: String, message: String },
     RecordClock { take: TakeId, elapsed_ns: u64 },          // ~4 Hz, pipeline clock
     CaptureStopped { take: TakeId, streams: Vec<RecordedStream>, timed_out: bool },
@@ -575,13 +577,14 @@ pub struct Interval { pub start_ns: i64, pub end_ns: i64 }   // half-open, file 
 | `usage` | 2 | bad arguments, clap errors |
 | `not_project` | 3 | folder rule ("Not my swamp: …") |
 | `confirmation_required` | 4 | `confirmation required: <what is lost>` |
-| `missing_dependency` | 5 | a required tool or element is missing |
+| `missing_dependency` | 5 | a required tool or element is missing: no ffmpeg (export, frame save, autocut whose analysis failed), no ffprobe (export, before rendering), a GStreamer element (`CaptureFailed.missing`); the hint points at `qrec doctor` |
 | `busy` | 6 | recording/finalizing/exporting, lock held by an unresponsive host |
 | `not_found` | 7 | bad id, unknown output/device |
 | `invalid` | 1 | impossible edit, invalid project, not recording, already a project |
 | `capture_failed` | 1 | health check or start failure; hint names the source |
 | `unavailable` | 1 | needs the GUI host, no host holds a selection |
 | `io`, `internal` | 1 | |
+| `interrupted` | 130 | CLI only: Ctrl+C/SIGTERM before a reply (A§8.6) |
 
 ### A§4.9 Wire format (IPC and `--json`)
 
@@ -602,8 +605,11 @@ host → client  {"id":"7","accepted":true}
 The shell's `ReqId(u64)` is allocated per request by the Session; client
 ids stay inside the IPC layer. `--json` prints `to_wire(&result)` — the
 same `{"ok":…}` object — and streaming commands print progress lines
-(`{"event":"progress",…}`) before it. Toasts never go to stdout: humans get
-them on stderr, `--json` gets `{"event":"notice",…}` lines on stderr.
+(`{"event":"progress",…}`) before it. Every run ends stdout with exactly one
+such object: help and the version are `{"ok":true,"data":<help text>}` and
+`{"ok":true,"data":{"version":…}}`, and an interrupted run ends with one too
+(A§8.6). Toasts never go to stdout: humans get them on stderr, `--json`
+gets `{"event":"notice",…}` lines on stderr.
 
 ---
 
@@ -662,7 +668,7 @@ including `Play`, `Undo` and `Export`, is `Busy` (SPEC §5.3.3).
 | Countdown | TimerFired (current timer) | next tick, or begin take ⇒ Starting |
 | Countdown | Stop/Toggle/Cancel | `CancelTimer` ⇒ Idle; start req gets `Invalid` "countdown cancelled"; caller gets Ok |
 | Starting | CaptureStarted | ⇒ Recording; reply start req `RecordStartedView` (unless `wait`) |
-| Starting | CaptureFailed | take `broken` (+`error`) ⇒ Idle; reply start req `capture_failed` |
+| Starting | CaptureFailed | take `broken` (+`error`) ⇒ Idle; reply start req `capture_failed` (`missing_dependency` when `missing` names an element that isn't installed) |
 | Starting | Stop/Toggle | `StopCapture{cancel:false}` ⇒ Finalizing; start req gets its started reply |
 | Starting / Recording | Cancel | `StopCapture{cancel:true}` ⇒ Finalizing(cancelled) |
 | Recording | Stop/Toggle | `StopCapture{cancel:false}` ⇒ Finalizing; the caller waits for the finalized reply |
@@ -776,8 +782,14 @@ requester started if no other requester waits; never stop a recording.
 ### A§5.9 Export and frame-save commands
 
 `out` from the CLI is already absolute (resolved against the CLI's cwd).
+It means what the OS says: `..` stays in `facts.out.abs` (the path the job
+writes and reports) and the checks run where the kernel resolves it, so
+`link/..` is the parent of the link's target, never lexically the folder
+holding `link`.
 `facts.out.forbidden` (inside `takes/`, `.qrec/` or `qrec.json`) ⇒ `Invalid`
 (not confirmable); `exists && !confirmed` ⇒ `confirmation_required`.
+Frame saves need ffmpeg like exports (`missing_dependency` before the job
+starts); exports also need ffprobe, which checks every segment (A§9.3).
 Auto names: `exports/<stem>-YYYYMMDD-HHMMSS.<ext>` and
 `frames/<stem>-<take>-<HHMMSSFF>.png` (timeline timecode) with local time
 from `utc_offset_secs` and `stem = naming::file_stem(project.name)`.
@@ -1028,7 +1040,9 @@ Cli) and serves the socket.
 ancestor holds `qrec.json`, exit 3 with "you're inside project <dir>; run
 there or pass --project <dir>" → the single live host found by `hello` on
 `<runtime>/*.sock` (stderr: `qrec: using project <dir> (pid N)`) → exit 3
-(several hosts: `Usage` listing them). Init order: `mkdir .qrec` → lock →
+(several hosts: `Usage` listing them). `qrec init` never takes the host
+step: its target is the folder itself, so a folder that is neither empty
+nor a project is exit 3 whatever runs elsewhere. Init order: `mkdir .qrec` → lock →
 re-check the folder rule (a folder whose only entry is `.qrec/` counts as
 empty) → write `qrec.json` + head → `mkdir takes`. Read-only commands take no
 lock and write nothing (no migration backups either). `--over-selection` with
@@ -1057,8 +1071,15 @@ continue"). `seek`/`play`/`pause`/`shuttle` without a GUI host ⇒
   deletes temp outputs, exits 130; the second SIGKILLs and exits 130.
   IPC-routed: Ctrl+C closes the connection and exits 130; for `record --wait`
   the first Ctrl+C sends `RecordStop` on a second connection and keeps
-  streaming until finalized, a second detaches. Stdout is written with
-  `writeln!`; `BrokenPipe` exits quietly.
+  streaming until finalized, a second detaches. Under `--json` an
+  interrupted run still ends stdout with one object: the reply when one came
+  before the signal (a command that finished or committed), else
+  `{"ok":false,"error":{"code":"interrupted",…}}` whose hint says whether
+  the host may still finish it, with the host's own error (e.g. "export
+  cancelled") in `details.reply`; people get a warning on stderr. Stdout is
+  written with `writeln!`; `BrokenPipe` exits quietly, any other write
+  error (a full disk) is said on stderr and makes a run that would exit 0
+  exit 1.
 - GUI start with a live non-GUI host: recording ⇒ SPEC §4.3 modal (Stop &
   open: `RecordStop`, wait for its reply, `shutdown`, wait ≤ 20 s for the
   lock); running job ⇒ "An export from the CLI is running (43 %)" with Wait
@@ -1274,7 +1295,9 @@ pub struct StitchPlan { pub list_path: String, pub list_content: String, pub arg
   timestamps make the stitched MP4 VFR-looking); VP9/AV1 segments are `.mkv`.
   The shell verifies each segment (`ffprobe -count_packets`: video packets
   == n, decoded samples == S) before renaming it into
-  `.qrec/cache/segments/<key>.<ext>`; a mismatch fails the export.
+  `.qrec/cache/segments/<key>.<ext>`; a mismatch fails the export. So the
+  planner requires `caps.ffprobe` as well as ffmpeg and its encoders
+  (`missing_dependency` before anything renders).
 - **Presets** (Draft / Standard / High; Standard is SPEC §13.1):
   - libx264: `-preset veryfast -crf 23` / `medium -crf 20` / `slow -crf 18`
   - h264_vaapi: `-rc_mode CQP -qp 26` / `22` / `19`
@@ -1387,8 +1410,11 @@ strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
 ## A§10 CLI
 
 - Global flags: `--project DIR`, `--json`, `--yes`, `-q`, `-v`. Numeric and
-  time arguments allow hyphen values (`--by -1`, `--gain-db -3`). clap errors
-  under `--json` print `{"ok":false,"error":{"code":"usage",…}}`, exit 2.
+  time arguments allow hyphen values (`--by -1`, `--gain-db -3`), so a
+  negative count or index gets its range error (`--to -1`, `undo -1`). clap
+  errors under `--json` print `{"ok":false,"error":{"code":"usage",…}}`,
+  exit 2; `--help`, `help` and `--version` under `--json` print one
+  `{"ok":true,…}` object (A§4.9).
 - `--out` is resolved against the CLI's cwd before sending.
 - `qrec autocut` without `--clips`/`--all` sends `ClipScope::All`.
 - `qrec status --json` returns `Query::State` plus host info.

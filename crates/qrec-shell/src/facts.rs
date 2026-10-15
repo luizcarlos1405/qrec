@@ -703,7 +703,11 @@ mod tests {
         assert!(!facts.files.contains_key("takes/take-0002/missing.mka"));
         assert_eq!(all.warnings.len(), 1, "{:?}", all.warnings);
         let out = facts.out.as_ref().unwrap();
-        assert_eq!(out.abs, paths.root().join("x.mp4").to_string_lossy());
+        // Relative to the project; `..` is left for the OS to resolve.
+        assert_eq!(
+            out.abs,
+            paths.root().join("exports/../x.mp4").to_string_lossy()
+        );
         assert_eq!((out.exists, out.forbidden.as_deref()), (false, None));
 
         let empty = ProjectPaths::new(tmp.path().join("nowhere"));
@@ -792,7 +796,11 @@ mod tests {
         symlink(root.join("takes/take-0002"), outside.join("lnk/dirlink")).unwrap();
         let sneaky = outside.join("lnk/dirlink/../x.png");
         let facts = check(&sneaky);
-        assert_eq!(facts.abs, sneaky.to_string_lossy(), "the path is kept as given");
+        assert_eq!(
+            facts.abs,
+            sneaky.to_string_lossy(),
+            "the path is kept as given"
+        );
         assert!(
             facts.forbidden.as_deref().unwrap_or("").contains("takes/"),
             "{facts:?}"

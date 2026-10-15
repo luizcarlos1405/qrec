@@ -54,9 +54,7 @@ use super::record::{RecordBin, attach_audio, attach_video};
 use super::spec::{
     CameraKey, SourceSpec, audio_label, plan_sources, record_file_rel, scene_sources, video_label,
 };
-use super::util::{
-    error_text, missing_element, object_path, running_time, set_null_with_deadline,
-};
+use super::util::{error_text, missing_element, object_path, running_time, set_null_with_deadline};
 use super::{
     Backend, CLOCK_INTERVAL, EngineOptions, FILL_GRACE, PIPELINE_START_TIMEOUT, SideEvent,
     TEARDOWN_TIMEOUT,

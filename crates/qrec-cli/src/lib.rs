@@ -195,7 +195,12 @@ fn clap_exit_code(err: &clap::Error, printed: io::Result<()>, stderr: &mut dyn W
 /// `{"ok":true,"data":<help text>}` and `{"ok":true,"data":{"version":…}}`
 /// (what `qrec version --json` prints); everything else is
 /// `{"ok":false,"error":{"code":"usage","message":…}}` (exit 2).
-fn clap_json(err: &clap::Error, args: &[OsString], out: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
+fn clap_json(
+    err: &clap::Error,
+    args: &[OsString],
+    out: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> u8 {
     let mut ui = output::Ui::new(out, stderr, true, false, 0, false);
     let code = match err.kind() {
         clap::error::ErrorKind::DisplayVersion => {

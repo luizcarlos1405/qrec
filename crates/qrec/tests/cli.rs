@@ -5,8 +5,12 @@
 //! in-process `cli` host per command, or (recording) a spawned headless
 //! host that later commands are routed to.
 
+use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::io::{BufRead, BufReader};
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -65,10 +69,26 @@ impl Out {
     }
 }
 
+/// The `qrec` under test: Cargo's, unless `$CARGO_BIN_EXE_qrec` is set when
+/// the tests run (a copy of this build's binary, for checkouts that share
+/// one target dir, where `target/debug/qrec` is whichever built last).
+fn qrec_bin() -> PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_qrec")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_qrec")), PathBuf::from)
+}
+
 /// Runs `qrec <args>` in `dir`, with a timeout.
 fn qrec(env: &TestEnv, dir: &Path, args: &[&str]) -> Out {
-    let mut command = env.command(Path::new(env!("CARGO_BIN_EXE_qrec")));
-    command.current_dir(dir).args(args);
+    qrec_with(env, dir, args, &[])
+}
+
+/// [`qrec`] with extra environment variables (e.g. a `PATH` without ffmpeg).
+fn qrec_with(env: &TestEnv, dir: &Path, args: &[&str], vars: &[(&str, &OsStr)]) -> Out {
+    let mut command = env.command(&qrec_bin());
+    command
+        .current_dir(dir)
+        .args(args)
+        .envs(vars.iter().copied());
     let out = run_tool(&mut command, Duration::from_secs(120));
     Out {
         code: out.status.code(),
@@ -134,6 +154,19 @@ fn version_help_and_usage_errors() {
     let help = qrec(&env, &dir, &["--help"]);
     help.ok();
     assert!(help.stdout.contains("EXIT CODES"), "{}", help.stdout);
+    // Under --json, help and the version are one object too (SPEC §14).
+    for args in [&["--json", "--version"][..], &["--json", "-V"]] {
+        let out = qrec(&env, &dir, args);
+        out.ok();
+        assert_eq!(
+            out.only_reply(),
+            json!({"ok": true, "data": {"version": env!("CARGO_PKG_VERSION")}}),
+            "{args:?}"
+        );
+    }
+    let json_help = qrec(&env, &dir, &["--json", "--help"]);
+    json_help.ok();
+    assert_eq!(json_help.only_reply()["data"], help.stdout.as_str());
 
     let usage = qrec(&env, &dir, &["clip", "split", "c1", "--json"]);
     assert_eq!(usage.code, Some(2));
@@ -519,6 +552,13 @@ fn undo_redo_and_history() {
     let human = qrec(&env, &dir, &["history"]);
     human.ok();
     assert!(human.stdout.contains("Split clip c001"), "{}", human.stdout);
+    // An empty window would read "No history yet.": like `undo 0`, a
+    // usage error.
+    let none = qrec(&env, &dir, &["history", "--limit", "0"]);
+    assert_eq!(none.code, Some(2), "{none:?}");
+    assert!(!none.stdout.contains("No history yet."));
+    let newest = qrec(&env, &dir, &["history", "--limit", "1", "--json"]);
+    assert_eq!(newest.reply()["data"].as_array().unwrap().len(), 1);
 }
 
 #[test]
@@ -794,6 +834,11 @@ fn record_start_and_stop_with_the_fake_backend() {
     assert!(dir.join("takes/take-0001").is_dir());
 
     // The headless host exits once idle (A§8.6): its socket goes away.
+    wait_until_no_host(&env);
+}
+
+/// Waits until every host of `env` exited (its socket went away, A§8.6).
+fn wait_until_no_host(env: &TestEnv) {
     let deadline = Instant::now() + Duration::from_secs(15);
     let sockets = || {
         fs::read_dir(env.runtime_dir())
@@ -809,4 +854,326 @@ fn record_start_and_stop_with_the_fake_backend() {
         assert!(Instant::now() < deadline, "the headless host didn't exit");
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+// ------------------------------------------------------- review round 1
+
+/// `qrec init` acts on its own folder (SPEC §4.4): with another project's
+/// host running, a folder that is neither empty nor a project is still "Not
+/// my swamp" (exit 3), never a request to that project.
+#[test]
+fn init_never_goes_to_another_projects_host() {
+    let env = TestEnv::new();
+    let a = env.empty_dir("a");
+    qrec(&env, &a, &["init", "--canvas", "640x360@30"]).ok();
+    qrec(
+        &env,
+        &a,
+        &["scene", "layer", "add", "screen", "--output", "FAKE-1"],
+    )
+    .ok();
+    qrec(&env, &a, &["record", "start", "--json"]).ok();
+    let b = env.empty_dir("b");
+    fs::write(b.join("notes.txt"), "mine").unwrap();
+
+    let init = qrec(&env, &b, &["--json", "init"]);
+    assert_eq!(init.code, Some(3), "{init:?}");
+    assert_eq!(init.stderr, "", "no `using project` notice: {init:?}");
+    let error = &init.only_reply()["error"];
+    assert_eq!(error["code"], "not_project");
+    assert_eq!(error["message"], NOT_MY_SWAMP);
+    // Other commands from there still use the running host (key binds).
+    let status = qrec(&env, &b, &["--json", "status"]);
+    status.ok();
+    assert_eq!(
+        status.reply()["data"]["path"],
+        fs::canonicalize(&a).unwrap().to_string_lossy().as_ref()
+    );
+
+    // Once the recording stopped, while the host idles out, the same.
+    qrec(&env, &a, &["record", "cancel"]).ok();
+    let again = qrec(&env, &b, &["--json", "init"]);
+    assert_eq!(again.code, Some(3), "{again:?}");
+    assert_eq!(again.only_reply()["error"]["code"], "not_project");
+    assert_eq!(
+        fs::read_dir(&b).unwrap().count(),
+        1,
+        "b is untouched: {:?}",
+        fs::read_dir(&b).unwrap().collect::<Vec<_>>()
+    );
+    wait_until_no_host(&env);
+}
+
+/// `PATH` without the folders that hold ffmpeg or ffprobe, after `first`.
+fn path_without_ffmpeg(first: Option<&Path>) -> OsString {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let kept = std::env::split_paths(&path)
+        .filter(|dir| !dir.join("ffmpeg").exists() && !dir.join("ffprobe").exists());
+    std::env::join_paths(first.map(Path::to_path_buf).into_iter().chain(kept)).unwrap()
+}
+
+/// The ffmpeg on `PATH`.
+fn ffmpeg_on_path() -> PathBuf {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("ffmpeg"))
+        .find(|file| file.is_file())
+        .expect("ffmpeg on PATH")
+}
+
+/// SPEC §14, A§4.8: a missing tool is `missing_dependency` (exit 5) for
+/// every command that needs it, before anything is written.
+#[test]
+fn missing_ffmpeg_or_ffprobe_is_a_missing_dependency() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "deps", &[video(30)]);
+    let no_ffmpeg = path_without_ffmpeg(None);
+    for args in [
+        &["--json", "frame", "save", "--at", "1f"][..],
+        &["--json", "autocut", "--dry-run"],
+        &["--json", "autocut"],
+        &["--json", "export"],
+    ] {
+        let out = qrec_with(&env, &dir, args, &[("PATH", no_ffmpeg.as_os_str())]);
+        assert_eq!(out.code, Some(5), "{args:?}: {out:?}");
+        let error = &out.only_reply()["error"];
+        assert_eq!(error["code"], "missing_dependency", "{args:?}");
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("ffmpeg wasn't found"),
+            "{args:?}: {error}"
+        );
+        assert!(
+            error["hint"].as_str().unwrap().contains("qrec doctor"),
+            "{args:?}: {error}"
+        );
+    }
+    let human = qrec_with(
+        &env,
+        &dir,
+        &["frame", "save", "--at", "1f"],
+        &[("PATH", no_ffmpeg.as_os_str())],
+    );
+    assert_eq!(human.code, Some(5), "{human:?}");
+    let pngs = fs::read_dir(dir.join("frames")).map_or(0, |d| d.count());
+    assert_eq!(pngs, 0, "no frame was written");
+    assert_eq!(clip_ids(&env, &dir), ["c001"], "autocut changed nothing");
+
+    // ffmpeg without ffprobe: the export is refused before any segment
+    // renders (every segment is checked with ffprobe, A§9.3).
+    let only_ffmpeg = env.root().join("only-ffmpeg");
+    fs::create_dir(&only_ffmpeg).unwrap();
+    symlink(ffmpeg_on_path(), only_ffmpeg.join("ffmpeg")).unwrap();
+    let path = path_without_ffmpeg(Some(&only_ffmpeg));
+    let out = qrec_with(
+        &env,
+        &dir,
+        &["--json", "export"],
+        &[("PATH", path.as_os_str())],
+    );
+    assert_eq!(out.code, Some(5), "{out:?}");
+    let error = &out.only_reply()["error"];
+    assert_eq!(error["code"], "missing_dependency");
+    assert_eq!(error["message"], "ffprobe wasn't found");
+    let rendered = fs::read_dir(dir.join(".qrec/cache/segments")).map_or(0, |d| d.count());
+    assert_eq!(rendered, 0, "nothing was rendered");
+    // The same frame save works with ffmpeg alone.
+    qrec_with(
+        &env,
+        &dir,
+        &["frame", "save", "--at", "1f"],
+        &[("PATH", path.as_os_str())],
+    )
+    .ok();
+}
+
+/// A GStreamer element that isn't installed is `missing_dependency` (exit
+/// 5) naming it, not `capture_failed` (A§4.8).
+#[test]
+fn record_start_without_a_gstreamer_element_is_a_missing_dependency() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("nogst");
+    qrec(&env, &dir, &["init", "--canvas", "640x360@30"]).ok();
+    qrec(
+        &env,
+        &dir,
+        &["scene", "layer", "add", "screen", "--output", "FAKE-1"],
+    )
+    .ok();
+    let plugins = env.root().join("no-plugins");
+    fs::create_dir(&plugins).unwrap();
+    let registry = env.root().join("empty-registry.bin");
+    let out = qrec_with(
+        &env,
+        &dir,
+        &["--json", "record", "start"],
+        &[
+            ("GST_PLUGIN_SYSTEM_PATH_1_0", plugins.as_os_str()),
+            ("GST_PLUGIN_PATH_1_0", OsStr::new("")),
+            ("GST_REGISTRY_1_0", registry.as_os_str()),
+        ],
+    );
+    assert_eq!(out.code, Some(5), "{out:?}");
+    let error = &out.only_reply()["error"];
+    assert_eq!(error["code"], "missing_dependency");
+    assert!(
+        error["message"].as_str().unwrap().contains("is missing"),
+        "{error}"
+    );
+    assert!(
+        error["hint"]
+            .as_str()
+            .unwrap()
+            .contains("install the GStreamer plugin that provides "),
+        "{error}"
+    );
+    wait_until_no_host(&env);
+}
+
+/// Only a closed pipe is quiet (A§8.6): a stdout that can't take the
+/// result (`qrec schema > /dev/full`) fails the run with exit 1.
+#[test]
+fn a_full_stdout_fails_the_run() {
+    if !Path::new("/dev/full").exists() {
+        return;
+    }
+    let env = TestEnv::new();
+    let dir = env.empty_dir("full");
+    for args in [
+        &["schema"][..],
+        &["--json", "version"],
+        &["--help"],
+        &["--json", "--version"],
+    ] {
+        let full = fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .unwrap();
+        let mut command = env.command(&qrec_bin());
+        command
+            .current_dir(&dir)
+            .args(args)
+            .stdout(full)
+            .stderr(Stdio::piped());
+        let out = command.output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains("can't write to stdout"),
+            "{args:?}: {stderr}"
+        );
+    }
+}
+
+/// `--out` means what the OS says (A§5.9): `link/..` is the parent of the
+/// link's target, so a path that resolves into `takes/` is refused, and
+/// one that resolves elsewhere is written there.
+#[test]
+fn out_paths_resolve_dot_dot_like_the_os() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "dotdot", &[video(30)]);
+    let lnk = env.root().join("lnk");
+    fs::create_dir(&lnk).unwrap();
+    symlink(dir.join("takes/take-0001"), lnk.join("dirlink")).unwrap();
+    let sneaky = lnk.join("dirlink/../x.png");
+    let out = qrec(
+        &env,
+        &dir,
+        &[
+            "--json",
+            "frame",
+            "save",
+            "--at",
+            "1f",
+            "--out",
+            sneaky.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(out.code, Some(1), "{out:?}");
+    let error = &out.only_reply()["error"];
+    assert_eq!(error["code"], "invalid");
+    assert!(
+        error["message"].as_str().unwrap().contains("inside takes/"),
+        "{error}"
+    );
+    assert!(!lnk.join("x.png").exists() && !dir.join("takes/x.png").exists());
+
+    let real = env.root().join("real");
+    fs::create_dir_all(real.join("sub")).unwrap();
+    fs::create_dir_all(real.join("stills")).unwrap();
+    let a = env.root().join("a");
+    fs::create_dir(&a).unwrap();
+    symlink(real.join("sub"), a.join("cur")).unwrap();
+    let wanted = a.join("cur/../stills/still.png");
+    let saved = qrec(
+        &env,
+        &dir,
+        &[
+            "--json",
+            "frame",
+            "save",
+            "--at",
+            "1f",
+            "--out",
+            wanted.to_str().unwrap(),
+        ],
+    );
+    saved.ok();
+    assert!(real.join("stills/still.png").is_file(), "{saved:?}");
+    assert!(!a.join("stills").exists());
+}
+
+/// Ctrl+C under --json: stdout still ends with exactly one `{"ok":…}`
+/// object (SPEC §14) and the run exits 130 (A§8.6).
+#[test]
+fn an_interrupted_export_still_ends_with_one_object() {
+    let env = TestEnv::new();
+    let spec = MediaSpec::video(1280, 720, 30, 600).with_audio(48_000, 1, &[(0, 20_000)]);
+    let dir = project_with(&env, "interrupt", &[spec]);
+    let mut command = env.command(&qrec_bin());
+    command
+        .current_dir(&dir)
+        .args(["--json", "export", "--format", "webm", "--quality", "high"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let first = lines.next().unwrap().unwrap();
+    assert!(first.starts_with(r#"{"event":"progress""#), "{first}");
+    let killed = std::process::Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let rest: Vec<String> = lines.map(Result::unwrap).collect();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("the export didn't stop");
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(status.code(), Some(130), "{rest:?}");
+    let last: Value = serde_json::from_str(rest.last().unwrap_or(&first)).unwrap();
+    assert_eq!(last["ok"], false, "{rest:?}");
+    assert_eq!(last["error"]["code"], "interrupted");
+    assert_eq!(last["error"]["message"], "export interrupted");
+    assert_eq!(
+        last["error"]["details"]["reply"]["message"], "export cancelled",
+        "{last}"
+    );
+    assert!(
+        rest[..rest.len().saturating_sub(1)]
+            .iter()
+            .all(|l| l.starts_with(r#"{"event":"progress""#)),
+        "{rest:?}"
+    );
+    let exports = fs::read_dir(dir.join("exports")).map_or(0, |d| d.count());
+    assert_eq!(exports, 0, "no export and no temp file is left");
 }

@@ -969,6 +969,7 @@ qrec agent-guide                      # concise usage guide for LLM agents
 | 5    | Missing dependency                      |
 | 6    | Busy (recording or exporting)           |
 | 7    | Not found (bad id)                      |
+| 130  | Interrupted (Ctrl+C or SIGTERM)         |
 
 ---
 

@@ -587,11 +587,7 @@ pub(crate) fn missing_tool(tool: &str) -> CoreError {
         "ffprobe" => "install ffmpeg's ffprobe (most packages ship both); `qrec doctor` checks it",
         _ => "install ffmpeg with libx264, libvpx-vp9 and libopus; `qrec doctor` checks it",
     };
-    CoreError::new(
-        ErrorCode::MissingDependency,
-        format!("{tool} wasn't found"),
-    )
-    .with_hint(hint)
+    CoreError::new(ErrorCode::MissingDependency, format!("{tool} wasn't found")).with_hint(hint)
 }
 
 /// The detected ffmpeg, with `encoders` among its encoders, or
@@ -604,7 +600,10 @@ pub(crate) fn require_ffmpeg<'a>(
 ) -> Result<&'a FfmpegCaps, CoreError> {
     let ffmpeg = caps.ffmpeg.as_ref().ok_or_else(|| missing_tool("ffmpeg"))?;
     if !ffmpeg.encoders.is_empty() {
-        if let Some(name) = encoders.iter().find(|name| !ffmpeg.encoders.contains(**name)) {
+        if let Some(name) = encoders
+            .iter()
+            .find(|name| !ffmpeg.encoders.contains(**name))
+        {
             return Err(CoreError::new(
                 ErrorCode::MissingDependency,
                 format!("ffmpeg has no {name} encoder"),

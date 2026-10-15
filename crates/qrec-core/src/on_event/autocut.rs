@@ -921,8 +921,17 @@ mod tests {
             (ErrorCode::MissingDependency, 5)
         );
         assert_eq!(err.message, format!("silence analysis failed: {reason}"));
-        assert!(err.hint.as_deref().unwrap().contains("qrec doctor"), "{err:?}");
-        assert_eq!(err.details.as_ref().unwrap()["skipped"].as_array().unwrap().len(), 2);
+        assert!(
+            err.hint.as_deref().unwrap().contains("qrec doctor"),
+            "{err:?}"
+        );
+        assert_eq!(
+            err.details.as_ref().unwrap()["skipped"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
         assert!(done.state.runtime.jobs.is_empty());
     }
 

@@ -966,7 +966,10 @@ fn a_missing_element_is_a_missing_dependency() {
         "capture failed: L1 (Monitor DP-4): the GStreamer element videotestsrc is missing (see `qrec doctor`)"
     );
     let hint = err.hint.unwrap();
-    assert!(hint.contains("videotestsrc") && hint.contains("qrec doctor"), "{hint}");
+    assert!(
+        hint.contains("videotestsrc") && hint.contains("qrec doctor"),
+        "{hint}"
+    );
 
     // The same while a countdown runs (the live pipeline failed).
     let mut headless = idle();

@@ -90,7 +90,8 @@ the same commands, and every edit is undoable. Always pass `--json`.
   project: pass `--project DIR` or run them there.
 - Elsewhere, without `--project`, commands use the single running Qrec (so
   compositor key binds work from `$HOME`; several running ones are a usage
-  error that lists them). With none running they exit 3 with
+  error that lists them), except `qrec init`, which only acts on its own
+  folder. With none running they exit 3 with
 ";
 
 const OUTPUT: &str = "\

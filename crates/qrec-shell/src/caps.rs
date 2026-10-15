@@ -504,7 +504,10 @@ esac
         assert!(missing.cached);
         assert_eq!(missing.caps.ffprobe, None);
         assert!(
-            missing.notes.iter().any(|n| n.contains("qrec-no-such-ffprobe")),
+            missing
+                .notes
+                .iter()
+                .any(|n| n.contains("qrec-no-such-ffprobe")),
             "{:?}",
             missing.notes
         );
@@ -601,7 +604,10 @@ esac
         opts.ffmpeg = "qrec-no-such-ffmpeg".into();
         let missing = detect(&opts, &VaConfig::default());
         assert_eq!((missing.caps.ffmpeg, missing.caps.vaapi), (None, None));
-        assert!(missing.caps.ffprobe.is_some(), "ffprobe is looked up anyway");
+        assert!(
+            missing.caps.ffprobe.is_some(),
+            "ffprobe is looked up anyway"
+        );
         assert!(missing.notes[0].contains("not installed"));
     }
 

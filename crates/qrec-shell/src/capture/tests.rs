@@ -584,7 +584,10 @@ fn start_failures_name_the_source() {
     else {
         unreachable!()
     };
-    assert!(message.contains("qrecnosuchh264enc is missing"), "{message}");
+    assert!(
+        message.contains("qrecnosuchh264enc is missing"),
+        "{message}"
+    );
     assert_eq!(missing.as_deref(), Some("qrecnosuchh264enc"));
 }
 

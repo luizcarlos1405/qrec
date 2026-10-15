@@ -809,7 +809,10 @@ mod tests {
             (View::Status, OnEmpty::Answer)
         );
         assert!(!status.route.lock, "queries take no lock");
-        assert!(status.host_fallback, "status from $HOME asks the running host");
+        assert!(
+            status.host_fallback,
+            "status from $HOME asks the running host"
+        );
         assert!(project_plan("qrec record toggle").host_fallback);
         assert_eq!(
             body("qrec status --json"),

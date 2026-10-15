@@ -338,9 +338,7 @@ fn interrupted(
             render(plan, data, dir, host, ui);
             None
         }
-        Some(Err(e)) => {
-            Some(interrupted_error(&title, host).with_details(json!({ "reply": e })))
-        }
+        Some(Err(e)) => Some(interrupted_error(&title, host).with_details(json!({ "reply": e }))),
         None => Some(interrupted_error(&title, host)),
     };
     match error {

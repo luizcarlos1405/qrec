@@ -983,7 +983,11 @@ fn help_and_version_under_json_are_one_object() {
     }
     // The flag form of `qrec version --json`.
     let (_, version, _) = run("qrec version --json");
-    for line in ["qrec --json --version", "qrec --json -V", "qrec --version --json"] {
+    for line in [
+        "qrec --json --version",
+        "qrec --json -V",
+        "qrec --version --json",
+    ] {
         assert_eq!(run(line), (0, version.clone(), String::new()), "{line}");
     }
 }
