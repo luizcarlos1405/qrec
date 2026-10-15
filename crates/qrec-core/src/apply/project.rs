@@ -369,7 +369,7 @@ fn canvas_problem(canvas: &Canvas) -> Option<String> {
 }
 
 fn side_problem(what: &str, value: u32) -> Option<String> {
-    (value % 2 != 0 || !(MIN_CANVAS..=MAX_CANVAS).contains(&value)).then(|| {
+    (!value.is_multiple_of(2) || !(MIN_CANVAS..=MAX_CANVAS).contains(&value)).then(|| {
         format!("the canvas {what} must be even and {MIN_CANVAS} to {MAX_CANVAS} px (got {value})")
     })
 }
@@ -455,22 +455,22 @@ pub fn autocut_settings(
     }
     let project = &state.project;
     let mut warning = None;
-    if let Some(id) = settings.track.as_ref().filter(|_| track_given) {
-        if project.scene.track(id).is_none() {
-            if !project.takes.values().any(|t| t.scene.track(id).is_some()) {
-                let ids: Vec<&str> = project.scene.audio.iter().map(|t| t.id.as_str()).collect();
-                return Err(
+    if let Some(id) = settings.track.as_ref().filter(|_| track_given)
+        && project.scene.track(id).is_none()
+    {
+        if !project.takes.values().any(|t| t.scene.track(id).is_some()) {
+            let ids: Vec<&str> = project.scene.audio.iter().map(|t| t.id.as_str()).collect();
+            return Err(
                     CoreError::not_found(format!("no audio track {id}")).with_hint(if ids.is_empty() {
                         "the project scene has no audio tracks (add one with `qrec scene audio add mic`)".to_owned()
                     } else {
                         format!("tracks in the project scene: {}", ids.join(", "))
                     }),
                 );
-            }
-            warning = Some(format!(
-                "{id} isn't in the project scene; takes without it are skipped"
-            ));
         }
+        warning = Some(format!(
+            "{id} isn't in the project scene; takes without it are skipped"
+        ));
     }
 
     let before = &project.autocut;

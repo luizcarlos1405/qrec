@@ -170,7 +170,7 @@ pub fn parse_segment_check(csv: &str) -> Result<SegmentCounts, String> {
             _ => {}
         }
     }
-    if audio_bytes % SEGMENT_SAMPLE_BYTES != 0 {
+    if !audio_bytes.is_multiple_of(SEGMENT_SAMPLE_BYTES) {
         return Err(format!(
             "the segment's audio is {audio_bytes} bytes, not whole stereo 16-bit samples"
         ));

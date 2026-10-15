@@ -37,8 +37,10 @@ pub use tool::{ToolOutput, run_tool};
 /// `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR`
 /// and `QREC_RUNTIME_DIR` inside the env's temp dirs and
 /// `QREC_CAPTURE_BACKEND=fake`; other inherited `QREC_*` variables are
-/// removed. The runtime dir lives under `/tmp` so socket paths stay under the
-/// 107-byte limit. Everything is deleted on drop.
+/// removed, and so are `DISPLAY`, `WAYLAND_DISPLAY` and `WAYLAND_SOCKET`
+/// (a window never opens on the developer's display). The runtime dir lives
+/// under `/tmp` so socket paths stay under the 107-byte limit. Everything is
+/// deleted on drop.
 pub struct TestEnv {
     root: TempDir,
     runtime_root: TempDir,
@@ -142,6 +144,11 @@ impl TestEnv {
             if key.to_str().is_some_and(|k| k.starts_with("QREC_")) {
                 command.env_remove(&key);
             }
+        }
+        // Never the developer's display: a `qrec` without a command opens
+        // the window (the GUI tests give theirs a nested compositor).
+        for key in ["DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET"] {
+            command.env_remove(key);
         }
         command.envs(self.vars());
         command

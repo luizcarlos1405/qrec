@@ -246,10 +246,10 @@ fn record_wait_ctrl_c_stops_then_detaches() {
                 }
                 WireBody::Command(Command::RecordStop) => {
                     stops_seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    if finishing.load(std::sync::atomic::Ordering::SeqCst) {
-                        if let Some(mut w) = waiter.take() {
-                            w.reply(Ok(json!({ "finalized": true })));
-                        }
+                    if finishing.load(std::sync::atomic::Ordering::SeqCst)
+                        && let Some(mut w) = waiter.take()
+                    {
+                        w.reply(Ok(json!({ "finalized": true })));
                     }
                     to.reply(Ok(json!({ "stopping": true })));
                 }

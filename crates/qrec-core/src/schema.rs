@@ -253,10 +253,10 @@ pub mod check {
             walk(root, sub, inst, path, &mut errors);
             errors.is_empty()
         };
-        if let Some(any) = keyword("anyOf").and_then(Value::as_array) {
-            if !any.iter().any(passes) {
-                problems.push(format!("{inst} matches none of anyOf"));
-            }
+        if let Some(any) = keyword("anyOf").and_then(Value::as_array)
+            && !any.iter().any(passes)
+        {
+            problems.push(format!("{inst} matches none of anyOf"));
         }
         if let Some(one) = keyword("oneOf").and_then(Value::as_array) {
             let matching = one.iter().filter(|sub| passes(sub)).count();

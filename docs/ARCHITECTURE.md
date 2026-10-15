@@ -26,7 +26,7 @@ crates/
                hosts (the GUI's too), process runner, ffmpeg/ffprobe,
                GStreamer capture, portal, sources, doctor
   qrec-cli/    clap definitions → Request; output formatting; exit codes
-  qrec-gui/    GTK views (docs/GUI.md; a placeholder crate so far)
+  qrec-gui/    GTK views (docs/GUI.md)
   qrec/        the `qrec` binary
 ```
 
@@ -48,8 +48,11 @@ applies), and its host is GTK-free, in `qrec-shell/src/host/gui.rs`
 
 ### A§1.2 Dependencies (pinned in the root `Cargo.toml`)
 
-Agents never add or bump dependencies; they ask. CI asserts
-`cargo tree -d -i glib` is empty (one glib for gstreamer, gtk4, ashpd).
+Agents never add or bump dependencies; they ask. One glib serves
+gstreamer, gtk4, libadwaita and ashpd: CI runs `cargo tree -i glib --depth
+0`, which fails when two glib versions are in the graph (`cargo tree -d -i
+glib` isn't empty even with one glib: it lists the build-time smallvec
+twice).
 
 | Crate | Version / features | Used by |
 | --- | --- | --- |
@@ -60,20 +63,23 @@ Agents never add or bump dependencies; they ask. CI asserts
 | sha2 0.11 + hex | only through `qrec_core::hash` | core |
 | toml 1.1, toml_edit 0.25 | config and keys files | core |
 | proptest, insta, pretty_assertions | tests; core feature `testkit` exposes proptest strategies | core |
-| gstreamer(-app/-video/-audio/-pbutils/-allocators), gstreamer-editing-services | 0.25, features ≤ `v1_24` | shell (feature `gst`, default on) |
+| gstreamer(-app/-video/-audio/-pbutils/-allocators), gstreamer-editing-services | 0.25, features ≤ `v1_24` (`gstreamer-allocators` approved after the fact, 2026-10-15) | shell (feature `gst`, default on); `gstreamer` also gui |
+| gtk4 (`gtk`), libadwaita (`adw`), pango | 0.11.5 `v4_22`, 0.9.2 `v1_9`, 0.22.9 `v1_56` (`FontMap::add_font_file` for the bundled fonts); approved 2026-10-15 (docs/GUI.md G§0.1, G§6.1). Built against GTK 4.22, libadwaita 1.9, Pango 1.57: `gtk/v4_24` and `adw/v1_10` don't build in the dev env. No `gst-plugin-gtk4` crate (a second glib): the system `gtk4paintablesink` plugin; no `glib-build-tools` (`build.rs` runs `glib-compile-resources`) | gui |
 | ashpd | 0.13, `default-features = false`, `async-io, screencast, camera` (no tokio anywhere) | shell |
 | futures-lite | 2.6 (`block_on` for ashpd) | shell |
-| crossbeam-channel | 0.5 | shell |
+| crossbeam-channel | 0.5 | shell, gui |
 | notify | 8 (inotify) | shell |
 | wayland-client | 0.31 (wl_output names) | shell |
 | rustix | 1.1 `process, termios` (setsid, kill, process groups) | shell |
 | libc | 0.2 (`renameat2`, `SO_PEERCRED`, `prctl`, `flock`, `sigaction`) | shell |
-| tempfile, getrandom, dirs, which, tracing(-subscriber), anyhow | | shell, cli |
+| tempfile, getrandom, dirs, which, tracing(-subscriber), anyhow | | shell, cli; tracing also gui |
 | clap 4.6 (derive), clap_complete | | cli |
 | assert_cmd, predicates | tests | qrec |
 
-File locking is `flock(2)` through libc: std's `File::try_lock` needs Rust
-1.89, above the workspace MSRV (1.85). Signals: libc `sigaction` handlers
+The workspace MSRV is Rust 1.92 (`rust-version`): gtk4 0.11.5, glib
+0.22.10 and gstreamer 0.25.4 need it. File locking stays `flock(2)` through
+libc (std's `File::try_lock`, Rust 1.89, would do now; the code didn't
+change). Signals: libc `sigaction` handlers
 write to a self-pipe that a thread turns into `host::signals::Interrupts`
 (no signal-hook).
 

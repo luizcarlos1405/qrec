@@ -271,14 +271,14 @@ fn stream_row(
     if let (Some(w), Some(h)) = (n(st, "width"), n(st, "height")) {
         detail.push(format!("{w}x{h}"));
     }
-    if let Some(fps) = st.get("fps") {
-        if let (Some(num), Some(den)) = (n(fps, "num"), n(fps, "den")) {
-            detail.push(if den == 1 {
-                format!("{num} fps")
-            } else {
-                format!("{num}/{den} fps")
-            });
-        }
+    if let Some(fps) = st.get("fps")
+        && let (Some(num), Some(den)) = (n(fps, "num"), n(fps, "den"))
+    {
+        detail.push(if den == 1 {
+            format!("{num} fps")
+        } else {
+            format!("{num}/{den} fps")
+        });
     }
     if let Some(count) = n(st, "frames") {
         detail.push(format!("{count} frames"));
@@ -289,10 +289,10 @@ fn stream_row(
     if let Some(channels) = n(st, "channels") {
         detail.push(format!("{channels} ch"));
     }
-    if let Some(offset) = st.get("startOffsetNs").and_then(Value::as_i64) {
-        if offset != 0 {
-            detail.push(format!("offset {:.1} ms", offset as f64 / 1e6));
-        }
+    if let Some(offset) = st.get("startOffsetNs").and_then(Value::as_i64)
+        && offset != 0
+    {
+        detail.push(format!("offset {:.1} ms", offset as f64 / 1e6));
     }
     vec![s(st, "id"), s(st, "kind"), s(st, "file"), detail.join(", ")]
 }

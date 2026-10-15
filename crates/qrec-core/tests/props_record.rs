@@ -271,15 +271,17 @@ impl Harness {
     fn vary(&self, ev: Event, variant: u8) -> Event {
         let fps = self.state.project.canvas.fps;
         match ev {
-            Event::CaptureStarted { take, .. } if variant % 6 == 0 => Event::CaptureFailed {
-                take: Some(take),
-                source: Some("L1".into()),
-                message: "device busy".into(),
-                missing: None,
-            },
+            Event::CaptureStarted { take, .. } if variant.is_multiple_of(6) => {
+                Event::CaptureFailed {
+                    take: Some(take),
+                    source: Some("L1".into()),
+                    message: "device busy".into(),
+                    missing: None,
+                }
+            }
             Event::CaptureStopped { take, .. } => Event::CaptureStopped {
                 streams: recorded(&self.state, &take),
-                timed_out: variant % 8 == 0,
+                timed_out: variant.is_multiple_of(8),
                 take,
             },
             Event::TakeProbed {

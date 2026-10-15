@@ -155,12 +155,11 @@ proptest! {
             _ => MoveTo::After(anchor),
         };
         let result = timeline::move_block(clips, &ids, &to);
-        if let MoveTo::Before(c) | MoveTo::After(c) = &to {
-            if ids.contains(c) {
+        if let MoveTo::Before(c) | MoveTo::After(c) = &to
+            && ids.contains(c) {
                 prop_assert_eq!(result.unwrap_err().code, ErrorCode::Invalid);
                 return Ok(());
             }
-        }
         let out = result.unwrap();
 
         let mut sorted_in = clips.clone();

@@ -721,17 +721,16 @@ pub(crate) fn require_ffmpeg<'a>(
     encoders: &[&str],
 ) -> Result<&'a FfmpegCaps, CoreError> {
     let ffmpeg = caps.ffmpeg.as_ref().ok_or_else(|| missing_tool("ffmpeg"))?;
-    if !ffmpeg.encoders.is_empty() {
-        if let Some(name) = encoders
+    if !ffmpeg.encoders.is_empty()
+        && let Some(name) = encoders
             .iter()
             .find(|name| !ffmpeg.encoders.contains(**name))
-        {
-            return Err(CoreError::new(
-                ErrorCode::MissingDependency,
-                format!("ffmpeg has no {name} encoder"),
-            )
-            .with_hint("install a full ffmpeg build; `qrec doctor` lists what is missing"));
-        }
+    {
+        return Err(CoreError::new(
+            ErrorCode::MissingDependency,
+            format!("ffmpeg has no {name} encoder"),
+        )
+        .with_hint("install a full ffmpeg build; `qrec doctor` lists what is missing"));
     }
     Ok(ffmpeg)
 }

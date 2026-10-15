@@ -321,7 +321,7 @@ pub fn record_clock(state: &State, _ctx: &Ctx, take: TakeId, elapsed_ns: u64) ->
 /// rate or jitter, and each shows a new `mm:ss`.
 pub fn announces_second(previous: u64, elapsed: u64) -> bool {
     let slot = elapsed / RECORD_PROGRESS_NS;
-    slot > previous / RECORD_PROGRESS_NS && slot % 2 == 0
+    slot > previous / RECORD_PROGRESS_NS && slot.is_multiple_of(2)
 }
 
 /// `timed_out` ⇒ `broken`; else record the offsets (persist) and

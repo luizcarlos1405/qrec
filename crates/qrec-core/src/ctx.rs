@@ -265,7 +265,7 @@ impl IdGen {
                 return id;
             }
             self.collisions += 1;
-            if self.collisions % Self::WIDEN_AFTER == 0 {
+            if self.collisions.is_multiple_of(Self::WIDEN_AFTER) {
                 self.width += 1;
             }
         }

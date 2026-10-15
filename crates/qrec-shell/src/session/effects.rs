@@ -92,15 +92,18 @@ impl Session {
         let saves = write_project || !ops.is_empty();
         let writable = self.store.writable();
 
-        if writable && saves && !force && is_initialized(&self.state.project) {
-            if let Some(file) = self.store.disk_changed(self.check) {
-                tracing::info!("qrec.json changed on disk: merging it before this change");
-                self.store.accept_disk(&file);
-                self.run_event(Event::ProjectChangedOnDisk {
-                    project: file.project,
-                });
-                return Ran::ExternalFirst;
-            }
+        if writable
+            && saves
+            && !force
+            && is_initialized(&self.state.project)
+            && let Some(file) = self.store.disk_changed(self.check)
+        {
+            tracing::info!("qrec.json changed on disk: merging it before this change");
+            self.store.accept_disk(&file);
+            self.run_event(Event::ProjectChangedOnDisk {
+                project: file.project,
+            });
+            return Ran::ExternalFirst;
         }
 
         // A§7.7: recovery mode (`qrec history restore`) leaves the files

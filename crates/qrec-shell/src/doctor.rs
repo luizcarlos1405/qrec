@@ -637,17 +637,14 @@ fn va_check(va: &VaReport) -> Check {
     }
     if let (Some(expected), Some(actual), Some(vendor)) =
         (va.expected_driver.as_deref(), env, va.vendor)
+        && !driver_fits(actual, vendor)
     {
-        if !driver_fits(actual, vendor) {
-            return fail(
-                "vaapi",
-                false,
-                format!("{detail}, but {device} needs {expected}"),
-                format!(
-                    "unset LIBVA_DRIVER_NAME or set it to {expected} (Qrec sets it at startup)"
-                ),
-            );
-        }
+        return fail(
+            "vaapi",
+            false,
+            format!("{detail}, but {device} needs {expected}"),
+            format!("unset LIBVA_DRIVER_NAME or set it to {expected} (Qrec sets it at startup)"),
+        );
     }
     match (va.vendor, va.ffmpeg_h264) {
         (Some(PCI_INTEL | PCI_AMD), Some(false)) => fail(

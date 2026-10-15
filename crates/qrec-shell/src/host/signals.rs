@@ -261,10 +261,10 @@ pub fn child_processes() -> Vec<(i32, i32)> {
         let mut fields = stat[close + 1..].split_whitespace().skip(1);
         let ppid = fields.next().and_then(|f| f.parse::<i32>().ok());
         let pgrp = fields.next().and_then(|f| f.parse::<i32>().ok());
-        if let (Some(ppid), Some(pgrp)) = (ppid, pgrp) {
-            if ppid == me {
-                children.push((pid, pgrp));
-            }
+        if let (Some(ppid), Some(pgrp)) = (ppid, pgrp)
+            && ppid == me
+        {
+            children.push((pid, pgrp));
         }
     }
     children

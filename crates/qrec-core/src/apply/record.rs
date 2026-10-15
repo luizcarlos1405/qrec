@@ -474,10 +474,9 @@ fn join_stop(state: &State, ctx: &Ctx) -> Outcome {
     let mut next = state.clone();
     if let (RecordPhase::Finalizing { stop_reqs, .. }, Some(req)) =
         (&mut next.runtime.record, &ctx.req)
+        && !stop_reqs.contains(req)
     {
-        if !stop_reqs.contains(req) {
-            stop_reqs.push(req.clone());
-        }
+        stop_reqs.push(req.clone());
     }
     Outcome::new(next, Vec::new(), None)
 }

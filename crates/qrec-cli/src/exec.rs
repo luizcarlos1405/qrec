@@ -636,17 +636,17 @@ fn command_result(view: View, result: &CmdResult, ui: &mut Ui<'_>) {
             }
         }
         View::Export => {
-            if let Some(done) = parse::<ExportDone>(&result.result) {
-                if !message.contains(&done.path) {
-                    extra.push(human::export_done(&done.path, done.bytes, done.frames));
-                }
+            if let Some(done) = parse::<ExportDone>(&result.result)
+                && !message.contains(&done.path)
+            {
+                extra.push(human::export_done(&done.path, done.bytes, done.frames));
             }
         }
         View::FrameSave => {
-            if let Some(saved) = parse::<FrameSavedView>(&result.result) {
-                if !message.contains(&saved.path) {
-                    extra.push(saved.path);
-                }
+            if let Some(saved) = parse::<FrameSavedView>(&result.result)
+                && !message.contains(&saved.path)
+            {
+                extra.push(saved.path);
             }
         }
         View::Record => {

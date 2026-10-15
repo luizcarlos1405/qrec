@@ -432,10 +432,10 @@ impl Shared {
         if self.accepting.swap(false, Ordering::SeqCst) {
             self.wake_acceptor();
         }
-        if let Some(mut socket) = lock(&self.socket).take() {
-            if let Err(e) = socket.unpublish() {
-                tracing::warn!("IPC: {e}");
-            }
+        if let Some(mut socket) = lock(&self.socket).take()
+            && let Err(e) = socket.unpublish()
+        {
+            tracing::warn!("IPC: {e}");
         }
     }
 

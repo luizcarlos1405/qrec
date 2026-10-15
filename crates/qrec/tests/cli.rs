@@ -4289,8 +4289,10 @@ fn the_design_fixture_is_the_briefs_sample_project() {
 
 /// The window prints nothing on stdout: `qrec --json` alone is a usage
 /// error, one object (docs/GUI.md G§3.2). Without `--json`, `qrec` logs to
-/// its project's GUI log (appended per run, one per project) and, until the
-/// GUI is wired in, says it isn't built.
+/// its project's GUI log (appended per run, one per project) and opens the
+/// window; with no Wayland display (the test env has none, and GDK never
+/// falls back to X11) it says so and exits 1, leaving the empty folder as it
+/// was.
 #[test]
 fn qrec_without_a_command() {
     use qrec_shell::paths::UserDirs;
@@ -4310,13 +4312,15 @@ fn qrec_without_a_command() {
 
     for _ in 0..2 {
         let gui = qrec(&env, &a, &[]);
-        assert_eq!(gui.code, Some(1));
+        assert_eq!(gui.code, Some(1), "{}", gui.stderr);
         assert!(
-            gui.stderr.contains("The Qrec GUI is not built yet"),
+            gui.stderr.contains("can't open the window"),
             "{}",
             gui.stderr
         );
     }
+    let left: Vec<_> = fs::read_dir(&a).unwrap().flatten().collect();
+    assert!(left.is_empty(), "the folder stays empty: {left:?}");
     qrec(&env, &b, &["-v"]);
     let headers = |dir: &Path| {
         fs::read_to_string(log_of(dir))
