@@ -219,8 +219,8 @@ Pass `--yes` only when that loss is intended:
 - Every change returns `data.seq`. `qrec undo [N]` / `qrec redo [N]` move
   through the history; `qrec history --json` lists `{seq, ts, label,
   current}`; `qrec history restore <seq> --yes` jumps (it also rebuilds a
-  corrupt `qrec.json`). Undo never deletes media: undoing a recording
-  removes its clip and the take goes to the bin.
+  corrupt or deleted `qrec.json`). Undo never deletes media: undoing a
+  recording removes its clip and the take goes to the bin.
 - While a take records or finalizes, edits exit 6 (`busy`). One export runs
   at a time, and recording is refused while it runs. When the GUI or a
   background recorder owns the project, the CLI talks to it automatically.

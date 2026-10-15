@@ -341,7 +341,7 @@ pub struct AudioDeviceInfo { pub name: String, pub description: String, pub is_m
 pub struct ScreenInfo { pub output: String, pub description: String, pub x: i32, pub y: i32, pub width: u32, pub height: u32, pub scale: f64 }
 pub struct CameraInfo { pub device: String, pub label: String, pub modes: Vec<CameraMode> }
 pub struct CameraMode { pub width: u32, pub height: u32, pub fps: Fps, pub format: String }
-pub struct OutFacts { pub abs: String, pub exists: bool, pub forbidden: Option<String> /* why: inside takes/, .qrec/, or qrec.json */ }
+pub struct OutFacts { pub abs: String, pub exists: bool, pub forbidden: Option<String> /* why: inside takes/, .qrec/, qrec.json, or a name over 255 bytes */ }
 pub struct FileFact { pub path: String, pub bytes: u64, pub mtime_ns: i64 }
 
 #[derive(Default)]
@@ -549,7 +549,7 @@ pub enum Event {
     ExportProgress { job: JobId, segment: usize, frames_done: u64 },
     ExportStitchProgress { job: JobId, out_time_ns: u64 },
     ExportFinished { job: JobId, path: String, bytes: u64 },
-    ExportFailed { job: JobId, message: String, stderr_tail: Vec<String>, log: String },
+    ExportFailed { job: JobId, message: String, stderr_tail: Vec<String>, log: String }, // log "" = none written: nothing names it
     ExportCancelled { job: JobId },
     FrameSaved { job: JobId, path: String },
     FrameFailed { job: JobId, message: String, log: String },
@@ -800,7 +800,7 @@ requester started if no other requester waits; never stop a recording.
 ### A§5.9 Export and frame-save commands
 
 `out` from the CLI is already absolute (resolved against the CLI's cwd).
-`facts.out.forbidden` (inside `takes/`, `.qrec/` or `qrec.json`) ⇒ `Invalid`
+`facts.out.forbidden` (inside `takes/`, `.qrec/` or `qrec.json`, a name over 255 bytes) ⇒ `Invalid`
 (not confirmable); `exists && !confirmed` ⇒ `confirmation_required`.
 Auto names: `exports/<stem>-YYYYMMDD-HHMMSS.<ext>` and
 `frames/<stem>-<take>-<HHMMSSFF>.png` (timeline timecode) with local time
@@ -919,10 +919,22 @@ empty are dropped; recompute `after_hash`. If no state references T, only the
 (there is no `history.cursor` file). Per outcome, in order:
 1. History: `Append` = one line via `O_APPEND` + `fdatasync`; redo-tail drop
    and `Rewrite` = tmp + rename (and `history.base.json`).
-2. `qrec.json`: tmp → fsync → `rename` → fsync(dir).
+2. `qrec.json`: tmp → fsync → `rename` → fsync(dir). The tmp is
+   `.qrec/qrec.json.tmp` (same file system), so a folder being initialized
+   shows nothing but `.qrec/` to another command's folder rule (A§8.4).
 3. `history.head.json`: tmp → rename. **This is the commit point.**
 4. Only then the effects that touch the world: `StartCapture`,
    `DeleteTakeDirs`, `Reply`, `Notify`, jobs.
+
+A failed commit marks the store dirty (the next commit rewrites history,
+`qrec.json` and head from memory) and toasts the cause. A request whose
+outcome had something to save fails with that cause: in a GUI host the
+change stays in memory ("saved with the next change"); a short-lived host
+(Cli, Headless) can't promise that, so the outcome is dropped, nothing
+changes and the reply says so ("couldn't be saved to disk, so it wasn't
+made: …"). Event outcomes (facts) stay in memory; a Session that goes away
+with a dirty store tries one last full write (never over a `qrec.json` that
+failed to load).
 
 Non-undoable writes do steps 2–3. On open (lock held): drop history lines with
 `seq ≥ nextSeq`; drop a torn last line; a bad line elsewhere ⇒ `Invalid`
@@ -1007,7 +1019,8 @@ Runtime dir: `$QREC_RUNTIME_DIR`, else `$XDG_RUNTIME_DIR/qrec`, else
 `$XDG_STATE_HOME/qrec` (portal tokens 0600, `last-session.log`), cache
 `$XDG_CACHE_HOME/qrec` (capabilities). Socket:
 `<runtime>/<sha256(canonical project dir) hex>.sock`; refuse paths over 107
-bytes.
+bytes. The publish name (A§8.3 step 1) is never longer, so every socket path
+that fits works for hosts too, whatever their pid.
 
 ### A§8.3 Lock and socket protocol
 
@@ -1016,32 +1029,46 @@ Cli) and serves the socket.
 1. **Start:** open `.qrec/lock` (O_CLOEXEC), `try_lock` (exclusive, never
    blocking). Held ⇒ route (step 4). Under the lock: write
    `{pid, kind, socket, since, state:"starting"}` to the lock file, unlink
-   `<hash>.sock`, bind `<hash>.sock.<pid>`, listen, `rename` it to
-   `<hash>.sock` (atomic publish), set `state:"ready"`. This happens before
+   `<hash>.sock`, bind `<first 40 hex of the hash>.<pid>.tmp` (shorter than
+   the socket path), listen, `rename` it to `<hash>.sock` (atomic publish),
+   set `state:"ready"`. This happens before
    recovery and `gst::init()`; early requests queue in the inbox. The host
    then opens its Session with a second descriptor of the lock (`dup`, same
    open file description): a second `open` + `flock` in the same process
    would be refused, and dropping the Session only closes its copy.
 2. Only the lock holder unlinks its socket. Scanners never delete anything.
-3. **Exit:** `state:"stopping"` → stop accepting → unlink the socket →
-   flush replies → exit (closing the lock fd releases the lock). Routing
-   clients treat `starting` and `stopping` alike: retry.
+3. **Exit:** stop accepting → unlink the socket → `state:"stopping"` →
+   flush replies → exit (closing the lock fd releases the lock). The exit
+   rules only fire with no connection open, and the server stops accepting
+   only while that still holds, under the lock admission takes: a host never
+   admits (tells `accepted`) a client and then drops its request. A client
+   the acceptor took but didn't admit sees EOF before `accepted` (step 6).
+   Routing clients treat `starting` and `stopping` alike: retry.
 4. **CLI routing** (deadline 3 s; 20 s for `record *`): connect. On
    ENOENT/ECONNREFUSED try the lock; if acquired, become the host (in-process,
    or hand off to a spawned headless host). If not, read the lock file: when
    `ready`, connect to its socket; otherwise retry every 50 ms. `hello` timeout
    2 s ⇒ `Busy` "host pid N is not responding"; deadline ⇒ `Busy` naming pid,
-   kind and start time.
+   kind and start time. A record outlives its host (it says `stopping`, or
+   whatever a crash left), so these name a pid only while that process still
+   runs and started before the record (not a reused pid); otherwise "another
+   process holds the project lock … but runs no Qrec host".
 5. **Spawn hand-off** (`record start`/`toggle` with no host): the CLI takes
    the lock and spawns `qrec host --headless --project DIR --lock-fd 3
    --ready-fd 4` (fds dup'ed in `pre_exec`, CLOEXEC cleared, `setsid`, stdio
    to `.qrec/logs/…-host.log`). flock belongs to the open file description,
    so the child keeps it; the CLI closes its fd and **never unlocks**. The
    host writes one JSON line on fd 4 (`{"ok":true}` once listening, or the
-   `CoreError`); EOF ⇒ the CLI reports the host log path.
+   `CoreError`); EOF ⇒ the CLI reports the host log path. It keeps fd 4 until
+   its Session opened: if that fails (a corrupt `qrec.json`, A§7.7) it writes
+   the error as a second line before freeing the lock, so a CLI whose
+   request found the host gone reports that error and its hint (plus the
+   log path), not "exited right after starting".
 6. **Protocol safety:** the host sends `{"id","accepted":true}` once parsed.
-   EOF before `accepted` ⇒ re-route once; EOF after ⇒ exit 1 "host
-   disconnected" with the log path (never retry: it may have run).
+   EOF before `accepted` ⇒ the request never ran: route again, like for a
+   starting or stopping host, until the deadline (given once more from the
+   first bounce); EOF after ⇒ exit 1 "host disconnected" with the log path
+   (never retry: it may have run).
 7. Peers must have our uid (`SO_PEERCRED`). Request lines are capped at 1 MiB
    with a 5 s read timeout; each connection has a bounded 64-message queue
    (progress coalesced, replies never dropped) and a 10 s write timeout.
@@ -1051,12 +1078,18 @@ Cli) and serves the socket.
 `--project DIR` → cwd if it holds `qrec.json` or is strictly empty → if an
 ancestor holds `qrec.json`, exit 3 with "you're inside project <dir>; run
 there or pass --project <dir>" → the single live host found by `hello` on
-`<runtime>/*.sock` (stderr: `qrec: using project <dir> (pid N)`) → exit 3
-(several hosts: `Usage` listing them). Init order: `mkdir .qrec` → lock →
-re-check the folder rule (a folder whose only entry is `.qrec/` counts as
-empty) → write `qrec.json` + head → `mkdir takes`. Read-only commands take no
-lock and write nothing (no migration backups either). `--over-selection` with
-no live host ⇒ `Unavailable`.
+`<runtime>/*.sock` (stderr: `qrec: using project <dir> (pid N)`; the exact
+path from `projectDirHex` when it isn't UTF-8) → exit 3 (several hosts:
+`Usage` listing them). Init order: `mkdir .qrec` → lock → re-check the folder
+rule (a folder whose only entry is `.qrec/` counts as empty) → write
+`qrec.json` + head → `mkdir takes`. A folder without `qrec.json` whose
+`.qrec/` holds a history (`history.head.json`, `history.jsonl` or
+`history.base.json`) is a project that lost its file, whatever else is in
+it: it is that project (from the cwd or `--project`), never "Not my swamp"
+and never initialized again; `qrec history [restore]` work on it in recovery
+mode (A§7.7) and other commands get the A§7.7 `Invalid` with the restore
+hint. Read-only commands take no lock and write nothing (no migration
+backups either). `--over-selection` with no live host ⇒ `Unavailable`.
 
 ### A§8.5 In-process commands
 
@@ -1069,8 +1102,11 @@ continue"). `seek`/`play`/`pause`/`shuttle` without a GUI host ⇒
 
 ### A§8.6 Hosts: exit, signals, GUI start
 
-- Exit (Headless and Cli): once Idle + no running jobs + no open connections
-  has held for 2 s, or (Headless) 60 s after `ready` without a request.
+- Exit (Headless and Cli): once Idle + no running jobs + no recovery probe
+  out (`runtime.recovering`) + no open connections has held for 2 s, or
+  (Headless) 60 s after `ready` without a request. An in-process command
+  whose host nobody else used exits as soon as it is answered and nothing is
+  busy (so it finishes the startup recovery it began, A§5.3).
   `shutdown` requests: stop accepting, let jobs finish, exit.
 - Signals in every host: the first SIGTERM/SIGINT/SIGHUP dispatches
   `RecordStop` (finalize, not cancel) and cancels jobs; exit when idle or
@@ -1081,7 +1117,8 @@ continue"). `seek`/`play`/`pause`/`shuttle` without a GUI host ⇒
   deletes temp outputs, exits 130; the second SIGKILLs and exits 130.
   IPC-routed: Ctrl+C closes the connection and exits 130; for `record --wait`
   the first Ctrl+C sends `RecordStop` on a second connection and keeps
-  streaming until finalized, a second detaches. Stdout is written with
+  streaming until finalized, a second detaches (two presses count as two
+  even when they arrive together). Stdout is written with
   `writeln!`; `BrokenPipe` exits quietly.
 - GUI start with a live non-GUI host: recording ⇒ SPEC §4.3 modal (Stop &
   open: `RecordStop`, wait for its reply, `shutdown`, wait ≤ 20 s for the
@@ -1094,7 +1131,9 @@ continue"). `seek`/`play`/`pause`/`shuttle` without a GUI host ⇒
 One runner for every child: stdin null, `process_group(0)`, stdout piped only
 when parsed (drained on its own thread), stderr appended to a log file.
 Timeouts: ffprobe 20 s, pactl 3 s, VA/encoder probes 10 s, `wl-copy` 5 s
-(`--type image/png`, stdin from the PNG file). Long ffmpeg jobs have a stall
+(`--type image/png`, stdin from the PNG file). ffprobe and silencedetect get
+30 s more per GiB of input, in proportion (`-count_packets` reads the whole
+file), so small files get exactly the base. Long ffmpeg jobs have a stall
 watchdog (no `-progress` block for 60 s ⇒ kill, "ffmpeg stalled"). Kill:
 SIGTERM to the group, SIGKILL after 2 s, wait ≤ 2 s more, then hand the
 child to a reaper thread and fail the job — the session thread never blocks in
@@ -1107,7 +1146,10 @@ in A§9.3). Logs: `.qrec/logs/YYYYMMDD-HHMMSS-<pid>-j<job>-<step>.log`
 ### A§8.8 Output files: never overwrite
 
 Temp outputs live in the destination directory as
-`.<stem>.qrec-part-<pid>-<job>.<ext>`; the final step is
+`.<stem>.qrec-part-<pid>-<job>.<ext>`, the stem cut so the name fits in
+`NAME_MAX` (255 bytes): any destination name that fits gets a temp that fits.
+A hand-picked name over 255 bytes is refused up front (`facts.out.forbidden`,
+A§5.9). The final step is
 `renameat2(RENAME_NOREPLACE)` (fallback `link` + `unlink`). Auto names loop
 `-2`, `-3`, … on EEXIST; a hand-picked unconfirmed `--out` that appeared
 meanwhile ⇒ keep the temp, fail `confirmation_required` naming both paths.

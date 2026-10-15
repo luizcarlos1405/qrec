@@ -65,13 +65,12 @@ impl Session {
             })
             .collect();
         let write_project = effects.contains(&Effect::WriteProject);
+        // This outcome changes the project's files (not only a repair of a
+        // store an earlier failure left dirty).
+        let saves = write_project || !ops.is_empty();
         let writable = self.store.writable();
 
-        if writable
-            && (write_project || !ops.is_empty())
-            && !force
-            && is_initialized(&self.state.project)
-        {
+        if writable && saves && !force && is_initialized(&self.state.project) {
             if let Some(file) = self.store.disk_changed(self.check) {
                 tracing::info!("qrec.json changed on disk: merging it before this change");
                 self.store.accept_disk(&file);
@@ -159,6 +158,7 @@ impl Session {
             }
         };
         if let Some(e) = &failure
+            && saves
             && to.is_some()
             && self.state.runtime.host != HostKind::Gui
         {
@@ -189,7 +189,7 @@ impl Session {
         // registered first, so progress and late replies among the effects
         // reach it.
         let reply = match (reply, &failure) {
-            (Some(Ok(_)), Some(e)) => Some(Err(self.save_error(e, true))),
+            (Some(Ok(_)), Some(e)) if saves => Some(Err(self.save_error(e, true))),
             (other, _) => other,
         };
         if let Some(id) = req

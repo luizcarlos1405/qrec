@@ -999,6 +999,13 @@ fn probe_failures_say_whether_the_file_or_the_tool_failed() {
 
     let garbage = probe_with(&dir, options(), probe_argv(file, StreamKind::Video));
     assert_eq!(garbage.kind, ProbeFailure::Media, "{garbage:?}");
+
+    // Killed from outside (the OOM killer, say): it judged nothing.
+    let killed = probe_with(&dir, options(), strings(&["sh", "-c", "kill -9 $$", file]));
+    assert_eq!(killed.kind, ProbeFailure::Tool, "{killed:?}");
+    // A wrapper that couldn't run the tool.
+    let wrapper = probe_with(&dir, options(), strings(&["sh", "-c", "exit 127", file]));
+    assert_eq!(wrapper.kind, ProbeFailure::MissingTool, "{wrapper:?}");
 }
 
 /// A§8.7: ffprobe gets 20 s; only big files get more, in proportion.

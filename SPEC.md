@@ -203,6 +203,11 @@ or the directory given with `--project <dir>`, must be one of:
    (`qrec.json`, `takes/`, `.qrec/`). The CLI does this lazily on the first
    mutating command, or explicitly with `qrec init`.
 
+A folder whose `qrec.json` was deleted but whose `.qrec/` still holds the
+project's history is still that project: `qrec history` lists it, and other
+commands point at `qrec history restore <seq> --yes` (§16), which rebuilds
+the file.
+
 Anything else is rejected with the message _"Not my swamp: this folder isn't
 empty and has no qrec.json"_ and exit code 3. Commands that don't use a
 project still work anywhere: `--help`, `version`, `doctor`, `sources list`,

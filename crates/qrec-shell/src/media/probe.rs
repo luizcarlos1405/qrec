@@ -11,6 +11,7 @@
 //! core never changes a take's facts on the probe's own failure.
 
 use std::fs;
+use std::os::unix::process::ExitStatusExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::thread;
@@ -148,16 +149,25 @@ pub(crate) fn probe_one(ctx: &Ctx, take: &TakeId, job: &ProbeJob) -> Result<Medi
         if let Some(last) = tail_lines(&log.body(), 1).pop() {
             message.push_str(&format!(": {last}"));
         }
-        // ffprobe that exited (with an error, or killed by its own crash)
-        // judged the file; one that ran out of time or was stopped didn't,
-        // nor did a wrapper that couldn't run it (126/127, like a shell).
-        let tool_status = done
-            .status
-            .and_then(|s| s.code())
-            .is_some_and(|code| code == 126 || code == 127);
+        // ffprobe that exited with an error, or crashed, judged the file;
+        // one that ran out of time, was stopped or killed from outside (the
+        // OOM killer, a signal) didn't, nor did a wrapper that couldn't run
+        // it (126/127, like a shell).
+        let code = done.status.and_then(|s| s.code());
+        let signal = done.status.and_then(|s| s.signal());
+        let killed = signal.is_some_and(|s| {
+            [
+                libc::SIGKILL,
+                libc::SIGTERM,
+                libc::SIGINT,
+                libc::SIGHUP,
+                libc::SIGQUIT,
+            ]
+            .contains(&s)
+        });
         return Err(match done.ended {
-            Ended::Exited if tool_status => ProbeError::missing_tool(message),
-            Ended::Exited if done.status.is_some() => ProbeError::media(message),
+            Ended::Exited if matches!(code, Some(126 | 127)) => ProbeError::missing_tool(message),
+            Ended::Exited if done.status.is_some() && !killed => ProbeError::media(message),
             Ended::Exited | Ended::TimedOut(_) | Ended::Stalled(_) | Ended::Stopped => {
                 ProbeError::tool(message)
             }
