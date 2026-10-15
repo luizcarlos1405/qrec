@@ -21,7 +21,10 @@
 //!   every stream (the core then stops).
 //! - **Stopping**: T1 = the running time of the stop. Each bin closes when
 //!   its source delivers a buffer at or after T1 (or after 500 ms):
-//!   unlinked from the tee, filled to T1, EOS. Every filesink must see EOS
+//!   unlinked from the tee, filled to T1, EOS. A bin stopped before its
+//!   first buffer (a stop while Starting) still passes that one buffer, and
+//!   waits for it until the first-buffer deadline: closed empty, it would
+//!   write a file nothing can read. Every filesink must see EOS
 //!   within `eos_timeout_ms` (else `timed_out`), then the bins go to NULL
 //!   within 5 s (else `EngineWedged`) and `CaptureStopped` reports each
 //!   stream's `startOffsetNs`.
@@ -265,6 +268,18 @@ impl Drop for GstCaptureEngine {
     }
 }
 
+/// Stopping: when a bin whose source hasn't reached T1 closes anyway. One
+/// that passed a buffer closes at `fill_by`; one that hasn't (stopped while
+/// Starting) waits for its first buffer until `first_by` too, since a bin
+/// closed empty writes a file nothing can read.
+fn close_deadline(bin: &RecordBin, fill_by: Instant, first_by: Instant) -> Instant {
+    if bin.first_running().is_some() {
+        fill_by
+    } else {
+        fill_by.max(first_by)
+    }
+}
+
 fn panic_text(panic: &Box<dyn Any + Send>) -> String {
     if let Some(s) = panic.downcast_ref::<&str>() {
         (*s).to_owned()
@@ -292,7 +307,12 @@ enum Phase {
         next_clock: Instant,
     },
     Stopping {
+        /// Bins whose source didn't reach T1 by then close anyway.
         fill_by: Instant,
+        /// A bin that hasn't passed its first buffer (stopped while
+        /// Starting) waits for it until then: a bin closed empty writes a
+        /// file nothing can read.
+        first_by: Instant,
         eos_by: Instant,
     },
 }
@@ -1250,8 +1270,17 @@ impl Engine {
                     bin.probe.t1.store(t1, Ordering::SeqCst);
                 }
                 let now = Instant::now();
+                // Stopped while Starting: a source may not have delivered its
+                // first buffer yet; it gets the start's first-buffer window.
+                let first_by = match run.phase {
+                    Phase::Starting {
+                        first_buffer_by, ..
+                    } => first_buffer_by,
+                    _ => now,
+                };
                 run.phase = Phase::Stopping {
                     fill_by: now + FILL_GRACE,
+                    first_by,
                     eos_by: now + Duration::from_millis(u64::from(run.plan.eos_timeout_ms)),
                 };
                 run.log.line(format!(
@@ -1645,13 +1674,18 @@ impl Engine {
                 *first_buffer_by
             }),
             Phase::Recording { next_clock } => Some(*next_clock),
-            Phase::Stopping { fill_by, eos_by } => {
-                let closing_done = run.bins.iter().all(|b| b.closing || b.lost.is_some());
-                Some(if closing_done {
-                    *eos_by
-                } else {
-                    (*fill_by).min(*eos_by)
-                })
+            Phase::Stopping {
+                fill_by,
+                first_by,
+                eos_by,
+            } => {
+                let close_by = run
+                    .bins
+                    .iter()
+                    .filter(|b| !b.closing && b.lost.is_none())
+                    .map(|b| close_deadline(b, *fill_by, *first_by))
+                    .min();
+                Some(close_by.map_or(*eos_by, |at| at.min(*eos_by)))
             }
         }
     }
@@ -1718,14 +1752,21 @@ impl Engine {
                     self.emit_clock(&take, t0);
                 }
             }
-            Phase::Stopping { fill_by, eos_by } => {
+            Phase::Stopping {
+                fill_by,
+                first_by,
+                eos_by,
+            } => {
                 if now >= eos_by {
                     self.finish_take(true);
                 } else if now >= fill_by {
-                    // Sources that never reached T1 (stalled): close anyway.
+                    // Sources that never reached T1 (stalled): close anyway,
+                    // once each had its chance to pass a first buffer.
                     let tag = run.tag;
                     for bin in &mut run.bins {
-                        bin.begin_close(&self.tx, tag);
+                        if now >= close_deadline(bin, fill_by, first_by) {
+                            bin.begin_close(&self.tx, tag);
+                        }
                     }
                     self.check_stopped();
                 }

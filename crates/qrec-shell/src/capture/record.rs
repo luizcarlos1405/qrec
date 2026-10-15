@@ -10,7 +10,10 @@
 //!
 //! A data probe on the tee's src pad drops buffers whose running time is
 //! before T0 and measures `startOffsetNs = first passed − T0`; after stop it
-//! drops buffers at or after T1. It also moves the bin to *file time*: the
+//! drops buffers at or after T1, except a stream's first buffer: a stop
+//! that comes before it (a quick double-tap) still lets one buffer through,
+//! because a bin closed empty writes a file nothing can read (then the
+//! take is `tooShort`, not `broken`). It also moves the bin to *file time*: the
 //! bin gets a plain `[0, ∞)` segment and every passed buffer's timestamps
 //! minus the first passed running time, so each file starts at exactly 0.
 //! (`matroskamux offset-to-zero` alone isn't enough *(measured)*: it takes
@@ -131,7 +134,8 @@ impl RecProbe {
         if t0 == u64::MAX || running < t0 {
             return gst::PadProbeReturn::Drop;
         }
-        if running >= self.t1.load(Ordering::SeqCst) {
+        let at_end = running >= self.t1.load(Ordering::SeqCst);
+        if at_end && state.first.is_some() {
             state.reached_end = true;
             drop(state);
             let _ = tx.send(Cmd::Probe(tag, ProbeEvent::ReachedEnd(self.index)));
@@ -162,6 +166,15 @@ impl RecProbe {
                 let duration = buffer.duration().map_or(0, gst::ClockTime::nseconds);
                 state.audio_end = Some(running + duration);
             }
+        }
+        if at_end {
+            // The stop came before this stream's first buffer (a quick
+            // double-tap). A bin closed before any buffer writes a file
+            // nothing can read, so the first buffer at or after T0 always
+            // passes, and it is also the last.
+            state.reached_end = true;
+            drop(state);
+            let _ = tx.send(Cmd::Probe(tag, ProbeEvent::ReachedEnd(self.index)));
         }
         gst::PadProbeReturn::Ok
     }

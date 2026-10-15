@@ -1154,7 +1154,12 @@ pipeline first. Paths in the plan are joined with the project dir.
 **Record bins** *(measured)*: T0 = the pipeline running time chosen at start;
 a buffer probe on each bin's sink pad drops buffers with PTS < T0 and
 `startOffsetNs = first passed PTS − T0`; T1 = running time at stop, video is
-filled to T1 before EOS.
+filled to T1 before EOS. A stream's first buffer at or after T0 always
+passes, even past T1: a stop while Starting (a double-tap of `r`) would
+otherwise close bins that got nothing, and those write a header-only file
+nothing can read, which turned a too-short take into a `broken` one
+*(measured)*. Such a bin waits for that first buffer until the start's
+first-buffer deadline, then closes like the others.
 - Video: `queue ! videorate skip-to-first=true ! video/x-raw,framerate=N/D !
   videoconvert ! video/x-raw,format=I420|NV12,colorimetry=bt709 ! <encoder>
   ! h264parse ! matroskamux offset-to-zero=true ! filesink`. Without
