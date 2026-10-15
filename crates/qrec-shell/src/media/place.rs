@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use qrec_core::JobId;
 
-use crate::paths::NAME_MAX;
+use crate::paths::{NAME_MAX, path_text};
 
 /// The marker in every temp name; host start sweeps old temps (A§8.7),
 /// recognized by their whole shape ([`is_temp_name`]), never by the marker
@@ -140,8 +140,8 @@ impl std::fmt::Display for PlaceError {
                 f,
                 "confirmation required: {} appeared while Qrec was writing it; \
                  the new file was kept as {} (rename it, or run again with --yes to replace)",
-                out.display(),
-                kept.display()
+                path_text(out),
+                path_text(kept)
             ),
             PlaceError::Io(message) => f.write_str(message),
         }
@@ -156,7 +156,7 @@ pub(crate) fn place(tmp: &Path, dest: &Destination) -> Result<PathBuf, PlaceErro
             path,
             replace: true,
         } => fs::rename(tmp, path).map(|()| path.clone()).map_err(|e| {
-            PlaceError::Io(format!("can't move the output to {}: {e}", path.display()))
+            PlaceError::Io(format!("can't move the output to {}: {e}", path_text(path)))
         }),
         Destination::Chosen {
             path,
@@ -169,7 +169,7 @@ pub(crate) fn place(tmp: &Path, dest: &Destination) -> Result<PathBuf, PlaceErro
             }),
             Err(e) => Err(PlaceError::Io(format!(
                 "can't move the output to {}: {e}",
-                path.display()
+                path_text(path)
             ))),
         },
         Destination::Auto(path) => {
@@ -181,14 +181,14 @@ pub(crate) fn place(tmp: &Path, dest: &Destination) -> Result<PathBuf, PlaceErro
                     Err(e) => {
                         return Err(PlaceError::Io(format!(
                             "can't move the output to {}: {e}",
-                            candidate.display()
+                            path_text(&candidate)
                         )));
                     }
                 }
             }
             Err(PlaceError::Io(format!(
                 "{} and {MAX_SUFFIX} numbered variants all exist",
-                path.display()
+                path_text(path)
             )))
         }
     }

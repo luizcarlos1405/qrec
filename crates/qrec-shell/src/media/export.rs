@@ -22,6 +22,7 @@
 //! `export_plan::without_vaapi` (libx264, other keys: nothing mixes).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -42,6 +43,7 @@ use super::logs::{LogFile, TAIL_LINES};
 use super::place::{self, Destination, PlaceError, rename_noreplace, temp_path};
 use super::verify;
 use crate::msg::Inbox;
+use crate::paths::path_text;
 
 /// How a job (or one of its steps) didn't finish.
 #[derive(Debug)]
@@ -98,7 +100,7 @@ pub(crate) fn run(
     match result {
         Ok((path, bytes)) => Event::ExportFinished {
             job,
-            path: path.to_string_lossy().into_owned(),
+            path: path_text(&path),
             bytes,
         },
         Err(failure) => {
@@ -132,9 +134,9 @@ pub(crate) fn run(
 pub(crate) fn appeared(job: JobId, out: &Path, kept: &Path) -> Event {
     Event::OutputAppeared {
         job,
-        out: out.to_string_lossy().into_owned(),
+        out: path_text(out),
         bytes: fs::symlink_metadata(out).map(|m| m.len()).unwrap_or(0),
-        kept: kept.to_string_lossy().into_owned(),
+        kept: path_text(kept),
     }
 }
 
@@ -283,7 +285,10 @@ fn export(
     if !pending.is_empty() {
         fs::create_dir_all(ctx.project.segments_dir()).map_err(|e| {
             Failure::plain(
-                format!("can't create {}: {e}", ctx.project.segments_dir().display()),
+                format!(
+                    "can't create {}: {e}",
+                    path_text(&ctx.project.segments_dir())
+                ),
                 &log,
             )
         })?;
@@ -429,15 +434,15 @@ fn render_unit(
 ) -> Result<(), Failure> {
     let segment = unit.segment;
     let label = label(unit.first, total, segment);
-    let mut argv = segment.argv.clone();
+    let argv = &segment.argv;
     let log = ctx
-        .open_log(&ctx.job_log_base(job, &format!("seg{}", unit.first)), &argv)
+        .open_log(&ctx.job_log_base(job, &format!("seg{}", unit.first)), argv)
         .map_err(|message| Failure::Failed {
             message,
             stderr_tail: Vec::new(),
             log: String::new(),
         })?;
-    if let Some(missing) = missing_input(ctx, &argv) {
+    if let Some(missing) = missing_input(ctx, argv) {
         return Err(Failure::plain(
             format!("{label}: {missing} is missing"),
             &log,
@@ -450,8 +455,8 @@ fn render_unit(
     let ext = extension(&segment.path, "mkv");
     let tmp = temp_path(dir, &segment.key, job, &ext);
     ctl.add_temp(tmp.clone());
-    replace_output(&mut argv, &tmp).map_err(|m| Failure::plain(m, &log))?;
-    log.note(&format!("rendering to {}", tmp.display()));
+    let args = with_file(argv, &tmp).map_err(|m| Failure::plain(m, &log))?;
+    log.note(&format!("rendering to {}", path_text(&tmp)));
 
     let (indices, frames, progress_out) = (unit.indices.clone(), segment.frames, out.clone());
     let on_block = move |block: &ProgressBlock| {
@@ -465,13 +470,13 @@ fn render_unit(
             }
         }
     };
-    let mut spec = Spec::new(&argv, Stderr::Log(log.file()))
+    let mut spec = Spec::new(&args, Stderr::Log(log.file()))
         .cwd(ctx.root())
         .stdout(Stdout::Progress(Box::new(on_block)))
         .stall(ctx.options.stall_timeout)
         .stop(&ctl.stop)
         .kill_grace(ctx.options.kill_grace);
-    if let Some(driver) = vaapi_driver(&argv) {
+    if let Some(driver) = vaapi_driver(argv) {
         spec = spec.env("LIBVA_DRIVER_NAME", driver);
     }
     let done = child::run(spec).map_err(|m| Failure::plain(format!("{label}: {m}"), &log))?;
@@ -530,9 +535,9 @@ fn stitch(
     dest: &Destination,
     out: &Inbox,
 ) -> Result<PathBuf, Failure> {
-    let mut argv = plan.stitch.argv.clone();
+    let argv = &plan.stitch.argv;
     let log = ctx
-        .open_log(&ctx.job_log_base(job, "stitch"), &argv)
+        .open_log(&ctx.job_log_base(job, "stitch"), argv)
         .map_err(|message| Failure::Failed {
             message,
             stderr_tail: Vec::new(),
@@ -556,8 +561,8 @@ fn stitch(
     };
     let tmp = temp_path(dir, &place::file_stem(dest.path()), job, &ext);
     ctl.add_temp(tmp.clone());
-    replace_output(&mut argv, &tmp).map_err(|m| Failure::plain(m, &log))?;
-    log.note(&format!("stitching to {}", tmp.display()));
+    let args = with_file(argv, &tmp).map_err(|m| Failure::plain(m, &log))?;
+    log.note(&format!("stitching to {}", path_text(&tmp)));
 
     let progress_out = out.clone();
     let on_block = move |block: &ProgressBlock| {
@@ -569,7 +574,7 @@ fn stitch(
         }
     };
     let done = child::run(
-        Spec::new(&argv, Stderr::Log(log.file()))
+        Spec::new(&args, Stderr::Log(log.file()))
             .cwd(ctx.root())
             .stdout(Stdout::Progress(Box::new(on_block)))
             .stall(ctx.options.stall_timeout)
@@ -622,7 +627,7 @@ pub(crate) fn destination(ctx: &Ctx, out: &str, replace: bool) -> Result<Destina
             .filter(|p| !p.as_os_str().is_empty())
             .ok_or_else(|| format!("{out} is not a file path"))?;
         if !parent.is_dir() {
-            return Err(format!("the folder {} doesn't exist", parent.display()));
+            return Err(format!("the folder {} doesn't exist", path_text(parent)));
         }
         Ok(Destination::Chosen {
             path: path.to_path_buf(),
@@ -631,7 +636,7 @@ pub(crate) fn destination(ctx: &Ctx, out: &str, replace: bool) -> Result<Destina
     } else {
         let abs = ctx.project.resolve(out).map_err(|e| e.message)?;
         if let Some(dir) = abs.parent() {
-            fs::create_dir_all(dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
+            fs::create_dir_all(dir).map_err(|e| format!("can't create {}: {e}", path_text(dir)))?;
         }
         Ok(Destination::Auto(abs))
     }
@@ -656,15 +661,17 @@ pub(crate) fn extension(path: &str, default: &str) -> String {
         .unwrap_or_else(|| default.to_owned())
 }
 
-/// Replaces the argv's output (its last element) with `file:<tmp>`.
-pub(crate) fn replace_output(argv: &mut [String], tmp: &Path) -> Result<(), String> {
-    match argv {
-        [_program, .., last] => {
-            *last = format!("file:{}", tmp.to_string_lossy());
-            Ok(())
-        }
-        _ => Err("internal error: the plan's command line has no output".to_owned()),
-    }
+/// The argv to run: the plan's, with its last element (the file it writes,
+/// or a probe reads) replaced by `file:<path>`, byte for byte. A lossy copy
+/// would name a folder that doesn't exist when the project folder's path
+/// isn't UTF-8, and ffmpeg would fail to open its output.
+pub(crate) fn with_file(argv: &[String], path: &Path) -> Result<Vec<OsString>, String> {
+    let Some((_file, rest @ [_program, ..])) = argv.split_last() else {
+        return Err("internal error: the plan's command line has no output".to_owned());
+    };
+    let mut file = OsString::from("file:");
+    file.push(path.as_os_str());
+    Ok(rest.iter().map(OsString::from).chain([file]).collect())
 }
 
 /// The first `-i file:<path>` input that doesn't exist.
@@ -743,7 +750,7 @@ mod tests {
 
     #[test]
     fn output_replacement_and_inputs() {
-        let mut argv: Vec<String> = [
+        let argv: Vec<String> = [
             "ffmpeg",
             "-i",
             "file:a.mkv",
@@ -753,12 +760,32 @@ mod tests {
         ]
         .map(String::from)
         .to_vec();
-        replace_output(&mut argv, Path::new("/p/.qrec/.x.qrec-part-1-2.mov")).unwrap();
-        assert_eq!(argv.last().unwrap(), "file:/p/.qrec/.x.qrec-part-1-2.mov");
-        assert!(replace_output(&mut [], Path::new("/x")).is_err());
-        assert!(replace_output(&mut ["ffmpeg".to_owned()], Path::new("/x")).is_err());
+        let args = with_file(&argv, Path::new("/p/.qrec/.x.qrec-part-1-2.mov")).unwrap();
+        assert_eq!(
+            args[..5],
+            argv[..5].iter().map(OsString::from).collect::<Vec<_>>()
+        );
+        assert_eq!(args[5], "file:/p/.qrec/.x.qrec-part-1-2.mov");
+        assert!(with_file(&[], Path::new("/x")).is_err());
+        assert!(with_file(&["ffmpeg".to_owned()], Path::new("/x")).is_err());
         assert_eq!(extension(".qrec/cache/segments/k.mov", "mkv"), "mov");
         assert_eq!(extension("noext", "mkv"), "mkv");
+    }
+
+    /// A project folder whose path isn't UTF-8: the output argument keeps
+    /// its exact bytes (a lossy `�` names a folder that doesn't exist).
+    #[test]
+    fn output_paths_keep_their_bytes() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let argv: Vec<String> = ["ffmpeg", "-i", "file:a.mkv", "file:x.mov"]
+            .map(String::from)
+            .to_vec();
+        let tmp = Path::new(std::ffi::OsStr::from_bytes(b"/p/pr\xffoj/.x.mov"));
+        let args = with_file(&argv, tmp).unwrap();
+        assert_eq!(
+            args[3].clone().into_vec(),
+            b"file:/p/pr\xffoj/.x.mov".to_vec()
+        );
     }
 
     #[test]

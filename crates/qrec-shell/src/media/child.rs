@@ -14,7 +14,7 @@
 //!   the child is handed to a reaper thread. The caller never blocks in
 //!   `wait()` for longer than that.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -79,7 +79,9 @@ pub(crate) enum Stderr<'a> {
 
 /// One child process to run.
 pub(crate) struct Spec<'a> {
-    pub argv: &'a [String],
+    /// The program and its arguments, byte for byte: a path in them may
+    /// not be UTF-8 (a project folder whose path isn't).
+    pub argv: Vec<OsString>,
     pub cwd: Option<&'a Path>,
     /// Extra environment variables.
     pub env: Vec<(OsString, OsString)>,
@@ -95,9 +97,16 @@ pub(crate) struct Spec<'a> {
 
 impl<'a> Spec<'a> {
     /// `argv` with stdout and stderr discarded/captured, no deadline yet.
-    pub(crate) fn new(argv: &'a [String], stderr: Stderr<'a>) -> Self {
+    pub(crate) fn new<I, S>(argv: I, stderr: Stderr<'a>) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
         Self {
-            argv,
+            argv: argv
+                .into_iter()
+                .map(|arg| arg.as_ref().to_os_string())
+                .collect(),
             cwd: None,
             env: Vec::new(),
             stdout: Stdout::Null,
@@ -263,10 +272,11 @@ pub(crate) fn run(spec: Spec<'_>) -> Result<Finished, String> {
 
 /// [`run`], saying whether a failed start means the program is missing.
 pub(crate) fn start(spec: Spec<'_>) -> Result<Finished, StartError> {
-    let Some((program, args)) = spec.argv.split_first() else {
+    let Some((program_os, args)) = spec.argv.split_first() else {
         return Err("internal error: an empty command line".to_owned().into());
     };
-    let mut cmd = Command::new(program);
+    let program = &*program_os.to_string_lossy();
+    let mut cmd = Command::new(program_os);
     cmd.args(args).stdin(Stdio::null()).process_group(0);
     if let Some(dir) = spec.cwd {
         cmd.current_dir(dir);
@@ -693,7 +703,7 @@ mod tests {
         let cmd = argv(&["qrec-no-such-tool-here"]);
         let err = run(Spec::new(&cmd, Stderr::Capture)).unwrap_err();
         assert!(err.contains("wasn't found"), "{err}");
-        assert!(run(Spec::new(&[], Stderr::Capture)).is_err());
+        assert!(run(Spec::new(Vec::<String>::new(), Stderr::Capture)).is_err());
     }
 
     #[test]

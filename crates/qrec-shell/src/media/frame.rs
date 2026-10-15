@@ -14,12 +14,13 @@ use qrec_core::{Event, JobId};
 use super::Ctx;
 use super::child::{self, Spec, Stderr, Stdout};
 use super::export::{
-    Failure, appeared, check_ffmpeg, destination, extension, kept_aside, missing_input,
-    replace_output, stopped,
+    Failure, appeared, check_ffmpeg, destination, extension, kept_aside, missing_input, stopped,
+    with_file,
 };
 use super::jobs::JobCtl;
 use super::logs::LogFile;
 use super::place::{self, PlaceError, temp_path};
+use crate::paths::path_text;
 
 /// The first bytes of every PNG file.
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
@@ -30,7 +31,7 @@ pub(crate) fn run(ctx: &Ctx, ctl: &JobCtl, job: JobId, plan: &FramePlan) -> Even
     match result {
         Ok(path) => Event::FrameSaved {
             job,
-            path: path.to_string_lossy().into_owned(),
+            path: path_text(&path),
         },
         Err(failure) => {
             ctl.remove_temps();
@@ -56,16 +57,16 @@ fn save(
     plan: &FramePlan,
     log_path: &mut String,
 ) -> Result<std::path::PathBuf, Failure> {
-    let mut argv = plan.argv.clone();
+    let argv = &plan.argv;
     let log = ctx
-        .open_log(&ctx.job_log_base(job, "frame"), &argv)
+        .open_log(&ctx.job_log_base(job, "frame"), argv)
         .map_err(|message| Failure::Failed {
             message,
             stderr_tail: Vec::new(),
             log: String::new(),
         })?;
     *log_path = log.display();
-    if let Some(missing) = missing_input(ctx, &argv) {
+    if let Some(missing) = missing_input(ctx, argv) {
         return Err(Failure::plain(format!("{missing} is missing"), &log));
     }
     let dest = destination(ctx, &plan.out, plan.replace).map_err(|m| Failure::plain(m, &log))?;
@@ -80,13 +81,13 @@ fn save(
     };
     let tmp = temp_path(dir, &place::file_stem(dest.path()), job, &ext);
     ctl.add_temp(tmp.clone());
-    replace_output(&mut argv, &tmp).map_err(|m| Failure::plain(m, &log))?;
-    log.note(&format!("rendering to {}", tmp.display()));
+    let args = with_file(argv, &tmp).map_err(|m| Failure::plain(m, &log))?;
+    log.note(&format!("rendering to {}", path_text(&tmp)));
 
     // Plans normally ask for `-progress pipe:1`; without it only the exit
     // status counts.
     let reports_progress = argv.windows(2).any(|w| w[0] == "-progress");
-    let mut spec = Spec::new(&argv, Stderr::Log(log.file()))
+    let mut spec = Spec::new(&args, Stderr::Log(log.file()))
         .cwd(ctx.root())
         .timeout(ctx.options.frame_timeout)
         .stop(&ctl.stop)

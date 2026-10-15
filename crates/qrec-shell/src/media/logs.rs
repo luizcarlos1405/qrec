@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 
 use chrono::Local;
 
+use crate::paths::path_text;
+
 /// How many lines of stderr a failure shows (SPEC §13.1).
 pub(crate) const TAIL_LINES: usize = 30;
 
@@ -63,7 +65,7 @@ impl LogFile {
         let header = format!(
             "# qrec {}: in {}: {}\n",
             Local::now().format("%Y-%m-%d %H:%M:%S"),
-            cwd.display(),
+            path_text(cwd),
             shell_words(argv)
         );
         file.write_all(header.as_bytes())?;
@@ -103,8 +105,10 @@ impl LogFile {
         tail_lines(&self.body(), n)
     }
 
+    /// The log's path for replies and hints: exact, or escaped where it
+    /// isn't UTF-8 ([`path_text`]), never a lossy look-alike.
     pub(crate) fn display(&self) -> String {
-        self.path.display().to_string()
+        path_text(&self.path)
     }
 }
 

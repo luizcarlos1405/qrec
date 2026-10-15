@@ -136,7 +136,7 @@ impl Ctx {
         logs::LogFile::create(&self.project.logs_dir(), base, argv, self.root()).map_err(|e| {
             format!(
                 "can't create a log in {}: {e}",
-                self.project.logs_dir().display()
+                crate::paths::path_text(&self.project.logs_dir())
             )
         })
     }

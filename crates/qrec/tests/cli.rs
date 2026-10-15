@@ -2659,6 +2659,72 @@ fn a_live_host_in_a_folder_that_isnt_utf8_is_used() {
     assert_eq!(status.reply()["data"]["host"], "headless");
 }
 
+/// A project folder whose path isn't UTF-8 (A§4.9, A§8.4) exports and
+/// saves frames like any other (SPEC §13): ffmpeg gets every temp path byte
+/// for byte, and replies and hints name files exactly (`\xFF` for a byte
+/// that isn't UTF-8), never with a lossy `�`.
+#[test]
+fn a_project_folder_that_isnt_utf8_exports_and_saves_frames() {
+    use std::os::unix::ffi::OsStrExt;
+    let env = TestEnv::new();
+    let dir = env
+        .root()
+        .join("projects")
+        .join(std::ffi::OsStr::from_bytes(b"pr\xffoj"));
+    fs::create_dir(&dir).unwrap();
+    fixture_project(&dir, &[video(30)]);
+    let shown = format!(r"{}/pr\xFFoj", env.root().join("projects").display());
+
+    let export = qrec(&env, &dir, &["--json", "export", "--quality", "draft"]);
+    export.ok();
+    let path = export.reply()["data"]["result"]["path"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(path.starts_with(&format!("{shown}/exports/")), "{path}");
+    let exported: Vec<PathBuf> = fs::read_dir(dir.join("exports"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(exported.len(), 1, "{exported:?}");
+    assert!(fs::metadata(&exported[0]).unwrap().len() > 0);
+
+    let frame = qrec(&env, &dir, &["--json", "frame", "save", "--at", "3f"]);
+    frame.ok();
+    let still = frame.reply()["data"]["result"]["path"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(still.starts_with(&format!("{shown}/frames/")), "{still}");
+    assert_eq!(fs::read_dir(dir.join("frames")).unwrap().count(), 1);
+
+    // A hand-picked output elsewhere works too (segments come from the cache).
+    let out = env.root().join("out.mp4");
+    qrec(
+        &env,
+        &dir,
+        &[
+            "--json",
+            "export",
+            "--quality",
+            "draft",
+            "--out",
+            out.to_str().unwrap(),
+        ],
+    )
+    .ok();
+    assert!(out.is_file());
+
+    // A failure points at its log exactly.
+    fs::remove_file(dir.join("takes/take-0001/L1-screen-FAKE-1.mkv")).unwrap();
+    let failed = qrec(&env, &dir, &["--json", "frame", "save", "--at", "4f"]);
+    assert_eq!(failed.code, Some(1), "{failed:?}");
+    let error = &failed.only_reply()["error"];
+    let hint = error["hint"].as_str().unwrap();
+    assert!(hint.contains(&format!("{shown}/.qrec/logs/")), "{error}");
+    assert!(!failed.stdout.contains('\u{FFFD}'), "{}", failed.stdout);
+}
+
 /// The pid of the host serving `dir` (`qrec status`).
 fn host_pid(env: &TestEnv, dir: &Path) -> u32 {
     let status = qrec(env, dir, &["status", "--json"]);
