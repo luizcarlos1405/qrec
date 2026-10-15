@@ -689,13 +689,19 @@ fn camera_info(device: &gst::Device) -> Option<CameraInfo> {
     })
 }
 
-/// Fixed raw/MJPEG sizes with every listed frame rate.
+/// Fixed raw/MJPEG sizes with every listed frame rate. DMA-BUF variants of
+/// the raw modes (`DMA_DRM`, `memory:DMABuf`) are left out: the camera
+/// branch reads system memory, and they only repeat the raw modes.
 #[cfg(feature = "gst")]
 fn caps_modes(caps: &gst::Caps) -> Vec<CameraMode> {
     let mut modes = Vec::new();
-    for s in caps.iter() {
+    for (s, features) in caps.iter_with_features() {
+        if features.contains("memory:DMABuf") {
+            continue;
+        }
         let format = match s.name().as_str() {
             "video/x-raw" => match s.get::<String>("format") {
+                Ok(format) if format == "DMA_DRM" => continue,
                 Ok(format) => format,
                 Err(_) => continue,
             },
@@ -885,6 +891,25 @@ pub(crate) fn tool_output(argv: &[&str], timeout: Duration) -> Result<String, St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v4l2src lists DMA-BUF copies of the raw modes (seen on a Dell
+    /// webcam and a Brio); they would win a raw/raw tie in
+    /// `choose_camera_mode` and then fail to negotiate.
+    #[cfg(feature = "gst")]
+    #[test]
+    fn dma_buf_camera_modes_are_left_out() {
+        use std::str::FromStr;
+        gst::init().unwrap();
+        let caps = gst::Caps::from_str(
+            "video/x-raw, format=YUY2, width=640, height=480, framerate=30/1; \
+             video/x-raw(memory:DMABuf), format=DMA_DRM, drm-format=YUYV, width=640, height=480, framerate=30/1; \
+             video/x-raw, format=DMA_DRM, width=1920, height=1080, framerate=5/1; \
+             image/jpeg, width=1920, height=1080, framerate=30/1",
+        )
+        .unwrap();
+        let formats: Vec<String> = caps_modes(&caps).into_iter().map(|m| m.format).collect();
+        assert_eq!(formats, ["YUY2", "image/jpeg"]);
+    }
 
     #[test]
     fn the_fake_inventory_matches_the_architecture() {

@@ -4,7 +4,6 @@
 //! Frame counts carry an `f` (`410f`), the unit time arguments take, so a
 //! value can be pasted into the next command.
 
-use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use qrec_core::keymap::{KeyChord, Keymap};
@@ -479,6 +478,81 @@ pub(crate) fn take_finalized(view: &TakeFinalizedView) -> Vec<String> {
 }
 
 /// `qrec sources list` from the `SourceInventory` JSON, read leniently.
+/// A camera's modes in one short line: per format its largest mode and its
+/// fastest one, largest first, at most four, then how many more there are
+/// (`--json` lists them all). A Brio reports over 300.
+fn camera_modes_summary(modes: &[Value]) -> String {
+    const SHOWN: usize = 4;
+    struct Mode {
+        w: u64,
+        h: u64,
+        fps: f64,
+        rate: String,
+        format: String,
+    }
+    let n = |v: &Value, key: &str| v.get(key).and_then(Value::as_u64);
+    let mut all: Vec<Mode> = Vec::new();
+    for m in modes {
+        let fps = m.get("fps");
+        let (num, den) = (fps.and_then(|f| n(f, "num")), fps.and_then(|f| n(f, "den")));
+        let rate = match (num, den) {
+            (Some(num), Some(1)) => num.to_string(),
+            (Some(num), Some(den)) => format!("{num}/{den}"),
+            _ => "?".into(),
+        };
+        let format = match m.get("format").and_then(Value::as_str).unwrap_or("") {
+            "image/jpeg" => "MJPEG".to_owned(),
+            other => other.to_owned(),
+        };
+        let mode = Mode {
+            w: n(m, "width").unwrap_or(0),
+            h: n(m, "height").unwrap_or(0),
+            fps: match (num, den) {
+                (Some(num), Some(den)) if den > 0 => num as f64 / den as f64,
+                _ => 0.0,
+            },
+            rate,
+            format,
+        };
+        let same = |o: &Mode| {
+            o.w == mode.w && o.h == mode.h && o.rate == mode.rate && o.format == mode.format
+        };
+        if !all.iter().any(same) {
+            all.push(mode);
+        }
+    }
+    let area = |m: &Mode| m.w * m.h;
+    let mut picked: Vec<&Mode> = Vec::new();
+    let mut formats: Vec<&str> = all.iter().map(|m| m.format.as_str()).collect();
+    formats.dedup();
+    let mut seen_formats = Vec::new();
+    for format in formats {
+        if seen_formats.contains(&format) {
+            continue;
+        }
+        seen_formats.push(format);
+        let of = || all.iter().filter(|m| m.format == format);
+        let largest = of().max_by(|a, b| area(a).cmp(&area(b)).then(a.fps.total_cmp(&b.fps)));
+        let fastest = of().max_by(|a, b| a.fps.total_cmp(&b.fps).then(area(a).cmp(&area(b))));
+        for m in [largest, fastest].into_iter().flatten() {
+            if !picked.iter().any(|p| std::ptr::eq(*p, m)) {
+                picked.push(m);
+            }
+        }
+    }
+    picked.sort_by(|a, b| area(b).cmp(&area(a)).then(b.fps.total_cmp(&a.fps)));
+    let rest = all.len().saturating_sub(picked.len().min(SHOWN));
+    let mut text: Vec<String> = picked
+        .iter()
+        .take(SHOWN)
+        .map(|m| format!("{}x{}@{} {}", m.w, m.h, m.rate, m.format))
+        .collect();
+    if rest > 0 {
+        text.push(format!("+{rest} more"));
+    }
+    text.join(", ")
+}
+
 pub(crate) fn sources(inv: &Value) -> Vec<String> {
     let s = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).unwrap_or("").to_owned();
     let n = |v: &Value, key: &str| v.get(key).and_then(Value::as_u64);
@@ -530,35 +604,12 @@ pub(crate) fn sources(inv: &Value) -> Vec<String> {
     let cameras = list("cameras")
         .iter()
         .map(|cam| {
-            let modes: Vec<String> = cam
+            let modes = cam
                 .get("modes")
                 .and_then(Value::as_array)
-                .map(|modes| {
-                    let mut seen = BTreeSet::new();
-                    modes
-                        .iter()
-                        .filter_map(|m| {
-                            let fps = m.get("fps");
-                            let rate = match (
-                                fps.and_then(|f| n(f, "num")),
-                                fps.and_then(|f| n(f, "den")),
-                            ) {
-                                (Some(num), Some(1)) => num.to_string(),
-                                (Some(num), Some(den)) => format!("{num}/{den}"),
-                                _ => "?".into(),
-                            };
-                            let text = format!(
-                                "{}x{}@{rate} {}",
-                                n(m, "width").unwrap_or(0),
-                                n(m, "height").unwrap_or(0),
-                                s(m, "format")
-                            );
-                            seen.insert(text.clone()).then_some(text)
-                        })
-                        .collect()
-                })
+                .map(|modes| camera_modes_summary(modes))
                 .unwrap_or_default();
-            vec![s(cam, "device"), s(cam, "label"), modes.join(", ")]
+            vec![s(cam, "device"), s(cam, "label"), modes]
         })
         .collect();
     section("Cameras", &["DEVICE", "LABEL", "MODES"], cameras);
@@ -764,6 +815,30 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn many_camera_modes_are_summarized() {
+        let mode = |w: u64, h: u64, num: u64, den: u64, format: &str| json!({"width": w, "height": h, "fps": {"num": num, "den": den}, "format": format});
+        let mut modes = vec![];
+        for (w, h) in [(160, 90), (640, 480), (1280, 720), (1920, 1080)] {
+            for fps in [5, 15, 30] {
+                modes.push(mode(w, h, fps, 1, "YUY2"));
+                modes.push(mode(w, h, fps, 1, "image/jpeg"));
+            }
+        }
+        modes.push(mode(1280, 720, 60, 1, "image/jpeg"));
+        modes.push(mode(2560, 1440, 2, 1, "YUY2"));
+        modes.push(mode(2560, 1440, 2, 1, "YUY2")); // duplicate
+        assert_eq!(
+            camera_modes_summary(&modes),
+            "2560x1440@2 YUY2, 1920x1080@30 YUY2, 1920x1080@30 MJPEG, 1280x720@60 MJPEG, +22 more"
+        );
+        assert_eq!(
+            camera_modes_summary(&[mode(640, 480, 15, 2, "YUY2")]),
+            "640x480@15/2 YUY2"
+        );
+        assert_eq!(camera_modes_summary(&[]), "");
+    }
 
     fn history_row(seq: u64, label: &str, current: bool) -> HistoryRow {
         serde_json::from_value(json!({
