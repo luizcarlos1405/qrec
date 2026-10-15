@@ -275,7 +275,9 @@ pub(crate) fn start(spec: Spec<'_>) -> Result<Finished, StartError> {
     let Some((program_os, args)) = spec.argv.split_first() else {
         return Err("internal error: an empty command line".to_owned().into());
     };
-    let program = &*program_os.to_string_lossy();
+    // For messages and thread names.
+    let program_name = program_os.to_string_lossy();
+    let program: &str = &program_name;
     let mut cmd = Command::new(program_os);
     cmd.args(args).stdin(Stdio::null()).process_group(0);
     if let Some(dir) = spec.cwd {

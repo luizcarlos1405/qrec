@@ -803,7 +803,8 @@ folder with something behind it, or a symlink, folder or special file in the
 take folder) makes the purge `Invalid` before anything changes, confirmed or
 not: "can't purge take 2 from disk: takes/take-0002/ is a symlink (not
 followed)", `details: {takes, left}`, hint to move or delete those entries by
-hand first. A purge never drops a take and its history while its media stays. A purge whose commit fails changes nothing
+hand first. A purge never drops a take and its history while its media
+stays. A purge whose commit fails changes nothing
 (A§7.6: the store puts the base it replaced back) and replies `io`
 "couldn't save the project, so nothing changed"; if its files can't be put
 back it is kept in memory, the shell deletes nothing and sends
@@ -1757,10 +1758,9 @@ strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
   negative count, index or seq gets its range error (`undo -1`: "-1 is not
   in 1..=…"; `--to -1`, `--at -1`, `history restore -1`: "-1 is not in
   0..=…"), never "invalid digit found in string", which stays for what
-  isn't a number. clap
-  errors under `--json` print `{"ok":false,"error":{"code":"usage",…}}`,
-  exit 2; `--help`, `help` and `--version` under `--json` print one
-  `{"ok":true,…}` object (A§4.9).
+  isn't a number. clap errors under `--json` print
+  `{"ok":false,"error":{"code":"usage",…}}`, exit 2; `--help`, `help` and
+  `--version` under `--json` print one `{"ok":true,…}` object (A§4.9).
 - `--out` is resolved against the CLI's cwd before sending, keeping a
   trailing `/` (`dir/` or `dir/.` names a folder, which the host refuses,
   A§5.9). Without a readable cwd only an absolute `--out` or `--project`
