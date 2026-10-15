@@ -20,7 +20,7 @@ use qrec_core::protocol::command::{ExportFormat, Quality, VideoCodec};
 use qrec_core::requantize::derive_duration_frames;
 use qrec_core::state::{Capabilities, VaapiCaps};
 use qrec_core::testkit::{self, strategies::arb_project};
-use qrec_core::time::{frame_ns, ns_to_frame_round};
+use qrec_core::time::frame_ns;
 use qrec_core::timeline::total_frames;
 use qrec_core::{ClipId, Frame};
 
@@ -373,16 +373,36 @@ proptest! {
         for stream in project.takes.values().flat_map(|t| &t.streams).filter(|s| s.kind == StreamKind::Video) {
             let recorded = stream.fps.unwrap_or(canvas);
             let sel = select_frames(stream, canvas, in_);
-            let nearest = |t: u64| -> i64 {
-                if recorded == canvas {
-                    t as i64 - ns_to_frame_round(stream.start_offset_ns, canvas)
-                } else {
-                    ns_to_frame_round(frame_ns(t as i64, canvas) - stream.start_offset_ns, recorded)
-                }
-            };
+            let nearest = |t: u64| nearest_recorded(recorded, stream.start_offset_ns, canvas, t);
             let lead = (in_..in_ + 10_000).take_while(|&t| nearest(t) < 0).count() as u64;
             prop_assert_eq!(sel.lead, lead);
             prop_assert_eq!(sel.k0 as i64, nearest(in_ + lead));
+            // At another rate, every recorded frame starts where the rule
+            // first shows it, counted from the unit's start (`k0` may have
+            // started before the unit: it shows from the unit's first frame).
+            if let Some(retime) = sel.retime {
+                for j in sel.k0 as i64..sel.k0 as i64 + 20 {
+                    let start = (in_..in_ + 10_000).find(|&t| nearest(t) >= j).unwrap();
+                    prop_assert_eq!(retime.slot(j).max(0), start as i64 - in_ as i64);
+                }
+            }
         }
     }
+}
+
+/// The recorded frame nearest to take frame `t`'s time in the file, the
+/// earlier one on a tie (A§9.3), by comparing distances in whole numbers
+/// (times scaled by R·C·10⁹).
+fn nearest_recorded(recorded: Fps, offset_ns: i64, canvas: Fps, t: u64) -> i64 {
+    let (cn, cd) = (i128::from(canvas.num), i128::from(canvas.den));
+    let (rn, rd) = (i128::from(recorded.num), i128::from(recorded.den));
+    let time = (i128::from(t) * cd * 1_000_000_000 - i128::from(offset_ns) * cn) * rn;
+    let step = rd * cn * 1_000_000_000;
+    let before = time.div_euclid(step);
+    let after = before + 1;
+    (if after * step - time < time - before * step {
+        after
+    } else {
+        before
+    }) as i64
 }

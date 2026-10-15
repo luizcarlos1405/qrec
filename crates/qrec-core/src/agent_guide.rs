@@ -209,7 +209,9 @@ it in `error.details` (files and sizes, history entries lost, clips moved).
 Pass `--yes` only when that loss is intended:
 
 - `qrec take purge <take>…` deletes unused takes' media (not undoable);
-- `--out PATH` on `export` or `frame save` when PATH exists (overwrite);
+- `--out PATH` on `export` or `frame save` when PATH exists (overwrite),
+  also when PATH appears while the job runs: nothing is replaced and the
+  result is kept next to it (`error.details.kept`);
 - `qrec history clear`, `qrec history restore <seq>`;
 - `qrec project set --canvas @<fps>` on a project with takes (clip bounds
   are re-quantized).
