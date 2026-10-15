@@ -3,7 +3,8 @@
 //! edits only its own files:
 //!
 //! - `lockfile`, `publish` — owner: store
-//! - `headless`, `cli_host`, `signals`, `spawn` and this file — owner: ipc
+//! - `headless`, `cli_host`, `gui`, `takeover`, `signals`, `spawn` and this
+//!   file — owner: ipc
 //!
 //! A host runs like this (A§8.3): take the lock → record `starting` →
 //! publish the socket and start the IPC server → record `ready` → open the
@@ -29,16 +30,26 @@
 //! soon as its jobs report it (≤ 2 s) so its command still prints its final
 //! result, with a watchdog that `_exit(130)`s 5 s later if that hangs.
 //!
+//! **Exit rules** (GUI, docs/GUI.md G§3.4.1): a window holds the host, so it
+//! never idles out and refuses `shutdown`; it exits once its window asked to
+//! close ([`gui::GuiHost::close`]: it stops accepting at once) and it is
+//! quiet, or 60 s after that request whatever still runs (dropping the
+//! Session cancels jobs and finalizes a take within their own deadlines).
+//! Signals as for every host; the second one hard-exits like a headless
+//! host. [`takeover`] makes another host let go of the project first.
+//!
 //! The Session only re-evaluates the exit rules when it handles a message,
 //! so a waker thread sends a cheap nudge (a `Query::Status` nobody waits
 //! for) whenever a deadline of the rules comes due.
 
 pub mod cli_host;
+pub mod gui;
 pub mod headless;
 pub mod lockfile;
 pub mod publish;
 pub mod signals;
 pub mod spawn;
+pub mod takeover;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
@@ -55,6 +66,7 @@ pub use cli_host::{
     CliContext, CliExit, CliRequest, Fallback, Finish, RequestContext, RequestEvents, RouteOpts,
     request, run_cli,
 };
+pub use gui::{GuiHost, GuiHostSpec, GuiPort, HostEvent};
 pub use headless::{HeadlessArgs, main_headless, run_headless};
 pub use spawn::HostProgram;
 
@@ -82,6 +94,12 @@ pub trait HostSession {
     /// it holds again.
     fn run_until(&mut self, done: &mut dyn FnMut(&State) -> bool);
     fn state(&self) -> &State;
+    /// How many states its observer saw ([`Session::rev`]): the revision of
+    /// [`state`](Self::state), which a GUI host's first snapshot carries.
+    /// Stand-ins without an observer say 0.
+    fn rev(&self) -> u64 {
+        0
+    }
 }
 
 impl HostSession for Session {
@@ -95,6 +113,10 @@ impl HostSession for Session {
 
     fn state(&self) -> &State {
         Session::state(self)
+    }
+
+    fn rev(&self) -> u64 {
+        Session::rev(self)
     }
 }
 
@@ -168,6 +190,9 @@ pub struct ExitRules {
     /// In-process CLI host: after the second signal (its children are
     /// killed), stop serving at the latest after this long.
     pub hurry_grace: Duration,
+    /// GUI host: after its window asked to close, exit at the latest after
+    /// this long, quiet or not (docs/GUI.md G§3.4.1).
+    pub close_grace: Duration,
 }
 
 impl Default for ExitRules {
@@ -178,6 +203,7 @@ impl Default for ExitRules {
             signal_grace: Duration::from_secs(15),
             flush_timeout: Duration::from_secs(10),
             hurry_grace: Duration::from_secs(2),
+            close_grace: Duration::from_secs(60),
         }
     }
 }
@@ -205,6 +231,12 @@ pub enum HostEnd {
     SignalTimeout,
     /// The Session stopped running on its own while the rules said wait.
     SessionStopped,
+    /// GUI host: its window closed, once quiet or after the close grace
+    /// (exit 0).
+    Closed,
+    /// GUI host: it never served a Session: `GuiHost::fail`, a Session that
+    /// couldn't open, or a crash. The `HostEvent` before `Stopped` says which.
+    Failed,
 }
 
 impl HostEnd {
@@ -234,6 +266,10 @@ pub(crate) struct ExitInputs {
     /// In-process CLI host: whether its own command got its reply.
     pub own_done: Option<bool>,
     pub ready_at: Instant,
+    /// A GUI host: never `Unused` or `Idle`, and no `shutdown`.
+    pub gui: bool,
+    /// GUI host: when its window asked to close.
+    pub close_requested: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,6 +294,22 @@ pub(crate) fn decide(i: &ExitInputs, rules: &ExitRules) -> Decision {
             return Decision::Exit(HostEnd::SignalTimeout);
         }
         return Decision::Wait(Some(limit));
+    }
+    if i.gui {
+        // A window holds the host: it goes when the window closes, once
+        // quiet, or when the close grace runs out whatever still runs.
+        return match i.close_requested {
+            None => Decision::Wait(None),
+            Some(_) if quiet => Decision::Exit(HostEnd::Closed),
+            Some(at) => {
+                let limit = at + rules.close_grace;
+                if i.now >= limit {
+                    Decision::Exit(HostEnd::Closed)
+                } else {
+                    Decision::Wait(Some(limit))
+                }
+            }
+        };
     }
     if i.shutdown {
         return if quiet {
@@ -473,6 +525,11 @@ pub(crate) struct HostCtl {
     /// The second signal in an in-process CLI host: stop soon.
     pub hurried_at: Mutex<Option<Instant>>,
     pub waker: OnceLock<Arc<WakerInner>>,
+    /// GUI host: when its window asked to close ([`gui::GuiHost::close`]).
+    pub close_requested: Mutex<Option<Instant>>,
+    /// Called by the first signal, after its messages went out: a GUI host
+    /// whose Session isn't serving yet stops then (G§3.3).
+    pub on_signal: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl HostCtl {
@@ -487,6 +544,23 @@ impl HostCtl {
             .signalled_at
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn close_requested(&self) -> Option<Instant> {
+        *self
+            .close_requested
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The window asked to close (the first request counts); the loop
+    /// looks at once.
+    fn request_close(&self) {
+        self.close_requested
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(Instant::now);
+        self.wake_now();
     }
 
     fn hurried_at(&self) -> Option<Instant> {
@@ -509,6 +583,7 @@ impl HostCtl {
 
 /// A host that holds the lock and serves its socket.
 pub(crate) struct Host {
+    kind: HostKind,
     pub paths: ProjectPaths,
     lock: ProjectLock,
     record: LockRecord,
@@ -531,6 +606,19 @@ impl Host {
         socket: &Path,
         opts: HostOptions,
     ) -> Result<Host, CoreError> {
+        Self::start_with(kind, paths, lock, socket, opts, Vec::new())
+    }
+
+    /// [`start`](Self::start) with `first` queued for the Session ahead of
+    /// every request a client sends (a GUI host's first `Init`, D-35).
+    pub fn start_with(
+        kind: HostKind,
+        paths: ProjectPaths,
+        lock: ProjectLock,
+        socket: &Path,
+        opts: HostOptions,
+        first: Vec<Msg>,
+    ) -> Result<Host, CoreError> {
         let mut record = LockRecord::starting(kind, socket, Utc::now().trunc_subsecs(0));
         lock_record::write(&lock, &record)?;
         let published = publish(socket)?;
@@ -542,7 +630,12 @@ impl Host {
                 hook_ctl.wake_now();
             }
         });
-        let server = IpcServer::start(published, ServerConfig::new(paths.root(), kind), hook)?;
+        let server = IpcServer::start_with(
+            published,
+            ServerConfig::new(paths.root(), kind),
+            hook,
+            first,
+        )?;
         let sender = server.sender();
         let waker = Waker::start(move || sender.send(nudge_msg()))
             .map_err(|e| CoreError::io(format!("can't start the host waker: {e}")))?;
@@ -563,6 +656,7 @@ impl Host {
         };
         lock_record::set_state(&lock, &mut record, HostState::Ready)?;
         Ok(Host {
+            kind,
             paths,
             lock,
             record,
@@ -610,10 +704,19 @@ impl Host {
         let mut state_quiet_since = Some(self.ready_at);
         let mut end = None;
         let mut stopping_noted = false;
+        let mut closing_noted = false;
         let mut spontaneous = 0u32;
+        let gui = self.kind == HostKind::Gui;
         self.waker.wake_now();
         loop {
             let mut done = |state: &State| {
+                // The window asked to close (GUI): stop accepting first, so
+                // the connections counted below are all there will be.
+                let close_requested = self.ctl.close_requested().filter(|_| gui);
+                if close_requested.is_some() && !closing_noted {
+                    closing_noted = true;
+                    self.on_close_request();
+                }
                 let now = Instant::now();
                 let own_done = own.as_mut().map(|own| own());
                 if own_done == Some(true) {
@@ -653,6 +756,8 @@ impl Host {
                     hurried_at: self.ctl.hurried_at(),
                     own_done,
                     ready_at: self.ready_at,
+                    gui,
+                    close_requested,
                 };
                 // What the last evaluation decided: the Session may run on
                 // after one that said stop (A§5.3: a recovery still out).
@@ -673,8 +778,11 @@ impl Host {
             let started = Instant::now();
             session.run_until(&mut done);
             if let Some(why) = end.take() {
-                // Out of time after a signal: go, whoever is connected.
-                if why == HostEnd::SignalTimeout {
+                // Out of time after a signal: go, whoever is connected. A
+                // closing GUI host stopped accepting when the close came,
+                // so nobody can be admitted any more: it goes too (open
+                // connections still get `finish`'s flush).
+                if matches!(why, HostEnd::SignalTimeout | HostEnd::Closed) {
                     return why;
                 }
                 // The rules saw no open connection; stop accepting only if
@@ -709,6 +817,14 @@ impl Host {
         self.mark_stopping();
         self.server.send(record_stop_msg());
         self.server.send(Msg::Shutdown);
+    }
+
+    /// The window asked to close (G§3.4.1): the record says `stopping` and
+    /// the socket goes; the GUI already sent what ends a recording or a job
+    /// (D-12), the rules wait until that is over.
+    fn on_close_request(&self) {
+        self.mark_stopping();
+        self.server.stop_accepting();
     }
 
     /// The lock record says `stopping` (best effort: it only words errors).
@@ -792,6 +908,9 @@ fn watch_signals(
         sender.send_urgent(record_stop_msg());
         sender.send_urgent(Msg::Interrupt);
         first_ctl.wake_now();
+        if let Some(on_signal) = first_ctl.on_signal.get() {
+            on_signal();
+        }
     };
     let second = move || match on_second {
         SecondSignal {

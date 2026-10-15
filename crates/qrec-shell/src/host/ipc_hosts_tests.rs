@@ -42,6 +42,8 @@ fn inputs(now: Instant) -> ExitInputs {
         hurried_at: None,
         own_done: None,
         ready_at: now,
+        gui: false,
+        close_requested: None,
     }
 }
 

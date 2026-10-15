@@ -34,8 +34,8 @@ use crate::host::publish::publish;
 use crate::host::signals::{self, HOST_SIGNALS, Interrupts};
 use crate::host::spawn::{HostProgram, spawn_headless};
 use crate::host::{
-    CliContext, CliExit, CliRequest, ExitRules, HeadlessArgs, HostOptions, HostSession, Opener,
-    run_cli, run_headless,
+    CliContext, CliExit, CliRequest, ExitRules, GuiHost, GuiHostSpec, GuiPort, HeadlessArgs,
+    HostEnd, HostEvent, HostOptions, HostSession, Opener, run_cli, run_headless,
 };
 use crate::lock::ProjectLock;
 use crate::msg::{Inbox, Msg, Request, Responder};
@@ -703,6 +703,103 @@ impl Opener for FakeOpener {
     }
 }
 
+// ------------------------------------------------------------- fake port
+
+/// What a [`FakePort`] heard, in order.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PortEvent {
+    Snapshot(u64),
+    Toast(qrec_core::protocol::Toast, bool),
+    Host(HostEvent),
+}
+
+/// A GUI port that records what the host tells the window (and logs host
+/// events to a [`FakeLog`] when it has one, for child processes).
+#[derive(Default)]
+pub(crate) struct FakePort {
+    events: Mutex<Vec<PortEvent>>,
+    cv: std::sync::Condvar,
+    log: Option<FakeLog>,
+}
+
+impl FakePort {
+    pub fn logging_to(log: FakeLog) -> Self {
+        Self {
+            log: Some(log),
+            ..Self::default()
+        }
+    }
+
+    pub fn events(&self) -> Vec<PortEvent> {
+        self.events.lock().unwrap().clone()
+    }
+
+    pub fn host_events(&self) -> Vec<HostEvent> {
+        self.events()
+            .into_iter()
+            .filter_map(|e| match e {
+                PortEvent::Host(event) => Some(event),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The `end` of `Stopped`, once it came.
+    pub fn stopped(&self) -> Option<HostEnd> {
+        self.host_events().into_iter().find_map(|e| match e {
+            HostEvent::Stopped { end } => Some(end),
+            _ => None,
+        })
+    }
+
+    /// Waits up to `timeout` for a host event `pred` accepts.
+    pub fn wait_host(&self, timeout: Duration, pred: impl Fn(&HostEvent) -> bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut events = self.events.lock().unwrap();
+        loop {
+            if events
+                .iter()
+                .any(|e| matches!(e, PortEvent::Host(event) if pred(event)))
+            {
+                return true;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            events = self.cv.wait_timeout(events, deadline - now).unwrap().0;
+        }
+    }
+
+    /// Waits up to `timeout` for `Stopped` and returns its `end`.
+    pub fn wait_stopped(&self, timeout: Duration) -> Option<HostEnd> {
+        self.wait_host(timeout, |e| matches!(e, HostEvent::Stopped { .. }));
+        self.stopped()
+    }
+
+    fn push(&self, event: PortEvent) {
+        if let (Some(log), PortEvent::Host(host)) = (&self.log, &event) {
+            log.push(json!({ "event": "hostEvent", "detail": format!("{host:?}") }));
+        }
+        self.events.lock().unwrap().push(event);
+        self.cv.notify_all();
+    }
+}
+
+impl GuiPort for FakePort {
+    fn snapshot(&self, rev: u64, _state: Arc<State>) {
+        self.push(PortEvent::Snapshot(rev));
+    }
+
+    fn toast(&self, toast: qrec_core::protocol::Toast, recovery: bool) {
+        self.push(PortEvent::Toast(toast, recovery));
+    }
+
+    fn host(&self, event: HostEvent) {
+        self.push(PortEvent::Host(event));
+    }
+}
+
 /// Short exit rules for test hosts, so a failed test never leaves one
 /// running for long.
 pub(crate) fn quick_rules() -> ExitRules {
@@ -712,6 +809,7 @@ pub(crate) fn quick_rules() -> ExitRules {
         signal_grace: Duration::from_secs(3),
         flush_timeout: Duration::from_secs(2),
         hurry_grace: Duration::from_secs(1),
+        close_grace: Duration::from_secs(3),
     }
 }
 
@@ -807,6 +905,7 @@ fn child_entry() {
         "headless" => child_headless(&log),
         "cli" => child_cli(&log),
         "spawner" => child_spawner(&log),
+        "gui" => child_gui(&log),
         other => panic!("unknown test role {other}"),
     };
     std::process::exit(i32::from(code));
@@ -907,6 +1006,37 @@ fn child_cli(log: &Path) -> u8 {
         (CliExit::Replied, Some(Ok(_))) => 0,
         (CliExit::Replied, Some(Err(e))) => e.exit_code(),
         (CliExit::Replied, None) => 99,
+    }
+}
+
+/// A GUI host on a fake Session with the process's signal handlers, as the
+/// window would run it (G§3.4.1): it serves until it stops and exits like
+/// the GUI does, 130 after a signal and 0 once closed. Host events go to the
+/// log. The second signal `_exit(130)`s on its own.
+fn child_gui(log: &Path) -> u8 {
+    let project = PathBuf::from(std::env::var_os(PROJECT).expect("QREC_IPC_TEST_PROJECT"));
+    let dir = fs::canonicalize(project).unwrap();
+    let interrupts = signals::install(&HOST_SIGNALS).expect("signal handlers");
+    let lock = ProjectLock::try_acquire(&dir)
+        .unwrap()
+        .expect("the lock is free");
+    let port = Arc::new(FakePort::logging_to(FakeLog::to_file(log)));
+    let spec = GuiHostSpec {
+        dir,
+        lock,
+        env: Env::from_process(),
+        interrupts: Some(interrupts),
+        rules: rules_from_env(),
+        first: None,
+    };
+    let host = GuiHost::start(spec, Arc::clone(&port) as Arc<dyn GuiPort>).expect("start");
+    let mut opener = FakeOpener::to_file(log);
+    opener.stubborn = std::env::var_os(STUBBORN).is_some();
+    host.open(Box::new(opener));
+    match port.wait_stopped(Duration::from_secs(120)) {
+        Some(HostEnd::Signal | HostEnd::SignalTimeout) => 130,
+        Some(HostEnd::Closed) => 0,
+        _ => 1,
     }
 }
 

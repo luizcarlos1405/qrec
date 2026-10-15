@@ -21,10 +21,13 @@ use crate::backend::{Backend, Events, Fallback, Finish, ProjectRequest, RouteOpt
 use crate::output::Ui;
 use crate::plan::{self, Local, OnEmpty, Plan, ProjectPlan, View};
 use crate::resolve::{self, Target};
-use crate::{GUI_NOT_BUILT, config, human};
+use crate::{config, human};
 
 /// The exit code of a command stopped by Ctrl+C (128 + SIGINT).
 pub const EXIT_INTERRUPTED: u8 = 130;
+
+/// `qrec --json` without a command (`usage`, exit 2, docs/GUI.md G§3.2).
+pub const GUI_NO_JSON: &str = "the GUI has no --json output; give a command";
 
 /// The process context of one run.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,7 +54,10 @@ pub(crate) fn execute(
     let planned = plan::plan(cli, env.cwd.as_deref());
     let result = match planned {
         Err(e) => Err(e),
-        Ok(Plan::Gui) => Err(CoreError::unavailable(GUI_NOT_BUILT)),
+        // The window prints nothing on stdout: `--json` has nothing to say.
+        Ok(Plan::Gui) if g.json => Err(CoreError::usage(GUI_NO_JSON)),
+        Ok(Plan::Gui) => project_dir(cli, env.cwd.as_deref())
+            .and_then(|(dir, explicit)| backend.gui(&dir, explicit)),
         Ok(Plan::Local(local)) => run_local(&local, cli, backend, env, &mut ui),
         Ok(Plan::Project(plan)) => project_dir(cli, env.cwd.as_deref())
             .map(|(dir, explicit)| run_project(&plan, &dir, explicit, backend, &mut ui)),

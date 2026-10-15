@@ -6,10 +6,15 @@
 //! - [`fixture`]: ffmpeg-generated media (`testsrc2` video, a 440 Hz tone
 //!   gated by speech intervals), cached across test processes.
 //! - [`fixture_project`]: a valid project whose takes point at fixture media.
+//! - [`design`] (feature `testkit`: it builds on `qrec_core::testkit`): the
+//!   GUI's fixture projects, BRIEF §3's sample among them (docs/GUI.md
+//!   G§8.4).
 //!
 //! Helpers panic with a clear message instead of returning errors: they only
 //! run in tests.
 
+#[cfg(feature = "testkit")]
+pub mod design;
 mod media;
 mod project;
 mod tool;

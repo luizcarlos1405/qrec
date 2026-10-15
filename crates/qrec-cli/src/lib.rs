@@ -39,10 +39,11 @@ use qrec_core::{CoreError, ErrorCode};
 
 pub use args::*;
 pub use backend::*;
-pub use exec::{EXIT_INTERRUPTED, RunEnv};
+pub use exec::{EXIT_INTERRUPTED, GUI_NO_JSON, RunEnv};
 pub use standalone::Standalone;
 
-/// Printed to stderr by `qrec` without a command until the GUI exists.
+/// What `qrec` without a command says (`unavailable`) when the build has no
+/// GUI: [`Backend::gui`]'s default, until the binary runs `qrec-gui`.
 pub const GUI_NOT_BUILT: &str = "The Qrec GUI is not built yet: the screen designs are waiting for \
                                  product-owner approval (SPEC §15.1). Use the CLI: qrec --help";
 

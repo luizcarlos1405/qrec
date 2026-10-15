@@ -254,6 +254,80 @@ fn shutdown_stops_accepting_and_unlinks_the_socket() {
     assert!(UnixStream::connect(&t.socket).is_err());
 }
 
+/// A GUI host refuses the wire `shutdown` (docs/GUI.md D-13): `busy`, and
+/// it keeps accepting, before and after its Session is attached.
+#[test]
+fn a_gui_host_refuses_shutdown() {
+    let dir = socket_dir();
+    let t = start_server(dir.path(), |cfg| cfg.host = HostKind::Gui);
+    let refused = |lines: &[Value]| {
+        assert_eq!(lines[0], json!({ "id": "s", "accepted": true }));
+        let reply = &lines[1]["reply"];
+        assert_eq!(reply["ok"], false, "{lines:?}");
+        assert_eq!(reply["error"]["code"], "busy");
+        assert_eq!(reply["error"]["message"], GUI_REFUSES_SHUTDOWN);
+        assert_eq!(
+            GUI_REFUSES_SHUTDOWN,
+            "the Qrec window holds this project; close it there"
+        );
+    };
+    refused(&raw_exchange(
+        &t.socket,
+        &request_line("s", json!("shutdown")),
+    ));
+    let (inbox, session) = session_thread(|_| true);
+    t.server.attach(inbox);
+    refused(&raw_exchange(
+        &t.socket,
+        &request_line("s", json!("shutdown")),
+    ));
+    let stats = t.server.stats();
+    assert!(stats.accepting && !stats.shutdown, "{stats:?}");
+    assert!(t.socket.exists());
+    assert!(!t.events.lock().unwrap().contains(&ServerEvent::Shutdown));
+    // Neither reached the Session, and neither counts as a request.
+    assert_eq!(stats.requests, 0);
+    drop(t);
+    session.join().unwrap();
+}
+
+/// Messages a host hands [`IpcServer::start_with`] go ahead of every
+/// request, also one that was waiting in the backlog as the server started.
+#[test]
+fn first_messages_go_ahead_of_every_request() {
+    let dir = socket_dir();
+    let socket = dir.path().join("p.sock");
+    let published = crate::host::publish::publish(&socket).unwrap();
+    // A client that connected before the acceptor ran.
+    let early = {
+        let socket = socket.clone();
+        std::thread::spawn(move || raw_exchange(&socket, &command_line("early")))
+    };
+    std::thread::sleep(Duration::from_millis(100));
+    let cfg = ServerConfig::new(std::path::Path::new("/projects/swamp"), HostKind::Gui);
+    let server = IpcServer::start_with(
+        published,
+        cfg,
+        Arc::new(|_| {}),
+        vec![Msg::DiskChanged, Msg::RetryLive],
+    )
+    .unwrap();
+    assert!(wait_for(Duration::from_secs(5), || server.stats().requests == 1));
+    let (inbox, rx) = Inbox::channel();
+    server.attach(inbox);
+    assert!(matches!(rx.try_recv().unwrap(), Msg::DiskChanged));
+    assert!(matches!(rx.try_recv().unwrap(), Msg::RetryLive));
+    match rx.try_recv().unwrap() {
+        Msg::Request { req, mut to } => {
+            assert!(matches!(req.body, WireBody::Command(_)), "{req:?}");
+            to.reply(Ok(ok_result("done")));
+        }
+        other => panic!("expected the early request, got {other:?}"),
+    }
+    let lines = early.join().unwrap();
+    assert_eq!(lines[1]["reply"]["ok"], true, "{lines:?}");
+}
+
 /// A host stops accepting only while no connection is open, atomically
 /// with admission (A§8.3 step 3): one that is open keeps it serving; once
 /// none is, the socket goes and nothing more is admitted.

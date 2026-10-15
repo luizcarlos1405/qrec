@@ -901,14 +901,30 @@ fn no_command_says_the_gui_is_not_built() {
     let (code, out, err) = run("qrec");
     assert_eq!((code, out.as_str()), (1, ""));
     assert_eq!(err, format!("{GUI_NOT_BUILT}\n"));
+    let (code, _, err) = run("qrec -v");
+    assert_eq!((code, err), (1, format!("{GUI_NOT_BUILT}\n")));
+}
 
-    let (code, out, _) = run("qrec --json");
-    assert_eq!(code, 1);
-    let reply: Value = serde_json::from_str(&out).unwrap();
-    assert_eq!(
-        reply,
-        json!({"ok": false, "error": {"code": "unavailable", "message": GUI_NOT_BUILT}})
-    );
+/// The window prints nothing on stdout, so `qrec --json` alone is a usage
+/// error (exit 2), one object, whatever the build (docs/GUI.md G§3.2).
+#[test]
+fn the_gui_has_no_json_output() {
+    assert_eq!(GUI_NO_JSON, "the GUI has no --json output; give a command");
+    for line in [
+        "qrec --json",
+        "qrec --json -v",
+        "qrec --json --project /nowhere",
+    ] {
+        let (code, out, err) = run(line);
+        assert_eq!(code, 2, "{line}");
+        assert_eq!(err, "", "{line}");
+        let reply: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            reply,
+            json!({"ok": false, "error": {"code": "usage", "message": GUI_NO_JSON}}),
+            "{line}"
+        );
+    }
 }
 
 #[test]

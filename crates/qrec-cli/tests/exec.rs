@@ -70,6 +70,10 @@ struct Fake {
     doctor: Result<Value, CoreError>,
     sources: Result<Value, CoreError>,
     hosted: Vec<(PathBuf, HostArgs)>,
+    /// The windows asked for: the folder and whether `--project` named it.
+    guis: Vec<(PathBuf, bool)>,
+    /// What the window's process exits with.
+    gui_exit: u8,
     logging: Option<(u8, bool)>,
 }
 
@@ -84,6 +88,8 @@ impl Fake {
             doctor: Err(CoreError::unavailable("no doctor")),
             sources: Err(CoreError::unavailable("no sources")),
             hosted: vec![],
+            guis: vec![],
+            gui_exit: 0,
             logging: None,
         }
     }
@@ -164,6 +170,11 @@ impl Backend for Fake {
     fn host(&mut self, project: &Path, args: &HostArgs) -> Result<u8, CoreError> {
         self.hosted.push((project.to_path_buf(), args.clone()));
         Ok(0)
+    }
+
+    fn gui(&mut self, project: &Path, explicit: bool) -> Result<u8, CoreError> {
+        self.guis.push((project.to_path_buf(), explicit));
+        Ok(self.gui_exit)
     }
 }
 
@@ -1652,6 +1663,54 @@ fn the_host_command_gets_an_absolute_project() {
         (fake.hosted[0].1.lock_fd, fake.hosted[0].1.ready_fd),
         (Some(3), Some(4))
     );
+}
+
+/// `qrec` without a command opens the window on the current folder or on
+/// `--project` (made absolute), and exits with the window's code; nothing
+/// is resolved or sent first: the window applies the folder rule itself
+/// (docs/GUI.md G§3.2, G§3.3). Under `--json` it is a usage error.
+#[test]
+fn no_command_opens_the_window() {
+    let tmp = Tmp::new();
+    let project = tmp.project("p");
+    let mut fake = Fake::new(&tmp.dir("cfg"));
+    let window = run(&mut fake, &project, "qrec");
+    assert_eq!(
+        (window.code, window.out.as_str()),
+        (0, ""),
+        "{}",
+        window.err
+    );
+    assert_eq!(fake.guis, [(project.clone(), false)]);
+    // `--project`, relative to the current folder; any folder (the window
+    // shows "Not my swamp" itself).
+    let busy = tmp.busy("busy");
+    fake.gui_exit = 3;
+    let named = run(&mut fake, &tmp.0, "qrec -v --project busy");
+    assert_eq!(named.code, 3);
+    assert_eq!(fake.guis.last().unwrap(), &(busy, true));
+    assert_eq!(fake.logging, Some((1, false)));
+    // No current folder: only an absolute `--project` works.
+    let gone = run_in(&mut fake, None, "qrec");
+    assert_eq!(gone.code, 1);
+    assert!(
+        gone.err.contains("can't read the current directory"),
+        "{}",
+        gone.err
+    );
+    let line = format!("qrec --project {}", project.display());
+    assert_eq!(run_in(&mut fake, None, &line).code, 3);
+    assert_eq!(fake.guis.last().unwrap(), &(project.clone(), true));
+    // `--json`: nothing to print, so a usage error, and no window.
+    let opened = fake.guis.len();
+    let json = run(&mut fake, &project, "qrec --json");
+    assert_eq!(json.code, 2);
+    assert_eq!(
+        json.json(),
+        json!({"ok": false, "error": {"code": "usage", "message": GUI_NO_JSON}})
+    );
+    assert_eq!(fake.guis.len(), opened);
+    assert!(fake.seen.is_empty(), "nothing was sent to a host");
 }
 
 /// SPEC §10.2, A§8.4: an absolute `--project` names the folder, so a

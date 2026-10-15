@@ -23,7 +23,12 @@
 //! - `doctor` and `sources list` are the media owner's report and inventory
 //!   (the fake inventory under the fake backend).
 //! - Logging: `tracing` to stderr, filtered by `-q`/`-v` (or `QREC_LOG`).
-//!   A headless host's stderr is its `.qrec/logs/…-<pid>-host.log`.
+//!   A headless host's stderr is its `.qrec/logs/…-<pid>-host.log`. The
+//!   GUI (`qrec` without a command) logs to its project's GUI log
+//!   (`UserDirs::gui_log`: appended, a header per run, rotated past 8 MiB;
+//!   `info`, `debug` with `-v`), warnings also on stderr (docs/GUI.md
+//!   G§3.2). Until `qrec-gui` is wired in (WP0b) it then says the GUI
+//!   isn't built.
 
 use std::ffi::OsString;
 use std::io::IsTerminal;
@@ -47,11 +52,12 @@ use qrec_shell::host::{
 };
 use qrec_shell::media::FfmpegRunner;
 use qrec_shell::msg::Request;
-use qrec_shell::paths::{Env, UserDirs};
+use qrec_shell::paths::{self, Env, UserDirs};
 use qrec_shell::session::{Notifier, Session, SessionConfig, SessionEnv};
 use qrec_shell::sources::{self, Discover, LiveDevices, SourceInventory};
 use qrec_shell::{ShellError, caps, ipc};
 use serde_json::Value;
+use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 /// This build's version, compared with a live host's `hello`.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -117,7 +123,7 @@ impl Shell {
         let filter = tracing_subscriber::EnvFilter::builder().parse_lossy(directives);
         let ansi = std::io::stderr().is_terminal();
         let _ = match role {
-            Role::Host => tracing_subscriber::fmt()
+            Role::Host | Role::Gui => tracing_subscriber::fmt()
                 .with_env_filter(filter)
                 .with_writer(std::io::stderr)
                 .with_ansi(false)
@@ -133,6 +139,53 @@ impl Shell {
                 .without_time()
                 .try_init(),
         };
+    }
+
+    /// The GUI's logging (docs/GUI.md G§3.2): the GUI log of the project in
+    /// `project` (its canonical path names the file, so GUIs on two projects
+    /// never share one), opened for append with a header line, rotated past
+    /// 8 MiB and never truncated (a second GUI on the project, which exits
+    /// at once, doesn't erase the first one's); warnings also on stderr
+    /// (errors only with `-q`). Without user dirs or a writable log, all of
+    /// it goes to stderr.
+    fn init_gui_logging(&mut self, project: &Path) {
+        if self.logging_ready {
+            return;
+        }
+        self.logging_ready = true;
+        let (verbose, quiet) = self.verbosity.unwrap_or((0, false));
+        let directives = match std::env::var("QREC_LOG") {
+            Ok(custom) if !custom.trim().is_empty() => custom,
+            _ => default_directives(Role::Gui, verbose, quiet, self.json),
+        };
+        let filter = tracing_subscriber::EnvFilter::builder().parse_lossy(directives);
+        let builder = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_ansi(false)
+            .with_target(false)
+            .with_thread_names(true)
+            .with_timer(LocalTime);
+        let dir = std::fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
+        let Ok(dirs) = self.dirs() else {
+            let _ = builder.with_writer(std::io::stderr).try_init();
+            return;
+        };
+        let log = dirs.gui_log(&dir);
+        match paths::open_gui_log(&log, &dir, chrono::Local::now()) {
+            Ok(file) => {
+                let terminal = if quiet {
+                    tracing::Level::ERROR
+                } else {
+                    tracing::Level::WARN
+                };
+                let writer = Arc::new(file).and(std::io::stderr.with_max_level(terminal));
+                let _ = builder.with_writer(writer).try_init();
+            }
+            Err(e) => {
+                let _ = builder.with_writer(std::io::stderr).try_init();
+                tracing::warn!("can't write the GUI log {}: {e}", log.display());
+            }
+        }
     }
 
     /// The process-wide interrupt counter (SIGINT, SIGTERM, SIGHUP),
@@ -169,15 +222,17 @@ impl tracing_subscriber::fmt::time::FormatTime for LocalTime {
     }
 }
 
-/// Who logs: a CLI command, or a host whose stderr is its log file.
+/// Who logs: a CLI command, a host whose stderr is its log file, or the
+/// GUI, which logs to its project's GUI log (warnings also on stderr).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Role {
     Cli,
     Host,
+    Gui,
 }
 
 /// Qrec's own crates, which `-v` makes chattier.
-const OWN_CRATES: [&str; 4] = ["qrec", "qrec_cli", "qrec_shell", "qrec_core"];
+const OWN_CRATES: [&str; 5] = ["qrec", "qrec_cli", "qrec_shell", "qrec_core", "qrec_gui"];
 
 fn default_directives(role: Role, verbose: u8, quiet: bool, json: bool) -> String {
     let own = |level: &str| {
@@ -187,6 +242,10 @@ fn default_directives(role: Role, verbose: u8, quiet: bool, json: bool) -> Strin
     };
     match (role, verbose, quiet) {
         (_, 3.., _) => "trace".to_owned(),
+        // The GUI's log file: `info`, `debug` with -v, whatever -q says
+        // (it only quiets the terminal, G§3.2).
+        (Role::Gui, 1.., _) => own("debug"),
+        (Role::Gui, _, _) => own("info"),
         (_, 2, _) => own("debug"),
         (_, 1, _) => own("info"),
         // stderr is for JSON lines only, unless -v asked for logs.
@@ -316,6 +375,24 @@ impl Backend for Shell {
             ready_fd: args.ready_fd,
         };
         Ok(host::main_headless(args, &mut opener))
+    }
+
+    /// `qrec` without a command (docs/GUI.md G§3.2): the GUI's logging,
+    /// then the window. `qrec-gui` is wired in by WP0b; until then this
+    /// build has no window.
+    fn gui(&mut self, project: &Path, explicit: bool) -> Result<u8, CoreError> {
+        self.init_gui_logging(project);
+        tracing::info!(
+            "qrec {VERSION}: the window for {} (from {})",
+            project.display(),
+            if explicit {
+                "--project"
+            } else {
+                "the current folder"
+            }
+        );
+        tracing::info!("this build has no GUI yet");
+        Err(CoreError::unavailable(qrec_cli::GUI_NOT_BUILT))
     }
 }
 
@@ -497,6 +574,15 @@ mod tests {
         assert!(default_directives(Role::Host, 0, false, false).contains("qrec_shell=info"));
         assert!(default_directives(Role::Cli, 2, false, false).contains("qrec_core=debug"));
         assert_eq!(default_directives(Role::Host, 3, false, false), "trace");
+        // The GUI's log: info, debug with -v, whatever -q or --json say.
+        for (quiet, json) in [(false, false), (true, false), (false, true)] {
+            let info = default_directives(Role::Gui, 0, quiet, json);
+            assert!(info.contains("qrec_gui=info"), "{info}");
+            assert!(info.contains("qrec_shell=info"), "{info}");
+            let debug = default_directives(Role::Gui, 1, quiet, json);
+            assert!(debug.contains("qrec_gui=debug"), "{debug}");
+        }
+        assert!(OWN_CRATES.contains(&"qrec_gui"));
     }
 
     #[test]

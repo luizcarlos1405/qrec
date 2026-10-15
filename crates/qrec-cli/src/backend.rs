@@ -6,7 +6,8 @@
 //! routing a request to the project's host (A§8.3), running it in-process
 //! when no host runs (A§8.5), spawning a headless host for `record`
 //! (A§8.3 step 5), Ctrl+C handling (A§8.6), `doctor` and `sources list`
-//! (A§8.12) and the hidden `qrec host --headless`.
+//! (A§8.12), the hidden `qrec host --headless` and the GUI (`qrec` without
+//! a command, docs/GUI.md G§3.2).
 //!
 //! The `qrec` binary implements it over `qrec-shell`; [`crate::Standalone`]
 //! is the implementation for a build without the shell; tests use fakes.
@@ -169,4 +170,16 @@ pub trait Backend {
     /// idling out or `shutdown`, 130 after a signal, 1 when it couldn't
     /// start (the host already logged why).
     fn host(&mut self, project: &Path, args: &HostArgs) -> Result<u8, CoreError>;
+
+    /// `qrec` without a command (docs/GUI.md G§3.2): the window on the
+    /// folder `project` (`--project DIR` made absolute, `explicit`, else the
+    /// current directory) until it closes; returns the process's exit code
+    /// (0 closed, 130 a signal, 3 not a project, 5 a missing dependency, 6
+    /// the project is held, 1 otherwise). The window shows its own errors,
+    /// so `Err` is only for a GUI that can't run at all. Default: this
+    /// build has no GUI ([`GUI_NOT_BUILT`](crate::GUI_NOT_BUILT)).
+    fn gui(&mut self, project: &Path, explicit: bool) -> Result<u8, CoreError> {
+        let _ = (project, explicit);
+        Err(CoreError::unavailable(crate::GUI_NOT_BUILT))
+    }
 }

@@ -4100,3 +4100,322 @@ fn a_stop_is_answered_at_once_during_the_startup_recovery() {
         );
     }
 }
+
+// ------------------------------------------------------------- the GUI (WP0a)
+
+/// `HH:MM:SS:FF` at 30 fps, in frames.
+fn tc(timecode: &str) -> u64 {
+    let parts: Vec<u64> = timecode.split(':').map(|p| p.parse().unwrap()).collect();
+    ((parts[0] * 60 + parts[1]) * 60 + parts[2]) * 30 + parts[3]
+}
+
+/// The removed runs `[in, out)` of a dry run's clip, from its kept ones.
+fn removed_runs(clip: &Value, in_: u64, out: u64) -> Vec<(u64, u64)> {
+    let mut runs = Vec::new();
+    let mut cursor = in_;
+    for kept in clip["kept"].as_array().unwrap() {
+        let (a, b) = (kept[0].as_u64().unwrap(), kept[1].as_u64().unwrap());
+        if a > cursor {
+            runs.push((cursor, a));
+        }
+        cursor = b;
+    }
+    if cursor < out {
+        runs.push((cursor, out));
+    }
+    runs
+}
+
+/// The GUI's design fixture (docs/GUI.md G§8.4) is BRIEF §3's sample, as
+/// the CLI sees it: §3.3's timeline, §3.2's takes, §3.6's autocut regions
+/// in c3e9 and §3.3's two silences in c2d0.
+#[test]
+fn the_design_fixture_is_the_briefs_sample_project() {
+    use qrec_core::on_event::record::EOS_TIMEOUT_REASON;
+    use qrec_shell::testkit::design::{DesignVariant, design_fixture};
+    let env = TestEnv::new();
+    let dir = env.empty_dir("rust-traits-talk");
+    design_fixture(&dir, DesignVariant::Base);
+
+    // BRIEF §3.3: clip, take, in, out, starts at.
+    let brief = [
+        ("c7f3", 1, 0, 410, "00:00:00:00"),
+        ("c8a1", 1, 455, 912, "00:00:13:20"),
+        ("c1b2", 3, 0, 268, "00:00:28:27"),
+        ("c1b3", 3, 304, 611, "00:00:37:25"),
+        ("c1b4", 3, 652, 890, "00:00:48:02"),
+        ("c1b5", 3, 931, 1180, "00:00:56:00"),
+        ("c1b6", 3, 1222, 1377, "00:01:04:09"),
+        ("c2d0", 5, 12, 1104, "00:01:09:14"),
+        ("c2d1", 5, 1104, 2214, "00:01:45:26"),
+        ("c3e9", 8, 0, 3105, "00:02:22:26"),
+    ];
+    let expected: Vec<Value> = brief
+        .iter()
+        .map(|&(id, take, in_, out, starts)| {
+            json!({
+                "id": id,
+                "take": format!("take-{take:04}"),
+                "in": in_,
+                "out": out,
+                "start": tc(starts),
+                "duration": out - in_,
+            })
+        })
+        .collect();
+    let clips = qrec(&env, &dir, &["clip", "list", "--json"]);
+    clips.ok();
+    assert_eq!(clips.only_reply()["data"], json!(expected));
+    let last = expected.last().unwrap();
+    assert_eq!(
+        last["start"].as_u64().unwrap() + last["duration"].as_u64().unwrap(),
+        tc("00:04:06:11"),
+        "7,391 frames"
+    );
+
+    // BRIEF §3.2: take, status, frames, clips, recovered, error.
+    let takes = qrec(&env, &dir, &["take", "list", "--json"]);
+    takes.ok();
+    let rows: Vec<(String, String, u64, u64, bool, Value)> = takes.only_reply()["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["id"].as_str().unwrap().to_owned(),
+                row["status"].as_str().unwrap().to_owned(),
+                row["durationFrames"].as_u64().unwrap(),
+                row["clips"].as_u64().unwrap(),
+                row["recovered"].as_bool().unwrap(),
+                row["error"].clone(),
+            )
+        })
+        .collect();
+    let row = |n: u32, status: &str, frames: u64, clips: u64, recovered: bool, error: Value| {
+        (
+            format!("take-{n:04}"),
+            status.to_owned(),
+            frames,
+            clips,
+            recovered,
+            error,
+        )
+    };
+    assert_eq!(
+        rows,
+        [
+            row(1, "ok", 912, 2, false, Value::Null),
+            row(2, "ok", 664, 0, false, Value::Null),
+            row(3, "ok", 1377, 5, false, Value::Null),
+            row(4, "ok", 1548, 0, false, Value::Null),
+            row(5, "ok", 2214, 2, false, Value::Null),
+            row(6, "tooShort", 7, 0, false, Value::Null),
+            row(7, "ok", 1870, 0, true, Value::Null),
+            row(8, "ok", 3105, 1, false, Value::Null),
+            row(9, "broken", 0, 0, false, json!(EOS_TIMEOUT_REASON)),
+        ]
+    );
+
+    // BRIEF §3.6: autocut on c3e9 (take 8, from 00:02:22:26) removes four
+    // regions: 48, 42, 39 and 57 frames, 186 in all.
+    let dry = qrec(
+        &env,
+        &dir,
+        &["autocut", "--clips", "c3e9", "--dry-run", "--json"],
+    );
+    dry.ok();
+    let plan = &dry.only_reply()["data"]["result"];
+    let clip = &plan["clips"][0];
+    assert_eq!(clip["clip"], "c3e9", "{plan}");
+    assert_eq!(clip["silences"], 4, "{plan}");
+    assert_eq!(clip["removedFrames"], 186, "{plan}");
+    let start = tc("00:02:22:26");
+    let regions: Vec<(u64, u64)> = removed_runs(clip, 0, 3105)
+        .into_iter()
+        .map(|(a, b)| (start + a, start + b))
+        .collect();
+    let brief_regions = [
+        ("00:02:41:12", "00:02:43:00", 48),
+        ("00:03:05:20", "00:03:07:02", 42),
+        ("00:03:29:06", "00:03:30:15", 39),
+        ("00:03:51:18", "00:03:53:15", 57),
+    ];
+    assert_eq!(
+        regions,
+        brief_regions
+            .iter()
+            .map(|&(from, to, frames)| {
+                assert_eq!(tc(to) - tc(from), frames);
+                (tc(from), tc(to))
+            })
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(clip_ids(&env, &dir).len(), 10, "a dry run changes nothing");
+
+    // BRIEF §3.3: A1 is silent at 00:01:13:02–00:01:14:10 and
+    // 00:01:18:20–00:01:19:05 inside c2d0 (take 5 from frame 12, at
+    // 00:01:09:14); the cut takes each silence shrunk by the 120 ms padding
+    // (3.6 frames), snapped inward.
+    let dry = qrec(
+        &env,
+        &dir,
+        &["autocut", "--clips", "c2d0", "--dry-run", "--json"],
+    );
+    dry.ok();
+    let plan = &dry.only_reply()["data"]["result"];
+    let clip = &plan["clips"][0];
+    assert_eq!(
+        (clip["clip"].as_str(), clip["silences"].as_u64()),
+        (Some("c2d0"), Some(2)),
+        "{plan}"
+    );
+    let start = tc("00:01:09:14");
+    let cuts: Vec<(u64, u64)> = removed_runs(clip, 12, 1104)
+        .into_iter()
+        .map(|(a, b)| (start + a - 12, start + b - 12))
+        .collect();
+    let silences = [
+        ("00:01:13:02", "00:01:14:10"),
+        ("00:01:18:20", "00:01:19:05"),
+    ];
+    assert_eq!(
+        cuts,
+        silences
+            .iter()
+            .map(|&(from, to)| (tc(from) + 4, tc(to) - 4))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The window prints nothing on stdout: `qrec --json` alone is a usage
+/// error, one object (docs/GUI.md G§3.2). Without `--json`, `qrec` logs to
+/// its project's GUI log (appended per run, one per project) and, until the
+/// GUI is wired in, says it isn't built.
+#[test]
+fn qrec_without_a_command() {
+    use qrec_shell::paths::UserDirs;
+    let env = TestEnv::new();
+    let a = env.empty_dir("a");
+    let b = env.empty_dir("b");
+    let json = qrec(&env, &a, &["--json"]);
+    assert_eq!(json.code, Some(2));
+    assert_eq!(json.stderr, "");
+    assert_eq!(
+        json.only_reply(),
+        json!({"ok": false, "error": {"code": "usage", "message": "the GUI has no --json output; give a command"}})
+    );
+    let dirs = UserDirs::resolve(&env.paths_env()).unwrap();
+    let log_of = |dir: &Path| dirs.gui_log(&fs::canonicalize(dir).unwrap());
+    assert!(!log_of(&a).exists(), "--json opened no window");
+
+    for _ in 0..2 {
+        let gui = qrec(&env, &a, &[]);
+        assert_eq!(gui.code, Some(1));
+        assert!(
+            gui.stderr.contains("The Qrec GUI is not built yet"),
+            "{}",
+            gui.stderr
+        );
+    }
+    qrec(&env, &b, &["-v"]);
+    let headers = |dir: &Path| {
+        fs::read_to_string(log_of(dir))
+            .unwrap()
+            .lines()
+            .filter(|l| l.starts_with("=== qrec "))
+            .count()
+    };
+    assert_eq!((headers(&a), headers(&b)), (2, 1));
+    assert_ne!(log_of(&a), log_of(&b));
+    let text = fs::read_to_string(log_of(&a)).unwrap();
+    assert!(
+        text.contains(&format!("{} ===", fs::canonicalize(&a).unwrap().display())),
+        "{text}"
+    );
+}
+
+/// X1 "Stop & open" against a real headless recorder (the fake backend):
+/// the take is finalized and placed, the recorder exits, and the lock
+/// becomes ours (G§3.4.3).
+#[test]
+fn a_gui_takes_over_a_headless_recording() {
+    use qrec_shell::host::takeover::{self, Holder};
+    use qrec_shell::lock::ProjectLock;
+    let env = TestEnv::new();
+    let dir = env.empty_dir("x1");
+    qrec(&env, &dir, &["init", "--canvas", "640x360@30"]).ok();
+    qrec(
+        &env,
+        &dir,
+        &["scene", "layer", "add", "screen", "--output", "FAKE-1"],
+    )
+    .ok();
+    qrec(&env, &dir, &["scene", "audio", "add", "mic"]).ok();
+    qrec(&env, &dir, &["record", "start", "--json"]).ok();
+    let dir = fs::canonicalize(&dir).unwrap();
+    let paths_env = env.paths_env();
+
+    let Holder::Host { hello, socket } = takeover::find_holder(&dir, &paths_env).unwrap() else {
+        panic!("the recorder holds the project");
+    };
+    assert_eq!(hello.host.as_str(), "headless");
+    let record = serde_json::to_value(&hello.record).unwrap();
+    assert_eq!(record["phase"], "recording", "{record}");
+    thread::sleep(Duration::from_millis(1500));
+
+    let stopped = takeover::stop_recording(&socket, takeover::STOP_TIMEOUT).unwrap();
+    let finalized = &stopped["result"];
+    assert_eq!(finalized["take"], "take-0001", "{stopped}");
+    assert_eq!(finalized["status"], "ok", "{stopped}");
+    assert_eq!(finalized["placed"], true, "{stopped}");
+    takeover::request_shutdown(&socket).unwrap();
+    let lock = takeover::wait_for_lock(&dir, takeover::LOCK_TIMEOUT).unwrap();
+    wait_until_no_host(&env);
+    assert!(ProjectLock::is_held(&dir).unwrap(), "the lock is ours");
+    let project: Value = serde_json::from_slice(&fs::read(dir.join("qrec.json")).unwrap()).unwrap();
+    assert_eq!(project["takes"]["take-0001"]["status"], "ok");
+    assert_eq!(project["timeline"]["clips"].as_array().unwrap().len(), 1);
+    drop(lock);
+    assert_eq!(take_row(&env, &dir, "take-0001")["clips"], 1);
+}
+
+/// `QREC_FAKE_INVENTORY=design`: the fake sources carry BRIEF's labels and
+/// sizes (G§8.4).
+#[test]
+fn the_design_inventory_labels_the_fake_sources() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("anywhere");
+    let sources = qrec_with(
+        &env,
+        &dir,
+        &["sources", "list", "--json"],
+        &[("QREC_FAKE_INVENTORY", OsStr::new("design"))],
+    );
+    sources.ok();
+    let data = &sources.only_reply()["data"];
+    let screens: Vec<(&str, &str, u64)> = data["screens"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["output"].as_str().unwrap(),
+                s["description"].as_str().unwrap(),
+                s["width"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        screens,
+        [
+            ("FAKE-1", "GIGA-BYTE GS27QA", 2560),
+            ("FAKE-2", "Dell U2720Q", 3840)
+        ]
+    );
+    assert_eq!(data["cameras"][0]["label"], "Logitech C920");
+    assert_eq!(data["mics"][0]["description"], "Yeti Nano");
+    assert_eq!(
+        data["monitors"][0]["description"],
+        "Built-in Audio Analog Stereo"
+    );
+}

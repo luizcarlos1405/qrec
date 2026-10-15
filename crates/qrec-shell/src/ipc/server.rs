@@ -11,9 +11,13 @@
 //! The server can start before its Session exists (A§8.3 step 1: the socket
 //! is published before recovery and `gst::init()`): until [`IpcServer::attach`]
 //! requests are parked in order and `hello` is answered by the server itself
-//! (a host that hasn't opened its Session is idle and has no jobs).
+//! (a host that hasn't opened its Session is idle and has no jobs). A host
+//! can hand the server messages that go ahead of every request
+//! ([`IpcServer::start_with`]: the GUI's first `Init`, D-35).
 //! `shutdown` is handled here: stop accepting, unlink the socket, tell the
-//! host ([`ServerEvent::Shutdown`]), reply.
+//! host ([`ServerEvent::Shutdown`]), reply. A GUI host refuses it with
+//! `busy` (docs/GUI.md D-13): a window holds the project, and only closing
+//! it there ends that host.
 //!
 //! A CLI command's own host (A§8.5) bounces what it doesn't take: closed
 //! before `accepted`, the request never ran and its client routes again
@@ -53,6 +57,9 @@ use crate::msg::{Inbox, Msg, Request, Responder};
 
 /// How often an idle connection checks whether its client left.
 const GONE_CHECK: Duration = Duration::from_millis(200);
+
+/// What a GUI host answers a wire `shutdown` (`busy`, docs/GUI.md D-13).
+pub const GUI_REFUSES_SHUTDOWN: &str = "the Qrec window holds this project; close it there";
 
 /// How a server identifies itself and the limits it enforces.
 #[derive(Debug, Clone)]
@@ -158,6 +165,19 @@ impl IpcServer {
         cfg: ServerConfig,
         hook: Hook,
     ) -> Result<IpcServer, CoreError> {
+        Self::start_with(published, cfg, hook, Vec::new())
+    }
+
+    /// [`start`](Self::start) with `first` parked before the acceptor runs:
+    /// those messages reach the Session ahead of every request a client
+    /// sends (the GUI's first `Init`, docs/GUI.md D-35). Connections that
+    /// arrive meanwhile wait in the listen backlog.
+    pub fn start_with(
+        published: PublishedSocket,
+        cfg: ServerConfig,
+        hook: Hook,
+        first: Vec<Msg>,
+    ) -> Result<IpcServer, CoreError> {
         let io_err = |what: &str, e: io::Error| CoreError::io(format!("{what}: {e}"));
         // The acceptor's own handle; `O_NONBLOCK` is shared with the original.
         let listener = published
@@ -171,7 +191,7 @@ impl IpcServer {
             cfg,
             hook,
             link: Mutex::new(Link::Pending {
-                parked: Vec::new(),
+                parked: first,
                 urgent: 0,
             }),
             accepting: AtomicBool::new(true),
@@ -352,7 +372,10 @@ impl std::fmt::Debug for ServerSender {
 impl Drop for IpcServer {
     fn drop(&mut self) {
         self.stop_accepting();
-        self.shared.fail(CoreError::io("the host is exiting"));
+        // Senders that outlive the server (a GUI host's) keep hearing why it
+        // stopped, if it said ([`IpcServer::fail`], [`IpcServer::finish`]).
+        self.shared
+            .fail_unless_failed(CoreError::io("the host is exiting"));
         self.shared.force_close();
     }
 }
@@ -462,8 +485,20 @@ impl Shared {
     }
 
     fn fail(&self, err: CoreError) {
+        self.fail_with(err, true);
+    }
+
+    /// [`fail`](Self::fail), keeping an earlier failure's error.
+    fn fail_unless_failed(&self, err: CoreError) {
+        self.fail_with(err, false);
+    }
+
+    fn fail_with(&self, err: CoreError, replace: bool) {
         let parked = {
             let mut link = lock(&self.link);
+            if !replace && matches!(*link, Link::Failed(_)) {
+                return;
+            }
             match std::mem::replace(&mut *link, Link::Failed(err.clone())) {
                 Link::Pending { parked, .. } => parked,
                 Link::Attached(_) | Link::Failed(_) => Vec::new(),
@@ -751,6 +786,11 @@ fn serve_conn(shared: &Arc<Shared>, stream: &UnixStream, out: &Arc<Outgoing>) {
     };
     let responder = || Box::new(ConnResponder::new(Arc::clone(out), Arc::downgrade(shared)));
     match &req.body {
+        // A window holds the project: only closing it ends a GUI host
+        // (D-13). Nothing changes; the client hears why.
+        WireBody::Shutdown if shared.cfg.host == HostKind::Gui => {
+            out.push_reply(&Err(CoreError::busy(GUI_REFUSES_SHUTDOWN)));
+        }
         WireBody::Shutdown => {
             shared.begin_shutdown();
             let result = CmdResult::new(format!(
