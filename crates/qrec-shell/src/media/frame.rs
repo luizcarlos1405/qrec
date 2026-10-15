@@ -119,7 +119,7 @@ fn save(
             log.note(&format!("saved {}", path.display()));
             Ok(path)
         }
-        Err(PlaceError::Appeared { out, kept }) => Err(kept_aside(ctl, &log, out, kept)),
+        Err(PlaceError::Appeared { out, kept }) => Err(kept_aside(ctl, &log, &tmp, out, kept)),
         Err(e) => Err(Failure::plain(e.to_string(), &log)),
     }
 }

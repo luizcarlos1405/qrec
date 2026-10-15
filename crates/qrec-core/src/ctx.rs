@@ -118,7 +118,14 @@ pub struct OutFacts {
     /// The absolute path.
     pub abs: String,
     pub exists: bool,
-    /// Why the path can't be used: inside `takes/`, `.qrec/`, or `qrec.json` itself.
+    /// The size of what is at the path (`lstat`: a symlink there is what an
+    /// overwrite replaces), when something is. The overwrite confirmation
+    /// lists it (SPEC §11).
+    #[serde(default)]
+    pub bytes: Option<u64>,
+    /// Why the path can't be used: inside `takes/` or `.qrec/` (also through
+    /// a symlinked folder), `qrec.json` itself, a directory, or a name over
+    /// 255 bytes.
     pub forbidden: Option<String>,
 }
 

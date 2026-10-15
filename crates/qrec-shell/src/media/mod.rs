@@ -49,8 +49,9 @@ use crate::msg::Inbox;
 use crate::paths::ProjectPaths;
 
 pub use logs::{KEEP_LOGS, prune_logs};
-/// Never-overwrite renames, also for migration backups (A§8.8).
-pub use place::{PART_MARKER, rename_noreplace};
+/// Never-overwrite renames, also for migration backups (A§8.8), and what a
+/// temp output's name looks like (the host-start sweep, A§8.7).
+pub use place::{PART_MARKER, is_temp_name, rename_noreplace};
 
 pub(crate) use child::{
     Spec as ChildSpec, Stderr as ChildStderr, Stdout as ChildStdout, run as run_child,
@@ -326,10 +327,11 @@ pub struct Housekeeping {
     pub temps_removed: Vec<PathBuf>,
 }
 
-/// Host start (A§8.7): keep the newest [`KEEP_LOGS`] logs and delete
-/// `*.qrec-part-*` temp files older than an hour in `exports/`, `frames/`,
-/// `.qrec/cache/segments/` and `.qrec/cache/silence/`. Only the lock holder
-/// may call this (a running job's temps are younger than an hour anyway).
+/// Host start (A§8.7): keep the newest [`KEEP_LOGS`] logs and delete temp
+/// files ([`is_temp_name`]: `.<stem>.qrec-part-<pid>-<job>[.<ext>]`)
+/// older than an hour in `exports/`, `frames/`, `.qrec/cache/segments/` and
+/// `.qrec/cache/silence/`. Only the lock holder may call this (a running
+/// job's temps are younger than an hour anyway).
 pub fn housekeeping(project_dir: &Path) -> Housekeeping {
     let project = ProjectPaths::new(project_dir);
     let logs_pruned = prune_logs(&project.logs_dir(), KEEP_LOGS).unwrap_or_else(|e| {
@@ -354,8 +356,8 @@ pub fn housekeeping(project_dir: &Path) -> Housekeeping {
     }
 }
 
-/// Deletes regular files named `*.qrec-part-*` in `dir` whose mtime is
-/// older than `age` before `now`.
+/// Deletes regular files in `dir` that have a temp file's name
+/// ([`is_temp_name`]) and whose mtime is older than `age` before `now`.
 fn sweep_temps(dir: &Path, age: Duration, now: SystemTime) -> io::Result<Vec<PathBuf>> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -364,8 +366,7 @@ fn sweep_temps(dir: &Path, age: Duration, now: SystemTime) -> io::Result<Vec<Pat
     };
     let mut removed = Vec::new();
     for entry in entries.flatten() {
-        let name = entry.file_name();
-        if !name.to_string_lossy().contains(PART_MARKER) {
+        if !is_temp_name(&entry.file_name()) {
             continue;
         }
         let Ok(meta) = entry.metadata() else { continue };

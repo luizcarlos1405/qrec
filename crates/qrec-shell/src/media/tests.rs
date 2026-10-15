@@ -584,20 +584,15 @@ fn hand_picked_outputs_are_replaced_only_when_confirmed() {
         (JobId(2), out.as_path(), 14)
     );
     assert_eq!(fs::read_to_string(&out).unwrap(), "someone else's");
+    // Next to it, under a name that isn't a temp's: host start never
+    // sweeps it (A§8.7).
     let kept = PathBuf::from(kept);
-    assert_eq!(kept.parent(), Some(env.root()));
-    assert!(
-        kept.file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with(".mine.qrec-part-"),
-        "{}",
-        kept.display()
-    );
+    assert_eq!(kept, env.root().join("mine-kept.mp4"));
     assert_eq!(output_counts(&kept).0, 30, "the export was kept whole");
-    assert_eq!(
-        temps_in(env.root()),
-        [kept.file_name().unwrap().to_string_lossy()]
+    assert!(
+        temps_in(env.root()).is_empty(),
+        "{:?}",
+        names_in(env.root())
     );
     fs::remove_file(&kept).unwrap();
 
@@ -632,7 +627,13 @@ fn hand_picked_outputs_are_replaced_only_when_confirmed() {
     };
     assert_eq!(Path::new(appeared), png);
     assert_eq!(fs::read_to_string(&png).unwrap(), "a drawing");
+    assert_eq!(Path::new(kept), env.root().join("mine-kept.png"));
     assert_eq!(&fs::read(kept).unwrap()[..4], b"\x89PNG");
+    assert!(
+        temps_in(env.root()).is_empty(),
+        "{:?}",
+        names_in(env.root())
+    );
     fs::remove_file(kept).unwrap();
     runner.save_frame(
         JobId(5),
@@ -1359,7 +1360,22 @@ fn housekeeping_sweeps_old_temps_and_prunes_logs() {
             .unwrap();
         old.push(stale);
         fs::write(d.join(format!(".y{PART_MARKER}1-2.mp4")), "").unwrap(); // fresh: kept
-        fs::write(d.join("keep.mp4"), "").unwrap();
+        // Results, however old: one kept aside (A§8.8) and one whose
+        // name merely contains the marker.
+        for result in [
+            "keep.mp4".to_owned(),
+            "keep-kept.mp4".to_owned(),
+            format!("talk{PART_MARKER}final-20261014-120000.mp4"),
+        ] {
+            let path = d.join(result);
+            fs::write(&path, "").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(two_hours_ago)
+                .unwrap();
+        }
     }
     let logs = dir.join(".qrec/logs");
     fs::create_dir_all(&logs).unwrap();
@@ -1372,9 +1388,17 @@ fn housekeeping_sweeps_old_temps_and_prunes_logs() {
     removed.sort();
     old.sort();
     assert_eq!(removed, old);
-    for sub in ["exports", "frames", SEGMENTS] {
-        assert_eq!(temps_in(&dir.join(sub)).len(), 1, "{sub}");
-        assert!(dir.join(sub).join("keep.mp4").exists());
+    for sub in ["exports", "frames", SEGMENTS, ".qrec/cache/silence"] {
+        assert_eq!(
+            names_in(&dir.join(sub)),
+            [
+                format!(".y{PART_MARKER}1-2.mp4"),
+                "keep-kept.mp4".to_owned(),
+                "keep.mp4".to_owned(),
+                format!("talk{PART_MARKER}final-20261014-120000.mp4"),
+            ],
+            "{sub}"
+        );
     }
     assert_eq!(names_in(&logs).len(), 200);
     assert_eq!(names_in(&logs)[0], "20261014-000005-1-x.log");

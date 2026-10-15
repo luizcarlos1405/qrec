@@ -10,6 +10,7 @@
 use serde_json::json;
 
 use crate::apply::Outcome;
+use crate::apply::history::byte_size;
 use crate::config::UserConfig;
 use crate::ctx::Ctx;
 use crate::error::CoreError;
@@ -192,9 +193,10 @@ fn running_export(state: &State) -> Option<JobId> {
 
 /// A hand-picked output path (A§5.9): inside `takes/`, `.qrec/` or
 /// `qrec.json` is `Invalid` (not confirmable); an existing file needs
-/// confirmation. Returns the absolute path to write and whether the job may
-/// replace a file there: only the one that was confirmed (A§8.8; a file
-/// that appears later ends the job with `OutputAppeared`).
+/// confirmation, which names it and its size (SPEC §11, A§4.8). Returns
+/// the absolute path to write and whether the job may replace a file
+/// there: only the one that was confirmed (A§8.8; a file that appears later
+/// ends the job with `OutputAppeared`).
 fn checked_out(ctx: &Ctx, requested: &str, verb: &str) -> Result<(String, bool), CoreError> {
     match &ctx.facts.out {
         Some(facts) => {
@@ -206,9 +208,14 @@ fn checked_out(ctx: &Ctx, requested: &str, verb: &str) -> Result<(String, bool),
                 );
             }
             if facts.exists && !ctx.confirmed {
+                let mut what = format!("overwrite {}", facts.abs);
+                let mut file = json!({ "path": facts.abs });
+                if let Some(bytes) = facts.bytes {
+                    what = format!("{what} ({})", byte_size(bytes));
+                    file["bytes"] = json!(bytes);
+                }
                 return Err(
-                    CoreError::confirmation_required(format!("overwrite {}", facts.abs))
-                        .with_details(json!({ "files": [{ "path": facts.abs }] })),
+                    CoreError::confirmation_required(what).with_details(json!({ "files": [file] }))
                 );
             }
             Ok((facts.abs.clone(), facts.exists))
@@ -377,6 +384,7 @@ mod tests {
         ctx.facts.out = Some(OutFacts {
             abs: "/home/me/v/takes/x.mp4".into(),
             exists: false,
+            bytes: None,
             forbidden: Some("it is inside takes/".into()),
         });
         let err = apply(&state, &ctx, export_cmd(Some("/home/me/v/takes/x.mp4"))).unwrap_err();
@@ -398,17 +406,30 @@ mod tests {
         ctx.facts.out = Some(OutFacts {
             abs: "/home/me/out.mp4".into(),
             exists: true,
+            bytes: Some(415_500_000),
             forbidden: None,
         });
         let err = apply(&state, &ctx, export_cmd(Some("/home/me/out.mp4"))).unwrap_err();
         assert_eq!(err.code, ErrorCode::ConfirmationRequired);
+        // What is lost, with its size (SPEC §11, A§4.8).
         assert_eq!(
             err.message,
-            "confirmation required: overwrite /home/me/out.mp4"
+            "confirmation required: overwrite /home/me/out.mp4 (415.5 MB)"
         );
         assert_eq!(
             err.details,
-            Some(json!({"files": [{"path": "/home/me/out.mp4"}]}))
+            Some(json!({"files": [{"path": "/home/me/out.mp4", "bytes": 415_500_000}]}))
+        );
+        // Without a size (facts from an older shell) the path still goes.
+        let mut sizeless = ctx.clone();
+        sizeless.facts.out.as_mut().unwrap().bytes = None;
+        let err = apply(&state, &sizeless, export_cmd(Some("/home/me/out.mp4"))).unwrap_err();
+        assert_eq!(
+            (err.message.as_str(), err.details),
+            (
+                "confirmation required: overwrite /home/me/out.mp4",
+                Some(json!({"files": [{"path": "/home/me/out.mp4"}]}))
+            )
         );
         ctx.confirmed = true;
         let out = apply(&state, &ctx, export_cmd(Some("/home/me/out.mp4"))).unwrap();
@@ -429,6 +450,7 @@ mod tests {
             ctx.facts.out = Some(OutFacts {
                 abs: "/home/me/new.mp4".into(),
                 exists: false,
+                bytes: None,
                 forbidden: None,
             });
             let out = apply(&state, &ctx, export_cmd(Some("/home/me/new.mp4"))).unwrap();
@@ -448,6 +470,7 @@ mod tests {
         ctx.facts.out = Some(OutFacts {
             abs: "/home/me/old.png".into(),
             exists: true,
+            bytes: Some(12),
             forbidden: None,
         });
         let frame = Command::FrameSave {
@@ -633,10 +656,19 @@ mod tests {
         ctx.facts.out = Some(OutFacts {
             abs: "/home/me/f.png".into(),
             exists: true,
+            bytes: Some(2_048),
             forbidden: None,
         });
         let err = apply(&state, &ctx, save("0f", None, Some("/home/me/f.png"))).unwrap_err();
         assert_eq!(err.code, ErrorCode::ConfirmationRequired);
+        assert_eq!(
+            err.message,
+            "confirmation required: overwrite /home/me/f.png (2.0 kB)"
+        );
+        assert_eq!(
+            err.details,
+            Some(json!({"files": [{"path": "/home/me/f.png", "bytes": 2_048}]}))
+        );
         ctx.confirmed = true;
         let out = apply(&state, &ctx, save("0f", Some("L1"), Some("/home/me/f.png"))).unwrap();
         let Effect::SaveFrame { plan, .. } = &out.effects[0] else {

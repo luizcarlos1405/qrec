@@ -12,7 +12,7 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use qrec_core::error::NOT_MY_SWAMP;
 use qrec_shell::testkit::{MediaSpec, TestEnv, ffprobe, fixture_project, run_tool};
@@ -781,14 +781,17 @@ fn export_end_to_end_never_overwrites() {
 }
 
 /// A hand-picked `--out` that someone else creates while the export runs
-/// is kept, and so is the export, next to it; the command then needs
-/// confirmation (exit 4, both paths named), like an `--out` that existed
-/// before (A§8.8, SPEC §11).
+/// is kept, and so is the export, next to it (`<stem>-kept.<ext>`); the
+/// command then needs confirmation (exit 4, both paths named), like an
+/// `--out` that existed before (A§8.8, SPEC §11). The kept export is the
+/// result: the host-start sweep of stale temp files (A§8.7) never takes it,
+/// even in `exports/` and an hour later.
 #[test]
 fn an_out_that_appears_during_the_export_needs_confirmation() {
     let env = TestEnv::new();
     let dir = project_with(&env, "race", &[video(300)]);
-    let out = env.root().join("race.mp4");
+    fs::create_dir(dir.join("exports")).unwrap();
+    let out = dir.join("exports/race.mp4");
     let out_arg = out.to_str().unwrap();
     let segments = dir.join(".qrec/cache/segments");
     let rendering = || {
@@ -840,18 +843,46 @@ fn an_out_that_appears_during_the_export_needs_confirmation() {
     );
     assert!(error["hint"].as_str().unwrap().contains("--yes"));
     assert_eq!(fs::read_to_string(&out).unwrap(), "someone else's");
-    assert_eq!(kept.parent(), Some(env.root()));
-    let probe = ffprobe(&kept);
-    let video_stream = probe["streams"]
-        .as_array()
+    assert_eq!(kept, dir.join("exports/race-kept.mp4"));
+    let packets = |file: &Path| {
+        let probe = ffprobe(file);
+        let video_stream = probe["streams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["codec_type"] == "video")
+            .unwrap()
+            .clone();
+        video_stream["nb_read_packets"].clone()
+    };
+    assert_eq!(packets(&kept), "300", "the export was kept whole");
+    let leftovers: Vec<_> = fs::read_dir(dir.join("exports"))
         .unwrap()
-        .iter()
-        .find(|s| s["codec_type"] == "video")
-        .unwrap();
-    assert_eq!(
-        video_stream["nb_read_packets"], "300",
-        "the export was kept whole"
-    );
+        .map(|e| e.unwrap().file_name())
+        .filter(|n| n.to_string_lossy().contains(".qrec-part-"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+
+    // An hour later the next host sweeps stale temps, never the result.
+    let stale = dir.join("exports/.race.qrec-part-1-1.mp4");
+    fs::write(&stale, "left over").unwrap();
+    let two_hours_ago = SystemTime::now() - Duration::from_secs(7200);
+    for file in [&kept, &stale] {
+        fs::File::options()
+            .write(true)
+            .open(file)
+            .unwrap()
+            .set_modified(two_hours_ago)
+            .unwrap();
+    }
+    qrec(
+        &env,
+        &dir,
+        &["autocut", "settings", "--threshold-db", "-36", "-q"],
+    )
+    .ok();
+    assert!(!stale.exists(), "the sweep ran");
+    assert_eq!(packets(&kept), "300", "the kept export is still there");
 }
 
 #[test]
@@ -1259,6 +1290,202 @@ fn out_paths_resolve_dot_dot_like_the_os() {
     saved.ok();
     assert!(real.join("stills/still.png").is_file(), "{saved:?}");
     assert!(!a.join("stills").exists());
+}
+
+/// `takes/` moved to another disk and linked back (A§5.9): an `--out` that
+/// reaches a take folder, through the link or straight at its target, is
+/// refused (`invalid`, exit 1) with or without `--yes`, so no export or
+/// frame replaces a recording or lands among its files (SPEC §11). The
+/// project still exports elsewhere through the link.
+#[test]
+fn a_symlinked_takes_folder_still_guards_the_recordings() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "moved", &[video(30)]);
+    let disk = env.root().join("disk");
+    fs::create_dir(&disk).unwrap();
+    fs::rename(dir.join("takes"), disk.join("takes")).unwrap();
+    symlink(disk.join("takes"), dir.join("takes")).unwrap();
+    let take = dir.join("takes/take-0001");
+    let listing = || {
+        let mut names: Vec<String> = fs::read_dir(&take)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    };
+    let files = listing();
+    let media = take.join("L1-screen-FAKE-1.mkv");
+    let recorded = fs::read(&media).unwrap();
+
+    let refused = |args: &[&str]| {
+        let out = qrec(&env, &dir, args);
+        assert_eq!(out.code, Some(1), "{args:?}: {out:?}");
+        let error = &out.only_reply()["error"];
+        assert_eq!(error["code"], "invalid", "{args:?}");
+        assert!(
+            error["message"].as_str().unwrap().contains("inside takes/"),
+            "{error}"
+        );
+    };
+    let media_out = "takes/take-0001/L1-screen-FAKE-1.mkv";
+    refused(&["--json", "export", "--quality", "draft", "--out", media_out]);
+    refused(&[
+        "--json",
+        "--yes",
+        "export",
+        "--quality",
+        "draft",
+        "--out",
+        media_out,
+    ]);
+    refused(&[
+        "--json",
+        "--yes",
+        "export",
+        "--out",
+        "takes/take-0001/inside.mp4",
+    ]);
+    let png = take.join("inside.png");
+    refused(&[
+        "--json",
+        "frame",
+        "save",
+        "--at",
+        "3f",
+        "--out",
+        png.to_str().unwrap(),
+    ]);
+    let direct = disk.join("takes/take-0001/inside.mp4");
+    refused(&[
+        "--json",
+        "--yes",
+        "export",
+        "--out",
+        direct.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        fs::read(&media).unwrap(),
+        recorded,
+        "the recording is untouched"
+    );
+    assert_eq!(listing(), files, "nothing was written into the take folder");
+
+    let export = qrec(&env, &dir, &["--json", "export", "--quality", "draft"]);
+    export.ok();
+    let path = PathBuf::from(export.reply()["data"]["result"]["path"].as_str().unwrap());
+    assert!(path.starts_with(dir.join("exports")), "{}", path.display());
+}
+
+/// Overwriting a hand-picked `--out` is confirmed knowing what is lost:
+/// the file and its size, in the message and in `details.files` (SPEC §11,
+/// A§4.8), for exports and frame saves alike.
+#[test]
+fn an_overwrite_confirmation_names_the_file_and_its_size() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "sizes", &[video(30)]);
+    let mp4 = env.root().join("existing.mp4");
+    fs::write(&mp4, "my own file\n").unwrap();
+    let png = env.root().join("existing.png");
+    fs::write(&png, vec![0u8; 2_500]).unwrap();
+    let cases = [
+        (
+            vec!["--json", "export", "--out", mp4.to_str().unwrap()],
+            &mp4,
+            12,
+            "12 B",
+        ),
+        (
+            vec![
+                "--json",
+                "frame",
+                "save",
+                "--at",
+                "3f",
+                "--out",
+                png.to_str().unwrap(),
+            ],
+            &png,
+            2_500,
+            "2.5 kB",
+        ),
+    ];
+    for (args, path, bytes, size) in cases {
+        let out = qrec(&env, &dir, &args);
+        assert_eq!(out.code, Some(4), "{out:?}");
+        let error = &out.only_reply()["error"];
+        assert_eq!(error["code"], "confirmation_required");
+        assert_eq!(
+            error["message"],
+            format!(
+                "confirmation required: overwrite {} ({size})",
+                path.display()
+            )
+        );
+        assert_eq!(
+            error["details"]["files"],
+            json!([{ "path": path, "bytes": bytes }])
+        );
+    }
+    let human = qrec(&env, &dir, &["export", "--out", mp4.to_str().unwrap()]);
+    assert_eq!(human.code, Some(4), "{human:?}");
+    assert!(human.stderr.contains("(12 B)"), "{}", human.stderr);
+    assert_eq!(fs::read_to_string(&mp4).unwrap(), "my own file\n");
+    assert_eq!(fs::read(&png).unwrap().len(), 2_500);
+}
+
+/// Host start deletes stale temp files (A§8.7), and only those: exports and
+/// frames are never deleted, also when the project's name contains the
+/// temp marker (SPEC §11).
+#[test]
+fn the_host_start_sweep_deletes_only_temp_files() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "sweep", &[video(30)]);
+    qrec(
+        &env,
+        &dir,
+        &["project", "set", "--name", "talk.qrec-part-final", "-q"],
+    )
+    .ok();
+    let export = qrec(&env, &dir, &["--json", "export", "--quality", "draft"]);
+    export.ok();
+    let frame = qrec(&env, &dir, &["--json", "frame", "save", "--at", "3f"]);
+    frame.ok();
+    let results: Vec<PathBuf> = [&export, &frame]
+        .iter()
+        .map(|out| PathBuf::from(out.reply()["data"]["result"]["path"].as_str().unwrap()))
+        .collect();
+    let stale = [
+        dir.join("exports/.talk.qrec-part-1-1.mp4"),
+        dir.join("frames/.talk.qrec-part-1-2.png"),
+    ];
+    for file in &stale {
+        fs::write(file, "left over").unwrap();
+    }
+    let two_hours_ago = SystemTime::now() - Duration::from_secs(7200);
+    for file in results.iter().chain(&stale) {
+        fs::File::options()
+            .write(true)
+            .open(file)
+            .unwrap()
+            .set_modified(two_hours_ago)
+            .unwrap();
+    }
+    // Any command that takes the project lock starts a host.
+    qrec(
+        &env,
+        &dir,
+        &["autocut", "settings", "--threshold-db", "-36", "-q"],
+    )
+    .ok();
+    for file in &stale {
+        assert!(!file.exists(), "{} is a stale temp", file.display());
+    }
+    for file in &results {
+        assert!(file.is_file(), "{} was deleted", file.display());
+        let name = file.file_name().unwrap().to_string_lossy();
+        assert!(name.starts_with("talk_qrec-part-final-"), "{name}");
+    }
 }
 
 /// Ctrl+C under --json: stdout still ends with exactly one `{"ok":…}`

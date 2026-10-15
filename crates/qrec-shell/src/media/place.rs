@@ -2,9 +2,11 @@
 //! destination directory, `.<stem>.qrec-part-<pid>-<job>.<ext>`, and the
 //! final step is `renameat2(RENAME_NOREPLACE)` (fallbacks: `link` +
 //! `unlink`, then an `O_EXCL` placeholder). Auto names loop `-2`, `-3`, …;
-//! a hand-picked path that appeared meanwhile keeps the temp and fails.
+//! a hand-picked path that appeared meanwhile fails the job, and the result
+//! is kept next to it as `<stem>-kept.<ext>` (`-kept-2`, …): a name that is
+//! not a temp file's, so the host-start sweep (A§8.7) never deletes it.
 
-use std::ffi::CString;
+use std::ffi::{CString, OsStr};
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
@@ -14,10 +16,15 @@ use qrec_core::JobId;
 
 use crate::paths::NAME_MAX;
 
-/// The marker in every temp name; host start sweeps old ones (A§8.7).
-pub const PART_MARKER: &str = ".qrec-part-";
+/// The marker in every temp name; host start sweeps old temps (A§8.7),
+/// recognized by their whole shape ([`is_temp_name`]), never by the marker
+/// alone.
+pub const PART_MARKER: &str = qrec_core::naming::TEMP_MARKER;
 
-/// How many `-N` names an auto name tries.
+/// What a result kept aside gets after its stem (A§8.8).
+const KEPT_SUFFIX: &str = "-kept";
+
+/// How many `-N` names an auto name (or a kept result) tries.
 const MAX_SUFFIX: u32 = 10_000;
 
 /// `<dir>/.<stem>.qrec-part-<pid>-<job>.<ext>`. The stem is cut (on a char
@@ -37,6 +44,55 @@ pub(crate) fn temp_path(dir: &Path, stem: &str, job: JobId, ext: &str) -> PathBu
         cut -= 1;
     }
     dir.join(format!(".{}{suffix}", &stem[..cut]))
+}
+
+/// Whether `name` has exactly the shape [`temp_path`] gives:
+/// `.<stem>.qrec-part-<pid>-<job>`, then optionally `.<ext>` (one
+/// extension). Only such files are swept as stale temps (A§8.7). Names that
+/// merely contain the marker are not temps: an auto-named export of a
+/// project called `talk.qrec-part-final`, or a result kept aside
+/// (`<stem>-kept.<ext>`).
+pub fn is_temp_name(name: &OsStr) -> bool {
+    let Some(rest) = name.to_str().and_then(|n| n.strip_prefix('.')) else {
+        return false;
+    };
+    let Some(at) = rest.rfind(PART_MARKER) else {
+        return false;
+    };
+    let tail = &rest[at + PART_MARKER.len()..];
+    let (ids, ext) = match tail.split_once('.') {
+        Some((ids, ext)) => (ids, Some(ext)),
+        None => (tail, None),
+    };
+    let number = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    ids.split_once('-')
+        .is_some_and(|(pid, job)| number(pid) && number(job))
+        && ext.is_none_or(|ext| !ext.is_empty() && !ext.contains('.'))
+}
+
+/// Where a result is kept when its hand-picked path `out` appeared while
+/// the job ran (A§8.8): `<stem>-kept.<ext>` next to it for `n == 1`, else
+/// `<stem>-kept-<n>.<ext>`. The stem is cut (on a char boundary) so the name
+/// fits in [`NAME_MAX`].
+pub(crate) fn kept_path(out: &Path, n: u32) -> PathBuf {
+    let stem = out
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = out
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    let suffix = if n <= 1 {
+        format!("{KEPT_SUFFIX}{ext}")
+    } else {
+        format!("{KEPT_SUFFIX}-{n}{ext}")
+    };
+    let mut cut = stem.len().min(NAME_MAX.saturating_sub(suffix.len()));
+    while !stem.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    out.with_file_name(format!("{}{suffix}", &stem[..cut]))
 }
 
 /// The file name of `path` without its extension (`clip` for `a/clip.mp4`).
@@ -69,7 +125,7 @@ impl Destination {
 #[derive(Debug)]
 pub(crate) enum PlaceError {
     /// A hand-picked path appeared while the job ran; the output was kept
-    /// at `kept`.
+    /// at `kept` ([`kept_path`], or the temp path if it couldn't be moved).
     Appeared {
         out: PathBuf,
         kept: PathBuf,
@@ -109,7 +165,7 @@ pub(crate) fn place(tmp: &Path, dest: &Destination) -> Result<PathBuf, PlaceErro
             Ok(()) => Ok(path.clone()),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(PlaceError::Appeared {
                 out: path.clone(),
-                kept: tmp.to_path_buf(),
+                kept: keep_aside(tmp, path),
             }),
             Err(e) => Err(PlaceError::Io(format!(
                 "can't move the output to {}: {e}",
@@ -136,6 +192,35 @@ pub(crate) fn place(tmp: &Path, dest: &Destination) -> Result<PathBuf, PlaceErro
             )))
         }
     }
+}
+
+/// Moves a finished result whose hand-picked path `out` was taken meanwhile
+/// to the first free [`kept_path`] (never replacing anything) and returns
+/// where it is. It is the result now (A§8.8), so it must not keep a temp
+/// name that host start sweeps (A§8.7). If it can't be moved it stays at
+/// `tmp`, which is reported instead.
+fn keep_aside(tmp: &Path, out: &Path) -> PathBuf {
+    for n in 1..=MAX_SUFFIX {
+        let kept = kept_path(out, n);
+        match rename_noreplace(tmp, &kept) {
+            Ok(()) => return kept,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                tracing::warn!(
+                    "can't move {} to {}: {e}; the result stays where it is",
+                    tmp.display(),
+                    kept.display()
+                );
+                return tmp.to_path_buf();
+            }
+        }
+    }
+    tracing::warn!(
+        "{} and {MAX_SUFFIX} numbered variants all exist; the result stays at {}",
+        kept_path(out, 1).display(),
+        tmp.display()
+    );
+    tmp.to_path_buf()
 }
 
 /// `n == 1`: `path`; otherwise `-<n>` before the extension
@@ -313,29 +398,122 @@ mod tests {
             path: out.clone(),
             replace: false,
         };
+        let kept = dir.path().join("mine-kept.mp4");
         match place(&tmp, &dest) {
-            Err(PlaceError::Appeared { out: o, kept }) => {
-                assert_eq!(
-                    (o.as_path(), kept.as_path()),
-                    (out.as_path(), tmp.as_path())
-                );
-                let message = PlaceError::Appeared { out: o, kept }.to_string();
+            Err(PlaceError::Appeared { out: o, kept: k }) => {
+                assert_eq!((o.as_path(), k.as_path()), (out.as_path(), kept.as_path()));
+                let message = PlaceError::Appeared { out: o, kept: k }.to_string();
                 assert!(message.starts_with("confirmation required: "), "{message}");
             }
             other => panic!("{other:?}"),
         }
         assert_eq!(fs::read_to_string(&out).unwrap(), "someone else's");
         assert_eq!(
-            fs::read_to_string(&tmp).unwrap(),
+            fs::read_to_string(&kept).unwrap(),
             "new",
-            "the render is kept"
+            "the render is kept, under a name that isn't a temp's"
         );
+        assert!(!tmp.exists());
 
+        let tmp = temp_path(dir.path(), "mine", JobId(2), "mp4");
+        fs::write(&tmp, "newer").unwrap();
         let dest = Destination::Chosen {
             path: out.clone(),
             replace: true,
         };
         assert_eq!(place(&tmp, &dest).unwrap(), out);
-        assert_eq!(fs::read_to_string(&out).unwrap(), "new");
+        assert_eq!(fs::read_to_string(&out).unwrap(), "newer");
+        assert_eq!(fs::read_to_string(&kept).unwrap(), "new");
+    }
+
+    /// A result kept aside never replaces anything either, and never keeps
+    /// a temp name (the host-start sweep deletes those, A§8.7).
+    #[test]
+    fn kept_results_count_up_and_are_not_temps() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("final.webm");
+        fs::write(&out, "someone else's").unwrap();
+        fs::write(dir.path().join("final-kept.webm"), "kept before").unwrap();
+        let dest = Destination::Chosen {
+            path: out.clone(),
+            replace: false,
+        };
+        for (job, expected) in [(1, "final-kept-2.webm"), (2, "final-kept-3.webm")] {
+            let tmp = temp_path(dir.path(), "final", JobId(job), "webm");
+            fs::write(&tmp, format!("render {job}")).unwrap();
+            let Err(PlaceError::Appeared { kept, .. }) = place(&tmp, &dest) else {
+                panic!("the output was taken")
+            };
+            assert_eq!(kept, dir.path().join(expected));
+            assert_eq!(fs::read_to_string(&kept).unwrap(), format!("render {job}"));
+            assert!(!is_temp_name(kept.file_name().unwrap()), "{kept:?}");
+        }
+        assert_eq!(fs::read_to_string(&out).unwrap(), "someone else's");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("final-kept.webm")).unwrap(),
+            "kept before"
+        );
+        // Names without an extension, hidden names and names that look like
+        // temps get the suffix too, which makes them no temps.
+        assert_eq!(
+            kept_path(Path::new("/e/noext"), 1),
+            Path::new("/e/noext-kept")
+        );
+        assert_eq!(
+            kept_path(Path::new("/e/.hidden.png"), 2),
+            Path::new("/e/.hidden-kept-2.png")
+        );
+        let tempish = kept_path(Path::new("/e/.x.qrec-part-1-2.mp4"), 1);
+        assert_eq!(tempish, Path::new("/e/.x.qrec-part-1-2-kept.mp4"));
+        assert!(!is_temp_name(tempish.file_name().unwrap()));
+        // The longest name a person may pick still gets a kept name that fits.
+        for stem in ["y".repeat(251), "é".repeat(125)] {
+            let long = dir.path().join(format!("{stem}.mp4"));
+            for n in [1, MAX_SUFFIX] {
+                let kept = kept_path(&long, n);
+                let name = kept.file_name().unwrap().to_str().unwrap();
+                assert!(name.len() <= NAME_MAX, "{} bytes", name.len());
+                assert!(name.ends_with(".mp4") && name.contains("-kept"), "{name}");
+                fs::write(&kept, b"x").unwrap();
+            }
+        }
+    }
+
+    /// Only names [`temp_path`] makes are temps: not every name with the
+    /// marker in it (a project called `talk.qrec-part-final`, a kept result).
+    #[test]
+    fn temp_names_have_one_exact_shape() {
+        let made = [
+            temp_path(
+                Path::new("/p/exports"),
+                "v-20261014-120000",
+                JobId(7),
+                "mp4",
+            ),
+            temp_path(Path::new("/p/frames"), "a.b", JobId(1), "png"),
+            temp_path(Path::new("/p/s"), "k", JobId(u64::MAX), ""),
+            temp_path(Path::new("/p/s"), "x.qrec-part-1-2", JobId(3), "mov"),
+            temp_path(Path::new("/p/s"), &"y".repeat(300), JobId(3), "json"),
+        ];
+        for tmp in &made {
+            assert!(is_temp_name(tmp.file_name().unwrap()), "{tmp:?}");
+        }
+        for name in [
+            "v-20261014-120000.mp4",
+            "talk.qrec-part-final-20261014-120000.mp4",
+            "talk.qrec-part-final-take-0001-00000003.png",
+            ".talk.qrec-part-final.mp4",
+            "x.qrec-part-1-2.mp4",
+            ".x.qrec-part-1.mp4",
+            ".x.qrec-part--2.mp4",
+            ".x.qrec-part-1-2-kept.mp4",
+            ".x.qrec-part-1-2.",
+            ".x.qrec-part-1-2.tar.gz",
+            ".x.qrec-part-1-two.mp4",
+            ".x.qrec-part-",
+            "final-kept.webm",
+        ] {
+            assert!(!is_temp_name(OsStr::new(name)), "{name}");
+        }
     }
 }

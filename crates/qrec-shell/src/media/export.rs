@@ -13,7 +13,8 @@
 //!    in the destination folder (`ExportStitchProgress`) and the result is
 //!    renamed into place without replacing anything but a confirmed
 //!    hand-picked path (`plan.replace`). A hand-picked path that appeared
-//!    meanwhile leaves the result where it is: `OutputAppeared` (A§8.8).
+//!    meanwhile is left alone and the result is kept next to it as
+//!    `<stem>-kept.<ext>`: `OutputAppeared` (A§8.8).
 //!
 //! A failure stops the other segments; a cancel stops everything. Either way
 //! the job's temp files are deleted (finished segments stay cached). A
@@ -306,14 +307,23 @@ fn export(
             log.note(&format!("exported {} ({bytes} bytes)", path.display()));
             Ok((path, bytes))
         }
-        Err(PlaceError::Appeared { out, kept }) => Err(kept_aside(ctl, &log, out, kept)),
+        Err(PlaceError::Appeared { out, kept }) => Err(kept_aside(ctl, &log, &tmp, out, kept)),
         Err(e) => Err(Failure::plain(e.to_string(), &log)),
     }
 }
 
-/// The hand-picked output appeared meanwhile: the result stays at `kept`
-/// (no longer a temp file of the job) and the job ends with `Appeared`.
-pub(crate) fn kept_aside(ctl: &JobCtl, log: &LogFile, out: PathBuf, kept: PathBuf) -> Failure {
+/// The hand-picked output appeared meanwhile: the result was moved from
+/// `tmp` to `kept` (`<stem>-kept.<ext>`, or still `tmp` if it couldn't be
+/// moved), which is no longer a temp file of the job, and the job ends with
+/// `Appeared`.
+pub(crate) fn kept_aside(
+    ctl: &JobCtl,
+    log: &LogFile,
+    tmp: &Path,
+    out: PathBuf,
+    kept: PathBuf,
+) -> Failure {
+    ctl.forget_temp(tmp);
     ctl.forget_temp(&kept);
     log.note(&format!(
         "{} appeared meanwhile; the result was kept as {}",

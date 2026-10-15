@@ -13,8 +13,16 @@ use crate::time::timecode_compact;
 /// Longest stem in bytes.
 pub const MAX_STEM_BYTES: usize = 120;
 
+/// The marker in the shell's temp output names,
+/// `.<stem>.qrec-part-<pid>-<job>.<ext>` (A§8.8). A file is a temp only
+/// when its whole name has that shape (A§8.7); auto names never contain
+/// the marker anyway ([`file_stem`]).
+pub const TEMP_MARKER: &str = ".qrec-part-";
+
 /// `name` made safe for a file name: `/`, NUL, control characters and `%`
-/// become `_`, leading `.` and `-` are stripped, the result is capped at
+/// become `_`, `.qrec-part` becomes `_qrec-part` (so no export or frame
+/// name contains the temp marker, even after a cut stem and the `-` that
+/// follows it), leading `.` and `-` are stripped, the result is capped at
 /// 120 bytes on a char boundary; empty ⇒ `qrec`.
 pub fn file_stem(name: &str) -> String {
     let replaced: String = name
@@ -27,6 +35,8 @@ pub fn file_stem(name: &str) -> String {
             }
         })
         .collect();
+    // The temp marker without its final `-`.
+    let replaced = replaced.replace(".qrec-part", "_qrec-part");
     let trimmed = replaced.trim_start_matches(['.', '-']);
     let mut end = trimmed.len().min(MAX_STEM_BYTES);
     while !trimmed.is_char_boundary(end) {
@@ -77,6 +87,27 @@ mod tests {
         assert_eq!(file_stem("..-.hidden"), "hidden");
         assert_eq!(file_stem(""), "qrec");
         assert_eq!(file_stem("..."), "qrec");
+        // No export or frame name carries the temp marker (A§8.7).
+        assert_eq!(file_stem("talk.qrec-part-final"), "talk_qrec-part-final");
+        assert_eq!(file_stem(".qrec-part-1-2"), "_qrec-part-1-2");
+        assert_eq!(
+            file_stem("a.qrec-part-.qrec-part-"),
+            "a_qrec-part-_qrec-part-"
+        );
+        assert_eq!(file_stem("qrec-part-x"), "qrec-part-x");
+        // A stem cut right after `.qrec-part` would make the marker with
+        // the `-` that follows it.
+        let cut = format!("{}.qrec-partX", "a".repeat(110));
+        assert_eq!(file_stem(&cut), format!("{}_qrec-part", "a".repeat(110)));
+        let now = DateTime::parse_from_rfc3339("2026-10-14T23:30:05Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        for name in [cut.as_str(), "talk.qrec-part-final", ".qrec-part-1-2"] {
+            let export = export_file_name(name, now, 0, "mp4");
+            let frame = frame_file_name(name, &TakeId::numbered(1), 3, Fps::new(30, 1));
+            assert!(!export.contains(TEMP_MARKER), "{export}");
+            assert!(!frame.contains(TEMP_MARKER), "{frame}");
+        }
         let long = "é".repeat(100); // 200 bytes
         let stem = file_stem(&long);
         assert_eq!(stem.len(), 120);

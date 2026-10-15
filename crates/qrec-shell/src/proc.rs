@@ -21,8 +21,9 @@
 //!
 //! Logs live in `.qrec/logs/YYYYMMDD-HHMMSS-<pid>-j<job>-<step>.log`
 //! (created with `O_EXCL`); [`prune_logs`] keeps the newest
-//! [`KEEP_LOGS`] and [`prune_temp_outputs`] deletes `*.qrec-part-*`
-//! leftovers older than [`TEMP_MAX_AGE`] (both run at host start).
+//! [`KEEP_LOGS`] and [`prune_temp_outputs`] deletes temp outputs
+//! (`.<stem>.qrec-part-<pid>-<job>[.<ext>]`) left over for longer than
+//! [`TEMP_MAX_AGE`] (both run at host start).
 //!
 //! Owner: session.
 
@@ -45,6 +46,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use qrec_core::{CoreError, ErrorCode, JobId};
 use rustix::process::{Pid, Signal};
 
+use crate::media::is_temp_name;
 use crate::paths::ProjectPaths;
 
 /// `ffprobe` runs (A§8.7).
@@ -66,7 +68,8 @@ pub const KILL_WAIT: Duration = Duration::from_secs(2);
 pub const STDOUT_DRAIN: Duration = Duration::from_secs(2);
 /// Logs kept by [`prune_logs`] at host start.
 pub const KEEP_LOGS: usize = 200;
-/// `*.qrec-part-*` temp outputs older than this are deleted at host start.
+/// Temp outputs (`.<stem>.qrec-part-<pid>-<job>[.<ext>]`) older than this
+/// are deleted at host start.
 pub const TEMP_MAX_AGE: Duration = Duration::from_secs(3600);
 
 // ------------------------------------------------------------------ errors
@@ -975,9 +978,15 @@ pub fn prune_logs(dir: &Path, keep: usize) -> usize {
         .count()
 }
 
-/// Deletes `*.qrec-part-*` temp outputs older than `max_age` in
-/// `exports/`, `frames/`, `.qrec/cache/segments/` and the silence cache
-/// (regular files only). Returns how many were deleted.
+/// Deletes temp outputs older than `max_age` in `exports/`, `frames/`,
+/// `.qrec/cache/segments/` and the silence cache (regular files only).
+/// Returns how many were deleted.
+///
+/// A temp output is a name of exactly the shape the media runner gives
+/// them, `.<stem>.qrec-part-<pid>-<job>[.<ext>]` ([`is_temp_name`]), never
+/// any name that contains `.qrec-part-`: exports and frames (also of a
+/// project whose name contains it) and results kept aside
+/// (`<stem>-kept.<ext>`, A§8.8) are never deleted.
 pub fn prune_temp_outputs(paths: &ProjectPaths, max_age: Duration) -> usize {
     let now = SystemTime::now();
     [
@@ -990,7 +999,7 @@ pub fn prune_temp_outputs(paths: &ProjectPaths, max_age: Duration) -> usize {
     .filter_map(|dir| fs::read_dir(dir).ok())
     .flatten()
     .filter_map(Result::ok)
-    .filter(|e| e.file_name().to_string_lossy().contains(".qrec-part-"))
+    .filter(|e| is_temp_name(&e.file_name()))
     .filter(|e| {
         e.path().symlink_metadata().is_ok_and(|m| {
             m.file_type().is_file()
@@ -1360,28 +1369,41 @@ mod tests {
         assert_eq!(prune_logs(&tmp.path().join("nope"), 3), 0);
 
         fs::create_dir_all(paths.exports_dir()).unwrap();
+        fs::create_dir_all(paths.frames_dir()).unwrap();
         fs::create_dir_all(paths.segments_dir()).unwrap();
         let old = paths.exports_dir().join(".v.qrec-part-1-2.mp4");
+        let old_frame = paths.frames_dir().join(".f.qrec-part-1-4.png");
         let fresh = paths.segments_dir().join(".k.qrec-part-1-3.mov");
-        let keep = paths.exports_dir().join("v-20261014-120000.mp4");
-        for f in [&old, &fresh, &keep] {
-            fs::write(f, "x").unwrap();
-        }
+        // Results, however old: an export, a result kept aside (A§8.8) and
+        // the outputs of a project called `talk.qrec-part-final`.
+        let keep = [
+            paths.exports_dir().join("v-20261014-120000.mp4"),
+            paths.exports_dir().join("final-kept.webm"),
+            paths
+                .exports_dir()
+                .join("talk.qrec-part-final-20261014-120000.mp4"),
+            paths
+                .frames_dir()
+                .join("talk.qrec-part-final-take-0001-00000003.png"),
+            paths.frames_dir().join(".mine.qrec-part-1-2-kept.png"),
+        ];
         let two_hours_ago = SystemTime::now() - Duration::from_secs(7200);
-        File::options()
-            .write(true)
-            .open(&old)
-            .unwrap()
-            .set_modified(two_hours_ago)
-            .unwrap();
-        File::options()
-            .write(true)
-            .open(&keep)
-            .unwrap()
-            .set_modified(two_hours_ago)
-            .unwrap();
-        assert_eq!(prune_temp_outputs(&paths, TEMP_MAX_AGE), 1);
-        assert!(!old.exists() && fresh.exists() && keep.exists());
+        for f in keep.iter().chain([&old, &old_frame, &fresh]) {
+            fs::write(f, "x").unwrap();
+            if f != &fresh {
+                File::options()
+                    .write(true)
+                    .open(f)
+                    .unwrap()
+                    .set_modified(two_hours_ago)
+                    .unwrap();
+            }
+        }
+        assert_eq!(prune_temp_outputs(&paths, TEMP_MAX_AGE), 2);
+        assert!(!old.exists() && !old_frame.exists() && fresh.exists());
+        for f in &keep {
+            assert!(f.exists(), "{} was deleted", f.display());
+        }
     }
 
     #[test]
