@@ -17,7 +17,8 @@
 //! open connection has held for 2 s; a headless host that
 //! never got a request exits 60 s after `ready`; an in-process CLI host
 //! exits as soon as its own command is answered and it is quiet (A§8.5:
-//! meanwhile it takes no recording, and no new job once its command is
+//! meanwhile it takes no recording — while it exports, its core refuses
+//! one at once, like every host's — and no new job once its command is
 //! done). `shutdown`: stop accepting, finalize a recording, let jobs
 //! finish, exit. The first signal dispatches `RecordStop` and
 //! `Msg::Interrupt` (cancel jobs), ahead of requests parked while the
@@ -46,7 +47,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{SubsecRound, Utc};
 use qrec_core::protocol::{Command, Progress, Query};
-use qrec_core::state::HostKind;
+use qrec_core::state::{HostKind, JobKind};
 use qrec_core::{CoreError, State};
 use serde_json::Value;
 
@@ -614,6 +615,15 @@ impl Host {
                     // Its command is answered: no new job from now on (A§8.5).
                     self.server.own_command_done();
                 }
+                // While an export runs, a CLI command's host lets a recording
+                // reach its core, which refuses it at once (A§8.5).
+                self.server.set_exporting(
+                    state
+                        .runtime
+                        .jobs
+                        .values()
+                        .any(|job| matches!(job.kind, JobKind::Export { .. })),
+                );
                 // Recording, jobs, or a startup recovery still out (A§8.6).
                 let busy = state.runtime.is_busy();
                 if busy {

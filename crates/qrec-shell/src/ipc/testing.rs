@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use crossbeam_channel::{Receiver, RecvTimeoutError};
+use qrec_core::apply::record::export_blocks_recording;
 use qrec_core::model::{Project, ProjectDefaults};
 use qrec_core::protocol::{
     Command as CoreCommand, HelloInfo, Progress, ProgressPhase, Query, WireBody,
@@ -326,10 +327,14 @@ impl FakeLog {
 /// and fakes the slow parts:
 ///
 /// - `Export { out: Some("ms:N") }` is an N ms job with five progress steps
-///   (`"ms:N:sleep"` also runs `sleep 60` in its own process group);
+///   (`"ms:N:sleep"` also runs `sleep 60` in its own process group). It is
+///   a job that isn't an export (`JobKind::Purge`, like a frame save or an
+///   autocut a command waits for) unless the spec says `export`
+///   (`"ms:N:export"`): then `hello` lists a `JobKind::Export`;
 ///   `ExportCancel` and `Msg::Interrupt` cancel jobs (unless `stubborn`);
 /// - `RecordStart`/`RecordToggle` record until `RecordStop` (waiters with
-///   `wait` get the finalized reply).
+///   `wait` get the finalized reply), except while an export runs: they
+///   get the core's `Busy` (`export_blocks_recording`, A§5.3).
 ///
 /// `done` is evaluated only after a handled message — the strictest reading
 /// of `run_until` — so hosts must nudge it; after 30 s without a message it
@@ -433,6 +438,15 @@ impl FakeSession {
 
     fn command(&mut self, cmd: CoreCommand, confirmed: bool, mut to: Box<dyn Responder>) {
         let recording = !self.state.runtime.record.is_idle();
+        if !recording
+            && cmd.may_start_recording()
+            && let Some(busy) = export_blocks_recording(self.state.runtime.jobs.values())
+        {
+            // The core's first refusal (A§5.3), in every host.
+            self.log.push(json!({ "event": "recordRefused" }));
+            to.reply(Err(busy));
+            return;
+        }
         match cmd {
             CoreCommand::RecordStart { wait, .. } | CoreCommand::RecordToggle { wait }
                 if !recording =>
@@ -502,7 +516,22 @@ impl FakeSession {
     fn start_job(&mut self, spec: &str, to: Box<dyn Responder>) {
         let mut parts = spec.split(':').skip(1);
         let ms: u64 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(300);
-        let child = (parts.next() == Some("sleep")).then(|| {
+        let flags: Vec<&str> = parts.collect();
+        let kind = if flags.contains(&"export") {
+            JobKind::Export {
+                out: "/fake.mp4".into(),
+                files: Default::default(),
+                total_frames: 5,
+                seg_frames: vec![5],
+                seg_done: vec![0],
+                stitch_total_ns: 0,
+                stitch_done_ns: 0,
+                stitching: false,
+            }
+        } else {
+            JobKind::Purge { takes: Vec::new() }
+        };
+        let child = flags.contains(&"sleep").then(|| {
             let child = Command::new("sleep")
                 .arg("60")
                 .process_group(0)
@@ -517,7 +546,7 @@ impl FakeSession {
             id,
             Job {
                 id,
-                kind: JobKind::Purge { takes: Vec::new() },
+                kind,
                 req: Some(ReqId(self.next_req.to_string())),
                 started: Utc::now(),
             },

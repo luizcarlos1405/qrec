@@ -1412,6 +1412,93 @@ fn the_spawned_host_keeps_the_lock_after_its_parent_exits() {
     assert_eq!(exits[0]["code"], 0);
 }
 
+/// The spawned host gets the lock, the ready pipe and its log, and nothing
+/// else of its parent's (A§8.3 step 5): a descriptor the CLI inherited from
+/// its own caller — a pipe on fd 9 here, like `qrec record start 9>&1 |
+/// …` or a key-bind script's flock — is closed in the detached host, so
+/// that pipe ends when the CLI does, not when the take does. The host used
+/// to keep every inherited descriptor until it exited.
+#[test]
+fn the_spawned_host_keeps_none_of_its_parents_other_descriptors() {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    let f = fixture();
+    let log = f.env.root().join("spawn-fds.jsonl");
+    // Close-on-exec here, so only the spawner (fd 9) gets the write end.
+    let (read, write) = crate::ipc::server::pipe_cloexec().unwrap();
+    let pipe = fs::read_link(format!("/proc/self/fd/{}", read.as_raw_fd())).unwrap();
+    let write_fd = write.as_raw_fd();
+    let mut command = child_command(&f.env, "spawner", &log);
+    command
+        .env(PROJECT, &f.dir)
+        .env(
+            RULES,
+            rules_env(&ExitRules {
+                unused_timeout: Duration::from_secs(10),
+                ..quick_rules()
+            }),
+        )
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: dup2 between fork and exec on a descriptor open in the child.
+    unsafe {
+        command.pre_exec(move || {
+            // dup2 clears close-on-exec: the spawner inherits it as fd 9.
+            if libc::dup2(write_fd, 9) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut spawner = command.spawn().unwrap();
+    drop(write);
+    assert_eq!(
+        wait_exit(&mut spawner, Duration::from_secs(30)),
+        Some(0),
+        "{:#?}",
+        read_events(&log)
+    );
+    let spawned = events_named(&log, "spawned");
+    assert_eq!(spawned.len(), 1, "{:#?}", read_events(&log));
+    let host_pid = spawned[0]["host"].as_u64().unwrap() as u32;
+    let _reap = Reap {
+        child: None,
+        pid: Some(host_pid as i32),
+    };
+    assert!(alive(host_pid));
+    // The host runs, yet nobody holds the write end any more: EOF.
+    let mut pfd = libc::pollfd {
+        fd: read.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: poll(2) on one valid pollfd.
+    let ready = unsafe { libc::poll(&mut pfd, 1, 5000) };
+    let held: Vec<PathBuf> = fs::read_dir(format!("/proc/{host_pid}/fd"))
+        .unwrap()
+        .filter_map(|entry| fs::read_link(entry.ok()?.path()).ok())
+        .collect();
+    assert!(!held.contains(&pipe), "the host kept fd 9: {held:?}");
+    assert_eq!(ready, 1, "the pipe never ended: {held:?}");
+    let mut byte = [0u8; 1];
+    // SAFETY: read(2) into a local buffer from our pipe.
+    let n = unsafe { libc::read(read.as_raw_fd(), byte.as_mut_ptr().cast(), 1) };
+    assert_eq!(n, 0, "EOF");
+    // It has what the hand-off gives it, and serves as before.
+    assert!(f.lock_held());
+    assert!(
+        held.iter().any(|p| p
+            .to_string_lossy()
+            .ends_with(&format!("-{host_pid}-host.log"))),
+        "{held:?}"
+    );
+    let hello = client::hello(&f.socket, Duration::from_secs(2)).unwrap();
+    assert_eq!((hello.pid, hello.host), (host_pid, HostKind::Headless));
+    let lines = raw_exchange(&f.socket, &request_line("s", json!("shutdown")));
+    assert_eq!(lines[1]["reply"]["ok"], true);
+    assert!(wait_for(Duration::from_secs(10), || !f.lock_held()));
+}
+
 #[test]
 fn record_start_without_a_host_spawns_a_headless_one() {
     let f = fixture();
@@ -1586,7 +1673,9 @@ fn a_second_signal_kills_child_processes_and_exits_130() {
 /// A recording asked while a CLI command holds the project waits for that
 /// command to end, then runs in a headless host of its own: never inside
 /// the command's process, which it used to keep alive (its result held
-/// back) for as long as the take lasted (A§8.5).
+/// back) for as long as the take lasted (A§8.5). The command's job here
+/// isn't an export (the fake's plain job, like a frame save or an
+/// autocut): an export refuses the recording at once instead (next test).
 #[test]
 fn a_recording_never_runs_in_a_cli_commands_host() {
     let f = fixture();
@@ -1660,6 +1749,95 @@ fn a_recording_never_runs_in_a_cli_commands_host() {
     );
     assert_eq!(out.ok()["finalized"], true);
     assert!(wait_for(Duration::from_secs(10), || !f.lock_held()));
+}
+
+/// Recording is blocked during an export, whichever process runs it (SPEC
+/// §13.1, A§5.3): a `record toggle|start` while a CLI command's own host
+/// exports is refused at once with the core's `Busy` (exit 6), as a GUI or
+/// headless host refuses it. It used to wait silently for the export to
+/// end and then start a take nobody was told about (or, past 20 s, blame
+/// the command for not recording).
+#[test]
+fn a_recording_asked_while_a_cli_command_exports_is_refused_at_once() {
+    let f = fixture();
+    let log = f.env.root().join("cli-export.jsonl");
+    let export = WireBody::Command(export_spec("ms:10000:export"));
+    let mut command = Reap {
+        child: Some(cli_child(&f, &log, &export)),
+        pid: None,
+    };
+    let command_pid = command.child.as_ref().unwrap().id();
+    // Its own host runs the export.
+    assert!(wait_for(Duration::from_secs(10), || client::hello(
+        &f.socket,
+        Duration::from_secs(1)
+    )
+    .is_ok_and(|h| h.host == HostKind::Cli
+        && h.pid == command_pid
+        && h.jobs
+            .iter()
+            .any(|j| matches!(j.kind, JobKind::Export { .. })))));
+    let toggle = WireBody::Command(qrec_core::Command::RecordToggle { wait: false });
+    let start = WireBody::Command(qrec_core::Command::RecordStart {
+        mode: RecordModeArg::Append,
+        countdown: None,
+        wait: false,
+    });
+    for body in [toggle, start] {
+        let mut recorder = Reap {
+            child: Some(cli_child(&f, &log, &body)),
+            pid: None,
+        };
+        let recorder_pid = recorder.child.as_ref().unwrap().id();
+        assert_eq!(
+            wait_exit(recorder.child.as_mut().unwrap(), Duration::from_secs(20)),
+            Some(6),
+            "{:#?}",
+            read_events(&log)
+        );
+        assert_eq!(
+            command.child.as_mut().unwrap().try_wait().unwrap(),
+            None,
+            "answered while the export runs, not once it ended"
+        );
+        let done = events_named(&log, "cliDone");
+        let reply = &done
+            .iter()
+            .find(|d| d["pid"] == recorder_pid)
+            .unwrap_or_else(|| panic!("no cliDone from {recorder_pid}: {done:#?}"))["reply"];
+        assert_eq!(reply["error"]["code"], "busy", "{reply}");
+        assert_eq!(reply["error"]["message"], "an export is running (job-1)");
+        assert_eq!(
+            reply["error"]["hint"],
+            "wait for it to finish, or cancel it with qrec export cancel"
+        );
+    }
+    // A client that sends it anyway isn't bounced: the host's core refuses
+    // it, accepted and answered at once.
+    let raw = send(
+        &f.socket,
+        Request::command(qrec_core::Command::RecordToggle { wait: false }, false),
+    );
+    assert_eq!(raw.accepted, 1);
+    assert_eq!(raw.err().message, "an export is running (job-1)");
+    // The export ends normally; nothing recorded, no headless host started.
+    assert_eq!(
+        wait_exit(command.child.as_mut().unwrap(), Duration::from_secs(30)),
+        Some(0),
+        "{:#?}",
+        read_events(&log)
+    );
+    let events = read_events(&log);
+    assert!(
+        events.iter().all(|e| e["event"] != "recording"),
+        "{events:#?}"
+    );
+    assert!(
+        events.iter().all(|e| e["role"] != "headless"),
+        "{events:#?}"
+    );
+    assert_eq!(events_named(&log, "recordRefused").len(), 1, "{events:#?}");
+    assert!(wait_for(Duration::from_secs(5), || !f.lock_held()));
 }
 
 /// The second Ctrl+C of an in-process command kills its children at once

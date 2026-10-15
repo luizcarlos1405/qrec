@@ -32,7 +32,7 @@ use crate::protocol::command::{Command, RecordModeArg};
 use crate::protocol::effect::{Effect, LogLevel};
 use crate::protocol::progress::{Progress, ProgressPhase};
 use crate::protocol::reply::{CmdResult, RecordStartedView};
-use crate::state::{ClipRef, DiscardRequest, JobKind, RecordMode, RecordPhase, State};
+use crate::state::{ClipRef, DiscardRequest, Job, JobKind, RecordMode, RecordPhase, State};
 use crate::timeline;
 
 /// `recording.countdownSecs` and `--countdown` are 0–10 (SPEC §5.5).
@@ -46,8 +46,9 @@ pub const ENGINE_STUCK: &str = "the capture engine is stuck (GPU driver?); resta
 
 /// `qrec record start`: countdown > 0 ⇒ Countdown + `StartTimer`; else begin take.
 ///
-/// `Busy` while an export runs or in a CLI command's own host (which never
-/// records, A§8.5); `Invalid` for an empty scene; record-over
+/// `Busy` while an export runs (in every host, [`export_blocks_recording`])
+/// or in a CLI command's own host (which never records, A§8.5); `Invalid`
+/// for an empty scene; record-over
 /// needs contiguous existing clips (`OverSelection` without a selection is
 /// `Unavailable`). The start request is answered later: `RecordStartedView`
 /// once capture runs, or with `wait` the `TakeFinalizedView`.
@@ -153,10 +154,17 @@ fn project_countdown(project: &Project) -> u32 {
     project.recording.countdown_secs.min(MAX_COUNTDOWN_SECS)
 }
 
-/// What an Idle `Start`/`Toggle` needs: a host that records (never a CLI
-/// command's own host, A§8.5), no export running and a scene with something
-/// to record.
+/// What an Idle `Start`/`Toggle` needs: no export running, a host that
+/// records (never a CLI command's own host, A§8.5) and a scene with
+/// something to record.
+///
+/// The export comes first: recording is blocked during an export (SPEC
+/// §13.1) whichever process runs it, so a CLI command's host running one
+/// gives the same answer as a GUI or headless host.
 pub(crate) fn check_can_start(state: &State) -> Result<(), CoreError> {
+    if let Some(busy) = export_blocks_recording(state.runtime.jobs.values()) {
+        return Err(busy);
+    }
     if !state.runtime.host.records() {
         return Err(cli_host_busy());
     }
@@ -164,21 +172,26 @@ pub(crate) fn check_can_start(state: &State) -> Result<(), CoreError> {
         return Err(CoreError::capture_failed(ENGINE_STUCK)
             .with_hint("restart Qrec; qrec doctor checks the GPU driver"));
     }
-    let export = state
-        .runtime
-        .jobs
-        .values()
-        .find(|j| matches!(j.kind, JobKind::Export { .. }));
-    if let Some(job) = export {
-        return Err(
-            CoreError::busy(format!("an export is running ({})", job.id))
-                .with_hint("wait for it to finish, or cancel it with qrec export cancel"),
-        );
-    }
     if state.project.scene.is_empty() {
         return Err(capture_plan::empty_scene());
     }
     Ok(())
+}
+
+/// `Busy` "an export is running (job-N)" when one of `jobs` is an export:
+/// recording is blocked during an export (SPEC §13.1, A§5.3), in every host.
+/// [`check_can_start`]'s first refusal. The shell answers a recording with
+/// it too when the `hello` of a CLI command's host lists an export: that
+/// host is never sent a recording (A§8.5), and the person pressing record
+/// gets the same answer at once, whichever process runs the export.
+pub fn export_blocks_recording<'a>(jobs: impl IntoIterator<Item = &'a Job>) -> Option<CoreError> {
+    let job = jobs
+        .into_iter()
+        .find(|j| matches!(j.kind, JobKind::Export { .. }))?;
+    Some(
+        CoreError::busy(format!("an export is running ({})", job.id))
+            .with_hint("wait for it to finish, or cancel it with qrec export cancel"),
+    )
 }
 
 /// Resolves `--over`/`--over-selection` into the `ClipRef`s the take will

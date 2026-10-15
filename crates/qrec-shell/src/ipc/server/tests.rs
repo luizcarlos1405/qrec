@@ -480,9 +480,10 @@ fn messages_sent_before_attach_are_delivered_in_order() {
 }
 
 /// A CLI command's own host (A§8.5) closes what it doesn't take before
-/// `accepted`, so the client routes again: a recording always, a new job
-/// once its own command is done. Everything else is taken, and other hosts
-/// take everything.
+/// `accepted`, so the client routes again: a recording unless an export
+/// runs (then its core refuses it, at once), a new job once its own
+/// command is done. Everything else is taken, and other hosts take
+/// everything.
 #[test]
 fn a_cli_commands_host_bounces_recordings_and_late_jobs() {
     let serve = |host: HostKind| {
@@ -527,6 +528,13 @@ fn a_cli_commands_host_bounces_recordings_and_late_jobs() {
         let lines = ask(&cli, id, cmd);
         assert!(taken(&lines), "{id}: {lines:?}");
     }
+    // While it exports, a recording reaches the Session, whose core refuses
+    // it at once (A§5.3): the client hears why instead of waiting.
+    cli.server.set_exporting(true);
+    let lines = ask(&cli, "r3", &toggle);
+    assert!(taken(&lines), "{lines:?}");
+    cli.server.set_exporting(false);
+    assert_eq!(ask(&cli, "r4", &start), Vec::<Value>::new());
     // Its own command is done: no new job either.
     cli.server.own_command_done();
     assert_eq!(ask(&cli, "e2", &export), Vec::<Value>::new());
@@ -551,12 +559,13 @@ fn a_cli_commands_host_bounces_recordings_and_late_jobs() {
             json!("export"),
             json!("recordStop"),
             json!("undo"),
+            json!("recordToggle"),
             json!("recordStop"),
             json!("undo"),
             Value::Null
         ]
     );
-    assert_eq!(cli.server.stats().requests, 6);
+    assert_eq!(cli.server.stats().requests, 7);
 
     // A headless host takes all of it, done or not.
     let (_dir, headless, _, _session) = serve(HostKind::Headless);

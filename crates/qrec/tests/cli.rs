@@ -334,8 +334,10 @@ fn init_and_status_shapes() {
     status.ok();
     let data = &status.only_reply()["data"];
     assert_eq!(data["initialized"], true);
-    assert_eq!(data["host"], "cli");
-    assert!(data["pid"].as_u64().is_some());
+    // No host runs (the human view says "none running"): `host` and `pid`
+    // name only a process that holds the project, never the reader itself.
+    assert_eq!(data["host"], Value::Null, "{data}");
+    assert_eq!(data["pid"], Value::Null, "{data}");
     assert_eq!(data["project"]["name"], "my-video");
     assert_eq!(
         data["project"]["canvas"]["fps"],
@@ -347,6 +349,11 @@ fn init_and_status_shapes() {
     human.ok();
     assert!(
         human.stdout.starts_with("Project    my-video\n"),
+        "{}",
+        human.stdout
+    );
+    assert!(
+        human.stdout.contains("\nHost       none running;"),
         "{}",
         human.stdout
     );
@@ -3512,4 +3519,139 @@ fn an_unreadable_history_base_is_rebuilt_by_the_next_command() {
     let project = &status.reply()["data"]["project"];
     assert_eq!(project["name"], "b", "{project}");
     assert_eq!(project["scene"]["layers"][0]["id"], "L1", "{project}");
+}
+
+/// An `ffmpeg` first on `PATH` that waits `secs` before each run that
+/// reports progress (export segments, the stitch), so an export is still
+/// running when the test looks; probes run at once.
+fn slow_renders(env: &TestEnv, secs: u32) -> OsString {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = env.root().join("slow-renders");
+    fs::create_dir(&bin).unwrap();
+    let wrapper = bin.join("ffmpeg");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\ncase \" $* \" in *' -progress '*) sleep {secs} ;; esac\nexec '{}' \"$@\"\n",
+            ffmpeg_on_path().display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path))).unwrap()
+}
+
+/// Recording is blocked during an export, whichever process runs it (SPEC
+/// §13.1, A§5.3): `record toggle` while an in-process `qrec export` runs is
+/// refused at once (exit 6, the core's "an export is running"), as when a
+/// headless or GUI host exports. It used to print nothing, wait for the
+/// export to end and then start a take nobody was told about (or, past
+/// 20 s, blame the export's command for not recording).
+#[test]
+fn a_recording_asked_during_an_in_process_export_is_refused_at_once() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "exporting", &[video(30)]);
+    let mut command = env.command(&qrec_bin());
+    command
+        .current_dir(&dir)
+        .env("PATH", slow_renders(&env, 50))
+        .args(["--json", "export", "--quality", "draft"]);
+    let export = Background::spawn(command);
+    // The export's own process hosts the project and runs the export.
+    wait_until(Duration::from_secs(60), "the export's host", || {
+        let status = qrec(&env, &dir, &["status", "--json"]);
+        status.code == Some(0) && {
+            let data = &status.reply()["data"];
+            data["host"] == "cli"
+                && data["pid"] == export.pid()
+                && data["runtime"]["jobs"]
+                    .as_object()
+                    .is_some_and(|jobs| jobs.values().any(|j| j["kind"]["kind"] == "export"))
+        }
+    });
+    let asked = Instant::now();
+    let toggle = qrec(&env, &dir, &["record", "toggle", "--json"]);
+    let took = asked.elapsed();
+    assert_eq!(toggle.code, Some(6), "{toggle:?}");
+    // At once: the routing deadline it used to wait out is 20 s.
+    assert!(
+        took < Duration::from_secs(10),
+        "answered at once, not when the export ends: {took:?}"
+    );
+    let error = &toggle.only_reply()["error"];
+    assert_eq!(error["code"], "busy", "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("an export is running (job-"),
+        "{error}"
+    );
+    assert_eq!(
+        error["hint"],
+        "wait for it to finish, or cancel it with qrec export cancel"
+    );
+    // Nothing started meanwhile: the export's process still hosts the
+    // project, recording nothing.
+    let status = qrec(&env, &dir, &["status", "--json"]);
+    status.ok();
+    let data = &status.reply()["data"];
+    assert_eq!(data["pid"], export.pid(), "{data}");
+    assert_eq!(data["runtime"]["record"]["phase"], "idle", "{data}");
+    qrec(&env, &dir, &["export", "cancel", "--json"]).ok();
+    let (code, out, _) = export.finish(Duration::from_secs(30));
+    assert_ne!(code, Some(0), "cancelled: {out:?}");
+    wait_until_no_host(&env);
+    let takes = qrec(&env, &dir, &["take", "list", "--json"]);
+    takes.ok();
+    assert_eq!(
+        takes.reply()["data"].as_array().unwrap().len(),
+        1,
+        "no take was started: {}",
+        takes.stdout
+    );
+}
+
+/// The background recorder keeps nothing of its caller's but what the
+/// hand-off gives it (A§8.3 step 5: the lock, the ready pipe, the host
+/// log). A descriptor the caller of `qrec record start` holds open — the
+/// `exec 9>lock; flock -n 9 || exit; qrec record toggle` of a debounced key
+/// bind — is closed in it, so the next press isn't locked out for the whole
+/// take. The recorder used to keep every inherited descriptor until the
+/// take ended.
+#[test]
+fn the_background_recorder_keeps_none_of_the_callers_descriptors() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("fds");
+    qrec(&env, &dir, &["init", "--canvas", "640x360@30"]).ok();
+    qrec(
+        &env,
+        &dir,
+        &["scene", "layer", "add", "screen", "--output", "FAKE-1"],
+    )
+    .ok();
+    let held_file = env.root().join("held.txt");
+    let mut command = env.command(Path::new("sh"));
+    command
+        .current_dir(&dir)
+        .args(["-c", r#"exec 9>>"$1"; exec "$0" record start --json"#])
+        .arg(qrec_bin())
+        .arg(&held_file);
+    let start = run_tool(&mut command, Duration::from_secs(60));
+    assert!(start.status.success(), "{}", start.stderr);
+    let held_file = fs::canonicalize(&held_file).unwrap();
+    let pid = host_pid(&env, &dir);
+    let held: Vec<PathBuf> = fs::read_dir(format!("/proc/{pid}/fd"))
+        .unwrap()
+        .filter_map(|entry| fs::read_link(entry.ok()?.path()).ok())
+        .collect();
+    qrec(&env, &dir, &["record", "stop"]).ok();
+    wait_until_no_host(&env);
+    assert!(
+        !held.contains(&held_file),
+        "the recorder kept the caller's fd 9: {held:?}"
+    );
+    let lock = fs::canonicalize(dir.join(".qrec/lock")).unwrap();
+    assert!(held.contains(&lock), "it still holds the lock: {held:?}");
 }

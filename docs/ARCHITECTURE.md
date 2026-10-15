@@ -695,7 +695,7 @@ including `Play`, `Undo` and `Export`, is `Busy` (SPEC §5.3.3).
 
 | Phase | Input | Result |
 | --- | --- | --- |
-| Idle | Start/Toggle | `Busy` in a CLI command's own host (`HostKind::Cli` never records, A§8.5) or if an export runs; `Invalid` if the scene is empty; Over needs contiguous existing clips (stored as `ClipRef`s; `OverSelection` resolves `ui.selection` and is `Unavailable` without a selection). countdown > 0 ⇒ Countdown + `StartTimer`; else begin take ⇒ Starting |
+| Idle | Start/Toggle | `Busy` "an export is running (job-N)" if an export runs, in every host and checked first (`export_blocks_recording`; SPEC §13.1); else `Busy` in a CLI command's own host (`HostKind::Cli` never records, A§8.5); `Invalid` if the scene is empty; Over needs contiguous existing clips (stored as `ClipRef`s; `OverSelection` resolves `ui.selection` and is `Unavailable` without a selection). countdown > 0 ⇒ Countdown + `StartTimer`; else begin take ⇒ Starting |
 | Idle | Stop/Cancel | `Invalid` "not recording" |
 | Countdown | TimerFired (current timer) | next tick, or begin take ⇒ Starting |
 | Countdown | Stop/Toggle/Cancel | `CancelTimer` ⇒ Idle; start req gets `Invalid` "countdown cancelled"; caller gets Ok |
@@ -1230,23 +1230,28 @@ Cli) and serves the socket.
 5. **Spawn hand-off** (`record start`/`toggle` with no host): the CLI takes
    the lock and spawns `qrec host --headless --project DIR --lock-fd 3
    --ready-fd 4` (fds dup'ed in `pre_exec`, CLOEXEC cleared, `setsid`, stdio
-   to `.qrec/logs/…-host.log`). flock belongs to the open file description,
-   so the child keeps it; the CLI closes its fd and **never unlocks**. The
-   host writes one JSON line on fd 4 (`{"ok":true}` once listening, or the
-   `CoreError`); EOF ⇒ the CLI reports the host log path. It keeps fd 4 until
-   its Session opened: if that fails (a corrupt `qrec.json`, A§7.7) it writes
-   the error as a second line before freeing the lock, so a CLI whose
-   request found the host gone reports that error and its hint (plus the
-   log path), not "exited right after starting".
+   to `.qrec/logs/…-host.log`, every descriptor above 4 close-on-exec:
+   nothing the CLI inherited from its own caller, such as a pipe that caller
+   reads to its end or a key-bind script's `flock`, reaches the detached
+   host to live as long as the take, A§8.7). flock belongs to the open file
+   description, so the child keeps it; the CLI closes its fd and **never
+   unlocks**. The host writes one JSON line on fd 4 (`{"ok":true}` once
+   listening, or the `CoreError`); EOF ⇒ the CLI reports the host log path.
+   It keeps fd 4 until its Session opened: if that fails (a corrupt
+   `qrec.json`, A§7.7) it writes the error as a second line before freeing
+   the lock, so a CLI whose request found the host gone reports that error
+   and its hint (plus the log path), not "exited right after starting".
 6. **Protocol safety:** the host sends `{"id","accepted":true}` once parsed.
    EOF before `accepted` ⇒ the request never ran: route again after 50 ms,
    like for a starting or stopping host, until the deadline (given once
    more from the first bounce); EOF after ⇒ exit 1 "host disconnected"
    with the log path (never retry: it may have run). A host also bounces
    this way what it doesn't take: a CLI command's own host bounces
-   recordings, and new jobs once its command is answered (A§8.5). Past the
-   deadline the CLI says so (`Busy` "the project is held by another qrec
-   command (pid N), which doesn't record").
+   recordings while it runs no export (during one, a recording reaches
+   its core, which refuses it at once like every host's, A§5.3), and new
+   jobs once its command is answered (A§8.5). Past the deadline the CLI
+   says so (`Busy` "the project is held by another qrec command (pid N),
+   which doesn't record").
 7. Peers must have our uid (`SO_PEERCRED`). Request lines are capped at 1 MiB
    with a 5 s read timeout; each connection has a bounded 64-message queue
    (progress coalesced, replies never dropped) and a 10 s write timeout.
@@ -1305,6 +1310,14 @@ nothing of anyone else's may be tied to it for long:
   before `accepted` (A§8.3 step 6; the CLI, seeing `host: "cli"` in
   `hello`, doesn't even send them): the client routes again every 50 ms
   until that command is gone (≤ 20 s), then spawns its own headless host.
+  That wait is only for a command that runs no export. Recording is
+  blocked during an export whichever process runs it (SPEC §13.1): when
+  the `hello` lists an export, the client answers at once with the core's
+  own `Busy` "an export is running (job-N)" and its hint
+  (`export_blocks_recording`, exit 6), as a GUI or headless host does; and
+  the server, told by its host loop that an export runs
+  (`IpcServer::set_exporting`), lets a recording through to the core,
+  which gives the same answer, instead of bouncing it.
 - **Its result comes at once.** The command's reply is printed as soon as
   it comes (`RequestEvents::replied`), even while the process still runs
   other clients' requests; a signal after that only adds the stderr warning
@@ -1380,7 +1393,14 @@ nothing of anyone else's may be tied to it for long:
 ### A§8.7 Process runner (`proc.rs`) and logs
 
 One runner for every child: stdin null, `process_group(0)`, stdout piped only
-when parsed (drained on its own thread), stderr appended to a log file.
+when parsed (drained on its own thread), stderr appended to a log file, and
+nothing else: in `pre_exec`, every descriptor from 3 up is made
+close-on-exec (`proc::close_on_exec_from`: `close_range(…,
+CLOSE_RANGE_CLOEXEC)`, else an `fcntl` sweep below `RLIMIT_NOFILE`; never
+closed outright, so std still hears a failed `exec`). Rust opens everything
+close-on-exec already; this also keeps out what Qrec itself inherited from
+whoever started it. The headless host spawn (A§8.3 step 5) and the GPU
+probe child do the same.
 Arguments are passed byte for byte (`OsString`): the media runner replaces a
 plan's last element with `file:<temp path>` (and the segment check's input)
 keeping the path's exact bytes, so a project folder whose path isn't UTF-8
@@ -1800,7 +1820,12 @@ strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
   A§5.9). Without a readable cwd only an absolute `--out` or `--project`
   works (A§8.4).
 - `qrec autocut` without `--clips`/`--all` sends `ClipScope::All`.
-- `qrec status --json` returns `Query::State` plus host info.
+- `qrec status --json` returns `Query::State` plus `path`, `initialized`
+  and the host that holds the project: `host` (`gui`, `headless` or `cli`)
+  and `pid` of the live process that answered, or `null` and `null` when
+  none runs and the CLI read the project itself (A§8.4; the human view
+  says "none running"). `host` never names that short-lived reader (its
+  read-only Session's `runtime.host` is `cli`, but it holds no lock, A§8.3).
 - Project-less: `--help`, `version`, `doctor`, `sources list`, `schema`,
   `keys`, `agent-guide`, `config`, `completions <shell>`.
 - Extensions to SPEC §14 (for GUI parity): `qrec project set`,
@@ -1864,6 +1889,8 @@ Program; theme tokens from `crates/qrec-gui/resources/theme/*.css`;
    external edit are ignored with a warning (A§7.4).
 6. In-process CLI commands become temporary hosts while they run jobs
    (A§8.5). They never record (a recording asked meanwhile waits for them,
-   ≤ 20 s, then gets its own headless host), print their result as soon as
-   they have it, and take no new job once answered.
+   ≤ 20 s, then gets its own headless host; while one of them exports, it
+   is refused at once instead, as in every host, since recording is
+   blocked during an export), print their result as soon as they have it,
+   and take no new job once answered.
 7. Export quality presets for Draft and High (A§9.3).

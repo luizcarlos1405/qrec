@@ -387,6 +387,83 @@ fn a_cli_host_never_records() {
     }
 }
 
+fn export_job(id: u64) -> Job {
+    Job {
+        id: JobId(id),
+        kind: JobKind::Export {
+            out: "/tmp/x.mp4".into(),
+            files: Default::default(),
+            total_frames: 10,
+            seg_frames: vec![],
+            seg_done: vec![],
+            stitch_total_ns: 0,
+            stitch_done_ns: 0,
+            stitching: false,
+        },
+        req: None,
+        started: ctx_for(None).now,
+    }
+}
+
+/// Recording is blocked during an export (SPEC §13.1) with one answer,
+/// whichever host runs the export: a CLI command's own host running one
+/// says "an export is running", like a GUI or headless host, not that it
+/// doesn't record (A§5.3). The shell answers a recording from that host's
+/// `hello` with the same helper (A§8.5), so a key press during an
+/// in-process export is refused at once instead of waiting for it.
+#[test]
+fn an_export_blocks_recording_the_same_way_in_every_host() {
+    for host in [HostKind::Cli, HostKind::Gui, HostKind::Headless] {
+        let mut state = idle();
+        state.runtime.host = host;
+        state.runtime.jobs.insert(JobId(4), export_job(4));
+        for command in [append(), Command::RecordToggle { wait: false }] {
+            let err = fail(&state, Some("s1"), command.clone());
+            assert_eq!(err.code, ErrorCode::Busy, "{host:?} {command:?}");
+            assert_eq!(
+                err.message, "an export is running (job-4)",
+                "{host:?} {command:?}"
+            );
+            assert_eq!(
+                err.hint.as_deref(),
+                Some("wait for it to finish, or cancel it with qrec export cancel")
+            );
+            assert_eq!(
+                Some(err),
+                qrec_core::apply::record::export_blocks_recording(state.runtime.jobs.values()),
+                "the shell's answer is the core's"
+            );
+        }
+    }
+    // Other jobs don't block a recording; a CLI host still doesn't record.
+    let purge = Job {
+        id: JobId(5),
+        kind: JobKind::Purge { takes: vec![] },
+        req: None,
+        started: ctx_for(None).now,
+    };
+    let frame = Job {
+        id: JobId(6),
+        kind: JobKind::FrameSave {
+            out: "/tmp/f.png".into(),
+            files: Default::default(),
+        },
+        req: None,
+        started: ctx_for(None).now,
+    };
+    assert_eq!(
+        qrec_core::apply::record::export_blocks_recording([&purge, &frame]),
+        None
+    );
+    let mut cli = idle();
+    cli.runtime.host = HostKind::Cli;
+    cli.runtime.jobs.insert(JobId(5), purge);
+    assert_eq!(
+        fail(&cli, Some("s1"), append()).message,
+        qrec_core::apply::record::CLI_HOST_BUSY
+    );
+}
+
 #[test]
 fn a_host_without_live_mode_starts_the_live_pipeline_first() {
     for (host, mode) in [
@@ -531,24 +608,7 @@ fn idle_start_rejections() {
     let state = idle();
     // An export runs.
     let mut exporting = state.clone();
-    exporting.runtime.jobs.insert(
-        JobId(3),
-        Job {
-            id: JobId(3),
-            kind: JobKind::Export {
-                out: "/tmp/x.mp4".into(),
-                files: Default::default(),
-                total_frames: 10,
-                seg_frames: vec![],
-                seg_done: vec![],
-                stitch_total_ns: 0,
-                stitch_done_ns: 0,
-                stitching: false,
-            },
-            req: None,
-            started: ctx_for(None).now,
-        },
-    );
+    exporting.runtime.jobs.insert(JobId(3), export_job(3));
     for command in [append(), Command::RecordToggle { wait: false }] {
         let err = fail(&exporting, Some("s1"), command);
         assert_eq!(err.code, ErrorCode::Busy);

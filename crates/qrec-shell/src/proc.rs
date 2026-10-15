@@ -3,6 +3,9 @@
 //! - stdin is `/dev/null` (or a file, e.g. the PNG `wl-copy` reads);
 //! - the child leads its own process group (`process_group(0)`), so a kill
 //!   reaches everything it started;
+//! - it gets nothing but its stdio: every other descriptor Qrec holds is
+//!   close-on-exec, including any it inherited from whoever started it
+//!   ([`close_on_exec_from`]);
 //! - stdout is piped only when the caller parses it, and then drained on
 //!   its own thread (lines to a callback, or collected up to a limit);
 //! - stderr is appended to a log file (never a pipe nobody reads);
@@ -33,6 +36,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::os::fd::RawFd;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdout, Command, ExitStatus, Stdio};
@@ -360,12 +364,15 @@ impl Spec {
             }
         }
         cmd.process_group(0);
-        if self.die_with_parent {
-            let parent = std::process::id();
-            // SAFETY: the closure runs in the forked child before exec and
-            // only makes async-signal-safe system calls (prctl, getppid).
-            unsafe {
-                cmd.pre_exec(move || {
+        let parent = self.die_with_parent.then(std::process::id);
+        // SAFETY: the closure runs in the forked child before exec and only
+        // makes async-signal-safe system calls (close_range or fcntl,
+        // prctl, getppid).
+        unsafe {
+            cmd.pre_exec(move || {
+                // Only its stdio crosses: nothing Qrec inherited.
+                close_on_exec_from(3);
+                if let Some(parent) = parent {
                     if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong) == -1 {
                         return Err(io::Error::last_os_error());
                     }
@@ -373,9 +380,9 @@ impl Spec {
                     if libc::getppid() as u32 != parent {
                         return Err(io::Error::from_raw_os_error(libc::ESRCH));
                     }
-                    Ok(())
-                });
-            }
+                }
+                Ok(())
+            });
         }
 
         if let Some(file) = log.as_mut() {
@@ -811,6 +818,72 @@ fn secs(d: Duration) -> String {
     }
 }
 
+// ------------------------------------------------- inherited descriptors
+
+/// The most descriptors [`close_on_exec_from`] walks one by one when the
+/// kernel can't do it at once and the descriptor limit is unlimited.
+const FD_SWEEP_MAX: libc::rlim_t = 1 << 20;
+
+/// Marks every descriptor from `first` up close-on-exec. For `pre_exec`
+/// (between fork and exec): the program then starts with its stdio and
+/// what the caller placed below `first` (a headless host's lock and ready
+/// pipe, A§8.3 step 5), never with a descriptor Qrec itself inherited from
+/// whoever started it. Rust opens everything close-on-exec, but a key-bind
+/// script's `flock` (`exec 9>lock; flock -n 9 …; qrec record toggle`) or a
+/// harness's pipe isn't: a child that outlives the command, above all the
+/// background recorder, would hold it for the whole take, and whoever waits
+/// for that lock or for the pipe's end would wait for the take too.
+///
+/// `close_range(first, ~0, CLOSE_RANGE_CLOEXEC)` (Linux 5.11), else
+/// `fcntl(F_SETFD)` on each descriptor below the `RLIMIT_NOFILE` soft limit
+/// (at most [`FD_SWEEP_MAX`]). Close-on-exec rather than closed, so std's
+/// own exec-error pipe still reports a failed `exec`. Best effort, and only
+/// async-signal-safe system calls.
+pub(crate) fn close_on_exec_from(first: RawFd) {
+    let Ok(low) = libc::c_uint::try_from(first) else {
+        return;
+    };
+    // SAFETY: close_range(2) only sets the close-on-exec flag of this
+    // process's descriptors; the arguments are plain integers.
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_close_range,
+            low,
+            libc::c_uint::MAX,
+            libc::CLOSE_RANGE_CLOEXEC,
+        )
+    };
+    if rc == 0 {
+        return;
+    }
+    // ENOSYS (before 5.9), EINVAL (no CLOSE_RANGE_CLOEXEC before 5.11), a
+    // seccomp filter: one descriptor at a time.
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit(2) writes into the struct we own.
+    let top = if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0 {
+        limit.rlim_cur.min(FD_SWEEP_MAX)
+    } else {
+        1024
+    };
+    mark_close_on_exec(first..RawFd::try_from(top).unwrap_or(RawFd::MAX));
+}
+
+/// [`close_on_exec_from`] without `close_range`: `fcntl(F_SETFD)` on each
+/// open descriptor in `fds`.
+fn mark_close_on_exec(fds: std::ops::Range<RawFd>) {
+    for fd in fds {
+        // SAFETY: fcntl(2) on a descriptor number; a closed one is EBADF.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
+            // SAFETY: as above, on a descriptor that is open.
+            unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+        }
+    }
+}
+
 // --------------------------------------------------------- process groups
 
 fn groups() -> &'static Mutex<BTreeSet<u32>> {
@@ -1048,10 +1121,87 @@ pub fn summary(runs: &[Finished]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::sync::atomic::AtomicUsize;
 
     use super::*;
+
+    /// A descriptor this process holds without close-on-exec, the way a
+    /// shell hands `exec 9>file` down to the command it starts: at 200 or
+    /// above, so a shell started by the test doesn't open one with that
+    /// number itself.
+    pub(crate) fn inheritable_fd() -> OwnedFd {
+        let file = tempfile::tempfile().unwrap();
+        // SAFETY: F_DUPFD (which doesn't set close-on-exec) on a
+        // descriptor we own.
+        let fd = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD, 200) };
+        assert!(fd >= 200, "{}", io::Error::last_os_error());
+        // SAFETY: a fresh descriptor we own.
+        unsafe { OwnedFd::from_raw_fd(fd) }
+    }
+
+    /// A `sh -c` script that prints whether the shell holds `fd`.
+    pub(crate) fn holds_fd_script(fd: &OwnedFd) -> String {
+        format!(
+            "if test -e /proc/$$/fd/{0}; then echo held; else echo free; fi",
+            fd.as_raw_fd()
+        )
+    }
+
+    /// A child gets its stdio and nothing else: not a descriptor Qrec
+    /// inherited from whoever started it (a key-bind script's flock, a
+    /// harness's pipe), which a child outliving the command would keep.
+    #[test]
+    fn children_get_no_inherited_descriptor() {
+        let fd = inheritable_fd();
+        let script = holds_fd_script(&fd);
+        // A plain spawn hands it down: the check sees leaks.
+        let plain = std::process::Command::new("sh")
+            .args(["-c", &script])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&plain.stdout), "held\n");
+        for die_with_parent in [true, false] {
+            let out = sh(&script, Limit::Timeout(Duration::from_secs(10)))
+                .die_with_parent(die_with_parent)
+                .capture_stdout(1024)
+                .run()
+                .unwrap();
+            assert!(out.success(), "{}", out.describe());
+            assert_eq!(
+                out.stdout_text(),
+                "free\n",
+                "die_with_parent {die_with_parent}"
+            );
+        }
+        // Still open here: only the child's copy was closed at exec.
+        // SAFETY: fcntl query on our descriptor.
+        assert!(unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) } >= 0);
+    }
+
+    /// The sweep a kernel without `close_range(CLOSE_RANGE_CLOEXEC)` gets:
+    /// open descriptors in the range become close-on-exec, others are left
+    /// alone. (Only this test's own descriptor: other tests running
+    /// meanwhile hold theirs.)
+    #[test]
+    fn the_fallback_sweep_marks_open_descriptors() {
+        let fd = inheritable_fd();
+        let raw = fd.as_raw_fd();
+        // SAFETY: fcntl queries on our descriptor.
+        let flags = || unsafe { libc::fcntl(raw, libc::F_GETFD) };
+        assert_eq!(flags() & libc::FD_CLOEXEC, 0);
+        mark_close_on_exec(raw + 1..raw + 1);
+        assert_eq!(flags() & libc::FD_CLOEXEC, 0, "outside the range");
+        mark_close_on_exec(raw..raw + 1);
+        assert_ne!(flags() & libc::FD_CLOEXEC, 0);
+        let script = holds_fd_script(&fd);
+        let plain = std::process::Command::new("sh")
+            .args(["-c", &script])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&plain.stdout), "free\n");
+    }
 
     fn alive(pid: u32) -> bool {
         // Signal 0 checks existence; a zombie still exists until reaped.

@@ -578,7 +578,11 @@ fn render(
 }
 
 /// `qrec status --json`: the `Query::State` object plus where it lives and
-/// which host answered (`host`, `pid`).
+/// the host that holds the project (`host`, `pid`): the live process that
+/// answered, or `null` and `null` when none runs and this process read the
+/// project itself (A§8.4), like the human view's "none running". A host is
+/// a process that holds the project lock (A§8.3), so `host` never names
+/// this short-lived reader, whose pid is gone once the answer is read.
 fn status_json(data: Value, dir: &Path, host: Option<&HelloInfo>) -> Value {
     let mut object = match data {
         Value::Object(object) => object,
@@ -589,14 +593,14 @@ fn status_json(data: Value, dir: &Path, host: Option<&HelloInfo>) -> Value {
         }
     };
     let (kind, pid) = match host {
-        Some(hello) => (hello.host.as_str(), hello.pid),
-        None => ("cli", std::process::id()),
+        Some(hello) => (json!(hello.host.as_str()), json!(hello.pid)),
+        None => (Value::Null, Value::Null),
     };
     let path = host.map_or_else(|| dir.display().to_string(), |h| h.project_dir.clone());
     object.insert("path".into(), json!(path));
     object.insert("initialized".into(), json!(true));
-    object.insert("host".into(), json!(kind));
-    object.insert("pid".into(), json!(pid));
+    object.insert("host".into(), kind);
+    object.insert("pid".into(), pid);
     Value::Object(object)
 }
 
