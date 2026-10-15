@@ -3293,3 +3293,223 @@ fn an_interrupted_export_routed_to_a_headless_host_says_it_was_cancelled() {
     let exports = fs::read_dir(dir.join("exports")).map_or(0, |d| d.count());
     assert_eq!(exports, 0);
 }
+
+// ------------------------------------------------------- review round 3
+
+/// The fixture project with take 2 left `recording` by a crash, and a
+/// `PATH` whose ffprobe takes `secs` seconds: the next host holds its
+/// commands that long for take 2's Recover probe (A§5.3).
+fn held_by_a_slow_recovery(env: &TestEnv, name: &str, secs: u32) -> (PathBuf, OsString) {
+    let dir = env.empty_dir(name);
+    let project = fixture_project(&dir, &[video(30), video(45)]);
+    crash_take_two(&dir, project);
+    (dir, slow_ffprobe(env, secs))
+}
+
+/// `qrec <args>` in `dir`, with `PATH` set to `path`, in the background.
+fn background(env: &TestEnv, dir: &Path, args: &[&str], path: &OsStr) -> Background {
+    let mut command = env.command(&qrec_bin());
+    command.current_dir(dir).args(args).env("PATH", path);
+    Background::spawn(command)
+}
+
+/// Waits until a `kind` host of `dir` is ready (its lock record says so).
+fn wait_for_host(dir: &Path, kind: &str) {
+    let lock = dir.join(".qrec/lock");
+    wait_until(Duration::from_secs(20), "the host", || {
+        fs::read(&lock)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|r| r["kind"] == kind && r["state"] == "ready")
+    });
+}
+
+/// Once take 2 is recovered, nothing records and no take 3 was made.
+fn nothing_recorded_after_the_recovery(env: &TestEnv, dir: &Path) {
+    wait_until(Duration::from_secs(40), "the recovery", || {
+        take_row(env, dir, "take-0002")["status"] == "ok"
+    });
+    let status = qrec(env, dir, &["status", "--json"]);
+    status.ok();
+    let data = &status.reply()["data"];
+    assert_eq!(data["runtime"]["record"]["phase"], "idle", "{data}");
+    assert!(!dir.join("takes/take-0003").exists());
+}
+
+/// `record stop` while `record start` waits for the startup recovery of a
+/// crashed take (A§5.3): the stop cancels the start, like a countdown, and
+/// nothing records once the take is recovered. The stop used to answer
+/// "not recording" and the start then recorded take 3 until a second stop.
+#[test]
+fn a_stop_cancels_a_start_waiting_for_the_startup_recovery() {
+    let env = TestEnv::new();
+    let (dir, path) = held_by_a_slow_recovery(&env, "held-start", 6);
+    let start = background(&env, &dir, &["--json", "record", "start"], &path);
+    wait_for_host(&dir, "headless");
+    thread::sleep(Duration::from_millis(500));
+
+    let stop = qrec(&env, &dir, &["--json", "record", "stop"]);
+    stop.ok();
+    assert_eq!(
+        stop.only_reply()["data"]["message"],
+        "Recording cancelled before it started"
+    );
+    let (code, out, _) = start.finish(Duration::from_secs(30));
+    assert_eq!(code, Some(1), "{out:?}");
+    let last: Value = serde_json::from_str(out.last().unwrap()).unwrap();
+    assert_eq!(last["error"]["code"], "invalid", "{last}");
+    assert_eq!(
+        last["error"]["message"], "recording cancelled before it started",
+        "{last}"
+    );
+    nothing_recorded_after_the_recovery(&env, &dir);
+    wait_until_no_host(&env);
+}
+
+/// The first Ctrl+C of `record start --wait` while the start waits for the
+/// startup recovery (A§8.6): its `RecordStop` cancels the start, so the
+/// command ends with that answer and nothing records. The client used to
+/// stream "Recording take 3: 00:01…" after the Ctrl+C, and a second one
+/// left the take recording in the background.
+#[test]
+fn ctrl_c_on_a_waiting_record_start_wait_cancels_it() {
+    let env = TestEnv::new();
+    let (dir, path) = held_by_a_slow_recovery(&env, "held-wait", 6);
+    let start = background(&env, &dir, &["--json", "record", "start", "--wait"], &path);
+    wait_for_host(&dir, "headless");
+    thread::sleep(Duration::from_millis(500));
+    start.signal("INT");
+    let (code, out, _) = start.finish(Duration::from_secs(30));
+    assert_eq!(code, Some(1), "{out:?}");
+    assert!(
+        !out.iter().any(|l| l.contains("Recording take")),
+        "nothing recorded: {out:?}"
+    );
+    let last: Value = serde_json::from_str(out.last().unwrap()).unwrap();
+    assert_eq!(
+        last["error"]["message"], "recording cancelled before it started",
+        "{last}"
+    );
+    nothing_recorded_after_the_recovery(&env, &dir);
+    wait_until_no_host(&env);
+}
+
+/// `export cancel` while an export waits for the startup recovery in its
+/// own (in-process) host: the export is cancelled before it starts and
+/// nothing is exported. It used to answer "no export is running" and the
+/// export then ran to the end.
+#[test]
+fn export_cancel_cancels_an_export_waiting_for_the_startup_recovery() {
+    let env = TestEnv::new();
+    let (dir, path) = held_by_a_slow_recovery(&env, "held-export", 6);
+    let export = background(&env, &dir, &["--json", "export"], &path);
+    wait_for_host(&dir, "cli");
+    thread::sleep(Duration::from_millis(500));
+
+    let cancel = qrec(&env, &dir, &["--json", "export", "cancel"]);
+    cancel.ok();
+    assert_eq!(
+        cancel.only_reply()["data"]["message"],
+        "Export cancelled before it started"
+    );
+    let (code, out, _) = export.finish(Duration::from_secs(30));
+    assert_eq!(code, Some(1), "{out:?}");
+    let last: Value = serde_json::from_str(out.last().unwrap()).unwrap();
+    assert_eq!(last["error"]["message"], "export cancelled", "{last}");
+    assert_eq!(take_row(&env, &dir, "take-0002")["status"], "ok");
+    let exports = fs::read_dir(dir.join("exports")).map_or(0, |d| d.count());
+    assert_eq!(exports, 0, "nothing was exported");
+}
+
+/// A confirmed `history restore` over a broken `qrec.json` whose commit
+/// record can't be written says nothing changed, and so it is: `qrec.json`
+/// still holds the person's bytes (A§7.6, SPEC §16), and the restore works
+/// once the disk does. The dropped commit used to leave the commit
+/// record's project there instead.
+#[test]
+fn a_restore_that_cant_be_saved_keeps_the_broken_file() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("restore-unsaved");
+    qrec(&env, &dir, &["init"]).ok();
+    qrec(
+        &env,
+        &dir,
+        &["scene", "layer", "add", "screen", "--output", "FAKE-1"],
+    )
+    .ok();
+    qrec(&env, &dir, &["scene", "audio", "add", "mic"]).ok();
+    let broken: &[u8] = b"{ \"my\": \"half-finished edit\"\n";
+    fs::write(dir.join("qrec.json"), broken).unwrap();
+    // Only the commit record can't be written (a stand-in for a full disk).
+    let blocker = dir.join(".qrec/history.head.json.tmp");
+    fs::create_dir(&blocker).unwrap();
+
+    let restore = qrec(&env, &dir, &["--json", "history", "restore", "1", "--yes"]);
+    assert_eq!(restore.code, Some(1), "{restore:?}");
+    let error = &restore.reply()["error"];
+    assert_eq!(error["code"], "io", "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("couldn't save the project, so nothing changed"),
+        "{error}"
+    );
+    fs::remove_dir(&blocker).unwrap();
+    assert_eq!(fs::read(dir.join("qrec.json")).unwrap(), broken);
+    let head: Value =
+        serde_json::from_slice(&fs::read(dir.join(".qrec/history.head.json")).unwrap()).unwrap();
+    assert_eq!(head["cursor"], 2);
+
+    qrec(&env, &dir, &["history", "restore", "1", "--yes"]).ok();
+    let status = qrec(&env, &dir, &["status", "--json"]);
+    status.ok();
+    let project = &status.reply()["data"]["project"];
+    assert_eq!(project["scene"]["layers"][0]["id"], "L1", "{project}");
+    assert_eq!(project["scene"]["audio"], json!([]), "{project}");
+}
+
+/// An unreadable `.qrec/history.base.json` is rebuilt by the next command,
+/// which says so once, so the history can still rebuild a lost `qrec.json`
+/// (A§7.7). It used to be called repaired by every command and never
+/// written, and `history restore` then said there was nothing to recover
+/// from.
+#[test]
+fn an_unreadable_history_base_is_rebuilt_by_the_next_command() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("unreadable-base");
+    qrec(&env, &dir, &["init"]).ok();
+    qrec(
+        &env,
+        &dir,
+        &["scene", "layer", "add", "screen", "--output", "FAKE-1"],
+    )
+    .ok();
+    let base_file = dir.join(".qrec/history.base.json");
+    fs::write(&base_file, "garbage\n").unwrap();
+
+    let first = qrec(&env, &dir, &["--json", "project", "set", "--name", "a"]);
+    first.ok();
+    assert!(
+        first.stderr.contains("Qrec repaired the project's files")
+            && first
+                .stderr
+                .contains("rebuilt the unreadable .qrec/history.base.json"),
+        "{}",
+        first.stderr
+    );
+    let base: Value = serde_json::from_slice(&fs::read(&base_file).unwrap()).unwrap();
+    assert!(base["project"]["scene"].is_object(), "{base}");
+    let second = qrec(&env, &dir, &["--json", "project", "set", "--name", "b"]);
+    second.ok();
+    assert!(!second.stderr.contains("repaired"), "{}", second.stderr);
+
+    fs::remove_file(dir.join("qrec.json")).unwrap();
+    fs::remove_file(dir.join(".qrec/history.head.json")).unwrap();
+    qrec(&env, &dir, &["history", "restore", "3", "--yes"]).ok();
+    let status = qrec(&env, &dir, &["status", "--json"]);
+    status.ok();
+    let project = &status.reply()["data"]["project"];
+    assert_eq!(project["name"], "b", "{project}");
+    assert_eq!(project["scene"]["layers"][0]["id"], "L1", "{project}");
+}

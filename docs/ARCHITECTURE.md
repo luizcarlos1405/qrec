@@ -752,11 +752,21 @@ even a one-shot CLI command recovers the take and already sees it recovered
 them itself instead of blocking in `Session::open`, so it handles events,
 `hello`, queries and signals meanwhile; commands that only stop something
 (`RecordStop`, `RecordCancel`, `ExportCancel`, a `RecordToggle` that stops)
-never wait. A probe still out after that is work like a running job: a host
-isn't idle meanwhile (A§8.6) and `Session::run_until` doesn't return before
-its answer, so no host exits and drops it (the runner always answers,
-A§8.7) — unless the host was interrupted: then its 15 s grace decides, and
-the next open recovers the take.
+never wait. They act on what waits too, which would otherwise run after
+them: `RecordStop`, `RecordCancel` and `RecordToggle` abort every waiting
+`RecordStart` and `RecordToggle`, like a countdown (each gets `Invalid`
+"recording cancelled before it started", the caller Ok "Recording cancelled
+before it started"; a toggle that finds no start waiting is a start and
+waits), and `ExportCancel` without a job aborts the waiting `Export`s
+(`Invalid` "export cancelled"; a job id only names a running export).
+Commands whose wait is over run before any later message but a signal
+(which drops them, A§8.6), also before a tick released them, so a stop
+always finds the take their start began. A probe still out after that is
+work like a running job: a host isn't idle meanwhile (A§8.6) and
+`Session::run_until` doesn't return before its answer, so no host exits
+and drops it (the runner always answers, A§8.7) — unless the host was
+interrupted: then its 15 s grace decides, and the next open recovers the
+take.
 
 **CaptureFailed vs StreamLost** (engine contract, A§8.11): after
 CaptureStarted, an error attributable to one branch (its source, encoder,
@@ -973,7 +983,12 @@ Diff (`history/diff.rs`, custom, not `json_patch::diff`):
 
 Above 5,000 entries the oldest are dropped down to 4,000; `history.base.json`
 becomes the project before the oldest kept entry (walking inverses back from
-the current state) and `base_seq` its seq. `Clear` (`!`): no entries, base =
+the current state) and `base_seq` its seq. The same walk
+(`history::ops::derive_base`) gives back a base that is lost: an unreadable
+`history.base.json`, or a missing one under a history with entries, is
+derived on open from the project at the cursor and written with the open's
+repairs (A§7.6); an entry whose inverse no longer applies is dropped with
+everything older, as in compaction. `Clear` (`!`): no entries, base =
 current project, `base_seq = cursor`. `Restore <seq>` (`!`) = undo/redo to it;
 restoring the cursor itself applies no patch but its project is validated
 all the same (it is what gets written, A§7.7).
@@ -1025,14 +1040,20 @@ that saves (a `History` op or `WriteProject`), in order:
 An outcome that saves nothing writes nothing, even when the files need
 repair: a failed commit or a repair the load found makes the next commit
 that saves rewrite the history file, `qrec.json` and the head, and a host's
-open (outside recovery mode) writes the repair right away, unless its
-`qrec.json` didn't merge (A§7.7): that file is never written over in place,
-so the repair waits for the write that moves it aside or copies it first. A
-Session that goes away with a dirty store tries one last full write (in
-recovery mode only once a request saved, A§7.7; never over a `qrec.json`
-that failed to load). Non-undoable writes do steps 2–3. On open (lock
-held): drop history lines with `seq ≥ nextSeq`; drop a torn last line; a
-bad line elsewhere ⇒ `Invalid` with its line number. If `sha256(qrec.json) == H` the state is clean.
+open (outside recovery mode) writes the repair right away (and an
+unreadable `ui.json`; its toast says the files were repaired only when it
+wrote them), unless its `qrec.json` didn't merge (A§7.7): that file is
+never written over in place, so the repair waits for the write that moves
+it aside or copies it first. A Session that goes away with a dirty store
+tries one last full write (in recovery mode only once a request saved,
+A§7.7; never over a `qrec.json` that failed to load). Non-undoable writes
+do steps 2–3. On open (lock held): drop history lines with
+`seq ≥ nextSeq`; drop a torn last line; a bad line elsewhere ⇒ `Invalid`
+with its line number; derive an unreadable `history.base.json` (or a
+missing one under entries) from the project at the cursor (A§7.3) and
+write it as a repair; a base whose seq isn't the head's `baseSeq` (a
+rewrite that didn't finish) wins and the head is written again. If
+`sha256(qrec.json) == H` the state is clean.
 Otherwise a valid file whose undoable view is the `afterHash` of the
 uncommitted lines (they follow the head: the first is its `nextSeq`, then
 one after the other, after a history ending at its cursor), and that still
@@ -1047,11 +1068,14 @@ A§7.7.
 
 **A failed commit** (disk full, permissions): a command's change didn't
 happen. The Session keeps the previous state, runs none of the outcome's
-effects and puts back what the commit wrote: a `qrec.json` that step 2
-already replaced (else the next open would merge it as an external edit),
-the history line (else the next open drops it as uncommitted), a first
-base, and the base a history `Rewrite` (purge, clear, compaction) replaced
-(the store keeps its bytes for that). It answers `io` "couldn't save the
+effects and puts back what the commit wrote: `qrec.json` as it was before
+step 2 replaced it, byte for byte, or no file if there was none (else the
+next open would merge the change as an external edit; and the file isn't
+always the head's project: a restore replaces an unusable or unmerged one,
+A§7.7, which stays the person's), the history line (else the next open
+drops it as uncommitted), a first base, and the base a history `Rewrite`
+(purge, clear, compaction) replaced (the store keeps the bytes of both
+files for that, `Store::mark`). It answers `io` "couldn't save the
 project, so nothing changed" — an in-process CLI host exits right after it
 replies, so a change can't wait in memory for a later save. An event's
 outcome carries facts (a finished take, a recovery), and a change whose
@@ -1090,9 +1114,12 @@ rewrites every file with its next commit, and the replies they send are
   that would save without replacing it is refused. Restore copies the
   corrupt file to `.qrec/qrec.corrupt-<ts>.json` before writing.
 - If the head file is missing too, rebuild from `history.base.json` +
-  forward patches. Patches carry no take facts and the base usually predates
-  the takes, so each take found under `takes/` joins the pool right before
-  the first entry that uses it (its clip or its scene), `recording`, with
+  forward patches (without a usable base there is nothing to recover from,
+  and the error says whether the base is missing or unreadable; an open
+  that had the head derived a lost base, A§7.3, so this rarely happens).
+  Patches carry no take facts and the base usually predates the takes, so
+  each take found under `takes/` joins the pool right before the first
+  entry that uses it (its clip or its scene), `recording`, with
   the project scene of that moment (what `begin_take` copied) and `placed`
   if that entry put its clip on the timeline; takes no entry uses go to the
   bin. `nextTakeNumber` goes past every take any entry names (SPEC §5.3.1:
@@ -1322,7 +1349,14 @@ nothing of anyone else's may be tied to it for long:
   IPC-routed: Ctrl+C closes the connection and exits 130; for `record --wait`
   the first Ctrl+C sends `RecordStop` on a second connection and keeps
   streaming until finalized, a second detaches (two presses count as two
-  even when they arrive together). Under `--json` an interrupted run still
+  even when they arrive together). A host answers `accepted` only once the
+  request is queued for its Session, so that stop always comes after the
+  start: it stops the take, or cancels the countdown or the start still
+  waiting for a recovery (A§5.3), and the start's reply ends the command.
+  When the stop finds nothing to stop (`invalid`) and the start stays
+  unanswered 1 s more (a host that holds the start where a stop can't
+  reach it), the client detaches like on a second press, so that host
+  drops the start (`RequesterGone`). Under `--json` an interrupted run still
   ends stdout with one object: the reply when one came before the signal (a
   command that finished or committed; printed only once, also when it was
   printed as it came, A§8.5), else

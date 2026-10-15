@@ -182,6 +182,8 @@ struct Harness {
     recover: Option<u64>,
     /// How projects from disk are checked (default: not at all).
     check: crate::store::Check,
+    /// How long commands wait for a recovery the open started (A§5.3).
+    recovery_wait: Duration,
 }
 
 impl Harness {
@@ -196,6 +198,8 @@ impl Harness {
             toasts: Arc::default(),
             recover: None,
             check: unchecked,
+            // The fake runner answers recovery at once or never.
+            recovery_wait: Duration::from_millis(200),
         }
     }
 
@@ -227,8 +231,7 @@ impl Harness {
                 toasts.lock().unwrap().push(t.clone())
             })),
             check: Some(self.check),
-            // The fake runner answers recovery at once or never.
-            recovery_wait: Some(Duration::from_millis(200)),
+            recovery_wait: Some(self.recovery_wait),
             ..SessionConfig::default()
         }
     }
@@ -1149,6 +1152,54 @@ fn a_hand_edit_found_at_open_survives_the_repairs() {
     );
 }
 
+/// An unreadable `.qrec/history.base.json` is rebuilt from the history and
+/// written by the next host's open, which says so once (A§7.6). It used to
+/// be reported as repaired by every open and never written. A repair toast
+/// now means the open wrote something: an unreadable `ui.json` is written
+/// again too, and a problem it can't fix isn't called repaired.
+#[test]
+fn an_unreadable_history_base_is_rebuilt_once() {
+    let h = Harness::with_sample("unreadable-base");
+    {
+        let mut s = h.open(true).unwrap();
+        for id in ["c001", "c002"] {
+            send(
+                &mut s,
+                Command::ClipRemove {
+                    clips: vec![clip(id)],
+                },
+                false,
+            )
+            .unwrap();
+        }
+    }
+    let base = h.paths().history_base();
+    let original = fs::read(&base).unwrap();
+    fs::write(&base, b"garbage\n").unwrap();
+    fs::write(h.paths().ui_file(), b"{ not ui").unwrap();
+    h.toasts.lock().unwrap().clear();
+
+    let s = h.open(true).unwrap();
+    let toasts = h.toasts.lock().unwrap().clone();
+    assert_eq!(toasts.len(), 1, "{toasts:?}");
+    assert_eq!(toasts[0].title, "Qrec repaired the project's files");
+    let body = toasts[0].body.clone().unwrap();
+    assert!(
+        body.contains("rebuilt the unreadable .qrec/history.base.json from the history"),
+        "{body}"
+    );
+    assert!(body.contains(".qrec/ui.json"), "{body}");
+    assert_eq!(fs::read(&base).unwrap(), original, "the same base again");
+    let ui: Value = serde_json::from_slice(&fs::read(h.paths().ui_file()).unwrap()).unwrap();
+    assert!(ui.is_object(), "{ui}");
+    drop(s);
+
+    h.toasts.lock().unwrap().clear();
+    let s = h.open(true).unwrap();
+    assert!(h.toast_titles().is_empty(), "{:?}", h.toast_titles());
+    drop(s);
+}
+
 /// A hand edit that is valid alone but not once merged (facts in memory
 /// win, A§7.4) is never written over by the open's repairs (A§7.7, SPEC
 /// §16): it stays as it is, user edits wait, closing writes nothing, and a
@@ -1882,7 +1933,10 @@ fn takes_still_recording_are_recovered_before_the_first_request() {
 /// ran the interrupted purge.
 #[test]
 fn an_interrupt_drops_the_commands_waiting_for_a_recovery() {
-    let h = Harness::new("interrupted-recovery");
+    let mut h = Harness::new("interrupted-recovery");
+    // Held for as long as the test needs (a held command whose wait is
+    // over runs before the next message, the interrupt included).
+    h.recovery_wait = Duration::from_secs(30);
     write_crashed_take(&h);
     let mut json: Value =
         serde_json::from_slice(&fs::read(h.dir.join("qrec.json")).unwrap()).unwrap();
@@ -1949,6 +2003,187 @@ fn commands_wait_for_a_slow_recovery_only_so_long() {
     s.tick();
     assert!(undo.last().is_some(), "it ran");
     assert_eq!(s.recovering().len(), 1, "the recovery is still out");
+}
+
+/// A recorder host after a crash, its Recover probe out (never answered
+/// unless the test sends it) and commands held for it for 30 s.
+fn holding_recorder(name: &str) -> (Harness, Session) {
+    let mut h = Harness::new(name);
+    h.recovery_wait = Duration::from_secs(30);
+    write_crashed_take(&h);
+    let s = h.open_recorder().unwrap();
+    assert_eq!(s.recovering().len(), 1);
+    (h, s)
+}
+
+/// Answers take 2's Recover probe: the hold ends and parked commands run.
+fn answer_recovery(s: &mut Session) {
+    let jobs = recovery_probe_jobs(s, &take(2));
+    s.handle(Msg::Event(Event::TakeProbed {
+        take: take(2),
+        purpose: ProbePurpose::Recover,
+        results: jobs.iter().map(|j| probed_job(j, 90)).collect(),
+    }));
+    s.drain();
+    assert!(s.recovering().is_empty());
+}
+
+fn record_start() -> Command {
+    Command::RecordStart {
+        mode: RecordModeArg::Append,
+        countdown: Some(0),
+        wait: true,
+    }
+}
+
+/// A stop, cancel or toggle while a start waits for the startup recovery
+/// aborts that start, like a countdown (A§5.3): the start hears "recording
+/// cancelled before it started", the caller gets Ok, and nothing records
+/// once the recovery is answered. They used to skip the wait, find nothing
+/// recording ("not recording") and leave the start parked: it then started
+/// a take the person had stopped.
+#[test]
+fn a_stop_aborts_a_start_waiting_for_the_recovery() {
+    for stop in [
+        Command::RecordStop,
+        Command::RecordCancel,
+        Command::RecordToggle { wait: false },
+    ] {
+        let name = stop.name();
+        let (h, mut s) = holding_recorder(&format!("abort-{name}"));
+        let start = request(&mut s, WireBody::Command(record_start()), false);
+        assert!(start.last().is_none(), "{name}: held for the recovery");
+        assert_eq!(s.pending_requests(), 1);
+
+        let stopped = send(&mut s, stop, false).unwrap();
+        assert_eq!(
+            stopped["message"], "Recording cancelled before it started",
+            "{name}: {stopped}"
+        );
+        let err = start.last().expect("answered at once").unwrap_err();
+        assert_eq!(err.code, ErrorCode::Invalid, "{name}");
+        assert_eq!(err.message, "recording cancelled before it started");
+        assert_eq!(s.pending_requests(), 0, "{name}: nothing waits anymore");
+
+        answer_recovery(&mut s);
+        assert!(!h.log.has("start take-"), "{name}: {:?}", h.log.lines());
+        assert!(s.state().runtime.record.is_idle(), "{name}");
+        assert!(!s.state().project.takes.contains_key(&take(3)), "{name}");
+        assert!(s.is_idle(), "{name}");
+    }
+}
+
+/// A toggle while nothing waits starts a take (it waits like any start);
+/// the next toggle aborts it. A stop with nothing waiting is still "not
+/// recording".
+#[test]
+fn toggles_alternate_while_the_recovery_holds_them() {
+    let (h, mut s) = holding_recorder("toggles");
+    let err = send(&mut s, Command::RecordStop, false).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Invalid);
+    assert_eq!(err.message, "not recording");
+
+    let first = request(
+        &mut s,
+        WireBody::Command(Command::RecordToggle { wait: false }),
+        false,
+    );
+    assert!(first.last().is_none(), "the starting toggle waits");
+    let second = send(&mut s, Command::RecordToggle { wait: false }, false).unwrap();
+    assert_eq!(second["message"], "Recording cancelled before it started");
+    assert_eq!(
+        first.last().unwrap().unwrap_err().message,
+        "recording cancelled before it started"
+    );
+    let third = request(
+        &mut s,
+        WireBody::Command(Command::RecordToggle { wait: false }),
+        false,
+    );
+    assert!(third.last().is_none(), "waits again");
+
+    answer_recovery(&mut s);
+    assert!(h.log.has("start take-0003"), "{:?}", h.log.lines());
+    assert!(matches!(
+        s.state().runtime.record,
+        RecordPhase::Starting { .. }
+    ));
+}
+
+/// `export cancel` while an export waits for the startup recovery drops
+/// that export (A§5.3): the export hears "export cancelled", the caller
+/// gets Ok, and no render starts once the recovery is answered. It used to
+/// answer "no export is running" and let the export run.
+#[test]
+fn an_export_cancel_aborts_an_export_waiting_for_the_recovery() {
+    let (h, mut s) = holding_recorder("abort-export");
+    let export = request(
+        &mut s,
+        WireBody::Command(Command::Export {
+            format: Default::default(),
+            quality: Default::default(),
+            codec: None,
+            out: None,
+        }),
+        false,
+    );
+    assert!(export.last().is_none(), "held for the recovery");
+    // A job id can't name an export that hasn't started.
+    let err = send(
+        &mut s,
+        Command::ExportCancel {
+            job: Some(JobId(1)),
+        },
+        false,
+    )
+    .unwrap_err();
+    assert_eq!(err.code, ErrorCode::NotFound, "{err:?}");
+    assert!(export.last().is_none(), "still waiting");
+
+    let cancelled = send(&mut s, Command::ExportCancel { job: None }, false).unwrap();
+    assert_eq!(
+        cancelled["message"], "Export cancelled before it started",
+        "{cancelled}"
+    );
+    let err = export.last().expect("answered at once").unwrap_err();
+    assert_eq!(err.code, ErrorCode::Invalid);
+    assert_eq!(err.message, "export cancelled");
+
+    answer_recovery(&mut s);
+    assert!(!h.log.has("export "), "{:?}", h.log.lines());
+    assert!(s.state().runtime.jobs.is_empty());
+}
+
+/// Commands whose wait is over run before a message that came after them,
+/// even when no tick released them yet: a stop then stops the take that
+/// start began, instead of finding nothing and letting it start after.
+#[test]
+fn commands_whose_wait_is_over_run_before_later_ones() {
+    let mut h = Harness::new("released-first");
+    h.recovery_wait = Duration::from_millis(50);
+    write_crashed_take(&h);
+    let mut s = h.open_recorder().unwrap();
+    let start = request(&mut s, WireBody::Command(record_start()), false);
+    assert!(start.last().is_none(), "held for the recovery");
+    std::thread::sleep(Duration::from_millis(100));
+    let stop = request(&mut s, WireBody::Command(Command::RecordStop), false);
+    let lines = h.log.lines();
+    let started = lines.iter().position(|l| l == "start take-0003");
+    let stopped = lines
+        .iter()
+        .position(|l| l == "stop take-0003 cancel=false");
+    assert!(
+        started.is_some() && started < stopped,
+        "the start ran first, then the stop stopped it: {lines:?}"
+    );
+    assert!(
+        stop.last().is_none(),
+        "the stop waits for the finalized take"
+    );
+    assert!(matches!(
+        s.state().runtime.record,
+        RecordPhase::Finalizing { .. }
+    ));
 }
 
 #[test]
@@ -2243,6 +2478,120 @@ fn a_dropped_change_is_taken_back_out_of_qrec_json() {
         "{:?}",
         s.state().history.entries
     );
+}
+
+/// The sample project with two committed edits (cursor 2), then `edit`
+/// done to `qrec.json` by hand, and the commit record made unwritable (its
+/// temp file's name is taken by a folder, like a full disk would fail it).
+fn unwritable_head_after(name: &str, edit: impl FnOnce(&Path)) -> (Harness, PathBuf) {
+    let h = Harness::with_sample(name);
+    {
+        let mut s = h.open(true).unwrap();
+        for id in ["c001", "c002"] {
+            send(
+                &mut s,
+                Command::ClipRemove {
+                    clips: vec![clip(id)],
+                },
+                false,
+            )
+            .unwrap();
+        }
+    }
+    edit(&h.dir.join("qrec.json"));
+    let blocker = h.dir.join(".qrec/history.head.json.tmp");
+    fs::create_dir(&blocker).unwrap();
+    (h, blocker)
+}
+
+fn assert_nothing_changed(err: &CoreError, what: &str) {
+    assert_eq!(err.code, ErrorCode::Io, "{what}: {err:?}");
+    assert!(
+        err.message
+            .starts_with("couldn't save the project, so nothing changed: write "),
+        "{what}: {}",
+        err.message
+    );
+}
+
+/// A confirmed restore over an unusable `qrec.json` whose commit fails
+/// (only the commit record can't be written) says nothing changed, and so
+/// it is: `qrec.json` holds the person's bytes again, not the project of
+/// the commit record (A§7.6, SPEC §16), and a later restore still works.
+/// The dropped commit used to write the record's project over it.
+#[test]
+fn a_dropped_restore_puts_the_unusable_file_back() {
+    let broken: &[u8] = b"{ \"my\": \"half-finished edit\"\n";
+    let (h, blocker) = unwritable_head_after("dropped-restore", |file| {
+        fs::write(file, broken).unwrap();
+    });
+    let head = fs::read(h.paths().history_head()).unwrap();
+    let mut s = h.open_opts(recovery(true)).unwrap();
+    let err = send(&mut s, Command::HistoryRestore { seq: 1 }, true).unwrap_err();
+    assert_nothing_changed(&err, "restore");
+    assert_eq!(fs::read(h.dir.join("qrec.json")).unwrap(), broken);
+    assert_eq!(fs::read(h.paths().history_head()).unwrap(), head);
+    assert_eq!(s.state().history.cursor, 2);
+    assert!(s.state().runtime.disk_invalid.is_some(), "still unusable");
+    drop(s);
+    assert_eq!(
+        fs::read(h.dir.join("qrec.json")).unwrap(),
+        broken,
+        "closing writes nothing over it either"
+    );
+
+    fs::remove_dir(&blocker).unwrap();
+    let mut s = h.open_opts(recovery(true)).unwrap();
+    send(&mut s, Command::HistoryRestore { seq: 1 }, true).unwrap();
+    assert_eq!(h.head().cursor, 1);
+    assert_eq!(
+        fs::read(h.dir.join("qrec.json")).unwrap(),
+        format::project_bytes(&s.state().project)
+    );
+    assert!(corrupt_copies(&h).iter().all(|copy| copy == broken));
+}
+
+/// The same with `qrec.json` gone: the dropped restore leaves no file
+/// behind (it used to write the commit record's project there).
+#[test]
+fn a_dropped_restore_of_a_missing_file_leaves_none() {
+    let (h, _blocker) = unwritable_head_after("dropped-restore-missing", |file| {
+        fs::remove_file(file).unwrap();
+    });
+    let mut s = h.open_opts(recovery(true)).unwrap();
+    let err = send(&mut s, Command::HistoryRestore { seq: 1 }, true).unwrap_err();
+    assert_nothing_changed(&err, "restore");
+    drop(s);
+    assert!(!h.dir.join("qrec.json").exists());
+}
+
+/// A host whose `qrec.json` didn't merge (A§7.7) and whose restore can't
+/// commit keeps the person's file, byte for byte.
+#[test]
+fn a_dropped_restore_keeps_a_file_that_did_not_merge() {
+    let mut edited = Vec::new();
+    let (mut h, _blocker) = unwritable_head_after("dropped-restore-unmerged", |file| {
+        // Valid alone; once merged the take keeps its 300 frames, and the
+        // clip that now ends at 500 doesn't fit.
+        let mut json: Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+        json["name"] = "my hand edit".into();
+        json["takes"]["take-0001"]["durationFrames"] = 500.into();
+        json["timeline"]["clips"] = serde_json::json!([
+            {"id": "c009", "take": "take-0001", "in": 0, "out": 500}
+        ]);
+        fs::write(file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+        edited = fs::read(file).unwrap();
+    });
+    h.check = crate::store::validated;
+    let mut s = h.open(true).unwrap();
+    assert!(s.state().runtime.disk_invalid.is_some(), "it didn't merge");
+    let cursor = s.state().history.cursor;
+    let err = send(&mut s, Command::HistoryRestore { seq: cursor }, true).unwrap_err();
+    assert_nothing_changed(&err, "restore");
+    assert_eq!(fs::read(h.dir.join("qrec.json")).unwrap(), edited);
+    assert!(s.state().runtime.disk_invalid.is_some());
+    drop(s);
+    assert_eq!(fs::read(h.dir.join("qrec.json")).unwrap(), edited);
 }
 
 #[test]

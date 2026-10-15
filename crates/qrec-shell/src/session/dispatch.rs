@@ -12,7 +12,8 @@ use qrec_core::ctx::{Ctx, Facts, FactsNeeded};
 use qrec_core::protocol::{Command, HelloInfo, Query, Toast, ToastLevel, WireBody};
 use qrec_core::state::JobKind;
 use qrec_core::{
-    CoreError, ErrorCode, Event, ReqId, apply, facts_needed, facts_needed_for_event, on_event,
+    CmdResult, CoreError, ErrorCode, Event, ReqId, apply, facts_needed, facts_needed_for_event,
+    on_event,
 };
 use serde_json::{Value, json};
 
@@ -27,12 +28,46 @@ use crate::proc;
 const MAX_REDISPATCH: u32 = 3;
 
 /// Commands an interrupted host still runs (A§8.6): the ones that stop
-/// what runs. They never wait for a recovery either.
+/// what runs. They never wait for a recovery either, and stop what waits
+/// for it ([`aborts`]).
 fn winds_down(cmd: &Command, state: &qrec_core::State) -> bool {
     match cmd {
         Command::RecordStop | Command::RecordCancel | Command::ExportCancel { .. } => true,
         Command::RecordToggle { .. } => !state.runtime.record.is_idle(),
         _ => false,
+    }
+}
+
+/// Whether `stop`, a command that only stops something, aborts `parked`, a
+/// command still waiting for the startup recovery (A§5.3). It would run
+/// after the stop, so the stop acts on it like on a countdown: a stop,
+/// cancel or toggle aborts a start (a toggle that waits is a start: it was
+/// parked while nothing recorded), and `export cancel` without a job aborts
+/// an export (a job id can only name one that runs).
+fn aborts(stop: &Command, parked: &Command) -> bool {
+    match stop {
+        Command::RecordStop | Command::RecordCancel | Command::RecordToggle { .. } => {
+            parked.may_start_recording()
+        }
+        Command::ExportCancel { job: None } => matches!(parked, Command::Export { .. }),
+        _ => false,
+    }
+}
+
+/// What a start aborted before it ran hears (like "countdown cancelled").
+const START_ABORTED: &str = "recording cancelled before it started";
+
+/// What the aborted command and the caller hear.
+fn aborted(stop: &Command) -> (CoreError, CmdResult) {
+    match stop {
+        Command::ExportCancel { .. } => (
+            CoreError::invalid("export cancelled"),
+            CmdResult::new("Export cancelled before it started"),
+        ),
+        _ => (
+            CoreError::invalid(START_ABORTED),
+            CmdResult::new("Recording cancelled before it started"),
+        ),
     }
 }
 
@@ -160,6 +195,15 @@ impl Session {
         if self.interrupts > 0 && !winds_down(&cmd, &self.state) {
             return self.reply_now(id.as_ref(), &mut to, Err(stopping(&cmd)));
         }
+        // A stop never waits for the recovery, so it acts on what waits too:
+        // a start or export it would otherwise let run afterwards (A§5.3).
+        // Commands wait only while the open's recovery holds them, before
+        // any command ran: no take or export runs then, so aborting what
+        // waits is all the stop does.
+        if let Some(result) = self.abort_parked(&cmd) {
+            let reply = serde_json::to_value(result).unwrap_or(Value::Null);
+            return self.reply_now(id.as_ref(), &mut to, Ok(reply));
+        }
         if self.holding_for_recovery() && !winds_down(&cmd, &self.state) {
             // Resumed by `release_parked` once the Recover probes answered
             // (or, outside recovery mode, once the open's wait is over).
@@ -219,6 +263,36 @@ impl Session {
                 Ran::ExternalFirst => continue,
             }
         }
+    }
+
+    /// `cmd` only stops something and commands it stops wait for the
+    /// recovery ([`aborts`]): answers each of them (its requester hears it
+    /// was cancelled before it started) and returns the caller's result.
+    /// `None` when nothing waiting is stopped: `cmd` runs as usual.
+    fn abort_parked(&mut self, cmd: &Command) -> Option<CmdResult> {
+        if !self.parked.iter().any(|p| aborts(cmd, &p.cmd)) {
+            return None;
+        }
+        let (err, result) = aborted(cmd);
+        let (gone, kept): (Vec<Parked>, Vec<Parked>) = std::mem::take(&mut self.parked)
+            .into_iter()
+            .partition(|p| aborts(cmd, &p.cmd));
+        self.parked = kept;
+        for Parked {
+            id,
+            cmd: what,
+            mut to,
+            ..
+        } in gone
+        {
+            tracing::info!(
+                "{} cancelled {}, which waited for the takes being recovered",
+                cmd.name(),
+                what.name()
+            );
+            self.reply_now(id.as_ref(), &mut to, Err(err.clone()));
+        }
+        Some(result)
     }
 
     /// Runs a parked command now.
