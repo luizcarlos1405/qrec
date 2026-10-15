@@ -403,6 +403,29 @@ impl Command {
             | Command::SetUi { .. } => false,
         }
     }
+
+    /// Whether this command first makes a strictly empty folder a project
+    /// (SPEC §4.4: "lazily on the first mutating command"): setting the
+    /// project or its scene up, and recording. A command that works on what
+    /// a project already holds (clips, takes, history, outputs, playback)
+    /// is refused with `not_project` instead, and nothing is written.
+    /// `Init` creates the project itself.
+    pub fn creates_project(&self) -> bool {
+        matches!(
+            self,
+            Command::ProjectSet { .. }
+                | Command::LayerAdd { .. }
+                | Command::LayerSet { .. }
+                | Command::LayerOrder { .. }
+                | Command::LayerRemove { .. }
+                | Command::AudioAdd { .. }
+                | Command::AudioSet { .. }
+                | Command::AudioRemove { .. }
+                | Command::AutocutSettings { .. }
+                | Command::RecordStart { .. }
+                | Command::RecordToggle { .. }
+        )
+    }
 }
 
 // ------------------------------------------------------------- Nullable

@@ -200,11 +200,17 @@ fn check_initialized(state: &State, cmd: &Command) -> Result<(), CoreError> {
     if project::is_initialized(&state.project) || matches!(cmd, Command::Init { .. }) {
         return Ok(());
     }
-    Err(CoreError::new(
+    Err(no_project_yet())
+}
+
+/// What a command that doesn't create a project
+/// ([`Command::creates_project`]) gets in an empty folder (SPEC §4.4).
+pub fn no_project_yet() -> CoreError {
+    CoreError::new(
         crate::ErrorCode::NotProject,
         "this folder has no Qrec project yet",
     )
-    .with_hint("run `qrec init`, or any editing command, to create one here"))
+    .with_hint("run `qrec init`, set up a scene or start recording to create one here")
 }
 
 /// A§5.3: while not `Idle`, only the commands marked R run; the rest are `Busy`.

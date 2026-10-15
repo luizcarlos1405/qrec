@@ -85,7 +85,8 @@ the same commands, and every edit is undoable. Always pass `--json`.
 - A project is a folder with `qrec.json`. Commands use `--project DIR`, else
   the current directory, which must hold `qrec.json` or be strictly empty
   (hidden files such as `.git` count). An empty folder becomes a project with
-  `qrec init` or on the first change.
+  `qrec init`, a `project set`/`scene` change or `record start`; other
+  commands there exit 3 (`not_project`) and write nothing.
 - Inside a project's subfolder, commands exit 3 (`not_project`) and name the
   project: pass `--project DIR` or run them there.
 - Elsewhere, without `--project`, commands use the single running Qrec (so

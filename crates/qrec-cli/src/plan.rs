@@ -87,6 +87,10 @@ pub enum OnEmpty {
     /// A query: answer it here (no takes, no clips, no history) without
     /// creating anything.
     Answer,
+    /// A command that works on what a project holds
+    /// ([`Command::creates_project`] is false): refused here with
+    /// `not_project`, writing nothing.
+    Refuse,
 }
 
 /// How a reply is shown to people (`--json` prints it as it is, except
@@ -160,14 +164,20 @@ impl Builder {
         }
     }
 
-    /// A command: run under the lock, the first one initializes an empty folder.
+    /// A command: run under the lock. In an empty folder, one that sets a
+    /// project up or records creates it first; the others are refused.
     fn command(&self, name: &str, cmd: Command, view: View) -> ProjectPlan {
+        let on_empty = if cmd.creates_project() {
+            OnEmpty::Init
+        } else {
+            OnEmpty::Refuse
+        };
         ProjectPlan {
             name: format!("qrec {name}"),
             request: self.request(WireBody::Command(cmd)),
             route: RouteOpts::command(),
             view,
-            on_empty: OnEmpty::Init,
+            on_empty,
             host_fallback: true,
             needs_host: None,
             streams: false,
@@ -799,6 +809,18 @@ mod tests {
         );
         let init = project_plan("qrec init");
         assert_eq!(init.on_empty, OnEmpty::Send);
+        // SPEC §4.4: setting a project up or recording creates it; work on
+        // what a project holds is refused in an empty folder.
+        for (line, on_empty) in [
+            ("qrec scene layer add screen --output DP-4", OnEmpty::Init),
+            ("qrec project set --name x", OnEmpty::Init),
+            ("qrec record toggle", OnEmpty::Init),
+            ("qrec undo", OnEmpty::Refuse),
+            ("qrec export", OnEmpty::Refuse),
+            ("qrec take discard-last", OnEmpty::Refuse),
+        ] {
+            assert_eq!(project_plan(line).on_empty, on_empty, "{line}");
+        }
         assert!(init.route.lock);
         assert!(!init.host_fallback, "init never goes to another project");
 

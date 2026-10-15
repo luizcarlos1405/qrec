@@ -1213,7 +1213,13 @@ path from `projectDirHex` when it isn't UTF-8) → exit 3 (several hosts:
 the folder itself, so a folder that is neither empty nor a project is exit 3
 whatever runs elsewhere. Init order: `mkdir .qrec` → lock → re-check the
 folder rule (a folder whose only entry is `.qrec/` counts as empty) → write
-`qrec.json` + head → `mkdir takes`. A folder without `qrec.json` whose
+`qrec.json` + head → `mkdir takes`. In an empty folder only a command
+with `Command::creates_project()` (project set, layer and audio edits,
+autocut settings, record start/toggle) sends `Init` first (the CLI's
+`OnEmpty::Init`, the Session's lazy init); every other command gets
+`not_project` "this folder has no Qrec project yet" (`apply::no_project_yet`,
+exit 3) from the CLI before anything is opened or written, and queries are
+answered as empty. A folder without `qrec.json` whose
 `.qrec/` holds a history (`history.head.json`, `history.jsonl` or
 `history.base.json`) is a project that lost its file, whatever else is in
 it: it is that project (from the cwd or `--project`), never "Not my swamp"

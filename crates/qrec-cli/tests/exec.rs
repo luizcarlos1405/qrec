@@ -502,7 +502,7 @@ fn the_first_change_creates_the_project() {
 
     // A failed init stops there.
     let mut failing = Fake::new(&tmp.dir("cfg")).script(Script::error(CoreError::io("disk full")));
-    let run2 = run(&mut failing, &empty, "qrec --json undo");
+    let run2 = run(&mut failing, &empty, "qrec --json project set --name x");
     assert_eq!(run2.code, 1);
     assert_eq!(run2.json()["error"]["message"], "disk full");
     assert_eq!(failing.seen.len(), 1);
@@ -511,17 +511,55 @@ fn the_first_change_creates_the_project() {
     let mut raced = Fake::new(&tmp.dir("cfg"))
         .script(Script::error(CoreError::invalid("already a project")))
         .script(Script::reply(result(
-            "Nothing undone",
-            None,
+            "Renamed the project to x",
+            Some(1),
             &[],
             Value::Null,
         )));
-    let run3 = run(&mut raced, &empty, "qrec undo");
+    let run3 = run(&mut raced, &empty, "qrec project set --name x");
     assert_eq!(
         (run3.code, run3.out.as_str(), run3.err.as_str()),
-        (0, "Nothing undone\n", "")
+        (0, "Renamed the project to x\n", "")
     );
     assert_eq!(raced.seen.len(), 2);
+}
+
+/// SPEC §4.4: an empty folder becomes a project on the first change that
+/// sets one up (or a recording). Commands that work on what a project holds
+/// are refused (exit 3) without sending anything or writing a file.
+#[test]
+fn commands_that_need_a_project_are_refused_in_an_empty_folder() {
+    let tmp = Tmp::new();
+    let empty = tmp.dir("empty");
+    let mut fake = Fake::new(&tmp.dir("cfg"));
+    for line in [
+        "qrec undo",
+        "qrec redo",
+        "qrec export",
+        "qrec frame save --at 1f",
+        "qrec autocut",
+        "qrec take discard-last",
+        "qrec clip remove c001",
+        "qrec history clear --yes",
+        "qrec record stop",
+    ] {
+        let out = run(&mut fake, &empty, line);
+        assert_eq!(out.code, 3, "{line}: {}", out.err);
+        assert!(
+            out.err
+                .starts_with("this folder has no Qrec project yet\nhint: "),
+            "{line}: {}",
+            out.err
+        );
+    }
+    let json = run(&mut fake, &empty, "qrec --json export");
+    assert_eq!(json.json()["error"]["code"], "not_project");
+    assert!(fake.seen.is_empty(), "nothing was sent");
+    assert_eq!(
+        fs::read_dir(&empty).unwrap().count(),
+        0,
+        "nothing was written"
+    );
 }
 
 #[test]
@@ -1061,10 +1099,10 @@ fn ctrl_c_during_lazy_init() {
         early: false,
         finish: Finish::Interrupted { reply: None },
     });
-    let run1 = run(&mut fake, &empty, "qrec --json undo");
+    let run1 = run(&mut fake, &empty, "qrec --json project set --name x");
     assert_eq!(run1.code, EXIT_INTERRUPTED);
     assert_eq!(run1.json()["error"]["code"], "interrupted");
-    assert_eq!(run1.json()["error"]["message"], "undo interrupted");
+    assert_eq!(run1.json()["error"]["message"], "project set interrupted");
     assert_eq!(fake.seen.len(), 1, "only the init was sent");
 }
 

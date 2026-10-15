@@ -26,22 +26,6 @@ use crate::proc;
 /// kept changing under it; then it is saved over the change.
 const MAX_REDISPATCH: u32 = 3;
 
-/// Commands that create the project in an empty folder before they run
-/// (A§8.4): edits and recordings. UI, playback, output, undo and history
-/// commands don't: in an empty folder they get `not_project`.
-pub(super) fn creates_the_project(cmd: &Command) -> bool {
-    !matches!(cmd, Command::Init { .. })
-        && (cmd.edits_project()
-            || matches!(
-                cmd,
-                Command::RecordStart { .. } | Command::RecordToggle { .. }
-            ))
-        && !matches!(
-            cmd,
-            Command::Undo { .. } | Command::Redo { .. } | Command::HistoryClear
-        )
-}
-
 /// Commands an interrupted host still runs (A§8.6): the ones that stop
 /// what runs. They never wait for a recovery either.
 fn winds_down(cmd: &Command, state: &qrec_core::State) -> bool {
@@ -189,7 +173,7 @@ impl Session {
             return;
         }
         let initialized = is_initialized(&self.state.project);
-        if !initialized && creates_the_project(&cmd) {
+        if !initialized && cmd.creates_project() {
             // A§8.4: the first mutating command in an empty folder creates
             // the project (other commands get the core's `not_project`).
             if let Err(e) = self.lazy_init() {

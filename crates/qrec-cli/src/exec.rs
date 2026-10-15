@@ -311,11 +311,14 @@ fn run_project(
         match plan.on_empty {
             OnEmpty::Answer => return answer_empty(plan, dir, ui),
             OnEmpty::Send => {}
-            OnEmpty::Init if plan.route.fallback == Fallback::None => {
+            OnEmpty::Init | OnEmpty::Refuse if plan.route.fallback == Fallback::None => {
                 // No host can hold a selection or a GUI for a folder that
                 // isn't a project yet.
                 return ui.fail(&needs_host(plan));
             }
+            // SPEC §4.4: only a change that sets a project up (or a
+            // recording) creates one; the rest have nothing to work on.
+            OnEmpty::Refuse => return ui.fail(&qrec_core::apply::no_project_yet()),
             OnEmpty::Init => {
                 if let Err(code) = lazy_init(plan, dir, backend, ui) {
                     return code;

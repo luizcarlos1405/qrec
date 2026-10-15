@@ -589,17 +589,19 @@ fn only_mutating_commands_create_a_project() {
         assert_eq!(err.code, ErrorCode::NotProject, "{name}");
     }
     assert!(!h.dir.join("qrec.json").exists());
-    assert!(dispatch_creates(&Command::ClipRemove { clips: vec![] }));
-    assert!(dispatch_creates(&Command::RecordToggle { wait: false }));
-    assert!(!dispatch_creates(&Command::Init {
-        canvas: None,
-        name: None
-    }));
-    assert!(!dispatch_creates(&Command::HistoryRestore { seq: 0 }));
-}
-
-fn dispatch_creates(cmd: &Command) -> bool {
-    super::dispatch::creates_the_project(cmd)
+    // Only setting a project up or recording creates one (SPEC §4.4); work
+    // on what a project holds doesn't create one to fail in.
+    assert!(Command::RecordToggle { wait: false }.creates_project());
+    assert!(!Command::ClipRemove { clips: vec![] }.creates_project());
+    assert!(!Command::TakeDiscardLast.creates_project());
+    assert!(
+        !Command::Init {
+            canvas: None,
+            name: None
+        }
+        .creates_project()
+    );
+    assert!(!Command::HistoryRestore { seq: 0 }.creates_project());
 }
 
 #[test]

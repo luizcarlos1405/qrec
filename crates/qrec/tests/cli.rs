@@ -370,6 +370,26 @@ fn the_first_change_creates_the_project() {
     assert_eq!(notice["event"], "notice");
 }
 
+/// SPEC §4.4: only a change that sets a project up (or a recording) makes
+/// an empty folder a project; `export` or `undo` there write nothing.
+#[test]
+fn commands_on_nothing_leave_an_empty_folder_empty() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("untouched");
+    for args in [&["--json", "export"][..], &["--json", "undo"]] {
+        let out = qrec(&env, &dir, args);
+        assert_eq!(out.code, Some(3), "{args:?}: {out:?}");
+        let error = &out.only_reply()["error"];
+        assert_eq!(error["code"], "not_project");
+        assert_eq!(error["message"], "this folder has no Qrec project yet");
+    }
+    assert_eq!(
+        fs::read_dir(&dir).unwrap().count(),
+        0,
+        "nothing was written"
+    );
+}
+
 #[test]
 fn a_change_that_cant_be_saved_is_not_made() {
     // An in-process CLI host exits right after it replies: a change it

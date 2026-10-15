@@ -1029,7 +1029,7 @@ fn project_commands_need_the_shell() {
             String::from_utf8(err).unwrap(),
         )
     };
-    let (code, out, err) = run_in("qrec clip split c7f3 --at 13f");
+    let (code, out, err) = run_in("qrec scene layer add screen --output DP-4");
     assert_eq!((code, out.as_str()), (1, ""));
     assert!(
         err.starts_with(
