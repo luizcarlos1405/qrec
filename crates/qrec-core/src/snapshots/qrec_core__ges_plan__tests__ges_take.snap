@@ -1,0 +1,90 @@
+---
+source: crates/qrec-core/src/ges_plan.rs
+expression: ges
+---
+{
+  "canvas": {
+    "width": 1920,
+    "height": 1080,
+    "fps": {
+      "num": 30,
+      "den": 1
+    },
+    "background": "#000000"
+  },
+  "durationNs": 30400000000,
+  "video": [
+    {
+      "take": "take-0001",
+      "layer": "L1",
+      "file": "takes/take-0001/L1-screen-DP-4.mkv",
+      "layerPriority": 1,
+      "startNs": 0,
+      "inpointNs": 0,
+      "durationNs": 30400000000,
+      "placement": {
+        "src": {
+          "x": 0,
+          "y": 0,
+          "w": 1920,
+          "h": 1080
+        },
+        "dst": {
+          "x": 0,
+          "y": 0,
+          "w": 1920,
+          "h": 1080
+        }
+      },
+      "alpha": 1.0
+    },
+    {
+      "take": "take-0001",
+      "layer": "L2",
+      "file": "takes/take-0001/L2-camera-0.mkv",
+      "layerPriority": 0,
+      "startNs": 33333333,
+      "inpointNs": 0,
+      "durationNs": 30366666667,
+      "placement": {
+        "src": {
+          "x": 160,
+          "y": 0,
+          "w": 960,
+          "h": 720
+        },
+        "dst": {
+          "x": 1498,
+          "y": 754,
+          "w": 384,
+          "h": 288
+        }
+      },
+      "alpha": 0.8
+    }
+  ],
+  "audio": [
+    {
+      "take": "take-0001",
+      "track": "A1",
+      "file": "takes/take-0001/A1-mic.mka",
+      "startNs": 23000000,
+      "inpointNs": 0,
+      "durationNs": 30377000000,
+      "volume": 1.0,
+      "fadeInSamples": 0,
+      "fadeOutSamples": 0
+    },
+    {
+      "take": "take-0001",
+      "track": "A2",
+      "file": "takes/take-0001/A2-system.mka",
+      "startNs": 0,
+      "inpointNs": 20000000,
+      "durationNs": 30380000000,
+      "volume": 0.5011872336272722,
+      "fadeInSamples": 0,
+      "fadeOutSamples": 0
+    }
+  ]
+}
