@@ -360,7 +360,7 @@ pub struct AudioDeviceInfo { pub name: String, pub description: String, pub is_m
 pub struct ScreenInfo { pub output: String, pub description: String, pub x: i32, pub y: i32, pub width: u32, pub height: u32, pub scale: f64 }
 pub struct CameraInfo { pub device: String, pub label: String, pub modes: Vec<CameraMode> }
 pub struct CameraMode { pub width: u32, pub height: u32, pub fps: Fps, pub format: String }
-pub struct OutFacts { pub abs: String, pub exists: bool, pub forbidden: Option<String> /* why: inside takes/, .qrec/, qrec.json, or a name over 255 bytes */ }
+pub struct OutFacts { pub abs: String, pub exists: bool, pub bytes: Option<u64> /* lstat size when it exists */, pub forbidden: Option<String> /* why: inside takes/ or .qrec/ (also through a symlinked one), qrec.json, a directory, a name over 255 bytes or in the temp-file shape (A§8.7) */ }
 pub struct FileFact { pub path: String, pub bytes: u64, pub mtime_ns: i64 }
 
 #[derive(Default)]
@@ -835,13 +835,23 @@ It means what the OS says: `..` stays in `facts.out.abs` (the path the job
 writes and reports) and the checks run where the kernel resolves it, so
 `link/..` is the parent of the link's target, never lexically the folder
 holding `link`.
-`facts.out.forbidden` (inside `takes/`, `.qrec/` or `qrec.json`, or a name
-over 255 bytes) ⇒ `Invalid` (not confirmable); `exists && !confirmed` ⇒
-`confirmation_required`. The plan's `replace` is `exists && confirmed`: the
+`facts.out.forbidden` (inside `takes/` or `.qrec/`, `qrec.json`, a
+directory, a name over 255 bytes, or a name in the temp-file shape
+`.<stem>.qrec-part-<pid>-<job>[.<ext>]` that host start would sweep, A§8.7)
+⇒ `Invalid` (not confirmable). `takes/`, `.qrec/` and `qrec.json` are
+matched by name under the project folder and by identity (`st_dev`,
+`st_ino`, symlinks followed) against the output and every existing folder
+above it, so a symlinked `takes/` (media moved to another disk) or a bind
+mount still guards the recordings, through the link or straight at its
+target. `exists && !confirmed` ⇒ `confirmation_required` "overwrite <abs>
+(<size>)" with `details: {files:[{path,bytes}]}` (`facts.out.bytes`, the
+`lstat` size: a symlink at `out` is what gets replaced, not its target).
+The plan's `replace` is `exists && confirmed`: the
 runner may replace only the file the person confirmed. `OutputAppeared` (a
 hand-picked `out` appeared while the job ran, A§8.8) ends the job with
 `confirmation_required` (exit 4) naming both paths, `details:
-{files:[{path,bytes}], kept}`, hint "rename <kept>, or run the command again
+{files:[{path,bytes}], kept}` (`kept` is `<stem>-kept.<ext>` next to `out`),
+hint "rename <kept>, or run the command again
 with --yes to replace <out>", and a warning toast ("Export kept aside" /
 "Frame kept aside") with Open folder / Copy path for the kept file.
 Frame saves need ffmpeg like exports (`missing_dependency` before the job
@@ -1231,9 +1241,14 @@ SIGTERM to the group, SIGKILL after 2 s, wait ≤ 2 s more, then hand the
 child to a reaper thread and fail the job — the session thread never blocks in
 `wait()`. Success = exit 0 and `progress=end` (and, for segments, the counts
 in A§9.3). Logs: `.qrec/logs/YYYYMMDD-HHMMSS-<pid>-j<job>-<step>.log`
-(O_EXCL); at host start prune to the newest 200 and delete
-`*.qrec-part-*` temp files older than 1 h in `exports/`, `frames/`,
-`.qrec/cache/segments/`.
+(O_EXCL); at host start prune to the newest 200 and delete temp files
+older than 1 h in `exports/`, `frames/`, `.qrec/cache/segments/` and the
+silence cache. A temp file is a regular file whose whole name has the
+shape A§8.8 gives temps, `.<stem>.qrec-part-<pid>-<job>` plus an optional
+`.<ext>` (`media::is_temp_name`), never any name that merely contains
+`.qrec-part-`: exports, frames and results kept aside (`<stem>-kept.<ext>`)
+are never deleted. Auto names can't take that shape (`file_stem`, A§9.9)
+and a hand-picked `--out` in it is refused (A§5.9).
 
 ### A§8.8 Output files: never overwrite
 
@@ -1246,9 +1261,12 @@ A§5.9). The final step is
 `-2`, `-3`, … on EEXIST; a hand-picked `--out` is replaced only when the
 plan says so (`replace`: it existed at dispatch and the person confirmed,
 A§5.9 — never guessed from the file system when the job starts). A
-hand-picked unconfirmed `--out` that appeared meanwhile ⇒ keep the temp
-(it is the result now) and end the job with
-`OutputAppeared { out, bytes, kept }`, which the core turns into
+hand-picked unconfirmed `--out` that appeared meanwhile ⇒ keep the result
+(it is the result now): the temp is renamed, without replacing anything,
+to `<stem>-kept.<ext>` next to `out` (then `-kept-2`, `-kept-3`, …; the stem
+cut to fit `NAME_MAX`), a name the A§8.7 sweep never deletes (only if that
+rename fails does it stay at the temp path, with a warning), and the job
+ends with `OutputAppeared { out, bytes, kept }`, which the core turns into
 `confirmation_required` naming both paths (exit 4).
 `ExportFinished`/`FrameSaved` carry the real path. Migration backups use the
 same no-replace rule.
@@ -1604,6 +1622,8 @@ shell only reads and atomically writes the file.
 ### A§9.9 Naming (`naming.rs`)
 
 `file_stem(name)`: replace `/`, NUL, control characters and `%` with `_`,
+`.qrec-part` with `_qrec-part` (no export or frame name contains the temp
+marker `.qrec-part-`, A§8.7, even when the cut stem is followed by `-`),
 strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
 `qrec`. Used for exports, frames and capture file names.
 
