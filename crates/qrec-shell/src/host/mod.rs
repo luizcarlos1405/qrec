@@ -704,7 +704,15 @@ impl Host {
         self.mark_stopping();
         self.server.stop_accepting();
         drop(session);
-        let flush = if self.ctl.hurried_at().is_some() {
+        let hurried = self.ctl.hurried_at().is_some();
+        if hurried {
+            // After a second signal nothing this command started outlives
+            // it: a child spawned since the kill, a job that didn't report
+            // in time and its temp output.
+            signals::kill_child_groups();
+            crate::media::remove_temps_in_flight();
+        }
+        let flush = if hurried {
             self.rules.flush_timeout.min(HURRIED_FLUSH)
         } else {
             self.rules.flush_timeout

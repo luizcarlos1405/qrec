@@ -487,15 +487,25 @@ fn run_request(
                 socket: host_socket,
                 hello,
             }) => {
-                let pid = hello.as_ref().map(|h| h.pid);
-                if reported != Some(pid) {
-                    reported = Some(pid);
-                    sink.routed(hello.as_deref());
-                }
-                let mut send = SendOpts::new(cx.interrupts);
-                send.baseline = baseline;
-                send.stop_on_interrupt = opts.stop_on_interrupt;
-                match send_request(&host_socket, req, sink.out(), &send) {
+                // A CLI command's own host never records (A§8.5): don't
+                // even ask it (it would bounce the request); wait for it to
+                // go like for a bounce, then start a headless host.
+                let refused = hello.as_deref().is_some_and(|h| h.host == HostKind::Cli)
+                    && matches!(&req.body, WireBody::Command(cmd) if cmd.may_start_recording());
+                let sent = if refused {
+                    Err(SendError::NotAccepted)
+                } else {
+                    let pid = hello.as_ref().map(|h| h.pid);
+                    if reported != Some(pid) {
+                        reported = Some(pid);
+                        sink.routed(hello.as_deref());
+                    }
+                    let mut send = SendOpts::new(cx.interrupts);
+                    send.baseline = baseline;
+                    send.stop_on_interrupt = opts.stop_on_interrupt;
+                    send_request(&host_socket, req, sink.out(), &send)
+                };
+                match sent {
                     Ok(Sent::Replied) => return Ran::Replied,
                     Ok(Sent::Interrupted) => return Ran::Interrupted,
                     // EOF before `accepted`: it never ran (the host stopped
