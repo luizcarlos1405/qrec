@@ -1,8 +1,9 @@
 //! Which project a command uses (SPEC §4.4 folder rule, A§8.4):
 //! `--project DIR`, else the current directory, when it holds `qrec.json`
-//! or is strictly empty; inside a project's subfolder, exit 3 pointing at
-//! the project; without `--project`, the single running host; else exit 3
-//! "Not my swamp".
+//! (or a `.qrec/` history: a project that lost its file, A§7.7) or is
+//! strictly empty; inside a project's subfolder, exit 3 pointing at the
+//! project; without `--project`, the single running host (its exact path,
+//! also when it isn't UTF-8); else exit 3 "Not my swamp".
 //!
 //! Reading a folder never changes it: resolution writes nothing.
 

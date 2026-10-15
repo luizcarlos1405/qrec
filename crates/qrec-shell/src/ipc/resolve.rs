@@ -16,7 +16,11 @@
 //! another `qrec` is initializing right now (it did `mkdir .qrec` and holds
 //! or is taking the lock), or one whose initialization died before writing
 //! `qrec.json`. Without this, two commands started together in a fresh
-//! folder would race and one would exit 3.
+//! folder would race and one would exit 3 (`qrec.json` is written through
+//! `.qrec/qrec.json.tmp`, so nothing else shows up meanwhile).
+//!
+//! A folder without `qrec.json` whose `.qrec/` holds a history is a project
+//! that lost its file (A§7.7): it is that project, whatever else is in it.
 //!
 //! Scanning never deletes anything (A§8.3 step 2).
 
