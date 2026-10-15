@@ -40,7 +40,7 @@ use serde_json::Value;
 
 use super::{Session, with_current};
 use crate::msg::Responder;
-use crate::store::{CommitError, CommitMark};
+use crate::store::CommitMark;
 
 /// What became of an outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,7 +190,7 @@ impl Session {
         let mark = droppable.then(|| self.store.mark(&ops));
         let commit = self.store.commit(&self.state, &next, &ops, write_project);
         #[cfg(test)]
-        if let Err(CommitError::Crashed(_)) = &commit {
+        if let Err(crate::store::CommitError::Crashed(_)) = &commit {
             // The "process" died here: nothing else runs, nobody hears back.
             self.state = next;
             self.crashed = true;
@@ -198,7 +198,7 @@ impl Session {
         }
         if let Err(e) = &commit
             && let Some(mark) = mark
-            && self.drop_unsaved(mark, e)
+            && self.drop_unsaved(mark)
         {
             // The state stays as it was and none of the effects run.
             let err = CoreError::io(format!("couldn't save the project, so nothing changed: {e}"))
@@ -268,12 +268,14 @@ impl Session {
     }
 
     /// After a failed commit of a command: puts back what it wrote
-    /// (`Store::drop_commit`). `false` when `qrec.json` already holds the
-    /// change, or a rewrite replaced the history base, and it can't be put
-    /// back: then the change is kept instead, as after a crash between the
-    /// project and the head writes (A§7.6).
-    fn drop_unsaved(&mut self, mark: CommitMark, failed: &CommitError) -> bool {
-        match self.store.drop_commit(mark, &self.state, failed) {
+    /// (`Store::drop_commit`), `qrec.json` byte for byte (a broken file a
+    /// restore was replacing stays the person's, A§7.7). `false` when
+    /// `qrec.json` already holds the change, or a rewrite replaced the
+    /// history base, and it can't be put back: then the change is kept
+    /// instead, as after a crash between the project and the head writes
+    /// (A§7.6).
+    fn drop_unsaved(&mut self, mark: CommitMark) -> bool {
+        match self.store.drop_commit(mark, &self.state) {
             Ok(()) => true,
             Err(e) => {
                 tracing::error!("can't put qrec.json back after a failed save: {e}");

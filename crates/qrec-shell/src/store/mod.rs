@@ -88,20 +88,6 @@ pub enum CommitError {
     Crashed(Step),
 }
 
-impl CommitError {
-    /// `qrec.json` had been replaced when the commit failed: only the
-    /// commit record (step 3) is missing.
-    pub fn wrote_project(&self) -> bool {
-        matches!(
-            self,
-            CommitError::Io {
-                step: Step::Head,
-                ..
-            }
-        )
-    }
-}
-
 /// The store's own bookkeeping before a commit ([`Store::mark`],
 /// [`Store::drop_commit`]).
 #[derive(Debug, Clone)]
@@ -115,6 +101,23 @@ pub struct CommitMark {
     /// The bytes of `history.base.json` before that rewrite, so a dropped
     /// one (a purge, a clear) can put them back.
     base_bytes: Option<Vec<u8>>,
+    /// `qrec.json` before the commit, put back as it was by a dropped one.
+    project: ProjectBefore,
+    /// The hash the store compared `qrec.json` with before the commit.
+    last_sha: Option<String>,
+}
+
+/// `qrec.json` as it was before a commit ([`CommitMark`]): not always the
+/// project the head describes. It may be a file a restore replaces because
+/// it is unusable or didn't merge (A§7.7, never written over: SPEC §16), or
+/// a hand edit the host hasn't merged yet; a dropped commit puts back
+/// these bytes, not a project it serializes.
+#[derive(Debug, Clone)]
+enum ProjectBefore {
+    Bytes(Vec<u8>),
+    Missing,
+    /// It couldn't be read: a commit that replaced it can't be dropped.
+    Unreadable(String),
 }
 
 /// What `qrec.json` holds right now, compared with what the host wrote.
@@ -390,10 +393,16 @@ impl Store {
     }
 
     /// What [`Store::drop_commit`] puts back; taken before a commit of
-    /// `ops`. A history `Rewrite` replaces `history.base.json`, so its
-    /// current bytes are kept to put back.
+    /// `ops`. `qrec.json` is kept as it is (every saving commit replaces
+    /// it), and so is `history.base.json` when a history `Rewrite`
+    /// replaces it.
     pub fn mark(&self, ops: &[&HistoryOp]) -> CommitMark {
         let rewrites = ops.iter().any(|op| matches!(op, HistoryOp::Rewrite { .. }));
+        let project = match fs::read(self.paths.project_file()) {
+            Ok(bytes) => ProjectBefore::Bytes(bytes),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => ProjectBefore::Missing,
+            Err(e) => ProjectBefore::Unreadable(e.to_string()),
+        };
         CommitMark {
             has_base: self.has_base,
             pending_base: self.pending_base.clone(),
@@ -405,14 +414,19 @@ impl Store {
             } else {
                 None
             },
+            project,
+            last_sha: self.last_sha.clone(),
         }
     }
 
     /// After a failed [`Store::commit`] whose change is dropped, puts the
-    /// files back to `prev`, the state the head still describes, as far as
-    /// the next open and the next commit care:
-    /// - a `qrec.json` it already replaced (only the head failed) is
-    ///   written back, else an open would merge it as an external edit;
+    /// files back as they were before it (the head still describes `prev`),
+    /// as far as the next open and the next commit care:
+    /// - a `qrec.json` it replaced gets back the bytes it had, or is
+    ///   removed if there was none: the project it described, but also a
+    ///   file the host must never write over (an unusable or unmerged one a
+    ///   restore was replacing, A§7.7) or a hand edit to merge, else an
+    ///   open would merge the dropped change as an external edit;
     /// - a base a history `Rewrite` replaced is written back from the
     ///   mark's bytes (a purge or a clear that isn't saved changes nothing);
     /// - a base it wrote for a project that had none is removed (the next
@@ -423,18 +437,11 @@ impl Store {
     ///   dirty: an open drops lines at or past the head's `nextSeq` and the
     ///   next commit rewrites the file.
     ///
-    /// `Err` when `qrec.json` or a replaced base can't be written back: the
+    /// `Err` when `qrec.json` or a replaced base can't be put back: the
     /// files hold the change.
-    pub fn drop_commit(
-        &mut self,
-        mark: CommitMark,
-        prev: &State,
-        failed: &CommitError,
-    ) -> Result<(), CommitError> {
+    pub fn drop_commit(&mut self, mark: CommitMark, prev: &State) -> Result<(), CommitError> {
         self.dirty = true;
-        if failed.wrote_project() {
-            self.write_project(&prev.project)?;
-        }
+        self.put_back_project(&mark)?;
         // A base a repair wrote (not a rewrite) is the one the files need.
         if self.replaced_base && mark.rewrites {
             let path = self.paths.history_base();
@@ -477,6 +484,56 @@ impl Store {
                 Err(e) => tracing::debug!("can't put the history back yet: {e}"),
             }
         }
+        Ok(())
+    }
+
+    /// [`Store::drop_commit`]'s `qrec.json`: the bytes the mark kept
+    /// (written only when the file differs), or no file if there was none.
+    /// The store then compares the file with the hash it had before, so a
+    /// file it never wrote is still not its own (A§8.9).
+    fn put_back_project(&mut self, mark: &CommitMark) -> Result<(), CommitError> {
+        let path = self.paths.project_file();
+        let failed = |source: io::Error| CommitError::Io {
+            step: Step::Project,
+            what: format!("put back {}", path.display()),
+            source,
+        };
+        let now = match fs::read(&path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        };
+        match &mark.project {
+            ProjectBefore::Bytes(before) => {
+                if !matches!(&now, Ok(Some(bytes)) if bytes == before) {
+                    fsx::replace_via(
+                        &path,
+                        &self.paths.project_tmp(),
+                        before,
+                        fsx::Sync::FileAndDir,
+                    )
+                    .map_err(failed)?;
+                }
+            }
+            ProjectBefore::Missing => {
+                if !matches!(now, Ok(None)) {
+                    match fs::remove_file(&path) {
+                        Ok(()) => fsx::sync_dir(self.paths.root()).map_err(failed)?,
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                        Err(e) => return Err(failed(e)),
+                    }
+                }
+            }
+            // Readable (or gone) now: the commit replaced it, and what it
+            // held is unknown.
+            ProjectBefore::Unreadable(why) if now.is_ok() => {
+                return Err(failed(io::Error::other(format!(
+                    "what it held before couldn't be read ({why})"
+                ))));
+            }
+            ProjectBefore::Unreadable(_) => {}
+        }
+        self.last_sha = mark.last_sha.clone();
         Ok(())
     }
 

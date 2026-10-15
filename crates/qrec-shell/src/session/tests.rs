@@ -2432,6 +2432,120 @@ fn a_dropped_change_is_taken_back_out_of_qrec_json() {
     );
 }
 
+/// The sample project with two committed edits (cursor 2), then `edit`
+/// done to `qrec.json` by hand, and the commit record made unwritable (its
+/// temp file's name is taken by a folder, like a full disk would fail it).
+fn unwritable_head_after(name: &str, edit: impl FnOnce(&Path)) -> (Harness, PathBuf) {
+    let h = Harness::with_sample(name);
+    {
+        let mut s = h.open(true).unwrap();
+        for id in ["c001", "c002"] {
+            send(
+                &mut s,
+                Command::ClipRemove {
+                    clips: vec![clip(id)],
+                },
+                false,
+            )
+            .unwrap();
+        }
+    }
+    edit(&h.dir.join("qrec.json"));
+    let blocker = h.dir.join(".qrec/history.head.json.tmp");
+    fs::create_dir(&blocker).unwrap();
+    (h, blocker)
+}
+
+fn assert_nothing_changed(err: &CoreError, what: &str) {
+    assert_eq!(err.code, ErrorCode::Io, "{what}: {err:?}");
+    assert!(
+        err.message
+            .starts_with("couldn't save the project, so nothing changed: write "),
+        "{what}: {}",
+        err.message
+    );
+}
+
+/// A confirmed restore over an unusable `qrec.json` whose commit fails
+/// (only the commit record can't be written) says nothing changed, and so
+/// it is: `qrec.json` holds the person's bytes again, not the project of
+/// the commit record (A§7.6, SPEC §16), and a later restore still works.
+/// The dropped commit used to write the record's project over it.
+#[test]
+fn a_dropped_restore_puts_the_unusable_file_back() {
+    let broken: &[u8] = b"{ \"my\": \"half-finished edit\"\n";
+    let (h, blocker) = unwritable_head_after("dropped-restore", |file| {
+        fs::write(file, broken).unwrap();
+    });
+    let head = fs::read(h.paths().history_head()).unwrap();
+    let mut s = h.open_opts(recovery(true)).unwrap();
+    let err = send(&mut s, Command::HistoryRestore { seq: 1 }, true).unwrap_err();
+    assert_nothing_changed(&err, "restore");
+    assert_eq!(fs::read(h.dir.join("qrec.json")).unwrap(), broken);
+    assert_eq!(fs::read(h.paths().history_head()).unwrap(), head);
+    assert_eq!(s.state().history.cursor, 2);
+    assert!(s.state().runtime.disk_invalid.is_some(), "still unusable");
+    drop(s);
+    assert_eq!(
+        fs::read(h.dir.join("qrec.json")).unwrap(),
+        broken,
+        "closing writes nothing over it either"
+    );
+
+    fs::remove_dir(&blocker).unwrap();
+    let mut s = h.open_opts(recovery(true)).unwrap();
+    send(&mut s, Command::HistoryRestore { seq: 1 }, true).unwrap();
+    assert_eq!(h.head().cursor, 1);
+    assert_eq!(
+        fs::read(h.dir.join("qrec.json")).unwrap(),
+        format::project_bytes(&s.state().project)
+    );
+    assert!(corrupt_copies(&h).iter().all(|copy| copy == broken));
+}
+
+/// The same with `qrec.json` gone: the dropped restore leaves no file
+/// behind (it used to write the commit record's project there).
+#[test]
+fn a_dropped_restore_of_a_missing_file_leaves_none() {
+    let (h, _blocker) = unwritable_head_after("dropped-restore-missing", |file| {
+        fs::remove_file(file).unwrap();
+    });
+    let mut s = h.open_opts(recovery(true)).unwrap();
+    let err = send(&mut s, Command::HistoryRestore { seq: 1 }, true).unwrap_err();
+    assert_nothing_changed(&err, "restore");
+    drop(s);
+    assert!(!h.dir.join("qrec.json").exists());
+}
+
+/// A host whose `qrec.json` didn't merge (A§7.7) and whose restore can't
+/// commit keeps the person's file, byte for byte.
+#[test]
+fn a_dropped_restore_keeps_a_file_that_did_not_merge() {
+    let mut edited = Vec::new();
+    let (mut h, _blocker) = unwritable_head_after("dropped-restore-unmerged", |file| {
+        // Valid alone; once merged the take keeps its 300 frames, and the
+        // clip that now ends at 500 doesn't fit.
+        let mut json: Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+        json["name"] = "my hand edit".into();
+        json["takes"]["take-0001"]["durationFrames"] = 500.into();
+        json["timeline"]["clips"] = serde_json::json!([
+            {"id": "c009", "take": "take-0001", "in": 0, "out": 500}
+        ]);
+        fs::write(file, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+        edited = fs::read(file).unwrap();
+    });
+    h.check = crate::store::validated;
+    let mut s = h.open(true).unwrap();
+    assert!(s.state().runtime.disk_invalid.is_some(), "it didn't merge");
+    let cursor = s.state().history.cursor;
+    let err = send(&mut s, Command::HistoryRestore { seq: cursor }, true).unwrap_err();
+    assert_nothing_changed(&err, "restore");
+    assert_eq!(fs::read(h.dir.join("qrec.json")).unwrap(), edited);
+    assert!(s.state().runtime.disk_invalid.is_some());
+    drop(s);
+    assert_eq!(fs::read(h.dir.join("qrec.json")).unwrap(), edited);
+}
+
 #[test]
 fn a_dropped_first_commit_leaves_no_base_behind() {
     // The base written for the project's first commit describes that

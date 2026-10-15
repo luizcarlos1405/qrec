@@ -2940,3 +2940,51 @@ fn export_cancel_cancels_an_export_waiting_for_the_startup_recovery() {
     let exports = fs::read_dir(dir.join("exports")).map_or(0, |d| d.count());
     assert_eq!(exports, 0, "nothing was exported");
 }
+
+/// A confirmed `history restore` over a broken `qrec.json` whose commit
+/// record can't be written says nothing changed, and so it is: `qrec.json`
+/// still holds the person's bytes (A§7.6, SPEC §16), and the restore works
+/// once the disk does. The dropped commit used to leave the commit
+/// record's project there instead.
+#[test]
+fn a_restore_that_cant_be_saved_keeps_the_broken_file() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("restore-unsaved");
+    qrec(&env, &dir, &["init"]).ok();
+    qrec(
+        &env,
+        &dir,
+        &["scene", "layer", "add", "screen", "--output", "FAKE-1"],
+    )
+    .ok();
+    qrec(&env, &dir, &["scene", "audio", "add", "mic"]).ok();
+    let broken: &[u8] = b"{ \"my\": \"half-finished edit\"\n";
+    fs::write(dir.join("qrec.json"), broken).unwrap();
+    // Only the commit record can't be written (a stand-in for a full disk).
+    let blocker = dir.join(".qrec/history.head.json.tmp");
+    fs::create_dir(&blocker).unwrap();
+
+    let restore = qrec(&env, &dir, &["--json", "history", "restore", "1", "--yes"]);
+    assert_eq!(restore.code, Some(1), "{restore:?}");
+    let error = &restore.reply()["error"];
+    assert_eq!(error["code"], "io", "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("couldn't save the project, so nothing changed"),
+        "{error}"
+    );
+    fs::remove_dir(&blocker).unwrap();
+    assert_eq!(fs::read(dir.join("qrec.json")).unwrap(), broken);
+    let head: Value =
+        serde_json::from_slice(&fs::read(dir.join(".qrec/history.head.json")).unwrap()).unwrap();
+    assert_eq!(head["cursor"], 2);
+
+    qrec(&env, &dir, &["history", "restore", "1", "--yes"]).ok();
+    let status = qrec(&env, &dir, &["status", "--json"]);
+    status.ok();
+    let project = &status.reply()["data"]["project"];
+    assert_eq!(project["scene"]["layers"][0]["id"], "L1", "{project}");
+    assert_eq!(project["scene"]["audio"], json!([]), "{project}");
+}

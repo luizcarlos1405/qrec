@@ -1034,11 +1034,14 @@ A§7.7.
 
 **A failed commit** (disk full, permissions): a command's change didn't
 happen. The Session keeps the previous state, runs none of the outcome's
-effects and puts back what the commit wrote: a `qrec.json` that step 2
-already replaced (else the next open would merge it as an external edit),
-the history line (else the next open drops it as uncommitted), a first
-base, and the base a history `Rewrite` (purge, clear, compaction) replaced
-(the store keeps its bytes for that). It answers `io` "couldn't save the
+effects and puts back what the commit wrote: `qrec.json` as it was before
+step 2 replaced it, byte for byte, or no file if there was none (else the
+next open would merge the change as an external edit; and the file isn't
+always the head's project: a restore replaces an unusable or unmerged one,
+A§7.7, which stays the person's), the history line (else the next open
+drops it as uncommitted), a first base, and the base a history `Rewrite`
+(purge, clear, compaction) replaced (the store keeps the bytes of both
+files for that, `Store::mark`). It answers `io` "couldn't save the
 project, so nothing changed" — an in-process CLI host exits right after it
 replies, so a change can't wait in memory for a later save. An event's
 outcome carries facts (a finished take, a recovery), and a change whose
