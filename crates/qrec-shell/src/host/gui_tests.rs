@@ -897,3 +897,293 @@ fn a_signal_ends_a_gui_host_process_with_130() {
     );
     assert!(f.released());
 }
+
+// ------------------------------------------- a real Session, fake capture
+
+/// The GUI host with the Session the window opens (docs/GUI.md G§8.3): a
+/// real `Session` with the port as its observer and notifier, recording on
+/// the fake capture backend (GStreamer test sources) and ffprobe.
+#[cfg(feature = "gst")]
+mod real_session {
+    use qrec_core::model::{AudioRole, TakeStatus};
+    use qrec_core::protocol::{SceneTarget, VideoSourceArg};
+    use qrec_core::state::RecordPhase;
+    use qrec_core::{TakeId, TrackId};
+
+    use super::*;
+    use crate::capture::{self, Backend, EngineOptions};
+    use crate::deps::{Deps, os_entropy, system_clock};
+    use crate::error::ShellError;
+    use crate::host::SessionLock;
+    use crate::media::FfmpegRunner;
+    use crate::paths::UserDirs;
+    use crate::session::{Session, SessionConfig, SessionEnv};
+
+    /// A port that keeps every state it was shown.
+    #[derive(Default)]
+    struct StatePort {
+        port: FakePort,
+        states: Mutex<Vec<(u64, Arc<State>)>>,
+    }
+
+    impl StatePort {
+        fn last(&self) -> Option<Arc<State>> {
+            self.states
+                .lock()
+                .unwrap()
+                .last()
+                .map(|(_, s)| Arc::clone(s))
+        }
+
+        fn revs(&self) -> Vec<u64> {
+            self.states
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(r, _)| *r)
+                .collect()
+        }
+    }
+
+    impl GuiPort for StatePort {
+        fn snapshot(&self, rev: u64, state: Arc<State>) {
+            self.states.lock().unwrap().push((rev, Arc::clone(&state)));
+            self.port.snapshot(rev, state);
+        }
+
+        fn toast(&self, toast: Toast, recovery: bool) {
+            self.port.toast(toast, recovery);
+        }
+
+        fn host(&self, event: HostEvent) {
+            self.port.host(event);
+        }
+    }
+
+    /// An answer, whether it came late, and the last state the window had
+    /// when it came.
+    type Answer = (Result<Value, CoreError>, bool, Option<Arc<State>>);
+
+    /// The window's responder for one request: keeps its answer with what
+    /// the window showed at that moment.
+    struct StopAnswer {
+        port: Arc<StatePort>,
+        answer: Arc<Mutex<Option<Answer>>>,
+    }
+
+    impl StopAnswer {
+        fn keep(&mut self, r: Result<Value, CoreError>, late: bool) {
+            *self.answer.lock().unwrap() = Some((r, late, self.port.last()));
+        }
+    }
+
+    impl Responder for StopAnswer {
+        fn accepted(&mut self) {}
+
+        fn progress(&mut self, _p: &Progress) {}
+
+        fn reply(&mut self, r: Result<Value, CoreError>) {
+            self.keep(r, false);
+        }
+
+        fn reply_late(&mut self, r: Result<Value, CoreError>) {
+            self.keep(r, true);
+        }
+    }
+
+    /// Opens what `GuiOpener` (WP0b) opens, on the fake backend and the test
+    /// env's dirs, without a GPU.
+    struct RealOpener {
+        dirs: UserDirs,
+        no_sysfs: PathBuf,
+        port: Arc<dyn GuiPort>,
+    }
+
+    impl Opener for RealOpener {
+        fn open(
+            &mut self,
+            dir: &Path,
+            opts: OpenOpts,
+            lock: Option<SessionLock>,
+        ) -> Result<Box<dyn HostSession>, ShellError> {
+            let mut env = SessionEnv::for_dirs(self.dirs.clone(), true);
+            env.caps.sys_class_drm = self.no_sysfs.clone();
+            let deps = Deps {
+                capture: capture::new_engine(EngineOptions::new(dir, Backend::Fake, &self.dirs)),
+                media: Box::new(FfmpegRunner::new(dir)),
+                clock: Box::new(system_clock),
+                entropy: Box::new(os_entropy),
+            };
+            let cfg = SessionConfig {
+                lock,
+                env: Some(env),
+                notifier: Some(Box::new(PortNotifier(Arc::clone(&self.port)))),
+                observer: Some(Box::new(PortObserver(Arc::clone(&self.port)))),
+                ..SessionConfig::default()
+            };
+            Ok(Box::new(Session::open_with(dir, opts, deps, cfg)?))
+        }
+    }
+
+    /// An empty folder: the window's first `Init` (D-35) makes it a project
+    /// before the CLI's query that came while the window opened; the CLI
+    /// adds sources and records into the window's host; every state reaches
+    /// the window (the record clock too, H-6); the window stops the take
+    /// with its own request (a late answer, H-7) and closes: the host
+    /// stops, the lock is free.
+    #[test]
+    fn a_gui_host_records_with_a_real_session() {
+        let f = fixture();
+        let dirs = UserDirs::resolve(&f.paths_env).unwrap();
+        let mut spec = f.spec(ExitRules {
+            close_grace: Duration::from_secs(20),
+            ..quick_rules()
+        });
+        let init = Command::Init {
+            canvas: None,
+            name: None,
+        };
+        spec.first = Some(Request::command(init, false));
+        let port = Arc::new(StatePort::default());
+        let host = GuiHost::start(spec, Arc::clone(&port) as Arc<dyn GuiPort>).unwrap();
+        let early = Waiting::send(&f.socket, "early", WireBody::Query(Query::Status));
+        host.open(Box::new(RealOpener {
+            dirs,
+            no_sysfs: f.env.root().join("no-sysfs"),
+            port: Arc::clone(&port) as Arc<dyn GuiPort>,
+        }));
+        // The status came while the folder was empty, yet ran after `Init`.
+        let early = early.reply();
+        assert_eq!(early["ok"], true, "{early}");
+        assert_eq!(early["data"]["initialized"], true, "{early}");
+        assert!(f.dir.join("qrec.json").is_file());
+        assert!(
+            port.port
+                .wait_host(Duration::from_secs(10), |e| *e == HostEvent::Opened)
+        );
+
+        // The CLI adds a screen and a mic (the fake inventory's).
+        let screen = Command::LayerAdd {
+            target: SceneTarget::Project,
+            source: VideoSourceArg::Screen {
+                output: "FAKE-1".into(),
+            },
+            name: None,
+            rect: None,
+        };
+        let mic = Command::AudioAdd {
+            target: SceneTarget::Project,
+            role: AudioRole::Mic,
+            source: None,
+            label: None,
+        };
+        for (id, cmd) in [("screen", screen), ("mic", mic)] {
+            let reply = Waiting::send(&f.socket, id, WireBody::Command(cmd)).reply();
+            assert_eq!(reply["ok"], true, "{id}: {reply}");
+        }
+        let shown = port.last().expect("states came");
+        assert_eq!(shown.project.scene.layers.len(), 1);
+        assert_eq!(shown.project.scene.audio[0].id, TrackId::numbered(1));
+        // Lane mutes are UI state the window sets whole (D-08).
+        let mute = Command::SetUi {
+            patch: UiPatch {
+                lane_mute: Some([TrackId::numbered(1)].into()),
+                ..UiPatch::default()
+            },
+        };
+        let replies = Replies::default();
+        assert!(host.submit(Request::command(mute, false), replies.responder()));
+        assert!(wait_for(Duration::from_secs(5), || replies.all().len() == 1));
+        assert!(replies.all()[0].is_ok(), "{:?}", replies.all());
+        assert!(
+            port.last()
+                .unwrap()
+                .ui
+                .lane_mute
+                .contains(&TrackId::numbered(1))
+        );
+
+        // A take from the CLI (the niri bind while the window is open),
+        // answered once capture runs.
+        let start = Command::RecordStart {
+            mode: RecordModeArg::Append,
+            countdown: Some(0),
+            wait: false,
+        };
+        let reply = Waiting::send(&f.socket, "record", WireBody::Command(start)).reply();
+        assert_eq!(reply["ok"], true, "{reply}");
+        // The record clock's runtime-only states reach the window.
+        assert!(
+            wait_for(Duration::from_secs(10), || port.last().is_some_and(|s| {
+                matches!(
+                    s.runtime.record,
+                    RecordPhase::Recording { elapsed_ns, .. } if elapsed_ns >= 1_000_000_000
+                )
+            })),
+            "{:?}",
+            port.last().map(|s| s.runtime.record.clone())
+        );
+        // D-50's retry reaches the engine in order (a no-op until WP1).
+        host.retry_live();
+
+        // The window stops it: its answer comes once the take is final.
+        let answer: Arc<Mutex<Option<Answer>>> = Arc::default();
+        let to = Box::new(StopAnswer {
+            port: Arc::clone(&port),
+            answer: Arc::clone(&answer),
+        });
+        assert!(host.submit(Request::command(Command::RecordStop, false), to));
+        assert!(
+            wait_for(Duration::from_secs(30), || answer.lock().unwrap().is_some()),
+            "no answer to the stop"
+        );
+        let (stopped, late, shown) = answer.lock().unwrap().take().unwrap();
+        let stopped = stopped.expect("the take was finalized");
+        assert!(late, "it came from the finalize event (H-7)");
+        assert_eq!(stopped["result"]["take"], "take-0001", "{stopped}");
+        assert_eq!(stopped["result"]["status"], "ok", "{stopped}");
+        assert_eq!(stopped["result"]["placed"], true, "{stopped}");
+        // The window had the state that answer describes when it came.
+        let shown = shown.expect("states came");
+        assert!(shown.runtime.record.is_idle());
+        assert_eq!(
+            shown.project.takes[&TakeId::numbered(1)].status,
+            TakeStatus::Ok
+        );
+        assert_eq!(shown.project.timeline.clips.len(), 1);
+        let revs = port.revs();
+        assert!(
+            revs.windows(2).all(|w| w[0] <= w[1]),
+            "revisions never go back: {revs:?}"
+        );
+
+        // D-13 with a real Session too.
+        let lines = raw_exchange(&f.socket, &request_line("s", json!("shutdown")));
+        assert_eq!(lines[1]["reply"]["error"]["code"], "busy", "{lines:?}");
+
+        host.close();
+        assert_eq!(
+            port.port.wait_stopped(Duration::from_secs(30)),
+            Some(HostEnd::Closed)
+        );
+        assert_eq!(
+            port.port.host_events(),
+            [
+                HostEvent::Ready,
+                HostEvent::Opened,
+                HostEvent::Stopped {
+                    end: HostEnd::Closed
+                }
+            ]
+        );
+        assert!(f.released(), "the lock was released");
+        assert!(!f.socket.exists());
+        let errors: Vec<PortEvent> = port
+            .port
+            .events()
+            .into_iter()
+            .filter(|e| matches!(e, PortEvent::Toast(t, _) if t.level == ToastLevel::Error))
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+}

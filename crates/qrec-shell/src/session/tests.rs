@@ -4047,3 +4047,38 @@ fn cached_sources_keep_discovery_off_the_session_thread() {
     send(&mut s, add_system, false).unwrap();
     assert_eq!(*runs.lock().unwrap(), [std::thread::current().id()]);
 }
+
+/// GUI D-08: `SetUi{laneMute}` reaches `.qrec/ui.json` and the next open
+/// reads it back. Ids that no scene has are dropped, and the history doesn't
+/// change (lane mutes aren't undoable).
+#[test]
+fn lane_mutes_round_trip_through_ui_json() {
+    let h = Harness::with_sample("lane-mutes");
+    let mut s = h.open(true).unwrap();
+    let mute = |tracks: &[u32]| Command::SetUi {
+        patch: qrec_core::protocol::UiPatch {
+            lane_mute: Some(
+                tracks
+                    .iter()
+                    .map(|n| qrec_core::TrackId::numbered(*n))
+                    .collect(),
+            ),
+            ..Default::default()
+        },
+    };
+    // A9 is in no scene of the sample project.
+    send(&mut s, mute(&[1, 9]), false).unwrap();
+    let ui: Value = serde_json::from_slice(&fs::read(h.paths().ui_file()).unwrap()).unwrap();
+    assert_eq!(ui["laneMute"], serde_json::json!(["A1"]), "{ui}");
+    assert_eq!(
+        h.history_seqs(),
+        Vec::<u64>::new(),
+        "lane mutes aren't undoable"
+    );
+    drop(s);
+    let again = h.open(true).unwrap();
+    assert_eq!(
+        again.state().ui.lane_mute,
+        BTreeSet::from([qrec_core::TrackId::numbered(1)])
+    );
+}
