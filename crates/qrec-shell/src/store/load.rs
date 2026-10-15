@@ -34,18 +34,19 @@ use std::io;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use qrec_core::capture_plan::{audio_file_name, video_file_name};
 use qrec_core::hash::json_hash;
 use qrec_core::history::HistoryEntry;
 use qrec_core::history::ops::{apply_patch_with, derive_base, unchecked};
 use qrec_core::history::view::undoable_view;
-use qrec_core::model::{Project, Stream, StreamKind, Take, TakeStatus};
+use qrec_core::model::{Project, Scene, Stream, StreamKind, Take, TakeStatus};
 use qrec_core::state::{History, UiState};
 use qrec_core::{CoreError, ErrorCode, TakeId};
 use serde_json::Value;
 
 use super::Check;
 use super::format::{self, Head, ParsedHistory};
-use crate::capture::spec::logged_start_offsets;
+use crate::capture::spec::{LoggedTake, read_take_log};
 use crate::error::ShellError;
 use crate::paths::ProjectPaths;
 
@@ -630,22 +631,24 @@ struct FoundTake {
     /// One per media file (`L1-….mkv` is video, `A1-….mka` audio), by id.
     streams: Vec<Stream>,
     recorded_at: Option<DateTime<Utc>>,
+    /// What its `recorder.log` says (ids, offsets, lost streams).
+    logged: LoggedTake,
 }
 
-/// The most of a take's `recorder.log` read for its start offsets (the
-/// engine writes a few KiB).
+/// The most of a take's `recorder.log` read (the engine writes a few KiB).
 const MAX_RECORDER_LOG_BYTES: u64 = 1 << 20;
 
-/// The take folders `project` doesn't have, with their media files and
-/// the start offsets their `recorder.log` names (others start at 0).
+/// The take folders `project` doesn't have, with their media files, the
+/// ids and start offsets their `recorder.log` names (other streams start
+/// at 0; their ids are settled by `readd`) and the streams it lost.
 fn takes_on_disk(paths: &ProjectPaths, project: &Project) -> Vec<FoundTake> {
     super::take_dirs(paths)
         .into_iter()
         .filter(|id| !project.takes.contains_key(id))
         .map(|id| {
             let dir = paths.take_dir(&id);
-            let offsets = recorder_log(&dir.join("recorder.log"))
-                .map(|log| logged_start_offsets(&log))
+            let logged = recorder_log(&dir.join("recorder.log"))
+                .map(|log| read_take_log(&log))
                 .unwrap_or_default();
             let mut streams: Vec<Stream> = fs::read_dir(&dir)
                 .into_iter()
@@ -659,12 +662,15 @@ fn takes_on_disk(paths: &ProjectPaths, project: &Project) -> Vec<FoundTake> {
                         "mka" => StreamKind::Audio,
                         _ => return None,
                     };
-                    let stream_id = name.split('-').next()?.to_owned();
                     let file = format!("takes/{id}/{name}");
+                    let seen = logged.streams.get(&file);
                     Some(Stream {
-                        id: stream_id,
+                        id: match seen {
+                            Some(seen) => seen.id.clone(),
+                            None => name.split('-').next()?.to_owned(),
+                        },
                         kind,
-                        start_offset_ns: offsets.get(&file).copied().unwrap_or(0),
+                        start_offset_ns: seen.map_or(0, |seen| seen.start_offset_ns),
                         file,
                         width: None,
                         height: None,
@@ -685,43 +691,80 @@ fn takes_on_disk(paths: &ProjectPaths, project: &Project) -> Vec<FoundTake> {
                 id,
                 streams,
                 recorded_at,
+                logged,
             }
         })
         .collect()
 }
 
-/// A take's `recorder.log` (its first [`MAX_RECORDER_LOG_BYTES`]), or
-/// `None` when it can't be read (a take without one starts its streams at
-/// 0).
+/// A take's `recorder.log` (its first [`MAX_RECORDER_LOG_BYTES`], bytes
+/// that aren't UTF-8 replaced), or `None` when it can't be read.
 fn recorder_log(path: &std::path::Path) -> Option<String> {
     use std::io::Read;
-    let mut text = String::new();
+    let mut bytes = Vec::new();
     fs::File::open(path)
         .ok()?
         .take(MAX_RECORDER_LOG_BYTES)
-        .read_to_string(&mut text)
+        .read_to_end(&mut bytes)
         .ok()?;
-    Some(text)
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Adds `found` to the pool as a take still `recording` (for the Recover
 /// probe to finalize), with the project's scene as it is now, like
-/// `begin_take` copies it.
+/// `begin_take` copies it. The log's lost streams are missing in that
+/// scene, as the core marked them when they were lost (so they don't cut
+/// the take short, A§2.2); a stream the log doesn't name gets the id of
+/// the layer or track whose file it is.
 fn readd(project: &mut Project, found: &FoundTake) {
     project.next_take_number = project.next_take_number.max(found.id.number() + 1);
+    let mut scene = project.scene.clone();
+    let mut streams = found.streams.clone();
+    for stream in &mut streams {
+        if !found.logged.streams.contains_key(&stream.file)
+            && let Some(id) = scene_id_of(&scene, &stream.file)
+        {
+            stream.id = id;
+        }
+    }
+    streams.sort_by(|a, b| a.id.cmp(&b.id));
+    for layer in &mut scene.layers {
+        layer.missing |= found.logged.lost.contains(layer.id.as_str());
+    }
+    for track in &mut scene.audio {
+        track.missing |= found.logged.lost.contains(track.id.as_str());
+    }
     project.takes.insert(
         found.id.clone(),
         Take {
             status: TakeStatus::Recording,
             recorded_at: found.recorded_at.unwrap_or(project.created_at),
             duration_frames: 0,
-            scene: project.scene.clone(),
-            streams: found.streams.clone(),
+            scene,
+            streams,
             error: None,
             placed: false,
             replaced: Vec::new(),
         },
     );
+}
+
+/// The id of the layer or track of `scene` that records to `file` (its
+/// name as `capture_plan` gives it).
+fn scene_id_of(scene: &Scene, file: &str) -> Option<String> {
+    let name = file.rsplit('/').next()?;
+    scene
+        .layers
+        .iter()
+        .find(|layer| video_file_name(layer) == name)
+        .map(|layer| layer.id.to_string())
+        .or_else(|| {
+            scene
+                .audio
+                .iter()
+                .find(|track| audio_file_name(track) == name)
+                .map(|track| track.id.to_string())
+        })
 }
 
 /// The highest take number `entries` name anywhere: in a path under
@@ -846,5 +889,56 @@ fn read_ui(paths: &ProjectPaths, notes: &mut Vec<String>) -> (UiState, bool) {
             }
         },
         _ => (UiState::default(), false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::testdata::sample_project;
+
+    fn stream(id: &str, kind: StreamKind, file: &str) -> Stream {
+        Stream {
+            id: id.into(),
+            kind,
+            file: file.into(),
+            width: None,
+            height: None,
+            sample_rate: None,
+            channels: None,
+            start_offset_ns: 0,
+            duration_ns: None,
+            frames: None,
+            fps: None,
+        }
+    }
+
+    /// A take without log lines (it crashed before recording): the file
+    /// name alone can't tell where a hand-edited id with a `-` ends, the
+    /// scene's layers can.
+    #[test]
+    fn a_readded_stream_the_log_doesnt_name_gets_its_layers_id() {
+        let mut project = sample_project();
+        project.scene.layers[0].id = "scr-a".parse().unwrap();
+        let take: TakeId = "take-0009".parse().unwrap();
+        let found = FoundTake {
+            id: take.clone(),
+            streams: vec![
+                stream(
+                    "scr",
+                    StreamKind::Video,
+                    "takes/take-0009/scr-a-screen-FAKE-1.mkv",
+                ),
+                stream("A1", StreamKind::Audio, "takes/take-0009/A1-mic.mka"),
+            ],
+            recorded_at: None,
+            logged: LoggedTake::default(),
+        };
+        readd(&mut project, &found);
+        let readded = &project.takes[&take];
+        let ids: Vec<&str> = readded.streams.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["A1", "scr-a"]);
+        assert!(readded.scene.layers.iter().all(|l| !l.missing));
+        assert_eq!(project.next_take_number, 10);
     }
 }

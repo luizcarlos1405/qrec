@@ -1,6 +1,6 @@
 //! The screen branch's bridge (A§8.11): `… ! appsink` → `appsrc ! …`.
-//! Screencast frames go in; I420 frames come out, at least one per frame
-//! period.
+//! Screencast frames go in; I420 frames come out, and a still screen still
+//! sends one now and then.
 //!
 //! - **Sized memories.** niri sets the PipeWire data size of a DMA-BUF frame
 //!   to 1, so `pipewiresrc` (PipeWire 1.6) wraps each frame in a 1-byte
@@ -21,9 +21,15 @@
 //!   waits for that time (hundreds of hours) before pushing it, so the
 //!   branch stalls for good the first time the screen is still
 //!   *(measured)*. Instead a thread pushes the last frame again, stamped
-//!   with the running time, whenever no frame came for a frame period: a
-//!   record bin gets its first frame within a frame of T0 and its last
-//!   within a frame of T1, however still the screen is.
+//!   with the running time, once the screen sent nothing for
+//!   [`KEEPALIVE_IDLE`], and again every `KEEPALIVE_IDLE` while it stays
+//!   still. A repeat stamped close before a real frame would take that
+//!   frame's slot in the record bins' `videorate` (nearest frame wins), so
+//!   frames are dropped and doubled; repeats only fill long silences, never
+//!   go ahead of a frame being converted, and so never meet a screen that
+//!   changes at any real rate. The engine [kicks](Keepalive::kick) a
+//!   repeat out when a take starts (T0) and stops (T1), so a still screen's
+//!   bins start at T0 and end at T1.
 
 use std::os::fd::{BorrowedFd, RawFd};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -52,51 +58,94 @@ const OUTPUT_COLORIMETRY: &str = "bt709";
 /// Converted frames kept ready for reuse.
 const POOL_MIN_BUFFERS: u32 = 2;
 
+/// How long a screen may send nothing before the bridge sends its last
+/// frame again, and how often it does while the screen stays still. Long
+/// next to any real frame rate (so a repeat never lands between the frames
+/// of something that moves), short next to `STALL_LIMIT` (3 s); a stop
+/// fills at most this much when a take ends on a still screen, which the
+/// T1 kicks avoid anyway.
+pub(super) const KEEPALIVE_IDLE: Duration = Duration::from_millis(500);
+
+/// A bridge's keepalive, for the engine ([`Keepalive::kick`]).
+#[derive(Clone)]
+pub(super) struct Keepalive {
+    shared: Arc<Shared>,
+    target: glib::WeakRef<gst_app::AppSrc>,
+}
+
+impl Keepalive {
+    /// Sends the last frame again now, stamped with the running time; when a
+    /// frame is being converted, right after it instead (its PTS may be from
+    /// before a T0 that was just chosen). Nothing before the first frame. A
+    /// take kicks at T0 so a still screen's bins start there, and around T1
+    /// so they reach it at once.
+    pub fn kick(&self) {
+        let Some(src) = self.target.upgrade() else {
+            return;
+        };
+        let mut state = self.shared.lock();
+        if state.in_flight {
+            state.kick_pending = true;
+        } else {
+            repeat(&mut state, &src, Instant::now());
+        }
+    }
+}
+
 /// Connects `sink` (the end of the screencast's part of the branch) to
 /// `src` (the start of the rest): each frame is converted to I420 and
-/// pushed on with its timestamps; when none came for `period`, the last
-/// one is pushed again ([module docs](self)). EOS is passed on. The
-/// keepalive runs on a thread named `thread` (returned; dropping the
-/// handle detaches it), which ends at EOS or when `src` is gone.
+/// pushed on with its timestamps; after `idle` without a frame the last
+/// one is pushed again, and every `idle` while the screen stays still
+/// ([module docs](self); [`KEEPALIVE_IDLE`] outside tests). EOS is passed
+/// on. The keepalive runs on a thread named `thread` (its handle is
+/// returned; dropping it detaches the thread), which ends at EOS or when
+/// `src` is gone.
 pub(super) fn bridge(
     sink: &gst_app::AppSink,
     src: &gst_app::AppSrc,
-    period: Duration,
+    idle: Duration,
     thread: String,
-) -> Result<JoinHandle<()>, String> {
+) -> Result<(Keepalive, JoinHandle<()>), String> {
     let shared = Arc::new(Shared::default());
-    let keepalive = {
+    let handle = {
         let target = src.downgrade();
         let shared = shared.clone();
         std::thread::Builder::new()
             .name(thread)
-            .spawn(move || keepalive(&target, &shared, period))
+            .spawn(move || keepalive(&target, &shared, idle))
             .map_err(|e| format!("can't start the screen's keepalive: {e}"))?
     };
     let allocator = DmaBufAllocator::new();
     let mut converter: Option<Converter> = None;
     let target = src.downgrade();
     let eos = (src.downgrade(), shared.clone());
+    let frames = shared.clone();
     sink.set_callbacks(
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
                 let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                 let src = target.upgrade().ok_or(gst::FlowError::Flushing)?;
-                let (frame, caps) = convert(&sample, &mut converter, &allocator).map_err(
-                    |failure| match failure {
-                        Failure::Format(e) => {
-                            gst::element_error!(src, gst::CoreError::Negotiation, ("{}", e));
-                            gst::FlowError::NotNegotiated
-                        }
-                        Failure::Read(e) => {
-                            gst::element_error!(src, gst::ResourceError::Read, ("{}", e));
-                            gst::FlowError::Error
-                        }
-                    },
-                )?;
+                // No repeat may go ahead of this frame from now on.
+                frames.arrive();
+                let converted = convert(&sample, &mut converter, &allocator);
                 // pipewiresrc gets its buffer back.
                 drop(sample);
-                shared.push(&src, caps.as_ref(), frame)
+                match converted {
+                    Ok((frame, caps)) => frames.push(&src, caps.as_ref(), frame),
+                    Err(failure) => {
+                        frames.abandon();
+                        Err(match failure {
+                            Failure::Format(e) => {
+                                gst::element_error!(src, gst::CoreError::Negotiation, ("{}", e));
+                                gst::FlowError::NotNegotiated
+                            }
+                            Failure::Read(e) => {
+                                gst::element_error!(src, gst::ResourceError::Read, ("{}", e));
+                                gst::FlowError::Error
+                            }
+                        })
+                    }
+                }
             })
             .eos(move |_| {
                 let (target, shared) = &eos;
@@ -107,7 +156,11 @@ pub(super) fn bridge(
             })
             .build(),
     );
-    Ok(keepalive)
+    let keepalive = Keepalive {
+        shared,
+        target: src.downgrade(),
+    };
+    Ok((keepalive, handle))
 }
 
 /// Why a frame couldn't be handed on.
@@ -249,8 +302,14 @@ struct State {
     last: Option<gst::Buffer>,
     /// The PTS of the last push, repeats included: pushed PTS only grow.
     last_pts: Option<gst::ClockTime>,
-    /// When the last frame or repeat was pushed.
-    pushed_at: Option<Instant>,
+    /// When a frame last arrived or a repeat was last sent: the keepalive's
+    /// idle time counts from here.
+    active_at: Option<Instant>,
+    /// A frame arrived and is being converted: no repeat may go ahead of it.
+    in_flight: bool,
+    /// A kick came while a frame was being converted: it goes out right
+    /// after that frame.
+    kick_pending: bool,
     /// EOS was passed on: nothing more is pushed.
     stopped: bool,
 }
@@ -260,9 +319,22 @@ impl Shared {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// A frame arrived (before its conversion).
+    fn arrive(&self) {
+        let mut state = self.lock();
+        state.in_flight = true;
+        state.active_at = Some(Instant::now());
+    }
+
+    /// The frame that arrived won't be pushed (its conversion failed).
+    fn abandon(&self) {
+        self.lock().in_flight = false;
+    }
+
     /// Pushes a converted frame (after `caps`, when its format is new) and
-    /// keeps it for the keepalive. All pushes happen under the lock, so a
-    /// repeat never lands between a frame and its caps or out of order.
+    /// keeps it for the keepalive, then a pending kick's repeat. All pushes
+    /// happen under the lock, so a repeat never lands between a frame and
+    /// its caps or out of order.
     fn push(
         &self,
         src: &gst_app::AppSrc,
@@ -270,6 +342,7 @@ impl Shared {
         mut frame: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         let mut state = self.lock();
+        state.in_flight = false;
         if state.stopped {
             return Err(gst::FlowError::Eos);
         }
@@ -287,9 +360,13 @@ impl Shared {
         }
         state.last = Some(frame.clone());
         state.last_pts = pts.or(state.last_pts);
-        state.pushed_at = Some(Instant::now());
+        state.active_at = Some(Instant::now());
         // The appsrc is leaky: a push never waits.
-        src.push_buffer(frame)
+        let pushed = src.push_buffer(frame);
+        if std::mem::take(&mut state.kick_pending) {
+            repeat(&mut state, src, Instant::now());
+        }
+        pushed
     }
 
     /// No more pushes (EOS); wakes the keepalive so it ends.
@@ -302,8 +379,8 @@ impl Shared {
     }
 }
 
-/// `pts`, or just after `last` when it isn't later (a repeat stamped while
-/// a frame was on its way).
+/// `pts`, or just after `last` when it isn't later (a frame that got its
+/// PTS just before a repeat was sent).
 fn after(last: Option<gst::ClockTime>, pts: Option<gst::ClockTime>) -> Option<gst::ClockTime> {
     match (last, pts) {
         (Some(last), Some(pts)) if pts <= last => Some(last + gst::ClockTime::NSECOND),
@@ -311,10 +388,35 @@ fn after(last: Option<gst::ClockTime>, pts: Option<gst::ClockTime>) -> Option<gs
     }
 }
 
-/// The keepalive thread: pushes the last frame again, stamped with the
-/// running time, whenever nothing was pushed for `period`. Ends at EOS or
-/// when `target` is gone. A repeat is a new buffer over the same memory.
-fn keepalive(target: &glib::WeakRef<gst_app::AppSrc>, shared: &Shared, period: Duration) {
+/// Pushes the last frame again (a new buffer over the same memory),
+/// stamped with the running time. Nothing while stopped, without a frame or
+/// a running clock; a refused push (flushing, stopping) is the next
+/// frame's or the EOS's business. Returns whether it pushed.
+fn repeat(state: &mut State, src: &gst_app::AppSrc, now: Instant) -> bool {
+    if state.stopped {
+        return false;
+    }
+    let (Some(last), Some(running)) = (state.last.as_ref(), running_time(src)) else {
+        return false;
+    };
+    let pts = after(state.last_pts, Some(gst::ClockTime::from_nseconds(running)));
+    let mut copy = last.copy();
+    {
+        let copy = copy.make_mut();
+        copy.set_pts(pts);
+        copy.set_dts(pts);
+        copy.unset_flags(gst::BufferFlags::DISCONT);
+    }
+    state.last_pts = pts.or(state.last_pts);
+    state.active_at = Some(now);
+    let _ = src.push_buffer(copy);
+    true
+}
+
+/// The keepalive thread: once nothing arrived for `idle`, pushes the last
+/// frame again, and every `idle` while the screen stays still; never while
+/// a frame is being converted. Ends at EOS or when `target` is gone.
+fn keepalive(target: &glib::WeakRef<gst_app::AppSrc>, shared: &Shared, idle: Duration) {
     let mut state = shared.lock();
     loop {
         if state.stopped {
@@ -324,29 +426,16 @@ fn keepalive(target: &glib::WeakRef<gst_app::AppSrc>, shared: &Shared, period: D
             return;
         };
         let now = Instant::now();
-        if state.pushed_at.is_some_and(|at| now >= at + period) {
-            if let (Some(last), Some(running)) = (state.last.clone(), running_time(&src)) {
-                let pts = after(state.last_pts, Some(gst::ClockTime::from_nseconds(running)));
-                let mut repeat = last.copy();
-                {
-                    let repeat = repeat.make_mut();
-                    repeat.set_pts(pts);
-                    repeat.set_dts(pts);
-                    repeat.set_duration(gst::ClockTime::from_nseconds(
-                        u64::try_from(period.as_nanos()).unwrap_or(u64::MAX),
-                    ));
-                    repeat.unset_flags(gst::BufferFlags::DISCONT);
-                }
-                state.last_pts = pts.or(state.last_pts);
-                // Refused while flushing or stopping; the next frame or the
-                // EOS sorts that out.
-                let _ = src.push_buffer(repeat);
-            }
-            state.pushed_at = Some(now);
+        if !state.in_flight
+            && state.active_at.is_some_and(|at| now >= at + idle)
+            && !repeat(&mut state, &src, now)
+        {
+            // Not playing yet, or nothing to repeat: look again later.
+            state.active_at = Some(now);
         }
         drop(src);
-        let wait = state.pushed_at.map_or(period, |at| {
-            (at + period).saturating_duration_since(Instant::now())
+        let wait = state.active_at.map_or(idle, |at| {
+            (at + idle).saturating_duration_since(Instant::now())
         });
         state = shared
             .wake
@@ -517,8 +606,8 @@ mod tests {
     }
 
     impl Rig {
-        /// The rig and its keepalive thread.
-        fn new(input_caps: &str, period: Duration) -> (Self, JoinHandle<()>) {
+        /// The rig, its keepalive and the keepalive's thread.
+        fn new(input_caps: &str, idle: Duration) -> (Self, Keepalive, JoinHandle<()>) {
             gst::init().unwrap();
             let pipeline = gst::Pipeline::new();
             pipeline.use_clock(Some(&gst::SystemClock::obtain()));
@@ -550,14 +639,14 @@ mod tests {
                 .unwrap();
             input.link(&sink).unwrap();
             feed.link(&out).unwrap();
-            let keepalive = bridge(&sink, &feed, period, "test-keepalive".into()).unwrap();
+            let (keepalive, thread) = bridge(&sink, &feed, idle, "test-keepalive".into()).unwrap();
             pipeline.set_state(gst::State::Playing).unwrap();
             let rig = Self {
                 pipeline,
                 input,
                 out,
             };
-            (rig, keepalive)
+            (rig, keepalive, thread)
         }
 
         /// A `size`² BGRx frame of one byte value.
@@ -603,12 +692,24 @@ mod tests {
         )
     }
 
+    /// The pushed frames' luma, in order (white 235, black 16, …).
+    fn lumas(samples: &[gst::Sample]) -> Vec<u8> {
+        samples.iter().map(|s| yuv(s).0).collect()
+    }
+
+    fn pts_of(samples: &[gst::Sample]) -> Vec<u64> {
+        samples
+            .iter()
+            .map(|s| s.buffer().unwrap().pts().unwrap().nseconds())
+            .collect()
+    }
+
     #[test]
     fn a_still_screen_keeps_sending_its_last_frame() {
-        let period = Duration::from_millis(20);
-        let (rig, keepalive) = Rig::new(
+        let idle = Duration::from_millis(20);
+        let (rig, _, thread) = Rig::new(
             "video/x-raw,format=BGRx,width=64,height=64,framerate=0/1",
-            period,
+            idle,
         );
         // One white frame, then nothing: a still screen.
         rig.push_solid(64, 0xff);
@@ -628,68 +729,125 @@ mod tests {
                 "{y} {u} {v}"
             );
         }
-        let pts: Vec<u64> = samples
-            .iter()
-            .map(|s| s.buffer().unwrap().pts().unwrap().nseconds())
-            .collect();
+        let pts = pts_of(&samples);
         assert!(pts.windows(2).all(|w| w[0] < w[1]), "{pts:?}");
-        // Repeats are stamped when they're sent: never early, about a
-        // period apart (the median, so a loaded machine doesn't fail it).
+        // Repeats are stamped when they're sent: never early, about `idle`
+        // apart (the median, so a loaded machine doesn't fail it).
         let mut gaps: Vec<Duration> = pts
             .windows(2)
             .map(|w| Duration::from_nanos(w[1] - w[0]))
             .collect();
-        assert!(gaps.iter().all(|gap| *gap >= period / 2), "{pts:?}");
+        assert!(gaps.iter().all(|gap| *gap >= idle / 2), "{pts:?}");
         gaps.sort();
-        assert!(gaps[gaps.len() / 2] < period * 3, "{pts:?}");
+        assert!(gaps[gaps.len() / 2] < idle * 3, "{pts:?}");
 
         // EOS passes through and ends the keepalive.
         rig.input.end_of_stream().unwrap();
         rig.collect(Duration::from_secs(2));
         assert!(rig.out.is_eos());
         assert!(
-            within(Duration::from_secs(1), || keepalive.is_finished()),
+            within(Duration::from_secs(1), || thread.is_finished()),
             "the keepalive outlived EOS"
         );
     }
 
     #[test]
     fn new_frames_replace_the_repeated_one() {
-        let (rig, _keepalive) = Rig::new(
+        let (rig, _, _) = Rig::new(
             "video/x-raw,format=BGRx,width=32,height=32,framerate=0/1",
             Duration::from_millis(20),
         );
         rig.push_solid(32, 0xff);
-        let white = rig.collect(Duration::from_millis(100));
+        let mut samples = rig.collect(Duration::from_millis(100));
         rig.push_solid(32, 0x00);
-        let black = rig.collect(Duration::from_millis(100));
+        samples.extend(rig.collect(Duration::from_millis(100)));
+        let pts = pts_of(&samples);
+        assert!(pts.windows(2).all(|w| w[0] < w[1]), "{pts:?}");
+        // White (Y 235), repeated while it stayed; then black (Y 16) only,
+        // whenever exactly the black frame landed.
+        let lumas = lumas(&samples);
+        let first_black = lumas
+            .iter()
+            .position(|y| y.abs_diff(16) <= 1)
+            .unwrap_or_else(|| panic!("no black frame: {lumas:?}"));
+        assert!(first_black >= 2, "white wasn't repeated: {lumas:?}");
         assert!(
-            white.len() >= 2 && black.len() >= 2,
-            "{} {}",
-            white.len(),
-            black.len()
+            lumas[..first_black].iter().all(|y| y.abs_diff(235) <= 1),
+            "{lumas:?}"
         );
-        // From the black frame on, only black ones (Y 16 in limited range).
-        assert!(black.iter().all(|s| yuv(s).0.abs_diff(16) <= 1));
-        let last_white = white.last().unwrap().buffer().unwrap().pts().unwrap();
-        let first_black = black[0].buffer().unwrap().pts().unwrap();
-        assert!(first_black > last_white);
+        assert!(
+            lumas[first_black..].iter().all(|y| y.abs_diff(16) <= 1),
+            "a white repeat after the black frame: {lumas:?}"
+        );
+        assert!(
+            lumas.len() > first_black + 1,
+            "black wasn't repeated: {lumas:?}"
+        );
+    }
+
+    /// A screen that changes at a steady rate is never repeated: a repeat
+    /// stamped near a frame would take its slot in the record bins'
+    /// `videorate` (A§8.11).
+    #[test]
+    fn frames_at_a_steady_rate_are_never_repeated() {
+        let (rig, _, _) = Rig::new(
+            "video/x-raw,format=BGRx,width=32,height=32,framerate=0/1",
+            Duration::from_millis(150),
+        );
+        let bytes: Vec<u8> = (0..12)
+            .map(|i| if i % 2 == 0 { 0xff } else { 0x00 })
+            .collect();
+        for (i, byte) in bytes.iter().enumerate() {
+            rig.push_solid(32, *byte);
+            // ~30 fps with jitter.
+            std::thread::sleep(Duration::from_millis([25, 33, 41][i % 3]));
+        }
+        let samples = rig.collect(Duration::from_millis(60));
+        let lumas = lumas(&samples);
+        assert_eq!(samples.len(), bytes.len(), "{lumas:?}");
+        for (y, byte) in lumas.iter().zip(&bytes) {
+            let want = if *byte == 0xff { 235 } else { 16 };
+            assert!(y.abs_diff(want) <= 1, "{lumas:?}");
+        }
+    }
+
+    #[test]
+    fn a_kick_sends_the_last_frame_at_once() {
+        // Idle far longer than the test: only kicks repeat.
+        let (rig, keepalive, _) = Rig::new(
+            "video/x-raw,format=BGRx,width=32,height=32,framerate=0/1",
+            Duration::from_secs(60),
+        );
+        // Nothing to repeat yet.
+        keepalive.kick();
+        assert!(rig.collect(Duration::from_millis(50)).is_empty());
+
+        rig.push_solid(32, 0xff);
+        let first = rig.collect(Duration::from_millis(50));
+        assert_eq!(first.len(), 1);
+        keepalive.kick();
+        let kicked = rig.collect(Duration::from_millis(50));
+        assert_eq!(kicked.len(), 1);
+        assert_eq!(lumas(&kicked), lumas(&first));
+        assert!(pts_of(&kicked)[0] > pts_of(&first)[0]);
     }
 
     #[test]
     fn the_keepalive_ends_with_the_pipeline() {
-        let (rig, keepalive) = Rig::new(
+        let (rig, keepalive, thread) = Rig::new(
             "video/x-raw,format=BGRx,width=32,height=32,framerate=0/1",
             Duration::from_millis(20),
         );
         rig.push_solid(32, 0x80);
         assert!(!rig.collect(Duration::from_millis(60)).is_empty());
-        assert!(!keepalive.is_finished());
+        assert!(!thread.is_finished());
         drop(rig);
         assert!(
-            within(Duration::from_secs(1), || keepalive.is_finished()),
+            within(Duration::from_secs(1), || thread.is_finished()),
             "the keepalive outlived its pipeline"
         );
+        // A kick after that is a no-op.
+        keepalive.kick();
     }
 
     #[test]

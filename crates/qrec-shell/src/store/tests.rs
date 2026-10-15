@@ -687,6 +687,57 @@ fn recovery_mode_merges_a_valid_hand_edit_like_any_open() {
     assert_eq!(loaded, load(&paths, &opts()).unwrap(), "like a normal open");
 }
 
+/// Take facts aren't in the history: a rebuilt take gets its streams'
+/// offsets, and which were lost before the stop, from its recorder.log
+/// (A§7.7), so it comes out as long as it was recorded.
+#[test]
+fn a_rebuilt_take_gets_its_offsets_and_losses_from_its_log() {
+    use crate::capture::spec::{start_offset_line, stop_line, stream_lost_line};
+    let (tmp, mut store, s0) = initialized();
+    let (s1, ops, project) = edit(&s0, "Remove c001", remove_first_clip);
+    commit(&mut store, &s0, &s1, &ops, project).unwrap();
+    let paths = ProjectPaths::new(tmp.path());
+    let take_dir = paths.takes_dir().join("take-0002");
+    fs::create_dir_all(&take_dir).unwrap();
+    for name in ["L1-screen-FAKE-1.mkv", "A1-mic.mka"] {
+        fs::write(take_dir.join(name), b"x").unwrap();
+    }
+    let at = |line: String| format!("2026-10-15T13:25:01.402Z {line}\n");
+    let log = [
+        at("recording".into()),
+        at(start_offset_line(
+            "L1",
+            "takes/take-0002/L1-screen-FAKE-1.mkv",
+            20_000_000,
+        )),
+        at(start_offset_line(
+            "A1",
+            "takes/take-0002/A1-mic.mka",
+            10_000_000,
+        )),
+        at(stream_lost_line("A1", "the device was unplugged")),
+        at(stop_line(false, 9_000_000_000, 8_900)),
+    ]
+    .concat();
+    fs::write(take_dir.join("recorder.log"), log).unwrap();
+    fs::remove_file(paths.history_head()).unwrap();
+    fs::write(paths.project_file(), b"{").unwrap();
+
+    let loaded = load(&paths, &recovery()).unwrap();
+    assert_eq!(loaded.readded, vec!["take-0002".parse().unwrap()]);
+    let take = &loaded.project.takes[&"take-0002".parse().unwrap()];
+    let streams: Vec<(&str, i64)> = take
+        .streams
+        .iter()
+        .map(|s| (s.id.as_str(), s.start_offset_ns))
+        .collect();
+    assert_eq!(streams, [("A1", 10_000_000), ("L1", 20_000_000)]);
+    // The lost mic is missing in the take's scene, as the core marked it.
+    assert!(take.scene.audio[0].missing, "{:?}", take.scene.audio);
+    assert!(!take.scene.layers[0].missing);
+    assert!(!loaded.project.scene.audio[0].missing, "only the take's");
+}
+
 #[test]
 fn recovery_rebuilds_from_the_base_and_re_adds_takes() {
     let (tmp, mut store, s0) = initialized();

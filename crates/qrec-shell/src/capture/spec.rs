@@ -208,13 +208,6 @@ pub fn audio_label(rec: &AudioRecord) -> String {
     format!("{} audio {}", rec.id, rec.device)
 }
 
-/// How long a screen may go without a frame before the screen bridge
-/// sends its last one again: one frame period, so a still screen still
-/// produces frames to the end of a take (A§8.11).
-pub fn keepalive_period(fps: Fps) -> std::time::Duration {
-    std::time::Duration::from_nanos(frame_duration_ns(fps))
-}
-
 /// One frame at `fps`, in ns (`frame_ns(1)`).
 pub fn frame_duration_ns(fps: Fps) -> u64 {
     frame_ns(1, fps).max(1) as u64
@@ -274,44 +267,95 @@ pub fn encoder_input_format(encoder: &VideoEncoder) -> &'static str {
     }
 }
 
-/// A `recorder.log` line with one stream's `startOffsetNs`:
-/// `<id>: <file> startOffsetNs=<n>`. The engine logs it for every stream
-/// once recording starts (the offsets are known then) and again at the
-/// stop, so a take rebuilt from the files gets its offsets back
-/// ([`logged_start_offsets`], A§7.7): take facts aren't in the history.
+// `recorder.log` lines a rebuild reads back (A§7.7): take facts aren't in
+// the history, so a take rebuilt from its files gets its streams' ids and
+// offsets, and which of them were lost, from its log. Every line the
+// engine writes starts with a UTC timestamp (`2026-10-15T13:25:00.871Z`).
+
+/// One stream's `startOffsetNs`: `<id>: <file> startOffsetNs=<n>`. The
+/// engine logs it for every stream once recording starts (the offsets are
+/// known then) and again at the stop (with ` eos=…`).
 pub fn start_offset_line(id: &str, file: &str, start_offset_ns: i64) -> String {
     format!("{id}: {file} {START_OFFSET_KEY}{start_offset_ns}")
 }
 
 const START_OFFSET_KEY: &str = "startOffsetNs=";
 
-/// Every stream's `startOffsetNs` in a `recorder.log`, by its file
-/// (`takes/take-0001/L1-screen-DP-4.mkv`), from the lines
-/// [`start_offset_line`] writes (the last one of a file wins). Other lines,
-/// and offsets that aren't a count of ns ≥ 0, are skipped.
-pub fn logged_start_offsets(log: &str) -> std::collections::BTreeMap<String, i64> {
-    let mut offsets = std::collections::BTreeMap::new();
+/// A stream lost while recording or stopping: `<id> lost: <message>`.
+pub fn stream_lost_line(id: &str, message: &str) -> String {
+    format!("{id} {LOST_WORD} {message}")
+}
+
+const LOST_WORD: &str = "lost:";
+
+/// The stop: `stop at T1 = <ns> ns (<ms> ms after T0)`, or `cancel at …`.
+/// Streams lost after it count as recorded (the core never hears of them).
+pub fn stop_line(cancel: bool, t1_ns: u64, after_t0_ms: u64) -> String {
+    let what = if cancel { "cancel" } else { "stop" };
+    format!("{what} {T1_WORDS} {t1_ns} ns ({after_t0_ms} ms after T0)")
+}
+
+const T1_WORDS: &str = "at T1 =";
+
+/// What a take's `recorder.log` tells a rebuild.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LoggedTake {
+    /// Each stream's id and `startOffsetNs`, by its file
+    /// (`takes/take-0001/L1-screen-DP-4.mkv`); the last line wins.
+    pub streams: std::collections::BTreeMap<String, LoggedStream>,
+    /// The ids of the streams lost before the stop (the core marked their
+    /// layers or tracks missing in the take's scene).
+    pub lost: std::collections::BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoggedStream {
+    pub id: String,
+    pub start_offset_ns: i64,
+}
+
+/// Reads the lines [`start_offset_line`], [`stream_lost_line`] and
+/// [`stop_line`] write; everything else (and offsets that aren't a count of
+/// ns ≥ 0) is skipped.
+pub fn read_take_log(log: &str) -> LoggedTake {
+    let mut take = LoggedTake::default();
+    let mut stopped = false;
     for line in log.lines() {
         let words: Vec<&str> = line.split_whitespace().collect();
-        // `<timestamp> <id>: <file> startOffsetNs=<n> [eos=…]`
-        let Some(at) = words.iter().position(|w| w.ends_with(':')) else {
-            continue;
+        // Without the timestamp.
+        let words = match words.first() {
+            Some(first) if first.ends_with('Z') && first.contains('T') => &words[1..],
+            _ => &words[..],
         };
-        let (Some(file), Some(value)) = (
-            words.get(at + 1),
-            words
-                .get(at + 2)
-                .and_then(|w| w.strip_prefix(START_OFFSET_KEY)),
-        ) else {
-            continue;
-        };
-        if let Ok(ns) = value.parse::<i64>()
-            && ns >= 0
-        {
-            offsets.insert((*file).to_owned(), ns);
+        match words {
+            [id, file, value, ..] if id.ends_with(':') => {
+                let Some(value) = value.strip_prefix(START_OFFSET_KEY) else {
+                    continue;
+                };
+                if let Ok(ns) = value.parse::<i64>()
+                    && ns >= 0
+                {
+                    let stream = LoggedStream {
+                        id: id.trim_end_matches(':').to_owned(),
+                        start_offset_ns: ns,
+                    };
+                    take.streams.insert((*file).to_owned(), stream);
+                }
+            }
+            [id, word, ..] if *word == LOST_WORD => {
+                if !stopped {
+                    take.lost.insert((*id).to_owned());
+                }
+            }
+            [what, rest @ ..]
+                if matches!(*what, "stop" | "cancel") && rest.join(" ").starts_with(T1_WORDS) =>
+            {
+                stopped = true;
+            }
+            _ => {}
         }
     }
-    offsets
+    take
 }
 
 /// `audiotestsrc wave=ticks` settings for a fake tone: sine periods per tick
@@ -509,52 +553,65 @@ mod tests {
     }
 
     #[test]
-    fn start_offsets_come_back_from_the_recorder_log() {
+    fn a_rebuild_reads_streams_and_losses_from_the_recorder_log() {
         let l1 = "takes/take-0001/L1-screen-DP-4.mkv";
+        let cam = "takes/take-0001/cam-a-camera-0.mkv";
         let a1 = "takes/take-0001/A1-mic.mka";
         assert_eq!(
             start_offset_line("L1", l1, 379_829),
             format!("L1: {l1} startOffsetNs=379829")
         );
+        assert_eq!(stream_lost_line("L2", "gone"), "L2 lost: gone");
+        assert_eq!(
+            stop_line(false, 25_000_000_000, 24_950),
+            "stop at T1 = 25000000000 ns (24950 ms after T0)"
+        );
+        let at = |line: String| format!("2026-10-15T13:25:01.402Z {line}");
         // A log as the engine writes it: the lines at the start, other
         // lines, the summary at the stop (same values, plus `eos`).
         let log = [
-            format!("2026-10-15T13:25:00.871Z attached at T0 = 67619293 ns: {l1}, {a1}"),
-            "2026-10-15T13:25:01.402Z recording".to_owned(),
-            format!(
-                "2026-10-15T13:25:01.402Z {}",
-                start_offset_line("L1", l1, 379_829)
-            ),
-            format!(
-                "2026-10-15T13:25:01.402Z {}",
-                start_offset_line("A1", a1, 2_380_707)
-            ),
-            "2026-10-15T13:25:25.539Z L1: closed after 1190 buffers (last at T0 + 24634.735 ms), 0 fill frames, EOS sent".to_owned(),
-            format!(
-                "2026-10-15T13:25:25.586Z {} eos=true",
-                start_offset_line("L1", l1, 379_829)
-            ),
+            at(format!("attached at T0 = 67619293 ns: {l1}, {cam}, {a1}")),
+            at("L1: first buffer at T0 + 11.623 ms".into()),
+            at("recording".into()),
+            at(start_offset_line("L1", l1, 379_829)),
+            at(start_offset_line("cam-a", cam, 532_318_194)),
+            at(start_offset_line("A1", a1, 2_380_707)),
+            at(stream_lost_line(
+                "cam-a",
+                "no frames from cam-a camera for 3.0 s: the camera stopped",
+            )),
+            at(stop_line(false, 25_000_000_000, 24_950)),
+            // Lost while stopping: the core never hears of it.
+            at(stream_lost_line("A1", "the device was unplugged")),
+            at("L1: closed after 1190 buffers (last at T0 + 24634.735 ms), 0 fill frames, EOS sent".into()),
+            at(format!("{} eos=true", start_offset_line("L1", l1, 379_829))),
             // Not offsets: skipped.
-            "2026-10-15T13:25:25.586Z A2: takes/take-0001/A2.mka startOffsetNs=-5".to_owned(),
-            "2026-10-15T13:25:25.586Z A3: takes/take-0001/A3.mka startOffsetNs=lots".to_owned(),
+            at("A2: takes/take-0001/A2.mka startOffsetNs=-5".into()),
+            at("A3: takes/take-0001/A3.mka startOffsetNs=lots".into()),
+            at("stopped".into()),
             "garbage".to_owned(),
             String::new(),
         ]
         .join("\n");
-        let offsets = logged_start_offsets(&log);
+        let take = read_take_log(&log);
+        let stream = |id: &str, start_offset_ns| LoggedStream {
+            id: id.into(),
+            start_offset_ns,
+        };
         assert_eq!(
-            offsets.into_iter().collect::<Vec<_>>(),
-            [(a1.to_owned(), 2_380_707), (l1.to_owned(), 379_829)]
+            take.streams.into_iter().collect::<Vec<_>>(),
+            [
+                (a1.to_owned(), stream("A1", 2_380_707)),
+                (l1.to_owned(), stream("L1", 379_829)),
+                (cam.to_owned(), stream("cam-a", 532_318_194)),
+            ]
         );
+        assert_eq!(take.lost.into_iter().collect::<Vec<_>>(), ["cam-a"]);
+        assert_eq!(read_take_log(""), LoggedTake::default());
     }
 
     #[test]
     fn element_settings_follow_the_architecture() {
-        let ms = |fps: Fps| keepalive_period(fps).as_millis();
-        assert_eq!(ms(Fps::new(30, 1)), 33);
-        assert_eq!(ms(Fps::new(30000, 1001)), 33);
-        assert_eq!(ms(Fps::new(60, 1)), 16);
-        assert_eq!(ms(Fps::new(240, 1)), 4);
         assert_eq!(frame_duration_ns(Fps::new(30, 1)), 33_333_333);
 
         let (factory, props) = encoder_settings(&screen("L1", "DP-4"));

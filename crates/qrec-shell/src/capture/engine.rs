@@ -57,7 +57,7 @@ use super::portal::{OpenRequest, PortalWorker, ScreenShare};
 use super::record::{RecordBin, attach_audio, attach_video};
 use super::spec::{
     CameraKey, SourceSpec, audio_label, plan_sources, record_file_rel, scene_sources,
-    start_offset_line, video_label,
+    start_offset_line, stop_line, stream_lost_line, video_label,
 };
 use super::util::{error_text, missing_element, object_path, running_time, set_null_with_deadline};
 use super::{
@@ -602,8 +602,7 @@ impl Engine {
                 return self.apply_desired();
             }
         }
-        let fps = scene.canvas.fps;
-        match self.rebuild_live(&specs, Some(&scene), fps) {
+        match self.rebuild_live(&specs, Some(&scene)) {
             Ok(()) => {
                 if let Some(live) = &self.live {
                     live.apply_layout(&scene);
@@ -676,7 +675,6 @@ impl Engine {
         &mut self,
         specs: &[SourceSpec],
         scene: Option<&LiveScene>,
-        fps: Fps,
     ) -> Result<(), BuildError> {
         self.teardown_live();
         if self.wedged.is_some() {
@@ -698,7 +696,6 @@ impl Engine {
             tx: &self.tx,
             side: self.opts.side.as_ref(),
             casts: &self.casts,
-            fps,
         };
         let live = Live::build(specs, scene, &ctx)?;
         let generation = live.generation;
@@ -1074,8 +1071,7 @@ impl Engine {
             }
         }
         let scene = self.desired.clone();
-        let fps = self.take.as_ref().map_or(Fps::new(30, 1), |r| r.plan.fps);
-        match self.rebuild_live(&specs, scene.as_ref(), fps) {
+        match self.rebuild_live(&specs, scene.as_ref()) {
             Ok(()) => {
                 if let (Some(live), Some(scene)) = (&self.live, &scene) {
                     live.apply_layout(scene);
@@ -1206,6 +1202,9 @@ impl Engine {
         let files: Vec<&str> = run.bins.iter().map(|b| b.file.as_str()).collect();
         run.log
             .line(format!("attached at T0 = {t0} ns: {}", files.join(", ")));
+        // A still screen sends nothing until it changes: its bridge sends
+        // its last frame now, so its bins start at T0 (A§8.11).
+        kick_screens(live, &run.bins);
     }
 
     /// Fails the take being started: tears its bins down, `CaptureFailed`.
@@ -1265,6 +1264,11 @@ impl Engine {
             }
             Phase::Stopping { .. } => {}
             Phase::Starting { .. } | Phase::Recording { .. } => {
+                // A still screen's bins reach T1 at once: a repeat stamped
+                // before it passes, one after it closes them (A§8.11).
+                if let Some(live) = &self.live {
+                    kick_screens(live, &run.bins);
+                }
                 let pipeline = self.live.as_ref().map(|l| l.pipeline.clone());
                 let t1 = pipeline
                     .as_ref()
@@ -1274,6 +1278,9 @@ impl Engine {
                 run.t1 = Some(t1);
                 for bin in &run.bins {
                     bin.probe.t1.store(t1, Ordering::SeqCst);
+                }
+                if let Some(live) = &self.live {
+                    kick_screens(live, &run.bins);
                 }
                 let now = Instant::now();
                 // Stopped while Starting: a source may not have delivered its
@@ -1289,11 +1296,8 @@ impl Engine {
                     first_by,
                     eos_by: now + Duration::from_millis(u64::from(run.plan.eos_timeout_ms)),
                 };
-                run.log.line(format!(
-                    "{} at T1 = {t1} ns ({} ms after T0)",
-                    if cancel { "cancel" } else { "stop" },
-                    (t1 - run.t0) / 1_000_000
-                ));
+                run.log
+                    .line(stop_line(cancel, t1, (t1 - run.t0) / 1_000_000));
                 self.close_ready_bins();
             }
         }
@@ -1515,7 +1519,7 @@ impl Engine {
                     lost.push(bin.id.clone());
                 }
                 for id in &lost {
-                    run.log.line(format!("{id} lost: {message}"));
+                    run.log.line(stream_lost_line(id, &message));
                 }
                 if matches!(run.phase, Phase::Recording { .. }) {
                     for id in lost {
@@ -1829,6 +1833,13 @@ impl Engine {
             })
             .collect();
         for (i, message) in lost {
+            // Its branch is rebuilt after the take: reopening the device
+            // may revive it, and later takes don't attach to a hung tee.
+            if let (Some(live), Some(run)) = (&mut self.live, &self.take)
+                && let Some(source) = run.bins.get(i).and_then(|b| live.sources.get_mut(b.source))
+            {
+                source.dead.get_or_insert_with(|| message.clone());
+            }
             self.branch_lost(&[i], message);
         }
     }
@@ -1869,6 +1880,19 @@ impl Engine {
             let _ = ack.send(());
         }
         self.done = true;
+    }
+}
+
+/// Kicks the bridge keepalive of every screen that `bins` record from, so
+/// a still one sends its last frame now (A§8.11).
+fn kick_screens(live: &Live, bins: &[RecordBin]) {
+    let mut sources: Vec<usize> = bins.iter().map(|b| b.source).collect();
+    sources.sort_unstable();
+    sources.dedup();
+    for source in sources {
+        if let Some(keepalive) = live.sources.get(source).and_then(|s| s.keepalive.as_ref()) {
+            keepalive.kick();
+        }
     }
 }
 

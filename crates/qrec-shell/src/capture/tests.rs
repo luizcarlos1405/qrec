@@ -944,6 +944,24 @@ fn screen_layer(id: &str, output: &str, rect: Rect) -> Layer {
     }
 }
 
+fn camera_layer(id: &str, device: &str, rect: Rect) -> Layer {
+    Layer {
+        id: id.parse().unwrap(),
+        name: "Camera".into(),
+        visible: true,
+        opacity: 1.0,
+        source: VideoSource::Camera {
+            device: device.into(),
+            label: "Fake camera".into(),
+        },
+        rect,
+        crop: Crop::default(),
+        fit: Fit::Cover,
+        locked: false,
+        missing: false,
+    }
+}
+
 fn audio_track(id: &str, device: &str) -> AudioTrack {
     AudioTrack {
         id: id.parse().unwrap(),
@@ -1040,4 +1058,70 @@ fn set_live_is_idempotent_and_the_take_reuses_its_pipeline() {
     assert_eq!(h.engine.inspect().generation, None);
     h.engine.set_live(None, h.inbox.clone());
     assert_eq!(h.engine.inspect().generation, None);
+}
+
+/// A kept live pipeline (the GUI's) whose camera hung is rebuilt after the
+/// take that lost it, so the next take doesn't attach to the silent branch.
+#[test]
+fn a_hung_camera_is_rebuilt_for_the_next_take() {
+    let _serial = serial();
+    let mut h = Harness::new();
+    let full = Rect::new(0, 0, 320, 180);
+    let scene = live_scene(
+        vec![
+            screen_layer("L1", "FAKE-1", full),
+            camera_layer("L2", FAKE_CAMERA, full),
+        ],
+        vec![audio_track("A1", FAKE_MIC)],
+        false,
+    );
+    h.engine.set_live(Some(scene), h.inbox.clone());
+    let generation = h.engine.inspect().generation.expect("SetLive builds it");
+    // Any mode: the take records from the live camera branch.
+    let take = |n: u32, h: &mut Harness| {
+        let dir = h.take_dir(n);
+        let camera = VideoRecord {
+            camera_mode: None,
+            ..camera("L2", FAKE_CAMERA)
+        };
+        plan(
+            n,
+            &dir,
+            vec![screen("L1", "FAKE-1"), camera],
+            vec![audio("A1", FAKE_MIC, "mic")],
+        )
+    };
+
+    let first = take(1, &mut h);
+    h.start(&first);
+    h.started();
+    assert_eq!(h.engine.inspect().generation, Some(generation));
+    h.engine
+        .inject_fake_failure(FAKE_CAMERA, FakeFailure::Stall);
+    let (ev, _) = h.wait_for("StreamLost", |e| matches!(e, Event::StreamLost { .. }));
+    assert!(
+        matches!(&ev, Event::StreamLost { stream, .. } if stream == "L2"),
+        "{ev:?}"
+    );
+    h.engine.stop(&first.take, false);
+    let (_, timed_out, skipped) = h.stopped();
+    assert!(!timed_out, "{skipped:?}");
+    let rebuilt = h.engine.inspect().generation;
+    assert!(rebuilt > Some(generation), "{rebuilt:?}");
+
+    // The camera records again.
+    let second = take(2, &mut h);
+    h.start(&second);
+    let started = h.started();
+    assert!(
+        matches!(started, Event::CaptureStarted { .. }),
+        "{started:?}"
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    h.engine.stop(&second.take, false);
+    let (streams, timed_out, skipped) = h.stopped();
+    assert!(
+        !timed_out && streams.iter().all(|s| s.eos),
+        "{streams:?} {skipped:?}"
+    );
 }

@@ -1269,14 +1269,18 @@ rewrites every file with its next commit, and the replies they send are
   put an old take's clip on a new recording). The Recover probe finalizes
   the takes found; in recovery mode commands wait for those probes (and a
   host stays up for them, A§8.6), so the restore writes a project that
-  validates. Start offsets aren't in the media files; a take found on disk
-  gets them back from its `recorder.log` (`<id>: <file> startOffsetNs=<n>`
-  lines, logged once recording starts and again at the stop, A§8.11; the
-  last line of a file wins, the first 1 MiB is read), so it comes out as
-  long as it was recorded. A stream the log doesn't name (a take that
-  crashed before it started recording, a lost log) starts at 0; such a take
-  can come out shorter than recorded, and then a restore whose clips no
-  longer fit fails naming the clip (restore an older entry).
+  validates. The other take facts a take's length depends on aren't in the
+  media files, so a take found on disk reads them from its `recorder.log`
+  (A§8.11; the first 1 MiB, the last line of a file winning): each
+  stream's id and start offset (`<id>: <file> startOffsetNs=<n>`, logged
+  once recording starts and again at the stop), and the streams lost before
+  the stop (`<id> lost: …`), whose layers or tracks are then missing in its
+  scene as the core marked them; so it comes out as long as it was
+  recorded. A stream the log doesn't name (a take that crashed before it
+  started recording, a lost log) starts at 0, with the id of the scene's
+  layer or track whose file name it has, else the name up to its first
+  `-`; such a take can come out shorter than recorded, and then a restore
+  whose clips no longer fit fails naming the clip (restore an older entry).
 
 ---
 
@@ -1732,10 +1736,11 @@ nothing can read, which turned a too-short take into a `broken` one
 *(measured)*. Such a bin waits for that first buffer until the start's
 first-buffer deadline, then closes like the others. Once every bin passed
 its first buffer (`CaptureStarted`), `recorder.log` gets one
-`<id>: <file> startOffsetNs=<n>` line per stream, and the stop summary
-repeats them with `eos=`: the only copy of the offsets outside `qrec.json`,
-which a rebuild reads (A§7.7; `spec::start_offset_line` /
-`logged_start_offsets`).
+`<id>: <file> startOffsetNs=<n>` line per stream (the stop summary repeats
+them with `eos=`), a lost stream gets `<id> lost: <message>`, and the stop
+`stop|cancel at T1 = …`. A rebuild without `qrec.json` and the commit
+record reads them back (A§7.7; `spec::start_offset_line`,
+`stream_lost_line`, `stop_line`, `read_take_log`).
 - Video: `queue ! videorate skip-to-first=true ! video/x-raw,framerate=N/D !
   videoconvert ! video/x-raw,format=I420|NV12,colorimetry=bt709 ! <encoder>
   ! h264parse ! matroskamux offset-to-zero=true ! filesink`. Without
@@ -1775,11 +1780,18 @@ which a rebuild reads (A§7.7; `spec::start_offset_line` /
   ended with ~18,000 fill frames that couldn't be encoded within the EOS
   timeout *(measured)*. Instead the bridge's keepalive thread pushes the last
   converted frame again (a new buffer over the same memory, so no
-  conversion), stamped with the running time, whenever nothing was pushed for
-  one frame period of the canvas rate; pushed PTS only grow. A record bin thus
-  gets its first frame within a frame of T0 and needs no fill at T1. The
-  thread ends at EOS or when the appsrc is gone, and every wait has a
-  timeout.
+  conversion), stamped with the running time, once no frame arrived for
+  `KEEPALIVE_IDLE` (500 ms), and every 500 ms while the screen stays still;
+  pushed PTS only grow. Repeats only fill long silences: a repeat stamped
+  close before a real frame would take that frame's slot in the record bins'
+  `videorate` (nearest frame wins), dropping it and doubling the old one, so
+  no repeat goes out while a frame is being converted, and a screen that
+  changes at any real rate (≥ 2 fps) is never repeated. The engine kicks the
+  keepalive when it attaches the bins (a repeat at T0, so a still screen's
+  bins start there) and around T1 (one repeat stamped before it, which
+  passes, and one after, which closes the bins at once); a kick during a
+  conversion goes out right after that frame. The thread ends at EOS or
+  when the appsrc is gone, and every wait has a timeout.
 - **Stalls.** A camera can hang without an error (uvcvideo USB errors). Its
   bin would then wait for a T1 it never reaches and be filled at the stop
   for as long as the hang lasted, more frames than the EOS timeout lets it
@@ -1787,9 +1799,12 @@ which a rebuild reads (A§7.7; `spec::start_offset_line` /
   still-screen stall above produced)*. So while recording, a video stream
   whose last passed frame is more than `STALL_LIMIT` (3 s) old is lost
   (`StreamLost`, SPEC §16: its file ends where it hung, unfilled, and the
-  layer is marked missing), and a stop fills at most that much. Still
-  screens never stall (the keepalive); audio isn't watched (a stop doesn't
-  fill it). `FakeFailure::Stall` hangs a fake source for the tests.
+  layer is marked missing), and a stop fills at most that much. Its live
+  branch is marked dead, so a kept live pipeline (the GUI's) rebuilds it
+  after the take instead of attaching the next take to a silent tee.
+  Still screens never stall (the keepalive); audio isn't watched (a stop
+  doesn't fill it). `FakeFailure::Stall` hangs a fake source for the
+  tests.
 - Encoders: `x264enc pass=qual quantizer=18 speed-preset=veryfast
   tune=zerolatency key-int-max=<round(fps)>` (without `pass=qual` x264enc
   records 2 Mbit/s CBR); VA: the resolved factory with `rate-control=cqp

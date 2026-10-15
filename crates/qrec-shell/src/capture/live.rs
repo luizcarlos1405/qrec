@@ -30,7 +30,7 @@ use super::bridge;
 use super::engine::Cmd;
 use super::fake::{FAKE_SCREEN_FPS, FAKE_SCREEN_SIZE, FakeTone, fake_screen_is_still, fake_tone};
 use super::portal::ScreenShare;
-use super::spec::{SourceSpec, keepalive_period, tick_settings};
+use super::spec::{SourceSpec, tick_settings};
 use super::util::{capsfilter, make, set_str, set_value};
 use super::{Backend, LevelReading, PreviewFrame, SideEvent};
 
@@ -46,6 +46,8 @@ pub(super) struct SourceBranch {
     pub size: Option<(u32, u32)>,
     /// Why the source stopped working.
     pub dead: Option<String>,
+    /// A screen's bridge keepalive (kicked at T0 and T1, A§8.11).
+    pub keepalive: Option<bridge::Keepalive>,
 }
 
 /// A layer drawn by the preview compositor.
@@ -121,8 +123,6 @@ pub(super) struct BuildCtx<'a> {
     pub side: Option<&'a Sender<SideEvent>>,
     /// Portal casts of the real backend's screens, by output.
     pub casts: &'a BTreeMap<String, ScreenShare>,
-    /// The canvas rate (screen keepalive).
-    pub fps: qrec_core::Fps,
 }
 
 impl Live {
@@ -210,6 +210,7 @@ fn add_source(
     let name = |role: &str| format!("{prefix}-{role}");
     let err = |message: String| BuildError::of(spec, message);
     let mut chain: Vec<gst::Element> = Vec::new();
+    let mut keepalive = None;
     let src = match (ctx.backend, spec) {
         (Backend::Fake, SourceSpec::Screen { output }) => {
             // Like a screencast: BGRx frames through the screen bridge, and
@@ -231,7 +232,8 @@ fn add_source(
                 ),
             )
             .map_err(err)?;
-            let feed = bridged(pipeline, &[&src, &caps], &name, ctx).map_err(err)?;
+            let (feed, handle) = bridged(pipeline, &[&src, &caps], &name).map_err(err)?;
+            keepalive = Some(handle);
             chain.push(feed);
             src
         }
@@ -289,7 +291,8 @@ fn add_source(
             // The capsfilter gets its DMA_DRM caps only after linking, which
             // they would fail.
             let accept = make("capsfilter", &name("accept")).map_err(err)?;
-            let feed = bridged(pipeline, &[&src, &accept], &name, ctx).map_err(err)?;
+            let (feed, handle) = bridged(pipeline, &[&src, &accept], &name).map_err(err)?;
+            keepalive = Some(handle);
             let caps = gst::Caps::from_str(bridge::SCREEN_CAPS)
                 .map_err(|e| err(format!("bad screencast caps: {e}")))?;
             accept.set_property("caps", &caps);
@@ -376,18 +379,19 @@ fn add_source(
         tee,
         size: None,
         dead: None,
+        keepalive,
     })
 }
 
 /// `upstream… ! appsink` → [`bridge::bridge`] → `appsrc`: adds and links
 /// `upstream` (a screen's elements) and the appsink, starts the bridge
-/// and returns the appsrc, where the rest of the branch starts.
+/// and returns the appsrc, where the rest of the branch starts, with the
+/// bridge's keepalive.
 fn bridged(
     pipeline: &gst::Pipeline,
     upstream: &[&gst::Element],
     name: &dyn Fn(&str) -> String,
-    ctx: &BuildCtx<'_>,
-) -> Result<gst::Element, String> {
+) -> Result<(gst::Element, bridge::Keepalive), String> {
     let sink = gst_app::AppSink::builder()
         .name(name("bridge-sink"))
         .sync(false)
@@ -419,9 +423,10 @@ fn bridged(
         .map_err(|e| format!("can't build the screen branch: {e}"))?;
     gst::Element::link_many(elements.iter().copied())
         .map_err(|e| format!("can't link the screen branch: {e}"))?;
-    // Dropping the handle detaches the keepalive; it ends with the branch.
-    bridge::bridge(&sink, &feed, keepalive_period(ctx.fps), name("keepalive"))?;
-    Ok(feed.upcast())
+    // Dropping the thread's handle detaches it; it ends with the branch.
+    let (keepalive, _thread) =
+        bridge::bridge(&sink, &feed, bridge::KEEPALIVE_IDLE, name("keepalive"))?;
+    Ok((feed.upcast(), keepalive))
 }
 
 /// Lets only the first buffer of `src` through (a damage-driven
