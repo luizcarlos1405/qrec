@@ -12,7 +12,7 @@ use crate::error::{ErrorCode, NOT_MY_SWAMP};
 use crate::keymap;
 
 /// Every error code, in exit-code order.
-const CODES: [ErrorCode; 11] = [
+const CODES: [ErrorCode; 12] = [
     ErrorCode::Invalid,
     ErrorCode::CaptureFailed,
     ErrorCode::Unavailable,
@@ -24,6 +24,7 @@ const CODES: [ErrorCode; 11] = [
     ErrorCode::MissingDependency,
     ErrorCode::Busy,
     ErrorCode::NotFound,
+    ErrorCode::Interrupted,
 ];
 
 /// What an agent should do about each code.
@@ -44,6 +45,9 @@ fn advice(code: ErrorCode) -> &'static str {
         ErrorCode::Unavailable => "needs the GUI (seek, play, pause) or a selection it holds",
         ErrorCode::Io => "a file or process failed; see the message and `.qrec/logs/`",
         ErrorCode::Internal => "a Qrec bug; report it with the message",
+        ErrorCode::Interrupted => {
+            "stopped by Ctrl+C or SIGTERM before a reply came; the hint says whether the host may still finish it (check `qrec status`)"
+        }
     }
 }
 
@@ -322,7 +326,7 @@ mod tests {
         assert_eq!(unique.len(), CODES.len());
         // The exhaustive match in `advice` fails to compile when a code is
         // added; keep CODES in step with it.
-        assert_eq!(CODES.len(), 11);
+        assert_eq!(CODES.len(), 12);
     }
 
     #[test]

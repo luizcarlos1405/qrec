@@ -60,6 +60,11 @@ pub struct ProjectPlan {
     pub route: RouteOpts,
     pub view: View,
     pub on_empty: OnEmpty,
+    /// Whether a current directory that isn't a project (and isn't inside
+    /// one) may fall back to the single running host (A§8.4), so key binds
+    /// work from `$HOME`. `false` for `qrec init`, whose target is the
+    /// folder itself: it is never sent to another project.
+    pub host_fallback: bool,
     /// Why only a live host can answer ([`Fallback::None`]): the
     /// `unavailable` message when none runs.
     pub needs_host: Option<String>,
@@ -163,6 +168,7 @@ impl Builder {
             route: RouteOpts::command(),
             view,
             on_empty: OnEmpty::Init,
+            host_fallback: true,
             needs_host: None,
             streams: false,
         }
@@ -176,6 +182,7 @@ impl Builder {
             route: RouteOpts::query(),
             view,
             on_empty: OnEmpty::Answer,
+            host_fallback: true,
             needs_host: None,
             streams: false,
         }
@@ -184,8 +191,11 @@ impl Builder {
     fn project(&self, command: &Cmd, cwd: &Path) -> Result<ProjectPlan, CoreError> {
         use View::Command as Msg;
         let plan = match command {
+            // `init` acts on the folder itself, never on a running host's
+            // project (A§8.4).
             Cmd::Init(args) => ProjectPlan {
                 on_empty: OnEmpty::Send,
+                host_fallback: false,
                 ..self.command(
                     "init",
                     Command::Init {
@@ -596,7 +606,9 @@ impl Builder {
         let mut plan = match &args.command {
             None => self.query(
                 "history",
-                Query::History { limit: args.limit },
+                Query::History {
+                    limit: args.limit.map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
+                },
                 View::History,
             ),
             Some(HistoryCmd::Restore(restore)) => self.command(
@@ -788,6 +800,7 @@ mod tests {
         let init = project_plan("qrec init");
         assert_eq!(init.on_empty, OnEmpty::Send);
         assert!(init.route.lock);
+        assert!(!init.host_fallback, "init never goes to another project");
 
         let status = project_plan("qrec status");
         assert_eq!(body("qrec status"), json!({"query": {"query": "status"}}));
@@ -796,6 +809,8 @@ mod tests {
             (View::Status, OnEmpty::Answer)
         );
         assert!(!status.route.lock, "queries take no lock");
+        assert!(status.host_fallback, "status from $HOME asks the running host");
+        assert!(project_plan("qrec record toggle").host_fallback);
         assert_eq!(
             body("qrec status --json"),
             json!({"query": {"query": "state"}})

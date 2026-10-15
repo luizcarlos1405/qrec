@@ -59,6 +59,8 @@ struct Seen {
 struct Fake {
     config_dir: PathBuf,
     hosts: Vec<HelloInfo>,
+    /// How often the CLI listed the running hosts.
+    host_lookups: usize,
     scripts: VecDeque<Script>,
     seen: Vec<Seen>,
     doctor: Result<Value, CoreError>,
@@ -72,6 +74,7 @@ impl Fake {
         Self {
             config_dir: config_dir.to_path_buf(),
             hosts: vec![],
+            host_lookups: 0,
             scripts: VecDeque::new(),
             seen: vec![],
             doctor: Err(CoreError::unavailable("no doctor")),
@@ -101,6 +104,7 @@ impl Backend for Fake {
     }
 
     fn live_hosts(&mut self) -> Result<Vec<HelloInfo>, CoreError> {
+        self.host_lookups += 1;
         Ok(self.hosts.clone())
     }
 
@@ -339,6 +343,57 @@ fn the_single_running_host_is_the_fallback() {
         "{message}"
     );
     assert!(message.contains("(headless host, pid 78)"), "{message}");
+}
+
+/// `qrec init` acts on the folder itself (SPEC §4.4): a folder that is
+/// neither empty nor a project is "Not my swamp" (exit 3) whatever runs
+/// elsewhere, never a request to the running host's project.
+#[test]
+fn init_never_goes_to_a_running_host() {
+    let tmp = Tmp::new();
+    let busy = tmp.busy("b");
+    let other = tmp.project("a");
+    let mut fake = Fake::new(&tmp.dir("cfg"));
+    fake.hosts = vec![hello(&other, HostKind::Headless, 9)];
+    for line in ["qrec --json init", "qrec --json init --name b"] {
+        let json = run(&mut fake, &busy, line);
+        assert_eq!(json.code, 3, "{line}: {}", json.out);
+        assert_eq!(json.err, "", "{line}: no `using project` notice");
+        assert_eq!(json.json()["error"]["code"], "not_project", "{line}");
+        assert_eq!(json.json()["error"]["message"], NOT_MY_SWAMP, "{line}");
+    }
+    let human = run(&mut fake, &busy, "qrec init");
+    assert_eq!(human.code, 3);
+    assert!(human.err.starts_with(NOT_MY_SWAMP), "{}", human.err);
+    assert!(fake.seen.is_empty(), "nothing was sent to {}", other.display());
+    assert_eq!(fake.host_lookups, 0, "init never looks for a host");
+    assert_eq!(
+        fs::read_dir(&busy).unwrap().count(),
+        1,
+        "the folder is untouched"
+    );
+
+    // Inside a project's subfolder it still points at that project.
+    let sub = other.join("takes");
+    fs::create_dir(&sub).unwrap();
+    fs::write(sub.join("x"), "").unwrap();
+    let inside = run(&mut fake, &sub, "qrec --json init");
+    assert_eq!(inside.code, 3);
+    assert!(
+        inside.json()["error"]["hint"]
+            .as_str()
+            .unwrap()
+            .starts_with("you're inside project "),
+        "{}",
+        inside.out
+    );
+
+    // Other commands from there still use the running host.
+    let status = run(&mut fake, &busy, "qrec --json status");
+    assert_eq!(status.code, 0, "{}", status.out);
+    assert_eq!(fake.seen.len(), 1);
+    assert_eq!(fake.seen[0].dir, other);
+    assert_eq!(fake.host_lookups, 1);
 }
 
 // ----------------------------------------------------------- empty folders
@@ -703,7 +758,7 @@ fn ctrl_c_exits_130() {
         routed: None,
         progress: vec![progress(ProgressPhase::Render, 1, 10, "Rendering clip 1/1")],
         notices: vec![],
-        finish: Finish::Interrupted,
+        finish: Finish::Interrupted { reply: None },
     });
     let run1 = run(&mut fake, &project, "qrec export");
     assert_eq!(run1.code, EXIT_INTERRUPTED);
@@ -713,6 +768,126 @@ fn ctrl_c_exits_130() {
         "{}",
         run1.err
     );
+}
+
+/// SPEC §14: under `--json` stdout ends with exactly one `{"ok":…}` object,
+/// also when Ctrl+C or SIGTERM stops the command (exit 130, A§8.6).
+#[test]
+fn ctrl_c_under_json_still_ends_with_one_object() {
+    let tmp = Tmp::new();
+    let project = tmp.project("p");
+    let interrupted = |routed: Option<HelloInfo>, reply| Script {
+        routed,
+        progress: vec![progress(ProgressPhase::Render, 1, 10, "Rendering clip 1/1")],
+        notices: vec![],
+        finish: Finish::Interrupted { reply },
+    };
+    let cancelled = CoreError::invalid("export cancelled");
+    let mut fake = Fake::new(&tmp.dir("cfg"))
+        .script(interrupted(None, None))
+        .script(interrupted(None, Some(Err(cancelled.clone()))))
+        .script(interrupted(
+            Some(hello(&project, HostKind::Headless, 41)),
+            None,
+        ))
+        .script(interrupted(None, None));
+
+    // A streaming command: progress lines, then the error object.
+    let streamed = run(&mut fake, &project, "qrec --json export");
+    assert_eq!(streamed.code, EXIT_INTERRUPTED);
+    assert_eq!(streamed.err, "", "--json keeps stderr for JSON lines");
+    let lines = streamed.json_lines();
+    assert_eq!(lines.len(), 2, "{}", streamed.out);
+    assert_eq!(lines[0]["event"], "progress");
+    assert_eq!(
+        lines[1],
+        json!({"ok": false, "error": {
+            "code": "interrupted",
+            "message": "export interrupted",
+            "hint": "jobs it started were cancelled and their temporary files deleted; check with `qrec status`"
+        }})
+    );
+
+    // The host's own answer (its jobs were cancelled) is kept in details.
+    let answered = run(&mut fake, &project, "qrec --json export");
+    assert_eq!(answered.code, EXIT_INTERRUPTED);
+    let last = answered.json_lines().pop().unwrap();
+    assert_eq!(last["error"]["code"], "interrupted");
+    assert_eq!(
+        last["error"]["details"]["reply"],
+        serde_json::to_value(&cancelled).unwrap()
+    );
+
+    // Routed to a live host: it may still finish the request.
+    let routed = run(&mut fake, &project, "qrec --json export");
+    let last = routed.json_lines().pop().unwrap();
+    assert_eq!(
+        last["error"]["hint"],
+        "the headless host (pid 41) may still finish it; check with `qrec status`"
+    );
+
+    // A command that streams nothing prints exactly that one object.
+    let single = run(&mut fake, &project, "qrec --json project set --name zz");
+    assert_eq!(single.code, EXIT_INTERRUPTED);
+    assert_eq!(single.json()["error"]["code"], "interrupted");
+    assert_eq!(single.json()["error"]["message"], "project set interrupted");
+}
+
+/// A command that finished (here: committed a cut) before the signal still
+/// reports what it did, with exit 130.
+#[test]
+fn ctrl_c_after_the_reply_still_shows_it() {
+    let tmp = Tmp::new();
+    let project = tmp.project("p");
+    let done = result(
+        "Autocut 5 takes: removed 12 silences",
+        Some(1),
+        &["c9b2"],
+        json!({"clips": [], "skipped": []}),
+    );
+    let script = || Script {
+        routed: None,
+        progress: vec![],
+        notices: vec![],
+        finish: Finish::Interrupted {
+            reply: Some(Ok(done.clone())),
+        },
+    };
+    let mut fake = Fake::new(&tmp.dir("cfg"))
+        .script(script())
+        .script(script());
+    let json_run = run(&mut fake, &project, "qrec --json autocut");
+    assert_eq!(json_run.code, EXIT_INTERRUPTED);
+    assert_eq!(json_run.json(), json!({"ok": true, "data": done}));
+    let notice: Value = serde_json::from_str(json_run.err.trim()).unwrap();
+    assert_eq!(
+        (notice["event"].as_str(), notice["title"].as_str()),
+        (Some("notice"), Some("autocut interrupted"))
+    );
+
+    let human = run(&mut fake, &project, "qrec autocut");
+    assert_eq!(human.code, EXIT_INTERRUPTED);
+    assert_eq!(human.out, "Autocut 5 takes: removed 12 silences\n");
+    assert_eq!(human.err, "qrec: warning: autocut interrupted\n");
+}
+
+/// Interrupted while creating the project for its first change: the
+/// command never ran.
+#[test]
+fn ctrl_c_during_lazy_init() {
+    let tmp = Tmp::new();
+    let empty = tmp.dir("empty");
+    let mut fake = Fake::new(&tmp.dir("cfg")).script(Script {
+        routed: None,
+        progress: vec![],
+        notices: vec![],
+        finish: Finish::Interrupted { reply: None },
+    });
+    let run1 = run(&mut fake, &empty, "qrec --json undo");
+    assert_eq!(run1.code, EXIT_INTERRUPTED);
+    assert_eq!(run1.json()["error"]["code"], "interrupted");
+    assert_eq!(run1.json()["error"]["message"], "undo interrupted");
+    assert_eq!(fake.seen.len(), 1, "only the init was sent");
 }
 
 #[test]
@@ -918,6 +1093,65 @@ fn closed_stdout_is_not_a_crash() {
     );
     assert_eq!(code, 0);
     assert!(err.is_empty());
+}
+
+/// Only a closed pipe is quiet (A§8.6): when stdout can't take the result
+/// (`qrec schema > /dev/full`), the run says so and exits 1, not 0.
+#[test]
+fn a_full_stdout_fails_the_run() {
+    struct Full;
+    impl Write for Full {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::StorageFull))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let tmp = Tmp::new();
+    let project = tmp.project("p");
+    let mut fake = Fake::new(&tmp.dir("cfg"))
+        .script(Script::reply(json!([])))
+        .script(Script::reply(json!([])));
+    let env = RunEnv {
+        cwd: Some(project.clone()),
+        err_tty: false,
+    };
+    for line in [
+        "qrec clip list --json",
+        "qrec clip list",
+        "qrec schema",
+        "qrec version",
+        "qrec --json --version",
+        "qrec --help",
+        "qrec --json help",
+    ] {
+        let mut err = Vec::new();
+        let code = run_with_backend(
+            line.split_whitespace().map(OsString::from),
+            &mut fake,
+            &env,
+            &mut Full,
+            &mut err,
+        );
+        let err = String::from_utf8(err).unwrap();
+        assert_eq!(code, 1, "{line}: {err}");
+        assert!(err.contains("can't write to stdout: "), "{line}: {err}");
+        if line.contains("--json") {
+            let notice: Value = serde_json::from_str(err.trim()).unwrap();
+            assert_eq!(notice["event"], "notice", "{line}: stderr stays JSON lines");
+        }
+    }
+    // A failing command keeps its own exit code.
+    let mut err = Vec::new();
+    let code = run_with_backend(
+        ["qrec", "--json", "take", "show", "take-0001"].map(OsString::from),
+        &mut Fake::new(&tmp.dir("cfg")).script(Script::error(CoreError::not_found("no take"))),
+        &env,
+        &mut Full,
+        &mut err,
+    );
+    assert_eq!(code, 7);
 }
 
 // ------------------------------------------------------------ project-less

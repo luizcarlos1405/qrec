@@ -58,10 +58,16 @@ pub(crate) fn execute(
             None => Err(no_cwd()),
         },
     };
-    match result {
+    let code = match result {
         Ok(code) => code,
         Err(e) => ui.fail(&e),
-    }
+    };
+    ui.finish(code)
+}
+
+/// What `qrec version` and `qrec --version` print under `--json`.
+pub(crate) fn version_data() -> Value {
+    json!({ "version": env!("CARGO_PKG_VERSION") })
 }
 
 fn no_cwd() -> CoreError {
@@ -80,11 +86,10 @@ fn run_local(
 ) -> Result<u8, CoreError> {
     match local {
         Local::Version => {
-            let version = env!("CARGO_PKG_VERSION");
             if ui.json {
-                ui.print_ok(&json!({ "version": version }));
+                ui.print_ok(&version_data());
             } else {
-                ui.print(&format!("qrec {version}"));
+                ui.print(&format!("qrec {}", env!("CARGO_PKG_VERSION")));
             }
         }
         Local::Completions(shell) => {
@@ -272,7 +277,9 @@ fn run_project(
         .as_deref()
         .map(|p| plan::absolute(cwd, p));
     let dir = explicit.clone().unwrap_or_else(|| cwd.to_path_buf());
-    let resolved = match resolve::resolve(&dir, explicit.is_some(), || backend.live_hosts()) {
+    // `--project` names the folder; `qrec init` acts on the folder itself.
+    let allow_host_fallback = explicit.is_none() && plan.host_fallback;
+    let resolved = match resolve::resolve(&dir, allow_host_fallback, || backend.live_hosts()) {
         Ok(resolved) => resolved,
         Err(e) => return ui.fail(&e),
     };
@@ -289,7 +296,7 @@ fn run_project(
                 return ui.fail(&needs_host(plan));
             }
             OnEmpty::Init => {
-                if let Err(code) = lazy_init(dir, backend, ui) {
+                if let Err(code) = lazy_init(plan, dir, backend, ui) {
                     return code;
                 }
             }
@@ -307,15 +314,57 @@ fn run_project(
         Finish::Reply(Ok(data)) => render(plan, data, dir, host.as_ref(), ui),
         Finish::Reply(Err(e)) => ui.fail(&e),
         Finish::NoHost => ui.fail(&needs_host(plan)),
-        Finish::Interrupted => {
-            let what = plan.name.strip_prefix("qrec ").unwrap_or(&plan.name);
-            ui.notice(&Toast::new(
-                ToastLevel::Warning,
-                format!("{what} interrupted"),
-            ));
+        Finish::Interrupted { reply } => interrupted(plan, reply, dir, host.as_ref(), ui),
+    }
+}
+
+/// Ctrl+C or SIGTERM stopped the request: exit 130 (A§8.6), and a warning
+/// for people on stderr. A command that finished (or committed) before the
+/// signal still shows its result. Otherwise `--json` still ends stdout with
+/// exactly one object (SPEC §14): an `interrupted` error whose hint says
+/// whether the host may still finish the request, with the host's own
+/// error (e.g. "export cancelled") in `details.reply`.
+fn interrupted(
+    plan: &ProjectPlan,
+    reply: Option<Result<Value, CoreError>>,
+    dir: &Path,
+    host: Option<&HelloInfo>,
+    ui: &mut Ui<'_>,
+) -> u8 {
+    let what = plan.name.strip_prefix("qrec ").unwrap_or(&plan.name);
+    let title = format!("{what} interrupted");
+    let error = match reply {
+        Some(Ok(data)) => {
+            render(plan, data, dir, host, ui);
+            None
+        }
+        Some(Err(e)) => {
+            Some(interrupted_error(&title, host).with_details(json!({ "reply": e })))
+        }
+        None => Some(interrupted_error(&title, host)),
+    };
+    match error {
+        Some(error) if ui.json => ui.fail(&error),
+        _ => {
+            ui.notice(&Toast::new(ToastLevel::Warning, title));
             EXIT_INTERRUPTED
         }
     }
+}
+
+/// The `interrupted` error (exit 130) of a request that got no answer.
+fn interrupted_error(message: &str, host: Option<&HelloInfo>) -> CoreError {
+    let hint = match host {
+        Some(h) => format!(
+            "the {} host (pid {}) may still finish it; check with `qrec status`",
+            h.host.as_str(),
+            h.pid
+        ),
+        None => "jobs it started were cancelled and their temporary files deleted; \
+                 check with `qrec status`"
+            .to_owned(),
+    };
+    CoreError::new(ErrorCode::Interrupted, message).with_hint(hint)
 }
 
 fn needs_host(plan: &ProjectPlan) -> CoreError {
@@ -334,7 +383,12 @@ const ALREADY_A_PROJECT: &str = "already a project";
 /// user's defaults (SPEC §4.4); the notice goes to stderr so stdout keeps
 /// only the command's own reply. A project that appeared meanwhile (another
 /// command initialized it first) is fine: the command runs on it.
-fn lazy_init(dir: &Path, backend: &mut dyn Backend, ui: &mut Ui<'_>) -> Result<(), u8> {
+fn lazy_init(
+    plan: &ProjectPlan,
+    dir: &Path,
+    backend: &mut dyn Backend,
+    ui: &mut Ui<'_>,
+) -> Result<(), u8> {
     let request = ProjectRequest {
         body: WireBody::Command(Command::Init {
             canvas: None,
@@ -348,6 +402,7 @@ fn lazy_init(dir: &Path, backend: &mut dyn Backend, ui: &mut Ui<'_>) -> Result<(
         streams: false,
     };
     let finish = backend.request(dir, request, &RouteOpts::command(), &mut live);
+    let host = live.host;
     match finish {
         Finish::Reply(Ok(data)) => {
             let message = parse::<CmdResult>(&data)
@@ -364,7 +419,8 @@ fn lazy_init(dir: &Path, backend: &mut dyn Backend, ui: &mut Ui<'_>) -> Result<(
         Finish::NoHost => Err(ui.fail(&CoreError::internal(
             "creating the project needs no host, yet none was found",
         ))),
-        Finish::Interrupted => Err(EXIT_INTERRUPTED),
+        // The command itself never ran.
+        Finish::Interrupted { .. } => Err(interrupted(plan, None, dir, host.as_ref(), ui)),
     }
 }
 

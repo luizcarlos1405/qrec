@@ -98,10 +98,15 @@ pub enum Finish {
     Reply(Result<Value, CoreError>),
     /// [`Fallback::None`] and no host serves the project.
     NoHost,
-    /// Ctrl+C (A§8.6): in-process, running jobs were cancelled and their
-    /// temp outputs deleted; routed, the connection was closed (the host
-    /// may still finish the request); `--wait`, the second Ctrl+C detached.
-    Interrupted,
+    /// Ctrl+C or SIGTERM (A§8.6): in-process, running jobs were cancelled
+    /// and their temp outputs deleted; routed, the connection was closed
+    /// (the host may still finish the request); `--wait`, the second Ctrl+C
+    /// detached. `reply` is the host's answer when one came anyway (an
+    /// in-process command that finished, or failed because its jobs were
+    /// cancelled).
+    Interrupted {
+        reply: Option<Result<Value, CoreError>>,
+    },
 }
 
 /// What a request reports while it runs. The CLI prints these as they come.

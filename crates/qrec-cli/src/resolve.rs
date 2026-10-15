@@ -1,8 +1,9 @@
 //! Which project a command uses (SPEC §4.4 folder rule, A§8.4):
 //! `--project DIR`, else the current directory, when it holds `qrec.json`
 //! or is strictly empty; inside a project's subfolder, exit 3 pointing at
-//! the project; without `--project`, the single running host; else exit 3
-//! "Not my swamp".
+//! the project; without `--project` (and except for `qrec init`, which
+//! acts on the folder itself), the single running host; else exit 3 "Not
+//! my swamp".
 //!
 //! Reading a folder never changes it: resolution writes nothing.
 
@@ -98,12 +99,14 @@ pub fn ancestor_project(dir: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// Applies the folder rule to `dir` (absolute). `explicit` says it came
-/// from `--project`, which turns the running-host fallback off; `hosts`
-/// lists the running hosts and is called only when needed.
+/// Applies the folder rule to `dir` (absolute). `allow_host_fallback` lets
+/// a folder that is neither a project nor empty use the single running host
+/// (A§8.4); it is off for a folder from `--project` and for `qrec init`,
+/// whose target is the folder itself. `hosts` lists the running hosts and
+/// is called only when needed.
 pub fn resolve(
     dir: &Path,
-    explicit: bool,
+    allow_host_fallback: bool,
     hosts: impl FnOnce() -> Result<Vec<HelloInfo>, CoreError>,
 ) -> Result<Resolved, CoreError> {
     let local = |target| {
@@ -120,7 +123,7 @@ pub fn resolve(
     if let Some(project) = ancestor_project(dir) {
         return Err(inside_project(&project));
     }
-    if explicit {
+    if !allow_host_fallback {
         return Err(CoreError::not_project());
     }
     let hosts = hosts()?;
@@ -230,21 +233,21 @@ mod tests {
         let tmp = tempdir();
         let empty = tmp.path().join("empty");
         fs::create_dir(&empty).unwrap();
-        let resolved = resolve(&empty, false, no_hosts).unwrap();
+        let resolved = resolve(&empty, true, no_hosts).unwrap();
         assert_eq!(resolved.target, Target::Empty(empty.clone()));
 
         let project = tmp.path().join("project");
         fs::create_dir(&project).unwrap();
         fs::write(project.join(PROJECT_FILE), "{}").unwrap();
         assert_eq!(
-            resolve(&project, true, no_hosts).unwrap().target,
+            resolve(&project, false, no_hosts).unwrap().target,
             Target::Project(project.clone())
         );
 
         let busy = tmp.path().join("busy");
         fs::create_dir(&busy).unwrap();
         fs::write(busy.join("notes.txt"), "").unwrap();
-        let err = resolve(&busy, false, no_hosts).unwrap_err();
+        let err = resolve(&busy, true, no_hosts).unwrap_err();
         assert_eq!(
             (err.code, err.message.as_str()),
             (ErrorCode::NotProject, NOT_MY_SWAMP)
@@ -261,9 +264,11 @@ mod tests {
         fs::write(project.join(PROJECT_FILE), "{}").unwrap();
         fs::write(sub.join("A1-mic.mka"), "").unwrap();
         // Neither the hosts nor --project change it.
-        for explicit in [false, true] {
-            let err =
-                resolve(&sub, explicit, || panic!("no host lookup inside a project")).unwrap_err();
+        for allow_host_fallback in [true, false] {
+            let err = resolve(&sub, allow_host_fallback, || {
+                panic!("no host lookup inside a project")
+            })
+            .unwrap_err();
             assert_eq!(err.message, NOT_MY_SWAMP);
             assert_eq!(
                 err.hint.unwrap(),
@@ -282,11 +287,11 @@ mod tests {
         fs::create_dir(&busy).unwrap();
         fs::write(busy.join(".bashrc"), "").unwrap();
 
-        let one = resolve(&busy, false, || Ok(vec![hello("/v/swamp", 42)])).unwrap();
+        let one = resolve(&busy, true, || Ok(vec![hello("/v/swamp", 42)])).unwrap();
         assert_eq!(one.target, Target::Project("/v/swamp".into()));
         assert_eq!(one.notice.unwrap(), "using project /v/swamp (pid 42)");
 
-        let err = resolve(&busy, false, || {
+        let err = resolve(&busy, true, || {
             Ok(vec![hello("/v/a", 1), hello("/v/b", 2)])
         })
         .unwrap_err();
@@ -298,10 +303,15 @@ mod tests {
             err.message
         );
 
-        let explicit = resolve(&busy, true, || panic!("--project never falls back")).unwrap_err();
-        assert_eq!(explicit.message, NOT_MY_SWAMP);
+        // --project and `qrec init` never fall back.
+        let no_fallback =
+            resolve(&busy, false, || panic!("no host lookup without the fallback")).unwrap_err();
+        assert_eq!(
+            (no_fallback.code, no_fallback.message.as_str()),
+            (ErrorCode::NotProject, NOT_MY_SWAMP)
+        );
 
-        let failed = resolve(&busy, false, || Err(CoreError::io("runtime dir"))).unwrap_err();
+        let failed = resolve(&busy, true, || Err(CoreError::io("runtime dir"))).unwrap_err();
         assert_eq!(failed.code, ErrorCode::Io);
     }
 

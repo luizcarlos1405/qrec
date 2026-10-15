@@ -58,6 +58,9 @@ pub enum ErrorCode {
     Io,
     /// A bug. Exit 1.
     Internal,
+    /// The CLI was stopped by Ctrl+C or SIGTERM before it got a reply.
+    /// Exit 130 (A§8.6).
+    Interrupted,
 }
 
 impl ErrorCode {
@@ -74,6 +77,8 @@ impl ErrorCode {
             | ErrorCode::Unavailable
             | ErrorCode::Io
             | ErrorCode::Internal => 1,
+            // 128 + SIGINT, like shells report it.
+            ErrorCode::Interrupted => 130,
         }
     }
 
@@ -90,6 +95,7 @@ impl ErrorCode {
             ErrorCode::Unavailable => "unavailable",
             ErrorCode::Io => "io",
             ErrorCode::Internal => "internal",
+            ErrorCode::Interrupted => "interrupted",
         }
     }
 }
@@ -173,6 +179,11 @@ mod tests {
         assert_eq!(CoreError::busy("x").exit_code(), 6);
         assert_eq!(CoreError::not_found("x").exit_code(), 7);
         assert_eq!(CoreError::invalid("x").exit_code(), 1);
+        assert_eq!(CoreError::new(ErrorCode::Interrupted, "x").exit_code(), 130);
+        assert_eq!(
+            serde_json::to_value(ErrorCode::Interrupted).unwrap(),
+            serde_json::json!(ErrorCode::Interrupted.as_str())
+        );
     }
 
     #[test]

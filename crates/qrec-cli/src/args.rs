@@ -153,7 +153,9 @@ pub enum Cmd {
     /// --out names it and --yes is given. Clips render to cached segments, so
     /// re-exporting after a small edit only re-renders what changed. Humans see
     /// one progress line; --json streams {"event":"progress",...} lines, then
-    /// the result. Editing can continue meanwhile; recording waits.
+    /// the result. Editing can continue meanwhile, but `qrec record start` is
+    /// refused (busy, exit 6) until the export ends or `qrec export cancel`
+    /// stops it.
     Export(ExportArgs),
     /// Save frames as PNG images.
     #[command(subcommand)]
@@ -225,7 +227,7 @@ pub struct ProjectSetArgs {
     #[arg(long, value_name = "#RRGGBB")]
     pub background: Option<Color>,
     /// Countdown before each recording, in seconds (0-10).
-    #[arg(long, value_name = "SECS", value_parser = value_parser!(u32).range(0..=10))]
+    #[arg(long, value_name = "SECS", allow_negative_numbers = true, value_parser = value_parser!(u32).range(0..=10))]
     pub countdown: Option<u32>,
     /// H.264 encoder for recording and MP4 export.
     #[arg(long, value_enum)]
@@ -341,10 +343,10 @@ pub struct LayerPatchArgs {
     #[arg(long, value_name = "X,Y,W,H", allow_hyphen_values = true, value_parser = parse_rect)]
     pub rect: Option<Rect>,
     /// Source pixels to trim as TOP,RIGHT,BOTTOM,LEFT.
-    #[arg(long, value_name = "T,R,B,L", value_parser = parse_crop)]
+    #[arg(long, value_name = "T,R,B,L", allow_hyphen_values = true, value_parser = parse_crop)]
     pub crop: Option<Crop>,
     /// Opacity from 0.0 (invisible) to 1.0 (opaque).
-    #[arg(long, value_parser = parse_opacity)]
+    #[arg(long, allow_negative_numbers = true, value_parser = parse_opacity)]
     pub opacity: Option<f64>,
     /// Show (true) or hide (false) the layer; hidden layers are still recorded.
     #[arg(long, value_name = "BOOL")]
@@ -365,7 +367,7 @@ pub struct LayerOrderArgs {
     /// Layer id, e.g. L2.
     pub layer: LayerId,
     /// New z-order index: 0 = bottom.
-    #[arg(long, value_name = "INDEX")]
+    #[arg(long, value_name = "INDEX", allow_negative_numbers = true)]
     pub to: usize,
     #[command(flatten)]
     pub scene: SceneTargetArgs,
@@ -485,7 +487,7 @@ pub struct RecordStartArgs {
     #[arg(long)]
     pub over_selection: bool,
     /// Countdown in seconds, 0-10 (default: the project setting).
-    #[arg(long, value_name = "SECS", value_parser = value_parser!(u32).range(0..=10))]
+    #[arg(long, value_name = "SECS", allow_negative_numbers = true, value_parser = value_parser!(u32).range(0..=10))]
     pub countdown: Option<u32>,
     #[command(flatten)]
     pub wait: WaitArgs,
@@ -586,7 +588,7 @@ pub struct ClipAddArgs {
 #[group(multiple = false)]
 pub struct InsertAtArgs {
     /// Timeline index (0 = first).
-    #[arg(long, value_name = "INDEX")]
+    #[arg(long, value_name = "INDEX", allow_negative_numbers = true)]
     pub at: Option<usize>,
     /// Right after this clip.
     #[arg(long, value_name = "CLIP")]
@@ -610,7 +612,7 @@ pub struct ClipMoveArgs {
 #[group(required = true, multiple = false)]
 pub struct MoveToArgs {
     /// Index in the timeline without the moved clips (0 = first).
-    #[arg(long, value_name = "INDEX")]
+    #[arg(long, value_name = "INDEX", allow_negative_numbers = true)]
     pub to: Option<usize>,
     /// Shift by N slots: negative moves left, positive right (clamped).
     #[arg(long, value_name = "N", allow_negative_numbers = true)]
@@ -709,13 +711,13 @@ pub struct AutocutParamArgs {
     #[arg(long, value_name = "DB", allow_negative_numbers = true)]
     pub threshold_db: Option<f64>,
     /// Only silences at least this long are removed.
-    #[arg(long, value_name = "MS")]
+    #[arg(long, value_name = "MS", allow_negative_numbers = true)]
     pub min_silence_ms: Option<u32>,
     /// Audio kept on each side of speech.
-    #[arg(long, value_name = "MS")]
+    #[arg(long, value_name = "MS", allow_negative_numbers = true)]
     pub padding_ms: Option<u32>,
     /// Kept fragments shorter than this are dropped.
-    #[arg(long, value_name = "MS")]
+    #[arg(long, value_name = "MS", allow_negative_numbers = true)]
     pub min_keep_ms: Option<u32>,
 }
 
@@ -733,13 +735,13 @@ pub struct AutocutSettingsArgs {
     #[arg(long, value_name = "DB", allow_negative_numbers = true)]
     pub threshold_db: Option<f64>,
     /// Only silences at least this long are removed.
-    #[arg(long, value_name = "MS")]
+    #[arg(long, value_name = "MS", allow_negative_numbers = true)]
     pub min_silence_ms: Option<u32>,
     /// Audio kept on each side of speech.
-    #[arg(long, value_name = "MS")]
+    #[arg(long, value_name = "MS", allow_negative_numbers = true)]
     pub padding_ms: Option<u32>,
     /// Kept fragments shorter than this are dropped.
-    #[arg(long, value_name = "MS")]
+    #[arg(long, value_name = "MS", allow_negative_numbers = true)]
     pub min_keep_ms: Option<u32>,
 }
 
@@ -748,7 +750,7 @@ pub struct AutocutSettingsArgs {
 #[derive(Clone, Debug, PartialEq, Args)]
 pub struct StepsArgs {
     /// How many steps.
-    #[arg(value_name = "N", default_value_t = 1, value_parser = value_parser!(u32).range(1..))]
+    #[arg(value_name = "N", default_value_t = 1, allow_negative_numbers = true, value_parser = value_parser!(u32).range(1..))]
     pub steps: u32,
 }
 
@@ -756,9 +758,9 @@ pub struct StepsArgs {
 pub struct HistoryArgs {
     #[command(subcommand)]
     pub command: Option<HistoryCmd>,
-    /// Show only the newest N entries.
-    #[arg(long, value_name = "N")]
-    pub limit: Option<usize>,
+    /// Show only the newest N entries (N ≥ 1).
+    #[arg(long, value_name = "N", allow_negative_numbers = true, value_parser = value_parser!(u32).range(1..))]
+    pub limit: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Subcommand)]
@@ -775,6 +777,7 @@ pub enum HistoryCmd {
 #[derive(Clone, Debug, PartialEq, Args)]
 pub struct HistoryRestoreArgs {
     /// History entry seq, as `qrec history` lists it.
+    #[arg(allow_negative_numbers = true)]
     pub seq: u64,
 }
 
@@ -890,10 +893,10 @@ pub struct HostArgs {
     #[arg(long, required = true)]
     pub headless: bool,
     /// Inherited fd that holds the project lock.
-    #[arg(long, value_name = "FD", value_parser = value_parser!(i32).range(0..))]
+    #[arg(long, value_name = "FD", allow_negative_numbers = true, value_parser = value_parser!(i32).range(0..))]
     pub lock_fd: Option<i32>,
     /// Inherited fd to report readiness on: one JSON line, then close.
-    #[arg(long, value_name = "FD", value_parser = value_parser!(i32).range(0..))]
+    #[arg(long, value_name = "FD", allow_negative_numbers = true, value_parser = value_parser!(i32).range(0..))]
     pub ready_fd: Option<i32>,
 }
 
