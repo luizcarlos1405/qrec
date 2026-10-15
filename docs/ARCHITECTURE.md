@@ -761,12 +761,15 @@ waits), and `ExportCancel` without a job aborts the waiting `Export`s
 (`Invalid` "export cancelled"; a job id only names a running export).
 Commands whose wait is over run before any later message but a signal
 (which drops them, A§8.6), also before a tick released them, so a stop
-always finds the take their start began. A probe still out after that is
-work like a running job: a host isn't idle meanwhile (A§8.6) and
-`Session::run_until` doesn't return before its answer, so no host exits
-and drops it (the runner always answers, A§8.7) — unless the host was
-interrupted: then its 15 s grace decides, and the next open recovers the
-take.
+always finds the take their start began. A probe still out, whether
+commands still wait for it or not, is work like a running job: a host
+isn't idle meanwhile (A§8.6) and `Session::run_until` doesn't return
+before its answer, so no host exits and drops it (the runner always
+answers, A§8.7) — unless the host was interrupted: then its 15 s grace
+decides, and the next open recovers the take. `run_until` still asks its
+host's `done` after every message meanwhile: that is where an in-process
+host passes its command's reply on (A§8.5), so the reply of a stop, which
+didn't wait, is printed at once, the recovery's toasts after it.
 
 **CaptureFailed vs StreamLost** (engine contract, A§8.11): after
 CaptureStarted, an error attributable to one branch (its source, encoder,
@@ -1320,8 +1323,13 @@ nothing of anyone else's may be tied to it for long:
   which gives the same answer, instead of bouncing it.
 - **Its result comes at once.** The command's reply is printed as soon as
   it comes (`RequestEvents::replied`), even while the process still runs
-  other clients' requests; a signal after that only adds the stderr warning
-  and exit 130 (A§8.6).
+  other clients' requests or finishes the startup recovery its open began
+  (which a stop never waits for, A§5.3; `Session::run_until` asks the
+  host's `done`, where the reply is passed on, after every message); a
+  signal after that only adds the stderr warning and exit 130 (A§8.6).
+  Toasts that come after the reply are about other clients' requests and
+  aren't shown, except the recovery's, the process's own news
+  (`Notifier::notify_recovery`).
 - **Once answered it takes no new job** (export, frame save, autocut,
   purge: bounced like a recording, `IpcServer::own_command_done`), keeps
   serving queries and quick edits, and exits as soon as what it still runs
@@ -1335,7 +1343,8 @@ nothing of anyone else's may be tied to it for long:
   in-process command's host exits as soon as its command is answered,
   nothing is busy and no connection is open, whoever else used it (A§8.5;
   it still finishes the startup recovery it began, A§5.3: its answer would
-  otherwise be lost and the take would stay `recording`). `shutdown`
+  otherwise be lost and the take would stay `recording`; the command's
+  reply is printed meanwhile, the recovery's toasts after it). `shutdown`
   requests: stop accepting, let jobs finish, exit.
 - Signals in every host: the first SIGTERM/SIGINT/SIGHUP dispatches
   `RecordStop` (finalize, not cancel) and cancels jobs; exit when idle or

@@ -97,8 +97,8 @@ pub struct Session {
     recovery_until: Option<Instant>,
     next_req: u64,
     notifier: Box<dyn Notifier>,
-    /// The outcome of a startup recovery runs: its toasts are the host's
-    /// own news ([`Notifier::notify_recovery`]).
+    /// Set while the outcome of a startup recovery runs: its toasts are the
+    /// host's own news ([`Notifier::notify_recovery`]).
     recovery_news: bool,
     shutdown: bool,
     interrupts: u32,

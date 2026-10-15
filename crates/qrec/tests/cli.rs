@@ -3763,6 +3763,10 @@ fn a_stop_is_answered_at_once_during_the_startup_recovery() {
             .unwrap_or_else(|| panic!("{name}: no answer in {lines:?}"));
         assert!(answer.contains(expected), "{name}: {answer}");
         assert_eq!(code, Some(1), "{name}: {lines:?}");
+        if json {
+            let objects = lines.iter().filter(|(_, stream, _)| *stream == "out");
+            assert_eq!(objects.count(), 1, "{name}: printed once: {lines:?}");
+        }
         assert!(
             exited.saturating_sub(*answered) >= Duration::from_millis(2500),
             "{name}: the answer came at {answered:?}, with the recovery (exit at {exited:?}): {lines:?}"

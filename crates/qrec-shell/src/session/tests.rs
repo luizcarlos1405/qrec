@@ -2271,10 +2271,13 @@ fn run_until_asks_its_caller_while_a_recovery_is_out() {
     let inbox = s.inbox();
     let jobs = recovery_probe_jobs(&s, &take(2));
     let answered = Arc::new(Mutex::new(None));
+    let (saw, sees) = std::sync::mpsc::channel::<()>();
     let late = {
         let answered = Arc::clone(&answered);
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(400));
+            // The probe comes back once `done` saw the stop's answer (or,
+            // too late, after 5 s).
+            let _ = sees.recv_timeout(Duration::from_secs(5));
             *answered.lock().unwrap() = Some(Instant::now());
             inbox.event(Event::TakeProbed {
                 take: take(2),
@@ -2287,6 +2290,7 @@ fn run_until_asks_its_caller_while_a_recovery_is_out() {
     s.run_until(|_| {
         if seen.is_none() && stop.last().is_some() {
             seen = Some(Instant::now());
+            let _ = saw.send(());
         }
         true
     });
