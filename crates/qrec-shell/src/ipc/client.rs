@@ -12,8 +12,11 @@
 //!   EOF after it is [`SendError::Disconnected`] (never retried: it may have
 //!   run). Ctrl+C closes the connection, except for `record … --wait`, where
 //!   the first one sends `RecordStop` on a second connection and keeps
-//!   streaming and the second detaches. While a long request is silent the
-//!   client checks the host with `hello` every 30 s.
+//!   streaming and the second detaches. A stop that finds nothing to stop
+//!   while the start stays unanswered (a host that holds the start where a
+//!   stop can't reach it) also detaches, so that host drops the start. While
+//!   a long request is silent the client checks the host with `hello` every
+//!   30 s.
 
 use std::io;
 use std::os::unix::net::UnixStream;
@@ -21,10 +24,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use qrec_core::CoreError;
 use qrec_core::protocol::{
     Command, HelloInfo, Progress, WIRE_VERSION, WireBody, WireMessage, WireRequest, from_wire,
 };
+use qrec_core::{CoreError, ErrorCode};
 use serde_json::Value;
 
 use super::framing::{LineReader, ReadError, encode_line, is_disconnect, write_all_before};
@@ -40,6 +43,12 @@ use crate::paths::ProjectPaths;
 
 /// How often the streaming and routing loops look at [`Interrupts`].
 const POLL_SLICE: Duration = Duration::from_millis(100);
+/// How long each turn of the streaming loop waits for the reply of the
+/// first Ctrl+C's `RecordStop`.
+const STOP_POLL: Duration = Duration::from_millis(10);
+/// How long `record … --wait` still waits for its start's reply after that
+/// stop found nothing to stop (a reply already on its way arrives first).
+const UNSTOPPED_GRACE: Duration = Duration::from_secs(1);
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -276,16 +285,15 @@ pub fn send_request(
     let mut accepted = false;
     let mut last_message = Instant::now();
     let mut seen = opts.baseline;
-    let mut stop_sent = false;
+    let mut stop = Stop::NotSent;
     loop {
         let count = opts.interrupts.count();
         if count > seen {
             // Every press counts, also two that land in one poll slice.
             let presses = count - seen;
             seen = count;
-            if opts.stop_on_interrupt && accepted && !stop_sent {
-                stop_sent = true;
-                send_record_stop(socket);
+            if opts.stop_on_interrupt && accepted && matches!(stop, Stop::NotSent) {
+                stop = send_record_stop(socket);
                 if presses >= 2 {
                     // The second press detaches (the take still finalizes).
                     return Ok(Sent::Interrupted);
@@ -294,6 +302,20 @@ pub fn send_request(
                 // Dropping the exchange closes the connection.
                 return Ok(Sent::Interrupted);
             }
+        }
+        stop.poll();
+        if let Stop::Missed(at) = stop
+            && at.elapsed() >= UNSTOPPED_GRACE
+        {
+            // Nothing records and the start is still unanswered: the host
+            // holds it where a stop can't reach it (one that parks it for
+            // its startup recovery and doesn't let a stop cancel it).
+            // Closing the connection drops it there, instead of letting it
+            // start a take the person stopped.
+            tracing::warn!(
+                "the host found nothing to stop while the start waits; detaching so it drops the start"
+            );
+            return Ok(Sent::Interrupted);
         }
         match exchange.next(Instant::now() + POLL_SLICE) {
             Ok(msg) => {
@@ -363,21 +385,60 @@ pub fn send_request(
     }
 }
 
+/// The first Ctrl+C's `RecordStop` for `record … --wait` (A§8.6).
+enum Stop {
+    /// Not sent: no Ctrl+C yet.
+    NotSent,
+    /// Sent and accepted; its reply comes on this connection (a stop that
+    /// finalizes a take answers once the take is placed).
+    Waiting(Exchange),
+    /// It stopped something, or nothing more can be learned from it: the
+    /// start's own reply follows on the start's connection.
+    Done,
+    /// It found nothing to stop (`invalid`, e.g. "not recording") at this
+    /// moment: the start's reply is already on its way, or the host holds
+    /// the start where a stop can't reach it.
+    Missed(Instant),
+}
+
+impl Stop {
+    /// What the stop's reply says.
+    fn answered(reply: &Value) -> Stop {
+        match from_wire(reply) {
+            Ok(Err(e)) if e.code == ErrorCode::Invalid => Stop::Missed(Instant::now()),
+            _ => Stop::Done,
+        }
+    }
+
+    /// Looks for the stop's reply without holding up the start's stream.
+    fn poll(&mut self) {
+        let Stop::Waiting(exchange) = self else {
+            return;
+        };
+        *self = match exchange.next(Instant::now() + STOP_POLL) {
+            Ok(WireMessage::Reply { reply, .. }) => Stop::answered(&reply),
+            Ok(_) | Err(NextError::Read(ReadError::Timeout)) => return,
+            Err(_) => Stop::Done,
+        };
+    }
+}
+
 /// `record … --wait` and the first Ctrl+C: `RecordStop` on a second
-/// connection, waiting only for `accepted` (≤ 2 s). Best effort: the
-/// original connection receives the finalized reply.
-fn send_record_stop(socket: &Path) {
+/// connection, waiting only for `accepted` (≤ 2 s); its reply is read
+/// later ([`Stop::poll`]). Best effort: the start's connection receives the
+/// finalized reply.
+fn send_record_stop(socket: &Path) -> Stop {
     let deadline = Instant::now() + HELLO_TIMEOUT;
     let body = WireBody::Command(Command::RecordStop);
     let Ok(mut exchange) = Exchange::open(socket, &body, false, deadline) else {
-        return;
+        return Stop::Done;
     };
-    while let Ok(msg) = exchange.next(deadline) {
-        if matches!(
-            msg,
-            WireMessage::Accepted { .. } | WireMessage::Reply { .. }
-        ) {
-            return;
+    loop {
+        match exchange.next(deadline) {
+            Ok(WireMessage::Accepted { .. }) => return Stop::Waiting(exchange),
+            Ok(WireMessage::Reply { reply, .. }) => return Stop::answered(&reply),
+            Ok(WireMessage::Progress { .. }) => {}
+            Err(_) => return Stop::Done,
         }
     }
 }

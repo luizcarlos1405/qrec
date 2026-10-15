@@ -2813,3 +2813,130 @@ fn an_interrupted_export_routed_to_a_headless_host_says_it_was_cancelled() {
     let exports = fs::read_dir(dir.join("exports")).map_or(0, |d| d.count());
     assert_eq!(exports, 0);
 }
+
+// ------------------------------------------------------- review round 3
+
+/// The fixture project with take 2 left `recording` by a crash, and a
+/// `PATH` whose ffprobe takes `secs` seconds: the next host holds its
+/// commands that long for take 2's Recover probe (A§5.3).
+fn held_by_a_slow_recovery(env: &TestEnv, name: &str, secs: u32) -> (PathBuf, OsString) {
+    let dir = env.empty_dir(name);
+    let project = fixture_project(&dir, &[video(30), video(45)]);
+    crash_take_two(&dir, project);
+    (dir, slow_ffprobe(env, secs))
+}
+
+/// `qrec <args>` in `dir`, with `PATH` set to `path`, in the background.
+fn background(env: &TestEnv, dir: &Path, args: &[&str], path: &OsStr) -> Background {
+    let mut command = env.command(&qrec_bin());
+    command.current_dir(dir).args(args).env("PATH", path);
+    Background::spawn(command)
+}
+
+/// Waits until a `kind` host of `dir` is ready (its lock record says so).
+fn wait_for_host(dir: &Path, kind: &str) {
+    let lock = dir.join(".qrec/lock");
+    wait_until(Duration::from_secs(20), "the host", || {
+        fs::read(&lock)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|r| r["kind"] == kind && r["state"] == "ready")
+    });
+}
+
+/// Once take 2 is recovered, nothing records and no take 3 was made.
+fn nothing_recorded_after_the_recovery(env: &TestEnv, dir: &Path) {
+    wait_until(Duration::from_secs(40), "the recovery", || {
+        take_row(env, dir, "take-0002")["status"] == "ok"
+    });
+    let status = qrec(env, dir, &["status", "--json"]);
+    status.ok();
+    let data = &status.reply()["data"];
+    assert_eq!(data["runtime"]["record"]["phase"], "idle", "{data}");
+    assert!(!dir.join("takes/take-0003").exists());
+}
+
+/// `record stop` while `record start` waits for the startup recovery of a
+/// crashed take (A§5.3): the stop cancels the start, like a countdown, and
+/// nothing records once the take is recovered. The stop used to answer
+/// "not recording" and the start then recorded take 3 until a second stop.
+#[test]
+fn a_stop_cancels_a_start_waiting_for_the_startup_recovery() {
+    let env = TestEnv::new();
+    let (dir, path) = held_by_a_slow_recovery(&env, "held-start", 6);
+    let start = background(&env, &dir, &["--json", "record", "start"], &path);
+    wait_for_host(&dir, "headless");
+    thread::sleep(Duration::from_millis(500));
+
+    let stop = qrec(&env, &dir, &["--json", "record", "stop"]);
+    stop.ok();
+    assert_eq!(
+        stop.only_reply()["data"]["message"],
+        "Recording cancelled before it started"
+    );
+    let (code, out, _) = start.finish(Duration::from_secs(30));
+    assert_eq!(code, Some(1), "{out:?}");
+    let last: Value = serde_json::from_str(out.last().unwrap()).unwrap();
+    assert_eq!(last["error"]["code"], "invalid", "{last}");
+    assert_eq!(
+        last["error"]["message"], "recording cancelled before it started",
+        "{last}"
+    );
+    nothing_recorded_after_the_recovery(&env, &dir);
+    wait_until_no_host(&env);
+}
+
+/// The first Ctrl+C of `record start --wait` while the start waits for the
+/// startup recovery (A§8.6): its `RecordStop` cancels the start, so the
+/// command ends with that answer and nothing records. The client used to
+/// stream "Recording take 3: 00:01…" after the Ctrl+C, and a second one
+/// left the take recording in the background.
+#[test]
+fn ctrl_c_on_a_waiting_record_start_wait_cancels_it() {
+    let env = TestEnv::new();
+    let (dir, path) = held_by_a_slow_recovery(&env, "held-wait", 6);
+    let start = background(&env, &dir, &["--json", "record", "start", "--wait"], &path);
+    wait_for_host(&dir, "headless");
+    thread::sleep(Duration::from_millis(500));
+    start.signal("INT");
+    let (code, out, _) = start.finish(Duration::from_secs(30));
+    assert_eq!(code, Some(1), "{out:?}");
+    assert!(
+        !out.iter().any(|l| l.contains("Recording take")),
+        "nothing recorded: {out:?}"
+    );
+    let last: Value = serde_json::from_str(out.last().unwrap()).unwrap();
+    assert_eq!(
+        last["error"]["message"], "recording cancelled before it started",
+        "{last}"
+    );
+    nothing_recorded_after_the_recovery(&env, &dir);
+    wait_until_no_host(&env);
+}
+
+/// `export cancel` while an export waits for the startup recovery in its
+/// own (in-process) host: the export is cancelled before it starts and
+/// nothing is exported. It used to answer "no export is running" and the
+/// export then ran to the end.
+#[test]
+fn export_cancel_cancels_an_export_waiting_for_the_startup_recovery() {
+    let env = TestEnv::new();
+    let (dir, path) = held_by_a_slow_recovery(&env, "held-export", 6);
+    let export = background(&env, &dir, &["--json", "export"], &path);
+    wait_for_host(&dir, "cli");
+    thread::sleep(Duration::from_millis(500));
+
+    let cancel = qrec(&env, &dir, &["--json", "export", "cancel"]);
+    cancel.ok();
+    assert_eq!(
+        cancel.only_reply()["data"]["message"],
+        "Export cancelled before it started"
+    );
+    let (code, out, _) = export.finish(Duration::from_secs(30));
+    assert_eq!(code, Some(1), "{out:?}");
+    let last: Value = serde_json::from_str(out.last().unwrap()).unwrap();
+    assert_eq!(last["error"]["message"], "export cancelled", "{last}");
+    assert_eq!(take_row(&env, &dir, "take-0002")["status"], "ok");
+    let exports = fs::read_dir(dir.join("exports")).map_or(0, |d| d.count());
+    assert_eq!(exports, 0, "nothing was exported");
+}

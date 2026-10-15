@@ -351,6 +351,85 @@ fn record_wait_ctrl_c_stops_then_detaches() {
         == 3));
 }
 
+/// The first Ctrl+C's stop found nothing to stop while the start stays
+/// unanswered: a host holds the start where a stop can't reach it (one
+/// that parks it for its startup recovery and doesn't let a stop cancel
+/// it). The client detaches after a short grace, so that host drops the
+/// start, instead of streaming the take it then records (A§8.6). A start
+/// answered meanwhile still gets its reply.
+#[test]
+fn record_wait_detaches_when_its_stop_finds_nothing() {
+    let dir = socket_dir();
+    let t = start_server(dir.path(), |_| {});
+    // `answer`: the stop finds nothing, but the start's reply was on its way.
+    let answer = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let answering = std::sync::Arc::clone(&answer);
+    let mut held: Vec<Box<dyn Responder>> = Vec::new();
+    let (inbox, _session) = session_thread(move |msg| {
+        if let Msg::Request { req, mut to } = msg {
+            match req.body {
+                WireBody::Command(Command::RecordStart { .. }) => held.push(to),
+                WireBody::Command(Command::RecordStop) => {
+                    to.reply(Err(CoreError::invalid("not recording")));
+                    if answering.load(std::sync::atomic::Ordering::SeqCst) {
+                        for mut start in held.drain(..) {
+                            start.reply(Ok(json!({ "finalized": true })));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        true
+    });
+    t.server.attach(inbox);
+    let start = Request::command(
+        Command::RecordStart {
+            mode: RecordModeArg::Append,
+            countdown: None,
+            wait: true,
+        },
+        false,
+    );
+    let run = |start: Request| {
+        let interrupts = Interrupts::new();
+        let mut opts = quick(&interrupts);
+        opts.stop_on_interrupt = true;
+        let raiser = interrupts.clone();
+        let socket = t.socket.clone();
+        let before = t.server.stats().requests;
+        let client = thread::spawn(move || {
+            let mut out = Collect::default();
+            let sent = send_request(&socket, &start, &mut out, &opts);
+            (sent, out)
+        });
+        assert!(wait_for(Duration::from_secs(5), || t
+            .server
+            .stats()
+            .requests
+            > before));
+        thread::sleep(Duration::from_millis(100));
+        raiser.raise();
+        let pressed = Instant::now();
+        let (sent, out) = client.join().unwrap();
+        (sent, out, pressed.elapsed())
+    };
+
+    let (sent, _, took) = run(start.clone());
+    assert_eq!(sent, Ok(Sent::Interrupted));
+    assert!(
+        took >= UNSTOPPED_GRACE && took < Duration::from_secs(5),
+        "{took:?}"
+    );
+    // The held start's connection is closed: the host drops it.
+    assert!(wait_for(Duration::from_secs(5), || t.server.stats().open == 0));
+
+    answer.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (sent, out, _) = run(start);
+    assert_eq!(sent, Ok(Sent::Replied));
+    assert_eq!(out.ok()["finalized"], true);
+}
+
 // ------------------------------------------------------------------ routing
 
 struct Project {

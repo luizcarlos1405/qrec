@@ -751,7 +751,16 @@ even a one-shot CLI command recovers the take and already sees it recovered
 them itself instead of blocking in `Session::open`, so it handles events,
 `hello`, queries and signals meanwhile; commands that only stop something
 (`RecordStop`, `RecordCancel`, `ExportCancel`, a `RecordToggle` that stops)
-never wait. A probe still out after that is work like a running job: a host
+never wait. They act on what waits too, which would otherwise run after
+them: `RecordStop`, `RecordCancel` and `RecordToggle` abort every waiting
+`RecordStart` and `RecordToggle`, like a countdown (each gets `Invalid`
+"recording cancelled before it started", the caller Ok "Recording cancelled
+before it started"; a toggle that finds no start waiting is a start and
+waits), and `ExportCancel` without a job aborts the waiting `Export`s
+(`Invalid` "export cancelled"; a job id only names a running export).
+Commands whose wait is over run before any later message, also before a
+tick released them, so a stop always finds the take their start began. A
+probe still out after that is work like a running job: a host
 isn't idle meanwhile (A§8.6) and `Session::run_until` doesn't return before
 its answer, so no host exits and drops it (the runner always answers,
 A§8.7) — unless the host was interrupted: then its 15 s grace decides, and
@@ -1294,7 +1303,14 @@ nothing of anyone else's may be tied to it for long:
   IPC-routed: Ctrl+C closes the connection and exits 130; for `record --wait`
   the first Ctrl+C sends `RecordStop` on a second connection and keeps
   streaming until finalized, a second detaches (two presses count as two
-  even when they arrive together). Under `--json` an interrupted run still
+  even when they arrive together). A host answers `accepted` only once the
+  request is queued for its Session, so that stop always comes after the
+  start: it stops the take, or cancels the countdown or the start still
+  waiting for a recovery (A§5.3), and the start's reply ends the command.
+  When the stop finds nothing to stop (`invalid`) and the start stays
+  unanswered 1 s more (a host that holds the start where a stop can't
+  reach it), the client detaches like on a second press, so that host
+  drops the start (`RequesterGone`). Under `--json` an interrupted run still
   ends stdout with one object: the reply when one came before the signal (a
   command that finished or committed; printed only once, also when it was
   printed as it came, A§8.5), else
