@@ -3655,3 +3655,130 @@ fn the_background_recorder_keeps_none_of_the_callers_descriptors() {
     let lock = fs::canonicalize(dir.join(".qrec/lock")).unwrap();
     assert!(held.contains(&lock), "it still holds the lock: {held:?}");
 }
+
+// ------------------------------------------------------- review round 4
+
+/// One line of a run's output: when it came (from the start), its stream
+/// (`"out"` or `"err"`) and the text.
+type TimedLine = (Duration, &'static str, String);
+
+/// Runs `command` (at most `timeout`), noting when each output line came:
+/// the exit code, the lines in arrival order and when it exited.
+fn timed_run(
+    mut command: std::process::Command,
+    timeout: Duration,
+) -> (Option<i32>, Vec<TimedLine>, Duration) {
+    let started = Instant::now();
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let pipes: [(&'static str, Box<dyn std::io::Read + Send>); 2] = [
+        ("out", Box::new(child.stdout.take().unwrap())),
+        ("err", Box::new(child.stderr.take().unwrap())),
+    ];
+    let readers: Vec<_> = pipes
+        .into_iter()
+        .map(|(stream, pipe)| {
+            let tx = tx.clone();
+            thread::spawn(move || {
+                for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                    let _ = tx.send((started.elapsed(), stream, line));
+                }
+            })
+        })
+        .collect();
+    drop(tx);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("qrec (pid {}) didn't exit", child.id());
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    let exited = started.elapsed();
+    for reader in readers {
+        reader.join().unwrap();
+    }
+    let mut lines: Vec<TimedLine> = rx.into_iter().collect();
+    lines.sort_by_key(|(at, _, _)| *at);
+    (status.code(), lines, exited)
+}
+
+/// `record stop`, `record cancel` and `export cancel` run in-process while
+/// their host recovers a crashed take, its probe slow: they never wait for
+/// the recovery (A§5.3), so their answer is printed at once (A§8.5), and
+/// the process still finishes the recovery before it exits, its toast
+/// after the answer (A§8.6). The answer used to be held back until the
+/// probe was done.
+#[test]
+fn a_stop_is_answered_at_once_during_the_startup_recovery() {
+    let env = TestEnv::new();
+    let runs: [(&str, &[&str], &str); 3] = [
+        ("stop", &["record", "stop"], "not recording"),
+        ("cancel", &["--json", "record", "cancel"], "not recording"),
+        (
+            "export-cancel",
+            &["--json", "export", "cancel"],
+            "no export is running",
+        ),
+    ];
+    // A project each, take 2 left `recording` by a crash; probes take 5 s.
+    let held: Vec<(PathBuf, OsString)> = runs
+        .iter()
+        .map(|(name, _, _)| held_by_a_slow_recovery(&env, name, 5))
+        .collect();
+    let results: Vec<_> = thread::scope(|scope| {
+        let running: Vec<_> = runs
+            .iter()
+            .zip(&held)
+            .map(|((_, args, _), (dir, path))| {
+                let mut command = env.command(&qrec_bin());
+                command.current_dir(dir).args(*args).env("PATH", path);
+                scope.spawn(move || timed_run(command, Duration::from_secs(90)))
+            })
+            .collect();
+        running.into_iter().map(|run| run.join().unwrap()).collect()
+    });
+    for (((name, args, expected), (dir, _)), (code, lines, exited)) in
+        runs.iter().zip(&held).zip(results)
+    {
+        // The answer: the object on stdout, or the error on stderr.
+        let json = args.contains(&"--json");
+        let (answered, _, answer) = lines
+            .iter()
+            .find(|(_, stream, line)| {
+                if json {
+                    *stream == "out"
+                } else {
+                    line.contains(expected)
+                }
+            })
+            .unwrap_or_else(|| panic!("{name}: no answer in {lines:?}"));
+        assert!(answer.contains(expected), "{name}: {answer}");
+        assert_eq!(code, Some(1), "{name}: {lines:?}");
+        assert!(
+            exited.saturating_sub(*answered) >= Duration::from_millis(2500),
+            "{name}: the answer came at {answered:?}, with the recovery (exit at {exited:?}): {lines:?}"
+        );
+        // The recovery is finished and said, after the answer.
+        let (toasted, _, _) = lines
+            .iter()
+            .find(|(_, stream, line)| {
+                *stream == "err" && line.contains("Recovered take 2 from the bog")
+            })
+            .unwrap_or_else(|| panic!("{name}: no recovery toast in {lines:?}"));
+        assert!(toasted >= answered, "{name}: {lines:?}");
+        assert_eq!(
+            take_row(&env, dir, "take-0002")["status"],
+            "ok",
+            "{name}: {lines:?}"
+        );
+    }
+}

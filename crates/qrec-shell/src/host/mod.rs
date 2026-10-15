@@ -75,7 +75,11 @@ pub trait HostSession {
     /// The Session's queue.
     fn inbox(&self) -> Inbox;
     /// Handles messages until `done(state)` holds. `done` is evaluated after
-    /// each handled message; it may also be evaluated at other times.
+    /// each handled message, also while the Session runs on for work of its
+    /// own (the startup recovery it began, A§5.3), and may be evaluated at
+    /// other times: a host passes its command's reply on from there (A§8.5).
+    /// So `done` may hold without ending the run, which then goes on until
+    /// it holds again.
     fn run_until(&mut self, done: &mut dyn FnMut(&State) -> bool);
     fn state(&self) -> &State;
 }
@@ -588,8 +592,9 @@ impl Host {
     }
 
     /// Runs the Session until the exit rules say stop. `own` (in-process CLI
-    /// host) is polled after each message and says whether the host's own
-    /// command got its reply.
+    /// host) is polled after each message, also while the Session finishes
+    /// a startup recovery (it passes the command's reply on as soon as it
+    /// comes, A§8.5), and says whether the host's own command got its reply.
     ///
     /// Exiting is atomic for clients (A§8.3 step 3): the rules only say
     /// stop with no connection open, and the server stops accepting only
@@ -649,12 +654,15 @@ impl Host {
                     own_done,
                     ready_at: self.ready_at,
                 };
+                // What the last evaluation decided: the Session may run on
+                // after one that said stop (A§5.3: a recovery still out).
                 match decide(&inputs, &self.rules) {
                     Decision::Exit(why) => {
                         end = Some(why);
                         true
                     }
                     Decision::Wait(at) => {
+                        end = None;
                         if let Some(at) = at {
                             self.waker.wake_at(at);
                         }

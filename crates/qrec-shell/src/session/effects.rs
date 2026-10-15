@@ -148,7 +148,7 @@ impl Session {
             let stamp = self.stamp();
             if next.runtime.disk_invalid.is_none() {
                 match self.store.copy_disk_file_aside(&stamp) {
-                    Ok(Some(path)) => self.notifier.notify(
+                    Ok(Some(path)) => self.notify(
                         &Toast::new(ToastLevel::Info, "Kept the broken qrec.json")
                             .with_body(format!(
                                 "It was copied to {} before the restore.",
@@ -169,7 +169,7 @@ impl Session {
                 match self.store.reject_disk_file(&stamp) {
                     Ok(Some(path)) => {
                         reclaimed = true;
-                        self.notifier.notify(
+                        self.notify(
                             &Toast::new(ToastLevel::Warning, "Moved the invalid qrec.json aside")
                                 .with_body(format!(
                                     "Qrec had to save the take's facts, so the invalid file is now {}.",
@@ -388,7 +388,7 @@ impl Session {
             Effect::CancelJob { job } => self.deps.media.cancel(job),
             Effect::StartTimer { timer, after_ms } => self.timers.start(timer, after_ms),
             Effect::CancelTimer { timer } => self.timers.cancel(timer),
-            Effect::Notify(toast) => self.notifier.notify(&toast),
+            Effect::Notify(toast) => self.notify(&toast),
             Effect::Progress { req, progress } => match self.pending.get_mut(&req) {
                 Some(to) => with_current(&req, || to.progress(&progress)),
                 None => tracing::debug!("progress for {req}, which nobody waits for"),

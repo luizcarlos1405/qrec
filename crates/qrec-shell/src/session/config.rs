@@ -22,6 +22,15 @@ pub const BACKEND_ENV: &str = "QREC_CAPTURE_BACKEND";
 /// CLI's stderr, a headless host's log.
 pub trait Notifier: Send {
     fn notify(&mut self, toast: &Toast);
+
+    /// A toast of the startup recovery of takes a crash left `recording`
+    /// (A§5.3): the host's own news, not about a request. An in-process
+    /// command finishes the recovery its open began even after its reply
+    /// (A§8.6), so its CLI shows these after that reply too, unlike the
+    /// toasts of other clients' requests. Default: like any toast.
+    fn notify_recovery(&mut self, toast: &Toast) {
+        self.notify(toast);
+    }
 }
 
 impl<F: FnMut(&Toast) + Send> Notifier for F {
