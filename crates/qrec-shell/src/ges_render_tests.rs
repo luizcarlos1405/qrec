@@ -525,6 +525,101 @@ fn ges_matches_the_frame_plan_and_shows_exact_frames() {
     assert_quiet_since(quiet);
 }
 
+/// A camera recorded at 25 fps on a 30 fps canvas, in units starting
+/// anywhere (one frame long, trimmed by a frame, over an earlier range):
+/// GES shows at every timeline frame the recorded frame the export shows,
+/// the nearest to the frame's take time and the earlier one on a tie
+/// (A§9.3, A§9.6), not one shifted by where the unit starts.
+#[test]
+fn ges_shows_the_nearest_frame_of_another_recorded_rate() {
+    let _serial = serial();
+    let quiet = problems();
+    let env = TestEnv::new();
+    let dir = env.empty_dir("rates");
+    let take_dir = dir.join("takes/take-0001");
+    fs::create_dir_all(&take_dir).unwrap();
+    let rate = Fps::new(25, 1);
+    let recorded = 250;
+    fs::copy(
+        frame_id_fixture(160, 120, rate, recorded),
+        take_dir.join("L1-camera-0.mkv"),
+    )
+    .unwrap();
+    let layers = json!([{
+        "id": "L1", "name": "L1", "visible": true, "opacity": 1.0,
+        "source": { "kind": "camera", "device": "/dev/fake0", "label": "Fake camera" },
+        "rect": { "x": 0, "y": 0, "w": CANVAS.0, "h": CANVAS.1 },
+        "crop": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
+        "fit": "contain",
+    }]);
+    let ranges = [(0u64, 20u64), (101, 112), (202, 203), (204, 215), (3, 9)];
+    let clips: Vec<serde_json::Value> = ranges
+        .iter()
+        .enumerate()
+        .map(|(i, &(in_, out))| {
+            json!({ "id": format!("c{:03x}", i + 1), "take": "take-0001", "in": in_, "out": out })
+        })
+        .collect();
+    let value = json!({
+        "version": 1,
+        "name": "rates",
+        "createdAt": "2026-10-14T12:00:00Z",
+        "canvas": {
+            "width": CANVAS.0, "height": CANVAS.1,
+            "fps": { "num": FPS.num, "den": FPS.den }, "background": "#12170F",
+        },
+        "scene": { "layers": layers.clone(), "audio": [] },
+        "recording": { "countdownSecs": 0, "encoder": "auto", "vaapiDevice": null },
+        "autocut": {
+            "autoRunAfterTake": false, "track": null, "thresholdDb": -35.0,
+            "minSilenceMs": 400, "paddingMs": 120, "minKeepMs": 200,
+        },
+        "takes": {
+            "take-0001": {
+                "status": "ok", "recordedAt": "2026-10-14T12:00:00Z",
+                "durationFrames": 300,
+                "scene": { "layers": layers, "audio": [] },
+                "streams": [{
+                    "id": "L1", "kind": "video", "file": "takes/take-0001/L1-camera-0.mkv",
+                    "width": 160, "height": 120, "startOffsetNs": 0,
+                    "durationNs": frame_ns(recorded as i64, rate), "frames": recorded,
+                    "fps": { "num": rate.num, "den": rate.den },
+                }],
+                "placed": true,
+            }
+        },
+        "nextTakeNumber": 2,
+        "timeline": { "clips": clips },
+    });
+    write_project(&dir, &value);
+    let project: Project = serde_json::from_value(value).expect("a valid project");
+    let rect = placements(&project)[0].2.dst;
+    let plan = qrec_core::ges_plan::plan_ges(&project);
+    let mut renderer = FrameRenderer::new(&plan, &dir).expect("a GES renderer");
+    let mut at = 0;
+    let mut wrong = Vec::new();
+    for &(in_, out) in &ranges {
+        for f in in_..out {
+            let frame = renderer.render(at).unwrap();
+            let shown = read_frame_id(|x, y| frame.pixel(x, y).unwrap()[0], rect);
+            let expected = qrec_core::export_plan::shown_frame(rate, 0, FPS, f as i64);
+            if shown as i64 != expected {
+                wrong.push(format!(
+                    "timeline {at} (take frame {f}): {shown}, not {expected}"
+                ));
+            }
+            at += 1;
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "GES showed other frames:\n{}",
+        wrong.join("\n")
+    );
+    drop(renderer);
+    assert_quiet_since(quiet);
+}
+
 /// The peak of `samples` (interleaved F32 stereo) in frames `[from, to)`.
 fn peak(samples: &[f32], from: usize, to: usize) -> f32 {
     samples[from * 2..to * 2]

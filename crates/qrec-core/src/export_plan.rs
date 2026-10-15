@@ -6,10 +6,17 @@
 //! encodes the audio once. Every rule marked *(measured)* was checked with
 //! ffmpeg 8.1.2 and must not be "simplified" away:
 //!
-//! - **Frame selection:** a layer input seeks to `frame_ns_rec(k0) − 2 ms`
-//!   (the 2 ms absorb Matroska's millisecond timestamps), `fps=<canvas>`
-//!   makes it constant-rate and `setpts=PTS-STARTPTS+<lead>` puts its first
-//!   frame `lead` canvas frames into the unit.
+//! - **Frame selection:** take frame `f` shows the recorded frame nearest to
+//!   its time, the earlier one on a tie ([`shown_frame`]), wherever its
+//!   unit starts. A layer input seeks to `frame_ns_rec(k0) − 2 ms` (the 2 ms
+//!   absorb Matroska's millisecond timestamps). At the canvas rate,
+//!   `fps=<canvas>` makes it constant-rate and `setpts=PTS-STARTPTS+<lead>`
+//!   puts its first frame `lead` canvas frames into the unit. At another
+//!   recorded rate that would re-base the stream at `k0` and let `fps` pick
+//!   frames on a grid shifted by `k0`'s rounding, so each frame is put on
+//!   the canvas grid explicitly instead: `setpts` gives recorded frame `j`
+//!   (from its timestamp) the first unit frame that shows it ([`Retime`]),
+//!   in whole numbers, and `fps` repeats or drops frames from there.
 //! - **Lengths** are enforced in the graph (`trim=end_frame`,
 //!   `atrim=end_sample`), never with `-frames:v`/`-t`, which cut the audio
 //!   short at 29.97 fps.
@@ -68,7 +75,7 @@ use crate::model::{AudioTrack, Canvas, Fps, Layer, Project, Stream, StreamKind, 
 use crate::plans::{ExportPlan, SegmentPlan, StitchPlan};
 use crate::protocol::command::{ExportFormat, Quality, VideoCodec};
 use crate::state::{Capabilities, FfmpegCaps};
-use crate::time::{NS_PER_MS, NS_PER_SEC, frame_ns, ns_to_frame_ceil, ns_to_frame_round};
+use crate::time::{NS_PER_MS, NS_PER_SEC, frame_ns};
 
 /// Bumped whenever generated argv change meaning (part of every cache key).
 pub const PLAN_VERSION: u32 = 1;
@@ -165,8 +172,9 @@ pub fn resolve_codec(
 
 // --------------------------------------------------------- frame selection
 
-/// Which recorded frame a layer starts a unit with, and how many canvas
-/// frames of the unit pass before it appears (A§9.3).
+/// Which recorded frame a layer starts a unit with, how many canvas frames
+/// of the unit pass before it appears, and (at another recorded rate) how
+/// its frames are put on the canvas grid (A§9.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameSelection {
     /// The first recorded frame shown: an index into the stream.
@@ -174,6 +182,9 @@ pub struct FrameSelection {
     /// Canvas frames at the start of the unit before the layer's first
     /// frame (the stream started after the unit's start).
     pub lead: u64,
+    /// `None` at the canvas rate, where recorded frame `k0 + i` is unit
+    /// frame `lead + i`.
+    pub retime: Option<Retime>,
 }
 
 impl FrameSelection {
@@ -183,44 +194,128 @@ impl FrameSelection {
     }
 }
 
-/// The frame selection of `stream` for a unit starting at take frame `in_`
-/// *(measured)*.
-///
-/// At the canvas rate, with `off = ns_to_frame_round(startOffsetNs)`:
-/// `k = in − off`, `lead = max(0, −k)`, `k0 = max(0, k)`.
-///
-/// At another recorded rate, a canvas frame `t` shows the recorded frame
-/// nearest to its time, `ns_to_frame_round(frame_ns(t) − startOffsetNs)`.
-/// When that is negative at `in`, `lead` counts the *canvas* frames before
-/// the first one that has a recorded frame, and `k0` is that frame's (the
-/// canvas-rate formula `lead = −k` would count recorded frames).
+/// The frame selection of `stream` for a unit starting at take frame `in_`:
+/// `k0 = shown_frame(in + lead)` with `lead` the canvas frames before the
+/// first one that shows a recorded frame (frame 0 or later).
 pub fn select_frames(stream: &Stream, canvas_fps: Fps, in_: Frame) -> FrameSelection {
     let recorded = stream.fps.unwrap_or(canvas_fps);
     let offset = stream.start_offset_ns;
     let in_ = in_ as i64;
-    if same_rate(recorded, canvas_fps) {
-        let k = in_ - ns_to_frame_round(offset, canvas_fps);
-        return FrameSelection {
-            k0: k.max(0) as u64,
-            lead: (-k).max(0) as u64,
-        };
-    }
-    let nearest = |t: i64| ns_to_frame_round(frame_ns(t, canvas_fps) - offset, recorded);
-    let k = nearest(in_);
-    if k >= 0 {
-        return FrameSelection {
-            k0: k as u64,
-            lead: 0,
-        };
-    }
-    // A time x rounds to recorded frame 0 or later once x ≥ −⌊D/2⌋, with D
-    // the length of recorded frame −1.
-    let half = -frame_ns(-1, recorded) / 2;
-    let first = ns_to_frame_ceil(offset - half, canvas_fps).max(in_ + 1);
+    let first = first_showing(recorded, offset, canvas_fps, 0).max(in_);
     FrameSelection {
-        k0: nearest(first).max(0) as u64,
+        k0: shown_frame(recorded, offset, canvas_fps, first).max(0) as u64,
         lead: (first - in_) as u64,
+        retime: (!same_rate(recorded, canvas_fps))
+            .then(|| Retime::new(recorded, offset, canvas_fps, in_)),
     }
+}
+
+/// The recorded frame that take frame `f` shows (the frame-selection rule,
+/// A§9.3): the one whose time in the file is nearest to the canvas frame's,
+/// `f/C − startOffset`, the earlier one on a tie. Negative before the
+/// stream's first frame; past its end the background shows. Exact rational
+/// arithmetic, so it never depends on where a unit starts or on rounding.
+pub fn shown_frame(recorded: Fps, offset_ns: i64, canvas: Fps, f: i64) -> i64 {
+    let (cn, cd, rn, rd) = rates(canvas, recorded);
+    // x − 1/2, x = (f·cd/cn − offset/10⁹)·rn/rd in recorded frames;
+    // the answer is ⌈x − 1/2⌉.
+    let num = 2 * (i128::from(f) * cd * NS - i128::from(offset_ns) * cn) * rn - cn * NS * rd;
+    let den = 2 * cn * NS * rd;
+    (-(-num).div_euclid(den)) as i64
+}
+
+/// The first take frame that shows recorded frame `j` or a later one under
+/// [`shown_frame`]: `⌊z⌋ + 1`, `z = C·((j − 1/2)/R + startOffset)` being
+/// the midpoint between frames `j − 1` and `j` in canvas frames.
+pub fn first_showing(recorded: Fps, offset_ns: i64, canvas: Fps, j: i64) -> i64 {
+    let (cn, cd, rn, rd) = rates(canvas, recorded);
+    let num = cn * ((2 * i128::from(j) - 1) * rd * NS + 2 * i128::from(offset_ns) * rn);
+    let den = cd * 2 * rn * NS;
+    num.div_euclid(den) as i64 + 1
+}
+
+const NS: i128 = NS_PER_SEC as i128;
+
+fn rates(canvas: Fps, recorded: Fps) -> (i128, i128, i128, i128) {
+    (
+        i128::from(canvas.num),
+        i128::from(canvas.den),
+        i128::from(recorded.num),
+        i128::from(recorded.den),
+    )
+}
+
+/// How a layer recorded at another rate goes on the canvas grid of a unit
+/// starting at take frame `in` (A§9.3): recorded frame `j` starts at unit
+/// frame `⌊(a·j + b)/q⌋ + c` = `first_showing(j) − in`, so ffmpeg's `fps`,
+/// which shows the last frame started, shows `shown_frame` everywhere.
+///
+/// With `C/R = p/q'` reduced and `Y = ⌊2q'·C·startOffset⌋`:
+/// `first_showing(j) = ⌊((2j − 1)·p + Y)/2q'⌋ + 1` (an integer plus a real,
+/// floored over an integer, only needs the real's floor). So `a = 2p`,
+/// `b = Y − p`, `q = 2q'`, `c = 1 − in`: small integers that ffmpeg's
+/// double-precision expressions evaluate exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retime {
+    pub a: i64,
+    pub b: i64,
+    pub q: i64,
+    pub c: i64,
+    /// The recorded rate, to tell `j` from a frame's timestamp.
+    pub recorded: Fps,
+}
+
+impl Retime {
+    pub fn new(recorded: Fps, offset_ns: i64, canvas: Fps, in_: i64) -> Self {
+        let (cn, cd, rn, rd) = rates(canvas, recorded);
+        let g = gcd(cn * rd, cd * rn);
+        let (p, q) = (cn * rd / g, cd * rn / g);
+        let y = (2 * q * cn * i128::from(offset_ns)).div_euclid(cd * NS);
+        Retime {
+            a: (2 * p) as i64,
+            b: (y - p) as i64,
+            q: (2 * q) as i64,
+            c: 1 - in_,
+            recorded,
+        }
+    }
+
+    /// The unit frame where recorded frame `j` starts (may be negative).
+    pub fn slot(&self, j: i64) -> i64 {
+        (i128::from(self.a) * i128::from(j) + i128::from(self.b)).div_euclid(i128::from(self.q))
+            as i64
+            + self.c
+    }
+
+    /// The layer chain's head (A§9.3): microsecond timestamps; each frame's
+    /// index `j = round((T + seek)·R)` from its time in the file (`T` counts
+    /// from the input seek `seek`, in seconds as passed to `-ss`); its start
+    /// [`Self::slot`], from the unit's first frame at the latest (earlier
+    /// frames hold until then), as microseconds, then canvas frames; then
+    /// `fps` repeats each frame until the next one starts (and drops a frame
+    /// a later one replaces before it shows).
+    fn chain(&self, canvas: Fps, seek: &str) -> String {
+        let r = self.recorded;
+        format!(
+            "settb=1/1000000,setpts='max(floor(({}*round((T+{seek})*{}/{}){:+})/{}){:+},0)*{}*1000000/{}',settb={}/{},fps={}/{}",
+            self.a,
+            r.num,
+            r.den,
+            self.b,
+            self.q,
+            self.c,
+            canvas.den,
+            canvas.num,
+            canvas.den,
+            canvas.num,
+            canvas.num,
+            canvas.den
+        )
+    }
+}
+
+fn gcd(a: i128, b: i128) -> i128 {
+    if b == 0 { a.abs() } else { gcd(b, a % b) }
 }
 
 /// `a` and `b` are the same rate (`60/2` is `30/1`; ffprobe reduces its
@@ -375,20 +470,24 @@ pub(crate) fn video_graph(canvas: &Canvas, layers: &[LayerInput<'_>]) -> VideoGr
     };
     let mut overlays = Vec::new();
     for (i, input) in layers.iter().enumerate() {
-        if let Some(seek) = input.selection.seek_ns(input.recorded) {
-            graph.inputs.extend(["-ss".to_owned(), seconds_arg(seek)]);
+        let seek = input.selection.seek_ns(input.recorded).map(seconds_arg);
+        if let Some(seek) = &seek {
+            graph.inputs.extend(["-ss".to_owned(), seek.clone()]);
         }
         graph
             .inputs
             .extend(["-i".to_owned(), file_arg(&input.stream.file)]);
         graph.files.push(input.stream.file.clone());
         let (src, dst) = (input.placement.src, input.placement.dst);
-        let lead = match input.selection.lead {
-            0 => String::new(),
-            lead => format!("+{lead}"),
+        let head = match &input.selection.retime {
+            None => match input.selection.lead {
+                0 => format!("fps={rate},setpts=PTS-STARTPTS"),
+                lead => format!("fps={rate},setpts=PTS-STARTPTS+{lead}"),
+            },
+            Some(retime) => retime.chain(canvas.fps, seek.as_deref().unwrap_or("0")),
         };
         let mut chain = format!(
-            "[{i}:v]fps={rate},setpts=PTS-STARTPTS{lead},crop={}:{}:{}:{},scale={}:{}:flags=bilinear,format=yuva420p",
+            "[{i}:v]{head},crop={}:{}:{}:{},scale={}:{}:flags=bilinear,format=yuva420p",
             src.w, src.h, src.x, src.y, dst.w, dst.h
         );
         if input.layer.opacity < 1.0 {
@@ -1070,37 +1169,112 @@ pub(crate) mod tests {
         assert!(render_units(&ProjectBuilder::new().build()).is_empty());
     }
 
+    /// `(k0, lead)` of a selection.
+    fn kl(sel: FrameSelection) -> (u64, u64) {
+        (sel.k0, sel.lead)
+    }
+
     #[test]
     fn frame_selection_at_the_canvas_rate() {
         let mut s = spec_project().takes.values().next().unwrap().streams[0].clone();
         s.start_offset_ns = 0;
-        assert_eq!(
-            select_frames(&s, F30, 37),
-            FrameSelection { k0: 37, lead: 0 }
-        );
+        assert_eq!(select_frames(&s, F30, 37).retime, None);
+        assert_eq!(kl(select_frames(&s, F30, 37)), (37, 0));
         // 41 ms rounds to frame 1: the layer starts one frame late.
         s.start_offset_ns = 41_000_000;
-        assert_eq!(select_frames(&s, F30, 0), FrameSelection { k0: 0, lead: 1 });
-        assert_eq!(
-            select_frames(&s, F30, 37),
-            FrameSelection { k0: 36, lead: 0 }
-        );
+        assert_eq!(kl(select_frames(&s, F30, 0)), (0, 1));
+        assert_eq!(kl(select_frames(&s, F30, 37)), (36, 0));
         // −20 ms rounds to frame −1: the recording started a frame early.
         s.start_offset_ns = -20_000_000;
-        assert_eq!(select_frames(&s, F30, 0), FrameSelection { k0: 1, lead: 0 });
+        assert_eq!(kl(select_frames(&s, F30, 0)), (1, 0));
         // 16 ms rounds to frame 0.
         s.start_offset_ns = 16_000_000;
-        assert_eq!(select_frames(&s, F30, 0), FrameSelection { k0: 0, lead: 0 });
+        assert_eq!(kl(select_frames(&s, F30, 0)), (0, 0));
         // An unreduced rate is the same rate, even at an exact half frame.
         s.start_offset_ns = 16_666_667;
         let reduced = select_frames(&s, F30, 0);
-        assert_eq!(reduced, FrameSelection { k0: 0, lead: 1 });
+        assert_eq!(kl(reduced), (0, 1));
         s.fps = Some(Fps::new(60, 2));
         assert_eq!(select_frames(&s, F30, 0), reduced);
         assert!(same_rate(Fps::new(60, 2), F30) && !same_rate(Fps::new(60, 1), F30));
-        let sel = FrameSelection { k0: 37, lead: 0 };
+        let sel = FrameSelection {
+            k0: 37,
+            lead: 0,
+            retime: None,
+        };
         assert_eq!(sel.seek_ns(F30), Some(1_233_333_333 - 2_000_000));
-        assert_eq!(FrameSelection { k0: 0, lead: 3 }.seek_ns(F30), None);
+        let late = FrameSelection {
+            k0: 0,
+            lead: 3,
+            retime: None,
+        };
+        assert_eq!(late.seek_ns(F30), None);
+    }
+
+    /// The rule at another recorded rate: nearest by exact time, the earlier
+    /// frame on a tie, whatever the unit (the cases of the frame-save and
+    /// trim bugs: a 25 fps take on a 30 fps canvas, 30 on 60, 50 on 30).
+    #[test]
+    fn the_frame_selection_rule() {
+        let (f25, f50, f60) = (Fps::new(25, 1), Fps::new(50, 1), Fps::new(60, 1));
+        let shown = |rec, canvas, f| shown_frame(rec, 0, canvas, f);
+        // 25 → 30: 104 (3466.7 ms) shows 87 (3480 ms), not 86 (3440 ms);
+        // 105 (3500 ms) is halfway between 87 and 88: the earlier.
+        let at_25: Vec<i64> = (100..=106).map(|f| shown(f25, F30, f)).collect();
+        assert_eq!(at_25, [83, 84, 85, 86, 87, 87, 88]);
+        // 30 → 60: every recorded frame twice, from its own time.
+        assert!((0..600).all(|t| shown(F30, f60, t) == t / 2));
+        // 50 → 30.
+        let at_50: Vec<i64> = (0..9).map(|f| shown(f50, F30, f)).collect();
+        assert_eq!(at_50, [0, 2, 3, 5, 7, 8, 10, 12, 13]);
+        // Offsets move the file under the canvas: 41 ms late at 25 fps.
+        assert_eq!(shown_frame(f25, 41_000_000, F30, 3), 1); // 100 − 41 = 59 ms
+        assert_eq!(shown_frame(f25, 41_000_000, F30, 0), -1); // −41 ms
+        assert_eq!(shown_frame(f25, 41_000_000, F30, 1), 0); // −7.7 ms
+        assert_eq!(first_showing(f25, 41_000_000, F30, 0), 1);
+
+        // Against a brute-force "nearest" in whole numbers: |j/R − t|
+        // scaled by R·C·10⁹ for take frame f.
+        let rates = [
+            Fps::new(24, 1),
+            f25,
+            F30,
+            Fps::new(30000, 1001),
+            f50,
+            f60,
+            Fps::new(60000, 1001),
+            Fps::new(15, 1),
+        ];
+        for &rec in &rates {
+            for &canvas in &rates {
+                for offset in [-50_000_000, -1, 0, 1, 8_333_333, 41_000_000, 250_000_000] {
+                    let (cn, cd, rn, rd) = rates_of(canvas, rec);
+                    let distance = |f: i64, k: i64| {
+                        (i128::from(k) * rd * cn * NS
+                            - (i128::from(f) * cd * NS - i128::from(offset) * cn) * rn)
+                            .abs()
+                    };
+                    let mut previous = i64::MIN;
+                    for f in 0..200 {
+                        let j = shown_frame(rec, offset, canvas, f);
+                        let what = format!("{rec} on {canvas}, offset {offset}, frame {f}: {j}");
+                        assert!(distance(f, j) <= distance(f, j + 1), "{what}");
+                        assert!(distance(f, j) < distance(f, j - 1), "{what}");
+                        assert!(j >= previous, "{what}: went back");
+                        previous = j;
+                        // `first_showing` is where each frame starts.
+                        let start = first_showing(rec, offset, canvas, j);
+                        assert!(start <= f, "{what}: starts at {start}");
+                        assert!(shown_frame(rec, offset, canvas, start) >= j, "{what}");
+                        assert!(shown_frame(rec, offset, canvas, start - 1) < j, "{what}");
+                    }
+                }
+            }
+        }
+    }
+
+    fn rates_of(canvas: Fps, recorded: Fps) -> (i128, i128, i128, i128) {
+        rates(canvas, recorded)
     }
 
     #[test]
@@ -1109,24 +1283,35 @@ pub(crate) mod tests {
         s.fps = Some(Fps::new(60, 1));
         s.start_offset_ns = 0;
         // 60 fps into 30: frame 10 starts at 333.3 ms = recorded frame 20.
+        let sel = select_frames(&s, F30, 10);
+        assert_eq!(kl(sel), (20, 0));
         assert_eq!(
-            select_frames(&s, F30, 10),
-            FrameSelection { k0: 20, lead: 0 }
+            sel.retime,
+            Some(Retime {
+                a: 2,
+                b: -1,
+                q: 4,
+                c: -9,
+                recorded: Fps::new(60, 1),
+            })
         );
         // 100 ms late: canvas frames 0-2 come before recorded frame 0 is
         // nearest; frame 3 (100 ms) shows it.
         s.start_offset_ns = 100_000_000;
-        assert_eq!(select_frames(&s, F30, 0), FrameSelection { k0: 0, lead: 3 });
-        assert_eq!(select_frames(&s, F30, 2), FrameSelection { k0: 0, lead: 1 });
-        assert_eq!(select_frames(&s, F30, 3), FrameSelection { k0: 0, lead: 0 });
-        assert_eq!(select_frames(&s, F30, 4), FrameSelection { k0: 2, lead: 0 });
-        // Brute force: lead is the number of canvas frames whose nearest
-        // recorded frame is before frame 0.
+        assert_eq!(kl(select_frames(&s, F30, 0)), (0, 3));
+        assert_eq!(kl(select_frames(&s, F30, 2)), (0, 1));
+        assert_eq!(kl(select_frames(&s, F30, 3)), (0, 0));
+        assert_eq!(kl(select_frames(&s, F30, 4)), (2, 0));
+        // Brute force: lead is the number of canvas frames whose recorded
+        // frame is before frame 0, k0 the first shown; every recorded frame
+        // starts where the rule says, in the unit's frames.
         for (rec, canvas) in [
             (Fps::new(60, 1), F30),
             (Fps::new(24, 1), F30),
             (Fps::new(30000, 1001), Fps::new(25, 1)),
             (F30, Fps::new(60, 1)),
+            (Fps::new(25, 1), F30),
+            (Fps::new(50, 1), F30),
         ] {
             s.fps = Some(rec);
             for offset in [
@@ -1142,17 +1327,112 @@ pub(crate) mod tests {
                 s.start_offset_ns = offset;
                 for in_ in 0..20u64 {
                     let sel = select_frames(&s, canvas, in_);
-                    let nearest =
-                        |t: u64| ns_to_frame_round(frame_ns(t as i64, canvas) - offset, rec);
-                    let lead = (in_..in_ + 1000).take_while(|&t| nearest(t) < 0).count() as u64;
-                    assert_eq!(
-                        sel.lead, lead,
-                        "{rec} → {canvas}, offset {offset}, in {in_}"
-                    );
-                    assert_eq!(sel.k0, nearest(in_ + lead).max(0) as u64);
+                    let shown = |t: u64| shown_frame(rec, offset, canvas, t as i64);
+                    let lead = (in_..in_ + 1000).take_while(|&t| shown(t) < 0).count() as u64;
+                    let what = format!("{rec} → {canvas}, offset {offset}, in {in_}");
+                    assert_eq!(sel.lead, lead, "{what}");
+                    assert_eq!(sel.k0, shown(in_ + lead).max(0) as u64, "{what}");
+                    let retime = sel.retime.unwrap();
+                    for j in 0..60 {
+                        assert_eq!(
+                            retime.slot(j) + in_ as i64,
+                            first_showing(rec, offset, canvas, j),
+                            "{what}, frame {j}"
+                        );
+                    }
+                    assert_eq!(retime.slot(sel.k0 as i64).max(0), lead as i64, "{what}");
                 }
             }
         }
+    }
+
+    /// ffmpeg evaluates the `setpts` expression in doubles, from frame
+    /// timestamps Matroska truncated to milliseconds: it must still land
+    /// every frame on its exact slot, for long takes and odd rates.
+    #[test]
+    fn retiming_survives_ffmpeg_arithmetic() {
+        let rates = [
+            Fps::new(24, 1),
+            Fps::new(25, 1),
+            Fps::new(30, 1),
+            Fps::new(30000, 1001),
+            Fps::new(24000, 1001),
+            Fps::new(60000, 1001),
+            Fps::new(50, 1),
+            Fps::new(60, 1),
+            Fps::new(1_000_000, 33_333),
+        ];
+        for &rec in &rates {
+            for &canvas in &rates {
+                if same_rate(rec, canvas) {
+                    continue;
+                }
+                for offset in [-20_000_000, 0, 3_141_592, 1_234_567_891] {
+                    // An hour into the take, and at its start.
+                    for in_ in [0i64, 7, 108_000 + 13] {
+                        let mut stream =
+                            spec_project().takes.values().next().unwrap().streams[0].clone();
+                        (stream.fps, stream.start_offset_ns) = (Some(rec), offset);
+                        let sel = select_frames(&stream, canvas, in_ as u64);
+                        let retime = sel.retime.unwrap();
+                        let seek_us = sel.seek_ns(rec).map_or(0, |ns| {
+                            seconds_arg(ns).replace('.', "").parse::<i64>().unwrap()
+                        });
+                        for j in sel.k0 as i64..sel.k0 as i64 + 50 {
+                            // The file's millisecond stamp minus the input
+                            // seek (rounded to the stream's milliseconds),
+                            // then `settb` to µs.
+                            let stamp_ms = frame_ns(j, rec) / NS_PER_MS;
+                            let t = ((stamp_ms - (seek_us + 500) / 1000) * 1000) as f64 / 1e6;
+                            let seek = seek_us as f64 / 1e6;
+                            let index =
+                                ((t + seek) * f64::from(rec.num) / f64::from(rec.den)).round();
+                            assert_eq!(index, j as f64, "{rec} → {canvas}: frame {j}");
+                            let slot = ((retime.a as f64 * index + retime.b as f64)
+                                / retime.q as f64)
+                                .floor()
+                                + retime.c as f64;
+                            let pts_us = (slot.max(0.0) * f64::from(canvas.den) * 1e6
+                                / f64::from(canvas.num))
+                                as i64;
+                            // `settb` back to canvas frames rounds to nearest.
+                            let back = (pts_us as f64 * f64::from(canvas.num)
+                                / (f64::from(canvas.den) * 1e6))
+                                .round() as i64;
+                            assert_eq!(
+                                back,
+                                retime.slot(j).max(0),
+                                "{rec} → {canvas}, offset {offset}, in {in_}: frame {j}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn layers_at_another_rate_are_retimed_in_the_graph() {
+        let project = ProjectBuilder::new()
+            .canvas(320, 180, F30)
+            .screen_layer("L1", "DP-1")
+            .take("take-0001", 300)
+            .with_take("take-0001", |take| {
+                take.streams[0].fps = Some(Fps::new(25, 1))
+            })
+            .clip("c1", "take-0001", 101, 111)
+            .build();
+        let plan = plan_export(&project, &testkit::capabilities(), &opts("x.mp4")).unwrap();
+        let argv = &plan.segments[0].argv;
+        // k0 = 84 (3.36 s), 2 ms early.
+        assert!(argv.windows(2).any(|w| w[0] == "-ss" && w[1] == "3.358000"));
+        let graph = &argv[argv.iter().position(|a| a == "-filter_complex").unwrap() + 1];
+        assert!(
+            graph.contains(
+                "[0:v]settb=1/1000000,setpts='max(floor((12*round((T+3.358000)*25/1)-6)/10)-100,0)*1*1000000/30',settb=1/30,fps=30/1,crop="
+            ),
+            "{graph}"
+        );
     }
 
     #[test]

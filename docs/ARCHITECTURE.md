@@ -1255,15 +1255,34 @@ pub struct StitchPlan { pub list_path: String, pub list_content: String, pub arg
   `clips[i].out == clips[i+1].in`) become one segment, so a split never
   changes the output and its cache key survives. Property:
   `plan_export(split(p)) == plan_export(p)` (and the same for GES).
+- **Frame selection** (one rule for export, frame save and GES): take frame
+  `f` shows recorded frame `shown_frame(f) = ⌈x − ½⌉`, `x = (f/C −
+  startOffsetNs·10⁻⁹)·R`: the frame nearest to the canvas frame's time in
+  the file, the earlier one on a tie, in exact rational arithmetic (so it
+  never depends on where a unit starts). `first_showing(j) = ⌊C·((j − ½)/R
+  + startOffset)⌋ + 1` is the first take frame showing `j` or later. At the
+  canvas rate this is `f − off` with `off = round(startOffsetNs/frame)`.
 - **Video inputs** *(measured; the old setpts/sub-frame plan was wrong in 30
-  of 66 segments)*: per visible layer with media, `off =
-  ns_to_frame_round(startOffsetNs)`. For a unit `[in, out)` with `n` frames:
-  `k0 = in − off` (if the recorded fps ≠ canvas fps:
-  `k0 = round((frame_ns(in) − startOffsetNs) / frame_ns_rec(1))`),
-  `lead = max(0, −k0)`, `k0 = max(0, k0)`. Input:
-  `-ss <frame_ns_rec(k0) − 2 ms>` (omitted when ≤ 0; the 2 ms absorbs MKV's
-  ms timestamps) `-i file:<f>`. Chain:
-  `[i:v]fps=<num>/<den>,setpts=PTS-STARTPTS+<lead>,crop=<src.w>:<src.h>:<src.x>:<src.y>,scale=<dst.w>:<dst.h>:flags=bilinear,format=yuva420p[,lutyuv=a=val*<opacity>][li]`.
+  of 66 segments)*: per visible layer with media, for a unit `[in, out)`
+  with `n` frames: `lead = max(0, first_showing(0) − in)`,
+  `k0 = shown_frame(in + lead)`. Input: `-ss <frame_ns_rec(k0) − 2 ms>`
+  (omitted when ≤ 0; the 2 ms absorbs MKV's ms timestamps) `-i file:<f>`.
+  Chain: `[i:v]<head>,crop=<src.w>:<src.h>:<src.x>:<src.y>,scale=<dst.w>:<dst.h>:flags=bilinear,format=yuva420p[,lutyuv=a=val*<opacity>][li]`.
+  At the canvas rate `<head>` = `fps=<num>/<den>,setpts=PTS-STARTPTS+<lead>`
+  (frame `k0 + i` is unit frame `lead + i`). At another recorded rate that
+  head re-based the stream at `k0` and let `fps` pick frames on a grid
+  shifted by `k0`'s rounding: frame saves differed from the export, a
+  trimmed start moved every frame of a clip by a canvas frame, and units
+  showed frames that weren't the nearest. There `<head>` puts every recorded
+  frame where the rule starts it:
+  `settb=1/1000000,setpts='max(floor((a*round((T+<ss>)*<Rn>/<Rd>)+b)/q)+c,0)*<Cd>*1000000/<Cn>',settb=<Cd>/<Cn>,fps=<Cn>/<Cd>`
+  — `j = round((T + ss)·R)` from the frame's time in the file (`ss` the
+  input seek, 0 without one; Matroska stamps are within 1 ms), its start
+  `⌊(a·j + b)/q⌋ + c = first_showing(j) − in`, then `fps` holds each frame
+  until the next starts. With `C/R = p/q'` reduced and `Y = ⌊2q'·C·
+  startOffset⌋`: `a = 2p`, `b = Y − p`, `q = 2q'`, `c = 1 − in` (whole
+  numbers that ffmpeg's doubles evaluate exactly). The end of the stream
+  maps to `first_showing(frames)`, so the background shows from there.
   `bilinear` matches GES's compositor best *(measured)*; `lutyuv` avoids an
   RGB round trip.
 - **Compositing:** `color=c=<bg>:s=<W>x<H>:r=<num>/<den>[base]`, then
@@ -1324,7 +1343,11 @@ The playhead's frame through the same graph as a one-frame unit (`n = 1`,
 no audio), then `scale=out_color_matrix=bt709:out_range=pc,format=rgb24,setparams=color_trc=iec61966-2-1`
 (an sRGB PNG) `-frames:v 1 -f image2 -update 1`, to
 `frames/<stem>-<take>-<HHMMSSFF>.png`. `--layer L2`: the stream's raw frame at
-native resolution (same frame selection, no crop or scale).
+native resolution (same frame selection, no crop or scale). Because the
+frame selection doesn't depend on where a unit starts (A§9.3), the
+one-frame unit at the playhead shows exactly the export's frame, at any
+recorded rate *(measured: frame-ID fixtures at 25→30, 30→60, 50→30 and
+29.97→25 fps)*.
 
 ### A§9.5 Capture plan (`capture_plan.rs`)
 
@@ -1356,7 +1379,15 @@ pub struct GesAudioClip { pub file: String, pub start_ns: u64, pub inpoint_ns: u
 
 Same render units, frame selection and lead as A§9.3:
 `inpoint_ns = frame_ns_rec(k0)`, `start_ns = frame_ns(pos + lead)`,
-`duration_ns = frame_ns(pos + n) − start_ns`. Video: a `videocrop` effect
+`duration_ns = frame_ns(pos + n) − start_ns`. A layer recorded at another
+rate instead gets `inpoint_ns = max(0, frame_ns(in + lead) − startOffsetNs +
+⌊frame_ns_rec(1)/2⌋ − 3 ms)`: aligned with the take's time wherever the
+unit starts (from `k0` it was off by `k0`'s rounding); GES shows the last
+frame started, so half a recorded frame later makes that the nearest one;
+−3 ms undoes the renderer's 2 ms Matroska nudge and keeps a stamp
+truncated to the millisecond from winning a tie the export gives to the
+earlier frame *(measured with GES: 25 fps camera on a 30 fps canvas)*.
+Near a tie (within ~1 ms) GES may still differ by one frame. Video: a `videocrop` effect
 from `placement.src` and always `posx/posy/width/height` from
 `placement.dst`. Audio track caps `audio/x-raw,rate=48000,channels=2`;
 fades are 240-sample linear ramps on the source's `volume` through a
@@ -1437,7 +1468,7 @@ strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
 | Shell | store order and crash points, lock/socket protocol, history persistence, IPC round trip, process runner timeouts |
 | CLI integration | `crates/qrec/tests/<area>.rs` with `assert_cmd` |
 | Fake capture | `QREC_CAPTURE_BACKEND=fake` record start/stop end to end (M2) |
-| Parity | GES vs frame plan: SSIM ≥ 0.98 **per layer rect**, plus a frame-ID fixture (frame index drawn as binary bars) asserting the exact source frame in both renderers |
+| Parity | GES vs frame plan: SSIM ≥ 0.98 **per layer rect**, plus a frame-ID fixture (frame index drawn as binary bars) asserting the exact source frame in both renderers; at another recorded rate, export segments, frame saves and GES all show `shown_frame` (A§9.3) in units starting anywhere |
 
 **`qrec_core::testkit`** (feature `testkit`, also under `cfg(test)`; pure):
 `ctx(now, entropy)`, `ProjectBuilder` (`.canvas()`, `.screen_layer()`,

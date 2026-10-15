@@ -1,7 +1,9 @@
 //! The frame-save planner (A§9.4). Owner: output.
 //!
 //! A saved frame goes through the export graph as a one-frame unit (`n = 1`,
-//! no audio), so it matches the export, then becomes an sRGB PNG. With a
+//! no audio), then becomes an sRGB PNG. It matches the export exactly
+//! because the frame selection doesn't depend on where a unit starts
+//! (`export_plan::shown_frame`, also at another recorded rate). With a
 //! layer, it is that layer's raw source frame at native resolution, picked
 //! with the same frame selection.
 
