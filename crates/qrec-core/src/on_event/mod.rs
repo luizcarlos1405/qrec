@@ -84,6 +84,12 @@ pub fn on_event(state: &State, ctx: &Ctx, ev: Event) -> Outcome {
         Event::FrameFailed { job, message, log } => {
             output::frame_failed(state, ctx, job, message, log)
         }
+        Event::OutputAppeared {
+            job,
+            out,
+            bytes,
+            kept,
+        } => output::output_appeared(state, ctx, job, out, bytes, kept),
         Event::TakeDirsDeleted {
             job,
             deleted,

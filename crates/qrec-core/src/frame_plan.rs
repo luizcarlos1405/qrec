@@ -106,6 +106,7 @@ pub fn plan_frame(
     argv.extend(png_output_args(out));
     Ok(FramePlan {
         out: out.to_owned(),
+        replace: false,
         tmp_ext: "png".to_owned(),
         argv,
         files,

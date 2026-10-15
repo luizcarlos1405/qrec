@@ -58,12 +58,13 @@ pub enum Effect {
         key: SilenceKey,
         argv: Vec<String>,
     },
-    /// → `ExportProgress`… then `ExportFinished` | `ExportFailed` | `ExportCancelled`.
+    /// → `ExportProgress`… then `ExportFinished` | `ExportFailed` |
+    /// `ExportCancelled` | `OutputAppeared`.
     RenderExport {
         job: JobId,
         plan: ExportPlan,
     },
-    /// → `FrameSaved` | `FrameFailed`.
+    /// → `FrameSaved` | `FrameFailed` | `OutputAppeared`.
     SaveFrame {
         job: JobId,
         plan: FramePlan,

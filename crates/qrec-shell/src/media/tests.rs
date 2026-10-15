@@ -72,12 +72,18 @@ fn events_until(
 fn export_ended(ev: &Event) -> bool {
     matches!(
         ev,
-        Event::ExportFinished { .. } | Event::ExportFailed { .. } | Event::ExportCancelled { .. }
+        Event::ExportFinished { .. }
+            | Event::ExportFailed { .. }
+            | Event::ExportCancelled { .. }
+            | Event::OutputAppeared { .. }
     )
 }
 
 fn frame_ended(ev: &Event) -> bool {
-    matches!(ev, Event::FrameSaved { .. } | Event::FrameFailed { .. })
+    matches!(
+        ev,
+        Event::FrameSaved { .. } | Event::FrameFailed { .. } | Event::OutputAppeared { .. }
+    )
 }
 
 fn names_in(dir: &Path) -> Vec<String> {
@@ -532,8 +538,13 @@ fn a_failed_va_segment_falls_back_to_libx264() {
     assert!(temps_in(&dir.join("exports")).is_empty());
 }
 
+/// A hand-picked output is replaced only when the plan says the person
+/// confirmed it (`replace`). A file that appears at an unconfirmed path
+/// while the job runs is kept, and so is the result, next to it:
+/// `OutputAppeared` names both (the core makes it `confirmation_required`,
+/// A§8.8). Whether a file was there when the job started doesn't matter.
 #[test]
-fn hand_picked_outputs_are_replaced_only_when_they_existed() {
+fn hand_picked_outputs_are_replaced_only_when_confirmed() {
     let env = TestEnv::new();
     let dir = env.empty_dir("swamp");
     fixture_project(
@@ -542,6 +553,7 @@ fn hand_picked_outputs_are_replaced_only_when_they_existed() {
     );
     let out = env.root().join("mine.mp4");
     let plan = export_plan(&load(&dir), out.to_str().unwrap(), None);
+    assert!(!plan.replace);
     let mut runner = runner(&dir);
     let (inbox, rx) = Inbox::channel();
 
@@ -551,15 +563,88 @@ fn hand_picked_outputs_are_replaced_only_when_they_existed() {
         matches!(events.last(), Some(Event::ExportFinished { path, .. }) if Path::new(path) == out),
         "{events:#?}"
     );
-    // It exists now, so a second export (confirmed by the core) replaces it.
-    fs::write(&out, "old").unwrap();
-    runner.render_export(JobId(2), plan, inbox);
+    // Someone else's file at the unconfirmed path: kept, and so is ours.
+    fs::write(&out, "someone else's").unwrap();
+    runner.render_export(JobId(2), plan.clone(), inbox.clone());
+    let events = events_until(&rx, WAIT, export_ended);
+    let Some(Event::OutputAppeared {
+        job,
+        out: appeared,
+        bytes,
+        kept,
+    }) = events.last()
+    else {
+        panic!("{events:#?}");
+    };
+    assert_eq!(
+        (*job, Path::new(appeared), *bytes),
+        (JobId(2), out.as_path(), 14)
+    );
+    assert_eq!(fs::read_to_string(&out).unwrap(), "someone else's");
+    let kept = PathBuf::from(kept);
+    assert_eq!(kept.parent(), Some(env.root()));
+    assert!(
+        kept.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(".mine.qrec-part-"),
+        "{}",
+        kept.display()
+    );
+    assert_eq!(output_counts(&kept).0, 30, "the export was kept whole");
+    assert_eq!(
+        temps_in(env.root()),
+        [kept.file_name().unwrap().to_string_lossy()]
+    );
+    fs::remove_file(&kept).unwrap();
+
+    // Confirmed (`replace`): the file is replaced.
+    let confirmed = ExportPlan {
+        replace: true,
+        ..plan
+    };
+    runner.render_export(JobId(3), confirmed, inbox.clone());
     let events = events_until(&rx, WAIT, export_ended);
     assert!(
         matches!(events.last(), Some(Event::ExportFinished { path, .. }) if Path::new(path) == out),
         "{events:#?}"
     );
     assert_eq!(output_counts(&out).0, 30);
+    assert!(temps_in(env.root()).is_empty());
+
+    // Frame saves follow the same rule.
+    let png = env.root().join("mine.png");
+    fs::write(&png, "a drawing").unwrap();
+    let frame = plan_frame(&load(&dir), 1, None, png.to_str().unwrap()).unwrap();
+    runner.save_frame(JobId(4), frame.clone(), inbox.clone());
+    let events = events_until(&rx, WAIT, frame_ended);
+    let Some(Event::OutputAppeared {
+        out: appeared,
+        bytes: 9,
+        kept,
+        ..
+    }) = events.last()
+    else {
+        panic!("{events:#?}");
+    };
+    assert_eq!(Path::new(appeared), png);
+    assert_eq!(fs::read_to_string(&png).unwrap(), "a drawing");
+    assert_eq!(&fs::read(kept).unwrap()[..4], b"\x89PNG");
+    fs::remove_file(kept).unwrap();
+    runner.save_frame(
+        JobId(5),
+        FramePlan {
+            replace: true,
+            ..frame
+        },
+        inbox,
+    );
+    let events = events_until(&rx, WAIT, frame_ended);
+    assert!(
+        matches!(events.last(), Some(Event::FrameSaved { path, .. }) if Path::new(path) == png),
+        "{events:#?}"
+    );
+    assert_eq!(&fs::read(&png).unwrap()[..4], b"\x89PNG");
     assert!(temps_in(env.root()).is_empty());
 }
 
@@ -597,6 +682,7 @@ fn raw_plan(segment: SegmentPlan, out: &str) -> ExportPlan {
     argv.push(file_arg(out));
     ExportPlan {
         out: out.to_owned(),
+        replace: false,
         tmp_ext: "mp4".to_owned(),
         total_frames: segment.frames,
         files: BTreeSet::new(),
@@ -893,6 +979,7 @@ fn a_failed_frame_save_reports_its_log() {
     argv.push(file_arg("frames/x.png"));
     let plan = FramePlan {
         out: "frames/x.png".to_owned(),
+        replace: false,
         tmp_ext: "png".to_owned(),
         argv,
         files: BTreeSet::new(),

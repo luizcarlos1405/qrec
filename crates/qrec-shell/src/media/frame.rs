@@ -1,4 +1,5 @@
-//! `Effect::SaveFrame` → `FrameSaved` | `FrameFailed` (A§9.4, SPEC §13.2):
+//! `Effect::SaveFrame` → `FrameSaved` | `FrameFailed` | `OutputAppeared`
+//! (A§9.4, SPEC §13.2):
 //! the core-built ffmpeg argv writes a PNG to a temp file next to the
 //! destination, which must be a PNG before it is renamed into place without
 //! replacing anything (A§8.8). Copying to the clipboard (`wl-copy`) is not
@@ -13,7 +14,8 @@ use qrec_core::{Event, JobId};
 use super::Ctx;
 use super::child::{self, Spec, Stderr, Stdout};
 use super::export::{
-    Failure, check_ffmpeg, destination, extension, missing_input, replace_output, stopped,
+    Failure, appeared, check_ffmpeg, destination, extension, kept_aside, missing_input,
+    replace_output, stopped,
 };
 use super::jobs::JobCtl;
 use super::logs::LogFile;
@@ -40,6 +42,7 @@ pub(crate) fn run(ctx: &Ctx, ctl: &JobCtl, job: JobId, plan: &FramePlan) -> Even
                     Failure::Failed { message, log, .. } => (message, log),
                     _ => ("cancelled".to_owned(), log_path),
                 },
+                Failure::Appeared { out, kept } => return appeared(job, &out, &kept),
             };
             Event::FrameFailed { job, message, log }
         }
@@ -65,7 +68,7 @@ fn save(
     if let Some(missing) = missing_input(ctx, &argv) {
         return Err(Failure::plain(format!("{missing} is missing"), &log));
     }
-    let dest = destination(ctx, &plan.out).map_err(|m| Failure::plain(m, &log))?;
+    let dest = destination(ctx, &plan.out, plan.replace).map_err(|m| Failure::plain(m, &log))?;
     let dir = dest
         .path()
         .parent()
@@ -116,12 +119,7 @@ fn save(
             log.note(&format!("saved {}", path.display()));
             Ok(path)
         }
-        Err(e @ PlaceError::Appeared { .. }) => {
-            if let PlaceError::Appeared { kept, .. } = &e {
-                ctl.forget_temp(kept);
-            }
-            Err(Failure::plain(e.to_string(), &log))
-        }
+        Err(PlaceError::Appeared { out, kept }) => Err(kept_aside(ctl, &log, out, kept)),
         Err(e) => Err(Failure::plain(e.to_string(), &log)),
     }
 }

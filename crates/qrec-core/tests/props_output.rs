@@ -255,7 +255,26 @@ proptest! {
                 prop_assert!(plan.files.contains(&arg["file:".len()..]), "{}", arg);
             }
         }
-        prop_assert_eq!(plan.stitch.list_content.lines().count(), plan.segments.len() + 1);
+        // The concat list: a header, then each segment's file and exact
+        // duration; every segment starts within 0.5 µs of its timeline time
+        // (the durations never add up their rounding).
+        let lines: Vec<&str> = plan.stitch.list_content.lines().collect();
+        prop_assert_eq!(lines.len(), 2 * plan.segments.len() + 1);
+        let (num, den) = (i128::from(fps.num), i128::from(fps.den));
+        let (mut start_us, mut position) = (0i128, 0i128);
+        for (s, pair) in plan.segments.iter().zip(lines[1..].chunks(2)) {
+            let name = s.path.rsplit('/').next().unwrap();
+            prop_assert_eq!(pair[0], format!("file '{name}'"));
+            let error = start_us * num - position * 1_000_000 * den;
+            prop_assert!(2 * error.abs() <= num, "starts at {} µs", start_us);
+            let duration = pair[1].strip_prefix("duration ").unwrap();
+            let (secs, micros) = duration.split_once('.').unwrap();
+            prop_assert_eq!(micros.len(), 6);
+            start_us += secs.parse::<i128>().unwrap() * 1_000_000 + micros.parse::<i128>().unwrap();
+            position += i128::from(s.frames);
+        }
+        let error = start_us * num - position * 1_000_000 * den;
+        prop_assert!(2 * error.abs() <= num, "ends at {} µs", start_us);
         prop_assert_eq!(plan.stitch.argv.last().unwrap(), &format!("file:{}", plan.out));
     }
 

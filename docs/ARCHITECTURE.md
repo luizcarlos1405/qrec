@@ -551,6 +551,7 @@ pub enum Event {
     ExportCancelled { job: JobId },
     FrameSaved { job: JobId, path: String },
     FrameFailed { job: JobId, message: String, log: String },
+    OutputAppeared { job: JobId, out: String, bytes: u64, kept: String }, // A§8.8, ends either job
     TakeDirsDeleted { job: JobId, deleted: Vec<String>, errors: Vec<String> },
     ProjectChangedOnDisk { project: Result<Box<Project>, String> }, // parsed + migrated by the shell
     RequesterGone { req: ReqId },                                  // IPC client disconnected
@@ -777,7 +778,14 @@ requester started if no other requester waits; never stop a recording.
 
 `out` from the CLI is already absolute (resolved against the CLI's cwd).
 `facts.out.forbidden` (inside `takes/`, `.qrec/` or `qrec.json`) ⇒ `Invalid`
-(not confirmable); `exists && !confirmed` ⇒ `confirmation_required`.
+(not confirmable); `exists && !confirmed` ⇒ `confirmation_required`. The
+plan's `replace` is `exists && confirmed`: the runner may replace only the
+file the person confirmed. `OutputAppeared` (a hand-picked `out` appeared
+while the job ran, A§8.8) ends the job with `confirmation_required` (exit 4)
+naming both paths, `details: {files:[{path,bytes}], kept}`, hint "rename
+<kept>, or run the command again with --yes to replace <out>", and a
+warning toast ("Export kept aside" / "Frame kept aside") with Open folder /
+Copy path for the kept file.
 Auto names: `exports/<stem>-YYYYMMDD-HHMMSS.<ext>` and
 `frames/<stem>-<take>-<HHMMSSFF>.png` (timeline timecode) with local time
 from `utc_offset_secs` and `stem = naming::file_stem(project.name)`.
@@ -1085,8 +1093,13 @@ in A§9.3). Logs: `.qrec/logs/YYYYMMDD-HHMMSS-<pid>-j<job>-<step>.log`
 Temp outputs live in the destination directory as
 `.<stem>.qrec-part-<pid>-<job>.<ext>`; the final step is
 `renameat2(RENAME_NOREPLACE)` (fallback `link` + `unlink`). Auto names loop
-`-2`, `-3`, … on EEXIST; a hand-picked unconfirmed `--out` that appeared
-meanwhile ⇒ keep the temp, fail `confirmation_required` naming both paths.
+`-2`, `-3`, … on EEXIST; a hand-picked `--out` is replaced only when the
+plan says so (`replace`: it existed at dispatch and the person confirmed,
+A§5.9 — never guessed from the file system when the job starts). A
+hand-picked unconfirmed `--out` that appeared meanwhile ⇒ keep the temp
+(it is the result now) and end the job with
+`OutputAppeared { out, bytes, kept }`, which the core turns into
+`confirmation_required` naming both paths (exit 4).
 `ExportFinished`/`FrameSaved` carry the real path. Migration backups use the
 same no-replace rule.
 
@@ -1231,7 +1244,7 @@ Every ffmpeg/ffprobe command line is built in the core (SPEC §3.1):
 ### A§9.3 Export plan (`export_plan.rs`)
 
 ```rust
-pub struct ExportPlan { pub out: String, pub tmp_ext: String, pub segments: Vec<SegmentPlan>,
+pub struct ExportPlan { pub out: String, pub replace: bool /* A§8.8 */, pub tmp_ext: String, pub segments: Vec<SegmentPlan>,
                         pub stitch: StitchPlan, pub total_frames: u64, pub files: BTreeSet<String> }
 pub struct SegmentPlan { pub clips: Vec<ClipId>, pub take: TakeId, pub in_: Frame, pub out: Frame,
                          pub frames: u64, pub samples: u64, pub key: String, pub path: String, pub argv: Vec<String> }

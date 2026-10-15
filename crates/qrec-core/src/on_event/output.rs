@@ -2,8 +2,9 @@
 //! away. Owner: output.
 //!
 //! Events whose job isn't in the job table (or is another kind of job) are
-//! ignored with a debug log. A finished, failed or cancelled job leaves the
-//! table, its requester gets the reply and the person a toast.
+//! ignored with a debug log. A finished, failed or cancelled job, or one
+//! whose hand-picked output appeared meanwhile (`OutputAppeared`), leaves
+//! the table, its requester gets the reply and the person a toast.
 
 use chrono::{DateTime, Utc};
 use serde_json::json;
@@ -317,6 +318,66 @@ pub fn frame_failed(
     effects.push(log(
         LogLevel::Error,
         format!("{job}: frame save failed: {message} (log: {log_path})"),
+    ));
+    Outcome::new(next, effects, None)
+}
+
+/// A hand-picked output that appeared while an export or a frame save ran
+/// (A§8.8): nothing was replaced and the result was kept next to it. The
+/// job ends; its requester gets `confirmation_required` (exit 4) naming
+/// both paths, with the file that appeared in `details.files` like the
+/// confirmation asked before a job starts; the person gets a warning toast.
+pub fn output_appeared(
+    state: &State,
+    ctx: &Ctx,
+    job: JobId,
+    out: String,
+    bytes: u64,
+    kept: String,
+) -> Outcome {
+    let _ = ctx;
+    let Some(entry) = job_of(state, job, |k| {
+        matches!(k, JobKind::Export { .. } | JobKind::FrameSave { .. })
+    }) else {
+        return ignore(
+            state,
+            format!("OutputAppeared for {job}, which isn't a running export or frame save"),
+        );
+    };
+    let (what, title) = match entry.kind {
+        JobKind::Export { .. } => ("export", "Export kept aside"),
+        _ => ("frame", "Frame kept aside"),
+    };
+    let mut next = state.clone();
+    next.runtime.jobs.remove(&job);
+    let mut effects = Vec::new();
+    if let Some(req) = &entry.req {
+        let error = CoreError::confirmation_required(format!(
+            "{out} appeared while Qrec was writing it; the new {what} was kept as {kept}"
+        ))
+        .with_hint(format!(
+            "rename {kept}, or run the command again with --yes to replace {out}"
+        ))
+        .with_details(json!({
+            "files": [{ "path": out, "bytes": bytes }],
+            "kept": kept,
+        }));
+        effects.push(Effect::Reply {
+            req: req.clone(),
+            reply: Err(error),
+        });
+    }
+    effects.push(Effect::Notify(
+        Toast::new(ToastLevel::Warning, title)
+            .with_body(format!(
+                "{out} appeared while Qrec was writing it, so it wasn't replaced. The new {what} is {kept}."
+            ))
+            .with_action("Open folder", UiAction::RevealPath(kept.clone()))
+            .with_action("Copy path", UiAction::CopyText(kept.clone())),
+    ));
+    effects.push(log(
+        LogLevel::Warn,
+        format!("{job}: {out} appeared meanwhile; the {what} was kept as {kept}"),
     ));
     Outcome::new(next, effects, None)
 }
@@ -675,6 +736,101 @@ mod tests {
         assert!(matches!(
             &out.effects[0],
             Effect::Reply { reply: Err(e), .. } if e.code == ErrorCode::Io && e.message == "saving the frame failed: boom"
+        ));
+    }
+
+    /// A hand-picked output that appeared while the job ran is a
+    /// confirmation (exit 4) naming both paths, for exports and frame saves
+    /// alike, never a generic I/O failure (A§8.8).
+    #[test]
+    fn an_output_that_appeared_meanwhile_needs_confirmation() {
+        let state = exporting(HostKind::Cli);
+        let ctx = testkit::ctx(START, 2);
+        let frame = Command::FrameSave {
+            at: "5f".parse().unwrap(),
+            layer: None,
+            out: None,
+        };
+        let state = apply(&state, &ctx, frame).unwrap().state;
+        for (job, what, title) in [
+            (JobId(1), "export", "Export kept aside"),
+            (JobId(2), "frame", "Frame kept aside"),
+        ] {
+            let out = on_event(
+                &state,
+                &ctx,
+                Event::OutputAppeared {
+                    job,
+                    out: "/home/me/race.webm".into(),
+                    bytes: 20,
+                    kept: "/home/me/.race.qrec-part-7-1.webm".into(),
+                },
+            );
+            assert!(!out.state.runtime.jobs.contains_key(&job), "{what}");
+            assert_eq!(out.state.runtime.jobs.len(), 1, "the other job goes on");
+            let [
+                Effect::Reply {
+                    reply: Err(err), ..
+                },
+                Effect::Notify(toast),
+                Effect::Log {
+                    level: LogLevel::Warn,
+                    ..
+                },
+            ] = &out.effects[..]
+            else {
+                panic!("{:?}", out.effects)
+            };
+            assert_eq!(err.code, ErrorCode::ConfirmationRequired);
+            assert_eq!(err.exit_code(), 4);
+            assert_eq!(
+                err.message,
+                format!(
+                    "confirmation required: /home/me/race.webm appeared while Qrec was \
+                     writing it; the new {what} was kept as /home/me/.race.qrec-part-7-1.webm"
+                )
+            );
+            assert_eq!(
+                err.hint.as_deref(),
+                Some(
+                    "rename /home/me/.race.qrec-part-7-1.webm, or run the command again \
+                     with --yes to replace /home/me/race.webm"
+                )
+            );
+            assert_eq!(
+                err.details,
+                Some(json!({
+                    "files": [{ "path": "/home/me/race.webm", "bytes": 20 }],
+                    "kept": "/home/me/.race.qrec-part-7-1.webm",
+                }))
+            );
+            assert_eq!(
+                (toast.level, toast.title.as_str()),
+                (ToastLevel::Warning, title)
+            );
+            assert!(matches!(
+                &toast.actions[0].action,
+                UiAction::RevealPath(p) if p == "/home/me/.race.qrec-part-7-1.webm"
+            ));
+        }
+        // Another job, or none: ignored.
+        let out = on_event(
+            &state,
+            &ctx,
+            Event::OutputAppeared {
+                job: JobId(9),
+                out: "/x".into(),
+                bytes: 0,
+                kept: "/y".into(),
+            },
+        );
+        assert_eq!(out.state, state);
+        assert!(matches!(
+            out.effects.as_slice(),
+            [Effect::Log {
+                level: LogLevel::Debug,
+                ..
+            }]
         ));
     }
 

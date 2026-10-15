@@ -632,6 +632,7 @@ fn record_phases_round_trip() {
 fn export_plan() -> ExportPlan {
     ExportPlan {
         out: "/home/me/exports/demo.mp4".into(),
+        replace: true,
         tmp_ext: "mp4".into(),
         segments: vec![SegmentPlan {
             clips: vec![clip("c7f3")],
@@ -774,6 +775,7 @@ fn effects_round_trip() {
             job: JobId(7),
             plan: FramePlan {
                 out: "/tmp/f.png".into(),
+                replace: false,
                 tmp_ext: "png".into(),
                 argv: vec!["ffmpeg".into()],
                 files: BTreeSet::new(),
@@ -958,6 +960,12 @@ fn events_round_trip() {
             job: JobId(7),
             message: "bad".into(),
             log: ".qrec/logs/y.log".into(),
+        },
+        Event::OutputAppeared {
+            job: JobId(7),
+            out: "/tmp/race.webm".into(),
+            bytes: 20,
+            kept: "/tmp/.race.qrec-part-1-7.webm".into(),
         },
         Event::TakeDirsDeleted {
             job: JobId(9),
