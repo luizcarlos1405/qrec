@@ -3,16 +3,18 @@
 //! before the first dispatch (A§8.10), recovery probes (A§5.3) and the
 //! watcher (A§8.9).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
+use crossbeam_channel::RecvTimeoutError;
 use qrec_core::apply::project::{is_initialized, uninitialized_state};
 use qrec_core::apply::ui::live_scene;
 use qrec_core::on_event::record::recovery_probes;
 use qrec_core::protocol::{Effect, Toast, ToastLevel};
-use qrec_core::{CoreError, ErrorCode, Event, State};
+use qrec_core::{CoreError, ErrorCode, Event, State, TakeId};
 
 use super::Session;
 use super::config::{LogNotifier, SessionConfig, SessionEnv};
@@ -28,6 +30,12 @@ use crate::proc;
 use crate::store::{self, Check, LoadOpts, Loaded, Store};
 use crate::timers::Timers;
 use crate::watcher;
+
+/// How long opening a project waits for the recovery probes (A§5.3)
+/// before the first request runs. Probing reads every packet of the files
+/// (`-count_packets`), a few seconds even for long takes; the runner's own
+/// limit is 20 s plus 30 s per GiB.
+pub const RECOVERY_WAIT: Duration = Duration::from_secs(60);
 
 /// What a folder holds (A§8.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +204,7 @@ pub(super) fn open(
         timers,
         watcher: None,
         pending: BTreeMap::new(),
+        recovering: BTreeSet::new(),
         next_req: 0,
         notifier: cfg.notifier.unwrap_or_else(|| Box::new(LogNotifier)),
         shutdown: false,
@@ -234,6 +243,10 @@ pub(super) fn open(
     }
     if writable && is_initialized(&session.state.project) {
         session.start_recovery_probes();
+        // A§5.3: a take left `recording` is finalized before the first
+        // request runs, so even a one-shot CLI command recovers it (and
+        // sees it recovered). Requests that arrive meanwhile queue.
+        session.finish_recovery(cfg.recovery_wait.unwrap_or(RECOVERY_WAIT));
     }
     if writable && !opts.recovery {
         match watcher::watch(&session.dir, session.inbox.clone()) {
@@ -284,7 +297,8 @@ impl Session {
     }
 
     /// One `Probe{Recover}` per take still `recording` (A§5.3 "Recovery",
-    /// the record owner's `recovery_probes`).
+    /// the record owner's `recovery_probes`). Each stays outstanding work
+    /// until its `TakeProbed` is handled.
     fn start_recovery_probes(&mut self) {
         for probe in recovery_probes(&self.state) {
             if let Effect::Probe {
@@ -294,9 +308,37 @@ impl Session {
             } = probe
             {
                 tracing::info!("recovering {take}: probing {} file(s)", jobs.len());
+                self.recovering.insert(take.clone());
                 self.deps
                     .media
                     .probe(take, purpose, jobs, self.inbox.clone());
+            }
+        }
+    }
+
+    /// Handles what arrives until every recovery probe is answered, for at
+    /// most `wait`. A probe still running then (a huge file) is answered
+    /// later: [`Session::run_until`] waits for it.
+    fn finish_recovery(&mut self, wait: Duration) {
+        let deadline = Instant::now() + wait;
+        while !self.recovering.is_empty() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                tracing::warn!(
+                    "still recovering {} after {} s; the project opens meanwhile",
+                    self.recovering
+                        .iter()
+                        .map(TakeId::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    wait.as_secs()
+                );
+                return;
+            }
+            match self.rx.recv_timeout(left) {
+                Ok(msg) => self.handle(msg),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
             }
         }
     }

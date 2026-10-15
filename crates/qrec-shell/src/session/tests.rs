@@ -20,9 +20,9 @@ use qrec_core::model::StreamKind;
 use qrec_core::model::TakeStatus;
 use qrec_core::plans::{CapturePlan, ExportPlan, FramePlan, LiveScene};
 use qrec_core::protocol::{
-    Command, Effect, HelloInfo, HistoryOp, MediaInfo, MoveTo, ProbeJob, ProbePurpose, ProbeResult,
-    Progress, RecordModeArg, RecordedStream, SceneTarget, SelectOp, Toast, VideoSourceArg,
-    WireBody,
+    Command, Effect, HelloInfo, HistoryOp, InsertAt, MediaInfo, MoveTo, ProbeJob, ProbePurpose,
+    ProbeResult, Progress, RecordModeArg, RecordedStream, SceneTarget, SelectOp, Toast,
+    VideoSourceArg, WireBody,
 };
 use qrec_core::state::{HostKind, Job, JobKind, RecordPhase, SilenceKey};
 use qrec_core::{ClipId, CoreError, ErrorCode, Event, Fps, JobId, ReqId, TakeId};
@@ -84,13 +84,23 @@ impl CaptureEngine for FakeCapture {
 struct FakeMedia {
     log: Log,
     dir: PathBuf,
+    /// `Some(frames)`: recovery probes are answered at once, every file
+    /// readable and `frames` long; `None`: never answered.
+    recover: Option<u64>,
 }
 
 impl MediaRunner for FakeMedia {
-    fn probe(&mut self, take: TakeId, purpose: ProbePurpose, jobs: Vec<ProbeJob>, _out: Inbox) {
+    fn probe(&mut self, take: TakeId, purpose: ProbePurpose, jobs: Vec<ProbeJob>, out: Inbox) {
         let files: Vec<&str> = jobs.iter().map(|j| j.file.as_str()).collect();
         self.log
             .push(format!("probe {take} {purpose:?} {}", files.join(",")));
+        if let (ProbePurpose::Recover, Some(frames)) = (purpose, self.recover) {
+            out.event(Event::TakeProbed {
+                take,
+                purpose,
+                results: jobs.iter().map(|j| probed_job(j, frames)).collect(),
+            });
+        }
     }
 
     fn detect_silence(&mut self, job: JobId, _key: SilenceKey, _argv: Vec<String>, _out: Inbox) {
@@ -168,6 +178,8 @@ struct Harness {
     dir: PathBuf,
     log: Log,
     toasts: Arc<Mutex<Vec<Toast>>>,
+    /// How the fake media runner answers recovery probes ([`FakeMedia`]).
+    recover: Option<u64>,
 }
 
 impl Harness {
@@ -180,6 +192,7 @@ impl Harness {
             dir,
             log: Log::default(),
             toasts: Arc::default(),
+            recover: None,
         }
     }
 
@@ -211,6 +224,8 @@ impl Harness {
                 toasts.lock().unwrap().push(t.clone())
             })),
             check: Some(unchecked),
+            // The fake runner answers recovery at once or never.
+            recovery_wait: Some(Duration::from_millis(200)),
             ..SessionConfig::default()
         }
     }
@@ -224,6 +239,7 @@ impl Harness {
             media: Box::new(FakeMedia {
                 log: self.log.clone(),
                 dir: self.dir.clone(),
+                recover: self.recover,
             }),
             clock: Box::new(move || {
                 tick += 1;
@@ -1120,9 +1136,8 @@ fn a_restore_rewrites_qrec_json_and_keeps_the_broken_one() {
     );
 }
 
-#[test]
-fn takes_still_recording_are_probed_when_a_host_opens() {
-    let h = Harness::new("recover");
+/// The sample project plus take 2, left `recording` by a crash.
+fn write_crashed_take(h: &Harness) {
     let mut json = testdata::sample_json();
     let mut recording = testdata::take_json("take-0002", 0);
     recording["status"] = "recording".into();
@@ -1134,21 +1149,90 @@ fn takes_still_recording_are_probed_when_a_host_opens() {
     json["takes"]["take-0002"] = recording;
     json["nextTakeNumber"] = 3.into();
     write_project(&h.dir, &json);
+}
+
+#[test]
+fn takes_still_recording_are_recovered_before_the_first_request() {
+    let mut h = Harness::new("recover");
+    h.recover = Some(90);
+    write_crashed_take(&h);
 
     let ro = h.open(false).unwrap();
     assert!(!h.log.has("probe"), "readers don't recover takes");
     drop(ro);
-    let s = h.open(true).unwrap();
+    let mut s = h.open(true).unwrap();
     assert!(
         h.log
             .has("probe take-0002 Recover takes/take-0002/L1-screen-FAKE-1.mkv,takes/take-0002/A1-mic.mka"),
         "{:?}",
         h.log.lines()
     );
+    // Open waited for the answer: the take is recovered, on disk too, and
+    // nothing is left for a host to wait for.
+    let t = &s.state().project.takes[&take(2)];
+    assert_eq!((t.status, t.duration_frames), (TakeStatus::Ok, 90));
+    assert_eq!(h.head().project.takes[&take(2)].status, TakeStatus::Ok);
+    assert!(
+        h.toast_titles()
+            .contains(&"Recovered take 2 from the bog.".to_owned()),
+        "{:?}",
+        h.toast_titles()
+    );
+    assert!(s.recovering().is_empty() && s.is_idle());
+    // So the very first command can use it (a one-shot CLI command).
+    let added = send(
+        &mut s,
+        Command::ClipAdd {
+            take: take(2),
+            at: InsertAt::End,
+        },
+        false,
+    )
+    .unwrap();
+    assert_eq!(added["created"].as_array().unwrap().len(), 1, "{added}");
+}
+
+#[test]
+fn a_slow_recovery_keeps_the_host_running_until_it_is_answered() {
+    let h = Harness::new("slow-recover");
+    write_crashed_take(&h);
+    // The probe isn't answered while opening (the wait ends first).
+    let mut s = h.open(true).unwrap();
+    assert!(h.log.has("probe take-0002 Recover"), "{:?}", h.log.lines());
     assert_eq!(
         s.state().project.takes[&take(2)].status,
         TakeStatus::Recording
     );
+    assert_eq!(
+        s.recovering().iter().collect::<Vec<_>>(),
+        [&take(2)],
+        "still outstanding"
+    );
+    assert!(!s.is_idle(), "a host must not exit now");
+
+    // A host that is otherwise done keeps handling messages until the
+    // answer arrives, instead of dropping it.
+    let inbox = s.inbox();
+    let jobs = recovery_probe_jobs(&s, &take(2));
+    let late = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        inbox.event(Event::TakeProbed {
+            take: take(2),
+            purpose: ProbePurpose::Recover,
+            results: jobs.iter().map(|j| probed_job(j, 90)).collect(),
+        });
+    });
+    let started = Instant::now();
+    s.run_until(|_| true);
+    late.join().unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(250));
+    assert_eq!(s.state().project.takes[&take(2)].status, TakeStatus::Ok);
+    assert!(s.recovering().is_empty() && s.is_idle());
+}
+
+/// The probe jobs recovery runs for `take` in `s`'s project.
+fn recovery_probe_jobs(s: &Session, take: &TakeId) -> Vec<ProbeJob> {
+    qrec_core::on_event::record::probe_jobs(&s.state().project.takes[take])
 }
 
 #[test]
@@ -1461,6 +1545,24 @@ fn the_live_pipeline_follows_the_gui_from_the_start() {
     let cli = h.open(true).unwrap();
     assert!(!h.log.has("set_live"));
     drop(cli);
+}
+
+/// [`probed`] for a probe job.
+fn probed_job(job: &ProbeJob, frames: u64) -> ProbeResult {
+    let stream = qrec_core::model::Stream {
+        id: job.id.clone(),
+        kind: job.kind,
+        file: job.file.clone(),
+        width: None,
+        height: None,
+        sample_rate: None,
+        channels: None,
+        start_offset_ns: 0,
+        duration_ns: None,
+        frames: None,
+        fps: None,
+    };
+    probed(&stream, frames)
 }
 
 /// What ffprobe would say about one planned stream of `frames` frames at 30 fps.

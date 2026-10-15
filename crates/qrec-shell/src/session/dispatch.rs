@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use chrono::SubsecRound;
 use qrec_core::apply::project::is_initialized;
 use qrec_core::ctx::{Ctx, Facts, FactsNeeded};
-use qrec_core::protocol::{Command, HelloInfo, Query, Toast, ToastLevel, WireBody};
+use qrec_core::protocol::{Command, HelloInfo, ProbePurpose, Query, Toast, ToastLevel, WireBody};
 use qrec_core::state::JobKind;
 use qrec_core::{
     CoreError, ErrorCode, Event, ReqId, apply, facts_needed, facts_needed_for_event, on_event,
@@ -204,9 +204,20 @@ impl Session {
     }
 
     pub(super) fn handle_event(&mut self, ev: Event) {
-        if let Event::RequesterGone { req } = &ev {
+        match &ev {
             // Its connection is gone: nothing more can be sent to it.
-            self.pending.remove(req);
+            Event::RequesterGone { req } => {
+                self.pending.remove(req);
+            }
+            // A recovery probe answered (the runner always answers, A§8.7).
+            Event::TakeProbed {
+                take,
+                purpose: ProbePurpose::Recover,
+                ..
+            } => {
+                self.recovering.remove(take);
+            }
+            _ => {}
         }
         self.run_event(ev);
     }

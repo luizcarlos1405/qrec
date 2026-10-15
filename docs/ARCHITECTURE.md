@@ -701,7 +701,12 @@ to every stop request and waiter with `TakeFinalizedView`.
 
 **Recovery** (`Session::open` with the lock): each take still `recording`
 gets `Probe{Recover}`; readable ⇒ `ok`, bin, toast "Recovered take 7 from
-the bog."; otherwise `broken`.
+the bog."; otherwise `broken`. Open waits for the answers (at most
+`RECOVERY_WAIT`, 60 s) before the first request runs, so even a one-shot CLI
+command recovers the take and already sees it recovered (`qrec clip add
+take-0007` works right after a crash). A probe still outstanding after that
+is work like a running job: `Session::run_until` doesn't return before its
+answer, so no host exits and drops it (the runner always answers, A§8.7).
 
 **CaptureFailed vs StreamLost** (engine contract, A§8.11): after
 CaptureStarted, an error attributable to one branch (its source, encoder,
@@ -1054,7 +1059,9 @@ continue"). `seek`/`play`/`pause`/`shuttle` without a GUI host ⇒
 
 - Exit (Headless and Cli): once Idle + no running jobs + no open connections
   has held for 2 s, or (Headless) 60 s after `ready` without a request.
-  `shutdown` requests: stop accepting, let jobs finish, exit.
+  `shutdown` requests: stop accepting, let jobs finish, exit. Never while a
+  recovery probe is outstanding (A§5.3): its answer would be lost and the
+  take would stay `recording`.
 - Signals in every host: the first SIGTERM/SIGINT/SIGHUP dispatches
   `RecordStop` (finalize, not cancel) and cancels jobs; exit when idle or
   after 15 s. A second signal: SIGKILL child process groups, `_exit(130)`;
