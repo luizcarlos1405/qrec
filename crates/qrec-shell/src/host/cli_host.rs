@@ -11,8 +11,11 @@
 //!   IPC so other commands run against the same Session (A§8.5). Its reply
 //!   is reported as soon as it comes ([`RequestEvents::replied`]); then the
 //!   host takes no new job and exits once what it still runs for others is
-//!   over. It never takes a recording: that request bounces and its client
-//!   waits for the host to go, then spawns a headless one;
+//!   over. It never takes a recording: a client that finds such a host
+//!   doesn't send one, and waits for the host to go, then spawns a headless
+//!   one — unless the host's `hello` lists an export: recording is blocked
+//!   during an export (SPEC §13.1), so the client answers at once with the
+//!   core's `Busy` (`export_blocks_recording`), as any host would;
 //! - no host and [`Fallback::SpawnHeadless`] (`record start|toggle`) ⇒ take
 //!   the lock, hand it to a spawned headless host (A§8.3 step 5), send the
 //!   request there;
@@ -36,6 +39,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 use qrec_core::CoreError;
+use qrec_core::apply::record::export_blocks_recording;
 use qrec_core::protocol::{Command, HelloInfo, InsertAt, Progress, RecordModeArg, WireBody};
 use qrec_core::state::HostKind;
 use serde_json::Value;
@@ -488,10 +492,23 @@ fn run_request(
                 hello,
             }) => {
                 // A CLI command's own host never records (A§8.5): don't
-                // even ask it (it would bounce the request); wait for it to
-                // go like for a bounce, then start a headless host.
-                let refused = hello.as_deref().is_some_and(|h| h.host == HostKind::Cli)
-                    && matches!(&req.body, WireBody::Command(cmd) if cmd.may_start_recording());
+                // even ask it (it would bounce the request).
+                let refused = match hello.as_deref() {
+                    Some(cli) if cli.host == HostKind::Cli && starts_recording(req) => {
+                        // Recording is blocked during an export, whichever
+                        // process runs it (SPEC §13.1): the core's `Busy`,
+                        // at once, as a GUI or headless host answers it
+                        // (A§5.3). Waiting would only start an unannounced
+                        // take once the export is over.
+                        if let Some(busy) = export_blocks_recording(&cli.jobs) {
+                            return reply_err(sink.out(), busy);
+                        }
+                        // A short command: wait for it to go like for a
+                        // bounce, then start a headless host.
+                        true
+                    }
+                    _ => false,
+                };
                 let sent = if refused {
                     Err(SendError::NotAccepted)
                 } else {
@@ -510,8 +527,9 @@ fn run_request(
                     Ok(Sent::Interrupted) => return Ran::Interrupted,
                     // EOF before `accepted`: it never ran (the host stopped
                     // accepting as we connected, or it is a CLI command's
-                    // own host, which bounces recordings, and new jobs once
-                    // its command is done, A§8.5). Route again after a
+                    // own host, which bounces recordings while it runs no
+                    // export, and new jobs once its command is done,
+                    // A§8.5). Route again after a
                     // pause, like for a host that is starting or stopping,
                     // until the deadline (given once more from the first
                     // bounce) passes.
@@ -615,6 +633,11 @@ fn run_request(
             },
         }
     }
+}
+
+/// `record start|toggle`: a request a CLI command's host never takes.
+fn starts_recording(req: &Request) -> bool {
+    matches!(&req.body, WireBody::Command(cmd) if cmd.may_start_recording())
 }
 
 /// A query with no host: a read-only Session, no lock (A§8.4).
@@ -865,15 +888,16 @@ impl Drop for ProxyResponder {
 /// bouncing the request (A§8.5): it never records, and takes no new job
 /// once its own command is done.
 fn bounced_by_cli_host(hello: &HelloInfo, req: &Request) -> CoreError {
-    let (what, again) = match &req.body {
-        WireBody::Command(cmd) if cmd.may_start_recording() => (
+    let (what, again) = if starts_recording(req) {
+        (
             "doesn't record",
             "record again once it finishes (`qrec status` shows it)",
-        ),
-        _ => (
+        )
+    } else {
+        (
             "takes no new job while it finishes",
             "run this again once it finishes",
-        ),
+        )
     };
     CoreError::busy(format!(
         "the project is held by another qrec command (pid {}), which {what}",

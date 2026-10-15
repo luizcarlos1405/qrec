@@ -3,6 +3,8 @@
 //!
 //! - stdin is null; the child leads its own process group (`process_group(0)`)
 //!   and gets SIGKILL if the thread that spawned it dies (`PR_SET_PDEATHSIG`);
+//! - it gets nothing but its stdio (`proc::close_on_exec_from`): not even a
+//!   descriptor Qrec inherited from whoever started it;
 //! - stdout is piped only when it is parsed, and always drained on its own
 //!   thread (ffmpeg `-progress pipe:1` blocks, or captured bytes);
 //! - stderr is appended to a log file, or captured through an anonymous
@@ -275,9 +277,11 @@ pub(crate) fn start(spec: Spec<'_>) -> Result<Finished, StartError> {
         cmd.env(key, value);
     }
     // SAFETY: the closure runs in the forked child before exec and only
-    // calls the async-signal-safe `prctl`.
+    // makes async-signal-safe system calls (close_range or fcntl, prctl).
     unsafe {
         cmd.pre_exec(|| {
+            // Only its stdio crosses: nothing Qrec inherited (A§8.7).
+            crate::proc::close_on_exec_from(3);
             // The child dies with the thread that spawned it; a SIGKILLed
             // host leaves no orphaned ffmpeg behind.
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
@@ -608,6 +612,21 @@ mod tests {
         assert_eq!(done.stdout, b"out");
         assert_eq!(done.stderr, "err");
         assert_eq!(done.describe("sh"), "sh exited with status 3");
+    }
+
+    /// Like `proc`'s runner (A§8.7): an ffmpeg an export starts never holds
+    /// a descriptor Qrec inherited from whoever started it.
+    #[test]
+    fn children_get_no_inherited_descriptor() {
+        let fd = crate::proc::tests::inheritable_fd();
+        let script = crate::proc::tests::holds_fd_script(&fd);
+        let cmd = argv(&["sh", "-c", &script]);
+        let done = run(Spec::new(&cmd, Stderr::Capture)
+            .stdout(Stdout::Capture { limit: 1024 })
+            .timeout(Duration::from_secs(10)))
+        .unwrap();
+        assert!(done.exited_ok(), "{}", done.describe("sh"));
+        assert_eq!(done.stdout, b"free\n");
     }
 
     #[test]

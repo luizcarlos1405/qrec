@@ -1182,7 +1182,11 @@ fn status_for_people_and_for_programs() {
         })
         .script(Script::reply(
             json!({"project": {}, "ui": {}, "history": {}, "runtime": {}}),
-        ));
+        ))
+        .script(Script {
+            routed: Some(hello(&project, HostKind::Cli, 77)),
+            ..Script::reply(json!({"project": {}, "ui": {}, "history": {}, "runtime": {}}))
+        });
     let human = run(&mut fake, &project, "qrec status");
     assert_eq!(
         human.out,
@@ -1197,9 +1201,20 @@ fn status_for_people_and_for_programs() {
     assert_eq!(json["data"]["initialized"], true);
     assert_eq!(json["data"]["path"], project.display().to_string());
     assert_eq!(json["data"]["history"]["cursor"], 4);
+    // No host runs: this process read the project itself. `host` names
+    // only a process that holds the project, so it is null, like the human
+    // view's "none running" (it used to be "cli" with this process's pid,
+    // like a real CLI command's host, and a pid gone once read).
     let in_process = run(&mut fake, &project, "qrec status --json").json();
-    assert_eq!(in_process["data"]["host"], "cli");
-    assert_eq!(in_process["data"]["pid"], std::process::id());
+    assert_eq!(in_process["data"]["host"], Value::Null, "{in_process}");
+    assert_eq!(in_process["data"]["pid"], Value::Null, "{in_process}");
+    assert_eq!(in_process["data"]["initialized"], true);
+    assert_eq!(in_process["data"]["path"], project.display().to_string());
+    // Another qrec command hosting the project (an in-process export) is a
+    // host: "cli" and its pid.
+    let cli_host = run(&mut fake, &project, "qrec status --json").json();
+    assert_eq!(cli_host["data"]["host"], "cli");
+    assert_eq!(cli_host["data"]["pid"], 77);
 }
 
 #[test]

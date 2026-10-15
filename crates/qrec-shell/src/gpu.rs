@@ -812,6 +812,15 @@ pub fn run_probe_child(
         )
         .stderr(stderr)
         .process_group(0);
+    // SAFETY: the closure runs in the forked child before exec and only
+    // makes async-signal-safe system calls (close_range or fcntl).
+    unsafe {
+        command.pre_exec(|| {
+            // Only its stdio crosses: nothing Qrec inherited (A§8.7).
+            crate::proc::close_on_exec_from(3);
+            Ok(())
+        });
+    }
     let Probe::VaH264Factory { device } = probe;
     let vendor = render_nodes()
         .into_iter()

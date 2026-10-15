@@ -18,7 +18,11 @@
 //! A CLI command's own host (A§8.5) bounces what it doesn't take: closed
 //! before `accepted`, the request never ran and its client routes again
 //! (A§8.3 step 6). It never takes a recording, and once its own command is
-//! done ([`IpcServer::own_command_done`]) no new job either.
+//! done ([`IpcServer::own_command_done`]) no new job either. While it runs
+//! an export ([`IpcServer::set_exporting`]) a recording isn't bounced but
+//! reaches its core, which refuses it at once (`Busy` "an export is
+//! running", as in every host): recording is blocked during an export, and
+//! the client shouldn't wait for one.
 //!
 //! Contract for clients: keep the connection open until the reply. Closing
 //! (or half-closing) it means the requester is gone (A§5.8).
@@ -173,6 +177,7 @@ impl IpcServer {
             accepting: AtomicBool::new(true),
             shutdown: AtomicBool::new(false),
             own_done: AtomicBool::new(false),
+            exporting: AtomicBool::new(false),
             socket: Mutex::new(Some(published)),
             wake_wr,
             conns: Mutex::new(Conns {
@@ -236,6 +241,15 @@ impl IpcServer {
     /// one is gone. Idempotent.
     pub fn own_command_done(&self) {
         self.shared.own_done.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the Session runs an export now (its host says so after each
+    /// message the Session handles). A CLI command's host doesn't bounce a
+    /// recording meanwhile: its core refuses it at once, as every host does
+    /// while an export runs (A§5.3), instead of the client waiting for the
+    /// host to go only to record once the export is over (A§8.5).
+    pub fn set_exporting(&self, exporting: bool) {
+        self.shared.exporting.store(exporting, Ordering::SeqCst);
     }
 
     pub fn stats(&self) -> ServerStats {
@@ -353,6 +367,8 @@ struct Shared {
     shutdown: AtomicBool,
     /// A CLI host's own command got its reply ([`IpcServer::own_command_done`]).
     own_done: AtomicBool,
+    /// The Session runs an export ([`IpcServer::set_exporting`]).
+    exporting: AtomicBool,
     /// Taken (unpublished and closed) when the server stops accepting; the
     /// acceptor closes its own handle when it exits.
     socket: Mutex<Option<PublishedSocket>>,
@@ -462,7 +478,9 @@ impl Shared {
     /// command's own host never records (the recording would live and die
     /// with that command and its terminal), and once its own command is
     /// done it takes no new job, so it exits as soon as what it already
-    /// runs is over. Everything else is taken, by every host.
+    /// runs is over. Everything else is taken, by every host, and so is a
+    /// recording while an export runs: the core refuses it at once (A§5.3),
+    /// so its client hears why instead of waiting for the export to end.
     fn bounces(&self, body: &WireBody) -> Option<&'static str> {
         let WireBody::Command(cmd) = body else {
             return None;
@@ -471,7 +489,8 @@ impl Shared {
             return None;
         }
         if cmd.may_start_recording() {
-            Some("a CLI command's host doesn't record")
+            (!self.exporting.load(Ordering::SeqCst))
+                .then_some("a CLI command's host doesn't record")
         } else if cmd.may_start_job() && self.own_done.load(Ordering::SeqCst) {
             Some("this CLI command's host is done and takes no new job")
         } else {

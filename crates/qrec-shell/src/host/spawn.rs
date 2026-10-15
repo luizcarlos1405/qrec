@@ -3,8 +3,11 @@
 //! `record start|toggle` with no host: the CLI holds the lock and spawns
 //! `qrec host --headless --project DIR --lock-fd 3 --ready-fd 4`. In the
 //! child (`pre_exec`) the lock fd and the ready pipe are `dup2`ed onto 3
-//! and 4 (which clears `FD_CLOEXEC`) and `setsid` detaches it from the
-//! terminal; stdin is null and stdout/stderr append to
+//! and 4 (which clears `FD_CLOEXEC`), every descriptor above them is made
+//! close-on-exec (nothing the CLI inherited from its own caller reaches the
+//! host: a pipe or `flock` held for the whole take would make whoever waits
+//! on it wait for the take) and `setsid` detaches it from the terminal;
+//! stdin is null and stdout/stderr append to
 //! `.qrec/logs/<stamp>-<pid>-host.log`. flock belongs to the open file
 //! description, so the child keeps the lock: the CLI closes its fd and
 //! **never unlocks**. The host writes one JSON line on fd 4 (`{"ok":true}`
@@ -162,13 +165,19 @@ pub fn spawn_headless(
         .stderr(log);
     let (lock_fd, ready_fd) = (lock_high.as_raw_fd(), ready_high.as_raw_fd());
     // SAFETY: the closure runs between fork and exec and only makes
-    // async-signal-safe calls (dup2, setsid) on fds that are open in the child.
+    // async-signal-safe calls (dup2, close_range or fcntl, setsid) on fds
+    // that are open in the child.
     unsafe {
         command.pre_exec(move || {
             // dup2 clears FD_CLOEXEC on the new descriptor.
             if libc::dup2(lock_fd, CHILD_LOCK_FD) < 0 || libc::dup2(ready_fd, CHILD_READY_FD) < 0 {
                 return Err(io::Error::last_os_error());
             }
+            // Nothing else of the CLI's reaches the detached host: a
+            // descriptor the CLI's own caller passed down (a pipe it reads
+            // to the end, a key-bind script's flock) would stay open for
+            // the whole take.
+            crate::proc::close_on_exec_from(CHILD_READY_FD + 1);
             if libc::setsid() < 0 {
                 return Err(io::Error::last_os_error());
             }
