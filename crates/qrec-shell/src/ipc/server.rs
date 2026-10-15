@@ -242,6 +242,27 @@ impl IpcServer {
         }
     }
 
+    /// [`stop_accepting`](Self::stop_accepting), but only while no
+    /// connection is open, atomically with admission: a host that decided
+    /// to exit because nobody was connected never admits (and tells
+    /// `accepted`) a client afterwards. A client the acceptor took but
+    /// didn't admit sees EOF before `accepted` and routes again (A§8.3
+    /// step 6). `false` (nothing changed) when a connection got in first:
+    /// serve it and decide again.
+    pub fn stop_accepting_if_idle(&self) -> bool {
+        {
+            let conns = lock(&self.shared.conns);
+            if !conns.open.is_empty() {
+                return false;
+            }
+            if self.shared.accepting.swap(false, Ordering::SeqCst) {
+                self.shared.wake_acceptor();
+            }
+        }
+        self.stop_accepting();
+        true
+    }
+
     /// The rest of the exit sequence: stop accepting, refuse anything new
     /// with `why`, let open connections flush for up to `timeout`, then give
     /// the stragglers `why` as their reply and close them. Drop the Session
@@ -334,15 +355,20 @@ struct ConnEntry {
 impl Shared {
     fn stop_accepting(&self) {
         if self.accepting.swap(false, Ordering::SeqCst) {
-            let byte = [1u8];
-            // SAFETY: writing one byte from a valid buffer to our pipe fd.
-            unsafe { libc::write(self.wake_wr.as_raw_fd(), byte.as_ptr().cast(), 1) };
+            self.wake_acceptor();
         }
         if let Some(mut socket) = lock(&self.socket).take() {
             if let Err(e) = socket.unpublish() {
                 tracing::warn!("IPC: {e}");
             }
         }
+    }
+
+    /// Gets the acceptor out of `poll` (it then sees `accepting` is off).
+    fn wake_acceptor(&self) {
+        let byte = [1u8];
+        // SAFETY: writing one byte from a valid buffer to our pipe fd.
+        unsafe { libc::write(self.wake_wr.as_raw_fd(), byte.as_ptr().cast(), 1) };
     }
 
     fn submit(&self, msg: Msg) -> bool {
@@ -416,6 +442,12 @@ impl Shared {
         let out = Arc::new(Outgoing::default());
         {
             let mut conns = lock(&self.conns);
+            if !self.accepting.load(Ordering::SeqCst) {
+                // The host stopped accepting while this one was being
+                // taken: closing it before `accepted` lets the client route
+                // again, safely (A§8.3 step 6).
+                return;
+            }
             conns.open.insert(
                 id,
                 ConnEntry {

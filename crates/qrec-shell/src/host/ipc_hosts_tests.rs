@@ -41,7 +41,6 @@ fn inputs(now: Instant) -> ExitInputs {
         signalled_at: None,
         own_done: None,
         ready_at: now,
-        stopping: None,
     }
 }
 
@@ -114,27 +113,6 @@ fn exit_rules() {
     assert_eq!(decide(&cli, &rules), Decision::Wait(Some(s(2))));
     cli.busy = true;
     assert_eq!(decide(&cli, &rules), Decision::Wait(None));
-
-    // Stopped accepting after deciding to exit: whatever got in before is
-    // answered (no grace: nobody new can come), then it exits for the
-    // reason it decided.
-    let mut stopping = inputs(s(0));
-    stopping.requests = 3;
-    stopping.stopping = Some(HostEnd::Idle);
-    stopping.open = 1;
-    stopping.conns_idle_since = None;
-    assert_eq!(decide(&stopping, &rules), Decision::Wait(None));
-    stopping.open = 0;
-    stopping.conns_idle_since = Some(s(0));
-    stopping.busy = true;
-    assert_eq!(decide(&stopping, &rules), Decision::Wait(None));
-    stopping.busy = false;
-    assert_eq!(decide(&stopping, &rules), Decision::Exit(HostEnd::Idle));
-    stopping.stopping = Some(HostEnd::Unused);
-    assert_eq!(decide(&stopping, &rules), Decision::Exit(HostEnd::Unused));
-    // A signal still has the last word.
-    stopping.signalled_at = Some(s(0));
-    assert_eq!(decide(&stopping, &rules), Decision::Exit(HostEnd::Signal));
 }
 
 // ------------------------------------------------------- in-process hosts

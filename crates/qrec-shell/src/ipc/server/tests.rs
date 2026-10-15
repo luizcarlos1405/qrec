@@ -254,6 +254,29 @@ fn shutdown_stops_accepting_and_unlinks_the_socket() {
     assert!(UnixStream::connect(&t.socket).is_err());
 }
 
+/// A host stops accepting only while no connection is open, atomically
+/// with admission (A§8.3 step 3): one that is open keeps it serving; once
+/// none is, the socket goes and nothing more is admitted.
+#[test]
+fn stopping_to_accept_waits_for_open_connections() {
+    let dir = socket_dir();
+    let t = start_server(dir.path(), |_| {});
+    let held = UnixStream::connect(&t.socket).unwrap();
+    assert!(wait_for(Duration::from_secs(5), || t.server.stats().open == 1));
+    assert!(!t.server.stop_accepting_if_idle());
+    assert!(t.server.stats().accepting);
+    assert!(t.socket.exists());
+    drop(held);
+    assert!(wait_for(Duration::from_secs(5), || t.server.stats().open == 0));
+    assert!(t.server.stop_accepting_if_idle());
+    let stats = t.server.stats();
+    assert!(!stats.accepting && !stats.shutdown);
+    assert!(!t.socket.exists());
+    assert!(UnixStream::connect(&t.socket).is_err());
+    // Idempotent.
+    assert!(t.server.stop_accepting_if_idle());
+}
+
 #[test]
 fn every_accepted_request_gets_exactly_one_reply() {
     let dir = socket_dir();
