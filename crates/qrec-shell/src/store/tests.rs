@@ -201,8 +201,12 @@ fn a_crash_after_the_history_line_drops_it() {
     assert_eq!(again.history.entries[0].label, "Trim");
 }
 
+/// A crash between writing `qrec.json` and the head (A§7.6 steps 2 and
+/// 3): the file is that commit's own write, so the open finishes the
+/// commit (its line kept, the head rewritten by the repair) instead of
+/// merging the file as an edit.
 #[test]
-fn a_crash_after_writing_qrec_json_is_an_external_edit() {
+fn a_crash_after_writing_qrec_json_finishes_the_commit() {
     let (tmp, mut store, s0) = initialized();
     let (s1, ops, project) = edit(&s0, "Remove c001", remove_first_clip);
     store.crash_after = Some(Step::Project);
@@ -211,16 +215,106 @@ fn a_crash_after_writing_qrec_json_is_an_external_edit() {
         Err(CommitError::Crashed(Step::Project))
     ));
 
-    let loaded = load(&ProjectPaths::new(tmp.path()), &opts()).unwrap();
-    // The state starts from the last commit; the newer file is merged by
-    // the core as an "External edit" right after opening.
-    assert_eq!(loaded.project, s0.project);
-    assert!(loaded.history.entries.is_empty());
-    assert_eq!(loaded.external, Some(Ok(Box::new(s1.project.clone()))));
+    let paths = ProjectPaths::new(tmp.path());
+    let loaded = load(&paths, &opts()).unwrap();
+    assert_eq!(loaded.project, s1.project);
+    assert_eq!(loaded.history.entries, s1.history.entries);
+    assert_eq!(
+        (loaded.history.cursor, loaded.history.next_seq),
+        (1, 2),
+        "{:?}",
+        loaded.notes
+    );
+    assert_eq!(loaded.external, None);
+    assert!(loaded.needs_repair, "the head gets written");
     assert_eq!(
         loaded.accepted_sha.as_deref(),
         Some(format::sha(&format::project_bytes(&s1.project)).as_str())
     );
+    assert!(
+        loaded.notes.iter().any(|n| n.contains("Remove c001")),
+        "{:?}",
+        loaded.notes
+    );
+
+    // The repair commits it: the next load is clean.
+    let mut store = Store::new(paths.clone(), true);
+    store.adopt(&loaded);
+    let mut reopened = state(loaded.project.clone());
+    reopened.history = loaded.history.clone();
+    store.write_all(&reopened).unwrap();
+    let again = load(&paths, &opts()).unwrap();
+    assert_eq!(again.project, s1.project);
+    assert_eq!(again.history.cursor, 1);
+    assert!(!again.needs_repair && again.external.is_none());
+}
+
+/// The same crash, then a hand edit of `qrec.json`: the file isn't the
+/// commit's write anymore, so it is merged as an edit against the head.
+#[test]
+fn a_crash_after_writing_qrec_json_then_a_hand_edit_is_an_external_edit() {
+    let (tmp, mut store, s0) = initialized();
+    let (s1, ops, project) = edit(&s0, "Remove c001", remove_first_clip);
+    store.crash_after = Some(Step::Project);
+    assert!(commit(&mut store, &s0, &s1, &ops, project).is_err());
+    let paths = ProjectPaths::new(tmp.path());
+    let mut edited = s1.project.clone();
+    edited.name = "edited by hand".into();
+    fs::write(paths.project_file(), format::project_bytes(&edited)).unwrap();
+
+    let loaded = load(&paths, &opts()).unwrap();
+    // The state starts from the last commit; the newer file is merged by
+    // the core as an "External edit" right after opening.
+    assert_eq!(loaded.project, s0.project);
+    assert!(loaded.history.entries.is_empty());
+    assert_eq!(loaded.external, Some(Ok(Box::new(edited.clone()))));
+    assert_eq!(
+        loaded.accepted_sha.as_deref(),
+        Some(format::sha(&format::project_bytes(&edited)).as_str())
+    );
+}
+
+/// A take finalization that reached `qrec.json` but not the head keeps
+/// the facts the file holds (the take `ok`, its media) with the clip it
+/// placed. Merged as an edit, the head's facts won (`recording`, 0
+/// frames) while the file's clip used the take, so the open reported the
+/// file invalid and the placement was lost.
+#[test]
+fn an_unfinished_finalization_is_finished_with_its_facts() {
+    let (tmp, mut store, _) = initialized();
+    let take: qrec_core::TakeId = "take-0001".parse().unwrap();
+    // The take as `begin_take` saved it, no clip yet.
+    let mut recording = state(sample_project());
+    recording.project.timeline.clips.clear();
+    let t = recording.project.takes.get_mut(&take).unwrap();
+    t.status = qrec_core::model::TakeStatus::Recording;
+    t.duration_frames = 0;
+    t.placed = false;
+    store.write_all(&recording).unwrap();
+    // Finalization: facts first (persist), then the clip ("Record take 1").
+    let mut facts = recording.clone();
+    facts
+        .project
+        .takes
+        .insert(take.clone(), sample_project().takes[&take].clone());
+    let (finished, ops, project) = edit(&facts, "Record take 1", |p| {
+        p.timeline.clips = sample_project().timeline.clips[..1].to_vec();
+    });
+    store.crash_after = Some(Step::Project);
+    assert!(commit(&mut store, &recording, &finished, &ops, project).is_err());
+
+    let loaded = load(&ProjectPaths::new(tmp.path()), &opts()).unwrap();
+    assert_eq!(loaded.project, finished.project);
+    assert_eq!(
+        loaded.project.takes[&take].status,
+        qrec_core::model::TakeStatus::Ok
+    );
+    assert_eq!(
+        loaded.history.entries.last().unwrap().label,
+        "Record take 1"
+    );
+    assert_eq!(loaded.external, None);
+    qrec_core::validate::ensure_valid(&loaded.project).unwrap();
 }
 
 #[test]
@@ -657,6 +751,35 @@ fn a_rebuilt_take_joins_the_pool_where_its_history_needs_it() {
     assert_eq!(take.status, qrec_core::model::TakeStatus::Recording);
     assert_eq!(take.duration_frames, 0, "the Recover probe measures it");
     assert_eq!(loaded.project.next_take_number, 2);
+}
+
+/// SPEC §5.3.1: take numbers are never reused. A project rebuilt from
+/// `.qrec/` alone, whose take folders are gone too, starts numbering after
+/// every take its history names: the base predates them, and a new take
+/// numbered like an old one would get the old entries' clips on redo.
+#[test]
+fn a_rebuilt_project_never_reuses_a_take_number_its_history_names() {
+    let (tmp, _store, _states) = recorded_after_the_base();
+    let paths = ProjectPaths::new(tmp.path());
+    let base: BaseFile = serde_json::from_slice(&fs::read(paths.history_base()).unwrap()).unwrap();
+    assert_eq!(base.project.next_take_number, 1, "the base predates take 1");
+    assert!(!paths.takes_dir().exists(), "no take folder to count");
+    fs::remove_file(paths.history_head()).unwrap();
+    fs::remove_file(paths.project_file()).unwrap();
+
+    let loaded = load(&paths, &recovery()).unwrap();
+    assert!(loaded.readded.is_empty());
+    assert_eq!(
+        loaded.project.next_take_number, 2,
+        "take 1 is named by the history: {:?}",
+        loaded.notes
+    );
+    let named = loaded
+        .history
+        .entries
+        .iter()
+        .any(|e| e.label == "Record take 1");
+    assert!(named, "{:?}", loaded.history.entries);
 }
 
 #[test]

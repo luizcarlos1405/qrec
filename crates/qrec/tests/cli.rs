@@ -670,6 +670,50 @@ fn purging_a_take_needs_yes() {
     assert_eq!(takes.reply()["data"].as_array().unwrap().len(), 1);
 }
 
+/// A purge that can't be saved deletes nothing, changes nothing and says
+/// so (A§5.6, A§7.6). It used to reply "purged take 1 from the project, but
+/// some files could not be deleted … delete the leftover files by hand"
+/// while the project still listed the take.
+#[test]
+fn a_purge_that_cant_be_saved_deletes_nothing_and_says_so() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |dir: &Path, mode: u32| {
+        fs::set_permissions(dir, fs::Permissions::from_mode(mode)).unwrap();
+    };
+    let env = TestEnv::new();
+    let dir = project_with(&env, "purge-ro", &[video(30), video(30)]);
+    qrec(&env, &dir, &["clip", "remove", "c001", "-q"]).ok();
+    let state = dir.join(".qrec");
+    mode(&state, 0o555);
+    if fs::write(state.join(".probe"), b"").is_ok() {
+        // Root writes anyway: nothing to test.
+        let _ = fs::remove_file(state.join(".probe"));
+        return mode(&state, 0o755);
+    }
+    let out = qrec(
+        &env,
+        &dir,
+        &["--json", "take", "purge", "take-0001", "--yes"],
+    );
+    mode(&state, 0o755);
+    assert_eq!(out.code, Some(1), "{out:?}");
+    let error = out.only_reply()["error"].clone();
+    assert_eq!(error["code"], "io");
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("couldn't save the project, so nothing changed: "),
+        "{error}"
+    );
+    assert!(!error.to_string().contains("leftover"), "{error}");
+    assert!(dir.join("takes/take-0001").is_dir(), "nothing deleted");
+    let row = take_row(&env, &dir, "take-0001");
+    assert_eq!(row["unused"], true, "still in the bin: {row}");
+
+    // Once the folder is writable again the purge goes through.
+    qrec(&env, &dir, &["take", "purge", "take-0001", "--yes", "-q"]).ok();
+    assert!(!dir.join("takes/take-0001").exists());
+}
+
 #[test]
 fn autocut_dry_run_then_apply() {
     let env = TestEnv::new();
@@ -1002,6 +1046,62 @@ fn record_start_and_stop_with_the_fake_backend() {
 
     // The headless host exits once idle (A§8.6): its socket goes away.
     wait_until_no_host(&env);
+}
+
+/// A take finalization whose commit record couldn't be written (A§7.6:
+/// the history line and qrec.json were, the head wasn't) is finished by
+/// the next open: the take is `ok` with its clip and nothing is called
+/// invalid. It used to come back `recording`, and the next command said
+/// Qrec's own qrec.json was invalid, then dropped the clip and the entry.
+#[test]
+fn a_take_finalized_without_its_commit_record_is_finished_by_the_next_open() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("unfinished");
+    qrec(&env, &dir, &["init", "--canvas", "640x360@30"]).ok();
+    qrec(
+        &env,
+        &dir,
+        &["scene", "layer", "add", "screen", "--output", "FAKE-1"],
+    )
+    .ok();
+    qrec(&env, &dir, &["record", "start", "--json"]).ok();
+    thread::sleep(Duration::from_millis(1500));
+    // From now on only the commit record (history.head.json) can't be
+    // written: its temp file's name is taken by a folder.
+    let blocker = dir.join(".qrec/history.head.json.tmp");
+    fs::create_dir(&blocker).unwrap();
+    let stop = qrec(&env, &dir, &["record", "stop", "--json"]);
+    assert_eq!(stop.code, Some(1), "{stop:?}");
+    let error = stop.only_reply()["error"].clone();
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("the change was made but couldn't be saved"),
+        "{error}"
+    );
+    // The headless host exits (its last write fails the same way).
+    wait_until_no_host(&env);
+    fs::remove_dir(&blocker).unwrap();
+
+    let row = take_row(&env, &dir, "take-0001");
+    assert_eq!(row["status"], "ok", "{row}");
+    assert_eq!(row["clips"], 1, "{row}");
+    let edit = qrec(&env, &dir, &["project", "set", "--name", "x"]);
+    edit.ok();
+    assert!(!edit.stderr.contains("invalid"), "{}", edit.stderr);
+    assert_eq!(clip_ids(&env, &dir).len(), 1, "the clip is still placed");
+    let history = qrec(&env, &dir, &["history", "--json"]);
+    history.ok();
+    let labels: Vec<String> = history.reply()["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["label"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(labels.contains(&"Record take 1".to_owned()), "{labels:?}");
+    assert!(!labels.iter().any(|l| l == "External edit"), "{labels:?}");
+    assert!(!dir.join(".qrec/rejected").exists());
 }
 
 /// Waits until every host of `env` exited (its socket went away, A§8.6).
@@ -1677,6 +1777,53 @@ fn a_restore_keeps_a_valid_hand_edit_as_an_entry() {
     assert_eq!(status.reply()["data"]["project"]["name"], "my hand edit");
 }
 
+/// A hand edit that is valid alone but not once merged (A§7.4: facts in
+/// memory win) is kept as it is, even when the files need repair (SPEC
+/// §16, A§7.7): commands refuse to run until it is fixed or restored, and a
+/// restore keeps a copy. It used to be replaced by the commit record's
+/// project, with no copy kept anywhere, and the next command succeeded.
+#[test]
+fn a_hand_edit_that_doesnt_merge_is_never_overwritten() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "unmerged", &[video(30)]);
+    qrec(&env, &dir, &["project", "set", "--name", "named", "-q"]).ok();
+    // A torn last history line (a crash mid-append): the next open has
+    // repairs to write.
+    let history = dir.join(".qrec/history.jsonl");
+    let mut lines = fs::read(&history).unwrap();
+    lines.extend_from_slice(b"{\"seq\":");
+    fs::write(&history, lines).unwrap();
+    hand_edit(&dir, |json| {
+        json["name"] = json!("my hand edit");
+        json["takes"]["take-0001"]["durationFrames"] = json!(500);
+        json["timeline"]["clips"][0]["out"] = json!(500);
+    });
+    let edited = fs::read(dir.join("qrec.json")).unwrap();
+
+    for _ in 0..2 {
+        let out = qrec(&env, &dir, &["project", "set", "--name", "z", "--json"]);
+        assert_eq!(out.code, Some(1), "{out:?}");
+        let error = out.only_reply()["error"].clone();
+        assert_eq!(error["code"], "invalid");
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("qrec.json on disk is invalid: "),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read(dir.join("qrec.json")).unwrap(),
+            edited,
+            "the hand edit is kept"
+        );
+    }
+    qrec(&env, &dir, &["history", "restore", "1", "--yes", "-q"]).ok();
+    assert_eq!(corrupt_copies(&dir), [edited], "a restore keeps a copy");
+    let status = qrec(&env, &dir, &["status", "--json"]);
+    assert_eq!(status.reply()["data"]["project"]["name"], "named");
+}
+
 #[test]
 fn readers_report_only_the_history_on_disk() {
     let env = TestEnv::new();
@@ -1909,6 +2056,113 @@ fn the_next_command_recovers_a_crashed_take() {
     assert_eq!(row["durationFrames"], 45, "{row}");
     assert_eq!(row["unused"], true, "recovered into the bin");
     qrec(&env, &dir, &["clip", "add", "take-0002", "--json"]).ok();
+}
+
+/// A folder with an `ffprobe` that sleeps `secs` before running the real
+/// one (a probe of a long take on a slow disk).
+fn slow_ffprobe(env: &TestEnv, secs: u32) -> OsString {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let real = std::env::split_paths(&path)
+        .map(|dir| dir.join("ffprobe"))
+        .find(|file| file.is_file())
+        .expect("ffprobe on PATH");
+    let dir = env.root().join("slow-ffprobe");
+    fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("ffprobe");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nsleep {secs}\nexec '{}' \"$@\"\n",
+            real.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path))).unwrap()
+}
+
+/// Ctrl+C on a command whose in-process host is still recovering a crashed
+/// take, its probe slow (A§8.6): the command, which hadn't started, never
+/// runs, and the host stops waiting for the probe after the 15 s grace (the
+/// next open recovers the take). The open used to wait for the probe before
+/// the signal was even seen; with a probe slower than the open's wait, an
+/// interrupted `take purge --yes` then deleted the take.
+#[test]
+fn a_command_interrupted_during_the_startup_recovery_never_runs() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("interrupted");
+    let mut project = fixture_project(&dir, &[video(30), video(45)]);
+    project["timeline"]["clips"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|c| c["take"] != "take-0001");
+    // Take 2's files are 1 GiB each (sparse, and new files: the fixtures
+    // are shared hard links), so its probe may take 50 s (A§8.7).
+    for stream in project["takes"]["take-0002"]["streams"].as_array().unwrap() {
+        let file = dir.join(stream["file"].as_str().unwrap());
+        fs::remove_file(&file).unwrap();
+        fs::File::create(&file).unwrap().set_len(1 << 30).unwrap();
+    }
+    crash_take_two(&dir, project);
+    let path = slow_ffprobe(&env, 25);
+    let mut command = env.command(&qrec_bin());
+    command
+        .current_dir(&dir)
+        .args(["--json", "take", "purge", "take-0001", "--yes"])
+        .env("PATH", &path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    // Its host is up (and recovering take 2) before Ctrl+C.
+    let lock = dir.join(".qrec/lock");
+    let ready = || {
+        fs::read(&lock)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|r| r["pid"] == child.id() && r["state"] == "ready")
+    };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !ready() {
+        assert!(Instant::now() < deadline, "the host never got ready");
+        thread::sleep(Duration::from_millis(20));
+    }
+    thread::sleep(Duration::from_millis(500));
+    let killed = std::process::Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let signalled = Instant::now();
+    let deadline = signalled + Duration::from_secs(40);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("the interrupted command didn't exit");
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    let waited = signalled.elapsed();
+    let mut stdout = String::new();
+    std::io::Read::read_to_string(&mut child.stdout.take().unwrap(), &mut stdout).unwrap();
+    assert_eq!(status.code(), Some(130), "{stdout}");
+    assert!(
+        waited < Duration::from_secs(21),
+        "the 15 s grace ends the wait for the probe: {waited:?}"
+    );
+    let last: Value = serde_json::from_str(stdout.lines().last().unwrap()).unwrap();
+    assert_eq!(last["error"]["code"], "interrupted", "{last}");
+    assert!(dir.join("takes/take-0001").is_dir(), "nothing was purged");
+    let row = take_row(&env, &dir, "take-0001");
+    assert_eq!(row["status"], "ok", "{row}");
+    let row = take_row(&env, &dir, "take-0002");
+    assert_eq!(
+        row["status"], "recording",
+        "recovered by the next open: {row}"
+    );
 }
 
 /// ffprobe missing when a take stops: the take keeps its facts (still

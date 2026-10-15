@@ -982,6 +982,10 @@ fn events_round_trip() {
             deleted: vec!["takes/take-0001".into()],
             errors: vec![],
         },
+        Event::PurgeFailed {
+            job: JobId(9),
+            message: "write .qrec/qrec.json.tmp: No space left on device".into(),
+        },
         Event::ProjectChangedOnDisk {
             project: Ok(Box::new(project())),
         },

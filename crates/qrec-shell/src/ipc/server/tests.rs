@@ -439,6 +439,30 @@ fn finish_lets_replies_flush_then_answers_stragglers() {
     assert!(!t.socket.exists());
 }
 
+/// A signal while the Session opens (A§8.6): its `RecordStop` and
+/// `Interrupt` reach the Session before the requests parked meanwhile, so
+/// the Session refuses those instead of running them first (a queued
+/// `record start` used to start recording, then stop at once).
+#[test]
+fn urgent_messages_go_ahead_of_parked_requests() {
+    let dir = socket_dir();
+    let t = start_server(dir.path(), |_| {});
+    assert!(t.server.send(Msg::DiskChanged));
+    let sender = t.server.sender();
+    assert!(sender.send_urgent(Msg::Shutdown));
+    assert!(sender.send_urgent(Msg::Interrupt));
+    let (inbox, rx) = Inbox::channel();
+    t.server.attach(inbox);
+    assert!(matches!(rx.try_recv().unwrap(), Msg::Shutdown));
+    assert!(matches!(rx.try_recv().unwrap(), Msg::Interrupt));
+    assert!(matches!(rx.try_recv().unwrap(), Msg::DiskChanged));
+    // Attached, they keep their place in the queue.
+    assert!(t.server.send(Msg::DiskChanged));
+    assert!(sender.send_urgent(Msg::Interrupt));
+    assert!(matches!(rx.try_recv().unwrap(), Msg::DiskChanged));
+    assert!(matches!(rx.try_recv().unwrap(), Msg::Interrupt));
+}
+
 #[test]
 fn messages_sent_before_attach_are_delivered_in_order() {
     let dir = socket_dir();

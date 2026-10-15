@@ -18,9 +18,11 @@
 //! never got a request exits 60 s after `ready`; an in-process CLI host whose
 //! own command finished exits at once if nobody else used it. `shutdown`:
 //! stop accepting, finalize a recording, let jobs finish, exit. The first
-//! signal dispatches `RecordStop` and `Msg::Interrupt` (cancel jobs); exit
-//! once idle or after 15 s. The second signal kills child process groups
-//! and `_exit(130)`s.
+//! signal dispatches `RecordStop` and `Msg::Interrupt` (cancel jobs), ahead
+//! of requests parked while the Session opened; the Session then runs no
+//! command that hadn't started but those that stop something; exit once
+//! idle (a recovery probe still out counts) or after 15 s. The second
+//! signal kills child process groups and `_exit(130)`s.
 //!
 //! The Session only re-evaluates the exit rules when it handles a message,
 //! so a waker thread sends a cheap nudge (a `Query::Status` nobody waits
@@ -665,7 +667,9 @@ impl Host {
 }
 
 /// The first signal: note it, finalize a recording, cancel jobs
-/// (`Msg::Interrupt`), wake the loop. The second: `on_second` or the hard exit.
+/// (`Msg::Interrupt`), wake the loop. Both messages go ahead of requests
+/// that were parked while the Session opened, so the Session refuses those
+/// instead of running them first. The second: `on_second` or the hard exit.
 fn watch_signals(
     interrupts: &Interrupts,
     baseline: usize,
@@ -684,8 +688,8 @@ fn watch_signals(
                 .unwrap_or_else(PoisonError::into_inner);
             at.get_or_insert_with(Instant::now);
         }
-        sender.send(record_stop_msg());
-        sender.send(Msg::Interrupt);
+        sender.send_urgent(record_stop_msg());
+        sender.send_urgent(Msg::Interrupt);
         first_ctl.wake_now();
     };
     let second = move || match on_second {

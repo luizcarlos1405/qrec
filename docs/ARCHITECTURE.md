@@ -576,6 +576,7 @@ pub enum Event {
     FrameFailed { job: JobId, message: String, log: String },
     OutputAppeared { job: JobId, out: String, bytes: u64, kept: String }, // A§8.8, ends either job
     TakeDirsDeleted { job: JobId, deleted: Vec<String>, errors: Vec<String> },
+    PurgeFailed { job: JobId, message: String }, // its commit failed and wasn't undone: nothing deleted (A§5.6)
     ProjectChangedOnDisk { project: Result<Box<Project>, String> }, // parsed + migrated by the shell
     RequesterGone { req: ReqId },                                  // IPC client disconnected
 }
@@ -743,13 +744,18 @@ each take still `recording` gets `Probe{Recover}` and is in
 `runtime.recovering` until its `TakeProbed(Recover)` comes back (whatever it
 says). Readable ⇒ `ok`, bin, toast "Recovered take 7 from the bog.";
 unreadable ⇒ `broken`; a probe that failed on its own ⇒ the take stays
-`recording` (warning toast) for the next start. Open waits for the answers
-(at most `RECOVERY_WAIT`, 60 s) before the first request runs, so even a
-one-shot CLI command recovers the take and already sees it recovered (`qrec
-clip add take-0007` works right after a crash). A probe still out after
-that is work like a running job: a host isn't idle meanwhile (A§8.6) and
-`Session::run_until` doesn't return before its answer, so no host exits and
-drops it (the runner always answers, A§8.7).
+`recording` (warning toast) for the next start. Commands wait for the
+answers (at most `RECOVERY_WAIT`, 60 s after the open) before they run, so
+even a one-shot CLI command recovers the take and already sees it recovered
+(`qrec clip add take-0007` works right after a crash). The Session holds
+them itself instead of blocking in `Session::open`, so it handles events,
+`hello`, queries and signals meanwhile; commands that only stop something
+(`RecordStop`, `RecordCancel`, `ExportCancel`, a `RecordToggle` that stops)
+never wait. A probe still out after that is work like a running job: a host
+isn't idle meanwhile (A§8.6) and `Session::run_until` doesn't return before
+its answer, so no host exits and drops it (the runner always answers,
+A§8.7) — unless the host was interrupted: then its 15 s grace decides, and
+the next open recovers the take.
 
 **CaptureFailed vs StreamLost** (engine contract, A§8.11): after
 CaptureStarted, an error attributable to one branch (its source, encoder,
@@ -788,7 +794,12 @@ files with sizes (`facts.take_files`), the number of history entries lost and
 the oldest surviving label. Effects in order: `History(Rewrite)` (A§7.5),
 `WriteProject`, then `DeleteTakeDirs` — the shell deletes exactly
 `takes/<takeId>/` (O_NOFOLLOW, regular files only, then rmdir) only after the
-commit is durable. Not undoable.
+commit is durable. Not undoable. A purge whose commit fails changes nothing
+(A§7.6: the store puts the base it replaced back) and replies `io`
+"couldn't save the project, so nothing changed"; if its files can't be put
+back it is kept in memory, the shell deletes nothing and sends
+`PurgeFailed`, whose reply says nothing was deleted and never that the
+take was purged.
 
 ### A§5.7 Autocut
 
@@ -989,27 +1000,39 @@ that saves (a `History` op or `WriteProject`), in order:
 An outcome that saves nothing writes nothing, even when the files need
 repair: a failed commit or a repair the load found makes the next commit
 that saves rewrite the history file, `qrec.json` and the head, and a host's
-open (outside recovery mode) writes the repair right away. A Session that
-goes away with a dirty store tries one last full write (never in recovery
-mode, never over a `qrec.json` that failed to load). Non-undoable
-writes do steps 2–3. On open (lock held): drop history lines with
-`seq ≥ nextSeq`; drop a torn last line; a bad line elsewhere ⇒ `Invalid`
-with its line number. If `sha256(qrec.json) == H` the state is clean;
-otherwise a valid file is an external edit against `head.project` (covers a
-crash between 2 and 3); an unparsable or invalid one takes A§7.7.
+open (outside recovery mode) writes the repair right away, unless its
+`qrec.json` didn't merge (A§7.7): that file is never written over in place,
+so the repair waits for the write that moves it aside or copies it first. A
+Session that goes away with a dirty store tries one last full write (in
+recovery mode only once a request saved, A§7.7; never over a `qrec.json`
+that failed to load). Non-undoable writes do steps 2–3. On open (lock
+held): drop history lines with `seq ≥ nextSeq`; drop a torn last line; a
+bad line elsewhere ⇒ `Invalid` with its line number. If `sha256(qrec.json) == H` the state is clean.
+Otherwise a valid file whose undoable view is the `afterHash` of the
+uncommitted lines (they follow the head: the first is its `nextSeq`, then
+one after the other, after a history ending at its cursor), and that still
+has every take the head knows, is that commit's own write (a crash, or a
+failed head write, between 2 and 3): load finishes the commit — keeps those
+lines and the cursor at the last, takes the file with its facts (a
+finalized take, its clip) and rewrites the head as a repair. Any other
+valid file is an external edit against `head.project` (so is a commit
+without a line, facts only, interrupted there: the head's facts win and
+the Recover probe re-derives a take's); an unparsable or invalid one takes
+A§7.7.
 
 **A failed commit** (disk full, permissions): a command's change didn't
 happen. The Session keeps the previous state, runs none of the outcome's
 effects and puts back what the commit wrote: a `qrec.json` that step 2
 already replaced (else the next open would merge it as an external edit),
-the history line (else the next open drops it as uncommitted) and a first
-base. It answers `io` "couldn't save the project, so nothing changed" — an
-in-process CLI host exits right after it replies, so a change can't wait in
-memory for a later save. An event's outcome carries facts (a finished take,
-a recovery), and a history `Rewrite` (purge, clear, compaction) can't put
-its base file back: those are kept in memory, the store rewrites every file
-with its next commit, and the replies they send are `io` "the change was
-made but couldn't be saved", not `ok`.
+the history line (else the next open drops it as uncommitted), a first
+base, and the base a history `Rewrite` (purge, clear, compaction) replaced
+(the store keeps its bytes for that). It answers `io` "couldn't save the
+project, so nothing changed" — an in-process CLI host exits right after it
+replies, so a change can't wait in memory for a later save. An event's
+outcome carries facts (a finished take, a recovery), and a change whose
+files can't be put back stays too: those are kept in memory, the store
+rewrites every file with its next commit, and the replies they send are
+`io` "the change was made but couldn't be saved", not `ok`.
 
 ### A§7.7 Invalid or corrupt `qrec.json`
 
@@ -1018,7 +1041,10 @@ made but couldn't be saved", not `ok`.
   history restore <cursor> --yes`"; queries work; a later valid read clears
   it. Writes that must save facts (begin take, finalization, recovery) first
   move the invalid file to `.qrec/rejected/qrec-YYYYMMDD-HHMMSS.json` (never
-  overwritten) and say so in a toast.
+  overwritten) and say so in a toast. A host whose open finds a file that is
+  valid alone but not once merged (A§7.4: facts in memory win) is in the
+  same state, and its open writes none of the repairs the load found
+  (A§7.6): the toast says the files need repair.
 - Opening: a corrupt file makes `Session::open` fail with `Invalid` and that
   hint, except with `OpenOpts { recovery: true }` (used by `qrec history` and
   `qrec history restore`), which loads `history.head.json` + history and
@@ -1030,21 +1056,28 @@ made but couldn't be saved", not `ok`.
   head, `ui.json`) until a request saves (SPEC §11: an unconfirmed restore
   leaves them as they were; only child-process logs are written). Events'
   changes (that merge, recovered takes) stay in memory for the restore's
-  commit, which rewrites everything, and their toasts only go to the log;
-  while `qrec.json` is unusable a request that would save without replacing
-  it is refused. Restore copies the corrupt file to
-  `.qrec/qrec.corrupt-<ts>.json` before writing.
+  commit, which rewrites everything, and their toasts only go to the log; a
+  request such an event answers gets `io` "the change was made but isn't
+  saved", never `ok`. Once a request saved (the restore, or a command of
+  another client the host serves meanwhile, e.g. `record start`), the files
+  hold everything and later events save as on any host (that recording's
+  start offsets and finalization). While `qrec.json` is unusable a request
+  that would save without replacing it is refused. Restore copies the
+  corrupt file to `.qrec/qrec.corrupt-<ts>.json` before writing.
 - If the head file is missing too, rebuild from `history.base.json` +
   forward patches. Patches carry no take facts and the base usually predates
   the takes, so each take found under `takes/` joins the pool right before
   the first entry that uses it (its clip or its scene), `recording`, with
   the project scene of that moment (what `begin_take` copied) and `placed`
   if that entry put its clip on the timeline; takes no entry uses go to the
-  bin. The Recover probe finalizes them; in recovery mode commands wait for
-  those probes (and a host stays up for them, A§8.6), so the restore writes
-  a project that validates. Start offsets aren't in the files: a recovered
-  take can come out shorter than recorded, and then a restore whose clips
-  no longer fit fails naming the clip (restore an older entry).
+  bin. `nextTakeNumber` goes past every take any entry names (SPEC §5.3.1:
+  a number is never reused, even when its folder is gone, or a redo would
+  put an old take's clip on a new recording). The Recover probe finalizes
+  the takes found; in recovery mode commands wait for those probes (and a
+  host stays up for them, A§8.6), so the restore writes a project that
+  validates. Start offsets aren't in the files: a recovered take can come
+  out shorter than recorded, and then a restore whose clips no longer fit
+  fails naming the clip (restore an older entry).
 
 ---
 
@@ -1119,11 +1152,12 @@ Cli) and serves the socket.
    `{pid, kind, socket, since, state:"starting"}` to the lock file, unlink
    `<hash>.sock`, bind `<first 40 hex of the hash>.<pid>.tmp` (shorter than
    the socket path), listen, `rename` it to `<hash>.sock` (atomic publish),
-   set `state:"ready"`. This happens before
-   recovery and `gst::init()`; early requests queue in the inbox. The host
-   then opens its Session with a second descriptor of the lock (`dup`, same
-   open file description): a second `open` + `flock` in the same process
-   would be refused, and dropping the Session only closes its copy.
+   set `state:"ready"`. This happens before recovery and `gst::init()`;
+   early requests queue in the server until the Session is attached (a
+   signal's messages go ahead of them, A§8.6). The host then opens its
+   Session with a second descriptor of the lock (`dup`, same open file
+   description): a second `open` + `flock` in the same process would be
+   refused, and dropping the Session only closes its copy.
 2. Only the lock holder unlinks its socket. Scanners never delete anything.
 3. **Exit:** stop accepting → unlink the socket → `state:"stopping"` →
    flush replies → exit (closing the lock fd releases the lock). The exit
@@ -1205,8 +1239,15 @@ continue"). `seek`/`play`/`pause`/`shuttle` without a GUI host ⇒
   `recording`). `shutdown` requests: stop accepting, let jobs finish, exit.
 - Signals in every host: the first SIGTERM/SIGINT/SIGHUP dispatches
   `RecordStop` (finalize, not cancel) and cancels jobs; exit when idle or
-  after 15 s. A second signal: SIGKILL child process groups, `_exit(130)`;
-  startup recovery handles the take.
+  after 15 s (a recovery probe still out counts as busy only that long).
+  Its `RecordStop` and `Msg::Interrupt` go ahead of requests parked while
+  the Session opened. From then on the Session runs no command that hadn't
+  started — those held for a recovery (A§5.3), parked before it opened or
+  arriving later get `busy` "this Qrec host is stopping" — except the ones
+  that stop something (`RecordStop`, `RecordCancel`, `ExportCancel`, a
+  `RecordToggle` that stops), and an in-process host never sends its own
+  command once signalled. A second signal: SIGKILL child process groups,
+  `_exit(130)`; startup recovery handles the take.
 - Client CLI: SIGINT/SIGTERM (signal-hook) → `Msg::Interrupt`. In-process: the
   first cancels running jobs (SIGTERM to each child group, SIGKILL after 2 s),
   deletes temp outputs, exits 130; the second SIGKILLs and exits 130.

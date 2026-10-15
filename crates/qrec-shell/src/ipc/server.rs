@@ -161,7 +161,10 @@ impl IpcServer {
         let shared = Arc::new(Shared {
             cfg,
             hook,
-            link: Mutex::new(Link::Pending(Vec::new())),
+            link: Mutex::new(Link::Pending {
+                parked: Vec::new(),
+                urgent: 0,
+            }),
             accepting: AtomicBool::new(true),
             shutdown: AtomicBool::new(false),
             socket: Mutex::new(Some(published)),
@@ -194,7 +197,7 @@ impl IpcServer {
     pub fn attach(&self, inbox: Inbox) {
         let mut link = lock(&self.shared.link);
         match std::mem::replace(&mut *link, Link::Attached(inbox.clone())) {
-            Link::Pending(parked) => {
+            Link::Pending { parked, .. } => {
                 for msg in parked {
                     inbox.send(msg);
                 }
@@ -297,6 +300,14 @@ impl ServerSender {
     pub fn send(&self, msg: Msg) -> bool {
         self.0.submit(msg)
     }
+
+    /// Like [`send`](Self::send), but ahead of every request parked before
+    /// the Session existed (after earlier urgent messages, in order): a
+    /// signal's `RecordStop` and `Interrupt` reach the Session before the
+    /// requests it must then refuse (A§8.6).
+    pub fn send_urgent(&self, msg: Msg) -> bool {
+        self.0.submit_urgent(msg)
+    }
 }
 
 impl std::fmt::Debug for ServerSender {
@@ -334,8 +345,12 @@ struct Shared {
 
 /// Where requests go.
 enum Link {
-    /// No Session yet: messages wait here, in order.
-    Pending(Vec<Msg>),
+    /// No Session yet: messages wait here, in order; the first `urgent`
+    /// of them came through [`ServerSender::send_urgent`].
+    Pending {
+        parked: Vec<Msg>,
+        urgent: usize,
+    },
     Attached(Inbox),
     /// The Session failed to open or is gone: requests get this error.
     Failed(CoreError),
@@ -371,10 +386,28 @@ impl Shared {
         unsafe { libc::write(self.wake_wr.as_raw_fd(), byte.as_ptr().cast(), 1) };
     }
 
+    fn submit_urgent(&self, msg: Msg) -> bool {
+        let mut link = lock(&self.link);
+        match &mut *link {
+            Link::Pending { parked, urgent } => {
+                parked.insert(*urgent, msg);
+                *urgent += 1;
+                true
+            }
+            Link::Attached(inbox) => inbox.send(msg),
+            Link::Failed(err) => {
+                let err = err.clone();
+                drop(link);
+                answer_with(msg, err);
+                false
+            }
+        }
+    }
+
     fn submit(&self, msg: Msg) -> bool {
         let mut link = lock(&self.link);
         match &mut *link {
-            Link::Pending(parked) => {
+            Link::Pending { parked, .. } => {
                 parked.push(msg);
                 true
             }
@@ -395,7 +428,7 @@ impl Shared {
         let parked = {
             let mut link = lock(&self.link);
             match std::mem::replace(&mut *link, Link::Failed(err.clone())) {
-                Link::Pending(parked) => parked,
+                Link::Pending { parked, .. } => parked,
                 Link::Attached(_) | Link::Failed(_) => Vec::new(),
             }
         };
@@ -664,7 +697,7 @@ fn serve_conn(shared: &Arc<Shared>, stream: &UnixStream, out: &Arc<Outgoing>) {
             let attached = {
                 let link = lock(&shared.link);
                 match &*link {
-                    Link::Pending(_) => None,
+                    Link::Pending { .. } => None,
                     Link::Attached(inbox) => Some(Ok(inbox.clone())),
                     Link::Failed(err) => Some(Err(err.clone())),
                 }
@@ -976,7 +1009,7 @@ impl ConnResponder {
         let link = lock(&shared.link);
         match &*link {
             Link::Attached(inbox) => Some(inbox.clone()),
-            Link::Pending(_) | Link::Failed(_) => None,
+            Link::Pending { .. } | Link::Failed(_) => None,
         }
     }
 

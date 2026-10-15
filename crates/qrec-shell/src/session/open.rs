@@ -15,14 +15,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::RecvTimeoutError;
 use qrec_core::apply::project::{is_initialized, uninitialized_state};
 use qrec_core::apply::ui::live_scene;
 use qrec_core::history::external::merged_preview;
 use qrec_core::model::Project;
 use qrec_core::on_event::record::start_recovery;
 use qrec_core::protocol::{Toast, ToastLevel};
-use qrec_core::{CoreError, ErrorCode, Event, State, TakeId};
+use qrec_core::{CoreError, ErrorCode, Event, State};
 
 use super::Session;
 use super::config::{LogNotifier, SessionConfig, SessionEnv};
@@ -36,14 +35,14 @@ use crate::lock::ProjectLock;
 use crate::msg::Inbox;
 use crate::paths::ProjectPaths;
 use crate::proc;
-use crate::store::{self, Check, LoadOpts, Loaded, Store};
+use crate::store::{self, Check, LoadOpts, Store};
 use crate::timers::Timers;
 use crate::watcher;
 
-/// How long opening a project waits for the recovery probes (A§5.3)
-/// before the first request runs. Probing reads every packet of the files
-/// (`-count_packets`), a few seconds even for long takes; the runner's own
-/// limit is 20 s plus 30 s per GiB.
+/// How long after opening a project its requests wait for the recovery
+/// probes (A§5.3) before they run anyway. Probing reads every packet of the
+/// files (`-count_packets`), a few seconds even for long takes; the
+/// runner's own limit is 20 s plus 30 s per GiB.
 pub const RECOVERY_WAIT: Duration = Duration::from_secs(60);
 
 /// What a folder holds (A§8.4).
@@ -218,13 +217,16 @@ pub(super) fn open(
         notifier: cfg.notifier.unwrap_or_else(|| Box::new(LogNotifier)),
         shutdown: false,
         interrupts: 0,
+        recovery_until: None,
+        request_saved: false,
         #[cfg(test)]
         crashed: false,
         lock,
     };
 
-    if let Some(loaded) = &loaded {
-        session.report_load(loaded);
+    let notes = loaded.as_ref().map(|l| l.notes.clone()).unwrap_or_default();
+    for note in &notes {
+        tracing::warn!("{}: {note}", session.dir.display());
     }
     if writable {
         let logs = proc::prune_logs(&session.paths.logs_dir(), proc::KEEP_LOGS);
@@ -252,21 +254,46 @@ pub(super) fn open(
     }
     // A consistent commit record from the start. Recovery mode leaves the
     // files alone until its first write (the restore) rewrites them all.
+    // So does a host whose qrec.json didn't merge (A§7.7): that file is
+    // never overwritten in place. The store stays dirty: the next write
+    // that saves moves it to .qrec/rejected/ (facts) or copies it aside
+    // (a restore) first, and user edits wait until it is fixed.
     let initialized = is_initialized(&session.state.project);
+    let mut repair = Repair::Held;
     if writable && initialized && !opts.recovery {
-        if session.store.is_dirty()
-            && let Err(e) = session.store.write_all(&session.state)
-        {
-            session.notify_error("Couldn't repair the project files", &e.to_string());
+        if session.state.runtime.disk_invalid.is_some() {
+            if session.store.is_dirty() {
+                tracing::info!(
+                    "qrec.json didn't merge: the project's files are left as they are until it is fixed or restored"
+                );
+            }
+        } else if session.store.is_dirty() {
+            repair = match session.store.write_all(&session.state) {
+                Ok(()) => Repair::Done,
+                Err(e) => {
+                    session.notify_error("Couldn't repair the project files", &e.to_string());
+                    Repair::Failed
+                }
+            };
+        } else {
+            repair = Repair::Done;
         }
         session.store.sync_cursor_file(session.state.history.cursor);
+    }
+    if !notes.is_empty() && writable {
+        session.report_load(&notes, repair);
     }
     if writable && is_initialized(&session.state.project) {
         session.start_recovery_probes();
         // A§5.3: a take left `recording` is finalized before the first
         // request runs, so even a one-shot CLI command recovers it (and
-        // sees it recovered). Requests that arrive meanwhile queue.
-        session.finish_recovery(cfg.recovery_wait.unwrap_or(RECOVERY_WAIT));
+        // sees it recovered). The Session holds commands until then (for at
+        // most the wait) rather than blocking here, so it keeps handling
+        // events and interrupts meanwhile (A§8.6).
+        if !session.state.runtime.recovering.is_empty() {
+            let wait = cfg.recovery_wait.unwrap_or(RECOVERY_WAIT);
+            session.recovery_until = Some(Instant::now() + wait);
+        }
     }
     if writable && !opts.recovery {
         match watcher::watch(&session.dir, session.inbox.clone()) {
@@ -284,25 +311,40 @@ pub(super) fn open(
     Ok(session)
 }
 
+/// What a host's open did about the repairs the load found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Repair {
+    /// Written (or nothing needed writing).
+    Done,
+    /// The write failed (an error toast said so).
+    Failed,
+    /// Not written: recovery mode, or a `qrec.json` that didn't merge.
+    Held,
+}
+
 impl Session {
-    fn report_load(&mut self, loaded: &Loaded) {
-        for note in &loaded.notes {
-            tracing::warn!("{}: {note}", self.dir.display());
-        }
-        if !loaded.notes.is_empty() && self.store.writable() {
-            // Recovery mode repairs nothing until the restore saves (A§7.7).
-            let (title, then) = if self.opts.recovery {
-                (
-                    "The project's files need repair",
-                    "\nA confirmed restore rewrites them.",
-                )
-            } else {
-                ("Qrec repaired the project's files", "")
-            };
-            let toast = Toast::new(ToastLevel::Warning, title)
-                .with_body(format!("{}{then}", loaded.notes.join("\n")));
-            self.notifier.notify(&toast);
-        }
+    /// The toast for what the load found (its notes are logged already).
+    fn report_load(&mut self, notes: &[String], repair: Repair) {
+        // Recovery mode repairs nothing until the restore saves, and a
+        // qrec.json that didn't merge is never written over (A§7.7).
+        let (title, then) = match repair {
+            Repair::Done => ("Qrec repaired the project's files", String::new()),
+            Repair::Failed => return,
+            Repair::Held if self.opts.recovery => (
+                "The project's files need repair",
+                "\nA confirmed restore rewrites them.".to_owned(),
+            ),
+            Repair::Held => (
+                "The project's files need repair",
+                format!(
+                    "\nThey are rewritten once qrec.json is fixed, or by `qrec history restore {} --yes`.",
+                    self.state.history.cursor
+                ),
+            ),
+        };
+        let toast =
+            Toast::new(ToastLevel::Warning, title).with_body(format!("{}{then}", notes.join("\n")));
+        self.notifier.notify(&toast);
     }
 
     pub(super) fn notify_error(&mut self, title: &str, body: &str) {
@@ -351,35 +393,6 @@ impl Session {
             }
             Ok(_) => {}
             Err(why) => self.state.runtime.disk_invalid = Some(why),
-        }
-    }
-
-    /// Handles what arrives until every recovery probe is answered, for at
-    /// most `wait`. A probe still running then (a huge file) is answered
-    /// later: [`Session::run_until`] waits for it.
-    fn finish_recovery(&mut self, wait: Duration) {
-        let deadline = Instant::now() + wait;
-        while !self.state.runtime.recovering.is_empty() {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                tracing::warn!(
-                    "still recovering {} after {} s; the project opens meanwhile",
-                    self.state
-                        .runtime
-                        .recovering
-                        .iter()
-                        .map(TakeId::as_str)
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    wait.as_secs()
-                );
-                return;
-            }
-            match self.rx.recv_timeout(left) {
-                Ok(msg) => self.handle(msg),
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return,
-            }
         }
     }
 }

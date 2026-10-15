@@ -22,8 +22,10 @@
 //! The session runs the effects that touch the world only after that.
 //! A crash between any two steps leaves something [`load`] turns back into
 //! a consistent state: an uncommitted history line has `seq ≥ nextSeq`
-//! and is dropped; a `qrec.json` newer than the head is an external edit
-//! of `head.project` that the core merges ("External edit"); a stale
+//! and is dropped, unless `qrec.json` is the project it led to (its
+//! `afterHash`): then the commit is finished (a crash between 2 and 3); any
+//! other `qrec.json` newer than the head is an external edit of
+//! `head.project` that the core merges ("External edit"); a stale
 //! `history.cursor` is rewritten by the next open or commit.
 
 pub mod format;
@@ -108,6 +110,11 @@ pub struct CommitMark {
     pending_base: Option<(u64, Project)>,
     dirty: bool,
     has_history: bool,
+    /// The commit has a history `Rewrite`, which replaces the base.
+    rewrites: bool,
+    /// The bytes of `history.base.json` before that rewrite, so a dropped
+    /// one (a purge, a clear) can put them back.
+    base_bytes: Option<Vec<u8>>,
 }
 
 /// What `qrec.json` holds right now, compared with what the host wrote.
@@ -140,6 +147,8 @@ pub struct Store {
     /// history file, `qrec.json` and the head whatever it changed. It never
     /// makes an outcome that saves nothing write.
     dirty: bool,
+    /// The last commit replaced `history.base.json` before it failed.
+    replaced_base: bool,
     ui_last: Option<Instant>,
     ui_pending: bool,
     #[cfg(test)]
@@ -169,6 +178,7 @@ impl Store {
             pending_base: None,
             pending_backup: None,
             dirty: false,
+            replaced_base: false,
             ui_last: None,
             ui_pending: false,
             #[cfg(test)]
@@ -232,6 +242,7 @@ impl Store {
         if !self.writable || (ops.is_empty() && !project) {
             return Ok(());
         }
+        self.replaced_base = false;
         let result = self.commit_steps(prev, next, ops);
         self.dirty = result.is_err();
         result
@@ -305,6 +316,7 @@ impl Store {
             )
             .map_err(io_err(format!("write {}", path.display())))?;
             self.pending_base = None;
+            self.replaced_base = self.has_base;
             self.has_base = true;
         }
         let path = self.paths.history_file();
@@ -377,30 +389,42 @@ impl Store {
             })
     }
 
-    /// What [`Store::drop_commit`] puts back; taken before a commit.
-    pub fn mark(&self) -> CommitMark {
+    /// What [`Store::drop_commit`] puts back; taken before a commit of
+    /// `ops`. A history `Rewrite` replaces `history.base.json`, so its
+    /// current bytes are kept to put back.
+    pub fn mark(&self, ops: &[&HistoryOp]) -> CommitMark {
+        let rewrites = ops.iter().any(|op| matches!(op, HistoryOp::Rewrite { .. }));
         CommitMark {
             has_base: self.has_base,
             pending_base: self.pending_base.clone(),
             dirty: self.dirty,
             has_history: self.paths.history_file().is_file(),
+            rewrites,
+            base_bytes: if rewrites && self.has_base {
+                fs::read(self.paths.history_base()).ok()
+            } else {
+                None
+            },
         }
     }
 
-    /// After a failed [`Store::commit`] whose change is dropped (never one
-    /// with a history `Rewrite`: the base it replaced can't be put back),
-    /// puts the files back to `prev`, the state the head still describes,
-    /// as far as the next open and the next commit care:
+    /// After a failed [`Store::commit`] whose change is dropped, puts the
+    /// files back to `prev`, the state the head still describes, as far as
+    /// the next open and the next commit care:
     /// - a `qrec.json` it already replaced (only the head failed) is
     ///   written back, else an open would merge it as an external edit;
+    /// - a base a history `Rewrite` replaced is written back from the
+    ///   mark's bytes (a purge or a clear that isn't saved changes nothing);
     /// - a base it wrote for a project that had none is removed (the next
     ///   commit writes the right one);
     /// - the history file is rewritten without the line it appended (or
-    ///   with the redo tail it dropped), or removed if the commit made it.
-    ///   When that fails the store stays dirty: an open drops lines at or
-    ///   past the head's `nextSeq` and the next commit rewrites the file.
+    ///   with the redo tail it dropped, or the entries a rewrite dropped),
+    ///   or removed if the commit made it. When that fails the store stays
+    ///   dirty: an open drops lines at or past the head's `nextSeq` and the
+    ///   next commit rewrites the file.
     ///
-    /// `Err` when `qrec.json` can't be written back: it holds the change.
+    /// `Err` when `qrec.json` or a replaced base can't be written back: the
+    /// files hold the change.
     pub fn drop_commit(
         &mut self,
         mark: CommitMark,
@@ -410,6 +434,23 @@ impl Store {
         self.dirty = true;
         if failed.wrote_project() {
             self.write_project(&prev.project)?;
+        }
+        // A base a repair wrote (not a rewrite) is the one the files need.
+        if self.replaced_base && mark.rewrites {
+            let path = self.paths.history_base();
+            let Some(bytes) = &mark.base_bytes else {
+                return Err(CommitError::Io {
+                    step: Step::History,
+                    what: format!("put back {}", path.display()),
+                    source: io::Error::other("its previous contents weren't kept"),
+                });
+            };
+            fsx::replace(&path, bytes, fsx::Sync::File).map_err(|source| CommitError::Io {
+                step: Step::History,
+                what: format!("put back {}", path.display()),
+                source,
+            })?;
+            self.replaced_base = false;
         }
         if !mark.has_base && self.has_base {
             match fs::remove_file(self.paths.history_base()) {

@@ -5,9 +5,12 @@
 //!   torn last line are dropped; a bad line elsewhere is `Invalid` naming
 //!   its line number;
 //! - `sha256(qrec.json) == head.projectSha256` ⇒ clean; otherwise a valid
-//!   file is an external edit of `head.project` (this also covers a crash
-//!   between writing `qrec.json` and the head) for the core to merge, and
-//!   an invalid one fails the open with the restore hint.
+//!   file whose undoable view is the `afterHash` of the uncommitted lines
+//!   is that commit's own write (a crash, or a failed head write, between
+//!   writing `qrec.json` and the head): the commit is finished (lines
+//!   kept, the file's facts taken, the head rewritten by the repair). Any
+//!   other valid file is an external edit of `head.project` for the core
+//!   to merge, and an invalid one fails the open with the restore hint.
 //!
 //! Without it (a project written by hand or by tests, or a lost head): the
 //! file is the project, the history lines are kept and the cursor is the
@@ -91,20 +94,27 @@ pub fn load(paths: &ProjectPaths, opts: &LoadOpts) -> Result<Loaded, ShellError>
     if opts.recovery {
         if let Some(head) = head {
             let clean = file_sha.as_deref() == Some(head.project_sha256.as_str());
-            let mut loaded = with_head(head, base, parsed, ui, notes);
-            match file.as_deref() {
-                None => loaded.disk_invalid = Some("qrec.json is missing".to_owned()),
-                Some(_) if clean => {}
-                Some(bytes) => match parse_file(bytes, opts.check) {
-                    // A valid hand edit is merged first, as on any open.
-                    Ok(migrated) => {
-                        loaded.migrated_from = migrated_original(&migrated, Some(bytes));
-                        if migrated.project != loaded.project {
-                            loaded.external = Some(Ok(Box::new(migrated.project)));
-                        }
+            let usable = match file.as_deref() {
+                None => Err("qrec.json is missing".to_owned()),
+                Some(_) if clean => Ok(None),
+                Some(bytes) => parse_file(bytes, opts.check)
+                    .map(Some)
+                    .map_err(|e| file_problem(&e)),
+            };
+            let candidate = usable.as_ref().ok().and_then(Option::as_ref);
+            let mut loaded =
+                with_head(head, base, parsed, ui, notes, candidate.map(|m| &m.project));
+            match usable {
+                Err(why) => loaded.disk_invalid = Some(why),
+                Ok(None) => {}
+                // A valid hand edit is merged first, as on any open (Qrec's
+                // own unfinished commit was finished by `with_head`).
+                Ok(Some(migrated)) => {
+                    loaded.migrated_from = migrated_original(&migrated, file.as_deref());
+                    if migrated.project != loaded.project {
+                        loaded.external = Some(Ok(Box::new(migrated.project)));
                     }
-                    Err(e) => loaded.disk_invalid = Some(file_problem(&e)),
-                },
+                }
             }
             loaded.accepted_sha = file_sha;
             return Ok(loaded);
@@ -154,8 +164,17 @@ pub fn load(paths: &ProjectPaths, opts: &LoadOpts) -> Result<Loaded, ShellError>
     let file_project = migrated.project;
     let clean =
         file_sha.as_deref() == Some(head.project_sha256.as_str()) || file_project == head.project;
-    let mut loaded = with_head(head, base, parsed, ui, notes);
-    loaded.external = (!clean).then(|| Ok(Box::new(file_project)));
+    let mut loaded = with_head(
+        head,
+        base,
+        parsed,
+        ui,
+        notes,
+        (!clean).then_some(&file_project),
+    );
+    // Not Qrec's own unfinished commit (which `with_head` finished): an
+    // edit for the core to merge.
+    loaded.external = (loaded.project != file_project).then(|| Ok(Box::new(file_project)));
     loaded.accepted_sha = file_sha;
     loaded.migrated_from = original;
     Ok(loaded)
@@ -213,12 +232,19 @@ fn migrated_original(
 
 // ------------------------------------------------------------ with a head
 
+/// The project and history the commit record describes. `file` is a valid
+/// `qrec.json` that differs from `head.project`: when it is the project of
+/// the commit whose history lines are past the head (a crash, or a failed
+/// head write, between writing `qrec.json` and the head, A§7.6), that
+/// commit is finished here instead of the file being merged as an edit,
+/// whose facts the merge would ignore.
 fn with_head(
     head: Head,
     base: Option<(Option<u64>, Project)>,
     parsed: ParsedHistory,
     ui: UiState,
     mut notes: Vec<String>,
+    file: Option<&Project>,
 ) -> Loaded {
     let base_seq = base
         .as_ref()
@@ -236,14 +262,10 @@ fn with_head(
     }
     let mut entries = parsed.entries;
     let before = entries.len();
-    entries.retain(|e| e.seq < head.next_seq && e.seq > base_seq);
-    if entries.len() != before {
-        needs_repair = true;
-        notes.push(format!(
-            "dropped {} history entries that were never committed (or are folded into the base)",
-            before - entries.len()
-        ));
-    }
+    entries.retain(|e| e.seq > base_seq);
+    let folded = before - entries.len();
+    let (entries, uncommitted): (Vec<HistoryEntry>, Vec<HistoryEntry>) =
+        entries.into_iter().partition(|e| e.seq < head.next_seq);
     let next_seq = head
         .next_seq
         .max(entries.last().map_or(0, |e| e.seq + 1))
@@ -258,6 +280,28 @@ fn with_head(
     let mut base_to_write = None;
     let cursor_known = history.cursor == history.base_seq
         || history.entries.iter().any(|e| e.seq == history.cursor);
+    let mut project = head.project;
+    let finished = cursor_known
+        && file.is_some_and(|file| {
+            finishes_commit(&history, head.next_seq, &uncommitted, &project, file)
+        });
+    if finished && let (Some(file), Some(last)) = (file, uncommitted.last()) {
+        notes.push(format!(
+            "finished saving \"{}\" (entry {}): qrec.json had it, the commit record didn't",
+            last.label, last.seq
+        ));
+        history.cursor = last.seq;
+        history.next_seq = history.next_seq.max(last.seq + 1);
+        Arc::make_mut(&mut history.entries).extend(uncommitted);
+        project = file.clone();
+        needs_repair = true;
+    } else if folded + uncommitted.len() > 0 {
+        needs_repair = true;
+        notes.push(format!(
+            "dropped {} history entries that were never committed (or are folded into the base)",
+            folded + uncommitted.len()
+        ));
+    }
     if !cursor_known {
         notes.push(format!(
             "the undo history lost its current entry {}; it starts over from the current project",
@@ -265,16 +309,16 @@ fn with_head(
         ));
         history.entries = Arc::default();
         history.base_seq = history.cursor;
-        base_to_write = Some((history.cursor, head.project.clone()));
+        base_to_write = Some((history.cursor, project.clone()));
         needs_repair = true;
     }
     let base_project = match &base_to_write {
         Some((_, project)) => Some(project),
         None => base.as_ref().map(|(_, project)| project),
     };
-    let history = with_seen_ids(history, base_project, &head.project);
+    let history = with_seen_ids(history, base_project, &project);
     Loaded {
-        project: head.project,
+        project,
         history,
         ui,
         external: None,
@@ -286,6 +330,32 @@ fn with_head(
         readded: Vec::new(),
         notes,
     }
+}
+
+/// Whether `file` is what the commit that wrote the `uncommitted` lines
+/// saved (A§7.6 steps 1 and 2, but not 3): the lines come right after the
+/// head's (its `nextSeq` first, then one after the other, from one commit
+/// or from a store that stayed dirty), the history before them ends at the
+/// head's cursor (an append drops the redo tail), the file's undoable view
+/// is the one the last line leads to (`afterHash`), and it still has every
+/// take the head knows (takes are facts that only grow, but for a purge,
+/// which appends no line).
+fn finishes_commit(
+    history: &History,
+    head_next_seq: u64,
+    uncommitted: &[HistoryEntry],
+    committed: &Project,
+    file: &Project,
+) -> bool {
+    let Some(last) = uncommitted.last() else {
+        return false;
+    };
+    let chained = uncommitted[0].seq == head_next_seq
+        && uncommitted.windows(2).all(|w| w[1].seq == w[0].seq + 1);
+    let at_cursor = history.entries.last().map_or(history.base_seq, |e| e.seq) == history.cursor;
+    let takes_kept = committed.takes.keys().all(|id| file.takes.contains_key(id))
+        && file.next_take_number >= committed.next_take_number;
+    chained && at_cursor && takes_kept && json_hash(&undoable_view(file)) == last.after_hash
 }
 
 // ---------------------------------------------------------- without a head
@@ -375,6 +445,7 @@ fn without_head(
 /// patches of that scene still apply. It comes back `recording`, without
 /// media facts: the Recover probe finalizes it (A§5.3), and until then the
 /// project doesn't validate (a restore waits for the probes, A§7.7).
+/// `nextTakeNumber` goes past every take the history names, found or not.
 fn rebuild(
     paths: &ProjectPaths,
     base: Option<(Option<u64>, Project)>,
@@ -391,6 +462,14 @@ fn rebuild(
     };
     let base_seq = base_seq.unwrap_or(0);
     let mut project = base_project.clone();
+    // Take numbers are never reused (SPEC §5.3.1): the base's counter
+    // predates the takes its history names, whose folders may be gone, so a
+    // new recording must not get one of their numbers (a redo of their
+    // entries would put their clips on it).
+    let entries: Vec<&HistoryEntry> = parsed.entries.iter().filter(|e| e.seq > base_seq).collect();
+    if let Some(highest) = highest_take_named(&entries) {
+        project.next_take_number = project.next_take_number.max(highest.saturating_add(1));
+    }
     let mut on_disk = takes_on_disk(paths, &project);
     let mut readded: Vec<TakeId> = Vec::new();
     let mut kept: Vec<HistoryEntry> = Vec::new();
@@ -545,6 +624,38 @@ fn readd(project: &mut Project, found: &FoundTake) {
             replaced: Vec::new(),
         },
     );
+}
+
+/// The highest take number `entries` name anywhere: in a path under
+/// `/takes/<take>` or a value (a clip's take), forward or inverse, or in
+/// the command (`{"event":"takeFinalized","take":…}`).
+fn highest_take_named(entries: &[&HistoryEntry]) -> Option<u32> {
+    fn walk(value: &Value, highest: &mut Option<u32>) {
+        match value {
+            Value::String(s) => {
+                let name = match s.strip_prefix("/takes/") {
+                    Some(rest) => rest.split('/').next().unwrap_or(rest),
+                    None => s.as_str(),
+                };
+                if let Ok(take) = name.parse::<TakeId>() {
+                    *highest = (*highest).max(Some(take.number()));
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|v| walk(v, highest)),
+            Value::Object(members) => members.values().for_each(|v| walk(v, highest)),
+            _ => {}
+        }
+    }
+    let mut highest = None;
+    for entry in entries {
+        walk(&entry.cmd, &mut highest);
+        for patch in [&entry.forward, &entry.inverse] {
+            if let Ok(value) = serde_json::to_value(patch) {
+                walk(&value, &mut highest);
+            }
+        }
+    }
+    highest
 }
 
 /// Whether redoing `entry` uses `take`: an op under `/takes/<take>`, or a

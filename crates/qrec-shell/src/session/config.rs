@@ -100,8 +100,8 @@ pub struct SessionConfig {
     pub notifier: Option<Box<dyn Notifier>>,
     /// `None`: the fake inventory under the fake backend, else the system's.
     pub sources: Option<Box<dyn Sources>>,
-    /// How long opening waits for the recovery probes before the first
-    /// request runs; `None`: [`RECOVERY_WAIT`](super::RECOVERY_WAIT).
+    /// How long after opening commands wait for the recovery probes before
+    /// they run anyway; `None`: [`RECOVERY_WAIT`](super::RECOVERY_WAIT).
     pub recovery_wait: Option<std::time::Duration>,
     /// Tests: how projects read from disk are checked (default A§2.3).
     #[cfg(test)]

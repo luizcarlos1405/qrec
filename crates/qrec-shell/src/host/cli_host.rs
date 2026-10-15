@@ -675,11 +675,18 @@ fn run_in_process(
         }
     };
     host.attach(session.inbox());
-    let (mut own, responder) = OwnRequest::new();
-    host.server.send(Msg::Request {
-        req: req.clone(),
-        to: Box::new(responder),
-    });
+    // A§8.6: interrupted before it started (while the Session opened), the
+    // command never runs; the host only winds down.
+    let mut own = if host.signalled() {
+        OwnRequest::unanswered()
+    } else {
+        let (own, responder) = OwnRequest::new();
+        host.server.send(Msg::Request {
+            req: req.clone(),
+            to: Box::new(responder),
+        });
+        own
+    };
     let end = {
         let mut forward = || own.forward(out);
         host.serve(&mut *session, Some(&mut forward))
@@ -726,6 +733,12 @@ impl OwnRequest {
             OwnRequest { rx, replied: false },
             ProxyResponder { tx, replied: false },
         )
+    }
+
+    /// A request that was never sent: nothing will answer it.
+    fn unanswered() -> OwnRequest {
+        let (_, rx) = crossbeam_channel::unbounded();
+        OwnRequest { rx, replied: false }
     }
 
     /// Forwards what arrived; `true` once the reply was forwarded.

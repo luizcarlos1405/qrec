@@ -42,10 +42,31 @@ pub(super) fn creates_the_project(cmd: &Command) -> bool {
         )
 }
 
-/// A command that waits for the takes being recovered (recovery mode,
-/// A§7.7): a restore of a project rebuilt from the history must see the
-/// facts their Recover probes find, or its clips would use takes that are
-/// still `recording`.
+/// Commands an interrupted host still runs (A§8.6): the ones that stop
+/// what runs. They never wait for a recovery either.
+fn winds_down(cmd: &Command, state: &qrec_core::State) -> bool {
+    match cmd {
+        Command::RecordStop | Command::RecordCancel | Command::ExportCancel { .. } => true,
+        Command::RecordToggle { .. } => !state.runtime.record.is_idle(),
+        _ => false,
+    }
+}
+
+/// The answer to a command an interrupted host doesn't run (A§8.6): it is
+/// exiting, so nothing new starts, and a command that hadn't started when
+/// the signal came never does.
+fn stopping(cmd: &Command) -> CoreError {
+    CoreError::busy(format!(
+        "this Qrec host is stopping (it was interrupted), so {} didn't run",
+        cmd.name()
+    ))
+    .with_hint("run the command again: it goes to the next host once this one has exited")
+}
+
+/// A command that waits for the takes being recovered (A§5.3): the first
+/// request after a crash sees them recovered, and a restore of a project
+/// rebuilt from the history (recovery mode, A§7.7) sees the facts their
+/// Recover probes find, or its clips would use takes still `recording`.
 pub(super) struct Parked {
     id: Option<ReqId>,
     cmd: Command,
@@ -152,8 +173,12 @@ impl Session {
             ));
             return self.reply_now(id.as_ref(), &mut to, Err(err));
         }
-        if self.opts.recovery && !self.state.runtime.recovering.is_empty() {
-            // Resumed by `after_message` once every Recover probe answered.
+        if self.interrupts > 0 && !winds_down(&cmd, &self.state) {
+            return self.reply_now(id.as_ref(), &mut to, Err(stopping(&cmd)));
+        }
+        if self.holding_for_recovery() && !winds_down(&cmd, &self.state) {
+            // Resumed by `release_parked` once the Recover probes answered
+            // (or, outside recovery mode, once the open's wait is over).
             tracing::info!("{} waits for the takes being recovered", cmd.name());
             self.parked.push(Parked {
                 id,
@@ -293,14 +318,22 @@ impl Session {
     }
 
     /// Ctrl+C / SIGTERM (A§8.6). The first finalizes a recording (stop,
-    /// not cancel) and cancels the jobs; the second SIGKILLs every child's
-    /// process group (the host exits right after).
+    /// not cancel) and cancels the jobs; commands still waiting for a
+    /// recovery never run, and from now on only commands that stop things
+    /// do. The second SIGKILLs every child's process group (the host exits
+    /// right after).
     pub(super) fn handle_interrupt(&mut self) {
         self.interrupts += 1;
         if self.interrupts > 1 {
             let killed = proc::signal_all(true);
             tracing::warn!("second interrupt: killed {killed} child process group(s)");
             return;
+        }
+        for parked in std::mem::take(&mut self.parked) {
+            let Parked {
+                id, cmd, mut to, ..
+            } = parked;
+            self.reply_now(id.as_ref(), &mut to, Err(stopping(&cmd)));
         }
         if !self.state.runtime.record.is_idle() && self.store.writable() {
             self.dispatch(None, Command::RecordStop, false, None);

@@ -19,8 +19,8 @@ use super::*;
 use crate::host::lockfile::{self, HostState};
 use crate::ipc::client::{self, SendOpts, Sent, send_request};
 use crate::ipc::testing::{
-    Collect, FakeOpener, PROJECT, REQUEST, RULES, STUBBORN, child_command, hold_lock, quick_rules,
-    raw_exchange, read_events, request_line, rules_env, wait_for,
+    Collect, FakeLog, FakeOpener, PROJECT, REQUEST, RULES, STUBBORN, child_command, hold_lock,
+    quick_rules, raw_exchange, read_events, request_line, rules_env, wait_for,
 };
 use crate::lock::ProjectLock;
 use crate::paths::{Env, ensure_runtime_dir, socket_path};
@@ -423,6 +423,60 @@ fn ctrl_c_in_an_in_process_host_cancels_its_job() {
     assert_eq!(out.err().message, "interrupted");
     let names = opener.log.names();
     assert!(names.contains(&"interrupt".to_owned()), "{names:?}");
+    assert!(
+        wait_for(Duration::from_secs(2), || !f.lock_held()),
+        "the lock was released"
+    );
+}
+
+/// The commands a fake Session ran (requests other than the host's own
+/// `RecordStop` on a signal), by `cmd`.
+fn commands_run(log: &FakeLog) -> Vec<String> {
+    log.events()
+        .iter()
+        .filter(|e| e["event"] == "request")
+        .filter_map(|e| e["body"]["command"]["cmd"].as_str().map(str::to_owned))
+        .filter(|cmd| cmd != "recordStop")
+        .collect()
+}
+
+/// A§8.6: Ctrl+C while the in-process host's Session opens (it waited for
+/// a slow recovery before) means the command never started, so it never
+/// runs; the host winds down and the run is interrupted. It used to be sent
+/// after the open anyway (an interrupted `take purge --yes` deleted the
+/// take).
+#[test]
+fn a_command_interrupted_while_its_host_opens_never_runs() {
+    let f = fixture();
+    let mut opener = FakeOpener {
+        delay: Duration::from_millis(800),
+        ..FakeOpener::default()
+    };
+    let interrupts = Interrupts::new();
+    let raiser = interrupts.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(300));
+        raiser.raise();
+    });
+    let started = Instant::now();
+    let (exit, out, _) = cli(
+        &f,
+        &mut opener,
+        &interrupts,
+        command(set_ui()),
+        quick_rules(),
+        None,
+    );
+    assert_eq!(exit, CliExit::Interrupted);
+    assert!(out.replies.is_empty(), "{:?}", out.replies);
+    // Only the host's own `RecordStop` reached the Session (quiet right
+    // after it, the host may exit before the queued `Interrupt`).
+    assert!(
+        commands_run(&opener.log).is_empty(),
+        "{:?}",
+        opener.log.events()
+    );
+    assert!(started.elapsed() < Duration::from_secs(3));
     assert!(
         wait_for(Duration::from_secs(2), || !f.lock_held()),
         "the lock was released"
@@ -979,6 +1033,44 @@ fn a_signal_finalizes_the_recording_then_the_host_exits() {
         wait_for(Duration::from_secs(2), || !f.lock_held()),
         "the lock was released"
     );
+}
+
+/// A signal while a headless host's Session opens: its `RecordStop` and
+/// `Interrupt` reach the Session before a `record start` that came in
+/// meanwhile (A§8.6), so the Session can refuse the recording instead of
+/// starting it first.
+#[test]
+fn a_signal_while_the_session_opens_goes_before_the_requests_parked_meanwhile() {
+    let f = fixture();
+    let opener = FakeOpener {
+        delay: Duration::from_millis(800),
+        ..FakeOpener::default()
+    };
+    let log = opener.log.clone();
+    let interrupts = Interrupts::new();
+    let host = headless(&f, opener, quick_rules(), Some(interrupts.clone()));
+    wait_ready(&f);
+    let socket = f.socket.clone();
+    let start = qrec_core::Command::RecordStart {
+        mode: RecordModeArg::Append,
+        countdown: None,
+        wait: false,
+    };
+    let client = thread::spawn(move || send(&socket, Request::command(start, false)));
+    // The request is parked in the server (the Session is still opening).
+    thread::sleep(Duration::from_millis(200));
+    interrupts.raise();
+    let _ = client.join();
+    let code = host.join().unwrap();
+    assert_eq!(code, 130);
+    let names = log.names();
+    let interrupt = names.iter().position(|n| n == "interrupt");
+    let recording = names.iter().position(|n| n == "recording");
+    if let Some(recording) = recording {
+        let interrupt = interrupt.expect("the interrupt reached the Session");
+        assert!(interrupt < recording, "{names:?}");
+    }
+    assert!(interrupt.is_some(), "{names:?}");
 }
 
 #[test]

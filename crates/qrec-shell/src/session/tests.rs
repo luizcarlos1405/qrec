@@ -180,6 +180,8 @@ struct Harness {
     toasts: Arc<Mutex<Vec<Toast>>>,
     /// How the fake media runner answers recovery probes ([`FakeMedia`]).
     recover: Option<u64>,
+    /// How projects from disk are checked (default: not at all).
+    check: crate::store::Check,
 }
 
 impl Harness {
@@ -193,6 +195,7 @@ impl Harness {
             log: Log::default(),
             toasts: Arc::default(),
             recover: None,
+            check: unchecked,
         }
     }
 
@@ -223,7 +226,7 @@ impl Harness {
             notifier: Some(Box::new(move |t: &Toast| {
                 toasts.lock().unwrap().push(t.clone())
             })),
-            check: Some(unchecked),
+            check: Some(self.check),
             // The fake runner answers recovery at once or never.
             recovery_wait: Some(Duration::from_millis(200)),
             ..SessionConfig::default()
@@ -814,6 +817,110 @@ fn a_purge_is_committed_before_anything_is_deleted() {
     assert!(s.state().runtime.jobs.is_empty(), "the purge job is done");
 }
 
+/// A purge whose save fails changes nothing (A§7.6): the history base it
+/// replaced is put back like the rest, nothing is deleted, the take is
+/// still there and the reply says so. It used to stay purged in memory only
+/// (lost when the CLI host exited) and reply "purged take 2 from the
+/// project, but some files could not be deleted … delete the leftover files
+/// by hand", for the media of a take the project still listed.
+#[test]
+fn a_purge_that_cant_be_saved_changes_nothing() {
+    let h = Harness::new("purge-unsaved");
+    let mut json = testdata::sample_json();
+    json["takes"]["take-0002"] = testdata::take_json("take-0002", 60);
+    json["nextTakeNumber"] = 3.into();
+    write_project(&h.dir, &json);
+    let take_dir = h.dir.join("takes/take-0002");
+    fs::create_dir_all(&take_dir).unwrap();
+    fs::write(take_dir.join("A1-mic.mka"), b"12345").unwrap();
+    let mut s = h.open(true).unwrap();
+    // Entries that name take 2, so the purge rewrites the history.
+    send(
+        &mut s,
+        Command::ClipAdd {
+            take: take(2),
+            at: InsertAt::End,
+        },
+        false,
+    )
+    .unwrap();
+    let added = s.state().project.timeline.clips.last().unwrap().id.clone();
+    send(&mut s, Command::ClipRemove { clips: vec![added] }, false).unwrap();
+    let before = s.state().clone();
+    let files = snapshot(&h.dir);
+    let purge = Command::TakePurge {
+        takes: vec![take(2)],
+    };
+
+    let qrec = h.dir.join(".qrec");
+    if !make_read_only(&qrec) {
+        return;
+    }
+    let reply = send(&mut s, purge.clone(), true);
+    make_writable(&qrec);
+    let err = reply.unwrap_err();
+    assert_eq!(err.code, ErrorCode::Io);
+    assert!(
+        err.message
+            .starts_with("couldn't save the project, so nothing changed:"),
+        "{err:?}"
+    );
+    assert!(!err.message.contains("purged"), "{err:?}");
+    assert!(!h.log.has("delete"), "nothing is deleted");
+    assert_eq!(s.state().project, before.project, "not purged in memory");
+    assert_eq!(s.state().history, before.history);
+    assert!(s.state().runtime.jobs.is_empty());
+    assert!(take_dir.join("A1-mic.mka").is_file());
+    assert_eq!(snapshot(&h.dir), files, "every file is as it was");
+    drop(s);
+
+    // Nothing was lost: the next host sees the take and can purge it.
+    let mut s = h.open(true).unwrap();
+    assert!(s.state().project.takes.contains_key(&take(2)));
+    send(&mut s, purge, true).unwrap();
+    assert_eq!(
+        h.log.lines().last().unwrap(),
+        "delete take-0002 committed=true"
+    );
+    assert!(!s.state().project.takes.contains_key(&take(2)));
+}
+
+/// A rewrite that fails after it replaced the history base puts the base
+/// back with the rest: the files are as they were.
+#[test]
+fn a_dropped_rewrite_puts_the_history_base_back() {
+    let h = Harness::with_sample("clear-unsaved");
+    let mut s = h.open(true).unwrap();
+    send(
+        &mut s,
+        Command::ClipRemove {
+            clips: vec![clip("c001")],
+        },
+        false,
+    )
+    .unwrap();
+    let before = s.state().clone();
+    let files = snapshot(&h.dir);
+    // qrec.json's folder is read-only: the base and the history are
+    // rewritten in .qrec/, then writing qrec.json fails.
+    if !make_read_only(&h.dir) {
+        return;
+    }
+    let reply = send(&mut s, Command::HistoryClear, true);
+    make_writable(&h.dir);
+    let err = reply.unwrap_err();
+    assert!(
+        err.message
+            .starts_with("couldn't save the project, so nothing changed:"),
+        "{err:?}"
+    );
+    assert_eq!(s.state().history, before.history, "the history is kept");
+    assert_eq!(snapshot(&h.dir), files, "the base and history are back");
+    drop(s);
+    let s = h.open(true).unwrap();
+    assert_eq!(s.state().history.entries.len(), 1);
+}
+
 #[test]
 fn a_crash_after_the_history_line_loses_only_that_command() {
     let h = Harness::with_sample("crash-history");
@@ -875,7 +982,7 @@ fn a_crash_after_the_head_keeps_the_command() {
 }
 
 #[test]
-fn a_crash_after_writing_qrec_json_is_merged_as_an_external_edit() {
+fn a_crash_after_writing_qrec_json_finishes_the_command() {
     let h = Harness::with_sample("crash-project");
     let mut s = h.open(true).unwrap();
     s.store.crash_after = Some(Step::Project);
@@ -886,6 +993,7 @@ fn a_crash_after_writing_qrec_json_is_merged_as_an_external_edit() {
         }),
         false,
     );
+    let label = s.state().history.entries.last().unwrap().label.clone();
     drop(s);
 
     let s = h.open(true).unwrap();
@@ -894,12 +1002,94 @@ fn a_crash_after_writing_qrec_json_is_merged_as_an_external_edit() {
         [("c002".to_owned(), 150, 300)],
         "the file's change is kept"
     );
-    let last = s.state().history.entries.last().unwrap();
-    assert_eq!(last.label, "External edit");
-    assert_eq!(h.head().cursor, last.seq);
+    // As the command itself, not as an "External edit" of it (A§7.6).
+    let entries = &s.state().history.entries;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].label, label);
+    assert_eq!(h.head().cursor, entries[0].seq);
+    assert_eq!(h.history_seqs(), [entries[0].seq]);
     assert_eq!(
         fs::read(h.dir.join("qrec.json")).unwrap(),
         format::project_bytes(&s.state().project)
+    );
+}
+
+/// A take finalization whose head write failed (or that crashed right
+/// before it, A§7.6) is finished by the next open with what `qrec.json`
+/// holds: the take `ok` with its media and its clip, under its own "Record
+/// take N" entry. The file used to be merged as a hand edit whose facts
+/// lost to the head's (`recording`, 0 frames) while its clip used the take,
+/// so the project was reported invalid and the placement was dropped.
+#[test]
+fn a_finalization_saved_to_qrec_json_but_not_committed_is_finished() {
+    let mut h = Harness::with_sample("unfinished-take");
+    h.check = crate::store::validated;
+    let mut s = h.open(true).unwrap();
+    let start = Command::RecordStart {
+        mode: RecordModeArg::Append,
+        countdown: Some(0),
+        wait: false,
+    };
+    request(&mut s, WireBody::Command(start), false);
+    let planned = s.state().project.takes[&take(2)].streams.clone();
+    s.handle(Msg::Event(Event::CaptureStarted {
+        take: take(2),
+        t0_ns: 0,
+        files: planned.iter().map(|st| st.file.clone()).collect(),
+        start_offset_ns: Default::default(),
+    }));
+    request(&mut s, WireBody::Command(Command::RecordStop), false);
+    let streams = planned
+        .iter()
+        .map(|st| RecordedStream {
+            id: st.id.clone(),
+            file: st.file.clone(),
+            start_offset_ns: 0,
+            eos: true,
+        })
+        .collect();
+    s.handle(Msg::Event(Event::CaptureStopped {
+        take: take(2),
+        streams,
+        timed_out: false,
+    }));
+    // The process dies between writing qrec.json and the commit record.
+    s.store.crash_after = Some(Step::Project);
+    s.handle(Msg::Event(Event::TakeProbed {
+        take: take(2),
+        purpose: ProbePurpose::Finalize,
+        results: planned.iter().map(|st| probed(st, 90)).collect(),
+    }));
+    drop(s);
+    assert_eq!(
+        h.head().project.takes[&take(2)].status,
+        TakeStatus::Recording,
+        "the commit record never heard of it"
+    );
+
+    let s = h.open(true).unwrap();
+    assert_eq!(s.state().runtime.disk_invalid, None);
+    let t = &s.state().project.takes[&take(2)];
+    assert_eq!((t.status, t.duration_frames), (TakeStatus::Ok, 90));
+    assert!(
+        s.state()
+            .project
+            .timeline
+            .clips
+            .iter()
+            .any(|c| c.take == take(2)),
+        "its clip is placed"
+    );
+    let last = s.state().history.entries.last().unwrap();
+    assert_eq!(last.label, "Record take 2");
+    let head = h.head();
+    assert_eq!(head.cursor, last.seq);
+    assert_eq!(head.project, s.state().project);
+    assert!(s.recovering().is_empty(), "nothing to recover");
+    let titles = h.toast_titles();
+    assert!(
+        !titles.contains(&"qrec.json on disk is invalid".to_owned()),
+        "{titles:?}"
     );
 }
 
@@ -945,6 +1135,99 @@ fn a_hand_edit_found_at_open_survives_the_repairs() {
             .iter()
             .map(|e| e.seq)
             .collect::<Vec<_>>()
+    );
+}
+
+/// A hand edit that is valid alone but not once merged (facts in memory
+/// win, A§7.4) is never written over by the open's repairs (A§7.7, SPEC
+/// §16): it stays as it is, user edits wait, closing writes nothing, and a
+/// restore keeps a copy. The open used to rewrite it from the commit record
+/// when the store needed repair (here a torn history line), keeping no copy.
+#[test]
+fn a_hand_edit_that_fails_to_merge_is_never_written_over() {
+    let mut h = Harness::with_sample("unmergeable");
+    h.check = crate::store::validated;
+    {
+        let mut s = h.open(true).unwrap();
+        send(
+            &mut s,
+            Command::ClipRemove {
+                clips: vec![clip("c001")],
+            },
+            false,
+        )
+        .unwrap();
+    }
+    // A torn line from a crash: the next open has files to repair.
+    let mut history = fs::read(h.paths().history_file()).unwrap();
+    history.extend_from_slice(b"{\"seq\":");
+    fs::write(h.paths().history_file(), &history).unwrap();
+    // Valid alone; once merged the take keeps its 300 frames, and the clip
+    // that now ends at 500 doesn't fit.
+    let mut json: Value =
+        serde_json::from_slice(&fs::read(h.dir.join("qrec.json")).unwrap()).unwrap();
+    json["name"] = "my hand edit".into();
+    json["takes"]["take-0001"]["durationFrames"] = 500.into();
+    json["timeline"]["clips"][0]["out"] = 500.into();
+    write_project(&h.dir, &json);
+    let edited = fs::read(h.dir.join("qrec.json")).unwrap();
+    let head = fs::read(h.paths().history_head()).unwrap();
+
+    let mut s = h.open(true).unwrap();
+    let why = s
+        .state()
+        .runtime
+        .disk_invalid
+        .clone()
+        .expect("it didn't merge");
+    assert!(why.contains("ends at frame 500"), "{why}");
+    assert_eq!(fs::read(h.dir.join("qrec.json")).unwrap(), edited);
+    assert_eq!(fs::read(h.paths().history_head()).unwrap(), head);
+    assert_eq!(fs::read(h.paths().history_file()).unwrap(), history);
+    assert!(s.store.is_dirty(), "the repair waits");
+    let titles = h.toast_titles();
+    assert!(
+        !titles.contains(&"Qrec repaired the project's files".to_owned()),
+        "{titles:?}"
+    );
+    assert!(
+        titles.contains(&"The project's files need repair".to_owned()),
+        "{titles:?}"
+    );
+    assert!(
+        titles.contains(&"qrec.json on disk is invalid".to_owned()),
+        "{titles:?}"
+    );
+
+    // User edits wait until the file is fixed or restored…
+    let rename = Command::ProjectSet {
+        name: Some("z".into()),
+        canvas: None,
+        background: None,
+        countdown_secs: None,
+        encoder: None,
+        vaapi_device: qrec_core::protocol::Nullable::Keep,
+    };
+    let err = send(&mut s, rename, false).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Invalid);
+    assert!(
+        err.message.starts_with("qrec.json on disk is invalid"),
+        "{err:?}"
+    );
+    // …and neither they nor closing the host write over it.
+    drop(s);
+    assert_eq!(fs::read(h.dir.join("qrec.json")).unwrap(), edited);
+    assert_eq!(fs::read(h.paths().history_head()).unwrap(), head);
+
+    // A confirmed restore keeps a copy before it rewrites the file.
+    let mut s = h.open(true).unwrap();
+    let cursor = s.state().history.cursor;
+    send(&mut s, Command::HistoryRestore { seq: cursor }, true).unwrap();
+    assert_eq!(corrupt_copies(&h), [edited]);
+    assert_eq!(s.state().runtime.disk_invalid, None);
+    assert_eq!(
+        fs::read(h.dir.join("qrec.json")).unwrap(),
+        format::project_bytes(&s.state().project)
     );
 }
 
@@ -1502,8 +1785,11 @@ fn takes_still_recording_are_probed_when_a_host_opens() {
         [take(2)].into_iter().collect::<BTreeSet<_>>()
     );
     assert!(!s.is_idle());
-    // A command meanwhile doesn't start a second probe.
-    send(&mut s, Command::Undo { steps: 1 }, false).ok();
+    // A command meanwhile waits for it (A§5.3) and doesn't start a second
+    // probe.
+    let undo = request(&mut s, WireBody::Command(Command::Undo { steps: 1 }), false);
+    assert!(undo.last().is_none(), "held until the take is recovered");
+    assert_eq!(s.pending_requests(), 1);
     assert_eq!(
         h.log
             .lines()
@@ -1513,7 +1799,7 @@ fn takes_still_recording_are_probed_when_a_host_opens() {
         1
     );
 
-    // The result is applied and saved.
+    // The result is applied and saved, then the command runs.
     let streams = s.state().project.takes[&take(2)].streams.clone();
     s.handle(Msg::Event(Event::TakeProbed {
         take: take(2),
@@ -1522,6 +1808,7 @@ fn takes_still_recording_are_probed_when_a_host_opens() {
     }));
     s.drain();
     assert!(s.state().runtime.recovering.is_empty());
+    assert!(undo.last().is_some(), "answered once the take is recovered");
     assert!(s.is_idle());
     assert_eq!(s.state().project.takes[&take(2)].status, TakeStatus::Ok);
     assert_eq!(h.head().project.takes[&take(2)].status, TakeStatus::Ok);
@@ -1549,19 +1836,8 @@ fn takes_still_recording_are_recovered_before_the_first_request() {
         "{:?}",
         h.log.lines()
     );
-    // Open waited for the answer: the take is recovered, on disk too, and
-    // nothing is left for a host to wait for.
-    let t = &s.state().project.takes[&take(2)];
-    assert_eq!((t.status, t.duration_frames), (TakeStatus::Ok, 90));
-    assert_eq!(h.head().project.takes[&take(2)].status, TakeStatus::Ok);
-    assert!(
-        h.toast_titles()
-            .contains(&"Recovered take 2 from the bog.".to_owned()),
-        "{:?}",
-        h.toast_titles()
-    );
-    assert!(s.recovering().is_empty() && s.is_idle());
-    // So the very first command can use it (a one-shot CLI command).
+    // The very first command (a one-shot CLI command) waits for the answer
+    // queued behind it, so it can use the take.
     let added = send(
         &mut s,
         Command::ClipAdd {
@@ -1572,6 +1848,96 @@ fn takes_still_recording_are_recovered_before_the_first_request() {
     )
     .unwrap();
     assert_eq!(added["created"].as_array().unwrap().len(), 1, "{added}");
+    // The take is recovered, on disk too, and nothing is left for a host to
+    // wait for.
+    let t = &s.state().project.takes[&take(2)];
+    assert_eq!((t.status, t.duration_frames), (TakeStatus::Ok, 90));
+    assert_eq!(h.head().project.takes[&take(2)].status, TakeStatus::Ok);
+    assert!(
+        h.toast_titles()
+            .contains(&"Recovered take 2 from the bog.".to_owned()),
+        "{:?}",
+        h.toast_titles()
+    );
+    assert!(s.recovering().is_empty() && s.is_idle());
+}
+
+/// Ctrl+C or a signal while a crashed take is being recovered (A§8.6): a
+/// command still waiting for the recovery never runs (here a confirmed
+/// purge: nothing is deleted), later commands are refused unless they stop
+/// something, and the Session no longer holds its host for the recovery
+/// (the host's grace period decides; the next open recovers the take). The
+/// open used to wait for the probe before any message was handled, then
+/// ran the interrupted purge.
+#[test]
+fn an_interrupt_drops_the_commands_waiting_for_a_recovery() {
+    let h = Harness::new("interrupted-recovery");
+    write_crashed_take(&h);
+    let mut json: Value =
+        serde_json::from_slice(&fs::read(h.dir.join("qrec.json")).unwrap()).unwrap();
+    json["takes"]["take-0003"] = testdata::take_json("take-0003", 60);
+    json["nextTakeNumber"] = 4.into();
+    write_project(&h.dir, &json);
+    let take_dir = h.dir.join("takes/take-0003");
+    fs::create_dir_all(&take_dir).unwrap();
+    fs::write(take_dir.join("A1-mic.mka"), b"12345").unwrap();
+    // The probe is never answered: a huge file on a slow disk.
+    let mut s = h.open(true).unwrap();
+    assert_eq!(s.recovering().len(), 1);
+
+    let purge = request(
+        &mut s,
+        WireBody::Command(Command::TakePurge {
+            takes: vec![take(3)],
+        }),
+        true,
+    );
+    assert!(purge.last().is_none(), "held for the recovery");
+    s.handle(Msg::Interrupt);
+    let err = purge.last().expect("answered at once").unwrap_err();
+    assert_eq!(err.code, ErrorCode::Busy);
+    assert!(err.message.contains("stopping"), "{err:?}");
+    assert!(!h.log.has("delete"), "nothing is deleted");
+    assert!(take_dir.join("A1-mic.mka").is_file());
+    assert!(s.state().project.takes.contains_key(&take(3)));
+    assert_eq!(s.pending_requests(), 0);
+
+    // Nothing new starts; stopping things still runs.
+    let err = send(
+        &mut s,
+        Command::ClipRemove {
+            clips: vec![clip("c001")],
+        },
+        false,
+    )
+    .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Busy, "{err:?}");
+    let stop = send(&mut s, Command::RecordStop, false).unwrap_err();
+    assert_eq!(stop.code, ErrorCode::Invalid, "not refused: {stop:?}");
+
+    // The recovery no longer keeps `run_until` from asking its host.
+    let started = Instant::now();
+    s.run_until(|_| true);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(s.recovering().len(), 1, "still out: the next open retries");
+}
+
+/// Outside recovery mode, commands wait for a recovery only for the open's
+/// wait (A§5.3): then they run, the recovery answering later.
+#[test]
+fn commands_wait_for_a_slow_recovery_only_so_long() {
+    let h = Harness::new("slow-recovery-wait");
+    write_crashed_take(&h);
+    let mut s = h.open(true).unwrap();
+    let undo = request(&mut s, WireBody::Command(Command::Undo { steps: 1 }), false);
+    assert!(undo.last().is_none(), "held for the recovery");
+    // The harness waits 200 ms; `tick` lets them go once that is over.
+    let deadline = s.next_deadline().expect("the wait's end is due");
+    assert!(deadline <= Instant::now() + Duration::from_millis(200));
+    std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+    s.tick();
+    assert!(undo.last().is_some(), "it ran");
+    assert_eq!(s.recovering().len(), 1, "the recovery is still out");
 }
 
 #[test]
@@ -1718,16 +2084,14 @@ fn deleting_waits_for_a_durable_commit() {
         !h.log.has("delete"),
         "nothing is deleted without a commit record"
     );
+    // The core hears that the purge isn't saved (never "some files could
+    // not be deleted"), with why.
     match s.rx.try_recv() {
-        Ok(Msg::Event(Event::TakeDirsDeleted {
-            job,
-            deleted,
-            errors,
-        })) => {
+        Ok(Msg::Event(Event::PurgeFailed { job, message })) => {
             assert_eq!(job, JobId(9));
-            assert!(deleted.is_empty() && !errors.is_empty());
+            assert!(message.contains("Permission denied"), "{message}");
         }
-        other => panic!("expected TakeDirsDeleted, got {other:?}"),
+        other => panic!("expected PurgeFailed, got {other:?}"),
     }
     assert!(
         h.toast_titles()
@@ -2314,6 +2678,133 @@ fn a_take_is_committed_before_capture_and_finalized_from_events() {
     assert_eq!(last.label, "Record take 2");
     assert_eq!(h.history_seqs().last(), Some(&last.seq));
     assert_eq!(s.pending_requests(), 0);
+}
+
+/// A recovery-mode host (an unconfirmed `qrec history restore` serving
+/// other clients while it waits) saves another client's recording like any
+/// host once that request saved (A§7.7): the start offsets and the
+/// finalized take reach the files, and nobody hears "ok" for a change that
+/// isn't saved. Both used to stay in memory only, with `ok` replies, and
+/// were lost when the host exited.
+#[test]
+fn a_recording_served_in_recovery_mode_is_saved() {
+    let h = Harness::with_sample("recover-record");
+    drop(h.open(true).unwrap());
+    let mut s = h.open_opts(recovery(true)).unwrap();
+    let start = Answers::default();
+    s.handle(Msg::Request {
+        req: Request::command(
+            Command::RecordStart {
+                mode: RecordModeArg::Append,
+                countdown: Some(0),
+                wait: false,
+            },
+            false,
+        ),
+        to: start.responder(),
+    });
+    s.drain();
+    assert_eq!(
+        h.head().project.takes[&take(2)].status,
+        TakeStatus::Recording,
+        "the request saved"
+    );
+    let planned = s.state().project.takes[&take(2)].streams.clone();
+    let offsets: BTreeMap<String, i64> = planned
+        .iter()
+        .map(|st| (st.id.clone(), 7_000_000))
+        .collect();
+    s.handle(Msg::Event(Event::CaptureStarted {
+        take: take(2),
+        t0_ns: 0,
+        files: planned.iter().map(|st| st.file.clone()).collect(),
+        start_offset_ns: offsets.clone(),
+    }));
+    start.last().unwrap().unwrap();
+    let saved: Vec<i64> = h.head().project.takes[&take(2)]
+        .streams
+        .iter()
+        .map(|st| st.start_offset_ns)
+        .collect();
+    assert_eq!(saved, [7_000_000, 7_000_000], "the offsets are saved");
+
+    let stop = Answers::default();
+    s.handle(Msg::Request {
+        req: Request::command(Command::RecordStop, false),
+        to: stop.responder(),
+    });
+    let streams = planned
+        .iter()
+        .map(|st| RecordedStream {
+            id: st.id.clone(),
+            file: st.file.clone(),
+            start_offset_ns: 7_000_000,
+            eos: true,
+        })
+        .collect();
+    s.handle(Msg::Event(Event::CaptureStopped {
+        take: take(2),
+        streams,
+        timed_out: false,
+    }));
+    s.handle(Msg::Event(Event::TakeProbed {
+        take: take(2),
+        purpose: ProbePurpose::Finalize,
+        results: planned.iter().map(|st| probed(st, 90)).collect(),
+    }));
+    s.drain();
+    let finalized = stop.last().expect("the stop request hears back").unwrap();
+    assert_eq!(finalized["result"]["status"], "ok", "{finalized}");
+    let head = h.head();
+    assert_eq!(head.project.takes[&take(2)].status, TakeStatus::Ok);
+    assert!(
+        head.project
+            .timeline
+            .clips
+            .iter()
+            .any(|c| c.take == take(2))
+    );
+    assert_eq!(head.project, s.state().project);
+    assert_eq!(
+        s.state().history.entries.last().unwrap().label,
+        "Record take 2"
+    );
+    assert!(!s.store.is_dirty());
+}
+
+/// Before any request saved, recovery mode keeps an event's change in
+/// memory (A§7.7) and a request the event answers hears so, not `ok`.
+#[test]
+fn recovery_mode_never_answers_ok_for_a_change_it_keeps_in_memory() {
+    let h = Harness::with_sample("recover-unsaved");
+    drop(h.open(true).unwrap());
+    let mut s = h.open_opts(recovery(true)).unwrap();
+    let waiting = Answers::default();
+    s.pending.insert(ReqId("r9".into()), waiting.responder());
+    let mut next = s.state().clone();
+    next.project.name = "renamed".into();
+    let outcome = Outcome::new(
+        next,
+        vec![
+            Effect::WriteProject,
+            Effect::Reply {
+                req: ReqId("r9".into()),
+                reply: Ok(qrec_core::CmdResult::new("Done")),
+            },
+        ],
+        None,
+    );
+    let files = snapshot(&h.dir);
+    s.run_outcome(outcome, Origin::Event, None, &mut None, false);
+    let err = waiting.last().unwrap().unwrap_err();
+    assert_eq!(err.code, ErrorCode::Io);
+    assert!(
+        err.message
+            .starts_with("the change was made but isn't saved: "),
+        "{err:?}"
+    );
+    assert_eq!(s.state().project.name, "renamed", "kept in memory");
+    assert_eq!(snapshot(&h.dir), files, "nothing is written");
 }
 
 #[test]
