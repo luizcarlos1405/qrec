@@ -344,11 +344,54 @@ fn idle_start_begins_a_take() {
     assert_eq!(plan_files(plan), files(&out.state));
 }
 
+/// A CLI command's own host never records (A§8.5): a recording there
+/// would run inside that command's process, hold its result back and end
+/// with its terminal. Start and toggle are `Busy` and change nothing.
+#[test]
+fn a_cli_host_never_records() {
+    let mut state = idle();
+    state.runtime.host = HostKind::Cli;
+    for command in [
+        append(),
+        start(RecordModeArg::Append, Some(3), true),
+        over(&["c001"]),
+        Command::RecordToggle { wait: false },
+        Command::RecordToggle { wait: true },
+    ] {
+        let err = fail(&state, Some("s1"), command.clone());
+        assert_eq!(err.code, ErrorCode::Busy, "{command:?}");
+        assert_eq!(
+            err.message,
+            qrec_core::apply::record::CLI_HOST_BUSY,
+            "{command:?}"
+        );
+        assert!(
+            err.hint
+                .is_some_and(|h| h.contains("once that command finishes"))
+        );
+    }
+    // Stopping finds nothing to stop, as anywhere nothing records.
+    assert_eq!(
+        fail(&state, Some("s2"), Command::RecordStop).code,
+        ErrorCode::Invalid
+    );
+    // The other hosts record the same scene.
+    for host in [HostKind::Gui, HostKind::Headless] {
+        let mut other = idle();
+        other.runtime.host = host;
+        let out = cmd(&other, Some("s1"), append());
+        assert!(
+            matches!(out.state.runtime.record, RecordPhase::Starting { .. }),
+            "{host:?}"
+        );
+    }
+}
+
 #[test]
 fn a_host_without_live_mode_starts_the_live_pipeline_first() {
     for (host, mode) in [
         (HostKind::Headless, CanvasMode::Live),
-        (HostKind::Cli, CanvasMode::Live),
+        (HostKind::Headless, CanvasMode::Program),
         (HostKind::Gui, CanvasMode::Program),
     ] {
         let mut state = idle();

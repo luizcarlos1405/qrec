@@ -454,3 +454,91 @@ fn messages_sent_before_attach_are_delivered_in_order() {
     t.server.fail(CoreError::io("gone"));
     assert!(!t.server.send(Msg::DiskChanged));
 }
+
+/// A CLI command's own host (A§8.5) closes what it doesn't take before
+/// `accepted`, so the client routes again: a recording always, a new job
+/// once its own command is done. Everything else is taken, and other hosts
+/// take everything.
+#[test]
+fn a_cli_commands_host_bounces_recordings_and_late_jobs() {
+    let serve = |host: HostKind| {
+        let dir = socket_dir();
+        let t = start_server(dir.path(), |cfg| cfg.host = host);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let order = Arc::clone(&seen);
+        let (inbox, session) = session_thread(move |msg| {
+            if let Msg::Request { req, mut to } = msg {
+                order
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::to_value(&req.body).unwrap());
+                to.reply(Ok(json!({ "taken": true })));
+            }
+            true
+        });
+        t.server.attach(inbox);
+        (dir, t, seen, session)
+    };
+    let ask = |t: &crate::ipc::testing::TestServer, id: &str, cmd: &Value| {
+        raw_exchange(&t.socket, &request_line(id, json!({ "command": cmd })))
+    };
+    let taken = |lines: &[Value]| {
+        lines.len() == 2
+            && lines[0]["accepted"] == true
+            && lines[1]["reply"]["data"]["taken"] == true
+    };
+    let toggle = json!({ "cmd": "recordToggle" });
+    let start = json!({ "cmd": "recordStart", "mode": "append" });
+    let export = json!({ "cmd": "export" });
+    let purge = json!({ "cmd": "takePurge", "takes": ["take-0001"] });
+    let stop = json!({ "cmd": "recordStop" });
+    let undo = json!({ "cmd": "undo" });
+
+    let (_dir, cli, seen, _session) = serve(HostKind::Cli);
+    // A recording: EOF without even `accepted` (it never ran).
+    assert_eq!(ask(&cli, "r1", &toggle), Vec::<Value>::new());
+    assert_eq!(ask(&cli, "r2", &start), Vec::<Value>::new());
+    // While its own command runs, jobs and the rest are taken.
+    for (id, cmd) in [("e1", &export), ("s1", &stop), ("u1", &undo)] {
+        let lines = ask(&cli, id, cmd);
+        assert!(taken(&lines), "{id}: {lines:?}");
+    }
+    // Its own command is done: no new job either.
+    cli.server.own_command_done();
+    assert_eq!(ask(&cli, "e2", &export), Vec::<Value>::new());
+    assert_eq!(ask(&cli, "p2", &purge), Vec::<Value>::new());
+    for (id, cmd) in [("s2", &stop), ("u2", &undo)] {
+        let lines = ask(&cli, id, cmd);
+        assert!(taken(&lines), "{id}: {lines:?}");
+    }
+    let query = request_line("q", json!({ "query": { "query": "clipList" } }));
+    let lines = raw_exchange(&cli.socket, &query);
+    assert!(taken(&lines), "{lines:?}");
+    // Bounced requests never reach the Session and aren't requests.
+    let cmds: Vec<Value> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|body| body["command"]["cmd"].clone())
+        .collect();
+    assert_eq!(
+        cmds,
+        [
+            json!("export"),
+            json!("recordStop"),
+            json!("undo"),
+            json!("recordStop"),
+            json!("undo"),
+            Value::Null
+        ]
+    );
+    assert_eq!(cli.server.stats().requests, 6);
+
+    // A headless host takes all of it, done or not.
+    let (_dir, headless, _, _session) = serve(HostKind::Headless);
+    headless.server.own_command_done();
+    for (id, cmd) in [("r", &toggle), ("s", &start), ("e", &export), ("p", &purge)] {
+        let lines = ask(&headless, id, cmd);
+        assert!(taken(&lines), "{id}: {lines:?}");
+    }
+}

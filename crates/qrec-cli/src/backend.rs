@@ -99,8 +99,10 @@ pub enum Finish {
     /// [`Fallback::None`] and no host serves the project.
     NoHost,
     /// Ctrl+C or SIGTERM (A§8.6): in-process, running jobs were cancelled
-    /// and their temp outputs deleted; routed, the connection was closed
-    /// (the host may still finish the request); `--wait`, the second Ctrl+C
+    /// and their temp outputs deleted (the second signal kills them at
+    /// once); routed, the connection was closed (a GUI host may still
+    /// finish the request; headless and CLI hosts cancel the export, frame
+    /// save or autocut it started, A§5.8); `--wait`, the second Ctrl+C
     /// detached. `reply` is the host's answer when one came anyway (an
     /// in-process command that finished, or failed because its jobs were
     /// cancelled).
@@ -120,6 +122,12 @@ pub trait Events {
     fn progress(&mut self, progress: &Progress);
     /// A toast for people (`Effect::Notify` of an in-process host).
     fn notice(&mut self, toast: &Toast);
+    /// The reply, as soon as it came, of a command this process runs
+    /// itself and that no signal interrupted (A§8.5): the process may go on
+    /// hosting other clients' requests for a while, and the result
+    /// shouldn't wait for them. At most once; the [`Finish`] carries the
+    /// same reply. Backends may report replies only through the [`Finish`].
+    fn replied(&mut self, reply: &Result<Value, CoreError>);
 }
 
 /// The imperative side of the CLI.

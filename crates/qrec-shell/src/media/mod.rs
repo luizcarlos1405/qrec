@@ -48,6 +48,7 @@ use crate::deps::MediaRunner;
 use crate::msg::Inbox;
 use crate::paths::ProjectPaths;
 
+pub use jobs::remove_temps_in_flight;
 pub use logs::{KEEP_LOGS, prune_logs};
 /// Never-overwrite renames, also for migration backups (A§8.8).
 pub use place::{PART_MARKER, rename_noreplace};

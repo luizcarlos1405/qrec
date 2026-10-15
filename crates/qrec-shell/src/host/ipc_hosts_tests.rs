@@ -39,6 +39,7 @@ fn inputs(now: Instant) -> ExitInputs {
         requests: 1,
         shutdown: false,
         signalled_at: None,
+        hurried_at: None,
         own_done: None,
         ready_at: now,
     }
@@ -100,18 +101,35 @@ fn exit_rules() {
     signal.now = s(5);
     signal.busy = false;
     assert_eq!(decide(&signal, &rules), Decision::Exit(HostEnd::Signal));
+    // A second signal hurries an in-process command: 2 s, not 15.
+    signal.busy = true;
+    signal.now = s(4);
+    signal.hurried_at = Some(s(3));
+    assert_eq!(decide(&signal, &rules), Decision::Wait(Some(s(5))));
+    signal.now = s(5);
+    assert_eq!(
+        decide(&signal, &rules),
+        Decision::Exit(HostEnd::SignalTimeout)
+    );
+    signal.busy = false;
+    assert_eq!(decide(&signal, &rules), Decision::Exit(HostEnd::Signal));
 
-    // In-process CLI host: its own command first; nobody else ⇒ exit at once.
+    // In-process CLI host: its own command first, then it exits as soon as
+    // nothing keeps it, whoever else used it (A§8.5): no idle grace.
     let mut cli = inputs(s(0));
     cli.requests = 0;
     cli.own_done = Some(false);
     assert_eq!(decide(&cli, &rules), Decision::Wait(None));
     cli.own_done = Some(true);
     assert_eq!(decide(&cli, &rules), Decision::Exit(HostEnd::Idle));
-    // Others used it: the 2 s grace applies.
-    cli.requests = 1;
-    assert_eq!(decide(&cli, &rules), Decision::Wait(Some(s(2))));
+    cli.requests = 5;
+    assert_eq!(decide(&cli, &rules), Decision::Exit(HostEnd::Idle));
+    // What it already runs for others (a job, an open request) keeps it.
     cli.busy = true;
+    assert_eq!(decide(&cli, &rules), Decision::Wait(None));
+    cli.busy = false;
+    cli.open = 1;
+    cli.conns_idle_since = None;
     assert_eq!(decide(&cli, &rules), Decision::Wait(None));
 }
 
@@ -341,6 +359,11 @@ fn an_in_process_host_serves_other_commands_while_its_job_runs() {
     let f = std::sync::Arc::new(fixture());
     let opener = FakeOpener::default();
     let log = opener.log.clone();
+    // A long idle grace: a host that waited for it would be seen.
+    let rules = ExitRules {
+        idle_grace: Duration::from_secs(5),
+        ..quick_rules()
+    };
     let host = {
         let f = std::sync::Arc::clone(&f);
         let mut opener = opener.clone();
@@ -351,7 +374,7 @@ fn an_in_process_host_serves_other_commands_while_its_job_runs() {
                 &mut opener,
                 &Interrupts::new(),
                 command(export(800)),
-                quick_rules(),
+                rules,
                 None,
             );
             (exit, out, started.elapsed())
@@ -382,9 +405,9 @@ fn an_in_process_host_serves_other_commands_while_its_job_runs() {
     assert_eq!(exit, CliExit::Replied);
     assert_eq!(out.ok()["exported"], true);
     assert_eq!(out.progress, [1, 2, 3, 4, 5]);
-    // Someone else used it, so after its 800 ms job it lingered for the
-    // idle grace (300 ms) before exiting.
-    assert!(took >= Duration::from_millis(1100), "{took:?}");
+    // Someone else used it, yet once its own 800 ms job was answered it
+    // exited at once: no idle grace for a command's own host (A§8.5).
+    assert!(took >= Duration::from_millis(800), "{took:?}");
     assert!(took < Duration::from_secs(4), "{took:?}");
     assert!(
         wait_for(Duration::from_secs(2), || !f.lock_held()),
@@ -397,6 +420,114 @@ fn an_in_process_host_serves_other_commands_while_its_job_runs() {
         "{names:?}"
     );
     assert!(names.contains(&"jobDone".to_owned()), "{names:?}");
+}
+
+/// Request events shared with the test thread: `(event, when)`.
+#[derive(Clone, Default)]
+struct SharedEvents(std::sync::Arc<std::sync::Mutex<Vec<(String, Instant)>>>);
+
+impl SharedEvents {
+    fn when(&self, event: &str) -> Option<Instant> {
+        let events = self.0.lock().unwrap();
+        events.iter().find(|(e, _)| e == event).map(|(_, at)| *at)
+    }
+
+    fn push(&self, event: &str) {
+        self.0
+            .lock()
+            .unwrap()
+            .push((event.to_owned(), Instant::now()));
+    }
+}
+
+impl RequestEvents for SharedEvents {
+    fn routed(&mut self, _host: Option<&qrec_core::protocol::HelloInfo>) {}
+
+    fn accepted(&mut self) {}
+
+    fn progress(&mut self, _p: &qrec_core::protocol::Progress) {}
+
+    fn replied(&mut self, reply: &Result<Value, qrec_core::CoreError>) {
+        assert!(reply.is_ok(), "{reply:?}");
+        self.push("replied");
+    }
+}
+
+/// A finished in-process command shows its result at once, even while its
+/// process still runs another client's job, and from then on takes no new
+/// job: that one bounces and finds its own host later (A§8.5). Its result
+/// used to wait until the host was done with everyone (forever, for a
+/// recording someone started meanwhile).
+#[test]
+fn an_in_process_command_answers_at_once_and_takes_no_new_job() {
+    let f = std::sync::Arc::new(fixture());
+    let opener = FakeOpener::default();
+    let log = opener.log.clone();
+    let events = SharedEvents::default();
+    let host = {
+        let (f, events) = (std::sync::Arc::clone(&f), events.clone());
+        let mut opener = opener.clone();
+        thread::spawn(move || {
+            let mut events = events;
+            let req = Request::command(export(1500), false);
+            let finish = backend(&f, &mut opener, &req, &mut events);
+            events.push("returned");
+            finish
+        })
+    };
+    assert!(wait_for(Duration::from_secs(5), || client::hello(
+        &f.socket,
+        Duration::from_secs(1)
+    )
+    .is_ok_and(|h| h.host == HostKind::Cli)));
+    // Another client's long job, taken while the host's own command runs.
+    let other = {
+        let socket = f.socket.clone();
+        thread::spawn(move || send(&socket, Request::command(export(3500), false)))
+    };
+    assert!(
+        wait_for(Duration::from_secs(5), || events.when("replied").is_some()),
+        "the own reply was shown while the host still served the other job"
+    );
+    assert!(events.when("returned").is_none());
+    // Done: a new job bounces, before `accepted` (it never runs here) …
+    let mut out = Collect::default();
+    let bounced = send_request(
+        &f.socket,
+        &Request::command(export(100), false),
+        &mut out,
+        &SendOpts::new(&Interrupts::new()),
+    );
+    assert_eq!(bounced, Err(client::SendError::NotAccepted));
+    assert_eq!(out.accepted, 0);
+    // … while quick requests are still answered.
+    assert_eq!(
+        send(&f.socket, Request::command(set_ui(), false))
+            .replies
+            .len(),
+        1
+    );
+    assert_eq!(other.join().unwrap().ok()["exported"], true);
+    let finish = host.join().unwrap();
+    assert!(
+        matches!(&finish, Finish::Reply(Ok(v)) if v["exported"] == true),
+        "{finish:?}"
+    );
+    let (replied, returned) = (
+        events.when("replied").unwrap(),
+        events.when("returned").unwrap(),
+    );
+    assert!(
+        returned.duration_since(replied) >= Duration::from_millis(1000),
+        "shown well before the host finished the other job"
+    );
+    let jobs = log.names().iter().filter(|n| *n == "job").count();
+    assert_eq!(
+        jobs,
+        2,
+        "its own export and the other one: {:?}",
+        log.names()
+    );
 }
 
 #[test]
@@ -475,6 +606,8 @@ struct Events {
     routed: Vec<Option<u32>>,
     accepted: usize,
     progress: Vec<u64>,
+    /// Early replies, and when they came.
+    replied: Vec<(Result<Value, qrec_core::CoreError>, Instant)>,
 }
 
 impl RequestEvents for Events {
@@ -489,9 +622,18 @@ impl RequestEvents for Events {
     fn progress(&mut self, p: &qrec_core::protocol::Progress) {
         self.progress.push(p.done);
     }
+
+    fn replied(&mut self, reply: &Result<Value, qrec_core::CoreError>) {
+        self.replied.push((reply.clone(), Instant::now()));
+    }
 }
 
-fn backend(f: &Fixture, opener: &mut FakeOpener, req: &Request, events: &mut Events) -> Finish {
+fn backend(
+    f: &Fixture,
+    opener: &mut FakeOpener,
+    req: &Request,
+    events: &mut dyn RequestEvents,
+) -> Finish {
     let program = HostProgram::current_exe().unwrap();
     let interrupts = Interrupts::new();
     let cx = RequestContext {
@@ -1342,6 +1484,160 @@ fn a_second_signal_kills_child_processes_and_exits_130() {
         "the child group was killed"
     );
     // The lock died with the process; the socket was unlinked first.
+    assert!(
+        wait_for(Duration::from_secs(2), || !f.lock_held()),
+        "the lock was released"
+    );
+    assert!(!f.socket.exists());
+}
+
+/// A recording asked while a CLI command holds the project waits for that
+/// command to end, then runs in a headless host of its own: never inside
+/// the command's process, which it used to keep alive (its result held
+/// back) for as long as the take lasted (A§8.5).
+#[test]
+fn a_recording_never_runs_in_a_cli_commands_host() {
+    let f = fixture();
+    let log = f.env.root().join("cli-record.jsonl");
+    let mut command = Reap {
+        child: Some(cli_child(&f, &log, &WireBody::Command(export(1500)))),
+        pid: None,
+    };
+    let command_pid = command.child.as_ref().unwrap().id();
+    assert!(wait_for(Duration::from_secs(10), || client::hello(
+        &f.socket,
+        Duration::from_secs(1)
+    )
+    .is_ok_and(|h| h.host == HostKind::Cli && h.pid == command_pid)));
+    let start = WireBody::Command(qrec_core::Command::RecordStart {
+        mode: RecordModeArg::Append,
+        countdown: None,
+        wait: false,
+    });
+    let mut recorder = Reap {
+        child: Some(cli_child(&f, &log, &start)),
+        pid: None,
+    };
+    let recorder_pid = recorder.child.as_ref().unwrap().id();
+    assert_eq!(
+        wait_exit(command.child.as_mut().unwrap(), Duration::from_secs(30)),
+        Some(0),
+        "{:#?}",
+        read_events(&log)
+    );
+    assert_eq!(
+        wait_exit(recorder.child.as_mut().unwrap(), Duration::from_secs(40)),
+        Some(0),
+        "{:#?}",
+        read_events(&log)
+    );
+    let done = events_named(&log, "cliDone");
+    let by = |pid: u32| {
+        done.iter()
+            .find(|d| d["pid"] == pid)
+            .unwrap_or_else(|| panic!("no cliDone from {pid}: {done:#?}"))
+    };
+    let exported = &by(command_pid)["reply"];
+    assert_eq!(exported["data"]["exported"], true, "{exported}");
+    assert_eq!(exported["data"]["handledBy"], command_pid);
+    let recording = &by(recorder_pid)["reply"];
+    assert_eq!(recording["data"]["recording"], true, "{recording}");
+    let host_pid = recording["data"]["handledBy"].as_u64().unwrap() as u32;
+    let _host_reap = Reap {
+        child: None,
+        pid: Some(host_pid as i32),
+    };
+    assert_ne!(host_pid, command_pid, "not in the command's process");
+    assert_ne!(host_pid, recorder_pid);
+    let hello = client::hello(&f.socket, Duration::from_secs(2)).unwrap();
+    assert_eq!((hello.pid, hello.host), (host_pid, HostKind::Headless));
+    // The command's Session never even saw the request (only `hello`s and
+    // its own export).
+    assert!(
+        read_events(&log)
+            .iter()
+            .filter(|e| e["pid"] == command_pid && e["event"] == "request")
+            .filter(|e| e["body"]["command"].is_object())
+            .all(|e| e["body"]["command"]["cmd"] == "export"),
+        "{:#?}",
+        read_events(&log)
+    );
+    let out = send(
+        &f.socket,
+        Request::command(qrec_core::Command::RecordStop, false),
+    );
+    assert_eq!(out.ok()["finalized"], true);
+    assert!(wait_for(Duration::from_secs(10), || !f.lock_held()));
+}
+
+/// The second Ctrl+C of an in-process command kills its children at once
+/// and still ends it the normal way, so the CLI can print its final object
+/// (A§8.6). It used to `_exit(130)` on the spot: no final object, no
+/// warning, temp outputs left behind.
+#[test]
+fn a_second_signal_ends_an_in_process_command_with_an_answer() {
+    let f = fixture();
+    let log = f.env.root().join("cli-second.jsonl");
+    // A job that ignores cancellation and runs `sleep 60` in its own group;
+    // a long signal grace, so only the second signal explains a quick end.
+    let body = WireBody::Command(export_spec("ms:60000:sleep"));
+    let child = child_command(&f.env, "cli", &log)
+        .env(REQUEST, serde_json::to_string(&body).unwrap())
+        .env(PROJECT, &f.dir)
+        .env(
+            RULES,
+            rules_env(&ExitRules {
+                signal_grace: Duration::from_secs(30),
+                ..quick_rules()
+            }),
+        )
+        .env(STUBBORN, "1")
+        .current_dir(&f.dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id() as i32;
+    let mut reap = Reap {
+        child: Some(child),
+        pid: None,
+    };
+    let cli = reap.child.as_mut().unwrap();
+    assert!(wait_for(Duration::from_secs(10), || !events_named(
+        &log, "child"
+    )
+    .is_empty()));
+    let sleep_pid = events_named(&log, "child")[0]["child"].as_u64().unwrap() as u32;
+    // SAFETY: kill(2) on our child.
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+    assert!(wait_for(Duration::from_secs(5), || !events_named(
+        &log,
+        "interrupt"
+    )
+    .is_empty()));
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        cli.try_wait().unwrap(),
+        None,
+        "busy: the first signal waits"
+    );
+    let second = Instant::now();
+    // SAFETY: kill(2) on our child.
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+    assert_eq!(wait_exit(cli, Duration::from_secs(10)), Some(130));
+    assert!(
+        second.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        second.elapsed()
+    );
+    assert!(
+        wait_for(Duration::from_secs(5), || !alive(sleep_pid)),
+        "the child group was killed"
+    );
+    // It returned like any interrupted request, so the CLI could print.
+    let done = events_named(&log, "cliDone");
+    assert_eq!(done.len(), 1, "{:#?}", read_events(&log));
+    assert_eq!(done[0]["exit"], "Interrupted");
     assert!(
         wait_for(Duration::from_secs(2), || !f.lock_held()),
         "the lock was released"

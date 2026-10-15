@@ -46,7 +46,8 @@ pub const ENGINE_STUCK: &str = "the capture engine is stuck (GPU driver?); resta
 
 /// `qrec record start`: countdown > 0 ⇒ Countdown + `StartTimer`; else begin take.
 ///
-/// `Busy` while an export runs; `Invalid` for an empty scene; record-over
+/// `Busy` while an export runs or in a CLI command's own host (which never
+/// records, A§8.5); `Invalid` for an empty scene; record-over
 /// needs contiguous existing clips (`OverSelection` without a selection is
 /// `Unavailable`). The start request is answered later: `RecordStartedView`
 /// once capture runs, or with `wait` the `TakeFinalizedView`.
@@ -152,9 +153,13 @@ fn project_countdown(project: &Project) -> u32 {
     project.recording.countdown_secs.min(MAX_COUNTDOWN_SECS)
 }
 
-/// What an Idle `Start`/`Toggle` needs: no export running and a scene with
-/// something to record.
+/// What an Idle `Start`/`Toggle` needs: a host that records (never a CLI
+/// command's own host, A§8.5), no export running and a scene with something
+/// to record.
 pub(crate) fn check_can_start(state: &State) -> Result<(), CoreError> {
+    if !state.runtime.host.records() {
+        return Err(cli_host_busy());
+    }
     if state.runtime.engine_stuck.is_some() {
         return Err(CoreError::capture_failed(ENGINE_STUCK)
             .with_hint("restart Qrec; qrec doctor checks the GPU driver"));
@@ -572,6 +577,18 @@ pub(crate) fn busy_phase(phase: &RecordPhase) -> CoreError {
         RecordPhase::Finalizing { take, .. } => format!("finalizing take {}", take.number()),
     };
     CoreError::busy(what)
+}
+
+/// A recording asked of a CLI command's own host (A§8.5): it would run in
+/// that command's process and end with its terminal. The CLI never sends
+/// one there (the host bounces it and the CLI waits for it to finish, then
+/// starts a headless host); this answers anyone else.
+pub const CLI_HOST_BUSY: &str =
+    "this project is held by a qrec command running in a terminal, which doesn't record";
+
+fn cli_host_busy() -> CoreError {
+    CoreError::busy(CLI_HOST_BUSY)
+        .with_hint("start the recording again once that command finishes (`qrec status` shows it)")
 }
 
 fn not_recording() -> CoreError {

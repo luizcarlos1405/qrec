@@ -282,6 +282,15 @@ impl Harness {
         })
     }
 
+    /// A host that records: a CLI command's own host never does (A§8.5).
+    fn open_recorder(&self) -> Result<Session, ShellError> {
+        self.open_opts(OpenOpts {
+            host: HostKind::Headless,
+            mutating: true,
+            recovery: false,
+        })
+    }
+
     fn head(&self) -> Head {
         serde_json::from_slice(&fs::read(self.paths().history_head()).unwrap()).unwrap()
     }
@@ -1304,7 +1313,7 @@ fn a_restore_rebuilt_from_the_history_waits_for_the_recovered_takes() {
     // Take 2 is recorded after the base (A§7.7's usual case): only qrec.json
     // and the commit record know its facts.
     let streams = {
-        let mut s = h.open(true).unwrap();
+        let mut s = h.open_recorder().unwrap();
         record_take_2(&mut s)
     };
     for st in &streams {
@@ -2235,7 +2244,7 @@ fn probed(stream: &qrec_core::model::Stream, frames: u64) -> ProbeResult {
 #[test]
 fn a_take_is_committed_before_capture_and_finalized_from_events() {
     let h = Harness::with_sample("record");
-    let mut s = h.open(true).unwrap();
+    let mut s = h.open_recorder().unwrap();
     let start = Answers::default();
     s.handle(Msg::Request {
         req: Request::command(
@@ -2319,7 +2328,7 @@ fn a_take_is_committed_before_capture_and_finalized_from_events() {
 #[test]
 fn a_gone_requester_is_forgotten() {
     let h = Harness::with_sample("gone");
-    let mut s = h.open(true).unwrap();
+    let mut s = h.open_recorder().unwrap();
     let start = Answers::default();
     s.handle(Msg::Request {
         req: Request::command(
