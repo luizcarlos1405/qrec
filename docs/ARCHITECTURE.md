@@ -576,6 +576,7 @@ pub enum Event {
     FrameFailed { job: JobId, message: String, log: String },
     OutputAppeared { job: JobId, out: String, bytes: u64, kept: String }, // A§8.8, ends either job
     TakeDirsDeleted { job: JobId, deleted: Vec<String>, errors: Vec<String> },
+    PurgeFailed { job: JobId, message: String }, // its commit failed and wasn't undone: nothing deleted (A§5.6)
     ProjectChangedOnDisk { project: Result<Box<Project>, String> }, // parsed + migrated by the shell
     RequesterGone { req: ReqId },                                  // IPC client disconnected
 }
@@ -788,7 +789,12 @@ files with sizes (`facts.take_files`), the number of history entries lost and
 the oldest surviving label. Effects in order: `History(Rewrite)` (A§7.5),
 `WriteProject`, then `DeleteTakeDirs` — the shell deletes exactly
 `takes/<takeId>/` (O_NOFOLLOW, regular files only, then rmdir) only after the
-commit is durable. Not undoable.
+commit is durable. Not undoable. A purge whose commit fails changes nothing
+(A§7.6: the store puts the base it replaced back) and replies `io`
+"couldn't save the project, so nothing changed"; if its files can't be put
+back it is kept in memory, the shell deletes nothing and sends
+`PurgeFailed`, whose reply says nothing was deleted and never that the
+take was purged.
 
 ### A§5.7 Autocut
 
@@ -994,14 +1000,15 @@ crash between 2 and 3); an unparsable or invalid one takes A§7.7.
 happen. The Session keeps the previous state, runs none of the outcome's
 effects and puts back what the commit wrote: a `qrec.json` that step 2
 already replaced (else the next open would merge it as an external edit),
-the history line (else the next open drops it as uncommitted) and a first
-base. It answers `io` "couldn't save the project, so nothing changed" — an
-in-process CLI host exits right after it replies, so a change can't wait in
-memory for a later save. An event's outcome carries facts (a finished take,
-a recovery), and a history `Rewrite` (purge, clear, compaction) can't put
-its base file back: those are kept in memory, the store rewrites every file
-with its next commit, and the replies they send are `io` "the change was
-made but couldn't be saved", not `ok`.
+the history line (else the next open drops it as uncommitted), a first
+base, and the base a history `Rewrite` (purge, clear, compaction) replaced
+(the store keeps its bytes for that). It answers `io` "couldn't save the
+project, so nothing changed" — an in-process CLI host exits right after it
+replies, so a change can't wait in memory for a later save. An event's
+outcome carries facts (a finished take, a recovery), and a change whose
+files can't be put back stays too: those are kept in memory, the store
+rewrites every file with its next commit, and the replies they send are
+`io` "the change was made but couldn't be saved", not `ok`.
 
 ### A§7.7 Invalid or corrupt `qrec.json`
 

@@ -198,6 +198,56 @@ pub fn take_dirs_deleted(
     Outcome::new(next, effects, None)
 }
 
+/// The purge's commit failed and its files couldn't be put back, so the
+/// shell deleted nothing (A§5.6) and the purge lives only in memory until
+/// a later commit saves it (A§7.6). The reply says nothing was deleted and
+/// how to finish either way; it never says the take was purged.
+pub fn purge_failed(state: &State, _ctx: &Ctx, job: JobId, message: String) -> Outcome {
+    let takes = match state.runtime.jobs.get(&job).map(|j| &j.kind) {
+        Some(JobKind::Purge { takes }) => takes.clone(),
+        _ => {
+            let mut out = Outcome::unchanged(state);
+            out.effects.push(log(
+                LogLevel::Debug,
+                format!("ignored PurgeFailed for {job}: no such purge"),
+            ));
+            return out;
+        }
+    };
+    let mut next = state.clone();
+    let finished = next
+        .runtime
+        .jobs
+        .remove(&job)
+        .expect("the job was just found");
+    let names = take_names(&takes);
+    let folders: Vec<String> = takes.iter().map(|t| format!("takes/{t}/")).collect();
+    let err = CoreError::io(format!(
+        "the purge of {names} couldn't be saved, so no file was deleted: {message}"
+    ))
+    .with_hint(format!(
+        "free disk space or fix the project folder's permissions, then check `qrec take list`: \
+         purge what is still listed again; delete {} by hand only if it is no longer listed",
+        folders.join(", ")
+    ))
+    .with_details(json!({ "takes": takes, "folders": folders }));
+    let mut effects = vec![log(
+        LogLevel::Warn,
+        format!("purge {job} not saved: nothing deleted ({message})"),
+    )];
+    match finished.req {
+        Some(req) => effects.push(Effect::Reply {
+            req,
+            reply: Err(err),
+        }),
+        None => effects.push(Effect::Notify(
+            Toast::new(ToastLevel::Warning, format!("Couldn't purge {names}"))
+                .with_body(err.message),
+        )),
+    }
+    Outcome::new(next, effects, None)
+}
+
 fn log(level: LogLevel, message: impl Into<String>) -> Effect {
     Effect::Log {
         level,
@@ -464,6 +514,53 @@ mod tests {
         assert_eq!(toasts(&out)[0].title, "Purged take 2 from disk.");
         let out = take_dirs_deleted(&state, &ctx(), JobId(3), vec![], vec!["EIO".into()]);
         assert_eq!(toasts(&out)[0].level, ToastLevel::Warning);
+    }
+
+    /// A purge that couldn't be saved never says the take was purged or
+    /// that its files are leftovers to delete: nothing was deleted.
+    #[test]
+    fn an_unsaved_purge_says_nothing_was_deleted() {
+        let req = ctx().req;
+        let state = purging(req.clone());
+        let out = purge_failed(
+            &state,
+            &ctx(),
+            JobId(3),
+            "write .qrec/history.base.json: Permission denied".into(),
+        );
+        assert!(out.state.runtime.jobs.is_empty(), "the purge job is over");
+        let Some(Effect::Reply {
+            req: replied,
+            reply: Err(e),
+        }) = out
+            .effects
+            .iter()
+            .find(|e| matches!(e, Effect::Reply { .. }))
+        else {
+            panic!("an error reply: {:?}", out.effects)
+        };
+        assert_eq!(Some(replied), req.as_ref());
+        assert_eq!(e.code, crate::ErrorCode::Io);
+        assert_eq!(
+            e.message,
+            "the purge of take 2 couldn't be saved, so no file was deleted: \
+             write .qrec/history.base.json: Permission denied"
+        );
+        assert!(!e.message.contains("purged take"), "{e:?}");
+        let hint = e.hint.as_deref().unwrap();
+        assert!(hint.contains("qrec take list"), "{hint}");
+        assert!(hint.contains("takes/take-0002/"), "{hint}");
+        assert!(!hint.starts_with("delete the leftover files"), "{hint}");
+        assert!(toasts(&out).is_empty(), "the requester gets the news");
+
+        // Nobody waits: a warning toast says the same.
+        let out = purge_failed(&purging(None), &ctx(), JobId(3), "EIO".into());
+        let toast = toasts(&out)[0];
+        assert_eq!(toast.level, ToastLevel::Warning);
+        assert_eq!(toast.title, "Couldn't purge take 2");
+        // Not a purge: ignored.
+        let out = purge_failed(&state, &ctx(), JobId(9), "EIO".into());
+        assert_eq!(out.state, state);
     }
 
     #[test]

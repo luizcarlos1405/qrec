@@ -670,6 +670,50 @@ fn purging_a_take_needs_yes() {
     assert_eq!(takes.reply()["data"].as_array().unwrap().len(), 1);
 }
 
+/// A purge that can't be saved deletes nothing, changes nothing and says
+/// so (A§5.6, A§7.6). It used to reply "purged take 1 from the project, but
+/// some files could not be deleted … delete the leftover files by hand"
+/// while the project still listed the take.
+#[test]
+fn a_purge_that_cant_be_saved_deletes_nothing_and_says_so() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |dir: &Path, mode: u32| {
+        fs::set_permissions(dir, fs::Permissions::from_mode(mode)).unwrap();
+    };
+    let env = TestEnv::new();
+    let dir = project_with(&env, "purge-ro", &[video(30), video(30)]);
+    qrec(&env, &dir, &["clip", "remove", "c001", "-q"]).ok();
+    let state = dir.join(".qrec");
+    mode(&state, 0o555);
+    if fs::write(state.join(".probe"), b"").is_ok() {
+        // Root writes anyway: nothing to test.
+        let _ = fs::remove_file(state.join(".probe"));
+        return mode(&state, 0o755);
+    }
+    let out = qrec(
+        &env,
+        &dir,
+        &["--json", "take", "purge", "take-0001", "--yes"],
+    );
+    mode(&state, 0o755);
+    assert_eq!(out.code, Some(1), "{out:?}");
+    let error = out.only_reply()["error"].clone();
+    assert_eq!(error["code"], "io");
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("couldn't save the project, so nothing changed: "),
+        "{error}"
+    );
+    assert!(!error.to_string().contains("leftover"), "{error}");
+    assert!(dir.join("takes/take-0001").is_dir(), "nothing deleted");
+    let row = take_row(&env, &dir, "take-0001");
+    assert_eq!(row["unused"], true, "still in the bin: {row}");
+
+    // Once the folder is writable again the purge goes through.
+    qrec(&env, &dir, &["take", "purge", "take-0001", "--yes", "-q"]).ok();
+    assert!(!dir.join("takes/take-0001").exists());
+}
+
 #[test]
 fn autocut_dry_run_then_apply() {
     let env = TestEnv::new();
@@ -1448,6 +1492,53 @@ fn a_restore_keeps_a_valid_hand_edit_as_an_entry() {
     qrec(&env, &dir, &["redo", "2", "-q"]).ok();
     let status = qrec(&env, &dir, &["status", "--json"]);
     assert_eq!(status.reply()["data"]["project"]["name"], "my hand edit");
+}
+
+/// A hand edit that is valid alone but not once merged (A§7.4: facts in
+/// memory win) is kept as it is, even when the files need repair (SPEC
+/// §16, A§7.7): commands refuse to run until it is fixed or restored, and a
+/// restore keeps a copy. It used to be replaced by the commit record's
+/// project, with no copy kept anywhere, and the next command succeeded.
+#[test]
+fn a_hand_edit_that_doesnt_merge_is_never_overwritten() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "unmerged", &[video(30)]);
+    qrec(&env, &dir, &["project", "set", "--name", "named", "-q"]).ok();
+    // A torn last history line (a crash mid-append): the next open has
+    // repairs to write.
+    let history = dir.join(".qrec/history.jsonl");
+    let mut lines = fs::read(&history).unwrap();
+    lines.extend_from_slice(b"{\"seq\":");
+    fs::write(&history, lines).unwrap();
+    hand_edit(&dir, |json| {
+        json["name"] = json!("my hand edit");
+        json["takes"]["take-0001"]["durationFrames"] = json!(500);
+        json["timeline"]["clips"][0]["out"] = json!(500);
+    });
+    let edited = fs::read(dir.join("qrec.json")).unwrap();
+
+    for _ in 0..2 {
+        let out = qrec(&env, &dir, &["project", "set", "--name", "z", "--json"]);
+        assert_eq!(out.code, Some(1), "{out:?}");
+        let error = out.only_reply()["error"].clone();
+        assert_eq!(error["code"], "invalid");
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("qrec.json on disk is invalid: "),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read(dir.join("qrec.json")).unwrap(),
+            edited,
+            "the hand edit is kept"
+        );
+    }
+    qrec(&env, &dir, &["history", "restore", "1", "--yes", "-q"]).ok();
+    assert_eq!(corrupt_copies(&dir), [edited], "a restore keeps a copy");
+    let status = qrec(&env, &dir, &["status", "--json"]);
+    assert_eq!(status.reply()["data"]["project"]["name"], "named");
 }
 
 #[test]

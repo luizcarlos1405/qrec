@@ -20,9 +20,10 @@
 //!   is the commit point): the state stays as it was, none of its effects
 //!   run and its requester gets an `io` error saying nothing changed. A
 //!   CLI host exits right after its reply, so the change can't wait in
-//!   memory for a later save. The exception is a history `Rewrite`
-//!   (purge, clear, compaction), whose base file can't be put back: it is
-//!   kept like an event's facts.
+//!   memory for a later save. A history `Rewrite` (purge, clear,
+//!   compaction) is dropped the same way: the store kept the base it
+//!   replaced. Only a change whose files can't be put back is kept, like an
+//!   event's facts; a purge's folders then stay (`Event::PurgeFailed`).
 //! - An event's outcome carries facts (a finished take, a recovery), so it
 //!   is kept in memory and the store saves it with the next commit; replies
 //!   it sends say the change isn't saved yet.
@@ -183,11 +184,8 @@ impl Session {
         }
 
         let was_initialized = is_initialized(&self.state.project);
-        let droppable = origin == Origin::Command
-            && saves
-            && !reclaimed
-            && !ops.iter().any(|op| matches!(op, HistoryOp::Rewrite { .. }));
-        let mark = droppable.then(|| self.store.mark());
+        let droppable = origin == Origin::Command && saves && !reclaimed;
+        let mark = droppable.then(|| self.store.mark(&ops));
         let commit = self.store.commit(&self.state, &next, &ops, write_project);
         #[cfg(test)]
         if let Err(CommitError::Crashed(_)) = &commit {
@@ -219,6 +217,7 @@ impl Session {
             }
         };
         let committed = commit.is_ok();
+        let cause = commit.as_ref().err().map(ToString::to_string);
         if committed && !was_initialized && is_initialized(&self.state.project) {
             // A§8.4: `takes/` is made right after the first commit.
             if let Err(e) = self.store.ensure_takes_dir() {
@@ -244,7 +243,13 @@ impl Session {
             self.pending.insert(id.clone(), responder);
         }
         for effect in effects {
-            self.run_world_effect(effect, committed, unsaved.as_ref(), &failed_takes);
+            self.run_world_effect(
+                effect,
+                committed,
+                unsaved.as_ref(),
+                cause.as_deref(),
+                &failed_takes,
+            );
         }
         if let Some(reply) = reply {
             let reply = reply.map(|result| serde_json::to_value(result).unwrap_or(Value::Null));
@@ -259,8 +264,9 @@ impl Session {
 
     /// After a failed commit of a command: puts back what it wrote
     /// (`Store::drop_commit`). `false` when `qrec.json` already holds the
-    /// change and can't be put back: then the change is kept instead, as
-    /// after a crash between the project and the head writes (A§7.6).
+    /// change, or a rewrite replaced the history base, and it can't be put
+    /// back: then the change is kept instead, as after a crash between the
+    /// project and the head writes (A§7.6).
     fn drop_unsaved(&mut self, mark: CommitMark, failed: &CommitError) -> bool {
         match self.store.drop_commit(mark, &self.state, failed) {
             Ok(()) => true,
@@ -289,19 +295,26 @@ impl Session {
                     toast.title,
                     toast.body.as_deref().unwrap_or_default()
                 ),
-                effect => self.run_world_effect(effect, false, None, &no_failed_takes),
+                effect => self.run_world_effect(
+                    effect,
+                    false,
+                    None,
+                    Some("a `qrec history` session saves nothing until a change is confirmed"),
+                    &no_failed_takes,
+                ),
             }
         }
         Ran::Done
     }
 
     /// One effect after the commit. `unsaved` is the error replies get
-    /// instead of "ok" when the commit failed.
+    /// instead of "ok" when the commit failed, and `cause` why it failed.
     fn run_world_effect(
         &mut self,
         effect: Effect,
         committed: bool,
         unsaved: Option<&CoreError>,
+        cause: Option<&str>,
         failed_takes: &BTreeMap<TakeId, String>,
     ) {
         let inbox = self.inbox.clone();
@@ -316,12 +329,11 @@ impl Session {
                 if committed {
                     self.deps.media.delete_take_dirs(job, takes, inbox);
                 } else {
-                    inbox.event(Event::TakeDirsDeleted {
+                    // A§5.6: only after a durable commit. The purge is only
+                    // in memory: its reply must not say it happened.
+                    inbox.event(Event::PurgeFailed {
                         job,
-                        deleted: Vec::new(),
-                        errors: vec![
-                            "nothing was deleted: the project couldn't be saved first".to_owned(),
-                        ],
+                        message: cause.unwrap_or("the project couldn't be saved").to_owned(),
                     });
                 }
             }

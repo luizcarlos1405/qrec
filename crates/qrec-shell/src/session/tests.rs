@@ -817,6 +817,110 @@ fn a_purge_is_committed_before_anything_is_deleted() {
     assert!(s.state().runtime.jobs.is_empty(), "the purge job is done");
 }
 
+/// A purge whose save fails changes nothing (A§7.6): the history base it
+/// replaced is put back like the rest, nothing is deleted, the take is
+/// still there and the reply says so. It used to stay purged in memory only
+/// (lost when the CLI host exited) and reply "purged take 2 from the
+/// project, but some files could not be deleted … delete the leftover files
+/// by hand", for the media of a take the project still listed.
+#[test]
+fn a_purge_that_cant_be_saved_changes_nothing() {
+    let h = Harness::new("purge-unsaved");
+    let mut json = testdata::sample_json();
+    json["takes"]["take-0002"] = testdata::take_json("take-0002", 60);
+    json["nextTakeNumber"] = 3.into();
+    write_project(&h.dir, &json);
+    let take_dir = h.dir.join("takes/take-0002");
+    fs::create_dir_all(&take_dir).unwrap();
+    fs::write(take_dir.join("A1-mic.mka"), b"12345").unwrap();
+    let mut s = h.open(true).unwrap();
+    // Entries that name take 2, so the purge rewrites the history.
+    send(
+        &mut s,
+        Command::ClipAdd {
+            take: take(2),
+            at: InsertAt::End,
+        },
+        false,
+    )
+    .unwrap();
+    let added = s.state().project.timeline.clips.last().unwrap().id.clone();
+    send(&mut s, Command::ClipRemove { clips: vec![added] }, false).unwrap();
+    let before = s.state().clone();
+    let files = snapshot(&h.dir);
+    let purge = Command::TakePurge {
+        takes: vec![take(2)],
+    };
+
+    let qrec = h.dir.join(".qrec");
+    if !make_read_only(&qrec) {
+        return;
+    }
+    let reply = send(&mut s, purge.clone(), true);
+    make_writable(&qrec);
+    let err = reply.unwrap_err();
+    assert_eq!(err.code, ErrorCode::Io);
+    assert!(
+        err.message
+            .starts_with("couldn't save the project, so nothing changed:"),
+        "{err:?}"
+    );
+    assert!(!err.message.contains("purged"), "{err:?}");
+    assert!(!h.log.has("delete"), "nothing is deleted");
+    assert_eq!(s.state().project, before.project, "not purged in memory");
+    assert_eq!(s.state().history, before.history);
+    assert!(s.state().runtime.jobs.is_empty());
+    assert!(take_dir.join("A1-mic.mka").is_file());
+    assert_eq!(snapshot(&h.dir), files, "every file is as it was");
+    drop(s);
+
+    // Nothing was lost: the next host sees the take and can purge it.
+    let mut s = h.open(true).unwrap();
+    assert!(s.state().project.takes.contains_key(&take(2)));
+    send(&mut s, purge, true).unwrap();
+    assert_eq!(
+        h.log.lines().last().unwrap(),
+        "delete take-0002 committed=true"
+    );
+    assert!(!s.state().project.takes.contains_key(&take(2)));
+}
+
+/// A rewrite that fails after it replaced the history base puts the base
+/// back with the rest: the files are as they were.
+#[test]
+fn a_dropped_rewrite_puts_the_history_base_back() {
+    let h = Harness::with_sample("clear-unsaved");
+    let mut s = h.open(true).unwrap();
+    send(
+        &mut s,
+        Command::ClipRemove {
+            clips: vec![clip("c001")],
+        },
+        false,
+    )
+    .unwrap();
+    let before = s.state().clone();
+    let files = snapshot(&h.dir);
+    // qrec.json's folder is read-only: the base and the history are
+    // rewritten in .qrec/, then writing qrec.json fails.
+    if !make_read_only(&h.dir) {
+        return;
+    }
+    let reply = send(&mut s, Command::HistoryClear, true);
+    make_writable(&h.dir);
+    let err = reply.unwrap_err();
+    assert!(
+        err.message
+            .starts_with("couldn't save the project, so nothing changed:"),
+        "{err:?}"
+    );
+    assert_eq!(s.state().history, before.history, "the history is kept");
+    assert_eq!(snapshot(&h.dir), files, "the base and history are back");
+    drop(s);
+    let s = h.open(true).unwrap();
+    assert_eq!(s.state().history.entries.len(), 1);
+}
+
 #[test]
 fn a_crash_after_the_history_line_loses_only_that_command() {
     let h = Harness::with_sample("crash-history");
@@ -1814,16 +1918,14 @@ fn deleting_waits_for_a_durable_commit() {
         !h.log.has("delete"),
         "nothing is deleted without a commit record"
     );
+    // The core hears that the purge isn't saved (never "some files could
+    // not be deleted"), with why.
     match s.rx.try_recv() {
-        Ok(Msg::Event(Event::TakeDirsDeleted {
-            job,
-            deleted,
-            errors,
-        })) => {
+        Ok(Msg::Event(Event::PurgeFailed { job, message })) => {
             assert_eq!(job, JobId(9));
-            assert!(deleted.is_empty() && !errors.is_empty());
+            assert!(message.contains("Permission denied"), "{message}");
         }
-        other => panic!("expected TakeDirsDeleted, got {other:?}"),
+        other => panic!("expected PurgeFailed, got {other:?}"),
     }
     assert!(
         h.toast_titles()

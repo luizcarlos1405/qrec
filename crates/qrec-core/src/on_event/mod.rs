@@ -9,7 +9,7 @@
 //! | `record.rs` | record | capture, clock, probe and countdown timer events |
 //! | `autocut.rs` | autocut | `SilenceDetected`, `SilenceFailed` |
 //! | `output.rs` | output | export and frame events, `RequesterGone` |
-//! | `disk.rs` | history | `ProjectChangedOnDisk`, `TakeDirsDeleted` |
+//! | `disk.rs` | history | `ProjectChangedOnDisk`, `TakeDirsDeleted`, `PurgeFailed` |
 //!
 //! `Capabilities` is handled here.
 
@@ -99,6 +99,7 @@ pub fn on_event(state: &State, ctx: &Ctx, ev: Event) -> Outcome {
             deleted,
             errors,
         } => disk::take_dirs_deleted(state, ctx, job, deleted, errors),
+        Event::PurgeFailed { job, message } => disk::purge_failed(state, ctx, job, message),
         Event::ProjectChangedOnDisk { project } => {
             disk::project_changed_on_disk(state, ctx, project)
         }

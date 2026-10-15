@@ -118,6 +118,13 @@ pub enum Event {
         deleted: Vec<String>,
         errors: Vec<String>,
     },
+    /// Ends a purge whose commit failed and couldn't be undone: the shell
+    /// deleted nothing (A§5.6), the purge is only in memory, and `message`
+    /// says why it wasn't saved (A§7.6).
+    PurgeFailed {
+        job: JobId,
+        message: String,
+    },
     /// Parsed and migrated by the shell; `Err` = the file is invalid (A§7.7).
     ProjectChangedOnDisk {
         project: Result<Box<Project>, String>,
