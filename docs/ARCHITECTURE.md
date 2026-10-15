@@ -744,13 +744,18 @@ each take still `recording` gets `Probe{Recover}` and is in
 `runtime.recovering` until its `TakeProbed(Recover)` comes back (whatever it
 says). Readable ⇒ `ok`, bin, toast "Recovered take 7 from the bog.";
 unreadable ⇒ `broken`; a probe that failed on its own ⇒ the take stays
-`recording` (warning toast) for the next start. Open waits for the answers
-(at most `RECOVERY_WAIT`, 60 s) before the first request runs, so even a
-one-shot CLI command recovers the take and already sees it recovered (`qrec
-clip add take-0007` works right after a crash). A probe still out after
-that is work like a running job: a host isn't idle meanwhile (A§8.6) and
-`Session::run_until` doesn't return before its answer, so no host exits and
-drops it (the runner always answers, A§8.7).
+`recording` (warning toast) for the next start. Commands wait for the
+answers (at most `RECOVERY_WAIT`, 60 s after the open) before they run, so
+even a one-shot CLI command recovers the take and already sees it recovered
+(`qrec clip add take-0007` works right after a crash). The Session holds
+them itself instead of blocking in `Session::open`, so it handles events,
+`hello`, queries and signals meanwhile; commands that only stop something
+(`RecordStop`, `RecordCancel`, `ExportCancel`, a `RecordToggle` that stops)
+never wait. A probe still out after that is work like a running job: a host
+isn't idle meanwhile (A§8.6) and `Session::run_until` doesn't return before
+its answer, so no host exits and drops it (the runner always answers,
+A§8.7) — unless the host was interrupted: then its 15 s grace decides, and
+the next open recovers the take.
 
 **CaptureFailed vs StreamLost** (engine contract, A§8.11): after
 CaptureStarted, an error attributable to one branch (its source, encoder,
@@ -1138,11 +1143,12 @@ Cli) and serves the socket.
    `{pid, kind, socket, since, state:"starting"}` to the lock file, unlink
    `<hash>.sock`, bind `<first 40 hex of the hash>.<pid>.tmp` (shorter than
    the socket path), listen, `rename` it to `<hash>.sock` (atomic publish),
-   set `state:"ready"`. This happens before
-   recovery and `gst::init()`; early requests queue in the inbox. The host
-   then opens its Session with a second descriptor of the lock (`dup`, same
-   open file description): a second `open` + `flock` in the same process
-   would be refused, and dropping the Session only closes its copy.
+   set `state:"ready"`. This happens before recovery and `gst::init()`;
+   early requests queue in the server until the Session is attached (a
+   signal's messages go ahead of them, A§8.6). The host then opens its
+   Session with a second descriptor of the lock (`dup`, same open file
+   description): a second `open` + `flock` in the same process would be
+   refused, and dropping the Session only closes its copy.
 2. Only the lock holder unlinks its socket. Scanners never delete anything.
 3. **Exit:** stop accepting → unlink the socket → `state:"stopping"` →
    flush replies → exit (closing the lock fd releases the lock). The exit
@@ -1224,8 +1230,15 @@ continue"). `seek`/`play`/`pause`/`shuttle` without a GUI host ⇒
   `recording`). `shutdown` requests: stop accepting, let jobs finish, exit.
 - Signals in every host: the first SIGTERM/SIGINT/SIGHUP dispatches
   `RecordStop` (finalize, not cancel) and cancels jobs; exit when idle or
-  after 15 s. A second signal: SIGKILL child process groups, `_exit(130)`;
-  startup recovery handles the take.
+  after 15 s (a recovery probe still out counts as busy only that long).
+  Its `RecordStop` and `Msg::Interrupt` go ahead of requests parked while
+  the Session opened. From then on the Session runs no command that hadn't
+  started — those held for a recovery (A§5.3), parked before it opened or
+  arriving later get `busy` "this Qrec host is stopping" — except the ones
+  that stop something (`RecordStop`, `RecordCancel`, `ExportCancel`, a
+  `RecordToggle` that stops), and an in-process host never sends its own
+  command once signalled. A second signal: SIGKILL child process groups,
+  `_exit(130)`; startup recovery handles the take.
 - Client CLI: SIGINT/SIGTERM (signal-hook) → `Msg::Interrupt`. In-process: the
   first cancels running jobs (SIGTERM to each child group, SIGKILL after 2 s),
   deletes temp outputs, exits 130; the second SIGKILLs and exits 130.

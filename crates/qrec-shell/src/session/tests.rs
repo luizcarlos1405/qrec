@@ -1785,8 +1785,11 @@ fn takes_still_recording_are_probed_when_a_host_opens() {
         [take(2)].into_iter().collect::<BTreeSet<_>>()
     );
     assert!(!s.is_idle());
-    // A command meanwhile doesn't start a second probe.
-    send(&mut s, Command::Undo { steps: 1 }, false).ok();
+    // A command meanwhile waits for it (A§5.3) and doesn't start a second
+    // probe.
+    let undo = request(&mut s, WireBody::Command(Command::Undo { steps: 1 }), false);
+    assert!(undo.last().is_none(), "held until the take is recovered");
+    assert_eq!(s.pending_requests(), 1);
     assert_eq!(
         h.log
             .lines()
@@ -1796,7 +1799,7 @@ fn takes_still_recording_are_probed_when_a_host_opens() {
         1
     );
 
-    // The result is applied and saved.
+    // The result is applied and saved, then the command runs.
     let streams = s.state().project.takes[&take(2)].streams.clone();
     s.handle(Msg::Event(Event::TakeProbed {
         take: take(2),
@@ -1805,6 +1808,7 @@ fn takes_still_recording_are_probed_when_a_host_opens() {
     }));
     s.drain();
     assert!(s.state().runtime.recovering.is_empty());
+    assert!(undo.last().is_some(), "answered once the take is recovered");
     assert!(s.is_idle());
     assert_eq!(s.state().project.takes[&take(2)].status, TakeStatus::Ok);
     assert_eq!(h.head().project.takes[&take(2)].status, TakeStatus::Ok);
@@ -1832,19 +1836,8 @@ fn takes_still_recording_are_recovered_before_the_first_request() {
         "{:?}",
         h.log.lines()
     );
-    // Open waited for the answer: the take is recovered, on disk too, and
-    // nothing is left for a host to wait for.
-    let t = &s.state().project.takes[&take(2)];
-    assert_eq!((t.status, t.duration_frames), (TakeStatus::Ok, 90));
-    assert_eq!(h.head().project.takes[&take(2)].status, TakeStatus::Ok);
-    assert!(
-        h.toast_titles()
-            .contains(&"Recovered take 2 from the bog.".to_owned()),
-        "{:?}",
-        h.toast_titles()
-    );
-    assert!(s.recovering().is_empty() && s.is_idle());
-    // So the very first command can use it (a one-shot CLI command).
+    // The very first command (a one-shot CLI command) waits for the answer
+    // queued behind it, so it can use the take.
     let added = send(
         &mut s,
         Command::ClipAdd {
@@ -1855,6 +1848,96 @@ fn takes_still_recording_are_recovered_before_the_first_request() {
     )
     .unwrap();
     assert_eq!(added["created"].as_array().unwrap().len(), 1, "{added}");
+    // The take is recovered, on disk too, and nothing is left for a host to
+    // wait for.
+    let t = &s.state().project.takes[&take(2)];
+    assert_eq!((t.status, t.duration_frames), (TakeStatus::Ok, 90));
+    assert_eq!(h.head().project.takes[&take(2)].status, TakeStatus::Ok);
+    assert!(
+        h.toast_titles()
+            .contains(&"Recovered take 2 from the bog.".to_owned()),
+        "{:?}",
+        h.toast_titles()
+    );
+    assert!(s.recovering().is_empty() && s.is_idle());
+}
+
+/// Ctrl+C or a signal while a crashed take is being recovered (A§8.6): a
+/// command still waiting for the recovery never runs (here a confirmed
+/// purge: nothing is deleted), later commands are refused unless they stop
+/// something, and the Session no longer holds its host for the recovery
+/// (the host's grace period decides; the next open recovers the take). The
+/// open used to wait for the probe before any message was handled, then
+/// ran the interrupted purge.
+#[test]
+fn an_interrupt_drops_the_commands_waiting_for_a_recovery() {
+    let h = Harness::new("interrupted-recovery");
+    write_crashed_take(&h);
+    let mut json: Value =
+        serde_json::from_slice(&fs::read(h.dir.join("qrec.json")).unwrap()).unwrap();
+    json["takes"]["take-0003"] = testdata::take_json("take-0003", 60);
+    json["nextTakeNumber"] = 4.into();
+    write_project(&h.dir, &json);
+    let take_dir = h.dir.join("takes/take-0003");
+    fs::create_dir_all(&take_dir).unwrap();
+    fs::write(take_dir.join("A1-mic.mka"), b"12345").unwrap();
+    // The probe is never answered: a huge file on a slow disk.
+    let mut s = h.open(true).unwrap();
+    assert_eq!(s.recovering().len(), 1);
+
+    let purge = request(
+        &mut s,
+        WireBody::Command(Command::TakePurge {
+            takes: vec![take(3)],
+        }),
+        true,
+    );
+    assert!(purge.last().is_none(), "held for the recovery");
+    s.handle(Msg::Interrupt);
+    let err = purge.last().expect("answered at once").unwrap_err();
+    assert_eq!(err.code, ErrorCode::Busy);
+    assert!(err.message.contains("stopping"), "{err:?}");
+    assert!(!h.log.has("delete"), "nothing is deleted");
+    assert!(take_dir.join("A1-mic.mka").is_file());
+    assert!(s.state().project.takes.contains_key(&take(3)));
+    assert_eq!(s.pending_requests(), 0);
+
+    // Nothing new starts; stopping things still runs.
+    let err = send(
+        &mut s,
+        Command::ClipRemove {
+            clips: vec![clip("c001")],
+        },
+        false,
+    )
+    .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Busy, "{err:?}");
+    let stop = send(&mut s, Command::RecordStop, false).unwrap_err();
+    assert_eq!(stop.code, ErrorCode::Invalid, "not refused: {stop:?}");
+
+    // The recovery no longer keeps `run_until` from asking its host.
+    let started = Instant::now();
+    s.run_until(|_| true);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(s.recovering().len(), 1, "still out: the next open retries");
+}
+
+/// Outside recovery mode, commands wait for a recovery only for the open's
+/// wait (A§5.3): then they run, the recovery answering later.
+#[test]
+fn commands_wait_for_a_slow_recovery_only_so_long() {
+    let h = Harness::new("slow-recovery-wait");
+    write_crashed_take(&h);
+    let mut s = h.open(true).unwrap();
+    let undo = request(&mut s, WireBody::Command(Command::Undo { steps: 1 }), false);
+    assert!(undo.last().is_none(), "held for the recovery");
+    // The harness waits 200 ms; `tick` lets them go once that is over.
+    let deadline = s.next_deadline().expect("the wait's end is due");
+    assert!(deadline <= Instant::now() + Duration::from_millis(200));
+    std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+    s.tick();
+    assert!(undo.last().is_some(), "it ran");
+    assert_eq!(s.recovering().len(), 1, "the recovery is still out");
 }
 
 #[test]

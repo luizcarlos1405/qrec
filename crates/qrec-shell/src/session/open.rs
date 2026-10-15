@@ -15,14 +15,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::RecvTimeoutError;
 use qrec_core::apply::project::{is_initialized, uninitialized_state};
 use qrec_core::apply::ui::live_scene;
 use qrec_core::history::external::merged_preview;
 use qrec_core::model::Project;
 use qrec_core::on_event::record::start_recovery;
 use qrec_core::protocol::{Toast, ToastLevel};
-use qrec_core::{CoreError, ErrorCode, Event, State, TakeId};
+use qrec_core::{CoreError, ErrorCode, Event, State};
 
 use super::Session;
 use super::config::{LogNotifier, SessionConfig, SessionEnv};
@@ -40,10 +39,10 @@ use crate::store::{self, Check, LoadOpts, Store};
 use crate::timers::Timers;
 use crate::watcher;
 
-/// How long opening a project waits for the recovery probes (A§5.3)
-/// before the first request runs. Probing reads every packet of the files
-/// (`-count_packets`), a few seconds even for long takes; the runner's own
-/// limit is 20 s plus 30 s per GiB.
+/// How long after opening a project its requests wait for the recovery
+/// probes (A§5.3) before they run anyway. Probing reads every packet of the
+/// files (`-count_packets`), a few seconds even for long takes; the
+/// runner's own limit is 20 s plus 30 s per GiB.
 pub const RECOVERY_WAIT: Duration = Duration::from_secs(60);
 
 /// What a folder holds (A§8.4).
@@ -218,6 +217,7 @@ pub(super) fn open(
         notifier: cfg.notifier.unwrap_or_else(|| Box::new(LogNotifier)),
         shutdown: false,
         interrupts: 0,
+        recovery_until: None,
         request_saved: false,
         #[cfg(test)]
         crashed: false,
@@ -287,8 +287,13 @@ pub(super) fn open(
         session.start_recovery_probes();
         // A§5.3: a take left `recording` is finalized before the first
         // request runs, so even a one-shot CLI command recovers it (and
-        // sees it recovered). Requests that arrive meanwhile queue.
-        session.finish_recovery(cfg.recovery_wait.unwrap_or(RECOVERY_WAIT));
+        // sees it recovered). The Session holds commands until then (for at
+        // most the wait) rather than blocking here, so it keeps handling
+        // events and interrupts meanwhile (A§8.6).
+        if !session.state.runtime.recovering.is_empty() {
+            let wait = cfg.recovery_wait.unwrap_or(RECOVERY_WAIT);
+            session.recovery_until = Some(Instant::now() + wait);
+        }
     }
     if writable && !opts.recovery {
         match watcher::watch(&session.dir, session.inbox.clone()) {
@@ -388,35 +393,6 @@ impl Session {
             }
             Ok(_) => {}
             Err(why) => self.state.runtime.disk_invalid = Some(why),
-        }
-    }
-
-    /// Handles what arrives until every recovery probe is answered, for at
-    /// most `wait`. A probe still running then (a huge file) is answered
-    /// later: [`Session::run_until`] waits for it.
-    fn finish_recovery(&mut self, wait: Duration) {
-        let deadline = Instant::now() + wait;
-        while !self.state.runtime.recovering.is_empty() {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                tracing::warn!(
-                    "still recovering {} after {} s; the project opens meanwhile",
-                    self.state
-                        .runtime
-                        .recovering
-                        .iter()
-                        .map(TakeId::as_str)
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    wait.as_secs()
-                );
-                return;
-            }
-            match self.rx.recv_timeout(left) {
-                Ok(msg) => self.handle(msg),
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return,
-            }
         }
     }
 }

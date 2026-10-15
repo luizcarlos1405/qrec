@@ -1831,6 +1831,113 @@ fn the_next_command_recovers_a_crashed_take() {
     qrec(&env, &dir, &["clip", "add", "take-0002", "--json"]).ok();
 }
 
+/// A folder with an `ffprobe` that sleeps `secs` before running the real
+/// one (a probe of a long take on a slow disk).
+fn slow_ffprobe(env: &TestEnv, secs: u32) -> OsString {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let real = std::env::split_paths(&path)
+        .map(|dir| dir.join("ffprobe"))
+        .find(|file| file.is_file())
+        .expect("ffprobe on PATH");
+    let dir = env.root().join("slow-ffprobe");
+    fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("ffprobe");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nsleep {secs}\nexec '{}' \"$@\"\n",
+            real.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path))).unwrap()
+}
+
+/// Ctrl+C on a command whose in-process host is still recovering a crashed
+/// take, its probe slow (A§8.6): the command, which hadn't started, never
+/// runs, and the host stops waiting for the probe after the 15 s grace (the
+/// next open recovers the take). The open used to wait for the probe before
+/// the signal was even seen; with a probe slower than the open's wait, an
+/// interrupted `take purge --yes` then deleted the take.
+#[test]
+fn a_command_interrupted_during_the_startup_recovery_never_runs() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("interrupted");
+    let mut project = fixture_project(&dir, &[video(30), video(45)]);
+    project["timeline"]["clips"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|c| c["take"] != "take-0001");
+    // Take 2's files are 1 GiB each (sparse, and new files: the fixtures
+    // are shared hard links), so its probe may take 50 s (A§8.7).
+    for stream in project["takes"]["take-0002"]["streams"].as_array().unwrap() {
+        let file = dir.join(stream["file"].as_str().unwrap());
+        fs::remove_file(&file).unwrap();
+        fs::File::create(&file).unwrap().set_len(1 << 30).unwrap();
+    }
+    crash_take_two(&dir, project);
+    let path = slow_ffprobe(&env, 25);
+    let mut command = env.command(&qrec_bin());
+    command
+        .current_dir(&dir)
+        .args(["--json", "take", "purge", "take-0001", "--yes"])
+        .env("PATH", &path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    // Its host is up (and recovering take 2) before Ctrl+C.
+    let lock = dir.join(".qrec/lock");
+    let ready = || {
+        fs::read(&lock)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|r| r["pid"] == child.id() && r["state"] == "ready")
+    };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !ready() {
+        assert!(Instant::now() < deadline, "the host never got ready");
+        thread::sleep(Duration::from_millis(20));
+    }
+    thread::sleep(Duration::from_millis(500));
+    let killed = std::process::Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let signalled = Instant::now();
+    let deadline = signalled + Duration::from_secs(40);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("the interrupted command didn't exit");
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    let waited = signalled.elapsed();
+    let mut stdout = String::new();
+    std::io::Read::read_to_string(&mut child.stdout.take().unwrap(), &mut stdout).unwrap();
+    assert_eq!(status.code(), Some(130), "{stdout}");
+    assert!(
+        waited < Duration::from_secs(21),
+        "the 15 s grace ends the wait for the probe: {waited:?}"
+    );
+    let last: Value = serde_json::from_str(stdout.lines().last().unwrap()).unwrap();
+    assert_eq!(last["error"]["code"], "interrupted", "{last}");
+    assert!(dir.join("takes/take-0001").is_dir(), "nothing was purged");
+    let row = take_row(&env, &dir, "take-0001");
+    assert_eq!(row["status"], "ok", "{row}");
+    let row = take_row(&env, &dir, "take-0002");
+    assert_eq!(
+        row["status"], "recording",
+        "recovered by the next open: {row}"
+    );
+}
+
 /// ffprobe missing when a take stops: the take keeps its facts (still
 /// `recording`, nothing marked missing), `record stop` says what is
 /// missing (exit 5), and the next command with ffprobe back recovers it.

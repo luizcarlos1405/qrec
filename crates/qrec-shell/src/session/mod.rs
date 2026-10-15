@@ -3,9 +3,10 @@
 //!
 //! - [`Session::open`] applies the folder rule, takes the lock (mutating
 //!   opens), loads and reconciles the files (A§7.6, A§7.7), detects the
-//!   capabilities, merges an external edit found on disk, recovers the
-//!   takes still `recording` (it probes them and waits for the answers, so
-//!   the first request already sees them recovered) and starts the
+//!   capabilities, merges an external edit found on disk, starts
+//!   recovering the takes still `recording` (it probes them; commands wait
+//!   for the answers, so the first request already sees them recovered,
+//!   while events and signals are handled meanwhile) and starts the
 //!   `qrec.json` watcher.
 //! - [`Session::handle`] takes one [`Msg`]. A request gets a `ReqId`, its
 //!   facts (`facts_needed`), `apply`, then its effects in the A§7.6 order
@@ -87,9 +88,12 @@ pub struct Session {
     watcher: Option<Watcher>,
     /// Requests waiting for a late `Effect::Reply`.
     pending: BTreeMap<ReqId, Box<dyn Responder>>,
-    /// Commands of a recovery-mode session waiting for the Recover probes
-    /// of the takes being recovered (A§7.7), in arrival order.
+    /// Commands waiting for the Recover probes of the takes being
+    /// recovered (A§5.3, A§7.7), in arrival order.
     parked: Vec<dispatch::Parked>,
+    /// Until when commands wait for the recovery the open started
+    /// ([`RECOVERY_WAIT`]); recovery mode waits for the answers instead.
+    recovery_until: Option<Instant>,
     next_req: u64,
     notifier: Box<dyn Notifier>,
     shutdown: bool,
@@ -153,16 +157,41 @@ impl Session {
             Msg::Interrupt => self.handle_interrupt(),
             Msg::Shutdown => self.shutdown = true,
         }
-        self.after_message();
         self.tick();
     }
 
-    /// Runs the parked commands once no take is being recovered (A§7.7).
-    fn after_message(&mut self) {
-        if !self.parked.is_empty() && self.state.runtime.recovering.is_empty() {
-            for parked in std::mem::take(&mut self.parked) {
-                self.resume(parked);
-            }
+    /// Commands wait for the takes being recovered (A§5.3): in recovery
+    /// mode until every Recover probe answered (a restore needs their
+    /// facts, A§7.7); otherwise until they did or the open's wait
+    /// ([`RECOVERY_WAIT`]) is over.
+    fn holding_for_recovery(&self) -> bool {
+        !self.state.runtime.recovering.is_empty()
+            && (self.opts.recovery
+                || self
+                    .recovery_until
+                    .is_some_and(|until| Instant::now() < until))
+    }
+
+    /// Runs the parked commands once they may run, in arrival order.
+    fn release_parked(&mut self) {
+        if self.parked.is_empty() || self.holding_for_recovery() {
+            return;
+        }
+        if !self.state.runtime.recovering.is_empty() {
+            let takes: Vec<&str> = self
+                .state
+                .runtime
+                .recovering
+                .iter()
+                .map(TakeId::as_str)
+                .collect();
+            tracing::warn!(
+                "still recovering {} when the wait ended; the requests run meanwhile",
+                takes.join(", ")
+            );
+        }
+        for parked in std::mem::take(&mut self.parked) {
+            self.resume(parked);
         }
     }
 
@@ -171,10 +200,14 @@ impl Session {
     /// recovery probe is outstanding: like a running job, a recovery is
     /// work a host waits for, so it never exits and drops the answer
     /// (A§5.3, A§8.6). The media runner always answers within its timeouts.
+    /// After an interrupt `done` is checked all the same: the host's own
+    /// grace period decides then (A§8.6), and the next open recovers the
+    /// take again.
     pub fn run_until(&mut self, mut done: impl FnMut(&State) -> bool) {
         loop {
             self.tick();
-            if self.state.runtime.recovering.is_empty() && done(&self.state) {
+            let waits = !self.state.runtime.recovering.is_empty() && self.interrupts == 0;
+            if !waits && done(&self.state) {
                 return;
             }
             let wait = self.next_deadline().map_or(POLL, |due| {
@@ -242,13 +275,23 @@ impl Session {
         &self.state.runtime.recovering
     }
 
-    /// When [`Session::tick`] has work (a coalesced `ui.json` write).
+    /// When [`Session::tick`] has work (a coalesced `ui.json` write, or
+    /// commands that stop waiting for a recovery).
     pub fn next_deadline(&self) -> Option<Instant> {
-        self.store.ui_deadline()
+        let ui = self.store.ui_deadline();
+        let parked = self
+            .recovery_until
+            .filter(|_| !self.parked.is_empty() && !self.opts.recovery);
+        match (ui, parked) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
-    /// Does what is due: a coalesced `ui.json` write.
+    /// Does what is due: the commands whose wait for a recovery is over,
+    /// and a coalesced `ui.json` write.
     pub fn tick(&mut self) {
+        self.release_parked();
         if let Err(e) = self.store.flush_ui(&self.state.ui, Instant::now(), false) {
             tracing::warn!("can't write .qrec/ui.json: {e}");
         }
