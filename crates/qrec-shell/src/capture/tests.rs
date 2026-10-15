@@ -439,6 +439,25 @@ fn stop_and_cancel_while_starting() {
 }
 
 #[test]
+fn stopping_within_the_first_audio_block_is_quiet() {
+    // flacenc sets its output caps with its first block (4608 samples at
+    // 48 kHz, 96 ms): a stream that ended sooner made GStreamer warn
+    // ("got 'segment' before 'caps'"). Stop at several moments of that window.
+    let _serial = serial();
+    let mut h = Harness::new();
+    for (n, delay_ms) in [(1u32, 15u64), (2, 35), (3, 55), (4, 75), (5, 95)] {
+        let dir = h.take_dir(n);
+        let take = plan(n, &dir, vec![], vec![audio("A1", FAKE_MIC, "mic")]);
+        h.start(&take);
+        std::thread::sleep(Duration::from_millis(delay_ms));
+        h.engine.stop(&take.take, false);
+        let (streams, timed_out, _) = h.stopped();
+        assert!(!timed_out, "take {n}");
+        assert!(streams.iter().all(|s| s.eos), "take {n}: {streams:?}");
+    }
+}
+
+#[test]
 fn stop_of_an_unknown_take_still_answers() {
     let _serial = serial();
     let mut h = Harness::new();

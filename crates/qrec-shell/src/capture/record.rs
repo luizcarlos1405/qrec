@@ -20,8 +20,9 @@
 //! A probe on the filesink's pad reports the first write (for
 //! `CaptureStarted`) and EOS (for `CaptureStopped`). Closing a bin unlinks
 //! it from the tee in an IDLE probe, fills video up to T1 with copies of the
-//! last frame (a static screen may not produce another one), then sends EOS
-//! into the bin.
+//! last frame (a static screen may not produce another one), pads audio
+//! shorter than one FLAC block with silence (see [`MIN_AUDIO_NS`]), then
+//! sends EOS into the bin.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -40,6 +41,14 @@ use super::util::{capsfilter, make, set_str, set_value};
 /// No more than this many fill frames are pushed when closing a bin (an
 /// hour at 60 fps; a longer stall means the source is gone anyway).
 const MAX_FILL_FRAMES: u64 = 216_000;
+
+/// The shortest audio stream a bin closes with *(measured)*. flacenc sets
+/// its output caps with its first block (4608 samples, 96 ms at 48 kHz); a
+/// stream that ends before that makes GStreamer push the segment before
+/// the caps (warnings from flacenc and matroskamux; the file is still
+/// valid). A take that short is too short or cancelled anyway, so its
+/// audio is padded with silence up to this length.
+const MIN_AUDIO_NS: u64 = 120_000_000;
 
 /// What the streaming threads share with the engine about one bin.
 pub(super) struct RecProbe {
@@ -64,6 +73,9 @@ pub(super) struct ProbeState {
     pub last: Option<u64>,
     /// The last passed video buffer (for filling to T1).
     pub last_buffer: Option<gst::Buffer>,
+    /// Running time where the last passed audio buffer ends (for padding
+    /// a stream shorter than one FLAC block).
+    pub audio_end: Option<u64>,
     /// A buffer at or after T1 arrived; everything is dropped now.
     pub reached_end: bool,
     pub passed: u64,
@@ -143,8 +155,12 @@ impl RecProbe {
             b.set_pts(gst::ClockTime::from_nseconds(running - first));
             b.set_dts(dts.map(gst::ClockTime::from_nseconds));
         }
-        if self.kind == StreamKind::Video {
-            state.last_buffer = Some(buffer.clone());
+        match self.kind {
+            StreamKind::Video => state.last_buffer = Some(buffer.clone()),
+            StreamKind::Audio => {
+                let duration = buffer.duration().map_or(0, gst::ClockTime::nseconds);
+                state.audio_end = Some(running + duration);
+            }
         }
         gst::PadProbeReturn::Ok
     }
@@ -290,8 +306,54 @@ impl RecordBin {
                 }
             }
         }
+        if self.kind == StreamKind::Audio {
+            pushed += self.pad_short_audio();
+        }
         let _ = self.sink_pad.send_event(gst::event::Eos::new());
         pushed
+    }
+
+    /// Pads an audio stream shorter than [`MIN_AUDIO_NS`] with silence in
+    /// its input format, right after its last passed buffer (file time).
+    /// Returns the number of buffers pushed (0 or 1).
+    fn pad_short_audio(&mut self) -> u64 {
+        let (first, end) = {
+            let state = self.probe.lock();
+            (state.first, state.audio_end)
+        };
+        let (Some(first), Some(end)) = (first, end) else {
+            // Nothing passed: flacenc never starts, nothing to pad.
+            return 0;
+        };
+        let have = end.saturating_sub(first);
+        if have >= MIN_AUDIO_NS {
+            return 0;
+        }
+        let Some(info) = self
+            .sink_pad
+            .current_caps()
+            .and_then(|caps| gst_audio::AudioInfo::from_caps(&caps).ok())
+        else {
+            return 0;
+        };
+        let missing = MIN_AUDIO_NS - have;
+        let frames = (u128::from(missing) * u128::from(info.rate())).div_ceil(1_000_000_000);
+        let Ok(frames) = usize::try_from(frames) else {
+            return 0;
+        };
+        let Ok(mut buffer) = gst::Buffer::with_size(frames * info.bpf() as usize) else {
+            return 0;
+        };
+        {
+            let Some(b) = buffer.get_mut() else { return 0 };
+            b.set_pts(gst::ClockTime::from_nseconds(have));
+            b.set_duration(gst::ClockTime::from_nseconds(missing));
+            let Ok(mut map) = b.map_writable() else {
+                return 0;
+            };
+            info.format_info().fill_silence(map.as_mut_slice());
+        }
+        u64::from(self.sink_pad.chain(buffer).is_ok())
     }
 }
 
