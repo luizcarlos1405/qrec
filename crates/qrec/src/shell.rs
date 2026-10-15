@@ -166,9 +166,10 @@ fn default_directives(role: Role, verbose: u8, quiet: bool, json: bool) -> Strin
         (_, 3.., _) => "trace".to_owned(),
         (_, 2, _) => own("debug"),
         (_, 1, _) => own("info"),
+        // stderr is for JSON lines only, unless -v asked for logs.
+        (Role::Cli, _, _) if json => "off".to_owned(),
         (_, _, true) => "error".to_owned(),
         (Role::Host, _, _) => own("info"),
-        (Role::Cli, _, _) if json => "off".to_owned(),
         (Role::Cli, _, _) => "warn".to_owned(),
     }
 }
@@ -400,6 +401,7 @@ mod tests {
         assert_eq!(default_directives(Role::Cli, 0, false, false), "warn");
         assert_eq!(default_directives(Role::Cli, 0, false, true), "off");
         assert_eq!(default_directives(Role::Cli, 0, true, false), "error");
+        assert_eq!(default_directives(Role::Cli, 0, true, true), "off");
         assert!(default_directives(Role::Cli, 1, false, true).contains("qrec_shell=info"));
         assert!(default_directives(Role::Host, 0, false, false).contains("qrec_shell=info"));
         assert!(default_directives(Role::Cli, 2, false, false).contains("qrec_core=debug"));
