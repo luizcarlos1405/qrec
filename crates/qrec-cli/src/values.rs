@@ -54,6 +54,26 @@ pub(crate) fn parse_crop(s: &str) -> Result<Crop, String> {
     })
 }
 
+/// A timeline or z-order index (0 = first). A negative one gets its range
+/// error, "-1 is not in 0..=…", like the counts (`undo -1`, A§10), never
+/// "invalid digit found in string".
+pub(crate) fn parse_index(s: &str) -> Result<usize, String> {
+    let value = whole_number(s)?;
+    usize::try_from(value).map_err(|_| format!("{value} is not in 0..={}", usize::MAX))
+}
+
+/// A history entry seq (0 = before the first entry), with the range error
+/// of [`parse_index`] for a negative one.
+pub(crate) fn parse_seq(s: &str) -> Result<u64, String> {
+    let value = whole_number(s)?;
+    u64::try_from(value).map_err(|_| format!("{value} is not in 0..={}", u64::MAX))
+}
+
+/// A whole number of any sign, read the way clap reads the ranged counts.
+fn whole_number(s: &str) -> Result<i128, String> {
+    s.parse::<i128>().map_err(|e| e.to_string())
+}
+
 /// A number from 0.0 to 1.0.
 pub(crate) fn parse_opacity(s: &str) -> Result<f64, String> {
     match s.trim().parse::<f64>() {
@@ -116,6 +136,32 @@ mod tests {
         );
         assert!(parse_crop("-1,0,0,0").is_err());
         assert!(parse_crop("0,0,0").is_err());
+    }
+
+    /// A§10: a negative index or seq is out of range, as `undo -1` is, not
+    /// a malformed number.
+    #[test]
+    fn indexes_and_seqs() {
+        assert_eq!(parse_index("0"), Ok(0));
+        assert_eq!(parse_index("+3"), Ok(3));
+        assert_eq!(
+            parse_index("-1"),
+            Err(format!("-1 is not in 0..={}", usize::MAX))
+        );
+        assert_eq!(parse_seq("12"), Ok(12));
+        assert_eq!(
+            parse_seq("-7"),
+            Err(format!("-7 is not in 0..={}", u64::MAX))
+        );
+        assert_eq!(
+            parse_seq("18446744073709551616"),
+            Err("18446744073709551616 is not in 0..=18446744073709551615".to_owned())
+        );
+        assert_eq!(
+            parse_index("abc"),
+            Err("invalid digit found in string".to_owned())
+        );
+        assert!(parse_seq("").is_err());
     }
 
     #[test]

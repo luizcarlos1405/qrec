@@ -14,7 +14,8 @@ use qrec_core::{AudioRole, ClipId, Color, Crop, EncoderPref, Fit, LayerId, Rect,
 
 pub use crate::values::AutoOr;
 use crate::values::{
-    parse_crop, parse_device_or_auto, parse_opacity, parse_rect, parse_track_or_auto,
+    parse_crop, parse_device_or_auto, parse_index, parse_opacity, parse_rect, parse_seq,
+    parse_track_or_auto,
 };
 
 const LONG_ABOUT: &str = "\
@@ -368,7 +369,7 @@ pub struct LayerOrderArgs {
     /// Layer id, e.g. L2.
     pub layer: LayerId,
     /// New z-order index: 0 = bottom.
-    #[arg(long, value_name = "INDEX", allow_negative_numbers = true)]
+    #[arg(long, value_name = "INDEX", allow_negative_numbers = true, value_parser = parse_index)]
     pub to: usize,
     #[command(flatten)]
     pub scene: SceneTargetArgs,
@@ -589,7 +590,7 @@ pub struct ClipAddArgs {
 #[group(multiple = false)]
 pub struct InsertAtArgs {
     /// Timeline index (0 = first).
-    #[arg(long, value_name = "INDEX", allow_negative_numbers = true)]
+    #[arg(long, value_name = "INDEX", allow_negative_numbers = true, value_parser = parse_index)]
     pub at: Option<usize>,
     /// Right after this clip.
     #[arg(long, value_name = "CLIP")]
@@ -613,7 +614,7 @@ pub struct ClipMoveArgs {
 #[group(required = true, multiple = false)]
 pub struct MoveToArgs {
     /// Index in the timeline without the moved clips (0 = first).
-    #[arg(long, value_name = "INDEX", allow_negative_numbers = true)]
+    #[arg(long, value_name = "INDEX", allow_negative_numbers = true, value_parser = parse_index)]
     pub to: Option<usize>,
     /// Shift by N slots: negative moves left, positive right (clamped).
     #[arg(long, value_name = "N", allow_negative_numbers = true)]
@@ -780,7 +781,7 @@ pub enum HistoryCmd {
 #[derive(Clone, Debug, PartialEq, Args)]
 pub struct HistoryRestoreArgs {
     /// History entry seq, as `qrec history` lists it.
-    #[arg(allow_negative_numbers = true)]
+    #[arg(allow_negative_numbers = true, value_parser = parse_seq)]
     pub seq: u64,
 }
 

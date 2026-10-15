@@ -513,6 +513,68 @@ fn negative_numbers_reach_their_value_parser() {
     );
 }
 
+/// A§10: a negative index or seq gets its range error, like a negative
+/// count (`undo -1`), not "invalid digit found in string" (which stays for
+/// what isn't a number at all).
+#[test]
+fn negative_indexes_and_seqs_get_their_range_error() {
+    let usize_range = format!("-1 is not in 0..={}", usize::MAX);
+    let u64_range = format!("-1 is not in 0..={}", u64::MAX);
+    for (line, arg, range) in [
+        (
+            "qrec scene layer order L1 --to -1",
+            "--to <INDEX>",
+            &usize_range,
+        ),
+        (
+            "qrec clip add take-0001 --at -1",
+            "--at <INDEX>",
+            &usize_range,
+        ),
+        ("qrec clip move c1 --to -1", "--to <INDEX>", &usize_range),
+        ("qrec history restore -1 --yes", "<SEQ>", &u64_range),
+    ] {
+        let err = parse(line).unwrap_err();
+        let text = err.to_string();
+        assert_eq!(err.kind(), ErrorKind::ValueValidation, "`{line}`: {text}");
+        assert!(
+            text.contains(&format!("invalid value '-1' for '{arg}': {range}")),
+            "`{line}`: {text}"
+        );
+        assert!(!text.contains("invalid digit"), "`{line}`: {text}");
+        assert_eq!(err.exit_code(), 2, "`{line}`");
+    }
+    let undo = parse("qrec undo -1").unwrap_err().to_string();
+    assert!(undo.contains("-1 is not in 1..="), "{undo}");
+    let (code, out, _) = run("qrec --json clip move c1 --to -1");
+    assert_eq!(code, 2);
+    let reply: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(reply["error"]["code"], "usage");
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(&usize_range),
+        "{reply}"
+    );
+    // Not a number at all is still that.
+    assert!(
+        parse("qrec clip move c1 --to abc")
+            .unwrap_err()
+            .to_string()
+            .contains("invalid digit found in string")
+    );
+    // Valid ones still parse.
+    for line in [
+        "qrec scene layer order L1 --to 0",
+        "qrec clip add take-0001 --at 2",
+        "qrec clip move c1 --to 3",
+        "qrec history restore 0 --yes",
+    ] {
+        ok(line);
+    }
+}
+
 /// SPEC §13.1: recording is blocked during an export; the help says so
 /// instead of "recording waits".
 #[test]
