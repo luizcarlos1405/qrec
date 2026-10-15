@@ -79,6 +79,10 @@ impl CaptureEngine for FakeCapture {
     fn shutdown(&mut self) {
         self.0.push("shutdown");
     }
+
+    fn retry_live(&mut self, _out: Inbox) {
+        self.0.push("retry_live");
+    }
 }
 
 struct FakeMedia {
@@ -3495,4 +3499,551 @@ fn write_crashed_take(h: &Harness) {
 /// The probe jobs recovery runs for `take` in `s`'s project.
 fn recovery_probe_jobs(s: &Session, take: &TakeId) -> Vec<ProbeJob> {
     qrec_core::on_event::record::probe_jobs(&s.state().project.takes[take])
+}
+
+// ------------------------------------------------------- what a GUI hears
+
+/// What a GUI hears from its Session, in order (docs/GUI.md G§3.5):
+/// snapshots (`snapshot <rev>`), toasts (`toast <title>`) and the answers
+/// of its requests (`reply <name> ok|<code>`, `late <name> …`,
+/// `progress <name>`).
+#[derive(Clone, Default)]
+struct Heard {
+    lines: Log,
+    states: Arc<Mutex<Vec<(u64, qrec_core::State)>>>,
+}
+
+impl Heard {
+    fn observer(&self) -> Box<dyn StateObserver> {
+        let heard = self.clone();
+        Box::new(move |rev: u64, state: &qrec_core::State| {
+            heard.lines.push(format!("snapshot {rev}"));
+            heard.states.lock().unwrap().push((rev, state.clone()));
+        })
+    }
+
+    fn notifier(&self) -> Box<dyn Notifier> {
+        let lines = self.lines.clone();
+        Box::new(move |toast: &Toast| lines.push(format!("toast {}", toast.title)))
+    }
+
+    fn responder(&self, name: &str) -> Box<dyn Responder> {
+        Box::new(HeardAnswers {
+            lines: self.lines.clone(),
+            name: name.to_owned(),
+        })
+    }
+
+    fn snapshots(&self) -> usize {
+        self.states.lock().unwrap().len()
+    }
+
+    fn last_state(&self) -> qrec_core::State {
+        self.states
+            .lock()
+            .unwrap()
+            .last()
+            .expect("a snapshot came")
+            .1
+            .clone()
+    }
+
+    /// Where `line` is among the lines heard (it must be there).
+    fn position(&self, line: &str) -> usize {
+        let lines = self.lines.lines();
+        lines
+            .iter()
+            .position(|l| l == line)
+            .unwrap_or_else(|| panic!("no {line:?} in {lines:?}"))
+    }
+}
+
+struct HeardAnswers {
+    lines: Log,
+    name: String,
+}
+
+fn answer_text(r: &Result<Value, CoreError>) -> String {
+    match r {
+        Ok(_) => "ok".to_owned(),
+        Err(e) => format!("{:?}", e.code),
+    }
+}
+
+impl Responder for HeardAnswers {
+    fn accepted(&mut self) {}
+
+    fn progress(&mut self, _: &Progress) {
+        self.lines.push(format!("progress {}", self.name));
+    }
+
+    fn reply(&mut self, r: Result<Value, CoreError>) {
+        self.lines
+            .push(format!("reply {} {}", self.name, answer_text(&r)));
+    }
+
+    fn reply_late(&mut self, r: Result<Value, CoreError>) {
+        self.lines
+            .push(format!("late {} {}", self.name, answer_text(&r)));
+    }
+}
+
+impl Harness {
+    /// A host whose snapshots, toasts and answers `heard` gets, like the GUI.
+    fn open_heard(&self, host: HostKind, heard: &Heard) -> Session {
+        Self::retry_busy(|| {
+            let cfg = SessionConfig {
+                observer: Some(heard.observer()),
+                notifier: Some(heard.notifier()),
+                ..self.config()
+            };
+            let opts = OpenOpts {
+                host,
+                mutating: true,
+                recovery: false,
+            };
+            Session::open_with(&self.dir, opts, self.deps(), cfg)
+        })
+        .unwrap()
+    }
+}
+
+/// Sends `cmd` with `heard`'s responder named `name` and handles what it caused.
+fn heard_send(s: &mut Session, heard: &Heard, name: &str, cmd: Command) {
+    s.handle(Msg::Request {
+        req: Request::command(cmd, false),
+        to: heard.responder(name),
+    });
+    s.drain();
+}
+
+/// GUI H-6: the observer sees the opened state, then each command's state
+/// before its reply. A command refused at once changes nothing and makes
+/// no snapshot.
+#[test]
+fn the_observer_sees_each_state_before_its_reply() {
+    let h = Harness::with_sample("observed");
+    let heard = Heard::default();
+    let mut s = h.open_heard(HostKind::Gui, &heard);
+    let opened = heard.snapshots() as u64;
+    assert!(opened >= 1, "the open's states, then the opened one");
+    assert_eq!(s.rev(), opened);
+    assert_eq!(
+        heard.last_state(),
+        *s.state(),
+        "the last is the opened state"
+    );
+    let revs: Vec<u64> = heard
+        .states
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(r, _)| *r)
+        .collect();
+    assert_eq!(revs, (1..=opened).collect::<Vec<_>>(), "one rev per state");
+    heard.lines.clear();
+
+    let split = Command::ClipSplit {
+        clip: Some(clip("c001")),
+        at: "50f".parse().unwrap(),
+        timeline: false,
+    };
+    heard_send(&mut s, &heard, "split", split);
+    let lines = heard.lines.lines();
+    assert_eq!(
+        lines,
+        [
+            format!("snapshot {}", opened + 1),
+            "reply split ok".to_owned()
+        ]
+    );
+    assert_eq!(
+        heard.last_state().project.timeline.clips.len(),
+        3,
+        "the snapshot shows the split"
+    );
+    assert_eq!(s.rev(), opened + 1);
+
+    heard.lines.clear();
+    let remove = Command::ClipRemove {
+        clips: vec![clip("c999")],
+    };
+    heard_send(&mut s, &heard, "remove", remove);
+    let lines = heard.lines.lines();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("reply remove "), "{lines:?}");
+    assert!(!lines[0].ends_with(" ok"), "{lines:?}");
+    assert_eq!(s.rev(), opened + 1, "no state was assigned");
+}
+
+/// GUI H-6 and H-7: each `RecordClock` makes one snapshot with the elapsed
+/// time; the start's and the stop's answers come from events
+/// (`Effect::Reply`), so they are late, and each follows the snapshot of
+/// the state it describes; a refusal is an immediate answer.
+#[test]
+fn record_clock_snapshots_and_late_replies() {
+    let h = Harness::with_sample("observed-record");
+    let heard = Heard::default();
+    let mut s = h.open_heard(HostKind::Headless, &heard);
+
+    heard.lines.clear();
+    heard_send(&mut s, &heard, "idle-stop", Command::RecordStop);
+    assert_eq!(heard.lines.lines(), ["reply idle-stop Invalid"]);
+
+    heard.lines.clear();
+    let start = Command::RecordStart {
+        mode: RecordModeArg::Append,
+        countdown: Some(0),
+        wait: false,
+    };
+    heard_send(&mut s, &heard, "start", start);
+    assert!(h.log.has("start take-0002"), "{:?}", h.log.lines());
+    let lines = heard.lines.lines();
+    assert!(
+        lines.iter().all(|l| l.starts_with("snapshot ")),
+        "nothing answered yet: {lines:?}"
+    );
+    assert!(matches!(
+        heard.last_state().runtime.record,
+        RecordPhase::Starting { .. }
+    ));
+
+    heard.lines.clear();
+    let planned = s.state().project.takes[&take(2)].streams.clone();
+    s.handle(Msg::Event(Event::CaptureStarted {
+        take: take(2),
+        t0_ns: 0,
+        files: planned.iter().map(|st| st.file.clone()).collect(),
+        start_offset_ns: Default::default(),
+    }));
+    let late = heard.position("late start ok");
+    assert!(
+        heard.lines.lines()[..late]
+            .iter()
+            .any(|l| l.starts_with("snapshot "))
+    );
+    assert!(matches!(
+        heard.last_state().runtime.record,
+        RecordPhase::Recording { .. }
+    ));
+
+    for elapsed in [250_000_000, 500_000_000] {
+        let before = heard.snapshots();
+        s.handle(Msg::Event(Event::RecordClock {
+            take: take(2),
+            elapsed_ns: elapsed,
+        }));
+        assert_eq!(heard.snapshots(), before + 1, "one snapshot per tick");
+        match heard.last_state().runtime.record {
+            RecordPhase::Recording { elapsed_ns, .. } => assert_eq!(elapsed_ns, elapsed),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    heard.lines.clear();
+    heard_send(&mut s, &heard, "stop", Command::RecordStop);
+    let streams = planned
+        .iter()
+        .map(|st| RecordedStream {
+            id: st.id.clone(),
+            file: st.file.clone(),
+            start_offset_ns: 0,
+            eos: true,
+        })
+        .collect();
+    s.handle(Msg::Event(Event::CaptureStopped {
+        take: take(2),
+        streams,
+        timed_out: false,
+    }));
+    s.handle(Msg::Event(Event::TakeProbed {
+        take: take(2),
+        purpose: ProbePurpose::Finalize,
+        results: planned.iter().map(|st| probed(st, 90)).collect(),
+    }));
+    s.drain();
+    let lines = heard.lines.lines();
+    let late = heard.position("late stop ok");
+    assert!(
+        !lines.iter().any(|l| l.starts_with("reply stop")),
+        "{lines:?}"
+    );
+    assert!(heard.last_state().runtime.record.is_idle());
+    assert!(lines[..late].iter().any(|l| l.starts_with("snapshot ")));
+}
+
+/// GUI H-6: export progress makes one snapshot each (the job's progress),
+/// before the progress the requester hears; the job's failure is a late
+/// answer, with the core's toast, after the snapshot without the job.
+#[test]
+fn export_progress_snapshots() {
+    let h = Harness::with_sample("observed-export");
+    let heard = Heard::default();
+    let mut s = h.open_heard(HostKind::Gui, &heard);
+    // Whatever this machine has: an ffmpeg whose encoders aren't checked.
+    s.state.runtime.capabilities.ffmpeg = Some(qrec_core::state::FfmpegCaps {
+        version: "8.1.2".to_owned(),
+        identity: "/usr/bin/ffmpeg".to_owned(),
+        encoders: BTreeSet::new(),
+    });
+    s.state.runtime.capabilities.ffprobe = Some("/usr/bin/ffprobe".to_owned());
+    let export = Command::Export {
+        format: Default::default(),
+        quality: Default::default(),
+        codec: None,
+        out: None,
+    };
+    heard_send(&mut s, &heard, "export", export);
+    assert!(
+        h.log.has("export job-"),
+        "{:?} {:?}",
+        h.log.lines(),
+        heard.lines.lines()
+    );
+    let job = *s.state().runtime.jobs.keys().next().expect("a job runs");
+
+    for frames_done in [40, 80] {
+        heard.lines.clear();
+        let before = heard.snapshots();
+        s.handle(Msg::Event(Event::ExportProgress {
+            job,
+            segment: 0,
+            frames_done,
+        }));
+        assert_eq!(heard.snapshots(), before + 1);
+        match &heard.last_state().runtime.jobs[&job].kind {
+            JobKind::Export { seg_done, .. } => assert_eq!(seg_done[0], frames_done),
+            other => panic!("{other:?}"),
+        }
+        let lines = heard.lines.lines();
+        assert_eq!(lines[0], format!("snapshot {}", before + 1), "{lines:?}");
+        assert!(
+            lines[1..].iter().all(|l| l == "progress export"),
+            "{lines:?}"
+        );
+    }
+
+    heard.lines.clear();
+    s.handle(Msg::Event(Event::ExportFailed {
+        job,
+        message: "ffmpeg died".into(),
+        stderr_tail: vec![],
+        log: ".qrec/logs/x.log".into(),
+    }));
+    let lines = heard.lines.lines();
+    assert!(lines[0].starts_with("snapshot "), "{lines:?}");
+    assert!(heard.last_state().runtime.jobs.is_empty());
+    assert!(lines.iter().any(|l| l.starts_with("toast ")), "{lines:?}");
+    let late: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.starts_with("late export "))
+        .collect();
+    assert_eq!(late.len(), 1, "{lines:?}");
+    assert!(!late[0].ends_with(" ok"), "{lines:?}");
+}
+
+/// GUI D-47: while a recovery holds commands, `Select`, `Seek` and `SetUi`
+/// answer at once and their snapshots arrive while a parked `ClipSplit`
+/// (and a `ClipRemove` after it) waits; once the take is recovered they
+/// run in order, each answered (immediately: the request's own outcome)
+/// after its snapshot.
+#[test]
+fn ui_commands_never_wait_for_a_recovery() {
+    let mut h = Harness::new("ui-during-recovery");
+    h.recovery_wait = Duration::from_secs(30);
+    write_crashed_take(&h);
+    let heard = Heard::default();
+    let mut s = h.open_heard(HostKind::Gui, &heard);
+    assert_eq!(s.recovering().len(), 1);
+    heard.lines.clear();
+
+    let split = Command::ClipSplit {
+        clip: Some(clip("c001")),
+        at: "50f".parse().unwrap(),
+        timeline: false,
+    };
+    heard_send(&mut s, &heard, "split", split);
+    let remove = Command::ClipRemove {
+        clips: vec![clip("c002")],
+    };
+    heard_send(&mut s, &heard, "remove", remove);
+    assert_eq!(s.pending_requests(), 2);
+    assert!(heard.lines.lines().is_empty(), "{:?}", heard.lines.lines());
+
+    heard_send(
+        &mut s,
+        &heard,
+        "select",
+        Command::Select {
+            op: SelectOp::Set(vec![clip("c002")]),
+        },
+    );
+    heard_send(
+        &mut s,
+        &heard,
+        "seek",
+        Command::Seek {
+            to: qrec_core::protocol::SeekTarget::To("42f".parse().unwrap()),
+        },
+    );
+    heard_send(
+        &mut s,
+        &heard,
+        "ui",
+        Command::SetUi {
+            patch: qrec_core::protocol::UiPatch {
+                bin_open: Some(true),
+                ..Default::default()
+            },
+        },
+    );
+    let lines = heard.lines.lines();
+    assert_eq!(lines.len(), 6, "{lines:?}");
+    for (i, name) in ["select", "seek", "ui"].into_iter().enumerate() {
+        assert!(lines[2 * i].starts_with("snapshot "), "{lines:?}");
+        assert_eq!(lines[2 * i + 1], format!("reply {name} ok"), "{lines:?}");
+    }
+    let shown = heard.last_state();
+    assert_eq!(shown.ui.selection, [clip("c002")]);
+    assert_eq!(shown.ui.playhead, 42);
+    assert!(shown.ui.bin_open);
+    assert_eq!(shown.project.timeline.clips.len(), 2, "nothing split yet");
+    assert_eq!(
+        s.pending_requests(),
+        2,
+        "the split and the removal still wait"
+    );
+
+    heard.lines.clear();
+    answer_recovery(&mut s);
+    let lines = heard.lines.lines();
+    let split = heard.position("reply split ok");
+    let remove = heard.position("reply remove ok");
+    assert!(split < remove, "in arrival order: {lines:?}");
+    let recovered = heard.position("toast Recovered take 2 from the bog.");
+    assert!(recovered < split, "after the recovery: {lines:?}");
+    for (from, to) in [(recovered, split), (split, remove)] {
+        assert!(
+            lines[from..to].iter().any(|l| l.starts_with("snapshot ")),
+            "{lines:?}"
+        );
+    }
+    assert!(!lines.iter().any(|l| l.starts_with("late ")), "{lines:?}");
+    let ids: Vec<String> = clip_layout(&s).into_iter().map(|(id, ..)| id).collect();
+    assert_eq!(ids.len(), 2, "c001 split in two, c002 removed: {ids:?}");
+    assert_eq!(ids[0], "c001");
+    assert!(!ids.contains(&"c002".to_owned()), "{ids:?}");
+    assert_eq!(s.pending_requests(), 0);
+}
+
+/// GUI D-50: `Msg::RetryLive` reaches the engine on the session thread, in
+/// order with the `SetLive`s that commands send.
+#[test]
+fn a_retry_reaches_the_engine_in_order_with_set_live() {
+    let h = Harness::with_sample("retry-live");
+    let mut s = h
+        .open_opts(OpenOpts {
+            host: HostKind::Gui,
+            mutating: true,
+            recovery: false,
+        })
+        .unwrap();
+    h.log.clear();
+    let inbox = s.inbox();
+    let mode = |mode: qrec_core::state::CanvasMode| Msg::Request {
+        req: Request::command(Command::SetCanvasMode { mode }, false),
+        to: Answers::default().responder(),
+    };
+    assert!(inbox.send(mode(qrec_core::state::CanvasMode::Program)));
+    assert!(inbox.send(Msg::RetryLive));
+    assert!(inbox.send(mode(qrec_core::state::CanvasMode::Live)));
+    assert!(inbox.send(Msg::RetryLive));
+    s.drain();
+    assert_eq!(
+        h.log.lines(),
+        [
+            "set_live false",
+            "retry_live",
+            "set_live true",
+            "retry_live"
+        ]
+    );
+}
+
+/// GUI H-5: with the GUI's cached device facts, adding sources and
+/// starting a take never run discovery on the session thread; only the
+/// GUI's worker did. Without a cache, the first command discovers once.
+#[test]
+fn cached_sources_keep_discovery_off_the_session_thread() {
+    let runs: Arc<Mutex<Vec<std::thread::ThreadId>>> = Arc::default();
+    let counting = || {
+        let runs = Arc::clone(&runs);
+        crate::facts::SharedSources::with_discovery(move || {
+            runs.lock().unwrap().push(std::thread::current().id());
+            crate::sources::SourceInventory::fake()
+        })
+    };
+    let open = |h: &Harness, sources: &crate::facts::SharedSources| {
+        Harness::retry_busy(|| {
+            let cfg = SessionConfig {
+                sources: Some(Box::new(sources.clone())),
+                ..h.config()
+            };
+            let opts = OpenOpts {
+                host: HostKind::Headless,
+                mutating: true,
+                recovery: false,
+            };
+            Session::open_with(&h.dir, opts, h.deps(), cfg)
+        })
+        .unwrap()
+    };
+    let add_screen = Command::LayerAdd {
+        target: SceneTarget::Project,
+        source: VideoSourceArg::Screen {
+            output: "FAKE-2".into(),
+        },
+        name: None,
+        rect: None,
+    };
+    let add_system = Command::AudioAdd {
+        target: SceneTarget::Project,
+        role: qrec_core::model::AudioRole::System,
+        source: None,
+        label: None,
+    };
+
+    // The GUI's worker fills the cache before the Session needs it.
+    let warm = counting();
+    let worker = {
+        let warm = warm.clone();
+        std::thread::spawn(move || {
+            warm.refresh();
+            std::thread::current().id()
+        })
+        .join()
+        .unwrap()
+    };
+    let h = Harness::with_sample("cached-sources");
+    let mut s = open(&h, &warm);
+    send(&mut s, add_screen.clone(), false).unwrap();
+    send(&mut s, add_system.clone(), false).unwrap();
+    let start = request(&mut s, WireBody::Command(record_start()), false);
+    assert!(start.last().is_none(), "capturing");
+    assert!(h.log.has("start take-0002"), "{:?}", h.log.lines());
+    assert_eq!(
+        *runs.lock().unwrap(),
+        [worker],
+        "only the worker discovered"
+    );
+    drop(s);
+
+    // An empty cache: the first command that needs devices discovers once.
+    runs.lock().unwrap().clear();
+    let cold = counting();
+    let h = Harness::with_sample("cold-sources");
+    let mut s = open(&h, &cold);
+    send(&mut s, add_screen, false).unwrap();
+    send(&mut s, add_system, false).unwrap();
+    assert_eq!(*runs.lock().unwrap(), [std::thread::current().id()]);
 }

@@ -61,8 +61,8 @@ use super::spec::{
 };
 use super::util::{error_text, missing_element, object_path, running_time, set_null_with_deadline};
 use super::{
-    Backend, CLOCK_INTERVAL, EngineOptions, FILL_GRACE, PIPELINE_START_TIMEOUT, STALL_LIMIT,
-    SideEvent, TEARDOWN_TIMEOUT,
+    Backend, CLOCK_INTERVAL, EngineOptions, FILL_GRACE, LiveControl, PIPELINE_START_TIMEOUT,
+    STALL_LIMIT, SideEvent, TEARDOWN_TIMEOUT,
 };
 use crate::deps::CaptureEngine;
 use crate::gst_init::{self, InitError};
@@ -189,6 +189,12 @@ impl GstCaptureEngine {
         self.tx.send(Cmd::Inspect(tx)).expect("the engine runs");
         rx.recv_timeout(Duration::from_secs(20))
             .expect("the engine answers")
+    }
+
+    /// Moves the live preview's layers during a drag (docs/GUI.md G§3.9).
+    /// Not connected yet: the control it returns does nothing.
+    pub fn control(&self) -> LiveControl {
+        LiveControl::noop()
     }
 
     /// Fake backend only: makes the source `source` (an output, camera
@@ -359,6 +365,8 @@ struct TakeRun {
     t1: Option<u64>,
     bins: Vec<RecordBin>,
     cancel: bool,
+    /// `QREC_FAKE_EOS_DELAY_MS`: a stopped take ends no sooner than this.
+    hold_until: Option<Instant>,
 }
 
 struct Engine {
@@ -796,9 +804,14 @@ impl Engine {
 
     // ------------------------------------------------------------ portal
 
-    /// Screens of `specs` that need a portal session (real backend).
+    /// Screens of `specs` that need a portal session (real backend; the fake
+    /// one's screens only with `QREC_FAKE_PORTAL`, whose portal refuses them).
     fn missing_casts(&self, specs: &[SourceSpec]) -> Vec<String> {
-        if self.opts.backend != Backend::Real {
+        let portal = match self.opts.backend {
+            Backend::Real => true,
+            Backend::Fake => self.opts.fake.portal.is_some(),
+        };
+        if !portal {
             return Vec::new();
         }
         specs
@@ -831,6 +844,21 @@ impl Engine {
     }
 
     fn request_casts(&mut self, outputs: Vec<String>) -> Result<(), String> {
+        if let (Backend::Fake, Some(portal)) = (self.opts.backend, self.opts.fake.portal) {
+            // QREC_FAKE_PORTAL: refused, answered later like the real
+            // portal's dialog (through the queue, as its worker does).
+            self.portal_seq += 1;
+            let results = outputs
+                .iter()
+                .map(|output| (output.clone(), Err(portal.refusal(output))))
+                .collect();
+            let _ = self.tx.send(Cmd::PortalDone {
+                id: self.portal_seq,
+                results,
+            });
+            self.in_flight.extend(outputs);
+            return Ok(());
+        }
         if self.portal.is_none() {
             let worker = PortalWorker::spawn().map_err(|e| {
                 tracing::error!("capture: can't start the portal thread: {e}");
@@ -1019,6 +1047,7 @@ impl Engine {
             t1: None,
             bins: Vec::new(),
             cancel: false,
+            hold_until: None,
         };
         run.log.line(format!(
             "start {} ({:?} backend): {}",
@@ -1236,6 +1265,7 @@ impl Engine {
     }
 
     fn stop(&mut self, take: TakeId, cancel: bool) {
+        let hold = self.fake_eos_delay();
         let matches = self.take.as_ref().is_some_and(|run| run.plan.take == take);
         if !matches {
             // A take that already failed or ended (or was never seen): the
@@ -1298,8 +1328,23 @@ impl Engine {
                 };
                 run.log
                     .line(stop_line(cancel, t1, (t1 - run.t0) / 1_000_000));
+                if let Some(delay) = hold {
+                    run.hold_until = Some(now + delay);
+                    run.log.line(format!(
+                        "QREC_FAKE_EOS_DELAY_MS: the files close {} ms late",
+                        delay.as_millis()
+                    ));
+                }
                 self.close_ready_bins();
             }
+        }
+    }
+
+    /// `QREC_FAKE_EOS_DELAY_MS` (fake backend only).
+    fn fake_eos_delay(&self) -> Option<Duration> {
+        match self.opts.backend {
+            Backend::Fake => self.opts.fake.eos_delay,
+            Backend::Real => None,
         }
     }
 
@@ -1535,13 +1580,15 @@ impl Engine {
         }
     }
 
-    /// Stopping: done once every bin wrote EOS or was lost.
+    /// Stopping: done once every bin wrote EOS or was lost (and the fake EOS
+    /// delay is over).
     fn check_stopped(&mut self) {
         let Some(run) = &self.take else { return };
         if !matches!(run.phase, Phase::Stopping { .. }) {
             return;
         }
-        if run.bins.iter().all(|b| b.eos || b.lost.is_some()) {
+        let held = run.hold_until.is_some_and(|until| Instant::now() < until);
+        if !held && run.bins.iter().all(|b| b.eos || b.lost.is_some()) {
             self.finish_take(false);
         }
     }
@@ -1701,7 +1748,9 @@ impl Engine {
                     .filter(|b| !b.closing && b.lost.is_none())
                     .map(|b| close_deadline(b, *fill_by, *first_by))
                     .min();
-                Some(close_by.map_or(*eos_by, |at| at.min(*eos_by)))
+                let due = close_by.map_or(*eos_by, |at| at.min(*eos_by));
+                // `tick` clears a hold once it is over.
+                Some(run.hold_until.map_or(due, |hold| hold.min(due)))
             }
         }
     }
@@ -1784,6 +1833,10 @@ impl Engine {
                 first_by,
                 eos_by,
             } => {
+                let held_until_now = run.hold_until.is_some_and(|until| now >= until);
+                if held_until_now {
+                    run.hold_until = None;
+                }
                 if now >= eos_by {
                     self.finish_take(true);
                 } else if now >= fill_by {
@@ -1795,6 +1848,8 @@ impl Engine {
                             bin.begin_close(&self.tx, tag);
                         }
                     }
+                    self.check_stopped();
+                } else if held_until_now {
                     self.check_stopped();
                 }
             }
@@ -1847,9 +1902,15 @@ impl Engine {
     fn emit_clock(&self, take: &TakeId, t0: u64) {
         let now = self.live.as_ref().and_then(|l| running_time(&l.pipeline));
         if let Some(now) = now {
+            // QREC_FAKE_RECORD_OFFSET_FRAMES: a take that seems to have
+            // started earlier (the GUI's timer and ghost; fake backend only).
+            let offset = match (&self.take, self.opts.backend) {
+                (Some(run), Backend::Fake) => self.opts.fake.record_offset_ns(run.plan.fps),
+                _ => 0,
+            };
             self.emit(Event::RecordClock {
                 take: take.clone(),
-                elapsed_ns: now.saturating_sub(t0),
+                elapsed_ns: now.saturating_sub(t0).saturating_add(offset),
             });
         }
     }

@@ -935,7 +935,8 @@ fn send_failure(e: SendError, hello: Option<&HelloInfo>, log: Option<PathBuf>) -
 }
 
 /// Where a host logs: the one this CLI spawned, a headless host's
-/// `.qrec/logs/…-<pid>-host.log`, or the GUI's session log.
+/// `.qrec/logs/…-<pid>-host.log`, or the GUI's log of this project
+/// (`UserDirs::gui_log`). `paths` is the canonical project folder.
 fn host_log(
     paths: &ProjectPaths,
     env: &Env,
@@ -948,7 +949,7 @@ fn host_log(
     let hello = hello?;
     match hello.host {
         HostKind::Headless => find_host_log(paths, hello.pid),
-        HostKind::Gui => UserDirs::resolve(env).ok().map(|d| d.last_session_log()),
+        HostKind::Gui => UserDirs::resolve(env).ok().map(|d| d.gui_log(paths.root())),
         HostKind::Cli => None,
     }
 }
@@ -960,6 +961,37 @@ mod tests {
 
     fn command(cmd: Command) -> Request {
         Request::command(cmd, false)
+    }
+
+    /// "Host disconnected" names the GUI's log of this project (G§3.2).
+    #[test]
+    fn a_gui_hosts_log_is_its_projects_gui_log() {
+        let env = Env::new(1000)
+            .with("HOME", "/home/shrek")
+            .with("XDG_STATE_HOME", "/st");
+        let paths = ProjectPaths::new("/videos/swamp");
+        let hello = HelloInfo {
+            pid: 42,
+            project_dir: "/videos/swamp".into(),
+            project_dir_hex: None,
+            host: HostKind::Gui,
+            record: qrec_core::state::RecordPhase::Idle,
+            jobs: Vec::new(),
+            version: "0.1.0".into(),
+        };
+        let log = host_log(&paths, &env, Some(&hello), None).unwrap();
+        let dirs = UserDirs::resolve(&env).unwrap();
+        assert_eq!(log, dirs.gui_log(Path::new("/videos/swamp")));
+        assert!(
+            log.to_str().unwrap().starts_with("/st/qrec/gui-"),
+            "{}",
+            log.display()
+        );
+        let cli = HelloInfo {
+            host: HostKind::Cli,
+            ..hello
+        };
+        assert_eq!(host_log(&paths, &env, Some(&cli), None), None);
     }
 
     #[test]

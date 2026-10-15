@@ -27,6 +27,9 @@
 //! - An event's outcome carries facts (a finished take, a recovery), so it
 //!   is kept in memory and the store saves it with the next commit; replies
 //!   it sends say the change isn't saved yet.
+//! - Once the new state is assigned, the observer sees it (GUI H-6), before
+//!   any toast, progress or reply of the outcome; its late replies
+//!   (`Effect::Reply`) go to `Responder::reply_late` (H-7).
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -207,6 +210,9 @@ impl Session {
             return Ran::Done;
         }
         self.state = next;
+        // Whoever shows the state sees it before this outcome's toasts,
+        // progress and replies (GUI H-6).
+        self.observe();
         let unsaved = match &commit {
             Ok(()) => None,
             Err(e) => {
@@ -294,6 +300,7 @@ impl Session {
         tracing::info!("recovery mode: a change is kept in memory until the restore saves it");
         self.store.mark_dirty();
         self.state = next;
+        self.observe();
         let unsaved = CoreError::io(
             "the change was made but isn't saved: `qrec history restore` holds the project \
              and saves nothing until a change is confirmed",
@@ -393,6 +400,8 @@ impl Session {
                 Some(to) => with_current(&req, || to.progress(&progress)),
                 None => tracing::debug!("progress for {req}, which nobody waits for"),
             },
+            // A late answer: its requester heard nothing when the request
+            // ran; the core toasted a late error already (GUI H-7).
             Effect::Reply { req, reply } => match self.pending.remove(&req) {
                 Some(mut to) => {
                     let reply = match (reply, unsaved) {
@@ -401,7 +410,7 @@ impl Session {
                             reply.map(|result| serde_json::to_value(result).unwrap_or(Value::Null))
                         }
                     };
-                    with_current(&req, || to.reply(reply));
+                    with_current(&req, || to.reply_late(reply));
                 }
                 None => tracing::debug!("a reply for {req}, which nobody waits for"),
             },

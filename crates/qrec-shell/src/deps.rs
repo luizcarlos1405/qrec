@@ -60,6 +60,15 @@ pub trait CaptureEngine: Send {
     /// EOS to the record bins, then detach → `CaptureStopped`.
     fn stop(&mut self, take: &TakeId, cancel: bool);
     fn shutdown(&mut self);
+
+    /// The GUI's "Try again" (`Msg::RetryLive`, GUI D-50): forget the
+    /// sources the portal refused and those that died, and rebuild the live
+    /// pipeline for the scene it shows (asking the portal again). The
+    /// session thread calls it in order with `set_live` and `start`.
+    /// Default: nothing (an engine without a live preview).
+    fn retry_live(&mut self, out: Inbox) {
+        let _ = out;
+    }
 }
 
 /// A capture engine for hosts that can't record: every start fails.
@@ -116,13 +125,16 @@ mod tests {
             video: vec![],
             audio: vec![],
         };
-        NoCapture.start(plan, inbox);
+        NoCapture.start(plan, inbox.clone());
         match rx.recv().unwrap() {
             crate::msg::Msg::Event(Event::CaptureFailed { take, .. }) => {
                 assert_eq!(take, Some(TakeId::numbered(1)))
             }
             other => panic!("{other:?}"),
         }
+        // Without a live preview, a retry does nothing.
+        NoCapture.retry_live(inbox);
+        assert!(rx.try_recv().is_err());
         let (now, _offset) = system_clock();
         assert_eq!(now.timestamp_subsec_nanos(), 0);
         assert_ne!(os_entropy(), os_entropy());

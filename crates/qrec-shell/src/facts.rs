@@ -15,7 +15,9 @@
 //! **Devices.** [`Sources`] is the seam to device discovery: the fake
 //! inventory, or [`SystemSources`] (audio through `pactl --format=json`;
 //! screens and cameras through hooks the media owner's `sources` module
-//! fills in).
+//! fills in), or [`SharedSources`], the GUI's cache that a worker refreshes
+//! (GUI H-5), so the session thread never waits for discovery once it has
+//! run.
 
 use std::collections::{HashSet, VecDeque};
 use std::ffi::OsStr;
@@ -39,6 +41,7 @@ use crate::capture::fake::fake_inventory;
 use crate::media::{is_temp_name, take_contents};
 use crate::paths::{NAME_MAX, ProjectPaths, path_text};
 use crate::proc::{self, Limit, PACTL_TIMEOUT, Spec};
+use crate::sources::{self, SourceInventory};
 
 // ------------------------------------------------------------------ sources
 
@@ -155,6 +158,159 @@ impl Sources for SystemSources {
         match self.cameras {
             Some(discover) => discover(),
             None => Err("camera discovery isn't available in this build".to_owned()),
+        }
+    }
+}
+
+/// Device facts from a cache (GUI H-5): `LayerAdd`, `AudioAdd` and a take's
+/// start read what the last discovery found, so the session thread never
+/// waits for `pactl`, Wayland or the camera monitor once one has run.
+///
+/// Clones share the cache. The GUI keeps one to [`SharedSources::refresh`]
+/// on a worker (at startup, when an Add menu opens, on hotplug) and gives
+/// another to the Session (`SessionConfig::sources`). Until a discovery
+/// finished, the first caller discovers once, on its own thread; one that
+/// comes while a refresh runs waits for that refresh instead of starting
+/// another (each tool has its timeout, A§8.12).
+#[derive(Clone)]
+pub struct SharedSources {
+    shared: Arc<SharedCache>,
+}
+
+struct SharedCache {
+    discover: Box<dyn Fn() -> SourceInventory + Send + Sync>,
+    /// What the last discovery found.
+    cached: Mutex<Option<Arc<SourceInventory>>>,
+    /// Held while discovering.
+    discovering: Mutex<()>,
+}
+
+impl std::fmt::Debug for SharedSources {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedSources")
+            .field("cached", &self.cached().is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for SharedSources {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SharedSources {
+    /// The machine's sources ([`SourceInventory::discover`]: the fake
+    /// inventory under `QREC_CAPTURE_BACKEND=fake`); nothing cached yet.
+    pub fn new() -> Self {
+        Self::with_discovery(|| SourceInventory::discover(sources::Discover::ALL))
+    }
+
+    /// With another discovery (tests).
+    pub fn with_discovery(discover: impl Fn() -> SourceInventory + Send + Sync + 'static) -> Self {
+        Self {
+            shared: Arc::new(SharedCache {
+                discover: Box::new(discover),
+                cached: Mutex::new(None),
+                discovering: Mutex::new(()),
+            }),
+        }
+    }
+
+    /// Discovers every source on the caller's thread (up to seconds: never
+    /// the session's or the GTK thread) and caches what it found.
+    pub fn refresh(&self) -> Arc<SourceInventory> {
+        let _discovering = self
+            .shared
+            .discovering
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        self.discover_now()
+    }
+
+    /// What the last discovery found, if one finished.
+    pub fn cached(&self) -> Option<Arc<SourceInventory>> {
+        self.shared
+            .cached
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The cached inventory. An empty cache discovers once, here, or waits
+    /// for the discovery under way.
+    pub fn inventory(&self) -> Arc<SourceInventory> {
+        if let Some(inventory) = self.cached() {
+            return inventory;
+        }
+        let _discovering = self
+            .shared
+            .discovering
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        // A refresh may have filled it while this waited.
+        match self.cached() {
+            Some(inventory) => inventory,
+            None => self.discover_now(),
+        }
+    }
+
+    /// Discovers and caches (the caller holds `discovering`).
+    fn discover_now(&self) -> Arc<SourceInventory> {
+        let inventory = Arc::new((self.shared.discover)());
+        for warning in &inventory.warnings {
+            tracing::debug!("sources: {warning}");
+        }
+        *self
+            .shared
+            .cached
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&inventory));
+        inventory
+    }
+
+    /// Why `kind` (`screens`, `cameras`, `audio`) came back empty, when the
+    /// discovery said so (`SourceInventory::warnings` are `"<kind>: why"`).
+    fn failure(inventory: &SourceInventory, kind: &str, empty: bool) -> Option<String> {
+        let prefix = format!("{kind}: ");
+        empty
+            .then(|| {
+                inventory
+                    .warnings
+                    .iter()
+                    .find_map(|w| w.strip_prefix(&prefix).map(str::to_owned))
+            })
+            .flatten()
+    }
+}
+
+impl Sources for SharedSources {
+    fn audio(&mut self) -> Result<AudioInventory, String> {
+        let inventory = self.inventory();
+        let empty = inventory.mics.is_empty() && inventory.monitors.is_empty();
+        if let Some(why) = Self::failure(&inventory, "audio", empty) {
+            return Err(why);
+        }
+        Ok(AudioInventory {
+            devices: inventory.audio_devices(),
+            default_mic: inventory.default_mic.clone(),
+            default_monitor: inventory.default_monitor.clone(),
+        })
+    }
+
+    fn screens(&mut self) -> Result<Vec<ScreenInfo>, String> {
+        let inventory = self.inventory();
+        match Self::failure(&inventory, "screens", inventory.screens.is_empty()) {
+            Some(why) => Err(why),
+            None => Ok(inventory.screens.clone()),
+        }
+    }
+
+    fn cameras(&mut self) -> Result<Vec<CameraInfo>, String> {
+        let inventory = self.inventory();
+        match Self::failure(&inventory, "cameras", inventory.cameras.is_empty()) {
+            Some(why) => Err(why),
+            None => Ok(inventory.cameras.clone()),
         }
     }
 }
@@ -283,9 +439,10 @@ impl ConfigFile {
         let parsed = match &seen {
             Seen::Missing => Ok(UserConfig::default()),
             Seen::Unreadable(e) => Err(format!("can't read {}: {e}", self.path.display())),
-            Seen::File(..) => fs::read_to_string(&self.path)
-                .map_err(|e| format!("can't read {}: {e}", self.path.display()))
-                .and_then(|text| parse_config(&text)),
+            // At most 1 MiB, a regular file only (never a FIFO's wait).
+            Seen::File(..) => crate::config_file::read_text(&self.path).and_then(|text| {
+                text.map_or_else(|| Ok(UserConfig::default()), |t| parse_config(&t))
+            }),
         };
         read.seen = Some(seen);
         match parsed {
@@ -378,17 +535,13 @@ impl FactsGatherer {
     }
 
     /// The text of `keys.toml` (`Facts::keys_toml`, for `Query::Keys`):
-    /// empty when there is none; the core reports what's wrong with it.
+    /// empty when there is none, or when it can't be read (a warning says
+    /// why); the core reports what's wrong with one it got.
     pub fn keys_toml(&self) -> String {
-        match fs::read_to_string(&self.keys_file) {
-            Ok(text) => text,
-            Err(e) => {
-                if e.kind() != io::ErrorKind::NotFound {
-                    tracing::warn!("can't read {}: {e}", self.keys_file.display());
-                }
-                String::new()
-            }
-        }
+        crate::keys_file::read(&self.keys_file).unwrap_or_else(|why| {
+            tracing::warn!("{why}");
+            String::new()
+        })
     }
 
     /// Gathers exactly what `need` asks for, plus the config.
@@ -1048,6 +1201,101 @@ mod tests {
             Some("alsa_output.hdmi.monitor")
         );
         assert!(parse_pactl("{}", "{}").is_err());
+    }
+
+    /// A [`SharedSources`] whose discovery counts its runs and returns the
+    /// fake inventory, its screen descriptions numbered by run.
+    fn counting_sources() -> (SharedSources, Arc<Mutex<Vec<std::thread::ThreadId>>>) {
+        let runs: Arc<Mutex<Vec<std::thread::ThreadId>>> = Arc::default();
+        let seen = Arc::clone(&runs);
+        let shared = SharedSources::with_discovery(move || {
+            let mut runs = seen.lock().unwrap();
+            runs.push(std::thread::current().id());
+            let mut inventory = SourceInventory::fake();
+            inventory.screens[0].description = format!("run {}", runs.len());
+            inventory
+        });
+        (shared, runs)
+    }
+
+    /// GUI H-5: an empty cache discovers once, on the caller's thread; then
+    /// every fact comes from the cache until a refresh replaces it.
+    #[test]
+    fn shared_sources_discover_once_then_serve_the_cache() {
+        let (shared, runs) = counting_sources();
+        assert!(shared.cached().is_none());
+        let mut session_side: Box<dyn Sources> = Box::new(shared.clone());
+        let screens = session_side.screens().unwrap();
+        assert_eq!(screens[0].description, "run 1");
+        assert_eq!(session_side.cameras().unwrap()[0].device, "/dev/fake0");
+        let audio = session_side.audio().unwrap();
+        assert_eq!(audio.default_mic.as_deref(), Some(FAKE_MIC));
+        assert_eq!(audio.default_monitor.as_deref(), Some(FAKE_MONITOR));
+        assert_eq!(audio.devices.len(), 2, "mics, then monitors");
+        assert_eq!(*runs.lock().unwrap(), [std::thread::current().id()]);
+
+        // A refresh on another thread replaces what the Session reads.
+        let worker = {
+            let shared = shared.clone();
+            std::thread::spawn(move || {
+                shared.refresh();
+                std::thread::current().id()
+            })
+        };
+        let worker = worker.join().unwrap();
+        assert_eq!(session_side.screens().unwrap()[0].description, "run 2");
+        assert_eq!(*runs.lock().unwrap(), [std::thread::current().id(), worker]);
+        assert_eq!(shared.cached().unwrap().screens[0].description, "run 2");
+        assert!(format!("{shared:?}").contains("cached: true"));
+    }
+
+    /// A caller that finds the cache empty while a refresh runs waits for it
+    /// instead of discovering a second time.
+    #[test]
+    fn shared_sources_wait_for_a_refresh_under_way() {
+        let (started_tx, started_rx) = crossbeam_channel::bounded::<()>(1);
+        let runs = Arc::new(Mutex::new(0u32));
+        let counted = Arc::clone(&runs);
+        let shared = SharedSources::with_discovery(move || {
+            *counted.lock().unwrap() += 1;
+            let _ = started_tx.send(());
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            SourceInventory::fake()
+        });
+        let refresher = {
+            let shared = shared.clone();
+            std::thread::spawn(move || shared.refresh())
+        };
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the refresh started");
+        let inventory = shared.inventory();
+        refresher.join().unwrap();
+        assert_eq!(inventory.screens.len(), 2);
+        assert_eq!(*runs.lock().unwrap(), 1, "one discovery between them");
+    }
+
+    /// A kind that came back empty with a warning is a failure (logged by the
+    /// gatherer), like `SystemSources` says it.
+    #[test]
+    fn shared_sources_pass_discovery_failures_on() {
+        let shared = SharedSources::with_discovery(|| SourceInventory {
+            cameras: SourceInventory::fake().cameras,
+            warnings: vec![
+                "screens: no Wayland display".to_owned(),
+                "audio: pactl wasn't found".to_owned(),
+            ],
+            ..SourceInventory::default()
+        });
+        let mut sources: Box<dyn Sources> = Box::new(shared);
+        assert_eq!(sources.screens().unwrap_err(), "no Wayland display");
+        assert_eq!(sources.audio().unwrap_err(), "pactl wasn't found");
+        assert_eq!(sources.cameras().unwrap().len(), 1);
+        // Empty without a warning: just nothing there.
+        let mut none: Box<dyn Sources> =
+            Box::new(SharedSources::with_discovery(SourceInventory::default));
+        assert_eq!(none.screens().unwrap(), []);
+        assert_eq!(none.audio().unwrap(), AudioInventory::default());
     }
 
     fn project_dir() -> (tempfile::TempDir, ProjectPaths) {

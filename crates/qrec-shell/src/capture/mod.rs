@@ -34,8 +34,17 @@
 //! ```
 //!
 //! Without the `gst` feature the engine fails every start (`NoCapture`).
+//!
+//! The GUI also gets (docs/GUI.md G§3.9): the preview in its own sink
+//! ([`PreviewOutput`], once [`PREVIEW_SINK_SUPPORTED`]), each live source's
+//! state ([`SideEvent::LiveStatus`]), a [`LiveControl`] that moves preview
+//! layers during a drag, screen casts kept open for [`GUI_CAST_GRACE`]
+//! after the pipeline stops, and the meters of `meters::MeterMonitor`
+//! while no capture pipeline runs.
 
 pub mod fake;
+#[cfg(feature = "gst")]
+pub mod meters;
 pub mod spec;
 pub mod tokens;
 
@@ -45,6 +54,8 @@ mod bridge;
 mod cast_probe;
 #[cfg(feature = "gst")]
 mod engine;
+#[cfg(all(test, feature = "gst"))]
+mod fake_tests;
 #[cfg(feature = "gst")]
 mod live;
 #[cfg(feature = "gst")]
@@ -61,13 +72,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use qrec_core::ctx::{CameraMode, ScreenInfo};
+use qrec_core::model::Scene;
+use qrec_core::view::{LiveSourceView, LiveSources};
 
 use crate::deps::CaptureEngine;
 use crate::paths::UserDirs;
 
 #[cfg(feature = "gst")]
 pub use engine::{FakeFailure, GstCaptureEngine};
-pub use fake::{FakeInventory, fake_inventory};
+pub use fake::{
+    FakeHooks, FakeInventory, FakeInventoryKind, FakePortal, fake_inventory, fake_inventory_of,
+};
+/// A live source's state: the view models' type (`qrec_core::view`), so the
+/// GUI shows what the engine reports without converting it.
+pub use qrec_core::view::LiveSourceState;
 pub use tokens::{PortalTokens, TokenEntry};
 
 /// Selects the backend: `fake` uses test sources, anything else the devices.
@@ -96,6 +114,16 @@ pub const PIPELINE_START_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long the user has to answer a screen-share dialog.
 pub const PORTAL_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How long a GUI host keeps its screen casts open after the live pipeline
+/// stops (GUI H-4, [`EngineOptions::cast_grace`]): `Tab` back to Live
+/// doesn't ask the portal again.
+pub const GUI_CAST_GRACE: Duration = Duration::from_secs(60);
+
+/// Whether the engine composites the live preview into
+/// [`EngineOptions::preview`] (GUI H-1). While it doesn't, the preview is
+/// the RGBA appsink's [`SideEvent::Preview`] frames, also with a sink given.
+pub const PREVIEW_SINK_SUPPORTED: bool = false;
 
 /// Which devices the engine records from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +170,114 @@ pub enum SideEvent {
     Level(LevelReading),
     /// The live pipeline (not a take) has a problem.
     LiveError(String),
+    /// Every live source's state, after each build, portal answer, source
+    /// death and rebuild (docs/GUI.md G§3.9).
+    LiveStatus(Vec<LiveSourceStatus>),
+}
+
+/// One live source as the engine sees it ([`SideEvent::LiveStatus`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveSourceStatus {
+    pub source: LiveSource,
+    pub state: LiveSourceState,
+    /// The size it delivers, once known: the layer boxes in Live mode.
+    pub size: Option<(u32, u32)>,
+}
+
+/// A capture device of the live pipeline.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LiveSource {
+    /// By output name (`DP-4`).
+    Screen { output: String },
+    /// By device (`/dev/video0`).
+    Camera { device: String },
+    /// By PulseAudio/PipeWire source name.
+    Audio { device: String },
+}
+
+impl LiveSource {
+    /// The output, camera device or audio source name: how scenes name it.
+    pub fn name(&self) -> &str {
+        match self {
+            LiveSource::Screen { output } => output,
+            LiveSource::Camera { device } | LiveSource::Audio { device } => device,
+        }
+    }
+}
+
+impl LiveSourceStatus {
+    /// What the view models take of it.
+    pub fn view(&self) -> LiveSourceView {
+        LiveSourceView {
+            state: self.state.clone(),
+            size: self.size,
+        }
+    }
+}
+
+/// The statuses keyed by source name, as the view models take them
+/// (`qrec_core::view::LiveSources`). A name reported twice keeps the last.
+pub fn live_sources_view(statuses: &[LiveSourceStatus]) -> LiveSources {
+    statuses
+        .iter()
+        .map(|status| (status.source.name().to_owned(), status.view()))
+        .collect()
+}
+
+/// Lays out the live preview's layers without a `SetLive`, for a layer
+/// drag or nudge in Live mode (GUI D-32, D-33): the geometry holds until
+/// the next `SetLive` (any) or a `None`. It moves only the preview
+/// compositor's pads: record bins record each source to its own file, so it
+/// never reaches a take, and it never touches State. Cheap to clone; every
+/// call returns at once.
+///
+/// From `GstCaptureEngine::control()`; one that isn't connected to an
+/// engine does nothing.
+#[derive(Clone, Default)]
+pub struct LiveControl {
+    apply: Option<Arc<dyn Fn(Option<Scene>) + Send + Sync>>,
+}
+
+impl LiveControl {
+    /// Hands every layout to `apply` (the engine queues it).
+    pub fn new(apply: impl Fn(Option<Scene>) + Send + Sync + 'static) -> Self {
+        Self {
+            apply: Some(Arc::new(apply)),
+        }
+    }
+
+    /// A control that does nothing.
+    pub fn noop() -> Self {
+        Self::default()
+    }
+
+    /// Shows the preview's layers laid out as `scene` (the same layers and
+    /// sources as the live scene); `None` goes back to the live scene's own.
+    pub fn transient_layout(&self, scene: Option<Scene>) {
+        if let Some(apply) = &self.apply {
+            apply(scene);
+        }
+    }
+}
+
+impl std::fmt::Debug for LiveControl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiveControl")
+            .field("connected", &self.apply.is_some())
+            .finish()
+    }
+}
+
+/// Where the engine composites the live preview for the GUI (GUI H-1,
+/// docs/GUI.md G§3.9): BGRx at the canvas fitted into `max_size`.
+#[cfg(feature = "gst")]
+#[derive(Debug, Clone)]
+pub struct PreviewOutput {
+    /// The GUI's `gtk4paintablesink`, made on the GTK thread, which holds a
+    /// reference until exit. The engine reuses it across rebuilds.
+    pub sink: gst::Element,
+    /// (960, 540) × the window's scale factor.
+    pub max_size: (u32, u32),
 }
 
 /// One RGBA frame of the preview.
@@ -186,15 +322,29 @@ pub struct EngineOptions {
     pub portal_tokens: PathBuf,
     /// Screen and camera facts for the real backend.
     pub devices: Option<Arc<dyn DeviceInfo>>,
-    /// Preview frames and level meters (GUI).
+    /// Preview frames, level meters and live statuses (GUI).
     pub side: Option<crossbeam_channel::Sender<SideEvent>>,
     pub portal_timeout: Duration,
     /// Register `com.rsensato.qrec` with the host portal Registry first.
     pub register_app_id: bool,
+    /// The GUI's preview sink (`None`: the RGBA appsink and
+    /// [`SideEvent::Preview`]); used once [`PREVIEW_SINK_SUPPORTED`].
+    #[cfg(feature = "gst")]
+    pub preview: Option<PreviewOutput>,
+    /// After `SetLive(None)` with no take, screen casts stay open this long,
+    /// then close: [`GUI_CAST_GRACE`] for the GUI, zero for other hosts.
+    pub cast_grace: Duration,
+    /// The fake backend's test hooks ([`FakeHooks`]).
+    pub fake: FakeHooks,
 }
 
 impl EngineOptions {
+    /// The fake backend reads its test hooks from the environment.
     pub fn new(project_dir: impl Into<PathBuf>, backend: Backend, dirs: &UserDirs) -> Self {
+        let fake = match backend {
+            Backend::Fake => FakeHooks::from_env(),
+            Backend::Real => FakeHooks::default(),
+        };
         Self {
             project_dir: project_dir.into(),
             backend,
@@ -203,20 +353,28 @@ impl EngineOptions {
             side: None,
             portal_timeout: PORTAL_TIMEOUT,
             register_app_id: true,
+            #[cfg(feature = "gst")]
+            preview: None,
+            cast_grace: Duration::ZERO,
+            fake,
         }
     }
 }
 
 impl std::fmt::Debug for EngineOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EngineOptions")
-            .field("project_dir", &self.project_dir)
+        let mut d = f.debug_struct("EngineOptions");
+        d.field("project_dir", &self.project_dir)
             .field("backend", &self.backend)
             .field("portal_tokens", &self.portal_tokens)
             .field("devices", &self.devices.is_some())
             .field("side", &self.side.is_some())
             .field("portal_timeout", &self.portal_timeout)
-            .field("register_app_id", &self.register_app_id)
+            .field("register_app_id", &self.register_app_id);
+        #[cfg(feature = "gst")]
+        d.field("preview", &self.preview.as_ref().map(|p| p.max_size));
+        d.field("cast_grace", &self.cast_grace)
+            .field("fake", &self.fake)
             .finish()
     }
 }
@@ -266,5 +424,78 @@ mod unit_tests {
         );
         assert!(opts.register_app_id);
         assert!(format!("{opts:?}").contains("Fake"));
+        // Casts close at once unless a GUI asks for the grace.
+        assert_eq!(opts.cast_grace, Duration::ZERO);
+        assert_eq!(GUI_CAST_GRACE, Duration::from_secs(60));
+        let real = EngineOptions::new("/p", Backend::Real, &dirs);
+        assert_eq!(real.fake, FakeHooks::default(), "only the fake backend");
+        #[cfg(feature = "gst")]
+        assert!(real.preview.is_none());
+    }
+
+    #[test]
+    fn live_statuses_become_the_view_models_map() {
+        let statuses = [
+            LiveSourceStatus {
+                source: LiveSource::Screen {
+                    output: "FAKE-1".into(),
+                },
+                state: LiveSourceState::Refused {
+                    cancelled: false,
+                    message: "denied".into(),
+                },
+                size: None,
+            },
+            LiveSourceStatus {
+                source: LiveSource::Camera {
+                    device: "/dev/fake0".into(),
+                },
+                state: LiveSourceState::Live,
+                size: Some((640, 480)),
+            },
+            LiveSourceStatus {
+                source: LiveSource::Audio {
+                    device: "alsa_input.fake".into(),
+                },
+                state: LiveSourceState::AwaitingPortal,
+                size: None,
+            },
+        ];
+        let view = live_sources_view(&statuses);
+        assert_eq!(view.len(), 3);
+        assert_eq!(
+            view["/dev/fake0"],
+            LiveSourceView {
+                state: LiveSourceState::Live,
+                size: Some((640, 480))
+            }
+        );
+        assert!(matches!(
+            view["FAKE-1"].state,
+            LiveSourceState::Refused {
+                cancelled: false,
+                ..
+            }
+        ));
+        assert_eq!(statuses[2].source.name(), "alsa_input.fake");
+    }
+
+    #[test]
+    fn a_live_control_hands_layouts_on_or_does_nothing() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let control = {
+            let seen = Arc::clone(&seen);
+            LiveControl::new(move |scene: Option<Scene>| {
+                seen.lock().unwrap().push(scene.map(|s| s.layers.len()));
+            })
+        };
+        let copy = control.clone();
+        copy.transient_layout(Some(Scene::default()));
+        control.transient_layout(None);
+        assert_eq!(*seen.lock().unwrap(), [Some(0), None]);
+        assert!(format!("{control:?}").contains("connected: true"));
+        // Not connected: nothing happens.
+        LiveControl::noop().transient_layout(None);
+        assert!(format!("{:?}", LiveControl::default()).contains("connected: false"));
     }
 }

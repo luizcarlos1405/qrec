@@ -10,10 +10,12 @@
 //! `store`, `lock`, `host::{lockfile,publish}`, `watcher` → store;
 //! `session`, `facts`, `caps`, `timers`, `proc` → session; `ipc`,
 //! `host::{headless,cli_host,signals,spawn}` → ipc; `media`, `sources`,
-//! `doctor` → media; `capture`, `gpu`, `gst_init`, `ges_render` → capture.
+//! `doctor` → media; `capture`, `gpu`, `gst_init`, `ges_render`, `player`
+//! → capture; `config_file`, `keys_file` → meta.
 
 pub mod caps;
 pub mod capture;
+pub mod config_file;
 pub mod deps;
 pub mod doctor;
 pub mod error;
@@ -25,10 +27,13 @@ pub mod gpu;
 pub mod gst_init;
 pub mod host;
 pub mod ipc;
+pub mod keys_file;
 pub mod lock;
 pub mod media;
 pub mod msg;
 pub mod paths;
+#[cfg(feature = "gst")]
+pub mod player;
 pub mod proc;
 pub mod session;
 pub mod sources;

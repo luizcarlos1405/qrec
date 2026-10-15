@@ -14,8 +14,12 @@
 //!   go to `on_event` the same way. An empty folder is initialized lazily
 //!   before its first command (A§8.4).
 //! - The session thread only blocks on its own small writes (and the
-//!   bounded `pactl` run of an `AudioAdd`); media jobs, capture, timers and
-//!   the watcher answer through the [`Inbox`].
+//!   bounded `pactl` run of an `AudioAdd`, unless the host passed cached
+//!   device facts, GUI H-5); media jobs, capture, timers and the watcher
+//!   answer through the [`Inbox`].
+//! - A [`StateObserver`] (the GUI) sees every state the Session holds,
+//!   before the toasts and replies of the outcome that made it (GUI H-6).
+//!   Late replies (`Effect::Reply`) go to `Responder::reply_late` (H-7).
 //!
 //! Every state change goes through here.
 
@@ -37,7 +41,7 @@ use qrec_core::protocol::Toast;
 use qrec_core::state::JobKind;
 use qrec_core::{ReqId, State, TakeId};
 
-pub use config::{BACKEND_ENV, LogNotifier, Notifier, SessionConfig, SessionEnv};
+pub use config::{BACKEND_ENV, LogNotifier, Notifier, SessionConfig, SessionEnv, StateObserver};
 pub use open::RECOVERY_WAIT;
 
 use crate::deps::{Deps, OpenOpts};
@@ -97,6 +101,10 @@ pub struct Session {
     recovery_until: Option<Instant>,
     next_req: u64,
     notifier: Box<dyn Notifier>,
+    /// Sees every state assigned ([`Session::observe`]).
+    observer: Option<Box<dyn StateObserver>>,
+    /// How many states the observer saw ([`Session::rev`]).
+    rev: u64,
     /// Set while the outcome of a startup recovery runs: its toasts are the
     /// host's own news ([`Notifier::notify_recovery`]).
     recovery_news: bool,
@@ -133,14 +141,19 @@ impl Session {
     }
 
     /// [`Session::open`] with a lock or inbox taken earlier, another
-    /// environment, a toast sink or other device discovery.
+    /// environment, a toast sink, a state observer or other device
+    /// discovery. The observer has seen the opened state when this returns.
     pub fn open_with(
         dir: &Path,
         opts: OpenOpts,
         deps: Deps,
         cfg: SessionConfig,
     ) -> Result<Session, ShellError> {
-        open::open(dir, opts, deps, cfg)
+        let mut session = open::open(dir, opts, deps, cfg)?;
+        // The opened state, whatever the open changed in place (a reader's
+        // preview of a hand edit) or saw no outcome for.
+        session.observe();
+        Ok(session)
     }
 
     /// A sender for workers, IPC connections and the GUI.
@@ -167,8 +180,51 @@ impl Session {
             Msg::DiskChanged => self.handle_disk_changed(),
             Msg::Interrupt => self.handle_interrupt(),
             Msg::Shutdown => self.shutdown = true,
+            Msg::RetryLive => self.retry_live(),
         }
         self.tick();
+    }
+
+    /// GUI D-50: the engine forgets refused and dead live sources and
+    /// rebuilds, after every `SetLive` and `StartCapture` sent so far.
+    fn retry_live(&mut self) {
+        tracing::info!("retrying the live preview: refused and lost sources are asked for again");
+        let inbox = self.inbox.clone();
+        self.deps.capture.retry_live(inbox);
+    }
+
+    /// Hands the state just assigned to the observer (GUI H-6). Callers
+    /// assign `self.state`, then call this before anything of that outcome
+    /// is sent (toasts, progress, replies).
+    fn observe(&mut self) {
+        let Some(observer) = &mut self.observer else {
+            return;
+        };
+        self.rev += 1;
+        let started = Instant::now();
+        observer.changed(self.rev, &self.state);
+        // The GUI clones the state per snapshot (G§9 R14): above 1 ms a
+        // shared `Arc<State>` would pay off.
+        let took = started.elapsed();
+        if self.rev == 1 || took >= Duration::from_millis(1) {
+            tracing::debug!(
+                "state observer: snapshot {} took {} µs",
+                self.rev,
+                took.as_micros()
+            );
+        } else {
+            tracing::trace!(
+                "state observer: snapshot {} took {} µs",
+                self.rev,
+                took.as_micros()
+            );
+        }
+    }
+
+    /// The revision of the last state the observer saw (0 before the
+    /// first, and without an observer).
+    pub fn rev(&self) -> u64 {
+        self.rev
     }
 
     /// Commands wait for the takes being recovered (A§5.3): in recovery

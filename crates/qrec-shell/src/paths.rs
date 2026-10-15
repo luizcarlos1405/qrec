@@ -3,8 +3,8 @@
 //!
 //! Resolution is pure over an [`Env`] snapshot, so tests pass their own
 //! variables instead of mutating the process environment. Only
-//! [`ensure_runtime_dir`], [`ensure_private_dir`] and [`check_private_dir`]
-//! touch the disk.
+//! [`ensure_runtime_dir`], [`ensure_private_dir`], [`check_private_dir`]
+//! and [`open_gui_log`] touch the disk.
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -138,6 +138,16 @@ impl UserDirs {
         self.state.join("last-session.log")
     }
 
+    /// `state/gui-<first 12 hex of sha256(canonical project dir)>.log`: the
+    /// log of the GUI windows of one project (docs/GUI.md G§3.2), appended
+    /// to by each ([`open_gui_log`]). GUIs on two projects never share one,
+    /// and a second GUI on a project (which exits at once) doesn't erase the
+    /// first one's.
+    pub fn gui_log(&self, canonical_project_dir: &Path) -> PathBuf {
+        let digest = sha256_hex(canonical_project_dir.as_os_str().as_bytes());
+        self.state.join(format!("gui-{}.log", &digest[..12]))
+    }
+
     /// `cache/capabilities.json`: detected ffmpeg encoders and VA-API support.
     pub fn capabilities_cache(&self) -> PathBuf {
         self.cache.join("capabilities.json")
@@ -234,6 +244,48 @@ pub fn check_private_dir(dir: &Path, uid: u32) -> Result<(), CoreError> {
 
 fn io_error(what: String, e: &io::Error) -> CoreError {
     CoreError::io(format!("{what}: {e}"))
+}
+
+/// A GUI log past this size is rotated to `<name>.1` when a GUI starts.
+pub const GUI_LOG_ROTATE_BYTES: u64 = 8 << 20;
+
+/// Opens a GUI log ([`UserDirs::gui_log`]) to append to, never truncating
+/// it: a log past [`GUI_LOG_ROTATE_BYTES`] is moved to `<name>.1` first
+/// (replacing the older one). Writes the run's header, `=== qrec <version>
+/// pid <pid> <RFC 3339 time> <project dir> ===`. The state folder is made
+/// when missing; a new log is the user's alone (0600).
+pub fn open_gui_log(
+    log: &Path,
+    project_dir: &Path,
+    now: chrono::DateTime<chrono::Local>,
+) -> io::Result<fs::File> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    if let Some(dir) = log.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    if fs::metadata(log).is_ok_and(|m| m.len() > GUI_LOG_ROTATE_BYTES) {
+        let mut rotated = log.as_os_str().to_owned();
+        rotated.push(".1");
+        // Another GUI starting now may have moved it already; a log that
+        // can't be moved is appended to all the same.
+        let _ = fs::rename(log, rotated);
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(log)?;
+    writeln!(
+        file,
+        "=== qrec {} pid {} {} {} ===",
+        env!("CARGO_PKG_VERSION"),
+        std::process::id(),
+        now.to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
+        path_text(project_dir)
+    )?;
+    Ok(file)
 }
 
 /// `path` as text for people and JSON (replies, hints, logs): its exact
@@ -569,6 +621,66 @@ mod tests {
         let env = Env::from_process();
         assert!(env.vars.keys().all(|k| ENV_KEYS.contains(&k.as_str())));
         assert_eq!(env.uid(), rustix::process::getuid().as_raw());
+    }
+
+    /// GUI G§3.2: one log per project in the state folder, appended to by
+    /// every GUI on it (a second one, which exits at once, erases nothing),
+    /// rotated once past 8 MiB.
+    #[test]
+    fn the_gui_log_is_per_project_and_appended_to() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = Env::new(1000).with("HOME", tmp.path().join("home"));
+        let dirs = UserDirs::resolve(&env).unwrap();
+        let swamp = tmp.path().join("swamp");
+        let other = tmp.path().join("other");
+        let log = dirs.gui_log(&swamp);
+        assert_eq!(log, dirs.gui_log(&swamp), "stable");
+        assert_ne!(log, dirs.gui_log(&other), "one per project");
+        assert_eq!(log.parent(), Some(dirs.state.as_path()));
+        let name = log.file_name().unwrap().to_str().unwrap();
+        let hex = &sha256_hex(swamp.as_os_str().as_bytes())[..12];
+        assert_eq!(name, format!("gui-{hex}.log"));
+
+        let at = |s: &str| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&chrono::Local)
+        };
+        let mut first = open_gui_log(&log, &swamp, at("2026-10-15T10:00:00Z")).unwrap();
+        std::io::Write::write_all(&mut first, b"first window\n").unwrap();
+        drop(first);
+        assert_eq!(mode(&log), 0o600);
+        let mut second = open_gui_log(&log, &swamp, at("2026-10-15T10:05:00Z")).unwrap();
+        std::io::Write::write_all(&mut second, b"second window\n").unwrap();
+        drop(second);
+        let text = fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 4, "{text}");
+        let header = format!(
+            "=== qrec {} pid {} ",
+            env!("CARGO_PKG_VERSION"),
+            std::process::id()
+        );
+        assert!(lines[0].starts_with(&header), "{text}");
+        assert!(
+            lines[0].ends_with(&format!(" {} ===", swamp.display())),
+            "{text}"
+        );
+        assert_eq!(lines[1], "first window");
+        assert!(lines[2].starts_with(&header) && lines[3] == "second window");
+        // Each header has its own time.
+        assert_ne!(lines[0], lines[2]);
+
+        // Past 8 MiB the log moves to `.1` and a new one starts.
+        let big = fs::OpenOptions::new().append(true).open(&log).unwrap();
+        big.set_len(GUI_LOG_ROTATE_BYTES + 1).unwrap();
+        drop(open_gui_log(&log, &swamp, at("2026-10-15T11:00:00Z")).unwrap());
+        let rotated = log.with_file_name(format!("gui-{hex}.log.1"));
+        assert_eq!(
+            fs::metadata(&rotated).unwrap().len(),
+            GUI_LOG_ROTATE_BYTES + 1
+        );
+        assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 1);
     }
 
     #[test]

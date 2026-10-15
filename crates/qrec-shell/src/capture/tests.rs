@@ -851,7 +851,7 @@ fn live_pipeline_previews_and_records() {
             Ok(SideEvent::Preview(f)) => frame = Some(f),
             Ok(SideEvent::Level(l)) => level = Some(l),
             Ok(SideEvent::LiveError(e)) => panic!("live error: {e}"),
-            Err(_) => {}
+            Ok(SideEvent::LiveStatus(_)) | Err(_) => {}
         }
     }
     let frame = frame.expect("a preview frame");

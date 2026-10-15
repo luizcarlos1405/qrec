@@ -215,6 +215,8 @@ pub(super) fn open(
         parked: Vec::new(),
         next_req: 0,
         notifier: cfg.notifier.unwrap_or_else(|| Box::new(LogNotifier)),
+        observer: cfg.observer,
+        rev: 0,
         recovery_news: false,
         shutdown: false,
         interrupts: 0,

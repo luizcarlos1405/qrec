@@ -88,6 +88,8 @@ fn stopping(cmd: &Command) -> CoreError {
 /// request after a crash sees them recovered, and a restore of a project
 /// rebuilt from the history (recovery mode, A§7.7) sees the facts their
 /// Recover probes find, or its clips would use takes still `recording`.
+/// Parked commands keep their order among themselves; commands that stop
+/// something and UI-state ones (`Command::ui_only`, GUI D-47) never park.
 pub(super) struct Parked {
     id: Option<ReqId>,
     cmd: Command,
@@ -206,9 +208,13 @@ impl Session {
             let reply = serde_json::to_value(result).unwrap_or(Value::Null);
             return self.reply_now(id.as_ref(), &mut to, Ok(reply));
         }
-        if self.holding_for_recovery() && !winds_down(&cmd, &self.state) {
+        if self.holding_for_recovery() && !winds_down(&cmd, &self.state) && !cmd.ui_only() {
             // Resumed by `release_parked` once the Recover probes answered
             // (or, outside recovery mode, once the open's wait is over).
+            // UI-state commands (selection, playhead, view, playback) never
+            // wait (GUI D-47): they touch no take, and the parked commands
+            // resolve the selection and playhead when they run, like every
+            // command at its turn.
             tracing::info!("{} waits for the takes being recovered", cmd.name());
             self.parked.push(Parked {
                 id,

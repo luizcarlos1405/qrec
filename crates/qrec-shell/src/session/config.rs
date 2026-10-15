@@ -1,10 +1,12 @@
 //! What a Session is opened with besides `Deps`: the per-user dirs, the
 //! capture backend switch, capability detection settings, where toasts go,
-//! device discovery, and (for hosts) a lock and an inbox taken earlier.
+//! who sees the state change, device discovery, and (for hosts) a lock and
+//! an inbox taken earlier.
 
 use std::path::PathBuf;
 
 use crossbeam_channel::Receiver;
+use qrec_core::State;
 use qrec_core::protocol::Toast;
 use qrec_core::protocol::ToastLevel;
 
@@ -36,6 +38,31 @@ pub trait Notifier: Send {
 impl<F: FnMut(&Toast) + Send> Notifier for F {
     fn notify(&mut self, toast: &Toast) {
         self(toast)
+    }
+}
+
+/// Who sees every state the Session holds (GUI H-6, docs/GUI.md G§3.5):
+/// the GUI's snapshots.
+///
+/// The Session calls [`StateObserver::changed`] right after each assignment
+/// of its state, durable or not: every outcome of a command or an event
+/// (runtime-only ones too: `RecordClock`, export progress, playing,
+/// recovery, autocut), a change kept in memory (recovery mode), and the
+/// opened state before `open_with` returns (the states of the open's own
+/// outcomes come before it). It runs before that outcome's toasts, progress
+/// and replies, so a reply never reaches anyone before the state it
+/// describes. `rev` grows by one with each call; an event the core ignores
+/// still hands over a (possibly equal) state.
+///
+/// It runs on the session thread: it must return quickly and never wait
+/// on whoever reads the snapshots (the GUI clones the state and queues it).
+pub trait StateObserver: Send {
+    fn changed(&mut self, rev: u64, state: &State);
+}
+
+impl<F: FnMut(u64, &State) + Send> StateObserver for F {
+    fn changed(&mut self, rev: u64, state: &State) {
+        self(rev, state)
     }
 }
 
@@ -113,7 +140,11 @@ pub struct SessionConfig {
     pub env: Option<SessionEnv>,
     /// `None`: [`LogNotifier`].
     pub notifier: Option<Box<dyn Notifier>>,
+    /// Who sees every state the Session holds (the GUI); `None`: nobody.
+    pub observer: Option<Box<dyn StateObserver>>,
     /// `None`: the fake inventory under the fake backend, else the system's.
+    /// The GUI passes a [`SharedSources`](crate::facts::SharedSources), so
+    /// device facts never block the session thread (GUI H-5).
     pub sources: Option<Box<dyn Sources>>,
     /// How long after opening commands wait for the recovery probes before
     /// they run anyway; `None`: [`RECOVERY_WAIT`](super::RECOVERY_WAIT).
@@ -129,6 +160,7 @@ impl std::fmt::Debug for SessionConfig {
             .field("lock", &self.lock)
             .field("channel", &self.channel.is_some())
             .field("env", &self.env)
+            .field("observer", &self.observer.is_some())
             .finish_non_exhaustive()
     }
 }

@@ -26,9 +26,13 @@ mod frame;
 mod jobs;
 mod logs;
 mod place;
+/// The GUI's thumbnails, frames and waveform peaks (docs/GUI.md G§3.11).
+pub mod preview;
 mod probe;
 mod purge;
 mod silence;
+/// Take sizes for the bin (docs/GUI.md G§3.11).
+pub mod sizes;
 #[cfg(test)]
 mod tests;
 mod verify;
@@ -57,6 +61,7 @@ pub use logs::{KEEP_LOGS, prune_logs};
 pub use place::{PART_MARKER, is_temp_name, rename_noreplace};
 /// What a purge deletes and leaves, for its confirmation (A§5.6).
 pub use purge::{TakeContents, take_contents};
+pub use sizes::take_sizes;
 
 pub(crate) use child::{
     Spec as ChildSpec, Stderr as ChildStderr, Stdout as ChildStdout, run as run_child,

@@ -46,6 +46,11 @@ pub enum Msg {
     Interrupt,
     /// Stop accepting, let jobs finish, exit.
     Shutdown,
+    /// The GUI's "Try again" on a live source the portal refused or that
+    /// died (GUI D-50): the session thread hands it to
+    /// `CaptureEngine::retry_live`, in order with the `SetLive`s and
+    /// `StartCapture`s it sends. Not a command: it changes no state.
+    RetryLive,
 }
 
 impl std::fmt::Debug for Msg {
@@ -59,6 +64,7 @@ impl std::fmt::Debug for Msg {
             Msg::DiskChanged => f.write_str("DiskChanged"),
             Msg::Interrupt => f.write_str("Interrupt"),
             Msg::Shutdown => f.write_str("Shutdown"),
+            Msg::RetryLive => f.write_str("RetryLive"),
         }
     }
 }
@@ -91,12 +97,27 @@ impl Inbox {
 
 /// Where the session sends what happens to a request: the CLI's stdout, an
 /// IPC connection (`WireMessage` lines) or the GUI.
+///
+/// Every request gets exactly one answer, through [`Responder::reply`] or
+/// [`Responder::reply_late`].
 pub trait Responder: Send {
     /// The request parsed and was queued (`{"id","accepted":true}`).
     fn accepted(&mut self);
     fn progress(&mut self, p: &Progress);
     /// The final answer: a `CmdResult`, a query result or `HelloInfo` as JSON.
+    /// Immediate answers come here: the outcome of the request itself, also
+    /// when it ran later than it came (it waited for a recovery, A§5.3).
     fn reply(&mut self, r: Result<serde_json::Value, CoreError>);
+
+    /// A late answer (GUI H-7): one an event's outcome sends
+    /// (`Effect::Reply`), such as a started or finalized take or a finished
+    /// export. The core toasts the late errors itself (a `Notify` comes
+    /// with each, held by `qrec-core/tests/props_late_errors.rs`), so the
+    /// GUI only logs them, while it toasts immediate ones. Default:
+    /// [`Responder::reply`].
+    fn reply_late(&mut self, r: Result<serde_json::Value, CoreError>) {
+        self.reply(r);
+    }
 }
 
 #[cfg(test)]
@@ -116,7 +137,27 @@ mod tests {
             rx.recv().unwrap(),
             Msg::Event(Event::EngineWedged { .. })
         ));
+        assert!(inbox.send(Msg::RetryLive));
+        assert_eq!(format!("{:?}", rx.recv().unwrap()), "RetryLive");
         drop(rx);
         assert!(!inbox.send(Msg::Shutdown), "the session is gone");
+    }
+
+    /// A responder that only knows `reply` hears late answers there too.
+    #[test]
+    fn late_replies_default_to_reply() {
+        struct Plain(Vec<Result<serde_json::Value, CoreError>>);
+        impl Responder for Plain {
+            fn accepted(&mut self) {}
+            fn progress(&mut self, _: &Progress) {}
+            fn reply(&mut self, r: Result<serde_json::Value, CoreError>) {
+                self.0.push(r);
+            }
+        }
+        let mut plain = Plain(Vec::new());
+        plain.reply_late(Err(CoreError::invalid("late")));
+        plain.reply(Ok(serde_json::json!(1)));
+        assert_eq!(plain.0.len(), 2);
+        assert_eq!(plain.0[0].as_ref().unwrap_err().message, "late");
     }
 }

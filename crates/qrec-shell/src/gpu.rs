@@ -14,7 +14,11 @@
 //! 3. for the GUI, when an NVIDIA device exists and isn't the chosen one,
 //!    points `__EGL_VENDOR_LIBRARY_FILENAMES` at Mesa and
 //!    `VK_DRIVER_FILES`/`VK_ICD_FILENAMES` at the chosen vendor's Vulkan
-//!    driver, unless the user set them.
+//!    driver, unless the user set them,
+//! 4. for the GUI, sets `GDK_DISABLE=vulkan`, so GTK renders with GSK GL
+//!    (GUI H-3), unless the user set `GDK_DISABLE` or `GSK_RENDERER`: Mesa's
+//!    Vulkan loader opens every render node, NVIDIA's included, while it
+//!    enumerates devices, even with the driver pinned.
 //!
 //! The decision is pure ([`plan_gpu_env`]); applying it uses
 //! `std::env::set_var`, which is only sound while the process has a single
@@ -55,6 +59,10 @@ pub const VENDOR_NVIDIA: u16 = 0x10de;
 pub const LIBVA_DRIVER_NAME: &str = "LIBVA_DRIVER_NAME";
 /// glvnd's EGL vendor override.
 pub const EGL_VENDOR_FILES: &str = "__EGL_VENDOR_LIBRARY_FILENAMES";
+/// GTK features to turn off (GTK ≥ 4.16): Qrec's window disables `vulkan`.
+pub const GDK_DISABLE: &str = "GDK_DISABLE";
+/// GTK's renderer choice; set by the user, Qrec leaves GTK's renderer alone.
+pub const GSK_RENDERER: &str = "GSK_RENDERER";
 /// The Vulkan loader's driver list (current name).
 pub const VK_DRIVER_FILES: &str = "VK_DRIVER_FILES";
 /// The Vulkan loader's driver list (legacy name).
@@ -332,6 +340,26 @@ pub fn plan_gpu_env(inputs: &GpuEnvInputs<'_>) -> GpuEnvPlan {
                     .into(),
             );
         }
+    }
+
+    // GUI H-3: GSK GL, never Vulkan (which opens every render node while it
+    // enumerates devices), unless the user chose GTK's renderer. Their
+    // choice is noted for every command, so `qrec doctor` shows it.
+    let chosen: Vec<String> = [GDK_DISABLE, GSK_RENDERER]
+        .into_iter()
+        .filter_map(|key| inherited(key).map(|value| format!("{key}={value}")))
+        .collect();
+    if !chosen.is_empty() {
+        plan.notes.push(format!(
+            "{} set by the user: the Qrec window renders as it says (Qrec would set {GDK_DISABLE}=vulkan)",
+            chosen.join(" and ")
+        ));
+    } else if inputs.for_gui {
+        plan.changes.push(EnvChange {
+            key: GDK_DISABLE.into(),
+            value: "vulkan".into(),
+            previous: None,
+        });
     }
     plan
 }
@@ -1175,7 +1203,7 @@ mod tests {
             "radeonsi"
         );
 
-        // Explicit NVIDIA: untouched.
+        // Explicit NVIDIA: untouched (the GUI's own renderer variable aside).
         let nvidia = effective_va_device(None, Some("/dev/dri/renderD128"), &nodes).unwrap();
         let plan = plan_with(
             Some(&nvidia),
@@ -1183,12 +1211,65 @@ mod tests {
             true,
             &[(LIBVA_DRIVER_NAME, "nvidia")],
         );
-        assert!(plan.changes.is_empty(), "{plan:?}");
+        assert!(
+            plan.changes.iter().all(|c| c.key == GDK_DISABLE),
+            "{plan:?}"
+        );
         assert!(plan.notes[0].contains("configured explicitly"));
 
         // No usable node: untouched.
-        let plan = plan_with(None, &[node(128, Some(VENDOR_NVIDIA))], true, &[]);
+        let plan = plan_with(None, &[node(128, Some(VENDOR_NVIDIA))], false, &[]);
         assert!(plan.changes.is_empty());
+    }
+
+    /// GUI H-3: the window renders with GSK GL (`GDK_DISABLE=vulkan`) unless
+    /// the user chose GTK's renderer; then both variables are left alone and
+    /// a note says so (`qrec doctor` prints it).
+    #[test]
+    fn the_gui_disables_vulkan_unless_the_user_chose_a_renderer() {
+        let intel_only = [node(129, Some(VENDOR_INTEL))];
+        let intel = effective_va_device(None, None, &intel_only).unwrap();
+        let gdk = |plan: &GpuEnvPlan| -> Vec<(String, String)> {
+            plan.changes
+                .iter()
+                .filter(|c| c.key == GDK_DISABLE || c.key == GSK_RENDERER)
+                .map(|c| (c.key.clone(), c.value.clone()))
+                .collect()
+        };
+        let plan = plan_with(Some(&intel), &intel_only, true, &[]);
+        assert_eq!(gdk(&plan), [(GDK_DISABLE.to_owned(), "vulkan".to_owned())]);
+        assert!(plan.notes.is_empty(), "{plan:?}");
+        // Also without any VA node.
+        let plan = plan_with(None, &[], true, &[]);
+        assert_eq!(gdk(&plan), [(GDK_DISABLE.to_owned(), "vulkan".to_owned())]);
+        // Not for the CLI and hosts, which draw nothing.
+        assert!(gdk(&plan_with(Some(&intel), &intel_only, false, &[])).is_empty());
+
+        for (key, value) in [(GDK_DISABLE, "gl"), (GSK_RENDERER, "cairo")] {
+            for for_gui in [true, false] {
+                let plan = plan_with(Some(&intel), &intel_only, for_gui, &[(key, value)]);
+                assert!(gdk(&plan).is_empty(), "{key}: {plan:?}");
+                let note = plan.notes.last().expect("a note");
+                assert!(
+                    note.starts_with(&format!("{key}={value} set by the user")),
+                    "{note}"
+                );
+            }
+        }
+        let plan = plan_with(
+            Some(&intel),
+            &intel_only,
+            true,
+            &[(GDK_DISABLE, "vulkan,dmabuf"), (GSK_RENDERER, "ngl")],
+        );
+        assert!(gdk(&plan).is_empty());
+        assert!(
+            plan.notes[0].starts_with("GDK_DISABLE=vulkan,dmabuf and GSK_RENDERER=ngl"),
+            "{plan:?}"
+        );
+        // An empty value counts as unset.
+        let plan = plan_with(Some(&intel), &intel_only, true, &[(GSK_RENDERER, "")]);
+        assert_eq!(gdk(&plan).len(), 1);
     }
 
     #[test]
@@ -1209,7 +1290,8 @@ mod tests {
                 LIBVA_DRIVER_NAME,
                 EGL_VENDOR_FILES,
                 VK_DRIVER_FILES,
-                VK_ICD_FILENAMES
+                VK_ICD_FILENAMES,
+                GDK_DISABLE
             ]
         );
         assert!(plan.changes[1].value.ends_with("50_mesa.json"));
@@ -1223,7 +1305,7 @@ mod tests {
         let intel_only = [node(129, Some(VENDOR_INTEL))];
         assert_eq!(
             keys(&plan_with(Some(&intel), &intel_only, true, &[])),
-            [LIBVA_DRIVER_NAME]
+            [LIBVA_DRIVER_NAME, GDK_DISABLE]
         );
         let plan = plan_with(
             Some(&intel),
@@ -1234,7 +1316,7 @@ mod tests {
                 (VK_ICD_FILENAMES, "/vk.json"),
             ],
         );
-        assert_eq!(keys(&plan), [LIBVA_DRIVER_NAME]);
+        assert_eq!(keys(&plan), [LIBVA_DRIVER_NAME, GDK_DISABLE]);
         assert_eq!(plan.notes.len(), 2);
     }
 

@@ -427,6 +427,7 @@ impl FakeSession {
             }
             Msg::Shutdown => self.log.push(json!({ "event": "shutdown" })),
             Msg::DiskChanged => self.log.push(json!({ "event": "diskChanged" })),
+            Msg::RetryLive => self.log.push(json!({ "event": "retryLive" })),
         }
     }
 
