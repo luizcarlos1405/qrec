@@ -3,9 +3,10 @@
 //!
 //! - [`Session::open`] applies the folder rule, takes the lock (mutating
 //!   opens), loads and reconciles the files (A§7.6, A§7.7), detects the
-//!   capabilities, merges an external edit found on disk, starts the
-//!   recovery probes of takes still `recording` and the `qrec.json`
-//!   watcher.
+//!   capabilities, merges an external edit found on disk, recovers the
+//!   takes still `recording` (it probes them and waits for the answers, so
+//!   the first request already sees them recovered) and starts the
+//!   `qrec.json` watcher.
 //! - [`Session::handle`] takes one [`Msg`]. A request gets a `ReqId`, its
 //!   facts (`facts_needed`), `apply`, then its effects in the A§7.6 order
 //!   (history → `qrec.json` → head, then the world), then its reply. Events
@@ -25,16 +26,17 @@ mod open;
 mod tests;
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use qrec_core::apply::project::is_initialized;
 use qrec_core::state::JobKind;
-use qrec_core::{ReqId, State};
+use qrec_core::{ReqId, State, TakeId};
 
 pub use config::{BACKEND_ENV, LogNotifier, Notifier, SessionConfig, SessionEnv};
+pub use open::RECOVERY_WAIT;
 
 use crate::deps::{Deps, OpenOpts};
 use crate::error::ShellError;
@@ -162,11 +164,14 @@ impl Session {
     }
 
     /// Drains the inbox until `done(state)` holds (CLI and hosts). `done`
-    /// is checked after every message and at least every [`POLL`].
+    /// is checked after every message and at least every [`POLL`], once no
+    /// recovery probe is outstanding: like a running job, a recovery is
+    /// work a host waits for, so it never exits and drops the answer
+    /// (A§5.3, A§8.6). The media runner always answers within its timeouts.
     pub fn run_until(&mut self, mut done: impl FnMut(&State) -> bool) {
         loop {
             self.tick();
-            if done(&self.state) {
+            if self.state.runtime.recovering.is_empty() && done(&self.state) {
                 return;
             }
             let wait = self.next_deadline().map_or(POLL, |due| {
@@ -227,6 +232,11 @@ impl Session {
     /// grace period, A§8.6).
     pub fn is_idle(&self) -> bool {
         !self.state.runtime.is_busy() && self.pending.is_empty() && self.parked.is_empty()
+    }
+
+    /// Takes still waiting for their recovery probe (A§5.3).
+    pub fn recovering(&self) -> &BTreeSet<TakeId> {
+        &self.state.runtime.recovering
     }
 
     /// When [`Session::tick`] has work (a coalesced `ui.json` write).

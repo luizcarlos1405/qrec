@@ -28,9 +28,12 @@ use crate::state::{Capabilities, RecordPhase, State};
 pub fn on_event(state: &State, ctx: &Ctx, ev: Event) -> Outcome {
     match ev {
         Event::Capabilities(caps) => capabilities(state, caps),
-        Event::CaptureStarted { take, t0_ns, files } => {
-            record::capture_started(state, ctx, take, t0_ns, files)
-        }
+        Event::CaptureStarted {
+            take,
+            t0_ns,
+            files,
+            start_offset_ns,
+        } => record::capture_started(state, ctx, take, t0_ns, files, start_offset_ns),
         Event::CaptureFailed {
             take,
             source,

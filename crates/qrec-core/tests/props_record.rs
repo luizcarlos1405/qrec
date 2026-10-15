@@ -74,6 +74,7 @@ fn answers(state: &State, effect: &Effect, frames: u64) -> Vec<Event> {
             take: plan.take.clone(),
             t0_ns: 0,
             files: plan_files(plan),
+            start_offset_ns: Default::default(),
         }],
         Effect::StopCapture { take, .. } => vec![Event::CaptureStopped {
             take: take.clone(),
@@ -382,6 +383,7 @@ impl Harness {
                     take: stale,
                     t0_ns: 0,
                     files: vec![],
+                    start_offset_ns: Default::default(),
                 },
                 2 => Event::CaptureStopped {
                     take: stale,

@@ -17,6 +17,8 @@
 //! take) leaves `streams` and its layer/track is marked `missing`, which
 //! validation reports as "missing media".
 
+use std::collections::BTreeMap;
+
 use serde_json::json;
 
 use crate::apply::Outcome;
@@ -29,15 +31,15 @@ use crate::capture_plan::EOS_TIMEOUT_MS;
 use crate::ctx::{Ctx, IdGen};
 use crate::error::{CoreError, ErrorCode};
 use crate::history;
-use crate::ids::{ClipId, TakeId, TimerId};
+use crate::ids::{ClipId, Frame, TakeId, TimerId};
 use crate::media_argv::probe_argv;
-use crate::model::{Clip, Scene, Stream, StreamKind, Take, TakeStatus};
+use crate::model::{Clip, Fps, Scene, Stream, StreamKind, Take, TakeStatus};
 use crate::protocol::effect::{Effect, LogLevel, ProbeJob, ProbePurpose};
 use crate::protocol::event::{MediaInfo, ProbeError, ProbeFailure, ProbeResult, RecordedStream};
 use crate::protocol::progress::{Progress, ProgressPhase};
 use crate::protocol::reply::{CmdResult, TakeFinalizedView};
 use crate::protocol::toast::{Toast, ToastLevel};
-use crate::requantize::derive_duration_frames;
+use crate::requantize::derived_duration;
 use crate::state::{DiscardRequest, RecordMode, RecordPhase, State};
 use crate::time::{duration_label, frames_to_ns};
 use crate::timeline;
@@ -46,15 +48,17 @@ use crate::timeline;
 /// the first of these slots of a new second (see [`announces_second`]).
 pub const RECORD_PROGRESS_NS: u64 = 500_000_000;
 
-/// Starting ⇒ Recording; reply `RecordStartedView` to the start request
-/// (unless `wait`: then it waits for the whole take, starting with a
-/// `Recording take N: 00:00` progress).
+/// Starting ⇒ Recording; record the streams' start offsets (persist: a
+/// take recovered after a crash keeps them, SPEC §5.2); reply
+/// `RecordStartedView` to the start request (unless `wait`: then it waits
+/// for the whole take, starting with a `Recording take N: 00:00` progress).
 pub fn capture_started(
     state: &State,
     _ctx: &Ctx,
     take: TakeId,
     t0_ns: u64,
     files: Vec<String>,
+    start_offset_ns: BTreeMap<String, i64>,
 ) -> Outcome {
     let RecordPhase::Starting {
         take: current,
@@ -69,6 +73,10 @@ pub fn capture_started(
         return ignore(state, format!("CaptureStarted for {take}"));
     }
     let mut next = state.clone();
+    let mut notes = Vec::new();
+    if let Some(t) = next.project.takes.get_mut(&take) {
+        notes = record_offsets(&take, t, &start_offset_ns);
+    }
     let mut waiters = Vec::new();
     let mut answers = Vec::new();
     match start_req {
@@ -97,8 +105,25 @@ pub fn capture_started(
         level: LogLevel::Info,
         message: format!("{take}: capture started (T0 = {t0_ns} ns)"),
     });
+    effects.extend(notes);
     effects.extend(answers);
     Outcome::new(persisted.state, ordered(effects), None)
+}
+
+/// Sets each stream's `startOffsetNs` from what the engine measured; a
+/// stream the take doesn't have is logged.
+fn record_offsets(take: &TakeId, t: &mut Take, offsets: &BTreeMap<String, i64>) -> Vec<Effect> {
+    let mut notes = Vec::new();
+    for (id, offset) in offsets {
+        match t.stream_mut(id) {
+            Some(s) => s.start_offset_ns = *offset,
+            None => notes.push(Effect::Log {
+                level: LogLevel::Warn,
+                message: format!("{take}: the engine reported an unknown stream {id}"),
+            }),
+        }
+    }
+    notes
 }
 
 /// Start/health-window or pipeline-wide failure (A§5.3): the take is
@@ -331,19 +356,11 @@ pub fn capture_stopped(
         let err = CoreError::internal(reason.clone());
         return end_broken(state, ctx, state.clone(), &take, &reason, &err);
     };
-    let mut notes = Vec::new();
-    for recorded in &streams {
-        match t.stream_mut(&recorded.id) {
-            Some(s) => s.start_offset_ns = recorded.start_offset_ns,
-            None => notes.push(Effect::Log {
-                level: LogLevel::Warn,
-                message: format!(
-                    "{take}: the engine reported an unknown stream {}",
-                    recorded.id
-                ),
-            }),
-        }
-    }
+    let offsets: BTreeMap<String, i64> = streams
+        .iter()
+        .map(|s| (s.id.clone(), s.start_offset_ns))
+        .collect();
+    let mut notes = record_offsets(&take, t, &offsets);
     let jobs = probe_jobs(t);
     let no_eos: Vec<&str> = streams
         .iter()
@@ -636,12 +653,14 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
         return end_unprobed(state, ctx, take, failure);
     }
     let lost = fill_media(t, results);
-    if let Some(reason) = unusable(t) {
-        let reason = explained(reason, &lost);
-        let err = CoreError::capture_failed(format!("take {n} is broken: {reason}"));
-        return end_broken(state, ctx, next, take, &reason, &err);
-    }
-    let frames = derive_duration_frames(t, fps);
+    let frames = match usable_length(t, fps) {
+        Ok(frames) => frames,
+        Err(reason) => {
+            let reason = explained(reason, &lost);
+            let err = CoreError::capture_failed(format!("take {n} is broken: {reason}"));
+            return end_broken(state, ctx, next, take, &reason, &err);
+        }
+    };
     t.duration_frames = frames;
     t.status = TakeStatus::Ok;
     t.error = None;
@@ -827,23 +846,25 @@ fn recover(state: &State, current: State, take: &TakeId, results: &[ProbeResult]
         return ignore(&next, format!("TakeProbed(recover) for the unknown {take}"));
     };
     let lost = fill_media(&mut t, results);
-    let toast = if let Some(reason) = unusable(&t) {
-        let reason = explained(reason, &lost);
-        mark_broken(&mut t, &format!("recovery failed: {reason}"));
-        Toast::new(ToastLevel::Error, format!("Take {n} couldn't be recovered"))
-            .with_body(format!("It is marked broken: {reason}."))
-    } else {
-        let frames = derive_duration_frames(&t, fps);
-        t.duration_frames = frames;
-        t.error = None;
-        let recovered = format!("Recovered take {n} from the bog.");
-        if frames < MIN_TAKE_FRAMES {
-            t.status = TakeStatus::TooShort;
-            Toast::new(ToastLevel::Info, recovered)
-                .with_body("It was shorter than Lord Farquaad, so it stays in the bin.")
-        } else {
-            t.status = TakeStatus::Ok;
-            Toast::new(ToastLevel::Success, recovered).with_body("It is in the bin.")
+    let toast = match usable_length(&t, fps) {
+        Err(reason) => {
+            let reason = explained(reason, &lost);
+            mark_broken(&mut t, &format!("recovery failed: {reason}"));
+            Toast::new(ToastLevel::Error, format!("Take {n} couldn't be recovered"))
+                .with_body(format!("It is marked broken: {reason}."))
+        }
+        Ok(frames) => {
+            t.duration_frames = frames;
+            t.error = None;
+            let recovered = format!("Recovered take {n} from the bog.");
+            if frames < MIN_TAKE_FRAMES {
+                t.status = TakeStatus::TooShort;
+                Toast::new(ToastLevel::Info, recovered)
+                    .with_body("It was shorter than Lord Farquaad, so it stays in the bin.")
+            } else {
+                t.status = TakeStatus::Ok;
+                Toast::new(ToastLevel::Success, recovered).with_body("It is in the bin.")
+            }
         }
     };
     next.project.takes.insert(take.clone(), t);
@@ -1102,6 +1123,17 @@ fn unusable(take: &Take) -> Option<String> {
         return Some("every source was lost during the take".to_owned());
     }
     None
+}
+
+/// A probed take's `durationFrames` at `fps` (A§2.2), or why it can't be
+/// used ([`unusable`]). A take whose length its files don't tell (audio
+/// without a duration) is broken, never a silent 0-frame `tooShort`.
+fn usable_length(take: &Take, fps: Fps) -> Result<Frame, String> {
+    if let Some(reason) = unusable(take) {
+        return Err(reason);
+    }
+    derived_duration(take, fps)
+        .ok_or_else(|| "the recorded files don't tell how long the take is".to_owned())
 }
 
 /// A video stream needs packets and a size; audio needs a rate and channels.

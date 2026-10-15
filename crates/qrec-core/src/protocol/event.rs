@@ -1,5 +1,7 @@
 //! Events: results of effects and outside changes, fed to `on_event` (A§4.7).
 
+use std::collections::BTreeMap;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +18,12 @@ pub enum Event {
         take: TakeId,
         t0_ns: u64,
         files: Vec<String>,
+        /// Per stream id, `(running time of its first buffer) − T0` (SPEC
+        /// §5.2). Every bin passed its first buffer by now, so the offsets
+        /// are facts from the start: a take recovered after a crash keeps
+        /// them (`CaptureStopped` reports the same values again).
+        #[serde(default)]
+        start_offset_ns: BTreeMap<String, i64>,
     },
     CaptureFailed {
         take: Option<TakeId>,

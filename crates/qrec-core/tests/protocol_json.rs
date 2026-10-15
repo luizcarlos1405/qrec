@@ -869,6 +869,7 @@ fn events_round_trip() {
             take: take(4),
             t0_ns: 123,
             files: vec!["takes/take-0004/A1-mic.mka".into()],
+            start_offset_ns: BTreeMap::from([("A1".to_owned(), 3_906_126)]),
         },
         Event::CaptureFailed {
             take: Some(take(4)),

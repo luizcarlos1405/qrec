@@ -13,14 +13,16 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
+use crossbeam_channel::RecvTimeoutError;
 use qrec_core::apply::project::{is_initialized, uninitialized_state};
 use qrec_core::apply::ui::live_scene;
 use qrec_core::history::external::merged_preview;
 use qrec_core::model::Project;
 use qrec_core::on_event::record::start_recovery;
 use qrec_core::protocol::{Toast, ToastLevel};
-use qrec_core::{CoreError, ErrorCode, Event, State};
+use qrec_core::{CoreError, ErrorCode, Event, State, TakeId};
 
 use super::Session;
 use super::config::{LogNotifier, SessionConfig, SessionEnv};
@@ -37,6 +39,12 @@ use crate::proc;
 use crate::store::{self, Check, LoadOpts, Loaded, Store};
 use crate::timers::Timers;
 use crate::watcher;
+
+/// How long opening a project waits for the recovery probes (A§5.3)
+/// before the first request runs. Probing reads every packet of the files
+/// (`-count_packets`), a few seconds even for long takes; the runner's own
+/// limit is 20 s plus 30 s per GiB.
+pub const RECOVERY_WAIT: Duration = Duration::from_secs(60);
 
 /// What a folder holds (A§8.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,6 +263,10 @@ pub(super) fn open(
     }
     if writable && is_initialized(&session.state.project) {
         session.start_recovery_probes();
+        // A§5.3: a take left `recording` is finalized before the first
+        // request runs, so even a one-shot CLI command recovers it (and
+        // sees it recovered). Requests that arrive meanwhile queue.
+        session.finish_recovery(cfg.recovery_wait.unwrap_or(RECOVERY_WAIT));
     }
     if writable && !opts.recovery {
         match watcher::watch(&session.dir, session.inbox.clone()) {
@@ -339,6 +351,33 @@ impl Session {
             }
             Ok(_) => {}
             Err(why) => self.state.runtime.disk_invalid = Some(why),
+        }
+    }
+
+    /// Handles what arrives until every recovery probe is answered, for at
+    /// most `wait`. A probe still running then (a huge file) is answered
+    /// later: [`Session::run_until`] waits for it.
+    fn finish_recovery(&mut self, wait: Duration) {
+        let deadline = Instant::now() + wait;
+        while !self.state.runtime.recovering.is_empty() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                tracing::warn!(
+                    "still recovering {} after {} s; the project opens meanwhile",
+                    self.state.runtime.recovering
+                        .iter()
+                        .map(TakeId::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    wait.as_secs()
+                );
+                return;
+            }
+            match self.rx.recv_timeout(left) {
+                Ok(msg) => self.handle(msg),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
         }
     }
 }

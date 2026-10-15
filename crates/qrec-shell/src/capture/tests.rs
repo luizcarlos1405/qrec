@@ -9,9 +9,13 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 use qrec_core::ctx::CameraMode;
-use qrec_core::model::{AudioRole, AudioTrack, Canvas, Crop, Fit, Layer, Rect, Scene, VideoSource};
+use qrec_core::media_argv::probe_argv;
+use qrec_core::model::{
+    AudioRole, AudioTrack, Canvas, Crop, Fit, Layer, Rect, Scene, StreamKind, VideoSource,
+};
+use qrec_core::parse::ffprobe::parse_ffprobe;
 use qrec_core::plans::{AudioRecord, CapturePlan, LiveScene, VideoEncoder, VideoRecord};
-use qrec_core::protocol::RecordedStream;
+use qrec_core::protocol::{MediaInfo, RecordedStream};
 use qrec_core::{Event, Fps, TakeId};
 use serde_json::Value;
 
@@ -290,7 +294,13 @@ fn records_screens_cameras_and_audio_in_sync() {
     );
     let started_at = Instant::now();
     h.start(&plan);
-    let Event::CaptureStarted { take, files, .. } = h.started() else {
+    let Event::CaptureStarted {
+        take,
+        files,
+        start_offset_ns,
+        ..
+    } = h.started()
+    else {
         unreachable!()
     };
     // The health window passed before CaptureStarted.
@@ -366,6 +376,13 @@ fn records_screens_cameras_and_audio_in_sync() {
     let offsets: Vec<i64> = streams.iter().map(|s| s.start_offset_ns).collect();
     let spread = offsets.iter().max().unwrap() - offsets.iter().min().unwrap();
     assert!(spread < 70_000_000, "start offsets {offsets:?}");
+    // The offsets were already known (and reported) when the take started,
+    // so a take recovered after a crash keeps them.
+    let at_stop: std::collections::BTreeMap<String, i64> = streams
+        .iter()
+        .map(|s| (s.id.clone(), s.start_offset_ns))
+        .collect();
+    assert_eq!(start_offset_ns, at_stop);
 
     let log = fs::read_to_string(h.file("takes/take-0001/recorder.log")).unwrap();
     for needle in [
@@ -400,38 +417,80 @@ fn fake_mic_has_periodic_silence() {
     }
 }
 
+/// Probes a take file the way finalization does: the core's argv and parser.
+fn probe(h: &Harness, file: &str, kind: StreamKind) -> Result<MediaInfo, String> {
+    let argv = probe_argv(file, kind);
+    let out = run_tool(
+        Command::new(&argv[0])
+            .args(&argv[1..])
+            .current_dir(&h.project),
+        Duration::from_secs(30),
+    );
+    if !out.status.success() {
+        return Err(format!("ffprobe failed: {}", out.stderr));
+    }
+    parse_ffprobe(&String::from_utf8_lossy(&out.stdout), kind)
+}
+
 #[test]
 fn stop_and_cancel_while_starting() {
+    // A quick double-tap (or Esc) stops the take right after its bins are
+    // attached, before any buffer reached them: every file must still be
+    // readable, so the take ends up tooShort (or cancelled), never broken.
     let _serial = serial();
     let mut h = Harness::new();
-    let dir = h.take_dir(1);
-    let first = plan(
-        1,
-        &dir,
-        vec![screen("L1", "FAKE-2")],
-        vec![audio("A1", FAKE_MIC, "mic")],
-    );
-    h.start(&first);
-    // Cancel right away: no CaptureStarted, but always CaptureStopped.
-    h.engine.stop(&first.take, true);
-    let (streams, timed_out, skipped) = h.stopped();
-    assert!(!timed_out, "{skipped:?}");
-    assert!(
-        !skipped
-            .iter()
-            .any(|e| matches!(e, Event::CaptureFailed { .. })),
-        "{skipped:?}"
-    );
-    assert_eq!(streams.len(), 2);
-    assert!(streams.iter().all(|s| s.eos), "{streams:?}");
+    for (n, cancel) in [(1u32, true), (2, false)] {
+        let dir = h.take_dir(n);
+        let take = plan(
+            n,
+            &dir,
+            vec![screen("L1", "FAKE-2"), camera("L2", FAKE_CAMERA)],
+            vec![audio("A1", FAKE_MIC, "mic")],
+        );
+        h.start(&take);
+        // No CaptureStarted, but always CaptureStopped.
+        h.engine.stop(&take.take, cancel);
+        let (streams, timed_out, skipped) = h.stopped();
+        assert!(!timed_out, "take {n}: {skipped:?}");
+        assert!(
+            !skipped.iter().any(|e| matches!(
+                e,
+                Event::CaptureFailed { .. } | Event::CaptureStarted { .. }
+            )),
+            "take {n}: {skipped:?}"
+        );
+        let ids: Vec<&str> = streams.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["L1", "L2", "A1"], "take {n}");
+        for s in &streams {
+            assert!(s.eos, "take {n}: {s:?}");
+            assert!((0..100_000_000).contains(&s.start_offset_ns), "{s:?}");
+            let kind = if s.id.starts_with('A') {
+                StreamKind::Audio
+            } else {
+                StreamKind::Video
+            };
+            let info = probe(&h, &s.file, kind)
+                .unwrap_or_else(|e| panic!("take {n}: {} is unreadable: {e}", s.file));
+            match kind {
+                // One frame: the take is too short, not broken.
+                StreamKind::Video => assert!(info.frames >= Some(1), "{info:?}"),
+                // One buffer, padded to one FLAC block.
+                StreamKind::Audio => {
+                    assert!(info.duration_ns >= Some(96_000_000), "{info:?}")
+                }
+            }
+        }
+        let log = fs::read_to_string(h.file(&format!("{dir}/recorder.log"))).unwrap();
+        assert!(!log.contains("closed after 0 buffers"), "{log}");
+    }
 
     // The engine records the next take normally.
-    let dir = h.take_dir(2);
-    let second = plan(2, &dir, vec![screen("L1", "FAKE-2")], vec![]);
-    h.start(&second);
+    let dir = h.take_dir(3);
+    let third = plan(3, &dir, vec![screen("L1", "FAKE-2")], vec![]);
+    h.start(&third);
     h.started();
     std::thread::sleep(Duration::from_millis(1200));
-    h.engine.stop(&second.take, false);
+    h.engine.stop(&third.take, false);
     let (streams, timed_out, _) = h.stopped();
     assert!(!timed_out && streams[0].eos);
     let (frames, duration) = check_video(&h.file(&streams[0].file), 1280, 720);

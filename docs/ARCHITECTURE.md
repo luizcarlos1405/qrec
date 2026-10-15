@@ -175,6 +175,12 @@ bases, external merges) retimes the take facts from the rate they are at
 info (the SPEC §6.3 shape) converted through nanoseconds, and
 `Take.replaced` re-quantized like the timeline (A§5.4), so discard-last
 puts back the frames a record-over replaced.
+An audio `durationNs` is the container's; a file cut short by a crash has
+none, so it comes from the packets too: FLAC frames of 4608 samples
+(`capture_plan::FLAC_BLOCK_SAMPLES`, the `blocksize` the engine pins; only
+the last frame of a normally closed file is shorter) *(measured: 36 packets
+= 3.456 s, as decoded)*. A finished take whose length its files don't tell
+is `broken` with that reason, never a 0-frame `tooShort`.
 
 ### A§2.3 Validation (`validate::validate(&Project) -> Vec<Issue>`)
 
@@ -549,7 +555,8 @@ pub struct ProbeJob { pub id: String, pub file: String, pub kind: StreamKind, pu
 ```rust
 pub enum Event {
     Capabilities(Capabilities),
-    CaptureStarted { take: TakeId, t0_ns: u64, files: Vec<String> },
+    CaptureStarted { take: TakeId, t0_ns: u64, files: Vec<String>,
+                     start_offset_ns: BTreeMap<String, i64> }, // per stream id, measured (SPEC §5.2)
     CaptureFailed { take: Option<TakeId>, source: Option<String>, message: String,
                     missing: Option<String> },              // a GStreamer element that isn't installed
     StreamLost { take: TakeId, stream: String, message: String },
@@ -690,7 +697,7 @@ including `Play`, `Undo` and `Export`, is `Busy` (SPEC §5.3.3).
 | Idle | Stop/Cancel | `Invalid` "not recording" |
 | Countdown | TimerFired (current timer) | next tick, or begin take ⇒ Starting |
 | Countdown | Stop/Toggle/Cancel | `CancelTimer` ⇒ Idle; start req gets `Invalid` "countdown cancelled"; caller gets Ok |
-| Starting | CaptureStarted | ⇒ Recording; reply start req `RecordStartedView` (unless `wait`) |
+| Starting | CaptureStarted | ⇒ Recording; record the streams' `startOffsetNs` (persist: every bin passed its first buffer, and a crash never reaches `CaptureStopped`); reply start req `RecordStartedView` (unless `wait`) |
 | Starting | CaptureFailed | take `broken` (+`error`) ⇒ Idle; reply start req `capture_failed` (`missing_dependency` when `missing` names an element that isn't installed) |
 | Starting | Stop/Toggle | `StopCapture{cancel:false}` ⇒ Finalizing; start req gets its started reply |
 | Starting / Recording | Cancel | `StopCapture{cancel:true}` ⇒ Finalizing(cancelled) |
@@ -699,7 +706,7 @@ including `Play`, `Undo` and `Export`, is `Busy` (SPEC §5.3.3).
 | Recording | StreamLost | mark layer/track `missing` (persist); last stream lost ⇒ act as Stop |
 | Finalizing | Stop | join the stop waiters; Start/Toggle/Cancel ⇒ `Busy` "finalizing take N" |
 | Finalizing | TakeDiscardLast | remember `discard` (applied after placement, A§5.5) |
-| Finalizing | CaptureStopped | `timed_out` ⇒ `broken`; else record offsets, `Probe{Finalize}` |
+| Finalizing | CaptureStopped | `timed_out` ⇒ `broken`; else record offsets (the same values, or the first ones for a take stopped while Starting), `Probe{Finalize}` |
 | Finalizing | TakeProbed | see below ⇒ Idle |
 | any | EngineWedged | take `broken`; future starts fail with "the capture engine is stuck (GPU driver?); restart Qrec" |
 
@@ -734,10 +741,15 @@ works.
 **Recovery** (`Session::open` with the lock, `on_event::record::start_recovery`):
 each take still `recording` gets `Probe{Recover}` and is in
 `runtime.recovering` until its `TakeProbed(Recover)` comes back (whatever it
-says); a host isn't idle meanwhile (A§8.6), so an in-process command waits
-for the recovery it started. Readable ⇒ `ok`, bin, toast "Recovered take 7
-from the bog."; unreadable ⇒ `broken`; a probe that failed on its own ⇒ the
-take stays `recording` (warning toast) for the next start.
+says). Readable ⇒ `ok`, bin, toast "Recovered take 7 from the bog.";
+unreadable ⇒ `broken`; a probe that failed on its own ⇒ the take stays
+`recording` (warning toast) for the next start. Open waits for the answers
+(at most `RECOVERY_WAIT`, 60 s) before the first request runs, so even a
+one-shot CLI command recovers the take and already sees it recovered (`qrec
+clip add take-0007` works right after a crash). A probe still out after
+that is work like a running job: a host isn't idle meanwhile (A§8.6) and
+`Session::run_until` doesn't return before its answer, so no host exits and
+drops it (the runner always answers, A§8.7).
 
 **CaptureFailed vs StreamLost** (engine contract, A§8.11): after
 CaptureStarted, an error attributable to one branch (its source, encoder,
@@ -1179,7 +1191,8 @@ continue"). `seek`/`play`/`pause`/`shuttle` without a GUI host ⇒
   held for 2 s, or (Headless) 60 s after `ready` without a request. An
   in-process command whose host nobody else used exits as soon as it is
   answered and nothing is busy (so it finishes the startup recovery it
-  began, A§5.3). `shutdown` requests: stop accepting, let jobs finish, exit.
+  began, A§5.3: its answer would otherwise be lost and the take would stay
+  `recording`). `shutdown` requests: stop accepting, let jobs finish, exit.
 - Signals in every host: the first SIGTERM/SIGINT/SIGHUP dispatches
   `RecordStop` (finalize, not cancel) and cancels jobs; exit when idle or
   after 15 s. A second signal: SIGKILL child process groups, `_exit(130)`;
@@ -1297,17 +1310,24 @@ pipeline first. Paths in the plan are joined with the project dir.
 **Record bins** *(measured)*: T0 = the pipeline running time chosen at start;
 a buffer probe on each bin's sink pad drops buffers with PTS < T0 and
 `startOffsetNs = first passed PTS − T0`; T1 = running time at stop, video is
-filled to T1 before EOS.
+filled to T1 before EOS. A stream's first buffer at or after T0 always
+passes, even past T1: a stop while Starting (a double-tap of `r`) would
+otherwise close bins that got nothing, and those write a header-only file
+nothing can read, which turned a too-short take into a `broken` one
+*(measured)*. Such a bin waits for that first buffer until the start's
+first-buffer deadline, then closes like the others.
 - Video: `queue ! videorate skip-to-first=true ! video/x-raw,framerate=N/D !
   videoconvert ! video/x-raw,format=I420|NV12,colorimetry=bt709 ! <encoder>
   ! h264parse ! matroskamux offset-to-zero=true ! filesink`. Without
   `skip-to-first`, a bin attached after N s of Live mode starts with N s of
   frozen frame.
 - Audio: `queue ! audioconvert ! audioresample ! audiorate skip-to-first=true
-  ! audio/x-raw,rate=48000 ! flacenc ! matroskamux offset-to-zero=true !
-  filesink`. A stream shorter than one FLAC block (4608 samples) is padded
-  with silence to 120 ms before EOS: flacenc sets its caps with its first
-  block, and an earlier EOS pushes the segment before the caps *(measured)*.
+  ! audio/x-raw,rate=48000 ! flacenc blocksize=4608 ! matroskamux
+  offset-to-zero=true ! filesink` (the block size is pinned: a crashed
+  file's length is its packets × 4608, A§2.2). A stream shorter than one
+  FLAC block (4608 samples) is padded with silence to 120 ms before EOS:
+  flacenc sets its caps with its first block, and an earlier EOS pushes the
+  segment before the caps *(measured)*.
 - `pipewiresrc keepalive-time=<floor(1000·den/num)>` so a static screen still
   produces frames to the end (screencasts are damage-driven).
 - Encoders: `x264enc pass=qual quantizer=18 speed-preset=veryfast
@@ -1369,8 +1389,11 @@ Every ffmpeg/ffprobe command line is built in the core (SPEC §3.1):
   (with its temp path).
 - `probe_argv(file, kind)`: video `ffprobe -v error -select_streams v:0
   -count_packets -show_entries stream=nb_read_packets,r_frame_rate,width,height,pix_fmt,color_range,color_space:format=start_time
-  -of json`; audio adds `sample_rate,channels,duration`. Parsers live in
-  `parse/ffprobe.rs` (pure).
+  -of json`; audio adds `codec_name,sample_rate,channels,duration`. Parsers
+  live in `parse/ffprobe.rs` (pure). A duration is the stream's, the
+  `DURATION` tag or the format's; without any (a crash) it comes from the
+  counted packets: video frames at `r_frame_rate`, FLAC frames × 4608
+  samples (A§2.2).
 - `silence_argv(file, threshold_db, min_silence_ms)`: `ffmpeg … -i file:<f>
   -af silencedetect=noise=<t>dB:d=<s> -vn -f null -`; `parse/silencedetect.rs`
   turns stderr into intervals (a trailing silence without `silence_end` ends

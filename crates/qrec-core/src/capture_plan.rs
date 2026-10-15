@@ -24,6 +24,12 @@ pub const EOS_TIMEOUT_MS: u32 = 10_000;
 pub const RECORD_QP: u32 = 18;
 /// Every audio track is resampled to this rate.
 pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
+/// Samples in every FLAC frame (packet) a record bin writes: flacenc's
+/// `blocksize`, which the engine sets (A§8.11). Only the last frame of a
+/// file that was closed normally can be shorter, so a file cut short by a
+/// crash, which has no container duration, is `packets × FLAC_BLOCK_SAMPLES`
+/// samples long (A§2.2, `parse::ffprobe`).
+pub const FLAC_BLOCK_SAMPLES: u32 = 4608;
 /// The log the engine writes next to the take's files.
 pub const RECORDER_LOG: &str = "recorder.log";
 /// Longest sanitized source part of a file name (output name, device number).
