@@ -39,6 +39,10 @@ pub mod fake;
 pub mod spec;
 pub mod tokens;
 
+#[cfg(all(test, feature = "gst"))]
+mod cast_probe;
+#[cfg(feature = "gst")]
+mod dmabuf;
 #[cfg(feature = "gst")]
 mod engine;
 #[cfg(feature = "gst")]

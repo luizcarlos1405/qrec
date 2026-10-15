@@ -35,6 +35,7 @@ gst-app = { package = "gstreamer-app", version = "0.25.2", features = ["v1_24"] 
 gst-video = { package = "gstreamer-video", version = "0.25.4", features = ["v1_24"] }
 gst-audio = { package = "gstreamer-audio", version = "0.25.4", features = ["v1_24"] }
 gst-pbutils = { package = "gstreamer-pbutils", version = "0.25.4", features = ["v1_24"] }
+gst-allocators = { package = "gstreamer-allocators", version = "0.25", features = ["v1_24"] }
 ges = { package = "gstreamer-editing-services", version = "0.25.4", features = ["v1_24"] }
 ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "screencast", "camera"] }
 futures-lite = "2.6.1"

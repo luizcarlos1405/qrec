@@ -1736,8 +1736,10 @@ impl Engine {
                     let label = silent.map(|b| b.label.clone());
                     let message = match silent {
                         Some(bin) => format!(
-                            "no data from {} within {} ms",
-                            bin.label, run.plan.first_buffer_ms
+                            "no data from {} within {} ms: {}",
+                            bin.label,
+                            run.plan.first_buffer_ms,
+                            silence_reason(&run.plan, bin.id.as_str())
                         ),
                         None => "the recording didn't start".into(),
                     };
@@ -1813,5 +1815,25 @@ impl Engine {
             let _ = ack.send(());
         }
         self.done = true;
+    }
+}
+
+/// What usually keeps a source silent through the start window (A§5.3), for
+/// the `capture_failed` message.
+fn silence_reason(plan: &CapturePlan, id: &str) -> &'static str {
+    match plan
+        .video
+        .iter()
+        .find(|v| v.id.as_str() == id)
+        .map(|v| &v.source)
+    {
+        Some(VideoSource::Camera { .. }) => {
+            "the camera sent no frames; it may be in use, unplugged or stuck (unplug and replug \
+             it; `journalctl -k | grep uvcvideo` shows driver errors), or not support the chosen mode"
+        }
+        Some(VideoSource::Screen { .. }) => {
+            "the screen share sent no frames; the portal may have stopped it or the output may be off"
+        }
+        None => "the audio device sent no samples; it may be unplugged or suspended",
     }
 }

@@ -50,7 +50,7 @@ Agents never add or bump dependencies; they ask. CI asserts
 | sha2 0.11 + hex | only through `qrec_core::hash` | core |
 | toml 1.1, toml_edit 0.25 | config and keys files | core |
 | proptest, insta, pretty_assertions | tests; core feature `testkit` exposes proptest strategies | core |
-| gstreamer(-app/-video/-audio/-pbutils), gstreamer-editing-services | 0.25, features ≤ `v1_24` | shell (feature `gst`, default on) |
+| gstreamer(-app/-video/-audio/-pbutils/-allocators), gstreamer-editing-services | 0.25, features ≤ `v1_24` | shell (feature `gst`, default on) |
 | ashpd | 0.13, `default-features = false`, `async-io, screencast, camera` (no tokio anywhere) | shell |
 | futures-lite | 2.6 (`block_on` for ashpd) | shell |
 | crossbeam-channel | 0.5 | shell |
@@ -1738,6 +1738,20 @@ first-buffer deadline, then closes like the others.
   segment before the caps *(measured)*.
 - `pipewiresrc keepalive-time=<floor(1000·den/num)>` so a static screen still
   produces frames to the end (screencasts are damage-driven).
+- Screen branch: `pipewiresrc ! capsfilter ! appsink` → `appsrc !
+  videoconvert …` (`capture::dmabuf`). niri offers DMA-BUF only (BGRx with
+  modifiers; shared memory fails with "no more input formats") *(measured,
+  niri 2026-08, PipeWire 1.6.6, GStreamer 1.26)*. The capsfilter (its caps set
+  after linking, which DMA_DRM caps would fail) takes **linear** DMA-BUF
+  (`XR24/AR24/XB24/AB24`) or shared memory (GNOME, KDE). Linear frames are
+  CPU-mappable (a 2560×1440 frame copies in ~2 ms); GL import samples black
+  and the tiled/compressed layouts lose their extra planes in pipewiresrc,
+  and `vapostproc` can't import `XR24` *(measured)*. pipewiresrc wraps niri's
+  frames in 1-byte memories (PipeWire's data size), so the bridge resizes each
+  dmabuf memory to the buffer object's size (`lseek(fd, 0, SEEK_END)`) and
+  pushes it on as the plain format (`XR24` → `BGRx`) with its timestamps.
+  `cast_probe` (an ignored test) reruns these experiments against a real
+  portal session.
 - Encoders: `x264enc pass=qual quantizer=18 speed-preset=veryfast
   tune=zerolatency key-int-max=<round(fps)>` (without `pass=qual` x264enc
   records 2 Mbit/s CBR); VA: the resolved factory with `rate-control=cqp

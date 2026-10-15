@@ -16,6 +16,7 @@
 //! clock; audio sources slave to it.
 
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 use crossbeam_channel::Sender;
 use gst::glib;
@@ -24,6 +25,7 @@ use qrec_core::layout::place;
 use qrec_core::model::Layer;
 use qrec_core::plans::LiveScene;
 
+use super::dmabuf;
 use super::engine::Cmd;
 use super::fake::{FAKE_SCREEN_FPS, FAKE_SCREEN_SIZE, FakeTone, fake_tone};
 use super::portal::ScreenShare;
@@ -281,7 +283,35 @@ fn add_source(
             if src.find_property("on-disconnect").is_some() {
                 set_str(&src, "on-disconnect", "error").map_err(err)?;
             }
-            chain.push(src.clone());
+            // pipewiresrc ! capsfilter ! appsink → appsrc ! (the rest): the
+            // bridge turns linear DMA-BUF frames into plain mappable ones
+            // (A§8.11, `dmabuf`). The capsfilter gets its DMA_DRM caps only
+            // after linking, which they would fail.
+            let accept = make("capsfilter", &name("accept")).map_err(err)?;
+            let sink = gst_app::AppSink::builder()
+                .name(name("bridge-sink"))
+                .sync(false)
+                .max_buffers(2)
+                .drop(true)
+                .build();
+            let feed = gst_app::AppSrc::builder()
+                .name(name("bridge-src"))
+                .is_live(true)
+                .format(gst::Format::Time)
+                .do_timestamp(false)
+                .max_buffers(2)
+                .leaky_type(gst_app::AppLeakyType::Downstream)
+                .build();
+            pipeline
+                .add_many([&src, &accept, sink.upcast_ref::<gst::Element>()])
+                .map_err(|e| err(format!("can't build the screen branch: {e}")))?;
+            gst::Element::link_many([&src, &accept, sink.upcast_ref::<gst::Element>()])
+                .map_err(|e| err(format!("can't link the screen branch: {e}")))?;
+            let caps = gst::Caps::from_str(dmabuf::SCREEN_CAPS)
+                .map_err(|e| err(format!("bad screencast caps: {e}")))?;
+            accept.set_property("caps", &caps);
+            dmabuf::bridge(&sink, &feed);
+            chain.push(feed.upcast());
             src
         }
         (Backend::Real, SourceSpec::Camera { device, mode }) => {
