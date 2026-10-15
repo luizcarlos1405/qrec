@@ -336,6 +336,53 @@ pub fn plan_gpu_env(inputs: &GpuEnvInputs<'_>) -> GpuEnvPlan {
     plan
 }
 
+/// GStreamer's registry file ([`plan_gst_env`]).
+pub const GST_REGISTRY: &str = "GST_REGISTRY_1_0";
+
+/// Search paths of gst-plugins-bad's `lv2`, `ladspa` and `frei0r`
+/// elements. Qrec uses none of these effects.
+pub const EFFECT_PLUGIN_PATHS: [&str; 3] = ["LV2_PATH", "LADSPA_PATH", "FREI0R_PATH"];
+
+/// Step 4: GStreamer's plugin scan stays Qrec's own. The registry is Qrec's
+/// cache file (`$XDG_CACHE_HOME/qrec/gstreamer-registry-<arch>.bin`) unless
+/// the user names one, so other GStreamer apps never make it stale and the
+/// scan, which opens every render node through the `va` plugin, runs only
+/// when Qrec's plugins change. The LV2, LADSPA and frei0r search paths are
+/// emptied, so the scan never loads the user's effect plugins (and their
+/// warnings) into the recorder.
+pub fn plan_gst_env(env: &dyn Fn(&str) -> Option<String>) -> GpuEnvPlan {
+    let mut plan = GpuEnvPlan::default();
+    let inherited = |key: &str| env(key).filter(|v| !v.is_empty());
+    if inherited(GST_REGISTRY).is_none() {
+        let cache = inherited("XDG_CACHE_HOME")
+            .or_else(|| inherited("HOME").map(|home| format!("{home}/.cache")));
+        match cache {
+            Some(cache) => plan.changes.push(EnvChange {
+                key: GST_REGISTRY.into(),
+                value: format!(
+                    "{cache}/qrec/gstreamer-registry-{}.bin",
+                    std::env::consts::ARCH
+                ),
+                previous: None,
+            }),
+            None => plan.notes.push(
+                "neither XDG_CACHE_HOME nor HOME is set: GStreamer keeps its shared registry"
+                    .into(),
+            ),
+        }
+    }
+    for key in EFFECT_PLUGIN_PATHS {
+        if env(key).as_deref() != Some("") {
+            plan.changes.push(EnvChange {
+                key: key.into(),
+                value: String::new(),
+                previous: inherited(key),
+            });
+        }
+    }
+    plan
+}
+
 /// Directories holding `glvnd/` and `vulkan/` data: NixOS's driver dir,
 /// `$XDG_DATA_DIRS` (default `/usr/local/share:/usr/share`) and `/etc`.
 pub fn graphics_data_dirs(xdg_data_dirs: Option<&str>) -> Vec<PathBuf> {
@@ -595,21 +642,33 @@ pub fn prepare_gpu_env(inputs: &GpuInputs) -> GpuReport {
         mesa_egl_vendor: find_mesa_egl_vendor(&data_dirs),
         vulkan_icd: chosen_vendor.and_then(|v| find_vulkan_icd(&data_dirs, v)),
     });
+    let gst = plan_gst_env(&env);
+    let mut changes = plan.changes;
+    changes.extend(gst.changes);
     let mut notes = plan.notes;
-    let applied = match apply_changes(&plan.changes, thread_count()) {
+    notes.extend(gst.notes);
+    let applied = match apply_changes(&changes, thread_count()) {
         Ok(()) => true,
         Err(note) => {
             notes.push(note);
             false
         }
     };
+    // GStreamer writes its registry there once it initializes, later.
+    if applied
+        && let Some(registry) = changes.iter().find(|c| c.key == GST_REGISTRY)
+        && let Some(dir) = Path::new(&registry.value).parent()
+        && let Err(e) = fs::create_dir_all(dir)
+    {
+        notes.push(format!("can't create {}: {e}", dir.display()));
+    }
     for note in &notes {
         tracing::info!("gpu: {note}");
     }
     let report = GpuReport {
         nodes,
         choice,
-        changes: plan.changes,
+        changes,
         notes,
         applied,
     };
@@ -1023,6 +1082,55 @@ mod tests {
     }
 
     #[test]
+    fn gstreamer_keeps_its_own_registry_and_no_effect_plugins() {
+        let env_of = |vars: &'static [(&'static str, &'static str)]| {
+            move |key: &str| {
+                vars.iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, v)| (*v).to_owned())
+            }
+        };
+        let plan = plan_gst_env(&env_of(&[
+            ("XDG_CACHE_HOME", "/home/me/.cache"),
+            ("LV2_PATH", "/home/me/.lv2"),
+        ]));
+        let registry = plan.changes.iter().find(|c| c.key == GST_REGISTRY).unwrap();
+        assert_eq!(
+            registry.value,
+            format!(
+                "/home/me/.cache/qrec/gstreamer-registry-{}.bin",
+                std::env::consts::ARCH
+            )
+        );
+        let lv2 = plan.changes.iter().find(|c| c.key == "LV2_PATH").unwrap();
+        assert_eq!(
+            (lv2.value.as_str(), lv2.previous.as_deref()),
+            ("", Some("/home/me/.lv2"))
+        );
+        // Unset paths are emptied too (their defaults would be scanned).
+        assert!(
+            plan.changes
+                .iter()
+                .any(|c| c.key == "FREI0R_PATH" && c.value.is_empty())
+        );
+
+        // A registry the user chose and already-empty paths are left alone;
+        // HOME stands in for XDG_CACHE_HOME.
+        let plan = plan_gst_env(&env_of(&[
+            ("GST_REGISTRY_1_0", "/tmp/mine.bin"),
+            ("LV2_PATH", ""),
+            ("LADSPA_PATH", ""),
+            ("FREI0R_PATH", ""),
+        ]));
+        assert!(plan.changes.is_empty(), "{plan:?}");
+        let plan = plan_gst_env(&env_of(&[("HOME", "/home/me")]));
+        assert!(plan.changes[0].value.starts_with("/home/me/.cache/qrec/"));
+        let plan = plan_gst_env(&env_of(&[]));
+        assert!(plan.changes.iter().all(|c| c.key != GST_REGISTRY));
+        assert!(plan.notes[0].contains("shared registry"));
+    }
+
+    #[test]
     fn libva_driver_follows_the_chosen_vendor() {
         let nodes = [
             node(128, Some(VENDOR_NVIDIA)),
@@ -1270,7 +1378,15 @@ mod tests {
             for_gui: false,
         });
         assert_eq!(report.choice.as_ref().unwrap().origin, DeviceOrigin::Config);
-        assert!(report.changes.is_empty() && report.applied, "{report:?}");
+        // No GPU variable; the GStreamer ones (step 4) aren't applied here.
+        assert!(
+            report
+                .changes
+                .iter()
+                .all(|c| c.key == GST_REGISTRY || EFFECT_PLUGIN_PATHS.contains(&c.key.as_str())),
+            "{report:?}"
+        );
+        assert_eq!(report.applied, report.changes.is_empty(), "{report:?}");
         assert!(startup_report().is_some());
     }
 

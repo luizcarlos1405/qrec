@@ -1670,6 +1670,12 @@ outcome is saved over the change.
   configured. When an NVIDIA device exists and isn't chosen, also set
   `__EGL_VENDOR_LIBRARY_FILENAMES` (Mesa) and `VK_DRIVER_FILES` /
   `VK_ICD_FILENAMES` (chosen vendor) unless the user set them (GUI).
+- In the same step (`gpu::plan_gst_env`): `GST_REGISTRY_1_0` becomes
+  `$XDG_CACHE_HOME/qrec/gstreamer-registry-<arch>.bin` unless the user set
+  it, so other GStreamer apps never make Qrec's registry stale and the
+  plugin scan (whose `va` plugin opens every render node) runs only when
+  Qrec's plugins change; `LV2_PATH`, `LADSPA_PATH` and `FREI0R_PATH` become
+  empty, so the scan never loads the user's effect plugins (Qrec uses none).
 - Commands that only need ffmpeg never initialize GStreamer.
 - `gst::init()` runs on a helper thread; the caller waits ≤ 30 s, then prints
   "GStreamer is stuck scanning plugins (a GPU driver is probably hung); see
