@@ -890,8 +890,19 @@ mod tests {
             "1920*1080",
             "1920x1080@abc",
             "-1x2",
+            // Rates that used to overflow u32 while parsing (a panic).
+            "1920x1080@500000000.5",
+            "@4995004.995005",
         ] {
             assert!(bad.parse::<CanvasSpec>().is_err(), "{bad:?} should fail");
+        }
+        // Over IPC the same text is a decoding error the server answers
+        // with `usage`, not a panic of the connection thread.
+        for json in [
+            r#"{"cmd":"projectSet","canvas":"1920x1080@500000000.5"}"#,
+            r#"{"cmd":"init","canvas":"@4995004.995005"}"#,
+        ] {
+            assert!(serde_json::from_str::<Command>(json).is_err(), "{json}");
         }
     }
 

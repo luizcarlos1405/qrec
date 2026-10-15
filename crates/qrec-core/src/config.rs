@@ -508,6 +508,9 @@ mod tests {
         let cfg: UserConfig = toml::from_str("[canvas]\nfps = 25\n").unwrap();
         assert_eq!(cfg.canvas.fps, Fps::new(25, 1));
         assert!(toml::from_str::<UserConfig>("[canvas]\nfsp = 25\n").is_err());
+        // A huge decimal rate is a bad value (the shell falls back to the
+        // defaults), not an overflow while loading the file.
+        assert!(toml::from_str::<UserConfig>("[canvas]\nfps = \"500000000.5\"\n").is_err());
 
         let defaults = cfg.project_defaults();
         assert_eq!(defaults.canvas.fps, Fps::new(25, 1));
@@ -673,6 +676,9 @@ vaapi_device = \"/dev/dri/renderD129\"
             ("canvas.height", "wide", "must be an even integer"),
             ("canvas.fps", "1000", "at most 240"),
             ("canvas.fps", "0", "at most 240"),
+            // Used to overflow u32 while becoming a fraction (a panic).
+            ("canvas.fps", "500000000.5", "at most 240"),
+            ("canvas.fps", "4995004.995005", "at most 240"),
             ("canvas.background", "green", "#RRGGBB"),
             ("theme", "shrek", "swamp-night"),
             ("recording.countdown_secs", "11", "from 0 to 10"),
