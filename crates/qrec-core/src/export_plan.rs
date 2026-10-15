@@ -13,6 +13,18 @@
 //! - **Lengths** are enforced in the graph (`trim=end_frame`,
 //!   `atrim=end_sample`), never with `-frames:v`/`-t`, which cut the audio
 //!   short at 29.97 fps.
+//! - **Placement in the stitch:** the concat demuxer starts each segment
+//!   where the previous ones end by *their container durations*, which
+//!   Matroska rounds to milliseconds (a 23-frame VP9 segment at 30 fps lasts
+//!   0.767 s, not 0.766667 s): summed over many units, the copied video
+//!   drifts from the audio, which is encoded once. So the concat list gives
+//!   every segment its exact `duration`, from timeline boundaries rounded to
+//!   the microsecond (the list's precision): the errors never add up.
+//! - **Decode order:** H.264 segments have no B-frames (`-bf 0`). With
+//!   them, a segment starts its DTS a reorder delay early, except a 1–2-frame
+//!   one, which has nothing to reorder; the next segment's first DTS then
+//!   collide with the short one's in the stitch, ffmpeg bumps them by a tick
+//!   and the MP4's sample table loses up to two frames of duration.
 //! - **Colour:** `-color_range tv -colorspace bt709` drive the graph's
 //!   negotiation (the `color` background is drawn with BT.709 coefficients);
 //!   primaries and transfer are tagged in the graph (`media_argv::TAG_BT709`)
@@ -505,7 +517,9 @@ impl Encoder {
     }
 
     /// H.264 segments are `.mov` (Matroska's millisecond timestamps make a
-    /// stitched MP4 look VFR); VP9/AV1 segments are `.mkv`.
+    /// stitched MP4 look VFR); VP9/AV1 segments are `.mkv` (the stitch's
+    /// `duration` lines keep their millisecond durations from adding up,
+    /// see [`plan_stitch`]).
     fn segment_container(&self) -> (&'static str, &'static str) {
         match self {
             Encoder::X264 | Encoder::Vaapi { .. } => ("mov", "mov"),
@@ -528,6 +542,9 @@ impl Encoder {
                 pick("veryfast", "medium", "slow"),
                 "-crf",
                 pick("23", "20", "18"),
+                // No B-frames (see the module docs, "Decode order").
+                "-bf",
+                "0",
                 "-pix_fmt",
                 "yuv420p",
                 "-profile:v",
@@ -653,7 +670,7 @@ pub fn plan_export(
         segments.push(segment.0);
     }
     let total_frames = segments.iter().map(|s| s.frames).sum();
-    let stitch = plan_stitch(&segments, opts.format, &opts.out);
+    let stitch = plan_stitch(&segments, project.canvas.fps, opts.format, &opts.out);
     Ok(ExportPlan {
         out: opts.out.clone(),
         tmp_ext: opts.format.extension().to_owned(),
@@ -754,14 +771,56 @@ pub fn cache_key(
     sha256_hex(parts.join("\0").as_bytes())
 }
 
-/// The concat list (segment file names only, in the segments dir) and the
-/// command that copies the video and encodes the audio once.
-fn plan_stitch(segments: &[SegmentPlan], format: ExportFormat, out: &str) -> StitchPlan {
-    let mut list_content = String::from("ffconcat version 1.0\n");
-    for segment in segments {
-        let name = segment.path.rsplit('/').next().unwrap_or(&segment.path);
-        list_content.push_str(&format!("file '{name}'\n"));
+/// The concat list and the command that copies the video and encodes the
+/// audio once.
+///
+/// The list names each segment (file names only: it lives in the segments
+/// dir) with its exact `duration`: segment `i` covers the timeline from
+/// `us(start_i)` to `us(end_i)`, timeline frames converted to microseconds
+/// and rounded, so the concat demuxer starts every segment within half a
+/// microsecond of its timeline time however many there are. Without the
+/// durations it would add up the segments' container durations, which
+/// Matroska rounds to milliseconds (see the module docs).
+fn plan_stitch(segments: &[SegmentPlan], fps: Fps, format: ExportFormat, out: &str) -> StitchPlan {
+    let mut position: Frame = 0;
+    let entries = segments.iter().map(|segment| {
+        let start = boundary_us(position, fps);
+        position += segment.frames;
+        let duration = boundary_us(position, fps) - start;
+        (
+            segment_file_name(segment).to_owned(),
+            seconds_arg(duration * 1000),
+        )
+    });
+    stitch_with_list(stitch_list(entries), format, out)
+}
+
+/// Timeline frame `f`'s start in microseconds, rounded:
+/// `round(f·10⁶·den/num)`.
+fn boundary_us(f: Frame, fps: Fps) -> i64 {
+    let num = i128::from(f) * 1_000_000 * i128::from(fps.den);
+    let den = i128::from(fps.num);
+    ((2 * num + den) / (2 * den)) as i64
+}
+
+/// The segment's file name (its path's last component).
+fn segment_file_name(segment: &SegmentPlan) -> &str {
+    segment.path.rsplit('/').next().unwrap_or(&segment.path)
+}
+
+/// `ffconcat version 1.0`, then `file '<name>'` and `duration <seconds>`
+/// per segment.
+fn stitch_list(entries: impl IntoIterator<Item = (String, String)>) -> String {
+    let mut list = String::from("ffconcat version 1.0\n");
+    for (name, duration) in entries {
+        list.push_str(&format!("file '{name}'\nduration {duration}\n"));
     }
+    list
+}
+
+/// The stitch of a concat list: the list's path (named by its content) and
+/// the argv.
+fn stitch_with_list(list_content: String, format: ExportFormat, out: &str) -> StitchPlan {
     let list_path = format!(
         "{SEGMENTS_DIR}/stitch-{}.ffconcat",
         &sha256_hex(list_content.as_bytes())[..16]
@@ -838,7 +897,21 @@ pub fn without_vaapi(plan: &ExportPlan, caps: &Capabilities) -> Option<ExportPla
         "webm" => ExportFormat::Webm,
         _ => ExportFormat::Mp4,
     };
-    let stitch = plan_stitch(&segments, format, &plan.out);
+    // Same units, same timeline: only the file names change.
+    let durations: Vec<&str> = plan
+        .stitch
+        .list_content
+        .lines()
+        .filter_map(|line| line.strip_prefix("duration "))
+        .collect();
+    if durations.len() != segments.len() {
+        return None;
+    }
+    let entries = segments
+        .iter()
+        .zip(durations)
+        .map(|(s, d)| (segment_file_name(s).to_owned(), d.to_owned()));
+    let stitch = stitch_with_list(stitch_list(entries), format, &plan.out);
     Some(ExportPlan {
         segments,
         stitch,
@@ -1206,6 +1279,96 @@ pub(crate) mod tests {
             plan_export(&project, &va_caps(), &o).unwrap_err().code,
             ErrorCode::Usage
         );
+    }
+
+    /// 150 units of 23 frames: each Matroska segment would say 0.767 s
+    /// (0.766667 s at 30 fps, 0.767433 s at 29.97), +49 / −64 ms over the
+    /// timeline. The concat list's durations put every segment within half a
+    /// microsecond of its timeline time instead.
+    #[test]
+    fn the_stitch_places_every_segment_at_its_timeline_time() {
+        for (fps, first) in [(F30, "0.766667"), (Fps::new(30000, 1001), "0.767433")] {
+            let mut builder = ProjectBuilder::new()
+                .canvas(320, 180, fps)
+                .screen_layer("L1", "DP-1")
+                .mic("A1", "mic")
+                .take("take-0001", 4000);
+            for i in 0..150 {
+                builder = builder.clip(&format!("c{i}"), "take-0001", i * 25, i * 25 + 23);
+            }
+            let project = builder.build();
+            for (format, codec) in [
+                (ExportFormat::Webm, VideoCodec::Vp9),
+                (ExportFormat::Mp4, VideoCodec::H264),
+            ] {
+                let mut o = opts("/tmp/out");
+                (o.format, o.codec) = (format, codec);
+                let plan = plan_export(&project, &testkit::capabilities(), &o).unwrap();
+                let lines: Vec<&str> = plan.stitch.list_content.lines().collect();
+                assert_eq!(lines[0], "ffconcat version 1.0");
+                assert_eq!(lines.len(), 1 + 2 * 150);
+                let mut start_us: i128 = 0;
+                for (i, pair) in lines[1..].chunks(2).enumerate() {
+                    let segment = &plan.segments[i];
+                    assert_eq!(
+                        pair[0],
+                        format!("file '{}.{}'", segment.key, format_ext(codec))
+                    );
+                    let duration = pair[1].strip_prefix("duration ").unwrap();
+                    if i == 0 {
+                        assert_eq!(duration, first);
+                    }
+                    let (secs, micros) = duration.split_once('.').unwrap();
+                    assert_eq!(micros.len(), 6, "{duration}");
+                    let us: i128 =
+                        secs.parse::<i128>().unwrap() * 1_000_000 + micros.parse::<i128>().unwrap();
+                    // Segment i starts at frame 23·i of the timeline:
+                    // |start − 23i·den/num s| ≤ 0.5 µs, in whole numbers.
+                    let (num, den) = (i128::from(fps.num), i128::from(fps.den));
+                    let error = start_us * num - (23 * i as i128) * 1_000_000 * den;
+                    assert!(
+                        2 * error.abs() <= num,
+                        "{fps} {format:?}: segment {i} starts at {start_us} µs"
+                    );
+                    start_us += us;
+                }
+                assert_eq!(
+                    start_us,
+                    i128::from(boundary_us(150 * 23, fps)),
+                    "the durations add up to the timeline"
+                );
+            }
+        }
+        assert_eq!(boundary_us(1, Fps::new(30000, 1001)), 33_367);
+        assert_eq!(boundary_us(2, F30), 66_667);
+    }
+
+    fn format_ext(codec: VideoCodec) -> &'static str {
+        match codec {
+            VideoCodec::H264 => "mov",
+            VideoCodec::Vp9 | VideoCodec::Av1 => "mkv",
+        }
+    }
+
+    /// No B-frames in any H.264 segment, so every one starts its decode
+    /// order at its first frame whatever its length (module docs).
+    #[test]
+    fn h264_segments_have_no_b_frames() {
+        let project = spec_project();
+        for caps in [testkit::capabilities(), va_caps()] {
+            for quality in [Quality::Draft, Quality::Standard, Quality::High] {
+                let mut o = opts("x.mp4");
+                o.quality = quality;
+                let plan = plan_export(&project, &caps, &o).unwrap();
+                for s in &plan.segments {
+                    assert!(
+                        s.argv.windows(2).any(|w| w[0] == "-bf" && w[1] == "0"),
+                        "{:?}",
+                        s.argv
+                    );
+                }
+            }
+        }
     }
 
     #[test]

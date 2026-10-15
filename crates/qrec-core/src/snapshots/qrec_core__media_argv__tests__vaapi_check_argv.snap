@@ -2,4 +2,4 @@
 source: crates/qrec-core/src/media_argv.rs
 expression: "check.join(\" \")"
 ---
-ffmpeg -hide_banner -nostdin -nostats -loglevel info -y -init_hw_device vaapi=va:/dev/dri/renderD129 -filter_hw_device va -f lavfi -i color=c=0x000000:s=256x144:r=30/1 -filter_complex [0:v]trim=end_frame=2,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709[v];[v]format=nv12,hwupload[vv] -map [vv] -c:v h264_vaapi -rc_mode CQP -qp 22 -profile:v high -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 -f null -
+ffmpeg -hide_banner -nostdin -nostats -loglevel info -y -init_hw_device vaapi=va:/dev/dri/renderD129 -filter_hw_device va -f lavfi -i color=c=0x000000:s=256x144:r=30/1 -filter_complex [0:v]trim=end_frame=2,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709[v];[v]format=nv12,hwupload[vv] -map [vv] -c:v h264_vaapi -rc_mode CQP -qp 22 -bf 0 -profile:v high -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 -f null -

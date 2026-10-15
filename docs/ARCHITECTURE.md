@@ -1280,7 +1280,12 @@ pub struct StitchPlan { pub list_path: String, pub list_content: String, pub arg
   - h264_vaapi: `-rc_mode CQP -qp 26` / `22` / `19`
   - libvpx-vp9: `-crf 36/32/28 -b:v 0 -row-mt 1 -deadline good -cpu-used 5/4/2`
   - libsvtav1: `-preset 10/8/6 -crf 38/35/30`
-  - all H.264: `-pix_fmt yuv420p -profile:v high`; keyframe at each segment start.
+  - all H.264: `-bf 0 -pix_fmt yuv420p -profile:v high`; keyframe at each
+    segment start. No B-frames *(measured)*: with them a segment's DTS start
+    a reorder delay early, except in a 1–2-frame segment (nothing to
+    reorder), so after such a unit the next segment's first DTS collide in
+    the stitch, ffmpeg bumps them by one tick each and the MP4's sample
+    table comes out up to two frames short.
 - **VA export chain** (only when `caps.vaapi.ffmpeg_h264`):
   `-init_hw_device vaapi=va:<device> -filter_hw_device va … [v]format=nv12,hwupload[vv]
   -c:v h264_vaapi -rc_mode CQP -qp <q>`, child env `LIBVA_DRIVER_NAME` per
@@ -1291,7 +1296,14 @@ pub struct StitchPlan { pub list_path: String, pub list_content: String, pub arg
   rendered once.
 - **Stitch:** concat demuxer list in the segments dir (file names only),
   `-c:v copy`, audio encoded once (`aac -b:a 192k` + `-movflags +faststart`
-  for MP4; `libopus -b:a 128k` for WebM), `-f mp4|webm`, output last.
+  for MP4; `libopus -b:a 128k` for WebM), `-f mp4|webm`, output last. Each
+  `file '<key>.<ext>'` line is followed by `duration <s>` = `us(end) −
+  us(start)`, the unit's timeline boundaries in microseconds (rounded; the
+  list's precision), so every segment starts within 0.5 µs of its timeline
+  time *(measured)*. Without it the demuxer adds up the segments' container
+  durations, which Matroska rounds to milliseconds: the copied VP9/AV1 video
+  drifted from the once-encoded audio by up to 0.5 ms per unit (+49 ms after
+  150 autocut fragments).
 
 ### A§9.4 Frame plan (`frame_plan.rs`)
 

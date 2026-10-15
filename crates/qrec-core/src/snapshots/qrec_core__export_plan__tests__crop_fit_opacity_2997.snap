@@ -31,6 +31,8 @@ expression: "render_argv(&plan.segments[0].argv)"
   medium
   -crf
   20
+  -bf
+  0
   -pix_fmt
   yuv420p
   -profile:v
@@ -47,4 +49,4 @@ expression: "render_argv(&plan.segments[0].argv)"
   pcm_s16le
   -f
   mov
-  file:.qrec/cache/segments/65d8a819b7d2c4aaf902e104b66109c50500699f80bad0b6c0fda813620f52c2.mov
+  file:.qrec/cache/segments/70808056021950f8ddc4c09bdccc7bc2969a60b1ed2c37410788440c4c4c5bef.mov

@@ -15,7 +15,9 @@
 //! - every tone burst lands where the take time says, the mono track is
 //!   copied to both channels at 0 dB, gains apply, and the 240-sample fades
 //!   sit at cuts but not at take edges;
-//! - the stitch keeps every frame bit-exact and constant-rate;
+//! - the stitch keeps every frame bit-exact and constant-rate, with evenly
+//!   rising DTS even after units of one or two frames, and keeps every unit
+//!   at its timeline time however many there are (WebM included);
 //! - a split timeline plans and renders byte-identical segments;
 //! - frame saves are sRGB PNGs of the same pixels, and colours are BT.709.
 //!
@@ -693,8 +695,8 @@ fn render_segments(fx: &Fixture, plan: &ExportPlan, label: &str) -> Vec<Vec<u8>>
 
 /// Writes the concat list and runs the stitch, into `tmp` (the runner may
 /// replace only the last argv element) then renamed to the plan's output.
-/// Returns its progress blocks.
-fn stitch(fx: &Fixture, plan: &ExportPlan, tmp: &str) -> Vec<ProgressBlock> {
+/// Returns its progress blocks and its log (stderr).
+fn stitch(fx: &Fixture, plan: &ExportPlan, tmp: &str) -> (Vec<ProgressBlock>, String) {
     fs::write(
         fx.path().join(&plan.stitch.list_path),
         &plan.stitch.list_content,
@@ -704,13 +706,21 @@ fn stitch(fx: &Fixture, plan: &ExportPlan, tmp: &str) -> Vec<ProgressBlock> {
     let mut argv = plan.stitch.argv.clone();
     assert_eq!(argv.last().unwrap(), &format!("file:{}", plan.out));
     *argv.last_mut().unwrap() = format!("file:{tmp}");
-    let blocks = progress_blocks(&run(fx.path(), &argv).stdout);
+    let out = run(fx.path(), &argv);
+    let blocks = progress_blocks(&out.stdout);
     assert!(
         blocks.last().is_some_and(|b| b.end),
         "the stitch didn't end"
     );
     fs::rename(fx.path().join(tmp), fx.path().join(&plan.out)).unwrap();
-    blocks
+    (blocks, out.stderr)
+}
+
+/// Runs a segment's argv and checks only its counts (no decoding).
+fn render_segment_counts(fx: &Fixture, s: &SegmentPlan, what: &str) {
+    run(fx.path(), &s.argv);
+    let counts = segment_counts(fx.path(), &s.path);
+    assert_eq!(counts.check(s.frames, s.samples), Ok(()), "{what}");
 }
 
 /// The stitched MP4 holds every segment frame bit-exactly at a constant rate,
@@ -859,7 +869,7 @@ fn mp4_export_renders_exact_frames_samples_and_fades() {
     );
 
     // The stitch, its progress through the job, and the stitched file.
-    let blocks = stitch(&fx, &plan, "exports/.plans.qrec-part-1-1.mp4");
+    let (blocks, _) = stitch(&fx, &plan, "exports/.plans.qrec-part-1-1.mp4");
     for block in &blocks {
         let event = Event::ExportStitchProgress {
             job,
@@ -874,8 +884,7 @@ fn mp4_export_renders_exact_frames_samples_and_fades() {
             stitch_total_ns,
             ..
         } => {
-            // ffmpeg's last `out_time` trails the end by the B-frame delay
-            // of the copied video (two frames here).
+            // ffmpeg's last `out_time` may trail the end by a few frames.
             assert!(*stitching);
             assert!(
                 stitch_total_ns - stitch_done_ns <= frame_ns(3, fx.fps) as u64,
@@ -1004,6 +1013,135 @@ fn webm_exports_render_exact_frames_and_samples() {
     }
 }
 
+/// Many units whose Matroska segments round their duration the same way (2
+/// frames = 66.67 ms at 30 fps, 66.73 ms at 29.97, both stored as 67 ms):
+/// the stitch must still start every unit at its timeline time, so each
+/// WebM frame sits on the format's millisecond grid around its own time
+/// however many units came before it, and the Opus packets follow each
+/// other without jumps (A§9.3 stitch, SPEC §13.1).
+#[test]
+fn webm_units_stay_on_time_however_many() {
+    for (tag, fps) in [("webm-drift", FPS30), ("webm-drift-ntsc", NTSC)] {
+        let mut fx = Fixture::new(tag, fps);
+        // 36 units of 2 frames from take 2, a frame apart (not continuous).
+        fx.project.timeline.clips = (0..36u64)
+            .map(|i| Clip {
+                id: ClipId::from_raw(&format!("d{i}")),
+                take: TakeId::numbered(2),
+                in_: 3 * i,
+                out: 3 * i + 2,
+            })
+            .collect();
+        let out = format!("exports/{tag}.webm");
+        let opts = options(ExportFormat::Webm, VideoCodec::Vp9, Quality::Draft, &out);
+        let plan = plan_export(&fx.project, &capabilities(), &opts).unwrap();
+        assert_eq!((plan.segments.len(), plan.total_frames), (36, 72));
+        for (i, s) in plan.segments.iter().enumerate() {
+            render_segment_counts(&fx, s, &format!("{tag} segment {i}"));
+        }
+        let (_, log) = stitch(&fx, &plan, &format!("exports/.{tag}.qrec-part-1-4.webm"));
+        assert!(!log.contains("Non-monotonic"), "{tag}: {log}");
+
+        let video = packet_times(fx.path(), &plan.out, "v:0");
+        assert_eq!(video.len() as u64, plan.total_frames, "{tag}");
+        for (i, t) in video.iter().enumerate() {
+            // Timeline frame i, in ms (WebM stores whole milliseconds).
+            let exact = i as f64 * 1000.0 * f64::from(fps.den) / f64::from(fps.num);
+            assert!(
+                (t * 1000.0 - exact).abs() <= 1.0 + 1e-6,
+                "{tag}: frame {i} is at {:.3} ms, {exact:.3} ms on the timeline",
+                t * 1000.0
+            );
+        }
+        // 20 ms Opus packets, after the first one (stamped −7 ms: its
+        // 6.5 ms pre-skip rounded to the millisecond).
+        let audio = packet_times(fx.path(), &plan.out, "a:0");
+        let steps: Vec<f64> = audio.windows(2).map(|w| (w[1] - w[0]) * 1000.0).collect();
+        assert!(
+            steps[1..].iter().all(|d| (d - 20.0).abs() < 1e-6),
+            "{tag}: Opus packets jump: {steps:?}"
+        );
+        let samples: u64 = plan.segments.iter().map(|s| s.samples).sum();
+        assert_eq!(pcm(fx.path(), &plan.out).len() as u64, samples, "{tag}");
+    }
+}
+
+/// Units of one and two frames first, in the middle and last: H.264
+/// segments without B-frames all start their decode order at their first
+/// frame, so the stitched MP4's DTS rise evenly (ffmpeg bumps none of them),
+/// and its video track lasts exactly the timeline at the canvas rate.
+#[test]
+fn mp4_units_of_one_and_two_frames_keep_even_timestamps() {
+    let mut fx = Fixture::new("short-units", FPS30);
+    let units = [
+        (0, 1),
+        (10, 40),
+        (41, 43),
+        (50, 80),
+        (82, 83),
+        (90, 110),
+        (115, 116),
+    ];
+    fx.project.timeline.clips = units
+        .iter()
+        .enumerate()
+        .map(|(i, &(in_, out))| Clip {
+            id: ClipId::from_raw(&format!("s{i}")),
+            take: TakeId::numbered(2),
+            in_,
+            out,
+        })
+        .collect();
+    let opts = options(
+        ExportFormat::Mp4,
+        VideoCodec::H264,
+        Quality::Draft,
+        "exports/short-units.mp4",
+    );
+    let plan = plan_export(&fx.project, &capabilities(), &opts).unwrap();
+    assert_eq!(plan.total_frames, 1 + 30 + 2 + 30 + 1 + 20 + 1);
+    let frames = render_segments(&fx, &plan, "short units");
+    let (_, log) = stitch(&fx, &plan, "exports/.short-units.qrec-part-1-5.mp4");
+    assert!(!log.contains("Non-monotonic"), "{log}");
+    check_stitched_mp4(&fx, &plan, &frames);
+
+    let dts: Vec<i64> = packet_entries(fx.path(), &plan.out, "v:0", "dts")
+        .iter()
+        .map(|d| d.parse().unwrap())
+        .collect();
+    assert_eq!(dts.len() as u64, plan.total_frames);
+    let steps: Vec<i64> = dts.windows(2).map(|w| w[1] - w[0]).collect();
+    assert!(
+        steps.iter().all(|&d| d > 0 && d == steps[0]),
+        "uneven DTS: {steps:?}"
+    );
+    #[rustfmt::skip]
+    let stream = run(fx.path(), &args(&[
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=duration,avg_frame_rate", "-of", "default=nw=1",
+        &format!("file:{}", plan.out),
+    ]));
+    let stream = String::from_utf8(stream.stdout).unwrap();
+    let field = |key: &str| {
+        stream
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("{key}=")))
+            .unwrap_or_else(|| panic!("no {key} in {stream}"))
+            .to_owned()
+    };
+    assert_eq!(
+        field("avg_frame_rate"),
+        "30/1",
+        "the sample table's average rate"
+    );
+    let duration: f64 = field("duration").parse().unwrap();
+    let exact = plan.total_frames as f64 / 30.0;
+    assert!(
+        (duration - exact).abs() < 1e-4,
+        "the video track lasts {duration} s, the timeline {exact} s"
+    );
+}
+
 /// Frame saves go through the export graph as one-frame units: the same
 /// recorded frames, sRGB PNGs, BT.709 colours; `--layer` is the raw frame.
 #[test]
@@ -1090,6 +1228,7 @@ impl Drop for TempDir {
 
 struct ToolOutput {
     stdout: Vec<u8>,
+    stderr: String,
 }
 
 fn args(list: &[&str]) -> Vec<String> {
@@ -1133,6 +1272,7 @@ fn run(cwd: &Path, argv: &[String]) -> ToolOutput {
     assert!(status.success(), "{argv:?} failed ({status}):\n{stderr}");
     ToolOutput {
         stdout: fs::read(&out_path).unwrap(),
+        stderr,
     }
 }
 
@@ -1220,6 +1360,31 @@ fn pcm(cwd: &Path, file: &str) -> Vec<[i16; 2]> {
             ]
         })
         .collect()
+}
+
+/// One field of every packet of a stream (`v:0`, `a:0`), in file order.
+fn packet_entries(cwd: &Path, file: &str, stream: &str, entry: &str) -> Vec<String> {
+    #[rustfmt::skip]
+    let out = run(cwd, &args(&[
+        "ffprobe", "-v", "error", "-select_streams", stream,
+        "-show_entries", &format!("packet={entry}"), "-of", "csv=p=0", &format!("file:{file}"),
+    ]));
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|l| l.trim().trim_end_matches(',').to_owned())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// A stream's packet times in seconds, in presentation order.
+fn packet_times(cwd: &Path, file: &str, stream: &str) -> Vec<f64> {
+    let mut times: Vec<f64> = packet_entries(cwd, file, stream, "pts_time")
+        .iter()
+        .map(|t| t.parse().unwrap())
+        .collect();
+    times.sort_by(f64::total_cmp);
+    times
 }
 
 /// The video packets' timestamps, in presentation order.

@@ -8,8 +8,8 @@ total_frames: 867
 files: {"takes/take-0001/A1-mic.mka", "takes/take-0001/A2-system.mka", "takes/take-0001/L1-screen-DP-4.mkv", "takes/take-0001/L2-camera-0.mkv"}
 
 segment 0: take-0001 [0, 410) clips=c7f3 frames=410 samples=656000
-key: 6fea7d7fc2543240a869bee6c8220ee09cc77166f389d107b2c018ccd4655918
-path: .qrec/cache/segments/6fea7d7fc2543240a869bee6c8220ee09cc77166f389d107b2c018ccd4655918.mov
+key: 9c9f7ebb0dda1c6d9dd9e398ed28acd8c1ec0bc3e0446d9364b7a7d060e94db1
+path: .qrec/cache/segments/9c9f7ebb0dda1c6d9dd9e398ed28acd8c1ec0bc3e0446d9364b7a7d060e94db1.mov
 argv:
   ffmpeg
   -hide_banner
@@ -50,6 +50,8 @@ argv:
   medium
   -crf
   20
+  -bf
+  0
   -pix_fmt
   yuv420p
   -profile:v
@@ -66,11 +68,11 @@ argv:
   pcm_s16le
   -f
   mov
-  file:.qrec/cache/segments/6fea7d7fc2543240a869bee6c8220ee09cc77166f389d107b2c018ccd4655918.mov
+  file:.qrec/cache/segments/9c9f7ebb0dda1c6d9dd9e398ed28acd8c1ec0bc3e0446d9364b7a7d060e94db1.mov
 
 segment 1: take-0001 [455, 912) clips=c8a1 frames=457 samples=731200
-key: e33c57f8ef7d293c18486dbb3f7e539ae302eb61cc37ed7df2f9c58caef62a09
-path: .qrec/cache/segments/e33c57f8ef7d293c18486dbb3f7e539ae302eb61cc37ed7df2f9c58caef62a09.mov
+key: f9aaae48903b6860fe86c7f7ea6f468070a7739574da4dc4e1c6ffab208b84a0
+path: .qrec/cache/segments/f9aaae48903b6860fe86c7f7ea6f468070a7739574da4dc4e1c6ffab208b84a0.mov
 argv:
   ffmpeg
   -hide_banner
@@ -117,6 +119,8 @@ argv:
   medium
   -crf
   20
+  -bf
+  0
   -pix_fmt
   yuv420p
   -profile:v
@@ -133,12 +137,14 @@ argv:
   pcm_s16le
   -f
   mov
-  file:.qrec/cache/segments/e33c57f8ef7d293c18486dbb3f7e539ae302eb61cc37ed7df2f9c58caef62a09.mov
+  file:.qrec/cache/segments/f9aaae48903b6860fe86c7f7ea6f468070a7739574da4dc4e1c6ffab208b84a0.mov
 
-stitch list .qrec/cache/segments/stitch-8acf6627cba2ed3c.ffconcat:
+stitch list .qrec/cache/segments/stitch-f2d56630bfdf1dce.ffconcat:
 ffconcat version 1.0
-file '6fea7d7fc2543240a869bee6c8220ee09cc77166f389d107b2c018ccd4655918.mov'
-file 'e33c57f8ef7d293c18486dbb3f7e539ae302eb61cc37ed7df2f9c58caef62a09.mov'
+file '9c9f7ebb0dda1c6d9dd9e398ed28acd8c1ec0bc3e0446d9364b7a7d060e94db1.mov'
+duration 13.666667
+file 'f9aaae48903b6860fe86c7f7ea6f468070a7739574da4dc4e1c6ffab208b84a0.mov'
+duration 15.233333
 argv:
   ffmpeg
   -hide_banner
@@ -152,7 +158,7 @@ argv:
   -f
   concat
   -i
-  file:.qrec/cache/segments/stitch-8acf6627cba2ed3c.ffconcat
+  file:.qrec/cache/segments/stitch-f2d56630bfdf1dce.ffconcat
   -map
   0:v:0
   -map

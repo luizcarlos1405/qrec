@@ -203,9 +203,10 @@ pub fn vaapi_device_args(device: &str) -> Vec<String> {
 /// Uploads the composited `[v]` to the VA device: `[v]format=nv12,hwupload[vv]`.
 pub const VAAPI_UPLOAD: &str = "format=nv12,hwupload";
 
-/// `-c:v h264_vaapi -rc_mode CQP -qp <qp> -profile:v high`. `-pix_fmt
+/// `-c:v h264_vaapi -rc_mode CQP -qp <qp> -bf 0 -profile:v high`. `-pix_fmt
 /// yuv420p` is left out: ffmpeg 8.1.2 warns it is incompatible and picks
-/// `vaapi` anyway *(measured)*.
+/// `vaapi` anyway *(measured)*. No B-frames, like every H.264 segment
+/// (`export_plan`, "Decode order").
 pub fn vaapi_h264_args(qp: u32) -> Vec<String> {
     vec![
         "-c:v".to_owned(),
@@ -214,6 +215,8 @@ pub fn vaapi_h264_args(qp: u32) -> Vec<String> {
         "CQP".to_owned(),
         "-qp".to_owned(),
         qp.to_string(),
+        "-bf".to_owned(),
+        "0".to_owned(),
         "-profile:v".to_owned(),
         "high".to_owned(),
     ]
