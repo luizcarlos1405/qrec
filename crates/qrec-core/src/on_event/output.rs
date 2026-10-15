@@ -17,7 +17,7 @@ use crate::protocol::effect::{Effect, LogLevel};
 use crate::protocol::progress::{Progress, ProgressPhase};
 use crate::protocol::reply::{CmdResult, ExportDone, FrameSavedView};
 use crate::protocol::toast::{Toast, ToastLevel, UiAction};
-use crate::state::{HostKind, Job, JobKind, State};
+use crate::state::{Job, JobKind, State};
 
 /// The toast of a finished export (A§5.9).
 pub const EXPORT_DONE_TITLE: &str = "Layers! Like an onion. Your video is ready.";
@@ -431,7 +431,7 @@ pub fn output_appeared(
 pub fn requester_gone(state: &State, ctx: &Ctx, req: ReqId) -> Outcome {
     let _ = ctx;
     let mut next = state.clone();
-    let cancel = state.runtime.host != HostKind::Gui;
+    let cancel = !state.runtime.host.keeps_orphaned_jobs();
     let mut effects = Vec::new();
     let mut cancelled = Vec::new();
     let mut dropped = Vec::new();
@@ -515,7 +515,7 @@ mod tests {
     use crate::ids::TakeId;
     use crate::protocol::command::{ClipScope, Command, ExportFormat, Quality};
     use crate::protocol::event::Event;
-    use crate::state::AutocutParams;
+    use crate::state::{AutocutParams, HostKind};
     use crate::testkit::{self, ProjectBuilder};
     use crate::{ErrorCode, apply, on_event};
 
@@ -1044,5 +1044,44 @@ mod tests {
             out.effects.last(),
             Some(Effect::Log { level: LogLevel::Debug, message }) if message == "requester r1 went away: cancelled job-1, job-2, job-3"
         ));
+    }
+
+    /// What the CLI tells an interrupted person (A§8.6) follows from the
+    /// same rules: the commands whose jobs `requester_gone` stops (export,
+    /// frame save, autocut; never a purge) in the hosts that stop them.
+    #[test]
+    fn the_cli_hint_and_requester_gone_agree() {
+        let ends = |cmd: Command| cmd.job_ends_with_requester();
+        assert!(ends(Command::Export {
+            format: ExportFormat::Mp4,
+            quality: Quality::Draft,
+            codec: None,
+            out: None,
+        }));
+        assert!(ends(Command::FrameSave {
+            at: "1f".parse().unwrap(),
+            layer: None,
+            out: None,
+        }));
+        assert!(ends(Command::Autocut {
+            scope: ClipScope::All,
+            overrides: Default::default(),
+            dry_run: false,
+        }));
+        assert!(!ends(Command::TakePurge { takes: vec![] }));
+        assert!(!ends(Command::ClipRemove { clips: vec![] }));
+        let ctx = testkit::ctx(START, 2);
+        for host in [HostKind::Gui, HostKind::Headless, HostKind::Cli] {
+            let state = exporting(host);
+            let gone = Event::RequesterGone {
+                req: ReqId("r1".into()),
+            };
+            let out = on_event(&state, &ctx, gone);
+            let cancelled = out
+                .effects
+                .iter()
+                .any(|e| matches!(e, Effect::CancelJob { .. }));
+            assert_eq!(cancelled, !host.keeps_orphaned_jobs(), "{host:?}");
+        }
     }
 }

@@ -285,6 +285,15 @@ impl Harness {
         })
     }
 
+    /// A host that records: a CLI command's own host never does (A§8.5).
+    fn open_recorder(&self) -> Result<Session, ShellError> {
+        self.open_opts(OpenOpts {
+            host: HostKind::Headless,
+            mutating: true,
+            recovery: false,
+        })
+    }
+
     fn head(&self) -> Head {
         serde_json::from_slice(&fs::read(self.paths().history_head()).unwrap()).unwrap()
     }
@@ -1024,7 +1033,7 @@ fn a_crash_after_writing_qrec_json_finishes_the_command() {
 fn a_finalization_saved_to_qrec_json_but_not_committed_is_finished() {
     let mut h = Harness::with_sample("unfinished-take");
     h.check = crate::store::validated;
-    let mut s = h.open(true).unwrap();
+    let mut s = h.open_recorder().unwrap();
     let start = Command::RecordStart {
         mode: RecordModeArg::Append,
         countdown: Some(0),
@@ -1587,7 +1596,7 @@ fn a_restore_rebuilt_from_the_history_waits_for_the_recovered_takes() {
     // Take 2 is recorded after the base (A§7.7's usual case): only qrec.json
     // and the commit record know its facts.
     let streams = {
-        let mut s = h.open(true).unwrap();
+        let mut s = h.open_recorder().unwrap();
         record_take_2(&mut s)
     };
     for st in &streams {
@@ -2599,7 +2608,7 @@ fn probed(stream: &qrec_core::model::Stream, frames: u64) -> ProbeResult {
 #[test]
 fn a_take_is_committed_before_capture_and_finalized_from_events() {
     let h = Harness::with_sample("record");
-    let mut s = h.open(true).unwrap();
+    let mut s = h.open_recorder().unwrap();
     let start = Answers::default();
     s.handle(Msg::Request {
         req: Request::command(
@@ -2690,7 +2699,13 @@ fn a_take_is_committed_before_capture_and_finalized_from_events() {
 fn a_recording_served_in_recovery_mode_is_saved() {
     let h = Harness::with_sample("recover-record");
     drop(h.open(true).unwrap());
-    let mut s = h.open_opts(recovery(true)).unwrap();
+    // A CLI command's own host never records (A§8.5): a host that does.
+    let mut s = h
+        .open_opts(OpenOpts {
+            host: HostKind::Headless,
+            ..recovery(true)
+        })
+        .unwrap();
     let start = Answers::default();
     s.handle(Msg::Request {
         req: Request::command(
@@ -2810,7 +2825,7 @@ fn recovery_mode_never_answers_ok_for_a_change_it_keeps_in_memory() {
 #[test]
 fn a_gone_requester_is_forgotten() {
     let h = Harness::with_sample("gone");
-    let mut s = h.open(true).unwrap();
+    let mut s = h.open_recorder().unwrap();
     let start = Answers::default();
     s.handle(Msg::Request {
         req: Request::command(

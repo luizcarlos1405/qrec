@@ -7,8 +7,10 @@
 //! - **Hosts** (headless, in-process CLI): the first SIGTERM/SIGINT/SIGHUP
 //!   dispatches `RecordStop` (finalize, not cancel) and cancels jobs; the
 //!   host exits once idle or after 15 s. A second signal SIGKILLs the child
-//!   process groups and `_exit(130)`s; startup recovery handles the take
-//!   ([`watch`], [`hard_exit`]).
+//!   process groups; a headless host then `_exit(130)`s and startup
+//!   recovery handles the take ([`watch`], [`hard_exit`]), while an
+//!   in-process CLI command stops as soon as its jobs report their end, so
+//!   it still prints its final result ([`hard_exit_after`] is its watchdog).
 //! - **IPC clients**: the routing and streaming loops poll
 //!   [`Interrupts::count`]; Ctrl+C closes the connection (exit 130), and for
 //!   `record … --wait` the first sends `RecordStop` and the second detaches.
@@ -284,12 +286,29 @@ pub fn kill_child_groups() -> usize {
     killed
 }
 
-/// The second signal in a host (A§8.6): SIGKILL the child process groups
-/// and `_exit(130)` without running destructors.
+/// The second signal in a host (A§8.6): SIGKILL the child process groups,
+/// delete the temp outputs their jobs were writing (best effort: nothing
+/// else will) and `_exit(130)` without running destructors.
 pub fn hard_exit() -> ! {
     kill_child_groups();
+    crate::media::remove_temps_in_flight();
     // SAFETY: _exit never returns and is always safe to call.
     unsafe { libc::_exit(130) }
+}
+
+/// [`hard_exit`] `after` this long, from a thread of its own, unless the
+/// process is gone by then: the last resort of an in-process command told
+/// to hurry by a second signal (A§8.6). Without a thread, at once.
+pub fn hard_exit_after(after: Duration) {
+    let spawned = thread::Builder::new()
+        .name("qrec-exit-watchdog".into())
+        .spawn(move || {
+            thread::sleep(after);
+            hard_exit();
+        });
+    if spawned.is_err() {
+        hard_exit();
+    }
 }
 
 #[cfg(test)]

@@ -9,8 +9,9 @@
 //!   installed only for project requests (afterwards SIGINT no longer kills
 //!   the process).
 //! - Sessions are opened with the real collaborators: the capture engine
-//!   (GStreamer, initialized lazily, or the fake backend under
-//!   `QREC_CAPTURE_BACKEND=fake`), the ffmpeg media runner, the system
+//!   for hosts that record (GUI and headless; GStreamer, initialized lazily,
+//!   or the fake backend under `QREC_CAPTURE_BACKEND=fake`; a CLI command's
+//!   own host never records), the ffmpeg media runner, the system
 //!   clock and OS entropy. Hosts hand their Session a share of the project
 //!   lock they hold.
 //! - Toasts of an in-process host go to the CLI (stderr, or JSON notice
@@ -227,7 +228,8 @@ impl Backend for Shell {
             host_program: &program,
             interrupts: &interrupts,
             rules: ExitRules::default(),
-            // The second Ctrl+C kills child process groups and exits 130.
+            // The second Ctrl+C kills child process groups and ends the
+            // command at once, still with its final output (A§8.6).
             on_second_signal: None,
         };
         let request = Request {
@@ -237,6 +239,7 @@ impl Backend for Shell {
         let mut bridge = Bridge {
             events,
             notices: received,
+            replied: false,
         };
         let finish = host::request(cx, project, request, &route_opts(opts), &mut bridge);
         bridge.flush();
@@ -297,16 +300,20 @@ fn route_opts(opts: &RouteOpts) -> host::RouteOpts {
 /// The shell's request events, plus the toasts of an in-process host, into
 /// the CLI's [`Events`]. Toasts are passed on with the next event and when
 /// the request ends, so they come out in order with progress and before the
-/// reply.
+/// reply. Once the command's own reply is out, the host's later toasts are
+/// about requests of other clients it still serves: they aren't shown.
 struct Bridge<'e> {
     events: &'e mut dyn Events,
     notices: mpsc::Receiver<Toast>,
+    replied: bool,
 }
 
 impl Bridge<'_> {
     fn flush(&mut self) {
         while let Ok(toast) = self.notices.try_recv() {
-            self.events.notice(&toast);
+            if !self.replied {
+                self.events.notice(&toast);
+            }
         }
     }
 }
@@ -339,6 +346,13 @@ impl RequestEvents for Bridge<'_> {
         self.flush();
         self.events.progress(progress);
     }
+
+    fn replied(&mut self, reply: &Result<Value, CoreError>) {
+        // The command's own toasts (e.g. "your video is ready") first.
+        self.flush();
+        self.replied = true;
+        self.events.replied(reply);
+    }
 }
 
 /// Opens real Sessions for hosts and in-process commands.
@@ -362,7 +376,10 @@ impl Opener for ShellOpener {
         if matches!(opts.host, HostKind::Gui | HostKind::Headless) && !env.fake_backend {
             env.caps.gst_factory = Some(caps::gst_factory_probe);
         }
-        let capture: Box<dyn CaptureEngine> = if opts.mutating {
+        // Only hosts that record get the engine: a CLI command's own host
+        // never records (A§8.5), so a recording never runs inside a command
+        // someone started in a terminal.
+        let capture: Box<dyn CaptureEngine> = if opts.mutating && opts.host.records() {
             // GStreamer starts with the first live scene or take, so commands
             // that only need ffmpeg never initialize it.
             let mut engine = EngineOptions::new(dir, capture::Backend::from_env(), &env.dirs);

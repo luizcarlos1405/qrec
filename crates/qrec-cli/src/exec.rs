@@ -225,15 +225,20 @@ fn run_local(
 // ------------------------------------------------------------------- project
 
 /// Prints what happens while a request runs.
-struct Live<'u, 'a> {
+struct Live<'u, 'a, 'p> {
     ui: &'u mut Ui<'a>,
     /// The live host that served the request; `None` in-process.
     host: Option<HelloInfo>,
     /// [`ProjectPlan::streams`](crate::plan::ProjectPlan::streams).
     streams: bool,
+    /// How to show the reply when it comes early ([`Events::replied`]):
+    /// the plan and the project folder; `None` shows it only at the end.
+    show: Option<(&'p ProjectPlan, &'p Path)>,
+    /// The exit code of the reply already shown.
+    shown: Option<u8>,
 }
 
-impl Events for Live<'_, '_> {
+impl Events for Live<'_, '_, '_> {
     fn routed(&mut self, host: Option<&HelloInfo>) {
         self.host = host.cloned();
         match host {
@@ -261,6 +266,22 @@ impl Events for Live<'_, '_> {
 
     fn notice(&mut self, toast: &Toast) {
         self.ui.notice(toast);
+    }
+
+    /// An in-process command's result is shown as soon as it is known,
+    /// even while its process still hosts other clients' requests (A§8.5).
+    fn replied(&mut self, reply: &Result<Value, CoreError>) {
+        let Some((plan, dir)) = self.show else {
+            return;
+        };
+        if self.shown.is_some() {
+            return;
+        }
+        let code = match reply {
+            Ok(data) => render(plan, data.clone(), dir, self.host.as_ref(), self.ui),
+            Err(e) => self.ui.fail(e),
+        };
+        self.shown = Some(code);
     }
 }
 
@@ -307,26 +328,35 @@ fn run_project(
         ui: &mut *ui,
         host: None,
         streams: plan.streams,
+        show: Some((plan, dir)),
+        shown: None,
     };
     let finish = backend.request(dir, plan.request.clone(), &plan.route, &mut live);
-    let host = live.host;
-    match finish {
-        Finish::Reply(Ok(data)) => render(plan, data, dir, host.as_ref(), ui),
-        Finish::Reply(Err(e)) => ui.fail(&e),
-        Finish::NoHost => ui.fail(&needs_host(plan)),
-        Finish::Interrupted { reply } => interrupted(plan, reply, dir, host.as_ref(), ui),
+    let (host, shown) = (live.host, live.shown);
+    match (finish, shown) {
+        // Shown when it came (an in-process command whose process then
+        // went on serving other clients for a while).
+        (Finish::Reply(_), Some(code)) => code,
+        (Finish::Reply(Ok(data)), None) => render(plan, data, dir, host.as_ref(), ui),
+        (Finish::Reply(Err(e)), None) => ui.fail(&e),
+        (Finish::NoHost, _) => ui.fail(&needs_host(plan)),
+        (Finish::Interrupted { reply }, shown) => {
+            interrupted(plan, reply, shown.is_some(), dir, host.as_ref(), ui)
+        }
     }
 }
 
 /// Ctrl+C or SIGTERM stopped the request: exit 130 (A§8.6), and a warning
 /// for people on stderr. A command that finished (or committed) before the
-/// signal still shows its result. Otherwise `--json` still ends stdout with
-/// exactly one object (SPEC §14): an `interrupted` error whose hint says
-/// whether the host may still finish the request, with the host's own
-/// error (e.g. "export cancelled") in `details.reply`.
+/// signal still shows its result (once: `shown` says it is out already).
+/// Otherwise `--json` still ends stdout with exactly one object (SPEC
+/// §14): an `interrupted` error whose hint says whether the host may still
+/// finish the request, with the host's own error (e.g. "export cancelled")
+/// in `details.reply`.
 fn interrupted(
     plan: &ProjectPlan,
     reply: Option<Result<Value, CoreError>>,
+    shown: bool,
     dir: &Path,
     host: Option<&HelloInfo>,
     ui: &mut Ui<'_>,
@@ -334,12 +364,15 @@ fn interrupted(
     let what = plan.name.strip_prefix("qrec ").unwrap_or(&plan.name);
     let title = format!("{what} interrupted");
     let error = match reply {
+        _ if shown => None,
         Some(Ok(data)) => {
             render(plan, data, dir, host, ui);
             None
         }
-        Some(Err(e)) => Some(interrupted_error(&title, host).with_details(json!({ "reply": e }))),
-        None => Some(interrupted_error(&title, host)),
+        Some(Err(e)) => {
+            Some(interrupted_error(&title, plan, host).with_details(json!({ "reply": e })))
+        }
+        None => Some(interrupted_error(&title, plan, host)),
     };
     match error {
         Some(error) if ui.json => ui.fail(&error),
@@ -350,9 +383,22 @@ fn interrupted(
     }
 }
 
-/// The `interrupted` error (exit 130) of a request that got no answer.
-fn interrupted_error(message: &str, host: Option<&HelloInfo>) -> CoreError {
+/// The `interrupted` error (exit 130) of a request that got no answer. Its
+/// hint says what becomes of the request (A§5.8): a GUI host may still
+/// finish it, and so may any host for work that isn't a job of this
+/// command (a recording, an edit, a purge); headless and CLI hosts cancel
+/// the export, frame save or autocut of a command that stops.
+fn interrupted_error(message: &str, plan: &ProjectPlan, host: Option<&HelloInfo>) -> CoreError {
+    let job_ends = matches!(
+        &plan.request.body,
+        WireBody::Command(cmd) if cmd.job_ends_with_requester()
+    );
     let hint = match host {
+        Some(h) if job_ends && !h.host.keeps_orphaned_jobs() => format!(
+            "the {} host (pid {}) cancelled it when this command stopped; run the command again",
+            h.host.as_str(),
+            h.pid
+        ),
         Some(h) => format!(
             "the {} host (pid {}) may still finish it; check with `qrec status`",
             h.host.as_str(),
@@ -398,6 +444,9 @@ fn lazy_init(
         ui: &mut *ui,
         host: None,
         streams: false,
+        // Init's own reply becomes a notice below, never the command's.
+        show: None,
+        shown: None,
     };
     let finish = backend.request(dir, request, &RouteOpts::command(), &mut live);
     let host = live.host;
@@ -418,7 +467,7 @@ fn lazy_init(
             "creating the project needs no host, yet none was found",
         ))),
         // The command itself never ran.
-        Finish::Interrupted { .. } => Err(interrupted(plan, None, dir, host.as_ref(), ui)),
+        Finish::Interrupted { .. } => Err(interrupted(plan, None, false, dir, host.as_ref(), ui)),
     }
 }
 

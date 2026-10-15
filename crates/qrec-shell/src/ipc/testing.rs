@@ -681,6 +681,7 @@ pub(crate) fn quick_rules() -> ExitRules {
         unused_timeout: Duration::from_secs(5),
         signal_grace: Duration::from_secs(3),
         flush_timeout: Duration::from_secs(2),
+        hurry_grace: Duration::from_secs(1),
     }
 }
 
@@ -743,7 +744,7 @@ fn rules_from_env() -> ExitRules {
             idle_grace: Duration::from_millis(*idle),
             unused_timeout: Duration::from_millis(*unused),
             signal_grace: Duration::from_millis(*signal),
-            flush_timeout: Duration::from_secs(2),
+            ..quick_rules()
         },
         _ => quick_rules(),
     }
@@ -834,6 +835,8 @@ fn child_cli(log: &Path) -> u8 {
     let rules = rules_from_env();
     let program = test_host_program(log, &rules_env(&rules));
     let mut opener = FakeOpener::to_file(log);
+    // Its own jobs (in-process) may ignore cancellation too.
+    opener.stubborn = std::env::var_os(STUBBORN).is_some();
     let mut notices = Vec::new();
     let mut out = Collect::default();
     let exit = run_cli(

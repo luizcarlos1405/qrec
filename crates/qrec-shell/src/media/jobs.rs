@@ -1,13 +1,16 @@
 //! Running jobs and their cancellation (A§8.6, A§8.7): `cancel(job)` marks
 //! the job and stops its children (the child runner sends SIGTERM to each
 //! process group at once and SIGKILL after the grace period); the job thread
-//! then deletes its temp outputs and reports how it ended.
+//! then deletes its temp outputs and reports how it ended. Every temp output
+//! being written is also in a process-wide list, so a hard exit (a second
+//! signal in a headless host, A§8.6), which no job thread outlives, deletes
+//! them too ([`remove_temps_in_flight`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use qrec_core::JobId;
 
@@ -50,6 +53,7 @@ impl JobCtl {
 
     /// Remembers a temp file to delete if the job doesn't finish.
     pub(crate) fn add_temp(&self, path: PathBuf) {
+        in_flight().insert(path.clone());
         self.temps
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -57,24 +61,49 @@ impl JobCtl {
     }
 
     /// The temp file became an output (or is kept on purpose).
-    pub(crate) fn forget_temp(&self, path: &std::path::Path) {
+    pub(crate) fn forget_temp(&self, path: &Path) {
         self.temps
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .retain(|p| p != path);
+        in_flight().remove(path);
     }
 
     /// Deletes every remembered temp file (cancel, failure).
     pub(crate) fn remove_temps(&self) {
         let temps = std::mem::take(&mut *self.temps.lock().unwrap_or_else(PoisonError::into_inner));
         for path in temps {
-            match fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => tracing::warn!("can't delete the temp file {}: {e}", path.display()),
-            }
+            remove_temp(&path);
+            in_flight().remove(&path);
         }
     }
+}
+
+/// The temp outputs the jobs of this process are writing.
+static IN_FLIGHT: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+
+fn in_flight() -> MutexGuard<'static, BTreeSet<PathBuf>> {
+    IN_FLIGHT.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn remove_temp(path: &Path) {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => tracing::warn!("can't delete the temp file {}: {e}", path.display()),
+    }
+}
+
+/// Deletes the temp output of every job still running in this process
+/// (outputs already placed, or kept on purpose, are not in the list), for
+/// a process about to `_exit` with its children killed (A§8.6). Returns
+/// how many it deleted or found gone.
+pub fn remove_temps_in_flight() -> usize {
+    let temps = std::mem::take(&mut *in_flight());
+    for path in &temps {
+        remove_temp(path);
+    }
+    temps.len()
 }
 
 /// The running jobs. A job id may have several runs at once (an autocut
@@ -189,5 +218,31 @@ mod tests {
         ctl.cancel();
         ctl.resume();
         assert!(ctl.stop.is_set(), "a cancel can't");
+    }
+
+    /// A hard exit deletes what running jobs are writing: never an output
+    /// already placed (or kept), nor a temp a job already removed. (Other
+    /// tests' jobs share the process-wide list: only ours are looked at.)
+    #[test]
+    fn temps_in_flight_are_the_unfinished_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |name: &str| dir.path().join(name);
+        let ours = || -> BTreeSet<PathBuf> {
+            in_flight()
+                .iter()
+                .filter(|p| p.starts_with(dir.path()))
+                .cloned()
+                .collect()
+        };
+        let ctl = JobCtl::default();
+        ctl.add_temp(path("writing"));
+        ctl.add_temp(path("placed"));
+        ctl.forget_temp(&path("placed"));
+        let other = JobCtl::default();
+        other.add_temp(path("removed"));
+        other.remove_temps();
+        assert_eq!(ours(), BTreeSet::from([path("writing")]));
+        ctl.remove_temps();
+        assert!(ours().is_empty(), "a job that cleaned up leaves nothing");
     }
 }

@@ -2521,3 +2521,275 @@ fn a_double_tap_of_record_toggle_is_too_short_not_broken() {
         assert!(message.contains("was too short"), "{message}");
     }
 }
+
+// ------------------------------------------------------- review round 2
+
+/// A `qrec` run in the background: its output is read as it comes (a full
+/// pipe never blocks it) and it is killed if the test fails before it ends.
+struct Background {
+    child: std::process::Child,
+    stdout: Option<thread::JoinHandle<Vec<String>>>,
+    stderr: Option<thread::JoinHandle<String>>,
+}
+
+impl Background {
+    fn spawn(mut command: std::process::Command) -> Self {
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = child.stdout.take().unwrap();
+        let mut err = child.stderr.take().unwrap();
+        Self {
+            child,
+            stdout: Some(thread::spawn(move || {
+                BufReader::new(out).lines().map_while(Result::ok).collect()
+            })),
+            stderr: Some(thread::spawn(move || {
+                let mut text = String::new();
+                let _ = std::io::Read::read_to_string(&mut err, &mut text);
+                text
+            })),
+        }
+    }
+
+    fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// `kill -<signal>` to the `qrec` process alone (not its children).
+    fn signal(&self, signal: &str) {
+        let sent = std::process::Command::new("kill")
+            .args([format!("-{signal}"), self.pid().to_string()])
+            .status()
+            .unwrap();
+        assert!(sent.success());
+    }
+
+    /// Waits for the exit (at most `timeout`): its code, stdout lines and stderr.
+    fn finish(mut self, timeout: Duration) -> (Option<i32>, Vec<String>, String) {
+        let deadline = Instant::now() + timeout;
+        let status = loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "qrec (pid {}) didn't exit",
+                self.pid()
+            );
+            thread::sleep(Duration::from_millis(20));
+        };
+        let out = self.stdout.take().unwrap().join().unwrap();
+        let err = self.stderr.take().unwrap().join().unwrap();
+        (status.code(), out, err)
+    }
+}
+
+impl Drop for Background {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The 20 s, 720p fixture: an export of it takes a moment.
+fn long_take() -> MediaSpec {
+    MediaSpec::video(1280, 720, 30, 600).with_audio(48_000, 1, &[(0, 20_000)])
+}
+
+/// Temp outputs (`.<stem>.qrec-part-…`) left in the export and segment dirs.
+fn temp_outputs(dir: &Path) -> Vec<PathBuf> {
+    [dir.join("exports"), dir.join(".qrec/cache/segments")]
+        .iter()
+        .filter_map(|d| fs::read_dir(d).ok())
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().contains(".qrec-part-"))
+        .collect()
+}
+
+/// Polls `cond` every 10 ms; panics with `what` after `timeout`.
+fn wait_until(timeout: Duration, what: &str, mut cond: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while !cond() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// A command run in-process (an export, whose host another client used
+/// meanwhile) prints its result as soon as it has it and exits; a
+/// recording asked right then runs in a headless host of its own. It used
+/// to start inside the export's process, which then held its result back
+/// for as long as the take lasted and whose Ctrl+C stopped the take
+/// (A§8.5).
+#[test]
+fn a_recording_asked_as_a_command_finishes_gets_its_own_host() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "own-host", &[long_take()]);
+    let mut command = env.command(&qrec_bin());
+    command
+        .current_dir(&dir)
+        .args(["--json", "export", "--quality", "draft"]);
+    let export = Background::spawn(command);
+    // Another client uses its host meanwhile (an agent polling status).
+    wait_until(Duration::from_secs(60), "the export's host", || {
+        let status = qrec(&env, &dir, &["status", "--json"]);
+        status.code == Some(0) && status.reply()["data"]["pid"] == export.pid()
+    });
+    // The moment its file is placed, a recording is asked for.
+    let placed = || {
+        fs::read_dir(dir.join("exports")).is_ok_and(|entries| {
+            entries.filter_map(Result::ok).any(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                name.ends_with(".mp4") && !name.starts_with('.')
+            })
+        })
+    };
+    wait_until(Duration::from_secs(120), "the export", placed);
+    let start = qrec(&env, &dir, &["record", "start", "--json"]);
+    start.ok();
+    assert_eq!(start.only_reply()["data"]["result"]["take"], "take-0002");
+
+    // The export ended on its own with its one result: it never waited
+    // for the take.
+    let export_pid = export.pid();
+    let (code, out, _) = export.finish(Duration::from_secs(30));
+    assert_eq!(code, Some(0), "{out:?}");
+    let last: Value = serde_json::from_str(out.last().unwrap()).unwrap();
+    assert_eq!(last["ok"], true, "{out:?}");
+    assert!(last["data"]["result"]["path"].is_string(), "{last}");
+    assert_eq!(out.iter().filter(|l| l.starts_with(r#"{"ok""#)).count(), 1);
+    // The take records in a headless host.
+    let status = qrec(&env, &dir, &["status", "--json"]);
+    status.ok();
+    let data = &status.reply()["data"];
+    assert_eq!(data["host"], "headless", "{data}");
+    assert_ne!(data["pid"], export_pid);
+    assert_eq!(data["runtime"]["record"]["phase"], "recording", "{data}");
+    thread::sleep(Duration::from_millis(1500));
+    qrec(&env, &dir, &["record", "stop"]).ok();
+    wait_until_no_host(&env);
+}
+
+/// Ctrl+C twice on an in-process export whose ffmpeg doesn't die of
+/// SIGTERM: the second one kills it at once and the run still ends the
+/// normal way, with exactly one final object under --json (or a warning
+/// for people), no temp output left, exit 130 (A§4.9, A§8.6). It used to
+/// `_exit(130)` on the spot.
+#[test]
+fn a_second_ctrl_c_still_ends_the_run_properly() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    let dir = project_with(&env, "twice", &[long_take()]);
+    // An ffmpeg that, once done or stopped, lingers ignoring SIGTERM: only
+    // the SIGKILL 2 s after a cancel ends it.
+    let bin = env.root().join("stubborn-bin");
+    fs::create_dir(&bin).unwrap();
+    let wrapper = bin.join("ffmpeg");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\ntrap '' TERM INT\n'{}' \"$@\"\nstatus=$?\nsleep 30\nexit $status\n",
+            ffmpeg_on_path().display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let path =
+        std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(&path)))
+            .unwrap();
+    for json in [true, false] {
+        let mut command = env.command(&qrec_bin());
+        command.current_dir(&dir).env("PATH", &path);
+        if json {
+            command.arg("--json");
+        }
+        command.arg("export");
+        let run = Background::spawn(command);
+        // A segment is being rendered (its temp output exists).
+        wait_until(Duration::from_secs(60), "a segment", || {
+            !temp_outputs(&dir).is_empty()
+        });
+        run.signal("INT");
+        thread::sleep(Duration::from_millis(300));
+        let second = Instant::now();
+        run.signal("INT");
+        let (code, out, err) = run.finish(Duration::from_secs(20));
+        assert_eq!(code, Some(130), "{out:?}\n{err}");
+        assert!(
+            second.elapsed() < Duration::from_secs(8),
+            "{:?}",
+            second.elapsed()
+        );
+        if json {
+            let last: Value = serde_json::from_str(out.last().unwrap()).unwrap();
+            assert_eq!(last["ok"], false, "{out:?}");
+            assert_eq!(last["error"]["code"], "interrupted", "{last}");
+            assert_eq!(last["error"]["message"], "export interrupted");
+            assert!(
+                out[..out.len() - 1]
+                    .iter()
+                    .all(|l| l.starts_with(r#"{"event":"progress""#)),
+                "{out:?}"
+            );
+            assert!(
+                err.lines().all(|l| l.starts_with(r#"{"event":"notice""#)),
+                "--json keeps stderr for JSON lines: {err}"
+            );
+        } else {
+            assert!(err.contains("qrec: warning: export interrupted"), "{err}");
+        }
+        assert_eq!(temp_outputs(&dir), Vec::<PathBuf>::new(), "json: {json}");
+        let exports = fs::read_dir(dir.join("exports")).map_or(0, |d| d.count());
+        assert_eq!(exports, 0, "nothing was exported");
+        // The project is free again: no host was left behind.
+        qrec(&env, &dir, &["status", "--json"]).ok();
+    }
+}
+
+/// Ctrl+C on an export sent to a headless host: that host cancels the
+/// jobs of a requester that is gone (A§5.8), so the final object says it
+/// was cancelled, not that the host "may still finish it" (A§8.6).
+#[test]
+fn an_interrupted_export_routed_to_a_headless_host_says_it_was_cancelled() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "routed", &[long_take()]);
+    let mut command = env.command(&qrec_bin());
+    command.current_dir(&dir).args(["host", "--headless"]);
+    let host = Background::spawn(command);
+    wait_until(Duration::from_secs(30), "the headless host", || {
+        let status = qrec(&env, &dir, &["status", "--json"]);
+        status.code == Some(0) && status.reply()["data"]["host"] == "headless"
+    });
+    let mut command = env.command(&qrec_bin());
+    command.current_dir(&dir).args(["--json", "export"]);
+    let export = Background::spawn(command);
+    wait_until(Duration::from_secs(60), "a segment", || {
+        !temp_outputs(&dir).is_empty()
+    });
+    export.signal("INT");
+    let (code, out, _) = export.finish(Duration::from_secs(30));
+    assert_eq!(code, Some(130), "{out:?}");
+    let last: Value = serde_json::from_str(out.last().unwrap()).unwrap();
+    assert_eq!(last["error"]["code"], "interrupted", "{last}");
+    assert_eq!(
+        last["error"]["hint"],
+        format!(
+            "the headless host (pid {}) cancelled it when this command stopped; run the command again",
+            host.pid()
+        )
+        .as_str()
+    );
+    // And so it did: nothing was exported, no temp output is left, and the
+    // host idles out.
+    let (code, _, _) = host.finish(Duration::from_secs(30));
+    assert_eq!(code, Some(0));
+    assert_eq!(temp_outputs(&dir), Vec::<PathBuf>::new());
+    let exports = fs::read_dir(dir.join("exports")).map_or(0, |d| d.count());
+    assert_eq!(exports, 0);
+}

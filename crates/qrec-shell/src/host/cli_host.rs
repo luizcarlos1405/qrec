@@ -8,7 +8,11 @@
 //! - no host and [`Fallback::InProcess`] with the lock (commands) ⇒ this
 //!   process takes the lock and **is** the host (`HostKind::Cli`) until its
 //!   command is done: short commands finish at once, async ones keep serving
-//!   IPC so other commands run against the same Session (A§8.5);
+//!   IPC so other commands run against the same Session (A§8.5). Its reply
+//!   is reported as soon as it comes ([`RequestEvents::replied`]); then the
+//!   host takes no new job and exits once what it still runs for others is
+//!   over. It never takes a recording: that request bounces and its client
+//!   waits for the host to go, then spawns a headless one;
 //! - no host and [`Fallback::SpawnHeadless`] (`record start|toggle`) ⇒ take
 //!   the lock, hand it to a spawned headless host (A§8.3 step 5), send the
 //!   request there;
@@ -22,8 +26,9 @@
 //! The caller installs signal handlers first (`signals::install(&HOST_SIGNALS)`)
 //! and passes the counter: Ctrl+C on an IPC request closes the connection
 //! (exit 130; for `record … --wait` the first one stops the recording and
-//! the second detaches); in an in-process host the first finalizes a
-//! recording and cancels jobs, the second kills child processes and exits 130.
+//! the second detaches); in an in-process host the first cancels jobs, the
+//! second kills child processes and ends the request as soon as its jobs
+//! report it, so the caller still gets [`Finish::Interrupted`] (A§8.6).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -44,7 +49,7 @@ use crate::ipc::client::{
     stops_on_interrupt,
 };
 use crate::ipc::resolve::{Folder, classify, resolve_project};
-use crate::ipc::{RECORD_ROUTE_DEADLINE, ROUTE_DEADLINE};
+use crate::ipc::{RECORD_ROUTE_DEADLINE, ROUTE_DEADLINE, ROUTE_RETRY};
 use crate::lock::ProjectLock;
 use crate::msg::{Msg, Request, Responder};
 use crate::paths::{Env, ProjectPaths, UserDirs, ensure_runtime_dir, socket_path};
@@ -183,6 +188,11 @@ pub trait RequestEvents {
     fn accepted(&mut self);
     /// Progress of a long request (export, analysis, recording).
     fn progress(&mut self, progress: &Progress);
+    /// The reply of a request this process runs itself, as soon as it came
+    /// and before any signal (A§8.5): the process may go on hosting other
+    /// requests for a while, and the person shouldn't wait for those to see
+    /// their result. At most once; the same reply is in the [`Finish`].
+    fn replied(&mut self, reply: &Result<Value, CoreError>);
 }
 
 /// What running a request needs besides the request.
@@ -198,7 +208,8 @@ pub struct RequestContext<'a> {
     /// Exit rules of an in-process host.
     pub rules: ExitRules,
     /// The second signal in an in-process host; `None` kills the child
-    /// process groups and exits 130.
+    /// process groups and ends the request as soon as its jobs report it
+    /// (a watchdog exits 130 if that hangs, [`HostOptions::on_second_signal`]).
     pub on_second_signal: Option<Box<dyn FnOnce() + Send>>,
 }
 
@@ -215,6 +226,7 @@ pub fn request(
     let mut sink = EventsSink {
         events,
         reply: None,
+        settled: false,
     };
     match run_request(&mut cx, project, &request, opts, &mut sink) {
         Ran::Replied => Finish::Reply(
@@ -231,12 +243,17 @@ pub fn request(
 trait Sink {
     fn routed(&mut self, host: Option<&HelloInfo>);
     fn out(&mut self) -> &mut dyn Replies;
+    /// The reply `out` got is final and came before any signal, while this
+    /// process may go on hosting others' requests: report it now.
+    fn settled(&mut self) {}
 }
 
-/// [`request`]'s sink: events as they come, the reply kept for [`Finish`].
+/// [`request`]'s sink: events as they come, the reply kept for [`Finish`]
+/// (and reported early once settled).
 struct EventsSink<'e> {
     events: &'e mut dyn RequestEvents,
     reply: Option<Result<Value, CoreError>>,
+    settled: bool,
 }
 
 impl Replies for EventsSink<'_> {
@@ -260,6 +277,13 @@ impl Sink for EventsSink<'_> {
 
     fn out(&mut self) -> &mut dyn Replies {
         self
+    }
+
+    fn settled(&mut self) {
+        if let Some(reply) = self.reply.as_ref().filter(|_| !self.settled) {
+            self.settled = true;
+            self.events.replied(reply);
+        }
     }
 }
 
@@ -307,8 +331,8 @@ pub struct CliContext<'a> {
     pub notice: &'a mut dyn FnMut(&str),
     /// Exit rules of an in-process host.
     pub rules: ExitRules,
-    /// The second signal in an in-process host; `None` kills the child
-    /// process groups and exits 130.
+    /// The second signal in an in-process host (see
+    /// [`RequestContext::on_second_signal`]).
     pub on_second_signal: Option<Box<dyn FnOnce() + Send>>,
 }
 
@@ -463,28 +487,51 @@ fn run_request(
                 socket: host_socket,
                 hello,
             }) => {
-                let pid = hello.as_ref().map(|h| h.pid);
-                if reported != Some(pid) {
-                    reported = Some(pid);
-                    sink.routed(hello.as_deref());
-                }
-                let mut send = SendOpts::new(cx.interrupts);
-                send.baseline = baseline;
-                send.stop_on_interrupt = opts.stop_on_interrupt;
-                match send_request(&host_socket, req, sink.out(), &send) {
+                // A CLI command's own host never records (A§8.5): don't
+                // even ask it (it would bounce the request); wait for it to
+                // go like for a bounce, then start a headless host.
+                let refused = hello.as_deref().is_some_and(|h| h.host == HostKind::Cli)
+                    && matches!(&req.body, WireBody::Command(cmd) if cmd.may_start_recording());
+                let sent = if refused {
+                    Err(SendError::NotAccepted)
+                } else {
+                    let pid = hello.as_ref().map(|h| h.pid);
+                    if reported != Some(pid) {
+                        reported = Some(pid);
+                        sink.routed(hello.as_deref());
+                    }
+                    let mut send = SendOpts::new(cx.interrupts);
+                    send.baseline = baseline;
+                    send.stop_on_interrupt = opts.stop_on_interrupt;
+                    send_request(&host_socket, req, sink.out(), &send)
+                };
+                match sent {
                     Ok(Sent::Replied) => return Ran::Replied,
                     Ok(Sent::Interrupted) => return Ran::Interrupted,
                     // EOF before `accepted`: it never ran (the host stopped
-                    // accepting as we connected). Route again, like for a
-                    // host that is starting or stopping, until the deadline
-                    // (given once more from the first bounce) passes.
+                    // accepting as we connected, or it is a CLI command's
+                    // own host, which bounces recordings, and new jobs once
+                    // its command is done, A§8.5). Route again after a
+                    // pause, like for a host that is starting or stopping,
+                    // until the deadline (given once more from the first
+                    // bounce) passes.
                     Err(SendError::NotAccepted) if Instant::now() < deadline || !extended => {
                         if !extended {
                             extended = true;
                             deadline = deadline.max(Instant::now() + opts.deadline);
                         }
+                        let pause =
+                            ROUTE_RETRY.min(deadline.saturating_duration_since(Instant::now()));
+                        if cx.interrupts.wait_past(baseline, pause) > baseline {
+                            return Ran::Interrupted;
+                        }
                     }
                     Err(e) => {
+                        if e == SendError::NotAccepted
+                            && let Some(cli) = hello.as_deref().filter(|h| h.host == HostKind::Cli)
+                        {
+                            return reply_err(sink.out(), bounced_by_cli_host(cli, req));
+                        }
                         let log = host_log(&paths, cx.env, hello.as_deref(), spawned.as_ref());
                         return reply_err(sink.out(), send_failure(e, hello.as_deref(), log));
                     }
@@ -556,7 +603,7 @@ fn run_request(
                         recovery: opts.recovery,
                         baseline,
                     };
-                    return run_in_process(cx, lock, &in_process, req, sink.out());
+                    return run_in_process(cx, lock, &in_process, req, sink);
                 }
                 Fallback::None => {
                     drop(lock);
@@ -588,7 +635,7 @@ fn run_read_only(
         Ok(session) => session,
         Err(e) => return reply_err(out, e.to_core()),
     };
-    let (mut own, responder) = OwnRequest::new();
+    let (mut own, responder) = OwnRequest::new(|| {});
     if !session.inbox().send(Msg::Request {
         req: req.clone(),
         to: Box::new(responder),
@@ -618,13 +665,15 @@ struct InProcess<'a> {
     baseline: usize,
 }
 
-/// No host and a command: this process becomes the host (A§8.5).
+/// No host and a command: this process becomes the host (A§8.5). Its own
+/// reply is reported as soon as it comes (`Sink::settled`), before the
+/// host is done serving others; from then on it takes no new job.
 fn run_in_process(
     cx: &mut RequestContext<'_>,
     lock: ProjectLock,
     at: &InProcess<'_>,
     req: &Request,
-    out: &mut dyn Replies,
+    sink: &mut dyn Sink,
 ) -> Ran {
     let InProcess {
         paths,
@@ -638,10 +687,10 @@ fn run_in_process(
     // qrec.json: `history restore` rebuilds it, A§7.7).
     match classify(dir, true) {
         Ok(Folder::Project | Folder::MissingFile | Folder::Empty) => {}
-        Ok(Folder::Other) => return reply_err(out, CoreError::not_project()),
+        Ok(Folder::Other) => return reply_err(sink.out(), CoreError::not_project()),
         Err(e) => {
             return reply_err(
-                out,
+                sink.out(),
                 CoreError::io(format!("can't read {}: {e}", dir.display())),
             );
         }
@@ -654,7 +703,7 @@ fn run_in_process(
     };
     let host = match Host::start(HostKind::Cli, paths.clone(), lock, socket, opts) {
         Ok(host) => host,
-        Err(e) => return reply_err(out, e),
+        Err(e) => return reply_err(sink.out(), e),
     };
     let open = OpenOpts {
         host: HostKind::Cli,
@@ -671,24 +720,36 @@ fn run_in_process(
             let e = e.to_core();
             host.server.fail(e.clone());
             host.finish(None, e.clone());
-            return reply_err(out, e);
+            return reply_err(sink.out(), e);
         }
     };
     host.attach(session.inbox());
     // A§8.6: interrupted before it started (while the Session opened), the
-    // command never runs; the host only winds down.
+    // command never runs; the host only winds down. Once its command is
+    // answered the host takes no new job, from the moment of the reply (the
+    // session thread sends it).
     let mut own = if host.signalled() {
         OwnRequest::unanswered()
     } else {
-        let (own, responder) = OwnRequest::new();
+        let server = host.server.sender();
+        let (own, responder) = OwnRequest::new(move || server.own_command_done());
         host.server.send(Msg::Request {
             req: req.clone(),
             to: Box::new(responder),
         });
         own
     };
+    let interrupts = cx.interrupts.clone();
     let end = {
-        let mut forward = || own.forward(out);
+        let mut forward = || {
+            let replied = own.forward(sink.out());
+            // Answered before any signal: the person sees it now, not once
+            // the host is done with requests from other clients (A§8.5).
+            if replied && interrupts.count() <= baseline {
+                sink.settled();
+            }
+            replied
+        };
         host.serve(&mut *session, Some(&mut forward))
     };
     let signalled = host.signalled() || end.signalled();
@@ -696,13 +757,16 @@ fn run_in_process(
         Some(session),
         CoreError::io("the qrec command hosting this project is exiting"),
     );
-    let replied = own.forward(out);
+    let replied = own.forward(sink.out());
     if signalled {
         Ran::Interrupted
     } else if replied {
         Ran::Replied
     } else {
-        reply_err(out, CoreError::io("the host stopped before answering"))
+        reply_err(
+            sink.out(),
+            CoreError::io("the host stopped before answering"),
+        )
     }
 }
 
@@ -724,14 +788,21 @@ enum OwnEvent {
 struct ProxyResponder {
     tx: Sender<OwnEvent>,
     replied: bool,
+    /// Runs with the reply, on the session thread.
+    on_reply: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl OwnRequest {
-    fn new() -> (OwnRequest, ProxyResponder) {
+    /// `on_reply` runs when the Session answers (or drops) the request.
+    fn new(on_reply: impl FnOnce() + Send + 'static) -> (OwnRequest, ProxyResponder) {
         let (tx, rx) = crossbeam_channel::unbounded();
         (
             OwnRequest { rx, replied: false },
-            ProxyResponder { tx, replied: false },
+            ProxyResponder {
+                tx,
+                replied: false,
+                on_reply: Some(Box::new(on_reply)),
+            },
         )
     }
 
@@ -770,6 +841,9 @@ impl Responder for ProxyResponder {
     fn reply(&mut self, r: Result<Value, CoreError>) {
         if !self.replied {
             self.replied = true;
+            if let Some(on_reply) = self.on_reply.take() {
+                on_reply();
+            }
             let _ = self.tx.send(OwnEvent::Reply(r));
         }
     }
@@ -778,14 +852,35 @@ impl Responder for ProxyResponder {
 impl Drop for ProxyResponder {
     fn drop(&mut self) {
         if !self.replied {
-            let _ = self.tx.send(OwnEvent::Reply(Err(CoreError::io(
+            self.reply(Err(CoreError::io(
                 "the Session dropped the request without an answer",
-            ))));
+            )));
         }
     }
 }
 
 // --------------------------------------------------------------- errors
+
+/// The routing deadline passed while a CLI command's own host kept
+/// bouncing the request (A§8.5): it never records, and takes no new job
+/// once its own command is done.
+fn bounced_by_cli_host(hello: &HelloInfo, req: &Request) -> CoreError {
+    let (what, again) = match &req.body {
+        WireBody::Command(cmd) if cmd.may_start_recording() => (
+            "doesn't record",
+            "record again once it finishes (`qrec status` shows it)",
+        ),
+        _ => (
+            "takes no new job while it finishes",
+            "run this again once it finishes",
+        ),
+    };
+    CoreError::busy(format!(
+        "the project is held by another qrec command (pid {}), which {what}",
+        hello.pid
+    ))
+    .with_hint(again)
+}
 
 /// The error for a request that got no reply over IPC (A§8.3 step 6).
 fn send_failure(e: SendError, hello: Option<&HelloInfo>, log: Option<PathBuf>) -> CoreError {
@@ -925,19 +1020,58 @@ mod tests {
 
     #[test]
     fn own_request_forwards_once() {
-        let (mut own, mut responder) = OwnRequest::new();
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = |calls: &Arc<AtomicUsize>| {
+            let calls = Arc::clone(calls);
+            move || {
+                calls.fetch_add(1, Ordering::SeqCst);
+            }
+        };
+        let (mut own, mut responder) = OwnRequest::new(counter(&calls));
         let mut out = crate::ipc::testing::Collect::default();
         assert!(!own.forward(&mut out));
         responder.accepted();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
         responder.reply(Ok(Value::Null));
         responder.reply(Err(CoreError::internal("again")));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "told once, with the reply");
         assert!(own.forward(&mut out));
         assert_eq!((out.accepted, out.replies.len()), (1, 1));
-        // Dropped without a reply: an error reply.
-        let (mut own, responder) = OwnRequest::new();
+        // Dropped without a reply: an error reply, and the host is told.
+        let (mut own, responder) = OwnRequest::new(counter(&calls));
         drop(responder);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
         let mut out = crate::ipc::testing::Collect::default();
         assert!(own.forward(&mut out));
         assert!(out.reply().is_err());
+    }
+
+    #[test]
+    fn a_cli_host_that_keeps_bouncing_is_named() {
+        let hello = HelloInfo {
+            pid: 42,
+            project_dir: "/p".into(),
+            project_dir_hex: None,
+            host: HostKind::Cli,
+            record: qrec_core::RecordPhase::Idle,
+            jobs: vec![],
+            version: VERSION.into(),
+        };
+        let record = command(Command::RecordToggle { wait: false });
+        let e = bounced_by_cli_host(&hello, &record);
+        assert_eq!(e.code, qrec_core::ErrorCode::Busy);
+        assert_eq!(
+            e.message,
+            "the project is held by another qrec command (pid 42), which doesn't record"
+        );
+        assert!(e.hint.unwrap().starts_with("record again once it finishes"));
+        let export = command(Command::ExportCancel { job: None });
+        assert!(
+            bounced_by_cli_host(&hello, &export)
+                .message
+                .ends_with("which takes no new job while it finishes")
+        );
     }
 }

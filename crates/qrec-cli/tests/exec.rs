@@ -26,6 +26,9 @@ struct Script {
     routed: Option<HelloInfo>,
     progress: Vec<Progress>,
     notices: Vec<Toast>,
+    /// The reply in the finish also comes early, as an in-process command's
+    /// does while its process goes on hosting others ([`Events::replied`]).
+    early: bool,
     finish: Finish,
 }
 
@@ -35,6 +38,7 @@ impl Script {
             routed: None,
             progress: vec![],
             notices: vec![],
+            early: false,
             finish: Finish::Reply(Ok(data)),
         }
     }
@@ -136,6 +140,15 @@ impl Backend for Fake {
         }
         for t in &script.notices {
             events.notice(t);
+        }
+        if script.early {
+            match &script.finish {
+                Finish::Reply(reply)
+                | Finish::Interrupted {
+                    reply: Some(reply), ..
+                } => events.replied(reply),
+                _ => {}
+            }
         }
         script.finish
     }
@@ -712,6 +725,7 @@ fn export_streams_progress_then_one_object() {
             )
             .with_action("Copy path", UiAction::CopyText("/v/out.mp4".into())),
         ],
+        early: false,
         finish: Finish::Reply(Ok(result(
             "Exported exports/p-20261014-120000.mp4",
             None,
@@ -765,6 +779,7 @@ fn only_streaming_commands_print_progress_lines() {
             progress(ProgressPhase::Finalize, 0, 0, "Finalizing take 1"),
         ],
         notices: vec![],
+        early: false,
         finish: Finish::Reply(Ok(result(
             "Recorded take 1 (2.0 s)",
             Some(1),
@@ -798,6 +813,7 @@ fn ctrl_c_exits_130() {
         routed: None,
         progress: vec![progress(ProgressPhase::Render, 1, 10, "Rendering clip 1/1")],
         notices: vec![],
+        early: false,
         finish: Finish::Interrupted { reply: None },
     });
     let run1 = run(&mut fake, &project, "qrec export");
@@ -820,6 +836,7 @@ fn ctrl_c_under_json_still_ends_with_one_object() {
         routed,
         progress: vec![progress(ProgressPhase::Render, 1, 10, "Rendering clip 1/1")],
         notices: vec![],
+        early: false,
         finish: Finish::Interrupted { reply },
     };
     let cancelled = CoreError::invalid("export cancelled");
@@ -858,12 +875,13 @@ fn ctrl_c_under_json_still_ends_with_one_object() {
         serde_json::to_value(&cancelled).unwrap()
     );
 
-    // Routed to a live host: it may still finish the request.
+    // Routed to a headless host: it cancels the export of a command that
+    // stops (A§5.8), so nobody should wait for it.
     let routed = run(&mut fake, &project, "qrec --json export");
     let last = routed.json_lines().pop().unwrap();
     assert_eq!(
         last["error"]["hint"],
-        "the headless host (pid 41) may still finish it; check with `qrec status`"
+        "the headless host (pid 41) cancelled it when this command stopped; run the command again"
     );
 
     // A command that streams nothing prints exactly that one object.
@@ -889,6 +907,7 @@ fn ctrl_c_after_the_reply_still_shows_it() {
         routed: None,
         progress: vec![],
         notices: vec![],
+        early: false,
         finish: Finish::Interrupted {
             reply: Some(Ok(done.clone())),
         },
@@ -909,6 +928,126 @@ fn ctrl_c_after_the_reply_still_shows_it() {
     assert_eq!(human.err, "qrec: warning: autocut interrupted\n");
 }
 
+/// What becomes of an interrupted request depends on its host (A§5.8): a
+/// GUI keeps a job running, headless and CLI hosts cancel the export, frame
+/// save or autocut of a command that stops; other work (an edit, a purge, a
+/// recording) may still be done.
+#[test]
+fn the_interrupted_hint_says_what_the_host_does_with_it() {
+    let tmp = Tmp::new();
+    let project = tmp.project("p");
+    let cases = [
+        (HostKind::Headless, "qrec --json export", true),
+        (HostKind::Cli, "qrec --json frame save --at 1f", true),
+        (HostKind::Headless, "qrec --json autocut --all", true),
+        (HostKind::Gui, "qrec --json export", false),
+        (
+            HostKind::Headless,
+            "qrec --json project set --name zz",
+            false,
+        ),
+        (
+            HostKind::Headless,
+            "qrec --json take purge take-0001 --yes",
+            false,
+        ),
+        (HostKind::Headless, "qrec --json record start", false),
+    ];
+    for (host, line, cancelled) in cases {
+        let mut fake = Fake::new(&tmp.dir("cfg")).script(Script {
+            routed: Some(hello(&project, host, 41)),
+            progress: vec![],
+            notices: vec![],
+            early: false,
+            finish: Finish::Interrupted { reply: None },
+        });
+        let run1 = run(&mut fake, &project, line);
+        assert_eq!(run1.code, EXIT_INTERRUPTED, "{line}");
+        let error = &run1.json_lines().pop().unwrap()["error"];
+        assert_eq!(error["code"], "interrupted", "{line}");
+        let expected = if cancelled {
+            format!(
+                "the {} host (pid 41) cancelled it when this command stopped; run the command again",
+                host.as_str()
+            )
+        } else {
+            format!(
+                "the {} host (pid 41) may still finish it; check with `qrec status`",
+                host.as_str()
+            )
+        };
+        assert_eq!(error["hint"], expected.as_str(), "{line}");
+    }
+}
+
+/// An in-process command shows its result as soon as it has it, while its
+/// process may still host other clients' requests (A§8.5), and exactly
+/// once: the finish carries the same reply.
+#[test]
+fn an_early_reply_is_shown_once() {
+    let tmp = Tmp::new();
+    let project = tmp.project("p");
+    let done = result(
+        "Exported exports/p.mp4",
+        None,
+        &[],
+        json!({"path": "/v/p/exports/p.mp4", "bytes": 10, "frames": 3}),
+    );
+    let early = |finish: Finish| Script {
+        routed: None,
+        progress: vec![progress(ProgressPhase::Render, 1, 3, "Rendering clip 1/1")],
+        notices: vec![],
+        early: true,
+        finish,
+    };
+    let mut fake = Fake::new(&tmp.dir("cfg"))
+        .script(early(Finish::Reply(Ok(done.clone()))))
+        .script(early(Finish::Interrupted {
+            reply: Some(Ok(done.clone())),
+        }))
+        .script(early(Finish::Interrupted {
+            reply: Some(Ok(done.clone())),
+        }))
+        .script(early(Finish::Reply(Err(CoreError::busy(
+            "an export is running",
+        )))));
+
+    let ok = run(&mut fake, &project, "qrec --json export");
+    assert_eq!(ok.code, 0);
+    let lines = ok.json_lines();
+    assert_eq!(lines.len(), 2, "{}", ok.out);
+    assert_eq!(lines[1], json!({"ok": true, "data": done}));
+
+    // Ctrl+C after it was shown (the process was still hosting others):
+    // nothing more on stdout, a warning, exit 130.
+    let json_run = run(&mut fake, &project, "qrec --json export");
+    assert_eq!(json_run.code, EXIT_INTERRUPTED);
+    let lines = json_run.json_lines();
+    assert_eq!(lines.len(), 2, "{}", json_run.out);
+    assert_eq!(lines[1], json!({"ok": true, "data": done}));
+    let notice: Value = serde_json::from_str(json_run.err.trim()).unwrap();
+    assert_eq!(notice["title"], "export interrupted");
+    let human = run(&mut fake, &project, "qrec export");
+    assert_eq!(human.code, EXIT_INTERRUPTED);
+    assert_eq!(
+        human.out.matches("Exported exports/p.mp4").count(),
+        1,
+        "{}",
+        human.out
+    );
+    assert!(
+        human.err.ends_with("qrec: warning: export interrupted\n"),
+        "{}",
+        human.err
+    );
+
+    let failed = run(&mut fake, &project, "qrec --json export");
+    assert_eq!(failed.code, 6);
+    let lines = failed.json_lines();
+    assert_eq!(lines.len(), 2, "{}", failed.out);
+    assert_eq!(lines[1]["error"]["code"], "busy");
+}
+
 /// Interrupted while creating the project for its first change: the
 /// command never ran.
 #[test]
@@ -919,6 +1058,7 @@ fn ctrl_c_during_lazy_init() {
         routed: None,
         progress: vec![],
         notices: vec![],
+        early: false,
         finish: Finish::Interrupted { reply: None },
     });
     let run1 = run(&mut fake, &empty, "qrec --json undo");

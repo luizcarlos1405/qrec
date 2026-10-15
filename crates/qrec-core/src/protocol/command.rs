@@ -307,6 +307,40 @@ impl Command {
         )
     }
 
+    /// `record start` or `record toggle`: may start a recording, which only
+    /// a GUI or a headless host runs, never a CLI command's own (A§5.3, A§8.5).
+    pub fn may_start_recording(&self) -> bool {
+        matches!(
+            self,
+            Command::RecordStart { .. } | Command::RecordToggle { .. }
+        )
+    }
+
+    /// May start a job (A§5.8): an export, a frame save, an autocut analysis
+    /// or a purge. A CLI command's host takes none once its own command is
+    /// done (A§8.5).
+    pub fn may_start_job(&self) -> bool {
+        matches!(
+            self,
+            Command::Export { .. }
+                | Command::FrameSave { .. }
+                | Command::Autocut { .. }
+                | Command::TakePurge { .. }
+        )
+    }
+
+    /// Its job stops when its requester goes away in a host that doesn't
+    /// keep orphaned jobs ([`HostKind::keeps_orphaned_jobs`], A§5.8):
+    /// exports, frame saves and autocut analysis. A purge always finishes.
+    ///
+    /// [`HostKind::keeps_orphaned_jobs`]: crate::state::HostKind::keeps_orphaned_jobs
+    pub fn job_ends_with_requester(&self) -> bool {
+        matches!(
+            self,
+            Command::Export { .. } | Command::FrameSave { .. } | Command::Autocut { .. }
+        )
+    }
+
     /// `R`: accepted while `phase` isn't `Idle` (A§5.3). `TakeDiscardLast`
     /// only while finalizing.
     pub fn allowed_while_recording(&self, phase: &RecordPhase) -> bool {

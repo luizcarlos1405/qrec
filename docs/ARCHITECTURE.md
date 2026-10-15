@@ -694,7 +694,7 @@ including `Play`, `Undo` and `Export`, is `Busy` (SPEC §5.3.3).
 
 | Phase | Input | Result |
 | --- | --- | --- |
-| Idle | Start/Toggle | `Busy` if an export runs; `Invalid` if the scene is empty; Over needs contiguous existing clips (stored as `ClipRef`s; `OverSelection` resolves `ui.selection` and is `Unavailable` without a selection). countdown > 0 ⇒ Countdown + `StartTimer`; else begin take ⇒ Starting |
+| Idle | Start/Toggle | `Busy` in a CLI command's own host (`HostKind::Cli` never records, A§8.5) or if an export runs; `Invalid` if the scene is empty; Over needs contiguous existing clips (stored as `ClipRef`s; `OverSelection` resolves `ui.selection` and is `Unavailable` without a selection). countdown > 0 ⇒ Countdown + `StartTimer`; else begin take ⇒ Starting |
 | Idle | Stop/Cancel | `Invalid` "not recording" |
 | Countdown | TimerFired (current timer) | next tick, or begin take ⇒ Starting |
 | Countdown | Stop/Toggle/Cancel | `CancelTimer` ⇒ Idle; start req gets `Invalid` "countdown cancelled"; caller gets Ok |
@@ -837,7 +837,10 @@ its own plan (a snapshot), so editing continues during an export
 (SPEC §13.1). Export progress = `0.9·Σseg_done/total + 0.1·stitch`,
 ETA from `ctx.now − started`, `label` "Rendering clip 4/12" / "Stitching".
 `RequesterGone`: clear `job.req`; in Headless/Cli hosts cancel the jobs that
-requester started if no other requester waits; never stop a recording.
+requester started if no other requester waits (exports and frame saves are
+cancelled, autocut analysis dropped, a purge finishes); never stop a
+recording. Only a GUI keeps an orphaned job (`HostKind::keeps_orphaned_jobs`);
+the CLI's interrupted hint follows the same rule (A§8.6).
 
 ### A§5.9 Export and frame-save commands
 
@@ -1187,10 +1190,14 @@ Cli) and serves the socket.
    request found the host gone reports that error and its hint (plus the
    log path), not "exited right after starting".
 6. **Protocol safety:** the host sends `{"id","accepted":true}` once parsed.
-   EOF before `accepted` ⇒ the request never ran: route again, like for a
-   starting or stopping host, until the deadline (given once more from the
-   first bounce); EOF after ⇒ exit 1 "host disconnected" with the log path
-   (never retry: it may have run).
+   EOF before `accepted` ⇒ the request never ran: route again after 50 ms,
+   like for a starting or stopping host, until the deadline (given once
+   more from the first bounce); EOF after ⇒ exit 1 "host disconnected"
+   with the log path (never retry: it may have run). A host also bounces
+   this way what it doesn't take: a CLI command's own host bounces
+   recordings, and new jobs once its command is answered (A§8.5). Past the
+   deadline the CLI says so (`Busy` "the project is held by another qrec
+   command (pid N), which doesn't record").
 7. Peers must have our uid (`SO_PEERCRED`). Request lines are capped at 1 MiB
    with a 5 s read timeout; each connection has a bounded 64-message queue
    (progress coalesced, replies never dropped) and a 10 s write timeout.
@@ -1228,15 +1235,34 @@ IPC so other commands run against the same Session (SPEC §13.1 "editing can
 continue"). `seek`/`play`/`pause`/`shuttle` without a GUI host ⇒
 `Unavailable`.
 
+Such a host belongs to a command someone is waiting for in a terminal, so
+nothing of anyone else's may be tied to it for long:
+
+- **It never records** (SPEC §4.3: a recording runs in a setsid'd headless
+  host). The core refuses Start/Toggle there (`Busy`, A§5.3), the shell
+  gives it no capture engine, and its server bounces `record start|toggle`
+  before `accepted` (A§8.3 step 6; the CLI, seeing `host: "cli"` in
+  `hello`, doesn't even send them): the client routes again every 50 ms
+  until that command is gone (≤ 20 s), then spawns its own headless host.
+- **Its result comes at once.** The command's reply is printed as soon as
+  it comes (`RequestEvents::replied`), even while the process still runs
+  other clients' requests; a signal after that only adds the stderr warning
+  and exit 130 (A§8.6).
+- **Once answered it takes no new job** (export, frame save, autocut,
+  purge: bounced like a recording, `IpcServer::own_command_done`), keeps
+  serving queries and quick edits, and exits as soon as what it still runs
+  for others is over and no connection is open: no idle grace (A§8.6).
+
 ### A§8.6 Hosts: exit, signals, GUI start
 
 - Exit (Headless and Cli): once Idle + no running jobs + no recovery probe
   out (`runtime.recovering`, `Runtime::is_busy`) + no open connections has
   held for 2 s, or (Headless) 60 s after `ready` without a request. An
-  in-process command whose host nobody else used exits as soon as it is
-  answered and nothing is busy (so it finishes the startup recovery it
-  began, A§5.3: its answer would otherwise be lost and the take would stay
-  `recording`). `shutdown` requests: stop accepting, let jobs finish, exit.
+  in-process command's host exits as soon as its command is answered,
+  nothing is busy and no connection is open, whoever else used it (A§8.5;
+  it still finishes the startup recovery it began, A§5.3: its answer would
+  otherwise be lost and the take would stay `recording`). `shutdown`
+  requests: stop accepting, let jobs finish, exit.
 - Signals in every host: the first SIGTERM/SIGINT/SIGHUP dispatches
   `RecordStop` (finalize, not cancel) and cancels jobs; exit when idle or
   after 15 s (a recovery probe still out counts as busy only that long).
@@ -1246,20 +1272,34 @@ continue"). `seek`/`play`/`pause`/`shuttle` without a GUI host ⇒
   arriving later get `busy` "this Qrec host is stopping" — except the ones
   that stop something (`RecordStop`, `RecordCancel`, `ExportCancel`, a
   `RecordToggle` that stops), and an in-process host never sends its own
-  command once signalled. A second signal: SIGKILL child process groups,
-  `_exit(130)`; startup recovery handles the take.
+  command once signalled. A second signal SIGKILLs the child process
+  groups. A headless (or GUI) host then deletes the temp outputs of its
+  running jobs and `_exit(130)`s; startup recovery handles the take. An
+  in-process command (someone reads its output) instead stops serving as
+  soon as its jobs report the end of their killed children (they delete
+  their temps), at most 2 s later (`ExitRules::hurry_grace`; whatever is
+  left is killed and its temps deleted then), so it still ends the normal
+  way below; a watchdog `_exit(130)`s 5 s after the second signal if the
+  process is still there.
 - Client CLI: SIGINT/SIGTERM (signal-hook) → `Msg::Interrupt`. In-process: the
   first cancels running jobs (SIGTERM to each child group, SIGKILL after 2 s),
-  deletes temp outputs, exits 130; the second SIGKILLs and exits 130.
+  deletes temp outputs, exits 130; the second SIGKILLs them at once, and the
+  run still ends as below with exit 130.
   IPC-routed: Ctrl+C closes the connection and exits 130; for `record --wait`
   the first Ctrl+C sends `RecordStop` on a second connection and keeps
   streaming until finalized, a second detaches (two presses count as two
   even when they arrive together). Under `--json` an interrupted run still
   ends stdout with one object: the reply when one came before the signal (a
-  command that finished or committed), else
+  command that finished or committed; printed only once, also when it was
+  printed as it came, A§8.5), else
   `{"ok":false,"error":{"code":"interrupted",…}}` whose hint says whether
   the host may still finish it, with the host's own error (e.g. "export
-  cancelled") in `details.reply`; people get a warning on stderr. Stdout is
+  cancelled") in `details.reply`. The hint follows A§5.8: in-process, the
+  jobs were cancelled and their temps deleted; a headless or CLI host
+  "cancelled it when this command stopped; run the command again" for an
+  export, frame save or autocut; otherwise (a GUI host, or a recording,
+  edit or purge) "the … host (pid N) may still finish it". People get a
+  warning on stderr. Stdout is
   written with `writeln!`; `BrokenPipe` exits quietly, any other write
   error (a full disk) is said on stderr and makes a run that would exit 0
   exit 1.
@@ -1743,5 +1783,7 @@ Program; theme tokens from `crates/qrec-gui/resources/theme/*.css`;
 5. Hand edits can't remove takes or lower `nextTakeNumber`; those parts of an
    external edit are ignored with a warning (A§7.4).
 6. In-process CLI commands become temporary hosts while they run jobs
-   (A§8.5).
+   (A§8.5). They never record (a recording asked meanwhile waits for them,
+   ≤ 20 s, then gets its own headless host), print their result as soon as
+   they have it, and take no new job once answered.
 7. Export quality presets for Draft and High (A§9.3).

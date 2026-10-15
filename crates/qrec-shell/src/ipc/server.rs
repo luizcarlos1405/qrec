@@ -15,6 +15,11 @@
 //! `shutdown` is handled here: stop accepting, unlink the socket, tell the
 //! host ([`ServerEvent::Shutdown`]), reply.
 //!
+//! A CLI command's own host (A§8.5) bounces what it doesn't take: closed
+//! before `accepted`, the request never ran and its client routes again
+//! (A§8.3 step 6). It never takes a recording, and once its own command is
+//! done ([`IpcServer::own_command_done`]) no new job either.
+//!
 //! Contract for clients: keep the connection open until the reply. Closing
 //! (or half-closing) it means the requester is gone (A§5.8).
 
@@ -167,6 +172,7 @@ impl IpcServer {
             }),
             accepting: AtomicBool::new(true),
             shutdown: AtomicBool::new(false),
+            own_done: AtomicBool::new(false),
             socket: Mutex::new(Some(published)),
             wake_wr,
             conns: Mutex::new(Conns {
@@ -222,6 +228,14 @@ impl IpcServer {
     /// A handle other threads use like [`send`](Self::send).
     pub fn sender(&self) -> ServerSender {
         ServerSender(Arc::clone(&self.shared))
+    }
+
+    /// The command a CLI host runs for its own process got its reply
+    /// (A§8.5): from now on the host takes no new job; requests that would
+    /// start one bounce before `accepted` and find their own host once this
+    /// one is gone. Idempotent.
+    pub fn own_command_done(&self) {
+        self.shared.own_done.store(true, Ordering::SeqCst);
     }
 
     pub fn stats(&self) -> ServerStats {
@@ -308,6 +322,11 @@ impl ServerSender {
     pub fn send_urgent(&self, msg: Msg) -> bool {
         self.0.submit_urgent(msg)
     }
+
+    /// Like [`IpcServer::own_command_done`].
+    pub fn own_command_done(&self) {
+        self.0.own_done.store(true, Ordering::SeqCst);
+    }
 }
 
 impl std::fmt::Debug for ServerSender {
@@ -332,6 +351,8 @@ struct Shared {
     link: Mutex<Link>,
     accepting: AtomicBool,
     shutdown: AtomicBool,
+    /// A CLI host's own command got its reply ([`IpcServer::own_command_done`]).
+    own_done: AtomicBool,
     /// Taken (unpublished and closed) when the server stops accepting; the
     /// acceptor closes its own handle when it exits.
     socket: Mutex<Option<PublishedSocket>>,
@@ -434,6 +455,27 @@ impl Shared {
         };
         for msg in parked {
             answer_with(msg, err.clone());
+        }
+    }
+
+    /// Why this host doesn't take `body`, if it doesn't (A§8.5). A CLI
+    /// command's own host never records (the recording would live and die
+    /// with that command and its terminal), and once its own command is
+    /// done it takes no new job, so it exits as soon as what it already
+    /// runs is over. Everything else is taken, by every host.
+    fn bounces(&self, body: &WireBody) -> Option<&'static str> {
+        let WireBody::Command(cmd) = body else {
+            return None;
+        };
+        if self.cfg.host != HostKind::Cli {
+            return None;
+        }
+        if cmd.may_start_recording() {
+            Some("a CLI command's host doesn't record")
+        } else if cmd.may_start_job() && self.own_done.load(Ordering::SeqCst) {
+            Some("this CLI command's host is done and takes no new job")
+        } else {
+            None
         }
     }
 
@@ -675,6 +717,12 @@ fn serve_conn(shared: &Arc<Shared>, stream: &UnixStream, out: &Arc<Outgoing>) {
             return pump(shared, stream, out);
         }
     };
+    if let Some(why) = shared.bounces(&request.body) {
+        // Closed before `accepted`: it never ran, and the client routes
+        // again (A§8.3 step 6) until it finds a host that takes it.
+        tracing::debug!("IPC: bounced request {}: {why}", request.id);
+        return;
+    }
     out.set_id(request.id);
     // Accepted first: it goes out before anything the Session sends.
     out.push_accepted();

@@ -15,14 +15,18 @@
 //! no jobs, no take waiting for its Recover probe, so a crashed take's
 //! recovery is finished and saved instead of killed with the host) with no
 //! open connection has held for 2 s; a headless host that
-//! never got a request exits 60 s after `ready`; an in-process CLI host whose
-//! own command finished exits at once if nobody else used it. `shutdown`:
-//! stop accepting, finalize a recording, let jobs finish, exit. The first
-//! signal dispatches `RecordStop` and `Msg::Interrupt` (cancel jobs), ahead
-//! of requests parked while the Session opened; the Session then runs no
-//! command that hadn't started but those that stop something; exit once
-//! idle (a recovery probe still out counts) or after 15 s. The second
-//! signal kills child process groups and `_exit(130)`s.
+//! never got a request exits 60 s after `ready`; an in-process CLI host
+//! exits as soon as its own command is answered and it is quiet (A§8.5:
+//! meanwhile it takes no recording, and no new job once its command is
+//! done). `shutdown`: stop accepting, finalize a recording, let jobs
+//! finish, exit. The first signal dispatches `RecordStop` and
+//! `Msg::Interrupt` (cancel jobs), ahead of requests parked while the
+//! Session opened; the Session then runs no command that hadn't started but
+//! those that stop something; exit once idle (a recovery probe still out
+//! counts) or after 15 s. The second signal kills child process groups; a
+//! headless host then `_exit(130)`s, while an in-process CLI host stops as
+//! soon as its jobs report it (≤ 2 s) so its command still prints its final
+//! result, with a watchdog that `_exit(130)`s 5 s later if that hangs.
 //!
 //! The Session only re-evaluates the exit rules when it handles a message,
 //! so a waker thread sends a cheap nudge (a `Query::Status` nobody waits
@@ -156,6 +160,9 @@ pub struct ExitRules {
     pub signal_grace: Duration,
     /// At exit, open connections get this long to flush their replies.
     pub flush_timeout: Duration,
+    /// In-process CLI host: after the second signal (its children are
+    /// killed), stop serving at the latest after this long.
+    pub hurry_grace: Duration,
 }
 
 impl Default for ExitRules {
@@ -165,9 +172,18 @@ impl Default for ExitRules {
             unused_timeout: Duration::from_secs(60),
             signal_grace: Duration::from_secs(15),
             flush_timeout: Duration::from_secs(10),
+            hurry_grace: Duration::from_secs(2),
         }
     }
 }
+
+/// After the second signal, an in-process CLI host's process `_exit(130)`s
+/// this long later at the latest, whatever still runs (A§8.6).
+pub const HURRY_WATCHDOG: Duration = Duration::from_secs(5);
+
+/// A host that hurries after the second signal lets open connections
+/// flush their replies at most this long.
+const HURRIED_FLUSH: Duration = Duration::from_secs(1);
 
 /// Why a host stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +224,8 @@ pub(crate) struct ExitInputs {
     pub requests: u64,
     pub shutdown: bool,
     pub signalled_at: Option<Instant>,
+    /// In-process CLI host: when the second signal came (it hurries).
+    pub hurried_at: Option<Instant>,
     /// In-process CLI host: whether its own command got its reply.
     pub own_done: Option<bool>,
     pub ready_at: Instant,
@@ -227,7 +245,10 @@ pub(crate) fn decide(i: &ExitInputs, rules: &ExitRules) -> Decision {
         if quiet {
             return Decision::Exit(HostEnd::Signal);
         }
-        let limit = at + rules.signal_grace;
+        let mut limit = at + rules.signal_grace;
+        if let Some(hurried) = i.hurried_at {
+            limit = limit.min(hurried + rules.hurry_grace);
+        }
         if i.now >= limit {
             return Decision::Exit(HostEnd::SignalTimeout);
         }
@@ -242,9 +263,16 @@ pub(crate) fn decide(i: &ExitInputs, rules: &ExitRules) -> Decision {
     }
     match i.own_done {
         Some(false) => return Decision::Wait(None),
-        // Nobody else used this in-process host: done means done (A§8.5).
-        Some(true) if quiet && i.requests == 0 => return Decision::Exit(HostEnd::Idle),
-        Some(true) => {}
+        // Its command is answered: the in-process host goes as soon as
+        // nothing keeps it, whoever else used it (A§8.5), so the command
+        // ends when it is done, not 2 s after someone's last request.
+        Some(true) => {
+            return if quiet {
+                Decision::Exit(HostEnd::Idle)
+            } else {
+                Decision::Wait(None)
+            };
+        }
         None if i.requests == 0 => {
             let limit = i.ready_at + rules.unused_timeout;
             if i.now < limit {
@@ -414,8 +442,13 @@ pub struct HostOptions {
     /// Interrupts counted before this host's work began (e.g. when the CLI
     /// started); later ones are the "first" and "second" signals.
     pub signal_baseline: usize,
-    /// The second signal. `None`: unlink the socket, SIGKILL the child
-    /// process groups and `_exit(130)` ([`signals::hard_exit`]).
+    /// The second signal. `None`: a headless (or GUI) host unlinks its
+    /// socket, SIGKILLs the child process groups, deletes their temp outputs
+    /// and `_exit(130)`s ([`signals::hard_exit`]); an in-process CLI host
+    /// SIGKILLs the child process groups and stops serving as soon as its
+    /// jobs report their end (at most `hurry_grace` later), so its command
+    /// still prints its final result, and a watchdog `_exit(130)`s
+    /// [`HURRY_WATCHDOG`] later if the process is still there.
     pub on_second_signal: Option<Box<dyn FnOnce() + Send>>,
 }
 
@@ -432,6 +465,8 @@ impl std::fmt::Debug for HostOptions {
 #[derive(Default)]
 pub(crate) struct HostCtl {
     pub signalled_at: Mutex<Option<Instant>>,
+    /// The second signal in an in-process CLI host: stop soon.
+    pub hurried_at: Mutex<Option<Instant>>,
     pub waker: OnceLock<Arc<WakerInner>>,
 }
 
@@ -447,6 +482,23 @@ impl HostCtl {
             .signalled_at
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn hurried_at(&self) -> Option<Instant> {
+        *self
+            .hurried_at
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The second signal in an in-process CLI host: its children are
+    /// already killed; the loop stops once quiet or after `hurry_grace`.
+    fn hurry(&self) {
+        self.hurried_at
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(Instant::now);
+        self.wake_now();
     }
 }
 
@@ -496,8 +548,11 @@ impl Host {
                 opts.signal_baseline,
                 &ctl,
                 &server,
-                published_path,
-                opts.on_second_signal,
+                SecondSignal {
+                    kind,
+                    socket: published_path,
+                    custom: opts.on_second_signal,
+                },
             )?),
             None => None,
         };
@@ -555,6 +610,10 @@ impl Host {
             let mut done = |state: &State| {
                 let now = Instant::now();
                 let own_done = own.as_mut().map(|own| own());
+                if own_done == Some(true) {
+                    // Its command is answered: no new job from now on (A§8.5).
+                    self.server.own_command_done();
+                }
                 // Recording, jobs, or a startup recovery still out (A§8.6).
                 let busy = state.runtime.is_busy();
                 if busy {
@@ -576,6 +635,7 @@ impl Host {
                     requests: stats.requests,
                     shutdown: stats.shutdown,
                     signalled_at: self.ctl.signalled_at(),
+                    hurried_at: self.ctl.hurried_at(),
                     own_done,
                     ready_at: self.ready_at,
                 };
@@ -641,13 +701,26 @@ impl Host {
 
     /// The exit sequence (A§8.3 step 3): record `stopping`, stop accepting
     /// and unlink the socket, drop the Session (requests it still held are
-    /// answered), let replies flush (≤ `flush_timeout`), then release the
-    /// lock by closing it.
+    /// answered), let replies flush (≤ `flush_timeout`, ≤ 1 s for a host
+    /// hurried by a second signal), then release the lock by closing it.
     pub fn finish(self, session: Option<Box<dyn HostSession>>, why: CoreError) {
         self.mark_stopping();
         self.server.stop_accepting();
         drop(session);
-        self.server.finish(why, self.rules.flush_timeout);
+        let hurried = self.ctl.hurried_at().is_some();
+        if hurried {
+            // After a second signal nothing this command started outlives
+            // it: a child spawned since the kill, a job that didn't report
+            // in time and its temp output.
+            signals::kill_child_groups();
+            crate::media::remove_temps_in_flight();
+        }
+        let flush = if hurried {
+            self.rules.flush_timeout.min(HURRIED_FLUSH)
+        } else {
+            self.rules.flush_timeout
+        };
+        self.server.finish(why, flush);
         let Host {
             lock,
             server,
@@ -666,19 +739,29 @@ impl Host {
     }
 }
 
+/// What the second signal does in a host (see [`HostOptions::on_second_signal`]).
+struct SecondSignal {
+    kind: HostKind,
+    /// The published socket, which the hard exit unlinks.
+    socket: PathBuf,
+    custom: Option<Box<dyn FnOnce() + Send>>,
+}
+
 /// The first signal: note it, finalize a recording, cancel jobs
 /// (`Msg::Interrupt`), wake the loop. Both messages go ahead of requests
 /// that were parked while the Session opened, so the Session refuses those
-/// instead of running them first. The second: `on_second` or the hard exit.
+/// instead of running them first. The second: the custom action, else kill
+/// the child process groups and either hurry (an in-process CLI host, whose
+/// command still has to print its final result) or hard-exit.
 fn watch_signals(
     interrupts: &Interrupts,
     baseline: usize,
     ctl: &Arc<HostCtl>,
     server: &IpcServer,
-    socket: PathBuf,
-    on_second: Option<Box<dyn FnOnce() + Send>>,
+    on_second: SecondSignal,
 ) -> Result<SignalWatch, CoreError> {
     let first_ctl = Arc::clone(ctl);
+    let second_ctl = Arc::clone(ctl);
     let sender = server.sender();
     let first = move || {
         {
@@ -693,8 +776,22 @@ fn watch_signals(
         first_ctl.wake_now();
     };
     let second = move || match on_second {
-        Some(second) => second(),
-        None => {
+        SecondSignal {
+            custom: Some(second),
+            ..
+        } => second(),
+        SecondSignal {
+            kind: HostKind::Cli,
+            ..
+        } => {
+            // A command someone waits for (A§8.6): its children die now, so
+            // its jobs end (deleting their temp outputs) and it prints its
+            // final object; if that hangs, the watchdog ends the process.
+            signals::kill_child_groups();
+            second_ctl.hurry();
+            signals::hard_exit_after(HURRY_WATCHDOG);
+        }
+        SecondSignal { socket, .. } => {
             // We still hold the lock, so the path is ours (A§8.3 step 2).
             let _ = std::fs::remove_file(&socket);
             signals::hard_exit();

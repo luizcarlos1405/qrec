@@ -317,6 +317,19 @@ impl HostKind {
             HostKind::Cli => "cli",
         }
     }
+
+    /// Whether a job whose requester went away keeps running (A§5.8): in
+    /// the GUI, where people see it; headless and CLI hosts cancel it.
+    pub fn keeps_orphaned_jobs(self) -> bool {
+        self == HostKind::Gui
+    }
+
+    /// Whether this host records: a GUI or a headless host does; a CLI
+    /// command's own host (A§8.5) never does, so a recording is never tied
+    /// to a command running in someone's terminal.
+    pub fn records(self) -> bool {
+        self != HostKind::Cli
+    }
 }
 
 // ------------------------------------------------------------ recording

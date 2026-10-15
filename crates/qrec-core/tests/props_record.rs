@@ -500,9 +500,16 @@ proptest! {
         }
         let mut h = Harness::new(state);
         check(&h.state)?;
+        let takes = h.state.project.takes.len();
         for step in &steps {
             h.step(step)?;
             check(&h.state)?;
+            if host == HostKind::Cli {
+                // A CLI command's own host never records (A§8.5).
+                prop_assert_eq!(&h.state.runtime.record, &RecordPhase::Idle);
+                prop_assert_eq!(h.state.project.takes.len(), takes, "no take begins");
+                prop_assert_eq!(&h.live, &None);
+            }
         }
         h.settle()?;
         check(&h.state)?;
