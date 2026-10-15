@@ -103,10 +103,12 @@ impl Session {
         // A§7.7: recovery mode (`qrec history restore`) leaves the files
         // alone until a request saves. An event's change (a merged hand
         // edit, a recovered take) is kept in memory for the restore to
-        // save; while qrec.json is unusable, only the request that replaces
-        // it (the restore) may save at all.
+        // save; once a request saved, the files hold everything and later
+        // events (another client's recording, say) save as on any host.
+        // While qrec.json is unusable, only the request that replaces it
+        // (the restore) may save at all.
         if writable && saves && self.opts.recovery {
-            if req.is_none() && to.is_none() {
+            if req.is_none() && to.is_none() && !self.request_saved {
                 return self.keep_in_memory(next, effects);
             }
             if let (Some(why), Some(_)) =
@@ -218,6 +220,9 @@ impl Session {
         };
         let committed = commit.is_ok();
         let cause = commit.as_ref().err().map(ToString::to_string);
+        if committed && saves && origin == Origin::Command {
+            self.request_saved = true;
+        }
         if committed && !was_initialized && is_initialized(&self.state.project) {
             // A§8.4: `takes/` is made right after the first commit.
             if let Err(e) = self.store.ensure_takes_dir() {
@@ -281,11 +286,20 @@ impl Session {
     /// dirty, so the restore's commit writes it). Effects that need a
     /// durable commit don't run, as after a failed one; `ui.json` isn't
     /// written either, and toasts only go to the log: nothing they announce
-    /// is saved unless the restore runs (A§7.6 step 4).
+    /// is saved unless the restore runs (A§7.6 step 4). A request the event
+    /// answers hears that its change isn't saved, never `ok`.
     fn keep_in_memory(&mut self, next: State, effects: Vec<Effect>) -> Ran {
         tracing::info!("recovery mode: a change is kept in memory until the restore saves it");
         self.store.mark_dirty();
         self.state = next;
+        let unsaved = CoreError::io(
+            "the change was made but isn't saved: `qrec history restore` holds the project \
+             and saves nothing until a change is confirmed",
+        )
+        .with_hint(
+            "run the command again once `qrec history restore` has exited; \
+             this change is lost when it exits",
+        );
         let no_failed_takes = BTreeMap::new();
         for effect in effects {
             match effect {
@@ -298,8 +312,8 @@ impl Session {
                 effect => self.run_world_effect(
                     effect,
                     false,
-                    None,
-                    Some("a `qrec history` session saves nothing until a change is confirmed"),
+                    Some(&unsaved),
+                    Some("`qrec history restore` saves nothing until a change is confirmed"),
                     &no_failed_takes,
                 ),
             }

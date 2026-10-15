@@ -218,6 +218,7 @@ pub(super) fn open(
         notifier: cfg.notifier.unwrap_or_else(|| Box::new(LogNotifier)),
         shutdown: false,
         interrupts: 0,
+        request_saved: false,
         #[cfg(test)]
         crashed: false,
         lock,

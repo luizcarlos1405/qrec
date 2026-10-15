@@ -94,6 +94,9 @@ pub struct Session {
     notifier: Box<dyn Notifier>,
     shutdown: bool,
     interrupts: u32,
+    /// A request's change was saved (committed). Recovery mode keeps
+    /// events' changes in memory only until then (A§7.7).
+    request_saved: bool,
     /// Tests: a simulated crash stopped this "process"; nothing runs anymore.
     #[cfg(test)]
     crashed: bool,
@@ -265,10 +268,11 @@ impl Drop for Session {
         let crashed = false;
         // Facts an event couldn't save (a failed commit keeps them in memory
         // and the store dirty) get one last try before the host goes away;
-        // never over a qrec.json that failed to load (A§7.7).
+        // never over a qrec.json that failed to load, nor in recovery mode
+        // before a request saved (A§7.7).
         if !crashed
             && self.store.is_dirty()
-            && !self.opts.recovery
+            && (!self.opts.recovery || self.request_saved)
             && self.state.runtime.disk_invalid.is_none()
             && is_initialized(&self.state.project)
             && let Err(e) = self.store.write_all(&self.state)

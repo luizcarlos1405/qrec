@@ -2514,6 +2514,133 @@ fn a_take_is_committed_before_capture_and_finalized_from_events() {
     assert_eq!(s.pending_requests(), 0);
 }
 
+/// A recovery-mode host (an unconfirmed `qrec history restore` serving
+/// other clients while it waits) saves another client's recording like any
+/// host once that request saved (A§7.7): the start offsets and the
+/// finalized take reach the files, and nobody hears "ok" for a change that
+/// isn't saved. Both used to stay in memory only, with `ok` replies, and
+/// were lost when the host exited.
+#[test]
+fn a_recording_served_in_recovery_mode_is_saved() {
+    let h = Harness::with_sample("recover-record");
+    drop(h.open(true).unwrap());
+    let mut s = h.open_opts(recovery(true)).unwrap();
+    let start = Answers::default();
+    s.handle(Msg::Request {
+        req: Request::command(
+            Command::RecordStart {
+                mode: RecordModeArg::Append,
+                countdown: Some(0),
+                wait: false,
+            },
+            false,
+        ),
+        to: start.responder(),
+    });
+    s.drain();
+    assert_eq!(
+        h.head().project.takes[&take(2)].status,
+        TakeStatus::Recording,
+        "the request saved"
+    );
+    let planned = s.state().project.takes[&take(2)].streams.clone();
+    let offsets: BTreeMap<String, i64> = planned
+        .iter()
+        .map(|st| (st.id.clone(), 7_000_000))
+        .collect();
+    s.handle(Msg::Event(Event::CaptureStarted {
+        take: take(2),
+        t0_ns: 0,
+        files: planned.iter().map(|st| st.file.clone()).collect(),
+        start_offset_ns: offsets.clone(),
+    }));
+    start.last().unwrap().unwrap();
+    let saved: Vec<i64> = h.head().project.takes[&take(2)]
+        .streams
+        .iter()
+        .map(|st| st.start_offset_ns)
+        .collect();
+    assert_eq!(saved, [7_000_000, 7_000_000], "the offsets are saved");
+
+    let stop = Answers::default();
+    s.handle(Msg::Request {
+        req: Request::command(Command::RecordStop, false),
+        to: stop.responder(),
+    });
+    let streams = planned
+        .iter()
+        .map(|st| RecordedStream {
+            id: st.id.clone(),
+            file: st.file.clone(),
+            start_offset_ns: 7_000_000,
+            eos: true,
+        })
+        .collect();
+    s.handle(Msg::Event(Event::CaptureStopped {
+        take: take(2),
+        streams,
+        timed_out: false,
+    }));
+    s.handle(Msg::Event(Event::TakeProbed {
+        take: take(2),
+        purpose: ProbePurpose::Finalize,
+        results: planned.iter().map(|st| probed(st, 90)).collect(),
+    }));
+    s.drain();
+    let finalized = stop.last().expect("the stop request hears back").unwrap();
+    assert_eq!(finalized["result"]["status"], "ok", "{finalized}");
+    let head = h.head();
+    assert_eq!(head.project.takes[&take(2)].status, TakeStatus::Ok);
+    assert!(
+        head.project
+            .timeline
+            .clips
+            .iter()
+            .any(|c| c.take == take(2))
+    );
+    assert_eq!(head.project, s.state().project);
+    assert_eq!(
+        s.state().history.entries.last().unwrap().label,
+        "Record take 2"
+    );
+    assert!(!s.store.is_dirty());
+}
+
+/// Before any request saved, recovery mode keeps an event's change in
+/// memory (A§7.7) and a request the event answers hears so, not `ok`.
+#[test]
+fn recovery_mode_never_answers_ok_for_a_change_it_keeps_in_memory() {
+    let h = Harness::with_sample("recover-unsaved");
+    drop(h.open(true).unwrap());
+    let mut s = h.open_opts(recovery(true)).unwrap();
+    let waiting = Answers::default();
+    s.pending.insert(ReqId("r9".into()), waiting.responder());
+    let mut next = s.state().clone();
+    next.project.name = "renamed".into();
+    let outcome = Outcome::new(
+        next,
+        vec![
+            Effect::WriteProject,
+            Effect::Reply {
+                req: ReqId("r9".into()),
+                reply: Ok(qrec_core::CmdResult::new("Done")),
+            },
+        ],
+        None,
+    );
+    let files = snapshot(&h.dir);
+    s.run_outcome(outcome, Origin::Event, None, &mut None, false);
+    let err = waiting.last().unwrap().unwrap_err();
+    assert_eq!(err.code, ErrorCode::Io);
+    assert!(
+        err.message
+            .starts_with("the change was made but isn't saved: "),
+        "{err:?}"
+    );
+    assert_eq!(s.state().project.name, "renamed", "kept in memory");
+    assert_eq!(snapshot(&h.dir), files, "nothing is written");
+}
+
 #[test]
 fn a_gone_requester_is_forgotten() {
     let h = Harness::with_sample("gone");

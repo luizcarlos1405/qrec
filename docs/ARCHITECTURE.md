@@ -988,8 +988,9 @@ that saves rewrite the history file, `qrec.json` and the head, and a host's
 open (outside recovery mode) writes the repair right away, unless its
 `qrec.json` didn't merge (A§7.7): that file is never written over in place,
 so the repair waits for the write that moves it aside or copies it first. A
-Session that goes away with a dirty store tries one last full write (never in
-recovery mode, never over a `qrec.json` that failed to load). Non-undoable
+Session that goes away with a dirty store tries one last full write (in
+recovery mode only once a request saved, A§7.7; never over a `qrec.json`
+that failed to load). Non-undoable
 writes do steps 2–3. On open (lock held): drop history lines with
 `seq ≥ nextSeq`; drop a torn last line; a bad line elsewhere ⇒ `Invalid`
 with its line number. If `sha256(qrec.json) == H` the state is clean;
@@ -1032,10 +1033,14 @@ rewrites every file with its next commit, and the replies they send are
   head, `ui.json`) until a request saves (SPEC §11: an unconfirmed restore
   leaves them as they were; only child-process logs are written). Events'
   changes (that merge, recovered takes) stay in memory for the restore's
-  commit, which rewrites everything, and their toasts only go to the log;
-  while `qrec.json` is unusable a request that would save without replacing
-  it is refused. Restore copies the corrupt file to
-  `.qrec/qrec.corrupt-<ts>.json` before writing.
+  commit, which rewrites everything, and their toasts only go to the log; a
+  request such an event answers gets `io` "the change was made but isn't
+  saved", never `ok`. Once a request saved (the restore, or a command of
+  another client the host serves meanwhile, e.g. `record start`), the files
+  hold everything and later events save as on any host (that recording's
+  start offsets and finalization). While `qrec.json` is unusable a request
+  that would save without replacing it is refused. Restore copies the
+  corrupt file to `.qrec/qrec.corrupt-<ts>.json` before writing.
 - If the head file is missing too, rebuild from `history.base.json` +
   forward patches. Patches carry no take facts and the base usually predates
   the takes, so each take found under `takes/` joins the pool right before
