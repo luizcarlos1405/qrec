@@ -28,8 +28,9 @@ pub enum Plan {
     Gui,
     /// A command that needs no project (A§10).
     Local(Local),
-    /// A request for the project's host.
-    Project(ProjectPlan),
+    /// A request for the project's host (boxed: it is much bigger than
+    /// the other variants).
+    Project(Box<ProjectPlan>),
 }
 
 /// Project-less commands: they work in any folder.
@@ -68,8 +69,9 @@ pub struct ProjectPlan {
     /// folder itself: it is never sent to another project.
     pub host_fallback: bool,
     /// Why only a live host can answer ([`Fallback::None`]): the
-    /// `unavailable` message when none runs.
-    pub needs_host: Option<String>,
+    /// `unavailable` error when none runs, its hint saying what works
+    /// instead (the GUI, or naming the clips on the command line).
+    pub needs_host: Option<CoreError>,
     /// A streaming command (SPEC §14: export, `record … --wait`): under
     /// `--json` its progress goes to stdout as JSON lines before the reply.
     /// Every other command prints exactly one object (people still see
@@ -121,6 +123,11 @@ pub enum View {
     Record,
 }
 
+/// What to do about a GUI-only command (`seek`, `play`, `pause`) when no
+/// host runs: what the core answers when another host gets one (A§8.5).
+const GUI_ONLY_HINT: &str =
+    "open the project in the Qrec GUI (run qrec in its folder) and try again";
+
 /// Maps a parsed command line to its plan. `cwd` makes `--out` absolute;
 /// `None` (the current directory can't be read) refuses only a relative one.
 pub fn plan(cli: &Cli, cwd: Option<&Path>) -> Result<Plan, CoreError> {
@@ -149,7 +156,9 @@ pub fn plan(cli: &Cli, cwd: Option<&Path>) -> Result<Plan, CoreError> {
             },
         }),
         Cmd::Host(args) => local(Local::Host(args.clone())),
-        other => builder.project(other, cwd).map(Plan::Project),
+        other => builder
+            .project(other, cwd)
+            .map(|plan| Plan::Project(Box::new(plan))),
     }
 }
 
@@ -270,22 +279,36 @@ impl Builder {
         Ok(plan)
     }
 
-    /// Only a running GUI can answer (A§8.5): nothing runs in-process.
+    /// Only a running GUI can answer (A§8.5): nothing runs in-process, and
+    /// no other host does either (a headless host answers `unavailable`,
+    /// and `busy` to `play` while it records), so the hint only offers the
+    /// GUI.
     fn gui_only(&self, name: &str, cmd: Command) -> ProjectPlan {
         let mut plan = self.command(name, cmd, View::Command);
         plan.route.fallback = Fallback::None;
-        plan.needs_host = Some(format!(
-            "`qrec {name}` needs the Qrec GUI: open this project in Qrec first"
-        ));
+        plan.needs_host = Some(
+            CoreError::unavailable(format!(
+                "`qrec {name}` needs the Qrec GUI, and it isn't running for this project"
+            ))
+            .with_hint(GUI_ONLY_HINT),
+        );
         plan
     }
 
-    /// Acts on the selection of the running host, so it needs one (A§8.4).
-    fn needs_selection(mut plan: ProjectPlan, flag: &str) -> ProjectPlan {
+    /// Acts on the clips selected in the Qrec GUI, so it needs a running
+    /// host (A§8.4). The hint offers the GUI or naming the clips
+    /// (`instead`), never a recording: a host that records runs only the
+    /// `R` commands (A§5.3), so it answers `busy`.
+    fn needs_selection(mut plan: ProjectPlan, flag: &str, instead: &str) -> ProjectPlan {
         plan.route.fallback = Fallback::None;
-        plan.needs_host = Some(format!(
-            "{flag} uses the selection of a running Qrec, and none runs for this project"
-        ));
+        plan.needs_host = Some(
+            CoreError::unavailable(format!(
+                "{flag} uses the clips selected in the Qrec GUI, and it isn't running for this project"
+            ))
+            .with_hint(format!(
+                "open the project in the Qrec GUI and select clips there, or {instead}"
+            )),
+        );
         plan
     }
 
@@ -457,7 +480,7 @@ impl Builder {
         plan.route.stop_on_interrupt = wait;
         plan.streams = wait;
         if over_selection {
-            plan = Self::needs_selection(plan, "--over-selection");
+            plan = Self::needs_selection(plan, "--over-selection", "name them with --over <clip>…");
         }
         plan
     }
@@ -515,7 +538,11 @@ impl Builder {
                     Msg,
                 );
                 if after_selection {
-                    Self::needs_selection(plan, "--after-selection")
+                    Self::needs_selection(
+                        plan,
+                        "--after-selection",
+                        "insert it with --after <clip> or --at <index>",
+                    )
                 } else {
                     plan
                 }
@@ -795,7 +822,7 @@ mod tests {
 
     fn project_plan(line: &str) -> ProjectPlan {
         match plan(&cli(line), Some(Path::new("/work/dir"))) {
-            Ok(Plan::Project(plan)) => plan,
+            Ok(Plan::Project(plan)) => *plan,
             other => panic!("`{line}` planned {other:?}"),
         }
     }
@@ -976,7 +1003,16 @@ mod tests {
 
         let selection = project_plan("qrec record start --over-selection");
         assert_eq!(selection.route.fallback, Fallback::None);
-        assert!(selection.needs_host.unwrap().contains("--over-selection"));
+        let error = selection.needs_host.unwrap();
+        assert_eq!(error.code, ErrorCode::Unavailable);
+        assert!(error.message.contains("--over-selection"), "{error}");
+        // Only the GUI holds a selection; a recording host is busy instead.
+        let hint = error.hint.unwrap();
+        assert!(
+            hint.contains("Qrec GUI") && hint.contains("--over <clip>"),
+            "{hint}"
+        );
+        assert!(!hint.contains("record"), "{hint}");
         assert_eq!(
             command("qrec record start --over-selection")["mode"],
             json!("overSelection")
@@ -1044,6 +1080,14 @@ mod tests {
         );
         let after_selection = project_plan("qrec clip add take-0002 --after-selection");
         assert_eq!(after_selection.route.fallback, Fallback::None);
+        let error = after_selection.needs_host.unwrap();
+        assert!(error.message.contains("--after-selection"), "{error}");
+        let hint = error.hint.unwrap();
+        assert!(
+            hint.contains("Qrec GUI") && hint.contains("--after <clip>") && hint.contains("--at"),
+            "{hint}"
+        );
+        assert!(!hint.contains("record"), "{hint}");
         assert_eq!(
             command("qrec clip add take-0002 --after-selection")["at"],
             json!("afterSelection")
@@ -1197,10 +1241,11 @@ mod tests {
             let plan = project_plan(line);
             assert_eq!(command(line), expected, "{line}");
             assert_eq!(plan.route.fallback, Fallback::None, "{line}");
-            assert!(
-                plan.needs_host.unwrap().contains("needs the Qrec GUI"),
-                "{line}"
-            );
+            let error = plan.needs_host.unwrap();
+            assert!(error.message.contains("needs the Qrec GUI"), "{line}");
+            // Only a GUI answers them: no other host (one that records
+            // included) is offered.
+            assert_eq!(error.hint.as_deref(), Some(GUI_ONLY_HINT), "{line}");
         }
     }
 

@@ -1204,6 +1204,61 @@ fn wait_until_no_host(env: &TestEnv) {
     }
 }
 
+/// Commands only a live host answers (seek, play, pause, the selection
+/// flags) say what works when none runs: the GUI, or naming the clips.
+/// Never "start a recording", as they used to: a host that records answers
+/// none of them (only a GUI host runs seek/play/pause, A§8.5, and while a
+/// take records only the R commands run, A§5.3).
+#[test]
+fn commands_that_need_a_host_never_suggest_a_recording() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("needs-gui");
+    qrec(&env, &dir, &["init", "--canvas", "640x360@30"]).ok();
+    qrec(
+        &env,
+        &dir,
+        &["scene", "layer", "add", "screen", "--output", "FAKE-1"],
+    )
+    .ok();
+    let json = |args: &[&str]| qrec(&env, &dir, &[&["--json"][..], args].concat());
+    let gui = "open the project in the Qrec GUI (run qrec in its folder) and try again";
+    for (args, hint) in [
+        (&["seek", "--to", "1f"][..], gui),
+        (&["play"], gui),
+        (&["pause"], gui),
+        (
+            &["record", "start", "--over-selection"],
+            "open the project in the Qrec GUI and select clips there, or name them with --over <clip>…",
+        ),
+        (
+            &["clip", "add", "take-0001", "--after-selection"],
+            "open the project in the Qrec GUI and select clips there, or insert it with --after <clip> or --at <index>",
+        ),
+    ] {
+        let out = json(args);
+        assert_eq!(out.code, Some(1), "{args:?}: {out:?}");
+        let error = &out.only_reply()["error"];
+        assert_eq!(error["code"], "unavailable", "{args:?}");
+        assert_eq!(error["hint"], hint, "{args:?}");
+    }
+
+    // What the old hint offered doesn't work: with a take recording, each
+    // is refused by the recording's host.
+    json(&["record", "start"]).ok();
+    for (args, code) in [
+        (&["seek", "--to", "1f"][..], "unavailable"),
+        (&["pause"], "unavailable"),
+        (&["play"], "busy"),
+        (&["record", "start", "--over-selection"], "busy"),
+        (&["clip", "add", "take-0001", "--after-selection"], "busy"),
+    ] {
+        let out = json(args);
+        assert_eq!(out.only_reply()["error"]["code"], code, "{args:?}: {out:?}");
+    }
+    qrec(&env, &dir, &["record", "cancel"]).ok();
+    wait_until_no_host(&env);
+}
+
 // ------------------------------------------------------- review round 1
 
 /// `qrec init` acts on its own folder (SPEC §4.4): with another project's

@@ -1165,6 +1165,53 @@ fn selection_commands_need_a_live_host() {
     assert_eq!((play.code, play.out.as_str()), (0, "Playing\n"));
 }
 
+/// With no host, a command only a live host answers says what works
+/// instead: the GUI, or naming the clips. Never a recording: a host that
+/// records answers none of them (only a GUI host runs seek/play/pause,
+/// A§8.5, and while a take records only the R commands run, A§5.3).
+#[test]
+fn commands_that_need_a_live_host_say_what_works_instead() {
+    let tmp = Tmp::new();
+    let project = tmp.project("p");
+    for (line, hint) in [
+        (
+            "qrec seek --to 1f",
+            "open the project in the Qrec GUI (run qrec in its folder) and try again",
+        ),
+        (
+            "qrec play",
+            "open the project in the Qrec GUI (run qrec in its folder) and try again",
+        ),
+        (
+            "qrec pause",
+            "open the project in the Qrec GUI (run qrec in its folder) and try again",
+        ),
+        (
+            "qrec record start --over-selection",
+            "open the project in the Qrec GUI and select clips there, or name them with --over <clip>…",
+        ),
+        (
+            "qrec clip add take-0001 --after-selection",
+            "open the project in the Qrec GUI and select clips there, or insert it with --after <clip> or --at <index>",
+        ),
+    ] {
+        let mut fake = Fake::new(&tmp.dir("cfg"));
+        let json = run(&mut fake, &project, &format!("{line} --json"));
+        assert_eq!(json.code, 1, "{line}");
+        let error = &json.json()["error"];
+        assert_eq!(error["code"], "unavailable", "{line}");
+        assert_eq!(error["hint"], hint, "{line}");
+        let human = run(&mut fake, &project, line);
+        assert_eq!(human.code, 1, "{line}");
+        assert!(
+            human.err.ends_with(&format!("\nhint: {hint}\n")),
+            "{line}: {}",
+            human.err
+        );
+        assert!(!human.err.contains("recording"), "{line}: {}", human.err);
+    }
+}
+
 #[test]
 fn status_for_people_and_for_programs() {
     let tmp = Tmp::new();

@@ -415,13 +415,17 @@ fn interrupted_error(message: &str, plan: &ProjectPlan, host: Option<&HelloInfo>
     CoreError::new(ErrorCode::Interrupted, message).with_hint(hint)
 }
 
+/// The `unavailable` error of a request only a live host answers when none
+/// runs: the plan's own ([`ProjectPlan::needs_host`]), whose hint says what
+/// works for that command.
 fn needs_host(plan: &ProjectPlan) -> CoreError {
-    CoreError::unavailable(
-        plan.needs_host
-            .clone()
-            .unwrap_or_else(|| format!("`{}` needs a running Qrec host", plan.name)),
-    )
-    .with_hint("open the project in Qrec (or start a recording) and try again")
+    plan.needs_host.clone().unwrap_or_else(|| {
+        CoreError::unavailable(format!(
+            "`{}` needs a running Qrec host, and none runs for this project",
+            plan.name
+        ))
+        .with_hint("open the project in Qrec and try again")
+    })
 }
 
 /// The core's answer to `Init` in a folder that already holds a project.

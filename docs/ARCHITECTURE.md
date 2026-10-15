@@ -1284,13 +1284,17 @@ backups either). A valid hand edit a read-only open finds is shown as the
 project a host would merge (`history::external::merged_preview`), with the
 history as it is on disk: no "External edit" entry, cursor or seq is made
 up, and no merge is announced; the next host records it (A§7.4).
-`--over-selection` with no live host ⇒ `Unavailable`. A current directory
-that can't be read (it was deleted) only matters for what is relative to
-it: an absolute `--project` (and `--out`) works without one, like `qrec
-host`; no `--project` is `io` "can't read the current directory (was it
-deleted?)" with the hint "cd into an existing folder, or pass an absolute
---project DIR", and a relative `--project` or `--out` is `io` naming the
-flag.
+`--over-selection` and `--after-selection` with no live host ⇒
+`Unavailable`, whose hint offers the GUI or naming the clips ("open the
+project in the Qrec GUI and select clips there, or name them with --over
+<clip>…" / "…or insert it with --after <clip> or --at <index>"), never a
+recording: a host that records answers both `busy` (A§5.3). A current
+directory that can't be read (it was deleted) only matters for what is
+relative to it: an absolute `--project` (and `--out`) works without one,
+like `qrec host`; no `--project` is `io` "can't read the current directory
+(was it deleted?)" with the hint "cd into an existing folder, or pass an
+absolute --project DIR", and a relative `--project` or `--out` is `io`
+naming the flag.
 
 ### A§8.5 In-process commands
 
@@ -1299,7 +1303,10 @@ With no host, a command runs in-process and its process **is** the host
 async ones (export, frame save, autocut with analysis, purge) keep serving
 IPC so other commands run against the same Session (SPEC §13.1 "editing can
 continue"). `seek`/`play`/`pause`/`shuttle` without a GUI host ⇒
-`Unavailable`.
+`Unavailable`: with no host at all, the CLI's hint is "open the project
+in the Qrec GUI (run qrec in its folder) and try again", the core's own
+for another host; no other host answers them (a recording's refuses
+`play` as `busy`, and `seek`/`pause` as `Unavailable`).
 
 Such a host belongs to a command someone is waiting for in a terminal, so
 nothing of anyone else's may be tied to it for long:
