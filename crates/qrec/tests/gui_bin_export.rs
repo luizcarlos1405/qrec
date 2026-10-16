@@ -757,9 +757,30 @@ fn the_bin_keys_select_preview_and_insert() {
         assert!(Instant::now() < deadline, "no clip added: {}", clips.len());
         thread::sleep(Duration::from_millis(200));
     }
-    // Take 4 left the bin, so its rows were made again: the 5 it dropped
-    // are gone (nothing a row's callbacks hold keeps it alive), the 4 it
-    // shows are all that live (G§3.12).
+    // The keyboard goes on from the row now at take 4's place, take 2: it
+    // has the focus and the selection, and `↓` stays the bin's (every row
+    // was made again and the focus left the bin with take 4's: take 9's
+    // Open log had it, nothing was selected).
+    let gui = nested.window(0);
+    gui.wait_idle();
+    let local = gui.local();
+    assert_eq!(local["focus"], "bin", "{local}");
+    assert_eq!(local["focusPath"][0], "bin-take-2", "{local}");
+    assert_eq!(local["binSelection"], json!(["take-0002"]), "{local}");
+    let playhead = status(&nested, &project)["ui"]["playhead"].clone();
+    nested.keys(&["-k", "Down"]);
+    nested.window(0).wait_idle();
+    assert_eq!(
+        nested.window(0).local()["binSelection"],
+        json!(["take-0002"])
+    );
+    assert_eq!(
+        status(&nested, &project)["ui"]["playhead"],
+        playhead,
+        "↓ moved the bin's selection, not the playhead"
+    );
+    // Take 4 left the bin: its row went, the 4 it shows are all that live
+    // (nothing a row's callbacks hold keeps a row alive, G§3.12).
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let gui = nested.window(0);
