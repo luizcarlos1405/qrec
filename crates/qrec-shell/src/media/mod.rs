@@ -55,7 +55,7 @@ use crate::msg::Inbox;
 use crate::paths::ProjectPaths;
 
 pub use jobs::remove_temps_in_flight;
-pub use logs::{KEEP_LOGS, prune_logs};
+pub use logs::{KEEP_LOGS, is_stamped_log_name, prune_logs};
 /// Never-overwrite renames, also for migration backups (A§8.8), and what a
 /// temp output's name looks like (the host-start sweep, A§8.7).
 pub use place::{PART_MARKER, is_temp_name, rename_noreplace};

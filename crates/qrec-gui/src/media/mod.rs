@@ -43,7 +43,7 @@ use crossbeam_channel::Sender;
 use gtk::prelude::*;
 use gtk::{gdk, glib};
 use qrec_core::protocol::{Toast, ToastLevel};
-use qrec_core::state::{CanvasMode, State};
+use qrec_core::state::{CanvasMode, JobKind, State};
 use qrec_shell::capture::meters::MeterMonitor;
 use qrec_shell::capture::{
     Backend, LevelReading, LiveControl, LiveSourceStatus, PreviewFrame, SideEvent,
@@ -395,12 +395,17 @@ impl MediaHub {
         self.follow(&self.inner.store.state());
     }
 
-    /// Nothing the preview cache was asked for is queued or running (the
-    /// test channel's `waitIdle`, G§3.18). `PreviewCache` (WP2) has no way
-    /// to say so yet: until it does this is always true, and WP2 makes it
-    /// ask the cache.
+    /// Nothing the preview cache was asked for is queued, running or still
+    /// being handed to the queue (the test channel's `waitIdle`, G§3.18):
+    /// no cache yet, or `PreviewCache::in_flight() == 0`. An answer is in
+    /// the queue before its job stops counting, so a check of this before
+    /// the queue's misses none.
     pub fn previews_idle(&self) -> bool {
-        true
+        self.inner
+            .preview
+            .borrow()
+            .as_ref()
+            .is_none_or(|cache| cache.in_flight() == 0)
     }
 
     /// At exit (R4): the meters, the player and the cache stop; each
@@ -505,8 +510,17 @@ impl MediaHub {
             .set(self.inner.frames_shown.get() + 1);
     }
 
-    /// Runs the meter monitor exactly when it is wanted (D-03).
+    /// Runs the meter monitor exactly when it is wanted (D-03), and keeps
+    /// the preview cache to one ffmpeg while an export runs (G§3.11).
     fn follow(&self, state: &State) {
+        if let Some(cache) = self.preview_cache() {
+            let exporting = state
+                .runtime
+                .jobs
+                .values()
+                .any(|job| matches!(job.kind, JobKind::Export { .. }));
+            cache.set_exporting(exporting);
+        }
         let open = self.inner.store.local().is_open();
         let wanted =
             (open && state.runtime.record.is_idle() && state.ui.canvas_mode == CanvasMode::Program)

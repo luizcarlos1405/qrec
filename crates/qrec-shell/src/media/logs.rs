@@ -142,9 +142,24 @@ pub(crate) fn shell_words(argv: &[String]) -> String {
         .join(" ")
 }
 
-/// Deletes all but the newest `keep` `*.log` files in `dir` (A§8.7: at host
-/// start). Names start with their stamp, so name order is age order.
-/// Returns how many were deleted.
+/// Whether `name` is a timestamp-named log, `YYYYMMDD-HHMMSS-….log`: the
+/// logs the A§8.7 prune counts and deletes. Anything else is left alone,
+/// the GUI's rolling `preview.log` and `preview.1.log` included (docs/GUI.md
+/// G§3.11), so preview runs never evict export and host logs.
+pub fn is_stamped_log_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    let digits = |s: &[u8]| s.iter().all(u8::is_ascii_digit);
+    b.len() > "YYYYMMDD-HHMMSS-.log".len()
+        && name.ends_with(".log")
+        && digits(&b[..8])
+        && b[8] == b'-'
+        && digits(&b[9..15])
+        && b[15] == b'-'
+}
+
+/// Deletes all but the newest `keep` timestamp-named logs in `dir` (A§8.7:
+/// at host start; [`is_stamped_log_name`]). Names start with their stamp,
+/// so name order is age order. Returns how many were deleted.
 pub fn prune_logs(dir: &Path, keep: usize) -> io::Result<usize> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -157,7 +172,7 @@ pub fn prune_logs(dir: &Path, keep: usize) -> io::Result<usize> {
             continue;
         };
         let is_file = entry.file_type().is_ok_and(|t| t.is_file());
-        if is_file && name.ends_with(".log") {
+        if is_file && is_stamped_log_name(&name) {
             logs.push((name, entry.path()));
         }
     }
@@ -238,5 +253,52 @@ mod tests {
             ]
         );
         assert_eq!(prune_logs(&dir.path().join("missing"), 2).unwrap(), 0);
+    }
+
+    /// The GUI's rolling preview logs are never pruned and never counted:
+    /// 250 timestamp-named logs leave the newest 200 and both preview logs
+    /// (docs/GUI.md G§3.11).
+    #[test]
+    fn prune_counts_only_timestamp_named_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..250 {
+            let name = format!("20261015-{:06}-77-j{i}-seg0.log", 100_000 + i);
+            fs::write(dir.path().join(name), "").unwrap();
+        }
+        for name in ["preview.log", "preview.1.log", "notes.log", "host.log"] {
+            fs::write(dir.path().join(name), "keep").unwrap();
+        }
+        assert_eq!(prune_logs(dir.path(), KEEP_LOGS).unwrap(), 50);
+        let mut left: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left.len(), 204);
+        assert_eq!(
+            left[0], "20261015-100050-77-j50-seg0.log",
+            "the oldest went"
+        );
+        assert_eq!(
+            &left[200..],
+            ["host.log", "notes.log", "preview.1.log", "preview.log"]
+        );
+        assert_eq!(prune_logs(dir.path(), KEEP_LOGS).unwrap(), 0);
+
+        assert!(is_stamped_log_name("20261014-120000-1-x.log"));
+        assert!(is_stamped_log_name(
+            "20261014-120000-4242-preview-strip.log"
+        ));
+        for name in [
+            "preview.log",
+            "preview.1.log",
+            "20261014-120000-.log",
+            "2026101-1120000-1-x.log",
+            "20261014-120000-1-x.txt",
+            "20261014_120000-1-x.log",
+            "2026101é-120000-1-x.log",
+        ] {
+            assert!(!is_stamped_log_name(name), "{name}");
+        }
     }
 }

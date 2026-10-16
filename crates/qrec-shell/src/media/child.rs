@@ -9,9 +9,12 @@
 //!   the same descriptor number and opens as [`output_path`]: it writes that
 //!   very file, whatever its path leads to by then (A§8.8);
 //! - stdout is piped only when it is parsed, and always drained on its own
-//!   thread (ffmpeg `-progress pipe:1` blocks, or captured bytes);
+//!   thread (ffmpeg `-progress pipe:1` blocks, captured bytes, or a stream
+//!   handed over as it arrives);
 //! - stderr is appended to a log file, or captured through an anonymous
-//!   temp file for short project-less tools (`pactl`, `busctl`): never a pipe;
+//!   temp file for short project-less tools (`pactl`, `busctl`), or (the
+//!   GUI's preview runs, which share one rolling log) piped to a thread
+//!   that reads every line as it comes: never a pipe left unread;
 //! - every run has a deadline: an overall timeout and/or a stall watchdog
 //!   (no advancing `-progress` block for a while ⇒ "ffmpeg stalled");
 //! - stopping (cancel, timeout, stall) is SIGTERM to the group, SIGKILL after
@@ -26,7 +29,7 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
@@ -45,6 +48,9 @@ const DRAIN_GRACE: Duration = Duration::from_secs(2);
 
 /// The most stderr kept in memory for [`Stderr::Capture`].
 const CAPTURE_STDERR_LIMIT: u64 = 1 << 20;
+
+/// [`Stderr::Lines`] hands over longer lines in pieces of this many bytes.
+const LINE_LIMIT: usize = 4096;
 
 /// How a child names its [`Spec::output`]: `/proc/self/fd/<n>`, `n` being
 /// the file's descriptor here, which the child keeps under the same number
@@ -74,6 +80,12 @@ impl StopFlag {
     }
 }
 
+/// [`Stdout::Stream`]'s reader: every read, as it arrives.
+pub(crate) type StreamFn = Box<dyn FnMut(&[u8]) + Send>;
+
+/// [`Stderr::Lines`]'s reader: the child's pid and one line.
+pub(crate) type LineFn = Box<dyn FnMut(u32, &str) + Send>;
+
 /// Where the child's stdout goes.
 pub(crate) enum Stdout {
     /// `/dev/null`: nothing parses it.
@@ -83,14 +95,22 @@ pub(crate) enum Stdout {
     /// ffmpeg `-progress pipe:1`: every block goes to the callback (on the
     /// drain thread); blocks that advance feed the stall watchdog.
     Progress(Box<dyn FnMut(&ProgressBlock) + Send>),
+    /// Every read goes to the callback as it arrives (on the drain thread),
+    /// e.g. samples too many to hold at once. Nothing is kept.
+    Stream(StreamFn),
 }
 
-/// Where the child's stderr goes (never a pipe).
+/// Where the child's stderr goes (never a pipe left unread).
 pub(crate) enum Stderr<'a> {
     /// Appended to a log file (A§8.7).
     Log(&'a File),
     /// An anonymous temp file read back into [`Finished::stderr`].
     Capture,
+    /// Piped and read on its own thread: every line (without its line
+    /// ending; pieces of [`LINE_LIMIT`] bytes for longer ones) goes to the
+    /// callback with the child's pid, as it comes. The GUI's preview runs
+    /// append them to one shared log this way.
+    Lines(LineFn),
 }
 
 /// One child process to run.
@@ -197,6 +217,8 @@ pub(crate) enum Ended {
 /// What a finished (or abandoned) child left behind.
 #[derive(Debug)]
 pub(crate) struct Finished {
+    /// The child's pid (its process group too).
+    pub pid: u32,
     /// `None` when the child survived SIGKILL and went to a reaper thread.
     pub status: Option<ExitStatus>,
     pub ended: Ended,
@@ -342,13 +364,13 @@ pub(crate) fn start(spec: Spec<'_>) -> Result<Finished, StartError> {
             Ok(())
         });
     }
-    let captured_stderr = match spec.stderr {
+    let (captured_stderr, stderr_lines) = match spec.stderr {
         Stderr::Log(file) => {
             let handle = file
                 .try_clone()
                 .map_err(|e| format!("can't share the log file with {program}: {e}"))?;
             cmd.stderr(handle);
-            None
+            (None, None)
         }
         Stderr::Capture => {
             let file = tempfile::tempfile()
@@ -357,7 +379,11 @@ pub(crate) fn start(spec: Spec<'_>) -> Result<Finished, StartError> {
                 .try_clone()
                 .map_err(|e| format!("can't share a temp file with {program}: {e}"))?;
             cmd.stderr(handle);
-            Some(file)
+            (Some(file), None)
+        }
+        Stderr::Lines(callback) => {
+            cmd.stderr(Stdio::piped());
+            (None, Some(callback))
         }
     };
     match spec.stdout {
@@ -369,6 +395,7 @@ pub(crate) fn start(spec: Spec<'_>) -> Result<Finished, StartError> {
         message: spawn_error(program, &e),
         not_found: e.kind() == io::ErrorKind::NotFound,
     })?;
+    let pid = child.id();
     let shared = Arc::new(Shared {
         started: Instant::now(),
         last_progress_ms: AtomicU64::new(0),
@@ -379,6 +406,11 @@ pub(crate) fn start(spec: Spec<'_>) -> Result<Finished, StartError> {
         stall: spec.stall,
         stop: spec.stop,
         kill_grace: spec.kill_grace,
+    };
+    // Both pipes are read from before the child can fill them.
+    let lines = match (child.stderr.take(), stderr_lines) {
+        (Some(err), Some(callback)) => Some(spawn_line_drain(program, err, pid, callback)),
+        _ => None,
     };
     let drain = match (child.stdout.take(), spec.stdout) {
         (Some(out), mode) => Some(spawn_drain(program, out, mode, Arc::clone(&shared))),
@@ -394,17 +426,19 @@ pub(crate) fn start(spec: Spec<'_>) -> Result<Finished, StartError> {
         }
     };
 
+    // An abandoned child may still hold its pipes: don't wait for them.
+    let wait = if status.is_some() {
+        DRAIN_GRACE
+    } else {
+        Duration::ZERO
+    };
     let drained = match drain {
-        Some(rx) => {
-            let wait = if status.is_some() {
-                DRAIN_GRACE
-            } else {
-                Duration::ZERO
-            };
-            rx.recv_timeout(wait).ok()
-        }
+        Some(rx) => rx.recv_timeout(wait).ok(),
         None => None,
     };
+    if let Some(rx) = lines {
+        let _ = rx.recv_timeout(wait);
+    }
     let (stdout, parser_error) = match drained {
         Some(d) => (d.bytes, d.parser_error),
         None => (Vec::new(), None),
@@ -413,6 +447,7 @@ pub(crate) fn start(spec: Spec<'_>) -> Result<Finished, StartError> {
         .map(|mut file| read_capped(&mut file, CAPTURE_STDERR_LIMIT))
         .unwrap_or_default();
     Ok(Finished {
+        pid,
         status,
         ended,
         stdout,
@@ -546,6 +581,10 @@ fn spawn_drain(
                 parser_error: None,
             },
             Stdout::Progress(callback) => drain_progress(out, callback, &shared),
+            Stdout::Stream(callback) => Drained {
+                bytes: Vec::new(),
+                parser_error: drain_stream(out, callback),
+            },
         };
         let _ = tx.send(drained);
     };
@@ -553,6 +592,78 @@ fn spawn_drain(
         // Without a drain thread the child could block on a full pipe; the
         // watchdog (or the caller's timeout) still ends it.
         tracing::error!("can't start a stdout drain thread: {e}");
+    }
+    rx
+}
+
+/// Hands every read to `callback`; once it panics, keeps draining unread.
+/// Returns the panic, if there was one.
+fn drain_stream(mut out: ChildStdout, mut callback: StreamFn) -> Option<String> {
+    let mut failed: Option<String> = None;
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        match out.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) if failed.is_none() => {
+                if let Err(panic) = catch_unwind(AssertUnwindSafe(|| callback(&chunk[..n]))) {
+                    failed = Some(format!(
+                        "the stdout reader failed: {}",
+                        panic_message(panic.as_ref())
+                    ));
+                }
+            }
+            Ok(_) => {} // keep the pipe drained
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    failed
+}
+
+/// [`Stderr::Lines`]: reads the child's stderr line by line on its own
+/// thread, handing each to `callback` with `pid`, until the pipe closes.
+/// A callback that panics is dropped; the pipe is still drained.
+fn spawn_line_drain(
+    program: &str,
+    err: ChildStderr,
+    pid: u32,
+    mut callback: LineFn,
+) -> crossbeam_channel::Receiver<()> {
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    let name = format!("qrec-stderr-{program}");
+    let body = move || {
+        let mut reader = BufReader::new(err);
+        let mut line = Vec::new();
+        let mut failed = false;
+        loop {
+            line.clear();
+            // One line, or the next LINE_LIMIT bytes of a longer one.
+            match (&mut reader)
+                .take(LINE_LIMIT as u64)
+                .read_until(b'\n', &mut line)
+            {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+            if failed {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&line);
+            for part in text.split(['\n', '\r']).filter(|p| !p.is_empty()) {
+                if catch_unwind(AssertUnwindSafe(|| callback(pid, part))).is_err() {
+                    tracing::error!("a stderr reader of {pid} failed; draining the rest unread");
+                    failed = true;
+                    break;
+                }
+            }
+        }
+        let _ = tx.send(());
+    };
+    if let Err(e) = thread::Builder::new().name(name).spawn(body) {
+        // The child could block on a full pipe; its timeout still ends it.
+        tracing::error!("can't start a stderr reader thread: {e}");
     }
     rx
 }
@@ -852,6 +963,91 @@ mod tests {
         assert_eq!(
             done.describe("ffmpeg"),
             "ffmpeg stalled (no progress for 200 ms)"
+        );
+    }
+
+    /// The GUI's preview runs (docs/GUI.md G§3.11): stderr lines reach a
+    /// callback with the child's pid as they come (long ones in pieces,
+    /// `\r` splitting too), and a flood never blocks the child.
+    #[test]
+    fn stderr_lines_reach_the_callback_with_the_pid() {
+        let seen = Arc::new(Mutex::new(Vec::<(u32, String)>::new()));
+        let sink = Arc::clone(&seen);
+        let cmd = argv(&[
+            "sh",
+            "-c",
+            "echo one >&2; printf 'two\\r\\nthree\\rfour' >&2; echo out",
+        ]);
+        let done = run(Spec::new(
+            &cmd,
+            Stderr::Lines(Box::new(move |pid, line| {
+                sink.lock().unwrap().push((pid, line.to_owned()))
+            })),
+        )
+        .stdout(Stdout::Capture { limit: 64 })
+        .timeout(Duration::from_secs(10)))
+        .unwrap();
+        assert!(done.exited_ok(), "{}", done.describe("sh"));
+        assert_eq!(done.stdout, b"out\n");
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(
+            seen.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>(),
+            ["one", "two", "three", "four"]
+        );
+        assert!(seen.iter().all(|(pid, _)| *pid == done.pid && *pid > 0));
+
+        // 200 000 lines (~2 MB) through a 64 KiB pipe, and a 10 000-byte line.
+        let count = Arc::new(AtomicU64::new(0));
+        let longest = Arc::new(AtomicU64::new(0));
+        let (n, m) = (Arc::clone(&count), Arc::clone(&longest));
+        let cmd = argv(&[
+            "sh",
+            "-c",
+            "yes x | head -n 200000 >&2; head -c 10000 /dev/zero | tr '\\0' a >&2",
+        ]);
+        let done = run(Spec::new(
+            &cmd,
+            Stderr::Lines(Box::new(move |_, line| {
+                n.fetch_add(1, Ordering::SeqCst);
+                m.fetch_max(line.len() as u64, Ordering::SeqCst);
+            })),
+        )
+        .timeout(Duration::from_secs(30)))
+        .unwrap();
+        assert!(done.exited_ok(), "{}", done.describe("sh"));
+        // The 10 000 bytes come as 4096 + 4096 + 1808.
+        assert_eq!(count.load(Ordering::SeqCst), 200_000 + 3);
+        assert_eq!(longest.load(Ordering::SeqCst), LINE_LIMIT as u64);
+    }
+
+    #[test]
+    fn a_stream_gets_every_byte_as_it_comes() {
+        let total = Arc::new(AtomicU64::new(0));
+        let reads = Arc::new(AtomicU64::new(0));
+        let (t, r) = (Arc::clone(&total), Arc::clone(&reads));
+        let cmd = argv(&["sh", "-c", "head -c 3000000 /dev/zero"]);
+        let done = run(Spec::new(&cmd, Stderr::Capture)
+            .stdout(Stdout::Stream(Box::new(move |chunk| {
+                t.fetch_add(chunk.len() as u64, Ordering::SeqCst);
+                r.fetch_add(1, Ordering::SeqCst);
+            })))
+            .timeout(Duration::from_secs(10)))
+        .unwrap();
+        assert!(done.exited_ok(), "{}", done.describe("sh"));
+        assert_eq!(total.load(Ordering::SeqCst), 3_000_000);
+        assert!(reads.load(Ordering::SeqCst) > 1, "handed over as it came");
+        assert!(done.stdout.is_empty(), "nothing is kept");
+
+        // A reader that panics stops reading; the pipe is still drained.
+        let cmd = argv(&["sh", "-c", "head -c 1048576 /dev/zero"]);
+        let done = run(Spec::new(&cmd, Stderr::Capture)
+            .stdout(Stdout::Stream(Box::new(|_| panic!("no thanks"))))
+            .timeout(Duration::from_secs(10)))
+        .unwrap();
+        assert!(done.exited_ok(), "{}", done.describe("sh"));
+        assert!(
+            done.parser_error.as_deref().unwrap().contains("no thanks"),
+            "{done:?}"
         );
     }
 

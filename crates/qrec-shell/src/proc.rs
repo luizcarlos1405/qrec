@@ -50,7 +50,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use qrec_core::{CoreError, ErrorCode, JobId};
 use rustix::process::{Pid, Signal};
 
-use crate::media::is_temp_name;
+use crate::media::{is_stamped_log_name, is_temp_name};
 use crate::paths::ProjectPaths;
 
 /// `ffprobe` runs (A§8.7).
@@ -1025,9 +1025,12 @@ pub fn tail_lines(path: &Path, n: usize) -> Vec<String> {
     lines[skip..].iter().map(|l| (*l).to_owned()).collect()
 }
 
-/// Keeps the newest `keep` `*.log` files in `dir` (names start with their
-/// timestamp, so name order is age order) and deletes the rest. Returns how
-/// many were deleted. A missing dir is fine.
+/// Keeps the newest `keep` timestamp-named logs in `dir` (names start with
+/// their timestamp, so name order is age order) and deletes the rest.
+/// Other files are left alone and don't count, the GUI's rolling
+/// `preview.log` and `preview.1.log` included ([`is_stamped_log_name`],
+/// docs/GUI.md G§3.11). Returns how many were deleted. A missing dir is
+/// fine.
 pub fn prune_logs(dir: &Path, keep: usize) -> usize {
     let Ok(entries) = fs::read_dir(dir) else {
         return 0;
@@ -1037,7 +1040,7 @@ pub fn prune_logs(dir: &Path, keep: usize) -> usize {
         .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
         .filter_map(|e| {
             let name = e.file_name().into_string().ok()?;
-            name.ends_with(".log").then(|| (name, e.path()))
+            is_stamped_log_name(&name).then(|| (name, e.path()))
         })
         .collect();
     if logs.len() <= keep {
@@ -1489,6 +1492,31 @@ pub(crate) mod tests {
         assert_eq!(tail_lines(&path, 2), ["line 49", "line 50"]);
         assert_eq!(tail_lines(&path, 100).len(), 50);
         assert!(tail_lines(&tmp.path().join("missing"), 3).is_empty());
+    }
+
+    /// The prune at host start counts only timestamp-named logs: the GUI's
+    /// rolling `preview.log` and `preview.1.log` stay and don't count
+    /// (docs/GUI.md G§3.11), so 250 job logs leave the newest 200 and both.
+    #[test]
+    fn pruning_leaves_the_preview_logs_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = ProjectPaths::new(tmp.path()).logs_dir();
+        fs::create_dir_all(&logs).unwrap();
+        for i in 0..250 {
+            let name = format!("20261015-{:06}-77-j{i}-seg0.log", 100_000 + i);
+            fs::write(logs.join(name), "").unwrap();
+        }
+        fs::write(logs.join("preview.log"), "[1 strip] ok").unwrap();
+        fs::write(logs.join("preview.1.log"), "[1 strip] older").unwrap();
+        assert_eq!(prune_logs(&logs, KEEP_LOGS), 50);
+        let mut left: Vec<String> = fs::read_dir(&logs)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left.len(), 202);
+        assert_eq!(left[0], "20261015-100050-77-j50-seg0.log");
+        assert_eq!(&left[200..], ["preview.1.log", "preview.log"]);
     }
 
     #[test]

@@ -10,8 +10,19 @@
 //! their filter graphs with the helpers below; the probe, segment-check,
 //! silence and VA-check argv are complete here. Verified against ffmpeg
 //! 8.1.2 (`crates/qrec-shell/tests/plans_ffmpeg.rs` runs them).
+//!
+//! The GUI's previews (docs/GUI.md G§3.11) are here too: the thumbnail
+//! strip, recorded-frame and waveform argv (raw RGBA or s16le on stdout,
+//! `pipe:1`), the cache key, and the waveform's peak buckets
+//! ([`bucket_peaks`], [`peak_levels`]). `qrec_shell::media::preview` runs
+//! them (owner: media).
 
+use std::sync::Arc;
+
+use crate::export_plan::SEEK_BACKOFF_NS;
+use crate::hash::sha256_hex;
 use crate::model::StreamKind;
+use crate::time::NS_PER_SEC;
 
 /// `file:` + path, so names starting with `-` or containing `:` stay paths.
 pub fn file_arg(path: &str) -> String {
@@ -253,9 +264,528 @@ pub fn vaapi_check_argv(device: &str) -> Vec<String> {
     argv
 }
 
+// ----------------------------------------------------------- GUI previews
+
+/// Seconds of video one thumbnail strip chunk covers (G§3.11): image `i`
+/// of chunk `c` shows file time `60·c + i` s.
+pub const STRIP_CHUNK_SECS: u32 = 60;
+
+/// The most recorded frames one [`frames_argv`] run returns (frame zoom).
+pub const MAX_PREVIEW_FRAMES: u32 = 64;
+
+/// The waveform's sample rate: [`peaks_argv`] decodes to it, mono.
+pub const PEAK_SAMPLE_RATE: u32 = 48_000;
+
+/// Samples of [`PEAK_SAMPLE_RATE`] in one millisecond: one finest bucket.
+pub const PEAK_SAMPLES_PER_MS: usize = 48;
+
+/// Finer buckets in one coarser bucket: 1 → 16 → 256 ms.
+pub const PEAK_LEVEL_STEP: usize = 16;
+
+/// Bumped when a preview cache file's content changes for the same input
+/// (an argv or format change), so older files stop matching.
+pub const PREVIEW_CACHE_VERSION: u32 = 1;
+
+/// What a [`preview_key`] is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PreviewKind {
+    /// One 60 s chunk of one-per-second thumbnails.
+    Strip,
+    /// Consecutive recorded frames (frame zoom; memory only).
+    Frames,
+    /// A waveform's 1 ms peaks.
+    Peaks,
+}
+
+impl PreviewKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PreviewKind::Strip => "strip",
+            PreviewKind::Frames => "frames",
+            PreviewKind::Peaks => "peaks",
+        }
+    }
+}
+
+/// `ffmpeg … -ss <60·chunk> -t 60 -skip_frame nokey -i file:<f> -an -vf
+/// fps=1,scale=-2:<h> -f rawvideo -pix_fmt rgba pipe:1`: one RGBA image per
+/// second of chunk `chunk`, `height` px high ([`preview_width`] wide),
+/// image after image on stdout. Only keyframes are decoded (one per second
+/// in recordings, A§8.11), so image `i` is the keyframe nearest to file
+/// time `60·chunk + i` s. A chunk that reaches the end of the file has
+/// fewer images (one less than its whole seconds, or as many); one past it
+/// has none.
+pub fn strip_argv(file: &str, chunk: u32, height: u32) -> Vec<String> {
+    let mut argv = ffmpeg_prelude(false);
+    let start_ns = i64::from(chunk)
+        .saturating_mul(i64::from(STRIP_CHUNK_SECS))
+        .saturating_mul(NS_PER_SEC);
+    argv.extend([
+        "-ss".to_owned(),
+        seconds_arg(start_ns),
+        "-t".to_owned(),
+        STRIP_CHUNK_SECS.to_string(),
+        "-skip_frame".to_owned(),
+        "nokey".to_owned(),
+        "-i".to_owned(),
+        file_arg(file),
+        "-an".to_owned(),
+        "-vf".to_owned(),
+        format!("fps=1,scale=-2:{height}"),
+    ]);
+    argv.extend(raw_rgba_output());
+    argv
+}
+
+/// `ffmpeg … [-ss <start − 2 ms>] -i file:<f> -an -frames:v <count> -vf
+/// scale=-2:<h> -f rawvideo -pix_fmt rgba pipe:1`: `count` (at most
+/// [`MAX_PREVIEW_FRAMES`]) consecutive recorded frames from the one that
+/// starts at `start_ns` in the file, as RGBA images on stdout (fewer at the
+/// end of the file). The seek backs off 2 ms like a layer input's
+/// (`export_plan::SEEK_BACKOFF_NS`: Matroska rounds timestamps to the
+/// millisecond) and is left out when that is ≤ 0. Every decoded frame is
+/// one image (the rawvideo muxer keeps no timestamps, so nothing is
+/// duplicated or dropped). Timeline frames map to recorded ones with
+/// `export_plan::shown_frame` (A§9.3).
+pub fn frames_argv(file: &str, start_ns: i64, count: u32, height: u32) -> Vec<String> {
+    let mut argv = ffmpeg_prelude(false);
+    let seek = start_ns.saturating_sub(SEEK_BACKOFF_NS);
+    if seek > 0 {
+        argv.extend(["-ss".to_owned(), seconds_arg(seek)]);
+    }
+    argv.extend([
+        "-i".to_owned(),
+        file_arg(file),
+        "-an".to_owned(),
+        "-frames:v".to_owned(),
+        count.min(MAX_PREVIEW_FRAMES).to_string(),
+        "-vf".to_owned(),
+        format!("scale=-2:{height}"),
+    ]);
+    argv.extend(raw_rgba_output());
+    argv
+}
+
+/// `-f rawvideo -pix_fmt rgba pipe:1`.
+fn raw_rgba_output() -> [String; 5] {
+    ["-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"].map(String::from)
+}
+
+/// `ffmpeg … -i file:<f> -map 0:a:0 -ac 1 -ar 48000 -f s16le pipe:1`: the
+/// first audio stream, mono at [`PEAK_SAMPLE_RATE`], as 16-bit samples on
+/// stdout ([`bucket_peaks`] turns them into the waveform). 96 bytes are one
+/// millisecond.
+pub fn peaks_argv(file: &str) -> Vec<String> {
+    let mut argv = ffmpeg_prelude(false);
+    argv.extend([
+        "-i".to_owned(),
+        file_arg(file),
+        "-map".to_owned(),
+        "0:a:0".to_owned(),
+        "-ac".to_owned(),
+        "1".to_owned(),
+        "-ar".to_owned(),
+        PEAK_SAMPLE_RATE.to_string(),
+        "-f".to_owned(),
+        "s16le".to_owned(),
+        "pipe:1".to_owned(),
+    ]);
+    argv
+}
+
+/// `ffprobe -v error -select_streams v:0 -show_entries
+/// stream=width,height,r_frame_rate -of json file:<f>`: what a strip or a
+/// frames run needs from a video before it starts (the image width, and
+/// the recorded rate a frame's start comes from), read from the header
+/// alone: unlike [`probe_argv`], it counts no packets, so it is quick on an
+/// hour-long file. `parse::ffprobe::parse_ffprobe(_, Video)` reads it.
+pub fn preview_probe_argv(file: &str) -> Vec<String> {
+    let mut argv = Vec::from(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height,r_frame_rate",
+            "-of",
+            "json",
+        ]
+        .map(String::from),
+    );
+    argv.push(file_arg(file));
+    argv
+}
+
+/// The width `scale=-2:<height>` gives a `src_w`×`src_h` picture: ffmpeg's
+/// `av_rescale(height, src_w, 2·src_h) · 2` (to the nearest, halves away
+/// from zero), at least 2. The source's storage size counts, not its
+/// display aspect, as in ffmpeg.
+pub fn preview_width(src_w: u32, src_h: u32, height: u32) -> u32 {
+    if src_h == 0 {
+        return 2;
+    }
+    let (w, h, out) = (u64::from(src_w), u64::from(src_h), u64::from(height));
+    let half = (out * w + h) / (2 * h);
+    let width = (half * 2).clamp(2, u64::from(u32::MAX - 1));
+    u32::try_from(width).unwrap_or(2)
+}
+
+/// The cache key of one preview of `file` (G§3.11): the SHA-256 hex of
+/// `qrec preview v<version>\n<kind>\n<file>\n<size>\n<mtime_ns>\n<params>`,
+/// so it changes with the file (like `SilenceKey`), the kind and the
+/// parameters (`params`: e.g. `chunk=3 height=72`). A plain file name.
+pub fn preview_key(
+    kind: PreviewKind,
+    file: &str,
+    size: u64,
+    mtime_ns: i64,
+    params: &str,
+) -> String {
+    let text = format!(
+        "qrec preview v{PREVIEW_CACHE_VERSION}\n{}\n{file}\n{size}\n{mtime_ns}\n{params}",
+        kind.as_str()
+    );
+    sha256_hex(text.as_bytes())
+}
+
+/// (min, max) of each run of `per_bucket` samples (the last run may be
+/// shorter); `per_bucket` 0 counts as 1. With [`PEAK_SAMPLES_PER_MS`] at
+/// [`PEAK_SAMPLE_RATE`], one bucket per millisecond. Buckets of a stream
+/// cut into runs of whole buckets are the buckets of the whole stream, so
+/// a reader may bucket as samples arrive.
+pub fn bucket_peaks(samples: &[i16], per_bucket: usize) -> Vec<(i16, i16)> {
+    samples
+        .chunks(per_bucket.max(1))
+        .map(|run| {
+            run.iter()
+                .fold((i16::MAX, i16::MIN), |(lo, hi), &s| (lo.min(s), hi.max(s)))
+        })
+        .collect()
+}
+
+/// A waveform at three resolutions: (min, max) per 1, 16 and 256 ms, so a
+/// lane draws from the coarsest level with at least one bucket per pixel
+/// ([`PeakLevels::level`]). Each coarser bucket is the min and the max of
+/// its 16 finer ones (the last of fewer).
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct PeakLevels {
+    pub per_ms: Arc<[(i16, i16)]>,
+    pub per_16ms: Arc<[(i16, i16)]>,
+    pub per_256ms: Arc<[(i16, i16)]>,
+}
+
+/// The lengths, not the millions of buckets of an hour-long take.
+impl std::fmt::Debug for PeakLevels {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeakLevels")
+            .field("per_ms", &self.per_ms.len())
+            .field("per_16ms", &self.per_16ms.len())
+            .field("per_256ms", &self.per_256ms.len())
+            .finish()
+    }
+}
+
+impl PeakLevels {
+    /// The coarsest level with at least one bucket per pixel at `ms_per_px`
+    /// milliseconds per pixel (the finest below 16 ms/px), and its bucket
+    /// length in ms.
+    pub fn level(&self, ms_per_px: f64) -> (u32, &[(i16, i16)]) {
+        let step = PEAK_LEVEL_STEP as f64;
+        if ms_per_px >= step * step {
+            (256, &self.per_256ms)
+        } else if ms_per_px >= step {
+            (16, &self.per_16ms)
+        } else {
+            (1, &self.per_ms)
+        }
+    }
+
+    /// The waveform's length in ms (its finest buckets).
+    pub fn duration_ms(&self) -> usize {
+        self.per_ms.len()
+    }
+
+    /// The bytes the three levels hold.
+    pub fn bytes(&self) -> usize {
+        (self.per_ms.len() + self.per_16ms.len() + self.per_256ms.len())
+            * std::mem::size_of::<(i16, i16)>()
+    }
+}
+
+/// The three levels of a waveform from its 1 ms buckets ([`bucket_peaks`]).
+pub fn peak_levels(per_ms: Arc<[(i16, i16)]>) -> PeakLevels {
+    let per_16ms: Arc<[(i16, i16)]> = coarser(&per_ms, PEAK_LEVEL_STEP).into();
+    let per_256ms: Arc<[(i16, i16)]> = coarser(&per_16ms, PEAK_LEVEL_STEP).into();
+    PeakLevels {
+        per_ms,
+        per_16ms,
+        per_256ms,
+    }
+}
+
+/// (min of the mins, max of the maxes) of each run of `step` buckets.
+fn coarser(finer: &[(i16, i16)], step: usize) -> Vec<(i16, i16)> {
+    finer
+        .chunks(step)
+        .map(|run| {
+            run.iter().fold((i16::MAX, i16::MIN), |(lo, hi), &(a, b)| {
+                (lo.min(a), hi.max(b))
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Fps;
+    use crate::time::frame_ns;
+
+    #[test]
+    fn strip_argv_reads_keyframes_of_one_chunk() {
+        let argv = strip_argv("takes/take-0005/L2-camera-fake0.mkv", 3, 72);
+        assert_eq!(argv[0], "ffmpeg");
+        assert_eq!(&argv[..7], &ffmpeg_prelude(false)[..]);
+        let at = |flag: &str| argv.iter().position(|a| a == flag).unwrap();
+        assert_eq!(argv[at("-ss") + 1], "180.000000");
+        assert_eq!(argv[at("-t") + 1], "60");
+        assert!(
+            at("-skip_frame") < at("-i") && at("-ss") < at("-i"),
+            "input options: {argv:?}"
+        );
+        assert_eq!(
+            argv[at("-i") + 1],
+            "file:takes/take-0005/L2-camera-fake0.mkv"
+        );
+        assert_eq!(argv[at("-vf") + 1], "fps=1,scale=-2:72");
+        assert_eq!(&argv[argv.len() - 5..], raw_rgba_output());
+        // An absurd chunk saturates instead of overflowing.
+        let far = strip_argv("a.mkv", u32::MAX, 72);
+        assert_eq!(
+            far[far.iter().position(|a| a == "-ss").unwrap() + 1],
+            "9223372036.854776"
+        );
+        insta::assert_snapshot!(
+            "strip_argv",
+            format!(
+                "{}\n{}",
+                strip_argv("takes/take-0005/L2-camera-fake0.mkv", 0, 72).join(" "),
+                strip_argv("takes/take-0005/L2-camera-fake0.mkv", 3, 144).join(" ")
+            )
+        );
+    }
+
+    #[test]
+    fn frames_argv_seeks_just_before_the_frame() {
+        let fps = Fps::new(30, 1);
+        let argv = frames_argv(
+            "takes/take-0005/L1-screen-FAKE-1.mkv",
+            frame_ns(1000, fps),
+            64,
+            72,
+        );
+        let at = |flag: &str| argv.iter().position(|a| a == flag).unwrap();
+        // 1000 / 30 s = 33.333333 s, less 2 ms.
+        assert_eq!(argv[at("-ss") + 1], "33.331333");
+        assert!(at("-ss") < at("-i"), "an input seek: {argv:?}");
+        assert_eq!(argv[at("-frames:v") + 1], "64");
+        assert_eq!(argv[at("-vf") + 1], "scale=-2:72");
+        assert_eq!(argv.last().unwrap(), "pipe:1");
+        // The first frames: no seek at all.
+        for start in [0, frame_ns(0, fps), SEEK_BACKOFF_NS, i64::MIN] {
+            let argv = frames_argv("a.mkv", start, 8, 72);
+            assert!(!argv.contains(&"-ss".to_owned()), "{argv:?}");
+        }
+        // At most 64 frames.
+        let argv = frames_argv("a.mkv", 0, 500, 72);
+        assert_eq!(
+            argv[argv.iter().position(|a| a == "-frames:v").unwrap() + 1],
+            "64"
+        );
+        insta::assert_snapshot!(
+            "frames_argv",
+            format!(
+                "{}\n{}",
+                frames_argv(
+                    "takes/take-0005/L1-screen-FAKE-1.mkv",
+                    frame_ns(1000, fps),
+                    64,
+                    72
+                )
+                .join(" "),
+                frames_argv("takes/take-0005/L1-screen-FAKE-1.mkv", 0, 10, 144).join(" ")
+            )
+        );
+    }
+
+    #[test]
+    fn peaks_and_probe_argv() {
+        let argv = peaks_argv("takes/take-0005/A1-mic.mka");
+        assert_eq!(&argv[..7], &ffmpeg_prelude(false)[..]);
+        assert_eq!(&argv[argv.len() - 3..], ["-f", "s16le", "pipe:1"]);
+        assert!(argv.contains(&"file:takes/take-0005/A1-mic.mka".to_owned()));
+        let probe = preview_probe_argv("takes/take-0005/L1-screen-FAKE-1.mkv");
+        assert_eq!(probe[0], "ffprobe");
+        assert!(!probe.contains(&"-count_packets".to_owned()), "header only");
+        assert_eq!(
+            probe.last().unwrap(),
+            "file:takes/take-0005/L1-screen-FAKE-1.mkv"
+        );
+        insta::assert_snapshot!(
+            "peaks_and_probe_argv",
+            format!("{}\n{}", argv.join(" "), probe.join(" "))
+        );
+    }
+
+    #[test]
+    fn preview_width_is_ffmpegs_even_width() {
+        // (source, height) → what `scale=-2:<h>` gives (ffmpeg 8.1.2;
+        // `media::preview` tests check a few against ffmpeg itself).
+        let cases = [
+            ((1920, 1080, 72), 128),
+            ((2560, 1440, 72), 128),
+            ((3840, 2160, 72), 128),
+            ((640, 360, 72), 128),
+            ((320, 240, 72), 96),
+            ((160, 120, 72), 96),
+            ((1366, 768, 72), 128),
+            ((720, 480, 72), 108),
+            ((1920, 1080, 144), 256),
+            ((1920, 1080, 90), 160),
+            ((1080, 1920, 72), 40),
+            ((1, 1000, 72), 2),
+            ((5, 3, 0), 2),
+        ];
+        for ((w, h, out), expected) in cases {
+            assert_eq!(preview_width(w, h, out), expected, "{w}x{h} at {out}");
+        }
+        assert_eq!(preview_width(1920, 0, 72), 2);
+    }
+
+    #[test]
+    fn preview_keys_follow_the_file_kind_and_parameters() {
+        let key = |kind, file: &str, size, mtime, params: &str| {
+            preview_key(kind, file, size, mtime, params)
+        };
+        let a = key(
+            PreviewKind::Strip,
+            "takes/take-0001/L1.mkv",
+            10,
+            20,
+            "chunk=0 height=72",
+        );
+        assert_eq!(
+            a,
+            key(
+                PreviewKind::Strip,
+                "takes/take-0001/L1.mkv",
+                10,
+                20,
+                "chunk=0 height=72"
+            )
+        );
+        assert_eq!(a.len(), 64);
+        assert!(
+            a.bytes().all(|b| b.is_ascii_hexdigit()),
+            "a plain file name"
+        );
+        for other in [
+            key(
+                PreviewKind::Peaks,
+                "takes/take-0001/L1.mkv",
+                10,
+                20,
+                "chunk=0 height=72",
+            ),
+            key(
+                PreviewKind::Strip,
+                "takes/take-0002/L1.mkv",
+                10,
+                20,
+                "chunk=0 height=72",
+            ),
+            key(
+                PreviewKind::Strip,
+                "takes/take-0001/L1.mkv",
+                11,
+                20,
+                "chunk=0 height=72",
+            ),
+            key(
+                PreviewKind::Strip,
+                "takes/take-0001/L1.mkv",
+                10,
+                21,
+                "chunk=0 height=72",
+            ),
+            key(
+                PreviewKind::Strip,
+                "takes/take-0001/L1.mkv",
+                10,
+                20,
+                "chunk=1 height=72",
+            ),
+        ] {
+            assert_ne!(a, other);
+        }
+        insta::assert_snapshot!(
+            "preview_keys",
+            format!(
+                "{a}\n{}",
+                key(
+                    PreviewKind::Peaks,
+                    "takes/take-0001/A1-mic.mka",
+                    4096,
+                    1_760_000_000_123_456_789,
+                    ""
+                )
+            )
+        );
+    }
+
+    #[test]
+    fn peaks_bucket_per_millisecond() {
+        assert!(bucket_peaks(&[], PEAK_SAMPLES_PER_MS).is_empty());
+        let samples: Vec<i16> = (0..100).map(|i| (i * 300 - 15_000) as i16).collect();
+        let buckets = bucket_peaks(&samples, PEAK_SAMPLES_PER_MS);
+        // 100 samples: two whole milliseconds and a partial one.
+        assert_eq!(buckets, [(-15_000, -900), (-600, 13_500), (13_800, 14_700)]);
+        assert_eq!(
+            bucket_peaks(&[5, -3], 0),
+            [(5, 5), (-3, -3)],
+            "0 counts as 1"
+        );
+        assert_eq!(
+            bucket_peaks(&[i16::MIN, i16::MAX], 48),
+            [(i16::MIN, i16::MAX)]
+        );
+    }
+
+    #[test]
+    fn peak_levels_merge_sixteen_at_a_time() {
+        let per_ms: Vec<(i16, i16)> = (0..300).map(|i| (-(i as i16), i as i16 * 2)).collect();
+        let levels = peak_levels(per_ms.clone().into());
+        assert_eq!(levels.per_ms.len(), 300);
+        assert_eq!(levels.per_16ms.len(), 19, "⌈300 / 16⌉");
+        assert_eq!(levels.per_256ms.len(), 2, "⌈300 / 256⌉");
+        assert_eq!(levels.per_16ms[0], (-15, 30));
+        assert_eq!(levels.per_16ms[18], (-299, 598), "the last of 12");
+        assert_eq!(levels.per_256ms[0], (-255, 510));
+        assert_eq!(levels.per_256ms[1], (-299, 598));
+        assert_eq!(levels.duration_ms(), 300);
+        assert_eq!(levels.bytes(), (300 + 19 + 2) * 4);
+        assert_eq!(peak_levels(Vec::new().into()), PeakLevels::default());
+
+        // A lane takes the coarsest level with a bucket per pixel.
+        assert_eq!(levels.level(0.25).0, 1);
+        assert_eq!(levels.level(15.9).0, 1);
+        assert_eq!(levels.level(16.0).0, 16);
+        assert_eq!(levels.level(255.0).1.len(), 19);
+        assert_eq!(levels.level(256.0).0, 256);
+        assert_eq!(levels.level(10_000.0).1.len(), 2);
+    }
 
     #[test]
     fn silence_argv_shape() {
