@@ -31,8 +31,10 @@
 //! moves, resizes or (`Alt` + an edge) crops it, snapped to the canvas'
 //! edges, thirds and center while `ui.snapping`; the release sends one
 //! `LayerSet`. Arrow keys (the router's `layer.nudge-*` GUI actions) nudge
-//! in bursts: one `LayerSet` on the key release, or 300 ms after the last
-//! press. In Live the preview follows a gesture through
+//! in bursts: one `LayerSet` on the key release (watched on the window,
+//! where the router takes the presses), or, when none comes, 300 ms after
+//! the last repeat (a second after a lone press: a held key waits up to
+//! the repeat delay for its first repeat). In Live the preview follows a gesture through
 //! `LiveControl::transient_layout` (`None` once the newest `LayerSet`'s
 //! reply came, after its `SetLive`, or on `Esc`); in Program the box and
 //! the readout move and the picture changes on release. A gesture's
@@ -55,6 +57,7 @@ use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
 use gtk::{gdk, glib};
+use qrec_core::keymap::{KeyChord, usable_keys};
 use qrec_core::model::Scene;
 use qrec_core::protocol::ToastLevel;
 use qrec_core::protocol::command::{LayerPatch, Nullable, SceneTarget, UiPatch};
@@ -201,6 +204,8 @@ struct Inner {
     rendering: Cell<bool>,
     dirty: Cell<bool>,
     nudge_timer: RefCell<Option<glib::SourceId>>,
+    /// The window's release watch is on ([`Inner::watch_releases`]).
+    release_watch: Cell<bool>,
     epoch: Instant,
 }
 
@@ -321,6 +326,7 @@ impl Inner {
             rendering: Cell::new(false),
             dirty: Cell::new(false),
             nudge_timer: RefCell::new(None),
+            release_watch: Cell::new(false),
             epoch: Instant::now(),
         });
         inner.position_children();
@@ -814,16 +820,9 @@ impl Inner {
         }));
         self.canvas.add_controller(motion);
 
+        // The nudge keys' releases come through the window's watch
+        // (`watch_releases`): this controller never sees them.
         let keys = gtk::EventControllerKey::new();
-        let weak = Rc::downgrade(self);
-        keys.connect_key_released(crate::guarded!(
-            "stage: a key release",
-            move |_, keyval, _, _| {
-                if let Some(this) = weak.upgrade() {
-                    this.key_released(keyval);
-                }
-            }
-        ));
         let weak = Rc::downgrade(self);
         keys.connect_modifiers(crate::guarded!("stage: modifiers", move |_, modifiers| {
             if let Some(this) = weak.upgrade() {
@@ -1222,6 +1221,7 @@ impl Inner {
         let Some(step) = nudge_step(id) else {
             return;
         };
+        self.watch_releases();
         let state = self.ctx.store.state();
         let Some(target) = edit_target(&state) else {
             return;
@@ -1304,14 +1304,61 @@ impl Inner {
         *self.nudge_timer.borrow_mut() = Some(id);
     }
 
+    /// The window's key releases, in the capture phase (D-33: a burst ends
+    /// on its key's release). The key router handles the nudge presses on
+    /// the window in the capture phase, so GTK hands it their releases too
+    /// and they never reached a controller on the stage: every burst ended
+    /// by its timeout, so a held key split into two `LayerSet`s and quick
+    /// taps merged into one (R19). Added at the first nudge (the stage is
+    /// in the window by then); it only listens.
+    fn watch_releases(self: &Rc<Self>) {
+        if self.release_watch.get() {
+            return;
+        }
+        let Some(window) = self.root.root() else {
+            return;
+        };
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(self);
+        keys.connect_key_released(crate::guarded!(
+            "stage: a key release",
+            move |_, keyval, _, _| {
+                if let Some(this) = weak.upgrade() {
+                    this.key_released(keyval);
+                }
+            }
+        ));
+        window.add_controller(keys);
+        self.release_watch.set(true);
+    }
+
+    /// A key went up: the release of a nudge key (an arrow, or what
+    /// `keys.toml` binds a `layer.nudge-*` to) ends the burst.
     fn key_released(self: &Rc<Self>, keyval: gdk::Key) {
-        let arrow = keyval.name().is_some_and(|name| {
-            matches!(
-                name.as_str(),
-                "Left" | "Right" | "Up" | "Down" | "KP_Left" | "KP_Right" | "KP_Up" | "KP_Down"
-            )
-        });
-        if arrow {
+        if self.edit.borrow().nudges.active().is_none() {
+            return;
+        }
+        let Some(name) = keyval.name() else {
+            return;
+        };
+        let arrow = matches!(
+            name.as_str(),
+            "Left" | "Right" | "Up" | "Down" | "KP_Left" | "KP_Right" | "KP_Up" | "KP_Down"
+        );
+        let bound =
+            KeyChord::from_gdk(name.as_str(), false, false, false, false).is_some_and(|released| {
+                let keymap = self.ctx.store.keymap();
+                NUDGE_BINDINGS
+                    .iter()
+                    .filter_map(|id| keymap.binding(id))
+                    .any(|b| {
+                        usable_keys(&keymap, b)
+                            .iter()
+                            .any(|k| k.key == released.key)
+                    })
+            });
+        if arrow || bound {
             self.end_burst(NudgeCoalescer::release);
         }
     }

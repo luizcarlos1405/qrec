@@ -983,13 +983,58 @@ fn s13_layer_editing() {
     assert_hides(&labels, &["Right third"]);
     assert_eq!(nested.window(0).local()["drag"], Value::Null);
     assert_clean(&mut nested);
+    // `undo` takes that one entry back: L2 where it was (R26).
     let undo = nested.cli_json(&project, &["undo"]);
     assert_eq!(undo["ok"], true, "{undo}");
+    let data = status(&nested, &project);
+    assert_eq!(
+        data["project"]["scene"]["layers"][1]["rect"],
+        json!({"x": 1500, "y": 760, "w": 384, "h": 288}),
+        "undone"
+    );
+    assert_eq!(
+        data["history"]["cursor"], history_before,
+        "{}",
+        data["history"]
+    );
+}
+
+/// The history cursor of `project`.
+fn cursor(nested: &Nested, project: &Path) -> u64 {
+    status(nested, project)["history"]["cursor"]
+        .as_u64()
+        .unwrap_or(0)
+}
+
+/// Waits (10 s) until L2 sits at `(x, y)` with the history at `cursor` and
+/// no burst runs, then checks nothing more came: a burst is one entry.
+fn wait_nudged(nested: &mut Nested, project: &Path, cursor_at: u64, (x, y): (i64, i64)) {
+    let want = json!({"x": x, "y": y, "w": 384, "h": 288});
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let data = status(nested, project);
+        let rect = data["project"]["scene"]["layers"][1]["rect"].clone();
+        let at = data["history"]["cursor"].as_u64().unwrap_or(0);
+        let idle = nested.window(0).local()["drag"] == Value::Null;
+        if rect == want && at == cursor_at && idle {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the nudges: {rect} at cursor {at} (want {want} at {cursor_at}), burst over: {idle}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    nested.window(0).wait_idle();
+    assert_eq!(cursor(nested, project), cursor_at, "one entry per burst");
 }
 
 /// D-33: an arrow key pressed three times with the canvas focused is three
 /// bursts of one press (`wtype` releases each key): three `LayerSet`s, each
-/// 1 px; Shift+arrow nudges 10 px.
+/// 1 px; Shift+arrow nudges 10 px. A key held past the repeat delay (sway's
+/// 600 ms, then 25 a second) is one burst: one `LayerSet`, which one `undo`
+/// takes back (R19, R26: the releases never reached the stage, so the taps
+/// merged into one entry and a hold split into two).
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn arrow_keys_nudge_the_selected_layer() {
@@ -1009,21 +1054,41 @@ fn arrow_keys_nudge_the_selected_layer() {
         thread::sleep(Duration::from_millis(50));
     }
     assert_eq!(nested.window(0).local()["focus"], "stage");
+    let c0 = cursor(&nested, &project);
     nested.keys(&["-k", "Left", "-k", "Left", "-k", "Up"]);
+    wait_nudged(&mut nested, &project, c0 + 3, (1498, 759));
     nested.keys(&["-M", "shift", "-k", "Right", "-m", "shift"]);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let rect = status(&nested, &project)["project"]["scene"]["layers"][1]["rect"].clone();
-        if rect == json!({"x": 1508, "y": 759, "w": 384, "h": 288}) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "the nudges: {rect}");
-        thread::sleep(Duration::from_millis(50));
-    }
-    let gui = nested.window(0);
-    gui.wait_idle();
-    assert_eq!(gui.local()["drag"], Value::Null);
+    wait_nudged(&mut nested, &project, c0 + 4, (1508, 759));
     nested.screenshot("nudged");
+    // Held for 1.5 s: the press, the repeats from 600 ms, the release.
+    nested.keys(&["-P", "Left", "-s", "1500", "-p", "Left"]);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let held = loop {
+        let data = status(&nested, &project);
+        let x = data["project"]["scene"]["layers"][1]["rect"]["x"]
+            .as_i64()
+            .unwrap_or(0);
+        let at = data["history"]["cursor"].as_u64().unwrap_or(0);
+        if at > c0 + 4 && nested.window(0).local()["drag"] == Value::Null {
+            break x;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the held key: x {x} at cursor {at}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    };
+    nested.window(0).wait_idle();
+    assert!(held < 1507, "the repeats moved it: x {held}");
+    assert_eq!(cursor(&nested, &project), c0 + 5, "a held key is one entry");
+    let undo = nested.cli_json(&project, &["undo"]);
+    assert_eq!(undo["ok"], true, "{undo}");
+    let rect = status(&nested, &project)["project"]["scene"]["layers"][1]["rect"].clone();
+    assert_eq!(
+        rect,
+        json!({"x": 1508, "y": 759, "w": 384, "h": 288}),
+        "one undo takes the hold back"
+    );
     assert_clean(&mut nested);
 }
 

@@ -17,9 +17,14 @@ use crate::store::local::LayerDragPreview;
 /// click only selects.
 pub const DRAG_THRESHOLD: f64 = 3.0;
 
-/// A nudge burst ends this long after its last press when no key release
+/// A nudge burst ends this long after its last repeat when no key release
 /// came (D-33).
 pub const NUDGE_IDLE_MS: u64 = 300;
+/// ... and this long after its first press while no repeat came yet:
+/// longer than the compositors' repeat delays (sway 600 ms, GNOME 500 ms),
+/// so a held key's wait for its first repeat doesn't end the burst (R19).
+/// The key's release ends it at once.
+pub const NUDGE_FIRST_IDLE_MS: u64 = 1000;
 
 /// The command that puts `layer` of `target` at `rect` and `crop`, if
 /// either changed from `from`.
@@ -233,6 +238,8 @@ pub struct NudgeBurst {
     pub rect: Rect,
     pub crop: Crop,
     last_ms: u64,
+    /// The presses so far: the first, then the repeats.
+    presses: u32,
 }
 
 impl NudgeBurst {
@@ -253,11 +260,22 @@ impl NudgeBurst {
             (self.rect, self.crop),
         )
     }
+
+    /// When it ends without a release.
+    fn deadline(&self) -> u64 {
+        let idle = if self.presses > 1 {
+            NUDGE_IDLE_MS
+        } else {
+            NUDGE_FIRST_IDLE_MS
+        };
+        self.last_ms + idle
+    }
 }
 
 /// Arrow-key nudges, coalesced into one `LayerSet` per burst (D-33): the
-/// first press starts it, repeats add to it, a key release (or
-/// [`NUDGE_IDLE_MS`] after the last press) ends it.
+/// first press starts it, repeats add to it, a key release (or, when none
+/// comes, [`NUDGE_IDLE_MS`] after the last repeat, [`NUDGE_FIRST_IDLE_MS`]
+/// after a first press) ends it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NudgeCoalescer {
     burst: Option<NudgeBurst>,
@@ -286,10 +304,12 @@ impl NudgeCoalescer {
             rect: layer.rect,
             crop: layer.crop,
             last_ms: now_ms,
+            presses: 0,
         });
         let (dx, dy, ten) = step;
         burst.rect = nudge(burst.rect, dx, dy, ten);
         burst.last_ms = now_ms;
+        burst.presses += 1;
         (burst, flushed)
     }
 
@@ -298,19 +318,17 @@ impl NudgeCoalescer {
         self.end()
     }
 
-    /// The burst's command once [`NUDGE_IDLE_MS`] passed since its last
-    /// press without a release.
+    /// The burst's command once its idle time passed without a release
+    /// ([`NUDGE_IDLE_MS`] after a repeat, [`NUDGE_FIRST_IDLE_MS`] after the
+    /// first press).
     pub fn due(&mut self, now_ms: u64) -> Option<Command> {
-        let due = self
-            .burst
-            .as_ref()
-            .is_some_and(|b| now_ms.saturating_sub(b.last_ms) >= NUDGE_IDLE_MS);
+        let due = self.burst.as_ref().is_some_and(|b| now_ms >= b.deadline());
         if due { self.end() } else { None }
     }
 
     /// When [`due`](Self::due) ends the burst.
     pub fn deadline(&self) -> Option<u64> {
-        self.burst.as_ref().map(|b| b.last_ms + NUDGE_IDLE_MS)
+        self.burst.as_ref().map(NudgeBurst::deadline)
     }
 
     /// `Esc`: the burst is dropped, nothing goes out. `true` when there
@@ -378,18 +396,47 @@ mod tests {
         assert_eq!(nudges.active(), None);
     }
 
+    /// R19: a held key as the compositor sends it: the press, the first
+    /// repeat after the repeat delay (600 ms on sway's defaults, 500 on
+    /// GNOME's), repeats every 40 ms, the release. One burst, one
+    /// `LayerSet`: the wait before the first repeat doesn't end it.
+    #[test]
+    fn a_key_held_past_the_repeat_delay_is_one_burst() {
+        let (target, layer) = face();
+        let mut nudges = NudgeCoalescer::default();
+        nudges.press(&target, &layer, (-1, 0, false), 0);
+        assert_eq!(nudges.due(300), None, "before the first repeat");
+        assert_eq!(nudges.due(599), None);
+        for at in [600, 640, 680] {
+            let (_, flushed) = nudges.press(&target, &layer, (-1, 0, false), at);
+            assert_eq!(flushed, None);
+        }
+        assert_eq!(nudges.due(700), None);
+        let cmd = nudges.release().expect("one command");
+        assert_eq!(rect_of(&cmd), Some(Rect::new(1496, 760, 384, 288)));
+        assert_eq!(nudges.release(), None);
+    }
+
+    /// Without a release (the focus left mid-hold): 300 ms after the last
+    /// repeat, or a second after a lone press.
     #[test]
     fn without_a_release_the_burst_ends_after_300_ms() {
         let (target, layer) = face();
         let mut nudges = NudgeCoalescer::default();
         nudges.press(&target, &layer, (0, -1, false), 5000);
-        assert_eq!(nudges.deadline(), Some(5000 + NUDGE_IDLE_MS));
-        assert_eq!(nudges.due(5299), None);
-        let cmd = nudges.due(5300).expect("ended by the timeout");
-        assert_eq!(rect_of(&cmd), Some(Rect::new(1500, 759, 384, 288)));
+        assert_eq!(nudges.deadline(), Some(5000 + NUDGE_FIRST_IDLE_MS));
+        nudges.press(&target, &layer, (0, -1, false), 5600);
+        assert_eq!(nudges.deadline(), Some(5600 + NUDGE_IDLE_MS));
+        assert_eq!(nudges.due(5899), None);
+        let cmd = nudges.due(5900).expect("ended by the timeout");
+        assert_eq!(rect_of(&cmd), Some(Rect::new(1500, 758, 384, 288)));
         assert_eq!(nudges.due(9999), None);
         // A release after the timeout sends nothing more.
         assert_eq!(nudges.release(), None);
+        // A lone press: a second.
+        nudges.press(&target, &layer, (1, 0, false), 10_000);
+        assert_eq!(nudges.due(10_999), None);
+        assert!(nudges.due(11_000).is_some());
     }
 
     #[test]
