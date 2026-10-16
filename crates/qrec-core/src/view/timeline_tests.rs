@@ -736,6 +736,34 @@ fn thumbnails() {
     assert!(thumb_tiles(&missing, &view, &mboxes[7]).is_empty());
 }
 
+/// G§4.5 (review): the thumbnail layer is the take's topmost visible one
+/// whatever its media; without media there is no fallback to a lower
+/// layer (the clip is hatched as missing, DESIGN's "thumbnails replaced by
+/// hatch"). A hidden top layer hands over to the one below it.
+#[test]
+fn the_thumbnail_layer_never_falls_back_to_a_lower_one() {
+    let mut missing = testkit::design_state();
+    let take = missing.project.takes.get_mut(&TakeId::numbered(5)).unwrap();
+    take.scene.layers[1].missing = true;
+    let take = &missing.project.takes[&TakeId::numbered(5)];
+    assert_eq!(thumbnail_layer(take).map(|l| l.id.as_str()), Some("L2"));
+    assert_eq!(thumbnail_stream(take), None, "no L1 frames instead");
+    let mut hidden = testkit::design_state();
+    let take = hidden.project.takes.get_mut(&TakeId::numbered(5)).unwrap();
+    take.scene.layers[1].visible = false;
+    let view = Viewport::from_state(&hidden, W).unwrap();
+    let c2d0 = clip_boxes(&hidden, &view, None)[7].clone();
+    assert_eq!(c2d0.clip, id("c2d0"));
+    assert!(!c2d0.missing);
+    let tiles = thumb_tiles(&hidden, &view, &c2d0);
+    assert!(!tiles.is_empty());
+    assert!(
+        tiles.iter().all(|t| matches!(&t.image,
+            ThumbImage::Strip { file, .. } if file.starts_with("takes/take-0005/L1-"))),
+        "{tiles:?}"
+    );
+}
+
 // ------------------------------------------------------------- tooltip
 
 #[test]

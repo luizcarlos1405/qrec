@@ -1952,8 +1952,9 @@ As built (WP6, round 3):
 
   Plus the take color index, a 1 px `bg` divider at each right edge, and
   flags: selected, hovered, analyzing (a non-dry-run `Autocut` job targets
-  it, D-15), missing (the thumbnail layer's media is missing in its take:
-  C19 hatch + warning icon), recorded-over (`muted-40` hatch, S04b),
+  it, D-15), missing (the clip's own thumbnail layer, its take scene's
+  topmost visible one, has no media in its take: C19 hatch + warning
+  icon), recorded-over (`muted-40` hatch, S04b),
   dimmed (D-43).
 - **Rows**: toolbar 36, ruler 28, video 76 (4 stripe + 72), lanes 56,
   gaps 4. Compact (G§3.15): video 72, lanes 48, no gaps (36 + 28 + 72 +
@@ -2089,7 +2090,11 @@ As built (WP6, round 3):
   `autocut.track`, `M` (D-08), `S` (`SetUi{solo}` toggle; tooltip "Solo
   A1 while playing (export unaffected)").
 - **Thumbnails** (Q4): per clip, the topmost visible layer of its take
-  scene that has media.
+  scene (`thumbnail_layer`), whatever its media. When that layer has none
+  (`missing`, or no video stream: `thumbnail_stream` is `None`) nothing
+  falls back to a lower layer: the clip is flagged missing (C19 hatch and
+  the warning icon, DESIGN's "thumbnails replaced by hatch"), and a bin
+  row's thumbnail is blank (WP7). (Review: this said "that has media".)
   - Fit and seconds zoom: 128 px tiles from the clip's x; tile i shows the
     strip image at the take time of its left edge (file time = take time
     − `startOffsetNs`, nearest second; `ThumbCache::strip_image`).
