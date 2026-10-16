@@ -160,9 +160,15 @@ fn hatch_metrics() -> HatchMetrics {
     HatchMetrics::at(1.0)
 }
 
-/// The C19 hatch shifted by `phase` px (0 for a still one): 45° stripes 2
-/// px wide every 6 px (`HatchMetrics`), anchored to content x = 0 like
-/// `widgets::draw::hatch`, clipped to `r`.
+/// How far apart along x the hatch's stripes are (C19: 6 px across 45°
+/// stripes, 8.49 along x): one cycle of a moving hatch's phase.
+pub fn hatch_step() -> f32 {
+    hatch_metrics().step()
+}
+
+/// The C19 hatch shifted by `phase` px along x (0 for a still one): 45°
+/// stripes 2 px wide, 6 px apart across them (`HatchMetrics`), anchored to
+/// content x = 0 like `widgets::draw::hatch`, clipped to `r`.
 pub fn hatch(snapshot: &gtk::Snapshot, r: &graphene::Rect, stripe: &gdk::RGBA, phase: f32) {
     if r.width() <= 0.0 || r.height() <= 0.0 {
         return;
@@ -171,9 +177,10 @@ pub fn hatch(snapshot: &gtk::Snapshot, r: &graphene::Rect, stripe: &gdk::RGBA, p
     snapshot.push_clip(r);
     let builder = gsk::PathBuilder::new();
     let (top, bottom, h) = (r.y(), r.y() + r.height(), r.height());
-    let phase = phase.rem_euclid(metrics.pitch);
-    // From one pitch earlier, so a phase leaves no gap at the left.
-    for start in metrics.stripe_starts(r.x() - metrics.pitch, r.width() + metrics.pitch, h) {
+    let step = metrics.step();
+    let phase = phase.rem_euclid(step);
+    // From one step earlier, so a phase leaves no gap at the left.
+    for start in metrics.stripe_starts(r.x() - step, r.width() + step, h) {
         let x = start + phase;
         builder.move_to(x, bottom);
         builder.line_to(x + h, top);

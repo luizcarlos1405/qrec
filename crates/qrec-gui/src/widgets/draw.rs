@@ -18,7 +18,11 @@ pub struct Edges {
 
 /// The C19 hatch's geometry at `scale` (`Theme::scale`): its stripes'
 /// pitch and width and its edge lines' width, the design's 6, 2 and 1 px
-/// × the scale.
+/// × the scale. The pitch and the width are across the stripes (DESIGN: 2
+/// px stripes, 4 px gaps, rotated 45°), so along x the stripes are
+/// [`HatchMetrics::step`] = pitch · √2 apart (8.49 px at 100 %, as the
+/// frames draw them; they were 6 apart along x, a 4.2 px pitch, until the
+/// WP7 integration).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HatchMetrics {
     pub pitch: f32,
@@ -40,24 +44,35 @@ impl HatchMetrics {
         }
     }
 
+    /// How far apart the stripes are along x: the pitch across 45° stripes
+    /// times √2.
+    pub fn step(&self) -> f32 {
+        self.pitch * std::f32::consts::SQRT_2
+    }
+
     /// Where the stripes crossing `[x, x + width)` of a `height` px tall
-    /// area start at its bottom, anchored to content x = 0 (so
-    /// neighbouring areas line up); each runs 45° up to the right.
+    /// area start at its bottom, a [`step`](Self::step) apart and anchored
+    /// to content x = 0 (so neighbouring areas line up); each runs 45° up
+    /// to the right.
     pub fn stripe_starts(&self, x: f32, width: f32, height: f32) -> Vec<f32> {
-        let first = ((x - height) / self.pitch).floor() * self.pitch;
+        let step = self.step();
+        let mut n = ((x - height) / step).floor();
         let mut starts = Vec::new();
-        let mut at = first;
-        while at < x + width {
+        loop {
+            let at = n * step;
+            if at >= x + width {
+                break;
+            }
             starts.push(at);
-            at += self.pitch;
+            n += 1.0;
         }
         starts
     }
 }
 
-/// The C19 hatch: 45° stripes 2 px wide every 6 px (× `scale`, the UI
-/// scale), anchored to content x = 0, clipped to `rect`; `edge` lines (1 px
-/// × `scale`) where `edges` asks.
+/// The C19 hatch: 45° stripes 2 px wide, 6 px apart across them (8.49
+/// along x; × `scale`, the UI scale), anchored to content x = 0, clipped to
+/// `rect`; `edge` lines (1 px × `scale`) where `edges` asks.
 pub fn hatch(
     snapshot: &gtk::Snapshot,
     rect: &graphene::Rect,
@@ -171,8 +186,43 @@ mod tests {
         );
         assert_eq!(HatchMetrics::at(f32::NAN), HatchMetrics::at(1.0));
         // Anchored to x = 0: a neighbour's stripes continue these.
-        let starts = HatchMetrics::at(1.5).stripe_starts(10.0, 20.0, 9.0);
-        assert_eq!(starts, [0.0, 9.0, 18.0, 27.0]);
-        assert!(starts.iter().all(|s| (s / 9.0).fract() == 0.0));
+        let at_150 = HatchMetrics::at(1.5);
+        let step = at_150.step();
+        let starts = at_150.stripe_starts(10.0, 20.0, 9.0);
+        assert_eq!(starts.len(), 3, "{starts:?}");
+        for (n, s) in starts.iter().enumerate() {
+            assert!((s - n as f32 * step).abs() < 1e-4, "{starts:?}");
+        }
+    }
+
+    /// DESIGN's pitch is across the 45° stripes (2 px stripe, 4 px gap): along
+    /// x they are 6 · √2 = 8.49 px apart, as the frames draw them (S05's
+    /// saving ghost, S14's broken thumbnail: 8.49 px measured; the stripes
+    /// used to start every 6 px along x, a 4.2 px pitch).
+    #[test]
+    fn the_stripes_are_six_px_apart_across_them() {
+        let m = HatchMetrics::at(1.0);
+        assert!((m.step() - 8.485_281).abs() < 1e-4, "{}", m.step());
+        let starts = m.stripe_starts(0.0, 100.0, 54.0);
+        // The first stripe that reaches the area starts left of it (its
+        // height earlier), the last one before its right end.
+        assert!(
+            starts[0] <= -54.0 && starts[0] > -54.0 - m.step(),
+            "{starts:?}"
+        );
+        assert!(*starts.last().unwrap() < 100.0);
+        for pair in starts.windows(2) {
+            let along_x = pair[1] - pair[0];
+            // Two parallel 45° lines `along_x` apart along x are
+            // along_x / √2 apart across them.
+            let across = along_x / std::f32::consts::SQRT_2;
+            assert!((across - 6.0).abs() < 1e-3, "{across}");
+        }
+        // A neighbour starting further right continues the same lattice.
+        let right = m.stripe_starts(100.0, 50.0, 54.0);
+        for s in &right {
+            let k = s / m.step();
+            assert!((k - k.round()).abs() < 1e-3, "{s} is off the lattice");
+        }
     }
 }

@@ -501,8 +501,8 @@ fn ghost_clip(s: &gtk::Snapshot, sc: &Scene<'_>, g: &Ghost) {
     s.append_color(&p.ghost_fill, &r);
     s.append_color(&p.take[g.color % 8], &rect(g.x, 0.0, g.w, STRIPE_PX));
     if g.saving {
-        // One pitch every 1.2 s, like the indeterminate bar.
-        let phase = (sc.now_ms % 1200) as f32 / 1200.0 * 6.0;
+        // One stripe step every 1.2 s, like the indeterminate bar.
+        let phase = (sc.now_ms % 1200) as f32 / 1200.0 * paint::hatch_step();
         paint::hatch(s, &r, &p.record_25, phase);
     }
     paint::dashed(s, &r, 1.5, &[6.0, 4.0], &p.record);
