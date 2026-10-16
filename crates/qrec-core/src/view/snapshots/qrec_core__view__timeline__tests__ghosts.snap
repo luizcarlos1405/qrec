@@ -1,0 +1,38 @@
+---
+source: crates/qrec-core/src/view/timeline_tests.rs
+expression: "[ghost04, ghost04b, ghost05]"
+---
+[
+  {
+    "take": "take-0010",
+    "color": 1,
+    "x": 623.5193329518515,
+    "w": 408.48066704814846,
+    "plate": "● Take 10 · recording",
+    "over": null,
+    "replaced": [],
+    "saving": false
+  },
+  {
+    "take": "take-0010",
+    "color": 1,
+    "x": 290.9874171289406,
+    "w": 130.13448789067786,
+    "plate": "● Take 10 · recording",
+    "over": "over c2d0 (take 5)",
+    "replaced": [
+      "c2d0"
+    ],
+    "saving": false
+  },
+  {
+    "take": "take-0010",
+    "color": 1,
+    "x": 623.5193329518515,
+    "w": 408.48066704814846,
+    "plate": "Take 10 · saving…",
+    "over": null,
+    "replaced": [],
+    "saving": true
+  }
+]

@@ -1,1 +1,256 @@
-/* The timeline (C14-C18). Owner: WP3. */
+/*
+ * The timeline (C14–C18, BRIEF §2.6, DESIGN Components › Timeline).
+ * Owner: WP3. `bg` lanes; `surface` toolbar, ruler and track headers.
+ * The canvas, the ruler and the overlay draw themselves from the theme's
+ * palette (timeline/draw.rs); this file styles the widgets around them.
+ *
+ * GTK's min-width and min-height size the content box: padding and
+ * borders come on top.
+ */
+
+.qrec-timeline {
+  background-color: var(--qrec-bg);
+}
+
+/* ------------------------------------------------------ C14 toolbar */
+
+/* 36 px, `surface`, a bottom border; items 28 tall, 8 px padding. */
+.timeline-toolbar {
+  min-height: 36px;
+  padding: 0 8px;
+  background-color: var(--qrec-surface);
+  box-shadow: inset 0 -1px var(--qrec-border);
+}
+
+.timeline-toolbar .tl-group {
+  border-spacing: 6px;
+}
+
+.timeline-toolbar button.qrec-btn {
+  min-height: 28px;
+  padding: 0 8px;
+}
+
+/* GTK adds a box's `border-spacing` to its own spacing: the labeled
+   buttons (button::labeled) space their content by 8 px already. */
+.timeline-toolbar button.qrec-btn > box {
+  border-spacing: 0;
+}
+
+.timeline-toolbar button.qrec-btn > box.tl-content {
+  border-spacing: 7px;
+}
+
+.timeline-toolbar button.qrec-btn.icon-32 {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+}
+
+/* Toggles: Snap on reads as R1's selection (BRIEF §2.6). */
+.timeline-toolbar button.tl-toggle:checked {
+  background-color: var(--qrec-selected);
+  background-image: none;
+  box-shadow: inset 0 0 0 1px var(--qrec-accent);
+}
+
+.timeline-toolbar button.tl-toggle:checked:hover {
+  background-image: image(var(--qrec-hover));
+}
+
+/* The bin's count: a small round chip. */
+.tl-count {
+  min-width: 8px;
+  min-height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background-color: var(--qrec-pressed);
+  color: var(--qrec-text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.tl-divider {
+  min-width: 1px;
+  margin: 6px 2px;
+  background-color: var(--qrec-border);
+}
+
+.tl-summary {
+  margin-right: 4px;
+}
+
+scale.tl-zoom {
+  margin: 0 2px;
+}
+
+.tl-readout {
+  margin-left: 4px;
+}
+
+/* ------------------------------------------------------ C15 ruler */
+
+/* 28 px `surface`; the corner cell shows the playhead's timecode at
+   (12, 5), with the header column's right border. */
+.tl-ruler-row {
+  min-height: 28px;
+  background-color: var(--qrec-surface);
+}
+
+.tl-corner {
+  padding: 5px 0 0 12px;
+  color: var(--qrec-text);
+  background-color: var(--qrec-surface);
+  box-shadow: inset -1px 0 var(--qrec-border);
+}
+
+/* ------------------------------------------------------ C17 headers */
+
+/* The 176 px column: `surface`, a right border. */
+.tl-headers {
+  background-color: var(--qrec-surface);
+  box-shadow: inset -1px 0 var(--qrec-border);
+}
+
+.tl-video-header {
+  padding: 0 12px;
+}
+
+.tl-video-lines {
+  border-spacing: 2px;
+}
+
+.tl-header-title {
+  color: var(--qrec-text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.tl-lane-header {
+  padding: 4px 8px 4px 12px;
+}
+
+/* The compact rows' 48 px lanes: the 18 px line and the 24 px toggles
+   with 3 px above and below. */
+.tl-headers.compact .tl-lane-header {
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+.tl-lane-line {
+  border-spacing: 7px;
+}
+
+.tl-lane-line image {
+  -gtk-icon-size: 16px;
+  color: var(--qrec-text);
+}
+
+/* The id chip: `mono-xs` `muted` in a 1 px border. */
+.tl-chip {
+  padding: 0 4px;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px var(--qrec-border);
+}
+
+.tl-lane-tools {
+  border-spacing: 4px;
+}
+
+image.tl-scissors {
+  -gtk-icon-size: 12px;
+  color: var(--qrec-muted);
+}
+
+/* M and S: 24×24, `caption-strong`; on, M is `warning` at 20 % with a
+   1 px `warning` stroke and S `accent-2` at 20 % with `accent-2`. */
+button.track-toggle {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+  color: var(--qrec-text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+button.track-toggle:hover {
+  background-image: image(var(--qrec-hover));
+}
+
+button.track-toggle.mute:checked {
+  background-color: var(--qrec-warning-20);
+  box-shadow: inset 0 0 0 1px var(--qrec-warning);
+}
+
+button.track-toggle.solo:checked {
+  background-color: var(--qrec-accent-2-20);
+  box-shadow: inset 0 0 0 1px var(--qrec-accent-2);
+}
+
+/* ------------------------------------------------------ the canvas */
+
+/* It takes the keyboard focus: the ring sits inside it. */
+timeline-surface.tl-canvas:focus-visible {
+  outline: 2px solid var(--qrec-focus-ring);
+  outline-offset: -2px;
+}
+
+.tl-scroller {
+  background-color: var(--qrec-bg);
+}
+
+/* ------------------------------------------------------ S01b */
+
+/* The empty timeline (C31 Timeline): the quiet swamp, the `display`
+   line and "Press [R] and make some noise." */
+.tl-empty-title {
+  margin-top: 12px;
+  color: var(--qrec-text);
+}
+
+/* 10 px under the `display` line, as S01b draws it. */
+.tl-empty-line {
+  margin-top: 10px;
+  border-spacing: 8px;
+}
+
+/* ------------------------------------------------------ C33 clip tooltip */
+
+/* Like GTK's tooltips (common.css): `raised`, `md` radius, e1, a 1 px
+   `border`, `body-sm`. */
+.qrec-tl-tooltip {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background-color: var(--qrec-raised);
+  color: var(--qrec-text);
+  box-shadow: 0 0 0 1px var(--qrec-border), 0 2px 6px var(--qrec-shadow-e1);
+  font-size: 13px;
+  line-height: 18px;
+  border-spacing: 4px;
+}
+
+.qrec-tl-tooltip .tl-tip-strong {
+  font-weight: 600;
+}
+
+.qrec-tl-tooltip .tl-tip-keys {
+  margin-top: 2px;
+  border-spacing: 10px;
+}
+
+.qrec-tl-tooltip .tl-tip-hint {
+  border-spacing: 4px;
+}
+
+.qrec-tl-tooltip .tl-tip-keys label {
+  font-size: 12px;
+  line-height: 16px;
+}

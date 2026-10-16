@@ -1,0 +1,217 @@
+---
+source: crates/qrec-core/src/view/timeline_tests.rs
+expression: p
+---
+{
+  "block": [
+    "c8a1"
+  ],
+  "slot": 6,
+  "slots": 10,
+  "caretX": 227.1768366932756,
+  "startsAt": 1627,
+  "tooltip": [
+    "Move after c1b6 · slot 7 of 10",
+    "Starts at 00:00:54:07"
+  ],
+  "order": [
+    "c7f3",
+    "c1b2",
+    "c1b3",
+    "c1b4",
+    "c1b5",
+    "c1b6",
+    "c8a1",
+    "c2d0",
+    "c2d1",
+    "c3e9"
+  ],
+  "boxes": [
+    {
+      "clip": "c7f3",
+      "take": "take-0001",
+      "x": 0.0,
+      "w": 57.24800432959004,
+      "inFrame": 0,
+      "label": {
+        "kind": "short",
+        "text": "1"
+      },
+      "color": 0,
+      "selected": false,
+      "hovered": false,
+      "analyzing": false,
+      "missing": false,
+      "recordedOver": false,
+      "opacity": 1.0,
+      "trimming": null
+    },
+    {
+      "clip": "c1b2",
+      "take": "take-0003",
+      "x": 57.24800432959004,
+      "w": 37.420646732512516,
+      "inFrame": 0,
+      "label": {
+        "kind": "short",
+        "text": "3"
+      },
+      "color": 2,
+      "selected": false,
+      "hovered": false,
+      "analyzing": false,
+      "missing": false,
+      "recordedOver": false,
+      "opacity": 1.0,
+      "trimming": null
+    },
+    {
+      "clip": "c1b3",
+      "take": "take-0003",
+      "x": 94.66865106210255,
+      "w": 42.8661886077662,
+      "inFrame": 304,
+      "label": {
+        "kind": "short",
+        "text": "3"
+      },
+      "color": 2,
+      "selected": false,
+      "hovered": false,
+      "analyzing": false,
+      "missing": false,
+      "recordedOver": false,
+      "opacity": 1.0,
+      "trimming": null
+    },
+    {
+      "clip": "c1b4",
+      "take": "take-0003",
+      "x": 137.53483966986875,
+      "w": 33.231768366932755,
+      "inFrame": 652,
+      "label": {
+        "kind": "short",
+        "text": "3"
+      },
+      "color": 2,
+      "selected": false,
+      "hovered": false,
+      "analyzing": false,
+      "missing": false,
+      "recordedOver": false,
+      "opacity": 1.0,
+      "trimming": null
+    },
+    {
+      "clip": "c1b5",
+      "take": "take-0003",
+      "x": 170.7666080368015,
+      "w": 34.767690434312,
+      "inFrame": 931,
+      "label": {
+        "kind": "short",
+        "text": "3"
+      },
+      "color": 2,
+      "selected": false,
+      "hovered": false,
+      "analyzing": false,
+      "missing": false,
+      "recordedOver": false,
+      "opacity": 1.0,
+      "trimming": null
+    },
+    {
+      "clip": "c1b6",
+      "take": "take-0003",
+      "x": 205.53429847111352,
+      "w": 21.642538222162088,
+      "inFrame": 1222,
+      "label": {
+        "kind": "none"
+      },
+      "color": 2,
+      "selected": false,
+      "hovered": false,
+      "analyzing": false,
+      "missing": false,
+      "recordedOver": false,
+      "opacity": 1.0,
+      "trimming": null
+    },
+    {
+      "clip": "c2d0",
+      "take": "take-0005",
+      "x": 290.9874171289406,
+      "w": 152.47517250710322,
+      "inFrame": 12,
+      "label": {
+        "kind": "full",
+        "text": "Take 5"
+      },
+      "color": 4,
+      "selected": false,
+      "hovered": false,
+      "analyzing": false,
+      "missing": false,
+      "recordedOver": false,
+      "opacity": 1.0,
+      "trimming": null
+    },
+    {
+      "clip": "c2d1",
+      "take": "take-0005",
+      "x": 443.46258963604384,
+      "w": 154.98849952645108,
+      "inFrame": 1104,
+      "label": {
+        "kind": "full",
+        "text": "Take 5"
+      },
+      "color": 4,
+      "selected": false,
+      "hovered": false,
+      "analyzing": false,
+      "missing": false,
+      "recordedOver": false,
+      "opacity": 1.0,
+      "trimming": null
+    },
+    {
+      "clip": "c3e9",
+      "take": "take-0008",
+      "x": 598.4510891624949,
+      "w": 433.54891083750505,
+      "inFrame": 0,
+      "label": {
+        "kind": "full",
+        "text": "Take 8"
+      },
+      "color": 7,
+      "selected": false,
+      "hovered": false,
+      "analyzing": false,
+      "missing": false,
+      "recordedOver": false,
+      "opacity": 1.0,
+      "trimming": null
+    }
+  ],
+  "ripple": {
+    "text": "← 00:00:15:07",
+    "anchor": {
+      "kind": "center",
+      "x": 142.21242051143284
+    }
+  },
+  "command": {
+    "cmd": "clipMove",
+    "clips": [
+      "c8a1"
+    ],
+    "to": {
+      "index": 6
+    }
+  }
+}
