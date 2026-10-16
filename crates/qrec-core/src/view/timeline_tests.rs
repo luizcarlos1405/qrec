@@ -305,6 +305,41 @@ fn ghosts() {
     insta::assert_json_snapshot!("ghosts", [ghost04, ghost04b, ghost05]);
 }
 
+/// A ghost `w` px wide from `x`.
+fn ghost_at(x: f64, w: f64) -> Ghost {
+    Ghost {
+        take: TakeId::numbered(10),
+        color: 0,
+        x,
+        w,
+        plate: String::new(),
+        over: None,
+        replaced: Vec::new(),
+        saving: false,
+    }
+}
+
+/// The ghost's live waveform covers only its columns on screen (review: a
+/// 10 min take at 32 px/frame is 576,000 columns a lane, all of them
+/// computed every frame): the newest 8 at the right edge of a 1600 px view,
+/// the oldest 1000 when it is scrolled to its start, none off screen.
+#[test]
+fn the_ghost_waveform_covers_its_columns_on_screen() {
+    let at_end = ghost_columns(&ghost_at(1592.0, 576_000.0), 1600.0).unwrap();
+    assert_eq!(at_end.columns, 575_992..576_000);
+    assert_eq!(at_end.x0, 1592.0);
+    let at_start = ghost_columns(&ghost_at(-575_000.0, 576_000.0), 1600.0).unwrap();
+    assert_eq!(at_start.columns, 0..1000);
+    assert_eq!(at_start.x0, 0.0);
+    assert_eq!(ghost_columns(&ghost_at(1600.0, 500.0), 1600.0), None);
+    assert_eq!(ghost_columns(&ghost_at(-500.0, 500.0), 1600.0), None);
+    assert_eq!(ghost_columns(&ghost_at(10.0, 0.0), 1600.0), None);
+    // A short ghost inside the view: every one of its columns.
+    let short = ghost_columns(&ghost_at(100.25, 40.5), 1600.0).unwrap();
+    assert_eq!(short.columns, 0..41);
+    assert_eq!(short.x0, 140.0 - 41.0);
+}
+
 // ------------------------------------------------------------- previews
 
 /// S10: c2d0's start edge dragged right by 46.4 px at 48 px/s.

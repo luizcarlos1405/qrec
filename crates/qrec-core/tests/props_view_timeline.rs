@@ -2,8 +2,9 @@
 //! the timeline, the label rank is monotone in width, frames and x round
 //! trip, `zoom_at` keeps the anchor's frame under the anchor, a move
 //! preview's command gives the previewed order, a trim preview's command
-//! gives the previewed range, `drop_slot` is monotone in x, and the
-//! ruler's labels show only in view (dropped at the left edge).
+//! gives the previewed range, `drop_slot` is monotone in x, the ruler's
+//! labels show only in view (dropped at the left edge), and a ghost's
+//! waveform columns are exactly its columns in view.
 
 use proptest::prelude::*;
 use proptest::sample::Index;
@@ -13,8 +14,8 @@ use qrec_core::testkit::{self, strategies};
 use qrec_core::timeline::total_frames;
 use qrec_core::view::ruler::{self, TickKind};
 use qrec_core::view::timeline::{
-    ClipLabel, MAX_PX_PER_FRAME, TrimEdge, Viewport, clamp_zoom, clip_boxes, drop_slot,
-    move_preview, trim_preview,
+    ClipLabel, Ghost, MAX_PX_PER_FRAME, TrimEdge, Viewport, clamp_zoom, clip_boxes, drop_slot,
+    ghost_columns, move_preview, trim_preview,
 };
 use qrec_core::{ClipId, Frame, State, TakeId};
 
@@ -238,6 +239,46 @@ proptest! {
                 matches!(cut, Some((TickKind::Frame | TickKind::Second, true))),
                 "{cut:?}"
             );
+        }
+    }
+
+    /// A ghost's waveform columns (counted from its right edge) are those
+    /// whose x is in `[0, width)`, every one of them: at most a view's
+    /// worth whatever the ghost's length.
+    #[test]
+    fn ghost_columns_are_those_in_view(
+        x in -1e6f64..3000.0,
+        w in 0.0f64..1e6,
+        width in 100.0f64..3000.0,
+    ) {
+        let ghost = Ghost {
+            take: TakeId::numbered(10),
+            color: 0,
+            x,
+            w,
+            plate: String::new(),
+            over: None,
+            replaced: Vec::new(),
+            saving: false,
+        };
+        let right = (x + w).floor();
+        let all = w.ceil() as usize;
+        let x_of = |c: usize| right - 1.0 - c as f64;
+        let shown = |c: usize| (0.0..width).contains(&x_of(c));
+        match ghost_columns(&ghost, width) {
+            None => {
+                let any = (0..all).find(|&c| shown(c) && x_of(c) + 1.0 > x && x_of(c) < x + w);
+                prop_assert!(any.is_none(), "column {any:?} shows");
+            }
+            Some(cols) => {
+                let (start, end) = (cols.columns.start, cols.columns.end);
+                prop_assert!(end - start <= width.ceil() as usize + 1);
+                prop_assert!(end <= all);
+                prop_assert!((cols.x0 - x_of(end - 1)).abs() < 1e-9);
+                prop_assert!(shown(start) && shown(end - 1));
+                prop_assert!(start == 0 || !shown(start - 1));
+                prop_assert!(end == all || !shown(end));
+            }
         }
     }
 }

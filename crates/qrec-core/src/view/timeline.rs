@@ -782,6 +782,38 @@ pub fn ghost(state: &State, viewport: &Viewport, elapsed_ns: u64) -> Option<Ghos
     })
 }
 
+/// The px columns of a ghost's live waveform that show (G§4.5): column `c`
+/// counts from the ghost's right edge leftward (0 is the newest) and is at
+/// x = ⌊x + w⌋ − 1 − c; only those in the time area, `[0, width)`, are
+/// drawn, so a long take zoomed in costs one view of columns, not its
+/// whole length.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GhostColumns {
+    /// The leftmost visible column's x.
+    pub x0: f64,
+    /// The visible columns, counted from the right edge: in screen order
+    /// they run from `columns.end − 1` (at `x0`) down to `columns.start`.
+    pub columns: std::ops::Range<usize>,
+}
+
+/// The columns of `ghost` that show in a time area `width` wide; `None`
+/// when none does.
+pub fn ghost_columns(ghost: &Ghost, width: f64) -> Option<GhostColumns> {
+    let (x, w) = (ghost.x, ghost.w);
+    if !(w > 0.0 && x.is_finite() && w.is_finite()) || x >= width || x + w <= 0.0 {
+        return None;
+    }
+    let right = (x + w).floor();
+    let all = w.ceil();
+    // x = right − 1 − c ≥ 0 and < width.
+    let end = all.min(right.max(0.0));
+    let start = (right - width).floor().max(0.0);
+    (start < end).then_some(GhostColumns {
+        x0: right - end,
+        columns: start as usize..end as usize,
+    })
+}
+
 // ------------------------------------------------------------- lanes
 
 /// One audio lane: a track of the project scene or of a take on the

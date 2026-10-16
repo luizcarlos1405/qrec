@@ -858,6 +858,69 @@ pub fn decide_drop(state: &State, view: &Viewport, take: &TakeId, x: f64) -> Opt
     Some(tl::drop_command(take, slot))
 }
 
+// ------------------------------------------------------------- the ghost
+
+/// The level ring's readings are this far apart (20 Hz).
+pub const READING_MS: f64 = 50.0;
+
+/// The live waveform under a ghost `ghost_w` px wide whose take is
+/// `elapsed_ms` long (G§4.5), for `columns` (counted from its right edge
+/// leftward, as `tl::ghost_columns` gives them), in screen order: per column
+/// the loudest RMS among the level readings in its time (`history` oldest
+/// first, one per 50 ms, the newest at the right edge), drawn as the peak
+/// of a sine of that RMS (× √2), so a steady tone keeps its height when the
+/// take lands and its peaks are drawn. A column older than the readings
+/// reach is silent (0).
+pub fn ghost_amplitudes<T>(
+    history: &[T],
+    rms_db: impl Fn(&T) -> f32,
+    elapsed_ms: f64,
+    ghost_w: f64,
+    columns: std::ops::Range<usize>,
+) -> Vec<f32> {
+    let per_px_ms = if ghost_w > 0.0 {
+        elapsed_ms / ghost_w
+    } else {
+        READING_MS
+    };
+    let n = history.len() as f64;
+    columns
+        .rev()
+        .map(|c| {
+            // The readings in the column's time: from `b` (its left edge)
+            // to `a` (its right), as indices from the oldest.
+            let t1 = c as f64 * per_px_ms;
+            let t0 = t1 + per_px_ms;
+            let a = n - 1.0 - t1 / READING_MS;
+            let b = n - 1.0 - t0 / READING_MS;
+            if a < 0.0 {
+                return 0.0;
+            }
+            let (lo, hi) = (b.floor().max(0.0) as usize, a.ceil() as usize);
+            let hi = hi.min(history.len() - 1);
+            // The loudest first, one `powf` (dB to amplitude is monotone).
+            let db = history[lo..=hi]
+                .iter()
+                .map(&rms_db)
+                .fold(f32::NEG_INFINITY, f32::max);
+            (10f32.powf(db / 20.0) * std::f32::consts::SQRT_2).min(1.0)
+        })
+        .collect()
+}
+
+/// How many of the newest level readings [`ghost_amplitudes`] reads for
+/// `columns` (the oldest one's time, and one more).
+pub fn ghost_readings(elapsed_ms: f64, ghost_w: f64, columns: &std::ops::Range<usize>) -> usize {
+    let per_px_ms = if ghost_w > 0.0 {
+        elapsed_ms / ghost_w
+    } else {
+        READING_MS
+    };
+    let all = (elapsed_ms / READING_MS).ceil().max(0.0);
+    let oldest = (columns.end as f64 * per_px_ms / READING_MS).ceil() + 2.0;
+    all.min(oldest) as usize
+}
+
 /// The take a drag's string names: `qrec-take:<id>` (D-38).
 pub fn parse_drop(text: &str) -> Option<TakeId> {
     text.strip_prefix("qrec-take:")?.trim().parse().ok()

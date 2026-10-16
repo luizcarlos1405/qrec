@@ -1749,8 +1749,7 @@ impl Inner {
         let ghost = tl::ghost(&state, &view, elapsed);
         let ghost_waves = ghost
             .as_ref()
-            .map(|g| self.ghost_waves(&state, &m.lanes, g, elapsed))
-            .unwrap_or_default();
+            .and_then(|g| self.ghost_waves(&state, &m.lanes, g, elapsed, view.width));
         let scene = Scene {
             widget: &widget,
             texts: &self.texts,
@@ -1776,21 +1775,22 @@ impl Inner {
     }
 
     /// The live waveform under the ghost (G§4.5): the level ring's RMS per
-    /// 50 ms, newest at the ghost's right edge, one amplitude per px. An
-    /// RMS reads as the peak of a sine of that RMS (×√2), so a steady tone
-    /// keeps its height when the take lands and its peaks are drawn.
+    /// 50 ms, newest at the ghost's right edge, one amplitude per px, for
+    /// its columns in the time area `width` wide only (a long take zoomed
+    /// in is a view of columns, not its length: `tl::ghost_columns`).
     fn ghost_waves(
         &self,
         state: &State,
         lanes: &[Lane],
         ghost: &tl::Ghost,
         elapsed_ns: u64,
-    ) -> Vec<Vec<f32>> {
+        width: f64,
+    ) -> Option<draw::GhostWaves> {
+        let columns = tl::ghost_columns(ghost, width)?;
         let take = state.project.takes.get(&ghost.take);
-        let px = ghost.w.max(0.0).ceil() as usize;
         let ms = elapsed_ns as f64 / 1e6;
-        let per_px_ms = if ghost.w > 0.0 { ms / ghost.w } else { 50.0 };
-        lanes
+        let wanted = control::ghost_readings(ms, ghost.w, &columns.columns).min(media_history());
+        let lanes = lanes
             .iter()
             .map(|lane| {
                 let source = take
@@ -1800,31 +1800,20 @@ impl Inner {
                 let Some(source) = source else {
                     return Vec::new();
                 };
-                let samples = (ms / 50.0).ceil() as usize;
-                let history = self
-                    .ctx
-                    .media
-                    .level_history(&source, samples.min(media_history()));
-                (0..px)
-                    .map(|c| {
-                        // Column c counts from the right edge leftward.
-                        let t1 = c as f64 * per_px_ms;
-                        let t0 = t1 + per_px_ms;
-                        let a = history.len() as f64 - 1.0 - t1 / 50.0;
-                        let b = history.len() as f64 - 1.0 - t0 / 50.0;
-                        let (lo, hi) = (b.floor().max(0.0) as usize, a.ceil().max(0.0) as usize);
-                        history
-                            .get(lo..=hi.min(history.len().saturating_sub(1)))
-                            .unwrap_or(&[])
-                            .iter()
-                            .map(|l| {
-                                (10f32.powf(l.rms_db / 20.0) * std::f32::consts::SQRT_2).min(1.0)
-                            })
-                            .fold(0.0f32, f32::max)
-                    })
-                    .collect()
+                let history = self.ctx.media.level_history(&source, wanted);
+                control::ghost_amplitudes(
+                    &history,
+                    |l| l.rms_db,
+                    ms,
+                    ghost.w,
+                    columns.columns.clone(),
+                )
             })
-            .collect()
+            .collect();
+        Some(draw::GhostWaves {
+            x0: columns.x0,
+            lanes,
+        })
     }
 
     fn draw_ruler(&self, s: &gtk::Snapshot, _w: f64, h: f64) {

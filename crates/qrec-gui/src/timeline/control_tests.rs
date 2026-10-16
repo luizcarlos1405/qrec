@@ -693,3 +693,55 @@ fn bin_drops_insert_at_the_nearest_boundary() {
     assert_eq!(parse_drop("take-0004"), None);
     assert_eq!(parse_drop("qrec-take:nope"), None);
 }
+
+// ------------------------------------------------------------- the ghost
+
+/// RMS readings in dB, oldest first.
+fn readings(db: &[f32]) -> Vec<f32> {
+    db.to_vec()
+}
+
+/// The ghost's waveform for a window of its columns is that window of the
+/// whole width's (review: only the columns on screen are computed).
+#[test]
+fn the_ghost_waveform_in_a_window_is_the_window_of_the_whole() {
+    let history = readings(
+        &(0..400)
+            .map(|i| -60.0 + (i % 37) as f32 * 1.5)
+            .collect::<Vec<_>>(),
+    );
+    let (ms, w): (f64, f64) = (20_000.0, 733.4);
+    let all = w.ceil() as usize;
+    let full = ghost_amplitudes(&history, |db| *db, ms, w, 0..all);
+    assert_eq!(full.len(), all);
+    for (lo, hi) in [(0, 10), (100, 400), (700, all), (0, all)] {
+        let window = ghost_amplitudes(&history, |db| *db, ms, w, lo..hi);
+        assert_eq!(window, full[all - hi..all - lo], "{lo}..{hi}");
+        // Reading only the newest readings the window needs changes nothing.
+        let wanted = ghost_readings(ms, w, &(lo..hi));
+        let newest = &history[history.len().saturating_sub(wanted)..];
+        assert_eq!(
+            ghost_amplitudes(newest, |db| *db, ms, w, lo..hi),
+            window,
+            "{lo}..{hi} from the newest {wanted}"
+        );
+    }
+}
+
+/// Columns older than the readings reach are silent, not a flat band at
+/// the oldest reading's level (review): ten readings (500 ms) under a 60 s
+/// ghost of 1000 px fill its newest 8 columns.
+#[test]
+fn columns_older_than_the_readings_are_silent() {
+    let history = readings(&[-6.0; 10]);
+    let amps = ghost_amplitudes(&history, |db| *db, 60_000.0, 1000.0, 0..1000);
+    let loud = (10f32.powf(-6.0 / 20.0) * std::f32::consts::SQRT_2).min(1.0);
+    // Screen order: the newest (column 0) is last.
+    let newest: Vec<f32> = amps.iter().rev().take(8).copied().collect();
+    assert!(newest.iter().all(|a| (a - loud).abs() < 1e-6), "{newest:?}");
+    assert!(
+        amps[..992].iter().all(|a| *a == 0.0),
+        "{:?}",
+        &amps[980..992]
+    );
+}

@@ -2858,6 +2858,12 @@ reduced motion (WP1–WP7). Visible departures of the final shots:
   integration listed S02 and S11 only).
 - S04, S04b, S05: the timers read the real elapsed time
   (`00:02:41:27` for `00:02:41:12`).
+- S04, S04b, S05: the ghost's lanes are silent but for their newest
+  columns, where the frames draw the take's waveform: the fake clock
+  starts the take at 2:41 (0:31 in S04b) while the level ring holds only
+  the readings since it started, and a column older than the readings is
+  silent (review: it drew a flat band at the oldest reading's level, which
+  passed for a waveform).
 - S04, S05, S05b and S12: the ruler drew a 10 px tick every 30 s (the
   recording fit) and every 5 s with 1 s ticks between (S12's 10 px/s),
   where the frames tick only at their labels with 5 px ticks every 10 s
