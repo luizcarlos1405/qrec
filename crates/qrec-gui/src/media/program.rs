@@ -19,7 +19,8 @@
 //!    false: `pause()`, then `Seek{To(player frame)}`; the rate goes back
 //!    to 1. Leaving Program while playing is that stop too (R21).
 //! 3. While playing, `Seek{To(player frame)}` goes out once a second (an
-//!    own seek); a playhead the GUI didn't set that way moves the player.
+//!    own seek); a playhead the GUI didn't set that way (nor by a key's
+//!    pre-step seek to the player's frame, R22) moves the player.
 //!    `LocalUi.program_playing` says the program plays in the player (not
 //!    a take; and only once the program's load after a take landed, the
 //!    player idle, since until then its position is the take's): what the
@@ -76,7 +77,9 @@ pub const SEEK_EVERY_MS: u64 = 1000;
 /// How long a rate set by the GUI's shuttle waits for playback to start.
 pub const RATE_ARMED_MS: u64 = 1000;
 /// A playhead this close to the player's frame doesn't move a playing
-/// player (a pre-step's `Seek{To(player frame)}`).
+/// player (a frame step while playing, say); a key's pre-step seek to the
+/// player's frame is own whatever the distance
+/// ([`SyncMachine::note_own_seek`]).
 const NEAR_FRAMES: Frame = 2;
 /// How long after a ruler drag the sync waits for the snapshots to reach
 /// its last scrubbed frame (the echo of the drag's last seek) before it
@@ -218,6 +221,9 @@ pub struct SyncMachine {
     program_playing: bool,
     /// The bin preview paused the program's playback (once per preview).
     preview_paused: bool,
+    /// The frames the key router took from the player lately (its
+    /// pre-step seeks): (when, frame).
+    key_seeks: Vec<(u64, Frame)>,
 }
 
 impl Default for SyncMachine {
@@ -246,6 +252,7 @@ impl SyncMachine {
             settle_check: None,
             program_playing: false,
             preview_paused: false,
+            key_seeks: Vec::new(),
         }
     }
 
@@ -253,6 +260,17 @@ impl SyncMachine {
     /// pre-step): the next start plays at it (D-44).
     pub fn arm_rate(&mut self, now_ms: u64) {
         self.rate_armed_at = Some(now_ms);
+    }
+
+    /// The key router took the player's `frame` for the playhead (its
+    /// pre-step `Seek{To(frame)}`, G§3.8): a playhead at that frame within
+    /// [`SEEK_EVERY_MS`] is the GUI's own and doesn't move a playing
+    /// player (R22: at 4×, or stepping in reverse, the player is past it
+    /// by the time the snapshot comes).
+    pub fn note_own_seek(&mut self, now_ms: u64, frame: Frame) {
+        self.key_seeks
+            .retain(|(at, _)| now_ms.saturating_sub(*at) < SEEK_EVERY_MS);
+        self.key_seeks.push((now_ms, frame));
     }
 
     /// A reload is due (the test channel's `waitIdle`).
@@ -430,9 +448,13 @@ impl SyncMachine {
             // playhead that moves meanwhile moves the player once it landed.
         } else if now_playing && self.told_playing {
             // Playing: a playhead the GUI didn't set by its once-a-second
-            // seek moves the player.
+            // seek or a key's pre-step seek moves the player.
             let moved = self.seen_playhead != Some(playhead);
-            let own = self.auto_seek.is_some_and(|(_, f)| f == playhead);
+            let now = inp.now_ms;
+            self.key_seeks
+                .retain(|(at, _)| now.saturating_sub(*at) < SEEK_EVERY_MS);
+            let own = self.auto_seek.is_some_and(|(_, f)| f == playhead)
+                || self.key_seeks.iter().any(|(_, f)| *f == playhead);
             if moved && !own && playhead.abs_diff(inp.player_frame()) > NEAR_FRAMES {
                 out.player.push(PlayerCmd::Seek(inp.ns(playhead)));
                 self.auto_seek = Some((inp.now_ms, playhead));
@@ -971,6 +993,17 @@ impl ProgramSync {
             },
         );
         *self.timer.borrow_mut() = Some(id);
+    }
+}
+
+/// The key router took the player's `frame` for the playhead (G§3.8: a
+/// press while the program plays): its pre-step seek is the GUI's own
+/// ([`SyncMachine::note_own_seek`]).
+pub fn key_took_player_frame(frame: Frame) {
+    let sync = SYNC.with(|s| s.borrow().clone());
+    if let Some(sync) = sync {
+        let now = sync.now_ms();
+        sync.machine.borrow_mut().note_own_seek(now, frame);
     }
 }
 
@@ -1608,6 +1641,45 @@ mod tests {
         let out = rig.sync();
         assert_eq!(out.player, [PlayerCmd::Pause]);
         assert_eq!(out.dispatch, [], "no take frame in the playhead");
+    }
+
+    /// R22: the key router's pre-step `Seek{To(player frame)}` is the
+    /// GUI's own: at 4× (or stepping in reverse) the player is past that
+    /// frame by the time its snapshot comes, and seeking it back made
+    /// playback stutter. An auto seek still unechoed when a key comes
+    /// stays own too.
+    #[test]
+    fn a_keys_seek_to_the_players_frame_never_pulls_it_back() {
+        let mut rig = Rig::new(program()).loaded();
+        rig.rate = 4.0;
+        rig.machine.arm_rate(rig.now);
+        assert_eq!(rig.play().player, [PlayerCmd::Play(4.0)]);
+        rig.now += 300;
+        rig.position = 2500;
+        // `s` while playing: the router reads the player's frame and
+        // seeks the playhead there first.
+        rig.machine.note_own_seek(rig.now, 2500);
+        rig.own_seek = Some(2500);
+        rig.now += 30;
+        rig.position = 2504;
+        rig.state.ui.playhead = 2500;
+        assert_eq!(rig.sync().player, [], "no pull back to 2500");
+        // Reverse at −2: the player steps 4 frames back meanwhile.
+        rig.now += 1000;
+        rig.position = 2600;
+        let auto = rig.sync();
+        assert_eq!(auto.dispatch, [seek_cmd(2600)], "an auto seek");
+        rig.machine.note_own_seek(rig.now, 2596);
+        rig.position = 2592;
+        // The auto seek's snapshot, then the key's: neither moves it.
+        rig.state.ui.playhead = 2600;
+        assert_eq!(rig.sync().player, []);
+        rig.state.ui.playhead = 2596;
+        assert_eq!(rig.sync().player, []);
+        // A seek the GUI didn't take from the player (the ruler, the CLI)
+        // still moves it.
+        rig.state.ui.playhead = 100;
+        assert_eq!(rig.sync().player, [PlayerCmd::Seek(rig.ns(100))]);
     }
 
     #[test]

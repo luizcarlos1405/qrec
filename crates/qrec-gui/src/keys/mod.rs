@@ -149,14 +149,17 @@ impl KeyRouter {
     }
 
     /// The player's frame while the program plays (the effective
-    /// playhead); `None` while a bin preview's take plays.
+    /// playhead); `None` while a bin preview's take plays. The sync takes
+    /// a seek to it as its own (the pre-step's, R22).
     fn player_frame(&self, local: &crate::store::LocalUi) -> Option<Frame> {
         if !local.program_playing {
             return None;
         }
         let ns = self.inner.media.position_ns()?;
         let fps = self.inner.store.state().project.canvas.fps;
-        Some(ns_to_frame_floor(i64::try_from(ns).unwrap_or(i64::MAX), fps).max(0) as Frame)
+        let frame = ns_to_frame_floor(i64::try_from(ns).unwrap_or(i64::MAX), fps).max(0) as Frame;
+        crate::media::program::key_took_player_frame(frame);
+        Some(frame)
     }
 }
 

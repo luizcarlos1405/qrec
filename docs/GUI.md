@@ -914,8 +914,12 @@ pub const STUCK: &str = "the Program picture is stuck; restart Qrec";
      it; `LocalUi.playing` says the player plays anything.
   4. Paused: a snapshot playhead the player isn't on → `seek()`, except
      while a ruler scrub holds it (step 9). While playing, a playhead more
-     than 2 frames off the player's (one the GUI didn't set by its
-     once-a-second seek) moves it (WP4).
+     than 2 frames off the player's moves it (WP4), unless the GUI set it
+     itself: by its once-a-second seek, or by a key's pre-step seek to the
+     player's frame (G§3.8; the key router tells the sync the frame it
+     took, `media::program::key_took_player_frame`, and a playhead at it
+     within a second is own: at 2×/4× or stepping in reverse the player is
+     past it by the time its snapshot comes, R22).
   5. `Ended` → `Pause`, then `Seek{End}` (reverse: `Seek{Start}`).
   6. `Error` → error toast "Playback stopped" with the message; stays
      paused. A bin preview's take that fails gets `take_preview.playing =
