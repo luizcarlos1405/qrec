@@ -34,7 +34,8 @@ pub struct Scene<'a> {
     pub lanes: &'a [Lane],
     pub thumbs: Option<&'a ThumbCache>,
     pub peaks: Option<&'a PeakCache>,
-    /// The thumbnails' height in device px (72 × the scale factor).
+    /// The thumbnails' height in device px (72 × the UI scale × the scale
+    /// factor: `control::thumb_px`).
     pub thumb_px: u32,
     /// The animation clock (spinners, the saving ghost's stripes).
     pub now_ms: u64,

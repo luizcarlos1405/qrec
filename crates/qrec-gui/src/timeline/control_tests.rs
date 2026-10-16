@@ -816,3 +816,20 @@ fn fit_follows_the_ghost_between_record_clocks() {
     snapshot(&state, &mut vm, &mut clock, ms(3010));
     assert_eq!(vm.total(), shown_total(&state, elapsed));
 }
+
+/// R14: the filmstrip is drawn 72 px × the UI scale × the window's scale
+/// factor high: its textures are made at that height, not upscaled.
+#[test]
+fn thumbnails_are_made_at_the_drawn_height() {
+    for (ui, factor, want) in [
+        (1.0, 1, 72),
+        (1.25, 1, 90),
+        (1.5, 1, 108),
+        (1.0, 2, 144),
+        (1.25, 2, 180),
+        (1.5, 2, 216),
+        (2.0, 0, 144),
+    ] {
+        assert_eq!(thumb_px(ui, factor), want, "ui {ui} at {factor}");
+    }
+}

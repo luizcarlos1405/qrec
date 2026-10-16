@@ -123,8 +123,9 @@ struct Model {
     tip_clip: Option<ClipId>,
     /// The last trim snap target (a new one flashes).
     snapped: Option<f64>,
-    /// The canvas's cached render node and what it shows.
-    cache: Option<(u64, (i32, i32), gtk::gsk::RenderNode)>,
+    /// The canvas's cached render node and what it shows: its generation,
+    /// size and thumbnail height (a new scale factor makes new textures).
+    cache: Option<(u64, (i32, i32, u32), gtk::gsk::RenderNode)>,
     /// Bumps on every change of what the canvas shows.
     generation: u64,
     /// The thumbnail and peak caches are followed.
@@ -364,6 +365,11 @@ impl Inner {
         self.ctx.theme.scale()
     }
 
+    /// The thumbnails' height in device px (G§3.11).
+    fn thumb_px(&self) -> u32 {
+        control::thumb_px(self.scale(), self.canvas.scale_factor())
+    }
+
     // ------------------------------------------------------- wiring
 
     fn connect(&self) {
@@ -389,7 +395,9 @@ impl Inner {
             let me = me.clone();
             move |_| {
                 if let Some(inner) = me.upgrade() {
+                    // New colors or a new scale: the cached canvas goes.
                     inner.texts.clear();
+                    inner.bump();
                     inner.refresh_all();
                 }
             }
@@ -1647,7 +1655,7 @@ impl Inner {
 
     fn draw_canvas(&self, s: &gtk::Snapshot, w: f64, h: f64) {
         let scale = self.scale();
-        let size = (w as i32, h as i32);
+        let size = (w as i32, h as i32, self.thumb_px());
         let generation = self.m.borrow().generation;
         let cached = self
             .m
@@ -1740,7 +1748,7 @@ impl Inner {
             lanes: &m.lanes,
             thumbs: thumbs.as_deref(),
             peaks: peaks.as_deref(),
-            thumb_px: (72 * self.canvas.scale_factor().max(1)) as u32,
+            thumb_px: self.thumb_px(),
             now_ms: motion::now().as_millis() as u64,
             boxes,
             ghost,

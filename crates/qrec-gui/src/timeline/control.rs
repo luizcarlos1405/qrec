@@ -993,6 +993,16 @@ pub fn ghost_readings(elapsed_ms: f64, ghost_w: f64, columns: &std::ops::Range<u
     all.min(oldest) as usize
 }
 
+/// The height thumbnails are made at, in device px (G§3.11): the
+/// filmstrip's 72 px × the UI scale (the canvas paints scaled by it, D-46)
+/// × the window's scale factor, so a texture is drawn at its own size
+/// (72/90/108 at 100/125/150 % on a 1× output, twice that on a 2× one);
+/// at most 1080.
+pub fn thumb_px(ui_scale: f64, scale_factor: i32) -> u32 {
+    let device = ui_scale.max(1.0) * f64::from(scale_factor.max(1));
+    ((72.0 * device).ceil() as u32).min(1080)
+}
+
 /// The take a drag's string names: `qrec-take:<id>` (D-38).
 pub fn parse_drop(text: &str) -> Option<TakeId> {
     text.strip_prefix("qrec-take:")?.trim().parse().ok()

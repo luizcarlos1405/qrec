@@ -801,30 +801,31 @@ fn ui_scale(nested: &Nested, scale: f64) {
     .expect("config.toml");
 }
 
-/// At `ui.scale` 1.5 the track headers line up with their rows: each
-/// header's top and center are its row's (±1 px). They asked for their
-/// 100 % heights (A1's header 40 px above its lane, A2's 51 px).
+/// At `ui.scale` 1.5 (D-46): the track headers line up with their rows,
+/// each header's top and center its row's (±1 px; they asked for their
+/// 100 % heights, A1's header 40 px above its lane, A2's 51 px), and the
+/// thumbnails are made at 72 × 1.5 px (they were made at 72 and upscaled).
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
-fn headers_line_up_at_ui_scale_1_5() {
-    headers_line_up("headers-ui-1.5", 1.5, Options::default());
+fn ui_scale_1_5() {
+    at_ui_scale("ui-scale-1.5", 1.5, Options::default());
 }
 
 /// The same at 1.25 in the compact rows.
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
-fn headers_line_up_at_ui_scale_1_25_compact() {
-    headers_line_up("headers-ui-1.25-compact", 1.25, Options::size(1600, 800));
+fn ui_scale_1_25_compact() {
+    at_ui_scale("ui-scale-1.25-compact", 1.25, Options::size(1600, 800));
 }
 
 /// The same at 1.5 in the compact rows.
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
-fn headers_line_up_at_ui_scale_1_5_compact() {
-    headers_line_up("headers-ui-1.5-compact", 1.5, Options::size(1600, 800));
+fn ui_scale_1_5_compact() {
+    at_ui_scale("ui-scale-1.5-compact", 1.5, Options::size(1600, 800));
 }
 
-fn headers_line_up(case: &str, scale: f64, opts: Options) {
+fn at_ui_scale(case: &str, scale: f64, opts: Options) {
     let mut nested = Nested::start(AREA, case, opts);
     ui_scale(&nested, scale);
     let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
@@ -852,7 +853,18 @@ fn headers_line_up(case: &str, scale: f64, opts: Options) {
             "{header} {h:?} beside {row} {r:?}"
         );
     }
-    shoot(&nested, "headers", None);
+    let want = (72.0 * scale).ceil() as u32 * gui_support::scale_factor(nested.opts.scale);
+    let heights = gui_support::poll(Duration::from_secs(20), "the strip images", || {
+        nested.window(0).wait_idle();
+        let heights = gui_support::preview_heights(&project);
+        (!heights.is_empty()).then_some(heights)
+    });
+    assert_eq!(
+        heights,
+        std::collections::BTreeSet::from([want]),
+        "strip images {want} px high"
+    );
+    shoot(&nested, "ui-scale", None);
     assert_clean(&mut nested);
 }
 

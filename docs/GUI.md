@@ -1072,8 +1072,14 @@ time; A§8.7 rules for every child).
   Textures are `gdk::MemoryTexture` (R8G8B8A8) built on the main thread
   from the shared bytes (R22), once per image, from a zero-copy slice of
   the chunk's `Arc<[u8]>`, and dropped with their chunk. Strip height =
-  72 × the window's scale factor; a one-hour take is 60 chunks of about
-  2.2 MB at scale 1, loaded only for what is on screen.
+  72 × `ui.scale` × the window's scale factor, rounded up, at most 1080
+  (`timeline::control::thumb_px`: 72, 90 and 108 at 100, 125 and 150 % on
+  a 1× output, twice that on a 2× one; the canvas paints scaled by the UI
+  scale, so a texture is drawn at its own size; review: the UI scale was
+  left out and the strips upscaled). A one-hour take is 60 chunks of about
+  2.2 MB at 72 px, loaded only for what is on screen. The canvas's cached
+  node is kept per generation, size and strip height, and a theme change
+  (colors, scale) drops it.
 - **Silence overlay** (WP3): `view::timeline::silence_spans(state, files:
   &BTreeMap<String, FileFact>, cached: &BTreeMap<SilenceKey,
   Vec<Interval>>)` → hatches on the autocut track's lane, at the
