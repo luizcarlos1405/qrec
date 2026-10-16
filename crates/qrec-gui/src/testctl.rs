@@ -280,10 +280,14 @@ pub fn handle(app: &Rc<App>, request: TestRequest) {
 fn busy(app: &App) -> Vec<String> {
     let store = &app.ctx.store;
     let mut why = Vec::new();
-    // The preview cache before the queue: its answers are in the queue
-    // before its jobs stop counting, so none slips between the two checks.
+    // The threads that feed the queue before the queue: the preview cache's
+    // answers and the player's events are in the queue before the cache or
+    // the player says it is idle, so none slips between the checks.
     if !app.ctx.media.previews_idle() {
         why.push("previews".to_owned());
+    }
+    if app.ctx.media.player().is_some_and(|p| !p.idle()) {
+        why.push("the player".to_owned());
     }
     if !store.queue().is_empty() {
         why.push("the inbound queue".to_owned());
@@ -291,9 +295,6 @@ fn busy(app: &App) -> Vec<String> {
     let pending = store.pending_requests();
     if pending > 0 {
         why.push(format!("{pending} request(s) unanswered"));
-    }
-    if app.ctx.media.player().is_some_and(|p| !p.idle()) {
-        why.push("the player".to_owned());
     }
     let local = store.local();
     if matches!(local.startup, StartupPhase::Opening { .. }) {

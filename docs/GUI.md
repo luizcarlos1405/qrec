@@ -1426,7 +1426,7 @@ requests, previews, the player, opening, the portal).
 
 | Request | Reply |
 | --- | --- |
-| `{"op":"waitIdle"}` | `{"ok":true,"rev":R}` once: `PreviewCache::in_flight()` is 0 (checked first: an answer is in the queue before its job stops counting); the inbound queue is empty; the GUI's own requests are answered; the player isn't loading or seeking; no source is `AwaitingPortal`; the window isn't opening; and a frame was drawn after all that and it still holds (frame clock `after-paint`) |
+| `{"op":"waitIdle"}` | `{"ok":true,"rev":R}` once: `PreviewCache::in_flight()` is 0 and the player isn't loading or seeking (both checked before the queue: what they send is in the queue before they say they are idle); the inbound queue is empty; the GUI's own requests are answered; no source is `AwaitingPortal`; the window isn't opening; and a frame was drawn after all that and it still holds (frame clock `after-paint`) |
 | `{"op":"regions","names":[…]}` | `{"regions":{"<name>":[x,y,w,h],…}}`: window-logical bounds of every widget named `region-*` and of the named parts in G§8.4, plus the visible widgets named in `names` (a button a case clicks) |
 | `{"op":"labels","name":"region-header"}` | `{"ok":true,"labels":[…]}`: the text of every visible label under the widget `name` (default: the window), in tree order |
 | `{"op":"dispatch","command":{…},"confirmed":false}` | `Store::dispatch_with` with the default reply policy (confirmations open their modal); `{"ok":true}` at once |

@@ -23,8 +23,9 @@
 //!   cache start once the Session is open; [`MediaHub::shutdown`] stops them
 //!   at exit, asynchronously.
 //! - **`qrec-gui-io`**: one worker thread for blocking jobs of the window
-//!   (bin sizes, silence keys, wl-copy, source discovery, the cache trim):
-//!   [`MediaHub::run_io`] and [`MediaHub::run_io_then`].
+//!   (bin sizes, silence keys, wl-copy, source discovery):
+//!   [`MediaHub::run_io`] and [`MediaHub::run_io_then`]. The preview
+//!   caches' disk trim runs on the cache's own `qrec-preview-trim`.
 
 pub mod live;
 pub mod peaks;
