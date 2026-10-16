@@ -5,8 +5,21 @@
 //!   5s, 10s, 15s, 30s, 1min, 2min, 5min, 10min, 15min, 30min, 1h that is
 //!   at least 90 px wide; L picks the major and minor ticks ([`tick_steps`]).
 //!   Minor ticks closer than 6 px are hidden.
-//! - Labels are `HH:MM:SS:FF` 4 px right of their tick; one whose tick is
-//!   left of the view still shows its visible part (clipped, never dropped).
+//! - Labels are `HH:MM:SS:FF` 4 px right of their tick and show while
+//!   their tick shows: cut at the right edge, dropped at the left (S07, S08,
+//!   S12; G§4.5). A tick left of the view never has a label:
+//!
+//!   ```
+//!   use qrec_core::Fps;
+//!   use qrec_core::view::ruler::{self, TickKind};
+//!   use qrec_core::view::timeline::Viewport;
+//!
+//!   // S08: 48 px/s from 00:01:05:00; 00:01:04:00's major is 48 px left.
+//!   let view = Viewport { width: 1040.0, px_per_frame: 1.6, scroll_px: 1950.0 * 1.6, lanes_scroll_px: 0.0 };
+//!   let ticks = ruler::ticks(&view, Fps::new(30, 1), 7391);
+//!   assert!(ticks.iter().any(|t| t.x < 0.0 && t.kind == TickKind::Major));
+//!   assert!(ticks.iter().filter(|t| t.x < 0.0).all(|t| t.label.is_none()));
+//!   ```
 //! - Frame level (≥ 24 px per frame): a tick per frame with its `FF`
 //!   centered in the cell, and at each second a tall tick with the full
 //!   timecode; the playhead's cell gets a band ([`current_cell`]).
@@ -24,8 +37,10 @@ use crate::view::timeline::Viewport;
 pub const LABEL_MIN_PX: f64 = 90.0;
 /// Minor ticks closer than this are hidden.
 pub const MINOR_MIN_PX: f64 = 6.0;
-/// How far left of the view a label's tick may be and still show (a label
-/// is about 77 px of `mono-xs`).
+/// How far left of the view ticks are still listed, unlabeled: nothing it
+/// adds shows (a label left of the view is dropped, and the frame cell the
+/// left edge cuts is listed anyway: the first frame is the floor of the
+/// time at the edge).
 pub const LABEL_REACH_PX: f64 = 84.0;
 
 /// How far apart labels are: the smallest of 1f, 2f, 5f, 10f, 15f, 1s,
@@ -159,11 +174,12 @@ pub struct Tick {
     pub cell: Option<String>,
 }
 
-/// The ticks visible in `viewport`, from a little left of it (the frame
-/// cells cut by its left edge). A tick left of the view has no label: the
-/// frames show a label while its tick shows, cut at the right edge, never
-/// at the left (S07, S08, S12). `total` is the timeline's length; the ruler
-/// runs on past it to the view's edge.
+/// The ticks visible in `viewport` (the frame cell its left edge cuts
+/// included), and a few unlabeled ones left of it ([`LABEL_REACH_PX`]). A
+/// tick left of the view has no label: the frames show a label while its
+/// tick shows, cut at the right edge, never at the left (S07, S08, S12).
+/// `total` is the timeline's length; the ruler runs on past it to the
+/// view's edge.
 pub fn ticks(viewport: &Viewport, fps: Fps, total: Frame) -> Vec<Tick> {
     let _ = total;
     let ppf = viewport.px_per_frame;
