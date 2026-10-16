@@ -104,6 +104,31 @@ struct Drawer {
     sink: RefCell<Option<Sink>>,
 }
 
+thread_local! {
+    /// Each bin row's main area made so far (the widget its gestures and
+    /// drag source hang on), weakly; test mode only: what [`rows_alive`]
+    /// counts.
+    static ROWS: RefCell<Vec<glib::WeakRef<gtk::Box>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Notes a new row's main area for [`rows_alive`] (test mode only).
+fn track_row(main: &gtk::Box) {
+    if crate::testctl::mode().on {
+        ROWS.with(|rows| rows.borrow_mut().push(main.downgrade()));
+    }
+}
+
+/// How many bin rows are alive (test mode; `testctl`'s `local`,
+/// `binRowsAlive`): the rows shown, once those a rebuild dropped are gone.
+/// A row a callback holds strongly would outlive its rebuild (G§3.12).
+pub fn rows_alive() -> usize {
+    ROWS.with(|rows| {
+        let mut rows = rows.borrow_mut();
+        rows.retain(|row| row.upgrade().is_some());
+        rows.len()
+    })
+}
+
 /// The UTC offset of the local zone at `at`.
 fn offset_at(at: DateTime<Utc>) -> i32 {
     Local
@@ -382,6 +407,7 @@ impl Drawer {
                 .iter()
                 .map(|row| {
                     let v = RowView::new(&self.ctx, row, &sink);
+                    track_row(&v.main);
                     self.list.append(&v.root);
                     v
                 })

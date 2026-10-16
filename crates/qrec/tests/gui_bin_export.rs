@@ -554,6 +554,11 @@ fn the_bin_keys_select_preview_and_insert() {
     };
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base, Some(ui));
     open(&mut nested, &project, launch());
+    assert_eq!(
+        nested.window(0).local()["binRowsAlive"],
+        5,
+        "the bin's 5 rows"
+    );
     click(&mut nested, "bin-take-6");
     nested.keys(&["-k", "Down"]);
     nested.window(0).wait_idle();
@@ -618,6 +623,23 @@ fn the_bin_keys_select_preview_and_insert() {
             break;
         }
         assert!(Instant::now() < deadline, "no clip added: {}", clips.len());
+        thread::sleep(Duration::from_millis(200));
+    }
+    // Take 4 left the bin, so its rows were made again: the 5 it dropped
+    // are gone (nothing a row's callbacks hold keeps it alive), the 4 it
+    // shows are all that live (G§3.12).
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let gui = nested.window(0);
+        gui.wait_idle();
+        let alive = gui.local()["binRowsAlive"].clone();
+        if alive == 4 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{alive} bin rows alive, 4 shown: the rebuild's dropped rows live on"
+        );
         thread::sleep(Duration::from_millis(200));
     }
     assert_clean(&mut nested);

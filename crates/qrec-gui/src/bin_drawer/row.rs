@@ -220,13 +220,17 @@ impl RowView {
             let (sink, take) = (Rc::clone(sink), self.take.clone());
             move || sink(&take, event.clone())
         };
+        // The row's callbacks never hold its widgets strongly: a gesture's
+        // closure keeping the widget it hangs on would be a cycle, and a
+        // rebuild's dropped rows would never go (G§3.12).
         let click = gtk::GestureClick::new();
         click.set_button(gdk::BUTTON_PRIMARY);
         let (sink2, take) = (Rc::clone(sink), self.take.clone());
-        let main = self.main.clone();
         click.connect_pressed(guarded!("bin: a row's click", move |g, _n, _x, _y| {
             let state = g.current_event_state();
-            main.grab_focus();
+            if let Some(main) = g.widget() {
+                main.grab_focus();
+            }
             sink2(
                 &take,
                 RowEvent::Select {
@@ -262,9 +266,11 @@ impl RowView {
             after_panic = None,
             move |_, _, _| Some(gdk::ContentProvider::for_value(&text.to_value()))
         ));
-        let (sink2, take, thumb) = (Rc::clone(sink), self.take.clone(), self.thumb.clone());
+        let (sink2, take, thumb) = (Rc::clone(sink), self.take.clone(), self.thumb.downgrade());
         source.connect_drag_begin(guarded!("bin: drag begins", move |source, _| {
-            source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&thumb))), 0, 0);
+            if let Some(thumb) = thumb.upgrade() {
+                source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&thumb))), 0, 0);
+            }
             sink2(&take, RowEvent::DragBegin);
         }));
         let (sink2, take) = (Rc::clone(sink), self.take.clone());
