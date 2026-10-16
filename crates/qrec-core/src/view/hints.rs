@@ -34,6 +34,12 @@ pub enum HintState {
     Modal,
     Palette,
     Settings,
+    /// The Narrow layout's layers sheet keeps the keyboard (G§3.8 step 4):
+    /// only its widgets' keys and `Esc`. `autocut`: the autocut page shows
+    /// in it.
+    LayersSheet {
+        autocut: bool,
+    },
     TrimDrag,
     MoveDrag,
     BinDrag,
@@ -68,11 +74,17 @@ pub const MAX_PX_PER_FRAME: f64 = 128.0;
 /// [`HintState::Blocking`] itself: the facts don't know the startup page.)
 pub fn hint_state(state: &State, facts: &GuiFacts) -> HintState {
     // 1. The overlay on top (the cheat sheet covers the bar: the state
-    //    below shows).
+    //    below shows). The Narrow layers sheet traps the keyboard like the
+    //    others: the editor's keys don't reach the window under it.
     match facts.top_overlay {
         Some(OverlayKind::Modal) => return HintState::Modal,
         Some(OverlayKind::Palette) => return HintState::Palette,
         Some(OverlayKind::Settings) => return HintState::Settings,
+        Some(OverlayKind::LayersSheet) => {
+            return HintState::LayersSheet {
+                autocut: facts.panel_page == PanelPageKind::Autocut,
+            };
+        }
         _ => {}
     }
     // 2. A drag (a scrub keeps the state below).
@@ -482,6 +494,16 @@ impl Items<'_> {
             H::Settings => {
                 self.literal(&[&["Tab"]], "Move focus", true)
                     .literal(&[&["Esc"]], "Close", true);
+            }
+            H::LayersSheet { autocut } => {
+                // `Enter` reaches the page's default widget, Apply; `Esc`
+                // is the page's Cancel there (G§3.8 step 4).
+                if *autocut {
+                    self.literal(&[&["Enter"]], "Apply autocut", true);
+                }
+                let esc = if *autocut { "Cancel" } else { "Close" };
+                self.literal(&[&["Tab"]], "Move focus", true)
+                    .literal(&[&["Esc"]], esc, true);
             }
             H::Palette => {
                 self.literal(&[&["\u{2191}"], &["\u{2193}"]], "Choose", true)
@@ -1056,6 +1078,31 @@ mod tests {
             },
             HintState::Palette,
             vec!["[\u{2191}] [\u{2193}] Choose", "[Enter] Run", "[Esc] Close"],
+        ));
+        // The Narrow layers sheet (not drawn) keeps the keyboard: only its
+        // own keys, not S02's (R33); the autocut page in it (S12, Narrow).
+        out.push((
+            "S02 narrow, sheet open",
+            s02.clone(),
+            GuiFacts {
+                top_overlay: Some(OverlayKind::LayersSheet),
+                ..fit()
+            },
+            HintState::LayersSheet { autocut: false },
+            vec!["[Tab] Move focus", "[Esc] Close"],
+        ));
+        let mut s12_narrow = program(&["c3e9"]);
+        s12_narrow.ui.playhead = 4842;
+        out.push((
+            "S12 narrow",
+            s12_narrow,
+            GuiFacts {
+                top_overlay: Some(OverlayKind::LayersSheet),
+                panel_page: PanelPageKind::Autocut,
+                ..fit()
+            },
+            HintState::LayersSheet { autocut: true },
+            vec!["[Enter] Apply autocut", "[Tab] Move focus", "[Esc] Cancel"],
         ));
         out.push((
             "S24",

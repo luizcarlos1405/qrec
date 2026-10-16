@@ -712,3 +712,78 @@ fn rebound_and_conflicting_keys_follow_the_users_keymap() {
         decide_binding("bin.toggle", &scene.rs())
     );
 }
+
+/// The chord a hint item's first key caps stand for (the legends
+/// `KeyChord::cap_legends` gives the keys these hint states use).
+fn chord_of(caps: &[String]) -> KeyChord {
+    let mut parts: Vec<String> = Vec::new();
+    for cap in caps {
+        parts.push(match cap.as_str() {
+            "Ctrl" | "Alt" | "Shift" | "Super" => cap.to_lowercase(),
+            "Esc" => "Escape".into(),
+            "Enter" => "Return".into(),
+            "Space" => "space".into(),
+            "Tab" => "Tab".into(),
+            "?" => "question".into(),
+            "=" => "equal".into(),
+            "\u{2212}" => "minus".into(),
+            "\\" => "backslash".into(),
+            letter if letter.len() == 1 && letter.chars().all(|c| c.is_ascii_alphabetic()) => {
+                letter.to_lowercase()
+            }
+            other => panic!("no chord for the cap {other:?}"),
+        });
+    }
+    KeyChord::parse(&parts.join("+")).unwrap_or_else(|e| panic!("{parts:?}: {e}"))
+}
+
+/// The hint bar names only keys the router honors (R33): every enabled
+/// item's key does something under the overlays the window stacks; the
+/// Narrow layers sheet traps the keyboard (step 4), so its hints aren't
+/// the editor's (`[R] Record` there was swallowed), and on the autocut
+/// page in the sheet `Esc` is the page's Cancel, as docked.
+#[test]
+fn the_hint_bar_names_keys_the_router_honors() {
+    use qrec_core::view::hints::{hint_bar, hint_state};
+    let mut cases: Vec<(&str, Scene)> = Vec::new();
+    cases.push(("docked", Scene::new()));
+    let mut sheet = Scene::new();
+    sheet.local.overlays.push(Overlay::LayersSheet);
+    cases.push(("sheet", sheet));
+    let mut autocut = Scene::new();
+    autocut.local.overlays.push(Overlay::LayersSheet);
+    autocut.local.panel_page = PanelPageKind::Autocut;
+    cases.push(("autocut in the sheet", autocut));
+    let mut settings = Scene::new();
+    settings.local.overlays.push(Overlay::Settings(
+        qrec_core::view::settings::SettingsPage::Project,
+    ));
+    cases.push(("settings", settings));
+    for (name, scene) in &cases {
+        let facts = scene.local.facts();
+        let hint = hint_state(&scene.state, &facts);
+        let (items, _) = hint_bar(&hint, &scene.state, &facts, &scene.keymap);
+        assert!(!items.is_empty(), "{name}");
+        for item in items.iter().filter(|i| i.enabled && !i.keys.is_empty()) {
+            let chord = chord_of(&item.keys[0]);
+            let decision = scene.decide_input(&KeyInput::chord(chord.clone())).0;
+            assert_ne!(
+                decision,
+                KeyDecision::Swallow,
+                "{name}: {hint:?} names {chord} {:?}",
+                item.label
+            );
+            if *name == "autocut in the sheet" && chord.key == "Escape" {
+                assert_eq!(item.label, "Cancel", "{name}");
+                assert_eq!(
+                    decision,
+                    KeyDecision::Gui {
+                        id: "autocut.page".into()
+                    }
+                );
+            }
+        }
+    }
+    // The sheet alone: `Esc` closes it.
+    assert_eq!(cases[1].1.calls("Escape"), [Call::CloseOverlay]);
+}

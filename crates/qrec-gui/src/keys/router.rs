@@ -13,8 +13,9 @@
 //!    the gesture (they make no chord); anything else is swallowed.
 //! 4. A top overlay that keeps the keyboard (all but the running export
 //!    panel, D-49): `Tab`, `Enter`, `Space` and the arrows go to its
-//!    widgets; in context `overlay`, `cancel` closes it and `app.quit`
-//!    quits; nothing else.
+//!    widgets; in context `overlay`, `cancel` closes it (on the autocut
+//!    page in the Narrow layers sheet: the page's Cancel, as step 5 does
+//!    docked) and `app.quit` quits; nothing else.
 //! 5. `Esc` (the `cancel` keys), first that applies: close the passive
 //!    export panel → close the autocut page → end a bin preview →
 //!    `cancel` (`RecordCancel`, clear the clip selection, the layer
@@ -193,6 +194,14 @@ pub fn decide(input: &KeyInput, rs: &RouterState<'_>) -> KeyDecision {
         return match lookup(rs.keymap, chord, KeyContext::Overlay) {
             // A popover closes itself on Esc (and says so with `closed`).
             Some(b) if b.id == "cancel" && *top == Overlay::Menu => KeyDecision::Propagate,
+            // The autocut page in the Narrow sheet: its Cancel (R33).
+            Some(b)
+                if b.id == "cancel"
+                    && *top == Overlay::LayersSheet
+                    && local.panel_page == PanelPageKind::Autocut =>
+            {
+                gui("autocut.page")
+            }
             Some(b) if b.id == "cancel" => KeyDecision::CloseOverlay,
             Some(b) if b.id == "app.quit" => gui("app.quit"),
             _ => KeyDecision::Swallow,

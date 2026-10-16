@@ -662,7 +662,9 @@ each key press, first match:
    LayersSheet, or the export panel in Setup, Done or Failed): `Tab`,
    `Enter`, `Space` and the arrows propagate to the overlay's widgets;
    `keymap::lookup` in context `Overlay` (`cancel` closes the top overlay,
-   `app.quit`); nothing else.
+   except on the autocut page in the Narrow layers sheet, where it is the
+   page's Cancel, GUI action `autocut.page`, as step 5 docked; `app.quit`);
+   nothing else.
 5. `Esc`, before the lookup, first that applies: close the passive export
    panel (D-49) → close the autocut page (its Cancel) → end a bin preview
    → `action_for("cancel")` (`RecordCancel`, clear the clip selection,
@@ -1789,8 +1791,11 @@ conflicting chords drop out (`keymap::usable_keys`, made `pub`).
 
 `hint_state(&State, &GuiFacts) -> HintState`, first match:
 
-1. top overlay Modal → Modal; Palette → Palette; Settings → Settings.
-   (The cheat sheet covers the hint bar: keep the state below.)
+1. top overlay Modal → Modal; Palette → Palette; Settings → Settings;
+   LayersSheet (Narrow) → LayersSheet, `autocut` when the panel page is
+   Autocut: the sheet keeps the keyboard (G§3.8 step 4), so the editor's
+   keys under it don't run. (The cheat sheet covers the hint bar: keep the
+   state below.)
 2. drag TrimStart/TrimEnd → TrimDrag; Move → MoveDrag; BinInsert →
    BinDrag; Layer* → LayerEdit.
 3. record Countdown → Countdown; Starting or Recording → Recording;
@@ -1852,6 +1857,7 @@ decides, because some ids are handled by the GUI and not by
 | ExportSetup / ExportDone / ExportFailed | `[Enter]` "Export" / "Open file" / "Try again" · `[Tab]` "Move focus" · `[Esc]` "Close" |
 | Modal | `[Tab]` "Move focus" · `[Enter]` "Activate focused button" · `[Esc]` "Cancel" |
 | Settings (not drawn) | `[Tab]` "Move focus" · `[Esc]` "Close" |
+| LayersSheet (not drawn) | `[Tab]` "Move focus" · `[Esc]` "Close"; with the autocut page: `[Enter]` "Apply autocut" · `[Tab]` "Move focus" · `[Esc]` "Cancel" |
 | Palette (gated) | `[↑][↓]` "Choose" · `[Enter]` "Run" · `[Esc]` "Close" |
 | PortalDenied (gated) | `record.toggle` "Try again" · `canvas.mode` "Program" · `bin.toggle` "Bin" · `keys.help` "All keys" |
 | Blocking | S23: `[Enter]` "Check again" · `app.quit` "Quit"; other pages: `app.quit` "Quit" |

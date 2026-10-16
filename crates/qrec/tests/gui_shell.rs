@@ -942,6 +942,16 @@ fn narrow_windows_show_the_panel_as_a_sheet() {
     );
     nested.window(0).wait_idle();
     nested.screenshot("sheet");
+    // The sheet keeps the keyboard: the bar names its keys, not the
+    // editor's under it (R33: `[R] Record` there did nothing).
+    let hints = nested.window(0).ctl(json!({"op": "hints"}));
+    let labels: Vec<&str> = hints["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("hints: {hints}"))
+        .iter()
+        .filter_map(|item| item["label"].as_str())
+        .collect();
+    assert_eq!(labels, ["Move focus", "Close"], "{hints}");
     nested.keys(&["-k", "Escape"]);
     wait_for_region(nested.window(0), "region-panel", false);
 }
