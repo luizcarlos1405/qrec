@@ -1,3 +1,576 @@
-//! C30 mud bar (G§5.1): the export progress bar, drawn from
-//! `motion::now()` with a seeded PRNG for its bubbles. Owner: WP7. Stub
-//! until WP7 lands.
+//! C30 mud bar (G§5.1, DESIGN Progress): the export progress bar, drawn
+//! from `motion::now()` with a seeded PRNG for its bubbles. Owner: WP7.
+//!
+//! 20 px tall (× the UI scale), `md` radius, a `field` track with a 1 px
+//! `border`. The fill is `mud` with a 3 px `wood` sediment band along its
+//! bottom; its leading edge is rounded 6 px and wobbles ±1.5 px on a 2.4 s
+//! sine. Bubbles are 3–6 px `mud-bubble` circles, at most 3 at a time: one
+//! spawns every 0.6–1.4 s, rises 6–10 px over 1.4–2.2 s (ease-in) and pops
+//! with a 120 ms fade. The fill eases to each new level over 400 ms
+//! (ease-out). Under reduced motion it is a flat fill that jumps to each
+//! level, with no bubbles or wobble. A failed export's bar stops where it
+//! was, still.
+//!
+//! [`MudSim`] is the GTK-free part (the bubbles, the easing, the wobble):
+//! a pure function of the animation clock and its seed, so test mode
+//! (`motion::now()` frozen) draws frame A every time, bubbles included.
+
+use std::cell::{Cell, RefCell};
+use std::f64::consts::PI;
+
+use gtk::prelude::*;
+use gtk::subclass::prelude::*;
+use gtk::{gdk, glib, graphene, gsk};
+
+use crate::theme::Palette;
+use crate::theme::motion::{self, Curve};
+
+/// The bar's height, logical px.
+pub const HEIGHT: f64 = 20.0;
+/// The sediment band.
+const SEDIMENT: f64 = 3.0;
+/// The track's and the leading edge's radius.
+const RADIUS: f64 = 6.0;
+/// The wobble's amplitude (px) and period (ms).
+const WOBBLE_PX: f64 = 1.5;
+const WOBBLE_MS: f64 = 2400.0;
+/// The level's easing.
+const EASE_MS: f64 = 400.0;
+/// CSS `ease-out`.
+const EASE_OUT: Curve = Curve(0.0, 0.0, 0.58, 1.0);
+/// CSS `ease-in`, for a bubble's rise.
+const EASE_IN: Curve = Curve(0.42, 0.0, 1.0, 1.0);
+/// At most this many bubbles at once.
+const MAX_BUBBLES: usize = 3;
+/// A bubble's pop.
+const POP_MS: f64 = 120.0;
+/// The simulation starts this long before the clock's 0, so frame A has
+/// its bubbles already rising (S15b, S15c).
+const PRE_ROLL_MS: f64 = 3000.0;
+
+/// What the bar shows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MudState {
+    /// Running at a level (0–1): the fill eases to it, bubbles rise.
+    Running(f64),
+    /// Done: full (bubbles still rise, S16).
+    Done,
+    /// Failed at a level: the fill stops there, still (S17).
+    Failed(f64),
+}
+
+impl MudState {
+    fn level(self) -> f64 {
+        match self {
+            MudState::Running(l) | MudState::Failed(l) => l.clamp(0.0, 1.0),
+            MudState::Done => 1.0,
+        }
+    }
+
+    fn alive(self) -> bool {
+        !matches!(self, MudState::Failed(_))
+    }
+}
+
+/// One bubble on screen: where (`x` as a fraction of the fill's width, `y`
+/// px up from its start above the sediment), how big and how opaque.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bubble {
+    pub x: f64,
+    pub rise: f64,
+    pub radius: f64,
+    pub alpha: f64,
+}
+
+/// A spawned bubble's whole life.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Life {
+    born_ms: f64,
+    rise_ms: f64,
+    rise_px: f64,
+    radius: f64,
+    x: f64,
+}
+
+impl Life {
+    fn end_ms(&self) -> f64 {
+        self.born_ms + self.rise_ms + POP_MS
+    }
+
+    fn at(&self, t: f64) -> Option<Bubble> {
+        let age = t - self.born_ms;
+        if age < 0.0 || t >= self.end_ms() {
+            return None;
+        }
+        let progress = (age / self.rise_ms).min(1.0);
+        let alpha = if age <= self.rise_ms {
+            1.0
+        } else {
+            1.0 - (age - self.rise_ms) / POP_MS
+        };
+        Some(Bubble {
+            x: self.x,
+            rise: EASE_IN.at(progress) * self.rise_px,
+            radius: self.radius,
+            alpha: alpha.clamp(0.0, 1.0),
+        })
+    }
+}
+
+/// splitmix64: small, seeded, the same everywhere.
+#[derive(Debug, Clone)]
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform in [lo, hi).
+    fn range(&mut self, lo: f64, hi: f64) -> f64 {
+        let unit = (self.next() >> 11) as f64 / (1u64 << 53) as f64;
+        lo + unit * (hi - lo)
+    }
+}
+
+/// The bar's animation (GTK-free): the eased level, the wobble and the
+/// bubbles at a time `t` of the animation clock (ms).
+#[derive(Debug, Clone)]
+pub struct MudSim {
+    rng: Rng,
+    /// The next bubble's birth.
+    next_ms: f64,
+    lives: Vec<Life>,
+    /// The time simulated up to.
+    at_ms: f64,
+    /// The level easing: from, to, since.
+    from: f64,
+    to: f64,
+    since_ms: f64,
+}
+
+impl MudSim {
+    /// A simulation with its own `seed` (test mode uses a fixed one).
+    pub fn new(seed: u64) -> Self {
+        let mut sim = Self {
+            rng: Rng(seed),
+            next_ms: -PRE_ROLL_MS,
+            lives: Vec::new(),
+            at_ms: -PRE_ROLL_MS,
+            from: 0.0,
+            to: 0.0,
+            since_ms: f64::NEG_INFINITY,
+        };
+        sim.advance(0.0);
+        sim
+    }
+
+    /// Simulates up to `t` (ms; earlier times are ignored: the clock only
+    /// goes forward).
+    pub fn advance(&mut self, t: f64) {
+        if t < self.at_ms {
+            return;
+        }
+        while self.next_ms <= t {
+            let born = self.next_ms;
+            self.lives.retain(|l| l.end_ms() > born);
+            let life = Life {
+                born_ms: born,
+                rise_ms: self.rng.range(1400.0, 2200.0),
+                rise_px: self.rng.range(6.0, 10.0),
+                radius: self.rng.range(1.5, 3.0),
+                x: self.rng.range(0.08, 0.92),
+            };
+            if self.lives.len() < MAX_BUBBLES {
+                self.lives.push(life);
+            }
+            self.next_ms = born + self.rng.range(600.0, 1400.0);
+        }
+        self.lives.retain(|l| l.end_ms() > t);
+        self.at_ms = t;
+    }
+
+    /// The bubbles at the time simulated to.
+    pub fn bubbles(&self) -> Vec<Bubble> {
+        self.lives.iter().filter_map(|l| l.at(self.at_ms)).collect()
+    }
+
+    /// A new target level at `t`; `jump` (reduced motion, or the first
+    /// level shown) skips the easing.
+    pub fn set_level(&mut self, level: f64, t: f64, jump: bool) {
+        let level = level.clamp(0.0, 1.0);
+        if (level - self.to).abs() < f64::EPSILON && !jump {
+            return;
+        }
+        self.from = if jump { level } else { self.level_at(t) };
+        self.to = level;
+        self.since_ms = t;
+    }
+
+    /// The level shown at `t` (eased over 400 ms).
+    pub fn level_at(&self, t: f64) -> f64 {
+        let p = ((t - self.since_ms) / EASE_MS).clamp(0.0, 1.0);
+        self.from + (self.to - self.from) * EASE_OUT.at(p)
+    }
+
+    /// The leading edge's offset at `t` (px, ±1.5).
+    pub fn wobble(t: f64) -> f64 {
+        WOBBLE_PX * (2.0 * PI * t / WOBBLE_MS).sin()
+    }
+}
+
+/// The bar's colors (from the theme's palette).
+#[derive(Debug, Clone)]
+pub(crate) struct Colors {
+    track: gdk::RGBA,
+    border: gdk::RGBA,
+    mud: gdk::RGBA,
+    wood: gdk::RGBA,
+    bubble: gdk::RGBA,
+}
+
+impl Colors {
+    fn of(p: &Palette) -> Self {
+        Self {
+            track: p.field,
+            border: p.border,
+            mud: p.mud,
+            wood: p.wood,
+            bubble: p.mud_bubble,
+        }
+    }
+}
+
+mod imp {
+    use super::*;
+
+    pub struct MudBar {
+        pub sim: RefCell<MudSim>,
+        pub state: Cell<MudState>,
+        pub reduced: Cell<bool>,
+        pub scale: Cell<f64>,
+        pub(crate) colors: RefCell<Colors>,
+        pub shown: Cell<bool>,
+        pub tick: Cell<Option<gtk::TickCallbackId>>,
+    }
+
+    impl Default for MudBar {
+        fn default() -> Self {
+            Self {
+                sim: RefCell::new(MudSim::new(0x51EC_0D0E)),
+                state: Cell::new(MudState::Running(0.0)),
+                reduced: Cell::new(false),
+                scale: Cell::new(1.0),
+                colors: RefCell::new(Colors::of(&Palette::default())),
+                shown: Cell::new(false),
+                tick: Cell::new(None),
+            }
+        }
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for MudBar {
+        const NAME: &'static str = "QrecMudBar";
+        type Type = super::MudBar;
+        type ParentType = gtk::Widget;
+
+        fn class_init(klass: &mut Self::Class) {
+            klass.set_css_name("mud-bar");
+            klass.set_accessible_role(gtk::AccessibleRole::ProgressBar);
+        }
+    }
+
+    impl ObjectImpl for MudBar {
+        fn dispose(&self) {
+            crate::guard::run("mud bar: dispose", || {
+                if let Some(tick) = self.tick.take() {
+                    tick.remove();
+                }
+            });
+        }
+    }
+
+    impl WidgetImpl for MudBar {
+        fn measure(&self, orientation: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
+            crate::guard::run("mud bar: measure", || {
+                let height = (HEIGHT * self.scale.get()).round() as i32;
+                match orientation {
+                    gtk::Orientation::Vertical => (height, height, -1, -1),
+                    _ => (0, 0, -1, -1),
+                }
+            })
+        }
+
+        fn map(&self) {
+            self.parent_map();
+            crate::guard::run("mud bar: map", || {
+                let tick = crate::guard::tick(&*self.obj(), "mud bar: tick", |bar, _clock| {
+                    bar.queue_draw();
+                    glib::ControlFlow::Continue
+                });
+                if let Some(old) = self.tick.replace(Some(tick)) {
+                    old.remove();
+                }
+            });
+        }
+
+        fn unmap(&self) {
+            crate::guard::run("mud bar: unmap", || {
+                if let Some(tick) = self.tick.take() {
+                    tick.remove();
+                }
+            });
+            self.parent_unmap();
+        }
+
+        fn snapshot(&self, snapshot: &gtk::Snapshot) {
+            crate::guard::run("mud bar: snapshot", || self.draw(snapshot));
+        }
+    }
+
+    impl MudBar {
+        fn draw(&self, snapshot: &gtk::Snapshot) {
+            let obj = self.obj();
+            let s = self.scale.get();
+            let (w, h) = (f64::from(obj.width()), f64::from(obj.height()));
+            if w <= 0.0 || h <= 0.0 {
+                return;
+            }
+            let t = motion::now().as_secs_f64() * 1000.0;
+            let state = self.state.get();
+            let reduced = self.reduced.get();
+            let (level, bubbles, wobble) = {
+                let mut sim = self.sim.borrow_mut();
+                let animated = !reduced && state.alive();
+                if animated {
+                    sim.advance(t);
+                }
+                let level = if reduced || !state.alive() {
+                    state.level()
+                } else {
+                    sim.level_at(t)
+                };
+                let bubbles = if animated { sim.bubbles() } else { Vec::new() };
+                let wobble = if animated && level < 1.0 {
+                    MudSim::wobble(t) * s
+                } else {
+                    0.0
+                };
+                (level, bubbles, wobble)
+            };
+            let colors = self.colors.borrow();
+            let bar_h = (HEIGHT * s).min(h);
+            let top = ((h - bar_h) / 2.0).round();
+            let rect = |x: f64, y: f64, w: f64, h: f64| {
+                graphene::Rect::new(x as f32, y as f32, w.max(0.0) as f32, h.max(0.0) as f32)
+            };
+            let radius = (RADIUS * s) as f32;
+            let border = s.max(1.0).round();
+            // The track: `field` with a 1 px `border`.
+            let outer = gsk::RoundedRect::from_rect(rect(0.0, top, w, bar_h), radius);
+            snapshot.push_rounded_clip(&outer);
+            snapshot.append_color(&colors.border, &rect(0.0, top, w, bar_h));
+            snapshot.pop();
+            let inner_rect = rect(border, top + border, w - 2.0 * border, bar_h - 2.0 * border);
+            let inner = gsk::RoundedRect::from_rect(inner_rect, (radius - border as f32).max(0.0));
+            snapshot.push_rounded_clip(&inner);
+            snapshot.append_color(&colors.track, &inner_rect);
+            // The fill, its sediment and its bubbles, inside the track.
+            let span = w - 2.0 * border;
+            let fill_w = (level * span + if level > 0.0 { wobble } else { 0.0 }).clamp(0.0, span);
+            if fill_w > 0.0 {
+                let fill_rect = rect(border, top + border, fill_w, bar_h - 2.0 * border);
+                let edge = graphene::Size::new(radius.min(fill_w as f32), radius);
+                let flat = graphene::Size::new(0.0, 0.0);
+                let fill = gsk::RoundedRect::new(fill_rect, flat, edge, edge, flat);
+                snapshot.push_rounded_clip(&fill);
+                snapshot.append_color(&colors.mud, &fill_rect);
+                let sediment = SEDIMENT * s;
+                snapshot.append_color(
+                    &colors.wood,
+                    &rect(border, top + bar_h - border - sediment, fill_w, sediment),
+                );
+                for b in bubbles {
+                    let r = b.radius * s;
+                    let cx = border + b.x * fill_w;
+                    let cy = top + bar_h - border - sediment - r - 1.0 * s - b.rise * s;
+                    if cx - r < border || cx + r > border + fill_w || cy - r < top {
+                        continue;
+                    }
+                    let builder = gsk::PathBuilder::new();
+                    builder.add_circle(&graphene::Point::new(cx as f32, cy as f32), r as f32);
+                    let mut color = colors.bubble;
+                    color.set_alpha(color.alpha() * b.alpha as f32);
+                    snapshot.append_fill(&builder.to_path(), gsk::FillRule::Winding, &color);
+                }
+                snapshot.pop();
+            }
+            snapshot.pop();
+        }
+    }
+}
+
+glib::wrapper! {
+    /// The C30 mud bar.
+    pub struct MudBar(ObjectSubclass<imp::MudBar>)
+        @extends gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
+}
+
+impl Default for MudBar {
+    fn default() -> Self {
+        glib::Object::new()
+    }
+}
+
+impl MudBar {
+    /// A bar drawn with `theme`'s palette, scale and motion (it follows
+    /// them).
+    pub fn new(theme: &crate::theme::Theme) -> Self {
+        let bar = Self::default();
+        bar.follow(theme);
+        let weak = bar.downgrade();
+        theme
+            .subscribe(move |theme| {
+                if let Some(bar) = weak.upgrade() {
+                    bar.follow(theme);
+                }
+            })
+            .detach();
+        bar.update_property(&[gtk::accessible::Property::Label("Export progress")]);
+        bar
+    }
+
+    fn follow(&self, theme: &crate::theme::Theme) {
+        let imp = self.imp();
+        *imp.colors.borrow_mut() = Colors::of(&theme.palette());
+        imp.scale.set(theme.scale());
+        imp.reduced.set(theme.motion().reduced);
+        self.queue_resize();
+        self.queue_draw();
+    }
+
+    /// Shows `state`: a new level eases in over 400 ms (jumps under reduced
+    /// motion, and the first time).
+    pub fn set_state(&self, state: MudState) {
+        let imp = self.imp();
+        let t = motion::now().as_secs_f64() * 1000.0;
+        // Test mode freezes the clock: one-shot animations land at their end.
+        let jump = imp.reduced.get()
+            || !imp.shown.replace(true)
+            || !state.alive()
+            || motion::one_shots_at_end();
+        imp.sim.borrow_mut().set_level(state.level(), t, jump);
+        imp.state.set(state);
+        let percent = (state.level() * 100.0).round();
+        self.update_property(&[
+            gtk::accessible::Property::ValueMin(0.0),
+            gtk::accessible::Property::ValueMax(100.0),
+            gtk::accessible::Property::ValueNow(percent),
+        ]);
+        self.queue_draw();
+    }
+
+    /// A fresh bar: the next level shown jumps there.
+    pub fn reset(&self) {
+        self.imp().shown.set(false);
+    }
+
+    /// What it shows.
+    pub fn state(&self) -> MudState {
+        self.imp().state.get()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The PRNG's sequence is the same everywhere (G§8.2): frame A is the
+    /// same picture in every run.
+    #[test]
+    fn the_bubbles_are_a_function_of_the_seed_and_the_clock() {
+        let a = MudSim::new(7);
+        let b = MudSim::new(7);
+        assert_eq!(a.bubbles(), b.bubbles());
+        assert!(!a.bubbles().is_empty(), "frame A has bubbles (pre-roll)");
+        let mut c = MudSim::new(8);
+        c.advance(0.0);
+        assert_ne!(a.bubbles(), c.bubbles(), "another seed, other bubbles");
+        // Advancing in steps or at once ends the same.
+        let mut steps = MudSim::new(7);
+        for t in (0..5000).step_by(16) {
+            steps.advance(f64::from(t));
+        }
+        steps.advance(5000.0);
+        let mut once = MudSim::new(7);
+        once.advance(5000.0);
+        assert_eq!(steps.bubbles(), once.bubbles());
+    }
+
+    /// DESIGN Progress: at most 3 at a time, 3–6 px, rising 6–10 px, a
+    /// spawn every 0.6–1.4 s, each living 1.4–2.2 s plus a 120 ms pop.
+    #[test]
+    fn bubbles_keep_to_the_design() {
+        let mut sim = MudSim::new(42);
+        let mut seen = 0;
+        for t in (0..60_000).step_by(20) {
+            sim.advance(f64::from(t));
+            let bubbles = sim.bubbles();
+            assert!(bubbles.len() <= MAX_BUBBLES, "{bubbles:?} at {t}");
+            for b in &bubbles {
+                assert!((1.5..3.0).contains(&b.radius), "{b:?}");
+                assert!((0.0..10.0).contains(&b.rise), "{b:?}");
+                assert!((0.08..0.92).contains(&b.x), "{b:?}");
+                assert!((0.0..=1.0).contains(&b.alpha), "{b:?}");
+            }
+            seen = seen.max(bubbles.len());
+        }
+        assert!(seen >= 2, "bubbles overlap in time");
+        // A minute holds about 60 / 1 s spawns.
+        let lives: Vec<Life> = sim.lives.clone();
+        assert!(lives.iter().all(|l| (1400.0..2200.0).contains(&l.rise_ms)));
+    }
+
+    /// The level eases over 400 ms (ease-out) and a jump lands at once.
+    #[test]
+    fn the_level_eases_and_jumps() {
+        let mut sim = MudSim::new(1);
+        sim.set_level(0.2, 0.0, true);
+        assert!((sim.level_at(0.0) - 0.2).abs() < 1e-9);
+        sim.set_level(0.6, 1000.0, false);
+        assert!((sim.level_at(1000.0) - 0.2).abs() < 1e-9);
+        let half = sim.level_at(1200.0);
+        assert!(half > 0.4 && half < 0.6, "ease-out is past halfway: {half}");
+        assert!((sim.level_at(1400.0) - 0.6).abs() < 1e-9);
+        assert!((sim.level_at(9000.0) - 0.6).abs() < 1e-9);
+        // A new level mid-ease starts from where it is.
+        sim.set_level(0.2, 1100.0, false);
+        sim.set_level(1.0, 1150.0, false);
+        let from = sim.level_at(1150.0);
+        assert!(from > 0.2 && from < 0.6, "{from}");
+        sim.set_level(0.3, 2000.0, true);
+        assert!((sim.level_at(2000.0) - 0.3).abs() < 1e-9, "reduced: jumps");
+    }
+
+    #[test]
+    fn the_edge_wobbles_one_and_a_half_px_on_a_2_4_s_sine() {
+        assert!(MudSim::wobble(0.0).abs() < 1e-9);
+        assert!((MudSim::wobble(600.0) - 1.5).abs() < 1e-9);
+        assert!((MudSim::wobble(1800.0) + 1.5).abs() < 1e-9);
+        assert!(MudSim::wobble(2400.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn states_have_their_levels() {
+        assert_eq!(MudState::Running(0.42).level(), 0.42);
+        assert_eq!(MudState::Done.level(), 1.0);
+        assert_eq!(MudState::Failed(1.7).level(), 1.0);
+        assert!(!MudState::Failed(0.37).alive());
+        assert!(MudState::Done.alive());
+    }
+}

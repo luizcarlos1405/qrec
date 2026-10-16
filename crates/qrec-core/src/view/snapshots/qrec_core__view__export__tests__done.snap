@@ -1,0 +1,22 @@
+---
+source: crates/qrec-core/src/view/export.rs
+expression: done
+---
+{
+  "path": "exports/rust-traits-talk-20261014-153012.mp4",
+  "details": "88.4 MB · 1920×1080 · 30 fps · 00:04:06:11 · took 00:01:31",
+  "detailsRuns": [
+    {
+      "text": "88.4 MB · 1920×1080 · 30 fps · 00:04:06:11",
+      "mono": true
+    },
+    {
+      "text": " · took ",
+      "mono": false
+    },
+    {
+      "text": "00:01:31",
+      "mono": true
+    }
+  ]
+}

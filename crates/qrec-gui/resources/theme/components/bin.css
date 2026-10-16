@@ -1,1 +1,113 @@
-/* The bin drawer (C21). Owner: WP7. */
+/*
+ * The bin drawer (C21, S14, S18). Owner: WP7.
+ *
+ * 352 wide on `surface` with a 1 px `border` at its right, pushing the
+ * stage. A 48 px header ("Bin" in `title` over its `caption` count), 72 px
+ * rows 2 px apart (a 96×54 thumbnail, 12 px from the edge and from the
+ * texts), the selected row in R1 (the `selected` tint and a 1 px `accent`
+ * stroke) with its actions under it on `surface`, and the S18 footer.
+ */
+
+.qrec-bin {
+  background-color: var(--qrec-surface);
+  border-right: 1px solid var(--qrec-border);
+  color: var(--qrec-text);
+}
+
+.qrec-bin .bin-header {
+  min-height: 48px;
+  padding: 0 8px 0 16px;
+}
+
+.qrec-bin .bin-list {
+  border-spacing: 2px;
+}
+
+/* A row: its main area, then (selected alone) its actions. */
+.bin-row {
+  border-radius: 6px;
+}
+
+.bin-row.selected {
+  outline: 1px solid var(--qrec-accent);
+  outline-offset: -1px;
+}
+
+.bin-row-main {
+  min-height: 72px;
+  padding: 0 12px;
+  border-spacing: 12px;
+  border-radius: 6px;
+}
+
+.bin-row-main:hover {
+  background-image: image(var(--qrec-hover));
+}
+
+.bin-row.selected > .bin-row-main {
+  background-color: var(--qrec-selected);
+  background-image: none;
+}
+
+.bin-row.selected.expanded > .bin-row-main {
+  border-radius: 6px 6px 0 0;
+}
+
+/* Rows ring themselves inside (C20). */
+.bin-row-main:focus:focus-visible {
+  outline-offset: -2px;
+}
+
+.bin-row.selected .muted {
+  color: var(--qrec-text);
+}
+
+.bin-row-title {
+  border-spacing: 8px;
+}
+
+.bin-row-line {
+  border-spacing: 8px;
+}
+
+/* The actions: two rows of 32 px flat buttons (Preview, Insert at end,
+   Insert after selection; reveal, Purge from disk). */
+.bin-row-actions {
+  padding: 5px 3px 5px 3px;
+  border-spacing: 2px;
+}
+
+.bin-actions-row {
+  border-spacing: 2px;
+}
+
+button.qrec-btn.bin-reveal image {
+  -gtk-icon-size: 20px;
+}
+
+/* Links ("Open log"): `accent-text`, a real underline (README). */
+.bin-row button.qrec-link {
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background: none;
+  box-shadow: none;
+  color: var(--qrec-accent-text);
+}
+
+.bin-row button.qrec-link label {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  text-decoration-line: underline;
+}
+
+/* S18: two or more takes selected. */
+.qrec-bin .bin-footer {
+  min-height: 47px;
+  padding: 0 8px 0 16px;
+  border-top: 1px solid var(--qrec-border);
+  border-spacing: 8px;
+}

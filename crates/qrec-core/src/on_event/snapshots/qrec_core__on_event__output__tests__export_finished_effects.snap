@@ -26,25 +26,19 @@ expression: out.effects
             level: Success,
             title: "Layers! Like an onion. Your video is ready.",
             body: Some(
-                "/p/exports/test-20261014-120000.mp4",
+                "exports/test-20261014-120000.mp4 · 4 KB",
             ),
             actions: [
                 ToastAction {
                     label: "Open file",
                     action: OpenPath(
-                        "/p/exports/test-20261014-120000.mp4",
+                        "exports/test-20261014-120000.mp4",
                     ),
                 },
                 ToastAction {
                     label: "Open folder",
                     action: RevealPath(
-                        "/p/exports/test-20261014-120000.mp4",
-                    ),
-                },
-                ToastAction {
-                    label: "Copy path",
-                    action: CopyText(
-                        "/p/exports/test-20261014-120000.mp4",
+                        "exports/test-20261014-120000.mp4",
                     ),
                 },
             ],
