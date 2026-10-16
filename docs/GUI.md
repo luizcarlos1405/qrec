@@ -1935,9 +1935,14 @@ As built (WP6, round 3):
     on the frame clock, not `adw::TimedAnimation` (WP3).
   - Fit uses the inset rule (G§1.3): c8a1 is 63.8 px wide and reads "1";
     S07 and S11 show "Take 1" at 64.3 px (WP3).
-  - While recording, fit includes the ghost (total + elapsed frames),
-    refitted at each `RecordClock` (4 Hz) with the same 200 ms easing, so
-    clips glide instead of jumping (instant under reduced motion).
+  - While recording, fit includes the ghost (total + elapsed frames) as
+    it grows on the frame clock between record clocks, at once
+    (`ViewModel::follow_ghost`; a clock behind that growth never shrinks
+    it), so the ghost's end and the playhead parked there stay inside the
+    8 px inset and the clips glide. The fit eases (200 ms, instant under
+    reduced motion) when the ghost starts or ends. (Review: refitted only
+    at each `RecordClock`, 4 Hz, with a 200 ms ease, they ran up to 25 %
+    past the time area between clocks early in a take.)
 - **Wheel, pan, scrub**: D-39, D-40. `scroll_for_wheel`, `zoom_at(ppf,
   factor, anchor_x)` and `scrub_frame(x)` are pure.
 - **Clip boxes** (time-area x = start × ppf − scroll; w = len × ppf, no

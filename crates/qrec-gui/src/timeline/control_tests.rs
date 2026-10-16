@@ -745,3 +745,74 @@ fn columns_older_than_the_readings_are_silent() {
         &amps[980..992]
     );
 }
+
+/// R05: a new project's first take at fit (no clips, 30 fps, 1000 px), its
+/// record clocks every 250 ms from 1 s, a frame every 10 ms: the ghost's
+/// end and the playhead parked there never pass the fit's 8 px inset, also
+/// between clocks (the ghost grows on the frame clock by up to 300 ms; at
+/// 1 s it ran 25 % past the time area when the fit followed the clocks
+/// only).
+#[test]
+fn fit_follows_the_ghost_between_record_clocks() {
+    use qrec_core::view::timeline::{FIT_INSET_PX, ghost, shown_playhead};
+    let mut state = testkit::design_state();
+    state.project.timeline.clips.clear();
+    let recording = |elapsed_ns: u64| RecordPhase::Recording {
+        take: TakeId::numbered(10),
+        mode: RecordMode::Append,
+        elapsed_ns,
+        waiters: vec![],
+    };
+    let mut vm = ViewModel::new(false);
+    vm.set_width(1000.0);
+    let mut clock = GhostClock::default();
+    let mut elapsed = 1_000_000_000u64;
+    let mut last_clock = ms(0);
+    // A snapshot: what `Inner::on_change` does.
+    let snapshot = |state: &State, vm: &mut ViewModel, clock: &mut GhostClock, now| {
+        let grows = clock.follow(&state.runtime.record, now);
+        let mut total = shown_total(state, clock.elapsed_ns);
+        if grows {
+            vm.follow_ghost(total);
+            total = vm.total();
+        }
+        vm.on_state(state, total, now);
+    };
+    state.runtime.record = recording(elapsed);
+    snapshot(&state, &mut vm, &mut clock, ms(0));
+    for step in 0..=300u64 {
+        let now = ms(step * 10);
+        // A clock 250 ms after the last (one late by 60 ms, past the lead).
+        let every = if step / 25 == 4 { 310 } else { 250 };
+        if now.saturating_sub(last_clock) >= ms(every) {
+            elapsed += (now - last_clock).as_nanos() as u64;
+            last_clock = now;
+            state.runtime.record = recording(elapsed);
+            snapshot(&state, &mut vm, &mut clock, now);
+        }
+        // A frame: what `Inner::on_tick` does.
+        let e = clock.elapsed(now, false);
+        vm.follow_ghost(shown_total(&state, e));
+        let view = vm.shown(now).unwrap();
+        let bound = view.width - FIT_INSET_PX + 1e-6;
+        let parked = view.x_of_frame(shown_playhead(&state, e, None));
+        assert!(parked <= bound, "{now:?}: the playhead at {parked}");
+        let g = ghost(&state, &view, e).unwrap();
+        assert!(
+            g.x + g.w <= bound,
+            "{now:?}: the ghost ends at {}",
+            g.x + g.w
+        );
+    }
+    // Stopped: the ghost keeps the last clock's length, and the fit too.
+    state.runtime.record = RecordPhase::Finalizing {
+        take: TakeId::numbered(10),
+        mode: RecordMode::Append,
+        cancelled: false,
+        stop_reqs: vec![],
+        waiters: vec![],
+        discard: None,
+    };
+    snapshot(&state, &mut vm, &mut clock, ms(3010));
+    assert_eq!(vm.total(), shown_total(&state, elapsed));
+}

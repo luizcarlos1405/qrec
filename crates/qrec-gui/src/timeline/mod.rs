@@ -49,7 +49,7 @@ use gtk::prelude::*;
 use gtk::{gdk, glib, graphene};
 use qrec_core::ctx::FileFact;
 use qrec_core::protocol::event::Interval;
-use qrec_core::state::{RecordPhase, SilenceKey};
+use qrec_core::state::SilenceKey;
 use qrec_core::view::DragKind;
 use qrec_core::view::notices::unavailable_notice;
 use qrec_core::view::timeline::{self as tl, ClipBox, HEADER_WIDTH, Lane, Rows, Viewport};
@@ -61,7 +61,7 @@ use crate::store::{Change, Subscription};
 use crate::theme::motion;
 use crate::widgets::keycap::{CapSize, KeyCap};
 use crate::{Ctx, guard, guarded, testctl};
-use control::{Area, Button, Cx, Drag, Gestures, Mods, Press, Sink, ViewModel};
+use control::{Area, Button, Cx, Drag, Gestures, GhostClock, Mods, Press, Sink, ViewModel};
 use draw::Scene;
 use paint::Texts;
 use root::{Column, TimelineRoot};
@@ -74,9 +74,6 @@ use toolbar::Toolbar;
 const HOVER_DELAY: Duration = Duration::from_millis(500);
 /// The snap guide flashes this long (G§4.5).
 const FLASH: Duration = Duration::from_millis(300);
-/// The ghost grows on the frame clock at most this far past the last
-/// record clock (G§4.5).
-const GHOST_LEAD: Duration = Duration::from_millis(300);
 
 /// The timeline region (`region-timeline`).
 pub struct Timeline {
@@ -93,16 +90,6 @@ impl Timeline {
     pub fn widget(&self) -> gtk::Widget {
         self.inner.root.clone().upcast()
     }
-}
-
-/// The record clock as last seen, for the ghost's growth between ticks.
-#[derive(Debug, Clone, Default)]
-struct GhostClock {
-    take: Option<TakeId>,
-    elapsed_ns: u64,
-    at: Duration,
-    /// Recording (it grows); finalizing keeps the last length.
-    running: bool,
 }
 
 /// What the timeline knows besides the state.
@@ -758,29 +745,15 @@ impl Inner {
         {
             let mut m = self.m.borrow_mut();
             // The record clock, for the ghost's growth.
-            match &state.runtime.record {
-                RecordPhase::Recording {
-                    take, elapsed_ns, ..
-                } => {
-                    if m.ghost.take.as_ref() != Some(take) || m.ghost.elapsed_ns != *elapsed_ns {
-                        m.ghost = GhostClock {
-                            take: Some(take.clone()),
-                            elapsed_ns: *elapsed_ns,
-                            at: now,
-                            running: true,
-                        };
-                    }
-                }
-                RecordPhase::Finalizing { take, .. } => {
-                    if m.ghost.take.as_ref() == Some(take) {
-                        m.ghost.running = false;
-                    } else {
-                        m.ghost = GhostClock::default();
-                    }
-                }
-                _ => m.ghost = GhostClock::default(),
+            let grows = m.ghost.follow(&state.runtime.record, now);
+            let mut total = tl::shown_total(state, m.ghost.elapsed_ns);
+            if grows {
+                // While a take records its ghost grows on the frame clock
+                // (`follow_ghost`, at once): a clock past it too, and one
+                // behind it never shrinks it.
+                m.vm.follow_ghost(total);
+                total = m.vm.total();
             }
-            let total = tl::shown_total(state, m.ghost.elapsed_ns);
             m.vm.on_state(state, total, now);
             m.g.on_state(state, &mut pending);
             m.lanes = tl::lanes(state);
@@ -1619,6 +1592,11 @@ impl Inner {
             {
                 m.flash = None;
             }
+            // Fit includes the ghost as it grows between record clocks.
+            if m.ghost.running {
+                let total = tl::shown_total(&state, ghost_elapsed(&m.ghost, now));
+                m.vm.follow_ghost(total);
+            }
             m.generation += 1;
         }
         if playing {
@@ -1976,11 +1954,7 @@ impl Sink for Pending {
 /// The ghost's length now: the last record clock, grown on the frame clock
 /// for at most 300 ms (not in test mode: screenshots show the clock).
 fn ghost_elapsed(ghost: &GhostClock, now: Duration) -> u64 {
-    if !ghost.running || testctl::mode().on {
-        return ghost.elapsed_ns;
-    }
-    let lead = now.saturating_sub(ghost.at).min(GHOST_LEAD);
-    ghost.elapsed_ns + lead.as_nanos() as u64
+    ghost.elapsed(now, testctl::mode().on)
 }
 
 /// How many level readings the media hub keeps per device.

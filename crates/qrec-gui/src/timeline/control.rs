@@ -16,6 +16,7 @@
 use std::time::Duration;
 
 use qrec_core::protocol::command::{Nullable, SeekTarget, SelectOp, UiPatch};
+use qrec_core::state::RecordPhase;
 use qrec_core::view::DragKind;
 use qrec_core::view::notices::Notice;
 use qrec_core::view::timeline::{
@@ -33,6 +34,9 @@ pub const SCRUB_EVERY: Duration = Duration::from_millis(100);
 pub const ZOOM_EASE: Duration = Duration::from_millis(200);
 /// A move drag's neighbours close the gap over this long (G§4.5).
 pub const GAP_EASE: Duration = Duration::from_millis(120);
+/// The ghost grows on the frame clock at most this far past the last
+/// record clock (G§4.5).
+pub const GHOST_LEAD: Duration = Duration::from_millis(300);
 
 /// What the timeline's logic asks of the window (the GTK glue; a recorder
 /// in tests).
@@ -384,6 +388,21 @@ impl ViewModel {
         };
         let scroll = view.scroll_for_wheel(dx, dy, self.total);
         self.scroll_to(scroll, now);
+    }
+
+    /// The frames shown grew on the frame clock: a recording's ghost
+    /// between record clocks (G§4.5). The view follows at once, never
+    /// easing (an ease in flight lands on it), so at fit the ghost's end
+    /// and the playhead parked there stay inside the 8 px inset.
+    pub fn follow_ghost(&mut self, total: Frame) {
+        if total <= self.total {
+            return;
+        }
+        self.total = total;
+        let to = self.target_view();
+        if let (Some(anim), Some(to)) = (self.anim.as_mut(), to) {
+            anim.to = to;
+        }
     }
 
     /// Scrolls to `scroll` px (a pan, auto-page).
@@ -859,6 +878,59 @@ pub fn decide_drop(state: &State, view: &Viewport, take: &TakeId, x: f64) -> Opt
 }
 
 // ------------------------------------------------------------- the ghost
+
+/// The record clock as last seen, for the ghost's growth between clocks.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GhostClock {
+    pub take: Option<TakeId>,
+    pub elapsed_ns: u64,
+    pub at: Duration,
+    /// Recording (it grows); finalizing keeps the last length.
+    pub running: bool,
+}
+
+impl GhostClock {
+    /// Follows a snapshot's record phase at `now`; `true` while it is the
+    /// take it followed before and records: the frame clock may have grown
+    /// its ghost past this clock.
+    pub fn follow(&mut self, record: &RecordPhase, now: Duration) -> bool {
+        let before = self.take.clone();
+        match record {
+            RecordPhase::Recording {
+                take, elapsed_ns, ..
+            } => {
+                if self.take.as_ref() != Some(take) || self.elapsed_ns != *elapsed_ns {
+                    *self = GhostClock {
+                        take: Some(take.clone()),
+                        elapsed_ns: *elapsed_ns,
+                        at: now,
+                        running: true,
+                    };
+                }
+            }
+            RecordPhase::Finalizing { take, .. } => {
+                if self.take.as_ref() == Some(take) {
+                    self.running = false;
+                } else {
+                    *self = GhostClock::default();
+                }
+            }
+            _ => *self = GhostClock::default(),
+        }
+        self.running && before.is_some() && before == self.take
+    }
+
+    /// The ghost's length at `now`: the last record clock, grown on the
+    /// frame clock for at most 300 ms; the clock's once it finalizes, and
+    /// when `frozen` (test mode: screenshots show the clock).
+    pub fn elapsed(&self, now: Duration, frozen: bool) -> u64 {
+        if !self.running || frozen {
+            return self.elapsed_ns;
+        }
+        let lead = now.saturating_sub(self.at).min(GHOST_LEAD);
+        self.elapsed_ns + lead.as_nanos() as u64
+    }
+}
 
 /// The level ring's readings are this far apart (20 Hz).
 pub const READING_MS: f64 = 50.0;
