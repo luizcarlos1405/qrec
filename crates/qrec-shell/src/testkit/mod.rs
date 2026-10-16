@@ -39,11 +39,82 @@ pub use tool::{ToolOutput, run_tool};
 /// `QREC_CAPTURE_BACKEND=fake`; other inherited `QREC_*` variables are
 /// removed, and so are `DISPLAY`, `WAYLAND_DISPLAY` and `WAYLAND_SOCKET`
 /// (a window never opens on the developer's display). The runtime dir lives
-/// under `/tmp` so socket paths stay under the 107-byte limit. Everything is
-/// deleted on drop.
+/// under `/tmp` so socket paths stay under the 107-byte limit. On drop,
+/// every process still running in the env is killed (see the `Drop` impl),
+/// then everything is deleted.
 pub struct TestEnv {
     root: TempDir,
     runtime_root: TempDir,
+}
+
+impl Drop for TestEnv {
+    /// Kills (SIGKILL) every process whose environment has this env's
+    /// `QREC_RUNTIME_DIR` (what [`TestEnv::command`] started, the headless
+    /// hosts a `qrec record start` spawned and detached, and their own
+    /// children), also when the test failed: a host left recording, or
+    /// counting down to it, would go on writing into the deleted folders
+    /// for good. Says on stderr what it killed.
+    fn drop(&mut self) {
+        let mut marker = b"QREC_RUNTIME_DIR=".to_vec();
+        marker.extend_from_slice(self.runtime_dir().as_os_str().as_encoded_bytes());
+        let killed = kill_processes_with(&marker);
+        if !killed.is_empty() {
+            eprintln!(
+                "testkit: killed what {} left running: {killed:?}",
+                self.root().display()
+            );
+        }
+    }
+}
+
+/// The processes but this one whose environment holds `marker`
+/// (`KEY=value`), with their command lines. Zombies have no environment
+/// left, so they don't count.
+fn processes_with(marker: &[u8]) -> Vec<(libc::pid_t, String)> {
+    let me = std::process::id();
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
+            if pid == me {
+                return None;
+            }
+            let environ = fs::read(entry.path().join("environ")).ok()?;
+            if !environ.split(|&b| b == 0).any(|var| var == marker) {
+                return None;
+            }
+            let cmdline = fs::read(entry.path().join("cmdline")).unwrap_or_default();
+            let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
+            Some((
+                libc::pid_t::try_from(pid).ok()?,
+                cmdline.trim_end().to_owned(),
+            ))
+        })
+        .collect()
+}
+
+/// SIGKILLs what [`processes_with`] finds until nothing is left (one may
+/// still be forking; at most 5 s), and returns what it killed.
+fn kill_processes_with(marker: &[u8]) -> Vec<(libc::pid_t, String)> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut killed: Vec<(libc::pid_t, String)> = Vec::new();
+    loop {
+        let left = processes_with(marker);
+        if left.is_empty() || std::time::Instant::now() >= deadline {
+            return killed;
+        }
+        for (pid, cmdline) in left {
+            // SAFETY: kill(2) only sends a signal to `pid`.
+            if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 && !killed.iter().any(|k| k.0 == pid)
+            {
+                killed.push((pid, cmdline));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 impl Default for TestEnv {
@@ -276,6 +347,57 @@ mod tests {
         assert!(root.join("home").is_dir() && runtime.is_dir());
         drop(env);
         assert!(!root.exists() && !runtime.exists());
+    }
+
+    /// What the env started is killed with it: a child, and a process whose
+    /// parent is gone, like the host a `qrec record start` spawned; a
+    /// process started outside the env stays.
+    #[test]
+    fn dropping_the_env_kills_what_it_started() {
+        use std::process::Stdio;
+        use std::time::{Duration, Instant};
+
+        let env = TestEnv::new();
+        let mut child = env
+            .command(Path::new("sleep"))
+            .arg("60")
+            .spawn()
+            .expect("run sleep");
+        let detached = env
+            .command(Path::new("sh"))
+            .args(["-c", "sleep 60 </dev/null >/dev/null 2>&1 & echo $!"])
+            .stdout(Stdio::piped())
+            .output()
+            .expect("run sh");
+        let detached: u32 = String::from_utf8(detached.stdout)
+            .unwrap()
+            .trim()
+            .parse()
+            .expect("the detached pid");
+        let mut outside = Command::new("sleep").arg("60").spawn().expect("run sleep");
+        let alive = |pid: u32| {
+            fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+                !stat
+                    .rsplit_once(") ")
+                    .is_some_and(|(_, s)| s.starts_with('Z'))
+            })
+        };
+        assert!(alive(child.id()) && alive(detached));
+
+        drop(env);
+        let status = child.wait().unwrap();
+        assert_eq!(
+            std::os::unix::process::ExitStatusExt::signal(&status),
+            Some(libc::SIGKILL)
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while alive(detached) {
+            assert!(Instant::now() < deadline, "the detached sleep still runs");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(outside.try_wait().unwrap(), None, "not the env's");
+        outside.kill().unwrap();
+        outside.wait().unwrap();
     }
 
     #[test]
