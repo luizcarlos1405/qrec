@@ -3227,6 +3227,17 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   per key sequence, `-s 400` first so the compositor has the virtual
   keyboard's keymap (`wtype -k <key>`, `-M ctrl -k e -m ctrl`). And the
   control channel's `dispatch` and `action`.
+  The seat has a keyboard only while a `wtype` runs, so the window is
+  active only then (round 3 integration audit: `is_active` false before
+  the first key and after each run). GTK takes `:focus` and
+  `:focus-visible` off the focus chain of an inactive window, so a shot
+  after a key shows no focus ring (S18's Tab: the purge button is
+  focused, ring-less); one before any key keeps the ring a widget got
+  from `grab_focus` and `set_focus_visible`. GTK 4.22 also drops focus
+  visibility 3 s after it was last set (`VISIBLE_FOCUS_DURATION`) and
+  sets it again on the release of a key that moved the focus. A
+  persistent virtual keyboard (like the pointer) would keep the window
+  active as a person's does.
 - **Readiness.** `waitIdle` (never a fixed sleep), then capture.
 - **Capture.** `grim -o HEADLESS-1
   <repo>/tmp/gui-shots/<area>/<case>-<name>.png` (`Nested::screenshot`;
