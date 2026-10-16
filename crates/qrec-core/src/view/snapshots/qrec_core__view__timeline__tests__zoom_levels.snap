@@ -1,0 +1,24 @@
+---
+source: crates/qrec-core/src/view/timeline_tests.rs
+expression: text
+---
+== fit: 0.13963 px/frame, scroll 0.0, readout "Fit", slider 0.000, visible 0.0 → 7448.3
+c7f3  take 1  x    176.0 w    57.2 "1"      
+c8a1  take 1  x    233.2 w    63.8 "1"      
+c1b2  take 3  x    297.1 w    37.4 "3"      
+c1b3  take 3  x    334.5 w    42.9 "3"      
+c1b4  take 3  x    377.3 w    33.2 "3"      
+c1b5  take 3  x    410.6 w    34.8 "3"      
+c1b6  take 3  x    445.3 w    21.6 none     
+c2d0  take 5  x    467.0 w   152.5 "Take 5" 
+c2d1  take 5  x    619.5 w   155.0 "Take 5" 
+c3e9  take 8  x    774.5 w   433.5 "Take 8" 
+== seconds (S08): 1.60000 px/frame, scroll 3120.0, readout "48 px/s", slider 0.358, visible 1950.0 → 2600.0
+c1b6  take 3  x    142.4 w   248.0 "Take 3" 
+c2d0  take 5  x    390.4 w  1747.2 "Take 5" 
+== frame level (S09): 32.00000 px/frame, scroll 101120.0, readout "32 px/frame", slider 0.797, visible 3160.0 → 3192.5
+c2d0  take 5  x -34256.0 w 34944.0 "Take 5" 
+c2d1  take 5  x    688.0 w 35520.0 "Take 5" selected 
+== zoom to c3e9 (S12): 0.33494 px/frame, scroll 1435.6, readout "10 px/s", slider 0.128, visible 4286.0 → 7391.0
+c2d1  take 5  x   -195.8 w   371.8 "Take 5" 
+c3e9  take 8  x    176.0 w  1040.0 "Take 8" selected

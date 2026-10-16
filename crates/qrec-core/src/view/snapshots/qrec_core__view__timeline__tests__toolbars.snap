@@ -1,0 +1,66 @@
+---
+source: crates/qrec-core/src/view/timeline_tests.rs
+expression: "[normal, e, r]"
+---
+[
+  {
+    "variant": "normal",
+    "binCount": 5,
+    "binOpen": false,
+    "snapping": true,
+    "autocut": {
+      "Ok": null
+    },
+    "autocutSettings": true,
+    "summary": [
+      "10 clips · ",
+      "00:04:06:11"
+    ],
+    "zoom": true,
+    "zoomIn": true,
+    "zoomOut": false,
+    "fit": true,
+    "slider": 0.0,
+    "readout": "Fit"
+  },
+  {
+    "variant": "empty",
+    "binCount": null,
+    "binOpen": false,
+    "snapping": true,
+    "autocut": {
+      "Err": "The timeline is empty"
+    },
+    "autocutSettings": false,
+    "summary": [
+      "No clips yet",
+      ""
+    ],
+    "zoom": false,
+    "zoomIn": false,
+    "zoomOut": false,
+    "fit": false,
+    "slider": 0.0,
+    "readout": "Fit"
+  },
+  {
+    "variant": "recording",
+    "binCount": 5,
+    "binOpen": false,
+    "snapping": true,
+    "autocut": {
+      "Err": "Not while recording"
+    },
+    "autocutSettings": false,
+    "summary": [
+      "10 clips · ",
+      "00:04:06:11"
+    ],
+    "zoom": true,
+    "zoomIn": true,
+    "zoomOut": false,
+    "fit": true,
+    "slider": 0.0,
+    "readout": "Fit"
+  }
+]

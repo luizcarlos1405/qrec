@@ -532,13 +532,17 @@ mod tests {
                 } else {
                     rest
                 };
-                let guarded = call_args(args)
-                    .and_then(|a| a.last().copied())
-                    .is_some_and(|last| {
-                        ["guarded!(", "crate::guarded!(", "$crate::guarded!("]
-                            .iter()
-                            .any(|g| last.starts_with(g))
-                    });
+                let args = call_args(args);
+                // `.connect_…()` without arguments is a method of ours that
+                // wires things up (a signal connection takes its callback).
+                if marker == ".connect_" && args.as_deref() == Some(&[""][..]) {
+                    continue;
+                }
+                let guarded = args.and_then(|a| a.last().copied()).is_some_and(|last| {
+                    ["guarded!(", "crate::guarded!(", "$crate::guarded!("]
+                        .iter()
+                        .any(|g| last.starts_with(g))
+                });
                 if !guarded {
                     found.push(format!(
                         "{file}:{}: {marker}… without guarded!",
@@ -563,6 +567,14 @@ mod tests {
             unguarded("x.rs", good)
         );
         assert!(unguarded("guard.rs", "glib::idle_add_full(p, f)").is_empty());
+        // Our own wiring methods named `connect_…` take no callback.
+        assert!(
+            unguarded(
+                "x.rs",
+                "self.connect_drop();\nself.connect_canvas_input( );"
+            )
+            .is_empty()
+        );
         let raw = "x.connect_clicked(guarded!(r#\"a)\"b\"#, move |_| f(')')));";
         assert!(unguarded("x.rs", raw).is_empty(), "{raw}");
         // Each of these, followed by a guarded connect (whose `guarded!(`
