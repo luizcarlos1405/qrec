@@ -662,3 +662,30 @@ fn region_names() {
     assert_eq!(region_for_name("region-hintbar"), None);
     assert_eq!(region_for_name("preview"), None);
 }
+
+/// The user's keymap (`keys.toml`): a rebound key runs its binding and the
+/// default key no longer does; a chord bound to two actions runs neither
+/// (Q5) and reaches GTK.
+#[test]
+fn rebound_and_conflicting_keys_follow_the_users_keymap() {
+    let mut scene = Scene::new();
+    scene.keymap =
+        keymap::resolve("[bindings]\n\"record.toggle\" = \"F9\"\n\"autocut.run\" = \"x\"\n");
+    assert!(!scene.keymap.conflicts.is_empty(), "x is a conflict");
+    let record = match action_for("record.toggle", &scene.state).expect("a binding") {
+        Action::Run(cmd) => cmd,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(scene.calls("F9"), [dispatch(record)]);
+    assert_eq!(
+        scene.press("r").0,
+        KeyDecision::Propagate,
+        "r isn't bound now"
+    );
+    assert_eq!(scene.press("x").0, KeyDecision::Propagate, "neither runs");
+    // The other defaults are untouched.
+    assert_eq!(
+        scene.press("b").0,
+        decide_binding("bin.toggle", &scene.rs())
+    );
+}

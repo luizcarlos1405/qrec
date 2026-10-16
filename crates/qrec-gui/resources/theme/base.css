@@ -1,0 +1,294 @@
+/*
+ * Base (G§3.14, DESIGN Typography, Shapes, Elevation): the window's
+ * ground and default text, the type roles `.t-<role>`, the text forms,
+ * the focus ring, the disabled look, hover and pressed overlays, the R1
+ * and R2 row selection, the elevations `.e1` `.e2` `.e3` and the take
+ * colors `.take-1` … `.take-8`. Owner: WP0b.
+ *
+ * Every color is a token; every px is multiplied by the UI scale before
+ * loading (theme::css::scale_px). Fraunces' optical size follows the font
+ * size ("opsz" = px), with SOFT and WONK per DESIGN.
+ */
+
+/* ------------------------------------------------------------- the window */
+
+window.qrec {
+  background-color: var(--qrec-bg);
+  color: var(--qrec-text);
+  font-family: var(--qrec-font-ui), "Atkinson Hyperlegible", Cantarell, sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+/* ------------------------------------------------------------- type roles */
+
+.t-display {
+  font-family: var(--qrec-font-display), "Noto Serif", serif;
+  font-size: 32px;
+  font-weight: 600;
+  line-height: 38px;
+  letter-spacing: -0.32px;
+  font-variation-settings: "SOFT" 50, "WONK" 1, "opsz" 32;
+}
+
+.t-display-sm {
+  font-family: var(--qrec-font-display), "Noto Serif", serif;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 30px;
+  letter-spacing: -0.12px;
+  font-variation-settings: "SOFT" 50, "WONK" 1, "opsz" 24;
+}
+
+.t-wordmark {
+  font-family: var(--qrec-font-display), "Noto Serif", serif;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 24px;
+  font-variation-settings: "SOFT" 100, "WONK" 1, "opsz" 20;
+}
+
+.t-headline {
+  font-family: var(--qrec-font-ui), "Atkinson Hyperlegible", Cantarell, sans-serif;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 26px;
+  letter-spacing: -0.1px;
+}
+
+.t-title {
+  font-family: var(--qrec-font-ui), "Atkinson Hyperlegible", Cantarell, sans-serif;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+.t-heading {
+  font-family: var(--qrec-font-ui), "Atkinson Hyperlegible", Cantarell, sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 20px;
+}
+
+.t-body {
+  font-family: var(--qrec-font-ui), "Atkinson Hyperlegible", Cantarell, sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.t-body-strong {
+  font-family: var(--qrec-font-ui), "Atkinson Hyperlegible", Cantarell, sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.t-body-sm {
+  font-family: var(--qrec-font-ui), "Atkinson Hyperlegible", Cantarell, sans-serif;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 18px;
+}
+
+.t-caption {
+  font-family: var(--qrec-font-ui), "Atkinson Hyperlegible", Cantarell, sans-serif;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
+}
+
+.t-caption-strong {
+  font-family: var(--qrec-font-ui), "Atkinson Hyperlegible", Cantarell, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.t-badge {
+  font-family: var(--qrec-font-ui), "Atkinson Hyperlegible", Cantarell, sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  letter-spacing: 0.72px;
+  text-transform: uppercase;
+}
+
+.t-rec {
+  font-family: var(--qrec-font-ui), "Atkinson Hyperlegible", Cantarell, sans-serif;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 16px;
+  letter-spacing: 0.78px;
+}
+
+.t-countdown {
+  font-family: var(--qrec-font-ui), "Atkinson Hyperlegible", Cantarell, sans-serif;
+  font-size: 160px;
+  font-weight: 800;
+  line-height: 160px;
+  font-feature-settings: "tnum" 1;
+}
+
+.t-mono-xs {
+  font-family: var(--qrec-font-mono), "DejaVu Sans Mono", monospace;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 14px;
+  font-feature-settings: "tnum" 1;
+}
+
+.t-mono-sm {
+  font-family: var(--qrec-font-mono), "DejaVu Sans Mono", monospace;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  font-feature-settings: "tnum" 1;
+}
+
+.t-mono {
+  font-family: var(--qrec-font-mono), "DejaVu Sans Mono", monospace;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+  font-feature-settings: "tnum" 1;
+}
+
+.t-mono-lg {
+  font-family: var(--qrec-font-mono), "DejaVu Sans Mono", monospace;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 24px;
+  font-feature-settings: "tnum" 1;
+}
+
+.t-mono-xl {
+  font-family: var(--qrec-font-mono), "DejaVu Sans Mono", monospace;
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 32px;
+  font-feature-settings: "tnum" 1;
+}
+
+.t-keycap {
+  font-family: var(--qrec-font-mono), "DejaVu Sans Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 14px;
+}
+
+.t-keycap-lg {
+  font-family: var(--qrec-font-mono), "DejaVu Sans Mono", monospace;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+/* ------------------------------------------------- text colors (R3, R4) */
+
+.muted { color: var(--qrec-muted); }
+.accent-text { color: var(--qrec-accent-text); }
+.record-text { color: var(--qrec-record-text); }
+.warning-text { color: var(--qrec-warning-text); }
+.success-text { color: var(--qrec-accent-text); }
+
+/* ----------------------------------------------------- focus and disabled */
+
+/* The focus ring: 2 px `focus-ring`, 2 px outside (DESIGN Shapes); rows
+   and fields draw it inset. Keyboard focus only (focus-visible). */
+:focus-visible {
+  outline: 2px solid var(--qrec-focus-ring);
+  outline-offset: 2px;
+}
+
+row:focus-visible,
+.inset-focus:focus-visible {
+  outline-offset: -2px;
+}
+
+/* Disabled controls are 0.45 opaque (DESIGN Components), once per disabled
+   subtree: libadwaita's own dimming of buttons, labels, entries and scales
+   would stack with it (a disabled button's label is disabled too). */
+:disabled {
+  filter: none;
+}
+
+:not(:disabled) > :disabled {
+  opacity: 0.45;
+}
+
+/* ---------------------------------------------- hover and pressed overlays */
+
+/* Flat things on `surface` (rows, flat buttons): the `hover` overlay, then
+   `pressed` (DESIGN Components; R2 rows on `raised` use R1 instead). */
+.hover-overlay:hover {
+  background-image: image(var(--qrec-hover));
+}
+
+.hover-overlay:active {
+  background-image: image(var(--qrec-pressed));
+}
+
+/* ------------------------------------------------- R1 and R2 selection */
+
+/* R1: a selected row gets the `selected` tint and a 1 px `accent` inner
+   stroke, and all of its text turns `text`. */
+.r1:selected,
+.r1.selected,
+.r2:selected,
+.r2.selected,
+.r2:hover {
+  background-color: var(--qrec-selected);
+  box-shadow: inset 0 0 0 1px var(--qrec-accent);
+  color: var(--qrec-text);
+}
+
+.r1:selected .muted,
+.r1.selected .muted,
+.r1:selected .accent-text,
+.r1.selected .accent-text,
+.r2:selected .muted,
+.r2.selected .muted,
+.r2:hover .muted {
+  color: var(--qrec-text);
+}
+
+/* ------------------------------------------------------------ elevation */
+
+/* e1 Lifted: tooltips, a clip or row being dragged. */
+.e1 {
+  box-shadow: 0 2px 6px var(--qrec-shadow-e1);
+}
+
+/* e2 Floating: popovers, menus, toasts, the palette, the export panel. */
+.e2 {
+  box-shadow: 0 8px 24px var(--qrec-shadow-e2), 0 1px 2px var(--qrec-shadow-e2-contact);
+}
+
+/* e3 Modal: modals, Settings, the cheat sheet. */
+.e3 {
+  box-shadow: 0 20px 48px var(--qrec-shadow-e3);
+}
+
+/* ----------------------------------------------------------- take colors */
+
+/* Take n wears `take-<order[(n − 1) mod 8]>` (view::format::take_color):
+   `.take-n` sets `--qrec-take` and `--qrec-take-tint` for what it holds;
+   `.take-stripe` and `.take-tint` paint them (DESIGN: stripes, tints and
+   bin thumbnails only, always next to the take number). */
+.take-1 { --qrec-take: var(--qrec-take-moss); --qrec-take-tint: var(--qrec-take-moss-tint); }
+.take-2 { --qrec-take: var(--qrec-take-donkey); --qrec-take-tint: var(--qrec-take-donkey-tint); }
+.take-3 { --qrec-take: var(--qrec-take-onion); --qrec-take-tint: var(--qrec-take-onion-tint); }
+.take-4 { --qrec-take: var(--qrec-take-mud); --qrec-take-tint: var(--qrec-take-mud-tint); }
+.take-5 { --qrec-take: var(--qrec-take-lily); --qrec-take-tint: var(--qrec-take-lily-tint); }
+.take-6 { --qrec-take: var(--qrec-take-ginger); --qrec-take-tint: var(--qrec-take-ginger-tint); }
+.take-7 { --qrec-take: var(--qrec-take-dragon); --qrec-take-tint: var(--qrec-take-dragon-tint); }
+.take-8 { --qrec-take: var(--qrec-take-fairy); --qrec-take-tint: var(--qrec-take-fairy-tint); }
+
+.take-stripe {
+  background-color: var(--qrec-take);
+}
+
+.take-tint {
+  background-color: var(--qrec-take-tint);
+}

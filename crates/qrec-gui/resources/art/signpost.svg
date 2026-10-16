@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- PLACEHOLDER for the wooden signpost (pen w7Qg8 > W1Ia5): the drawn art
+     is exported from design/qrec.pen with the pencil MCP while it is the
+     active document (G§0.6, G§3.14). The muted and border tokens. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="120" viewBox="0 0 160 120">
+  <ellipse cx="80" cy="108" rx="56" ry="8" fill="{{border}}"/>
+  <rect x="74" y="28" width="12" height="80" rx="2" fill="{{muted}}"/>
+  <path d="M40 34 H 116 L 128 46 L 116 58 H 40 Z" fill="{{border}}"/>
+  <path d="M120 66 H 44 L 32 78 L 44 90 H 120 Z" fill="{{border}}"/>
+  <path d="M52 46 H 104 M56 78 H 108" fill="none" stroke="{{muted}}" stroke-width="3" stroke-linecap="round"/>
+</svg>

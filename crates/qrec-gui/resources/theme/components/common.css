@@ -1,1 +1,678 @@
-/* Shared components (C01, C02, C20, C22, C25 menus, C26-C29, C33). Owner: WP0b (part 2: the theme pipeline). */
+/*
+ * Shared components (G§5.1): C01 buttons, C02 key caps, C20 list rows and
+ * check boxes, C22 status chips, C25 popovers and menus, C26 sliders, C27
+ * switches, C28 segmented controls, C29 fields, C33 tooltips; the overlay
+ * layers' scrims (G§3.15) and WP0b's region stubs. Owner: WP0b.
+ *
+ * Sizes are DESIGN's. GTK's min-width and min-height size the content box:
+ * padding and borders come on top.
+ */
+
+/* -------------------------------------------------------- C01 buttons */
+
+button.qrec-btn {
+  min-height: 32px;
+  min-width: 0;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: none;
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+  color: var(--qrec-text);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  transition: background-color 120ms cubic-bezier(0.4, 0, 0.2, 1),
+    background-image 120ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+button.qrec-btn > box {
+  border-spacing: 8px;
+}
+
+button.qrec-btn image {
+  -gtk-icon-size: 16px;
+}
+
+button.qrec-btn:hover {
+  background-image: image(var(--qrec-hover));
+}
+
+button.qrec-btn:active,
+button.qrec-btn:checked {
+  background-image: image(var(--qrec-pressed));
+}
+
+button.qrec-btn.primary {
+  background-color: var(--qrec-accent);
+  color: var(--qrec-text-on-accent);
+}
+
+button.qrec-btn.secondary {
+  background-color: var(--qrec-raised);
+  box-shadow: inset 0 0 0 1px var(--qrec-border);
+}
+
+button.qrec-btn.flat {
+  padding: 0 8px;
+}
+
+button.qrec-btn.destructive {
+  min-height: 40px;
+  padding: 0 16px;
+  background-color: var(--qrec-record);
+  color: var(--qrec-text-on-record);
+}
+
+button.qrec-btn.destructive-flat {
+  padding: 0 8px;
+  color: var(--qrec-record-text);
+}
+
+/* README known gap: destructive-flat pressed is a `ghost-fill` ground. */
+button.qrec-btn.destructive-flat:active {
+  background-image: none;
+  background-color: var(--qrec-ghost-fill);
+}
+
+button.qrec-btn.sm {
+  min-height: 24px;
+  padding: 0 8px;
+}
+
+button.qrec-btn.lg {
+  min-height: 40px;
+  padding: 0 16px;
+}
+
+button.qrec-btn.icon-32 {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+}
+
+button.qrec-btn.icon-24 {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  border-radius: 4px;
+}
+
+/* Loading: the spinner stands where the icon was; the label stays. */
+button.qrec-btn.loading qrec-spinner {
+  color: inherit;
+}
+
+/* --------------------------------------------------------- C02 key cap */
+
+/* Medium (20 tall, min 20 wide): 1 px border with a 2 px bottom edge. */
+keycap {
+  min-height: 17px;
+  min-width: 8px;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid var(--qrec-border);
+  border-bottom-width: 2px;
+  background-color: var(--qrec-keycap);
+  color: var(--qrec-text);
+}
+
+keycap > label {
+  font-family: var(--qrec-font-mono), "DejaVu Sans Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 14px;
+}
+
+/* Small (tooltips): 16 tall. */
+keycap.sm {
+  min-height: 13px;
+  min-width: 6px;
+  padding: 0 4px;
+}
+
+/* Large (cheat sheet, "Press [R]"): 28 tall, min 28 wide. */
+keycap.lg {
+  min-height: 25px;
+  min-width: 10px;
+  padding: 0 8px;
+  border-radius: 6px;
+}
+
+keycap.lg > label {
+  font-size: 14px;
+  line-height: 18px;
+}
+
+/* On-fill (inside Record or a primary button): no fill, a 1 px stroke in
+   the label color at 45 %, the legend in the label color. */
+keycap.on-fill {
+  min-height: 18px;
+  background-color: transparent;
+  border: 1px solid var(--qrec-text-on-accent-45);
+  color: inherit;
+}
+
+button.destructive keycap.on-fill,
+button.record keycap.on-fill {
+  border-color: var(--qrec-text-on-record-45);
+}
+
+keycap.disabled {
+  opacity: 0.45;
+}
+
+keycap.capture {
+  min-height: 18px;
+  background-color: transparent;
+  border: 1px dashed var(--qrec-accent);
+}
+
+keycap.conflict {
+  min-height: 18px;
+  border: 1px solid var(--qrec-warning-text);
+}
+
+.keycaps {
+  border-spacing: 2px;
+}
+
+/* ---------------------------------------------- C20 list rows, checks */
+
+/* Rows on `surface` (R1 selection, the `hover` overlay); `.on-raised`
+   lists (menus, palette, dropdowns) highlight with R2. */
+list.qrec-list {
+  background-color: transparent;
+  color: var(--qrec-text);
+}
+
+list.qrec-list > row {
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: 6px;
+  background-color: transparent;
+}
+
+list.qrec-list > row.row-32 { min-height: 32px; }
+list.qrec-list > row.row-40 { min-height: 40px; }
+list.qrec-list > row.row-44 { min-height: 44px; }
+list.qrec-list > row.row-72 { min-height: 72px; }
+
+list.qrec-list:not(.on-raised) > row:hover {
+  background-image: image(var(--qrec-hover));
+}
+
+list.qrec-list > row:selected,
+list.qrec-list.on-raised > row:hover {
+  background-color: var(--qrec-selected);
+  background-image: none;
+  box-shadow: inset 0 0 0 1px var(--qrec-accent);
+  color: var(--qrec-text);
+}
+
+list.qrec-list > row:selected .muted,
+list.qrec-list.on-raised > row:hover .muted {
+  color: var(--qrec-text);
+}
+
+checkbutton {
+  border-spacing: 8px;
+}
+
+checkbutton > check {
+  min-width: 14px;
+  min-height: 14px;
+  padding: 0;
+  border-radius: 4px;
+  background-color: var(--qrec-field);
+  background-image: none;
+  box-shadow: inset 0 0 0 1px var(--qrec-border-strong);
+  color: var(--qrec-text-on-accent);
+}
+
+checkbutton > check:checked {
+  background-color: var(--qrec-accent);
+  box-shadow: none;
+}
+
+/* ------------------------------------------------------ C22 status chip */
+
+.chip {
+  min-height: 20px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border-spacing: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.chip image {
+  -gtk-icon-size: 12px;
+}
+
+.chip.neutral {
+  background-color: var(--qrec-pressed);
+  color: var(--qrec-text);
+}
+
+.chip.success,
+.chip.accent {
+  color: var(--qrec-accent-text);
+  box-shadow: inset 0 0 0 1px var(--qrec-accent-text);
+}
+
+.chip.warning {
+  color: var(--qrec-warning-text);
+  box-shadow: inset 0 0 0 1px var(--qrec-warning-text);
+}
+
+.chip.error {
+  color: var(--qrec-record-text);
+  box-shadow: inset 0 0 0 1px var(--qrec-record-text);
+}
+
+/* ------------------------------------------------- C25 popover, menus */
+
+/* `raised`, `lg` radius, e2, a 1 px `border`, 16 px padding, an optional
+   12×6 arrow. Menus (Layout ▾, Add layer, row overflows) highlight R2. */
+popover > contents {
+  background-color: var(--qrec-raised);
+  color: var(--qrec-text);
+  border-radius: 12px;
+  border: 1px solid var(--qrec-border);
+  box-shadow: 0 8px 24px var(--qrec-shadow-e2), 0 1px 2px var(--qrec-shadow-e2-contact);
+}
+
+popover > arrow {
+  background-color: var(--qrec-raised);
+  border: 1px solid var(--qrec-border);
+  min-width: 12px;
+  min-height: 6px;
+}
+
+popover.qrec-popover > contents {
+  padding: 16px;
+}
+
+popover.menu > contents {
+  padding: 6px;
+}
+
+popover.menu modelbutton {
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 6px;
+  color: var(--qrec-text);
+  font-size: 14px;
+}
+
+popover.menu modelbutton:hover,
+popover.menu modelbutton:selected,
+popover.menu modelbutton:focus-visible {
+  background-color: var(--qrec-selected);
+  box-shadow: inset 0 0 0 1px var(--qrec-accent);
+  color: var(--qrec-text);
+  outline: none;
+}
+
+popover.menu separator {
+  margin: 4px 0;
+  background-color: var(--qrec-border);
+}
+
+/* -------------------------------------------------------- C26 slider */
+
+/* A 4 px track (`border-strong`, `accent` filled), a 16 px `text` thumb
+   with a 2 px `bg` ring, 1 px `muted` ticks. */
+scale {
+  padding: 6px 0;
+  min-height: 16px;
+}
+
+scale > trough {
+  min-height: 4px;
+  border-radius: 2px;
+  background-color: var(--qrec-border-strong);
+  outline: none;
+}
+
+scale > trough > highlight {
+  min-height: 4px;
+  border-radius: 2px;
+  background-color: var(--qrec-accent);
+}
+
+scale > trough > slider {
+  min-width: 12px;
+  min-height: 12px;
+  margin: -6px;
+  border: 2px solid var(--qrec-bg);
+  border-radius: 999px;
+  background-color: var(--qrec-text);
+  box-shadow: none;
+}
+
+scale:focus-visible > trough > slider {
+  outline: 2px solid var(--qrec-focus-ring);
+  outline-offset: 2px;
+}
+
+scale:focus-visible {
+  outline: none;
+}
+
+scale > marks > mark > indicator {
+  min-width: 1px;
+  min-height: 6px;
+  background-color: var(--qrec-muted);
+}
+
+scale > marks > mark > label {
+  color: var(--qrec-muted);
+  font-family: var(--qrec-font-mono), "DejaVu Sans Mono", monospace;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* -------------------------------------------------------- C27 switch */
+
+/* A 40×22 pill: off, a `raised` track with a 1 px `border-strong` and an
+   18 px `muted` knob; on, an `accent` track with a `text-on-accent` knob. */
+switch {
+  min-height: 18px;
+  padding: 2px;
+  border-radius: 999px;
+  border: none;
+  background-color: var(--qrec-raised);
+  box-shadow: inset 0 0 0 1px var(--qrec-border-strong);
+}
+
+switch > slider {
+  min-width: 18px;
+  min-height: 18px;
+  margin: 0;
+  border-radius: 999px;
+  background-color: var(--qrec-muted);
+  box-shadow: none;
+}
+
+switch > image {
+  color: transparent;
+}
+
+switch:checked {
+  background-color: var(--qrec-accent);
+  box-shadow: none;
+}
+
+switch:checked > slider {
+  background-color: var(--qrec-text-on-accent);
+}
+
+/* ------------------------------------------------------ C28 segmented */
+
+/* The mode switch anatomy at 32 px: a `field` well with a 1 px
+   `border-strong` stroke; the selected segment is `raised` with a 1 px
+   `border` and `body-strong` `text`, the others `muted`. */
+toggle-group {
+  min-height: 30px;
+  padding: 1px;
+  border-radius: 6px;
+  background-color: var(--qrec-field);
+  box-shadow: inset 0 0 0 1px var(--qrec-border-strong);
+  border-spacing: 0;
+}
+
+toggle-group > toggle {
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 5px;
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+  color: var(--qrec-muted);
+  font-weight: 400;
+}
+
+toggle-group > toggle:hover {
+  background-image: image(var(--qrec-hover));
+}
+
+toggle-group > toggle:checked {
+  background-color: var(--qrec-raised);
+  box-shadow: inset 0 0 0 1px var(--qrec-border);
+  color: var(--qrec-text);
+  font-weight: 600;
+}
+
+toggle-group > separator {
+  min-width: 0;
+  background: none;
+}
+
+/* ---------------------------------------------------------- C29 fields */
+
+/* Text and numeric fields, dropdowns, search: 32 px, `field` fill, a 1 px
+   `border-strong` stroke, `md` radius, `mono` values, `muted`
+   placeholders. Invalid: the stroke turns `record-text`. */
+entry,
+.field {
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: none;
+  background-color: var(--qrec-field);
+  color: var(--qrec-text);
+  box-shadow: inset 0 0 0 1px var(--qrec-border-strong);
+  outline: none;
+  font-family: var(--qrec-font-mono), "DejaVu Sans Mono", monospace;
+  font-size: 13px;
+  font-weight: 500;
+  font-feature-settings: "tnum" 1;
+}
+
+entry:hover,
+.field:hover {
+  box-shadow: inset 0 0 0 1px var(--qrec-muted);
+}
+
+entry:focus-within,
+.field:focus-within {
+  outline: 2px solid var(--qrec-focus-ring);
+  outline-offset: 2px;
+}
+
+entry > text:focus-visible,
+.field > text:focus-visible {
+  outline: none;
+}
+
+entry.invalid,
+.field.invalid {
+  box-shadow: inset 0 0 0 1px var(--qrec-record-text);
+}
+
+entry > text > placeholder,
+.field > text > placeholder {
+  color: var(--qrec-muted);
+}
+
+.field-helper {
+  color: var(--qrec-record-text);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.field-unit {
+  color: var(--qrec-muted);
+}
+
+/* Search fields read in the UI font; 40 px in the palette. */
+entry.search {
+  font-family: var(--qrec-font-ui), "Atkinson Hyperlegible", Cantarell, sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+entry.search.lg {
+  min-height: 40px;
+}
+
+dropdown > button {
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background-color: var(--qrec-field);
+  background-image: none;
+  color: var(--qrec-text);
+  box-shadow: inset 0 0 0 1px var(--qrec-border-strong);
+  font-weight: 400;
+}
+
+dropdown > button:hover {
+  box-shadow: inset 0 0 0 1px var(--qrec-muted);
+}
+
+dropdown popover listview > row:hover,
+dropdown popover listview > row:selected {
+  background-color: var(--qrec-selected);
+  box-shadow: inset 0 0 0 1px var(--qrec-accent);
+  color: var(--qrec-text);
+}
+
+/* --------------------------------------------------------- C33 tooltip */
+
+/* `raised`, `md` radius, e1, a 1 px `border`, `body-sm`; key caps sit 8 px
+   after the text. */
+tooltip,
+tooltip.background {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background-color: var(--qrec-raised);
+  color: var(--qrec-text);
+  border: 1px solid var(--qrec-border);
+  box-shadow: 0 2px 6px var(--qrec-shadow-e1);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+tooltip .qrec-tooltip {
+  border-spacing: 8px;
+}
+
+/* ------------------------------------------------- scrims (G§3.15) */
+
+.scrim {
+  background-color: var(--qrec-scrim);
+}
+
+.scrim-strong {
+  background-color: var(--qrec-scrim-strong);
+}
+
+/* ----------------------------------------- WP0b's region stubs (G§3.16) */
+
+/* A region whose owner hasn't landed: its DESIGN ground, a dashed hairline
+   and its name. Each owner's widget drops the class. */
+.qrec-stub {
+  outline: 1px dashed var(--qrec-border);
+  outline-offset: -1px;
+}
+
+.qrec-stub-label {
+  color: var(--qrec-muted);
+  font-size: 13px;
+}
+
+#region-stage.qrec-stub,
+#region-timeline.qrec-stub {
+  background-color: var(--qrec-bg);
+}
+
+#region-panel.qrec-stub,
+#region-bin.qrec-stub {
+  background-color: var(--qrec-surface);
+}
+
+#region-panel.qrec-stub {
+  box-shadow: inset 1px 0 var(--qrec-border);
+}
+
+#region-hintbar.qrec-stub {
+  background-color: var(--qrec-surface);
+  box-shadow: inset 0 1px var(--qrec-border);
+}
+
+#region-hintbar.qrec-stub {
+  padding: 0 12px;
+  border-spacing: 20px;
+}
+
+#region-hintbar.qrec-stub .hint {
+  border-spacing: 6px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--qrec-muted);
+}
+
+#region-hintbar.qrec-stub .hint.first,
+#region-hintbar.qrec-stub .hint.emphasized {
+  color: var(--qrec-text);
+}
+
+#region-hintbar.qrec-stub .hint-status {
+  color: var(--qrec-muted);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+/* WP0b's toast and modal stubs until WP6 (C23, C24): `raised`, `lg` and
+   `xl` radius, e2 and e3, a 1 px `border`. */
+.qrec-toast-stub {
+  padding: 12px 12px 12px 16px;
+  border-radius: 12px;
+  background-color: var(--qrec-raised);
+  color: var(--qrec-text);
+  box-shadow: inset 0 0 0 1px var(--qrec-border),
+    0 8px 24px var(--qrec-shadow-e2), 0 1px 2px var(--qrec-shadow-e2-contact);
+}
+
+.qrec-modal-stub {
+  padding: 24px;
+  border-radius: 16px;
+  background-color: var(--qrec-raised);
+  color: var(--qrec-text);
+  box-shadow: inset 0 0 0 1px var(--qrec-border), 0 20px 48px var(--qrec-shadow-e3);
+}
+
+/* The minimal header (C04 `Xba2H`): WP0b's header stub until WP6, and the
+   blocking pages' header. `surface` with a 1 px bottom `border`, the
+   wordmark, the window title (`title` over `caption` `muted`). */
+headerbar.qrec-minimal-header {
+  min-height: 48px;
+  background-color: var(--qrec-surface);
+  box-shadow: inset 0 -1px var(--qrec-border);
+}
+
+headerbar.qrec-minimal-header > windowhandle > box {
+  padding: 0 8px 0 12px;
+}
+
+headerbar.qrec-minimal-header .wordmark {
+  color: var(--qrec-text);
+}
+
+headerbar.qrec-minimal-header windowtitle .title {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+headerbar.qrec-minimal-header windowtitle .subtitle {
+  color: var(--qrec-muted);
+  font-size: 12px;
+  line-height: 16px;
+  opacity: 1;
+}

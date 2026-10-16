@@ -1,1 +1,53 @@
-/* Blocking pages: the interim pages (WP0b), the drafted ones (WP8). */
+/*
+ * Blocking pages (C31 Blocking, G§1.1 #2). The interim pages: WP0b. The
+ * drafted pages (art, per-row layout, the minimal header): WP8, once
+ * G§0.2 approves them.
+ *
+ * An interim page is one centered block on `bg`: the `display` title
+ * (Fraunces, the storybook voice of blocking screens), `body` lines, a
+ * `mono-sm` block in a `field` well (a folder, a command, a report) and
+ * large buttons, the primary first.
+ */
+
+.qrec-blocking {
+  background-color: var(--qrec-bg);
+  color: var(--qrec-text);
+  padding: 48px;
+}
+
+.qrec-blocking .qrec-blocking-content {
+  border-spacing: 16px;
+}
+
+.qrec-blocking .qrec-blocking-title {
+  font-family: var(--qrec-font-display), "Noto Serif", serif;
+  font-size: 32px;
+  font-weight: 600;
+  line-height: 38px;
+  letter-spacing: -0.32px;
+  font-variation-settings: "SOFT" 50, "WONK" 1, "opsz" 32;
+  color: var(--qrec-text);
+}
+
+.qrec-blocking .qrec-blocking-line {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--qrec-text);
+}
+
+.qrec-blocking .qrec-blocking-mono {
+  padding: 12px;
+  border-radius: 6px;
+  background-color: var(--qrec-field);
+  box-shadow: inset 0 0 0 1px var(--qrec-border);
+  color: var(--qrec-text);
+  font-family: var(--qrec-font-mono), "DejaVu Sans Mono", monospace;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+}
+
+.qrec-blocking .qrec-blocking-buttons {
+  margin-top: 8px;
+  border-spacing: 8px;
+}

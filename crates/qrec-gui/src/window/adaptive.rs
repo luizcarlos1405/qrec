@@ -15,6 +15,7 @@
 
 use adw::prelude::*;
 
+use crate::guarded;
 use crate::store::Store;
 use crate::store::local::{LayoutClass, LayoutWidth};
 
@@ -64,7 +65,7 @@ pub fn install(window: &adw::ApplicationWindow, store: &Store) {
         classes.push((breakpoint, LayoutClass { width, compact }));
     }
     let store = store.clone();
-    window.connect_current_breakpoint_notify(move |window| {
+    window.connect_current_breakpoint_notify(guarded!("window: breakpoint", move |window| {
         let class = window
             .current_breakpoint()
             .and_then(|current| {
@@ -76,7 +77,7 @@ pub fn install(window: &adw::ApplicationWindow, store: &Store) {
             .unwrap_or_default();
         tracing::debug!("layout: {class:?}");
         store.update_local(move |l| l.layout = class);
-    });
+    }));
 }
 
 #[cfg(test)]

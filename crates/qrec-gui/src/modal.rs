@@ -13,9 +13,10 @@ use std::rc::Rc;
 use gtk::prelude::*;
 use qrec_core::view::format;
 
-use crate::Ctx;
 use crate::store::local::{LocalUi, Overlay};
+use crate::widgets::button;
 use crate::window::layers::Layer;
+use crate::{Ctx, guarded};
 
 /// The text of the stub modal: title, lead, body, cancel and confirm
 /// labels.
@@ -95,10 +96,11 @@ fn follow(ctx: &Ctx, shown: &Rc<RefCell<Option<Overlay>>>, local: &LocalUi) {
     modal.set_halign(gtk::Align::Center);
     modal.set_valign(gtk::Align::Center);
     let title = gtk::Label::new(Some(&text.title));
-    title.add_css_class("title-2");
+    title.add_css_class("t-display-sm");
     title.set_xalign(0.0);
     modal.append(&title);
     let lead = gtk::Label::new(Some(&text.lead));
+    lead.add_css_class("t-body-strong");
     lead.set_wrap(true);
     lead.set_xalign(0.0);
     modal.append(&lead);
@@ -106,28 +108,36 @@ fn follow(ctx: &Ctx, shown: &Rc<RefCell<Option<Overlay>>>, local: &LocalUi) {
         let body = gtk::Label::new(Some(body));
         body.set_wrap(true);
         body.set_xalign(0.0);
-        body.add_css_class("dim-label");
         modal.append(&body);
     }
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     buttons.set_halign(gtk::Align::End);
-    let cancel = gtk::Button::with_label(&text.cancel);
-    let confirm = gtk::Button::with_label(&text.confirm);
-    confirm.add_css_class("destructive-action");
+    let keymap = ctx.store.keymap();
+    let cancel = button::labeled(&text.cancel, None, None, &keymap, button::Kind::Secondary);
+    cancel.add_css_class("lg");
+    cancel.set_focus_on_click(true);
+    let confirm = button::labeled(
+        &text.confirm,
+        None,
+        None,
+        &keymap,
+        button::Kind::Destructive,
+    );
+    confirm.set_focus_on_click(true);
     buttons.append(&cancel);
     buttons.append(&confirm);
     modal.append(&buttons);
 
     let store = ctx.store.clone();
     let closing = overlay.clone();
-    cancel.connect_clicked(move |_| {
+    cancel.connect_clicked(guarded!("modal: cancel", move |_| {
         let closing = closing.clone();
         store.update_local(move |l| {
             l.close_overlays(|o| *o == closing);
         });
-    });
+    }));
     let ctx2 = ctx.clone();
-    confirm.connect_clicked(move |_| {
+    confirm.connect_clicked(guarded!("modal: confirm", move |_| {
         let closing = overlay.clone();
         let target = closing.clone();
         ctx2.store.update_local(move |l| {
@@ -140,7 +150,7 @@ fn follow(ctx: &Ctx, shown: &Rc<RefCell<Option<Overlay>>>, local: &LocalUi) {
             }
             _ => {}
         }
-    });
+    }));
     ctx.window.open(Layer::Modal, &modal);
     cancel.grab_focus();
 }

@@ -44,9 +44,11 @@ mod imp {
 
     impl ObjectImpl for Spinner {
         fn dispose(&self) {
-            if let Some(tick) = self.tick.take() {
-                tick.remove();
-            }
+            crate::guard::run("spinner: dispose", || {
+                if let Some(tick) = self.tick.take() {
+                    tick.remove();
+                }
+            });
         }
     }
 
@@ -58,23 +60,33 @@ mod imp {
 
         fn map(&self) {
             self.parent_map();
-            let tick = self.obj().add_tick_callback(|widget, _clock| {
-                widget.queue_draw();
-                glib::ControlFlow::Continue
+            crate::guard::run("spinner: map", || {
+                let tick = crate::guard::tick(&*self.obj(), "spinner: tick", |widget, _clock| {
+                    widget.queue_draw();
+                    glib::ControlFlow::Continue
+                });
+                if let Some(old) = self.tick.replace(Some(tick)) {
+                    old.remove();
+                }
             });
-            if let Some(old) = self.tick.replace(Some(tick)) {
-                old.remove();
-            }
         }
 
         fn unmap(&self) {
-            if let Some(tick) = self.tick.take() {
-                tick.remove();
-            }
+            crate::guard::run("spinner: unmap", || {
+                if let Some(tick) = self.tick.take() {
+                    tick.remove();
+                }
+            });
             self.parent_unmap();
         }
 
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
+            crate::guard::run("spinner: snapshot", || self.draw(snapshot));
+        }
+    }
+
+    impl Spinner {
+        fn draw(&self, snapshot: &gtk::Snapshot) {
             let obj = self.obj();
             let w = obj.width() as f32;
             let h = obj.height() as f32;
@@ -120,6 +132,7 @@ impl Spinner {
     pub fn new(size: i32) -> Self {
         let spinner: Self = glib::Object::new();
         spinner.set_size(size);
+        spinner.update_property(&[gtk::accessible::Property::Label("Busy")]);
         spinner
     }
 

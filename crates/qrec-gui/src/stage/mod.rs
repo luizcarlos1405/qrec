@@ -26,6 +26,7 @@ impl Stage {
         root.set_vexpand(true);
         root.set_focusable(true);
         root.add_css_class("qrec-stub");
+        root.update_property(&[gtk::accessible::Property::Label("Stage")]);
 
         // The preview area of G§3.15: (16, 16) to (w − 16, h − 52).
         let picture = gtk::Picture::for_paintable(&ctx.media.live_paintable());

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- PLACEHOLDER for the 24 px app icon (pen w7Qg8 > uH1BD): an onion bulb
+     with a sprout and two ogre-ear trumpets. The drawn icon is exported from
+     design/qrec.pen with the pencil MCP while it is the active document
+     (G§0.6, G§3.14). The accent, accent-2 and wood tokens. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <path d="M3 13 L7 11.5 L7 15.5 Z M21 13 L17 11.5 L17 15.5 Z" fill="{{accent}}"/>
+  <circle cx="12" cy="14" r="6.5" fill="{{accent-2}}"/>
+  <path d="M12 8 C 11.5 6, 10 4.5, 8.5 4 M12 8 C 12.5 6, 14 4.5, 15.5 4.2"
+        fill="none" stroke="{{accent}}" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M9.5 10 C 8.5 12, 8.5 16, 9.5 18.5 M14.5 10 C 15.5 12, 15.5 16, 14.5 18.5"
+        fill="none" stroke="{{wood}}" stroke-width="1" stroke-linecap="round"/>
+</svg>

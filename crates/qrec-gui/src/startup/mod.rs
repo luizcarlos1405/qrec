@@ -66,7 +66,7 @@ use crate::host::Port;
 use crate::host::opener::{GuiOpener, PREVIEW_MAX};
 use crate::host::queue::{Inbound, Queue};
 use crate::store::local::StartupPhase;
-use crate::testctl;
+use crate::{guard, testctl};
 
 /// How long before the stage says "Opening <name>…".
 pub const SLOW_OPEN: Duration = Duration::from_secs(1);
@@ -739,7 +739,7 @@ impl Startup {
     /// From `activate`: the "Opening <name>…" caption after 1 s.
     pub fn begin(&self, app: &Rc<App>) {
         let weak = Rc::downgrade(app);
-        glib::timeout_add_local_once(SLOW_OPEN, move || {
+        guard::timeout_local_once(SLOW_OPEN, "startup: the slow caption", move || {
             if let Some(app) = weak.upgrade() {
                 app.ctx.store.update_local(|l| {
                     if l.startup == (StartupPhase::Opening { slow: false }) {
@@ -754,7 +754,7 @@ impl Startup {
     /// pages after the host stopped): quit with 130.
     pub fn watch_signals(&self, app: &Rc<App>) {
         let weak = Rc::downgrade(app);
-        let id = glib::timeout_add_local(Duration::from_millis(100), move || {
+        let id = guard::timeout_local(Duration::from_millis(100), "startup: signals", move || {
             let Some(app) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };

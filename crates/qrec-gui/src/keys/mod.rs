@@ -26,6 +26,7 @@ use qrec_core::time::ns_to_frame_floor;
 use qrec_core::view::notices::Notice;
 use qrec_core::{Command, Frame};
 
+use crate::guarded;
 use crate::media::MediaHub;
 use crate::store::Store;
 use actions::ActionRouter;
@@ -68,7 +69,7 @@ impl KeyRouter {
         controller.set_propagation_phase(gtk::PropagationPhase::Capture);
         let router = self.clone();
         let win = window.as_ref().downgrade();
-        controller.connect_key_pressed(move |_, keyval, _code, modifiers| {
+        controller.connect_key_pressed(guarded!("keys", move |_, keyval, _code, modifiers| {
             let Some(window) = win.upgrade() else {
                 return glib::Propagation::Proceed;
             };
@@ -78,7 +79,7 @@ impl KeyRouter {
             } else {
                 glib::Propagation::Proceed
             }
-        });
+        }));
         window.as_ref().add_controller(controller);
     }
 

@@ -18,7 +18,8 @@ use qrec_core::protocol::ToastLevel;
 use qrec_core::view::notices::{Notice, NoticeAction};
 use qrec_core::{Command, protocol::command::UiPatch};
 
-use crate::{Ctx, desktop};
+use crate::widgets::button;
+use crate::{Ctx, desktop, guard, guarded};
 
 /// How long a toast stays: `None` until dismissed (errors).
 pub fn duration(notice: &Notice) -> Option<Duration> {
@@ -113,44 +114,47 @@ impl Host {
         let title = gtk::Label::new(Some(&notice.title));
         title.set_xalign(0.0);
         title.set_wrap(true);
-        title.add_css_class("heading");
+        title.add_css_class("t-body-strong");
         text.append(&title);
         if let Some(body) = &notice.body {
             let body = gtk::Label::new(Some(body));
             body.set_xalign(0.0);
             body.set_wrap(true);
             body.set_max_width_chars(60);
+            body.add_css_class("t-body-sm");
+            body.add_css_class("muted");
             text.append(&body);
         }
         let waiting = self.state.borrow().queue.len();
         if waiting > 0 {
             let more = gtk::Label::new(Some(&format!("+{waiting}")));
-            more.add_css_class("dim-label");
+            more.add_css_class("muted");
             text.append(&more);
         }
         toast.append(&text);
+        let keymap = self.ctx.store.keymap();
         for action in notice.actions.iter().take(2) {
-            let button = gtk::Button::with_label(action.label());
-            button.set_focus_on_click(false);
+            let button = button::labeled(action.label(), None, None, &keymap, button::Kind::Flat);
+            button.add_css_class("accent-text");
             let (host, action) = (Rc::clone(self), action.clone());
-            button.connect_clicked(move |_| {
+            button.connect_clicked(guarded!("toast: action", move |_| {
                 host.run(&action);
                 host.show_next();
-            });
+            }));
             toast.append(&button);
         }
-        let close = gtk::Button::from_icon_name("window-close-symbolic");
-        close.set_focus_on_click(false);
-        close.add_css_class("flat");
-        close.update_property(&[gtk::accessible::Property::Label("Dismiss")]);
+        let close = button::icon("window-close-symbolic", "Dismiss", None, &keymap);
+        close.remove_css_class("icon-32");
+        close.add_css_class("icon-24");
+        close.set_valign(gtk::Align::Center);
         let host = Rc::clone(self);
-        close.connect_clicked(move |_| host.show_next());
+        close.connect_clicked(guarded!("toast: dismiss", move |_| host.show_next()));
         toast.append(&close);
         self.root.append(&toast);
         self.root.set_visible(true);
         if let Some(after) = duration(&notice) {
             let host = Rc::clone(self);
-            let id = glib::timeout_add_local_once(after, move || {
+            let id = guard::timeout_local_once(after, "toast: timer", move || {
                 host.state.borrow_mut().timer = None;
                 host.show_next();
             });

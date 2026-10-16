@@ -30,10 +30,8 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::glib;
 use qrec_core::view::FocusRegion;
 
-use crate::Ctx;
 use crate::bin_drawer::BinDrawer;
 use crate::blocking::BlockingPage;
 use crate::cheatsheet::CheatSheet;
@@ -49,6 +47,7 @@ use crate::stage::Stage;
 use crate::store::local::{LayoutClass, LayoutWidth, LocalUi, Overlay, StartupPhase};
 use crate::timeline::Timeline;
 use crate::toasts::ToastHost;
+use crate::{Ctx, guard, guarded};
 use layers::WindowLayers;
 
 /// The window's default size.
@@ -176,8 +175,19 @@ impl MainWindow {
         editor.add_top_bar(&header.widget());
         editor.set_content(Some(&split));
 
+        // The blocking pages' minimal header (C04 `Xba2H`): the wordmark,
+        // the folder's name, close.
         let page_header = adw::HeaderBar::new();
+        page_header.add_css_class("qrec-minimal-header");
+        let wordmark = gtk::Label::new(Some("Qrec"));
+        wordmark.add_css_class("wordmark");
+        wordmark.add_css_class("t-wordmark");
+        page_header.pack_start(&wordmark);
         page_header.set_title_widget(Some(&adw::WindowTitle::new(title, "")));
+        page_header.set_show_end_title_buttons(false);
+        page_header.set_show_start_title_buttons(false);
+        let keymap = ctx.store.keymap();
+        page_header.pack_end(&crate::widgets::button::close_window(&keymap));
         let page_slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
         page_slot.set_vexpand(true);
         let page_view = adw::ToolbarView::new();
@@ -241,28 +251,31 @@ impl MainWindow {
             .subscribe_local(move |local| apply_local(&ctx2, &parts2, local))
             .detach();
         let store = ctx.store.clone();
-        parts.split.connect_show_sidebar_notify(move |split| {
-            if split.is_collapsed() && !split.shows_sidebar() {
-                store.update_local(|l| {
-                    l.close_overlays(|o| *o == Overlay::LayersSheet);
-                });
-            }
-        });
+        parts
+            .split
+            .connect_show_sidebar_notify(guarded!("window: the sheet", move |split| {
+                if split.is_collapsed() && !split.shows_sidebar() {
+                    store.update_local(|l| {
+                        l.close_overlays(|o| *o == Overlay::LayersSheet);
+                    });
+                }
+            }));
     }
 
     /// `LocalUi.focus` follows the focus widget.
     fn follow_focus(&self, ctx: &Ctx) {
         let store = ctx.store.clone();
-        self.window.connect_focus_widget_notify(move |window| {
-            let focus = GtkWindowExt::focus(window);
-            if let Some(w) = &focus {
-                tracing::debug!("focus: {} {:?}", w.type_().name(), w.widget_name());
-            }
-            let region = focus.map_or(FocusRegion::Other, |w| focus_region(&w));
-            if store.local().focus != region {
-                store.update_local(move |l| l.focus = region);
-            }
-        });
+        self.window
+            .connect_focus_widget_notify(guarded!("window: focus", move |window| {
+                let focus = GtkWindowExt::focus(window);
+                if let Some(w) = &focus {
+                    tracing::debug!("focus: {} {:?}", w.type_().name(), w.widget_name());
+                }
+                let region = focus.map_or(FocusRegion::Other, |w| focus_region(&w));
+                if store.local().focus != region {
+                    store.update_local(move |l| l.focus = region);
+                }
+            }));
     }
 
     /// `region.next` and `region.prev` (D-10).
@@ -373,9 +386,12 @@ fn apply_local(ctx: &Ctx, parts: &Rc<Parts>, local: &LocalUi) {
             if parts.stack.visible_child_name().as_deref() != Some("page") {
                 parts.stack.set_visible_child_name("page");
                 let parts = Rc::clone(parts);
-                glib::idle_add_local_once(move || {
-                    if let Some(page) = &*parts.page.borrow() {
-                        page.focus_primary();
+                guard::idle_local_once("window: the page's focus", move || {
+                    // Cloned out first: focusing runs the window's focus
+                    // handlers, which may rebuild the page.
+                    let page = parts.page.borrow().as_ref().map(BlockingPage::focus_target);
+                    if let Some(Some(target)) = page {
+                        target.grab_focus();
                     }
                 });
             }

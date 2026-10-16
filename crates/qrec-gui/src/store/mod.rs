@@ -223,7 +223,8 @@ impl<T: ?Sized + 'static> Subscribers<T> {
     }
 
     /// Calls every subscriber with `value` (those added meanwhile wait for
-    /// the next call).
+    /// the next call). A subscriber that panics is reported and the others
+    /// still run (`guard`, G§3.12).
     pub fn emit(&self, value: &T) {
         let list: Vec<Callback<T>> = self
             .inner
@@ -233,7 +234,7 @@ impl<T: ?Sized + 'static> Subscribers<T> {
             .map(|(_, f)| Rc::clone(f))
             .collect();
         for f in list {
-            f(value);
+            crate::guard::run("a subscriber", || f(value));
         }
     }
 
