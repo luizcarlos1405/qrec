@@ -844,8 +844,11 @@ fn nothing_opens_over_the_opening_window() {
     // The header's gear (`run_binding`, as the test channel's action).
     let reply = gui.ctl(json!({"op": "action", "id": "settings.open"}));
     assert_eq!(reply["ok"], true, "{reply}");
+    // (A loaded machine may have shown X1 already: the gear waits there
+    // too.)
     let local = gui.local();
-    assert_eq!(local["startup"]["phase"], "opening", "{local}");
+    let startup = local["startup"]["phase"].clone();
+    assert!(startup == "opening" || startup == "blocked", "{local}");
     assert_eq!(local["overlays"], json!([]), "nothing opened: {local}");
     let local = gui.wait_phase("blocked", OPEN);
     assert_eq!(page_of(&local), "cliRecording", "{local}");
