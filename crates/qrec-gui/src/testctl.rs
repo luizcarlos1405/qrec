@@ -473,7 +473,9 @@ fn action(app: &App, request: &Value) -> Value {
 
 fn hints(app: &App) -> Value {
     let (items, status) = hintbar::current_items(&app.ctx);
-    json!({"items": items, "status": status})
+    let root: gtk::Widget = app.window.window.clone().upcast();
+    let (shown, cut) = hintbar::shown(&root);
+    json!({"items": items, "status": status, "shown": shown, "cut": cut})
 }
 
 fn local(app: &App) -> Value {

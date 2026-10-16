@@ -11,12 +11,18 @@
 //!
 //! [`current_items`] is what the bar renders (the test channel's `hints`
 //! op reports it): the blocking pages' hints while a page shows, nothing
-//! while the window opens.
+//! while the window opens. When the window is too narrow for every item
+//! (G§3.15's 1000 px windows), the trailing items that don't fit whole are
+//! left out ([`fitting`]): an item is never cut in half (WP7 integration:
+//! the bar used to clip them, so at 1000 px the `?` cap showed without its
+//! "All keys"); [`shown`] says what is drawn.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use gtk::glib;
 use gtk::prelude::*;
+use gtk::subclass::prelude::*;
 use qrec_core::view::blocking::BlockKind;
 use qrec_core::view::hints::{HintState, hint_bar, hint_state};
 use qrec_core::view::{HintItem, OverlayKind};
@@ -66,24 +72,21 @@ impl HintBar {
         root.set_vexpand(false);
         root.set_focusable(false);
         root.set_can_focus(false);
-        let items = gtk::Box::new(gtk::Orientation::Horizontal, 20);
+        // At narrow widths the items that don't fit whole are left out,
+        // instead of widening the window (G§3.15's 1000 px windows).
+        let items = HintItems::new(ITEM_GAP);
         items.add_css_class("hint-items");
+        items.set_widget_name(ITEMS);
         items.set_valign(gtk::Align::Center);
-        // The items clip at narrow widths instead of widening the window
-        // (no scrollbar; G§3.15's 1000 px windows).
-        let clip = gtk::ScrolledWindow::new();
-        clip.set_policy(gtk::PolicyType::External, gtk::PolicyType::Never);
-        clip.set_propagate_natural_width(true);
-        clip.set_hexpand(true);
-        clip.set_can_focus(false);
-        clip.set_child(Some(&items));
+        items.set_hexpand(true);
+        items.set_can_focus(false);
         let status = gtk::Label::new(None);
         status.add_css_class("hint-status");
         status.add_css_class("t-caption");
         status.add_css_class("muted");
         status.set_valign(gtk::Align::Center);
         status.set_ellipsize(gtk::pango::EllipsizeMode::Start);
-        root.append(&clip);
+        root.append(&items);
         root.append(&status);
         let shown: Rc<RefCell<Shown>> = Rc::default();
         let show = {
@@ -95,9 +98,7 @@ impl HintBar {
                 }
                 let (hints, text) = current.clone();
                 *shown.borrow_mut() = Some(current);
-                while let Some(child) = items.first_child() {
-                    items.remove(&child);
-                }
+                items.clear();
                 for (n, hint) in hints.iter().enumerate() {
                     items.append(&item(hint, n == 0));
                 }
@@ -114,6 +115,171 @@ impl HintBar {
 
     pub fn widget(&self) -> gtk::Widget {
         self.root.clone().upcast()
+    }
+}
+
+/// The items' container (its widget name).
+pub const ITEMS: &str = "hint-items";
+/// The gap between two items (DESIGN Hint bar: 20 px apart).
+const ITEM_GAP: i32 = 20;
+
+/// How many of the items `widths` px wide (in order, `gap` px apart) fit
+/// whole in `room` px: the first that doesn't, and every one after it, is
+/// left out (the order is the hints' priority, G§4.3).
+pub fn fitting(widths: &[i32], gap: i32, room: i32) -> usize {
+    let mut used = 0;
+    for (n, w) in widths.iter().enumerate() {
+        let need = if n == 0 { *w } else { used + gap + w };
+        if need > room {
+            return n;
+        }
+        used = need;
+    }
+    widths.len()
+}
+
+/// The labels of the items the bar draws now (whole), and whether any
+/// drawn item runs past the bar's room for them (never, as built): the test
+/// channel's `hints` op reports both. Empty without a hint bar under
+/// `root`.
+pub fn shown(root: &gtk::Widget) -> (Vec<String>, bool) {
+    let Some(items) = crate::window::find_named(root, ITEMS) else {
+        return (Vec::new(), false);
+    };
+    let room = items.width();
+    let mut labels = Vec::new();
+    let mut cut = false;
+    let mut child = items.first_child();
+    while let Some(c) = child {
+        if c.is_visible() && c.is_child_visible() && c.is_mapped() {
+            if let Some(b) = c.compute_bounds(&items) {
+                cut |= b.x() < 0.0 || f64::from(b.x() + b.width()) > f64::from(room) + 0.5;
+            }
+            // The item's label is its last child.
+            if let Some(label) = c.last_child().and_downcast::<gtk::Label>() {
+                labels.push(label.text().to_string());
+            }
+        }
+        child = c.next_sibling();
+    }
+    (labels, cut)
+}
+
+mod imp {
+    use std::cell::Cell;
+
+    use super::*;
+
+    /// The hint items in a row, `gap` px apart; the trailing ones that
+    /// don't fit whole are left out (`fitting`): not drawn, not
+    /// allocated (`child-visible` false, like a stack's hidden pages).
+    #[derive(Default)]
+    pub struct HintItems {
+        pub gap: Cell<i32>,
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for HintItems {
+        const NAME: &'static str = "QrecHintItems";
+        type Type = super::HintItems;
+        type ParentType = gtk::Widget;
+    }
+
+    impl ObjectImpl for HintItems {
+        fn dispose(&self) {
+            crate::guard::run("hint items: dispose", || {
+                while let Some(child) = self.obj().first_child() {
+                    child.unparent();
+                }
+            });
+        }
+    }
+
+    impl HintItems {
+        fn children(&self) -> Vec<gtk::Widget> {
+            let mut out = Vec::new();
+            let mut child = self.obj().first_child();
+            while let Some(c) = child {
+                child = c.next_sibling();
+                if c.should_layout() {
+                    out.push(c);
+                }
+            }
+            out
+        }
+    }
+
+    impl WidgetImpl for HintItems {
+        fn measure(&self, orientation: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
+            crate::guard::catch("hint items: measure", || {
+                let children = self.children();
+                match orientation {
+                    // As narrow as nothing (the items that don't fit are
+                    // left out), as wide as all of them by nature.
+                    gtk::Orientation::Horizontal => {
+                        let gaps = self.gap.get() * (children.len() as i32 - 1).max(0);
+                        let natural: i32 = children
+                            .iter()
+                            .map(|c| c.measure(orientation, -1).1)
+                            .sum::<i32>()
+                            + gaps;
+                        (0, natural, -1, -1)
+                    }
+                    _ => children.iter().fold((0, 0, -1, -1), |(min, nat, _, _), c| {
+                        let (m, n, _, _) = c.measure(orientation, -1);
+                        (min.max(m), nat.max(n), -1, -1)
+                    }),
+                }
+            })
+            .unwrap_or((0, 0, -1, -1))
+        }
+
+        fn size_allocate(&self, width: i32, height: i32, _baseline: i32) {
+            crate::guard::run("hint items: allocate", || {
+                let children = self.children();
+                let widths: Vec<i32> = children
+                    .iter()
+                    .map(|c| c.measure(gtk::Orientation::Horizontal, -1).1)
+                    .collect();
+                let fit = fitting(&widths, self.gap.get(), width);
+                let mut x = 0;
+                for (n, (child, w)) in children.iter().zip(&widths).enumerate() {
+                    let whole = n < fit;
+                    child.set_child_visible(whole);
+                    if whole {
+                        let at = gtk::gsk::Transform::new()
+                            .translate(&gtk::graphene::Point::new(x as f32, 0.0));
+                        child.allocate(*w, height, -1, Some(at));
+                        x += w + self.gap.get();
+                    }
+                }
+            });
+        }
+    }
+}
+
+glib::wrapper! {
+    /// The hint bar's items: a row that leaves out what doesn't fit whole.
+    pub struct HintItems(ObjectSubclass<imp::HintItems>)
+        @extends gtk::Widget,
+        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
+}
+
+impl HintItems {
+    fn new(gap: i32) -> Self {
+        let items: Self = glib::Object::new();
+        items.imp().gap.set(gap);
+        items
+    }
+
+    fn append(&self, child: &impl IsA<gtk::Widget>) {
+        child.set_parent(self);
+    }
+
+    fn clear(&self) {
+        while let Some(child) = self.first_child() {
+            child.unparent();
+        }
     }
 }
 
@@ -141,4 +307,27 @@ fn item(hint: &HintItem, first: bool) -> gtk::Box {
     item.append(&label);
     item.set_sensitive(hint.enabled);
     item
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fitting;
+
+    /// Items fit whole or not at all, in order: the first that doesn't fit
+    /// and every one after it are left out (a 1000 px window's `?` used to
+    /// show its cap without its label).
+    #[test]
+    fn trailing_items_that_dont_fit_whole_are_left_out() {
+        let widths = [60, 90, 120, 70];
+        // 60 + 20 + 90 + 20 + 120 + 20 + 70 = 400.
+        assert_eq!(fitting(&widths, 20, 400), 4);
+        assert_eq!(fitting(&widths, 20, 399), 3, "the last one, 1 px short");
+        assert_eq!(fitting(&widths, 20, 310), 3);
+        assert_eq!(fitting(&widths, 20, 309), 2);
+        assert_eq!(fitting(&widths, 20, 59), 0);
+        assert_eq!(fitting(&[], 20, 100), 0);
+        // A small item after a big one that doesn't fit stays out too: the
+        // order is the hints' priority.
+        assert_eq!(fitting(&[60, 300, 10], 20, 150), 1);
+    }
 }
