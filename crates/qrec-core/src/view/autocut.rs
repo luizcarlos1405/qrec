@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::autocut::{ClipCut, db_label};
 use crate::ids::{Frame, TakeId, TrackId};
-use crate::model::{AudioRole, Project};
+use crate::model::Project;
 use crate::protocol::command::{AutocutOverrides, AutocutPatch, ClipScope, Command, Nullable};
 use crate::protocol::reply::AutocutPlanView;
 use crate::state::State;
@@ -197,18 +197,18 @@ pub fn track_items(state: &State) -> Vec<TrackItem> {
         .collect()
 }
 
-/// The track the dropdown shows for `draft`: its own, else the project
-/// scene's first mic (what autocut uses when the setting is unset).
+/// The track the dropdown shows for `draft`: its own, else the project's
+/// setting (a draft that names no track leaves it to the setting, which
+/// may change while the page is open), else the project scene's
+/// [`default_track`](crate::autocut::default_track): what the dry run
+/// analyzes.
 pub fn shown_track(state: &State, draft: &AutocutDraft) -> Option<TrackId> {
-    draft.track.clone().or_else(|| {
-        state
-            .project
-            .scene
-            .audio
-            .iter()
-            .find(|t| t.role == AudioRole::Mic)
-            .map(|t| t.id.clone())
-    })
+    let project = &state.project;
+    draft
+        .track
+        .clone()
+        .or_else(|| project.autocut.track.clone())
+        .or_else(|| crate::autocut::default_track(&project.scene).map(|t| t.id.clone()))
 }
 
 /// What the page analyzes: the selection, or every clip.
@@ -491,8 +491,10 @@ pub fn preview_spans(plan: &AutocutPlanView, state: &State) -> Vec<AutocutPrevie
     preview_spans_for(plan, state, track.as_ref())
 }
 
-/// [`preview_spans`] on the lane of `track` (the draft's), or of each
-/// take's first mic when it is `None` (what autocut listens to then).
+/// [`preview_spans`] on the lane of the track the dry run analyzes for
+/// each clip's take: `track` (the draft's), else the setting, else the
+/// take scene's first mic, else its first track
+/// ([`choose_track`](crate::autocut::choose_track)).
 pub fn preview_spans_for(
     plan: &AutocutPlanView,
     state: &State,
@@ -517,16 +519,10 @@ pub fn preview_spans_for(
         if !cut.changes(clip) {
             continue;
         }
-        let lane = track.cloned().or_else(|| {
-            state
-                .project
-                .take(&clip.take)?
-                .scene
-                .audio
-                .iter()
-                .find(|t| t.role == AudioRole::Mic)
-                .map(|t| t.id.clone())
-        });
+        let lane = state
+            .project
+            .take(&clip.take)
+            .and_then(|take| crate::autocut::choose_track(&state.project, take, track));
         let Some(lane) = lane else {
             continue;
         };
@@ -852,6 +848,86 @@ mod tests {
             Some(TrackId::numbered(1)),
             "the first mic"
         );
+    }
+
+    /// One rule for the track autocut listens to (R77): the setting, else
+    /// the scene's first mic, else its first track. The dropdown, the
+    /// panel's "Autocut" tag, the lane's scissors and the preview's hatches
+    /// all name the track the dry run analyzes, a scene without a mic
+    /// included, and a draft that leaves the track to the setting follows
+    /// the setting.
+    #[test]
+    fn every_view_names_the_track_autocut_analyzes() {
+        let plan = AutocutPlanView {
+            clips: vec![AutocutClipView {
+                clip: id("c0a1"),
+                kept: vec![[0, 40], [60, 100]],
+                removed_frames: 20,
+                silences: 1,
+            }],
+            skipped: vec![],
+        };
+        // Every scene of one to three tracks, each a mic or system audio.
+        for n in 1..=3u32 {
+            for mics in 0..(1u32 << n) {
+                let mut builder = testkit::ProjectBuilder::new().screen_layer("L1", "DP-1");
+                for i in 0..n {
+                    let track = format!("A{}", i + 1);
+                    builder = if mics & (1 << i) != 0 {
+                        builder.mic(&track, "a.mic")
+                    } else {
+                        builder.system(&track, "a.monitor")
+                    };
+                }
+                let base = builder
+                    .take("take-0001", 100)
+                    .clip("c0a1", "take-0001", 0, 100)
+                    .build();
+                // The setting unset, or on each track.
+                let settings =
+                    std::iter::once(None).chain((1..=n).map(|i| Some(TrackId::numbered(i))));
+                for setting in settings {
+                    let mut project = base.clone();
+                    project.autocut.track = setting.clone();
+                    let state = testkit::state(project);
+                    let take = state.project.take(&TakeId::numbered(1)).unwrap();
+                    let analyzed = crate::autocut::choose_track(&state.project, take, None);
+                    assert!(analyzed.is_some(), "{n} tracks, mics {mics:b}");
+                    let case = format!("{n} tracks, mics {mics:b}, setting {setting:?}");
+                    let draft = AutocutDraft::from(&state.project);
+                    assert_eq!(
+                        shown_track(&state, &draft),
+                        analyzed,
+                        "the dropdown: {case}"
+                    );
+                    // A draft that names no track: the dry run's override
+                    // is unset, so it analyzes what the setting says.
+                    let unset = AutocutDraft {
+                        track: None,
+                        ..draft.clone()
+                    };
+                    assert_eq!(shown_track(&state, &unset), analyzed, "unset: {case}");
+                    let tagged: Vec<TrackId> =
+                        crate::view::panel::audio_rows(&state, &Default::default())
+                            .into_iter()
+                            .filter(|r| r.autocut)
+                            .map(|r| r.track)
+                            .collect();
+                    assert_eq!(Some(tagged), analyzed.clone().map(|t| vec![t]), "{case}");
+                    let scissors: Vec<TrackId> = crate::view::timeline::lanes(&state)
+                        .into_iter()
+                        .filter(|l| l.autocut)
+                        .map(|l| l.track)
+                        .collect();
+                    assert_eq!(Some(scissors), analyzed.clone().map(|t| vec![t]), "{case}");
+                    for draft in [&draft, &unset] {
+                        let spans = preview_spans_for(&plan, &state, draft.track.as_ref());
+                        assert_eq!(spans.len(), 1, "the hatch: {case}");
+                        assert_eq!(Some(&spans[0].track), analyzed.as_ref(), "{case}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

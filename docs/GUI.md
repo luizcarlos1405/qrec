@@ -2268,8 +2268,10 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
 - **As built** (WP5, 99197b5): Apply's answer is a GUI-owned success toast
   (S25 #6's copy from the reply, with Undo); a dry run's or Apply's error
   reads in the summary ("Nothing to cut" and the core's reason); the
-  summary adds a "Skipped" row when the plan skipped clips; the dropdown
-  shows the scene's first mic while `autocut.track` is null. A missing
+  summary adds a "Skipped" row when the plan skipped clips; while
+  `autocut.track` is null the dropdown, the "Autocut" tag and the hatches
+  name the track the dry run analyzes (`autocut::default_track`: the
+  scene's first mic, else its first track; review R77). A missing
   device's line replaces its meter; Change source lists the devices of
   the track's role; a layer problem's icon is `qrec-monitor-x-symbolic`
   (a screen), `dialog-error-symbolic` (another source) or

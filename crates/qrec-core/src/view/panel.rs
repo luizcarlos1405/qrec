@@ -380,9 +380,10 @@ pub struct AudioRow {
 }
 
 /// The audio rows of the scene the canvas shows. The "Autocut" tag sits on
-/// `autocut.track`, or on the scene's first mic when it is unset (the
-/// track autocut then uses). In Live mode, once the engine reported its
-/// sources, a track whose device isn't live reads "Device not found".
+/// `autocut.track`, or on the scene's first mic (else its first track)
+/// when it is unset: the track autocut then uses. In Live mode, once the
+/// engine reported its sources, a track whose device isn't live reads
+/// "Device not found".
 pub fn audio_rows(state: &State, live: &LiveSources) -> Vec<AudioRow> {
     let scene = canvas_scene(&state.project, &state.ui);
     let autocut = autocut_track(state, scene);
@@ -416,15 +417,15 @@ pub fn audio_rows(state: &State, live: &LiveSources) -> Vec<AudioRow> {
 }
 
 /// The track autocut listens to in `scene`: the project's `autocut.track`,
-/// else the scene's first mic.
+/// else the scene's [`default_track`](crate::autocut::default_track) (its
+/// first mic, else its first track).
 pub fn autocut_track(state: &State, scene: &Scene) -> Option<TrackId> {
-    state.project.autocut.track.clone().or_else(|| {
-        scene
-            .audio
-            .iter()
-            .find(|t| t.role == AudioRole::Mic)
-            .map(|t| t.id.clone())
-    })
+    state
+        .project
+        .autocut
+        .track
+        .clone()
+        .or_else(|| crate::autocut::default_track(scene).map(|t| t.id.clone()))
 }
 
 /// No `Live` status for `source` once the engine reported any (an empty

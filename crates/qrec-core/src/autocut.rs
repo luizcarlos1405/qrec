@@ -29,7 +29,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{Frame, TakeId, TrackId};
-use crate::model::{AudioRole, AudioTrack, Clip, Fps, Project, Stream, StreamKind, Take};
+use crate::model::{AudioRole, AudioTrack, Clip, Fps, Project, Scene, Stream, StreamKind, Take};
 use crate::protocol::event::Interval;
 use crate::state::AutocutParams;
 use crate::time::{NS_PER_MS, duration_label, frame_ns, ns_to_frame_ceil, ns_to_frame_floor};
@@ -263,8 +263,8 @@ fn union(silences: &[Interval]) -> Vec<Interval> {
 }
 
 /// The track that drives detection for `take`: the override, else
-/// `autocut.track`, else the take scene's first mic, else its first track.
-/// `None` when the take lacks it (the clip is skipped with a warning).
+/// `autocut.track`, else [`default_track`] of the take scene. `None` when
+/// the take lacks it (the clip is skipped with a warning).
 pub fn choose_track(
     project: &Project,
     take: &Take,
@@ -272,14 +272,20 @@ pub fn choose_track(
 ) -> Option<TrackId> {
     match override_track.or(project.autocut.track.as_ref()) {
         Some(id) => take.scene.track(id).map(|t| t.id.clone()),
-        None => take
-            .scene
-            .audio
-            .iter()
-            .find(|t| t.role == AudioRole::Mic)
-            .or_else(|| take.scene.audio.first())
-            .map(|t| t.id.clone()),
+        None => default_track(&take.scene).map(|t| t.id.clone()),
     }
+}
+
+/// The track autocut listens to in `scene` when no track is named: its
+/// first mic, else its first track. The one rule every view of it follows
+/// (the panel's "Autocut" tag, the page's "Detect silence on", the lane's
+/// scissors).
+pub fn default_track(scene: &Scene) -> Option<&AudioTrack> {
+    scene
+        .audio
+        .iter()
+        .find(|t| t.role == AudioRole::Mic)
+        .or_else(|| scene.audio.first())
 }
 
 /// The audio track (take scene) and stream autocut analyzes for clips of
