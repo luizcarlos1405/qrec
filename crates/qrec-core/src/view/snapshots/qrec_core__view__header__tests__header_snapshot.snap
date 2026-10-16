@@ -1,0 +1,421 @@
+---
+source: crates/qrec-core/src/view/header.rs
+expression: all
+---
+[
+  {
+    "case": "idle (S02)",
+    "header": {
+      "export": {
+        "enabled": true,
+        "keys": [
+          [
+            "Ctrl",
+            "E"
+          ]
+        ],
+        "percent": null,
+        "pressed": false,
+        "tooltip": "Export"
+      },
+      "layersButton": false,
+      "record": {
+        "enabled": true,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "kind": "record",
+        "tooltip": "Record"
+      },
+      "recordLine": false,
+      "subtitle": {
+        "count": "10 clips · ",
+        "duration": "00:04:06:11",
+        "kind": "clips"
+      },
+      "title": "rust-traits-talk"
+    }
+  },
+  {
+    "case": "countdown",
+    "header": {
+      "export": {
+        "enabled": false,
+        "keys": [
+          [
+            "Ctrl",
+            "E"
+          ]
+        ],
+        "percent": null,
+        "pressed": false,
+        "tooltip": "Not while recording"
+      },
+      "layersButton": false,
+      "record": {
+        "enabled": true,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "kind": "cancel",
+        "tooltip": "Cancel the countdown"
+      },
+      "recordLine": false,
+      "subtitle": {
+        "count": "10 clips · ",
+        "duration": "00:04:06:11",
+        "kind": "clips"
+      },
+      "title": "rust-traits-talk"
+    }
+  },
+  {
+    "case": "starting",
+    "header": {
+      "export": {
+        "enabled": false,
+        "keys": [
+          [
+            "Ctrl",
+            "E"
+          ]
+        ],
+        "percent": null,
+        "pressed": false,
+        "tooltip": "Not while recording"
+      },
+      "layersButton": false,
+      "record": {
+        "enabled": true,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "kind": "stop",
+        "tooltip": "Stop recording"
+      },
+      "recordLine": true,
+      "subtitle": {
+        "count": "10 clips · ",
+        "duration": "00:04:06:11",
+        "kind": "clips"
+      },
+      "title": "rust-traits-talk"
+    }
+  },
+  {
+    "case": "recording",
+    "header": {
+      "export": {
+        "enabled": false,
+        "keys": [
+          [
+            "Ctrl",
+            "E"
+          ]
+        ],
+        "percent": null,
+        "pressed": false,
+        "tooltip": "Not while recording"
+      },
+      "layersButton": false,
+      "record": {
+        "enabled": true,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "kind": "stop",
+        "tooltip": "Stop recording"
+      },
+      "recordLine": true,
+      "subtitle": {
+        "count": "10 clips · ",
+        "duration": "00:04:06:11",
+        "kind": "clips"
+      },
+      "title": "rust-traits-talk"
+    }
+  },
+  {
+    "case": "finalizing",
+    "header": {
+      "export": {
+        "enabled": false,
+        "keys": [
+          [
+            "Ctrl",
+            "E"
+          ]
+        ],
+        "percent": null,
+        "pressed": false,
+        "tooltip": "Not while recording"
+      },
+      "layersButton": false,
+      "record": {
+        "enabled": false,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "kind": "saving",
+        "tooltip": "Take 10 is finalizing"
+      },
+      "recordLine": true,
+      "subtitle": {
+        "count": "10 clips · ",
+        "duration": "00:04:06:11",
+        "kind": "clips"
+      },
+      "title": "rust-traits-talk"
+    }
+  },
+  {
+    "case": "first run (S01a)",
+    "header": {
+      "export": {
+        "enabled": false,
+        "keys": [
+          [
+            "Ctrl",
+            "E"
+          ]
+        ],
+        "percent": null,
+        "pressed": false,
+        "tooltip": "The timeline is empty"
+      },
+      "layersButton": false,
+      "record": {
+        "enabled": false,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "kind": "record",
+        "tooltip": "Add a layer or audio track first"
+      },
+      "recordLine": false,
+      "subtitle": {
+        "kind": "noClips"
+      },
+      "title": "rust-traits-talk"
+    }
+  },
+  {
+    "case": "exporting (S15b)",
+    "header": {
+      "export": {
+        "enabled": true,
+        "keys": [
+          [
+            "Ctrl",
+            "E"
+          ]
+        ],
+        "percent": 42,
+        "pressed": false,
+        "tooltip": "Exporting 42%"
+      },
+      "layersButton": false,
+      "record": {
+        "enabled": false,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "kind": "record",
+        "tooltip": "Wait for the export to finish"
+      },
+      "recordLine": false,
+      "subtitle": {
+        "count": "10 clips · ",
+        "duration": "00:04:06:11",
+        "kind": "clips"
+      },
+      "title": "rust-traits-talk"
+    }
+  },
+  {
+    "case": "exporting, panel open",
+    "header": {
+      "export": {
+        "enabled": true,
+        "keys": [
+          [
+            "Ctrl",
+            "E"
+          ]
+        ],
+        "percent": 42,
+        "pressed": true,
+        "tooltip": "Exporting 42%"
+      },
+      "layersButton": false,
+      "record": {
+        "enabled": false,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "kind": "record",
+        "tooltip": "Wait for the export to finish"
+      },
+      "recordLine": false,
+      "subtitle": {
+        "count": "10 clips · ",
+        "duration": "00:04:06:11",
+        "kind": "clips"
+      },
+      "title": "rust-traits-talk"
+    }
+  },
+  {
+    "case": "engine stuck",
+    "header": {
+      "export": {
+        "enabled": true,
+        "keys": [
+          [
+            "Ctrl",
+            "E"
+          ]
+        ],
+        "percent": null,
+        "pressed": false,
+        "tooltip": "Export"
+      },
+      "layersButton": false,
+      "record": {
+        "enabled": false,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "kind": "record",
+        "tooltip": "The capture engine is stuck (GPU driver?); restart Qrec"
+      },
+      "recordLine": false,
+      "subtitle": {
+        "count": "10 clips · ",
+        "duration": "00:04:06:11",
+        "kind": "clips"
+      },
+      "title": "rust-traits-talk"
+    }
+  },
+  {
+    "case": "qrec.json invalid",
+    "header": {
+      "export": {
+        "enabled": true,
+        "keys": [
+          [
+            "Ctrl",
+            "E"
+          ]
+        ],
+        "percent": null,
+        "pressed": false,
+        "tooltip": "Export"
+      },
+      "layersButton": false,
+      "record": {
+        "enabled": false,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "kind": "record",
+        "tooltip": "qrec.json on disk is invalid"
+      },
+      "recordLine": false,
+      "subtitle": {
+        "count": "10 clips · ",
+        "duration": "00:04:06:11",
+        "kind": "clips"
+      },
+      "title": "rust-traits-talk"
+    }
+  },
+  {
+    "case": "recovering",
+    "header": {
+      "export": {
+        "enabled": true,
+        "keys": [
+          [
+            "Ctrl",
+            "E"
+          ]
+        ],
+        "percent": null,
+        "pressed": false,
+        "tooltip": "Export"
+      },
+      "layersButton": false,
+      "record": {
+        "enabled": true,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "kind": "record",
+        "tooltip": "Record"
+      },
+      "recordLine": false,
+      "subtitle": {
+        "kind": "recovering",
+        "text": "Recovering take 7…"
+      },
+      "title": "rust-traits-talk"
+    }
+  },
+  {
+    "case": "no clips (S01b)",
+    "header": {
+      "export": {
+        "enabled": false,
+        "keys": [
+          [
+            "Ctrl",
+            "E"
+          ]
+        ],
+        "percent": null,
+        "pressed": false,
+        "tooltip": "The timeline is empty"
+      },
+      "layersButton": false,
+      "record": {
+        "enabled": true,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "kind": "record",
+        "tooltip": "Record"
+      },
+      "recordLine": false,
+      "subtitle": {
+        "kind": "noClips"
+      },
+      "title": "rust-traits-talk"
+    }
+  }
+]

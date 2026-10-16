@@ -1,1 +1,81 @@
-/* The Settings shell and its Project page. Owner: WP6. */
+/*
+ * The Settings shell and its Project page (S18b, G§4.10). Owner: WP6.
+ *
+ * 840×640, `raised`, `xl` radius, e3 and a 1 px `border`; a 56 px header
+ * with a hairline under it; rows of 60 px with hairlines; a 44 px footer.
+ */
+
+.qrec-settings {
+  border-radius: 16px;
+  background-color: var(--qrec-raised);
+  color: var(--qrec-text);
+  box-shadow: inset 0 0 0 1px var(--qrec-border), 0 20px 48px var(--qrec-shadow-e3);
+}
+
+/* "Settings", the tabs centered, "× Close [Esc]" at the right. */
+.qrec-settings .settings-header {
+  min-height: 55px;
+  padding: 0 16px 0 24px;
+  border-bottom: 1px solid var(--qrec-border);
+}
+
+.qrec-settings .settings-title {
+  color: var(--qrec-text);
+}
+
+/* The tabs: C28 with five label segments; the disabled ones (WP9's) at
+   0.45 with the tooltip "Not built yet". */
+toggle-group.settings-tabs > toggle {
+  padding: 0 12px;
+}
+
+.qrec-settings .settings-content {
+  padding: 24px 32px 0 32px;
+}
+
+/* The group header: "Canvas" over its caption. */
+.qrec-settings .settings-group {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--qrec-border);
+}
+
+.qrec-settings .settings-row {
+  min-height: 59px;
+  border-bottom: 1px solid var(--qrec-border);
+}
+
+/* Close's content box spaces itself (8 px; GtkBox would add common.css's
+   border-spacing to it). */
+.qrec-settings .settings-header button.qrec-btn > box {
+  border-spacing: 0;
+}
+
+/* The frame rates: five 44 px segments, the numbers in the mono face. */
+toggle-group.rate-switch > toggle {
+  min-width: 20px;
+  padding: 0 12px;
+  font-family: var(--qrec-font-mono), "DejaVu Sans Mono", monospace;
+  font-size: 13px;
+  font-feature-settings: "tnum" 1;
+}
+
+/* The Size dropdown reads its sizes in the mono face (C29). */
+dropdown.settings-dropdown > button {
+  font-family: var(--qrec-font-mono), "DejaVu Sans Mono", monospace;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* Only the focused widget draws the ring, not the focus chain (fields
+   ring themselves with :focus-within, common.css). */
+.qrec-settings:focus-visible:not(:focus),
+.qrec-settings :focus-visible:not(:focus):not(entry) {
+  outline: none;
+}
+
+/* "Saved in this project's ~/…/qrec.json." */
+.qrec-settings .settings-footer {
+  min-height: 43px;
+  padding: 0 24px;
+  border-top: 1px solid var(--qrec-border);
+}

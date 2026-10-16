@@ -163,8 +163,10 @@ fn the_skeleton_on_the_design_fixture() {
         header.contains(&"rust-traits-talk".to_owned()),
         "{header:?}"
     );
+    // The summary is two labels on one baseline (G§3.14): "10 clips · "
+    // and "00:04:06:11".
     assert!(
-        header.contains(&"10 clips · 00:04:06:11".to_owned()),
+        header.join("").contains("10 clips · 00:04:06:11"),
         "{header:?}"
     );
     nested.screenshot("open");
@@ -175,8 +177,10 @@ fn the_skeleton_on_the_design_fixture() {
     let gui = nested.window(0);
     gui.wait_idle();
     let header = gui.labels("region-header");
+    // The summary is two labels on one baseline (G§3.14): "11 clips · "
+    // and "00:04:06:11".
     assert!(
-        header.contains(&"11 clips · 00:04:06:11".to_owned()),
+        header.join("").contains("11 clips · 00:04:06:11"),
         "{header:?}"
     );
     nested.screenshot("split");
@@ -185,8 +189,10 @@ fn the_skeleton_on_the_design_fixture() {
     let gui = nested.window(0);
     gui.wait_idle();
     let header = gui.labels("region-header");
+    // The summary is two labels on one baseline (G§3.14): "10 clips · "
+    // and "00:04:06:11".
     assert!(
-        header.contains(&"10 clips · 00:04:06:11".to_owned()),
+        header.join("").contains("10 clips · 00:04:06:11"),
         "{header:?}"
     );
 

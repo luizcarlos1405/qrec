@@ -3,21 +3,33 @@
 //! success 5 s (8 s with actions), warning 8 s, error until dismissed; at
 //! most two actions. Owner: WP6.
 //!
-//! Until WP6 lands this is WP0b's stub: the same queue and timings in a
-//! plain box, so the window's own notices ("Not built yet", keymap
-//! problems, failed commands) and the core's toasts show.
+//! [`ToastQueue`] is the GTK-free part (timings, the queue, the actions
+//! shown, the Undo guard): an Undo (`Dispatch(Undo{..})`) stays enabled
+//! only while `history.cursor` is what it was when the toast arrived, and
+//! the core's export-done toast is dropped while the export panel shows
+//! the export's Done state.
+//!
+//! A toast is `raised`, `lg` radius, e2 with a 1 px `border`: a 20 px level
+//! icon, the `body-strong` title over a `body-sm` `muted` body (a path in
+//! the mono face, S16b), up to two flat `accent-text` actions under them,
+//! and a 24 px close button. It rises 12 px and fades in over 200 ms
+//! (expo-out) and fades out over 140 ms (ease-in); only the fades under
+//! reduced motion; at their end in test mode (G§8.4).
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::Duration;
 
+use adw::prelude::*;
 use gtk::glib;
-use gtk::prelude::*;
-use qrec_core::protocol::ToastLevel;
+use qrec_core::on_event::output::EXPORT_DONE_TITLE;
+use qrec_core::protocol::{ToastLevel, UiAction};
 use qrec_core::view::notices::{Notice, NoticeAction};
 use qrec_core::{Command, protocol::command::UiPatch};
 
+use crate::store::local::ExportPanelMode;
+use crate::theme::motion::{self, EASE_IN, EASE_OUT_EXPO};
 use crate::widgets::button;
 use crate::{Ctx, desktop, guard, guarded};
 
@@ -32,15 +44,102 @@ pub fn duration(notice: &Notice) -> Option<Duration> {
     }
 }
 
+/// The actions a toast shows: at most two (DESIGN), in order.
+pub fn shown_actions(notice: &Notice) -> &[NoticeAction] {
+    &notice.actions[..notice.actions.len().min(2)]
+}
+
+/// An action that undoes (`Dispatch(Undo{..})`): enabled only while the
+/// history hasn't moved since its toast arrived.
+pub fn is_undo(action: &NoticeAction) -> bool {
+    matches!(
+        action,
+        NoticeAction::Core(a) if matches!(&a.action, UiAction::Dispatch(cmd) if matches!(**cmd, Command::Undo { .. }))
+    )
+}
+
+/// Whether `action` of a toast that arrived at history cursor `arrived`
+/// can run at cursor `now`.
+pub fn action_enabled(action: &NoticeAction, arrived: u64, now: u64) -> bool {
+    !is_undo(action) || arrived == now
+}
+
+/// The core's export-done toast ("Layers! Like an onion. …").
+pub fn is_export_done(notice: &Notice) -> bool {
+    notice.title == EXPORT_DONE_TITLE
+}
+
+/// The body is a path a toast action names (`exports/….mp4 · 88.4 MB`,
+/// `frames/….png`): it reads in the mono face (S16b).
+pub fn body_is_path(notice: &Notice) -> bool {
+    let Some(body) = &notice.body else {
+        return false;
+    };
+    notice.actions.iter().any(|action| match action {
+        NoticeAction::Core(a) => match &a.action {
+            UiAction::OpenPath(p)
+            | UiAction::RevealPath(p)
+            | UiAction::CopyText(p)
+            | UiAction::CopyImage(p) => !p.is_empty() && body.starts_with(p.as_str()),
+            UiAction::Dispatch(_) => false,
+        },
+        _ => false,
+    })
+}
+
+/// The queue chip's text: "+2" while two toasts wait.
+pub fn chip_text(waiting: usize) -> Option<String> {
+    (waiting > 0).then(|| format!("+{waiting}"))
+}
+
+/// A toast in the queue, with the history cursor when it arrived.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Queued {
+    pub notice: Notice,
+    pub cursor: u64,
+}
+
+/// The toasts: the one shown and those waiting (GTK-free).
+#[derive(Debug, Default)]
+pub struct ToastQueue {
+    showing: Option<Queued>,
+    waiting: VecDeque<Queued>,
+}
+
+impl ToastQueue {
+    /// Adds a toast; `true` when it shows at once (nothing was showing).
+    pub fn push(&mut self, notice: Notice, cursor: u64) -> bool {
+        let queued = Queued { notice, cursor };
+        if self.showing.is_none() {
+            self.showing = Some(queued);
+            true
+        } else {
+            self.waiting.push_back(queued);
+            false
+        }
+    }
+
+    /// The shown toast goes (its time ran out, or it was dismissed or
+    /// acted on); the next one shows, if any.
+    pub fn done(&mut self) -> Option<&Queued> {
+        self.showing = self.waiting.pop_front();
+        self.showing.as_ref()
+    }
+
+    /// The toast shown now.
+    pub fn current(&self) -> Option<&Queued> {
+        self.showing.as_ref()
+    }
+
+    /// How many wait behind it (the "+N" chip).
+    pub fn waiting(&self) -> usize {
+        self.waiting.len()
+    }
+}
+
 /// The toast host (in the content layer, passive).
 pub struct ToastHost {
     root: gtk::Box,
-}
-
-struct State {
-    queue: VecDeque<Notice>,
-    showing: bool,
-    timer: Option<glib::SourceId>,
 }
 
 impl ToastHost {
@@ -49,21 +148,25 @@ impl ToastHost {
         root.set_widget_name("toast-host");
         root.set_halign(gtk::Align::Center);
         root.set_valign(gtk::Align::End);
-        root.set_margin_bottom(12);
+        root.set_margin_bottom(RISE);
         root.set_visible(false);
-        let state = Rc::new(RefCell::new(State {
-            queue: VecDeque::new(),
-            showing: false,
-            timer: None,
-        }));
         let host = Rc::new(Host {
             ctx: ctx.clone(),
             root: root.clone(),
-            state,
+            inner: RefCell::new(Inner::default()),
         });
         let receiver = Rc::clone(&host);
         ctx.store
             .subscribe_notices(move |notice| receiver.push(notice.clone()))
+            .detach();
+        // The Undo guard follows the history.
+        let follower = Rc::clone(&host);
+        ctx.store
+            .subscribe(move |change| {
+                if change.history() {
+                    follower.refresh_actions();
+                }
+            })
             .detach();
         Self { root }
     }
@@ -73,10 +176,28 @@ impl ToastHost {
     }
 }
 
+/// How far a toast rises as it comes in, and its gap above the hint bar.
+const RISE: i32 = 12;
+/// Toast in and out (DESIGN Motion).
+const IN_MS: u32 = 200;
+const OUT_MS: u32 = 140;
+
+#[derive(Default)]
+struct Inner {
+    queue: ToastQueue,
+    timer: Option<glib::SourceId>,
+    /// The toast's action buttons and the actions they run.
+    actions: Vec<(gtk::Button, NoticeAction)>,
+    /// The running in or out animation (kept alive while it plays).
+    animation: Option<adw::TimedAnimation>,
+    /// A toast is fading out: further dismissals wait for it.
+    leaving: bool,
+}
+
 struct Host {
     ctx: Ctx,
     root: gtk::Box,
-    state: Rc<RefCell<State>>,
+    inner: RefCell<Inner>,
 }
 
 impl Host {
@@ -86,80 +207,264 @@ impl Host {
             notice.title,
             notice.body.as_deref().unwrap_or_default()
         );
-        self.state.borrow_mut().queue.push_back(notice);
-        if !self.state.borrow().showing {
-            self.show_next();
+        // The export panel shows this result already (its Done state).
+        if is_export_done(&notice)
+            && self.ctx.store.local().export_panel() == Some(ExportPanelMode::Done)
+        {
+            tracing::debug!("toast: the export panel shows it; dropped");
+            return;
+        }
+        let cursor = self.ctx.store.state().history.cursor;
+        let now = self.inner.borrow_mut().queue.push(notice, cursor);
+        if now {
+            self.show_current();
+        } else {
+            self.refresh_chip();
         }
     }
 
-    fn show_next(self: &Rc<Self>) {
+    /// Builds the toast now at the queue's head (or hides the host).
+    fn show_current(self: &Rc<Self>) {
         while let Some(child) = self.root.first_child() {
             self.root.remove(&child);
         }
-        if let Some(timer) = self.state.borrow_mut().timer.take() {
+        if let Some(timer) = self.inner.borrow_mut().timer.take() {
             timer.remove();
         }
-        let next = self.state.borrow_mut().queue.pop_front();
-        let Some(notice) = next else {
-            self.state.borrow_mut().showing = false;
+        let current = self.inner.borrow().queue.current().cloned();
+        let Some(queued) = current else {
+            self.inner.borrow_mut().actions.clear();
             self.root.set_visible(false);
             return;
         };
-        self.state.borrow_mut().showing = true;
+        let waiting = self.inner.borrow().queue.waiting();
+        let (toast, actions) = self.build(&queued.notice, waiting);
+        self.inner.borrow_mut().actions = actions;
+        self.root.append(&toast);
+        self.root.set_visible(true);
+        self.refresh_actions();
+        self.animate_in(&toast);
+        if let Some(after) = duration(&queued.notice) {
+            let host = Rc::clone(self);
+            let id = guard::timeout_local_once(after, "toast: timer", move || {
+                host.inner.borrow_mut().timer = None;
+                host.dismiss();
+            });
+            self.inner.borrow_mut().timer = Some(id);
+        }
+    }
+
+    fn build(
+        self: &Rc<Self>,
+        notice: &Notice,
+        waiting: usize,
+    ) -> (gtk::Box, Vec<(gtk::Button, NoticeAction)>) {
         let toast = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        toast.add_css_class("qrec-toast-stub");
+        toast.add_css_class("qrec-toast");
+        toast.add_css_class(level_class(notice.level));
         toast.set_width_request(360);
-        let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let (icon_name, icon_class) = level_icon(notice.level);
+        let icon = gtk::Image::from_icon_name(icon_name);
+        icon.set_pixel_size(20);
+        icon.add_css_class("toast-icon");
+        icon.add_css_class(icon_class);
+        icon.set_valign(gtk::Align::Start);
+        toast.append(&icon);
+
+        let text = gtk::Box::new(gtk::Orientation::Vertical, 0);
         text.set_hexpand(true);
+        let title_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let title = gtk::Label::new(Some(&notice.title));
         title.set_xalign(0.0);
         title.set_wrap(true);
+        title.set_max_width_chars(58);
         title.add_css_class("t-body-strong");
-        text.append(&title);
-        if let Some(body) = &notice.body {
-            let body = gtk::Label::new(Some(body));
-            body.set_xalign(0.0);
-            body.set_wrap(true);
-            body.set_max_width_chars(60);
-            body.add_css_class("t-body-sm");
-            body.add_css_class("muted");
-            text.append(&body);
+        title.add_css_class("toast-title");
+        title_row.append(&title);
+        if let Some(chip) = chip_text(waiting) {
+            let more = gtk::Label::new(Some(&chip));
+            more.set_widget_name("toast-more");
+            more.add_css_class("chip");
+            more.add_css_class("neutral");
+            more.set_valign(gtk::Align::Center);
+            title_row.append(&more);
         }
-        let waiting = self.state.borrow().queue.len();
-        if waiting > 0 {
-            let more = gtk::Label::new(Some(&format!("+{waiting}")));
-            more.add_css_class("muted");
-            text.append(&more);
+        text.append(&title_row);
+        if let Some(body) = &notice.body {
+            let body_label = gtk::Label::new(Some(body));
+            body_label.set_xalign(0.0);
+            body_label.set_wrap(true);
+            body_label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+            body_label.set_lines(2);
+            body_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            body_label.add_css_class("toast-body");
+            body_label.add_css_class("muted");
+            if body_is_path(notice) {
+                body_label.add_css_class("t-mono-sm");
+                body_label.set_max_width_chars(64);
+            } else {
+                body_label.add_css_class("t-body-sm");
+                body_label.set_max_width_chars(66);
+            }
+            text.append(&body_label);
+        }
+        let keymap = self.ctx.store.keymap();
+        let mut buttons = Vec::new();
+        let shown = shown_actions(notice);
+        if !shown.is_empty() {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+            row.add_css_class("toast-actions");
+            for (n, action) in shown.iter().enumerate() {
+                let button =
+                    button::labeled(action.label(), None, None, &keymap, button::Kind::Flat);
+                button.set_widget_name(&format!("toast-action-{n}"));
+                button.add_css_class("accent-text");
+                button.add_css_class("toast-action");
+                let (host, run) = (Rc::clone(self), action.clone());
+                button.connect_clicked(guarded!("toast: action", move |_| {
+                    host.run(&run);
+                    host.dismiss();
+                }));
+                row.append(&button);
+                buttons.push((button, action.clone()));
+            }
+            text.append(&row);
         }
         toast.append(&text);
-        let keymap = self.ctx.store.keymap();
-        for action in notice.actions.iter().take(2) {
-            let button = button::labeled(action.label(), None, None, &keymap, button::Kind::Flat);
-            button.add_css_class("accent-text");
-            let (host, action) = (Rc::clone(self), action.clone());
-            button.connect_clicked(guarded!("toast: action", move |_| {
-                host.run(&action);
-                host.show_next();
-            }));
-            toast.append(&button);
-        }
+
         let close = button::icon("window-close-symbolic", "Dismiss", None, &keymap);
+        close.set_widget_name("toast-dismiss");
         close.remove_css_class("icon-32");
         close.add_css_class("icon-24");
-        close.set_valign(gtk::Align::Center);
+        close.set_valign(gtk::Align::Start);
         let host = Rc::clone(self);
-        close.connect_clicked(guarded!("toast: dismiss", move |_| host.show_next()));
+        close.connect_clicked(guarded!("toast: dismiss", move |_| host.dismiss()));
         toast.append(&close);
-        self.root.append(&toast);
-        self.root.set_visible(true);
-        if let Some(after) = duration(&notice) {
-            let host = Rc::clone(self);
-            let id = guard::timeout_local_once(after, "toast: timer", move || {
-                host.state.borrow_mut().timer = None;
-                host.show_next();
-            });
-            self.state.borrow_mut().timer = Some(id);
+        (toast, buttons)
+    }
+
+    /// The Undo guard: actions follow the history cursor.
+    fn refresh_actions(&self) {
+        let now = self.ctx.store.state().history.cursor;
+        let inner = self.inner.borrow();
+        let Some(current) = inner.queue.current() else {
+            return;
+        };
+        for (button, action) in &inner.actions {
+            button.set_sensitive(action_enabled(action, current.cursor, now));
         }
+    }
+
+    /// The "+N" chip of the toast shown follows the queue.
+    fn refresh_chip(&self) {
+        let waiting = self.inner.borrow().queue.waiting();
+        let Some(chip) = chip_text(waiting) else {
+            return;
+        };
+        let root: gtk::Widget = self.root.clone().upcast();
+        match crate::window::find_named(&root, "toast-more") {
+            Some(label) => {
+                if let Ok(label) = label.downcast::<gtk::Label>() {
+                    label.set_text(&chip);
+                }
+            }
+            None => {
+                // The title row is the text column's first child.
+                let title_row = root
+                    .first_child()
+                    .and_then(|toast| toast.first_child())
+                    .and_then(|icon| icon.next_sibling())
+                    .and_then(|text| text.first_child())
+                    .and_downcast::<gtk::Box>();
+                if let Some(row) = title_row {
+                    let more = gtk::Label::new(Some(&chip));
+                    more.set_widget_name("toast-more");
+                    more.add_css_class("chip");
+                    more.add_css_class("neutral");
+                    more.set_valign(gtk::Align::Center);
+                    row.append(&more);
+                }
+            }
+        }
+    }
+
+    /// The shown toast goes: it fades out, then the next one shows.
+    fn dismiss(self: &Rc<Self>) {
+        if self.inner.borrow().leaving {
+            return;
+        }
+        if let Some(timer) = self.inner.borrow_mut().timer.take() {
+            timer.remove();
+        }
+        let Some(toast) = self.root.first_child() else {
+            self.advance();
+            return;
+        };
+        if motion::one_shots_at_end() {
+            self.advance();
+            return;
+        }
+        self.inner.borrow_mut().leaving = true;
+        let target_toast = toast.clone();
+        let target = adw::CallbackAnimationTarget::new(move |v| {
+            guard::run("toast: out", || {
+                target_toast.set_opacity(1.0 - EASE_IN.at(v));
+            });
+        });
+        let animation = adw::TimedAnimation::new(&toast, 0.0, 1.0, OUT_MS, target);
+        animation.set_easing(adw::Easing::Linear);
+        let host = Rc::clone(self);
+        animation.connect_done(guarded!("toast: gone", move |_| {
+            host.inner.borrow_mut().leaving = false;
+            host.advance();
+        }));
+        self.replace_animation(&animation);
+        animation.play();
+    }
+
+    /// Keeps `animation` alive while it plays; one still running (a toast
+    /// dismissed while it rises) jumps to its end first.
+    fn replace_animation(&self, animation: &adw::TimedAnimation) {
+        let old = self.inner.borrow_mut().animation.replace(animation.clone());
+        if let Some(old) = old
+            && old.state() == adw::AnimationState::Playing
+        {
+            old.skip();
+        }
+    }
+
+    /// The next toast in the queue (or none).
+    fn advance(self: &Rc<Self>) {
+        self.inner.borrow_mut().queue.done();
+        self.show_current();
+    }
+
+    /// Rises 12 px and fades in (the fade only under reduced motion).
+    fn animate_in(&self, toast: &gtk::Box) {
+        if motion::one_shots_at_end() {
+            toast.set_opacity(1.0);
+            self.root.set_margin_bottom(RISE);
+            return;
+        }
+        let reduced = self.ctx.theme.motion().reduced;
+        let (target_toast, root) = (toast.clone(), self.root.clone());
+        let target = adw::CallbackAnimationTarget::new(move |v| {
+            guard::run("toast: in", || {
+                let eased = EASE_OUT_EXPO.at(v);
+                target_toast.set_opacity(eased);
+                let lift = if reduced {
+                    RISE
+                } else {
+                    (f64::from(RISE) * eased).round() as i32
+                };
+                root.set_margin_bottom(lift);
+            });
+        });
+        toast.set_opacity(0.0);
+        let animation = adw::TimedAnimation::new(toast, 0.0, 1.0, IN_MS, target);
+        animation.set_easing(adw::Easing::Linear);
+        self.replace_animation(&animation);
+        animation.play();
     }
 
     fn run(&self, action: &NoticeAction) {
@@ -191,9 +496,46 @@ impl Host {
     }
 }
 
+/// The toast's level class (`.info`, `.success`, `.warning`, `.error`).
+fn level_class(level: ToastLevel) -> &'static str {
+    match level {
+        ToastLevel::Info => "info",
+        ToastLevel::Success => "success",
+        ToastLevel::Warning => "warning",
+        ToastLevel::Error => "error",
+    }
+}
+
+/// The level's icon and its color class (DESIGN Lists: info `text`,
+/// success `success`, warning `warning-text`, error `record-text`).
+fn level_icon(level: ToastLevel) -> (&'static str, &'static str) {
+    match level {
+        ToastLevel::Info => ("dialog-information-symbolic", "info-icon"),
+        ToastLevel::Success => ("qrec-success-symbolic", "success-icon"),
+        ToastLevel::Warning => ("dialog-warning-symbolic", "warning-text"),
+        ToastLevel::Error => ("dialog-error-symbolic", "record-text"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use qrec_core::protocol::ToastAction;
+
     use super::*;
+
+    fn undo() -> NoticeAction {
+        NoticeAction::Core(ToastAction {
+            label: "Undo".into(),
+            action: UiAction::Dispatch(Box::new(Command::Undo { steps: 1 })),
+        })
+    }
+
+    fn open(path: &str) -> NoticeAction {
+        NoticeAction::Core(ToastAction {
+            label: "Open file".into(),
+            action: UiAction::OpenPath(path.into()),
+        })
+    }
 
     #[test]
     fn toast_durations() {
@@ -210,5 +552,77 @@ mod tests {
         assert_eq!(duration(&n(ToastLevel::Error)), None);
         let with_action = n(ToastLevel::Info).with_action(NoticeAction::ShowExport);
         assert_eq!(duration(&with_action), Some(Duration::from_secs(8)));
+        let success = n(ToastLevel::Success).with_action(undo());
+        assert_eq!(duration(&success), Some(Duration::from_secs(8)));
+        // An error stays even with actions.
+        let error = n(ToastLevel::Error).with_action(NoticeAction::OpenBin);
+        assert_eq!(duration(&error), None);
+    }
+
+    #[test]
+    fn one_toast_at_a_time_and_the_queue_chip() {
+        let mut queue = ToastQueue::default();
+        assert!(queue.current().is_none());
+        assert!(queue.push(Notice::new(ToastLevel::Info, "first"), 3));
+        assert!(!queue.push(Notice::new(ToastLevel::Warning, "second"), 3));
+        assert!(!queue.push(Notice::new(ToastLevel::Error, "third"), 4));
+        assert_eq!(queue.current().unwrap().notice.title, "first");
+        assert_eq!(queue.waiting(), 2);
+        assert_eq!(chip_text(queue.waiting()).as_deref(), Some("+2"));
+        assert_eq!(queue.done().unwrap().notice.title, "second");
+        assert_eq!(chip_text(queue.waiting()).as_deref(), Some("+1"));
+        let third = queue.done().unwrap();
+        assert_eq!((third.notice.title.as_str(), third.cursor), ("third", 4));
+        assert_eq!(chip_text(queue.waiting()), None);
+        assert!(queue.done().is_none());
+        assert!(queue.current().is_none());
+        // Empty again: the next toast shows at once.
+        assert!(queue.push(Notice::new(ToastLevel::Info, "again"), 5));
+    }
+
+    #[test]
+    fn at_most_two_actions_show() {
+        // The core's export-done toast has three (Copy path stays in the
+        // panel, S16b).
+        let notice = Notice::new(ToastLevel::Success, EXPORT_DONE_TITLE)
+            .with_body("exports/talk.mp4")
+            .with_action(open("exports/talk.mp4"))
+            .with_action(NoticeAction::OpenBin)
+            .with_action(NoticeAction::ShowExport);
+        let labels: Vec<&str> = shown_actions(&notice)
+            .iter()
+            .map(NoticeAction::label)
+            .collect();
+        assert_eq!(labels, ["Open file", "Open bin"]);
+        assert!(is_export_done(&notice));
+        assert!(body_is_path(&notice));
+        assert!(shown_actions(&Notice::new(ToastLevel::Info, "x")).is_empty());
+    }
+
+    #[test]
+    fn undo_stays_enabled_while_the_history_stands_still() {
+        let undo = undo();
+        assert!(is_undo(&undo));
+        assert!(action_enabled(&undo, 12, 12));
+        assert!(!action_enabled(&undo, 12, 13), "something else was done");
+        assert!(!action_enabled(&undo, 12, 11), "it was undone already");
+        let other = open("exports/talk.mp4");
+        assert!(!is_undo(&other));
+        assert!(action_enabled(&other, 12, 40));
+        assert!(action_enabled(&NoticeAction::ShowExport, 1, 2));
+    }
+
+    #[test]
+    fn path_bodies_read_in_mono() {
+        let path = "exports/rust-traits-talk-20261014-153012.mp4";
+        let done = Notice::new(ToastLevel::Success, EXPORT_DONE_TITLE)
+            .with_body(format!("{path} \u{b7} 88.4 MB"))
+            .with_action(open(path));
+        assert!(body_is_path(&done));
+        let sentence = Notice::new(ToastLevel::Info, "Recovered take 7 from the bog.")
+            .with_body("Qrec closed while it was recording. The take is in the bin.")
+            .with_action(NoticeAction::OpenBin);
+        assert!(!body_is_path(&sentence));
+        assert!(!body_is_path(&Notice::new(ToastLevel::Info, "no body")));
     }
 }

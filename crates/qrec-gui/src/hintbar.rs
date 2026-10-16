@@ -1,63 +1,56 @@
-//! The hint bar (C03, G§4.3): the keys of what can be done now, from
+//! The hint bar (C03, G§4.3, D-02): the keys of what can be done now, from
 //! `view::hints`, and the status on the right. Owner: WP6.
 //!
-//! Until WP6 lands this is WP0b's stub: the region (`region-hintbar`,
-//! 32 px, never focusable) showing [`current_items`]: `view::hints` once it
-//! returns items (WP6's core module), else a stand-in, G§4.3's Live idle
-//! list with the user's keys (so a rebound key shows: `record.toggle =
-//! "F9"` reads `[F9] Record`). The test channel's `hints` op reports the
-//! same items. WP6 keeps [`current_items`] as what its bar renders.
+//! A 32 px `surface` strip under everything (`region-hintbar`, never
+//! focusable, so it never anchors a tooltip; BRIEF S01). Items from x 12:
+//! key caps (2 px apart in a chord, 4 px between chords), 6 px, the
+//! `body-sm` label; 20 px between items. The first label is `text`, the
+//! others `muted` unless emphasized; disabled items are at 0.45. The
+//! status ("Snapping on · 1920×1080 · 30 fps") is `caption` `muted`,
+//! right-aligned at x 1588.
+//!
+//! [`current_items`] is what the bar renders (the test channel's `hints`
+//! op reports it): the blocking pages' hints while a page shows, nothing
+//! while the window opens.
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use gtk::prelude::*;
-use qrec_core::view::HintItem;
-use qrec_core::view::format;
-use qrec_core::view::hints::{hint_bar, hint_state};
+use qrec_core::view::blocking::BlockKind;
+use qrec_core::view::hints::{HintState, hint_bar, hint_state};
+use qrec_core::view::{HintItem, OverlayKind};
 
 use crate::Ctx;
-use crate::widgets::button::binding_caps;
+use crate::store::local::StartupPhase;
 use crate::widgets::keycap::{self, CapSize, CapVariant};
-
-/// G§4.3's Live idle items (binding id, label): the stand-in list.
-const STAND_IN: [(&str, &str); 8] = [
-    ("record.toggle", "Record"),
-    ("take.discard-last", "Discard last take"),
-    ("play.toggle", "Play"),
-    ("canvas.mode", "Program"),
-    ("autocut.run", "Autocut all"),
-    ("bin.toggle", "Bin"),
-    ("palette.open", "Commands"),
-    ("keys.help", "All keys"),
-];
 
 /// The hint items and the status text the bar shows now.
 pub fn current_items(ctx: &Ctx) -> (Vec<HintItem>, String) {
     let state = ctx.store.state();
     let keymap = ctx.store.keymap();
-    let facts = ctx.store.local().facts();
-    let (items, status) = hint_bar(&hint_state(&state, &facts), &state, &facts, &keymap);
-    if !items.is_empty() {
-        return (items, status);
+    let local = ctx.store.local();
+    let mut facts = local.facts();
+    // A menu or a dropdown's list open inside an overlay (Settings' Size)
+    // keeps that overlay's hints.
+    if facts.top_overlay == Some(OverlayKind::Menu)
+        && let Some(under) = local.overlays.iter().rev().nth(1)
+    {
+        facts.top_overlay = Some(under.kind());
     }
-    let items = STAND_IN
-        .iter()
-        .filter_map(|(id, label)| {
-            let caps = binding_caps(&keymap, id)?;
-            Some(HintItem {
-                keys: vec![caps],
-                label: (*label).to_owned(),
-                enabled: true,
-                emphasized: false,
-            })
-        })
-        .collect();
-    let snapping = if state.ui.snapping {
-        "Snapping on"
-    } else {
-        "Snapping off"
+    let hint = match &local.startup {
+        // The placeholder state says nothing of the project yet.
+        StartupPhase::Opening { .. } => return (Vec::new(), String::new()),
+        StartupPhase::Blocked(kind) => HintState::Blocking {
+            check_again: matches!(kind, BlockKind::MissingDeps { .. }),
+        },
+        StartupPhase::Open | StartupPhase::Closing => hint_state(&state, &facts),
     };
-    let status = format!("{snapping} · {}", format::canvas(&state.project.canvas));
-    (items, status)
+    hint_bar(&hint, &state, &facts, &keymap)
 }
+
+/// What the bar last rendered: its items and status.
+type Shown = Option<(Vec<HintItem>, String)>;
 
 /// The hint bar region (`region-hintbar`).
 pub struct HintBar {
@@ -68,12 +61,13 @@ impl HintBar {
     pub fn new(ctx: &Ctx) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 20);
         root.set_widget_name("region-hintbar");
-        root.add_css_class("qrec-stub");
+        root.add_css_class("hintbar");
         root.set_height_request(32);
         root.set_vexpand(false);
         root.set_focusable(false);
         root.set_can_focus(false);
         let items = gtk::Box::new(gtk::Orientation::Horizontal, 20);
+        items.add_css_class("hint-items");
         items.set_valign(gtk::Align::Center);
         // The items clip at narrow widths instead of widening the window
         // (no scrollbar; G§3.15's 1000 px windows).
@@ -81,14 +75,17 @@ impl HintBar {
         clip.set_policy(gtk::PolicyType::External, gtk::PolicyType::Never);
         clip.set_propagate_natural_width(true);
         clip.set_hexpand(true);
+        clip.set_can_focus(false);
         clip.set_child(Some(&items));
         let status = gtk::Label::new(None);
         status.add_css_class("hint-status");
+        status.add_css_class("t-caption");
+        status.add_css_class("muted");
         status.set_valign(gtk::Align::Center);
         status.set_ellipsize(gtk::pango::EllipsizeMode::Start);
         root.append(&clip);
         root.append(&status);
-        let shown: std::cell::RefCell<Option<(Vec<HintItem>, String)>> = Default::default();
+        let shown: Rc<RefCell<Shown>> = Rc::default();
         let show = {
             let ctx = ctx.clone();
             move || {
@@ -102,27 +99,14 @@ impl HintBar {
                     items.remove(&child);
                 }
                 for (n, hint) in hints.iter().enumerate() {
-                    let item = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-                    item.add_css_class("hint");
-                    if n == 0 {
-                        item.add_css_class("first");
-                    }
-                    if hint.emphasized {
-                        item.add_css_class("emphasized");
-                    }
-                    item.set_sensitive(hint.enabled);
-                    for chord in &hint.keys {
-                        item.append(&keycap::chord(chord, CapSize::Md, CapVariant::Plain));
-                    }
-                    item.append(&gtk::Label::new(Some(&hint.label)));
-                    items.append(&item);
+                    items.append(&item(hint, n == 0));
                 }
                 status.set_text(&text);
             }
         };
         show();
-        let show = std::rc::Rc::new(show);
-        let again = std::rc::Rc::clone(&show);
+        let show = Rc::new(show);
+        let again = Rc::clone(&show);
         ctx.store.subscribe(move |_| again()).detach();
         ctx.store.subscribe_local(move |_| show()).detach();
         Self { root }
@@ -131,4 +115,30 @@ impl HintBar {
     pub fn widget(&self) -> gtk::Widget {
         self.root.clone().upcast()
     }
+}
+
+/// One hint: its chords, then its label.
+fn item(hint: &HintItem, first: bool) -> gtk::Box {
+    let item = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    item.add_css_class("hint");
+    if first {
+        item.add_css_class("first");
+    }
+    if hint.emphasized {
+        item.add_css_class("emphasized");
+    }
+    if !hint.keys.is_empty() {
+        let chords = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        chords.set_valign(gtk::Align::Center);
+        for chord in &hint.keys {
+            chords.append(&keycap::chord(chord, CapSize::Md, CapVariant::Plain));
+        }
+        item.append(&chords);
+    }
+    let label = gtk::Label::new(Some(&hint.label));
+    label.add_css_class("hint-label");
+    label.set_valign(gtk::Align::Center);
+    item.append(&label);
+    item.set_sensitive(hint.enabled);
+    item
 }
