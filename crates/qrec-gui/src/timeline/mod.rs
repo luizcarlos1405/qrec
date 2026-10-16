@@ -1,8 +1,8 @@
 //! The timeline (S01b–S12, C14–C18): toolbar, ruler, track headers, the
 //! canvas of clips and lanes, the playhead overlay, gestures, the drop
 //! target, the clip tooltip, zoom. Owner: WP3. Registers `zoom.in`,
-//! `zoom.out`, `zoom.selection`; writes `LocalUi.{drag, viewport,
-//! fit_px_per_frame, hover_clip, trim_frame}`.
+//! `zoom.out`, `zoom.fit`, `zoom.selection`; writes `LocalUi.{drag,
+//! viewport, fit_px_per_frame, hover_clip, trim_frame}`.
 //!
 //! ```text
 //! region-timeline (TimelineRoot, 312 px; compact 232)
@@ -471,6 +471,15 @@ impl Inner {
                 }),
             );
         }
+        let me = self.me.clone();
+        self.ctx.actions.register(
+            "zoom.fit",
+            Rc::new(move || {
+                if let Some(inner) = me.upgrade() {
+                    inner.zoom_fit();
+                }
+            }),
+        );
         let me = self.me.clone();
         self.ctx.actions.register(
             "zoom.selection",
@@ -1229,6 +1238,20 @@ impl Inner {
         let playhead = self.shown_playhead(&state, now);
         self.m.borrow_mut().vm.zoom_step(zoom_in, playhead, now);
         self.after_view_change();
+    }
+
+    /// `\` and the toolbar's Fit: the view fits at once (a local zoom
+    /// still waiting is dropped); without a view, the core's own command.
+    fn zoom_fit(&self) {
+        let now = self.now();
+        if self.m.borrow_mut().vm.zoom_fit(now) {
+            self.after_view_change();
+            return;
+        }
+        let state = self.ctx.store.state();
+        if let Some(cmd) = qrec_core::keymap::command_for("zoom.fit", &state) {
+            self.ctx.store.dispatch(cmd);
+        }
     }
 
     fn zoom_selection(&self) {

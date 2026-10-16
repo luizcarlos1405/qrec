@@ -603,6 +603,32 @@ fn s12_zoom_to_c3e9() {
     assert_clean(&mut nested);
 }
 
+/// `=` then `\` within the 300 ms the zoom's `SetUi` waits (one `wtype`
+/// run): the view fits and stays fit. The core's `SetUi{zoom: Clear}`
+/// changed nothing from fit, so the waiting zoom went out after it and was
+/// saved (review).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn fit_right_after_a_zoom_wins() {
+    let mut nested = Nested::start(AREA, "fit-after-zoom", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
+    open(&mut nested, &project, Launch::default());
+    nested.keys(&["-k", "equal", "-k", "backslash"]);
+    // Past the zoom's 300 ms debounce.
+    thread::sleep(Duration::from_millis(800));
+    nested.window(0).wait_idle();
+    let ui = nested.cli_json(&project, &["status"])["data"]["ui"].clone();
+    assert_eq!(ui["zoom"], Value::Null, "{ui}");
+    let toolbar = nested.window(0).labels("timeline-toolbar");
+    assert!(
+        !toolbar
+            .iter()
+            .any(|l| l.ends_with(" px/s") || l.ends_with(" px/frame")),
+        "the readout shows a zoom: {toolbar:?}"
+    );
+    assert_clean(&mut nested);
+}
+
 // ------------------------------------------------------------- ghosts
 
 /// S04: recording with the clock at 00:02:41:12: fit includes the ghost,

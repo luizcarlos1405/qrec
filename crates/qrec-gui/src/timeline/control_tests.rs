@@ -833,3 +833,78 @@ fn thumbnails_are_made_at_the_drawn_height() {
         assert_eq!(thumb_px(ui, factor), want, "ui {ui} at {factor}");
     }
 }
+
+// ------------------------------------------------------------- fit
+
+/// R03: `\` (and the toolbar's Fit) go to the timeline's own GUI action,
+/// so a local zoom still waiting for its `SetUi` can't win over them: from
+/// fit, the core's `SetUi{zoom: Clear}` changes nothing a snapshot shows.
+#[test]
+fn fit_goes_through_the_timeline() {
+    use crate::keys::router::{KeyDecision, RouterState, decide_binding};
+    let state = testkit::design_state();
+    let keymap = qrec_core::keymap::resolve("");
+    let local = crate::store::LocalUi::default();
+    let rs = RouterState {
+        state: &state,
+        local: &local,
+        keymap: &keymap,
+        player_frame: None,
+    };
+    assert_eq!(
+        decide_binding("zoom.fit", &rs),
+        KeyDecision::Gui {
+            id: "zoom.fit".into()
+        }
+    );
+}
+
+/// `=` from fit, then `\` within the 300 ms: fit shows at once and nothing
+/// goes out (the state is at fit already); from a zoom it sends the clear.
+#[test]
+fn fit_drops_a_waiting_local_zoom() {
+    let state = testkit::design_state();
+    let (mut vm, fit, _) = setup(&state);
+    vm.zoom_step(true, 2437, ms(0));
+    assert!(vm.zoom_fit(ms(100)));
+    assert_eq!(vm.shown(ms(100)), Some(fit));
+    assert_eq!(vm.flush(&state, ms(400)), None);
+    assert!(!vm.dirty());
+    let zoomed = seconds();
+    let (mut vm, _, _) = setup(&zoomed);
+    assert!(vm.zoom_fit(ms(0)));
+    let Some(Command::SetUi { patch }) = vm.flush(&zoomed, ms(300)) else {
+        panic!("the clear goes out")
+    };
+    assert_eq!(patch.zoom, Nullable::Clear);
+    // No view (an empty timeline): nothing to fit here.
+    let mut empty = state.clone();
+    empty.project.timeline.clips.clear();
+    let mut vm = ViewModel::new(true);
+    vm.set_width(W);
+    vm.on_state(&empty, 0, ms(0));
+    assert!(!vm.zoom_fit(ms(0)));
+}
+
+/// The echo rule with a stale send: once a snapshot showed what the
+/// timeline sent, a later snapshot back at that value is someone else's
+/// (the CLI fitting while a local zoom waits): adopted, the local one
+/// dropped.
+#[test]
+fn a_send_echoed_once_is_forgotten() {
+    let zoomed = seconds();
+    let (mut vm, _, total) = setup(&zoomed);
+    // The timeline fits (`\`): the clear goes out, its echo comes back.
+    vm.zoom_fit(ms(0));
+    vm.flush(&zoomed, ms(300)).expect("the clear");
+    let mut fitted = zoomed.clone();
+    fitted.ui.zoom = None;
+    fitted.ui.scroll_px = 0.0;
+    vm.on_state(&fitted, total, ms(310));
+    // The CLI zooms; then a local zoom waits while the CLI fits again.
+    vm.on_state(&zoomed, total, ms(400));
+    vm.zoom_step(true, 2437, ms(500));
+    vm.on_state(&fitted, total, ms(600));
+    assert!(!vm.dirty(), "the CLI's fit wins");
+    assert_eq!(vm.flush(&fitted, ms(900)), None);
+}

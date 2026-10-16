@@ -568,7 +568,10 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
   `Seek`) keeps its local value until a snapshot shows that value, or a
   value it didn't send. Values it didn't send (CLI `qrec seek`, another
   widget) are adopted at once. `Store::sent()` keeps the last value sent
-  per `UiPatch` field and per `Seek`.
+  per `UiPatch` field and per `Seek`. Once a snapshot showed the sent
+  value, the timeline forgets it: a later snapshot back at it is someone
+  else's (review: the CLI's fit, while a local zoom waited, passed for the
+  timeline's own old fit).
 - **Debounces.** `SetUi{zoom, scroll_px}` 300 ms after the gesture's last
   event; `Seek` while playing at most once per second (G§3.10), while
   scrubbing at most 10 per second (D-40); player reload 100 ms; autocut
@@ -681,7 +684,12 @@ each key press, first match:
 9. `keymap::lookup(keymap, chord, ctx)`; none → propagate.
 10. GUI overrides: `export` → GUI action `export.panel`; `autocut.preview`
     → GUI action `autocut.page`; a runnable `layer.nudge-*` → the stage's
-    GUI action of that id (D-33's burst, the stage registers them; WP4).
+    GUI action of that id (D-33's burst, the stage registers them; WP4);
+    `zoom.fit` → the timeline's GUI action of that id, which fits its own
+    view (review: from fit the core's `SetUi{zoom: Clear}` changes nothing
+    a snapshot shows, so a local zoom still waiting for its `SetUi` went out
+    after it and won; the CLI and the palette's `command_for` keep the
+    command).
 11. `keymap::action_for(id, &effective_state)`, where `effective_state`
     is the snapshot with `ui.playhead` = the player's frame while playing:
     - `Run(cmd)` → pre-steps, then dispatch;
@@ -701,7 +709,7 @@ Pre-steps:
 
 `ActionRouter` (`keys/actions.rs`, WP0b): `register(id, Rc<dyn Fn()>)`,
 `run(id)`; each region registers its ids in its own constructor.
-Registered by: `zoom.in`, `zoom.out`, `zoom.selection` (WP3);
+Registered by: `zoom.in`, `zoom.out`, `zoom.fit`, `zoom.selection` (WP3);
 `settings.open` (WP6); `export.panel`, `bin.preview` (WP7);
 `autocut.page` (WP5); `region.next`, `region.prev`, `app.quit`, and
 `keys.help` and `palette.open` as the "Not built yet" toast (WP0b; WP9

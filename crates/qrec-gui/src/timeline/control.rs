@@ -240,9 +240,14 @@ impl ViewModel {
                 let changed = !ui.same(&prev);
                 let ours = self.sent.is_some_and(|s| s.same(&ui));
                 if changed && !ours {
-                    // Someone else's (`\`, the CLI): theirs wins.
+                    // Someone else's (the CLI): theirs wins.
                     self.target = Some(ui);
                     self.flush_at = None;
+                }
+                if ours {
+                    // Its echo came: a later snapshot back at this value is
+                    // someone else's.
+                    self.sent = None;
                 }
             }
         }
@@ -341,6 +346,26 @@ impl ViewModel {
         if next != view {
             self.set_view(next, now, true);
         }
+    }
+
+    /// `\` and the toolbar's Fit (the timeline's `zoom.fit`, G§3.8 step
+    /// 10): fit at once, easing, in place of a local zoom still waiting;
+    /// the `SetUi` clears the state's zoom unless it is at fit. `false`
+    /// without a view (an empty timeline).
+    pub fn zoom_fit(&mut self, now: Duration) -> bool {
+        let (Some(view), Some(fit)) = (self.target_view(), self.fit()) else {
+            return false;
+        };
+        self.set_view(
+            Viewport {
+                px_per_frame: fit,
+                scroll_px: 0.0,
+                ..view
+            },
+            now,
+            true,
+        );
+        true
     }
 
     /// `Ctrl`+wheel: ×1.25 per notch at `anchor_x`.
