@@ -238,23 +238,30 @@ impl Items<'_> {
     /// An item for bindings `ids`, enabled when any of them is (G§4.3:
     /// "a combined item when either is").
     fn bind(&mut self, ids: &[&str], label: &str) -> &mut Self {
+        self.bind_emphasized(ids, label, false)
+    }
+
+    /// `bind`, emphasized when `on` (S05b). The emphasis goes with the
+    /// item: one left out (no usable key) takes it along, it never passes
+    /// to the item before (R78).
+    fn bind_emphasized(&mut self, ids: &[&str], label: &str, on: bool) -> &mut Self {
         let enabled = ids
             .iter()
             .any(|id| hint_enabled(id, self.state, self.facts));
-        self.push_bound(ids, None, label, enabled)
+        self.push_bound(ids, None, label, enabled, on)
     }
 
     /// An item for bindings `ids` that is always enabled (`Esc` cancels a
     /// drag whatever `cancel` would do outside it, D-42).
     fn bind_on(&mut self, ids: &[&str], label: &str) -> &mut Self {
-        self.push_bound(ids, None, label, true)
+        self.push_bound(ids, None, label, true, false)
     }
 
     /// `bind` showing `prefer` when the binding still has it (`x` for
     /// remove).
     fn bind_prefer(&mut self, id: &str, prefer: &str, label: &str) -> &mut Self {
         let enabled = hint_enabled(id, self.state, self.facts);
-        self.push_bound(&[id], Some(prefer), label, enabled)
+        self.push_bound(&[id], Some(prefer), label, enabled, false)
     }
 
     fn push_bound(
@@ -263,6 +270,7 @@ impl Items<'_> {
         prefer: Option<&str>,
         label: &str,
         enabled: bool,
+        emphasized: bool,
     ) -> &mut Self {
         let keys: Vec<Vec<String>> = ids
             .iter()
@@ -274,7 +282,7 @@ impl Items<'_> {
                 keys,
                 label: label.to_owned(),
                 enabled,
-                emphasized: false,
+                emphasized,
             });
         }
         self
@@ -297,14 +305,6 @@ impl Items<'_> {
     /// A label-only item ("Release to trim").
     fn text(&mut self, label: &str) -> &mut Self {
         self.literal(&[], label, true)
-    }
-
-    /// The last item pushed is emphasized when `on`.
-    fn emphasize_last(&mut self, on: bool) -> &mut Self {
-        if let Some(last) = self.out.last_mut() {
-            last.emphasized = on;
-        }
-        self
     }
 
     /// `canvas.mode`'s label: the mode `Tab` switches to.
@@ -350,8 +350,7 @@ impl Items<'_> {
             H::LiveIdle => {
                 let landed = take_just_landed(self.state);
                 self.bind(&["record.toggle"], "Record")
-                    .bind(&["take.discard-last"], "Discard last take")
-                    .emphasize_last(landed)
+                    .bind_emphasized(&["take.discard-last"], "Discard last take", landed)
                     .bind(&["play.toggle"], "Play")
                     .bind(&["canvas.mode"], mode)
                     .bind(&["autocut.run"], "Autocut all")
@@ -1146,6 +1145,47 @@ mod tests {
             line(&items).contains(&"[Del] Remove".to_owned()),
             "{items:?}"
         );
+    }
+
+    /// S05b's emphasis goes with `[D] Discard last take`: when that item is
+    /// left out (`take.discard-last` unbound, or its `d` taken by another
+    /// binding: Q5, neither runs), nothing is emphasized. It used to land
+    /// on the item before, `[R] Record`, which the export prefix makes a
+    /// muted item drawn in the text color (R78).
+    #[test]
+    fn the_emphasis_goes_with_its_item() {
+        let landed = screens()
+            .into_iter()
+            .find(|s| s.0 == "S05b")
+            .expect("S05b")
+            .1;
+        for toml in [
+            "[bindings]\n\"take.discard-last\" = []\n",
+            "[bindings]\n\"bin.toggle\" = \"d\"\n",
+        ] {
+            let keymap = keymap::resolve(toml);
+            let (items, _) = hint_bar(&HintState::LiveIdle, &landed, &fit(), &keymap);
+            assert!(items.iter().all(|i| !i.emphasized), "{toml}: {items:?}");
+            assert_eq!(line(&items)[0], "[R] Record", "{toml}");
+            let mut exporting = landed.clone();
+            export_job(&mut exporting);
+            let (items, _) = hint_bar(&HintState::LiveIdle, &exporting, &fit(), &keymap);
+            assert_eq!(
+                line(&items)[..2],
+                ["[Ctrl][E] Show export", "[R] Record (disabled)"],
+                "{toml}"
+            );
+        }
+        // With its key the item keeps its emphasis, after the prefix too.
+        let mut exporting = landed;
+        export_job(&mut exporting);
+        let (items, _) = hint_bar(
+            &HintState::LiveIdle,
+            &exporting,
+            &fit(),
+            &keymap::resolve(""),
+        );
+        assert_eq!(line(&items)[2], "[D] Discard last take (emphasized)");
     }
 
     #[test]
