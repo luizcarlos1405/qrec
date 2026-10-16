@@ -911,14 +911,16 @@ pub const STUCK: &str = "the Program picture is stuck; restart Qrec";
      once-a-second seek) moves it (WP4).
   5. `Ended` → `Pause`, then `Seek{End}` (reverse: `Seek{Start}`).
   6. `Error` → error toast "Playback stopped" with the message; stays
-     paused.
+     paused. A bin preview's take that fails gets `take_preview.playing =
+     false` too, so the preview doesn't play straight into the failure
+     again (a toast each round, R17); the next `Space` plays it from 0.
   7. Shuttle: `L` → rate 1 → 2 → 4; `J` → −1 → −2 → −4; `K` stops. Reverse
      at 0 stops (core).
   8. Trim scrub (`LocalUi.trim_frame`) and bin preview
      (`LocalUi.take_preview`): `load(plan_ges_take(..), frame)`; when they
      end, `load(program plan, ui.playhead)`. When a bin preview plays to
-     its end the sync sets `take_preview.playing = false` (WP7 owns the
-     field). A bin preview that takes over a playing program pauses it
+     its end (or fails, step 6) the sync sets `take_preview.playing =
+     false` (WP7 owns the field). A bin preview that takes over a playing program pauses it
      (`Pause`, no seek: a playhead change ends the preview), so the core
      doesn't play under the take (R16).
   9. Ruler scrub (D-40, round 3): the timeline calls

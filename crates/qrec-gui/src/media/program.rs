@@ -28,7 +28,8 @@
 //!    except the GUI's own seek during a ruler scrub, which `scrub` drives
 //!    (D-40).
 //! 5. `Ended` → `Pause`, then `Seek{End}` (`Seek{Start}` in reverse).
-//! 6. `Error` → the error toast "Playback stopped"; the player stays paused.
+//! 6. `Error` → the error toast "Playback stopped"; the player stays paused
+//!    (a bin preview's `playing` too: the next play starts it from 0).
 //! 7. Shuttle rates come from the key router (D-44, `KeyRouter` pre-steps).
 //! 8. The trim scrub (`LocalUi.trim_frame`, S10) and the bin preview
 //!    (`LocalUi.take_preview`, D-17) load `plan_ges_take` (at the trimmed
@@ -166,7 +167,8 @@ pub struct Out {
     /// `LocalUi.playing_rate`, when it changes.
     pub rate: Option<f64>,
     pub notice: Option<Notice>,
-    /// The bin preview played to its end (`take_preview.playing` = false).
+    /// The bin preview played to its end or failed
+    /// (`take_preview.playing` = false).
     pub take_preview_ended: bool,
 }
 
@@ -637,6 +639,14 @@ impl SyncMachine {
                 if self.told_playing {
                     self.told_playing = false;
                     out.playing = Some(false);
+                }
+                if matches!(self.content, Content::Take(_)) {
+                    // A bin preview stays paused (step 6): its `playing`
+                    // would play it again at once, into the same failure,
+                    // a toast each round (R17). The next play starts it
+                    // from 0, not at the failing spot.
+                    self.take_ended = true;
+                    out.take_preview_ended = true;
                 }
                 if inp.state.runtime.playing {
                     self.ended = true;
@@ -1514,6 +1524,33 @@ mod tests {
         rig.player_idle = true;
         rig.position = 2437;
         assert_eq!(rig.sync().player, [PlayerCmd::Seek(rig.ns(2437))]);
+    }
+
+    /// R17: a bin preview whose take fails stops there (G§3.10 step 6:
+    /// "stays paused"), instead of `Play` → `Error` → `Play` with a toast
+    /// each round; the person's next `Space` tries again, from the start.
+    #[test]
+    fn a_failing_preview_stops_until_played_again() {
+        let mut rig = Rig::new(program()).loaded();
+        let take4 = TakeId::numbered(4);
+        rig.take_preview = Some((take4.clone(), true));
+        rig.sync();
+        let out = rig.event(PlayerEvent::Error {
+            message: "Internal data stream error.".into(),
+        });
+        assert!(out.notice.is_some(), "a toast");
+        assert!(out.take_preview_ended, "{out:?}");
+        assert_eq!(out.dispatch, [], "the program's playhead stays");
+        // The window's `apply`: the preview is paused now.
+        rig.take_preview = Some((take4.clone(), !out.take_preview_ended));
+        assert_eq!(rig.sync().player, [], "no Play after the error");
+        assert_eq!(rig.sync().player, []);
+        // Space: once, from the start.
+        rig.take_preview = Some((take4, true));
+        assert_eq!(
+            rig.sync().player,
+            [PlayerCmd::Seek(0), PlayerCmd::Play(1.0)]
+        );
     }
 
     #[test]
