@@ -89,6 +89,12 @@ impl Tips {
 
     fn place(&self, x: f64, y: f64) {
         self.tip.set_visible(true);
+        // Its rows changed while it was hidden, which queues no resize: its
+        // cached size is still the old content's. Measured stale, the first
+        // tooltip after a hide (a clip's after a drop's) was placed and
+        // allocated at the previous one's size for a frame ("Allocation
+        // width too small" for its 322 px times line; WP7 integration audit).
+        self.tip.queue_resize();
         let (_, natural) = self.tip.preferred_size();
         let (w, h) = (f64::from(natural.width()), f64::from(natural.height()));
         let (lw, lh) = (
