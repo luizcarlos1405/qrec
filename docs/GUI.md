@@ -895,7 +895,9 @@ pub const STUCK: &str = "the Program picture is stuck; restart Qrec";
   2. `runtime.playing` false → true: `play(LocalUi.playing_rate)` from
      `ui.playhead` (the rate is 1 unless the GUI sent the Shuttle, D-44).
      true → false: `pause()`, then `Seek{To(player_frame)}`; the rate
-     resets to 1.
+     resets to 1. Leaving Program while playing (`Tab`, D-05's record
+     start, CLI `SetCanvasMode`) is the same stop: the core turns
+     `playing` false in the snapshot that switches to Live (R21).
   3. While playing, the drawn playhead is `position_ns`;
      `Seek{To(player_frame)}` goes out every second (an own seek); the
      timeline auto-pages. "Playing" is `LocalUi.program_playing`: the

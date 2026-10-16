@@ -17,7 +17,7 @@
 //!    rate being `LocalUi.playing_rate` when the GUI's own shuttle just set
 //!    it and 1 otherwise (D-44: Space and CLI `qrec play` reset it). true →
 //!    false: `pause()`, then `Seek{To(player frame)}`; the rate goes back
-//!    to 1.
+//!    to 1. Leaving Program while playing is that stop too (R21).
 //! 3. While playing, `Seek{To(player frame)}` goes out once a second (an
 //!    own seek); a playhead the GUI didn't set that way moves the player.
 //!    `LocalUi.program_playing` says the program plays in the player (not
@@ -382,9 +382,12 @@ impl SyncMachine {
         self.preview_paused = false;
         if inp.state.ui.canvas_mode != CanvasMode::Program {
             // Live: the plan only goes stale; it loads when Program comes
-            // back. A player still going (a bin preview that ended in
-            // Live) stops.
-            if self.told_playing {
+            // back. A program that played stops as a pause does (step 2:
+            // the playhead parks at the player's frame, R21); a player
+            // still going (a bin preview that ended in Live) stops.
+            if self.playing && !now_playing && matches!(self.content, Content::Program(_)) {
+                self.stop(inp, &mut out);
+            } else if self.told_playing {
                 out.player.push(PlayerCmd::Pause);
                 self.told_playing = false;
                 out.playing = Some(false);
@@ -420,30 +423,7 @@ impl SyncMachine {
             self.auto_seek = Some((inp.now_ms, playhead));
             self.shown_frame = None;
         } else if stopped {
-            if self.told_playing {
-                out.player.push(PlayerCmd::Pause);
-                self.told_playing = false;
-                out.playing = Some(false);
-            }
-            if self.ended {
-                // `Seek{End}` (or `Start`) went out with the `Pause`.
-                self.shown_frame = None;
-            } else if self.settling {
-                // The program's load after a take hasn't landed: the
-                // player's position is still the take's. The playhead
-                // stays, and the paused player goes back to it.
-                self.shown_frame = None;
-            } else {
-                let frame = inp.player_frame();
-                out.dispatch.push(seek_to(frame));
-                self.shown_frame = Some(frame);
-                self.seen_playhead = Some(frame);
-            }
-            if inp.rate != 1.0 {
-                out.rate = Some(1.0);
-            }
-            self.ended = false;
-            self.auto_seek = None;
+            self.stop(inp, &mut out);
         } else if now_playing && self.told_playing && self.settling {
             // The program's load after a take is on its way: the player's
             // position is still the take's, so no own seek yet, and a
@@ -481,6 +461,35 @@ impl SyncMachine {
             self.seen_playhead = Some(playhead);
         }
         out
+    }
+
+    /// The program stopped playing (step 2): pause, the playhead parked at
+    /// the player's frame, the rate back to 1.
+    fn stop(&mut self, inp: &Inputs<'_>, out: &mut Out) {
+        if self.told_playing {
+            out.player.push(PlayerCmd::Pause);
+            self.told_playing = false;
+            out.playing = Some(false);
+        }
+        if self.ended {
+            // `Seek{End}` (or `Start`) went out with the `Pause`.
+            self.shown_frame = None;
+        } else if self.settling {
+            // The program's load after a take hasn't landed: the player's
+            // position is still the take's. The playhead stays, and the
+            // paused player goes back to it.
+            self.shown_frame = None;
+        } else {
+            let frame = inp.player_frame();
+            out.dispatch.push(seek_to(frame));
+            self.shown_frame = Some(frame);
+            self.seen_playhead = Some(frame);
+        }
+        if inp.rate != 1.0 {
+            out.rate = Some(1.0);
+        }
+        self.ended = false;
+        self.auto_seek = None;
     }
 
     /// The program plan in the player: loaded at once when the player held
@@ -1551,6 +1560,54 @@ mod tests {
             rig.sync().player,
             [PlayerCmd::Seek(0), PlayerCmd::Play(1.0)]
         );
+    }
+
+    /// R21: Tab to Live (or a record start from Program, D-05) while
+    /// playing stops playback as a pause does (step 2): the playhead parks
+    /// at the player's frame, not at the last once-a-second seek, and the
+    /// rate goes back to 1.
+    #[test]
+    fn leaving_program_while_playing_parks_the_playhead() {
+        let mut rig = Rig::new(program()).loaded();
+        rig.rate = 4.0;
+        rig.machine.arm_rate(rig.now);
+        assert_eq!(rig.play().player, [PlayerCmd::Play(4.0)]);
+        rig.position = 2457;
+        rig.now += 600;
+        assert_eq!(rig.sync(), Out::default(), "before the once-a-second seek");
+        // `SetCanvasMode{Live}`'s snapshot: Live, and not playing.
+        rig.state.ui.canvas_mode = CanvasMode::Live;
+        rig.state.runtime.playing = false;
+        let out = rig.sync();
+        assert_eq!(out.player, [PlayerCmd::Pause]);
+        assert_eq!(
+            out.dispatch,
+            [seek_cmd(2457)],
+            "parked at the player's frame"
+        );
+        assert_eq!(out.playing, Some(false));
+        assert_eq!(out.rate, Some(1.0));
+        // The seek's snapshot, then back to Program: the player stays.
+        rig.rate = 1.0;
+        rig.state.ui.playhead = 2457;
+        assert_eq!(rig.sync(), Out::default());
+        rig.state.ui.canvas_mode = CanvasMode::Program;
+        assert_eq!(rig.sync().player, [], "no seek back to 2437");
+    }
+
+    /// R21's guard: a bin preview's take that played on into Live stops
+    /// without its frame reaching the program's playhead.
+    #[test]
+    fn a_preview_stopped_by_live_never_moves_the_playhead() {
+        let mut rig = Rig::new(program()).loaded();
+        rig.take_preview = Some((TakeId::numbered(4), true));
+        rig.sync();
+        rig.position = 45;
+        rig.take_preview = None;
+        rig.state.ui.canvas_mode = CanvasMode::Live;
+        let out = rig.sync();
+        assert_eq!(out.player, [PlayerCmd::Pause]);
+        assert_eq!(out.dispatch, [], "no take frame in the playhead");
     }
 
     #[test]
