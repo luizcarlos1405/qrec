@@ -8,7 +8,7 @@
 //! screen: src ! caps ! appsink → bridge (I420, keepalive) → appsrc ! videoconvert ! … ! tee
 //! audio: src [! caps] ! audioconvert [! level] ! tee
 //! tee ! fakesink sync=false async=false        (always)
-//! tee ! queue ! videocrop ! compositor.sink_N   (preview, per visible layer)
+//! tee ! queue ! videoscale ! videocrop ! compositor.sink_N   (preview, per layer)
 //! the GUI's sink (GUI H-1), at the canvas fitted into its max size:
 //!   compositor ! video/x-raw,format=BGRx,PWxPH@fps ! queue leaky=downstream max-size-buffers=1
 //!     ! <sink sync=false async=false>
@@ -21,9 +21,24 @@
 //! clock; audio sources slave to it. The GUI's sink is the same element in
 //! every pipeline: the engine takes it out of a pipeline it tore down (at
 //! NULL) and puts it in the next one.
+//!
+//! **Crops never race a negotiation** (GUI D-32, D-33: a Live layer drag
+//! changes a `cover` layer's crop many times a second). A `videocrop`
+//! reads its crop once per caps transform, and a query that crossed it
+//! while the crop changed came back transformed with another crop: no
+//! common caps, and the source died "not-negotiated". So the engine thread
+//! never sets a crop: [`apply_layer`] leaves the crop (with the pad's
+//! geometry, so the two change on the same frame) in the layer's
+//! [`CropSlot`], and a probe on the `videocrop`'s sink pad applies it on the
+//! streaming thread just before the next caps event or buffer, where the
+//! element itself renegotiates in order. A `videoscale` in front (in
+//! passthrough while the sizes match) answers the source's own caps and
+//! accept-caps queries for any size, so they don't depend on the crop at
+//! all. A layout that keeps the crop moves the pad at once.
 
 use std::collections::BTreeMap;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::Sender;
 use gst::glib;
@@ -67,6 +82,93 @@ pub(super) struct PreviewLayer {
     pub source: usize,
     pub crop: gst::Element,
     pub pad: gst::Pad,
+    /// What the streaming thread applies to `crop` (and `pad`) next.
+    pub slot: Arc<Mutex<CropSlot>>,
+}
+
+/// A preview layer's crop as `videocrop` takes it: left, top, right, bottom.
+type CropPx = (u32, u32, u32, u32);
+
+/// One layout of a preview layer: its source crop and its compositor pad.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct PadLayout {
+    pub crop: CropPx,
+    pub dst: Rect,
+    pub alpha: f64,
+    pub zorder: u32,
+}
+
+/// The crop of a preview layer between the engine thread, which decides it,
+/// and the streaming thread, which applies it (module docs).
+#[derive(Debug, Default)]
+pub(super) struct CropSlot {
+    /// A layout with a new crop, waiting for the next caps event or buffer.
+    pub pending: Option<PadLayout>,
+    /// The crop the `videocrop` has.
+    pub applied: Option<CropPx>,
+}
+
+/// Sets `pad`'s geometry, opacity and z-order from `layout`.
+fn set_pad(pad: &gst::Pad, layout: &PadLayout) {
+    let _ = set_value(pad, "xpos", layout.dst.x);
+    let _ = set_value(pad, "ypos", layout.dst.y);
+    let _ = set_value(pad, "width", layout.dst.w as i32);
+    let _ = set_value(pad, "height", layout.dst.h as i32);
+    let _ = set_value(pad, "alpha", layout.alpha);
+    let _ = set_value(pad, "zorder", layout.zorder);
+}
+
+/// Sets the sides of `videocrop` that change. Every write marks the element
+/// to renegotiate (a reconfigure), so a side that keeps its value isn't
+/// written, and a layout that keeps the whole crop (a move: a drag, a
+/// nudge) never comes here ([`apply_layer`]).
+fn set_crop(crop: &gst::Element, (left, top, right, bottom): CropPx) {
+    for (name, value) in [
+        ("left", left),
+        ("top", top),
+        ("right", right),
+        ("bottom", bottom),
+    ] {
+        let value = i32::try_from(value).unwrap_or(i32::MAX);
+        if crop.property::<i32>(name) != value {
+            let _ = set_value(crop, name, value);
+        }
+    }
+}
+
+fn lock_slot(slot: &Mutex<CropSlot>) -> std::sync::MutexGuard<'_, CropSlot> {
+    slot.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Applies the slot's pending layout to `crop` and `pad`, on the streaming
+/// thread, before `videocrop` sees the next caps event or buffer.
+fn watch_crop(crop: &gst::Element, pad: &gst::Pad, slot: &Arc<Mutex<CropSlot>>) {
+    let Some(sink) = crop.static_pad("sink") else {
+        return;
+    };
+    let (crop, pad, slot) = (crop.downgrade(), pad.downgrade(), Arc::clone(slot));
+    sink.add_probe(
+        gst::PadProbeType::BUFFER | gst::PadProbeType::EVENT_DOWNSTREAM,
+        move |_, info| {
+            let caps_or_buffer = match &info.data {
+                Some(gst::PadProbeData::Buffer(_)) => true,
+                Some(gst::PadProbeData::Event(event)) => event.type_() == gst::EventType::Caps,
+                _ => false,
+            };
+            if !caps_or_buffer {
+                return gst::PadProbeReturn::Ok;
+            }
+            let pending = lock_slot(&slot).pending.take();
+            if let (Some(layout), Some(crop), Some(pad)) = (pending, crop.upgrade(), pad.upgrade())
+            {
+                set_crop(&crop, layout.crop);
+                set_pad(&pad, &layout);
+                lock_slot(&slot).applied = Some(layout.crop);
+            }
+            gst::PadProbeReturn::Ok
+        },
+    );
 }
 
 pub(super) struct Preview {
@@ -662,11 +764,15 @@ fn add_preview(live: &Live, scene: &LiveScene, ctx: &BuildCtx<'_>) -> Result<Pre
         set_value(&queue, "max-size-buffers", 1u32)?;
         set_value(&queue, "max-size-bytes", 0u32)?;
         set_value(&queue, "max-size-time", 0u64)?;
+        // Answers the source's caps queries for any size: a crop never
+        // changes their result (module docs). Passthrough at the source's
+        // size.
+        let guard = make("videoscale", &format!("{p}-guard"))?;
         let crop = make("videocrop", &format!("{p}-crop"))?;
         pipeline
-            .add_many([&queue, &crop])
+            .add_many([&queue, &guard, &crop])
             .map_err(|e| e.to_string())?;
-        queue.link(&crop).map_err(|e| e.to_string())?;
+        gst::Element::link_many([&queue, &guard, &crop]).map_err(|e| e.to_string())?;
         let tee_pad = live.sources[source]
             .tee
             .request_pad_simple("src_%u")
@@ -684,11 +790,14 @@ fn add_preview(live: &Live, scene: &LiveScene, ctx: &BuildCtx<'_>) -> Result<Pre
             .ok_or("no crop pad")?
             .link(&pad)
             .map_err(|e| format!("{e:?}"))?;
+        let slot = Arc::new(Mutex::new(CropSlot::default()));
+        watch_crop(&crop, &pad, &slot);
         let pl = PreviewLayer {
             layer: layer.clone(),
             source,
             crop,
             pad,
+            slot,
         };
         apply_layer(&pl, layer, None, z as u32 + 1, scale);
         layers.push(pl);
@@ -742,7 +851,11 @@ fn adopt_sink(
     Ok(sink)
 }
 
-/// Sets one preview layer's crop and compositor pad from its layout.
+/// One preview layer's crop and compositor pad from its layout: the pad at
+/// once while the crop stays, else both on the streaming thread before the
+/// next caps event or buffer ([`watch_crop`]). Before the pipeline starts
+/// (no streaming thread yet: a new pipeline laid out before it starts)
+/// both at once.
 fn apply_layer(
     pl: &PreviewLayer,
     layer: &Layer,
@@ -750,6 +863,26 @@ fn apply_layer(
     zorder: u32,
     scale: Scale,
 ) {
+    let layout = pad_layout(layer, size, zorder, scale);
+    let stopped = pl.crop.current_state() <= gst::State::Ready;
+    let mut slot = lock_slot(&pl.slot);
+    if stopped {
+        slot.pending = None;
+        slot.applied = Some(layout.crop);
+        drop(slot);
+        set_crop(&pl.crop, layout.crop);
+        set_pad(&pl.pad, &layout);
+    } else if slot.applied == Some(layout.crop) {
+        slot.pending = None;
+        drop(slot);
+        set_pad(&pl.pad, &layout);
+    } else {
+        slot.pending = Some(layout);
+    }
+}
+
+/// A preview layer's crop and pad from its layout and its source's size.
+fn pad_layout(layer: &Layer, size: Option<(u32, u32)>, zorder: u32, scale: Scale) -> PadLayout {
     let placement = size.and_then(|(w, h)| place(w, h, layer.crop, layer.rect, layer.fit));
     let (crop, dst) = match (size, placement) {
         (Some((w, h)), Some(p)) => (
@@ -764,38 +897,17 @@ fn apply_layer(
         // Size not known yet: no crop, the whole rect.
         _ => ((0, 0, 0, 0), layer.rect),
     };
-    let dst = scale.rect(dst);
-    let (left, top, right, bottom) = crop;
-    // Only a side that changes: every write makes `videocrop` renegotiate
-    // (reconfigure), and a crop that changes while a source's caps query
-    // crosses it (two caps transforms, each with another crop) leaves that
-    // source no caps. A move (a drag, a nudge) changes no crop.
-    for (name, value) in [
-        ("left", left),
-        ("top", top),
-        ("right", right),
-        ("bottom", bottom),
-    ] {
-        let value = i32::try_from(value).unwrap_or(i32::MAX);
-        if pl.crop.property::<i32>(name) != value {
-            let _ = set_value(&pl.crop, name, value);
-        }
-    }
     let visible = layer.visible && (size.is_none() || placement.is_some());
-    let _ = set_value(&pl.pad, "xpos", dst.x);
-    let _ = set_value(&pl.pad, "ypos", dst.y);
-    let _ = set_value(&pl.pad, "width", dst.w as i32);
-    let _ = set_value(&pl.pad, "height", dst.h as i32);
-    let _ = set_value(
-        &pl.pad,
-        "alpha",
-        if visible {
+    PadLayout {
+        crop,
+        dst: scale.rect(dst),
+        alpha: if visible {
             layer.opacity.clamp(0.0, 1.0)
         } else {
             0.0
         },
-    );
-    let _ = set_value(&pl.pad, "zorder", zorder);
+        zorder,
+    }
 }
 
 /// `#RRGGBB` → `0xFFRRGGBB`.

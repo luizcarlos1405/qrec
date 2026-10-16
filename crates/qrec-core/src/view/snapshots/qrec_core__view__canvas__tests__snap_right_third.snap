@@ -1,0 +1,63 @@
+---
+source: crates/qrec-core/src/view/canvas.rs
+expression: "json!({\"snapped\": frame, \"free\": free, \"low\": low})"
+---
+{
+  "free": {
+    "crop": {
+      "bottom": 0,
+      "left": 0,
+      "right": 0,
+      "top": 0
+    },
+    "guides": [],
+    "rect": {
+      "h": 288,
+      "w": 384,
+      "x": 1273,
+      "y": 763
+    }
+  },
+  "low": {
+    "crop": {
+      "bottom": 0,
+      "left": 0,
+      "right": 0,
+      "top": 0
+    },
+    "guides": [
+      {
+        "at": 1080.0,
+        "axis": "y",
+        "label": "Bottom edge"
+      }
+    ],
+    "rect": {
+      "h": 288,
+      "w": 384,
+      "x": 1500,
+      "y": 792
+    }
+  },
+  "snapped": {
+    "crop": {
+      "bottom": 0,
+      "left": 0,
+      "right": 0,
+      "top": 0
+    },
+    "guides": [
+      {
+        "at": 1280.0,
+        "axis": "x",
+        "label": "Right third"
+      }
+    ],
+    "rect": {
+      "h": 288,
+      "w": 384,
+      "x": 1280,
+      "y": 763
+    }
+  }
+}

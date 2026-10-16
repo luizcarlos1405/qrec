@@ -746,19 +746,20 @@ named `region-<name>`; the focused widget's nearest such ancestor).
   asked of the portal again (a retry, a take's dialog) is `AwaitingPortal`
   while the dialog is open, before its old `Dead` branch or `Refused`.
 - **`LiveControl`** (`GstCaptureEngine::control()`, `Clone`):
-  `transient_layout(Option<Scene>)` only. It lays the preview out (the
-  compositor's pads and each layer's `videocrop` crop) until the next
-  `SetLive` (any) or `None`, and never touches State. The record bins
-  record each source to its own file, never the composite, so the layout
-  itself never reaches a take; but a crop that changes while a source
-  negotiates its caps (two caps transforms, each with another crop) leaves
-  that source no caps and it dies "not-negotiated" (A§8.11), and a take
-  recording it loses that stream. The engine writes only the crop sides
-  that change (a move changes none), and a take's start doesn't make its
-  sources negotiate again (record bins link without RECONFIGURE); the
-  rest of that race is WP4's (A§8.11). The GUI sends it during a Live
-  layer drag or nudge burst (D-32, D-33) and sends `None` on cancel or
-  after a failed release.
+  `transient_layout(Option<Scene>)` only. It lays the preview out until
+  the next `SetLive` (any) or `None`, and never touches State: the
+  compositor's pads move at once; a changed `videocrop` crop goes with its
+  pad to the layer's streaming thread, which applies both before the next
+  caps event or buffer (so a Live crop shows at the source's next frame; a
+  still screen's comes with its 500 ms keepalive). A `videoscale` before
+  each `videocrop` answers the source's caps queries for any size, only
+  the crop sides that change are written, and record bins join their tee
+  without RECONFIGURE, so no crop can leave a source without caps and the
+  layout never reaches a take (A§8.11; WP4 closed the race, the stress
+  tests `transient_crops_never_lose_a_source` and
+  `takes_keep_every_stream_under_transient_crops` hammer it). The GUI sends
+  it during a Live layer drag or nudge burst (D-32, D-33) and sends `None`
+  on cancel or after a failed release.
 - **Retry** (D-50): `Msg::RetryLive` → `CaptureEngine::retry_live(out)`:
   forget refused and dead sources, rebuild. It runs on the session thread,
   ordered with `SetLive` and `StartCapture`, and is logged.

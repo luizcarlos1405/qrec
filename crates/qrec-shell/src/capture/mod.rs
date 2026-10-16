@@ -227,12 +227,14 @@ pub fn live_sources_view(statuses: &[LiveSourceStatus]) -> LiveSources {
 
 /// Lays out the live preview's layers without a `SetLive`, for a layer
 /// drag or nudge in Live mode (GUI D-32, D-33): the layout holds until the
-/// next `SetLive` (any) or a `None`. It sets the preview compositor's pads
-/// and each layer's `videocrop` crop, and never touches State; record bins
-/// record each source to its own file, so the layout itself never reaches
-/// a take. A crop that changes while a source negotiates its caps can still
-/// kill that source "not-negotiated" (and a take's stream of it; A§8.11):
-/// only the crop sides that change are written, so a move risks nothing.
+/// next `SetLive` (any) or a `None`. It moves the preview compositor's pads
+/// at once and leaves a changed `videocrop` crop to the layer's streaming
+/// thread, which applies it with the pad before the next caps event or
+/// buffer (a `videoscale` in front answers the source's caps queries for
+/// any size, and only the crop sides that change are written; A§8.11), so
+/// no crop can leave a source without caps. It never touches State; record
+/// bins record each source to its own file and join their tee without a
+/// renegotiation, so the layout never reaches a take.
 /// Cheap to clone; every call returns at once.
 ///
 /// From `GstCaptureEngine::control()`; one that isn't connected to an

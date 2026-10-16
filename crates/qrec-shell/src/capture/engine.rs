@@ -1066,11 +1066,11 @@ impl Engine {
         let generation = live.generation;
         let pipeline = live.pipeline.clone();
         self.live = Some(live);
-        // Before it starts: a crop that changes while a source's first caps
-        // query crosses its `videocrop` (two caps transforms, each with
-        // another crop) leaves no common caps, and the source dies
-        // "not-negotiated". The GUI's sink (`async=false`) lets the
-        // pipeline reach PLAYING before its sources negotiated.
+        // Before it starts, when crops are set at once (once it streams,
+        // a changed crop waits for each layer's streaming thread, live.rs),
+        // so the first frames are laid out at the expected sizes. The GUI's
+        // sink (`async=false`) lets the pipeline reach PLAYING before its
+        // sources negotiated.
         self.apply_layout();
         if let Err(message) = self.start_pipeline(&pipeline, generation) {
             let source = self.collect_start_error(generation);

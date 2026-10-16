@@ -1,0 +1,26 @@
+---
+source: crates/qrec-core/src/view/canvas.rs
+expression: "json!({\"countdown\": c, \"badges\": badges})"
+---
+{
+  "badges": [
+    {
+      "kind": "starting",
+      "take": "take-0010"
+    },
+    {
+      "elapsedNs": 161400000000,
+      "kind": "recording",
+      "take": "take-0010"
+    },
+    {
+      "kind": "saving",
+      "take": "take-0010"
+    }
+  ],
+  "countdown": {
+    "digit": 3,
+    "sweep": 1.0,
+    "take": "take-0010"
+  }
+}

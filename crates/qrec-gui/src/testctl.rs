@@ -19,7 +19,7 @@
 //!
 //! | op | reply |
 //! | --- | --- |
-//! | `waitIdle` | `{"ok":true,"rev":R}` once the previews, the player and the io worker are idle (checked before the queue: what they send is queued before they say so), the queue is empty, the window's requests are answered, no source awaits the portal, the window isn't opening, and a frame was drawn after that |
+//! | `waitIdle` | `{"ok":true,"rev":R}` once the previews, the player and the io worker are idle (checked before the queue: what they send is queued before they say so), the queue is empty, the window's requests are answered, no source awaits the portal, the window isn't opening, the stage is idle (no program reload due; in Live, the picture drew its live sources: `media::live`), and a frame was drawn after that |
 //! | `regions` | `{"regions":{"<name>":[x,y,w,h],…}}`: every `region-*` widget and named part (G§8.4), window coordinates; `names` adds widgets by name |
 //! | `labels` | the text of every visible label under the widget `name` (default: the window) |
 //! | `dispatch` | `Store::dispatch` of `command` (`confirmed`: as confirmed), `{"ok":true}` at once |
@@ -311,6 +311,9 @@ fn busy(app: &App) -> Vec<String> {
     {
         why.push("the portal".to_owned());
     }
+    // The stage's own (WP4): the live picture's first frames in Live, a
+    // program reload still due.
+    why.extend(crate::stage::busy());
     why
 }
 

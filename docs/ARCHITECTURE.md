@@ -1949,22 +1949,30 @@ pipeline first. Paths in the plan are joined with the project dir.
   else the last one that source (its whole spec: another mode or device
   misses it) delivered; a source that dies before it negotiated forgets
   it, so a crop sized for larger frames than the new ones (which leaves no
-  caps) is never used twice. A `videocrop` whose crop changes while a
-  source's first caps query crosses it answers no caps, and that source
-  dies "not-negotiated" (the sink's `async=false` lets the pipeline reach
-  PLAYING before its sources negotiated). Only crop sides that change are
-  written, and record bins link without RECONFIGURE, so a take's start
-  doesn't make its sources query their caps again. Still open (WP4): the
-  engine sets crops from its own thread while the pipeline streams (a
-  first build's `SourceSize`, layout changes, transient layouts during
-  drags), and one that lands inside a source's negotiation can still lose
-  that source (and a take recording it) the same way; a crop in the
-  compositor pad (`converter-config`'s source rectangle) or one set from
-  the streaming thread would not.
+  caps) is never used twice.
+- **Crops never race a negotiation.** A `videocrop` reads its crop once
+  per caps transform, so a crop that changed while a source's caps query
+  crossed it (two transforms, each with another crop) left no common caps
+  and the source died "not-negotiated", and a take recording it lost that
+  stream. So each preview layer is `queue ! videoscale ! videocrop ! pad`:
+  the `videoscale` (passthrough while the sizes match) answers the source's
+  caps and accept-caps queries for any size, whatever the crop. While the
+  pipeline streams, the engine thread never sets a crop: a layout that
+  changes one leaves it, with the pad's geometry, in the layer's slot,
+  and a probe on the `videocrop`'s sink applies both on the streaming
+  thread before the next caps event or buffer (a still screen: at its
+  500 ms keepalive); a layout that keeps the crop moves the pad at once.
+  Before the pipeline starts (a rebuild is laid out first) both are set at
+  once. Only the crop sides that change are written (each write makes the
+  element renegotiate), and record bins link to their tee without
+  RECONFIGURE, so a take's start doesn't make its sources query their caps
+  again. Tests: `transient_crops_never_lose_a_source` (layouts every
+  millisecond through rebuilds) and `takes_keep_every_stream_under_transient_crops`
+  (takes under the same hammer).
 - **`LiveControl`** (`control()`): `transient_layout(Some(scene))` lays the
-  preview out (pads and crops) from that scene's layers, without a
-  rebuild, until the next `SetLive` (any) or `None` (D-32, D-33). Preview
-  only, but a crop it changes falls under the race above.
+  preview out (pads at once, changed crops on the streaming thread) from
+  that scene's layers, without a rebuild, until the next `SetLive` (any)
+  or `None` (D-32, D-33). Preview only: it never reaches a take.
 - **Left out**: a screen the portal refused, or a source that failed to
   start, stays out of the live pipeline, which runs with the rest, until
   the scene's sources change (a layout change, or Program mode and back,
