@@ -3,9 +3,10 @@ source: crates/qrec-core/src/view/export.rs
 expression: panel
 ---
 {
-  "lead": "ffmpeg stopped while rendering clip 3/9 (take 3, c1b2). Nothing was written to exports/.",
+  "lead": "ffmpeg stopped while rendering clip 3/10 (take 3, c1b2). Nothing was written to exports/.",
   "hint": "VA-API couldn't start. Try Settings › Recording › Encoder: x264.",
   "at": "Failed at 37%",
+  "fraction": 37,
   "stderrTail": [
     "ffmpeg version 7.1 Copyright (c) 2000-2024 the FFmpeg developers",
     "Input #0, matroska,webm, from 'takes/take-0003/L1-screen-DP-4.mkv':",

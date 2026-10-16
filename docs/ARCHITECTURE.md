@@ -336,8 +336,9 @@ pub enum JobKind {
               targets: Vec<AutocutTarget>, params: AutocutParams,
               dry_run: bool, pending: BTreeSet<SilenceKey>, ready: bool },
     Export { out: String, files: BTreeSet<String>, total_frames: u64,
-             seg_frames: Vec<u64>, seg_done: Vec<u64>, stitch_total_ns: u64, stitch_done_ns: u64,
-             stitching: bool },
+             seg_frames: Vec<u64>, seg_done: Vec<u64>,
+             seg_clips: Vec<Vec<u64>> /* each segment's timeline clips as frame counts, A§5.8; serde default */,
+             stitch_total_ns: u64, stitch_done_ns: u64, stitching: bool },
     FrameSave { out: String, files: BTreeSet<String> },
     Purge { takes: Vec<TakeId> },
 }
@@ -1004,7 +1005,11 @@ its own plan (a snapshot), so editing continues during an export
 (SPEC §13.1). Export progress = `0.9·Σseg_done/total + 0.1·stitch`,
 ETA from `ctx.now − started`, `label` "Rendering clip 4/12" / "Stitching"
 (`on_event::output::export_progress_view`, which a window also applies to
-the jobs of another host's `hello`).
+the jobs of another host's `hello`). The label counts the timeline's
+clips, not the segments: a render unit joins continuous clips (A§9.3), so
+the job keeps each segment's clips as their frame counts (`seg_clips`) and
+"clip k" is the clips rendered whole plus one; a job without `seg_clips`
+counts segments.
 `RequesterGone`: clear `job.req`; in Headless/Cli hosts cancel the jobs that
 requester started if no other requester waits (exports and frame saves are
 cancelled, autocut analysis dropped, a purge finishes); never stop a

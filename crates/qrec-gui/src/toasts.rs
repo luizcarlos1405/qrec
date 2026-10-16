@@ -6,8 +6,10 @@
 //! [`ToastQueue`] is the GTK-free part (timings, the queue, the actions
 //! shown, the Undo guard): an Undo (`Dispatch(Undo{..})`) stays enabled
 //! only while `history.cursor` is what it was when the toast arrived, and
-//! the core's export-done toast is dropped while the export panel shows
-//! the export's Done state.
+//! the core's export-done and export-failed toasts are dropped while the
+//! export panel shows that export's Done or Failed state
+//! ([`shown_by_the_panel`]; the failed one since the WP7 integration: S17
+//! draws no toast).
 //!
 //! A toast is `raised`, `lg` radius, e2 with a 1 px `border`: a 20 px level
 //! icon, the `body-strong` title over a `body-sm` `muted` body (a path in
@@ -23,7 +25,7 @@ use std::time::Duration;
 
 use adw::prelude::*;
 use gtk::glib;
-use qrec_core::on_event::output::EXPORT_DONE_TITLE;
+use qrec_core::on_event::output::{EXPORT_DONE_TITLE, EXPORT_FAILED_TITLE};
 use qrec_core::protocol::{ToastLevel, UiAction};
 use qrec_core::view::notices::{Notice, NoticeAction};
 use qrec_core::{Command, protocol::command::UiPatch};
@@ -67,6 +69,23 @@ pub fn action_enabled(action: &NoticeAction, arrived: u64, now: u64) -> bool {
 /// The core's export-done toast ("Layers! Like an onion. …").
 pub fn is_export_done(notice: &Notice) -> bool {
     notice.title == EXPORT_DONE_TITLE
+}
+
+/// The core's export-failed toast ("Export failed", an error).
+pub fn is_export_failed(notice: &Notice) -> bool {
+    notice.title == EXPORT_FAILED_TITLE && notice.level == ToastLevel::Error
+}
+
+/// Whether the export panel open in `panel` shows what `notice` says (its
+/// own export's Done or Failed page: it answers before the core's toast
+/// comes), so the toast is dropped. A closed panel, or one showing
+/// Running or Setup, lets it through (S16b, a CLI export).
+pub fn shown_by_the_panel(notice: &Notice, panel: Option<ExportPanelMode>) -> bool {
+    match panel {
+        Some(ExportPanelMode::Done) => is_export_done(notice),
+        Some(ExportPanelMode::Failed) => is_export_failed(notice),
+        _ => false,
+    }
 }
 
 /// The body is a path a toast action names (`exports/….mp4 · 88.4 MB`,
@@ -207,10 +226,9 @@ impl Host {
             notice.title,
             notice.body.as_deref().unwrap_or_default()
         );
-        // The export panel shows this result already (its Done state).
-        if is_export_done(&notice)
-            && self.ctx.store.local().export_panel() == Some(ExportPanelMode::Done)
-        {
+        // The export panel shows this result already (its Done or Failed
+        // state).
+        if shown_by_the_panel(&notice, self.ctx.store.local().export_panel()) {
             tracing::debug!("toast: the export panel shows it; dropped");
             return;
         }
@@ -597,6 +615,31 @@ mod tests {
         assert!(is_export_done(&notice));
         assert!(body_is_path(&notice));
         assert!(shown_actions(&Notice::new(ToastLevel::Info, "x")).is_empty());
+    }
+
+    /// S16 and S17: the panel's Done or Failed page shows the export's end,
+    /// so the core's toast for it is dropped; with the panel closed, or
+    /// still on Running (a CLI export), it shows (S16b).
+    #[test]
+    fn the_panels_own_ending_drops_its_toast() {
+        let done = Notice::new(ToastLevel::Success, EXPORT_DONE_TITLE);
+        let failed = Notice::new(ToastLevel::Error, EXPORT_FAILED_TITLE);
+        let other = Notice::new(ToastLevel::Error, "Couldn't open exports/a.mp4");
+        assert!(shown_by_the_panel(&done, Some(ExportPanelMode::Done)));
+        assert!(shown_by_the_panel(&failed, Some(ExportPanelMode::Failed)));
+        assert!(!shown_by_the_panel(&failed, Some(ExportPanelMode::Done)));
+        assert!(!shown_by_the_panel(&done, Some(ExportPanelMode::Failed)));
+        for panel in [
+            None,
+            Some(ExportPanelMode::Running),
+            Some(ExportPanelMode::Setup),
+        ] {
+            assert!(!shown_by_the_panel(&done, panel), "{panel:?}");
+            assert!(!shown_by_the_panel(&failed, panel), "{panel:?}");
+        }
+        assert!(!shown_by_the_panel(&other, Some(ExportPanelMode::Failed)));
+        let warning = Notice::new(ToastLevel::Warning, EXPORT_FAILED_TITLE);
+        assert!(!is_export_failed(&warning), "only the core's error toast");
     }
 
     #[test]

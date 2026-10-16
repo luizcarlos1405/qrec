@@ -1125,12 +1125,41 @@ pub fn token_rgb(theme: &str, name: &str) -> [u8; 3] {
 /// 1600×1000 shot isn't black: the fake sources' bars show (a pipeline the
 /// engine just rebuilt draws black until its sources deliver, G§3.18).
 pub fn assert_live_picture_drawn(png: &Path) {
-    let grey = mean_grey(png, [128, 64, 960, 540]);
+    assert_live_picture_drawn_at(png, [128.0, 64.0, 960.0, 540.0]);
+}
+
+/// The live picture at `rect` (a preview's window rect, in the shot's px)
+/// isn't black: the adaptive layouts' preview (G§3.15).
+pub fn assert_live_picture_drawn_at(png: &Path, [x, y, w, h]: [f64; 4]) {
+    let px = |v: f64| v.round().max(0.0) as u32;
+    let grey = mean_grey(png, [px(x), px(y), px(w), px(h)]);
     assert!(
         grey > 40.0,
-        "the live picture is black (mean grey {grey:.1}): {}",
+        "the live picture at {:?} is black (mean grey {grey:.1}): {}",
+        [x, y, w, h],
         png.display()
     );
+}
+
+/// The heights the window's preview cache scaled its strip images and
+/// frames to (`scale=-2:<h>` of each ffmpeg run in the project's
+/// `.qrec/logs/preview.log`): 72 px × the window's scale factor (G§3.11).
+pub fn preview_heights(project: &Path) -> BTreeSet<u32> {
+    let log = fs::read_to_string(project.join(".qrec/logs/preview.log")).unwrap_or_default();
+    log.lines()
+        .filter(|l| l.contains("] $ ffmpeg "))
+        .filter_map(|l| {
+            let rest = &l[l.find("scale=-2:")? + "scale=-2:".len()..];
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse().ok()
+        })
+        .collect()
+}
+
+/// The window's whole scale factor on an output of `scale` (GTK rounds a
+/// fractional scale up and the compositor scales the buffer down).
+pub fn scale_factor(scale: f64) -> u32 {
+    scale.ceil().max(1.0) as u32
 }
 
 /// Polls `check` every 50 ms until it gives `Some` (within `within`): what

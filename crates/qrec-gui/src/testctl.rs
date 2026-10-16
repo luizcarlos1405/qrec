@@ -6,7 +6,9 @@
 //! animations jump to their end, reduced motion comes from the config only
 //! (D-30), `QREC_GUI_TEST_NOW` (RFC 3339) is the local time of the export's
 //! auto name, `QREC_GUI_TEST_LEVELS` (`<device>=<rms>/<peak>,…`, dBFS) pins
-//! the meters' readings (`widgets::meter`), and the control channel
+//! the meters' readings (`widgets::meter`), `QREC_GUI_TEST_SAVE_AS`
+//! (`|`-separated paths, one per press) stands in for the export panel's
+//! save dialog (no portal in the tests, G§9 R7), and the control channel
 //! listens. Flags, comma-separated: `stuck-gst` makes startup report
 //! GStreamer stuck without initializing it (the stuck page, exit 5);
 //! `panic-activate` panics in `activate` (the app quits with 1).
@@ -20,7 +22,7 @@
 //!
 //! | op | reply |
 //! | --- | --- |
-//! | `waitIdle` | `{"ok":true,"rev":R}` once the previews, the player and the io worker are idle (checked before the queue: what they send is queued before they say so), the queue is empty, the window's requests are answered, no source awaits the portal, the window isn't opening, the stage is idle (no program reload due; in Live, the engine settled its live scenes and the picture drew its live sources, also after a rebuild that sent no status: `media::live`), and a frame was drawn after that |
+//! | `waitIdle` | `{"ok":true,"rev":R}` once the previews, the player and the io worker are idle (checked before the queue: what they send is queued before they say so), the queue is empty, the window's requests are answered (its own export once its job runs: `Store::unsettled_requests`), no source awaits the portal, the window isn't opening, the stage is idle (no program reload due; in Live, the engine settled its live scenes and the picture drew its live sources, also after a rebuild that sent no status: `media::live`), and a frame was drawn after that |
 //! | `regions` | `{"regions":{"<name>":[x,y,w,h],…}}`: every `region-*` widget and named part (G§8.4), window coordinates; `names` adds widgets by name |
 //! | `labels` | the text of every visible label under the widget `name` (default: the window), and `entries`: each visible text field's value by its nearest given name (`{"inspector-x":"1280"}`) |
 //! | `dispatch` | `Store::dispatch` of `command` (`confirmed`: as confirmed), `{"ok":true}` at once |
@@ -297,7 +299,9 @@ fn busy(app: &App) -> Vec<String> {
     if !store.queue().is_empty() {
         why.push("the inbound queue".to_owned());
     }
-    let pending = store.pending_requests();
+    // The window's own export counts until its job runs: then its progress
+    // comes as snapshots and its answer only when it ends (G§3.18).
+    let pending = store.unsettled_requests();
     if pending > 0 {
         why.push(format!("{pending} request(s) unanswered"));
     }

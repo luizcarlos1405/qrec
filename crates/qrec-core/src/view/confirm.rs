@@ -198,11 +198,48 @@ fn purge(details: &Value, takes: &[TakeId]) -> ModalContent {
         }
     }
     body.push('.');
+    let mut files = files;
+    in_take_order(&mut files);
     let list = files
         .into_iter()
         .map(|(path, bytes)| (path, bytes.map(format::size)))
         .collect();
     content(lead, Some(body), list, confirm)
+}
+
+/// The loss list as BRIEF S18 writes it: each take's layers (`L1…`), then
+/// its tracks (`A1…`), then its other files (the log), each group by name;
+/// the takes stay in the core's order. (The shell lists a take's files by
+/// path, which puts the tracks first.)
+fn in_take_order(files: &mut [(String, Option<u64>)]) {
+    let folders: Vec<String> =
+        files
+            .iter()
+            .map(|(path, _)| folder(path).to_owned())
+            .fold(Vec::new(), |mut seen, f| {
+                if !seen.contains(&f) {
+                    seen.push(f);
+                }
+                seen
+            });
+    let rank = |name: &str| {
+        let mut chars = name.chars();
+        match (chars.next(), chars.next()) {
+            (Some('L'), Some(d)) if d.is_ascii_digit() => 0,
+            (Some('A'), Some(d)) if d.is_ascii_digit() => 1,
+            _ => 2,
+        }
+    };
+    files.sort_by_cached_key(|(path, _)| {
+        let name = path.rsplit('/').next().unwrap_or(path).to_owned();
+        let at = folders.iter().position(|f| f == folder(path)).unwrap_or(0);
+        (at, rank(&name), name)
+    });
+}
+
+/// A path's folder ("takes/take-0002"), "" for a bare name.
+fn folder(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(dir, _)| dir)
 }
 
 /// The rate in `details[key]` (`{"num": 25, "den": 1}`).
@@ -447,6 +484,54 @@ mod tests {
         let err = apply(state, ctx, cmd.clone()).unwrap_err();
         assert_eq!(err.code, crate::error::ErrorCode::ConfirmationRequired);
         err
+    }
+
+    /// The shell lists a take's files by path (the tracks first): the loss
+    /// list reads as BRIEF S18's, the layers, the tracks, then the log of
+    /// each take, the takes in the core's order.
+    #[test]
+    fn the_loss_list_reads_layers_tracks_then_the_log() {
+        let names = [
+            "A1-mic.mka",
+            "A2-system.mka",
+            "L1-screen-DP-4.mkv",
+            "L2-camera-0.mkv",
+            "recorder.log",
+        ];
+        let files: Vec<Value> = [4, 2]
+            .iter()
+            .flat_map(|take| {
+                names.iter().map(move |name| {
+                    json!({"path": format!("takes/take-{take:04}/{name}"), "bytes": 1000})
+                })
+            })
+            .collect();
+        let takes = vec![TakeId::numbered(4), TakeId::numbered(2)];
+        let error = CoreError::confirmation_required("purge take-0004 and take-0002")
+            .with_details(json!({"takes": takes, "files": files, "bytes": 10_000}));
+        let cmd = Command::TakePurge { takes };
+        let content = modal(
+            &cmd,
+            &error,
+            &testkit::design_state(),
+            &ConfirmFacts::default(),
+        );
+        let paths: Vec<&str> = content.list.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "takes/take-0004/L1-screen-DP-4.mkv",
+                "takes/take-0004/L2-camera-0.mkv",
+                "takes/take-0004/A1-mic.mka",
+                "takes/take-0004/A2-system.mka",
+                "takes/take-0004/recorder.log",
+                "takes/take-0002/L1-screen-DP-4.mkv",
+                "takes/take-0002/L2-camera-0.mkv",
+                "takes/take-0002/A1-mic.mka",
+                "takes/take-0002/A2-system.mka",
+                "takes/take-0002/recorder.log",
+            ]
+        );
     }
 
     /// S18: the purge of takes 2 and 4 (BRIEF §5: 10 files, 184.1 MB, 6

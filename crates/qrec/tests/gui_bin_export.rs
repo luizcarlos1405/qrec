@@ -26,8 +26,8 @@ use gui_support::{
     BRIEF_REGIONS, CLI_TIMEOUT, Launch, MERGED_REGIONS, Nested, Options, TOOL_TIMEOUT,
     assert_regions, reap_within, wait_for_gui_host,
 };
-use qrec_core::ClipId;
 use qrec_core::state::{CanvasMode, UiState};
+use qrec_core::{ClipId, LayerId};
 use qrec_shell::testkit::design::{DesignVariant, design_fixture, write_ui};
 use qrec_shell::testkit::run_tool;
 use serde_json::{Value, json};
@@ -49,12 +49,15 @@ fn fixture(nested: &Nested, name: &str, variant: DesignVariant, ui: Option<UiSta
     dir
 }
 
-/// S06's UI: Program, c2d0 selected, the playhead at 2437.
+/// S06's UI: Program, c2d0 selected, the playhead at 2437, Face (L2)
+/// selected (the inspector the frames draw under the panel, as
+/// gui_panel's S06).
 fn program_ui() -> UiState {
     UiState {
         canvas_mode: CanvasMode::Program,
         selection: vec![ClipId::from_raw("c2d0")],
         playhead: 2437,
+        selected_layer: Some(LayerId::numbered(2)),
         ..UiState::default()
     }
 }
@@ -82,9 +85,16 @@ fn open(nested: &mut Nested, project: &Path, launch: Launch) {
     gui.wait_idle();
 }
 
-/// The launch every case uses: the a11y walk on, S15a's now.
+/// BRIEF's meter readings, pinned (G§8.4 `QREC_GUI_TEST_LEVELS`, as
+/// gui_panel's): A1 at −22/−16 dBFS, A2 at −52/−48.
+const DESIGN_LEVELS: &str = "alsa_input.fake=-22/-16,alsa_output.fake.monitor=-52/-48";
+
+/// The launch every case uses: the a11y walk on, S15a's now, the meters
+/// pinned.
 fn launch() -> Launch {
-    Launch::a11y().with_env("QREC_GUI_TEST_NOW", NOW)
+    Launch::a11y()
+        .with_env("QREC_GUI_TEST_NOW", NOW)
+        .with_env("QREC_GUI_TEST_LEVELS", DESIGN_LEVELS)
 }
 
 /// The shot next to the approved frame (G§8.4 check 4), whole or both
@@ -215,21 +225,23 @@ fn clip_middle(nested: &Nested, project: &Path, clip: &str, width: f64) -> f64 {
     middle * (width - qrec_core::view::timeline::FIT_INSET_PX) / total
 }
 
+/// A click, then `waitIdle`: the window's own export settles once its job
+/// runs (G§3.18), so this returns while it renders.
 fn click(nested: &mut Nested, name: &str) {
     press(nested, name);
     nested.window(0).wait_idle();
 }
 
-/// A click without `waitIdle` after it: the window's own export stays
-/// unanswered until it ends, and `waitIdle` waits for the window's requests
-/// (G§3.18).
+/// A click and nothing after it: S16b's `Esc` has to beat the short Smoke
+/// export, so it doesn't wait for the job to start.
 fn press(nested: &mut Nested, name: &str) {
     let (x, y) = center(nested, name);
     nested.pointer().click(x, y);
 }
 
-/// Waits until the labels under `name` have one `pred` likes (no
-/// `waitIdle`: an export of the window's own may be running).
+/// Waits until the labels under `name` have one `pred` likes, then for
+/// the window to settle (`waitIdle`: drawn as the labels say; a running
+/// export of its own doesn't hold it, G§3.18).
 fn wait_label(
     nested: &mut Nested,
     name: &str,
@@ -241,8 +253,7 @@ fn wait_label(
     loop {
         let labels = nested.window(0).labels(name);
         if labels.iter().any(|l| pred(l)) {
-            // A frame to draw what the labels say.
-            thread::sleep(Duration::from_millis(300));
+            nested.window(0).wait_idle();
             return nested.window(0).labels(name);
         }
         assert!(Instant::now() < deadline, "no {what} in {labels:?}");
@@ -463,6 +474,70 @@ fn s14_the_bin_drawer() {
     close(&mut nested);
 }
 
+/// S14 at `QREC_TEST_SCALE=2` (G§8.4 scale runs).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s14_the_bin_drawer_at_scale_2() {
+    bin_at_scale("s14-scale-2", 2.0);
+}
+
+/// S14 at `QREC_TEST_SCALE=1.5`: GTK draws at the whole scale factor 2.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s14_the_bin_drawer_at_scale_1_5() {
+    bin_at_scale("s14-scale-1.5", 1.5);
+}
+
+/// S14 at `scale`: the bin and the stage it pushes where BRIEF puts them
+/// (logical px, ±1 px × the scale), take 4 selected with its actions, its
+/// rows' lines, and the thumbnails' (and the timeline's) strip images 72 px
+/// × the window's scale factor high.
+fn bin_at_scale(case: &str, scale: f64) {
+    let mut nested = Nested::start(AREA, case, Options::at_scale(1600, 1000, scale));
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(bin_ui()),
+    );
+    open(&mut nested, &project, launch());
+    click(&mut nested, "bin-take-4");
+    let gui = nested.window(0);
+    assert_eq!(gui.local()["binSelection"], json!(["take-0004"]));
+    let regions = gui.regions(&["bin-preview"]);
+    assert_regions(
+        &regions,
+        &[
+            ("region-bin", [0.0, 48.0, 352.0, 608.0]),
+            ("region-stage", [352.0, 48.0, 864.0, 608.0]),
+            ("preview", [368.0, 100.0, 832.0, 468.0]),
+            ("transport", [368.0, 612.0, 832.0, 36.0]),
+        ],
+        &["region-bin", "preview", "transport"],
+        scale,
+    );
+    assert!(regions.contains_key("bin-preview"), "take 4's actions show");
+    assert_shows(
+        &gui.labels("region-bin"),
+        &["Take 9", "Take 4", "Replaced by take 5.", "Insert at end"],
+    );
+    let want = 72 * gui_support::scale_factor(scale);
+    let heights = gui_support::poll(Duration::from_secs(20), "the strip images", || {
+        nested.window(0).wait_idle();
+        let heights = gui_support::preview_heights(&project);
+        (!heights.is_empty()).then_some(heights)
+    });
+    assert_eq!(
+        heights,
+        std::collections::BTreeSet::from([want]),
+        "strip images {want} px high at scale {scale}"
+    );
+    let shot = nested.screenshot("bin");
+    compare(&shot, "S14-bin-drawer.png", None, "");
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
 /// D-37's keys and D-17's preview: `↓` moves the selection, `Shift+↓`
 /// extends it (the S18 footer, no row actions); `Space` previews the
 /// selected take in the Program picture with its TAKE badge and pauses
@@ -471,8 +546,10 @@ fn s14_the_bin_drawer() {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn the_bin_keys_select_preview_and_insert() {
     let mut nested = Nested::start(AREA, "bin-keys", Options::default());
+    // No layer selected: the arrows are the bin's, never a nudge.
     let ui = UiState {
         canvas_mode: CanvasMode::Live,
+        selected_layer: None,
         ..bin_ui()
     };
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base, Some(ui));
@@ -763,7 +840,7 @@ fn s15b_export_running_then_cancelled() {
     );
     assert_eq!(items[1], "[Ctrl][E] Show export", "{items:?}");
     assert!(items.contains(&"[S] Split".to_owned()), "{items:?}");
-    press(&mut nested, "export-cancel");
+    click(&mut nested, "export-cancel");
     wait_export_gone(&nested, &project, Duration::from_secs(30));
     wait_overlays(&mut nested, &[], Duration::from_secs(10));
     let gui = nested.window(0);
@@ -775,8 +852,8 @@ fn s15b_export_running_then_cancelled() {
 }
 
 /// Opens the panel, picks Draft, exports, waits for 42 %, checks the
-/// running panel and shoots it as `name` (no `waitIdle` while it runs: the
-/// export is the window's own request).
+/// running panel and shoots it as `name` (`waitIdle` while it runs: the
+/// window's own export settles once its job runs, G§3.18).
 fn export_running(nested: &mut Nested, project: &Path, name: &str) {
     ctrl_e(nested);
     let regions = nested.window(0).regions(&["export-quality"]);
@@ -784,7 +861,12 @@ fn export_running(nested: &mut Nested, project: &Path, name: &str) {
     // Draft: the first of three segments.
     nested.pointer().click(qx + qw / 6.0, qy + qh / 2.0);
     nested.window(0).wait_idle();
-    press(nested, "export-start");
+    click(nested, "export-start");
+    assert_eq!(
+        overlays(nested),
+        ["ExportPanel(Running)"],
+        "waitIdle returned with the export running"
+    );
     wait_export_at(nested, project, 42, Duration::from_secs(300));
     let labels = wait_label(
         nested,
@@ -801,10 +883,11 @@ fn export_running(nested: &mut Nested, project: &Path, name: &str) {
     assert_panel_placed(nested);
     let gui = nested.window(0);
     assert_shows(&labels, &["Exporting", "Cancel export"]);
+    // The label counts the timeline's 10 clips, not the 9 render units.
     assert!(
         labels
             .iter()
-            .any(|l| l.starts_with("Rendering clip ") || l == "Stitching"),
+            .any(|l| (l.starts_with("Rendering clip ") && l.ends_with("/10")) || l == "Stitching"),
         "{labels:?}"
     );
     assert!(
@@ -934,7 +1017,7 @@ fn s16_export_done() {
     let project = fixture(&nested, "smoke", DesignVariant::Smoke, Some(program_ui()));
     open(&mut nested, &project, launch());
     ctrl_e(&mut nested);
-    press(&mut nested, "export-start");
+    click(&mut nested, "export-start");
     wait_overlays(
         &mut nested,
         &["ExportPanel(Done)"],
@@ -1070,7 +1153,16 @@ fn s17_export_failed() {
     };
     open(&mut nested, &project, launch);
     ctrl_e(&mut nested);
-    press(&mut nested, "export-start");
+    click(&mut nested, "export-start");
+    // While unit 3 waits for units 1 and 2, the label counts the timeline's
+    // clips: the third of ten is next.
+    wait_label(
+        &mut nested,
+        "export-panel",
+        "clip 3/10",
+        Duration::from_secs(300),
+        |l| l == "Rendering clip 3/10",
+    );
     wait_overlays(
         &mut nested,
         &["ExportPanel(Failed)"],
@@ -1081,23 +1173,21 @@ fn s17_export_failed() {
     assert_panel_placed(&mut nested);
     let gui = nested.window(0);
     let labels = gui.labels("export-panel");
+    // Units 1 and 2 rendered (867 of 7,391 frames), unit 3 (c1b2, the
+    // timeline's third clip) failed: BRIEF's lead, at 11 % (the frame's 37).
+    let at = format!("Failed at {}%", fail_ffmpeg::FAILED_PERCENT);
     assert_shows(
         &labels,
         &[
             "Export failed",
-            "ffmpeg stopped while rendering clip 3/9 (take 3, c1b2). Nothing was written to exports/.",
+            "ffmpeg stopped while rendering clip 3/10 (take 3, c1b2). Nothing was written to exports/.",
             "VA-API couldn't start on /dev/dri/renderD129. Try Settings › Recording › Encoder: x264.",
+            &at,
             "Open full log",
             "Copy error",
             "Close",
             "Try again",
         ],
-    );
-    assert!(
-        labels
-            .iter()
-            .any(|l| l.starts_with("Failed at ") && l.ends_with('%')),
-        "{labels:?}"
     );
     assert!(
         labels
@@ -1114,6 +1204,12 @@ fn s17_export_failed() {
     assert_eq!(
         hints(&mut nested),
         ["[Enter] Try again", "[Tab] Move focus", "[Esc] Close"]
+    );
+    // The panel shows the failure: the core's toast is dropped (S17 draws
+    // none), as the done toast is under S16's Done page.
+    assert!(
+        nested.window(0).labels("toast-host").is_empty(),
+        "no toast over the failed panel"
     );
     assert!(exports(&project).is_empty(), "nothing written");
     let shot = nested.screenshot("failed");
@@ -1179,8 +1275,10 @@ fn a_cli_export_shows_running_then_the_core_toast() {
 
 /// D-24: "Change…" picks a file that exists (the test's stand-in for the
 /// portal dialog): Export asks first (the Replace modal), and confirming
-/// sends it again, confirmed: the file is replaced. A path inside takes/
-/// is refused with the core's message under the Output field.
+/// sends it again, confirmed, as the panel's own export: the file is
+/// replaced and the panel ends on its Done page (the core's toast is
+/// dropped). A path inside takes/ is refused with the core's message under
+/// the Output field.
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn d24_an_existing_file_asks_and_a_forbidden_path_says_why() {
@@ -1226,18 +1324,31 @@ fn d24_an_existing_file_asks_and_a_forbidden_path_says_why() {
         &["Replace talk-final.mp4?", "Replace file", "Cancel"],
     );
     nested.screenshot("replace");
+    // Confirmed, it is still the panel's own export: Running, then its
+    // Done page (not only the core's toast).
     click(&mut nested, "modal-confirm");
-    let deadline = Instant::now() + Duration::from_secs(120);
-    loop {
-        let bytes = fs::read(&existing).unwrap_or_default();
-        if bytes.len() > 1000 {
-            break;
-        }
-        assert!(Instant::now() < deadline, "not replaced");
-        thread::sleep(Duration::from_millis(300));
-    }
+    wait_overlays(
+        &mut nested,
+        &["ExportPanel(Done)"],
+        Duration::from_secs(120),
+    );
+    let bytes = fs::read(&existing).unwrap_or_default();
+    assert!(bytes.len() > 1000, "replaced: {} bytes", bytes.len());
     wait_export_gone(&nested, &project, Duration::from_secs(60));
     assert!(exports(&project).is_empty(), "written where it was picked");
+    let gui = nested.window(0);
+    gui.wait_idle();
+    let labels = gui.labels("export-panel");
+    assert_shows(&labels, &["Export finished", "Open file"]);
+    assert!(
+        labels.iter().any(|l| l.ends_with("talk-final.mp4")),
+        "the picked path: {labels:?}"
+    );
+    assert!(
+        gui.labels("toast-host").is_empty(),
+        "the panel shows it: no toast"
+    );
+    nested.screenshot("replaced-done");
     assert_clean(&mut nested);
     close(&mut nested);
 }

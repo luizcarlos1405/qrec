@@ -12,12 +12,13 @@
 //!   until it closes; else Setup. A foreign export that ends closes it
 //!   (the core's toast says how it went).
 //! - Its own export goes out with `confirmed: false` (D-24): an existing
-//!   hand-picked file opens the Replace modal, whose confirmation sends it
-//!   again; a refused path shows the core's message under the Output
-//!   field. "Change…" picks the path with `gtk::FileDialog::save` on
-//!   `exports/` with the auto name (under `QREC_GUI_TEST` the paths in
-//!   `QREC_GUI_TEST_SAVE_AS`, `|`-separated, one per press: no portal in
-//!   the tests, G§9 R7).
+//!   hand-picked file opens the Replace modal (`Store::ask_confirmation`),
+//!   whose confirmation sends it again, confirmed, still as the panel's
+//!   own (Running, then Done or Failed); a refused path shows the core's
+//!   message under the Output field. "Change…" picks the path with
+//!   `gtk::FileDialog::save` on `exports/` with the auto name (under
+//!   `QREC_GUI_TEST` the paths in `QREC_GUI_TEST_SAVE_AS`, `|`-separated,
+//!   one per press: no portal in the tests, G§9 R7).
 //! - The caption names the encoder as `config.toml` and the project choose
 //!   (`view::export::caption`): the config is read once on `qrec-gui-io`.
 //! - Placement (BRIEF §2.8): 440 wide, 8 px from the window's right edge,
@@ -38,7 +39,6 @@ use gtk::glib;
 use gtk::prelude::*;
 use qrec_core::Command;
 use qrec_core::config::UserConfig;
-use qrec_core::on_event::output::export_readout;
 use qrec_core::protocol::UiAction;
 use qrec_core::protocol::command::{ExportFormat, Quality};
 use qrec_core::state::{Job, JobKind, State};
@@ -83,9 +83,8 @@ impl ExportPanel {
 struct Own {
     /// The first snapshot with its job: the timeline it renders.
     started: Option<Arc<State>>,
-    /// The last progress seen (the failed panel's "37%" and clip).
-    percent: u8,
-    label: String,
+    /// Its job as last seen (the failed panel's "37%" and clip).
+    last: Option<Job>,
 }
 
 struct Panel {
@@ -455,10 +454,7 @@ impl Panel {
                 if own.started.is_none() {
                     own.started = Some(Arc::clone(&change.next));
                 }
-                if let Some(readout) = export_readout(job, Utc::now()) {
-                    own.percent = readout.percent;
-                    own.label = readout.label;
-                }
+                own.last = Some(job.clone());
             }
             drop(own);
             if self.ctx.store.local().export_view.draft.starting {
@@ -743,10 +739,16 @@ impl Panel {
 
     /// Sends `cmd` as the panel's own export (`confirmed: false`, D-24).
     fn start(self: &Rc<Self>, cmd: Command) {
+        self.send(cmd, false);
+    }
+
+    /// Sends `cmd` as the panel's own export, `confirmed` once the Replace
+    /// modal was confirmed (D-24): either way its answer comes back here,
+    /// so it shows Running, then Done or Failed.
+    fn send(self: &Rc<Self>, cmd: Command, confirmed: bool) {
         *self.own.borrow_mut() = Some(Own {
             started: None,
-            percent: 0,
-            label: String::new(),
+            last: None,
         });
         self.ctx.store.update_local(|l| {
             let draft = &mut l.export_view.draft;
@@ -756,7 +758,7 @@ impl Panel {
         });
         let weak = Rc::downgrade(self);
         let sent = cmd.clone();
-        self.ctx.store.dispatch_with(cmd, false, move |reply| {
+        self.ctx.store.dispatch_with(cmd, confirmed, move |reply| {
             if let Some(panel) = weak.upgrade() {
                 panel.answered(&sent, reply);
             }
@@ -796,18 +798,15 @@ impl Panel {
                 };
                 let (dir, home) = self.dirs();
                 let folder = flow::folder_shown(out.as_deref(), &dir, home.as_deref());
-                let (percent, label) = own
-                    .as_ref()
-                    .map_or((0, String::new()), |o| (o.percent, o.label.clone()));
                 let view = view::failed(&FailedExport {
                     started: &started,
-                    percent,
-                    label: &label,
+                    job: own.as_ref().and_then(|o| o.last.as_ref()),
                     message: &message,
                     stderr_tail: &stderr_tail,
                     log: log.as_deref(),
                     folder: &folder,
                 });
+                let percent = view.fraction;
                 open.then(|| Outcome::Failed {
                     view,
                     retry: Box::new(cmd.clone()),
@@ -816,11 +815,19 @@ impl Panel {
                 })
             }
             Answer::Confirm(error) => {
-                let cmd = cmd.clone();
-                self.ctx.store.update_local(move |l| {
-                    l.export_view.draft.starting = false;
-                    l.overlays.push(Overlay::Confirm { cmd, error });
-                });
+                self.ctx
+                    .store
+                    .update_local(|l| l.export_view.draft.starting = false);
+                // The Replace modal (WP6's): confirming it sends the export
+                // again, confirmed, as the panel's own (D-24).
+                let weak = Rc::downgrade(self);
+                self.ctx
+                    .store
+                    .ask_confirmation(cmd.clone(), error, move |confirmed| {
+                        if let Some(panel) = weak.upgrade() {
+                            panel.send(confirmed, true);
+                        }
+                    });
                 return;
             }
             Answer::Inline(message) => {

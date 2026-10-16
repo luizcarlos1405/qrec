@@ -556,6 +556,7 @@ impl FakeSession {
                 total_frames: 5,
                 seg_frames: vec![5],
                 seg_done: vec![0],
+                seg_clips: vec![vec![5]],
                 stitch_total_ns: 0,
                 stitch_done_ns: 0,
                 stitching: false,

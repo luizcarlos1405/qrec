@@ -7,12 +7,13 @@
 //!   `Done` or `Failed` for its own export's outcome until it closes;
 //!   otherwise `Setup`.
 //! - Its own export (sent with `Store::dispatch_with`, `confirmed: false`):
-//!   an immediate `confirmation_required` opens the Replace modal (whose
-//!   confirmation re-dispatches it, `Store::dispatch_confirmed`, D-24); a
-//!   refused hand-picked path shows the core's message under the Output
-//!   field; other immediate errors toast; the late answer is `Done` or
-//!   `Failed`, and a cancel or anything else closes the panel (the core
-//!   toasted it, H-7).
+//!   an immediate `confirmation_required` opens the Replace modal
+//!   (`Store::ask_confirmation`: its confirmation sends the export again,
+//!   confirmed, with the panel's own answer handler, so it ends in Done or
+//!   Failed like any, D-24); a refused hand-picked path shows the core's
+//!   message under the Output field; other immediate errors toast; the late
+//!   answer is `Done` or `Failed`, and a cancel or anything else closes the
+//!   panel (the core toasted it, H-7).
 
 use qrec_core::protocol::command::{ExportFormat, Quality, VideoCodec};
 use qrec_core::view::export::{Done, Failed};

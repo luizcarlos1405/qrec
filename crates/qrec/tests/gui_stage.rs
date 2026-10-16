@@ -309,13 +309,23 @@ fn s02_live_idle() {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s02_at_scale_2() {
-    let opts = Options {
-        scale: 2.0,
-        width: 3200,
-        height: 2000,
-        ..Options::default()
-    };
-    let mut nested = Nested::start(AREA, "S02-scale2", opts);
+    live_at_scale("S02-scale2", 2.0);
+}
+
+/// S02 at `QREC_TEST_SCALE=1.5` (G§8.4 scale runs): GTK draws at the
+/// window's whole scale factor (2) and the compositor scales it down, so
+/// the sink composites at 1920×1080 here too.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s02_at_scale_1_5() {
+    live_at_scale("S02-scale1.5", 1.5);
+}
+
+/// S02 at `scale`: the regions (logical px, ±1 px × scale), the live
+/// picture drawn (probed in device px), the sink at 960×540 × the scale
+/// factor.
+fn live_at_scale(case: &str, scale: f64) {
+    let mut nested = Nested::start(AREA, case, Options::at_scale(1600, 1000, scale));
     let project = fixture(
         &nested,
         DesignVariant::Base,
@@ -323,13 +333,210 @@ fn s02_at_scale_2() {
     );
     open(&mut nested, &project, Launch::a11y());
     assert_stage_regions(&mut nested, &STAGE);
+    let labels = stage_labels(&mut nested);
+    assert_shows(&labels, &["LIVE", "Live · 1920×1080 · 30 fps"]);
     assert_clean(&mut nested);
     let shot = nested.screenshot("live");
-    compare(&nested, &shot, "S02-live-idle.png");
-    assert!(
-        gui_log(&mut nested).contains("the live picture is 1920×1080"),
-        "the sink composites at 1920×1080 at scale 2"
+    let device = |v: f64| (v * scale).round() as u32;
+    let grey = gui_support::mean_grey(
+        &shot,
+        [device(128.0), device(64.0), device(960.0), device(540.0)],
     );
+    assert!(grey > 40.0, "the live picture is black ({grey:.1})");
+    compare(&nested, &shot, "S02-live-idle.png");
+    let f = gui_support::scale_factor(scale);
+    let caps = format!("the live picture is {}×{}", 960 * f, 540 * f);
+    assert!(
+        gui_log(&mut nested).contains(&caps),
+        "the sink composites at {caps} at scale {scale}"
+    );
+}
+
+/// S06 at `QREC_TEST_SCALE=2` (G§8.4 scale runs).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s06_at_scale_2() {
+    program_at_scale("S06-scale2", 2.0);
+}
+
+/// S06 at `QREC_TEST_SCALE=1.5`.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s06_at_scale_1_5() {
+    program_at_scale("S06-scale1.5", 1.5);
+}
+
+/// S06 at `scale`: BRIEF's regions (logical px, ±1 px × scale), the
+/// program picture's labels, and the timeline's strip images 72 px × the
+/// window's scale factor high (144 at 2). As the frame: Face (L2) selected
+/// (the inspector) and BRIEF's meter levels pinned, like gui_panel's S06.
+fn program_at_scale(case: &str, scale: f64) {
+    let mut nested = Nested::start(AREA, case, Options::at_scale(1600, 1000, scale));
+    let mut preset = selecting(ui(CanvasMode::Program, 2437), &["c2d0"]);
+    preset.selected_layer = Some(qrec_core::LayerId::numbered(2));
+    let project = fixture(&nested, DesignVariant::Base, Some(preset));
+    let launch = Launch::a11y().with_env(
+        "QREC_GUI_TEST_LEVELS",
+        "alsa_input.fake=-22/-16,alsa_output.fake.monitor=-52/-48",
+    );
+    open(&mut nested, &project, launch);
+    let regions = nested.window(0).regions(&[]);
+    assert_regions(
+        &regions,
+        &gui_support::BRIEF_REGIONS,
+        &gui_support::MERGED_REGIONS,
+        scale,
+    );
+    let labels = stage_labels(&mut nested);
+    assert_shows(&labels, &["PROGRAM", "00:01:21:07", " / 00:04:06:11"]);
+    let want = 72 * gui_support::scale_factor(scale);
+    let heights = gui_support::poll(Duration::from_secs(20), "the strip images", || {
+        nested.window(0).wait_idle();
+        let heights = gui_support::preview_heights(&project);
+        (!heights.is_empty()).then_some(heights)
+    });
+    assert_eq!(
+        heights,
+        std::collections::BTreeSet::from([want]),
+        "strip images {want} px high at scale {scale}"
+    );
+    assert_clean(&mut nested);
+    let shot = nested.screenshot("program");
+    compare(&nested, &shot, "S06-program-with-selection.png");
+}
+
+// --------------------------------------------------------------- adaptive
+
+/// The stage's preview and transport for a stage `w`×`h` at (0, 48)
+/// (G§3.15's fit: the canvas into (w − 32) × (h − 68), the transport 44 px
+/// above the stage's bottom).
+fn stage_parts(w: f64, h: f64) -> [(&'static str, [f64; 4]); 3] {
+    let canvas = qrec_core::testkit::design_state().project.canvas;
+    let g = qrec_core::view::canvas::stage_geometry(w, h, &canvas);
+    let at = |r: qrec_core::view::Rect| [r.x, 48.0 + r.y, r.w, r.h];
+    [
+        ("region-stage", [0.0, 48.0, w, h]),
+        ("preview", at(g.preview)),
+        ("transport", at(g.transport)),
+    ]
+}
+
+/// S02 at 1300×1000 (G§0.3, G§3.15, DESIGN Layout): Medium, the panel
+/// docked at 320 with the inspector 2-up, the stage 980 wide with the
+/// preview fitted in it. No frame: the shot goes to the M4 review.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s02_at_1300_wide() {
+    let mut nested = Nested::start(AREA, "S02-1300", Options::size(1300, 1000));
+    let project = fixture(
+        &nested,
+        DesignVariant::Base,
+        Some(ui(CanvasMode::Live, 7391)),
+    );
+    open(&mut nested, &project, Launch::a11y());
+    let gui = nested.window(0);
+    assert_eq!(gui.local()["layout"]["width"], "Medium");
+    let regions = gui.regions(&[]);
+    let mut want = vec![
+        ("region-header", [0.0, 0.0, 1300.0, 48.0]),
+        ("region-panel", [980.0, 48.0, 320.0, 920.0]),
+        ("region-timeline", [0.0, 656.0, 980.0, 312.0]),
+        ("region-hintbar", [0.0, 968.0, 1300.0, 32.0]),
+    ];
+    want.extend(stage_parts(980.0, 608.0));
+    let names: Vec<&str> = want.iter().map(|(n, _)| *n).collect();
+    assert_regions(&regions, &want, &names, 1.0);
+    let labels = stage_labels(&mut nested);
+    assert_shows(&labels, &["LIVE", "Live · 1920×1080 · 30 fps"]);
+    assert_clean(&mut nested);
+    let shot = nested.screenshot("live");
+    gui_support::assert_live_picture_drawn_at(&shot, stage_parts(980.0, 608.0)[1].1);
+}
+
+/// S02 at 1000×1000: Narrow, the panel an overlay sheet: closed, the stage
+/// takes the whole width; the header's layers button opens the sheet over
+/// the stage's right (384 wide, under the header, down to the hint bar),
+/// and `Esc` closes it.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s02_at_1000_wide_with_the_sheet() {
+    let mut nested = Nested::start(AREA, "S02-1000", Options::size(1000, 1000));
+    let project = fixture(
+        &nested,
+        DesignVariant::Base,
+        Some(ui(CanvasMode::Live, 7391)),
+    );
+    open(&mut nested, &project, Launch::a11y());
+    let gui = nested.window(0);
+    assert_eq!(gui.local()["layout"]["width"], "Narrow");
+    let regions = gui.regions(&["layers-button"]);
+    assert!(!regions.contains_key("region-panel"), "{regions:?}");
+    let mut want = vec![
+        ("region-header", [0.0, 0.0, 1000.0, 48.0]),
+        ("region-timeline", [0.0, 656.0, 1000.0, 312.0]),
+        ("region-hintbar", [0.0, 968.0, 1000.0, 32.0]),
+    ];
+    want.extend(stage_parts(1000.0, 608.0));
+    let names: Vec<&str> = want.iter().map(|(n, _)| *n).collect();
+    assert_regions(&regions, &want, &names, 1.0);
+    assert_clean(&mut nested);
+    let shot = nested.screenshot("closed");
+    gui_support::assert_live_picture_drawn_at(&shot, stage_parts(1000.0, 608.0)[1].1);
+    let [x, y, w, h] = regions["layers-button"];
+    nested.pointer().click(x + w / 2.0, y + h / 2.0);
+    let open = gui_support::poll(Duration::from_secs(10), "the sheet", || {
+        let gui = nested.window(0);
+        gui.wait_idle();
+        let regions = gui.regions(&[]);
+        regions.contains_key("region-panel").then_some(regions)
+    });
+    assert_regions(
+        &open,
+        &[("region-panel", [616.0, 48.0, 384.0, 920.0])],
+        &["region-panel"],
+        1.0,
+    );
+    let overlays = nested.window(0).local()["overlays"].clone();
+    assert_eq!(overlays, json!(["LayersSheet"]), "{overlays}");
+    assert_clean(&mut nested);
+    nested.screenshot("sheet");
+    nested.keys(&["-k", "Escape"]);
+    gui_support::poll(Duration::from_secs(10), "the sheet closing", || {
+        let gui = nested.window(0);
+        gui.wait_idle();
+        (!gui.regions(&[]).contains_key("region-panel")).then_some(())
+    });
+}
+
+/// S06 at 1600×800 (DESIGN Layout: compact under 820 high): the timeline
+/// keeps 232 px (toolbar 36, ruler 28, video 72, lanes 48) and the stage
+/// shrinks to 488, its preview fitted in it; the panel spans the stage and
+/// the timeline.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s06_at_1600_by_800() {
+    let mut nested = Nested::start(AREA, "S06-800", Options::size(1600, 800));
+    let preset = selecting(ui(CanvasMode::Program, 2437), &["c2d0"]);
+    let project = fixture(&nested, DesignVariant::Base, Some(preset));
+    open(&mut nested, &project, Launch::a11y());
+    let gui = nested.window(0);
+    assert_eq!(gui.local()["layout"]["compact"], true);
+    let regions = gui.regions(&[]);
+    let mut want = vec![
+        ("region-header", [0.0, 0.0, 1600.0, 48.0]),
+        ("region-panel", [1216.0, 48.0, 384.0, 720.0]),
+        ("region-timeline", [0.0, 536.0, 1216.0, 232.0]),
+        ("timeline-toolbar", [0.0, 536.0, 1216.0, 36.0]),
+        ("ruler", [0.0, 572.0, 1216.0, 28.0]),
+        ("region-hintbar", [0.0, 768.0, 1600.0, 32.0]),
+    ];
+    want.extend(stage_parts(1216.0, 488.0));
+    let names: Vec<&str> = want.iter().map(|(n, _)| *n).collect();
+    assert_regions(&regions, &want, &names, 1.0);
+    let labels = stage_labels(&mut nested);
+    assert_shows(&labels, &["PROGRAM", "00:01:21:07", " / 00:04:06:11"]);
+    assert_clean(&mut nested);
+    nested.screenshot("program");
 }
 
 /// S05b: take 10 landed (Live, idle): the Live picture as S02.

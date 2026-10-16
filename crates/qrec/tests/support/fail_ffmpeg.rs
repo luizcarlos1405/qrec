@@ -1,9 +1,24 @@
-//! S17's failing ffmpeg (docs/GUI.md G§7 WP7): a `PATH` whose `ffmpeg`
-//! fails the render of the design export's third segment (c1b2, take 3
-//! from its first frame: the only unit whose first input is take 3's with
-//! no `-ss` before it) with a VA-API-style stderr (BRIEF S17's tail, plus
-//! the render node it tried), and runs the real ffmpeg for everything else
-//! (the other segments, probes, thumbnails).
+//! S17's failing ffmpeg (docs/GUI.md G§7 WP7, G§8.4): a `PATH` whose
+//! `ffmpeg` lets the design export's first two render units finish and
+//! fails the third with BRIEF S17's stderr, so the panel fails where the
+//! export got to.
+//!
+//! - Units 1 and 2 (c7f3 and c8a1, take 1's: its only units) are the real
+//!   ffmpeg.
+//! - Unit 3 (c1b2: take 3 from its first frame, the only unit whose first
+//!   input is take 3's with no `-ss` before it) waits until units 1 and 2
+//!   are in the segment cache (`.qrec/cache/segments/*.mov`; the renders
+//!   run in the project folder) and 2 s more (the panel reads "Rendering
+//!   clip 3/10" meanwhile), then writes the tail (plus the render node it
+//!   tried, which the hint reads), marks `failed` and exits 1.
+//! - Every other unit waits for that mark, then sleeps until the export
+//!   stops it (the shell stops the others when one fails), so no frame of
+//!   theirs counts: the export fails at units 1 and 2's 867 of 7,391
+//!   frames, 11 %.
+//! - Anything else (probes, thumbnails, peaks) is the real ffmpeg.
+//!
+//! Each wait has a bound (50 s, then it goes on as if it had happened);
+//! the shell's 60 s stall watchdog is the backstop.
 
 #![allow(dead_code)]
 
@@ -26,6 +41,11 @@ Device creation failed: -5.
 Error opening output file .qrec/cache/segments/9f3c2a71e4.mkv.
 Error opening output files: Input/output error";
 
+/// The frames units 1 and 2 render (c7f3's 410 and c8a1's 457), and so
+/// the percent the export fails at: ⌊0.9 · 867⌋ = 780 of 7,391, 11 %.
+pub const RENDERED_FRAMES: u64 = 867;
+pub const FAILED_PERCENT: u64 = 11;
+
 /// The ffmpeg on `PATH`.
 pub fn real_ffmpeg() -> PathBuf {
     let path = std::env::var_os("PATH").unwrap_or_default();
@@ -40,17 +60,38 @@ pub fn real_ffmpeg() -> PathBuf {
 pub fn failing_path(root: &Path) -> OsString {
     let bin = root.join("fail-ffmpeg");
     fs::create_dir_all(&bin).expect("the wrapper's folder");
+    let mark = bin.join("failed");
+    let _ = fs::remove_file(&mark);
     let wrapper = bin.join("ffmpeg");
+    let real = real_ffmpeg();
     let script = format!(
         "#!/bin/sh\n\
-         # S17: take 3's first render unit fails like a broken VA-API driver.\n\
+         # S17 (G§7 WP7): units 1 and 2 render, unit 3 fails once they are\n\
+         # cached, every later unit waits until it failed.\n\
+         mark='{mark}'\n\
          case \" $* \" in\n  \
+           *' -progress pipe:1 '*'-i file:takes/take-0001/'*)\n    \
+             exec '{real}' \"$@\" ;;\n  \
            *' -progress pipe:1 -i file:takes/take-0003/'*)\n    \
+             i=0\n    \
+             while [ \"$(ls .qrec/cache/segments 2>/dev/null | grep -c '\\.mov$')\" -lt 2 ] && [ $i -lt 500 ]; do\n      \
+               sleep 0.1; i=$((i + 1))\n    \
+             done\n    \
+             sleep 2\n    \
              cat >&2 <<'TAIL'\n{TAIL}\nTAIL\n    \
+             : > \"$mark\"\n    \
+             exit 1 ;;\n  \
+           *' -progress pipe:1 '*)\n    \
+             i=0\n    \
+             while [ ! -e \"$mark\" ] && [ $i -lt 500 ]; do\n      \
+               sleep 0.1; i=$((i + 1))\n    \
+             done\n    \
+             sleep 30\n    \
              exit 1 ;;\n\
          esac\n\
-         exec '{}' \"$@\"\n",
-        real_ffmpeg().display()
+         exec '{real}' \"$@\"\n",
+        mark = mark.display(),
+        real = real.display(),
     );
     fs::write(&wrapper, script).expect("the wrapper");
     fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).expect("chmod");

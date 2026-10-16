@@ -396,6 +396,7 @@ fn export_job(id: u64) -> Job {
             total_frames: 10,
             seg_frames: vec![],
             seg_done: vec![],
+            seg_clips: Vec::new(),
             stitch_total_ns: 0,
             stitch_done_ns: 0,
             stitching: false,

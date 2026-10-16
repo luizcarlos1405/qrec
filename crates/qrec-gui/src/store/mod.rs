@@ -8,6 +8,9 @@
 //! - [`Store::dispatch`] submits a Command to the GUI host, in one FIFO with
 //!   the CLI's requests, and applies the default reply policy
 //!   ([`replies`]); [`Store::dispatch_with`] hands the reply to the caller.
+//!   A caller that gets `confirmation_required` for a flow it follows opens
+//!   the modal with [`Store::ask_confirmation`]: the confirmed re-dispatch
+//!   goes back to it (the export panel's own export, D-24).
 //! - [`Store::notify`] shows a toast made by the GUI; the core's toasts come
 //!   the same way. The toast host subscribes ([`Store::subscribe_notices`]);
 //!   notices that come before it are kept for it.
@@ -29,6 +32,7 @@ use std::sync::Arc;
 use qrec_core::keymap::Keymap;
 use qrec_core::protocol::command::{Nullable, SeekTarget, UiPatch};
 use qrec_core::protocol::{Progress, Toast};
+use qrec_core::state::JobKind;
 use qrec_core::view::notices::Notice;
 use qrec_core::{Command, CoreError, LayerId, State, TrackId};
 use qrec_shell::host::GuiHost;
@@ -293,6 +297,9 @@ struct Inner {
     sent: RefCell<SentValues>,
     next_ticket: Cell<Ticket>,
     pending: RefCell<BTreeMap<Ticket, Pending>>,
+    /// Who takes the confirmed re-dispatch of an open `Overlay::Confirm`
+    /// ([`Store::ask_confirmation`]); a hook goes when its overlay closes.
+    confirm_hooks: RefCell<Vec<ConfirmHook>>,
     changes: Subscribers<Change>,
     locals: Subscribers<LocalUi>,
     notices: Subscribers<Notice>,
@@ -304,6 +311,14 @@ struct Inner {
 struct Pending {
     cmd: Command,
     done: Box<dyn FnOnce(Reply)>,
+    /// It reported progress: a long job runs for it (G§3.18).
+    progressed: bool,
+}
+
+/// The confirmed re-dispatch of `cmd`, for the region that asked.
+struct ConfirmHook {
+    cmd: Command,
+    confirmed: Box<dyn FnOnce(Command)>,
 }
 
 impl std::fmt::Debug for Store {
@@ -339,6 +354,7 @@ impl Store {
                 sent: RefCell::new(SentValues::default()),
                 next_ticket: Cell::new(1),
                 pending: RefCell::new(BTreeMap::new()),
+                confirm_hooks: RefCell::new(Vec::new()),
                 changes: Subscribers::default(),
                 locals: Subscribers::default(),
                 notices: Subscribers::default(),
@@ -386,6 +402,14 @@ impl Store {
             }
             next = self.inner.deferred.borrow_mut().pop_front();
         }
+        // A confirmation's hook goes with its overlay (cancelled, `Esc`).
+        let local = self.inner.local.borrow();
+        self.inner.confirm_hooks.borrow_mut().retain(|hook| {
+            local
+                .overlays
+                .iter()
+                .any(|o| matches!(o, Overlay::Confirm { cmd, .. } if *cmd == hook.cmd))
+        });
     }
 
     /// Follows snapshots.
@@ -420,8 +444,21 @@ impl Store {
     }
 
     /// Sends `cmd` again, confirmed (a confirmation modal's button), with
-    /// the default reply policy: the core checks again.
+    /// the default reply policy: the core checks again. When the region
+    /// that asked left a hook ([`Store::ask_confirmation`]), it gets `cmd`
+    /// instead and sends it with its own reply handler.
     pub fn dispatch_confirmed(&self, cmd: Command) {
+        let hook = {
+            let mut hooks = self.inner.confirm_hooks.borrow_mut();
+            hooks
+                .iter()
+                .position(|h| h.cmd == cmd)
+                .map(|at| hooks.remove(at))
+        };
+        if let Some(hook) = hook {
+            (hook.confirmed)(cmd);
+            return;
+        }
         let weak = Rc::downgrade(&self.inner);
         let sent = cmd.clone();
         self.dispatch_with(cmd, true, move |reply| {
@@ -429,6 +466,25 @@ impl Store {
                 Store { inner }.apply_default(&sent, reply);
             }
         });
+    }
+
+    /// Opens `Overlay::Confirm { cmd, error }` for a command the caller
+    /// sent itself and follows: confirming it in the modal hands `cmd` to
+    /// `confirmed` (which sends it again with `confirmed: true` and its own
+    /// reply handler) instead of the default policy. The hook goes when the
+    /// overlay closes unconfirmed (D-24: the export panel's own export ends
+    /// in its Done or Failed page, not only in the core's toasts).
+    pub fn ask_confirmation(
+        &self,
+        cmd: Command,
+        error: CoreError,
+        confirmed: impl FnOnce(Command) + 'static,
+    ) {
+        self.inner.confirm_hooks.borrow_mut().push(ConfirmHook {
+            cmd: cmd.clone(),
+            confirmed: Box::new(confirmed),
+        });
+        self.update_local(move |l| l.overlays.push(Overlay::Confirm { cmd, error }));
     }
 
     /// The live preview's "Try again" (D-50): `Msg::RetryLive` through the
@@ -457,6 +513,7 @@ impl Store {
             Pending {
                 cmd: cmd.clone(),
                 done: Box::new(done),
+                progressed: false,
             },
         );
         let mut responder = GuiResponder::new(ticket, self.inner.queue.clone());
@@ -500,6 +557,25 @@ impl Store {
         self.inner.pending.borrow().len()
     }
 
+    /// The unanswered requests `waitIdle` waits for (G§3.18): all but the
+    /// window's own exports whose job runs (it reported progress and an
+    /// export is in the job table). Their progress comes as snapshots and
+    /// their answer only when they end, so they settle once started.
+    pub fn unsettled_requests(&self) -> usize {
+        let exporting = self
+            .state()
+            .runtime
+            .jobs
+            .values()
+            .any(|job| matches!(job.kind, JobKind::Export { .. }));
+        self.inner
+            .pending
+            .borrow()
+            .values()
+            .filter(|p| !(exporting && p.progressed && matches!(p.cmd, Command::Export { .. })))
+            .count()
+    }
+
     /// The queue the host answers through.
     pub fn queue(&self) -> &Queue {
         &self.inner.queue
@@ -536,11 +612,17 @@ impl Store {
         (pending.done)(Reply { result, late });
     }
 
-    /// A request was accepted or reported progress (logged).
+    /// A request was accepted or reported progress (logged; progress marks
+    /// it as a long job's, [`Store::unsettled_requests`]).
     pub(crate) fn on_progress(&self, ticket: Ticket, progress: Option<&Progress>) {
         match progress {
             None => tracing::trace!("#{ticket} accepted"),
-            Some(p) => tracing::trace!("#{ticket} progress {p:?}"),
+            Some(p) => {
+                tracing::trace!("#{ticket} progress {p:?}");
+                if let Some(pending) = self.inner.pending.borrow_mut().get_mut(&ticket) {
+                    pending.progressed = true;
+                }
+            }
         }
     }
 
@@ -670,6 +752,97 @@ mod tests {
             }]
         );
         assert_eq!(*toasts.borrow(), ["Nothing to select"]);
+    }
+
+    /// D-24: a confirmation a region asked for itself goes back to it once
+    /// confirmed (the export panel follows its own export), not to the
+    /// default policy; once its overlay closes unconfirmed the hook is gone
+    /// and a confirmation of the same command takes the default path.
+    #[test]
+    fn a_confirmation_asked_for_goes_back_to_its_asker() {
+        let store = store();
+        let export = Command::Export {
+            format: qrec_core::protocol::command::ExportFormat::Mp4,
+            quality: qrec_core::protocol::command::Quality::Draft,
+            codec: None,
+            out: Some("/home/me/talk.mp4".into()),
+        };
+        let error = CoreError::confirmation_required("overwrite /home/me/talk.mp4");
+        let got = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&got);
+        store.ask_confirmation(export.clone(), error.clone(), move |cmd| {
+            seen.borrow_mut().push(cmd);
+        });
+        let open = Overlay::Confirm {
+            cmd: export.clone(),
+            error: error.clone(),
+        };
+        assert_eq!(store.local().overlays, std::slice::from_ref(&open));
+        // The modal's Confirm: the asker gets the command, nothing is sent
+        // with the default policy.
+        store.dispatch_confirmed(export.clone());
+        assert_eq!(*got.borrow(), std::slice::from_ref(&export));
+        assert_eq!(store.pending_requests(), 0);
+        store.update_local(|l| l.overlays.clear());
+
+        // Asked again, then cancelled: the hook goes with the overlay.
+        let seen = Rc::clone(&got);
+        store.ask_confirmation(export.clone(), error, move |cmd| {
+            seen.borrow_mut().push(cmd);
+        });
+        store.update_local(move |l| {
+            l.close_overlays(|o| *o == open);
+        });
+        store.dispatch_confirmed(export);
+        assert_eq!(got.borrow().len(), 1, "not the cancelled asker's");
+        assert_eq!(store.pending_requests(), 1, "the default path sent it");
+        drain(&store);
+    }
+
+    /// `waitIdle` (G§3.18) settles the window's own export once its job
+    /// runs (it reported progress and an export is in the job table): its
+    /// answer comes only when it ends. Its other requests still count.
+    #[test]
+    fn an_own_export_settles_once_its_job_runs() {
+        let store = store();
+        let export = Command::Export {
+            format: qrec_core::protocol::command::ExportFormat::Mp4,
+            quality: qrec_core::protocol::command::Quality::Draft,
+            codec: None,
+            out: None,
+        };
+        store.dispatch_with(export, false, |_| {});
+        assert_eq!(store.unsettled_requests(), 1, "sent, not started");
+        let progress = Progress {
+            phase: qrec_core::protocol::ProgressPhase::Render,
+            done: 0,
+            total: 90,
+            eta_secs: None,
+            label: "Rendering clip 1/3".into(),
+            take: None,
+        };
+        store.on_progress(1, Some(&progress));
+        assert_eq!(store.unsettled_requests(), 1, "no export in the table yet");
+        let mut next = (*store.state()).clone();
+        let ctx = testkit::ctx("2026-10-14T15:30:12Z", 1);
+        let cmd = Command::Export {
+            format: qrec_core::protocol::command::ExportFormat::Mp4,
+            quality: qrec_core::protocol::command::Quality::Draft,
+            codec: None,
+            out: None,
+        };
+        next = qrec_core::apply(&next, &ctx, cmd).unwrap().state;
+        store.on_snapshot(1, Arc::new(next));
+        assert_eq!(store.unsettled_requests(), 0, "its job runs");
+        assert_eq!(store.pending_requests(), 1, "still unanswered");
+        store.dispatch(Command::Select { op: SelectOp::All });
+        assert_eq!(store.unsettled_requests(), 1, "another request counts");
+        // The export ends: the job leaves the table, the request counts
+        // again until its answer is in.
+        store.on_snapshot(2, Arc::new(testkit::design_state()));
+        assert_eq!(store.unsettled_requests(), 2);
+        drain(&store);
+        assert_eq!(store.unsettled_requests(), 0, "both answered");
     }
 
     #[test]

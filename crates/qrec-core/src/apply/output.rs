@@ -16,8 +16,10 @@ use crate::error::CoreError;
 use crate::export_plan::{ExportOptions, export_vaapi, plan_export, require_ffmpeg, resolve_codec};
 use crate::frame_plan::{frame_source, plan_frame};
 use crate::ids::{JobId, LayerId};
+use crate::model::Clip;
 use crate::naming::{export_file_name, frame_file_name};
 use crate::on_event::output::export_progress_view;
+use crate::plans::SegmentPlan;
 use crate::protocol::command::{ExportFormat, Quality, VideoCodec};
 use crate::protocol::effect::{Effect, LogLevel};
 use crate::protocol::reply::CmdResult;
@@ -74,6 +76,7 @@ pub fn export(
     let mut next = state.clone();
     let id = next.runtime.alloc_job_id();
     let seg_frames: Vec<u64> = plan.segments.iter().map(|s| s.frames).collect();
+    let seg_clips = segment_clips(&project.timeline.clips, &plan.segments);
     let job = Job {
         id,
         kind: JobKind::Export {
@@ -82,6 +85,7 @@ pub fn export(
             total_frames: plan.total_frames,
             seg_done: vec![0; seg_frames.len()],
             seg_frames,
+            seg_clips,
             stitch_total_ns: frame_ns(plan.total_frames as i64, project.canvas.fps).max(0) as u64,
             stitch_done_ns: 0,
             stitching: false,
@@ -177,6 +181,23 @@ pub fn frame_save(
         vec![Effect::SaveFrame { job: id, plan }],
         None,
     ))
+}
+
+/// Each segment's timeline clips, as their frame counts in timeline order
+/// (`JobKind::Export::seg_clips`): a segment renders one run of continuous
+/// clips (A§9.3), so they add up to its frames.
+fn segment_clips(clips: &[Clip], segments: &[SegmentPlan]) -> Vec<Vec<u64>> {
+    segments
+        .iter()
+        .map(|segment| {
+            segment
+                .clips
+                .iter()
+                .filter_map(|id| clips.iter().find(|c| c.id == *id))
+                .map(Clip::len)
+                .collect()
+        })
+        .collect()
 }
 
 /// The running export, if any.
@@ -299,6 +320,7 @@ mod tests {
                 total_frames: 250,
                 seg_frames: vec![100, 150],
                 seg_done: vec![0, 0],
+                seg_clips: vec![vec![100], vec![150]],
                 stitch_total_ns: 8_333_333_333,
                 stitch_done_ns: 0,
                 stitching: false,

@@ -23,19 +23,25 @@ use crate::state::{Job, JobKind, State};
 /// The toast of a finished export (A§5.9).
 pub const EXPORT_DONE_TITLE: &str = "Layers! Like an onion. Your video is ready.";
 
+/// The toast of a failed export (A§5.9).
+pub const EXPORT_FAILED_TITLE: &str = "Export failed";
+
 /// How much ffmpeg stderr a failure shows (SPEC §13.1).
 pub const STDERR_TAIL_LINES: usize = 30;
 
 /// The progress of an export job: `0.9·Σseg_done/total + 0.1·stitch` in
 /// frames of `total_frames`, ETA from the time since it started, label
-/// "Rendering clip 4/12" or "Stitching". `None` for other jobs. A GUI
-/// shows a running export from any host with it (`hello.jobs`, the export
-/// slot, the export panel's [`export_readout`]).
+/// "Rendering clip 4/12" or "Stitching". The label counts the timeline's
+/// clips the export renders ([`rendered_clips`]): the clips rendered whole,
+/// plus one. `None` for other jobs. A GUI shows a running export from any
+/// host with it (`hello.jobs`, the export slot, the export panel's
+/// [`export_readout`]).
 pub fn export_progress_view(job: &Job, now: DateTime<Utc>) -> Option<Progress> {
     let JobKind::Export {
         total_frames,
         seg_frames,
         seg_done,
+        seg_clips,
         stitch_total_ns,
         stitch_done_ns,
         stitching,
@@ -59,12 +65,7 @@ pub fn export_progress_view(job: &Job, now: DateTime<Utc>) -> Option<Progress> {
     let (phase, label) = if *stitching {
         (ProgressPhase::Stitch, "Stitching".to_owned())
     } else {
-        let finished = seg_done
-            .iter()
-            .zip(seg_frames)
-            .filter(|(done, frames)| done >= frames)
-            .count();
-        let count = seg_frames.len();
+        let (finished, count) = rendered_clips(seg_frames, seg_done, seg_clips);
         (
             ProgressPhase::Render,
             format!("Rendering clip {}/{count}", (finished + 1).min(count)),
@@ -81,6 +82,45 @@ pub fn export_progress_view(job: &Job, now: DateTime<Utc>) -> Option<Progress> {
         label,
         take: None,
     })
+}
+
+/// How many of the clips an export renders are rendered whole, and how many
+/// it renders: the timeline's clips (`seg_clips`, each segment's clips as
+/// their frame counts: a render unit of continuous clips counts each,
+/// A§9.3), or the segments for a job without them.
+pub fn rendered_clips(
+    seg_frames: &[u64],
+    seg_done: &[u64],
+    seg_clips: &[Vec<u64>],
+) -> (usize, usize) {
+    if seg_clips.is_empty() || seg_clips.len() != seg_frames.len() {
+        let finished = seg_done
+            .iter()
+            .zip(seg_frames)
+            .filter(|(done, frames)| done >= frames)
+            .count();
+        return (finished, seg_frames.len());
+    }
+    let count = seg_clips.iter().map(Vec::len).sum();
+    let finished = seg_clips
+        .iter()
+        .zip(seg_done)
+        .map(|(clips, done)| clips_done(clips, *done))
+        .sum();
+    (finished, count)
+}
+
+/// How many of a render unit's clips (their frame counts, in timeline
+/// order) its first `done` frames cover whole.
+pub fn clips_done(clips: &[u64], done: u64) -> usize {
+    let mut end = 0u64;
+    clips
+        .iter()
+        .take_while(|frames| {
+            end += **frames;
+            end <= done
+        })
+        .count()
 }
 
 /// What the export panel and the header's export slot read while an
@@ -291,7 +331,7 @@ pub fn export_failed(
         });
     }
     effects.push(Effect::Notify(open_log_action(
-        Toast::new(ToastLevel::Error, "Export failed").with_body(failure_body(&message, &tail)),
+        Toast::new(ToastLevel::Error, EXPORT_FAILED_TITLE).with_body(failure_body(&message, &tail)),
         log_path.as_deref(),
     )));
     effects.push(log(
@@ -717,6 +757,7 @@ mod tests {
                 total_frames: 7391,
                 seg_frames: seg_frames.clone(),
                 seg_done: vec![410, 457, 268, 307, 238, 200, 100, 900, 400, 169],
+                seg_clips: Vec::new(),
                 stitch_total_ns,
                 stitch_done_ns: 0,
                 stitching: false,
@@ -770,6 +811,7 @@ mod tests {
                 total_frames: 90,
                 seg_frames: vec![90],
                 seg_done: vec![0],
+                seg_clips: vec![vec![90]],
                 stitch_total_ns: 3_000_000_000,
                 stitch_done_ns: 0,
                 stitching: false,
@@ -795,7 +837,8 @@ mod tests {
     #[test]
     fn the_design_export_reads_like_s15b() {
         // The design timeline renders in 9 units: c2d0 and c2d1 (a split)
-        // are one run of take 5, so the label counts 9, not BRIEF's 10.
+        // are one run of take 5. The label counts the timeline's 10 clips
+        // (BRIEF's "Rendering clip 6/10"): the job knows each unit's clips.
         let state = testkit::design_state();
         let ctx = testkit::ctx("2026-10-14T15:30:12Z", 1);
         let cmd = Command::Export {
@@ -806,10 +849,30 @@ mod tests {
         };
         let mut state = apply(&state, &ctx, cmd).unwrap().state;
         let job = *state.runtime.jobs.keys().next().unwrap();
-        let JobKind::Export { seg_frames, .. } = &state.runtime.jobs[&job].kind else {
+        let JobKind::Export {
+            seg_frames,
+            seg_clips,
+            ..
+        } = &state.runtime.jobs[&job].kind
+        else {
             panic!("not an export");
         };
         assert_eq!(seg_frames, &[410, 457, 268, 307, 238, 249, 155, 2202, 3105]);
+        assert_eq!(
+            seg_clips,
+            &[
+                vec![410],
+                vec![457],
+                vec![268],
+                vec![307],
+                vec![238],
+                vec![249],
+                vec![155],
+                vec![1092, 1110],
+                vec![3105]
+            ]
+        );
+        // Five clips rendered, c2d0 not yet: 3,449 frames in all.
         for (segment, frames_done) in [
             (0, 410),
             (1, 457),
@@ -818,8 +881,8 @@ mod tests {
             (4, 238),
             (5, 100),
             (6, 50),
-            (7, 1200),
-            (8, 419),
+            (7, 1000),
+            (8, 619),
         ] {
             let event = Event::ExportProgress {
                 job,
@@ -839,8 +902,40 @@ mod tests {
                 readout.elapsed_secs,
                 readout.eta_secs
             ),
-            (42, 3449, 7391, "Rendering clip 6/9", 38, Some(52))
+            (42, 3449, 7391, "Rendering clip 6/10", 38, Some(52))
         );
+        // Past c2d0's 1,092 frames its unit has rendered one clip whole.
+        let event = Event::ExportProgress {
+            job,
+            segment: 7,
+            frames_done: 1100,
+        };
+        let state = on_event(&state, &ctx, event).state;
+        let readout =
+            export_readout(&state.runtime.jobs[&job], at("2026-10-14T15:30:50Z")).unwrap();
+        assert_eq!(readout.label, "Rendering clip 7/10");
+    }
+
+    /// The clips counted whole: each unit's clips its frames cover, or the
+    /// segments for a job that doesn't name its clips.
+    #[test]
+    fn rendered_clips_count_the_timelines_clips() {
+        let frames = [410, 2202, 3105];
+        let clips = [vec![410], vec![1092, 1110], vec![3105]];
+        assert_eq!(rendered_clips(&frames, &[0, 0, 0], &clips), (0, 4));
+        assert_eq!(rendered_clips(&frames, &[410, 1091, 0], &clips), (1, 4));
+        assert_eq!(rendered_clips(&frames, &[410, 1092, 0], &clips), (2, 4));
+        assert_eq!(rendered_clips(&frames, &[410, 2202, 3105], &clips), (4, 4));
+        // Without the clips (or not one list per segment): the segments.
+        assert_eq!(rendered_clips(&frames, &[410, 1092, 0], &[]), (1, 3));
+        assert_eq!(
+            rendered_clips(&frames, &[410, 2202, 0], &clips[..2]),
+            (2, 3)
+        );
+        assert_eq!(clips_done(&[1092, 1110], 0), 0);
+        assert_eq!(clips_done(&[1092, 1110], 1092), 1);
+        assert_eq!(clips_done(&[1092, 1110], 5000), 2);
+        assert_eq!(clips_done(&[], 10), 0);
     }
 
     /// S16b: the done toast reads "<path> · 88.4 MB" with Open file and

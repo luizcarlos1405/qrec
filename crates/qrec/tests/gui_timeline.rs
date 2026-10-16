@@ -316,13 +316,14 @@ fn s09_frame_level() {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s09_frame_level_at_scale_2() {
-    let opts = Options {
-        width: 3200,
-        height: 2000,
-        scale: 2.0,
-        ..Options::default()
-    };
-    frame_level("s09-scale-2", opts);
+    frame_level("s09-scale-2", Options::at_scale(1600, 1000, 2.0));
+}
+
+/// S09 at `QREC_TEST_SCALE=1.5`: GTK draws at the whole scale factor 2.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s09_frame_level_at_scale_1_5() {
+    frame_level("s09-scale-1.5", Options::at_scale(1600, 1000, 1.5));
 }
 
 fn frame_level(case: &str, opts: Options) {
@@ -339,6 +340,19 @@ fn frame_level(case: &str, opts: Options) {
     assert!(toolbar.contains(&"32 px/frame".to_owned()), "{toolbar:?}");
     let corner = nested.window(0).labels("ruler");
     assert!(corner.contains(&"00:01:45:26".to_owned()), "{corner:?}");
+    // The frames (and strips) are 72 px × the window's scale factor high:
+    // 144 at 2 and at 1.5 (G§3.11, G§8.4 scale runs).
+    let want = 72 * gui_support::scale_factor(nested.opts.scale);
+    let heights = gui_support::poll(Duration::from_secs(20), "the frame images", || {
+        nested.window(0).wait_idle();
+        let heights = gui_support::preview_heights(&project);
+        (!heights.is_empty()).then_some(heights)
+    });
+    assert_eq!(
+        heights,
+        std::collections::BTreeSet::from([want]),
+        "frame images {want} px high"
+    );
     shoot(&nested, "frame-level", Some("S09-timeline-frame-level.png"));
     assert_clean(&mut nested);
 }
@@ -351,7 +365,26 @@ fn frame_level(case: &str, opts: Options) {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s10_trimming() {
-    let mut nested = Nested::start(AREA, "s10", Options::default());
+    trimming("s10", Options::default());
+}
+
+/// S10's scripted trim at `QREC_TEST_SCALE=2` (G§8.4 scale runs): the same
+/// logical drag hits the same edge and trims the same 29 frames.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s10_trimming_at_scale_2() {
+    trimming("s10-scale-2", Options::at_scale(1600, 1000, 2.0));
+}
+
+/// S10's scripted trim at `QREC_TEST_SCALE=1.5`.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s10_trimming_at_scale_1_5() {
+    trimming("s10-scale-1.5", Options::at_scale(1600, 1000, 1.5));
+}
+
+fn trimming(case: &str, opts: Options) {
+    let mut nested = Nested::start(AREA, case, opts);
     let project = fixture(
         &nested,
         DesignVariant::Base,

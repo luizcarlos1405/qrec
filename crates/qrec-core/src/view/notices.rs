@@ -172,6 +172,7 @@ mod tests {
                     total_frames: 7391,
                     seg_frames: vec![7391],
                     seg_done: vec![3449],
+                    seg_clips: Vec::new(),
                     stitch_total_ns: 1,
                     stitch_done_ns: 0,
                     stitching: false,

@@ -593,7 +593,16 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
     `crates/qrec-core/tests/props_late_errors.rs` holds every `on_event`
     path to that).
   - Widgets that own a flow (export panel, autocut page, purge) pass their
-    own `done`.
+    own `done`. One whose command comes back `confirmation_required` opens
+    the modal with `store.ask_confirmation(cmd, error, confirmed)`:
+    confirming it hands `cmd` to `confirmed` (`Store::dispatch_confirmed`
+    finds the hook), which sends it again with `confirmed: true` and its
+    own `done`, instead of the default policy; the hook goes when the
+    overlay closes unconfirmed. The export panel's Replace modal (D-24) is
+    one: an export confirmed there shows Running, then Done or Failed, like
+    any of the panel's own (WP7 integration; it ended in the core's toasts
+    only). `modal.rs` sends the confirmed command before it closes the
+    overlay (the hook goes with it).
 - **Gestures** (A§4.1, SPEC §7.1).
   - During a drag the widget computes its preview with `view::*`. When it
     needs the resulting layout it may call `qrec_core::apply` on a clone,
@@ -617,7 +626,10 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
   at most two actions are shown (DESIGN). `Dispatch(Undo{..})` stays
   enabled only while `history.cursor` equals its value when the toast
   arrived. A done-export toast is dropped while the export panel shows
-  that export's Done state.
+  that export's Done state, and the export-failed one while it shows its
+  Failed state (`toasts::shown_by_the_panel`; WP7 integration: S17 draws
+  no toast over the panel). The panel answers first: the core sends the
+  reply before the toast, through the same queue.
 - **`UiAction`** (`desktop.rs`, WP0b):
   - `OpenPath` → `gtk::FileLauncher::launch`;
   - `RevealPath` → `gtk::FileLauncher::open_containing_folder`;
@@ -1287,7 +1299,12 @@ time; A§8.7 rules for every child).
     `record-glow` shadow), the mud bar, the countdown, spinners and the
     ghost stripes; `adw::TimedAnimation` for zoom, the bin drawer, the
     panel sheet and toasts. CSS transitions only for hover and state
-    colors. So test mode can freeze every animation (G§8.4).
+    colors. So test mode can freeze every animation (G§8.4). A tick
+    callback runs only while its widget visibly moves: the mud bar's only
+    while an export runs with motion allowed and the clock moving
+    (`mud_bar::animates`; done and failed bars, reduced motion and test
+    mode's frozen clock, `motion::frozen()`, are still pictures; WP7
+    integration), like the meters' 30 Hz timer (G§8.6).
 - **Fonts** (SPEC §15.3, Q11):
   - bundled files `Fraunces[SOFT,WONK,opsz,wght].ttf`,
     `AtkinsonHyperlegibleNext[wght].ttf`, `JetBrainsMono[wght].ttf` from
@@ -1582,6 +1599,30 @@ through `run_tool`, their background CLIs through
 fixture's dry run through `run_tool`) and `gui_support/mod.rs` (those
 two helpers).
 
+The WP7 merge (e3b30a0) kept WP7's changes to `desktop.rs` (WP0b's:
+`resolve()`, so Open file and Open folder find project-relative paths under
+the project) and `timeline/mod.rs` (WP3's: the bin drop target's
+`set_preload(true)`), and added `theme/motion.rs`'s `frozen()` (WP0b's).
+Its integration changed `store/mod.rs` (WP0b's: `Store::ask_confirmation`,
+the confirmed re-dispatch's hook, `unsettled_requests`, G§3.7, G§3.18),
+`modal.rs` (WP6's: the confirmed command is sent before the overlay
+closes), `toasts.rs` (WP6's: the export-failed toast is dropped while
+the panel shows its Failed page, `shown_by_the_panel`), `testctl.rs`
+(`waitIdle` through `unsettled_requests`; the doc names
+`QREC_GUI_TEST_SAVE_AS`), `startup/mod.rs` (a test's job literal); in the
+core `view/confirm.rs` (WP6's: the purge's loss list in BRIEF's order),
+`state.rs` (`JobKind::Export::seg_clips`), `apply/output.rs`
+(`segment_clips`), `on_event/output.rs` (`rendered_clips`, `clips_done`:
+the label counts timeline clips, G§4.8, A§5.8; `EXPORT_FAILED_TITLE`), the job literals in
+`apply/history.rs`, `keymap.rs`, `view/{header,hints,notices}.rs` and
+`tests/{protocol_json,record_machine}.rs`, and `tests/props_output.rs`
+(`export_jobs_count_the_timelines_clips`); in the shell `ipc/testing.rs` (a
+job literal); and the harness and other suites: `gui_support/mod.rs`
+(`preview_heights`, `scale_factor`, `assert_live_picture_drawn_at`),
+`gui_stage.rs` (S02 at 1.5, S06 at 2 and 1.5, the adaptive S02 and S06
+cases), `gui_timeline.rs` (S09 at 1.5 and the frames' heights, S10's trim
+at 2 and 1.5), `gui_chrome.rs` (S16b's body, WP7's copy).
+
 ### G§3.18 Test control channel (`src/testctl.rs`, WP0b)
 
 Active only under `QREC_GUI_TEST` (G§8.4). A socket per window,
@@ -1598,7 +1639,7 @@ previews, the player, io, opening, the portal).
 
 | Request | Reply |
 | --- | --- |
-| `{"op":"waitIdle"}` | `{"ok":true,"rev":R}` once: `PreviewCache::in_flight()` is 0, the player isn't loading or seeking, and every `qrec-gui-io` job finished with no `MediaHub::hold_io_busy` token held (all checked before the queue: what they send is in the queue before they say they are idle; a debounce that leads to io work holds a token, as the autocut page's 250 ms dry-run debounce does until its dry run is sent, WP5); the inbound queue is empty; the GUI's own requests are answered; no source is `AwaitingPortal`; the window isn't opening; the stage is idle (`stage::busy`, WP4: no program reload is due, and in Live the engine settled its live scenes, `LiveControl::progress`, and the picture drew 10 frames since its visible live sources had sizes, again for each new pipeline, `media::live::LiveWatch`); and a frame was drawn after all that and it still holds (frame clock `after-paint`) |
+| `{"op":"waitIdle"}` | `{"ok":true,"rev":R}` once: `PreviewCache::in_flight()` is 0, the player isn't loading or seeking, and every `qrec-gui-io` job finished with no `MediaHub::hold_io_busy` token held (all checked before the queue: what they send is in the queue before they say they are idle; a debounce that leads to io work holds a token, as the autocut page's 250 ms dry-run debounce does until its dry run is sent, WP5); the inbound queue is empty; the GUI's own requests are answered, but for an export of its own once its job runs (`Store::unsettled_requests`: it reported progress and an export is in the job table; WP7 integration); no source is `AwaitingPortal`; the window isn't opening; the stage is idle (`stage::busy`, WP4: no program reload is due, and in Live the engine settled its live scenes, `LiveControl::progress`, and the picture drew 10 frames since its visible live sources had sizes, again for each new pipeline, `media::live::LiveWatch`); and a frame was drawn after all that and it still holds (frame clock `after-paint`) |
 | `{"op":"regions","names":[…]}` | `{"regions":{"<name>":[x,y,w,h],…}}`: window-logical bounds of every widget named `region-*` and of the named parts in G§8.4, plus the visible widgets named in `names` (a button a case clicks) |
 | `{"op":"labels","name":"region-header"}` | `{"ok":true,"labels":[…],"entries":{…}}`: the text of every visible label under the widget `name` (default: the window), in tree order, and each visible text field's value by its nearest given name (`"inspector-x": "1280"`, `Gui::entries`; WP5 integration) |
 | `{"op":"dispatch","command":{…},"confirmed":false}` | `Store::dispatch_with` with the default reply policy (confirmations open their modal); `{"ok":true}` at once |
@@ -1611,6 +1652,17 @@ previews, the player, io, opening, the portal).
 | `{"op":"art"}` | each illustration through `gtk::Svg` (`theme::art`): loaded, its size, drawn pixels and `errors` (GtkSvg's, none for `ok`), and `probeErrors` of a known-bad SVG (`<foreignObject>`; at least one for `ok`: the count works) |
 
 Dispatches go through the Store (R8); the other ops only read.
+
+The window's own export (WP7 integration): its request is answered only
+when the export ends, so `waitIdle` used to block for the whole export and
+WP7's cases clicked Export without it. A long job whose progress arrives as
+events is settled once it started: the request counts until it reported
+progress and an export is in the job table (then every progress event is a
+snapshot through the queue, which `waitIdle` waits for like any), and again
+once the job left the table until its answer is in. Only exports: the
+window's own `record start` and `record stop` report progress too, and
+their cases wait for their answers (the take landing) as before. Every
+nested case still waits through deadlines (`timeoutMs`, `poll`).
 
 The live picture's first frames: WP4's `LiveWatch` makes `waitIdle`
 wait, in Live, until the visible live sources have sizes and the picture
@@ -2280,21 +2332,37 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     frames" (S15b). "Elapsed 00:00:38 · About 00:00:52 left" (no ETA until
     known); "Exporting the timeline as it was at 15:30:12. You can keep
     editing." (`job.started`, local time).
+    The label counts the timeline's clips, not the shell's render
+    segments: a render unit joins continuous clips (A§9.3; the design
+    timeline's c2d0 and c2d1 render as one, 9 units for 10 clips), so the
+    export job keeps each segment's clips as their frame counts
+    (`JobKind::Export::seg_clips`, from the plan and the snapshot it was
+    planned from) and "clip k/N" is the clips its units' frames cover whole
+    plus one, N the clips it renders (`on_event::output::rendered_clips`;
+    the CLI's progress lines read the same). A job without `seg_clips`
+    counts segments. (WP7 integration: the label read "clip 6/9".)
   - Done: "88.4 MB · 1920×1080 · 30 fps · 00:04:06:11 · took 00:01:31";
     buttons Copy path, Open folder, Open file (primary).
   - Failed:
     - lead "ffmpeg stopped while rendering clip 3/10 (take 3, c1b2).
       Nothing was written to exports/.", from the last progress seen and
       the render units of the timeline snapshot taken when the export
-      started (runs of continuous clips, A§9.3);
+      started (runs of continuous clips, A§9.3): the failed unit is the
+      error's segment ("segment 3/9 (take-0003, …)"), else the first unit
+      the job hadn't finished; the clip is the one of its clips its
+      rendered frames reach into (the last job seen, `FailedExport::job`),
+      counted among the snapshot's clips the export renders ("3/10", not
+      the unit's "3/9"); "joining the clips" for the stitch; else the
+      error's message;
     - hint line from a pattern table over the stderr tail: VA-API init
       failure → "VA-API couldn't start on /dev/dri/renderD129. Try
       Settings › Recording › Encoder: x264." (the node from the tail, else
       from `capabilities`); "No space left" → "The disk is full. Free some
       space and try again."; "Unknown encoder" → "This ffmpeg has no
       <encoder>. Run qrec doctor."; otherwise no hint;
-    - "Failed at 37%"; the stderr tail (≤ 30 lines, `details.stderrTail`);
-      the log (`details.log`).
+    - "Failed at 37%" (the last job seen's percent; `Failed::fraction`
+      for the bar); the stderr tail (≤ 30 lines, `details.stderrTail`); the
+      log (`details.log`).
   - The core's export-done toast (WP7, `on_event/output.rs`): body
     "<path> · <size>" (`format::size(bytes)`; the path as the job reports
     it, project-relative for auto names, A§1.3) and the actions Open file,
@@ -2317,7 +2385,7 @@ the overwrite copy, which WP0a now builds.)
 
 | Command | Lead / body / list / button |
 | --- | --- |
-| `TakePurge` (`details {files, historyEntriesLost, oldestKept}`) | "Purge take 2 and take 4 from disk?" (one: "Purge take 4 from disk?"; ≥ 3: "Purge 3 takes from disk?") / "This permanently deletes 10 files (184.1 MB). It can't be undone, and the 6 history entries that mention these takes are removed too." (the clause is dropped at 0 entries) / files with sizes / "Purge 2 takes" or "Purge take 4" |
+| `TakePurge` (`details {files, historyEntriesLost, oldestKept}`) | "Purge take 2 and take 4 from disk?" (one: "Purge take 4 from disk?"; ≥ 3: "Purge 3 takes from disk?") / "This permanently deletes 10 files (184.1 MB). It can't be undone, and the 6 history entries that mention these takes are removed too." (the clause is dropped at 0 entries) / files with sizes, each take's layers, then its tracks, then its other files (BRIEF S18's order; the shell lists them by path; WP7 integration) / "Purge 2 takes" or "Purge take 4" |
 | `ProjectSet` with an fps change (Settings › Project; `details {clips:[{id,before,after}], removedClips}`) | "Change the canvas to 25 fps?" / "Clip bounds are re-quantized to the new frame rate. These 10 clips move by up to 1 frame:" (+ "c1b6 becomes empty and is removed." per removed clip) / every clip "c7f3 · take 1 · [0, 410) → [0, 342)" (8 visible, then it scrolls) / "Change fps" |
 | `Export` or `FrameSave` overwrite (`details {files:[{path,bytes}]}` + `ConfirmFacts`) | "Replace talk-final.mp4?" / "~/Videos/talk-final.mp4 already exists (91.2 MB, modified today at 15:02). Exporting here overwrites it." ("Saving the frame here overwrites it."; another day "modified Oct 14 at 15:02", another year "Oct 14, 2025 at 15:02", `format::local_when`; an unknown size or mtime is left out, and an unknown display the path as given) / — / "Replace file" |
 | `HistoryClear` (WP9) | "Clear undo history?" / "This removes 128 undo steps from .qrec/history.jsonl. The timeline stays as it is, but you can't undo anything done before now." / — / "Clear history" |
@@ -2434,7 +2502,7 @@ below; read them with `Get` while `design/qrec.pen` is active).
 | C18 Playhead, caret | `AgTAK`, `pKx7D`, `NhiaL` | `TimelineOverlay`, a separate widget redrawn per frame; the caret also for bin drops (D-38) | WP3 |
 | C19 Hatch | `GjISD`, `S6jeR8`, `VJilp`, `pHuYi`, `vuBiA` | `widgets::draw::hatch(snapshot, rect, stripe, edges, edge, scale)`: 45°, 2 px stripe, 6 px pitch, 1 px edges, × the UI scale (`HatchMetrics`), anchored to content x; the timeline paints the same metrics in its pre-scaled snapshot (G§4.5) | WP0b |
 | C20 List rows, checkbox | `flVDh`, `lYSdk`, `s0cPIL`, `m3mLzK`, `l3NPvv` | `gtk::ListBox` rows `.row-32/40/44/72`; `gtk::CheckButton` styled; R1 on `surface`, R2 on `raised` | WP0b (CSS) |
-| C21 Bin row, header, footer | `Se0zW` + states, `kD9zO`, `ZLlMZ` | custom row + `gtk::Revealer` for the actions; `gtk::DragSource` (D-38) | WP7 |
+| C21 Bin row, header, footer | `Se0zW` + states, `kD9zO`, `ZLlMZ` | custom row (`bin_drawer/row.rs`) whose actions show under it while it is the only one selected (a plain box, no `gtk::Revealer`: the frame draws no motion for them); `gtk::DragSource` (D-38); the drawer slides in `bin_drawer/slide.rs` (G§7.2) | WP7 |
 | C22 Status chip | `m3Gc2`, `yX8If`, `c9f9HC`, `pn17Q` | `widgets::Chip` | WP0b |
 | C23 Toast | `R7g4Dq` + levels, `PaHF5` | `ToastHost` / `ToastView` in `content_layer`; a body that starts with an action's path is `mono-sm` (S16b), others `body-sm`; a "+N" queue chip (not drawn) follows the title; Undo is guarded by the history cursor | WP6 |
 | C24 Modal | `x5RrCQ`, `VDIBZ`, `NdrWq`, scrim `Y83G19` | `ModalView` in `content_layer` (scrim to y 968, stacked over Settings); Cancel focused | WP6 (text stub: WP0b) |
@@ -2443,7 +2511,7 @@ below; read them with `Get` while `design/qrec.pen` is active).
 | C27 Switch | `z9laF`, `p3tmIy` | `gtk::Switch` styled | WP0b |
 | C28 Segmented | `NZKuJ`, `L46uU`, `jmq6y` | `adw::ToggleGroup` styled; the Settings switcher too (`adw::ToggleGroup` + `gtk::Stack`: `adw::InlineViewSwitcher`'s pages can't be disabled, D-48; WP6) | WP0b, WP6 |
 | C29 Fields | `j1hIDi`, `oc5uM`, `vpmJy`, `EfoCl`, `oE7jW` | `gtk::Entry`; `NumericField` (Box `.field` + `gtk::Text` right-aligned + unit label; arrows and scroll step; no ± buttons); `gtk::DropDown`; `gtk::SearchEntry` | WP0b (CSS), WP5 |
-| C30 Mud bar, export progress | `S5YPm4`, `T2C2U5`, `J6HyOH`, `TKIqZ`, `c0pJo3`, `cUfiU` | `widgets::MudBar` (snapshot + tick callback from `motion::now()`; seeded PRNG) | WP7 |
+| C30 Mud bar, export progress | `S5YPm4`, `T2C2U5`, `J6HyOH`, `TKIqZ`, `c0pJo3`, `cUfiU` | `widgets::MudBar` (snapshot from `motion::now()` over the GTK-free `MudSim`, seeded PRNG; a tick callback only while it animates: running, motion allowed, the clock moving) | WP7 |
 | C31 Empty states | `HVO2S`, `p3Dpn`, `uBSb8` | timeline (WP3), panel (WP5), blocking: interim pages (WP0b), drawn pages (WP8) | WP3, WP5, WP0b, WP8 |
 | C32 Theme card | `qqnCi` + themes | `ThemeCard` drawn from that theme's `Palette` | WP9 |
 | C33 Tooltip | `AbHWk`, `T7Ws1`, `m1fwku` | `widgets::tooltip::{text, keys}` via `query-tooltip` + `set_custom`; the clip tooltip is WP3 | WP0b |
@@ -2765,6 +2833,79 @@ reduced motion (WP1–WP7). Visible departures of the final shots:
   0.4; the rename field opens with the name selected; the focus ring is
   shot on L1 ("Main screen"), the board's on a "Face" row.
 - S18b: the Settings pages not built yet read disabled (D-48).
+
+Status after the WP7 merge (e3b30a0) and its integration: **final: S14
+S15a S15b S15c S16 S16b S17 S18**, the scale runs (S02, S06, S09 and S14
+at 2 and 1.5, and S10's trim at both), the reduced-motion runs (S03, S04,
+S15c, the panel's pages) and the adaptive runs (S02 at 1300×1000 and at
+1000×1000 with the sheet, S06 at 1600×800): every case and run of the
+table is final. Re-run after the integration: the workspace 1655 passed, 0
+failed, 105 ignored; nested, on pixman and on gles2 alike, gui_shell 21,
+gui_smoke 1, gui_chrome 11, gui_timeline 17, gui_stage 23, gui_panel 9,
+gui_bin_export 14, and gui_bin_export twice more on each (14 every time);
+gles2's warm frame-time p99 16.6 ms. Each shot is next to its frame in
+`tmp/gui-shots/final/<case>-compare.png` (the scale runs at their device
+size with the frame scaled up, `<case>-scale2`, `-scale1.5`; S15c's two
+panels next to its 1040×769 board; S03 and S04's reduced-motion shots
+next to the animated frames); the adaptive shots are there alone
+(`S02-1300`, `S02-1000-closed`, `S02-1000-sheet`, `S06-800`: no frames,
+G§0.3); the gles2 run's in `final/gles2/`. Visible departures of these
+shots (on top of the "everywhere" items above):
+
+- Everywhere: the fixture's files are small, so every size is the
+  fixture's ("5 takes · 31.4 MB", "10 files (17.0 MB)", "1.6 MB").
+- S14: the thumbnails are the fake test pattern's (take 6's from its
+  first frame: 7 frames have no strip image); take 9's broken thumbnail
+  carries `dialog-error-symbolic` and the bin's close Adwaita's smaller
+  `window-close-symbolic` (G§5.2's stand-ins for circle-x and x); take 2
+  reads "Removed from the timeline." where the frame reads "Discarded with
+  D." (the fixture writes no history, G§8.4).
+- S15a: "software encode (x264)" where the frame names VA-API on
+  renderD129 (the fake backend probes no VA device, G§8.4).
+- S15b and S15c's running page: the file and "as it was at" carry the
+  export's real start (the setup's preview is the test-mode now, 15:30:12;
+  the job is named when it starts); elapsed and left are real; at 42 %
+  eight units render at once, so the label is further on ("Rendering clip
+  8/10" at 42–43 %, the frame's 6/10 at 42 %).
+- S16, S16b: the Smoke fixture's export (3 clips of 30 frames: 1.6 MB,
+  00:00:03:00, took 00:00:01, its own name); around S16's panel the Smoke
+  project (the header's "3 clips · 00:00:03:00", its 3-clip timeline; no
+  c2d0, so nothing selected: Program is read-only and the panel's
+  inspector disabled, D-06, where the frame shows take 5's layout).
+- S17: it fails at 11 % (units 1 and 2 rendered, 867 of 7,391 frames;
+  the frame's 37 %); the status icon is `dialog-error-symbolic` (G§5.2's
+  stand-in for circle-x); Open full log names the failed segment's log
+  (`.qrec/logs/<stamp>-<pid>-j1-seg2.log`, ellipsized at its start) where
+  the frame names `export-20261014-153012.log`; the frame's first stderr
+  line looks faded (not built: a pen-file need).
+- S18: the modal has no history clause (the frame's "…, and the 6
+  history entries that mention these takes are removed too.": the fixture
+  has no history).
+- Fixed on the way (WP7 integration): the core's "Export failed" toast
+  showed over S17's panel, which already shows the failure (dropped now,
+  like the done toast under S16's Done page, G§3.7); S18's loss list read
+  in path order (A1, A2, L1, L2, recorder.log per take) where BRIEF and
+  the frame list the layers, then the tracks, then the log (G§4.9).
+- Scale runs: the departures of their cases at 1, nothing more at the
+  device size (at 1.5 the window draws at its whole factor, 2, and sway
+  scales the buffer down: fractional-scale rendering is WP10's audit).
+- Reduced motion: S03's ring and digit hold still and S04's REC badge has
+  no torch glow (DESIGN's reduced motion; the frames are the animated
+  look at frame A); S15c's bar is flat with no bubbles, as the board's.
+- Adaptive (DESIGN Layout, G§3.15; no frames, so checked against the
+  rules): S02 at 1300×1000 is Medium: the panel docked at 320 (its source
+  lines ellipsize, "GIGA-BYT…"; with no layer selected the inspector shows
+  its empty line, so its 2-up fields aren't in the shot), the stage 980
+  wide with the preview fitted at 948×533 and the transport under it, the
+  timeline 980 wide (the ruler's last label cut at its edge);
+  the header and hint bar keep every item. At 1000×1000 it is Narrow: no
+  docked panel, the stage and the timeline full width (the preview at
+  960×540), the header's layers button left of Record; the button opens
+  the sheet over the right 384 px from the header to the hint bar, the
+  content under it dimmed and the button pressed, and `Esc` closes it. S06
+  at 1600×800 is compact: the timeline 232 px (toolbar 36, ruler 28, video
+  72, lanes 48), the stage 488 with the preview fitted at 747×420 and the
+  transport under it, the panel 720 high; nothing else moves.
 
 ### WP0a — Interfaces, GTK-free (alone, first)
 
@@ -3176,8 +3317,11 @@ export-done toast in `qrec-core/src/on_event/output.rs` with its core and
 CLI test updates; `qrec-gui/src/{bin_drawer/**, export/**}`,
 `widgets/mud_bar.rs`; `components/{bin,export}.css`;
 `crates/qrec/tests/gui_bin_export.rs` and
-`gui_bin_export_data/fail_ffmpeg.sh` (a PATH wrapper that fails the third
-segment with BRIEF S17's stderr).
+`crates/qrec/tests/support/fail_ffmpeg.rs` (it writes a PATH wrapper at run
+time: the design export's first two render units render, the third, c1b2,
+fails with BRIEF S17's stderr once they are cached, and the later ones wait
+until the export stops them, so it fails at 11 %; simpler than a checked-in
+`gui_bin_export_data/fail_ffmpeg.sh`, the plan's first idea).
 
 **Builds.** C21, C30, the export panel (S15a, S15b, S15c, S16, S17) with
 its trap and passive modes (D-49), the S14 bin with multi-select (D-37)
@@ -3198,6 +3342,22 @@ Writes `LocalUi.{take_preview, export_view, bin_selection}`; calls
 - Screenshots: S14, S15a, S15b (captured once `qrec status` shows the job
   at ≥ 42 %), S15c (the WebM setup; the reduced-motion bar), S16, S16b,
   S17, S18.
+
+**As merged** (518e6cb, merged in e3b30a0, round 5): `gui_bin_export.rs`
+has 12 nested cases (S14; the bin's keys, preview and insert; a bin row
+dragged onto the timeline; S18 from the bin; S15a; S15b and a cancel;
+S15c's WebM setup and its reduced-motion bar with D-49's split and click;
+S16; S16b; S17; a CLI export in the panel; D-24's refused path and Replace
+modal) and the S14 scale runs (two more). The merge put its waits behind
+deadlines (`run_tool`, `Nested::cli_background` and `reap_within`,
+`Nested::keys_held`) and gave the mud bar a tick callback only while it
+animates. The integration: an export confirmed in the Replace modal is
+still the panel's own (`Store::ask_confirmation`, G§3.7), so it ends on
+Done or Failed; the running and failed lines count the timeline's clips
+(G§4.8); S17's wrapper fails the third unit after the first two rendered
+(11 %); `waitIdle` settles the window's own running export (G§3.18), so
+the cases click Export and wait idle like any. Its departures are in
+G§7.2's list.
 
 ### WP8 — Blocking screens as drawn (lane A, after WP7 and G§0.2)
 
@@ -3356,7 +3516,11 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
     the local time of the auto-name preview (S15a);
   - `QREC_GUI_TEST_LEVELS=<device>=<rms>/<peak>,…` (dBFS) pins the
     meters (WP5): BRIEF's −22/−16 on A1 and −52/−48 on A2 in the panel
-    cases, a clipping A1 for S13b's latch;
+    cases, WP7's and the S06 scale runs (with Face selected, as the frames
+    draw the inspector), a clipping A1 for S13b's latch;
+  - `QREC_GUI_TEST_SAVE_AS=<path>|<path>…` stands in for the export
+    panel's save dialog (WP7): each press of Change… takes the next path
+    (the file dialog needs a portal, G§9 R7; D-24's cases);
   - the control channel (G§3.18).
 - **Driving.** `qrec --project <dir> … --json` with the `TestEnv`
   (`Nested::cli`, `cli_json`); the pointer: `Nested::pointer()`, one
@@ -3496,7 +3660,7 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
 | S15c | as S15a | click WebM, capture; S15b again with `ui.reduced_motion = true` (plain bar) |
 | S16 | Smoke, panel open | export; `waitIdle` after done |
 | S16b | Smoke | export; `wtype -k Escape` before done; `waitIdle` after the toast |
-| S17 | Base, `gui_bin_export_data/fail_ffmpeg.sh` first on the GUI's PATH | export; wait for Failed |
+| S17 | Base, `tests/support/fail_ffmpeg.rs`'s wrapper first on the GUI's PATH (units 1 and 2 render, unit 3 fails after them, the rest wait) | export; "Rendering clip 3/10" while unit 3 waits; wait for Failed: "clip 3/10 (take 3, c1b2)", "Failed at 11%" |
 | S18 | Base, bin open | click take 2, Ctrl+click take 4, click Purge from disk |
 | S18b | Base, Live | `wtype -M ctrl -k comma -m ctrl`; click Frame rate 25 |
 | S19–S25, X1–X3 | per WP8 and WP9 | — |
@@ -3506,22 +3670,42 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   are 144 px high; a scripted trim like S10 hits the same edge. A case
   takes its pixel probes in device px (× `opts.scale`) and passes
   `opts.scale` to `assert_regions` (WP0b's gui_shell cases run at scale 1
-  only).
+  only). The cases (WP7 integration, each in its owner's suite):
+  `gui_stage`'s `s02_at_scale_2`, `s02_at_scale_1_5` (the live picture
+  probed in device px, the sink's size from the GUI log),
+  `s06_at_scale_2`, `s06_at_scale_1_5`; `gui_timeline`'s
+  `s09_frame_level_at_scale_2`, `_1_5` and `s10_trimming_at_scale_2`,
+  `_1_5` (the same logical drag trims c2d0 to 41 at every scale);
+  `gui_bin_export`'s `s14_the_bin_drawer_at_scale_2`, `_1_5`. The image
+  heights come from `gui_support::preview_heights` (each strip and frame
+  run's `scale=-2:<h>` in the project's `preview.log`). At 1.5 GTK draws at
+  the window's whole scale factor, 2 (`gui_support::scale_factor`), and the
+  compositor scales the buffer down: the sink is 1920×1080 and the images
+  144 px high there too.
 - **Reduced motion**: S03 (static ring), S04 (static badge), S15c (plain
   bar) with `ui.reduced_motion = true`; zoom is a GTK-free test; the
   panel's page switch is `gui_panel`'s
   `the_pages_slide_unless_motion_is_reduced` (`local`'s
-  `panelTransition`).
+  `panelTransition`). The cases: `gui_stage`'s
+  `s03_countdown_reduced_motion` and `s04_recording_reduced_motion`,
+  `gui_bin_export`'s `s15c_webm_setup_and_the_reduced_motion_bar`.
 - **Adaptive**: S02 at 1300×1000 and at 1000×1000 (sheet closed, then
-  opened by the header button); S06 at 1600×800.
+  opened by the header button); S06 at 1600×800. The cases (WP7
+  integration, in `gui_stage`, S02's and S06's owner's): `s02_at_1300_wide`,
+  `s02_at_1000_wide_with_the_sheet`, `s06_at_1600_by_800`; each checks the
+  regions against G§3.15 (the preview by `view::canvas::stage_geometry`)
+  and the layout class. WP0b's `gui_shell` has the same three layouts on
+  the fixture's default UI (`medium_windows_dock_the_panel_at_320`,
+  `narrow_windows_show_the_panel_as_a_sheet`,
+  `short_windows_keep_a_232_px_timeline`).
 - **Suites** (round 3): `gui_shell` (WP0b's flows and the integration
   cases: `the_first_runs_count_reaches_the_hint_bar`, WP4's checklist
   driving WP6's "[Enter] Add N sources"; `a_ruler_scrub_leaves_the_player_on_the_playhead`,
   WP3's scrub through WP4's sync with no seek after it, read from the
   GUI log's "program sync:" lines and `local`'s `playerNs`), `gui_smoke`,
   `gui_chrome` (WP6), `gui_timeline` (WP3), `gui_stage` (WP4), `gui_panel`
-  (WP5), each run with `-- --ignored --test-threads=1` on pixman and on
-  gles2.
+  (WP5), `gui_bin_export` (WP7), each run with `-- --ignored
+  --test-threads=1` on pixman and on gles2.
 
 ### G§8.5 End-to-end smoke (SPEC §17)
 

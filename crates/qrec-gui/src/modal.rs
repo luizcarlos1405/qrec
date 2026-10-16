@@ -4,11 +4,13 @@
 //! Settings; Cancel has the initial focus. Owner: WP6.
 //!
 //! It follows the top overlay (`Overlay::Confirm`, `QuitWhileExporting`):
-//! its content is `view::confirm`'s. Confirming closes it and sends the
-//! command again with `confirmed: true` (the core checks again: a
-//! confirmation isn't a lock); Cancel, `Esc` (the key router closes the
-//! top overlay) and `Enter` right after it opens (Cancel has the focus)
-//! dispatch nothing.
+//! its content is `view::confirm`'s. Confirming sends the command again
+//! with `confirmed: true` (the core checks again: a confirmation isn't a
+//! lock) and closes it: `Store::dispatch_confirmed`, which hands it to the
+//! region that asked when that one follows the answer itself
+//! (`Store::ask_confirmation`: the export panel's Replace modal, D-24; WP7
+//! integration). Cancel, `Esc` (the key router closes the top overlay) and
+//! `Enter` right after it opens (Cancel has the focus) dispatch nothing.
 //!
 //! 520 wide, `raised`, `xl` radius, e3 with a 1 px `border`, 24 px padding:
 //! the `display-sm` title, the `body-strong` lead, the `body` details, the
@@ -197,15 +199,25 @@ fn build(ctx: &Ctx, overlay: &Overlay, content: &ModalContent) -> ModalView {
     let confirming = overlay.clone();
     confirm.connect_clicked(guarded!("modal: confirm", move |_| {
         let target = confirming.clone();
-        ctx2.store.update_local(move |l| {
-            l.close_overlays(|o| *o == target);
-        });
+        let store = ctx2.store.clone();
+        let close = move || {
+            store.update_local(move |l| {
+                l.close_overlays(|o| *o == target);
+            });
+        };
         match &confirming {
-            Overlay::Confirm { cmd, .. } => ctx2.store.dispatch_confirmed(cmd.clone()),
+            Overlay::Confirm { cmd, .. } => {
+                // The confirmed command before the overlay closes: the hook
+                // its asker left (`Store::ask_confirmation`, the export
+                // panel's D-24) goes with the overlay.
+                ctx2.store.dispatch_confirmed(cmd.clone());
+                close();
+            }
             Overlay::QuitWhileExporting { .. } => {
+                close();
                 ctx2.actions.run("app.cancel-export-and-quit");
             }
-            _ => {}
+            _ => close(),
         }
     }));
     ModalView { root, body, cancel }

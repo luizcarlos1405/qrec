@@ -1,8 +1,9 @@
 //! Properties of the output planners (A§9.3, A§9.6, A§11): a split never
 //! changes the export or GES plan, every segment has exactly the frames and
-//! samples of its unit, units are maximal runs, GES clips stay inside their
-//! unit and their media, the libx264 fallback of a VA plan equals planning
-//! without VA, and the frame selection's lead counts canvas frames.
+//! samples of its unit, units are maximal runs, an export job's progress
+//! counts the timeline's clips, GES clips stay inside their unit and their
+//! media, the libx264 fallback of a VA plan equals planning without VA, and
+//! the frame selection's lead counts canvas frames.
 //!
 //! `crates/qrec-shell/tests/plans_ffmpeg.rs` runs the plans through real
 //! ffmpeg.
@@ -15,14 +16,15 @@ use qrec_core::export_plan::{
 };
 use qrec_core::ges_plan::plan_ges;
 use qrec_core::model::{Clip, Fps, Project, StreamKind};
+use qrec_core::on_event::output::rendered_clips;
 use qrec_core::plans::ExportPlan;
-use qrec_core::protocol::command::{ExportFormat, Quality, VideoCodec};
+use qrec_core::protocol::command::{Command, ExportFormat, Quality, VideoCodec};
 use qrec_core::requantize::derive_duration_frames;
-use qrec_core::state::{Capabilities, VaapiCaps};
+use qrec_core::state::{Capabilities, JobKind, VaapiCaps};
 use qrec_core::testkit::{self, strategies::arb_project};
 use qrec_core::time::frame_ns;
 use qrec_core::timeline::total_frames;
-use qrec_core::{ClipId, Frame};
+use qrec_core::{ClipId, Frame, apply};
 
 /// Random media facts and layout on top of `arb_project`: stream offsets
 /// (−60…+150 ms), other recorded rates, sync offsets, gains, mutes,
@@ -279,6 +281,58 @@ proptest! {
         let error = start_us * num - position * 1_000_000 * den;
         prop_assert!(2 * error.abs() <= num, "ends at {} µs", start_us);
         prop_assert_eq!(plan.stitch.argv.last().unwrap(), &format!("file:{}", plan.out));
+    }
+
+    /// An export job names each segment's timeline clips (`seg_clips`):
+    /// they add up to the segment's frames, every clip with frames is
+    /// there once, and the progress counts them, none at the start and all
+    /// once every segment is done, never more than the frames cover.
+    #[test]
+    fn export_jobs_count_the_timelines_clips(
+        project in arb_project(),
+        tweaks in arb_tweaks(),
+        done in prop::collection::vec(any::<u16>(), 0..16),
+    ) {
+        let project = tweaked(project, &tweaks);
+        let state = testkit::state(project.clone());
+        let cmd = Command::Export {
+            format: ExportFormat::Mp4,
+            quality: Quality::Draft,
+            codec: None,
+            out: None,
+        };
+        // An empty timeline exports nothing.
+        let Ok(out) = apply(&state, &testkit::ctx("2026-10-14T12:00:00Z", 1), cmd) else {
+            prop_assert_eq!(total_frames(&project.timeline.clips), 0);
+            return Ok(());
+        };
+        let job = out.state.runtime.jobs.values().next().unwrap();
+        let JobKind::Export { seg_frames, seg_clips, .. } = &job.kind else {
+            panic!("not an export: {job:?}");
+        };
+        prop_assert_eq!(seg_clips.len(), seg_frames.len());
+        for (clips, frames) in seg_clips.iter().zip(seg_frames) {
+            prop_assert_eq!(clips.iter().sum::<u64>(), *frames);
+            prop_assert!(clips.iter().all(|f| *f > 0), "{:?}", clips);
+        }
+        let count = project.timeline.clips.iter().filter(|c| !c.is_empty()).count();
+        let none = vec![0; seg_frames.len()];
+        prop_assert_eq!(rendered_clips(seg_frames, &none, seg_clips), (0, count));
+        prop_assert_eq!(rendered_clips(seg_frames, seg_frames, seg_clips), (count, count));
+        // Some progress: each unit counts the clips its frames cover.
+        let partial: Vec<u64> = seg_frames
+            .iter()
+            .enumerate()
+            .map(|(i, f)| u64::from(done.get(i).copied().unwrap_or(0)).min(*f))
+            .collect();
+        let (finished, total) = rendered_clips(seg_frames, &partial, seg_clips);
+        prop_assert_eq!(total, count);
+        let covered: usize = seg_clips
+            .iter()
+            .zip(&partial)
+            .map(|(clips, d)| clips.iter().scan(0u64, |end, f| { *end += f; Some(*end) }).filter(|end| end <= d).count())
+            .sum();
+        prop_assert_eq!(finished, covered);
     }
 
     #[test]

@@ -521,6 +521,14 @@ pub enum JobKind {
         total_frames: u64,
         seg_frames: Vec<u64>,
         seg_done: Vec<u64>,
+        /// The timeline clips each segment renders, as their frame counts
+        /// in timeline order (a render unit is a run of continuous clips,
+        /// A§9.3), so the progress counts the timeline's clips ("Rendering
+        /// clip 6/10", `on_event::output::export_progress_view`) where a
+        /// unit joins several. Left out by a job without it (it counts
+        /// segments then).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        seg_clips: Vec<Vec<u64>>,
         stitch_total_ns: u64,
         stitch_done_ns: u64,
         stitching: bool,

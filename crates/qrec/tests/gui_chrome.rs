@@ -590,6 +590,15 @@ fn s16b_the_export_done_toast() {
         !labels.contains(&"Copy path".to_owned()),
         "two actions at most"
     );
+    // WP7's copy (S16b): "<path> · <size>", the auto name project-relative.
+    assert!(
+        labels
+            .iter()
+            .any(|l| l.starts_with("exports/rust-traits-talk-")
+                && l.contains(".mp4 · ")
+                && l.ends_with('B')),
+        "the body: {labels:?}"
+    );
     let shot = nested.screenshot("toast");
     compare(&shot, "S16b-export-done-panel-closed.png", None);
     compare(

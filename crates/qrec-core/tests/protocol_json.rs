@@ -1024,6 +1024,7 @@ fn state_and_outcome_round_trip() {
                 total_frames: 912,
                 seg_frames: vec![410, 457],
                 seg_done: vec![410, 0],
+                seg_clips: Vec::new(),
                 stitch_total_ns: 30_400_000_000,
                 stitch_done_ns: 0,
                 stitching: false,

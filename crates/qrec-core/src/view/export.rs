@@ -12,8 +12,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::UserConfig;
 use crate::export_plan::{export_vaapi, render_units};
+use crate::ids::ClipId;
 use crate::naming::export_file_name;
-use crate::on_event::output::{STDERR_TAIL_LINES, export_readout};
+use crate::on_event::output::{STDERR_TAIL_LINES, clips_done, export_readout};
 use crate::protocol::command::{ExportFormat, VideoCodec};
 use crate::state::{Capabilities, Job, JobKind, State};
 use crate::timeline::total_frames;
@@ -245,6 +246,8 @@ pub struct Failed {
     pub hint: Option<String>,
     /// "Failed at 37%".
     pub at: String,
+    /// Where the bar stopped, 0–100 (the percent of `at`).
+    pub fraction: u8,
     /// At most 30 lines (`details.stderrTail`).
     pub stderr_tail: Vec<String>,
     /// `details.log`.
@@ -257,9 +260,10 @@ pub struct FailedExport<'a> {
     /// The snapshot the export started from: its timeline is what was
     /// rendered (its render units name the clip, A§9.3).
     pub started: &'a State,
-    /// The last progress seen: `export_readout`'s percent and label.
-    pub percent: u8,
-    pub label: &'a str,
+    /// The export's job as last seen before it ended: how far each unit
+    /// got (`seg_done`), and so the percent the bar stopped at. `None`
+    /// when no progress was seen.
+    pub job: Option<&'a Job>,
     /// The error's message ("export failed: segment 3/9 (take-0003, frames
     /// 0–268): ffmpeg exited with code 1"): its segment names the unit
     /// that failed when several render at once.
@@ -270,34 +274,57 @@ pub struct FailedExport<'a> {
     pub folder: &'a str,
 }
 
-/// The failed panel (S17): the lead from the failed segment (the error's,
-/// else the last progress label's) and the render units of the timeline
-/// the export started from; the hint from the stderr tail.
+/// The failed panel (S17): the lead names the timeline clip the failed
+/// unit was rendering (the error's segment, else the first unit the job
+/// hadn't finished), counted among the clips of the timeline the export
+/// started from (a unit of continuous clips counts each, A§9.3), with the
+/// frames the unit had rendered placing it among its clips; the percent is
+/// the job's last; the hint comes from the stderr tail.
 pub fn failed(f: &FailedExport<'_>) -> Failed {
     let units = render_units(&f.started.project);
+    let timeline = &f.started.project.timeline.clips;
+    let length = |id: &ClipId| timeline.iter().find(|c| c.id == *id).map_or(0, |c| c.len());
+    let count: usize = units.iter().map(|u| u.clips.len()).sum();
+    let (seg_frames, seg_done) = match f.job.map(|j| &j.kind) {
+        Some(JobKind::Export {
+            seg_frames,
+            seg_done,
+            ..
+        }) => (seg_frames.as_slice(), seg_done.as_slice()),
+        _ => (&[][..], &[][..]),
+    };
     let nothing = format!("Nothing was written to {}.", f.folder);
     let message = f
         .message
         .strip_prefix("export failed: ")
         .unwrap_or(f.message);
     let stitching = message.starts_with("stitch");
-    // The label only says where ffmpeg was when ffmpeg is what failed (not
-    // a folder that went away, say).
+    // Where the job was says which unit failed only when ffmpeg is what
+    // failed (not a folder that went away, say).
     let ffmpeg = message.contains("ffmpeg");
     let unit = segment_of(message)
-        .or_else(|| ffmpeg.then(|| segment_of_label(f.label)).flatten())
-        .filter(|k| *k >= 1 && *k <= units.len());
+        .map(|k| k.wrapping_sub(1))
+        .or_else(|| {
+            ffmpeg
+                .then(|| seg_done.iter().zip(seg_frames).position(|(d, n)| d < n))
+                .flatten()
+        })
+        .filter(|u| *u < units.len());
     let lead = match unit {
-        Some(k) if !stitching => {
-            let unit = &units[k - 1];
+        Some(u) if !stitching => {
+            let unit = &units[u];
+            let lengths: Vec<u64> = unit.clips.iter().map(length).collect();
+            let done = seg_done.get(u).copied().unwrap_or(0);
+            let within = clips_done(&lengths, done).min(lengths.len().saturating_sub(1));
+            let before: usize = units[..u].iter().map(|u| u.clips.len()).sum();
             let clip = unit
                 .clips
-                .first()
+                .get(within)
                 .map(ToString::to_string)
                 .unwrap_or_default();
             format!(
-                "ffmpeg stopped while rendering clip {k}/{} (take {}, {clip}). {nothing}",
-                units.len(),
+                "ffmpeg stopped while rendering clip {}/{count} (take {}, {clip}). {nothing}",
+                before + within + 1,
                 unit.take.number()
             )
         }
@@ -307,11 +334,16 @@ pub fn failed(f: &FailedExport<'_>) -> Failed {
             format::capitalized(message.trim_end_matches('.'))
         ),
     };
+    let percent = f
+        .job
+        .and_then(|job| export_readout(job, job.started))
+        .map_or(0, |r| r.percent);
     let cut = f.stderr_tail.len().saturating_sub(STDERR_TAIL_LINES);
     Failed {
         lead,
         hint: hint(f.stderr_tail, &f.started.runtime.capabilities),
-        at: format!("Failed at {}%", f.percent),
+        at: format!("Failed at {percent}%"),
+        fraction: percent,
         stderr_tail: f.stderr_tail[cut..].to_vec(),
         log: f.log.map(str::to_owned),
     }
@@ -325,12 +357,6 @@ fn segment_of(message: &str) -> Option<usize> {
         return None;
     }
     digits.parse().ok()
-}
-
-/// The 1-based clip of the progress label "Rendering clip 6/10".
-fn segment_of_label(label: &str) -> Option<usize> {
-    let rest = label.strip_prefix("Rendering clip ")?;
-    rest.split('/').next()?.parse().ok()
 }
 
 /// The hint line (G§4.8): what the stderr tail says went wrong, when it
@@ -522,8 +548,9 @@ mod tests {
     }
 
     /// S15b's readout: 3,449 of 7,391 frames at 15:30:50 of an export
-    /// started at 15:30:12. The design timeline renders in 9 units (c2d0
-    /// and c2d1 are one run of take 5), so the label counts 9 (WP0a).
+    /// started at 15:30:12, five clips rendered whole. The design timeline
+    /// renders in 9 units (c2d0 and c2d1 are one run of take 5) and the
+    /// label counts its 10 clips.
     #[test]
     fn the_running_panel_reads_like_s15b() {
         let mut state = exporting();
@@ -536,8 +563,8 @@ mod tests {
             (4, 238),
             (5, 100),
             (6, 50),
-            (7, 1200),
-            (8, 419),
+            (7, 1000),
+            (8, 619),
         ] {
             let event = crate::protocol::event::Event::ExportProgress {
                 job,
@@ -550,6 +577,7 @@ mod tests {
         let panel = running(&state.runtime.jobs[&job], at("2026-10-14T15:30:50Z"), 0).unwrap();
         insta::assert_json_snapshot!("running_42", panel);
         assert_eq!(panel.percent, "42%");
+        assert_eq!(panel.label, "Rendering clip 6/10");
         assert_eq!(panel.frames, "3,449 / 7,391 frames");
         assert_eq!(panel.times, "Elapsed 00:00:38 \u{b7} About 00:00:52 left");
         // Nothing done yet: no ETA.
@@ -590,18 +618,28 @@ mod tests {
         .to_vec()
     }
 
+    /// `exporting()`'s job with `seg_done`.
+    fn job_at(state: &State, seg_done: [u64; 9]) -> Job {
+        let mut job = state.runtime.jobs.values().next().unwrap().clone();
+        if let JobKind::Export { seg_done: done, .. } = &mut job.kind {
+            *done = seg_done.to_vec();
+        }
+        job
+    }
+
     /// S17: the third render unit (c1b2 of take 3) failed with a VA-API
-    /// stderr; the lead names it from the error's segment, whatever the
-    /// last label said (units render in parallel).
+    /// stderr; the lead names it from the error's segment among the
+    /// timeline's 10 clips (units render in parallel: others got further),
+    /// and the bar stops at the job's last percent (3,039 frames: 37 %).
     #[test]
     fn the_failed_panel_reads_like_s17() {
         let state = exporting();
         let tail = tail();
         let log = ".qrec/logs/export-20261014-153012.log";
+        let job = job_at(&state, [410, 457, 0, 307, 238, 249, 155, 1223, 0]);
         let f = FailedExport {
             started: &state,
-            percent: 37,
-            label: "Rendering clip 2/9",
+            job: Some(&job),
             message: "export failed: segment 3/9 (take-0003, frames 0\u{2013}268): ffmpeg exited with code 1",
             stderr_tail: &tail,
             log: Some(log),
@@ -610,16 +648,16 @@ mod tests {
         let panel = failed(&f);
         assert_eq!(
             panel.lead,
-            "ffmpeg stopped while rendering clip 3/9 (take 3, c1b2). Nothing was written to exports/."
+            "ffmpeg stopped while rendering clip 3/10 (take 3, c1b2). Nothing was written to exports/."
         );
         assert_eq!(
             panel.hint.as_deref(),
             Some("VA-API couldn't start. Try Settings \u{203a} Recording \u{203a} Encoder: x264."),
             "no node in the tail, none verified"
         );
-        assert_eq!(panel.at, "Failed at 37%");
+        assert_eq!((panel.at.as_str(), panel.fraction), ("Failed at 37%", 37));
         insta::assert_json_snapshot!("failed", panel);
-        // The node from the machine's VA facts, else from the tail.
+        // The node from the tail, else from the machine's VA facts.
         let va = va_state();
         assert_eq!(
             hint(&tail, &va.runtime.capabilities).as_deref(),
@@ -634,20 +672,36 @@ mod tests {
                 .unwrap()
                 .contains("/dev/dri/renderD130")
         );
-        // The last label, when the message names no segment.
-        let label_only = FailedExport {
+        // No segment in the message: the first unit the job hadn't
+        // finished, c2d0 and c2d1's, 1,500 frames in: past c2d0, so c2d1,
+        // the timeline's 9th clip.
+        let further = job_at(&state, [410, 457, 268, 307, 238, 249, 155, 1500, 0]);
+        let unnamed = FailedExport {
+            job: Some(&further),
             message: "export failed: segment: ffmpeg exited with code 1",
-            label: "Rendering clip 4/9",
             ..f
         };
-        assert!(
-            failed_lead(&label_only).contains("clip 4/9 (take 3, c1b3)"),
-            "{}",
-            failed_lead(&label_only)
+        assert_eq!(
+            failed_lead(&unnamed),
+            "ffmpeg stopped while rendering clip 9/10 (take 5, c2d1). Nothing was written to exports/."
         );
+        // A named unit with its frames: the clip they reach into.
+        let in_c2d1 = FailedExport {
+            job: Some(&further),
+            message: "export failed: segment 8/9 (take-0005, frames 12\u{2013}2214): ffmpeg exited with code 1",
+            ..f
+        };
+        assert!(failed_lead(&in_c2d1).contains("clip 9/10 (take 5, c2d1)"));
+        // No progress seen: the unit's first clip, at 0 %.
+        let blind = failed(&FailedExport { job: None, ..f });
+        assert!(
+            blind.lead.contains("clip 3/10 (take 3, c1b2)"),
+            "{}",
+            blind.lead
+        );
+        assert_eq!((blind.at.as_str(), blind.fraction), ("Failed at 0%", 0));
         let stitch = FailedExport {
             message: "export failed: stitch: ffmpeg exited with code 1",
-            label: "Stitching",
             ..f
         };
         assert_eq!(
@@ -656,7 +710,6 @@ mod tests {
         );
         let other = FailedExport {
             message: "export failed: the folder /home/me/gone doesn't exist",
-            label: "Rendering clip 1/9",
             folder: "~/gone/",
             ..f
         };
