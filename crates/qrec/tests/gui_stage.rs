@@ -14,12 +14,12 @@ mod gui_support;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use gui_support::pointer::BUTTON_LEFT;
-use gui_support::{Launch, Nested, Options, assert_regions, qrec_bin, wait_for_gui_host};
+use gui_support::{Launch, Nested, Options, assert_regions, reap_within, wait_for_gui_host};
 use qrec_core::state::CanvasMode;
 use qrec_core::{ClipId, UiState};
 use qrec_shell::testkit::design::{DesignVariant, design_fixture, write_ui};
@@ -612,49 +612,20 @@ fn s05b_take_lands() {
 
 // ------------------------------------------------------------- recording
 
-/// `qrec record start` in the background: it answers when the take
-/// starts (after the countdown) or the countdown is cancelled. Its output
-/// goes to `logs/<case>-record-start-<n>.log`.
-fn record_start_in_background(nested: &Nested, project: &Path, n: u32) -> Child {
-    let log = nested
-        .shots
-        .join("logs")
-        .join(format!("{}-record-start-{n}.log", nested.case));
-    let out = fs::File::create(&log).expect("the record start log");
-    let err = out.try_clone().expect("the record start log");
-    nested
-        .env
-        .command(&qrec_bin())
-        .arg("--project")
-        .arg(project)
-        .args(["record", "start", "--json"])
-        .stdin(Stdio::null())
-        .stdout(out)
-        .stderr(err)
-        .spawn()
-        .expect("run qrec record start")
+/// `qrec record start` in the background (`Nested::cli_background`, G§3.17:
+/// its output in `logs/<case>-cli.log`, and it dies with the test's thread,
+/// so a failed assert never leaves it running, R69): it answers when the
+/// take starts (after the countdown) or the countdown is cancelled.
+fn record_start_in_background(nested: &Nested, project: &Path) -> Child {
+    nested.cli_background(project, &["record", "start", "--json"])
 }
 
-/// Waits up to 20 s for the background `record start` to answer, then
-/// kills it.
-fn reap(mut child: Child) {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < deadline {
-        if let Ok(Some(_)) = child.try_wait() {
-            return;
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    panic!("qrec record start never answered the cancel");
-}
-
-/// Cancels the countdown (or the take) and waits for idle.
+/// Cancels the countdown (or the take), waits up to 20 s for the
+/// background `record start` to answer, then for idle.
 fn cancel_record(nested: &Nested, project: &Path, start: Child) {
     let cancel = nested.cli_json(project, &["record", "cancel"]);
     assert_eq!(cancel["ok"], true, "{cancel}");
-    reap(start);
+    reap_within(start, Duration::from_secs(20), "qrec record start");
     wait_phase(nested, project, "idle", Duration::from_secs(20));
 }
 
@@ -678,7 +649,7 @@ fn countdown_case(case: &str, reduced: bool) {
     let mut attempt = 0;
     let (shot, start) = loop {
         attempt += 1;
-        let start = record_start_in_background(&nested, &project, attempt);
+        let start = record_start_in_background(&nested, &project);
         wait_phase(&nested, &project, "countdown", Duration::from_secs(20));
         nested.window(0).wait_idle();
         let shot = nested.screenshot("countdown");
