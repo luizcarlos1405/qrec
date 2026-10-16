@@ -1094,8 +1094,9 @@ fn arrow_keys_nudge_the_selected_layer() {
 
 /// S10's canvas: a trim of c2d0's start edge (S08's seconds zoom, +29
 /// frames) shows take 5 frame 41 with the 2 px accent stroke and "Trim
-/// start · take 5 · frame 41". The trim drag is WP3's timeline: until it
-/// merges this case has nothing to press and stops there.
+/// start · take 5 · frame 41". The trim drag is WP3's timeline: its rows
+/// are required where BRIEF puts them (R70: without `video-row` the case
+/// stopped, passing, before WP3 merged and on any regression since).
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s10_trim_scrub_on_the_stage() {
@@ -1106,10 +1107,13 @@ fn s10_trim_scrub_on_the_stage() {
     let project = fixture(&nested, DesignVariant::Base, Some(preset));
     open(&mut nested, &project, Launch::a11y());
     let regions = nested.window(0).regions(&[]);
-    let Some(row) = regions.get("video-row").copied() else {
-        eprintln!("S10: no WP3 timeline yet (no `video-row`): stub-based, nothing to trim");
-        return;
-    };
+    assert_regions(
+        &regions,
+        &gui_support::BRIEF_REGIONS,
+        &gui_support::MERGED_REGIONS,
+        nested.opts.scale,
+    );
+    let row = regions["video-row"];
     // c2d0's start (frame 2084) at 1.6 px/frame from 00:01:05:00.
     let edge = row[0] + (2084.0 - 1950.0) * 1.6;
     let y = row[1] + row[3] / 2.0;
@@ -1120,6 +1124,10 @@ fn s10_trim_scrub_on_the_stage() {
         pointer.move_to(edge + 1.0 + 46.4 * f64::from(i) / 10.0, y);
         thread::sleep(Duration::from_millis(16));
     }
+    // The press started the trim (a missed press says so here).
+    gui_support::poll(Duration::from_secs(10), "the trim drag", || {
+        (nested.window(0).local()["drag"] == "trimStart").then_some(())
+    });
     nested.window(0).wait_idle();
     let shot = nested.screenshot("trimming");
     let labels = stage_labels(&mut nested);
