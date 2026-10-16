@@ -134,6 +134,58 @@ pub fn icon(icon: &str, action: &str, binding: Option<&str>, keymap: &Keymap) ->
     button
 }
 
+/// C01's loading state: a 16 px spinner where the icon was (before the
+/// label when there is none), the label kept; `false` puts the icon back.
+/// Whether the button reacts meanwhile is the caller's (`set_sensitive`).
+pub fn set_loading(button: &gtk::Button, loading: bool) {
+    let Some(content) = button.child().and_downcast::<gtk::Box>() else {
+        return;
+    };
+    let mut spinner = None;
+    let mut image = None;
+    let mut child = content.first_child();
+    while let Some(c) = child {
+        if c.widget_name() == "loading-spinner" {
+            spinner = Some(c.clone());
+        } else if c.is::<gtk::Image>() && image.is_none() {
+            image = Some(c.clone());
+        }
+        child = c.next_sibling();
+    }
+    if loading {
+        button.add_css_class("loading");
+        if let Some(image) = &image {
+            image.set_visible(false);
+        }
+        if spinner.is_none() {
+            let spinner = super::Spinner::new(16);
+            spinner.set_widget_name("loading-spinner");
+            content.prepend(&spinner);
+        }
+    } else {
+        button.remove_css_class("loading");
+        if let Some(image) = &image {
+            image.set_visible(true);
+        }
+        if let Some(spinner) = spinner {
+            content.remove(&spinner);
+        }
+    }
+}
+
+/// The header's close button (32×32): it asks its window to close, which
+/// runs the window's close sequence (D-12).
+pub fn close_window(keymap: &Keymap) -> gtk::Button {
+    let close = icon("window-close-symbolic", "Close", Some("app.quit"), keymap);
+    close.set_widget_name("close-button");
+    close.connect_clicked(crate::guarded!("close button", move |button| {
+        if let Some(window) = button.root().and_downcast::<gtk::Window>() {
+            window.close();
+        }
+    }));
+    close
+}
+
 #[cfg(test)]
 mod tests {
     use qrec_core::keymap;

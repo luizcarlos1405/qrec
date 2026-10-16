@@ -53,7 +53,7 @@ impl ActionRouter {
         let action = self.actions.borrow().get(id).cloned();
         match action {
             Some(action) => {
-                action();
+                crate::guard::run("a GUI action", || action());
                 true
             }
             None => {

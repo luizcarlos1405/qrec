@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- PLACEHOLDER for the quiet swamp (pen w7Qg8 > rfUfx): the drawn art is
+     exported from design/qrec.pen with the pencil MCP while it is the active
+     document (G§0.6, G§3.14). Same size and colour slots as the real one:
+     the muted and border tokens. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120" viewBox="0 0 200 120">
+  <ellipse cx="100" cy="96" rx="84" ry="16" fill="{{border}}"/>
+  <ellipse cx="100" cy="94" rx="60" ry="9" fill="{{muted}}" fill-opacity="0.35"/>
+  <circle cx="100" cy="70" r="18" fill="{{muted}}"/>
+  <path d="M100 52 C 96 42, 92 38, 86 36 M100 52 C 101 42, 103 36, 108 32 M100 52 C 104 44, 110 42, 116 42"
+        fill="none" stroke="{{muted}}" stroke-width="3" stroke-linecap="round"/>
+  <path d="M30 96 V 58 M38 96 V 66 M162 96 V 54 M170 96 V 68"
+        fill="none" stroke="{{border}}" stroke-width="3" stroke-linecap="round"/>
+</svg>

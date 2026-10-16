@@ -11,6 +11,14 @@
 //!   requests to the host.
 //! - Keys go through one router ([`keys`], G§3.8): a GTK-free decision
 //!   ([`keys::router::decide`]) and its glue.
+//! - The look is the theme's tokens ([`theme`], G§3.14): CSS generated from
+//!   `design/tokens/qrec-tokens.json`, the libadwaita bridge, the type
+//!   roles and the shared components; custom drawing reads the
+//!   [`theme::Palette`].
+//! - No panic crosses into GLib's C frames ([`guard`], G§3.12): every
+//!   source, signal handler and virtual method is guarded, and a test
+//!   greps the crate for unguarded ones.
+//! - Test mode and its control channel ([`testctl`], G§3.18, G§8.4).
 //!
 //! Every file of G§3.16 exists with its final public signatures; regions of
 //! work packages that haven't landed yet are stubs (a region of the right
@@ -23,6 +31,7 @@ pub mod blocking;
 pub mod cheatsheet;
 pub mod desktop;
 pub mod export;
+pub mod guard;
 pub mod header;
 pub mod hintbar;
 pub mod host;

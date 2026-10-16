@@ -29,6 +29,9 @@ pub fn stub_region(widget_name: &str, label: &str) -> gtk::Box {
     let region = gtk::Box::new(gtk::Orientation::Vertical, 0);
     region.set_widget_name(widget_name);
     region.add_css_class("qrec-stub");
+    // Regions take focus: they need a name for screen readers ("Timeline").
+    let name = label.split(" (").next().unwrap_or(label);
+    region.update_property(&[gtk::accessible::Property::Label(name)]);
     let text = gtk::Label::new(Some(label));
     text.add_css_class("qrec-stub-label");
     text.set_vexpand(true);

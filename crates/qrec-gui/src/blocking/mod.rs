@@ -32,8 +32,10 @@ pub trait PageView {
     fn widget(&self) -> gtk::Widget;
     /// The same page with new values.
     fn update(&self, kind: &BlockKind);
-    /// Gives the primary button the focus (`Enter` activates it).
-    fn focus_primary(&self);
+    /// What gets the keyboard focus when the page shows: the primary
+    /// button, else the first button that can take it (so `Enter` and
+    /// `Space` act on the page, not on the hidden editor).
+    fn focus_target(&self) -> Option<gtk::Widget>;
 }
 
 /// What a page's button does: runs its GUI action.
@@ -77,7 +79,13 @@ impl BlockingPage {
             | BlockKind::FolderUnreadable { .. }
             | BlockKind::HostFailed { .. } => None,
         };
-        let view = drafted.unwrap_or_else(|| Box::new(interim::InterimPage::new(&kind, on_action)));
+        let view = drafted.unwrap_or_else(|| {
+            Box::new(interim::InterimPage::new(
+                &kind,
+                on_action,
+                (*ctx.store.keymap()).clone(),
+            ))
+        });
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.set_widget_name("region-blocking");
         root.set_hexpand(true);
@@ -112,7 +120,8 @@ impl BlockingPage {
         true
     }
 
-    pub fn focus_primary(&self) {
-        self.view.focus_primary();
+    /// What gets the keyboard focus when the page shows.
+    pub fn focus_target(&self) -> Option<gtk::Widget> {
+        self.view.focus_target()
     }
 }

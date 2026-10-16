@@ -180,10 +180,13 @@ impl WindowLayers {
                 catcher.set_hexpand(true);
                 catcher.set_vexpand(true);
                 let click = gtk::GestureClick::new();
-                click.connect_pressed(move |gesture, _, _, _| {
-                    gesture.set_state(gtk::EventSequenceState::Claimed);
-                    dismiss();
-                });
+                click.connect_pressed(crate::guarded!(
+                    "layers: the click-catcher",
+                    move |gesture, _, _, _| {
+                        gesture.set_state(gtk::EventSequenceState::Claimed);
+                        dismiss();
+                    }
+                ));
                 catcher.add_controller(click);
                 Some(catcher.upcast())
             }

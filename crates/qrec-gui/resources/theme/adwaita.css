@@ -1,0 +1,52 @@
+/*
+ * The libadwaita bridge (G§3.14): libadwaita's named colors mapped to
+ * Qrec's tokens, so its own widgets (header bar, popovers, entries,
+ * switches, scales) draw in the theme. Owner: WP0b.
+ *
+ * Loaded with base.css and the components at APPLICATION + 1, after the
+ * theme's token provider (APPLICATION). No color is written here: every
+ * value is a token (crates/qrec-gui/tests/tokens.rs holds that).
+ */
+
+:root {
+  --window-bg-color: var(--qrec-bg);
+  --window-fg-color: var(--qrec-text);
+  --view-bg-color: var(--qrec-field);
+  --view-fg-color: var(--qrec-text);
+  --headerbar-bg-color: var(--qrec-surface);
+  --headerbar-backdrop-color: var(--qrec-surface);
+  --headerbar-fg-color: var(--qrec-text);
+  --headerbar-border-color: var(--qrec-border);
+  --headerbar-shade-color: transparent;
+  --popover-bg-color: var(--qrec-raised);
+  --popover-fg-color: var(--qrec-text);
+  --dialog-bg-color: var(--qrec-raised);
+  --dialog-fg-color: var(--qrec-text);
+  --card-bg-color: var(--qrec-raised);
+  --card-fg-color: var(--qrec-text);
+  --sidebar-bg-color: var(--qrec-surface);
+  --sidebar-fg-color: var(--qrec-text);
+  --accent-bg-color: var(--qrec-accent);
+  --accent-fg-color: var(--qrec-text-on-accent);
+  /* Overrides the system accent (GNOME's accent color setting). */
+  --accent-color: var(--qrec-accent-text);
+  --destructive-bg-color: var(--qrec-record);
+  --destructive-fg-color: var(--qrec-text-on-record);
+  --destructive-color: var(--qrec-record-text);
+  --success-color: var(--qrec-success);
+  --warning-color: var(--qrec-warning-text);
+  --error-color: var(--qrec-record-text);
+  --border-color: var(--qrec-border);
+  --disabled-opacity: 45%;
+}
+
+/*
+ * libadwaita pulls every header bar 1 px past both window edges (its side
+ * shades), so the header region measured (-1, 0, 1602, 48). In a
+ * ToolbarView those shades are off anyway: the header spans the window
+ * exactly (BRIEF §2.1: 0, 0, 1600, 48).
+ */
+headerbar {
+  margin-left: 0;
+  margin-right: 0;
+}

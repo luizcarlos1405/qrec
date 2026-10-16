@@ -51,6 +51,7 @@ use qrec_shell::capture::{
 use qrec_shell::media::preview::{PreviewCache, PreviewData};
 use qrec_shell::player::{AudioOut, PlayerOptions, ProgramPlayer};
 
+use crate::guard;
 use crate::host::queue::{Inbound, Queue};
 use crate::store::{Store, Subscribers, Subscription};
 use peaks::PeakCache;
@@ -336,7 +337,7 @@ impl MediaHub {
                         });
                     }
                     if !pending.swap(true, Ordering::SeqCst) {
-                        glib::idle_add_full(glib::Priority::DEFAULT, || {
+                        guard::idle(glib::Priority::DEFAULT, "the side pump's wake", || {
                             side_wake();
                             glib::ControlFlow::Break
                         });
@@ -394,6 +395,14 @@ impl MediaHub {
         self.follow(&self.inner.store.state());
     }
 
+    /// Nothing the preview cache was asked for is queued or running (the
+    /// test channel's `waitIdle`, G§3.18). `PreviewCache` (WP2) has no way
+    /// to say so yet: until it does this is always true, and WP2 makes it
+    /// ask the cache.
+    pub fn previews_idle(&self) -> bool {
+        true
+    }
+
     /// At exit (R4): the meters, the player and the cache stop; each
     /// reaches NULL on its own thread (≤ 5 s) while the main loop runs.
     pub fn shutdown(&self) {
@@ -426,7 +435,7 @@ impl MediaHub {
         let then = glib::thread_guard::ThreadGuard::new(then);
         self.run_io(move || {
             let result = work();
-            glib::MainContext::default().invoke(move || (then.into_inner())(result));
+            guard::invoke("an io job's result", move || (then.into_inner())(result));
         });
     }
 
@@ -565,11 +574,14 @@ mod imp {
 
     impl ObjectImpl for FramePaintable {
         fn dispose(&self) {
-            if let Some((source, handlers)) = self.source.borrow_mut().take() {
-                for handler in handlers {
-                    source.disconnect(handler);
+            crate::guard::run("picture: dispose", || {
+                let taken = self.source.borrow_mut().take();
+                if let Some((source, handlers)) = taken {
+                    for handler in handlers {
+                        source.disconnect(handler);
+                    }
                 }
-            }
+            });
         }
     }
 
@@ -584,21 +596,29 @@ mod imp {
 
     impl PaintableImpl for FramePaintable {
         fn snapshot(&self, snapshot: &gdk::Snapshot, width: f64, height: f64) {
-            if let Some(current) = self.current() {
-                current.snapshot(snapshot, width, height);
-            }
+            crate::guard::run("picture: snapshot", || {
+                if let Some(current) = self.current() {
+                    current.snapshot(snapshot, width, height);
+                }
+            });
         }
 
         fn intrinsic_width(&self) -> i32 {
-            self.current().map_or(0, |p| p.intrinsic_width())
+            crate::guard::run("picture: width", || {
+                self.current().map_or(0, |p| p.intrinsic_width())
+            })
         }
 
         fn intrinsic_height(&self) -> i32 {
-            self.current().map_or(0, |p| p.intrinsic_height())
+            crate::guard::run("picture: height", || {
+                self.current().map_or(0, |p| p.intrinsic_height())
+            })
         }
 
         fn intrinsic_aspect_ratio(&self) -> f64 {
-            self.current().map_or(0.0, |p| p.intrinsic_aspect_ratio())
+            crate::guard::run("picture: aspect", || {
+                self.current().map_or(0.0, |p| p.intrinsic_aspect_ratio())
+            })
         }
 
         fn flags(&self) -> gdk::PaintableFlags {
@@ -653,17 +673,21 @@ impl FramePaintable {
         }
         if let Some(source) = source {
             let weak = self.downgrade();
-            let contents = source.connect_invalidate_contents(move |_| {
-                if let Some(this) = weak.upgrade() {
-                    this.invalidate_contents();
+            let contents = source.connect_invalidate_contents(crate::guarded!(
+                "picture: contents",
+                move |_| {
+                    if let Some(this) = weak.upgrade() {
+                        this.invalidate_contents();
+                    }
                 }
-            });
+            ));
             let weak = self.downgrade();
-            let size = source.connect_invalidate_size(move |_| {
-                if let Some(this) = weak.upgrade() {
-                    this.invalidate_size();
-                }
-            });
+            let size =
+                source.connect_invalidate_size(crate::guarded!("picture: size", move |_| {
+                    if let Some(this) = weak.upgrade() {
+                        this.invalidate_size();
+                    }
+                }));
             *self.imp().source.borrow_mut() = Some((source.clone(), vec![contents, size]));
         }
         self.invalidate_size();

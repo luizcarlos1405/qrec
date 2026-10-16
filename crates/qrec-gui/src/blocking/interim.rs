@@ -3,30 +3,36 @@
 //! per-row layout: the title, the lines, a monospace block (a folder, a
 //! command, a report; it scrolls when long) and the buttons, primary
 //! first. Part of the G§0.2 review; WP8 replaces them one by one with the
-//! drafted pages once approved.
+//! drafted pages once approved. Look: `components/blocking.css`.
 
 use std::cell::RefCell;
 
 use gtk::prelude::*;
+use qrec_core::keymap::Keymap;
 use qrec_core::view::blocking::{BlockKind, BlockingAction, BlockingContent, interim};
 
 use super::{OnAction, PageView};
+use crate::guarded;
+use crate::widgets::button::{self, Kind};
 
 /// An interim page.
 pub struct InterimPage {
     root: gtk::Box,
     content: gtk::Box,
     on_action: OnAction,
-    primary: RefCell<Option<gtk::Button>>,
+    keymap: Keymap,
+    /// The primary button, else the first one.
+    focus: RefCell<Option<gtk::Button>>,
 }
 
 impl InterimPage {
-    pub fn new(kind: &BlockKind, on_action: OnAction) -> Self {
+    pub fn new(kind: &BlockKind, on_action: OnAction, keymap: Keymap) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.add_css_class("qrec-blocking");
         root.set_hexpand(true);
         root.set_vexpand(true);
         let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
+        content.add_css_class("qrec-blocking-content");
         content.set_halign(gtk::Align::Center);
         content.set_valign(gtk::Align::Center);
         content.set_vexpand(true);
@@ -36,7 +42,8 @@ impl InterimPage {
             root,
             content,
             on_action,
-            primary: RefCell::new(None),
+            keymap,
+            focus: RefCell::new(None),
         };
         page.render(&interim(kind));
         page
@@ -54,6 +61,7 @@ impl InterimPage {
         self.content.append(&title);
         for line in &page.lines {
             let label = gtk::Label::new(Some(line));
+            label.add_css_class("qrec-blocking-line");
             label.set_wrap(true);
             label.set_xalign(0.0);
             label.set_selectable(true);
@@ -76,20 +84,32 @@ impl InterimPage {
             self.content.append(&scroll);
         }
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.add_css_class("qrec-blocking-buttons");
         row.set_halign(gtk::Align::Start);
         let mut primary = None;
+        let mut first = None;
         let mut refocus = None;
         for spec in &page.buttons {
-            let button = gtk::Button::with_label(&spec.label);
-            button.add_css_class("pill");
-            if spec.primary {
-                button.add_css_class("suggested-action");
-            }
+            let kind = if spec.primary {
+                Kind::Primary
+            } else {
+                Kind::Secondary
+            };
+            let button = button::labeled(&spec.label, None, None, &self.keymap, kind);
+            button.add_css_class("lg");
+            // Page buttons are the keyboard's way out: they take focus.
+            button.set_focus_on_click(true);
             button.set_sensitive(!spec.busy);
+            button::set_loading(&button, spec.busy);
             let (on_action, action) = (self.on_action.clone(), spec.action);
-            button.connect_clicked(move |_| on_action(action));
+            button.connect_clicked(guarded!("a blocking page's button", move |_| {
+                on_action(action)
+            }));
             if spec.primary && primary.is_none() {
                 primary = Some(button.clone());
+            }
+            if first.is_none() && !spec.busy {
+                first = Some(button.clone());
             }
             if Some(spec.action) == focused_action && !spec.busy {
                 refocus = Some(button.clone());
@@ -98,7 +118,7 @@ impl InterimPage {
             row.append(&button);
         }
         self.content.append(&row);
-        *self.primary.borrow_mut() = primary;
+        *self.focus.borrow_mut() = primary.filter(|p| p.is_sensitive()).or(first);
         if let Some(button) = refocus {
             button.grab_focus();
         }
@@ -124,16 +144,8 @@ impl PageView for InterimPage {
         self.render(&interim(kind));
     }
 
-    fn focus_primary(&self) {
-        let primary = self.primary.borrow().clone();
-        match primary {
-            Some(button) if button.is_sensitive() => {
-                button.grab_focus();
-            }
-            _ => {
-                self.content.child_focus(gtk::DirectionType::TabForward);
-            }
-        }
+    fn focus_target(&self) -> Option<gtk::Widget> {
+        self.focus.borrow().clone().map(|b| b.upcast())
     }
 }
 

@@ -18,7 +18,7 @@ pub fn keys(widget: &impl IsA<gtk::Widget>, text: &str, keys: &[Vec<String>]) {
     widget.set_has_tooltip(true);
     let text = text.to_owned();
     let keys = keys.to_vec();
-    widget.connect_query_tooltip(move |_, _, _, _, tooltip| {
+    widget.connect_query_tooltip(crate::guarded!("a tooltip", move |_, _, _, _, tooltip| {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         row.add_css_class("qrec-tooltip");
         row.append(&gtk::Label::new(Some(&text)));
@@ -27,5 +27,5 @@ pub fn keys(widget: &impl IsA<gtk::Widget>, text: &str, keys: &[Vec<String>]) {
         }
         tooltip.set_custom(Some(&row));
         true
-    });
+    }));
 }

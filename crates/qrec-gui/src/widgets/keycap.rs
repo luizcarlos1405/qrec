@@ -87,19 +87,25 @@ mod imp {
     impl ObjectImpl for KeyCap {
         fn constructed(&self) {
             self.parent_constructed();
-            let obj = self.obj();
-            obj.set_focusable(false);
-            obj.set_can_focus(false);
-            obj.set_can_target(false);
-            let label = gtk::Label::new(None);
-            label.set_parent(&*obj);
-            *self.label.borrow_mut() = Some(label);
+            crate::guard::run("key cap: constructed", || {
+                let obj = self.obj();
+                obj.set_focusable(false);
+                obj.set_can_focus(false);
+                obj.set_can_target(false);
+                obj.set_accessible_role(gtk::AccessibleRole::Presentation);
+                let label = gtk::Label::new(None);
+                label.set_parent(&*obj);
+                *self.label.borrow_mut() = Some(label);
+            });
         }
 
         fn dispose(&self) {
-            if let Some(label) = self.label.borrow_mut().take() {
-                label.unparent();
-            }
+            crate::guard::run("key cap: dispose", || {
+                let label = self.label.borrow_mut().take();
+                if let Some(label) = label {
+                    label.unparent();
+                }
+            });
         }
     }
 

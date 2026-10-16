@@ -44,7 +44,7 @@ use crate::store::Store;
 use crate::store::local::{LocalUi, Overlay, StartupPhase};
 use crate::theme::{MotionPolicy, Theme};
 use crate::window::MainWindow;
-use crate::{Ctx, GuiArgs, blocking, testctl};
+use crate::{Ctx, GuiArgs, blocking, guard, guarded, testctl};
 
 /// The application id (SPEC §15, the portal's app id).
 pub const APP_ID: &str = "com.rsensato.qrec";
@@ -76,10 +76,13 @@ pub struct App {
     exit_after_host: Cell<u8>,
     hold: RefCell<Option<gio::ApplicationHoldGuard>>,
     quitting: Cell<bool>,
+    /// The test control channel (test mode only; the socket goes with it).
+    channel: RefCell<Option<testctl::Channel>>,
 }
 
 /// `qrec_gui::run`.
 pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
+    log_panics();
     let interrupts = signals::install(&HOST_SIGNALS).unwrap_or_else(|e| {
         tracing::warn!("signals won't be handled gracefully: {e}");
         Interrupts::new()
@@ -94,7 +97,7 @@ pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
     // The queue's drain runs on this thread's main loop; items wait until
     // the window is up (`activate` kicks the first drain).
     let queue = Queue::new(|| {
-        glib::idle_add_full(glib::Priority::DEFAULT, || {
+        guard::idle(glib::Priority::DEFAULT, "the queue's drain", || {
             drain();
             glib::ControlFlow::Break
         });
@@ -130,24 +133,29 @@ pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
     let startup = RefCell::new(Some(startup));
-    app.connect_startup(|_| on_startup());
-    app.connect_activate(move |app| {
-        if let Some(startup) = startup.borrow_mut().take() {
+    app.connect_startup(guarded!("startup", move |_| on_startup()));
+    app.connect_activate(guarded!("activate", move |app| {
+        let startup = startup.borrow_mut().take();
+        if let Some(startup) = startup {
             activate(app, startup);
         }
-    });
+    }));
     app.run_with_args::<&str>(&[]);
     APP.with(|a| a.borrow_mut().take());
     QUEUE.with(|q| q.borrow_mut().take());
     Ok(EXIT_CODE.with(Cell::get))
 }
 
-/// GTK `startup`: test mode's settings (G§8.4). The fonts, the theme
-/// providers and the icon theme come with the window (`activate`).
+/// GTK `startup`: GTK's settings. Font rendering is GTK's manual mode
+/// (`theme::fonts::configure_rendering`); test mode turns animations and
+/// the cursor blink off (G§8.4). The fonts, the theme providers and the
+/// icon theme come with the window (`activate`).
 fn on_startup() {
-    if testctl::mode().on
-        && let Some(settings) = gtk::Settings::default()
-    {
+    let Some(settings) = gtk::Settings::default() else {
+        return;
+    };
+    crate::theme::fonts::configure_rendering(&settings);
+    if testctl::mode().on {
         settings.set_gtk_enable_animations(false);
         settings.set_gtk_cursor_blink(false);
     }
@@ -184,14 +192,27 @@ fn activate(app: &adw::Application, startup: Startup) {
         MotionPolicy::from_settings(ui.reduced_motion),
     );
     register_resources();
+    // The fonts first (before any widget the window shows), then the
+    // theme's providers and the icons (G§3.3 step 2, G§3.14).
+    if let Some(dir) = crate::theme::fonts::font_dir() {
+        for warning in crate::theme::fonts::register(&dir) {
+            tracing::warn!("{warning}");
+        }
+    }
+    let resolved = crate::theme::fonts::resolve();
+    if crate::theme::fonts::all_resolved(&resolved) {
+        tracing::info!("fonts: the three bundled families resolve");
+    } else {
+        tracing::warn!("fonts: not every bundled family resolves: {resolved:?}");
+    }
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::IconTheme::for_display(&display).add_resource_path(ICONS);
         theme.install(&display);
-        if let Some(dir) = crate::theme::fonts::font_dir() {
-            for warning in crate::theme::fonts::register(&dir) {
-                tracing::warn!("{warning}");
-            }
-        }
+        tracing::info!(
+            "theme {} at scale {} before the first frame",
+            crate::theme::css_name(theme.id()),
+            theme.scale()
+        );
     }
     let window = MainWindow::new(app, &name);
     if theme.motion().reduced {
@@ -215,24 +236,45 @@ fn activate(app: &adw::Application, startup: Startup) {
         exit_after_host: Cell::new(0),
         hold: RefCell::new(None),
         quitting: Cell::new(false),
+        channel: RefCell::new(None),
     });
     APP.with(|a| *a.borrow_mut() = Some(Rc::clone(&the_app)));
+    // A caught panic (G§3.12) is told once as an error toast.
+    let notices = store.downgrade();
+    guard::set_reporter(move |what, message| {
+        if let Some(store) = notices.upgrade() {
+            store.notify(
+                Notice::new(ToastLevel::Error, "Something went wrong in the window").with_body(
+                    format!(
+                        "{what}: {message}. It's in the log; if the window misbehaves, close it \
+                         and start Qrec again."
+                    ),
+                ),
+            );
+        }
+    });
 
     the_app.window.populate(&ctx, &name);
     keys.attach(&the_app.window.window);
     the_app.register_actions();
     let weak = Rc::downgrade(&the_app);
-    the_app.window.window.connect_close_request(move |_| {
-        if let Some(app) = weak.upgrade() {
-            app.request_close();
+    the_app.window.window.connect_close_request(guarded!(
+        "close request",
+        after_panic = glib::Propagation::Stop,
+        move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.request_close();
+            }
+            glib::Propagation::Stop
         }
-        glib::Propagation::Stop
-    });
+    ));
     // The keymap's problems, one warning each (shown once the window maps).
-    for problem in &the_app.ctx.store.local().keymap_problems.clone() {
+    let problems = the_app.ctx.store.local().keymap_problems.clone();
+    for problem in problems {
         store
             .notify(Notice::new(ToastLevel::Warning, "keys.toml has a problem").with_body(problem));
     }
+    *the_app.channel.borrow_mut() = testctl::listen(queue.clone());
     let weak = Rc::downgrade(&the_app);
     store
         .subscribe(move |change| {
@@ -242,6 +284,7 @@ fn activate(app: &adw::Application, startup: Startup) {
         })
         .detach();
     the_app.window.window.present();
+    tracing::info!("the window is presented");
     if testctl::mode().on {
         log_regions_when_mapped(&the_app);
     }
@@ -299,8 +342,10 @@ fn drain() {
         });
         return;
     };
+    // One item at a time: a panic in one (caught, G§3.12) leaves the others
+    // to be handled.
     for item in app.ctx.store.queue().take_all() {
-        app.handle(item);
+        guard::run("an inbound item", || app.handle(item));
     }
 }
 
@@ -330,13 +375,7 @@ impl App {
                 let inventory = Arc::new(inventory);
                 store.update_local(move |l| l.sources = Some(inventory));
             }
-            Inbound::Test(request) => {
-                // The control channel's ops come with WP0b part 2.
-                (request.reply)(serde_json::json!({
-                    "ok": false,
-                    "error": "the test control channel isn't built yet"
-                }));
-            }
+            Inbound::Test(request) => testctl::handle(self, request),
         }
     }
 
@@ -535,6 +574,29 @@ impl App {
     }
 }
 
+/// Panics reach the GUI log too (with where they happened), not only
+/// stderr; the default hook still prints them. GLib callbacks catch theirs
+/// (`guard`), so the window carries on.
+fn log_panics() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let default = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let thread = std::thread::current();
+            let message = guard::message(info.payload());
+            let place = info
+                .location()
+                .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                .unwrap_or_default();
+            tracing::error!(
+                "panic on thread {} at {place}: {message}",
+                thread.name().unwrap_or("?")
+            );
+            default(info);
+        }));
+    });
+}
+
 /// What says where the Wayland display is.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DisplayEnv {
@@ -593,13 +655,17 @@ fn export_percent(state: &State) -> Option<u8> {
 /// (until the control channel's `regions` op).
 fn log_regions_when_mapped(app: &Rc<App>) {
     let weak = Rc::downgrade(app);
-    glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
-        if let Some(app) = weak.upgrade() {
-            for (name, [x, y, w, h]) in app.window.regions() {
-                tracing::info!("region {name}: ({x}, {y}, {w}, {h})");
+    guard::timeout_local_once(
+        std::time::Duration::from_millis(1500),
+        "the regions' log",
+        move || {
+            if let Some(app) = weak.upgrade() {
+                for (name, [x, y, w, h]) in app.window.regions() {
+                    tracing::info!("region {name}: ({x}, {y}, {w}, {h})");
+                }
             }
-        }
-    });
+        },
+    );
 }
 
 #[cfg(test)]

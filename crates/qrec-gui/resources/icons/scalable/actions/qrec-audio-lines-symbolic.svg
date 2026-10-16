@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Qrec custom symbolic icon (G§5.2): 16 px grid, fills only, so GTK recolors it. A hand-drawn PLACEHOLDER: the shape follows the pen file's icon (design/qrec.pen), exported once it is the active document (G§0.6). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill-rule="evenodd">
+  <path d="M1 6 H3 V10 H1 Z"/>
+  <path d="M4.5 3 H6.5 V13 H4.5 Z"/>
+  <path d="M8 5 H10 V11 H8 Z"/>
+  <path d="M11.5 2 H13.5 V14 H11.5 Z"/>
+  <path d="M15 6.5 H16 V9.5 H15 Z"/>
+</svg>

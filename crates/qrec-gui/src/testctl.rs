@@ -9,17 +9,50 @@
 //! `stuck-gst` makes startup report GStreamer stuck without initializing it
 //! (the stuck page, exit 5).
 //!
-//! **The control channel** (WP0b part 2): a socket
-//! `$XDG_RUNTIME_DIR/qrec-gui-test.sock` (0600), one JSON request line and
-//! one JSON reply line; requests reach the main thread as
-//! `Inbound::Test`. Ops: `waitIdle`, `regions`, `dispatch`, `action`,
-//! `hints`, `local`, `a11y`. Dispatches go through the Store (R8); the
-//! others only read.
+//! **The control channel**: a socket `$XDG_RUNTIME_DIR/qrec-gui-test.sock`
+//! (0600, the test's private runtime dir), served by thread `qrec-testctl`:
+//! one JSON request line, one JSON reply line. Requests reach the main
+//! thread as `Inbound::Test`; the socket thread waits for the answer up to
+//! the request's `timeoutMs` (default 10 000, at most 60 000).
+//!
+//! | op | reply |
+//! | --- | --- |
+//! | `waitIdle` | `{"ok":true,"rev":R}` once the queue is empty, the window's requests are answered, the previews and the player are idle, no source awaits the portal, the window isn't opening, and a frame was drawn after that |
+//! | `regions` | `{"regions":{"<name>":[x,y,w,h],…}}`: every `region-*` widget and named part (G§8.4), window coordinates; `names` adds widgets by name |
+//! | `labels` | the text of every visible label under the widget `name` (default: the window) |
+//! | `dispatch` | `Store::dispatch` of `command` (`confirmed`: as confirmed), `{"ok":true}` at once |
+//! | `action` | runs binding or GUI action `id` as its key would |
+//! | `hints` | the hint bar's items and status (`hintbar::current_items`) |
+//! | `local` | a summary of `LocalUi`, the theme, the caught panics |
+//! | `a11y` | every visible icon-only button, focusable region or custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
+//! | `fonts` | the family Pango loads for each bundled font |
+//! | `icons` | each custom symbolic icon drawn in a probe color: found, pixels, recolored |
+//! | `art` | each illustration through `gtk::Svg`: its size and drawn pixels |
+//!
+//! Dispatches go through the Store (R8); the other ops only read.
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::OnceLock;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, NaiveDateTime};
-use serde_json::Value;
+use gtk::prelude::*;
+use gtk::{gdk, glib, graphene};
+use qrec_core::Command;
+use qrec_shell::capture::LiveSourceState;
+use serde_json::{Value, json};
+
+use crate::app::App;
+use crate::host::queue::{Inbound, Queue};
+use crate::store::local::StartupPhase;
+use crate::{guard, guarded, hintbar, theme};
 
 /// `QREC_GUI_TEST` and its companions, as read at startup.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -76,12 +109,14 @@ pub fn mode() -> &'static TestMode {
 }
 
 /// One control request on its way to the main thread, with where its reply
-/// goes. (The channel itself is WP0b part 2.)
+/// goes.
 pub struct TestRequest {
     /// The request line, parsed.
     pub request: Value,
     /// Called once with the reply line's JSON.
     pub reply: Box<dyn FnOnce(Value) + Send>,
+    /// When the socket thread stops waiting.
+    pub deadline: Instant,
 }
 
 impl std::fmt::Debug for TestRequest {
@@ -90,6 +125,586 @@ impl std::fmt::Debug for TestRequest {
             .field("request", &self.request)
             .finish_non_exhaustive()
     }
+}
+
+// ------------------------------------------------------------- the socket
+
+/// The socket's file name in `$XDG_RUNTIME_DIR`.
+pub const SOCKET: &str = "qrec-gui-test.sock";
+/// A request's default wait (`timeoutMs`).
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+/// The longest wait a request may ask for (R6).
+pub const MAX_TIMEOUT: Duration = Duration::from_secs(60);
+/// The longest request line.
+const MAX_LINE: u64 = 1 << 20;
+
+/// Where the socket is: `$XDG_RUNTIME_DIR/qrec-gui-test.sock`.
+pub fn socket_path() -> Option<PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|d| !d.is_empty())
+        .map(|dir| PathBuf::from(dir).join(SOCKET))
+}
+
+/// The listening channel; the socket goes when it drops.
+#[derive(Debug)]
+pub struct Channel {
+    path: PathBuf,
+}
+
+impl Drop for Channel {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Listens in test mode (thread `qrec-testctl`); `None` outside test mode,
+/// or when another window of this runtime dir already listens.
+pub fn listen(queue: Queue) -> Option<Channel> {
+    if !mode().on {
+        return None;
+    }
+    let path = socket_path()?;
+    if UnixStream::connect(&path).is_ok() {
+        tracing::warn!(
+            "test channel: {} is another window's; this one has none",
+            path.display()
+        );
+        return None;
+    }
+    let _ = std::fs::remove_file(&path);
+    let listener = match UnixListener::bind(&path) {
+        Ok(listener) => listener,
+        Err(e) => {
+            tracing::warn!("test channel: can't listen on {}: {e}", path.display());
+            return None;
+        }
+    };
+    if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
+        tracing::warn!("test channel: chmod {}: {e}", path.display());
+    }
+    let spawned = thread::Builder::new()
+        .name("qrec-testctl".into())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { continue };
+                let queue = queue.clone();
+                let _ = thread::Builder::new()
+                    .name("qrec-testctl".into())
+                    .spawn(move || serve(stream, &queue));
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!("test channel: can't start its thread: {e}");
+        return None;
+    }
+    tracing::info!("test channel on {}", path.display());
+    Some(Channel { path })
+}
+
+/// One connection: a request line in, its reply line out.
+fn serve(stream: UnixStream, queue: &Queue) {
+    let _ = stream.set_read_timeout(Some(DEFAULT_TIMEOUT));
+    let mut line = String::new();
+    let read = BufReader::new(&stream).take(MAX_LINE).read_line(&mut line);
+    let reply = match read {
+        Err(e) => json!({"ok": false, "error": format!("can't read the request: {e}")}),
+        Ok(_) => match serde_json::from_str::<Value>(line.trim()) {
+            Err(e) => json!({"ok": false, "error": format!("not JSON: {e}")}),
+            Ok(request) => {
+                let wait = request["timeoutMs"]
+                    .as_u64()
+                    .map_or(DEFAULT_TIMEOUT, Duration::from_millis)
+                    .min(MAX_TIMEOUT);
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                queue.push(Inbound::Test(TestRequest {
+                    request,
+                    reply: Box::new(move |value| {
+                        let _ = tx.send(value);
+                    }),
+                    deadline: Instant::now() + wait,
+                }));
+                rx.recv_timeout(wait + Duration::from_millis(200))
+                    .unwrap_or_else(|_| json!({"ok": false, "error": "timed out"}))
+            }
+        },
+    };
+    let mut stream = stream;
+    let _ = writeln!(stream, "{reply}");
+}
+
+// ------------------------------------------------------------- the ops
+
+/// A reply that may be sent later (once).
+type Reply = Rc<RefCell<Option<Box<dyn FnOnce(Value) + Send>>>>;
+
+fn answer(reply: &Reply, value: Value) {
+    if let Some(send) = reply.borrow_mut().take() {
+        send(value);
+    }
+}
+
+/// A request on the main thread.
+pub fn handle(app: &Rc<App>, request: TestRequest) {
+    let TestRequest {
+        request,
+        reply,
+        deadline,
+    } = request;
+    let reply: Reply = Rc::new(RefCell::new(Some(reply)));
+    let op = request["op"].as_str().unwrap_or_default().to_owned();
+    tracing::debug!("test channel: {op}");
+    let value = match op.as_str() {
+        "waitIdle" => return wait_idle(app, deadline, reply),
+        "regions" => regions(app, &request),
+        "labels" => labels(app, &request),
+        "dispatch" => dispatch(app, &request),
+        "action" => action(app, &request),
+        "hints" => hints(app),
+        "local" => local(app),
+        "a11y" => a11y(app),
+        "fonts" => {
+            let resolved = theme::fonts::resolve();
+            json!({
+                "ok": theme::fonts::all_resolved(&resolved),
+                "fonts": resolved.into_iter().collect::<BTreeMap<_, _>>(),
+            })
+        }
+        "icons" => icons(app),
+        "art" => art(app),
+        other => json!({"ok": false, "error": format!("no op {other:?}")}),
+    };
+    answer(&reply, value);
+}
+
+/// Why the window isn't idle (empty: idle).
+fn busy(app: &App) -> Vec<String> {
+    let store = &app.ctx.store;
+    let mut why = Vec::new();
+    if !store.queue().is_empty() {
+        why.push("the inbound queue".to_owned());
+    }
+    let pending = store.pending_requests();
+    if pending > 0 {
+        why.push(format!("{pending} request(s) unanswered"));
+    }
+    if !app.ctx.media.previews_idle() {
+        why.push("previews".to_owned());
+    }
+    if app.ctx.media.player().is_some_and(|p| !p.idle()) {
+        why.push("the player".to_owned());
+    }
+    let local = store.local();
+    if matches!(local.startup, StartupPhase::Opening { .. }) {
+        why.push("opening".to_owned());
+    }
+    if local
+        .live_status
+        .iter()
+        .any(|s| matches!(s.state, LiveSourceState::AwaitingPortal))
+    {
+        why.push("the portal".to_owned());
+    }
+    why
+}
+
+/// `waitIdle`: polls every 10 ms until idle, then answers after the next
+/// frame is drawn (and the window is still idle then).
+fn wait_idle(app: &Rc<App>, deadline: Instant, reply: Reply) {
+    let weak = Rc::downgrade(app);
+    guard::timeout_local(
+        Duration::from_millis(10),
+        "test channel: waitIdle",
+        move || {
+            let Some(app) = weak.upgrade() else {
+                answer(&reply, json!({"ok": false, "error": "the window is gone"}));
+                return glib::ControlFlow::Break;
+            };
+            let why = busy(&app);
+            if why.is_empty() {
+                after_paint(&app, deadline, Rc::clone(&reply));
+                return glib::ControlFlow::Break;
+            }
+            if Instant::now() >= deadline {
+                answer(
+                    &reply,
+                    json!({"ok": false, "error": format!("not idle: {}", why.join(", "))}),
+                );
+                return glib::ControlFlow::Break;
+            }
+            glib::ControlFlow::Continue
+        },
+    );
+}
+
+/// Answers `waitIdle` after the window's next `after-paint`.
+fn after_paint(app: &Rc<App>, deadline: Instant, reply: Reply) {
+    let window = app.window.window.clone();
+    let Some(clock) = window.frame_clock() else {
+        answer(&reply, json!({"ok": true, "rev": app.ctx.store.rev()}));
+        return;
+    };
+    let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
+    let weak = Rc::downgrade(app);
+    let slot = Rc::clone(&handler);
+    let id = clock.connect_after_paint(guarded!("test channel: after-paint", move |clock| {
+        if let Some(id) = slot.borrow_mut().take() {
+            clock.disconnect(id);
+        }
+        let Some(app) = weak.upgrade() else {
+            answer(&reply, json!({"ok": false, "error": "the window is gone"}));
+            return;
+        };
+        if busy(&app).is_empty() {
+            answer(&reply, json!({"ok": true, "rev": app.ctx.store.rev()}));
+        } else {
+            wait_idle(&app, deadline, Rc::clone(&reply));
+        }
+    }));
+    *handler.borrow_mut() = Some(id);
+    window.queue_draw();
+}
+
+/// `regions`: every `region-*` widget and named part, plus the widgets
+/// named in `names` (a button a case clicks, say).
+fn regions(app: &App, request: &Value) -> Value {
+    let mut regions = app.window.regions();
+    let names: Vec<&str> = request["names"]
+        .as_array()
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let root: gtk::Widget = app.window.window.clone().upcast();
+    walk_visible(&root, &mut |w| {
+        let name = w.widget_name();
+        if names.contains(&name.as_str())
+            && let Some(b) = w.compute_bounds(&app.window.window)
+        {
+            regions.insert(
+                name.to_string(),
+                [
+                    f64::from(b.x()),
+                    f64::from(b.y()),
+                    f64::from(b.width()),
+                    f64::from(b.height()),
+                ],
+            );
+        }
+        true
+    });
+    json!({"regions": regions})
+}
+
+/// `labels`: the text of every visible label under the widget named
+/// `name` (default: the window), in tree order.
+fn labels(app: &App, request: &Value) -> Value {
+    let root: gtk::Widget = app.window.window.clone().upcast();
+    let start = match request["name"].as_str() {
+        Some(name) => match crate::window::find_named(&root, name) {
+            Some(w) => w,
+            None => return json!({"ok": false, "error": format!("no widget named {name}")}),
+        },
+        None => root,
+    };
+    let mut texts = Vec::new();
+    walk_visible(&start, &mut |w| {
+        if let Some(label) = w.downcast_ref::<gtk::Label>()
+            && !label.text().is_empty()
+        {
+            texts.push(label.text().to_string());
+        }
+        true
+    });
+    json!({"ok": true, "labels": texts})
+}
+
+fn dispatch(app: &App, request: &Value) -> Value {
+    let cmd: Command = match serde_json::from_value(request["command"].clone()) {
+        Ok(cmd) => cmd,
+        Err(e) => return json!({"ok": false, "error": format!("not a command: {e}")}),
+    };
+    if request["confirmed"].as_bool().unwrap_or(false) {
+        app.ctx.store.dispatch_confirmed(cmd);
+    } else {
+        app.ctx.store.dispatch(cmd);
+    }
+    json!({"ok": true})
+}
+
+fn action(app: &App, request: &Value) -> Value {
+    let Some(id) = request["id"].as_str() else {
+        return json!({"ok": false, "error": "no id"});
+    };
+    if app.ctx.store.keymap().binding(id).is_some() {
+        app.ctx.keys.run_binding(id);
+        json!({"ok": true})
+    } else if app.ctx.actions.run(id) {
+        json!({"ok": true})
+    } else {
+        json!({"ok": false, "error": format!("no binding or GUI action {id}")})
+    }
+}
+
+fn hints(app: &App) -> Value {
+    let (items, status) = hintbar::current_items(&app.ctx);
+    json!({"items": items, "status": status})
+}
+
+fn local(app: &App) -> Value {
+    let local = app.ctx.store.local();
+    let startup = match &local.startup {
+        StartupPhase::Opening { slow } => json!({"phase": "opening", "slow": slow}),
+        StartupPhase::Open => json!({"phase": "open"}),
+        StartupPhase::Blocked(kind) => json!({"phase": "blocked", "page": kind}),
+        StartupPhase::Closing => json!({"phase": "closing"}),
+    };
+    json!({
+        "startup": startup,
+        "focus": local.focus,
+        "overlays": local.overlays.iter().map(|o| format!("{o:?}")).collect::<Vec<_>>(),
+        "drag": local.drag,
+        "layout": {
+            "width": format!("{:?}", local.layout.width),
+            "compact": local.layout.compact,
+        },
+        "playingRate": local.playing_rate,
+        "binSelection": local.bin_selection.iter().map(|t| t.as_str().to_owned()).collect::<Vec<_>>(),
+        "keymapProblems": local.keymap_problems,
+        "theme": theme::css_name(app.ctx.theme.id()),
+        "scale": app.ctx.theme.scale(),
+        "reducedMotion": app.ctx.theme.motion().reduced,
+        "rev": app.ctx.store.rev(),
+        "panics": guard::panics(),
+    })
+}
+
+// ----------------------------------------------------------- a11y walk
+
+/// Every visible icon-only button, focusable region and focusable custom
+/// widget (ours: `Qrec…` types) without an accessible label or a
+/// labelled-by relation. Window controls are GTK's own (labeled by it).
+fn a11y(app: &App) -> Value {
+    if std::env::var("GTK_A11Y").as_deref() != Ok("test") {
+        return json!({"ok": false, "error": "the a11y walk needs GTK_A11Y=test"});
+    }
+    let mut missing = Vec::new();
+    let root: gtk::Widget = app.window.window.clone().upcast();
+    walk_visible(&root, &mut |w| {
+        let type_name = w.type_().name().to_owned();
+        if type_name == "GtkWindowControls" {
+            return false;
+        }
+        let name = w.widget_name().to_string();
+        let custom = type_name.starts_with("Qrec") && w.is_focusable();
+        let region = name.starts_with("region-") && w.is_focusable();
+        if (is_icon_only_button(w) || custom || region) && !has_label(w) {
+            let bounds = w
+                .compute_bounds(&app.window.window)
+                .map(|b| [b.x(), b.y(), b.width(), b.height()]);
+            missing.push(json!({"type": type_name, "name": name, "bounds": bounds}));
+        }
+        true
+    });
+    json!({"ok": missing.is_empty(), "missing": missing})
+}
+
+/// Visits the visible, mapped widgets under `root`; `f` returns whether to
+/// go into the widget's children.
+fn walk_visible(root: &gtk::Widget, f: &mut dyn FnMut(&gtk::Widget) -> bool) {
+    if !root.is_visible() || !root.is_mapped() {
+        return;
+    }
+    if !f(root) {
+        return;
+    }
+    let mut child = root.first_child();
+    while let Some(c) = child {
+        walk_visible(&c, f);
+        child = c.next_sibling();
+    }
+}
+
+fn is_icon_only_button(w: &gtk::Widget) -> bool {
+    let button = w.is::<gtk::Button>() || w.is::<gtk::MenuButton>();
+    button && !has_text(w)
+}
+
+fn has_text(w: &gtk::Widget) -> bool {
+    if let Some(label) = w.downcast_ref::<gtk::Label>()
+        && !label.text().is_empty()
+    {
+        return true;
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        if c.is_visible() && has_text(&c) {
+            return true;
+        }
+        child = c.next_sibling();
+    }
+    false
+}
+
+fn has_label(w: &gtk::Widget) -> bool {
+    gtk::test_accessible_has_property(w, gtk::AccessibleProperty::Label)
+        || gtk::test_accessible_has_relation(w, gtk::AccessibleRelation::LabelledBy)
+}
+
+// --------------------------------------------------------- icons and art
+
+/// The custom symbolic icons (G§5.2).
+pub const CUSTOM_ICONS: [&str; 10] = [
+    "qrec-record-symbolic",
+    "qrec-success-symbolic",
+    "qrec-magnet-symbolic",
+    "qrec-monitor-x-symbolic",
+    "qrec-package-x-symbolic",
+    "qrec-life-buoy-symbolic",
+    "qrec-timer-off-symbolic",
+    "qrec-gauge-symbolic",
+    "qrec-layers-symbolic",
+    "qrec-audio-lines-symbolic",
+];
+
+/// The Adwaita symbolic names G§5.2 maps the pen's icons to (checked
+/// against adwaita-icon-theme 50.0).
+pub const ADWAITA_ICONS: [&str; 44] = [
+    "media-playback-stop-symbolic",
+    "media-playback-start-symbolic",
+    "media-playback-pause-symbolic",
+    "go-previous-symbolic",
+    "go-next-symbolic",
+    "media-skip-backward-symbolic",
+    "media-skip-forward-symbolic",
+    "camera-photo-symbolic",
+    "document-save-symbolic",
+    "edit-find-symbolic",
+    "preferences-system-symbolic",
+    "camera-video-symbolic",
+    "video-x-generic-symbolic",
+    "view-reveal-symbolic",
+    "view-conceal-symbolic",
+    "changes-prevent-symbolic",
+    "changes-allow-symbolic",
+    "list-drag-handle-symbolic",
+    "list-add-symbolic",
+    "video-display-symbolic",
+    "camera-web-symbolic",
+    "audio-input-microphone-symbolic",
+    "audio-speakers-symbolic",
+    "package-x-generic-symbolic",
+    "edit-cut-symbolic",
+    "preferences-other-symbolic",
+    "zoom-in-symbolic",
+    "zoom-out-symbolic",
+    "zoom-fit-best-symbolic",
+    "user-trash-symbolic",
+    "folder-open-symbolic",
+    "folder-symbolic",
+    "edit-copy-symbolic",
+    "adw-external-link-symbolic",
+    "dialog-information-symbolic",
+    "dialog-warning-symbolic",
+    "dialog-error-symbolic",
+    "object-select-symbolic",
+    "pan-down-symbolic",
+    "view-more-symbolic",
+    "window-close-symbolic",
+    "insert-link-symbolic",
+    "document-edit-symbolic",
+    "edit-undo-symbolic",
+];
+
+/// Renders `node` (`width`×`height`) with the window's renderer; RGBA8.
+fn render(app: &App, node: &gtk::gsk::RenderNode, width: f32, height: f32) -> Option<Vec<u8>> {
+    let renderer = app.window.window.renderer()?;
+    let texture =
+        renderer.render_texture(node, Some(&graphene::Rect::new(0.0, 0.0, width, height)));
+    let mut downloader = gdk::TextureDownloader::new(&texture);
+    downloader.set_format(gdk::MemoryFormat::R8g8b8a8);
+    let (bytes, _stride) = downloader.download_bytes();
+    Some(bytes.to_vec())
+}
+
+/// Each custom icon drawn at 16 px in a probe color: it recolors when every
+/// pixel it covers takes the probe color (a stroke that doesn't recolor
+/// would stay black).
+fn icons(app: &App) -> Value {
+    let display = WidgetExt::display(&app.window.window);
+    let icon_theme = gtk::IconTheme::for_display(&display);
+    let probe = gdk::RGBA::new(1.0, 0.0, 1.0, 1.0);
+    let mut all = true;
+    let mut out = Vec::new();
+    for name in CUSTOM_ICONS {
+        if !icon_theme.has_icon(name) {
+            all = false;
+            out.push(json!({"name": name, "found": false}));
+            continue;
+        }
+        let paintable = icon_theme.lookup_icon(
+            name,
+            &[],
+            16,
+            1,
+            gtk::TextDirection::Ltr,
+            gtk::IconLookupFlags::empty(),
+        );
+        let snapshot = gtk::Snapshot::new();
+        paintable.snapshot_symbolic(&snapshot, 16.0, 16.0, &[probe, probe, probe, probe]);
+        let pixels = snapshot
+            .to_node()
+            .and_then(|node| render(app, &node, 16.0, 16.0))
+            .unwrap_or_default();
+        let (mut drawn, mut off_color) = (0, 0);
+        for px in pixels.chunks_exact(4) {
+            if px[3] > 128 {
+                drawn += 1;
+                // Premultiplied or not, magenta has no green and red = blue.
+                if px[1] > 40 || px[0].abs_diff(px[2]) > 40 {
+                    off_color += 1;
+                }
+            }
+        }
+        let recolored = drawn > 8 && off_color == 0;
+        all &= recolored;
+        out.push(json!({
+            "name": name,
+            "found": true,
+            "pixels": drawn,
+            "offColor": off_color,
+            "recolored": recolored,
+        }));
+    }
+    let missing: Vec<&str> = ADWAITA_ICONS
+        .iter()
+        .copied()
+        .filter(|name| !icon_theme.has_icon(name))
+        .collect();
+    all &= missing.is_empty();
+    json!({"ok": all, "icons": out, "adwaitaMissing": missing})
+}
+
+/// Each illustration through `gtk::Svg` in the theme's colors: its size and
+/// how many pixels it draws.
+fn art(app: &App) -> Value {
+    let mut all = true;
+    let mut out = Vec::new();
+    for which in theme::art::Art::ALL {
+        let Some(svg) = app.ctx.theme.art(which) else {
+            all = false;
+            out.push(json!({"name": which.name(), "loaded": false}));
+            continue;
+        };
+        let (w, h) = (svg.intrinsic_width(), svg.intrinsic_height());
+        let snapshot = gtk::Snapshot::new();
+        svg.snapshot(&snapshot, f64::from(w), f64::from(h));
+        let pixels = snapshot
+            .to_node()
+            .and_then(|node| render(app, &node, w as f32, h as f32))
+            .unwrap_or_default();
+        let drawn = pixels.chunks_exact(4).filter(|px| px[3] > 0).count();
+        all &= w > 0 && h > 0 && drawn > 0;
+        out.push(json!({"name": which.name(), "loaded": true, "size": [w, h], "pixels": drawn}));
+    }
+    json!({"ok": all, "art": out})
 }
 
 #[cfg(test)]
@@ -111,5 +726,47 @@ mod tests {
         assert!(stuck.on && stuck.stuck_gst);
         assert_eq!((stuck.t_ms, stuck.now), (0, None));
         assert!(TestMode::parse(Some("1,stuck-gst"), None, None).stuck_gst);
+    }
+
+    /// The socket thread's half: a request line reaches the queue with a
+    /// way back, and its reply comes out as one line.
+    #[test]
+    fn a_request_line_gets_its_reply_line() {
+        let queue = Queue::new(|| {});
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let worker = {
+            let queue = queue.clone();
+            thread::spawn(move || serve(server, &queue))
+        };
+        writeln!(client, r#"{{"op":"regions","timeoutMs":5000}}"#).unwrap();
+        let item = loop {
+            if let Some(item) = queue.take_all().into_iter().next() {
+                break item;
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
+        let Inbound::Test(request) = item else {
+            panic!("{item:?}")
+        };
+        assert_eq!(request.request["op"], "regions");
+        assert!(request.deadline > Instant::now() + Duration::from_secs(4));
+        (request.reply)(json!({"regions": {}}));
+        worker.join().unwrap();
+        let mut line = String::new();
+        BufReader::new(&client).read_line(&mut line).unwrap();
+        assert_eq!(line.trim(), r#"{"regions":{}}"#);
+    }
+
+    #[test]
+    fn garbage_gets_an_error_line() {
+        let queue = Queue::new(|| {});
+        let (mut client, server) = UnixStream::pair().unwrap();
+        writeln!(client, "not json").unwrap();
+        serve(server, &queue);
+        let mut line = String::new();
+        BufReader::new(&client).read_line(&mut line).unwrap();
+        let reply: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(reply["ok"], false);
+        assert!(queue.is_empty());
     }
 }

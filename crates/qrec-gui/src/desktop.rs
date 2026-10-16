@@ -18,7 +18,7 @@ use qrec_shell::doctor::DoctorReport;
 use qrec_shell::paths::ProjectPaths;
 use qrec_shell::proc::{self, Limit, Spec};
 
-use crate::Ctx;
+use crate::{Ctx, guarded};
 
 /// How long `wl-copy` may take (R6).
 pub const WL_COPY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -30,21 +30,29 @@ pub fn run(ctx: &Ctx, parent: Option<&gtk::Window>, project_dir: &Path, action: 
             let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(path)));
             let store = ctx.store.clone();
             let shown = path.clone();
-            launcher.launch(parent, gio::Cancellable::NONE, move |result| {
-                if let Err(e) = result {
-                    store.notify(couldnt("open", &shown, &e.to_string()));
-                }
-            });
+            launcher.launch(
+                parent,
+                gio::Cancellable::NONE,
+                guarded!("desktop: open", move |result| {
+                    if let Err(e) = result {
+                        store.notify(couldnt("open", &shown, &e.to_string()));
+                    }
+                }),
+            );
         }
         UiAction::RevealPath(path) => {
             let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(path)));
             let store = ctx.store.clone();
             let shown = path.clone();
-            launcher.open_containing_folder(parent, gio::Cancellable::NONE, move |result| {
-                if let Err(e) = result {
-                    store.notify(couldnt("show", &shown, &e.to_string()));
-                }
-            });
+            launcher.open_containing_folder(
+                parent,
+                gio::Cancellable::NONE,
+                guarded!("desktop: reveal", move |result| {
+                    if let Err(e) = result {
+                        store.notify(couldnt("show", &shown, &e.to_string()));
+                    }
+                }),
+            );
         }
         UiAction::CopyText(text) => match gdk::Display::default() {
             Some(display) => display.clipboard().set_text(text),
