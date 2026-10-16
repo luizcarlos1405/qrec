@@ -1,0 +1,225 @@
+---
+source: crates/qrec-core/src/view/bin.rs
+expression: rows
+---
+[
+  {
+    "take": "take-0009",
+    "title": "Take 9",
+    "chip": "broken",
+    "mono": "— · 14:31 · 95.4 MB",
+    "secondary": "Files didn't close within 10 s.",
+    "actions": [
+      {
+        "kind": "openLog",
+        "action": {
+          "openPath": "takes/take-0009/recorder.log"
+        }
+      },
+      {
+        "kind": "reveal",
+        "action": {
+          "revealPath": "takes/take-0009/"
+        }
+      },
+      {
+        "kind": "purge",
+        "command": {
+          "cmd": "takePurge",
+          "takes": [
+            "take-0009"
+          ]
+        }
+      }
+    ],
+    "color": 0,
+    "thumbnail": {
+      "kind": "broken"
+    },
+    "insertable": false
+  },
+  {
+    "take": "take-0007",
+    "title": "Take 7",
+    "chip": "recovered",
+    "mono": "00:01:02:10 · 14:21 · 155.8 MB",
+    "secondary": "Recovered after Qrec closed mid-take.",
+    "actions": [
+      {
+        "kind": "preview"
+      },
+      {
+        "kind": "insertAtEnd",
+        "command": {
+          "cmd": "clipAdd",
+          "take": "take-0007",
+          "at": "end"
+        }
+      },
+      {
+        "kind": "insertAfterSelection",
+        "command": {
+          "cmd": "clipAdd",
+          "take": "take-0007",
+          "at": "afterSelection"
+        },
+        "disabled": null
+      },
+      {
+        "kind": "reveal",
+        "action": {
+          "revealPath": "takes/take-0007/"
+        }
+      },
+      {
+        "kind": "purge",
+        "command": {
+          "cmd": "takePurge",
+          "takes": [
+            "take-0007"
+          ]
+        }
+      }
+    ],
+    "color": 6,
+    "thumbnail": {
+      "kind": "image",
+      "file": "takes/take-0007/L2-camera-0.mkv",
+      "second": 31
+    },
+    "insertable": true
+  },
+  {
+    "take": "take-0006",
+    "title": "Take 6",
+    "chip": "tooShort",
+    "mono": "00:00:00:07 · 14:19 · 1.1 MB",
+    "secondary": "7 frames; takes need 10.",
+    "actions": [
+      {
+        "kind": "reveal",
+        "action": {
+          "revealPath": "takes/take-0006/"
+        }
+      },
+      {
+        "kind": "purge",
+        "command": {
+          "cmd": "takePurge",
+          "takes": [
+            "take-0006"
+          ]
+        }
+      }
+    ],
+    "color": 5,
+    "thumbnail": {
+      "kind": "image",
+      "file": "takes/take-0006/L2-camera-0.mkv",
+      "second": 0
+    },
+    "insertable": false
+  },
+  {
+    "take": "take-0004",
+    "title": "Take 4",
+    "chip": "unused",
+    "mono": "00:00:51:18 · 14:12 · 129.0 MB",
+    "secondary": "Replaced by take 5.",
+    "actions": [
+      {
+        "kind": "preview"
+      },
+      {
+        "kind": "insertAtEnd",
+        "command": {
+          "cmd": "clipAdd",
+          "take": "take-0004",
+          "at": "end"
+        }
+      },
+      {
+        "kind": "insertAfterSelection",
+        "command": {
+          "cmd": "clipAdd",
+          "take": "take-0004",
+          "at": "afterSelection"
+        },
+        "disabled": null
+      },
+      {
+        "kind": "reveal",
+        "action": {
+          "revealPath": "takes/take-0004/"
+        }
+      },
+      {
+        "kind": "purge",
+        "command": {
+          "cmd": "takePurge",
+          "takes": [
+            "take-0004"
+          ]
+        }
+      }
+    ],
+    "color": 3,
+    "thumbnail": {
+      "kind": "image",
+      "file": "takes/take-0004/L2-camera-0.mkv",
+      "second": 25
+    },
+    "insertable": true
+  },
+  {
+    "take": "take-0002",
+    "title": "Take 2",
+    "chip": "unused",
+    "mono": "00:00:22:04 · 14:06 · 55.1 MB",
+    "secondary": "Removed from the timeline.",
+    "actions": [
+      {
+        "kind": "preview"
+      },
+      {
+        "kind": "insertAtEnd",
+        "command": {
+          "cmd": "clipAdd",
+          "take": "take-0002",
+          "at": "end"
+        }
+      },
+      {
+        "kind": "insertAfterSelection",
+        "command": {
+          "cmd": "clipAdd",
+          "take": "take-0002",
+          "at": "afterSelection"
+        },
+        "disabled": null
+      },
+      {
+        "kind": "reveal",
+        "action": {
+          "revealPath": "takes/take-0002/"
+        }
+      },
+      {
+        "kind": "purge",
+        "command": {
+          "cmd": "takePurge",
+          "takes": [
+            "take-0002"
+          ]
+        }
+      }
+    ],
+    "color": 1,
+    "thumbnail": {
+      "kind": "image",
+      "file": "takes/take-0002/L2-camera-0.mkv",
+      "second": 11
+    },
+    "insertable": true
+  }
+]

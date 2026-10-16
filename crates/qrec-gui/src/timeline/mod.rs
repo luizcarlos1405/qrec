@@ -704,6 +704,9 @@ impl Inner {
     /// D-38: bin rows drag `qrec-take:<id>` strings onto the canvas.
     fn connect_drop(&self) {
         let target = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::COPY);
+        // The take is read while it hovers (the caret, the tooltip): a
+        // Wayland drag's data is only there once loaded (WP7 found it).
+        target.set_preload(true);
         let me = self.me.clone();
         target.connect_motion(guarded!(
             "timeline: a drop over",

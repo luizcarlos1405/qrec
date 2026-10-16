@@ -23,11 +23,24 @@ use crate::{Ctx, guarded};
 /// How long `wl-copy` may take (R6).
 pub const WL_COPY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// A path a core action names, for the desktop: project-relative paths
+/// (`exports/…`, the export-done toast's, A§1.3) are under `project_dir`,
+/// not under the window's working directory.
+pub fn resolve(project_dir: &Path, path: &str) -> PathBuf {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_dir.join(path)
+    }
+}
+
 /// Carries out a toast button's `action` for the window `parent`.
 pub fn run(ctx: &Ctx, parent: Option<&gtk::Window>, project_dir: &Path, action: &UiAction) {
     match action {
         UiAction::OpenPath(path) => {
-            let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(path)));
+            let file = gio::File::for_path(resolve(project_dir, path));
+            let launcher = gtk::FileLauncher::new(Some(&file));
             let store = ctx.store.clone();
             let shown = path.clone();
             launcher.launch(
@@ -41,7 +54,8 @@ pub fn run(ctx: &Ctx, parent: Option<&gtk::Window>, project_dir: &Path, action: 
             );
         }
         UiAction::RevealPath(path) => {
-            let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(path)));
+            let file = gio::File::for_path(resolve(project_dir, path));
+            let launcher = gtk::FileLauncher::new(Some(&file));
             let store = ctx.store.clone();
             let shown = path.clone();
             launcher.open_containing_folder(
@@ -147,6 +161,21 @@ mod tests {
         assert!(copy_image_available(Some(&report(None))));
         assert!(copy_image_available(Some(&report(Some(true)))));
         assert!(!copy_image_available(Some(&report(Some(false)))));
+    }
+
+    /// The export-done toast's paths are project-relative (A§1.3): they
+    /// open under the project, wherever the window was started.
+    #[test]
+    fn relative_paths_are_the_projects() {
+        let dir = Path::new("/home/me/talk");
+        assert_eq!(
+            resolve(dir, "exports/talk-20261014-153012.mp4"),
+            Path::new("/home/me/talk/exports/talk-20261014-153012.mp4")
+        );
+        assert_eq!(
+            resolve(dir, "/home/me/Videos/x.mp4"),
+            Path::new("/home/me/Videos/x.mp4")
+        );
     }
 
     #[test]

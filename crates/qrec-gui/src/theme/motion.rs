@@ -95,6 +95,13 @@ pub fn one_shots_at_end() -> bool {
     testctl::mode().on
 }
 
+/// Whether [`now`] stands still (test mode): a looping animation is one
+/// picture then, at `QREC_GUI_TEST_T_MS`, and needs no frames to show it
+/// (the mud bar runs no tick callback, G§8.6).
+pub fn frozen() -> bool {
+    testctl::mode().on
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

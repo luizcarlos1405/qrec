@@ -1,0 +1,13 @@
+---
+source: crates/qrec-core/src/view/export.rs
+expression: panel
+---
+{
+  "out": "exports/rust-traits-talk-20261014-153012.mp4",
+  "percent": "42%",
+  "fraction": 42,
+  "label": "Rendering clip 6/9",
+  "frames": "3,449 / 7,391 frames",
+  "times": "Elapsed 00:00:38 · About 00:00:52 left",
+  "note": "Exporting the timeline as it was at 15:30:12. You can keep editing."
+}

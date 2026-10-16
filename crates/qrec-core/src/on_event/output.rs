@@ -210,6 +210,10 @@ pub fn export_stitch_progress(state: &State, ctx: &Ctx, job: JobId, out_time_ns:
 }
 
 /// Reply `ExportDone`; toast "Layers! Like an onion. Your video is ready."
+/// with the body "<path> · 88.4 MB" and the actions Open file and Open
+/// folder (S16b; Copy path stays in the GUI's export panel). The toast's
+/// path is project-relative for an auto name, as the job named it
+/// ([`shown_output`]); the reply keeps the shell's.
 pub fn export_finished(state: &State, ctx: &Ctx, job: JobId, path: String, bytes: u64) -> Outcome {
     let _ = ctx;
     let Some(entry) = job_of(state, job, |k| matches!(k, JobKind::Export { .. })) else {
@@ -218,10 +222,13 @@ pub fn export_finished(state: &State, ctx: &Ctx, job: JobId, path: String, bytes
             format!("ExportFinished for {job}, which isn't a running export"),
         );
     };
-    let frames = match entry.kind {
-        JobKind::Export { total_frames, .. } => total_frames,
-        _ => 0,
+    let (frames, out) = match &entry.kind {
+        JobKind::Export {
+            total_frames, out, ..
+        } => (*total_frames, out.as_str()),
+        _ => (0, ""),
     };
+    let shown = shown_output(out, &path);
     let mut next = state.clone();
     next.runtime.jobs.remove(&job);
     let mut effects = Vec::new();
@@ -238,10 +245,12 @@ pub fn export_finished(state: &State, ctx: &Ctx, job: JobId, path: String, bytes
     }
     effects.push(Effect::Notify(
         Toast::new(ToastLevel::Success, EXPORT_DONE_TITLE)
-            .with_body(path.clone())
-            .with_action("Open file", UiAction::OpenPath(path.clone()))
-            .with_action("Open folder", UiAction::RevealPath(path.clone()))
-            .with_action("Copy path", UiAction::CopyText(path.clone())),
+            .with_body(format!(
+                "{shown} \u{b7} {}",
+                crate::view::format::size(bytes)
+            ))
+            .with_action("Open file", UiAction::OpenPath(shown.clone()))
+            .with_action("Open folder", UiAction::RevealPath(shown)),
     ));
     effects.push(log(
         LogLevel::Info,
@@ -293,6 +302,21 @@ pub fn export_failed(
         ),
     ));
     Outcome::new(next, effects, None)
+}
+
+/// The output of a finished export as people read it: an auto name stays
+/// project-relative, as the job named it (`exports/…`, A§1.3), with the file
+/// name the shell gave it (a numbered one when the name was taken); a
+/// hand-picked path is the shell's `path`.
+pub fn shown_output(out: &str, path: &str) -> String {
+    if out.is_empty() || out.starts_with('/') {
+        return path.to_owned();
+    }
+    let name = path.rsplit('/').next().unwrap_or(path);
+    match out.rsplit_once('/') {
+        Some((folder, _)) => format!("{folder}/{name}"),
+        None => name.to_owned(),
+    }
 }
 
 /// The log a failed job wrote; the shell sends an empty path when it
@@ -817,6 +841,76 @@ mod tests {
             ),
             (42, 3449, 7391, "Rendering clip 6/9", 38, Some(52))
         );
+    }
+
+    /// S16b: the done toast reads "<path> · 88.4 MB" with Open file and
+    /// Open folder (Copy path is the export panel's); an auto name stays
+    /// project-relative, with the name the shell gave the file.
+    #[test]
+    fn the_done_toast_is_s16b() {
+        let state = testkit::design_state();
+        let ctx = testkit::ctx("2026-10-14T15:30:12Z", 1);
+        let cmd = Command::Export {
+            format: ExportFormat::Mp4,
+            quality: Quality::Standard,
+            codec: None,
+            out: None,
+        };
+        let state = apply(&state, &ctx, cmd).unwrap().state;
+        let job = *state.runtime.jobs.keys().next().unwrap();
+        let done = |path: &str| {
+            let out = on_event(
+                &state,
+                &ctx,
+                Event::ExportFinished {
+                    job,
+                    path: path.into(),
+                    bytes: 88_400_000,
+                },
+            );
+            out.effects
+                .into_iter()
+                .find_map(|e| match e {
+                    Effect::Notify(t) => Some(t),
+                    _ => None,
+                })
+                .expect("a toast")
+        };
+        let toast =
+            done("/home/me/videos/rust-traits-talk/exports/rust-traits-talk-20261014-153012.mp4");
+        assert_eq!(toast.title, EXPORT_DONE_TITLE);
+        let shown = "exports/rust-traits-talk-20261014-153012.mp4";
+        assert_eq!(
+            toast.body.as_deref(),
+            Some("exports/rust-traits-talk-20261014-153012.mp4 \u{b7} 88.4 MB")
+        );
+        let actions: Vec<(&str, &UiAction)> = toast
+            .actions
+            .iter()
+            .map(|a| (a.label.as_str(), &a.action))
+            .collect();
+        assert_eq!(
+            actions,
+            [
+                ("Open file", &UiAction::OpenPath(shown.into())),
+                ("Open folder", &UiAction::RevealPath(shown.into())),
+            ]
+        );
+        // The name was taken: the shell numbered it.
+        let numbered = done("/p/exports/rust-traits-talk-20261014-153012-2.mp4");
+        assert!(
+            numbered
+                .body
+                .as_deref()
+                .unwrap()
+                .starts_with("exports/rust-traits-talk-20261014-153012-2.mp4 \u{b7} ")
+        );
+        assert_eq!(
+            shown_output("/home/me/talk-final.mp4", "/home/me/talk-final.mp4"),
+            "/home/me/talk-final.mp4",
+            "a hand-picked path as the shell reports it"
+        );
+        assert_eq!(shown_output("", "/p/x.mp4"), "/p/x.mp4");
     }
 
     fn frame_ns_of(state: &State) -> u64 {

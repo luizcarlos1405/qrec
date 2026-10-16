@@ -1,1 +1,163 @@
-/* The export panel (C25, C30). Owner: WP7. */
+/*
+ * The export panel (S15a, S15b, S15c, S16, S17; C25, C29, C30). Owner:
+ * WP7.
+ *
+ * 440 wide, 8 px from the window's right edge, the body's top at y 52
+ * under a 12×6 arrow (BRIEF §2.8): `raised`, `lg` radius, e2, a 1 px
+ * `border`, 16 px of padding (DESIGN Popover). The gaps are the frames'.
+ */
+
+.qrec-export {
+  margin-top: 46px;
+  margin-right: 8px;
+}
+
+.qrec-export .export-body {
+  margin-top: 6px;
+  min-width: 406px;
+  padding: 16px;
+  border: 1px solid var(--qrec-border);
+  border-radius: 12px;
+  background-color: var(--qrec-raised);
+  color: var(--qrec-text);
+  box-shadow: 0 8px 24px var(--qrec-shadow-e2), 0 1px 2px var(--qrec-shadow-e2-contact);
+}
+
+.qrec-export .export-title {
+  margin-bottom: 12px;
+}
+
+/* Setup (S15a, S15c). */
+.qrec-export .export-group-label {
+  margin-bottom: 6px;
+}
+
+.qrec-export .export-caption {
+  margin-top: 6px;
+  margin-bottom: 16px;
+}
+
+.qrec-export .export-av1 {
+  margin-bottom: 16px;
+  border-spacing: 12px;
+}
+
+.qrec-export .export-output-row {
+  margin-top: 16px;
+  margin-bottom: 6px;
+}
+
+.qrec-export .export-field > label {
+  font-family: var(--qrec-font-mono), "DejaVu Sans Mono", monospace;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.qrec-export .export-helper {
+  margin-top: 4px;
+}
+
+.qrec-export .export-rule {
+  min-height: 1px;
+  margin: 16px 0;
+  background-color: var(--qrec-border);
+}
+
+.qrec-export .export-footer {
+  border-spacing: 12px;
+}
+
+/* Running (S15b): "Exporting", the file, 42% with its phase, the bar,
+   the times, the note, Cancel export. */
+#export-running .export-title {
+  margin-bottom: 10px;
+}
+
+.qrec-export .export-file {
+  margin-bottom: 16px;
+}
+
+.qrec-export .export-progress {
+  border-spacing: 12px;
+}
+
+.qrec-export .export-bar {
+  margin-top: 12px;
+}
+
+.qrec-export .export-times {
+  margin-top: 8px;
+}
+
+.qrec-export .export-note {
+  margin-top: 16px;
+}
+
+.qrec-export .export-cancel {
+  margin-top: 16px;
+}
+
+/* Done and Failed (S16, S17): a 20 px status icon by the `headline`. */
+.qrec-export .export-status {
+  border-spacing: 8px;
+  margin-bottom: 12px;
+}
+
+.qrec-export .export-line {
+  margin-bottom: 10px;
+}
+
+.qrec-export .export-path {
+  margin-bottom: 2px;
+}
+
+.qrec-export .export-lead {
+  margin-bottom: 2px;
+}
+
+.qrec-export .export-failed-at {
+  margin-top: 6px;
+}
+
+/* The stderr tail: a `field` well, `mono-sm`, 10 lines, then it scrolls.
+   The well's own padding clips the scrolled text (no half line above). */
+.qrec-export .export-stderr {
+  margin-top: 12px;
+  padding: 8px 0;
+  border-radius: 6px;
+  background-color: var(--qrec-field);
+  box-shadow: inset 0 0 0 1px var(--qrec-border);
+}
+
+.qrec-export .export-stderr-text {
+  padding: 0 12px;
+  color: var(--qrec-text);
+}
+
+.qrec-export .export-log {
+  margin-top: 12px;
+  border-spacing: 8px;
+}
+
+.qrec-export button.qrec-link {
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background: none;
+  box-shadow: none;
+  color: var(--qrec-accent-text);
+}
+
+.qrec-export button.qrec-link label {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  text-decoration-line: underline;
+}
+
+.qrec-export .export-buttons {
+  margin-top: 16px;
+  border-spacing: 8px;
+}
