@@ -12,6 +12,7 @@ use gtk::{gdk, glib, graphene, gsk};
 use qrec_core::view::bin::Thumbnail;
 
 use crate::media::MediaHub;
+use crate::store::Subscription;
 use crate::theme::Palette;
 use crate::widgets::draw::{self, Edges};
 
@@ -32,6 +33,10 @@ mod imp {
         pub palette: RefCell<Palette>,
         pub scale: Cell<f64>,
         pub media: RefCell<Option<MediaHub>>,
+        /// Its theme subscription: it goes with the thumbnail (a row's
+        /// rebuild drops its thumbnails; a detached one stayed in the
+        /// theme's list for the window's life, WP7 integration audit).
+        pub theme: RefCell<Option<Subscription>>,
     }
 
     impl Default for Thumb {
@@ -42,6 +47,7 @@ mod imp {
                 palette: RefCell::new(Palette::default()),
                 scale: Cell::new(1.0),
                 media: RefCell::new(None),
+                theme: RefCell::new(None),
             }
         }
     }
@@ -58,7 +64,13 @@ mod imp {
         }
     }
 
-    impl ObjectImpl for Thumb {}
+    impl ObjectImpl for Thumb {
+        fn dispose(&self) {
+            crate::guard::run("bin thumb: dispose", || {
+                self.theme.take();
+            });
+        }
+    }
 
     impl WidgetImpl for Thumb {
         fn measure(&self, orientation: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
@@ -152,13 +164,12 @@ impl Thumb {
         *thumb.imp().media.borrow_mut() = Some(media.clone());
         thumb.follow(theme);
         let weak = thumb.downgrade();
-        theme
-            .subscribe(move |theme| {
-                if let Some(thumb) = weak.upgrade() {
-                    thumb.follow(theme);
-                }
-            })
-            .detach();
+        let subscription = theme.subscribe(move |theme| {
+            if let Some(thumb) = weak.upgrade() {
+                thumb.follow(theme);
+            }
+        });
+        *thumb.imp().theme.borrow_mut() = Some(subscription);
         thumb.set_valign(gtk::Align::Center);
         thumb
     }

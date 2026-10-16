@@ -125,6 +125,12 @@ impl Theme {
         self.inner.changed.add(f)
     }
 
+    /// How many callbacks follow it now (the test channel's `local`: a
+    /// widget's subscription goes with the widget, G§3.12).
+    pub fn subscribers(&self) -> usize {
+        self.inner.changed.len()
+    }
+
     /// Calls `apply` with the motion policy now, and again whenever it
     /// changes (the window's `.reduced-motion` class follows it this way,
     /// G§3.14).

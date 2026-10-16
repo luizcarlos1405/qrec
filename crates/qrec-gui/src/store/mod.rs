@@ -245,6 +245,11 @@ impl<T: ?Sized + 'static> Subscribers<T> {
     pub fn is_empty(&self) -> bool {
         self.inner.list.borrow().is_empty()
     }
+
+    /// How many are subscribed.
+    pub fn len(&self) -> usize {
+        self.inner.list.borrow().len()
+    }
 }
 
 /// Keeps a callback subscribed; dropping it unsubscribes.
