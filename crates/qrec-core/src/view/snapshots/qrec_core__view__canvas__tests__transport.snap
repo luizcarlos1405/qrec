@@ -1,0 +1,59 @@
+---
+source: crates/qrec-core/src/view/canvas.rs
+expression: rows
+---
+{
+  "empty": {
+    "enabled": false,
+    "left": {
+      "kind": "timecode",
+      "now": "00:00:00:00",
+      "total": "00:00:00:00"
+    },
+    "rate": null
+  },
+  "live": {
+    "enabled": false,
+    "left": {
+      "kind": "live",
+      "text": "Live · 1920×1080 · 30 fps"
+    },
+    "rate": null
+  },
+  "playing": {
+    "enabled": true,
+    "left": {
+      "kind": "timecode",
+      "now": "00:01:23:10",
+      "total": "00:04:06:11"
+    },
+    "rate": null
+  },
+  "program": {
+    "enabled": true,
+    "left": {
+      "kind": "timecode",
+      "now": "00:01:21:07",
+      "total": "00:04:06:11"
+    },
+    "rate": null
+  },
+  "reverse": {
+    "enabled": true,
+    "left": {
+      "kind": "timecode",
+      "now": "00:01:23:10",
+      "total": "00:04:06:11"
+    },
+    "rate": "· −4×"
+  },
+  "shuttle": {
+    "enabled": true,
+    "left": {
+      "kind": "timecode",
+      "now": "00:01:23:10",
+      "total": "00:04:06:11"
+    },
+    "rate": "· 2×"
+  }
+}

@@ -9,8 +9,8 @@
 //! 2. Focus in an editable propagates: the field handles `Enter`, `Esc`
 //!    and `Tab`.
 //! 3. During a drag (D-42): `Esc` cancels it; `n` toggles snapping during a
-//!    trim; modifiers reach the gesture (they make no chord); anything
-//!    else is swallowed.
+//!    trim; the nudge keys go on with a nudge burst (D-33); modifiers reach
+//!    the gesture (they make no chord); anything else is swallowed.
 //! 4. A top overlay that keeps the keyboard (all but the running export
 //!    panel, D-49): `Tab`, `Enter`, `Space` and the arrows go to its
 //!    widgets; in context `overlay`, `cancel` closes it and `app.quit`
@@ -28,7 +28,8 @@
 //!    otherwise `timeline` (where `global` bindings are active too).
 //! 9. `keymap::lookup`; nothing bound propagates.
 //! 10. GUI overrides: `export` opens the export panel, `autocut.preview`
-//!     the autocut page.
+//!     the autocut page; a `layer.nudge-*` that can run goes to the stage's
+//!     nudge burst (D-33: one `LayerSet` per burst, not per press).
 //! 11. `keymap::action_for` on the state with the player's frame as the
 //!     playhead while playing: a command (after its pre-steps), a GUI
 //!     action, or why it can't run (D-34).
@@ -135,6 +136,19 @@ const PLAYHEAD_BINDINGS: [&str; 8] = [
     "frame.save",
 ];
 
+/// The layer nudges (D-33): the stage coalesces a burst of them into one
+/// `LayerSet` (its GUI actions of the same ids).
+pub const NUDGE_BINDINGS: [&str; 8] = [
+    "layer.nudge-left",
+    "layer.nudge-right",
+    "layer.nudge-up",
+    "layer.nudge-down",
+    "layer.nudge-left-10",
+    "layer.nudge-right-10",
+    "layer.nudge-up-10",
+    "layer.nudge-down-10",
+];
+
 /// The router's decision for one press (the steps in the module docs).
 pub fn decide(input: &KeyInput, rs: &RouterState<'_>) -> KeyDecision {
     // 1.
@@ -160,6 +174,14 @@ pub fn decide(input: &KeyInput, rs: &RouterState<'_>) -> KeyDecision {
         let trimming = matches!(drag, DragKind::TrimStart | DragKind::TrimEnd);
         if trimming && is_key_of(rs.keymap, "snapping.toggle", chord) {
             return decide_binding("snapping.toggle", rs);
+        }
+        // D-33: a nudge burst goes on with the nudge keys.
+        if drag == DragKind::LayerNudge
+            && let Some(id) = NUDGE_BINDINGS
+                .iter()
+                .find(|id| is_key_of(rs.keymap, id, chord))
+        {
+            return decide_binding(id, rs);
         }
         return KeyDecision::Swallow;
     }
@@ -215,6 +237,8 @@ pub fn decide_binding(id: &str, rs: &RouterState<'_>) -> KeyDecision {
     }
     let state = effective_state(rs);
     match action_for(id, &state) {
+        // D-33: the stage's nudge burst sends one `LayerSet` for all of it.
+        Some(Action::Run(_)) if NUDGE_BINDINGS.contains(&id) => gui(id),
         Some(Action::Run(cmd)) => KeyDecision::Run {
             id: id.to_owned(),
             pre: pre_steps(id, rs),

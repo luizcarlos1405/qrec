@@ -1,0 +1,102 @@
+---
+source: crates/qrec-core/src/view/canvas.rs
+expression: "json!({\"corner\": corner, \"topLeft\": top_left, \"free\": free, \"left\": left,\n    \"tiny\": tiny, \"snapped\": snapped})"
+---
+{
+  "corner": {
+    "crop": {
+      "bottom": 0,
+      "left": 0,
+      "right": 0,
+      "top": 0
+    },
+    "guides": [],
+    "rect": {
+      "h": 360,
+      "w": 480,
+      "x": 1500,
+      "y": 760
+    }
+  },
+  "free": {
+    "crop": {
+      "bottom": 0,
+      "left": 0,
+      "right": 0,
+      "top": 0
+    },
+    "guides": [],
+    "rect": {
+      "h": 298,
+      "w": 480,
+      "x": 1500,
+      "y": 760
+    }
+  },
+  "left": {
+    "crop": {
+      "bottom": 0,
+      "left": 0,
+      "right": 0,
+      "top": 0
+    },
+    "guides": [],
+    "rect": {
+      "h": 288,
+      "w": 344,
+      "x": 1540,
+      "y": 760
+    }
+  },
+  "snapped": {
+    "crop": {
+      "bottom": 0,
+      "left": 0,
+      "right": 0,
+      "top": 0
+    },
+    "guides": [
+      {
+        "at": 1920.0,
+        "axis": "x",
+        "label": "Right edge"
+      }
+    ],
+    "rect": {
+      "h": 315,
+      "w": 420,
+      "x": 1500,
+      "y": 760
+    }
+  },
+  "tiny": {
+    "crop": {
+      "bottom": 0,
+      "left": 0,
+      "right": 0,
+      "top": 0
+    },
+    "guides": [],
+    "rect": {
+      "h": 16,
+      "w": 21,
+      "x": 1500,
+      "y": 760
+    }
+  },
+  "topLeft": {
+    "crop": {
+      "bottom": 0,
+      "left": 0,
+      "right": 0,
+      "top": 0
+    },
+    "guides": [],
+    "rect": {
+      "h": 360,
+      "w": 480,
+      "x": 1404,
+      "y": 688
+    }
+  }
+}

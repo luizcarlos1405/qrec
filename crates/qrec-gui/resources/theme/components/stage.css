@@ -1,1 +1,184 @@
-/* The stage (C06-C08). Owner: WP4. */
+/*
+ * The stage (C06–C08, S01a; BRIEF §2.4, DESIGN Canvas overlays). Owner:
+ * WP4. The preview's picture, its frame, the countdown ring and the
+ * selection box are drawn from the palette (stage/*.rs); this is the rest.
+ * Everything over video sits on `video-scrim` with `video-text` (R5),
+ * inset 12 px from the preview's edges.
+ */
+
+/* ------------------------------------------------- badges (C06) */
+
+.stage-badges {
+  margin: 12px;
+  border-spacing: 8px;
+}
+
+/* LIVE, PROGRAM, TAKE 4, PROXY: a 24 px pill, a 14 px icon. */
+.stage-badge {
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border-spacing: 6px;
+  background-color: var(--qrec-video-scrim);
+  color: var(--qrec-video-text);
+}
+
+.stage-badge image {
+  -gtk-icon-size: 14px;
+}
+
+.stage-badge label {
+  margin-top: 1px;
+}
+
+/* ---------------------------------------------- the REC cluster */
+
+.stage-rec-cluster {
+  margin: 12px;
+  border-spacing: 6px;
+}
+
+/* The torch: a 28 px `record` pill, the 16 px onion glyph and REC. */
+.stage-rec {
+  min-height: 28px;
+  padding: 0 12px 0 10px;
+  border-radius: 999px;
+  border-spacing: 6px;
+  background-color: var(--qrec-record);
+  color: var(--qrec-text-on-record);
+}
+
+.stage-rec.glow {
+  box-shadow: 0 0 12px var(--qrec-record-glow);
+}
+
+.stage-rec image {
+  -gtk-icon-size: 16px;
+}
+
+/* The timer plate under it: mono-lg over "Take 10". */
+.stage-timer {
+  padding: 6px 10px;
+  border-radius: 6px;
+  background-color: var(--qrec-video-scrim);
+  color: var(--qrec-video-text);
+}
+
+/* "Starting take 10…" (D-04) and "Saving take 10…" (S05). */
+.stage-pill {
+  min-height: 28px;
+  padding: 0 14px 0 8px;
+  border-radius: 999px;
+  border-spacing: 8px;
+  background-color: var(--qrec-video-scrim);
+  color: var(--qrec-video-text);
+}
+
+/* ------------------------------------------------------- plates */
+
+/* The trim plate (S10) and D-05's line. */
+.stage-plate {
+  min-height: 28px;
+  margin: 12px;
+  padding: 0 10px;
+  border-radius: 6px;
+  background-color: var(--qrec-video-scrim);
+  color: var(--qrec-video-text);
+}
+
+/* The countdown's plate under the ring (C07). */
+.countdown-plate {
+  padding: 4px 12px;
+  border-radius: 6px;
+  background-color: var(--qrec-video-scrim);
+  color: var(--qrec-video-text);
+}
+
+/* ------------------------------------------ layer editing (C08) */
+
+/* A snap guide's tag ("Right third"). */
+.guide-tag {
+  padding: 2px 8px;
+  border-radius: 4px;
+  background-color: var(--qrec-video-scrim);
+  color: var(--qrec-video-text);
+}
+
+/* The position readout: a C33 tooltip (raised, a hairline, e1). */
+.layer-readout {
+  padding: 4px 12px;
+  border-radius: 6px;
+  background-color: var(--qrec-raised);
+  box-shadow: inset 0 0 0 1px var(--qrec-border), 0 2px 6px var(--qrec-shadow-e1);
+  color: var(--qrec-text);
+}
+
+/* --------------------------------------------- the transport row */
+
+/* The transport's icons are 20 px (DESIGN Icons); Save frame's 16. */
+.transport-buttons button.qrec-btn image {
+  -gtk-icon-size: 20px;
+}
+
+.transport-buttons {
+  border-spacing: 4px;
+}
+
+.transport button.qrec-btn.play {
+  min-width: 40px;
+}
+
+/* ------------------------------------------------ the first run */
+
+.first-run {
+  min-width: 480px;
+}
+
+.first-run-heading {
+  margin-bottom: 12px;
+}
+
+.first-run-list {
+  border-radius: 12px;
+  background-color: var(--qrec-surface);
+  box-shadow: inset 0 0 0 1px var(--qrec-border);
+  padding: 1px;
+}
+
+checkbutton.first-run-row {
+  min-height: 40px;
+  padding: 0 12px;
+  border-spacing: 12px;
+}
+
+checkbutton.first-run-row:not(:first-child) {
+  min-height: 39px;
+  border-top: 1px solid var(--qrec-border);
+}
+
+checkbutton.first-run-row > check {
+  min-width: 16px;
+  min-height: 16px;
+}
+
+checkbutton.first-run-row image {
+  -gtk-icon-size: 16px;
+}
+
+.first-run-looking {
+  min-height: 40px;
+  padding: 0 12px;
+}
+
+.first-run-add {
+  margin-top: 16px;
+}
+
+.first-run-caption {
+  margin-top: 8px;
+}
+
+scrolledwindow.first-run-scroll,
+scrolledwindow.first-run-scroll > viewport {
+  background-color: transparent;
+}

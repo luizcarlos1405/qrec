@@ -158,6 +158,8 @@ fn expected(scene: &Scene, id: &str, ctx: KeyContext) -> Vec<Call> {
         _ => {}
     }
     match action_for(id, &scene.state).expect("a known id") {
+        // D-33: the stage coalesces nudge bursts.
+        Action::Run(_) if NUDGE_BINDINGS.contains(&id) => vec![gui(id)],
         Action::Run(cmd) => {
             let mut calls = Vec::new();
             let state = &scene.state;
@@ -573,10 +575,16 @@ fn before_the_project_opens_only_quit_works() {
 fn layer_nudges_need_the_canvas_focused() {
     let scene = Scene::canvas();
     assert_eq!(context(&scene.rs()), KeyContext::Canvas);
-    assert!(matches!(
-        scene.press("Left").0,
-        KeyDecision::Run { ref id, .. } if id == "layer.nudge-left"
-    ));
+    // D-33: to the stage's nudge burst (one `LayerSet` per burst).
+    assert_eq!(scene.calls("Left"), [gui("layer.nudge-left")]);
+    assert_eq!(scene.calls("shift+Down"), [gui("layer.nudge-down-10")]);
+    // A locked layer: why, not a burst.
+    let mut locked = Scene::canvas();
+    locked.state.project.scene.layers[1].locked = true;
+    assert_eq!(
+        locked.calls("Left"),
+        [Call::Notice("Layer L2 is locked".to_owned())]
+    );
     // The timeline focused: the arrows seek.
     let mut timeline = Scene::canvas();
     timeline.local.focus = FocusRegion::Timeline;
@@ -588,6 +596,21 @@ fn layer_nudges_need_the_canvas_focused() {
     let mut program = Scene::canvas();
     program.state.ui.canvas_mode = CanvasMode::Program;
     assert_eq!(context(&program.rs()), KeyContext::Timeline);
+}
+
+/// D-33 with D-42: during a nudge burst the nudge keys go on with it,
+/// `Esc` cancels it and other keys are swallowed.
+#[test]
+fn a_nudge_burst_takes_the_nudge_keys() {
+    let mut scene = Scene::canvas();
+    scene.local.drag = Some(DragKind::LayerNudge);
+    assert_eq!(scene.calls("Left"), [gui("layer.nudge-left")]);
+    assert_eq!(scene.calls("shift+Up"), [gui("layer.nudge-up-10")]);
+    assert_eq!(scene.calls("Escape"), [Call::CancelDrag]);
+    assert_eq!(scene.press("r").0, KeyDecision::Swallow);
+    // Another layer drag swallows the arrows.
+    scene.local.drag = Some(DragKind::LayerMove);
+    assert_eq!(scene.press("Left").0, KeyDecision::Swallow);
 }
 
 #[test]

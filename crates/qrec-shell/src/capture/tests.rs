@@ -1755,6 +1755,98 @@ fn a_rebuilt_preview_keeps_a_cropped_camera() {
     }
 }
 
+/// D-32, D-33: a Live layer drag changes a `cover` camera's crop many times
+/// a second through transient layouts, from the engine thread, while the
+/// camera flows and while a rebuilt pipeline's sources negotiate. A crop
+/// that changed between the two caps transforms of a query crossing the
+/// camera's `videocrop` left no common caps and the camera died
+/// "not-negotiated" (d0c4189). Now crops land on the streaming thread
+/// between frames and a `videoscale` before each `videocrop` answers
+/// upstream queries for any size, so no interleaving loses the source:
+/// layouts hammer the crop from another thread (a new aspect, so a new
+/// cover crop, every millisecond) through rebuild after rebuild, and every
+/// source stays live with no live error.
+#[test]
+fn transient_crops_never_lose_a_source() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    const ROUNDS: usize = 8;
+    let _serial = serial();
+    for with_sink in [true, false] {
+        let tap = PreviewTap::new();
+        let (side_tx, side_rx) = crossbeam_channel::unbounded();
+        let mut h = Harness::custom(Some(side_tx), |opts| {
+            if with_sink {
+                opts.preview = Some(tap.output((960, 540)));
+            }
+        });
+        let scene = wide_scene(
+            vec![
+                camera_layer("L2", FAKE_CAMERA, Rect::new(960, 480, 320, 240)),
+                screen_layer("L1", "FAKE-1", Rect::new(0, 0, 1280, 720)),
+            ],
+            Vec::new(),
+        );
+        let all_live = names(&[(FAKE_CAMERA, "live"), ("FAKE-1", "live")]);
+        h.engine.set_live(Some(scene.clone()), h.inbox.clone());
+        statuses_until(&side_rx, "the sizes", |s| {
+            brief(s) == all_live && s.iter().all(|s| s.size.is_some())
+        });
+        let stop = Arc::new(AtomicBool::new(false));
+        let hammer = {
+            let (stop, control, base) =
+                (Arc::clone(&stop), h.engine.control(), scene.scene.clone());
+            std::thread::spawn(move || {
+                // 4:3, 1:1, 16:9, 3:4: a new cover crop every time.
+                const BOXES: [(u32, u32); 4] = [(320, 240), (240, 240), (320, 180), (180, 240)];
+                let mut sent = 0usize;
+                while !stop.load(Ordering::Relaxed) {
+                    let mut moved = base.clone();
+                    let (w, h) = BOXES[sent % BOXES.len()];
+                    moved.layers[0].rect = Rect::new(960 - (sent % 64) as i32, 480, w, h);
+                    control.transient_layout(Some(moved));
+                    sent += 1;
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                sent
+            })
+        };
+        let mut problems = Vec::new();
+        for round in 1..=ROUNDS {
+            // Steady flow first, then a rebuild (its sources negotiating
+            // under the hammer).
+            std::thread::sleep(Duration::from_millis(400));
+            h.engine.set_live(None, h.inbox.clone());
+            statuses_until(&side_rx, "no sources", <[_]>::is_empty);
+            h.engine.set_live(Some(scene.clone()), h.inbox.clone());
+            std::thread::sleep(Duration::from_millis(400));
+            for event in side_rx.try_iter() {
+                match &event {
+                    SideEvent::LiveStatus(s) if brief(s) == all_live => {}
+                    SideEvent::LiveStatus(_) | SideEvent::LiveError(_) => {
+                        problems.push(format!("round {round}: {event:?}"));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        let sent = hammer.join().expect("the hammer");
+        assert!(sent > 2000, "{sent} layouts sent");
+        assert!(
+            problems.is_empty(),
+            "GUI sink: {with_sink}; {sent} layouts: {problems:#?}"
+        );
+        // Still live: every source, and frames keep coming.
+        h.engine.set_live(Some(scene.clone()), h.inbox.clone());
+        let info = h.engine.inspect();
+        assert_eq!(info.layers.len(), 2, "{info:?}");
+        if with_sink {
+            let before = tap.frames().count;
+            tap.wait("more frames", |f| f.count > before + 5);
+        }
+    }
+}
+
 /// H-4: the screen casts outlive the live pipeline by `cast_grace` (a fake
 /// portal that shares: its call count), then close; without a grace they
 /// close at once.

@@ -369,7 +369,10 @@ impl App {
             Inbound::Toast { toast, recovery } => store.on_toast(toast, recovery),
             Inbound::Host(event) => self.startup.on_host(self, event),
             Inbound::Startup(event) => self.startup.on_event(self, event),
-            Inbound::Player(event) => tracing::debug!("player: {event:?}"),
+            Inbound::Player(event) => {
+                tracing::debug!("player: {event:?}");
+                crate::media::program::on_player_event(&event);
+            }
             Inbound::Preview(data) => self.ctx.media.on_preview(&data),
             Inbound::Sources(inventory) => {
                 let inventory = Arc::new(inventory);
