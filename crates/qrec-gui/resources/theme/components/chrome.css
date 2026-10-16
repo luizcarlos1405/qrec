@@ -1,1 +1,328 @@
-/* Header, hint bar, toasts, modals (C03-C05, C23, C24). Owner: WP6. */
+/*
+ * Header, hint bar, toasts, modals (C03-C05, C23, C24, C01 Record, the
+ * export slot). Owner: WP6.
+ *
+ * Geometry is BRIEF §2.3 and §2.7 at 1600×1000; colors are tokens only.
+ * GTK's min-width and min-height size the content box: padding and borders
+ * come on top.
+ */
+
+/* ------------------------------------------------------- C04 header */
+
+/* 48 px `surface` with a bottom hairline; 12 px in at the start, 8 at the
+   end. libadwaita's start and end boxes add their own spacing: the
+   header's boxes place everything themselves. */
+headerbar.qrec-header {
+  min-height: 48px;
+  padding: 0;
+  background-color: var(--qrec-surface);
+  color: var(--qrec-text);
+  box-shadow: inset 0 -1px var(--qrec-border);
+}
+
+/* While a take is recorded: a 2 px `record` line along the bottom edge. */
+headerbar.qrec-header.recording {
+  box-shadow: inset 0 -2px var(--qrec-record);
+}
+
+headerbar.qrec-header > windowhandle > box {
+  padding: 0 8px 0 12px;
+}
+
+headerbar.qrec-header > windowhandle > box > box.start,
+headerbar.qrec-header > windowhandle > box > box.end,
+headerbar.qrec-header > windowhandle > box > widget > box.start,
+headerbar.qrec-header > windowhandle > box > widget > box.end {
+  border-spacing: 0;
+  margin: 0;
+}
+
+headerbar.qrec-header .wordmark {
+  color: var(--qrec-text);
+}
+
+headerbar.qrec-header .header-title {
+  padding: 0;
+  color: var(--qrec-text);
+}
+
+/* Header icon buttons draw 20 px icons (DESIGN Icons). */
+headerbar.qrec-header button.qrec-btn.icon-32 image {
+  -gtk-icon-size: 20px;
+}
+
+/* ----------------------------------------------- C05 the mode switch */
+
+/* 176×32: a `field` well with a 1 px `border-strong` stroke and 2 px
+   inside it; Live 72 wide, Program 100 (BRIEF §2.3). */
+toggle-group.qrec-segmented {
+  min-height: 28px;
+  padding: 2px;
+}
+
+toggle-group.qrec-segmented > toggle {
+  min-height: 28px;
+  border-radius: 4px;
+}
+
+toggle-group.qrec-segmented > separator {
+  margin: 0;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+}
+
+toggle-group.qrec-segmented > toggle > buttoncontent > box {
+  border-spacing: 6px;
+}
+
+/* libadwaita sets button labels bold: the segments' weight is C28's
+   (`muted` 400, the selected one `body-strong`). */
+toggle-group.qrec-segmented > toggle > buttoncontent > box > label,
+toggle-group.qrec-segmented > toggle > label {
+  font-weight: inherit;
+  padding: 0;
+}
+
+toggle-group.qrec-segmented > toggle image {
+  -gtk-icon-size: 16px;
+}
+
+toggle-group.mode-switch > toggle:first-child {
+  min-width: 48px;
+}
+
+toggle-group.mode-switch > toggle:last-child {
+  min-width: 76px;
+}
+
+/* Only the focused widget draws the ring, not the focus chain. */
+headerbar.qrec-header :focus-visible:not(:focus),
+#region-hintbar :focus-visible:not(:focus),
+#toast-host :focus-visible:not(:focus) {
+  outline: none;
+}
+
+/* --------------------------------------------------- C01 Record */
+
+/* A fixed 120×32 in every state, its content centered (DESIGN Buttons). */
+button.qrec-btn.record {
+  min-width: 0;
+  padding: 0;
+  background-color: var(--qrec-record);
+  color: var(--qrec-text-on-record);
+}
+
+button.qrec-btn.record image {
+  -gtk-icon-size: 16px;
+}
+
+/* Its content box spaces itself (8 px; GtkBox would add common.css's
+   border-spacing to it). */
+button.qrec-btn.record > box {
+  border-spacing: 0;
+}
+
+button.qrec-btn.record keycap.on-fill {
+  border-color: var(--qrec-text-on-record-45);
+}
+
+/* Countdown: outlined, the label in `record-text`, a plain key cap. */
+button.qrec-btn.record.cancel {
+  background-color: transparent;
+  box-shadow: inset 0 0 0 1px var(--qrec-record);
+  color: var(--qrec-record-text);
+}
+
+button.qrec-btn.record.saving qrec-spinner {
+  color: inherit;
+}
+
+/* --------------------------------------------------- the export slot */
+
+/* 104×32 secondary: `Export…`, or "42%" and a 40×4 mini mud bar while an
+   export runs; pressed while the export panel is open. */
+button.qrec-btn.export-slot {
+  min-width: 0;
+  padding: 0 12px;
+}
+
+button.qrec-btn.export-slot.pressed {
+  background-image: image(var(--qrec-pressed));
+}
+
+button.qrec-btn.export-slot .export-percent {
+  font-weight: 400;
+}
+
+progressbar.mini-mud {
+  min-width: 40px;
+  min-height: 4px;
+}
+
+progressbar.mini-mud > trough {
+  min-width: 40px;
+  min-height: 4px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background-color: var(--qrec-field);
+  box-shadow: none;
+}
+
+progressbar.mini-mud > trough > progress {
+  min-height: 4px;
+  border: none;
+  border-radius: 2px;
+  background-color: var(--qrec-mud);
+  background-image: none;
+  box-shadow: none;
+}
+
+/* ------------------------------------------------------ C03 hint bar */
+
+/* 32 px `surface` with a top hairline; items from x 12, the status
+   right-aligned at x 1588. */
+/* (GtkBox adds CSS `border-spacing` to its own spacing: the boxes here
+   space themselves.) */
+#region-hintbar.hintbar {
+  background-color: var(--qrec-surface);
+  box-shadow: inset 0 1px var(--qrec-border);
+  padding: 0 12px;
+}
+
+/* Caps of one chord are 2 px apart (`keycap::chord` spaces them). */
+#region-hintbar.hintbar .keycaps {
+  border-spacing: 0;
+}
+
+#region-hintbar.hintbar .hint-label {
+  color: var(--qrec-muted);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 18px;
+}
+
+#region-hintbar.hintbar .hint.first .hint-label,
+#region-hintbar.hintbar .hint.emphasized .hint-label {
+  color: var(--qrec-text);
+}
+
+#region-hintbar.hintbar .hint-status {
+  color: var(--qrec-muted);
+}
+
+/* ---------------------------------------------------------- C23 toast */
+
+/* `raised`, `lg` radius, e2 and a 1 px `border`; padding 12 12 12 16. */
+.qrec-toast {
+  padding: 12px 12px 12px 16px;
+  border-radius: 12px;
+  background-color: var(--qrec-raised);
+  color: var(--qrec-text);
+  box-shadow: inset 0 0 0 1px var(--qrec-border),
+    0 8px 24px var(--qrec-shadow-e2), 0 1px 2px var(--qrec-shadow-e2-contact);
+}
+
+.qrec-toast .toast-icon {
+  -gtk-icon-size: 20px;
+}
+
+.qrec-toast .toast-icon.info-icon {
+  color: var(--qrec-text);
+}
+
+.qrec-toast .toast-icon.success-icon {
+  color: var(--qrec-success);
+}
+
+.qrec-toast .toast-body {
+  color: var(--qrec-muted);
+}
+
+.qrec-toast .toast-actions {
+  margin-top: 6px;
+  margin-left: -8px;
+}
+
+.qrec-toast button.qrec-btn.toast-action {
+  color: var(--qrec-accent-text);
+}
+
+/* ---------------------------------------------------------- C24 modal */
+
+/* 520 wide, `raised`, `xl` radius, e3 and a 1 px `border`, 24 padding. */
+.qrec-modal {
+  padding: 24px;
+  border-radius: 16px;
+  background-color: var(--qrec-raised);
+  color: var(--qrec-text);
+  box-shadow: inset 0 0 0 1px var(--qrec-border), 0 20px 48px var(--qrec-shadow-e3);
+}
+
+.qrec-modal .modal-title {
+  color: var(--qrec-text);
+}
+
+.qrec-modal .modal-lead {
+  margin-top: 8px;
+}
+
+.qrec-modal .modal-body {
+  margin-top: 16px;
+}
+
+.qrec-modal .modal-list {
+  margin-top: 16px;
+  border-radius: 6px;
+  background-color: var(--qrec-field);
+  box-shadow: inset 0 0 0 1px var(--qrec-border);
+}
+
+.qrec-modal .modal-rows {
+  padding: 6px 12px;
+}
+
+.qrec-modal .modal-row {
+  min-height: 24px;
+}
+
+/* A 2 px `border-strong` bar 6 px in from the well's right edge, always
+   shown while the list scrolls (S18); the rows make room for it. */
+.qrec-modal .modal-list scrollbar {
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+.qrec-modal .modal-list scrollbar > range > trough {
+  min-width: 2px;
+  margin: 8px 6px 8px 0;
+  border-radius: 1px;
+  background: none;
+}
+
+.qrec-modal .modal-list scrollbar > range > trough > slider {
+  min-width: 2px;
+  min-height: 24px;
+  margin: 0;
+  border: none;
+  border-radius: 1px;
+  background-color: var(--qrec-border-strong);
+}
+
+.qrec-modal .modal-rows.scrolls {
+  padding-right: 4px;
+}
+
+.qrec-modal .modal-footer {
+  margin-top: 24px;
+}
+
+/* GTK sets `:focus-visible` on the whole focus chain: only the focused
+   button draws the ring (base.css's rule rings every ancestor too). */
+.qrec-modal:focus-visible:not(:focus),
+.qrec-modal :focus-visible:not(:focus) {
+  outline: none;
+}

@@ -1,0 +1,1494 @@
+---
+source: crates/qrec-core/src/view/hints.rs
+expression: all
+---
+[
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Enter"
+          ]
+        ],
+        "label": "Add 4 sources"
+      },
+      {
+        "emphasized": false,
+        "enabled": false,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "label": "Record"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Program"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Ctrl",
+            "K"
+          ]
+        ],
+        "label": "Commands"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "?"
+          ]
+        ],
+        "label": "All keys"
+      }
+    ],
+    "screen": "S01a",
+    "state": {
+      "state": "firstRun"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "label": "Record"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Program"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Ctrl",
+            "K"
+          ]
+        ],
+        "label": "Commands"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "?"
+          ]
+        ],
+        "label": "All keys"
+      }
+    ],
+    "screen": "S01b",
+    "state": {
+      "state": "empty"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "label": "Record"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "D"
+          ]
+        ],
+        "label": "Discard last take"
+      },
+      {
+        "emphasized": false,
+        "enabled": false,
+        "keys": [
+          [
+            "Space"
+          ]
+        ],
+        "label": "Play"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Program"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "C"
+          ]
+        ],
+        "label": "Autocut all"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "B"
+          ]
+        ],
+        "label": "Bin"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Ctrl",
+            "K"
+          ]
+        ],
+        "label": "Commands"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "?"
+          ]
+        ],
+        "label": "All keys"
+      }
+    ],
+    "screen": "S02",
+    "state": {
+      "state": "liveIdle"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Esc"
+          ]
+        ],
+        "label": "Cancel"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "label": "Cancel"
+      }
+    ],
+    "screen": "S03",
+    "state": {
+      "state": "countdown"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "label": "Stop"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Esc"
+          ]
+        ],
+        "label": "Cancel take (files kept)"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Switch view"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "="
+          ],
+          [
+            "−"
+          ]
+        ],
+        "label": "Zoom"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "\\"
+          ]
+        ],
+        "label": "Fit"
+      }
+    ],
+    "screen": "S04",
+    "state": {
+      "state": "recording"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "label": "Stop"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Esc"
+          ]
+        ],
+        "label": "Cancel take (files kept)"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Switch view"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "="
+          ],
+          [
+            "−"
+          ]
+        ],
+        "label": "Zoom"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "\\"
+          ]
+        ],
+        "label": "Fit"
+      }
+    ],
+    "screen": "S04 (starting, D-04)",
+    "state": {
+      "state": "recording"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [],
+        "label": "Finalizing take 10. Waiting for every file to close (up to 10 s)."
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Switch view"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "="
+          ],
+          [
+            "−"
+          ]
+        ],
+        "label": "Zoom"
+      }
+    ],
+    "screen": "S05",
+    "state": {
+      "state": "finalizing"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "label": "Record"
+      },
+      {
+        "emphasized": true,
+        "enabled": true,
+        "keys": [
+          [
+            "D"
+          ]
+        ],
+        "label": "Discard last take"
+      },
+      {
+        "emphasized": false,
+        "enabled": false,
+        "keys": [
+          [
+            "Space"
+          ]
+        ],
+        "label": "Play"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Program"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "C"
+          ]
+        ],
+        "label": "Autocut all"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "B"
+          ]
+        ],
+        "label": "Bin"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Ctrl",
+            "K"
+          ]
+        ],
+        "label": "Commands"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "?"
+          ]
+        ],
+        "label": "All keys"
+      }
+    ],
+    "screen": "S05b",
+    "state": {
+      "state": "liveIdle"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "S"
+          ]
+        ],
+        "label": "Split"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "["
+          ],
+          [
+            "]"
+          ]
+        ],
+        "label": "Trim to playhead"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "<"
+          ],
+          [
+            ">"
+          ]
+        ],
+        "label": "Move"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "X"
+          ]
+        ],
+        "label": "Remove"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "C"
+          ]
+        ],
+        "label": "Autocut"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "O"
+          ]
+        ],
+        "label": "Record over"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Z"
+          ]
+        ],
+        "label": "Zoom to clip"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "?"
+          ]
+        ],
+        "label": "All keys"
+      }
+    ],
+    "screen": "S06",
+    "state": {
+      "state": "clipSelected"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Space"
+          ]
+        ],
+        "label": "Play"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            ","
+          ],
+          [
+            "."
+          ]
+        ],
+        "label": "Select clip"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "="
+          ]
+        ],
+        "label": "Zoom in"
+      },
+      {
+        "emphasized": false,
+        "enabled": false,
+        "keys": [
+          [
+            "Z"
+          ]
+        ],
+        "label": "Zoom to selection"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Live"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "?"
+          ]
+        ],
+        "label": "All keys"
+      }
+    ],
+    "screen": "S07",
+    "state": {
+      "state": "programIdle"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Space"
+          ]
+        ],
+        "label": "Play"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            ","
+          ],
+          [
+            "."
+          ]
+        ],
+        "label": "Select clip"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "="
+          ]
+        ],
+        "label": "Zoom in"
+      },
+      {
+        "emphasized": false,
+        "enabled": false,
+        "keys": [
+          [
+            "Z"
+          ]
+        ],
+        "label": "Zoom to selection"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Live"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "?"
+          ]
+        ],
+        "label": "All keys"
+      }
+    ],
+    "screen": "S08",
+    "state": {
+      "state": "programIdle"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "←"
+          ],
+          [
+            "→"
+          ]
+        ],
+        "label": "Previous / next frame"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Alt",
+            "["
+          ],
+          [
+            "Alt",
+            "]"
+          ]
+        ],
+        "label": "Nudge edge 1 frame"
+      },
+      {
+        "emphasized": false,
+        "enabled": false,
+        "keys": [
+          [
+            "S"
+          ]
+        ],
+        "label": "Split"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "−"
+          ]
+        ],
+        "label": "Zoom out"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "\\"
+          ]
+        ],
+        "label": "Fit"
+      }
+    ],
+    "screen": "S09",
+    "state": {
+      "state": "frameZoom"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [],
+        "label": "Release to trim"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Esc"
+          ]
+        ],
+        "label": "Cancel drag"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "N"
+          ]
+        ],
+        "label": "Snapping on/off"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Alt",
+            "["
+          ],
+          [
+            "Alt",
+            "]"
+          ]
+        ],
+        "label": "Nudge after release"
+      }
+    ],
+    "screen": "S10",
+    "state": {
+      "state": "trimDrag"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [],
+        "label": "Release to move"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Esc"
+          ]
+        ],
+        "label": "Cancel drag"
+      },
+      {
+        "emphasized": false,
+        "enabled": false,
+        "keys": [
+          [
+            "N"
+          ]
+        ],
+        "label": "Snapping on/off"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "<"
+          ],
+          [
+            ">"
+          ]
+        ],
+        "label": "Move with keys instead"
+      }
+    ],
+    "screen": "S11",
+    "state": {
+      "state": "moveDrag"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Enter"
+          ]
+        ],
+        "label": "Apply autocut"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Esc"
+          ]
+        ],
+        "label": "Cancel"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Space"
+          ]
+        ],
+        "label": "Play"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "="
+          ],
+          [
+            "−"
+          ]
+        ],
+        "label": "Zoom"
+      }
+    ],
+    "screen": "S12",
+    "state": {
+      "state": "autocutPage"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "←"
+          ],
+          [
+            "↑"
+          ],
+          [
+            "↓"
+          ],
+          [
+            "→"
+          ]
+        ],
+        "label": "Nudge 1 px"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Shift"
+          ]
+        ],
+        "label": "×10 · free aspect"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Alt"
+          ]
+        ],
+        "label": "Crop edges"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Esc"
+          ]
+        ],
+        "label": "Deselect"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Program"
+      }
+    ],
+    "screen": "S13",
+    "state": {
+      "state": "layerEdit"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "B"
+          ]
+        ],
+        "label": "Close bin"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "↑"
+          ],
+          [
+            "↓"
+          ]
+        ],
+        "label": "Select take"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Enter"
+          ]
+        ],
+        "label": "Insert at end"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Space"
+          ]
+        ],
+        "label": "Preview"
+      }
+    ],
+    "screen": "S14",
+    "state": {
+      "state": "bin"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Enter"
+          ]
+        ],
+        "label": "Export"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Move focus"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Esc"
+          ]
+        ],
+        "label": "Close"
+      }
+    ],
+    "screen": "S15a",
+    "state": {
+      "state": "exportSetup"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Enter"
+          ]
+        ],
+        "label": "Open file"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Move focus"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Esc"
+          ]
+        ],
+        "label": "Close"
+      }
+    ],
+    "screen": "S16",
+    "state": {
+      "state": "exportDone"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Enter"
+          ]
+        ],
+        "label": "Try again"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Move focus"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Esc"
+          ]
+        ],
+        "label": "Close"
+      }
+    ],
+    "screen": "S17",
+    "state": {
+      "state": "exportFailed"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Esc"
+          ]
+        ],
+        "label": "Close panel (export continues)"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Ctrl",
+            "E"
+          ]
+        ],
+        "label": "Show export"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "S"
+          ]
+        ],
+        "label": "Split"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "["
+          ],
+          [
+            "]"
+          ]
+        ],
+        "label": "Trim to playhead"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "<"
+          ],
+          [
+            ">"
+          ]
+        ],
+        "label": "Move"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "X"
+          ]
+        ],
+        "label": "Remove"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "C"
+          ]
+        ],
+        "label": "Autocut"
+      },
+      {
+        "emphasized": false,
+        "enabled": false,
+        "keys": [
+          [
+            "O"
+          ]
+        ],
+        "label": "Record over"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Z"
+          ]
+        ],
+        "label": "Zoom to clip"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "?"
+          ]
+        ],
+        "label": "All keys"
+      }
+    ],
+    "screen": "S15b",
+    "state": {
+      "state": "clipSelected"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Move focus"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Enter"
+          ]
+        ],
+        "label": "Activate focused button"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Esc"
+          ]
+        ],
+        "label": "Cancel"
+      }
+    ],
+    "screen": "S18",
+    "state": {
+      "state": "modal"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Move focus"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Enter"
+          ]
+        ],
+        "label": "Activate focused button"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Esc"
+          ]
+        ],
+        "label": "Cancel"
+      }
+    ],
+    "screen": "S18b",
+    "state": {
+      "state": "modal"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Move focus"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Esc"
+          ]
+        ],
+        "label": "Close"
+      }
+    ],
+    "screen": "Settings",
+    "state": {
+      "state": "settings"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "↑"
+          ],
+          [
+            "↓"
+          ]
+        ],
+        "label": "Choose"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Enter"
+          ]
+        ],
+        "label": "Run"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Esc"
+          ]
+        ],
+        "label": "Close"
+      }
+    ],
+    "screen": "S19",
+    "state": {
+      "state": "palette"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "R"
+          ]
+        ],
+        "label": "Try again"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Program"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "B"
+          ]
+        ],
+        "label": "Bin"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "?"
+          ]
+        ],
+        "label": "All keys"
+      }
+    ],
+    "screen": "S24",
+    "state": {
+      "state": "portalDenied"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  }
+]

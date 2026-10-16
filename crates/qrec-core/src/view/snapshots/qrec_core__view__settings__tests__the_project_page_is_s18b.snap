@@ -1,0 +1,64 @@
+---
+source: crates/qrec-core/src/view/settings.rs
+expression: page
+---
+{
+  "group": "Canvas",
+  "caption": "Applies to this project only.",
+  "size": {
+    "label": "Size",
+    "caption": "Preview and export resolution.",
+    "options": [
+      {
+        "width": 1280,
+        "height": 720,
+        "label": "1280×720 (16:9)"
+      },
+      {
+        "width": 1920,
+        "height": 1080,
+        "label": "1920×1080 (16:9)"
+      },
+      {
+        "width": 2560,
+        "height": 1440,
+        "label": "2560×1440 (16:9)"
+      },
+      {
+        "width": 3840,
+        "height": 2160,
+        "label": "3840×2160 (16:9)"
+      },
+      {
+        "width": 1080,
+        "height": 1920,
+        "label": "1080×1920 (9:16)"
+      },
+      {
+        "width": 1080,
+        "height": 1080,
+        "label": "1080×1080 (1:1)"
+      }
+    ],
+    "selected": 1
+  },
+  "rate": {
+    "label": "Frame rate",
+    "caption": "Currently 30 fps. Clip bounds are re-quantized when it changes.",
+    "rates": [
+      24,
+      25,
+      30,
+      50,
+      60
+    ],
+    "selected": 2
+  },
+  "background": {
+    "label": "Background",
+    "caption": "Shows where layers don't cover the canvas.",
+    "value": "#000000"
+  },
+  "footer": "Saved in this project's ~/videos/rust-traits-talk/qrec.json.",
+  "footerPath": "~/videos/rust-traits-talk/qrec.json"
+}

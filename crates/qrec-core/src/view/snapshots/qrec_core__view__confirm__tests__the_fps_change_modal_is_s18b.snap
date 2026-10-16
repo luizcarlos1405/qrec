@@ -1,0 +1,53 @@
+---
+source: crates/qrec-core/src/view/confirm.rs
+expression: content
+---
+{
+  "title": "Get out of my swamp?",
+  "lead": "Change the canvas to 25 fps?",
+  "body": "Clip bounds are re-quantized to the new frame rate. These 10 clips move by up to 1 frame:",
+  "list": [
+    [
+      "c7f3 · take 1 · [0, 410) → [0, 342)",
+      null
+    ],
+    [
+      "c8a1 · take 1 · [455, 912) → [379, 760)",
+      null
+    ],
+    [
+      "c1b2 · take 3 · [0, 268) → [0, 224)",
+      null
+    ],
+    [
+      "c1b3 · take 3 · [304, 611) → [253, 510)",
+      null
+    ],
+    [
+      "c1b4 · take 3 · [652, 890) → [543, 742)",
+      null
+    ],
+    [
+      "c1b5 · take 3 · [931, 1180) → [775, 984)",
+      null
+    ],
+    [
+      "c1b6 · take 3 · [1222, 1377) → [1018, 1148)",
+      null
+    ],
+    [
+      "c2d0 · take 5 · [12, 1104) → [10, 920)",
+      null
+    ],
+    [
+      "c2d1 · take 5 · [1104, 2214) → [920, 1845)",
+      null
+    ],
+    [
+      "c3e9 · take 8 · [0, 3105) → [0, 2588)",
+      null
+    ]
+  ],
+  "cancel": "Cancel",
+  "confirm": "Change fps"
+}

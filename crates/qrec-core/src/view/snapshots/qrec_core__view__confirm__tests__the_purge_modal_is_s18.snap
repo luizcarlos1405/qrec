@@ -1,0 +1,53 @@
+---
+source: crates/qrec-core/src/view/confirm.rs
+expression: content
+---
+{
+  "title": "Get out of my swamp?",
+  "lead": "Purge take 2 and take 4 from disk?",
+  "body": "This permanently deletes 10 files (184.1 MB). It can't be undone, and the 6 history entries that mention these takes are removed too.",
+  "list": [
+    [
+      "takes/take-0002/L1-screen-DP-4.mkv",
+      "33.0 MB"
+    ],
+    [
+      "takes/take-0002/L2-camera-0.mkv",
+      "16.6 MB"
+    ],
+    [
+      "takes/take-0002/A1-mic.mka",
+      "2.0 MB"
+    ],
+    [
+      "takes/take-0002/A2-system.mka",
+      "3.5 MB"
+    ],
+    [
+      "takes/take-0002/recorder.log",
+      "12 KB"
+    ],
+    [
+      "takes/take-0004/L1-screen-DP-4.mkv",
+      "77.3 MB"
+    ],
+    [
+      "takes/take-0004/L2-camera-0.mkv",
+      "38.8 MB"
+    ],
+    [
+      "takes/take-0004/A1-mic.mka",
+      "4.6 MB"
+    ],
+    [
+      "takes/take-0004/A2-system.mka",
+      "8.3 MB"
+    ],
+    [
+      "takes/take-0004/recorder.log",
+      "14 KB"
+    ]
+  ],
+  "cancel": "Cancel",
+  "confirm": "Purge 2 takes"
+}
