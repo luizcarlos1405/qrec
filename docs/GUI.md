@@ -863,22 +863,45 @@ time; A§8.7 rules for every child).
   - `strip_argv(file, chunk, height)`: `ffmpeg … -ss <60·chunk> -t 60
     -skip_frame nokey -i file:<f> -an -vf fps=1,scale=-2:<h> -f rawvideo
     -pix_fmt rgba pipe:1`: keyframes only (one per second in recordings,
-    A§8.11), image i ↔ file time 60·chunk + i s.
-  - `frames_argv(file, start_ns, count, height)`: `-ss <start − 2 ms> -i …
-    -frames:v <count> -vf scale=-2:<h> -f rawvideo -pix_fmt rgba pipe:1`:
-    consecutive recorded frames from the one at `start_ns` (frame zoom;
-    timeline frames map to recorded ones with `shown_frame`, A§9.3);
-    `count` ≤ 64.
+    A§8.11), image i ↔ file time 60·chunk + i s. A chunk that reaches the
+    end of the file has one image less than its whole seconds (ffmpeg's
+    `fps=1` at EOF: 34 for a 95 s file's chunk 1); one past the end has
+    none.
+  - `frames_argv(file, start_ns, count, height)`: `[-ss <start − 2 ms>] -i
+    … -an -frames:v <count> -vf scale=-2:<h> -f rawvideo -pix_fmt rgba
+    pipe:1`: consecutive recorded frames from the one at `start_ns` (frame
+    zoom; timeline frames map to recorded ones with `shown_frame`, A§9.3);
+    `count` ≤ 64 (`MAX_PREVIEW_FRAMES`). The seek backs off 2 ms like a
+    layer input's and is left out when that is ≤ 0.
   - `peaks_argv(file)`: `-map 0:a:0 -ac 1 -ar 48000 -f s16le pipe:1`;
     `bucket_peaks(samples, 48) -> Vec<(i16, i16)>` (1 ms buckets) and
     `peak_levels(per_ms) -> PeakLevels` (1, 16 and 256 ms buckets, so a
-    lane draws from the coarsest level with at least one bucket per px).
+    lane draws from the coarsest level with at least one bucket per px:
+    `PeakLevels::level(ms_per_px)`). `PeakLevels` lives here and is
+    re-exported as `media::preview::PeakLevels`.
+  - `preview_probe_argv(file)`: `ffprobe -v error -select_streams v:0
+    -show_entries stream=width,height,r_frame_rate -of json file:<f>`, a
+    video's size and rate from its header alone (no `-count_packets`, so
+    quick on an hour-long file). The cache runs it once per file version
+    before a strip or frames run (logged as kind `probe`, in the job's
+    child slot): `Frames` names a recorded frame while `frames_argv` takes
+    `start_ns` (the recorded rate is needed), and raw RGBA can't be cut
+    into images without the width. `preview_width(src_w, src_h, h)` is
+    `scale=-2:<h>`'s width, rounded as ffmpeg does (checked against it for
+    odd sizes).
   - `preview_key(kind, file, size, mtime_ns, params) -> String` (sha256,
     like `SilenceKey`).
 - **Shell** `media::preview::PreviewCache` (`Clone`):
   `new(project_dir, on_data: Box<dyn Fn(PreviewData) + Send + Sync>)`,
-  `request(PreviewRequest)` (deduplicated by key), `set_exporting(bool)`,
-  `shutdown()`. At most 2 ffmpeg at once, 1 while an export runs.
+  `request(PreviewRequest)` (deduplicated by key: a request already queued
+  or running is joined, one answer for all), `set_exporting(bool)`,
+  `shutdown()`, `in_flight()` (requests queued or running, an answer being
+  handed to `on_data` included: `waitIdle`, G§3.18). Two workers
+  (`qrec-preview-<n>`) take the newest request first; at most 2 ffmpeg at
+  once, 1 while an export runs (`MediaHub::follow` sets it while an export
+  job runs). Also public: `PreviewRequest::{file, what}`,
+  `PreviewData::{file, image_count}`, `WHAT_*` (a `Failed`'s `what`),
+  `image_bytes`, `trim_caches`, `trim_dir`.
 
   ```rust
   pub enum PreviewRequest {
@@ -897,25 +920,34 @@ time; A§8.7 rules for every child).
   pub struct PeakLevels { pub per_ms: Arc<[(i16, i16)]>, pub per_16ms: Arc<[(i16, i16)]>, pub per_256ms: Arc<[(i16, i16)]> }
   ```
 
-  - Disk: `.qrec/cache/thumbs/<key>.rgba` + `<key>.json` (`{width,
+  - Disk: `.qrec/cache/thumbnails/<key>.rgba` + `<key>.json` (`{width,
     height, count}`) per strip chunk, and `.qrec/cache/waveforms/<key>.peaks`
     (the 1 ms level; the others are recomputed on load), via
-    `ProjectPaths::{thumbnails_dir, waveforms_dir}`; tmp + rename. A short
-    or unreadable file is regenerated. `Frames` stay in memory only.
-  - Disk caps, enforced oldest first when the GUI host starts: thumbs
-    2 GiB, waveforms 512 MiB.
+    `ProjectPaths::{thumbnails_dir, waveforms_dir}`; tmp + rename. A short,
+    foreign or mismatched file is a miss and is made again; a hit refreshes
+    the file's mtime (the trim goes least recently used first). `Frames`
+    stay in memory only.
+  - Disk caps, enforced oldest first when a cache starts
+    (`PreviewCache::new`, startup step 8, once the host opened the
+    project), on a short thread of its own (`qrec-preview-trim`), which
+    also sweeps temp files older than an hour: thumbnails 2 GiB, waveforms
+    512 MiB.
   - `CachedSilence` only reads the analysis cache
     (`.qrec/cache/silence/<key>.json`, A§8.7) and never runs ffmpeg.
   - Children: stdout drained on its own thread; stderr drained by a thread
     that appends each line, prefixed `[<pid> <kind>]`, to one rolling
     `.qrec/logs/preview.log` (rotated to `preview.1.log` past 8 MiB); a
     failed run also writes its last 30 lines to its own
-    `YYYYMMDD-HHMMSS-<pid>-preview-<kind>.log`. The A§8.7 prune keeps the
-    newest 200 timestamp-named logs and ignores `preview*.log`, so preview
+    `YYYYMMDD-HHMMSS-<pid>-preview-<kind>.log`. Both A§8.7 prunes
+    (`proc::prune_logs`, which the Session's open runs, and
+    `media::prune_logs`) keep the newest 200 timestamp-named logs
+    (`media::is_stamped_log_name`) and ignore `preview*.log`, so preview
     runs never evict export and recorder logs. Timeout 20 s + 30 s/GiB,
     own process group, killed on shutdown.
 - `media::take_sizes(project_dir, &[TakeId]) -> BTreeMap<TakeId, u64>`:
-  blocking (from `take_contents`), called on a worker.
+  blocking (from `take_contents`), called on a worker. A take whose folder
+  is gone or wasn't looked into (a symlink, unreadable) is left out; an
+  empty folder is 0.
 - **GTK caches** (`qrec-gui/src/media/{thumbs,peaks}.rs`; API frozen by
   WP0b, implemented by WP2). Getters never block; a miss requests the
   containing chunk or block and returns `None`; subscribers get the file
@@ -936,13 +968,24 @@ time; A§8.7 rules for every child).
       pub fn peaks(&self, file: &str) -> Option<Arc<PeakLevels>>;
       pub fn request(&self, file: &str);
       pub fn subscribe(&self, f: impl Fn(&str) + 'static) -> Subscription;
+      pub fn bytes(&self) -> usize;                                    // G§8.6
   }
   ```
 
+  Both also have `on_data(&PreviewData)`, which `MediaHub::on_preview`
+  calls with every answer from the queue before its own subscribers. Each
+  sits over a GTK-free store (`ThumbStore`, `PeakStore`, on one byte-bounded
+  LRU): strips per 60 s chunk (a time past a chunk's last image shows that
+  image), recorded frames in aligned blocks of 64 (`FRAME_BLOCK`); an
+  entry larger than the whole budget is never kept. `PreviewData::Failed`
+  names no chunk or block, so a failure counts for the file (and that
+  kind), asked again after 30 s (`RETRY_AFTER`).
+
   Textures are `gdk::MemoryTexture` (R8G8B8A8) built on the main thread
-  from the shared bytes (R22). Strip height = 72 × the window's scale
-  factor; a one-hour take is 60 chunks of about 2.2 MB at scale 1, loaded
-  only for what is on screen.
+  from the shared bytes (R22), once per image, from a zero-copy slice of
+  the chunk's `Arc<[u8]>`, and dropped with their chunk. Strip height =
+  72 × the window's scale factor; a one-hour take is 60 chunks of about
+  2.2 MB at scale 1, loaded only for what is on screen.
 - **Silence overlay** (WP3): `view::timeline::silence_spans(state, files:
   &BTreeMap<String, FileFact>, cached: &BTreeMap<SilenceKey,
   Vec<Interval>>)` → hatches on the autocut track's lane, at the
@@ -962,7 +1005,8 @@ time; A§8.7 rules for every child).
 | `qrec-player` | the GES pipeline |
 | `qrec-meters` | meter monitor pipelines |
 | `qrec-preview-<n>` | ffmpeg for thumbnails and peaks |
-| `qrec-gui-io` | bin sizes, silence keys, wl-copy, source discovery, the cache trim |
+| `qrec-preview-trim` | the preview caches' disk-cap trim when a cache starts (G§3.11) |
+| `qrec-gui-io` | bin sizes, silence keys, wl-copy, source discovery |
 | `qrec-testctl` | the test control socket (G§3.18), test mode only |
 
 - **R1.** The GTK thread never blocks: no `recv`, `join`, Session call,
@@ -1017,6 +1061,30 @@ time; A§8.7 rules for every child).
   crate for it.
 - **R9.** Children the GUI starts (ffmpeg, wl-copy) follow A§8.7: a log
   file, a timeout, no unread pipe.
+- **R10.** No panic crosses into C. Unwinding into GLib's C frames aborts
+  the process (`panic_cannot_unwind` in glib's source trampoline: a
+  `RefCell` borrowed twice in startup's `fail_host` aborted a WP0b run
+  that way), so every closure GLib or GTK calls goes through `src/guard.rs`
+  (WP0b):
+  - signal handlers and async callbacks are wrapped in `guarded!("what",
+    move |…| …)` (`after_panic = expr` picks the return value after a
+    panic);
+  - sources go through `guard::{idle, idle_local_once, timeout_local,
+    timeout_local_once, invoke, tick}`, the only callers of GLib's own;
+  - subclass virtual methods and other entry points use `guard::run` or
+    `guard::catch`;
+  - the queue's drain, `Subscribers::emit` and `ActionRouter::run` contain
+    a panic to its item.
+
+  A caught panic is logged as an error with what was running, counted
+  (the test channel's `local` reports `panics`) and told as an error toast
+  at most every 5 s; the closure returns its `AfterPanic` value (nothing,
+  `false`, `Propagation::Proceed`, `ControlFlow::Break`: a repeating
+  source stops) and the window carries on. A test greps the crate's
+  production code: GLib's source functions only in `guard.rs`, and every
+  `.connect_…(`, `.launch(` and `.open_containing_folder(` callback inside
+  `guarded!`. Virtual methods aren't grepped: each work package wraps its
+  own (`snapshot`, `measure`, `dispose`, …) in `guard::run`.
 
 ### G§3.13 GPU environment (A§8.10)
 
@@ -1061,7 +1129,11 @@ time; A§8.7 rules for every child).
   - `components/<area>.css`, one per owner (G§3.16).
 
   Load order: the tokens provider (priority APPLICATION), then one provider
-  with adwaita + base + components (APPLICATION + 1).
+  with adwaita + base + every `components/*.css` of the GResource,
+  `common.css` first, the others by name (APPLICATION + 1), all through
+  `css::scale_px`; CSS parse errors are logged with the file and line.
+  `adwaita.css` also zeroes the header bar's side margins (libadwaita's
+  −1 px made the header region (−1, 0, 1602, 48)).
 - **libadwaita bridge** (`adwaita.css`):
   `--window-bg-color: var(--qrec-bg)`, `--window-fg-color:
   var(--qrec-text)`, `--view-bg-color: var(--qrec-field)`,
@@ -1115,7 +1187,19 @@ time; A§8.7 rules for every child).
     display-sm −0.12, headline −0.1;
   - mono roles: `font-feature-settings: "tnum" 1`;
   - a line that mixes families (header subtitle, summaries) is two
-    baseline-aligned labels.
+    baseline-aligned labels;
+  - `theme::fonts` checks through Pango that each bundled family resolves
+    to itself (the test channel's `fonts`);
+  - **manual font rendering**: startup sets `gtk-font-rendering = manual`
+    (`theme::fonts::configure_rendering`; the desktop's antialiasing and
+    hinting, applied alike to layout and drawing). GTK 4.22's automatic
+    mode lays a label's text out a pixel shorter at the top than it draws
+    it, so a partial redraw of a changed label (the header title: the
+    folder's name, then the project's) left the old text's ascender tops
+    above the new one under the GL renderer; `GSK_DEBUG=full-redraw` or
+    the manual mode removes it (`gui_shell`'s
+    `the_header_title_leaves_no_trace_of_the_old_one`, which fails by 8 px
+    on gles2 without it).
 - **Icons**: Adwaita symbolic names (G§5.2). Custom symbolic SVGs (16 px
   viewBox, fills only) live in
   `resources/icons/scalable/actions/qrec-*-symbolic.svg`, registered with
@@ -1138,6 +1222,15 @@ time; A§8.7 rules for every child).
   `rsvg-convert` (librsvg) from the substituted SVGs, committed under
   `resources/art/<theme>/`. The synthetic sample images (`X6zTi`,
   `sqyyT`) are never shipped.
+
+  As built (WP0b part 2): `theme::art` substitutes any `{{token}}` in a
+  template with the palette's color and draws it through `gtk::Svg` (the
+  test channel's `art`). Until the pen export, the three art files and the
+  10 custom symbolic icons (the REC glyph `w8imU`, success, magnet,
+  monitor-x, package-x, life-buoy, timer-off, gauge, layers, audio-lines;
+  recoloring checked by the test channel's `icons`) are placeholders of
+  the right size and colors, and the comparison with the pen crops is
+  open.
 - **GResource**: `build.rs` writes the `.gresource.xml` from every file
   under `resources/` (no hand-kept list, so WPs add files without
   conflicts) and runs `glib-compile-resources` (in the dev shell; added to
@@ -1230,8 +1323,9 @@ a module list.
 | `src/store/{mod,local,replies}.rs` | Store, LocalUi, Overlay, default reply policy | WP0b |
 | `src/keys/{mod,router,actions}.rs` | KeyRouter glue, GTK-free `decide`, ActionRouter | WP0b |
 | `src/desktop.rs` | `UiAction` handling | WP0b |
+| `src/guard.rs` | the callback guard: `guarded!`, guarded sources, the panic report (G§3.12 R10) | WP0b |
 | `src/testctl.rs` | test control channel (G§3.18) | WP0b |
-| `src/theme/{mod,fonts,motion,css}.rs` | providers, fonts, MotionPolicy, scale preprocessing | WP0b |
+| `src/theme/{mod,fonts,motion,css,art}.rs` | providers, fonts, MotionPolicy, scale preprocessing, art templates through `gtk::Svg` | WP0b |
 | `src/media/mod.rs` | MediaHub: sinks, side pump, preview frames, meter toggle, player and cache handles | WP0b |
 | `src/media/{live,program}.rs` | live picture glue; Program sync state machine | WP4 |
 | `src/media/{thumbs,peaks}.rs` | texture and peak caches (API in G§3.11) | WP2 |
@@ -1254,6 +1348,10 @@ a module list.
 | `src/blocking/{missing_deps,cli_recording,not_my_swamp,unreadable,export_wait}.rs` | the drafted pages | WP8 |
 | `src/palette.rs`, `src/cheatsheet.rs` | S19, S20 | WP9 |
 | `tests/tokens.rs` | token generation and hex grep | WP0b |
+
+Outside the crate, WP0b's harness `crates/qrec/tests/gui_support/` (G§8.4)
+is `mod.rs` (`Nested`, `Launch`, `Gui`, the region checks), `pointer.rs`
+(the virtual pointer) and `scripts/` (`run-nested.sh`, `gpu-opens.sh`).
 
 Region constructors are fixed by WP0b and never change signature:
 `header::Header::new(&Ctx)`, `stage::Stage`, `timeline::Timeline`,
@@ -1283,7 +1381,7 @@ with `fn widget(&self) -> gtk::Widget`) and
 | core | `on_event/{record,disk}.rs` | toast copy D-21 | WP9 |
 | core | `ctx.rs` | `Ctx::preview(now, config)` | WP0a |
 | core | `plans.rs`, `ges_plan.rs` | `GesVideoClip.{take, layer}`, `GesAudioClip.{take, track}` (WP0a); `plan_ges_take`, `without_tracks`, `scaled` (WP1) | WP0a, WP1 |
-| core | `media_argv.rs` | preview argv, key, `bucket_peaks`, `peak_levels` | WP2 |
+| core | `media_argv.rs`, `tests/props_preview.rs` (new) | preview argv (`strip_argv`, `frames_argv`, `peaks_argv`, `preview_probe_argv`), `preview_width`, key, `bucket_peaks`, `peak_levels`, `PeakLevels` (moved from the shell) | WP2 |
 | core | `testkit.rs` | `design_project()`, `design_state()` (BRIEF §3), `perf_project(clips)` | WP0a |
 | core | `tests/props_late_errors.rs` (new) | a late `Err` reply always comes with a `Notify` | WP0a |
 | shell | `host/gui.rs` (new), `host/mod.rs` | GUI host, GUI exit rules, `HostEnd::Closed`, `first` request | WP0a |
@@ -1298,6 +1396,7 @@ with `fn widget(&self) -> gtk::Widget`) and
 | shell | `player.rs` (new) | API stub (WP0a), implementation (WP1) | WP0a, WP1 |
 | shell | `ges_render.rs` | `rebuild_into` | WP1 |
 | shell | `media/preview.rs`, `media/sizes.rs` (new) | stubs (WP0a), implementation (WP2) | WP0a, WP2 |
+| shell | `media/{child,logs,mod}.rs`, `proc.rs` | `child::Stdout::Stream`, `Stderr::Lines`, `Finished::pid`; both log prunes count only timestamp-named logs (`media::is_stamped_log_name`) | WP2 |
 | shell | `gpu.rs` | H-3 | WP0a |
 | shell | `paths.rs`, `host/cli_host.rs` | `UserDirs::gui_log(dir)`; `host_log` names it | WP0a |
 | shell | `config_file.rs`, `keys_file.rs` (new) | readers (WP0a); atomic writers over `config::set` and the keymap edits (WP9) | WP0a, WP9 |
@@ -1307,7 +1406,8 @@ with `fn widget(&self) -> gtk::Widget`) and
 | cli | `backend.rs`, `exec.rs`, `lib.rs` | `Backend::gui`, `Plan::Gui`, `--json` usage | WP0a |
 | qrec | `src/shell.rs` | `Role::Gui` logging, `OWN_CRATES` + `qrec_gui` (WP0a); `Shell::gui` → `qrec_gui::run` (WP0b) | WP0a, WP0b |
 | qrec | `Cargo.toml` | `qrec-gui` dependency | WP0b |
-| qrec | `tests/gui_support/**`, `tests/gui_smoke.rs` | harness (G§8.4), smoke (G§8.5) | WP0b (smoke completed by WP10) |
+| qrec | `tests/gui_support/**` (`mod.rs`, `pointer.rs`, `scripts/`), `tests/gui_smoke.rs`, `tests/gui_shell.rs` | harness (G§8.4), smoke (G§8.5), WP0b's flows | WP0b (smoke completed by WP10) |
+| qrec | `tests/preview.rs` | `CachedSilence` reads what `qrec autocut --dry-run` cached | WP2 |
 | qrec | `tests/gui_<area>.rs`, `tests/gui_<area>_data/` | screenshot cases and their data | each area's owner |
 | root | `Cargo.toml`, `Cargo.lock`, `flake.nix` | G§6 (desktop file and icon install: WP10) | WP0b, WP10 |
 | docs | `ARCHITECTURE.md` | WP0a's list; A§1.2 after G§0.1 (WP0b); final pass (WP10) | WP0a, WP0b, WP10 |
@@ -1316,21 +1416,37 @@ with `fn widget(&self) -> gtk::Widget`) and
 
 Active only under `QREC_GUI_TEST` (G§8.4). A socket
 `$XDG_RUNTIME_DIR/qrec-gui-test.sock` (0600, in the test's private runtime
-dir); one JSON request line, one JSON reply line. Requests reach the main
-thread as `Inbound::Test`; the socket thread waits for the answer up to
-`timeoutMs` (default 10 000).
+dir), served by its own thread (`qrec-testctl`); one JSON request line, one
+JSON reply line. Requests reach the main thread as `Inbound::Test`; the
+socket thread waits for the answer up to `timeoutMs` (default 10 000, at
+most 60 000) and then replies `{"ok":false,"error":"timed out"}`.
+`TestRequest` carries that `deadline`, so a `waitIdle` still polling gives
+up with `{"ok":false,"error":"not idle: <why>"}` (the queue, unanswered
+requests, previews, the player, opening, the portal).
 
 | Request | Reply |
 | --- | --- |
-| `{"op":"waitIdle"}` | `{"ok":true,"rev":R}` once: the inbound queue is empty; the GUI's own requests are answered; `PreviewCache` has nothing queued or running for what is on screen; the player isn't loading or seeking; no source is `AwaitingPortal`; and a frame was drawn after all that (frame clock `after-paint`) |
-| `{"op":"regions"}` | `{"regions":{"<name>":[x,y,w,h],…}}`: window-logical bounds of every widget named `region-*` and of the named parts in G§8.4 |
+| `{"op":"waitIdle"}` | `{"ok":true,"rev":R}` once: `PreviewCache::in_flight()` is 0 (checked first: an answer is in the queue before its job stops counting); the inbound queue is empty; the GUI's own requests are answered; the player isn't loading or seeking; no source is `AwaitingPortal`; the window isn't opening; and a frame was drawn after all that and it still holds (frame clock `after-paint`) |
+| `{"op":"regions","names":[…]}` | `{"regions":{"<name>":[x,y,w,h],…}}`: window-logical bounds of every widget named `region-*` and of the named parts in G§8.4, plus the visible widgets named in `names` (a button a case clicks) |
+| `{"op":"labels","name":"region-header"}` | `{"ok":true,"labels":[…]}`: the text of every visible label under the widget `name` (default: the window), in tree order |
 | `{"op":"dispatch","command":{…},"confirmed":false}` | `Store::dispatch_with` with the default reply policy (confirmations open their modal); `{"ok":true}` at once |
 | `{"op":"action","id":"export.panel"}` | runs a binding or GUI action as its key would (pre-steps included) |
-| `{"op":"hints"}` | the rendered hint items (`keys`, `label`, `enabled`, `emphasized`) and the status text |
-| `{"op":"local"}` | a summary of `LocalUi`: focus, overlays, drag, layout, playing rate, bin selection |
-| `{"op":"a11y"}` | every visible icon-only button or custom widget without an accessible label (expected empty) |
+| `{"op":"hints"}` | the rendered hint items (`keys`, `label`, `enabled`, `emphasized`) and the status text (`hintbar::current_items`) |
+| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion; the Store's `rev`; `panics` caught by the guard (G§3.12 R10) |
+| `{"op":"a11y"}` | every visible icon-only button, focusable region or focusable custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
+| `{"op":"fonts"}` | the family Pango loads for each bundled font; `ok` when each resolves to itself |
+| `{"op":"icons"}` | each custom symbolic icon drawn in a probe color: found, its pixels, recolored |
+| `{"op":"art"}` | each illustration through `gtk::Svg` (`theme::art`): loaded, its size and drawn pixels |
 
 Dispatches go through the Store (R8); the other ops only read.
+
+Not covered yet: the live picture's first frame. Right after a window
+opens in Live, `waitIdle` can answer while the stage still shows the live
+sink's placeholder (black over the whole preview area: the paintable has
+no size before its first frame); the fake screen showed 0.2–0.7 s later in
+the round 2 integration smoke (nested sway, pixman and gles2). WP4 adds
+the condition (a Live video source and no frame shown yet) before its Live
+screenshot cases.
 
 ---
 
@@ -2008,7 +2124,7 @@ below; read them with `Get` while `design/qrec.pen` is active).
 
 | Component | Pen base node | Implementation | WP |
 | --- | --- | --- | --- |
-| C01 Buttons: primary, secondary, flat, destructive, destructive-flat, icon 32/24, sizes 24/32/40, loading | `NYyEU`, `iCGAH`, `XY43M`, `XWCm9`, `dFU0w`, `eLHti`, `J7Biwe` | `gtk::Button` + classes `.qrec-btn.primary/.secondary/.flat/.destructive/.destructive-flat/.icon-32/.icon-24/.sm/.lg` (common.css); hover and pressed = `background-image: image(var(--qrec-hover))` over the fill; `widgets::button::labeled(label, icon, binding)` adds the key cap and the accessible name with the shortcut | WP0b |
+| C01 Buttons: primary, secondary, flat, destructive, destructive-flat, icon 32/24, sizes 24/32/40, loading | `NYyEU`, `iCGAH`, `XY43M`, `XWCm9`, `dFU0w`, `eLHti`, `J7Biwe` | `gtk::Button` + classes `.qrec-btn.primary/.secondary/.flat/.destructive/.destructive-flat/.icon-32/.icon-24/.sm/.lg` (common.css); hover and pressed = `background-image: image(var(--qrec-hover))` over the fill; `widgets::button::labeled(label, icon, binding)` adds the key cap and the accessible name with the shortcut; `button::icon` (tooltip and accessible name with the key), `button::set_loading` (a 16 px spinner where the icon was), `button::close_window` (the header's close button) | WP0b |
 | C01 Record (header only) | `ixaXu` + states | `RecordButton`, fixed 120×32, children switched from `view::header` | WP6 |
 | C01 Spinner | `U574U` | `widgets::Spinner` (one 270° arc, 1 turn/s; 16/14/12 px) | WP0b |
 | C02 Key cap | `siZBm`, `vBUAG`, `G9zt10`, `CIRyG`, `RpGdo`, `NtDyY`, `TC7rA` | `widgets::KeyCap` (`gtk::Label`, CSS name `keycap`, not focusable or targetable; sm/md/lg, on-fill, disabled, rebound, capture, conflict). CSS `min-width` applies to the content box: subtract padding and border | WP0b |
@@ -2500,9 +2616,13 @@ and tests, and the A§8.7 prune's name pattern; `qrec-gui/src/media/{thumbs,peak
 **Acceptance and tests.**
 - argv snapshots; the key is deterministic;
 - a 95 s fixture gives chunk 0 with 60 images and chunk 1 with 35 (± 1),
-  72 px high; a `Frames` request returns exactly `count` consecutive frames
-  matching the frame-ID fixture; peaks have one bucket per ms, and each
-  coarser bucket is the min and max of its finer ones (property);
+  72 px high (as built 34: a chunk that reaches the end of the file has
+  one image less than its whole seconds, G§3.11); a `Frames` request
+  returns exactly `count` consecutive frames matching the frame-ID fixture
+  (WP2's own: a 12-bit frame-ID video with a keyframe exactly every
+  second; WP1's 8-bit one counts to 255 and x264 may add scene-cut
+  keyframes); peaks have one bucket per ms, and each coarser bucket is the
+  min and max of its finer ones (property);
 - a cache hit spawns no ffmpeg (a spawn counter); concurrent requests are
   deduplicated; at most 2 run at once, 1 while exporting; a corrupt cache
   file is regenerated; no ffmpeg → `Failed`;
@@ -2512,9 +2632,13 @@ and tests, and the A§8.7 prune's name pattern; `qrec-gui/src/media/{thumbs,peak
 - `take_sizes` equals the `take_contents` sums; `CachedSilence` reads an
   analysis written by `qrec autocut --dry-run`;
 - GTK caches (their GTK-free parts): the LRU never exceeds its byte budget
-  (a property over random request sequences); byte slicing; texture
-  creation in the smoke run; `bytes()` stays under budget while a one-hour
-  fixture scrolls (G§8.6).
+  (a property over random request sequences: seeded splitmix64 sequences,
+  as `qrec-gui` has no proptest dev-dependency); byte slicing; texture
+  creation in a nested compositor (`media::thumbs`'s ignored
+  `textures_in_a_nested_compositor`, run as a client of a headless sway:
+  the test binary with `--ignored`, under a private `XDG_RUNTIME_DIR` and
+  `WAYLAND_DISPLAY`; it refuses a runtime dir under `/run/user/`);
+  `bytes()` stays under budget while a one-hour fixture scrolls (G§8.6).
 
 ### WP3 — Timeline (lane B, after WP6)
 
@@ -2766,8 +2890,13 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
 - **Compositor.** sway headless at 1600×1000@60:
   - a private `XDG_RUNTIME_DIR` from `TestEnv`; `WLR_BACKENDS=headless`,
     `WLR_LIBINPUT_NO_DEVICES=1`;
-  - renderer `pixman` by default; `QREC_TEST_WLR=gles2` uses
-    `WLR_RENDER_DRM_DEVICE=/dev/dri/renderD129`;
+  - renderer `pixman` by default, and then the client draws with Cairo
+    too (`GDK_DISABLE=gl,vulkan`, below): nothing opens a GPU node, as on
+    CI. `QREC_TEST_WLR=gles2` renders on
+    `WLR_RENDER_DRM_DEVICE=/dev/dri/renderD129` with Mesa's EGL pinned
+    (`__EGL_VENDOR_LIBRARY_FILENAMES`), and the client uses GSK GL: the
+    GL path (the header title's stray mark, G§3.14 fonts, only ever
+    showed there);
   - config: `output HEADLESS-1 mode --custom 1600x1000@60Hz scale <s>`
     (`QREC_TEST_SCALE`, default 1), `default_border none`, `xwayland
     disable`, `swaybg_command -`, `swaynag_command -`;
@@ -2783,7 +2912,9 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   `WAYLAND_DISPLAY=<nested>`; `GDK_BACKEND=wayland`;
   `GSETTINGS_BACKEND=memory`; `GSETTINGS_SCHEMA_DIR` built like the spike;
   `GTK_A11Y=none` except for the a11y walk; a private `dbus-daemon` with no
-  service activation; `QREC_GUI_TEST=1`; `QREC_FAKE_INVENTORY=design`.
+  service activation; `QREC_GUI_TEST=1`; `QREC_FAKE_INVENTORY=design`;
+  Mesa's EGL vendor file; `QREC_FONT_DIR` passed through (`TestEnv` drops
+  `QREC_*`); under pixman also `GDK_DISABLE=gl,vulkan`.
 - **Test mode** (`QREC_GUI_TEST=1`):
   - `gtk-enable-animations = false`, so GTK and libadwaita transitions are
     instant. Reduced motion comes from `config.toml` only (D-30): cases
@@ -2796,13 +2927,25 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   - cursor blink off; a seeded PRNG; `QREC_GUI_TEST_NOW` (RFC 3339) as
     the local time of the auto-name preview (S15a);
   - the control channel (G§3.18).
-- **Driving.** `qrec --project <dir> … --json` with the `TestEnv`;
-  `swaymsg seat - cursor set X Y`, `cursor press button1`, `cursor release
-  button1`; `wtype -k <key>`, `wtype -M ctrl -k e -m ctrl`; the control
-  channel's `dispatch` and `action`.
+- **Driving.** `qrec --project <dir> … --json` with the `TestEnv`
+  (`Nested::cli`, `cli_json`); the pointer: `Nested::pointer()`, one
+  `zwlr_virtual_pointer_v1` (`gui_support/pointer.rs`, the Wayland wire
+  protocol over the compositor's socket, std only) created before any
+  window maps and kept for the whole case: headless sway has no pointer
+  device, so its seat offers clients no pointer until one exists, and a
+  pointer that comes and goes with each click (one `wlrctl` run per
+  click) loses the click. `move_to`, `button`,
+  `click`, `drag_to` take output-layout px and each ends with a `frame` and
+  a `wl_display.sync` round trip. Keys: `Nested::keys`, one `wtype` run
+  per key sequence, `-s 400` first so the compositor has the virtual
+  keyboard's keymap (`wtype -k <key>`, `-M ctrl -k e -m ctrl`). And the
+  control channel's `dispatch` and `action`.
 - **Readiness.** `waitIdle` (never a fixed sleep), then capture.
-- **Capture.** `grim -o HEADLESS-1 <repo>/tmp/gui-shots/<case>.png`
-  (menus and tooltips included; a GL client doesn't tear *(spike)*).
+- **Capture.** `grim -o HEADLESS-1
+  <repo>/tmp/gui-shots/<area>/<case>-<name>.png` (`Nested::screenshot`;
+  menus and tooltips included; a GL client doesn't tear *(spike)*), with
+  every log of the case (sway, the bus, the client's output) in
+  `<area>/logs/`.
 - **Checks per case.**
   1. **Regions** (objective, fails the test): `regions` against the
      case's rects, ±1 px (× scale). The base set, BRIEF §2.1 at
@@ -2956,8 +3099,10 @@ compositor, llvmpipe and ffmpeg share the CPU).
   composite; ours composites at 960×540 and should cost less.
 - **GPU device opens**: `gui_support/scripts/gpu-opens.sh` (strace) shows
   only the chosen render node.
-- **Cache bounds**: `ThumbCache::bytes()` and `PeakCache` stay under
-  budget while a one-hour fixture scrolls (WP2).
+- **Cache bounds**: `ThumbCache::bytes()` and `PeakCache::bytes()` stay
+  under budget while a one-hour fixture scrolls (WP2, in the nested
+  texture run: at most 24,330,240 bytes of a 24 MiB thumbnail budget; an
+  hour of peaks, 3,600,000 buckets, in 15,356,252 of 134,217,728 bytes).
 
 ### G§8.7 Manual checks for the product owner
 
