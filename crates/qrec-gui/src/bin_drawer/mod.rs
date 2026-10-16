@@ -433,6 +433,12 @@ impl Drawer {
             let insert = enabled(state, &view::insert_at(&row.take, InsertAt::End));
             view.set_enabled(insert, idle);
         }
+        // The footer's Purge from disk follows the same gate as the rows'
+        // (D-43: it depends on the state, not on which takes).
+        let selected = self.selection.borrow().selected.clone();
+        let purge = enabled(state, &Command::TakePurge { takes: selected }).err();
+        self.footer_purge.set_sensitive(purge.is_none());
+        self.footer_purge.set_tooltip_text(purge.as_deref());
         // The texture cache comes with the open Session: the thumbnails
         // drawn before it ask again (a draw asks for its images).
         if !self.thumbs_ready.get() && self.ctx.media.thumbs().is_some() {

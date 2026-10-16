@@ -2344,7 +2344,10 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     the timeline `ClipAdd{take, at: Index(k)}` (D-38); Reveal
     `RevealPath(takes/<id>/)`; Open log `OpenPath(takes/<id>/recorder.log)`;
     Purge `TakePurge{takes}` (the modal comes from
-    `confirmation_required`).
+    `confirmation_required`; `BinAction::Purge.disabled` is
+    `view::enabled`'s reason, D-43: dimmed with it while recording or with
+    `qrec.json` invalid, the row's button and the S18 footer's; review fix:
+    both stayed live and the core's refusal toasted).
 - **Export**:
   - Captions, `caption(format, codec, &State, &UserConfig)` (built by
     WP0a; the GUI passes the user config it read at startup, the one it

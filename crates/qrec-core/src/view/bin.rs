@@ -75,7 +75,12 @@ pub enum BinAction {
     /// `OpenPath(takes/<id>/recorder.log)`, for broken takes.
     OpenLog { action: UiAction },
     /// `TakePurge{takes}`; the modal comes from `confirmation_required`.
-    Purge { command: Command },
+    /// `disabled` says why it can't run now (D-43, `view::enabled`: while
+    /// recording, with `qrec.json` invalid on disk).
+    Purge {
+        command: Command,
+        disabled: Option<String>,
+    },
 }
 
 /// What a row's 96×54 thumbnail shows.
@@ -121,6 +126,14 @@ impl BinRow {
     pub fn open_log(&self) -> Option<&UiAction> {
         self.actions.iter().find_map(|a| match a {
             BinAction::OpenLog { action } => Some(action),
+            _ => None,
+        })
+    }
+
+    /// Why the row's Purge from disk can't run now (D-43), if it can't.
+    pub fn purge_disabled(&self) -> Option<&str> {
+        self.actions.iter().find_map(|a| match a {
+            BinAction::Purge { disabled, .. } => disabled.as_deref(),
             _ => None,
         })
     }
@@ -199,10 +212,12 @@ fn row(
     let reveal = BinAction::Reveal {
         action: UiAction::RevealPath(folder.clone()),
     };
+    let purge_command = Command::TakePurge {
+        takes: vec![id.clone()],
+    };
     let purge = BinAction::Purge {
-        command: Command::TakePurge {
-            takes: vec![id.clone()],
-        },
+        disabled: crate::view::enabled(state, &purge_command).err(),
+        command: purge_command,
     };
     let insertable = take.status == TakeStatus::Ok;
     let actions = match take.status {
@@ -567,6 +582,52 @@ mod tests {
             rows[3].mono
         );
         assert_eq!(header(&state, &BTreeMap::new()), "5 takes");
+    }
+
+    /// D-43: Purge from disk follows `view::enabled` (the core refuses a
+    /// purge while recording and with `qrec.json` invalid: the button said
+    /// nothing until the refusal's toast).
+    #[test]
+    fn purge_waits_for_the_recording_and_a_valid_qrec_json() {
+        use crate::ids::TimerId;
+        use crate::state::{RecordMode, RecordPhase};
+        let reasons = |state: &State| -> Vec<Option<String>> {
+            bin_rows(state, &BTreeMap::new(), &BTreeMap::new(), 0)
+                .iter()
+                .map(|row| row.purge_disabled().map(str::to_owned))
+                .collect()
+        };
+        let mut state = testkit::design_state();
+        assert_eq!(reasons(&state), [None, None, None, None, None]);
+        let take = TakeId::numbered(10);
+        state.runtime.record = RecordPhase::Recording {
+            take: take.clone(),
+            mode: RecordMode::Append,
+            elapsed_ns: 0,
+            waiters: vec![],
+        };
+        let all = |why: &str| vec![Some(why.to_owned()); 5];
+        assert_eq!(reasons(&state), all("Not while recording"));
+        state.runtime.record = RecordPhase::Finalizing {
+            take,
+            mode: RecordMode::Append,
+            cancelled: false,
+            stop_reqs: vec![],
+            waiters: vec![],
+            discard: None,
+        };
+        assert_eq!(reasons(&state), all("Not while take 10 is finalizing"));
+        state.runtime.record = RecordPhase::Countdown {
+            remaining: 3,
+            mode: RecordMode::Append,
+            timer: TimerId(1),
+            start_req: None,
+            wait: false,
+        };
+        assert_eq!(reasons(&state), all("Not during the countdown"));
+        state.runtime.record = RecordPhase::Idle;
+        state.runtime.disk_invalid = Some("expected `,`".into());
+        assert_eq!(reasons(&state), all("qrec.json on disk is invalid"));
     }
 
     #[test]

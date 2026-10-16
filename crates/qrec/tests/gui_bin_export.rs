@@ -1003,6 +1003,58 @@ fn s18_purging_two_takes_from_the_bin() {
     close(&mut nested);
 }
 
+/// Waits until `qrec status`'s record phase is `phase`.
+fn wait_record_phase(nested: &Nested, project: &Path, phase: &str) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let record = status(nested, project)["runtime"]["record"].clone();
+        if record["phase"] == phase {
+            return;
+        }
+        assert!(Instant::now() < deadline, "never {phase}: {record}");
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// D-43: the bin's Purge from disk waits while a take records (the core
+/// refuses `TakePurge` then): dimmed with the reason, a click sends
+/// nothing (it sent the purge, and the core's refusal toasted "Recording
+/// take 10").
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn purging_from_the_bin_waits_for_the_recording() {
+    let mut nested = Nested::start(AREA, "purge-recording", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(bin_ui()),
+    );
+    open(&mut nested, &project, launch());
+    click(&mut nested, "bin-take-4");
+    let start = nested.cli_json(&project, &["record", "start"]);
+    assert_eq!(start["ok"], true, "qrec record start: {start}");
+    wait_record_phase(&nested, &project, "recording");
+    nested.window(0).wait_idle();
+    click(&mut nested, "bin-purge");
+    let toasts = nested.window(0).labels("toast-host");
+    assert!(
+        !toasts.iter().any(|l| l.starts_with("Recording take")),
+        "the purge was sent: {toasts:?}"
+    );
+    assert!(overlays(&mut nested).is_empty(), "nothing to confirm");
+    assert!(
+        takes(&nested, &project).contains(&"take-0004".to_owned()),
+        "take 4 stays"
+    );
+    let stop = nested.cli_json(&project, &["record", "stop"]);
+    assert_eq!(stop["ok"], true, "qrec record stop: {stop}");
+    wait_record_phase(&nested, &project, "idle");
+    nested.window(0).wait_idle();
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
 // ---------------------------------------------------------------- export
 
 /// S15a: Ctrl+E opens the setup step under the Export slot (440 wide, its
