@@ -3042,6 +3042,32 @@ fn ui_writes_are_coalesced() {
     assert_eq!(again.state().ui.selection, [clip("c002")]);
 }
 
+/// A `ui.json` older than the project (a crash between their writes, a
+/// hand edit) is made consistent with it at open, as every commit does
+/// (`ui_normalize`): the playhead within the timeline, the selection on
+/// it, no layer of another scene. The views used to disagree on such a
+/// playhead (the ruler's corner past the end, the transport at it: WP7
+/// integration audit's S16).
+#[test]
+fn a_stale_ui_json_is_made_consistent_at_open() {
+    let h = Harness::with_sample("stale-ui");
+    drop(h.open(true).unwrap());
+    let stale = serde_json::json!({
+        "playhead": 2437,
+        "selection": ["c9d9", "c002"],
+        "selectedLayer": "L9",
+    });
+    fs::write(h.paths().ui_file(), stale.to_string()).unwrap();
+    for mutating in [false, true] {
+        let s = h.open(mutating).unwrap();
+        let ui = &s.state().ui;
+        // c001 [0, 100) and c002 [150, 300): 250 frames.
+        assert_eq!(ui.playhead, 250, "the end, not past it");
+        assert_eq!(ui.selection, [clip("c002")], "only clips on the timeline");
+        assert_eq!(ui.selected_layer, None);
+    }
+}
+
 #[test]
 fn an_invalid_file_is_moved_aside_before_facts_are_saved() {
     let h = Harness::with_sample("invalid");

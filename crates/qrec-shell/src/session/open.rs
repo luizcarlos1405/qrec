@@ -21,6 +21,7 @@ use qrec_core::history::external::merged_preview;
 use qrec_core::model::Project;
 use qrec_core::on_event::record::start_recovery;
 use qrec_core::protocol::{Toast, ToastLevel};
+use qrec_core::ui_normalize::ui_normalize;
 use qrec_core::{CoreError, ErrorCode, Event, State};
 
 use super::Session;
@@ -172,10 +173,16 @@ pub(super) fn open(
                 },
             )?;
             store.adopt(&loaded);
+            // A ui.json older than the project (a crash between their
+            // writes, a hand edit) is made consistent with it as every
+            // commit does: the playhead within the timeline, the selection
+            // on it (WP7 integration audit: a playhead past the end drew
+            // the ruler's corner past it while the transport read the end).
+            let ui = ui_normalize(&loaded.project, &loaded.project, &loaded.ui);
             let mut state = State::new(
                 loaded.project.clone(),
                 loaded.history.clone(),
-                loaded.ui.clone(),
+                ui,
                 opts.host,
             );
             state.runtime.disk_invalid = loaded.disk_invalid.clone();

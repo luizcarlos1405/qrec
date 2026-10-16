@@ -455,12 +455,17 @@ pub fn auto_page(viewport: &Viewport, playhead: Frame, total: Frame) -> Option<f
 
 /// The frame the playhead is drawn at: while a take is recorded, the
 /// ghost's end (the newest waveform is where the playhead is parked);
-/// while the player plays, its frame; otherwise `ui.playhead`.
+/// while the player plays, its frame; otherwise `ui.playhead`, at most the
+/// timeline's end, as the transport reads it (`view::canvas::transport`;
+/// the WP7 integration audit saw the ruler's corner read a playhead past
+/// the end while the transport read the end).
 pub fn shown_playhead(state: &State, elapsed_ns: u64, player_frame: Option<Frame>) -> Frame {
     if let Some(slot) = ghost_slot(state) {
         return slot.start + ghost_frames(elapsed_ns, state.project.canvas.fps);
     }
-    player_frame.unwrap_or(state.ui.playhead)
+    player_frame
+        .unwrap_or(state.ui.playhead)
+        .min(total_frames(&state.project.timeline.clips))
 }
 
 // ------------------------------------------------------------- clips

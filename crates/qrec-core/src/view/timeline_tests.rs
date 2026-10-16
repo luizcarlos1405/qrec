@@ -213,6 +213,20 @@ fn auto_page_and_the_shown_playhead() {
     assert!((next - (2600.0 * 1.6 - AUTO_PAGE_PX)).abs() < 1e-9);
     assert_eq!(shown_playhead(&state, 0, None), 2437);
     assert_eq!(shown_playhead(&state, 0, Some(2500)), 2500);
+    // Past the end (a ui.json older than the timeline): drawn at the end,
+    // as the transport reads it.
+    let mut past = state.clone();
+    past.ui.playhead = 9_000;
+    past.ui.canvas_mode = crate::state::CanvasMode::Program;
+    assert_eq!(shown_playhead(&past, 0, None), 7391);
+    let transport = crate::view::canvas::transport(&past, 0, false, 1.0);
+    assert_eq!(
+        transport.left,
+        crate::view::canvas::TransportLeft::Timecode {
+            now: "00:04:06:11".into(),
+            total: "00:04:06:11".into(),
+        }
+    );
 }
 
 // ------------------------------------------------------------- ghosts
