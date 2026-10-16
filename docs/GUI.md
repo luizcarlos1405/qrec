@@ -2100,7 +2100,11 @@ As built (WP6, round 3):
   and rows are replaced by the centered block: quiet swamp art 200×120,
   "This swamp is quiet." (`display`), "Press [R] and make some noise."
   (`body` `muted` with an lg key cap of `record.toggle`), 10 px under the
-  `display` line (S01b).
+  `display` line (S01b). When `record.toggle` has no key that runs
+  (unbound, or in a keys.toml conflict) the cap is left out and the line
+  reads "Click Record and make some noise.", as the hint bar leaves its
+  Record item out (`EmptyState.key` is `None`; review: it showed a
+  hard-coded R).
 - **Hatches** are the C19 geometry from `widgets::draw::HatchMetrics` at
   100 %: the canvas is painted in 100 % px into a snapshot scaled by
   `Theme::scale`, so they scale with the UI (`timeline/paint.rs`, which

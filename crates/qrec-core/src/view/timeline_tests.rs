@@ -871,9 +871,47 @@ fn the_empty_state_has_the_record_key() {
         ),
         ("This swamp is quiet.", "Press", "and make some noise.")
     );
-    assert_eq!(empty.key, vec!["R".to_owned()]);
+    assert_eq!(empty.key, Some(vec!["R".to_owned()]));
     let f9 = empty_state(&keymap::resolve("[bindings]\n\"record.toggle\" = \"F9\"\n"));
-    assert_eq!(f9.key, vec!["F9".to_owned()]);
+    assert_eq!(f9.key, Some(vec!["F9".to_owned()]));
+}
+
+/// `record.toggle` unbound, or in a keys.toml conflict (neither binding
+/// runs): no cap, and a line that needs none, as the hint bar leaves the
+/// Record item out.
+#[test]
+fn the_empty_state_without_a_record_key_names_the_button() {
+    let state = testkit::design_state();
+    for toml in [
+        "",
+        "[bindings]\n\"record.toggle\" = []\n",
+        "[bindings]\n\"record.over\" = \"r\"\n",
+        "[bindings]\n\"record.toggle\" = \"F9\"\n",
+    ] {
+        let map = keymap::resolve(toml);
+        let empty = empty_state(&map);
+        let (items, _) = crate::view::hints::hint_bar(
+            &crate::view::hints::HintState::Empty,
+            &state,
+            &crate::view::GuiFacts::default(),
+            &map,
+        );
+        let record = items.iter().any(|i| i.label == "Record");
+        assert_eq!(empty.key.is_some(), record, "{toml:?}: {empty:?}");
+        let line = match &empty.key {
+            Some(key) => format!("{} [{}] {}", empty.before, key.join("+"), empty.after),
+            None => format!("{} {}", empty.before, empty.after),
+        };
+        let want = if record {
+            format!(
+                "Press [{}] and make some noise.",
+                empty.key.clone().unwrap().join("+")
+            )
+        } else {
+            "Click Record and make some noise.".to_owned()
+        };
+        assert_eq!(line, want, "{toml:?}");
+    }
 }
 
 #[test]

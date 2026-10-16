@@ -1880,21 +1880,28 @@ pub fn lane_headers(state: &State) -> Vec<LaneHeader> {
 pub struct EmptyState {
     /// "This swamp is quiet." (`display`).
     pub title: String,
-    /// "Press", the cap of `record.toggle`, "and make some noise."
+    /// "Press", the cap of `record.toggle`, "and make some noise."; "Click
+    /// Record" and no cap when `record.toggle` has no key that runs.
     pub before: String,
-    pub key: Vec<String>,
+    pub key: Option<Vec<String>>,
     pub after: String,
 }
 
-/// The empty state with the user's record key.
+/// The empty state with the user's record key. Without one that runs
+/// (unbound, or in a keys.toml conflict) the line names the header's Record
+/// button instead, as the hint bar leaves its Record item out.
 pub fn empty_state(keymap: &Keymap) -> EmptyState {
     let key = keymap
         .binding("record.toggle")
-        .and_then(|b| usable_keys(keymap, b).first().map(|k| k.cap_legends()))
-        .unwrap_or_else(|| vec!["R".to_owned()]);
+        .and_then(|b| usable_keys(keymap, b).first().map(|k| k.cap_legends()));
     EmptyState {
         title: "This swamp is quiet.".to_owned(),
-        before: "Press".to_owned(),
+        before: if key.is_some() {
+            "Press"
+        } else {
+            "Click Record"
+        }
+        .to_owned(),
         key,
         after: "and make some noise.".to_owned(),
     }

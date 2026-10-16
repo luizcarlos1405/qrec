@@ -166,6 +166,8 @@ struct Inner {
     overlay: Surface,
     tips: Tips,
     empty_key: KeyCap,
+    /// "Press" (or "Click Record" without a record key) before the cap.
+    empty_before: gtk::Label,
     /// The quiet swamp and its fixed-width column (smaller in the compact
     /// rows).
     empty_art: Option<(Column, gtk::Picture)>,
@@ -259,7 +261,7 @@ impl Inner {
 
             let empty_key = KeyCap::new("R");
             empty_key.set_size(CapSize::Lg);
-            let (empty, empty_art) = empty_state(ctx, &empty_key);
+            let (empty, empty_before, empty_art) = empty_state(ctx, &empty_key);
             // Not homogeneous: the hidden page must not size the rows.
             let stack = gtk::Stack::new();
             stack.set_hhomogeneous(false);
@@ -323,6 +325,7 @@ impl Inner {
                 overlay,
                 tips,
                 empty_key,
+                empty_before,
                 empty_art,
                 texts: Texts::default(),
                 started: Instant::now(),
@@ -986,8 +989,11 @@ impl Inner {
             playhead,
             state.project.canvas.fps,
         ));
-        let keys = tl::empty_state(&self.ctx.store.keymap()).key;
-        self.empty_key.set_legend(&keys.join("+"));
+        show_empty_copy(
+            &tl::empty_state(&self.ctx.store.keymap()),
+            &self.empty_before,
+            &self.empty_key,
+        );
         if let Some((column, art)) = &self.empty_art {
             let (w, h) = empty_art_size(rows);
             column.set_width(w);
@@ -2035,8 +2041,9 @@ fn empty_art_size(rows: Rows) -> (i32, i32) {
 }
 
 /// The empty timeline (S01b, C31 Timeline): the quiet swamp, "This swamp
-/// is quiet.", "Press [R] and make some noise.".
-fn empty_state(ctx: &Ctx, key: &KeyCap) -> (gtk::Box, Option<(Column, gtk::Picture)>) {
+/// is quiet.", "Press [R] and make some noise." ("Click Record and make
+/// some noise." without a record key); the line's first label.
+fn empty_state(ctx: &Ctx, key: &KeyCap) -> (gtk::Box, gtk::Label, Option<(Column, gtk::Picture)>) {
     let copy = tl::empty_state(&ctx.store.keymap());
     let block = gtk::Box::new(gtk::Orientation::Vertical, 0);
     block.add_css_class("tl-empty");
@@ -2068,16 +2075,26 @@ fn empty_state(ctx: &Ctx, key: &KeyCap) -> (gtk::Box, Option<(Column, gtk::Pictu
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     line.add_css_class("tl-empty-line");
     line.set_halign(gtk::Align::Center);
-    let before = gtk::Label::new(Some(&copy.before));
+    let before = gtk::Label::new(None);
     before.add_css_class("t-body");
     before.add_css_class("muted");
     let after = gtk::Label::new(Some(&copy.after));
     after.add_css_class("t-body");
     after.add_css_class("muted");
-    key.set_legend(&copy.key.join("+"));
+    show_empty_copy(&copy, &before, key);
     line.append(&before);
     line.append(key);
     line.append(&after);
     block.append(&line);
-    (block, art)
+    (block, before, art)
+}
+
+/// The empty state's line for the keymap's `copy`: the record key's cap,
+/// or none (G§4.5).
+fn show_empty_copy(copy: &tl::EmptyState, before: &gtk::Label, key: &KeyCap) {
+    before.set_text(&copy.before);
+    if let Some(legends) = &copy.key {
+        key.set_legend(&legends.join("+"));
+    }
+    key.set_visible(copy.key.is_some());
 }
