@@ -873,6 +873,27 @@ pub const WP0B_REGIONS: [&str; 5] = [
     "region-hintbar",
 ];
 
+/// The regions every window on the design fixture has since round 3
+/// (WP3, WP4 and WP6 merged): all of BRIEF §2.1's, the stage's preview and
+/// transport (WP4) and the timeline's parts (WP3) with them; the panel is
+/// WP0b's stub until WP5.
+pub const MERGED_REGIONS: [&str; 14] = [
+    "region-header",
+    "region-stage",
+    "preview",
+    "transport",
+    "region-panel",
+    "region-timeline",
+    "timeline-toolbar",
+    "ruler",
+    "track-headers",
+    "time-area",
+    "video-row",
+    "lane-A1",
+    "lane-A2",
+    "region-hintbar",
+];
+
 /// Checks `actual` against `expected` (±1 px × `scale`): every name in
 /// `required` must be there; the others are checked when present.
 pub fn assert_regions(

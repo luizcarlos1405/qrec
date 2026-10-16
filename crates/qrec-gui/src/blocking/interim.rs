@@ -31,7 +31,9 @@ impl InterimPage {
         root.add_css_class("qrec-blocking");
         root.set_hexpand(true);
         root.set_vexpand(true);
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
+        // 16 px apart by CSS (blocking.css; GtkBox adds its border-spacing
+        // to its own spacing, which stays 0).
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
         content.add_css_class("qrec-blocking-content");
         content.set_halign(gtk::Align::Center);
         content.set_valign(gtk::Align::Center);
@@ -83,7 +85,8 @@ impl InterimPage {
             scroll.set_child(Some(&label));
             self.content.append(&scroll);
         }
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        // 8 px apart by CSS (blocking.css).
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         row.add_css_class("qrec-blocking-buttons");
         row.set_halign(gtk::Align::Start);
         let mut primary = None;

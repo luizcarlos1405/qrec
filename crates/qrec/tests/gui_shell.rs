@@ -16,7 +16,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use gui_support::{
-    BRIEF_REGIONS, Launch, Nested, Options, WP0B_REGIONS, assert_regions, wait_for_gui_host,
+    BRIEF_REGIONS, Launch, MERGED_REGIONS, Nested, Options, WP0B_REGIONS, assert_regions,
+    wait_for_gui_host,
 };
 use qrec_shell::testkit::design::{DesignVariant, design_fixture};
 use qrec_shell::testkit::run_tool;
@@ -159,7 +160,10 @@ fn the_skeleton_on_the_design_fixture() {
 
     let gui = nested.window(0);
     let regions = gui.regions(&[]);
-    assert_regions(&regions, &BRIEF_REGIONS, &WP0B_REGIONS, 1.0);
+    // Every region of BRIEF §2.1 is there since round 3: the stage's
+    // preview and transport (WP4), the timeline's toolbar, ruler, headers
+    // and rows (WP3), at their rects.
+    assert_regions(&regions, &BRIEF_REGIONS, &MERGED_REGIONS, 1.0);
     let header = gui.labels("region-header");
     assert!(
         header.contains(&"rust-traits-talk".to_owned()),
@@ -198,7 +202,7 @@ fn the_skeleton_on_the_design_fixture() {
         "{header:?}"
     );
 
-    // The hint bar's stand-in: the user's keys.
+    // The hint bar (WP6): the user's keys.
     let hints = gui.ctl(json!({"op": "hints"}));
     assert_eq!(hints["items"][0]["label"], "Record", "{hints}");
     assert_eq!(hints["items"][0]["keys"], json!([["R"]]), "{hints}");
@@ -985,4 +989,169 @@ fn short_windows_keep_a_232_px_timeline() {
     );
     assert_eq!(gui.local()["layout"]["compact"], true);
     nested.screenshot("open");
+}
+
+// ------------------------------------------------- round 3 (WP3, WP4, WP6)
+
+/// WP3's ruler scrub goes through WP4's program sync (D-40, G§3.10 step
+/// 9): a drag across the ruler in Program scrubs the paused player at
+/// every motion; neither the drag's throttled seeks nor its last one
+/// (after the release) seek the player again, and once idle it is on the
+/// playhead the drag left.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_ruler_scrub_leaves_the_player_on_the_playhead() {
+    const FRAME_NS: f64 = 1e9 / 30.0;
+    let mut nested = Nested::start("integ", "ruler-scrub", Options::default());
+    let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
+    nested.launch(&project, Launch::default());
+    wait_for_gui_host(&nested, &project, OPEN);
+    let gui = nested.window(0);
+    gui.wait_phase("open", OPEN);
+    gui.wait_idle();
+    let reply = gui.ctl(json!({
+        "op": "dispatch",
+        "command": {"cmd": "setCanvasMode", "mode": "program"},
+    }));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let playhead = |nested: &Nested| {
+        nested.cli_json(&project, &["status"])["data"]["ui"]["playhead"]
+            .as_u64()
+            .expect("the playhead")
+    };
+    // Settled: the player on the playhead (one frame at most apart).
+    let settled = |nested: &mut Nested, what: &str| -> (u64, u64) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            nested.window(0).wait_idle();
+            let at = playhead(nested);
+            let player = nested.window(0).local()["playerNs"].as_u64();
+            if let Some(ns) = player
+                && (ns as f64 - at as f64 * FRAME_NS).abs() <= FRAME_NS
+            {
+                return (at, ns);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{what}: the player at {player:?}, the playhead at {at}"
+            );
+            thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let (before, _) = settled(&mut nested, "the program loaded");
+    let log_before = nested.window(0).gui_log().lines().count();
+    let regions = nested.window(0).regions(&[]);
+    let [rx, ry, _, rh] = regions["ruler"];
+    let y = ry + rh / 2.0;
+    let pointer = nested.pointer();
+    pointer.move_to(rx + 300.0, y);
+    pointer.drag_to(rx + 900.0, y, 30);
+    let (after, _) = settled(&mut nested, "after the drag");
+    assert!(after > before + 1000, "the drag moved {before} to {after}");
+    assert_eq!(nested.window(0).local()["drag"], Value::Null);
+    let log = nested.window(0).gui_log();
+    let lines: Vec<&str> = log.lines().skip(log_before).collect();
+    let scrubs = lines
+        .iter()
+        .filter(|l| l.contains("program sync: scrub"))
+        .count();
+    let seeks: Vec<&&str> = lines
+        .iter()
+        .filter(|l| l.contains("program sync: seek"))
+        .collect();
+    assert!(scrubs >= 5, "{scrubs} scrubs:\n{}", lines.join("\n"));
+    assert!(
+        seeks.is_empty(),
+        "the scrub's seeks moved the player: {seeks:#?}"
+    );
+    nested.screenshot("after");
+}
+
+/// The first hint item ("[Enter] Add 4 sources") and whether it is on.
+fn first_hint(gui: &gui_support::Gui) -> (String, bool) {
+    let hints = gui.ctl(json!({"op": "hints"}));
+    let item = &hints["items"][0];
+    let keys: Vec<String> = item["keys"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|chord| chord.as_array().into_iter().flatten())
+        .map(|cap| format!("[{}]", cap.as_str().unwrap_or("?")))
+        .collect();
+    let label = item["label"].as_str().unwrap_or("?");
+    (
+        format!("{} {label}", keys.join(" ")),
+        item["enabled"] != false,
+    )
+}
+
+/// Polls the first hint until `done` holds, at most 10 s.
+fn wait_for_hint(nested: &mut Nested, done: impl Fn(&(String, bool)) -> bool) -> (String, bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let gui = nested.window(0);
+        gui.wait_idle();
+        let hint = first_hint(gui);
+        if done(&hint) {
+            return hint;
+        }
+        assert!(Instant::now() < deadline, "the first hint: {hint:?}");
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// WP4's first run drives WP6's hint bar: the checklist's count is
+/// `LocalUi.first_run_checked`, which "[Enter] Add N sources" reads, and
+/// the hint says what the button says (`add_sources_label`) as rows are
+/// unchecked: 4, 3, then none ("Add sources", off on both).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_first_runs_count_reaches_the_hint_bar() {
+    let mut nested = Nested::start("integ", "first-run-hint", Options::default());
+    let project = nested.env.empty_dir("rust-traits-talk");
+    nested.launch(&project, Launch::default());
+    wait_for_gui_host(&nested, &project, OPEN);
+    nested.window(0).wait_phase("open", OPEN);
+    // The rows, once discovery answered (named widgets: `names`).
+    let rows = ["0", "1", "2", "3", "4"].map(|i| format!("first-run-row-{i}"));
+    let names: Vec<&str> = rows.iter().map(String::as_str).collect();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let regions = loop {
+        let gui = nested.window(0);
+        gui.wait_idle();
+        let regions = gui.regions(&names);
+        if names.iter().all(|n| regions.contains_key(*n)) {
+            break regions;
+        }
+        assert!(Instant::now() < deadline, "the rows: {regions:?}");
+        thread::sleep(Duration::from_millis(100));
+    };
+    let hint = wait_for_hint(&mut nested, |h| h.0 == "[Enter] Add 4 sources");
+    assert!(hint.1, "{hint:?}");
+    let stage = nested.window(0).labels("region-stage");
+    assert!(stage.contains(&"Add 4 sources".to_owned()), "{stage:?}");
+    let mut click = |name: &str| {
+        let [x, y, w, h] = regions[name];
+        nested.pointer().click(x + w / 2.0, y + h / 2.0);
+    };
+    // System audio (the last row) off: 3.
+    click("first-run-row-4");
+    let hint = wait_for_hint(&mut nested, |h| h.0 == "[Enter] Add 3 sources");
+    assert!(hint.1, "{hint:?}");
+    let stage = nested.window(0).labels("region-stage");
+    assert!(stage.contains(&"Add 3 sources".to_owned()), "{stage:?}");
+    nested.screenshot("three");
+    // The first screen, the camera and the mic off too: none.
+    let mut click = |name: &str| {
+        let [x, y, w, h] = regions[name];
+        nested.pointer().click(x + w / 2.0, y + h / 2.0);
+    };
+    for name in ["first-run-row-0", "first-run-row-2", "first-run-row-3"] {
+        click(name);
+    }
+    let hint = wait_for_hint(&mut nested, |h| !h.1);
+    assert_eq!(hint, ("[Enter] Add sources".to_owned(), false));
+    let stage = nested.window(0).labels("region-stage");
+    assert!(stage.contains(&"Add sources".to_owned()), "{stage:?}");
+    nested.screenshot("none");
 }

@@ -85,7 +85,10 @@ fn base(kind: Kind) -> gtk::Button {
 }
 
 /// A labeled button: optional icon, the label, and the key cap of
-/// `binding` (looked up in `keymap`).
+/// `binding` (looked up in `keymap`), vertically centered. Its content box
+/// is 8 px apart by CSS (`button.qrec-btn > box`'s `border-spacing`:
+/// GtkBox adds it to its own spacing, which stays 0, and only CSS px follow
+/// the UI scale); a button that builds its own content does the same.
 pub fn labeled(
     label: &str,
     icon: Option<&str>,
@@ -94,7 +97,7 @@ pub fn labeled(
     kind: Kind,
 ) -> gtk::Button {
     let button = base(kind);
-    let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     if let Some(icon) = icon {
         content.append(&gtk::Image::from_icon_name(icon));
     }
@@ -106,7 +109,9 @@ pub fn labeled(
         } else {
             CapVariant::Plain
         };
-        content.append(&keycap::chord(caps, CapSize::Sm, variant));
+        let cap = keycap::chord(caps, CapSize::Sm, variant);
+        cap.set_valign(gtk::Align::Center);
+        content.append(&cap);
     }
     button.set_child(Some(&content));
     button.update_property(&[gtk::accessible::Property::Label(&accessible_name(

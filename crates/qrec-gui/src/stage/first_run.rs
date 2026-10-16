@@ -70,7 +70,8 @@ impl FirstRun {
         button.add_css_class("first-run-add");
         button.set_halign(gtk::Align::Start);
         button.set_focus_on_click(false);
-        let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        // 8 px apart by CSS (`button.qrec-btn > box`, common.css).
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let button_label = gtk::Label::new(Some(&add_sources_label(0)));
         content.append(&button_label);
         let cap = keycap::chord(&["Enter".to_owned()], CapSize::Md, CapVariant::OnFill);
@@ -143,8 +144,10 @@ impl FirstRun {
                 inv.default_mic.as_deref(),
                 inv.default_monitor.as_deref(),
             );
-            for row in found {
+            for (i, row) in found.into_iter().enumerate() {
                 let check = self.row(&row);
+                // Named for the nested cases (G§8.4): `first-run-row-0` ….
+                check.set_widget_name(&format!("first-run-row-{i}"));
                 self.list.append(&check);
                 rows.push((row, check));
             }

@@ -38,7 +38,8 @@ impl RecordButton {
         button.set_focus_on_click(false);
         button.set_size_request(120, 32);
         button.set_valign(gtk::Align::Center);
-        let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        // 8 px apart by CSS (`button.qrec-btn > box`, common.css).
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         content.set_halign(gtk::Align::Center);
         let icon = gtk::Image::from_icon_name("qrec-record-symbolic");
         icon.set_pixel_size(16);

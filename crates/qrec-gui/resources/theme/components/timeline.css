@@ -31,12 +31,6 @@
   padding: 0 8px;
 }
 
-/* GTK adds a box's `border-spacing` to its own spacing: the labeled
-   buttons (button::labeled) space their content by 8 px already. */
-.timeline-toolbar button.qrec-btn > box {
-  border-spacing: 0;
-}
-
 .timeline-toolbar button.qrec-btn > box.tl-content {
   border-spacing: 7px;
 }
@@ -198,7 +192,7 @@ button.track-toggle.solo:checked {
 /* ------------------------------------------------------ the canvas */
 
 /* It takes the keyboard focus: the ring sits inside it. */
-timeline-surface.tl-canvas:focus-visible {
+timeline-surface.tl-canvas:focus:focus-visible {
   outline: 2px solid var(--qrec-focus-ring);
   outline-offset: -2px;
 }

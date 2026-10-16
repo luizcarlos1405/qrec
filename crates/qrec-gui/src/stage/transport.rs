@@ -88,7 +88,8 @@ fn tooltip(button: &gtk::Button, tip: &Rc<RefCell<Tip>>) {
         "transport: a tooltip",
         move |_, _, _, _, tooltip| {
             let tip = tip.borrow();
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            // 8 px apart by CSS (`.qrec-tooltip`, common.css).
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             row.add_css_class("qrec-tooltip");
             row.append(&gtk::Label::new(Some(&tip.text)));
             if let Some(caps) = &tip.caps {
@@ -165,7 +166,8 @@ impl TransportRow {
         save.add_css_class("qrec-btn");
         save.add_css_class("flat");
         save.set_focus_on_click(false);
-        let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        // 8 px apart by CSS (`button.qrec-btn > box`, common.css).
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         content.append(&gtk::Image::from_icon_name("camera-photo-symbolic"));
         let save_label = gtk::Label::new(Some("Save frame"));
         save_label.set_ellipsize(gtk::pango::EllipsizeMode::End);

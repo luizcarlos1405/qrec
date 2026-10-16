@@ -196,14 +196,17 @@ window.qrec {
 /* ----------------------------------------------------- focus and disabled */
 
 /* The focus ring: 2 px `focus-ring`, 2 px outside (DESIGN Shapes); rows
-   and fields draw it inset. Keyboard focus only (focus-visible). */
-:focus-visible {
+   and fields draw it inset. Keyboard focus only (focus-visible), and only
+   on the focused widget: GTK sets `:focus-visible` on its whole focus
+   chain (every ancestor), so `:focus` picks the widget itself. Fields
+   ring themselves with `:focus-within` (common.css). */
+:focus:focus-visible {
   outline: 2px solid var(--qrec-focus-ring);
   outline-offset: 2px;
 }
 
-row:focus-visible,
-.inset-focus:focus-visible {
+row:focus:focus-visible,
+.inset-focus:focus:focus-visible {
   outline-offset: -2px;
 }
 

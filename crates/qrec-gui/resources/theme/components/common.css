@@ -27,6 +27,8 @@ button.qrec-btn {
     background-image 120ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+/* Content 8 px apart: GtkBox adds CSS `border-spacing` to its own
+   spacing, so content boxes are made with 0 (`button::labeled`). */
 button.qrec-btn > box {
   border-spacing: 8px;
 }
@@ -190,6 +192,7 @@ keycap.conflict {
   border: 1px solid var(--qrec-warning-text);
 }
 
+/* A chord's caps 2 px apart (`keycap::chord` makes its box with 0). */
 .keycaps {
   border-spacing: 2px;
 }
@@ -326,7 +329,7 @@ popover.menu modelbutton {
 
 popover.menu modelbutton:hover,
 popover.menu modelbutton:selected,
-popover.menu modelbutton:focus-visible {
+popover.menu modelbutton:focus:focus-visible {
   background-color: var(--qrec-selected);
   box-shadow: inset 0 0 0 1px var(--qrec-accent);
   color: var(--qrec-text);
@@ -370,12 +373,12 @@ scale > trough > slider {
   box-shadow: none;
 }
 
-scale:focus-visible > trough > slider {
+scale:focus:focus-visible > trough > slider {
   outline: 2px solid var(--qrec-focus-ring);
   outline-offset: 2px;
 }
 
-scale:focus-visible {
+scale:focus:focus-visible {
   outline: none;
 }
 
@@ -500,8 +503,8 @@ entry:focus-within,
   outline-offset: 2px;
 }
 
-entry > text:focus-visible,
-.field > text:focus-visible {
+entry > text:focus:focus-visible,
+.field > text:focus:focus-visible {
   outline: none;
 }
 
@@ -602,11 +605,6 @@ tooltip .qrec-tooltip {
   font-size: 13px;
 }
 
-#region-stage.qrec-stub,
-#region-timeline.qrec-stub {
-  background-color: var(--qrec-bg);
-}
-
 #region-panel.qrec-stub,
 #region-bin.qrec-stub {
   background-color: var(--qrec-surface);
@@ -616,56 +614,9 @@ tooltip .qrec-tooltip {
   box-shadow: inset 1px 0 var(--qrec-border);
 }
 
-#region-hintbar.qrec-stub {
-  background-color: var(--qrec-surface);
-  box-shadow: inset 0 1px var(--qrec-border);
-}
-
-#region-hintbar.qrec-stub {
-  padding: 0 12px;
-  border-spacing: 20px;
-}
-
-#region-hintbar.qrec-stub .hint {
-  border-spacing: 6px;
-  font-size: 13px;
-  line-height: 18px;
-  color: var(--qrec-muted);
-}
-
-#region-hintbar.qrec-stub .hint.first,
-#region-hintbar.qrec-stub .hint.emphasized {
-  color: var(--qrec-text);
-}
-
-#region-hintbar.qrec-stub .hint-status {
-  color: var(--qrec-muted);
-  font-size: 12px;
-  line-height: 16px;
-}
-
-/* WP0b's toast and modal stubs until WP6 (C23, C24): `raised`, `lg` and
-   `xl` radius, e2 and e3, a 1 px `border`. */
-.qrec-toast-stub {
-  padding: 12px 12px 12px 16px;
-  border-radius: 12px;
-  background-color: var(--qrec-raised);
-  color: var(--qrec-text);
-  box-shadow: inset 0 0 0 1px var(--qrec-border),
-    0 8px 24px var(--qrec-shadow-e2), 0 1px 2px var(--qrec-shadow-e2-contact);
-}
-
-.qrec-modal-stub {
-  padding: 24px;
-  border-radius: 16px;
-  background-color: var(--qrec-raised);
-  color: var(--qrec-text);
-  box-shadow: inset 0 0 0 1px var(--qrec-border), 0 20px 48px var(--qrec-shadow-e3);
-}
-
-/* The minimal header (C04 `Xba2H`): WP0b's header stub until WP6, and the
-   blocking pages' header. `surface` with a 1 px bottom `border`, the
-   wordmark, the window title (`title` over `caption` `muted`). */
+/* The minimal header (C04 `Xba2H`): the blocking pages' header. `surface`
+   with a 1 px bottom `border`, the wordmark, the window title (`title` over
+   `caption` `muted`). */
 headerbar.qrec-minimal-header {
   min-height: 48px;
   background-color: var(--qrec-surface);

@@ -96,13 +96,6 @@ toggle-group.mode-switch > toggle:last-child {
   min-width: 76px;
 }
 
-/* Only the focused widget draws the ring, not the focus chain. */
-headerbar.qrec-header :focus-visible:not(:focus),
-#region-hintbar :focus-visible:not(:focus),
-#toast-host :focus-visible:not(:focus) {
-  outline: none;
-}
-
 /* --------------------------------------------------- C01 Record */
 
 /* A fixed 120×32 in every state, its content centered (DESIGN Buttons). */
@@ -115,12 +108,6 @@ button.qrec-btn.record {
 
 button.qrec-btn.record image {
   -gtk-icon-size: 16px;
-}
-
-/* Its content box spaces itself (8 px; GtkBox would add common.css's
-   border-spacing to it). */
-button.qrec-btn.record > box {
-  border-spacing: 0;
 }
 
 button.qrec-btn.record keycap.on-fill {
@@ -183,17 +170,10 @@ progressbar.mini-mud > trough > progress {
 
 /* 32 px `surface` with a top hairline; items from x 12, the status
    right-aligned at x 1588. */
-/* (GtkBox adds CSS `border-spacing` to its own spacing: the boxes here
-   space themselves.) */
 #region-hintbar.hintbar {
   background-color: var(--qrec-surface);
   box-shadow: inset 0 1px var(--qrec-border);
   padding: 0 12px;
-}
-
-/* Caps of one chord are 2 px apart (`keycap::chord` spaces them). */
-#region-hintbar.hintbar .keycaps {
-  border-spacing: 0;
 }
 
 #region-hintbar.hintbar .hint-label {
@@ -318,11 +298,4 @@ progressbar.mini-mud > trough > progress {
 
 .qrec-modal .modal-footer {
   margin-top: 24px;
-}
-
-/* GTK sets `:focus-visible` on the whole focus chain: only the focused
-   button draws the ring (base.css's rule rings every ancestor too). */
-.qrec-modal:focus-visible:not(:focus),
-.qrec-modal :focus-visible:not(:focus) {
-  outline: none;
 }

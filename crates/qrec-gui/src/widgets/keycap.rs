@@ -162,9 +162,11 @@ impl KeyCap {
     }
 }
 
-/// One cap per legend, in a row (a chord: `Ctrl` `K`).
+/// One cap per legend, in a row (a chord: `Ctrl` `K`), 2 px apart:
+/// `.keycaps`' CSS `border-spacing` (GtkBox adds it to its own spacing,
+/// which stays 0, and only CSS px follow the UI scale).
 pub fn chord(legends: &[String], size: CapSize, variant: CapVariant) -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     row.add_css_class("keycaps");
     for legend in legends {
         let cap = KeyCap::new(legend);

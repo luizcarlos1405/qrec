@@ -44,7 +44,9 @@ pub struct Chip {
 
 impl Chip {
     pub fn new(text: &str, level: ChipLevel) -> Self {
-        let root = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        // 4 px between the icon and the text: `.chip`'s CSS border-spacing
+        // (GtkBox adds it to its own spacing, which stays 0).
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         root.add_css_class("chip");
         root.set_valign(gtk::Align::Center);
         let icon = gtk::Image::new();

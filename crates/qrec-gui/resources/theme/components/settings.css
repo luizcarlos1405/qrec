@@ -44,12 +44,6 @@ toggle-group.settings-tabs > toggle {
   border-bottom: 1px solid var(--qrec-border);
 }
 
-/* Close's content box spaces itself (8 px; GtkBox would add common.css's
-   border-spacing to it). */
-.qrec-settings .settings-header button.qrec-btn > box {
-  border-spacing: 0;
-}
-
 /* The frame rates: five 44 px segments, the numbers in the mono face. */
 toggle-group.rate-switch > toggle {
   min-width: 20px;
@@ -64,13 +58,6 @@ dropdown.settings-dropdown > button {
   font-family: var(--qrec-font-mono), "DejaVu Sans Mono", monospace;
   font-size: 13px;
   font-weight: 500;
-}
-
-/* Only the focused widget draws the ring, not the focus chain (fields
-   ring themselves with :focus-within, common.css). */
-.qrec-settings:focus-visible:not(:focus),
-.qrec-settings :focus-visible:not(:focus):not(entry) {
-  outline: none;
 }
 
 /* "Saved in this project's ~/…/qrec.json." */

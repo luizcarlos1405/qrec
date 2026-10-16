@@ -332,12 +332,9 @@ impl Items<'_> {
         let play = self.play_label();
         match hint {
             H::FirstRun => {
+                // The first run's button says the same (WP4's label).
                 let n = self.facts.first_run_checked.unwrap_or(0);
-                let label = if n == 1 {
-                    "Add 1 source".to_owned()
-                } else {
-                    format!("Add {n} sources")
-                };
+                let label = super::canvas::add_sources_label(n);
                 self.literal(&[&["Enter"]], &label, n > 0)
                     .bind(&["record.toggle"], "Record")
                     .bind(&["canvas.mode"], mode)
@@ -1157,8 +1154,10 @@ mod tests {
         state.project.scene = Default::default();
         for (checked, want) in [
             (Some(1), "[Enter] Add 1 source"),
-            (Some(0), "[Enter] Add 0 sources (disabled)"),
-            (None, "[Enter] Add 0 sources (disabled)"),
+            (Some(3), "[Enter] Add 3 sources"),
+            // As the button reads with nothing checked.
+            (Some(0), "[Enter] Add sources (disabled)"),
+            (None, "[Enter] Add sources (disabled)"),
         ] {
             let facts = GuiFacts {
                 first_run_checked: checked,

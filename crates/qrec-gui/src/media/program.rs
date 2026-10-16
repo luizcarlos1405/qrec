@@ -30,6 +30,13 @@
 //!    (`LocalUi.take_preview`, D-17) load `plan_ges_take` (at the trimmed
 //!    frame, or from 0); when they end the program plan loads again at
 //!    `ui.playhead`.
+//! 9. A ruler drag (D-40) scrubs through the sync ([`scrub`], the
+//!    timeline's): the paused program player scrubs to every frame; the
+//!    drag's own throttled seeks never move it, and after the drag the
+//!    sync waits (up to [`SCRUB_ECHO_MS`]) for the snapshots to reach the
+//!    last scrubbed frame instead of seeking back to an older one. While
+//!    playing, or with a take or nothing in the player, the drag's seeks
+//!    move the player instead.
 //!
 //! [`ProgramSync::install`] makes the window's one sync; the app hands it the
 //! player's events ([`on_player_event`]) and the test channel asks it
@@ -65,12 +72,21 @@ pub const RATE_ARMED_MS: u64 = 1000;
 /// A playhead this close to the player's frame doesn't move a playing
 /// player (a pre-step's `Seek{To(player frame)}`).
 const NEAR_FRAMES: Frame = 2;
+/// How long after a ruler drag the sync waits for the snapshots to reach
+/// its last scrubbed frame (the echo of the drag's last seek) before it
+/// follows the playhead again (a refused seek never echoes).
+pub const SCRUB_ECHO_MS: u64 = 1000;
 
 /// What the player is asked to do.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlayerCmd {
-    Load { plan: GesTimeline, at_ns: u64 },
+    Load {
+        plan: GesTimeline,
+        at_ns: u64,
+    },
     Seek(u64),
+    /// A seek plus 60 ms of audio (a ruler drag, D-40).
+    Scrub(u64),
     Play(f64),
     Pause,
 }
@@ -170,6 +186,11 @@ pub struct SyncMachine {
     ended: bool,
     /// The bin preview reached its end; a play starts it again from 0.
     take_ended: bool,
+    /// The frame a ruler drag last scrubbed the player to (D-40), until
+    /// the snapshots reach it.
+    scrubbed: Option<Frame>,
+    /// When the drag that scrubbed ended (the echo wait's start).
+    scrub_ended_at: Option<u64>,
 }
 
 impl Default for SyncMachine {
@@ -192,6 +213,8 @@ impl SyncMachine {
             rate_armed_at: None,
             ended: false,
             take_ended: false,
+            scrubbed: None,
+            scrub_ended_at: None,
         }
     }
 
@@ -207,14 +230,60 @@ impl SyncMachine {
     }
 
     /// When [`sync`](Self::sync) must run again on its own: a due reload,
-    /// the next once-a-second seek.
+    /// the next once-a-second seek, the end of a scrub's echo wait.
     pub fn deadline(&self) -> Option<u64> {
         let seek = (self.told_playing && matches!(self.content, Content::Program(_)))
             .then(|| self.auto_seek.map_or(0, |(at, _)| at + SEEK_EVERY_MS));
-        match (self.reload_due, seek) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
+        let echo = self
+            .scrubbed
+            .and(self.scrub_ended_at)
+            .map(|at| at + SCRUB_ECHO_MS);
+        [self.reload_due, seek, echo].into_iter().flatten().min()
+    }
+
+    /// A ruler drag's motion (D-40, the timeline's): the paused program
+    /// player scrubs to `frame`. While playing, or with a take or nothing
+    /// in the player (or in Live), nothing: the drag's seeks move it.
+    pub fn scrub(&mut self, frame: Frame, inp: &Inputs<'_>) -> Out {
+        let mut out = Out::default();
+        let program = matches!(self.content, Content::Program(_))
+            && inp.state.ui.canvas_mode == CanvasMode::Program
+            && inp.trim.is_none()
+            && inp.take_preview.is_none();
+        if !inp.has_player || !program || self.told_playing || inp.state.runtime.playing {
+            return out;
         }
+        let total = total_frames(&inp.state.project.timeline.clips);
+        let frame = frame.min(total);
+        out.player.push(PlayerCmd::Scrub(inp.ns(frame)));
+        self.scrubbed = Some(frame);
+        self.scrub_ended_at = None;
+        self.shown_frame = Some(frame);
+        out
+    }
+
+    /// A ruler scrub holds the paused player (no seek to `playhead`): while
+    /// its drag runs (the drag's own seeks lag behind its scrubs), and
+    /// after it while the snapshots haven't reached its last frame yet,
+    /// the GUI's last seek being that frame's, for at most
+    /// [`SCRUB_ECHO_MS`].
+    fn scrub_holds(&mut self, inp: &Inputs<'_>, playhead: Frame) -> bool {
+        let Some(scrubbed) = self.scrubbed else {
+            return false;
+        };
+        if inp.scrubbing {
+            self.scrub_ended_at = None;
+            return true;
+        }
+        let ended = *self.scrub_ended_at.get_or_insert(inp.now_ms);
+        let waiting = playhead != scrubbed
+            && inp.own_seek == Some(scrubbed)
+            && inp.now_ms.saturating_sub(ended) < SCRUB_ECHO_MS;
+        if !waiting {
+            self.scrubbed = None;
+            self.scrub_ended_at = None;
+        }
+        waiting
     }
 
     /// One step: whatever the inputs ask of the player now.
@@ -257,6 +326,8 @@ impl SyncMachine {
         let playhead = inp.playhead();
         if started || (fresh && now_playing && !self.told_playing) {
             self.ended = false;
+            self.scrubbed = None;
+            self.scrub_ended_at = None;
             let armed = self
                 .rate_armed_at
                 .is_some_and(|at| inp.now_ms.saturating_sub(at) <= RATE_ARMED_MS);
@@ -311,12 +382,16 @@ impl SyncMachine {
             }
         } else if !now_playing && self.shown_frame != Some(playhead) {
             // Paused: the player follows the playhead, but a ruler scrub
-            // drives it itself (D-40).
-            let scrubbed = inp.scrubbing && inp.own_seek == Some(playhead);
-            if !scrubbed {
+            // drives it itself (D-40, step 9).
+            if !self.scrub_holds(inp, playhead) {
                 out.player.push(PlayerCmd::Seek(inp.ns(playhead)));
+                self.shown_frame = Some(playhead);
             }
-            self.shown_frame = Some(playhead);
+        }
+        if !inp.scrubbing && self.scrubbed == Some(playhead) {
+            // The snapshots caught up with the scrub.
+            self.scrubbed = None;
+            self.scrub_ended_at = None;
         }
         self.seen_playhead = Some(playhead);
         out
@@ -350,6 +425,8 @@ impl SyncMachine {
                 });
                 self.content = Content::Program(inp.plan.clone());
                 self.reload_due = None;
+                self.scrubbed = None;
+                self.scrub_ended_at = None;
                 if !self.told_playing {
                     self.shown_frame = Some(playhead);
                 }
@@ -362,6 +439,8 @@ impl SyncMachine {
                 });
                 self.content = Content::Program(inp.plan.clone());
                 self.reload_due = None;
+                self.scrubbed = None;
+                self.scrub_ended_at = None;
                 self.take_frame = None;
                 self.take_ended = false;
                 self.shown_frame = Some(playhead);
@@ -664,6 +743,18 @@ impl ProgramSync {
         self.arm_timer();
     }
 
+    /// A ruler drag's motion (D-40): see [`SyncMachine::scrub`].
+    fn scrub(self: &Rc<Self>, frame: Frame) {
+        let state = self.ctx.store.state();
+        let plan = self.plan(&state);
+        let out = {
+            let inp = self.inputs(&state, &plan);
+            self.machine.borrow_mut().scrub(frame, &inp)
+        };
+        self.apply(out);
+        self.arm_timer();
+    }
+
     /// A player event (from the queue).
     fn event(self: &Rc<Self>, event: &PlayerEvent) {
         let state = self.ctx.store.state();
@@ -687,9 +778,22 @@ impl ProgramSync {
                         );
                         player.load(plan, at_ns);
                     }
-                    PlayerCmd::Seek(ns) => player.seek(ns),
-                    PlayerCmd::Play(rate) => player.play(rate),
-                    PlayerCmd::Pause => player.pause(),
+                    PlayerCmd::Seek(ns) => {
+                        tracing::debug!("program sync: seek {ns} ns");
+                        player.seek(ns);
+                    }
+                    PlayerCmd::Scrub(ns) => {
+                        tracing::debug!("program sync: scrub {ns} ns");
+                        player.scrub(ns);
+                    }
+                    PlayerCmd::Play(rate) => {
+                        tracing::debug!("program sync: play at {rate}");
+                        player.play(rate);
+                    }
+                    PlayerCmd::Pause => {
+                        tracing::debug!("program sync: pause");
+                        player.pause();
+                    }
                 }
             }
         }
@@ -745,6 +849,16 @@ impl ProgramSync {
             },
         );
         *self.timer.borrow_mut() = Some(id);
+    }
+}
+
+/// A ruler drag's motion in the timeline (D-40): the stage's sync owns
+/// the player's commands, so the timeline scrubs through it (and dispatches
+/// its `Seek`s itself).
+pub fn scrub(frame: Frame) {
+    let sync = SYNC.with(|s| s.borrow().clone());
+    if let Some(sync) = sync {
+        sync.scrub(frame);
     }
 }
 
@@ -838,6 +952,13 @@ mod tests {
         fn event(&mut self, event: PlayerEvent) -> Out {
             let mut machine = std::mem::take(&mut self.machine);
             let out = machine.on_event(&event, &self.inputs());
+            self.machine = machine;
+            out
+        }
+
+        fn scrub(&mut self, frame: Frame) -> Out {
+            let mut machine = std::mem::take(&mut self.machine);
+            let out = machine.scrub(frame, &self.inputs());
             self.machine = machine;
             out
         }
@@ -973,17 +1094,66 @@ mod tests {
         assert_eq!(rig.sync().player, [PlayerCmd::Seek(rig.ns(3000))]);
         rig.position = 3000;
         assert_eq!(rig.sync(), Out::default());
-        // A ruler scrub: the GUI's own throttled seeks don't fight it.
+        // A ruler drag (D-40): it scrubs the player through the sync, and
+        // the snapshots of its throttled seeks (behind the scrubs) don't
+        // move it.
         rig.scrubbing = true;
+        rig.own_seek = Some(3000);
+        assert_eq!(rig.scrub(3050).player, [PlayerCmd::Scrub(rig.ns(3050))]);
+        assert_eq!(rig.scrub(3100).player, [PlayerCmd::Scrub(rig.ns(3100))]);
         rig.position = 3100;
         rig.own_seek = Some(3050);
         rig.state.ui.playhead = 3050;
         assert_eq!(rig.sync().player, []);
-        // The release's seek after the scrub: the player is there already.
+        // The release: the drag ends before its last seek's snapshot comes
+        // (the playhead still 3050). The player is on 3100 already: no
+        // seek back to 3050, and none when the snapshot reaches 3100.
         rig.scrubbing = false;
         rig.own_seek = Some(3100);
+        rig.now += 20;
+        assert_eq!(rig.sync().player, []);
         rig.state.ui.playhead = 3100;
-        assert_eq!(rig.sync().player, [PlayerCmd::Seek(rig.ns(3100))]);
+        rig.now += 20;
+        assert_eq!(rig.sync().player, []);
+        // Then the playhead leads again (a key step, the CLI).
+        rig.state.ui.playhead = 3200;
+        assert_eq!(rig.sync().player, [PlayerCmd::Seek(rig.ns(3200))]);
+    }
+
+    /// A scrub whose last seek never echoes (refused) holds the player for
+    /// at most SCRUB_ECHO_MS: the sync runs again then (its deadline) and
+    /// follows the playhead.
+    #[test]
+    fn a_scrub_whose_seek_never_echoes_lets_go_after_a_second() {
+        let mut rig = Rig::new(program()).loaded();
+        rig.scrubbing = true;
+        assert_eq!(rig.scrub(3100).player, [PlayerCmd::Scrub(rig.ns(3100))]);
+        rig.scrubbing = false;
+        rig.own_seek = Some(3100);
+        assert_eq!(rig.sync().player, []);
+        assert_eq!(rig.machine.deadline(), Some(rig.now + SCRUB_ECHO_MS));
+        rig.now += SCRUB_ECHO_MS;
+        assert_eq!(rig.sync().player, [PlayerCmd::Seek(rig.ns(2437))]);
+        assert_eq!(rig.machine.deadline(), None);
+    }
+
+    /// While playing, in Live, or with a take in the player, a ruler drag
+    /// leaves the player to its seeks (a scrub would stop playback or seek
+    /// the wrong content).
+    #[test]
+    fn a_scrub_only_drives_a_paused_program_player() {
+        let mut rig = Rig::new(program()).loaded();
+        rig.scrubbing = true;
+        rig.play();
+        assert_eq!(rig.scrub(3000), Out::default());
+        rig.pause();
+        rig.trim = Some((TakeId::numbered(3), 10));
+        rig.sync();
+        assert_eq!(rig.scrub(3000), Out::default());
+        rig.trim = None;
+        rig.state.ui.canvas_mode = CanvasMode::Live;
+        rig.sync();
+        assert_eq!(rig.scrub(3000), Out::default());
     }
 
     #[test]

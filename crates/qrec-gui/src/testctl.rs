@@ -25,7 +25,7 @@
 //! | `dispatch` | `Store::dispatch` of `command` (`confirmed`: as confirmed), `{"ok":true}` at once |
 //! | `action` | runs binding or GUI action `id` as its key would |
 //! | `hints` | the hint bar's items and status (`hintbar::current_items`) |
-//! | `local` | a summary of `LocalUi`, the theme (and the window's `.reduced-motion`), the caught panics, the focused widget's path, the window's pid |
+//! | `local` | a summary of `LocalUi`, the theme (and the window's `.reduced-motion`), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player) |
 //! | `a11y` | every visible icon-only button, focusable region or custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 //! | `fonts` | the family Pango loads for each bundled font |
 //! | `icons` | each custom symbolic icon drawn in a probe color: found, pixels, recolored |
@@ -487,6 +487,7 @@ fn local(app: &App) -> Value {
         "focusPath": focus_path(app),
         "focusInTopLayer": focus_in_top_layer(app),
         "pid": std::process::id(),
+        "playerNs": app.ctx.media.position_ns(),
     })
 }
 
@@ -616,7 +617,9 @@ pub const ADWAITA_ICONS: [&str; 44] = [
     "camera-photo-symbolic",
     "document-save-symbolic",
     "edit-find-symbolic",
-    "preferences-system-symbolic",
+    // Settings: the gear as drawn (preferences-system-symbolic is tools in
+    // Adwaita 50).
+    "applications-system-symbolic",
     "camera-video-symbolic",
     "video-x-generic-symbolic",
     "view-reveal-symbolic",

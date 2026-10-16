@@ -19,7 +19,9 @@ pub fn keys(widget: &impl IsA<gtk::Widget>, text: &str, keys: &[Vec<String>]) {
     let text = text.to_owned();
     let keys = keys.to_vec();
     widget.connect_query_tooltip(crate::guarded!("a tooltip", move |_, _, _, _, tooltip| {
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        // 8 px apart: `.qrec-tooltip`'s CSS border-spacing (GtkBox adds it
+        // to its own spacing, which stays 0).
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         row.add_css_class("qrec-tooltip");
         row.append(&gtk::Label::new(Some(&text)));
         for chord in &keys {

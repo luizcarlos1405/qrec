@@ -155,4 +155,156 @@ mod tests {
             assert!(rule.contains(&format!("\"opsz\" {px};")), "{rule}");
         }
     }
+
+    /// Every stylesheet in `resources/theme`, concatenated.
+    fn all_css() -> String {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut css = String::new();
+        let mut dirs = vec![root.join("resources/theme")];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "css") {
+                    css.push_str(&std::fs::read_to_string(&path).unwrap());
+                }
+            }
+        }
+        css
+    }
+
+    /// GTK sets `:focus-visible` on the whole focus chain, so a ring keyed
+    /// on it alone rings every ancestor of the focused widget too (WP6
+    /// undid that in its own CSS): every rule says `:focus:focus-visible`,
+    /// which also keeps a field's or a menu item's override as specific as
+    /// base.css's ring.
+    #[test]
+    fn focus_rings_go_on_the_focused_widget_only() {
+        let css = all_css();
+        let mut offenders = Vec::new();
+        for rule in css.split('}') {
+            let Some((selectors, _)) = rule.split_once('{') else {
+                continue;
+            };
+            let selectors = match selectors.rfind("*/") {
+                Some(end) => &selectors[end + 2..],
+                None => selectors,
+            };
+            for selector in selectors.split(',') {
+                let bare = selector.matches(":focus-visible").count();
+                let keyed = selector.matches(":focus:focus-visible").count();
+                if bare != keyed {
+                    offenders.push(selector.trim().to_owned());
+                }
+            }
+        }
+        assert!(offenders.is_empty(), "{offenders:#?}");
+        assert!(css.contains("\n:focus:focus-visible {"), "base.css's ring");
+    }
+
+    /// The classes a stylesheet gives `border-spacing` to (in a selector's
+    /// last compound).
+    fn spaced_classes(css: &str) -> std::collections::BTreeSet<String> {
+        let mut out = std::collections::BTreeSet::new();
+        for rule in css.split('}') {
+            let Some((selectors, body)) = rule.split_once('{') else {
+                continue;
+            };
+            if !body.contains("border-spacing") {
+                continue;
+            }
+            let selectors = match selectors.rfind("*/") {
+                Some(end) => &selectors[end + 2..],
+                None => selectors,
+            };
+            for selector in selectors.split(',') {
+                let Some(last) = selector.split_whitespace().last() else {
+                    continue;
+                };
+                for class in last.split('.').skip(1) {
+                    let class: String = class
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                        .collect();
+                    if !class.is_empty() {
+                        out.insert(class);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// GtkBox adds CSS `border-spacing` to its own spacing: a box the CSS
+    /// spaces (by its class, or as a `.qrec-btn`'s content) is made with 0,
+    /// or the gap doubles (WP6 found the buttons' 16 px and the chords'
+    /// 4 px, and worked around them in its own CSS).
+    #[test]
+    fn boxes_the_css_spaces_have_no_spacing_of_their_own() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let classes = spaced_classes(&all_css());
+        assert!(
+            classes.contains("keycaps") && classes.contains("chip"),
+            "{classes:?}"
+        );
+        let mut offenders = Vec::new();
+        let mut dirs = vec![root.join("src")];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                let lines: Vec<&str> = text.lines().collect();
+                for (i, line) in lines.iter().enumerate() {
+                    // `let name = gtk::Box::new(…, N)` with N ≠ 0.
+                    let Some((head, args)) = line.split_once("gtk::Box::new(") else {
+                        continue;
+                    };
+                    let Some(name) = head
+                        .trim()
+                        .strip_prefix("let ")
+                        .map(|h| h.trim_start_matches("mut ").trim_end_matches(['=', ' ']))
+                    else {
+                        continue;
+                    };
+                    let spacing = args
+                        .rsplit_once(',')
+                        .map(|(_, s)| s.trim_end_matches([')', ';', ' ']).trim());
+                    if spacing.is_none_or(|s| s == "0") {
+                        continue;
+                    }
+                    let later = &lines[i + 1..lines.len().min(i + 12)];
+                    let styled = later.iter().any(|l| {
+                        classes
+                            .iter()
+                            .any(|c| l.contains(&format!("{name}.add_css_class(\"{c}\")")))
+                    });
+                    // A content box of a `.qrec-btn` (`button.qrec-btn > box`).
+                    // (A content box is set as the child once it is filled.)
+                    let button_child = lines[i + 1..lines.len().min(i + 30)]
+                        .iter()
+                        .any(|l| l.contains(&format!(".set_child(Some(&{name}))")))
+                        && lines[i.saturating_sub(12)..i].iter().any(|l| {
+                            l.contains("add_css_class(\"qrec-btn\")") || l.contains("= base(kind)")
+                        });
+                    if styled || button_child {
+                        offenders.push(format!(
+                            "{}:{}: {}",
+                            path.strip_prefix(root).unwrap().display(),
+                            i + 1,
+                            line.trim()
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(offenders.is_empty(), "doubled box spacing: {offenders:#?}");
+    }
 }

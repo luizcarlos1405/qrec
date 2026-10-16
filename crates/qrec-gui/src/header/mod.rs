@@ -301,7 +301,8 @@ impl LiveTooltip {
             if text.is_empty() {
                 return false;
             }
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            // 8 px apart by CSS (`.qrec-tooltip`, common.css).
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             row.add_css_class("qrec-tooltip");
             row.append(&gtk::Label::new(Some(&text)));
             for chord in &keys {

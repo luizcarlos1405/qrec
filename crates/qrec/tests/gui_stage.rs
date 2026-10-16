@@ -421,6 +421,19 @@ fn countdown_case(case: &str, reduced: bool) {
     };
     let labels = stage_labels(&mut nested);
     assert_shows(&labels, &["Take 10", "Esc or R cancels", "LIVE"]);
+    // The hint bar (WP6, round 3) says the countdown's keys, as S03 draws.
+    let hints = nested.window(0).ctl(json!({"op": "hints"}));
+    let line: Vec<String> = hints["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|item| format!("{} {}", item["keys"], item["label"].as_str().unwrap_or("?")))
+        .collect();
+    assert_eq!(
+        line,
+        [r#"[["Esc"]] Cancel"#, r#"[["R"]] Cancel"#],
+        "{hints}"
+    );
     assert_stage_regions(&mut nested, &STAGE);
     cancel_record(&nested, &project, start);
     assert_clean(&mut nested);

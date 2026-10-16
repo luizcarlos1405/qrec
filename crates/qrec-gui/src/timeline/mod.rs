@@ -50,7 +50,6 @@ use gtk::{gdk, glib, graphene};
 use qrec_core::ctx::FileFact;
 use qrec_core::protocol::event::Interval;
 use qrec_core::state::{RecordPhase, SilenceKey};
-use qrec_core::time::frames_to_ns;
 use qrec_core::view::DragKind;
 use qrec_core::view::notices::unavailable_notice;
 use qrec_core::view::timeline::{self as tl, ClipBox, HEADER_WIDTH, Lane, Rows, Viewport};
@@ -126,6 +125,9 @@ struct Model {
     silence_asked: Vec<(String, i64, u64)>,
     /// A bin drag over the canvas: its take and x.
     drop: Option<(TakeId, f64)>,
+    /// The drop target set `LocalUi.drag = BinInsert` (and clears it):
+    /// a drag the bin's source (WP7) set is left alone.
+    drop_drag: bool,
     /// The snap guide's x and when it started.
     flash: Option<(f64, Duration)>,
     /// The pointer over the rows (canvas px, 100 %).
@@ -337,6 +339,7 @@ impl Inner {
                     silence_key: None,
                     silence_asked: Vec::new(),
                     drop: None,
+                    drop_drag: false,
                     flash: None,
                     pointer: None,
                     tip_clip: None,
@@ -1456,6 +1459,7 @@ impl Inner {
                 let slot = tl::drop_slot(&view, clips, x);
                 let caret = tl::boundary_x(&view, clips, slot);
                 self.m.borrow_mut().drop = Some((take.clone(), caret));
+                self.set_drop_drag(true);
                 let text = tl::drop_tooltip(&take, slot, clips.len());
                 self.tips.show(
                     &[vec![(text, tips::Ink::Plain)]],
@@ -1471,9 +1475,37 @@ impl Inner {
                     self.bump();
                     self.canvas.queue_draw();
                 }
+                self.set_drop_drag(false);
                 gdk::DragAction::empty()
             }
         }
+    }
+
+    /// While an accepted take hovers the canvas, `LocalUi.drag` is
+    /// `BinInsert` (D-38): the hint bar shows "Release to insert" (G§4.3)
+    /// and the key router treats it as a drag. Only a drag this target set
+    /// is cleared (WP7's drag source may hold its own from the bin).
+    fn set_drop_drag(&self, on: bool) {
+        let mut m = self.m.borrow_mut();
+        if on == m.drop_drag {
+            return;
+        }
+        let local = self.ctx.store.local();
+        if on && local.drag.is_some() {
+            return;
+        }
+        m.drop_drag = on;
+        drop(m);
+        drop(local);
+        self.ctx.store.update_local(move |l| {
+            l.drag = if on {
+                Some(DragKind::BinInsert)
+            } else if l.drag == Some(DragKind::BinInsert) {
+                None
+            } else {
+                l.drag
+            };
+        });
     }
 
     fn drop_at(&self, take: Option<TakeId>, x: f64) -> bool {
@@ -1481,6 +1513,7 @@ impl Inner {
         let x = x / self.scale();
         let view = self.m.borrow().vm.shown(self.now());
         self.m.borrow_mut().drop = None;
+        self.set_drop_drag(false);
         self.tips.hide();
         self.bump();
         self.canvas.queue_draw();
@@ -1883,12 +1916,10 @@ impl Inner {
         }
         if let Some(frame) = scrubs.last().copied() {
             let state = self.ctx.store.state();
-            if state.ui.canvas_mode == qrec_core::state::CanvasMode::Program
-                && let Some(player) = self.ctx.media.player()
-            {
-                let ns = frames_to_ns(frame, state.project.canvas.fps).max(0) as u64;
-                player.scrub(ns);
-            }
+            // The stage's sync owns the player's commands: it scrubs a
+            // paused Program player and keeps the drag's seeks from fighting
+            // the scrub (D-40, G§3.10); the Seeks go out from here.
+            crate::media::program::scrub(frame);
             self.corner.set_text(&qrec_core::view::ruler::corner(
                 frame,
                 state.project.canvas.fps,
