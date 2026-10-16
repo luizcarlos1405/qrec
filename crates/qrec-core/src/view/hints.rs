@@ -113,8 +113,10 @@ pub fn hint_state(state: &State, facts: &GuiFacts) -> HintState {
     {
         return HintState::LayerEdit;
     }
-    // 8.–13. What the project holds and how it is shown.
-    if state.project.scene.is_empty() {
+    // 8.–13. What the project holds and how it is shown. The first run is
+    //    Live mode's, as the stage shows it (D-27): in Program an empty
+    //    scene leaves the states below.
+    if state.ui.canvas_mode == CanvasMode::Live && state.project.scene.is_empty() {
         return HintState::FirstRun;
     }
     // S24 is approved (G§0.2): a refused screen is its own state.
@@ -1186,6 +1188,36 @@ mod tests {
             &keymap::resolve(""),
         );
         assert_eq!(line(&items)[2], "[D] Discard last take (emphasized)");
+    }
+
+    /// The first run (S01a) is Live mode's, as the stage shows it (D-27):
+    /// in Program an empty project scene leaves the clip states and Empty,
+    /// without the first run's `[Enter]` item for a list that isn't on
+    /// screen (R80).
+    #[test]
+    fn the_first_run_is_lives_only() {
+        let keymap = keymap::resolve("");
+        let mut selected = program(&["c2d0"]);
+        selected.project.scene = Default::default();
+        assert_eq!(hint_state(&selected, &fit()), HintState::ClipSelected);
+        let mut idle = program(&[]);
+        idle.project.scene = Default::default();
+        assert_eq!(hint_state(&idle, &fit()), HintState::ProgramIdle);
+        idle.project.timeline.clips.clear();
+        let facts = GuiFacts::default();
+        assert_eq!(hint_state(&idle, &facts), HintState::Empty);
+        let (items, _) = hint_bar(&HintState::Empty, &idle, &facts, &keymap);
+        assert_eq!(
+            line(&items),
+            [
+                "[R] Record (disabled)",
+                "[Tab] Live",
+                "[Ctrl][K] Commands",
+                "[?] All keys",
+            ]
+        );
+        idle.ui.canvas_mode = CanvasMode::Live;
+        assert_eq!(hint_state(&idle, &facts), HintState::FirstRun);
     }
 
     #[test]

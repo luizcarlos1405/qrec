@@ -1801,7 +1801,8 @@ conflicting chords drop out (`keymap::usable_keys`, made `pub`).
 5. panel page Autocut → AutocutPage.
 6. focus Bin → Bin.
 7. focus Stage with `edit_target` and a selected layer → LayerEdit.
-8. project scene empty → FirstRun.
+8. Live mode and the project scene empty → FirstRun (the stage shows S01a
+   only in Live, D-27; in Program an empty scene goes on to step 9).
 9. a screen refused and S24 approved → PortalDenied.
 10. timeline empty → Empty.
 11. px/frame ≥ 24 → FrameZoom.
