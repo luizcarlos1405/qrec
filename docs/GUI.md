@@ -1883,7 +1883,9 @@ As built (WP6, round 3):
 - Title = `project.name`; subtitle = `format::clips_summary` or "No clips
   yet"; while `runtime.recovering` isn't empty: "Recovering take 7…" with
   a 12 px spinner (D-47).
-- Record button (C01 Record):
+- Record button (C01 Record). Idle, it says what its key does: disabled
+  with `keymap::action_for("record.toggle")`'s reason when that is
+  `Unavailable`, so the button, `R` and its hint agree:
 
   | State | Button | Tooltip |
   | --- | --- | --- |
@@ -1891,7 +1893,6 @@ As built (WP6, round 3):
   | Idle, scene empty | disabled | "Add a layer or audio track first" |
   | Idle, export running | disabled | "Wait for the export to finish" |
   | `runtime.engine_stuck` | disabled | "The capture engine is stuck (GPU driver?); restart Qrec" |
-  | `runtime.disk_invalid` | disabled | "qrec.json on disk is invalid" |
   | Countdown | outlined `Cancel [R]` | "Cancel the countdown" + key |
   | Starting, Recording | `■ Stop [R]`, 2 px `record` line under the header | "Stop recording" + key |
   | Finalizing | `Saving…` + spinner, disabled, line kept | "Take N is finalizing" |
@@ -1911,11 +1912,17 @@ As built (WP6, round 3):
   hint bar) has no layout, and `layers_button` = `narrow` (built by WP0a).
   (Changed in the WP0a review: `header` had no input that said the layout
   was narrow, so the button could never show.)
-- As built (WP6): idle record blockers in the order engine stuck, disk,
-  empty scene, export; the subtitle while recovering is "Recovering N
-  takes…"; the idle export tooltip is "Export"; disabled record tooltips
-  name no keys. The summary is two labels on one baseline ("10 clips · "
-  and "00:04:06:11"), so a reader of the labels joins them.
+- As built (WP6, review fix R34): the idle record blockers are
+  `keymap::start_blocker`'s, in the order engine stuck, empty scene,
+  export (the stuck engine was the header's only, so `R` and `o` sent a
+  take the core refused with a sticky error toast; now they say why in an
+  info toast). An invalid `qrec.json` blocks none of them: a take moves
+  the bad file aside first (A§7.7), as the key and niri's `qrec record
+  toggle` always did (the header showed Record disabled). The subtitle
+  while recovering is "Recovering N takes…"; the idle export tooltip is
+  "Export"; disabled record tooltips name no keys. The summary is two
+  labels on one baseline ("10 clips · " and "00:04:06:11"), so a reader of
+  the labels joins them.
 
 ### G§4.5 `view::timeline` and `view::ruler` (WP3)
 

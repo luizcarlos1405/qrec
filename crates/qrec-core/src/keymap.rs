@@ -1281,9 +1281,13 @@ fn export_running(state: &State) -> bool {
         .any(|j| matches!(j.kind, JobKind::Export { .. }))
 }
 
-/// Why a take can't start now, if it can't (A§5.3).
+/// Why a take can't start now, if it can't (A§5.3): the engine is stuck
+/// (future starts fail until a restart), the scene is empty, an export
+/// runs. The header's Record button says the same (`view::header`).
 fn start_blocker(state: &State) -> Option<String> {
-    if state.project.scene.is_empty() {
+    if state.runtime.engine_stuck.is_some() {
+        Some("The capture engine is stuck (GPU driver?); restart Qrec".to_owned())
+    } else if state.project.scene.is_empty() {
         Some("Add a layer or audio track first".to_owned())
     } else if export_running(state) {
         Some("Wait for the export to finish".to_owned())

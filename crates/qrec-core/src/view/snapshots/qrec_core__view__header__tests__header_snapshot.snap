@@ -333,14 +333,14 @@ expression: all
       },
       "layersButton": false,
       "record": {
-        "enabled": false,
+        "enabled": true,
         "keys": [
           [
             "R"
           ]
         ],
         "kind": "record",
-        "tooltip": "qrec.json on disk is invalid"
+        "tooltip": "Record"
       },
       "recordLine": false,
       "subtitle": {
