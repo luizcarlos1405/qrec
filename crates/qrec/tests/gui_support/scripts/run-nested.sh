@@ -7,8 +7,9 @@
 # DISPLAY/WAYLAND_DISPLAY unset for the compositor, GDK_BACKEND=wayland for
 # the client (a failed connection can't fall back to the user's Xwayland).
 # Tools come from PATH: run it inside the dev shell (sway, grim, wtype).
-# Never /dev/dri/renderD128 (NVIDIA hangs on the dev machine): gles2 runs
-# render on renderD129 with Mesa's EGL pinned.
+# Never NVIDIA's render node (it hangs on the dev machine): gles2 runs
+# render on the first Intel or AMD node, chosen by PCI vendor (the node
+# numbers swap between boots), with Mesa's EGL pinned.
 #
 #   COMP=sway|cage|weston  WLR=gles2|pixman|vulkan (wlroots renderer)
 #   WESTON_RENDERER=gl|pixman|vulkan  OUT_SIZE=1600x1000  REFRESH=60
@@ -43,7 +44,21 @@ export __EGL_VENDOR_LIBRARY_FILENAMES=/run/opengl-driver/share/glvnd/egl_vendor.
 export VK_DRIVER_FILES=/run/opengl-driver/share/vulkan/icd.d/intel_icd.x86_64.json
 export VK_ICD_FILENAMES=$VK_DRIVER_FILES
 export LIBVA_DRIVER_NAME=iHD
-intel_node=/dev/dri/renderD129
+# The first Intel (0x8086) or AMD (0x1002) render node, by vendor.
+intel_node=
+for vendor in /sys/class/drm/renderD*/device/vendor; do
+  [ -r "$vendor" ] || continue
+  case "$(cat "$vendor")" in
+    0x8086|0x1002)
+      intel_node=/dev/dri/$(basename "$(dirname "$(dirname "$vendor")")")
+      break
+      ;;
+  esac
+done
+if [ -z "$intel_node" ] && [ "$wlr" = gles2 ]; then
+  echo "run-nested.sh: no Intel or AMD render node for WLR=gles2" >&2
+  exit 2
+fi
 # GPU_STRICT=1: also keep Vulkan's implicit layers off the NVIDIA node: Mesa's
 # device-select layer opens every render node (renderD128 included), and the
 # NVIDIA Optimus/present layers load libGLX_nvidia when their enable vars are set.

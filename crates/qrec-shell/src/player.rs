@@ -25,7 +25,8 @@
 //!   `Ended { reverse: true }` at 0.
 //! - **Scrub**: while paused, a seek with a stop 60 ms later and the
 //!   pipeline playing until that end, then paused and back on the scrubbed
-//!   frame; while playing, a plain seek.
+//!   frame; while playing, or while a load waits (its seek still says
+//!   `Loaded`), a plain seek.
 //! - **Late frames** (H-8): QoS drops are counted per element and reported
 //!   as [`PlayerEvent::Late`] at most once a second, and logged.
 //! - **`out_size`** (H-9): the plan is composited at the canvas fitted into
@@ -33,7 +34,10 @@
 //!   [`scaled`].
 //!
 //! Every wait has a deadline: a load or seek [`SEEK_TIMEOUT`], stopping
-//! [`STOP_TIMEOUT`], opening the sound output [`SOUND_OPEN_TIMEOUT`].
+//! [`STOP_TIMEOUT`] (READY after an error, NULL at shutdown, both on a
+//! helper thread: a pipeline wedged past it is abandoned, never freed, and
+//! every later load says [`STUCK`]), opening the sound output
+//! [`SOUND_OPEN_TIMEOUT`]. An error is reported before the pipeline stops.
 //! GStreamer is initialized on the player thread (through
 //! [`ges_render::init`], which keeps GES in software); its bus has a sync
 //! handler that forwards to the thread, never a watch on a main context
@@ -60,8 +64,15 @@ use crate::ges_render::{self, Retired, Tracks};
 /// player reports an error.
 pub const SEEK_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How long [`ProgramPlayer::shutdown`] lets the pipeline take to stop.
+/// How long the pipeline may take to stop (READY after an error or for an
+/// empty plan, NULL at [`ProgramPlayer::shutdown`]) before the player
+/// abandons it: a streaming thread stuck where flushing doesn't reach (a
+/// decoder or GES deadlock) keeps it from ever stopping.
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What every load says once a pipeline had to be abandoned: the GUI's
+/// video sink is inside it, so no new pipeline can take over.
+pub const STUCK: &str = "the Program picture is stuck; restart Qrec";
 
 /// How long the system sound output may take to open before the player
 /// plays silently instead.
@@ -196,7 +207,8 @@ impl ProgramPlayer {
         self.send(Cmd::Scrub(ns));
     }
 
-    /// Where playback is, updated at least 60 times a second while playing.
+    /// Where playback is: read about 125 times a second while playing
+    /// forward; in reverse it moves once per step (at most 15 a second).
     pub fn position_ns(&self) -> u64 {
         self.shared.position.load(Ordering::SeqCst)
     }
@@ -320,6 +332,19 @@ struct Pipeline {
     rate: f64,
     /// It reached the end and no seek happened since.
     at_eos: bool,
+}
+
+impl Pipeline {
+    /// Nothing of it reaches the worker any more: no bus messages, no
+    /// confirmed frames.
+    fn disconnect(&mut self) {
+        if let Some(bus) = self.pipeline.bus() {
+            bus.unset_sync_handler();
+        }
+        if let Some((pad, id)) = self.probe.take() {
+            pad.remove_probe(id);
+        }
+    }
 }
 
 /// Reverse playback in progress.
@@ -510,7 +535,10 @@ impl Worker {
                 self.restart_stepping(at);
             }
             Cmd::Scrub(at) => {
-                let kind = if self.playing {
+                // A plain seek while playing, and while a load waits: the
+                // load's seek must still say `Loaded` once its frame shows
+                // (a scrub's seek goes on to its sound instead).
+                let kind = if self.playing || self.load.is_some() {
                     SeekKind::Plain
                 } else {
                     SeekKind::Scrub
@@ -717,6 +745,11 @@ impl Worker {
             // Nothing to show: the pipeline stops (no picture).
             let _ = p.timeline.commit();
             self.halt();
+            if self.gst.is_none() {
+                // It didn't stop: abandoned.
+                self.report_error(STUCK.to_owned());
+                return;
+            }
             self.seek = None;
             self.position = 0;
             self.failed = false;
@@ -745,10 +778,15 @@ impl Worker {
     }
 
     /// Prerolls a stopped pipeline (PAUSED), waiting at most
-    /// [`SEEK_TIMEOUT`] (less when a shutdown comes).
+    /// [`SEEK_TIMEOUT`] (less when a shutdown comes). On an error the
+    /// caller fails, and [`Worker::halt`] stops the pipeline (bounded), or,
+    /// shutting down, `stop` does.
     fn start(&mut self) -> Result<(), String> {
         let Some(p) = self.gst.as_mut() else {
-            return Err("the player has no pipeline".into());
+            return Err(self
+                .broken
+                .clone()
+                .unwrap_or_else(|| "the player has no pipeline".into()));
         };
         let changed = p.pipeline.set_state(gst::State::Paused);
         let deadline = Instant::now() + SEEK_TIMEOUT;
@@ -762,22 +800,16 @@ impl Worker {
             }
         };
         match (changed, result) {
-            (Ok(_), Ok(gst::StateChangeSuccess::Async)) => {
-                let _ = p.pipeline.set_state(gst::State::Ready);
-                Err(format!(
-                    "the picture didn't start within {} s",
-                    SEEK_TIMEOUT.as_secs()
-                ))
-            }
+            (Ok(_), Ok(gst::StateChangeSuccess::Async)) => Err(format!(
+                "the picture didn't start within {} s",
+                SEEK_TIMEOUT.as_secs()
+            )),
             (Ok(_), Ok(_)) => {
                 p.running = true;
                 p.at_eos = false;
                 Ok(())
             }
-            _ => {
-                let _ = p.pipeline.set_state(gst::State::Ready);
-                Err(self.bus_error("the pipeline failed to start"))
-            }
+            _ => Err(self.bus_error("the pipeline failed to start")),
         }
     }
 
@@ -800,18 +832,51 @@ impl Worker {
         found.unwrap_or_else(|| fallback.to_owned())
     }
 
-    /// Stops the pipeline (READY): no picture, nothing to play.
+    /// Stops the pipeline (READY): no picture, nothing to play. READY waits
+    /// for every streaming thread to leave its pad, so the change runs on a
+    /// helper thread for at most [`STOP_TIMEOUT`]; a pipeline that doesn't
+    /// get there is abandoned ([`Worker::abandon`]). Shutting down, it
+    /// leaves the pipeline to `stop` (NULL, bounded the same way).
     fn halt(&mut self) {
         self.clear_awaited();
-        if let Some(p) = self.gst.as_mut() {
-            if p.pipeline.set_state(gst::State::Ready).is_ok() {
-                // Nothing streams in READY, the old sources neither.
-                p.retired.release();
-            }
-            p.running = false;
-            p.playing = false;
-            p.at_eos = false;
+        let stopping = self.shared.stopping.load(Ordering::SeqCst);
+        let Some(p) = self.gst.as_mut() else {
+            return;
+        };
+        p.running = false;
+        p.playing = false;
+        p.at_eos = false;
+        if stopping {
+            return;
         }
+        let element = p.pipeline.clone().upcast::<gst::Element>();
+        match ges_render::set_state_with_deadline(element, gst::State::Ready, STOP_TIMEOUT) {
+            // Nothing streams in READY, the old sources neither.
+            Some(true) => p.retired.release(),
+            Some(false) => {}
+            None => self.abandon(),
+        }
+    }
+
+    /// Gives up a pipeline that didn't stop within [`STOP_TIMEOUT`]: its
+    /// streaming threads may still run in it, so nothing of it is ever
+    /// freed (leaked, as `stop` leaks the retired layers), and the GUI's
+    /// video sink is inside it, so no new pipeline can take over. Every
+    /// load says [`STUCK`] from then on; seeks do nothing.
+    fn abandon(&mut self) {
+        let Some(mut p) = self.gst.take() else {
+            return;
+        };
+        tracing::warn!(
+            "player: the pipeline didn't stop within {} s; abandoned",
+            STOP_TIMEOUT.as_secs()
+        );
+        p.disconnect();
+        std::mem::forget(p);
+        self.broken = Some(STUCK.to_owned());
+        self.duration_ns = 0;
+        self.load = None;
+        self.seek = None;
     }
 
     /// The start of the plan's last frame.
@@ -1062,9 +1127,15 @@ impl Worker {
                     .unwrap_or_default();
                 tracing::debug!("player: error from {source}: {:?}", err.debug());
                 let message = err.error().to_string();
-                if self.failed {
+                if self.failed && self.flight.is_none() {
+                    // The reported failure's follow-on errors: posted before
+                    // the READY that ended it returned, so they are handled
+                    // before anything new starts.
                     tracing::warn!("player: {message}");
                 } else {
+                    // A load or seek in flight fails with it at once, even
+                    // right after another error: a retry that meets the same
+                    // failure says so instead of waiting out SEEK_TIMEOUT.
                     self.fail(message);
                 }
             }
@@ -1116,13 +1187,14 @@ impl Worker {
     }
 
     /// Reports `message` once and stays paused: the pipeline stops, waiting
-    /// work is dropped; the next load (or a seek) starts it again.
+    /// work is dropped; the next load (or a seek) starts it again. The error
+    /// goes out first: stopping can take up to [`STOP_TIMEOUT`].
     fn fail(&mut self, message: String) {
         self.playing = false;
         self.stepping = None;
         self.flight = None;
-        self.halt();
         self.report_error(message);
+        self.halt();
     }
 
     fn report_error(&mut self, message: String) {
@@ -1136,14 +1208,11 @@ impl Worker {
         self.emit(PlayerEvent::Error { message });
     }
 
+    /// Takes the pipeline to NULL (at most [`STOP_TIMEOUT`]), then says
+    /// `Stopped`; at once when there is none (never made, or abandoned).
     fn stop(mut self) {
         if let Some(mut p) = self.gst.take() {
-            if let Some(bus) = p.pipeline.bus() {
-                bus.unset_sync_handler();
-            }
-            if let Some((pad, id)) = p.probe.take() {
-                pad.remove_probe(id);
-            }
+            p.disconnect();
             if ges_render::set_null_with_deadline(p.pipeline.clone().upcast(), STOP_TIMEOUT) {
                 p.retired.release();
             } else {

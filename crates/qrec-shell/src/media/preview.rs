@@ -6,20 +6,28 @@
 //!   calls them) and are deduplicated: one already queued or running is
 //!   joined, so it gets one answer. Each request gets exactly one answer
 //!   through `on_data`, on a worker thread (`qrec-preview-<n>`): its data, or
-//!   [`PreviewData::Failed`]. The newest request runs first: when the
-//!   timeline scrolls, what is on screen now comes before what scrolled by.
+//!   [`PreviewData::Failed`]. The newest request runs first, and one still
+//!   queued that is asked for again moves up to the newest (the GUI's getters
+//!   ask on every draw): when the timeline scrolls, what is on screen now
+//!   comes before what scrolled by. [`PreviewCache::prefetch`] queues after
+//!   every request (what may come on screen next).
 //! - **ffmpeg** runs per A§8.7 (`media::child`): its own process group, a
 //!   timeout of 20 s + 30 s/GiB of input, stdout drained on its own thread,
 //!   killed on [`PreviewCache::shutdown`]. At most 2 children at once, 1
 //!   while an export runs ([`PreviewCache::set_exporting`]). A strip or
 //!   frames run first reads the video's size and rate from its header
-//!   (`media_argv::preview_probe_argv`, once per file version).
+//!   (`media_argv::preview_probe_argv`, once per file version: one probe at
+//!   a time per version, and a failed one is reused for [`PROBE_RETRY_AFTER`],
+//!   so the chunks of an unreadable file share it).
 //! - **Logs**: stderr is read line by line on its own thread and appended,
 //!   `[<pid> <kind>]` first, to one rolling `.qrec/logs/preview.log` (moved
-//!   to `preview.1.log` past 8 MiB); a failed run also writes its last 30
-//!   lines to its own `YYYYMMDD-HHMMSS-<pid>-preview-<kind>.log`. The A§8.7
-//!   prune counts only timestamp-named logs and leaves `preview*.log` alone
-//!   (`media::is_stamped_log_name`).
+//!   to `preview.1.log` past 8 MiB); the first failed run of a file version
+//!   and kind (per cache) also writes its last 30 lines to its own
+//!   `YYYYMMDD-HHMMSS-<pid>-preview-<kind>.log`, and later ones only add a
+//!   line naming it to `preview.log`: a broken file never floods
+//!   `.qrec/logs`, whose A§8.7 prune keeps the newest 200 timestamp-named
+//!   logs (a failed run's own log counts like any job log) and leaves
+//!   `preview*.log` alone (`media::is_stamped_log_name`).
 //! - **Disk**: a strip chunk is `.qrec/cache/thumbnails/<key>.rgba` (its
 //!   images back to back) plus `<key>.json` (`{width, height, count}`); a
 //!   waveform is `.qrec/cache/waveforms/<key>.peaks` (the 1 ms level; the
@@ -45,7 +53,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use qrec_core::JobId;
 use qrec_core::ctx::FileFact;
@@ -94,8 +102,17 @@ const MAX_HEIGHT: u32 = 1080;
 /// Temp files older than this in the cache folders are swept by the trim.
 const TEMP_MAX_AGE: Duration = Duration::from_secs(3600);
 
-/// The most video headers remembered; past it they are all forgotten.
+/// The most video headers remembered; past it they are all forgotten (but
+/// the ones being read).
 const MAX_VIDEO_INFOS: usize = 4096;
+
+/// A video header that couldn't be read is answered from memory this long
+/// (a burst of chunks of one unreadable file runs one probe), then probed
+/// again.
+pub const PROBE_RETRY_AFTER: Duration = Duration::from_secs(30);
+
+/// The most file versions whose failure log is remembered.
+const MAX_FAILURE_LOGS: usize = 4096;
 
 /// What the GUI asks for (deduplicated by the cache key).
 #[derive(Debug, Clone, PartialEq)]
@@ -396,6 +413,8 @@ impl PreviewCache {
             wake: Condvar::new(),
             stop: StopFlag::default(),
             videos: Mutex::new(BTreeMap::new()),
+            probed: Condvar::new(),
+            failure_logs: Mutex::new(BTreeMap::new()),
             stats: Stats::default(),
             workers: AtomicUsize::new(0),
             options,
@@ -446,9 +465,23 @@ impl PreviewCache {
         }
     }
 
-    /// Asks for `req`'s data; a request already queued or running is
-    /// joined. Returns at once.
+    /// Asks for `req`'s data, before everything asked earlier (the workers
+    /// take the newest first). A request already running is joined; one
+    /// still queued is joined and moves up to the newest (asked for again,
+    /// it is on screen again). Returns at once.
     pub fn request(&self, req: PreviewRequest) {
+        self.enqueue(req, true);
+    }
+
+    /// Asks for `req`'s data after everything asked with
+    /// [`Self::request`]: a prefetch of what may come on screen (the oldest
+    /// end of the queue). A request already queued or running is joined
+    /// and keeps its place. Returns at once.
+    pub fn prefetch(&self, req: PreviewRequest) {
+        self.enqueue(req, false);
+    }
+
+    fn enqueue(&self, req: PreviewRequest, now: bool) {
         let shared = &self.handle.shared;
         if shared.workers.load(Ordering::SeqCst) == 0 {
             (shared.on_data)(PreviewData::Failed {
@@ -460,10 +493,22 @@ impl PreviewCache {
         }
         let id = req.identity();
         let mut sched = shared.lock_sched();
-        if sched.stopped || !sched.pending.insert(id.clone()) {
+        if sched.stopped {
             return;
         }
-        sched.queue.push(Job { id, req });
+        if !sched.pending.insert(id.clone()) {
+            if now && let Some(at) = sched.queue.iter().position(|job| job.id == id) {
+                let job = sched.queue.remove(at);
+                sched.queue.push(job);
+            }
+            return;
+        }
+        let job = Job { id, req };
+        if now {
+            sched.queue.push(job);
+        } else {
+            sched.queue.insert(0, job);
+        }
         drop(sched);
         shared.wake.notify_all();
     }
@@ -539,10 +584,19 @@ struct Shared {
     /// Set by `stop`: the running children are killed.
     stop: StopFlag,
     log: Arc<Mutex<RollingLog>>,
-    videos: Mutex<BTreeMap<(String, u64, i64), VideoInfo>>,
+    /// Video headers by file version.
+    videos: Mutex<BTreeMap<VersionKey, Probed>>,
+    /// A probe finished (its version is no longer `Probing`).
+    probed: Condvar,
+    /// The first failure log of each file version and kind, by its path:
+    /// later failures of it write none.
+    failure_logs: Mutex<BTreeMap<(VersionKey, &'static str), String>>,
     stats: Stats,
     workers: AtomicUsize,
 }
+
+/// A file version: its project-relative name, size and mtime.
+type VersionKey = (String, u64, i64);
 
 /// What a strip or frames run needs from a video's header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -550,6 +604,47 @@ struct VideoInfo {
     width: u32,
     height: u32,
     fps: Option<Fps>,
+}
+
+/// A video header, read or being read.
+#[derive(Debug, Clone)]
+enum Probed {
+    /// Another worker runs its probe now.
+    Probing,
+    Read(VideoInfo),
+    /// The probe failed: answered from memory until [`PROBE_RETRY_AFTER`].
+    Failed {
+        message: String,
+        at: Instant,
+    },
+}
+
+/// Marks a version `Probing` until dropped: then its outcome replaces the
+/// mark (none, after a panic or a stop: the next request probes again),
+/// and waiters wake.
+struct Probing<'a> {
+    shared: &'a Shared,
+    key: VersionKey,
+    outcome: Option<Probed>,
+}
+
+impl Drop for Probing<'_> {
+    fn drop(&mut self) {
+        let mut videos = lock(&self.shared.videos);
+        match self.outcome.take() {
+            Some(outcome) => {
+                if videos.len() >= MAX_VIDEO_INFOS {
+                    videos.retain(|_, probed| matches!(probed, Probed::Probing));
+                }
+                videos.insert(self.key.clone(), outcome);
+            }
+            None => {
+                videos.remove(&self.key);
+            }
+        }
+        drop(videos);
+        self.shared.probed.notify_all();
+    }
 }
 
 /// A child slot (`Shared::slot`): freed on drop.
@@ -689,6 +784,7 @@ impl Shared {
         let bytes = self.run_child(
             "strip",
             &strip_argv(file, chunk, height),
+            (file, &fact),
             fact.bytes,
             Stdout::Capture {
                 limit: (most + 1) * frame,
@@ -750,6 +846,7 @@ impl Shared {
         let bytes = self.run_child(
             "frames",
             &frames_argv(file, start_ns, count, height),
+            (file, &fact),
             fact.bytes,
             Stdout::Capture {
                 limit: (count as usize + 1) * frame,
@@ -775,6 +872,7 @@ impl Shared {
         self.run_child(
             "peaks",
             &peaks_argv(file),
+            (file, &fact),
             fact.bytes,
             Stdout::Stream(Box::new(move |bytes| lock(&sink).push(bytes))),
         )?;
@@ -817,16 +915,54 @@ impl Shared {
         })
     }
 
-    /// The video's size and rate from its header, once per file version.
-    /// The caller holds a child slot.
+    /// The video's size and rate from its header, once per file version:
+    /// one probe at a time per version (another worker waits for it), and a
+    /// failed one answers from memory for [`PROBE_RETRY_AFTER`]. The caller
+    /// holds a child slot.
     fn video_info(&self, file: &str, fact: &FileFact) -> Result<VideoInfo, String> {
         let key = (file.to_owned(), fact.bytes, fact.mtime_ns);
-        if let Some(info) = lock(&self.videos).get(&key) {
-            return Ok(*info);
+        let mut videos = lock(&self.videos);
+        loop {
+            match videos.get(&key) {
+                Some(Probed::Read(info)) => return Ok(*info),
+                Some(Probed::Failed { message, at }) if at.elapsed() < PROBE_RETRY_AFTER => {
+                    return Err(message.clone());
+                }
+                Some(Probed::Probing) => {
+                    videos = self
+                        .probed
+                        .wait(videos)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
+                _ => break,
+            }
         }
+        videos.insert(key.clone(), Probed::Probing);
+        drop(videos);
+        let mut probing = Probing {
+            shared: self,
+            key,
+            outcome: None,
+        };
+        let result = self.probe(file, fact);
+        probing.outcome = match &result {
+            Ok(info) => Some(Probed::Read(*info)),
+            // Stopped: not the file's fault; the next request probes again.
+            Err(_) if self.stop.is_set() => None,
+            Err(message) => Some(Probed::Failed {
+                message: message.clone(),
+                at: Instant::now(),
+            }),
+        };
+        result
+    }
+
+    /// Reads the video's header (`preview_probe_argv`).
+    fn probe(&self, file: &str, fact: &FileFact) -> Result<VideoInfo, String> {
         let json = self.run_child(
             "probe",
             &preview_probe_argv(file),
+            (file, fact),
             0,
             Stdout::Capture { limit: 1 << 16 },
         )?;
@@ -835,17 +971,11 @@ impl Shared {
         let (Some(width), Some(height)) = (info.width, info.height) else {
             return Err(format!("{file}: the video stream has no picture size"));
         };
-        let video = VideoInfo {
+        Ok(VideoInfo {
             width,
             height,
             fps: info.fps,
-        };
-        let mut videos = lock(&self.videos);
-        if videos.len() >= MAX_VIDEO_INFOS {
-            videos.clear();
-        }
-        videos.insert(key, video);
-        Ok(video)
+        })
     }
 
     /// Waits for a child slot: fewer than 2 children (1 while exporting).
@@ -871,13 +1001,16 @@ impl Shared {
         }
     }
 
-    /// Runs one child (A§8.7) and returns what it printed on stdout
-    /// (captured; nothing for a stream). Its stderr goes to the rolling
-    /// log; a failed run also gets its own log with its last lines.
+    /// Runs one child (A§8.7) on `version` (a file and its fact: its size
+    /// scales the timeout) and returns what it printed on stdout (captured;
+    /// nothing for a stream). Its stderr goes to the rolling log; the first
+    /// failed run of that file version and kind also gets its own log with
+    /// its last lines.
     fn run_child(
         &self,
         kind: &'static str,
         argv: &[String],
+        version: (&str, &FileFact),
         input_bytes: u64,
         stdout: Stdout,
     ) -> Result<Vec<u8>, String> {
@@ -954,8 +1087,26 @@ impl Shared {
         if let Some(last) = tail.lines.last() {
             message.push_str(&format!(": {last}"));
         }
+        let (file, fact) = version;
+        let key = ((file.to_owned(), fact.bytes, fact.mtime_ns), kind);
+        // Held while the log is written: two failures of one version at
+        // once write one log.
+        let mut logs = lock(&self.failure_logs);
+        if let Some(path) = logs.get(&key) {
+            lock(&self.log).append(&format!(
+                "[{} {kind}] # failed again; its first failure's log: {path}",
+                done.pid
+            ));
+            return Err(format!("{message} (log: {path})"));
+        }
         match self.failure_log(kind, argv, done.pid, &tail, &message) {
-            Ok(path) => Err(format!("{message} (log: {path})")),
+            Ok(path) => {
+                if logs.len() >= MAX_FAILURE_LOGS {
+                    logs.clear();
+                }
+                logs.insert(key, path.clone());
+                Err(format!("{message} (log: {path})"))
+            }
             Err(e) => {
                 tracing::warn!("can't write the log of a failed preview run: {e}");
                 Err(message)
@@ -1526,6 +1677,28 @@ mod tests {
         cache.stats().spawns.load(Ordering::SeqCst)
     }
 
+    /// Waits until `cache` is idle: an answer's worker counts as running
+    /// until `on_data` returned, so it may lag the answer a moment.
+    fn wait_idle(cache: &PreviewCache) {
+        let deadline = Instant::now() + WAIT;
+        while cache.in_flight() > 0 {
+            assert!(Instant::now() < deadline, "never idle");
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// The own logs (`*-preview-*.log`) in `logs`.
+    fn own_logs(logs: &Path) -> Vec<PathBuf> {
+        fs::read_dir(logs)
+            .map(|dir| {
+                dir.map(|e| e.unwrap())
+                    .filter(|e| e.file_name().to_string_lossy().contains("-preview-"))
+                    .map(|e| e.path())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// An executable script in `dir`.
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
@@ -1586,7 +1759,115 @@ mod tests {
                 .collect::<Vec<u64>>()
         );
         assert_eq!(chunks[&2].image_count(), 0, "past the end");
-        assert_eq!(cache.in_flight(), 0);
+        wait_idle(&cache);
+        assert!(rx.try_recv().is_err(), "nothing more");
+    }
+
+    /// The newest request runs first, and one still queued that is asked
+    /// for again moves up to the newest (the GUI's getters ask on every
+    /// draw: it is on screen again); a prefetch runs after every request
+    /// and keeps its place. (A request asked again kept its old place, so
+    /// chunks back on screen waited behind every chunk that scrolled by.)
+    #[test]
+    fn asked_again_runs_sooner_and_prefetches_last() {
+        let fps = Fps::new(30, 1);
+        let dir = project(&[(VIDEO, &id_video(fps, 95 * 30))]);
+        let bin = tempfile::tempdir().unwrap();
+        let options = Options {
+            ffmpeg: slow_ffmpeg(bin.path(), 0.3),
+            workers: 1,
+            ..quick()
+        };
+        let (cache, rx) = open(dir.path(), options);
+        cache.request(strip(0, 72));
+        let started = Instant::now();
+        while cache.stats().running.load(Ordering::SeqCst) == 0 {
+            assert!(started.elapsed() < WAIT, "the first run never started");
+            thread::sleep(Duration::from_millis(2));
+        }
+        // The worker is busy with chunk 0; these queue.
+        cache.prefetch(strip(4, 72));
+        for chunk in 1..=3 {
+            cache.request(strip(chunk, 72));
+        }
+        cache.request(strip(1, 72));
+        cache.prefetch(strip(2, 72));
+        let order: Vec<u32> = (0..5)
+            .map(|_| match next(&rx) {
+                PreviewData::Strip { chunk, .. } => chunk,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(order, [0, 1, 3, 2, 4]);
+        wait_idle(&cache);
+    }
+
+    /// A file version that fails writes one log of its own per kind,
+    /// however often it is asked (the GUI asks for every visible chunk
+    /// again after 30 s): later failures add a line to `preview.log` and
+    /// name that log. Its chunks share one probe, and an unreadable file's
+    /// failed probe answers them all. (Each failure wrote its own
+    /// timestamp-named log, and `.qrec/logs`' prune, which counts them like
+    /// export logs, then deleted the export and host logs.)
+    #[test]
+    fn a_broken_file_writes_one_log_per_kind() {
+        let fps = Fps::new(30, 1);
+        let dir = project(&[(VIDEO, &id_video(fps, 95 * 30))]);
+        let logs = ProjectPaths::new(dir.path()).logs_dir();
+        let bin = tempfile::tempdir().unwrap();
+        let broken: OsString =
+            script(bin.path(), "broken", "echo 'broken input' >&2\nexit 1").into();
+        let (cache, rx) = open(
+            dir.path(),
+            Options {
+                ffmpeg: broken,
+                ..quick()
+            },
+        );
+        let failed = |rx: &Receiver<PreviewData>| -> Vec<String> {
+            (0..4)
+                .map(|_| match next(rx) {
+                    PreviewData::Failed { message, .. } => message,
+                    other => panic!("{other:?}"),
+                })
+                .collect()
+        };
+        for _ in 0..2 {
+            for chunk in 0..4 {
+                cache.request(strip(chunk, 72));
+            }
+            let messages = failed(&rx);
+            let own = own_logs(&logs);
+            assert_eq!(own.len(), 1, "{own:?}");
+            for message in &messages {
+                assert!(
+                    message.contains(&format!("(log: {})", own[0].display())),
+                    "{message}"
+                );
+            }
+        }
+        assert_eq!(spawns(&cache), 1 + 8, "one probe, eight ffmpeg runs");
+        let text = fs::read_to_string(logs.join(PREVIEW_LOG)).unwrap();
+        assert_eq!(
+            text.matches("# failed again; its first failure's log: ")
+                .count(),
+            7,
+            "{text}"
+        );
+
+        // An unreadable file: its probe fails once for all its chunks.
+        fs::write(dir.path().join(VIDEO), b"not a video at all").unwrap();
+        let (cache, rx) = open(dir.path(), quick());
+        for chunk in 0..4 {
+            cache.request(strip(chunk, 72));
+        }
+        failed(&rx);
+        assert_eq!(spawns(&cache), 1, "one probe");
+        let probe_logs: Vec<PathBuf> = own_logs(&logs)
+            .into_iter()
+            .filter(|p| p.to_string_lossy().ends_with("-preview-probe.log"))
+            .collect();
+        assert_eq!(probe_logs.len(), 1, "{probe_logs:?}");
     }
 
     /// The acceptance check: a `Frames` request returns exactly `count`
@@ -2012,7 +2293,9 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(spawns(&cache), 3, "only the runs that couldn't start");
+        // The strip's probe, whose failure the frames reuse, and the peaks'
+        // ffmpeg: only runs that couldn't start.
+        assert_eq!(spawns(&cache), 2);
     }
 
     /// A request counts as in flight until its answer was handed over: once
@@ -2036,11 +2319,7 @@ mod tests {
         handing.recv_timeout(WAIT).expect("an answer");
         assert_eq!(cache.in_flight(), 1, "an answer being handed over");
         go.send(()).unwrap();
-        let deadline = Instant::now() + WAIT;
-        while cache.in_flight() > 0 {
-            assert!(Instant::now() < deadline, "never idle");
-            thread::sleep(Duration::from_millis(2));
-        }
+        wait_idle(&cache);
         // A request made while an answer is handed over is a new one.
         cache.request(strip(0, 72));
         handing.recv_timeout(WAIT).expect("a second answer");
@@ -2139,14 +2418,7 @@ mod tests {
             text.lines().all(|l| l.starts_with('[') && l.contains("] ")),
             "every line has its pid and kind:\n{text}"
         );
-        let own_logs = || -> Vec<PathBuf> {
-            fs::read_dir(&logs)
-                .unwrap()
-                .map(|e| e.unwrap())
-                .filter(|e| e.file_name().to_string_lossy().contains("-preview-"))
-                .map(|e| e.path())
-                .collect()
-        };
+        let own_logs = || own_logs(&logs);
         assert!(
             own_logs().is_empty(),
             "runs that worked have no log of their own"

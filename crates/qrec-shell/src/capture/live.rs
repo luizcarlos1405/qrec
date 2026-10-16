@@ -49,8 +49,12 @@ pub(super) struct SourceBranch {
     /// The source element (errors are attributed to it).
     pub src: gst::Element,
     pub tee: gst::Element,
-    /// The negotiated video size, once known.
+    /// The video size: the one expected at the build (laid out with it),
+    /// then the negotiated one.
     pub size: Option<(u32, u32)>,
+    /// The source reported a size in this pipeline (its caps reached the
+    /// tee): `size` is what it delivers, not a guess.
+    pub negotiated: bool,
     /// Why the source stopped working.
     pub dead: Option<String>,
     /// A screen's bridge keepalive (kicked at T0 and T1, A§8.11).
@@ -252,9 +256,10 @@ impl Live {
     }
 
     /// Updates the preview's per-layer crop, position, size, opacity and
-    /// z-order from `layers` (a scene's, topmost first: the layers and
-    /// sources it was built with). Layers it wasn't built with are ignored,
-    /// and preview layers `layers` lacks keep their layout.
+    /// z-order from `layers` (a scene's, in its array order: bottom first,
+    /// the last on top, as the preview was built; the layers and sources it
+    /// was built with). Layers it wasn't built with are ignored, and
+    /// preview layers `layers` lacks keep their layout.
     pub fn apply_layout(&self, layers: &[Layer]) {
         let Some(preview) = &self.preview else { return };
         for (z, layer) in layers.iter().enumerate() {
@@ -466,6 +471,7 @@ fn add_source(
         src,
         tee,
         size: None,
+        negotiated: false,
         dead: None,
         keepalive,
     })
@@ -760,13 +766,20 @@ fn apply_layer(
     };
     let dst = scale.rect(dst);
     let (left, top, right, bottom) = crop;
+    // Only a side that changes: every write makes `videocrop` renegotiate
+    // (reconfigure), and a crop that changes while a source's caps query
+    // crosses it (two caps transforms, each with another crop) leaves that
+    // source no caps. A move (a drag, a nudge) changes no crop.
     for (name, value) in [
         ("left", left),
         ("top", top),
         ("right", right),
         ("bottom", bottom),
     ] {
-        let _ = set_value(&pl.crop, name, value as i32);
+        let value = i32::try_from(value).unwrap_or(i32::MAX);
+        if pl.crop.property::<i32>(name) != value {
+            let _ = set_value(&pl.crop, name, value);
+        }
     }
     let visible = layer.visible && (size.is_none() || placement.is_some());
     let _ = set_value(&pl.pad, "xpos", dst.x);

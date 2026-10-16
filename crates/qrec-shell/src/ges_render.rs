@@ -44,8 +44,7 @@ use std::ffi::c_void;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -904,6 +903,12 @@ pub fn preview_pipeline(
 /// Makes every `compositor` inside `pipeline` (GES's mixer) scale its
 /// inputs bilinearly, like the export's `scale=…:flags=bilinear` (A§9.3):
 /// its pads default to a cubic resampler. Call once the timeline is set.
+///
+/// Each compositor is hooked once: nlecomposition takes its mixing
+/// operation out of its current bin and adds it back at every stack change,
+/// and each add emits `deep-element-added` again, so the long-lived Program
+/// player's pipeline would otherwise stack one more `pad-added` handler on
+/// the same compositor per load, cut or scrub.
 pub fn bilinear_compositors(pipeline: &impl IsA<gst::Bin>) {
     fn configure(pad: &gst::Pad) {
         if pad.find_property("converter-config").is_none() {
@@ -921,9 +926,21 @@ pub fn bilinear_compositors(pipeline: &impl IsA<gst::Bin>) {
             .build();
         pad.set_property("converter-config", config);
     }
-    fn hook(element: &gst::Element) {
+    type Hooked = Mutex<Vec<glib::WeakRef<gst::Element>>>;
+    fn hook(element: &gst::Element, hooked: &Hooked) {
         if element.factory().is_none_or(|f| f.name() != "compositor") {
             return;
+        }
+        {
+            let mut hooked = hooked.lock().unwrap_or_else(PoisonError::into_inner);
+            hooked.retain(|seen| seen.upgrade().is_some());
+            if hooked
+                .iter()
+                .any(|seen| seen.upgrade().as_ref() == Some(element))
+            {
+                return;
+            }
+            hooked.push(element.downgrade());
         }
         for pad in element.sink_pads() {
             configure(&pad);
@@ -934,10 +951,12 @@ pub fn bilinear_compositors(pipeline: &impl IsA<gst::Bin>) {
             }
         });
     }
+    let hooked: Arc<Hooked> = Arc::default();
     let bin = pipeline.as_ref();
-    bin.connect_deep_element_added(|_, _, element| hook(element));
+    let seen = Arc::clone(&hooked);
+    bin.connect_deep_element_added(move |_, _, element| hook(element, &seen));
     for element in bin.iterate_recurse().into_iter().flatten() {
-        hook(&element);
+        hook(&element, &hooked);
     }
 }
 
@@ -1003,14 +1022,28 @@ fn rgb_frame(sample: gst::Sample) -> Result<RgbFrame, GesError> {
 
 /// Sets `element` to NULL on a helper thread, waiting at most `timeout`.
 pub(crate) fn set_null_with_deadline(element: gst::Element, timeout: Duration) -> bool {
+    set_state_with_deadline(element, gst::State::Null, timeout).is_some()
+}
+
+/// Sets `element` to `state` on a helper thread, waiting at most `timeout`
+/// (going down, a state change waits for every streaming thread to leave
+/// its pad, and one stuck where flushing doesn't reach never does): whether
+/// the change succeeded, or `None` when it didn't finish in time. The helper
+/// is then left behind with its reference: never free what it may still use.
+pub(crate) fn set_state_with_deadline(
+    element: gst::Element,
+    state: gst::State,
+    timeout: Duration,
+) -> Option<bool> {
     let (tx, rx) = mpsc::channel();
     let spawned = thread::Builder::new()
         .name("qrec-ges-teardown".into())
         .spawn(move || {
-            let _ = element.set_state(gst::State::Null);
-            let _ = tx.send(());
+            let changed = element.set_state(state).is_ok();
+            let _ = tx.send(changed);
         });
-    spawned.is_ok() && rx.recv_timeout(timeout).is_ok()
+    spawned.ok()?;
+    rx.recv_timeout(timeout).ok()
 }
 
 #[cfg(test)]
@@ -1048,6 +1081,39 @@ mod tests {
             "videocrop left=10 top=20 right=30 bottom=40"
         );
         assert!(CropSides::of(&placement((0, 0, 640, 360), (0, 0, 1, 1)), 640, 360).is_none());
+    }
+
+    /// A compositor added again (nlecomposition re-adds its mixer at every
+    /// stack change) keeps one `pad-added` handler: a new input is set up
+    /// once, not once per add.
+    #[test]
+    fn a_compositor_added_again_is_hooked_once() {
+        gst::init().unwrap();
+        let bin = gst::Bin::new();
+        bilinear_compositors(&bin);
+        let configured = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::clone(&configured);
+        bin.connect_deep_notify(Some("converter-config"), move |_, _, _| {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        let compositor = gst::ElementFactory::make("compositor").build().unwrap();
+        for _ in 0..5 {
+            bin.add(&compositor).unwrap();
+            bin.remove(&compositor).unwrap();
+        }
+        bin.add(&compositor).unwrap();
+        let pad = compositor.request_pad_simple("sink_%u").unwrap();
+        assert_eq!(
+            configured.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "configured once"
+        );
+        let config = pad.property::<gst::Structure>("converter-config");
+        assert_eq!(
+            config.get::<gst_video::VideoResamplerMethod>("GstVideoConverter.resampler-method"),
+            Ok(gst_video::VideoResamplerMethod::Linear)
+        );
+        compositor.release_request_pad(&pad);
     }
 
     #[test]

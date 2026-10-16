@@ -2,8 +2,12 @@
 //! Owner: WP2.
 //!
 //! Getters never block: a miss requests the containing chunk or block from
-//! the preview cache and returns `None`; subscribers get the file whose
-//! data arrived and redraw. Textures are `gdk::MemoryTexture` (R8G8B8A8)
+//! the preview cache and returns `None`, and a getter on one asked for and
+//! not answered asks again (the preview cache moves it up: what is drawn
+//! now runs before what scrolled by); the prefetches ([`ThumbCache::request_strip`],
+//! [`ThumbCache::request_frames`]) queue after every getter's request.
+//! Subscribers get the file whose data arrived and redraw. Textures are
+//! `gdk::MemoryTexture` (R8G8B8A8)
 //! built on the main thread from the shared bytes (R22): each image is a
 //! slice of its chunk's `Arc<[u8]>` handed to GDK without a copy, made once
 //! and kept with its chunk. An LRU by bytes keeps the cache under its
@@ -18,8 +22,9 @@
 //!   [`FRAME_BLOCK`] (64), the most one run returns; a frame past the end of
 //!   the file has no image.
 //! - **Failures**: a file whose thumbnails (or frames) failed isn't asked
-//!   again for [`RETRY_AFTER`], so a broken file costs one run per draw
-//!   burst, not one per frame.
+//!   again for [`RETRY_AFTER`]; then one entry of it is asked (the rest wait
+//!   for that answer: once it works, they are asked on the next draw), so a
+//!   broken file costs one run per 30 s, not one per visible chunk or frame.
 //!
 //! The bookkeeping ([`ByteLru`], [`ThumbStore`]) is GTK-free and tested
 //! without a display; the textures are made in the nested smoke run
@@ -133,10 +138,11 @@ impl ThumbCache {
         }
     }
 
+    /// A prefetch: after every getter's request.
     fn want(&self, key: ThumbKey) {
         let request = self.store.borrow_mut().want(key, Instant::now());
         if let Some(request) = request {
-            self.cache.request(request);
+            self.cache.prefetch(request);
         }
     }
 
@@ -144,7 +150,8 @@ impl ThumbCache {
         let look = self.store.borrow_mut().look(&key, index, Instant::now());
         match look {
             Look::Hit(index, images) => Some(self.texture(&key, index, &images)),
-            Look::Request(request) => {
+            // Asked again while it waits: on screen now, it moves up.
+            Look::Request(request) | Look::Pending(request) => {
                 self.cache.request(request);
                 None
             }
@@ -302,7 +309,10 @@ pub(crate) enum Look {
     Hit(u32, Images),
     /// Not here: ask the preview cache for this.
     Request(PreviewRequest),
-    /// Asked for already (or failed a moment ago): nothing to draw yet.
+    /// Asked for and not answered yet: ask again (the preview cache joins
+    /// it and moves it up, since it is on screen now).
+    Pending(PreviewRequest),
+    /// Its file failed a moment ago (or its retry is out): nothing to draw.
     Wait,
     /// Known to have no image there (past the end of the file).
     PastEnd,
@@ -360,6 +370,9 @@ impl ThumbStore {
                 Look::Hit(index.min(images.count - 1), images.clone())
             };
         }
+        if self.pending.contains(key) {
+            return Look::Pending(key.request());
+        }
         match self.want(key.clone(), now) {
             Some(request) => Look::Request(request),
             None => Look::Wait,
@@ -367,17 +380,19 @@ impl ThumbStore {
     }
 
     /// The request for `key`, unless it is cached, asked for already, or
-    /// its file failed less than [`RETRY_AFTER`] ago.
+    /// its file failed less than [`RETRY_AFTER`] ago. Past that, one entry
+    /// of the file (and kind) is asked: its failure mark is renewed, so the
+    /// rest wait for its answer (a success clears the mark).
     pub fn want(&mut self, key: ThumbKey, now: Instant) -> Option<PreviewRequest> {
         if self.lru.contains(&key) || self.pending.contains(&key) {
             return None;
         }
         let failed = (key.file().to_owned(), key.what());
-        if let Some(at) = self.failed.get(&failed) {
+        if let Some(at) = self.failed.get_mut(&failed) {
             if now.saturating_duration_since(*at) < RETRY_AFTER {
                 return None;
             }
-            self.failed.remove(&failed);
+            *at = now;
         }
         let request = key.request();
         self.pending.insert(key);
@@ -437,10 +452,14 @@ impl ThumbStore {
         let file = key.file().to_owned();
         let what = key.what();
         match self.lru.insert(key, entry, bytes.len()) {
-            Ok(dropped) => Arrival {
-                file: Some(file),
-                dropped,
-            },
+            Ok(dropped) => {
+                // It works (again): the rest of the file is asked as drawn.
+                self.failed.remove(&(file.clone(), what));
+                Arrival {
+                    file: Some(file),
+                    dropped,
+                }
+            }
             Err(key) => {
                 // Bigger than the whole budget: never cached, so don't ask
                 // for it on every draw.
@@ -789,8 +808,11 @@ mod tests {
                 height: 72
             }
         );
-        assert!(matches!(store.look(&key, 6, now), Look::Wait));
-        assert_eq!(store.want(key.clone(), now), None, "pending");
+        assert!(
+            matches!(store.look(&key, 6, now), Look::Pending(ref again) if *again == request),
+            "a getter asks again (the cache moves it up)"
+        );
+        assert_eq!(store.want(key.clone(), now), None, "a prefetch doesn't");
         let arrival = store.arrive(&strip_data("a.mkv", 1, 72, 34), now);
         assert_eq!(arrival.file.as_deref(), Some("a.mkv"));
         assert!(store.pending().is_empty());
@@ -864,10 +886,28 @@ mod tests {
         assert_eq!(store.pending().len(), 1, "the frames are still out");
         assert!(matches!(store.look(&a, 0, now), Look::Wait));
         assert_eq!(store.want(b.clone(), now + RETRY_AFTER / 2), None);
+        let later = now + RETRY_AFTER;
+        assert!(store.want(b.clone(), later).is_some(), "asked again later");
+        // One entry at a time: the rest wait for its answer.
         assert!(
-            store.want(b, now + RETRY_AFTER).is_some(),
-            "asked again later"
+            matches!(store.look(&a, 0, later), Look::Wait),
+            "one retry per file, not one per chunk"
         );
+        store.arrive(&strip_data("bad.mkv", 1, 72, 60), later);
+        assert!(
+            matches!(store.look(&a, 0, later), Look::Request(_)),
+            "it works again: the rest is asked as drawn"
+        );
+        // A retry that fails again waits again.
+        let again = PreviewData::Failed {
+            file: "bad.mkv".into(),
+            what: WHAT_STRIP,
+            message: "ffmpeg exited with status 1".into(),
+        };
+        store.arrive(&again, later);
+        let c = ThumbKey::strip("bad.mkv", 2, 72);
+        assert_eq!(store.want(c.clone(), later + RETRY_AFTER / 2), None);
+        assert!(store.want(c, later + RETRY_AFTER).is_some());
         // Other files and other answers don't care.
         assert!(
             store

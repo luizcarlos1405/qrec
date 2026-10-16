@@ -149,8 +149,13 @@ pub fn set_reporter(f: impl Fn(&str, &str) + 'static) {
 const TELL_EVERY: Duration = Duration::from_secs(5);
 
 fn report(what: &str, payload: &(dyn Any + Send)) {
+    report_message(what, &message(payload));
+}
+
+/// Tells about a panic caught elsewhere (an io job's, `media::io`), on the
+/// main thread: logged, counted and toasted like the ones caught here.
+pub fn report_message(what: &str, message: &str) {
     PANICS.with(|p| p.set(p.get() + 1));
-    let message = message(payload);
     tracing::error!("{what} panicked: {message} (caught; the window carries on)");
     let now = Instant::now();
     let tell = LAST_TOLD.with(|last| {
@@ -169,7 +174,7 @@ fn report(what: &str, payload: &(dyn Any + Send)) {
     // it) can't come back here.
     let reporter = REPORTER.with(|r| r.borrow_mut().take());
     if let Some(reporter) = reporter {
-        if catch_unwind(AssertUnwindSafe(|| reporter(what, &message))).is_err() {
+        if catch_unwind(AssertUnwindSafe(|| reporter(what, message))).is_err() {
             tracing::error!("telling about a panic panicked too");
         }
         REPORTER.with(|r| {
@@ -303,14 +308,199 @@ mod tests {
                 let relative = path.strip_prefix(&src).unwrap().display().to_string();
                 let text = std::fs::read_to_string(&path).unwrap();
                 // Production code only: tests may call GLib directly.
-                let code = text.split("#[cfg(test)]").next().unwrap_or_default();
-                offenders.extend(unguarded(&relative, code));
+                offenders.extend(unguarded(&relative, &production(&text)));
             }
         }
         assert!(offenders.is_empty(), "unguarded callbacks: {offenders:#?}");
     }
 
-    /// The unguarded callbacks in `code` (comments stripped).
+    /// `text` without its `#[cfg(test)]` items: each attribute and the item
+    /// it is on, to that item's matching `}` (or its `;`), wherever it is in
+    /// the file (a test-only helper above production code included).
+    fn production(text: &str) -> String {
+        const ATTR: &str = "#[cfg(test)]";
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(at) = rest.find(ATTR) {
+            out.push_str(&rest[..at]);
+            let item = &rest[at + ATTR.len()..];
+            rest = match item_end(item) {
+                Some(end) => &item[end..],
+                None => "",
+            };
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// Where the item starting in `text` ends: past the `}` closing its
+    /// first `{`, or past a `;` before any `{` (string and char literals
+    /// skipped).
+    fn item_end(text: &str) -> Option<usize> {
+        let mut depth = 0usize;
+        let mut chars = Literals::new(text);
+        while let Some((i, c)) = chars.next_code() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return Some(i + 1);
+                    }
+                }
+                ';' if depth == 0 => return Some(i + 1),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The characters of Rust code outside comments and string and char
+    /// literals.
+    struct Literals<'a> {
+        chars: std::iter::Peekable<std::str::CharIndices<'a>>,
+    }
+
+    impl<'a> Literals<'a> {
+        fn new(text: &'a str) -> Self {
+            Self {
+                chars: text.char_indices().peekable(),
+            }
+        }
+
+        /// The next character of code (a literal is skipped whole).
+        fn next_code(&mut self) -> Option<(usize, char)> {
+            loop {
+                let (i, c) = self.chars.next()?;
+                match c {
+                    '"' => self.skip_string(),
+                    // A comment (its quotes and apostrophes are prose).
+                    '/' if matches!(self.chars.peek(), Some((_, '/'))) => {
+                        for (_, c) in self.chars.by_ref() {
+                            if c == '\n' {
+                                break;
+                            }
+                        }
+                    }
+                    '/' if matches!(self.chars.peek(), Some((_, '*'))) => {
+                        self.chars.next();
+                        let mut star = false;
+                        for (_, c) in self.chars.by_ref() {
+                            if star && c == '/' {
+                                break;
+                            }
+                            star = c == '*';
+                        }
+                    }
+                    // A raw string: `r"…"`, `r#"…"#`.
+                    'r' if self.raw_string_ahead().is_some() => {
+                        let hashes = self.raw_string_ahead().unwrap_or(0);
+                        for _ in 0..=hashes {
+                            self.chars.next();
+                        }
+                        self.skip_raw_string(hashes);
+                    }
+                    // A char literal (`'x'`, `'\n'`); otherwise a lifetime.
+                    '\'' => {
+                        let mut ahead = self.chars.clone();
+                        let char_literal = match ahead.next() {
+                            Some((_, '\\')) => true,
+                            Some(_) => matches!(ahead.next(), Some((_, '\''))),
+                            None => false,
+                        };
+                        if char_literal {
+                            while let Some((_, c)) = self.chars.next() {
+                                match c {
+                                    '\\' => {
+                                        self.chars.next();
+                                    }
+                                    '\'' => break,
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    _ => return Some((i, c)),
+                }
+            }
+        }
+
+        fn skip_string(&mut self) {
+            while let Some((_, c)) = self.chars.next() {
+                match c {
+                    '\\' => {
+                        self.chars.next();
+                    }
+                    '"' => return,
+                    _ => {}
+                }
+            }
+        }
+
+        /// After an `r`: the `#`s of a raw string's opening, if one starts.
+        fn raw_string_ahead(&self) -> Option<usize> {
+            let mut ahead = self.chars.clone();
+            let mut hashes = 0;
+            loop {
+                match ahead.next()? {
+                    (_, '#') => hashes += 1,
+                    (_, '"') => return Some(hashes),
+                    _ => return None,
+                }
+            }
+        }
+
+        /// To the `"` and `hashes` `#`s that close a raw string.
+        fn skip_raw_string(&mut self, hashes: usize) {
+            while let Some((_, c)) = self.chars.next() {
+                if c == '"' {
+                    let mut ahead = self.chars.clone();
+                    if (0..hashes).all(|_| matches!(ahead.next(), Some((_, '#')))) {
+                        for _ in 0..hashes {
+                            self.chars.next();
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The top-level arguments of the call whose `(` is just before
+    /// `args`, each trimmed; `None` when the call doesn't close.
+    fn call_args(args: &str) -> Option<Vec<&str>> {
+        let mut depth = 1usize;
+        let mut start = 0;
+        let mut out = Vec::new();
+        let mut chars = Literals::new(args);
+        while let Some((i, c)) = chars.next_code() {
+            match c {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        // A trailing comma leaves nothing after it.
+                        let last = args[start..i].trim();
+                        if !last.is_empty() || out.is_empty() {
+                            out.push(last);
+                        }
+                        return Some(out);
+                    }
+                }
+                ',' if depth == 1 => {
+                    out.push(args[start..i].trim());
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The unguarded callbacks in `code` (comments stripped): GLib's source
+    /// functions outside guard.rs, and every `.connect_…(`, `.launch(` and
+    /// `.open_containing_folder(` call whose last argument isn't a
+    /// `guarded!(…)` (a fn path, a variable, a closure of its own).
     fn unguarded(file: &str, code: &str) -> Vec<String> {
         let code: String = code
             .lines()
@@ -342,16 +532,14 @@ mod tests {
                 } else {
                     rest
                 };
-                // The callback is the last argument: `guarded!(` must come
-                // before the closure starts.
-                let closure = args.find("move |").or_else(|| args.find('|'));
-                let guard = args.find("guarded!(");
-                let ok = match (guard, closure) {
-                    (Some(g), Some(c)) => g < c,
-                    (Some(_), None) => true,
-                    (None, _) => false,
-                };
-                if !ok {
+                let guarded = call_args(args)
+                    .and_then(|a| a.last().copied())
+                    .is_some_and(|last| {
+                        ["guarded!(", "crate::guarded!(", "$crate::guarded!("]
+                            .iter()
+                            .any(|g| last.starts_with(g))
+                    });
+                if !guarded {
                     found.push(format!(
                         "{file}:{}: {marker}… without guarded!",
                         line_of(at)
@@ -367,12 +555,36 @@ mod tests {
         let bad = "button.connect_clicked(move |_| go());\nglib::idle_add_local_once(|| {});";
         assert_eq!(unguarded("x.rs", bad).len(), 2);
         let good = "button.connect_clicked(guarded!(\"go\", move |_| go()));\n\
-                    launcher.launch(None, NONE, guarded!(\"open\", move |r| f(r)));";
+                    launcher.launch(None, NONE, guarded!(\"open\", move |r| f(r)));\n\
+                    w.connect_notify(Some(\"caps\"), crate::guarded!(\"caps\", move |p, _| f(p, ')')));";
         assert!(
             unguarded("x.rs", good).is_empty(),
             "{:?}",
             unguarded("x.rs", good)
         );
         assert!(unguarded("guard.rs", "glib::idle_add_full(p, f)").is_empty());
+        let raw = "x.connect_clicked(guarded!(r#\"a)\"b\"#, move |_| f(')')));";
+        assert!(unguarded("x.rs", raw).is_empty(), "{raw}");
+        // Each of these, followed by a guarded connect (whose `guarded!(`
+        // the old grep took for theirs), is still found.
+        let after = "\nb.connect_clicked(guarded!(\"ok\", move |_| ok()));";
+        for unguarded_call in [
+            "w.connect_destroy(Self::on_destroy);",
+            "a.connect_clicked(|b| b.grab_focus());",
+            "let h = move |_| go(); a.connect_clicked(h);",
+            "a.connect_clicked(move |_| go(\"guarded!(\"));",
+        ] {
+            let code = format!("{unguarded_call}{after}");
+            assert_eq!(unguarded("x.rs", &code).len(), 1, "{code}");
+        }
+        // A test-only item above production code hides nothing below it.
+        let file = "impl X {\n    #[cfg(test)]\n    fn helper(&self) -> u32 { 1 }\n}\n\
+                    fn real(g: &gtk::GestureClick) { g.connect_pressed(move |_, _, _, _| go()); }\n\
+                    #[cfg(test)]\nmod tests { fn t() { b.connect_clicked(move |_| ()); } }\n";
+        let code = production(file);
+        assert!(!code.contains("fn helper"), "{code}");
+        assert!(code.contains("fn real"), "{code}");
+        assert!(!code.contains("mod tests"), "{code}");
+        assert_eq!(unguarded("x.rs", &code).len(), 1, "{code}");
     }
 }

@@ -657,6 +657,10 @@ pub struct Startup {
     host_stopped: Cell<bool>,
     /// The error to fail the host with once it exists (stuck, S23).
     fail_pending: RefCell<Option<CoreError>>,
+    /// The page of `fail_pending` (the stuck page, S23): nothing opens
+    /// until it is fixed, so it stays over the takeover pages (X1 and the
+    /// export wait re-show theirs every second or so).
+    fail_page: RefCell<Option<BlockKind>>,
     opened: Cell<bool>,
     open_sent: Cell<bool>,
     /// Re-run steps 4 and 7 once the failed host stopped ("Check again").
@@ -679,6 +683,7 @@ impl Startup {
             host: RefCell::new(None),
             host_stopped: Cell::new(false),
             fail_pending: RefCell::new(None),
+            fail_page: RefCell::new(None),
             opened: Cell::new(false),
             open_sent: Cell::new(false),
             restart_when_stopped: Cell::new(false),
@@ -813,6 +818,12 @@ impl Startup {
                 let pending = self.fail_pending.borrow().clone();
                 if let Some(err) = pending {
                     self.fail_host(err);
+                    // A takeover page shown before the failure (X1's
+                    // "Stopping…") would strand the window: its page again.
+                    let page = self.fail_page.borrow().clone();
+                    if let Some(page) = page {
+                        self.block(app, page);
+                    }
                 }
                 self.try_open(app);
             }
@@ -820,7 +831,14 @@ impl Startup {
                 tracing::warn!("the host can't start: {error}");
                 self.block(app, BlockKind::HostFailed { error });
             }
-            StartupEvent::Page(page) => self.block(app, page),
+            StartupEvent::Page(page) => {
+                let failed = self.fail_page.borrow().is_some();
+                if failed {
+                    tracing::info!("startup: {page:?} stays behind the failure's page");
+                } else {
+                    self.block(app, page);
+                }
+            }
             StartupEvent::TakeoverError(error) => {
                 app.ctx.store.notify(
                     qrec_core::view::notices::Notice::new(
@@ -850,6 +868,7 @@ impl Startup {
             Err(GstFailure::Stuck) => {
                 let err = CoreError::new(ErrorCode::MissingDependency, gst_init::STUCK_MESSAGE);
                 self.fail_host(err);
+                *self.fail_page.borrow_mut() = Some(BlockKind::GstStuck);
                 self.block(app, BlockKind::GstStuck);
             }
             Err(GstFailure::Failed(message)) => {
@@ -876,15 +895,15 @@ impl Startup {
             Some(err) => {
                 tracing::warn!("startup: {err}");
                 self.fail_host(err);
-                self.block(
-                    app,
-                    BlockKind::MissingDeps {
-                        report: missing_report(&report),
-                    },
-                );
+                let page = BlockKind::MissingDeps {
+                    report: missing_report(&report),
+                };
+                *self.fail_page.borrow_mut() = Some(page.clone());
+                self.block(app, page);
             }
             None => {
                 *self.fail_pending.borrow_mut() = None;
+                *self.fail_page.borrow_mut() = None;
                 if matches!(
                     app.ctx.store.local().startup,
                     StartupPhase::Blocked(BlockKind::MissingDeps { .. })

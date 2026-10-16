@@ -104,6 +104,22 @@ button.qrec-btn.loading qrec-spinner {
   color: inherit;
 }
 
+/* C01 spinner sizes (px, so the UI scale scales them like the icons). */
+qrec-spinner {
+  min-width: 16px;
+  min-height: 16px;
+}
+
+qrec-spinner.s14 {
+  min-width: 14px;
+  min-height: 14px;
+}
+
+qrec-spinner.s12 {
+  min-width: 12px;
+  min-height: 12px;
+}
+
 /* --------------------------------------------------------- C02 key cap */
 
 /* Medium (20 tall, min 20 wide): 1 px border with a 2 px bottom edge. */

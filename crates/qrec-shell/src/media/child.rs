@@ -230,13 +230,20 @@ pub(crate) struct Finished {
     pub progress_end: bool,
     /// The progress parser panicked (blocks after it were drained unparsed).
     pub parser_error: Option<String>,
+    /// Everything a [`Stdout::Capture`] or [`Stdout::Stream`] child printed
+    /// was read: its drain reached the end of the pipe within the grace
+    /// after the exit. Missing it is never "no output": the run failed.
+    pub stdout_complete: bool,
     pub elapsed: Duration,
 }
 
 impl Finished {
-    /// Exited on its own with status 0.
+    /// Exited on its own with status 0, and its captured or streamed stdout
+    /// was read to the end.
     pub(crate) fn exited_ok(&self) -> bool {
-        self.ended == Ended::Exited && self.status.is_some_and(|s| s.success())
+        self.ended == Ended::Exited
+            && self.status.is_some_and(|s| s.success())
+            && self.stdout_complete
     }
 
     /// A one-line reason for a failure, e.g. "ffmpeg exited with status 1".
@@ -249,6 +256,10 @@ impl Finished {
             Ended::Stopped => "cancelled".to_owned(),
             Ended::Exited => match self.status {
                 Some(status) => match (status.code(), status.signal()) {
+                    (Some(0), _) if !self.stdout_complete => format!(
+                        "{program}'s output wasn't read within {} of its exit",
+                        human(DRAIN_GRACE)
+                    ),
                     (Some(0), _) => format!("{program} finished"),
                     (Some(code), _) => format!("{program} exited with status {code}"),
                     (None, Some(signal)) => format!("{program} was killed by signal {signal}"),
@@ -390,6 +401,9 @@ pub(crate) fn start(spec: Spec<'_>) -> Result<Finished, StartError> {
         Stdout::Null => cmd.stdout(Stdio::null()),
         _ => cmd.stdout(Stdio::piped()),
     };
+    // Its stdout is the run's data (not progress, not nothing): read to the
+    // end, or the run failed.
+    let stdout_is_data = matches!(spec.stdout, Stdout::Capture { .. } | Stdout::Stream(_));
 
     let mut child = cmd.spawn().map_err(|e| StartError {
         message: spawn_error(program, &e),
@@ -432,10 +446,17 @@ pub(crate) fn start(spec: Spec<'_>) -> Result<Finished, StartError> {
     } else {
         Duration::ZERO
     };
+    let drain_started = drain.is_some();
     let drained = match drain {
         Some(rx) => rx.recv_timeout(wait).ok(),
         None => None,
     };
+    // Past the grace (a drain descheduled under memory pressure, say), or
+    // with no drain thread at all, what came is partial.
+    let stdout_complete = !stdout_is_data || (drain_started && drained.is_some());
+    if !stdout_complete && status.is_some() {
+        tracing::warn!("{program} (pid {pid}): its output wasn't read to the end");
+    }
     if let Some(rx) = lines {
         let _ = rx.recv_timeout(wait);
     }
@@ -454,6 +475,7 @@ pub(crate) fn start(spec: Spec<'_>) -> Result<Finished, StartError> {
         stderr,
         progress_end: shared.progress_end.load(Ordering::SeqCst),
         parser_error,
+        stdout_complete,
         elapsed: shared.started.elapsed(),
     })
 }
@@ -1049,6 +1071,33 @@ mod tests {
             done.parser_error.as_deref().unwrap().contains("no thanks"),
             "{done:?}"
         );
+    }
+
+    /// A stdout drain that doesn't reach the end of the pipe within the
+    /// grace after a clean exit is a failed run, never a short success: its
+    /// bytes may be cut short (an empty strip, a truncated waveform, both
+    /// cached for good).
+    #[test]
+    fn a_drain_past_its_grace_fails_the_run() {
+        let cmd = argv(&["sh", "-c", "printf abc"]);
+        let done = run(Spec::new(&cmd, Stderr::Capture)
+            .stdout(Stdout::Stream(Box::new(|_| {
+                thread::sleep(DRAIN_GRACE + Duration::from_millis(500));
+            })))
+            .timeout(Duration::from_secs(10)))
+        .unwrap();
+        assert_eq!(done.ended, Ended::Exited);
+        assert!(!done.stdout_complete);
+        assert!(!done.exited_ok(), "{done:?}");
+        assert!(
+            done.describe("sh").contains("output wasn't read"),
+            "{}",
+            done.describe("sh")
+        );
+        // No stdout to read: complete.
+        let cmd = argv(&["sh", "-c", "exit 0"]);
+        let done = run(Spec::new(&cmd, Stderr::Capture)).unwrap();
+        assert!(done.stdout_complete && done.exited_ok(), "{done:?}");
     }
 
     #[test]

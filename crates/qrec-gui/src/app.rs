@@ -17,11 +17,17 @@
 //!   take being recorded is stopped and the window stays until it is
 //!   finalized; a running export asks first ("Quit while exporting?");
 //!   then the host closes (it waits until quiet, ≤ 60 s) and the app is
-//!   held until it stopped and the media pipelines reached NULL (R4).
+//!   held until it stopped; then the window goes and the main loop runs on
+//!   until the player and the meter monitors reached NULL (each within
+//!   5 s; at most [`MEDIA_STOP_WAIT`]: R4). The exit code is the blocking
+//!   page's when one is up then (a session crash's: 1), else the close's.
+//! - A panic in `activate` (caught, G§3.12) would leave a window that
+//!   never shows holding the project: the app quits with 1 instead.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use chrono::Utc;
@@ -48,6 +54,10 @@ use crate::{Ctx, GuiArgs, blocking, guard, guarded, testctl};
 
 /// The application id (SPEC §15, the portal's app id).
 pub const APP_ID: &str = "com.rsensato.qrec";
+
+/// The longest the quit waits for the player and the meter monitors to
+/// reach NULL (they bound themselves at 5 s each, R4, R6).
+pub const MEDIA_STOP_WAIT: Duration = Duration::from_secs(6);
 
 thread_local! {
     static APP: RefCell<Option<Rc<App>>> = const { RefCell::new(None) };
@@ -134,12 +144,16 @@ pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
         .build();
     let startup = RefCell::new(Some(startup));
     app.connect_startup(guarded!("startup", move |_| on_startup()));
-    app.connect_activate(guarded!("activate", move |app| {
-        let startup = startup.borrow_mut().take();
-        if let Some(startup) = startup {
-            activate(app, startup);
+    app.connect_activate(guarded!(
+        "activate",
+        after_panic = activate_failed(app),
+        move |app| {
+            let startup = startup.borrow_mut().take();
+            if let Some(startup) = startup {
+                activate(app, startup);
+            }
         }
-    }));
+    ));
     app.run_with_args::<&str>(&[]);
     APP.with(|a| a.borrow_mut().take());
     QUEUE.with(|q| q.borrow_mut().take());
@@ -158,6 +172,22 @@ fn on_startup() {
     if testctl::mode().on {
         settings.set_gtk_enable_animations(false);
         settings.set_gtk_cursor_blink(false);
+    }
+}
+
+/// `activate` panicked (caught, G§3.12): nothing would ever show, and a
+/// host started at step 4 holds the project behind a window nobody sees.
+/// Quit with 1: through the close (the host closes first) when the app is
+/// up, else at once (`run_with_args` returns; a window that never showed
+/// isn't destroyed, see [`App::quit`]).
+fn activate_failed(app: &adw::Application) {
+    tracing::error!("the window couldn't be built; quitting with 1");
+    match App::current() {
+        Some(the_app) => the_app.close_host_then_quit(1),
+        None => {
+            EXIT_CODE.with(|c| c.set(1));
+            app.quit();
+        }
     }
 }
 
@@ -215,9 +245,20 @@ fn activate(app: &adw::Application, startup: Startup) {
         );
     }
     let window = MainWindow::new(app, &name);
-    if theme.motion().reduced {
-        window.window.add_css_class("reduced-motion");
-    }
+    // `.reduced-motion` follows the motion policy, also when it changes
+    // live (WP10's switch, G§3.14).
+    let motion_target = window.window.downgrade();
+    theme
+        .follow_motion(move |motion| {
+            if let Some(window) = motion_target.upgrade() {
+                if motion.reduced {
+                    window.add_css_class("reduced-motion");
+                } else {
+                    window.remove_css_class("reduced-motion");
+                }
+            }
+        })
+        .detach();
     let ctx = Ctx {
         store: store.clone(),
         keys: keys.clone(),
@@ -254,6 +295,9 @@ fn activate(app: &adw::Application, startup: Startup) {
         }
     });
 
+    if testctl::mode().panic_activate {
+        panic!("a test panic in activate (QREC_GUI_TEST=panic-activate)");
+    }
     the_app.window.populate(&ctx, &name);
     keys.attach(&the_app.window.window);
     the_app.register_actions();
@@ -369,12 +413,13 @@ impl App {
             Inbound::Toast { toast, recovery } => store.on_toast(toast, recovery),
             Inbound::Host(event) => self.startup.on_host(self, event),
             Inbound::Startup(event) => self.startup.on_event(self, event),
-            Inbound::Player(event) => tracing::debug!("player: {event:?}"),
+            Inbound::Player(event) => self.ctx.media.on_player(&event),
             Inbound::Preview(data) => self.ctx.media.on_preview(&data),
             Inbound::Sources(inventory) => {
                 let inventory = Arc::new(inventory);
                 store.update_local(move |l| l.sources = Some(inventory));
             }
+            Inbound::Io(done) => self.ctx.media.on_io(done),
             Inbound::Test(request) => testctl::handle(self, request),
         }
     }
@@ -534,7 +579,9 @@ impl App {
         }
         match self.closing.get() {
             Closing::WaitingForHost | Closing::WaitingForIdle => {
-                self.quit(self.exit_after_host.get());
+                let code =
+                    exit_after_close(&self.ctx.store.local().startup, self.exit_after_host.get());
+                self.quit(code);
             }
             Closing::No => {
                 if matches!(self.ctx.store.local().startup, StartupPhase::Blocked(_)) {
@@ -560,7 +607,9 @@ impl App {
     }
 
     /// Stops the media pipelines and quits the main loop with `code` (the
-    /// first quit wins).
+    /// first quit wins) once the player and the meter monitors reached NULL
+    /// (R4: the main loop runs meanwhile, for `gtk4paintablesink`'s calls
+    /// into it), at most [`MEDIA_STOP_WAIT`] later.
     pub fn quit(&self, code: u8) {
         if self.quitting.replace(true) {
             return;
@@ -568,9 +617,63 @@ impl App {
         EXIT_CODE.with(|c| c.set(code));
         tracing::info!("quitting with {code}");
         self.ctx.media.shutdown();
+        // The window goes now; the application lives on until NULL. One
+        // that never showed (a panic in `activate`) stays: GTK 4.22
+        // crashes taking an unrealized window out of its Wayland session
+        // (`gdk_wayland_toplevel_remove_from_session`), and quitting ends it.
+        let hold = self.app.hold();
         self.hold.borrow_mut().take();
-        self.window.window.destroy();
-        self.app.quit();
+        if self.window.window.is_realized() {
+            self.window.window.destroy();
+        }
+        let (media, app, asked) = (self.ctx.media.clone(), self.app.clone(), Instant::now());
+        let done = move || {
+            let waited = asked.elapsed();
+            if media.stopped() {
+                tracing::info!(
+                    "the player and the meters reached NULL ({} ms after the quit)",
+                    waited.as_millis()
+                );
+            } else {
+                tracing::warn!(
+                    "the player or the meters didn't reach NULL within {} s; quitting anyway",
+                    MEDIA_STOP_WAIT.as_secs()
+                );
+            }
+            app.quit();
+        };
+        if self.ctx.media.stopped() {
+            drop(hold);
+            return done();
+        }
+        let media = self.ctx.media.clone();
+        let mut hold = Some(hold);
+        let mut done = Some(done);
+        guard::timeout_local(
+            Duration::from_millis(50),
+            "quit: the media's NULL",
+            move || {
+                if !media.stopped() && asked.elapsed() < MEDIA_STOP_WAIT {
+                    return glib::ControlFlow::Continue;
+                }
+                hold.take();
+                if let Some(done) = done.take() {
+                    done();
+                }
+                glib::ControlFlow::Break
+            },
+        );
+    }
+}
+
+/// The exit code once the host stopped during a close: the blocking page's
+/// when one is up (a session that crashed meanwhile blocks with
+/// `HostFailed`, 1; GStreamer stuck or a missing dependency, 5), else the
+/// one the close asked for (G§3.2).
+fn exit_after_close(startup: &StartupPhase, asked: u8) -> u8 {
+    match startup {
+        StartupPhase::Blocked(kind) => kind.exit_code(),
+        _ => asked,
     }
 }
 
@@ -670,7 +773,28 @@ fn log_regions_when_mapped(app: &Rc<App>) {
 
 #[cfg(test)]
 mod tests {
+    use qrec_core::CoreError;
+    use qrec_core::view::blocking::BlockKind;
+
     use super::*;
+
+    /// A session that crashes during the D-12 close (its `HostFailed` page
+    /// up when the host stops) exits 1, like the crash page's Quit; a page
+    /// the close came from keeps its code; a plain close exits with the
+    /// close's code. (The close's 0 was used whatever ended it.)
+    #[test]
+    fn a_crash_during_the_close_exits_with_its_page() {
+        let crashed = StartupPhase::Blocked(BlockKind::HostFailed {
+            error: CoreError::internal("the Qrec session crashed: boom"),
+        });
+        assert_eq!(exit_after_close(&crashed, 0), 1);
+        assert_eq!(
+            exit_after_close(&StartupPhase::Blocked(BlockKind::GstStuck), 5),
+            5
+        );
+        assert_eq!(exit_after_close(&StartupPhase::Closing, 0), 0);
+        assert_eq!(exit_after_close(&StartupPhase::Open, 1), 1);
+    }
 
     #[test]
     fn the_display_is_reachable_only_with_its_socket() {

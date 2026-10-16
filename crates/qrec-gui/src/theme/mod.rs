@@ -125,6 +125,20 @@ impl Theme {
         self.inner.changed.add(f)
     }
 
+    /// Calls `apply` with the motion policy now, and again whenever it
+    /// changes (the window's `.reduced-motion` class follows it this way,
+    /// G§3.14).
+    pub fn follow_motion(&self, apply: impl Fn(MotionPolicy) + 'static) -> Subscription {
+        let last = Cell::new(self.motion());
+        apply(last.get());
+        self.subscribe(move |theme| {
+            let motion = theme.motion();
+            if last.replace(motion) != motion {
+                apply(motion);
+            }
+        })
+    }
+
     /// An illustration in this theme's colors (G§3.14), through `gtk::Svg`.
     pub fn art(&self, which: art::Art) -> Option<gtk::Svg> {
         art::paintable(which, &self.palette())
@@ -318,6 +332,25 @@ mod tests {
                 "components/blocking.css",
                 "components/timeline.css",
             ]
+        );
+    }
+
+    /// The window's `.reduced-motion` follows the policy at once and on
+    /// every live change, both ways (it was set once at startup and never
+    /// again).
+    #[test]
+    fn the_motion_class_follows_live_changes() {
+        let theme = Theme::new(ThemeId::SwampNight, 1.0, MotionPolicy::default());
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let record = Rc::clone(&seen);
+        let _follow = theme.follow_motion(move |m| record.borrow_mut().push(m.reduced));
+        theme.set_motion(MotionPolicy { reduced: true });
+        theme.set_scale(1.25);
+        theme.set_motion(MotionPolicy { reduced: false });
+        assert_eq!(
+            *seen.borrow(),
+            [false, true, false],
+            "a scale change isn't one"
         );
     }
 

@@ -123,6 +123,39 @@ impl Tap {
         self.seen.lock().unwrap().clone()
     }
 
+    fn bin(&self) -> &gst::Bin {
+        self.sink.downcast_ref().expect("the tap is a bin")
+    }
+
+    /// From now on, while the returned flag is set, every frame at
+    /// `from_ns` or later is dropped before anything sees it (the player's
+    /// probe included: this one comes first), and with `error` the tap
+    /// posts that stream error for it, like a decoder that can't decode
+    /// that part of a take. Call it before the player starts.
+    fn refuse_frames(&self, from_ns: u64, error: Option<&'static str>) -> Arc<AtomicBool> {
+        let on = Arc::new(AtomicBool::new(true));
+        let enabled = Arc::clone(&on);
+        let element = self.sink.clone();
+        let pad = self.sink.static_pad("sink").expect("a sink pad");
+        pad.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+            let refused = enabled.load(Ordering::SeqCst)
+                && matches!(&info.data, Some(gst::PadProbeData::Buffer(buffer))
+                    if buffer.pts().is_some_and(|pts| pts.nseconds() >= from_ns));
+            if !refused {
+                return gst::PadProbeReturn::Ok;
+            }
+            if let Some(message) = error {
+                let _ = element.post_message(
+                    gst::message::Error::builder(gst::StreamError::Decode, message)
+                        .src(&element)
+                        .build(),
+                );
+            }
+            gst::PadProbeReturn::Drop
+        });
+        on
+    }
+
     fn last(&self) -> Option<Seen> {
         self.seen.lock().unwrap().last().copied()
     }
@@ -155,6 +188,68 @@ impl Tap {
                 );
             }
             thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+/// A padless element that hangs on its way from PAUSED to READY while
+/// armed: like a streaming thread stuck where flushing doesn't reach (a
+/// decoder or GES deadlock), which a state change down waits for.
+mod wedge {
+    use std::sync::{Condvar, Mutex};
+
+    use gst::glib;
+    use gst::subclass::prelude::*;
+
+    mod imp {
+        use super::*;
+
+        #[derive(Default)]
+        pub struct Wedge {
+            pub(super) armed: Mutex<bool>,
+            pub(super) released: Condvar,
+        }
+
+        #[glib::object_subclass]
+        impl ObjectSubclass for Wedge {
+            const NAME: &'static str = "QrecTestWedge";
+            type Type = super::Wedge;
+            type ParentType = gst::Element;
+        }
+
+        impl ObjectImpl for Wedge {}
+
+        impl GstObjectImpl for Wedge {}
+
+        impl ElementImpl for Wedge {
+            fn change_state(
+                &self,
+                transition: gst::StateChange,
+            ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
+                if transition == gst::StateChange::PausedToReady {
+                    let mut armed = self.armed.lock().unwrap();
+                    while *armed {
+                        armed = self.released.wait(armed).unwrap();
+                    }
+                }
+                self.parent_change_state(transition)
+            }
+        }
+    }
+
+    glib::wrapper! {
+        pub struct Wedge(ObjectSubclass<imp::Wedge>) @extends gst::Element, gst::Object;
+    }
+
+    impl Wedge {
+        pub(super) fn new() -> Self {
+            glib::Object::new()
+        }
+
+        /// Hangs in PAUSED → READY (`true`), or lets it through.
+        pub(super) fn arm(&self, armed: bool) {
+            *self.imp().armed.lock().unwrap() = armed;
+            self.imp().released.notify_all();
         }
     }
 }
@@ -310,7 +405,8 @@ fn accurate_seeks_show_the_frame_plans_frames() {
 }
 
 /// A load shows the new plan at the position asked and keeps playing or
-/// paused as before; frames played after it are the new plan's.
+/// paused as before; frames played after it are the new plan's, from the
+/// position asked.
 #[test]
 fn a_load_keeps_the_position_and_playing() {
     let _serial = serial();
@@ -342,7 +438,8 @@ fn a_load_keeps_the_position_and_playing() {
     settle(&player);
     assert_eq!(player.position_ns(), ns(20));
 
-    // Playing: a load goes on playing from where it was asked.
+    // Playing: a load of another plan goes on playing that plan from where
+    // it was asked.
     player.load(plan_ges(&p.project), 0);
     events.loaded(3);
     player.play(1.0);
@@ -351,20 +448,44 @@ fn a_load_keeps_the_position_and_playing() {
     });
     let at = player.position_ns();
     let before = tap.all().len();
-    player.load(plan_ges(&p.project), at);
+    player.load(plan_ges(&cut), at);
     events.loaded(4);
     wait_until("playing on after the load", SETTLE, || {
         player.position_ns() > at + ns(10)
     });
     player.pause();
     settle(&player);
-    let after: Vec<Seen> = tap.all()[before..].to_vec();
-    assert!(after.len() > 5, "{after:?}");
-    for seen in &after {
+    // The cut's frame f, for a frame-aligned frame of it.
+    let cut_frames = plan_ges(&cut).duration_ns / ns(1);
+    let frame_of = |seen: &Seen| {
         let frame = seen.pts / ns(1).max(1);
-        if seen.pts == ns(frame) {
-            assert_eq!(seen.id, Some(take_frame(&p.project, frame)), "{seen:?}");
-        }
+        (seen.pts == ns(frame)).then_some(frame)
+    };
+    let is_cut = |seen: &Seen| {
+        frame_of(seen).is_some_and(|f| f < cut_frames && seen.id == Some(take_frame(&cut, f)))
+    };
+    // Until the load's seek flushed, the old plan played on (where it
+    // shows 10 + f, the cut 55 + f: they never look alike).
+    let after: Vec<Seen> = tap.all()[before..].to_vec();
+    let first = after
+        .iter()
+        .position(is_cut)
+        .unwrap_or_else(|| panic!("no frame of the new plan: {after:?}"));
+    assert_eq!(
+        frame_of(&after[first]),
+        Some(ns_to_frame_floor(at as i64, FPS) as u64),
+        "the new plan starts where the load asked ({at} ns): {after:?}"
+    );
+    let played: Vec<&Seen> = after[first..]
+        .iter()
+        .filter(|s| frame_of(s).is_some())
+        .collect();
+    assert!(played.len() > 5, "{after:?}");
+    for seen in played {
+        assert!(
+            is_cut(seen),
+            "a frame of the old plan after the load: {seen:?}"
+        );
     }
     assert!(events.errors().is_empty(), "{:?}", events.errors());
     stop(player, &events);
@@ -624,6 +745,191 @@ fn a_cut_at_the_end_of_a_file_shows_no_background() {
     assert_quiet_since(quiet);
 }
 
+/// A scrub that comes while a load waits (a ruler drag during the reload
+/// after an edit) doesn't swallow the load's `Loaded`: the load's seek goes
+/// where the scrub asked and says `Loaded` once its frame shows.
+#[test]
+fn a_scrub_while_a_load_waits_still_says_loaded() {
+    let _serial = serial();
+    let quiet = problems();
+    ges_render::init().unwrap();
+    let env = TestEnv::new();
+    let dir = env.empty_dir("scrub-load");
+    let plan = frame_id_plan(&dir, 120);
+    // The same file 10 frames in: timeline frame f shows source frame f + 10.
+    let mut later = plan.clone();
+    later.video[0].inpoint_ns = ns(10);
+    later.video[0].duration_ns = ns(100);
+    later.duration_ns = ns(100);
+    let tap = Tap::new(Some(ID_RECT));
+    let events = Events::default();
+    let player = spawn(&tap, &dir, None, &events);
+    player.load(plan, 0);
+    events.loaded(1);
+    player.scrub(ns(40));
+    // While that scrub's seek and sound are in flight (they take at least
+    // its 60 ms of playing), a load and a scrub wait behind it.
+    thread::sleep(Duration::from_millis(20));
+    player.load(later, 0);
+    player.scrub(ns(30));
+    assert_eq!(events.loaded(2), ns(100));
+    settle(&player);
+    assert_eq!(player.position_ns(), ns(30));
+    assert_eq!(tap.showing(ns(30)).id, Some(40));
+    assert!(events.errors().is_empty(), "{:?}", events.errors());
+    stop(player, &events);
+    assert_quiet_since(quiet);
+}
+
+/// The message [`Tap::refuse_frames`] posts in these tests.
+const REFUSED: &str = "the test sink can't decode this frame";
+
+/// An error while a seek or load is in flight fails it at once, also right
+/// after an error: the player doesn't take it for the last failure's echo.
+/// Seeking twice into a part of the take that fails, then loading there,
+/// are three errors with the element's message, none a timeout; elsewhere
+/// the take still shows.
+#[test]
+fn errors_while_retrying_are_reported_at_once() {
+    let _serial = serial();
+    let quiet = problems();
+    ges_render::init().unwrap();
+    let env = TestEnv::new();
+    let dir = env.empty_dir("retry");
+    let plan = frame_id_plan(&dir, 90);
+    let tap = Tap::new(Some(ID_RECT));
+    tap.refuse_frames(ns(60), Some(REFUSED));
+    let events = Events::default();
+    let player = spawn(&tap, &dir, None, &events);
+    player.load(plan.clone(), ns(10));
+    events.loaded(1);
+    let retry = |n: usize, what: &str, ask: &dyn Fn()| {
+        let asked = Instant::now();
+        ask();
+        wait_until(what, SETTLE, || events.errors().len() >= n);
+        assert!(
+            asked.elapsed() < SEEK_TIMEOUT / 2,
+            "{what}: the error came after {:?}",
+            asked.elapsed()
+        );
+        assert_eq!(events.errors()[n - 1], REFUSED, "{what}");
+        settle(&player);
+    };
+    retry(1, "seeking into the part that fails", &|| {
+        player.seek(ns(70))
+    });
+    retry(2, "seeking there again", &|| player.seek(ns(70)));
+    retry(3, "loading there", &|| player.load(plan.clone(), ns(75)));
+    assert_eq!(events.count(|e| matches!(e, PlayerEvent::Loaded { .. })), 1);
+    // Before that part, the take shows.
+    let before = tap.all().len();
+    player.seek(ns(20));
+    settle(&player);
+    assert_eq!(tap.showing_since(before, ns(20)).id, Some(20));
+    assert_eq!(events.errors().len(), 3, "{:?}", events.errors());
+    stop(player, &events);
+    assert_quiet_since(quiet);
+}
+
+/// A pipeline that hangs on its way to READY after an error (a streaming
+/// thread stuck where flushing doesn't reach) never takes the player with
+/// it: the error is reported first, the pipeline is abandoned after
+/// `STOP_TIMEOUT`, later loads say the picture is stuck, and a shutdown
+/// still says `Stopped` (at once: nothing is left to stop).
+#[test]
+fn a_pipeline_stuck_stopping_is_abandoned() {
+    let _serial = serial();
+    let quiet = problems();
+    ges_render::init().unwrap();
+    let env = TestEnv::new();
+    let dir = env.empty_dir("wedge");
+    let plan = frame_id_plan(&dir, 60);
+    let mut missing = plan.clone();
+    missing.video[0].file = "gone.mkv".into();
+    let tap = Tap::new(Some(ID_RECT));
+    let wedge = wedge::Wedge::new();
+    tap.bin().add(&wedge).unwrap();
+    let events = Events::default();
+    let player = spawn(&tap, &dir, None, &events);
+    player.load(plan.clone(), ns(10));
+    events.loaded(1);
+    wedge.arm(true);
+    let asked = Instant::now();
+    player.load(missing, 0);
+    wait_until("the error, before the stop", STOP_TIMEOUT / 2, || {
+        !events.errors().is_empty()
+    });
+    assert!(
+        events.errors()[0].ends_with("gone.mkv is missing"),
+        "{:?}",
+        events.errors()
+    );
+    player.load(plan, 0);
+    wait_until("the stuck picture said", SETTLE, || {
+        events.errors().len() >= 2
+    });
+    assert!(asked.elapsed() >= STOP_TIMEOUT, "{:?}", asked.elapsed());
+    assert_eq!(events.errors()[1], STUCK);
+    settle(&player);
+    assert_eq!(events.count(|e| matches!(e, PlayerEvent::Loaded { .. })), 1);
+    let asked = Instant::now();
+    player.shutdown();
+    events.nth(1, "Stopped", |e| *e == PlayerEvent::Stopped);
+    assert!(
+        asked.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        asked.elapsed()
+    );
+    // Let the abandoned pipeline's helper go (it stays leaked).
+    wedge.arm(false);
+    assert_eq!(events.errors().len(), 2, "{:?}", events.errors());
+    assert_quiet_since(quiet);
+}
+
+/// A shutdown while a stuck preroll waits never leaves the pipeline to a
+/// READY that may hang: `stop` takes it to NULL within `STOP_TIMEOUT`, or
+/// abandons it, and `Stopped` comes either way.
+#[test]
+fn a_shutdown_during_a_stuck_start_still_stops() {
+    let _serial = serial();
+    let quiet = problems();
+    ges_render::init().unwrap();
+    let env = TestEnv::new();
+    let dir = env.empty_dir("wedge-start");
+    let plan = frame_id_plan(&dir, 60);
+    let mut missing = plan.clone();
+    missing.video[0].file = "gone.mkv".into();
+    let tap = Tap::new(Some(ID_RECT));
+    let starve = tap.refuse_frames(0, None);
+    starve.store(false, Ordering::SeqCst);
+    let wedge = wedge::Wedge::new();
+    tap.bin().add(&wedge).unwrap();
+    let events = Events::default();
+    let player = spawn(&tap, &dir, None, &events);
+    player.load(plan.clone(), ns(10));
+    events.loaded(1);
+    // An error stops the pipeline (READY); the next start never prerolls.
+    player.load(missing, 0);
+    wait_until("an error", SETTLE, || !events.errors().is_empty());
+    settle(&player);
+    starve.store(true, Ordering::SeqCst);
+    wedge.arm(true);
+    player.load(plan, 0);
+    thread::sleep(Duration::from_millis(500));
+    assert!(!player.idle(), "the start waits");
+    let asked = Instant::now();
+    player.shutdown();
+    events.nth(1, "Stopped", |e| *e == PlayerEvent::Stopped);
+    assert!(
+        asked.elapsed() <= STOP_TIMEOUT + Duration::from_secs(1),
+        "{:?}",
+        asked.elapsed()
+    );
+    wedge.arm(false);
+    assert_eq!(events.errors().len(), 1, "{:?}", events.errors());
+    assert_quiet_since(quiet);
+}
+
 /// A plan with a missing file is an `Error` (and no `Loaded`); the player
 /// stays usable and the next good load shows.
 #[test]
@@ -727,6 +1033,26 @@ fn out_size_composites_smaller() {
     assert_quiet_since(quiet);
 }
 
+/// A scrub to `frame` played its sound (the next frame came, within its
+/// 60 ms), stopped there, and came back to `frame`: `seen` is what the tap
+/// got since the scrub.
+fn assert_scrubbed(seen: &[Seen], frame: u64) {
+    let (at, stop) = (ns(frame), ns(frame) + SCRUB_NS);
+    let played = seen
+        .iter()
+        .position(|s| s.pts > at && s.pts <= stop)
+        .unwrap_or_else(|| panic!("the scrub to {frame} played nothing: {seen:?}"));
+    assert_eq!(seen[played].pts, ns(frame + 1), "{seen:?}");
+    assert!(
+        seen.iter().all(|s| s.pts <= stop),
+        "the scrub to {frame} played past its stop: {seen:?}"
+    );
+    assert!(
+        seen[played..].iter().any(|s| s.pts == at),
+        "the scrub to {frame} never came back: {seen:?}"
+    );
+}
+
 /// A scrub plays a moment and comes back to the scrubbed frame; scrubs that
 /// pile up end on the newest.
 #[test]
@@ -742,16 +1068,20 @@ fn scrubs_end_on_the_scrubbed_frame() {
     let player = spawn(&tap, &dir, None, &events);
     player.load(plan, 0);
     events.loaded(1);
+    let before = tap.all().len();
     player.scrub(ns(40));
     settle(&player);
     assert_eq!(player.position_ns(), ns(40));
     assert_eq!(tap.showing(ns(40)).id, Some(40));
+    assert_scrubbed(&tap.all()[before..], 40);
+    let before = tap.all().len();
     for frame in [50, 51, 52, 53, 70] {
         player.scrub(ns(frame));
     }
     settle(&player);
     assert_eq!(player.position_ns(), ns(70));
     assert_eq!(tap.showing(ns(70)).id, Some(70));
+    assert_scrubbed(&tap.all()[before..], 70);
     // Still paused.
     thread::sleep(Duration::from_millis(200));
     assert_eq!(tap.last().unwrap().pts, ns(70));

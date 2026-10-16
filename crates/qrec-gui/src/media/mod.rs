@@ -21,12 +21,15 @@
 //!   pipeline is down then), on the project scene's audio sources.
 //! - **Player and caches** (step 8): the program player and the preview
 //!   cache start once the Session is open; [`MediaHub::shutdown`] stops them
-//!   at exit, asynchronously.
-//! - **`qrec-gui-io`**: one worker thread for blocking jobs of the window
-//!   (bin sizes, silence keys, wl-copy, source discovery):
-//!   [`MediaHub::run_io`] and [`MediaHub::run_io_then`]. The preview
+//!   at exit, asynchronously, and [`MediaHub::stopped`] says when the player
+//!   and every meter monitor reached NULL (the app's quit waits for it, R4).
+//! - **`qrec-gui-io`** ([`io`]): one worker thread for blocking jobs of the
+//!   window (bin sizes, silence keys, wl-copy, source discovery):
+//!   [`MediaHub::run_io`] and [`MediaHub::run_io_then`], whose results come
+//!   through the queue; a panic in a job ends that job only. The preview
 //!   caches' disk trim runs on the cache's own `qrec-preview-trim`.
 
+pub mod io;
 pub mod live;
 pub mod peaks;
 pub mod program;
@@ -55,6 +58,7 @@ use qrec_shell::player::{AudioOut, PlayerOptions, ProgramPlayer};
 use crate::guard;
 use crate::host::queue::{Inbound, Queue};
 use crate::store::{Store, Subscribers, Subscription};
+use io::{BusyToken, IoDone, IoWorker};
 use peaks::PeakCache;
 use thumbs::ThumbCache;
 
@@ -63,7 +67,7 @@ use thumbs::ThumbCache;
 pub const LEVEL_HISTORY: usize = 15 * 60 * 20;
 
 /// A job for `qrec-gui-io`.
-pub type IoJob = Box<dyn FnOnce() + Send>;
+pub use io::IoJob;
 
 /// One level reading, for the ring: the loudest channel.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -135,12 +139,16 @@ struct Inner {
     side_pending: Arc<AtomicBool>,
     live_control: RefCell<LiveControl>,
     meters: RefCell<Option<(Vec<String>, MeterMonitor)>>,
+    /// Monitors told to stop that may not have reached NULL yet (R4).
+    meters_stopping: RefCell<Vec<MeterMonitor>>,
     player: RefCell<Option<Rc<ProgramPlayer>>>,
+    /// The player said `Stopped` (R4).
+    player_stopped: Cell<bool>,
     preview: RefCell<Option<PreviewCache>>,
     thumbs: RefCell<Option<Rc<ThumbCache>>>,
     peaks: RefCell<Option<Rc<PeakCache>>>,
     preview_data: Subscribers<PreviewData>,
-    io: RefCell<Option<Sender<IoJob>>>,
+    io: IoWorker,
     frames_shown: Cell<u64>,
     subscription: RefCell<Option<Subscription>>,
 }
@@ -160,6 +168,7 @@ impl MediaHub {
     pub fn new(queue: Queue, store: Store) -> Self {
         let hub = Self {
             inner: Rc::new(Inner {
+                io: IoWorker::new(queue.clone()),
                 queue,
                 store: store.clone(),
                 backend: Backend::from_env(),
@@ -172,12 +181,13 @@ impl MediaHub {
                 side_pending: Arc::new(AtomicBool::new(false)),
                 live_control: RefCell::new(LiveControl::noop()),
                 meters: RefCell::new(None),
+                meters_stopping: RefCell::new(Vec::new()),
                 player: RefCell::new(None),
+                player_stopped: Cell::new(false),
                 preview: RefCell::new(None),
                 thumbs: RefCell::new(None),
                 peaks: RefCell::new(None),
                 preview_data: Subscribers::default(),
-                io: RefCell::new(None),
                 frames_shown: Cell::new(0),
                 subscription: RefCell::new(None),
             }),
@@ -410,58 +420,84 @@ impl MediaHub {
     }
 
     /// At exit (R4): the meters, the player and the cache stop; each
-    /// reaches NULL on its own thread (≤ 5 s) while the main loop runs.
+    /// reaches NULL on its own thread (≤ 5 s) while the main loop runs
+    /// (the app's quit waits for [`Self::stopped`]).
     pub fn shutdown(&self) {
         if let Some((_, monitor)) = self.inner.meters.borrow_mut().take() {
-            monitor.stop();
+            self.stop_meters(monitor);
         }
-        if let Some(player) = self.inner.player.borrow().as_ref() {
-            player.shutdown();
+        match self.inner.player.borrow().as_ref() {
+            Some(player) => player.shutdown(),
+            None => self.inner.player_stopped.set(true),
         }
         if let Some(cache) = self.inner.preview.borrow().as_ref() {
             cache.shutdown();
         }
     }
 
-    /// Runs `job` on `qrec-gui-io`, after the jobs before it.
-    pub fn run_io(&self, job: impl FnOnce() + Send + 'static) {
-        let tx = self.io_sender();
-        if let Err(e) = tx.send(Box::new(job)) {
-            tracing::error!("the io worker is gone: {e}");
+    /// After [`Self::shutdown`]: the player said `Stopped` (or there is
+    /// none) and every meter monitor reached NULL (or gave up on a wedged
+    /// device after 5 s).
+    pub fn stopped(&self) -> bool {
+        let player = self.inner.player_stopped.get() || self.inner.player.borrow().is_none();
+        self.inner
+            .meters_stopping
+            .borrow_mut()
+            .retain(|monitor| !monitor.is_finished());
+        player
+            && self.inner.meters.borrow().is_none()
+            && self.inner.meters_stopping.borrow().is_empty()
+    }
+
+    /// An event of the player, from the queue.
+    pub fn on_player(&self, event: &qrec_shell::player::PlayerEvent) {
+        tracing::debug!("player: {event:?}");
+        if *event == qrec_shell::player::PlayerEvent::Stopped {
+            self.inner.player_stopped.set(true);
         }
     }
 
+    /// Stops `monitor` and keeps it until it reached NULL (R4).
+    fn stop_meters(&self, monitor: MeterMonitor) {
+        monitor.stop();
+        let mut stopping = self.inner.meters_stopping.borrow_mut();
+        stopping.retain(|m| !m.is_finished());
+        stopping.push(monitor);
+    }
+
+    /// Runs `job` on `qrec-gui-io`, after the jobs before it (a panic in
+    /// it is caught and told).
+    pub fn run_io(&self, job: impl FnOnce() + Send + 'static) {
+        self.inner.io.run("an io job", job);
+    }
+
     /// Runs `work` on `qrec-gui-io`, then `then` with its result on the
-    /// main thread.
+    /// main thread, through the queue (in its order). A panic in `work` is
+    /// told, and `then` is dropped on the main thread.
     pub fn run_io_then<T: Send + 'static>(
         &self,
         work: impl FnOnce() -> T + Send + 'static,
         then: impl FnOnce(T) + 'static,
     ) {
-        let then = glib::thread_guard::ThreadGuard::new(then);
-        self.run_io(move || {
-            let result = work();
-            guard::invoke("an io job's result", move || (then.into_inner())(result));
-        });
+        self.inner.io.run_then("an io job", work, then);
     }
 
-    fn io_sender(&self) -> Sender<IoJob> {
-        if let Some(tx) = &*self.inner.io.borrow() {
-            return tx.clone();
-        }
-        let (tx, rx) = crossbeam_channel::unbounded::<IoJob>();
-        let spawned = thread::Builder::new()
-            .name("qrec-gui-io".into())
-            .spawn(move || {
-                while let Ok(job) = rx.recv() {
-                    job();
-                }
-            });
-        if let Err(e) = spawned {
-            tracing::error!("can't start the io worker: {e}");
-        }
-        *self.inner.io.borrow_mut() = Some(tx.clone());
-        tx
+    /// A finished io job, from the queue.
+    pub fn on_io(&self, done: IoDone) {
+        self.inner.io.on_done(done);
+    }
+
+    /// Every io job sent finished, its result queued (`waitIdle`, G§3.18,
+    /// checks it before the queue), and no [`BusyToken`] is held.
+    pub fn io_idle(&self) -> bool {
+        self.inner.io.idle()
+    }
+
+    /// Counts as pending io work until dropped: a debounce that will send
+    /// an io job (WP7's bin sizes, WP3's silence keys) holds one, so
+    /// `waitIdle` waits for it.
+    pub fn hold_io_busy(&self) -> BusyToken {
+        self.inner.io.hold_busy()
     }
 
     fn lock_slots(&self) -> std::sync::MutexGuard<'_, SideSlots> {
@@ -530,8 +566,9 @@ impl MediaHub {
         if wanted == current {
             return;
         }
-        if let Some((_, monitor)) = self.inner.meters.borrow_mut().take() {
-            monitor.stop();
+        let running = self.inner.meters.borrow_mut().take();
+        if let Some((_, monitor)) = running {
+            self.stop_meters(monitor);
         }
         let Some(devices) = wanted.filter(|d| !d.is_empty()) else {
             return;

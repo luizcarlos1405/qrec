@@ -729,7 +729,11 @@ named `region-<name>`; the focused widget's nearest such ancestor).
   until exit, so the paintable is always finalized on the main thread. It
   never waits on the engine (R4).
 - **Live status.** New `SideEvent::LiveStatus(Vec<LiveSourceStatus>)`,
-  sent after every build, portal answer, source death and rebuild:
+  sent whenever it changes (after builds, portal answers, deaths and
+  rebuilds that change a source's state or size; a rebuild that changes
+  nothing sends nothing), in the scene's order (layers in array order,
+  bottom first, then audio; consumers look a source up by name,
+  `live_sources_view`):
 
   ```rust
   pub struct LiveSourceStatus { pub source: LiveSource, pub state: LiveSourceState, pub size: Option<(u32, u32)> }
@@ -738,14 +742,23 @@ named `region-<name>`; the focused widget's nearest such ancestor).
   ```
 
   `size` feeds the canvas layer boxes in Live mode. `Refused { cancelled:
-  true }` is a closed picker (S24 variant); `false` is a denial.
+  true }` is a closed picker (S24 variant); `false` is a denial. A screen
+  asked of the portal again (a retry, a take's dialog) is `AwaitingPortal`
+  while the dialog is open, before its old `Dead` branch or `Refused`.
 - **`LiveControl`** (`GstCaptureEngine::control()`, `Clone`):
-  `transient_layout(Option<Scene>)` only. It sets the preview
-  compositor's pad geometry until the next `SetLive` (any) or `None`. It
-  is preview-only: the record bins record each source to its own file,
-  never the composite, so it can't reach a take, and it never touches
-  State. The GUI sends it during a Live layer drag or nudge burst (D-32,
-  D-33) and sends `None` on cancel or after a failed release.
+  `transient_layout(Option<Scene>)` only. It lays the preview out (the
+  compositor's pads and each layer's `videocrop` crop) until the next
+  `SetLive` (any) or `None`, and never touches State. The record bins
+  record each source to its own file, never the composite, so the layout
+  itself never reaches a take; but a crop that changes while a source
+  negotiates its caps (two caps transforms, each with another crop) leaves
+  that source no caps and it dies "not-negotiated" (A§8.11), and a take
+  recording it loses that stream. The engine writes only the crop sides
+  that change (a move changes none), and a take's start doesn't make its
+  sources negotiate again (record bins link without RECONFIGURE); the
+  rest of that race is WP4's (A§8.11). The GUI sends it during a Live
+  layer drag or nudge burst (D-32, D-33) and sends `None` on cancel or
+  after a failed release.
 - **Retry** (D-50): `Msg::RetryLive` → `CaptureEngine::retry_live(out)`:
   forget refused and dead sources, rebuild. It runs on the session thread,
   ordered with `SetLive` and `StartCapture`, and is logged.
@@ -774,7 +787,7 @@ pub struct PlayerOptions {
     pub project_dir: PathBuf,
     pub video_sink: gst::Element,                    // the program gtk4paintablesink (GTK thread)
     pub audio: AudioOut,
-    pub out_size: Option<(u32, u32)>,                // None = canvas size; Some = composite at this size (H-9)
+    pub out_size: Option<(u32, u32)>,                // None = canvas size; Some = composite at the canvas fitted into this bound (ges_plan::fit_size: aspect kept, even sides, never larger than the canvas; H-9)
     pub events: Box<dyn Fn(PlayerEvent) + Send + Sync>,
 }
 pub enum AudioOut { System /* pulsesink client-name=Qrec; fakesink + warning if it can't start */, Silent /* fakesink sync=true */ }
@@ -786,9 +799,11 @@ impl ProgramPlayer {
     pub fn play(&self, rate: f64);                              // 1, 2, 4; negative = reverse stepping; also changes the rate while playing
     pub fn pause(&self);
     pub fn scrub(&self, ns: u64);                               // seek + 60 ms of audio
-    pub fn position_ns(&self) -> u64;                           // AtomicU64, ≥ 60 Hz while playing
-    pub fn shutdown(&self);                                     // asynchronous; Stopped once NULL (≤ 5 s)
+    pub fn position_ns(&self) -> u64;                           // AtomicU64: read about 125 times a second while playing forward; in reverse it moves once per step (≤ 15 a second)
+    pub fn idle(&self) -> bool;                                 // nothing to load, seek or scrub, queued or in flight (waitIdle, G§3.18)
+    pub fn shutdown(&self);                                     // asynchronous; Stopped once NULL (≤ 5 s), at once when there is no pipeline
 }
+pub const STUCK: &str = "the Program picture is stuck; restart Qrec";
 ```
 
 - `AudioOut::Silent` under the fake backend and in tests.
@@ -811,16 +826,34 @@ impl ProgramPlayer {
 
   Asset discovery runs on the player thread only. The bus uses a sync
   handler, never a watch on the default MainContext (R5).
-- Forward rates are seeks with `rate`. Reverse is stepping: an accurate
-  seek every canvas frame period, |rate| frames back, video only (GES
-  reverse decoding isn't relied on).
+- **Errors and wedges.** An error is reported (`Error`) before the
+  pipeline stops. Stopping, READY after an error or for an empty plan and
+  NULL at `shutdown`, runs on a helper thread for at most 5 s
+  (`STOP_TIMEOUT`): READY waits for every streaming thread to leave its
+  pad, and one stuck where flushing doesn't reach (a decoder or GES
+  deadlock) never does. A pipeline wedged past that is abandoned (leaked,
+  never freed under its threads; the Program sink is inside it, so no new
+  pipeline can take over): every later load reports `STUCK`, seeks do
+  nothing, and `shutdown` says `Stopped` at once. While shutting down, an
+  error never takes the pipeline to READY: `shutdown`'s bounded NULL does
+  it. A bus error while a load or seek is in flight fails it at once;
+  only the follow-on errors of a failure already reported are logged.
+- Forward rates are seeks with `rate`. Reverse is stepping: accurate
+  seeks at most 15 a second (one per canvas frame period, never more
+  often than every 67 ms; G§9 R4) to where |rate| × the time since
+  reverse play started (or since the last seek) puts the playhead,
+  frame-aligned, with the pipeline paused and video only (GES reverse
+  decoding isn't relied on); `position_ns` moves at each step.
 - **Speed** (SPEC §12: canvas fps with 2 screens + 1 camera). GES decodes
   in software (`ges_render::init` demotes hardware decoders for the
   process) and composites at the restriction size, the dominant cost in
   the spike. WP1 measures it on the dev machine before anything else
   (WP1 acceptance); if it fails, `out_size = Some(max preview size)` with
-  `ges_plan::scaled` (positions, sizes and crops × out/canvas) and the
-  `PROXY` badge (H-9). Parity tests and `FrameRenderer` stay at canvas
+  `ges_plan::scaled` (destination positions and sizes × out/canvas, edge
+  by edge to even pixels; source crops stay in file pixels, since GES
+  crops before it scales) and the `PROXY` badge (H-9), shown when
+  `fit_size(canvas, out_size)` isn't the canvas (not merely when
+  `out_size` is set). Parity tests and `FrameRenderer` stay at canvas
   size.
 - **Core additions** (WP1): `ges_plan::plan_ges_take(&Project, &TakeId) ->
   GesTimeline` (one clip `[0, durationFrames)` in the take scene: S10
@@ -852,7 +885,8 @@ impl ProgramPlayer {
      (`LocalUi.take_preview`): `load(plan_ges_take(..), frame)`; when they
      end, `load(program plan, ui.playhead)`.
 - Audio scrub: a ruler drag calls `scrub()` on every motion event, one in
-  flight (D-40).
+  flight (D-40). A scrub that comes while a load waits is a plain seek
+  (that load's seek, so the load still says `Loaded`).
 
 ### G§3.11 Thumbnails, waveforms, silence overlay, bin sizes (WP2)
 
@@ -884,7 +918,9 @@ time; A§8.7 rules for every child).
     video's size and rate from its header alone (no `-count_packets`, so
     quick on an hour-long file). The cache runs it once per file version
     before a strip or frames run (logged as kind `probe`, in the job's
-    child slot): `Frames` names a recorded frame while `frames_argv` takes
+    child slot; one at a time per version, and a failed one answers from
+    memory for 30 s, `PROBE_RETRY_AFTER`, so the chunks of an unreadable
+    file share one probe): `Frames` names a recorded frame while `frames_argv` takes
     `start_ns` (the recorded rate is needed), and raw RGBA can't be cut
     into images without the width. `preview_width(src_w, src_h, h)` is
     `scale=-2:<h>`'s width, rounded as ffmpeg does (checked against it for
@@ -894,7 +930,11 @@ time; A§8.7 rules for every child).
 - **Shell** `media::preview::PreviewCache` (`Clone`):
   `new(project_dir, on_data: Box<dyn Fn(PreviewData) + Send + Sync>)`,
   `request(PreviewRequest)` (deduplicated by key: a request already queued
-  or running is joined, one answer for all), `set_exporting(bool)`,
+  or running is joined, one answer for all; one still queued that is asked
+  for again moves up to the newest: the GTK getters ask on every draw, so
+  what is on screen now runs before what scrolled by), `prefetch(PreviewRequest)`
+  (added in the rounds 1–2 review: queued after every `request`, at the
+  oldest end; a queued one keeps its place), `set_exporting(bool)`,
   `shutdown()`, `in_flight()` (requests queued or running, an answer being
   handed to `on_data` included: `waitIdle`, G§3.18). Two workers
   (`qrec-preview-<n>`) take the newest request first; at most 2 ffmpeg at
@@ -936,22 +976,30 @@ time; A§8.7 rules for every child).
     (`.qrec/cache/silence/<key>.json`, A§8.7) and never runs ffmpeg.
   - Children: stdout drained on its own thread; stderr drained by a thread
     that appends each line, prefixed `[<pid> <kind>]`, to one rolling
-    `.qrec/logs/preview.log` (rotated to `preview.1.log` past 8 MiB); a
-    failed run also writes its last 30 lines to its own
-    `YYYYMMDD-HHMMSS-<pid>-preview-<kind>.log`. Both A§8.7 prunes
-    (`proc::prune_logs`, which the Session's open runs, and
+    `.qrec/logs/preview.log` (rotated to `preview.1.log` past 8 MiB); the
+    first failed run of a file version and kind (per cache) also writes its
+    last 30 lines to its own `YYYYMMDD-HHMMSS-<pid>-preview-<kind>.log`, and
+    later failures of it add a line naming that log to `preview.log`. Both
+    A§8.7 prunes (`proc::prune_logs`, which the Session's open runs, and
     `media::prune_logs`) keep the newest 200 timestamp-named logs
-    (`media::is_stamped_log_name`) and ignore `preview*.log`, so preview
-    runs never evict export and recorder logs. Timeout 20 s + 30 s/GiB,
-    own process group, killed on shutdown.
+    (`media::is_stamped_log_name`) and ignore `preview*.log`: preview runs
+    that work never evict export and recorder logs, and a failed run's own
+    log counts like any job log (one per broken file version and kind).
+    Timeout 20 s + 30 s/GiB, own process group, killed on shutdown. A
+    captured or streamed stdout that isn't read to the end within 2 s of a
+    clean exit fails the run (`child::Finished::stdout_complete`): nothing
+    partial is cached.
 - `media::take_sizes(project_dir, &[TakeId]) -> BTreeMap<TakeId, u64>`:
   blocking (from `take_contents`), called on a worker. A take whose folder
   is gone or wasn't looked into (a symlink, unreadable) is left out; an
   empty folder is 0.
 - **GTK caches** (`qrec-gui/src/media/{thumbs,peaks}.rs`; API frozen by
   WP0b, implemented by WP2). Getters never block; a miss requests the
-  containing chunk or block and returns `None`; subscribers get the file
-  whose data arrived and redraw.
+  containing chunk or block and returns `None`, and a getter on one asked
+  for and not answered asks again (the cache moves it up); `request_strip`,
+  `request_frames` and `PeakCache::request` are prefetches
+  (`PreviewCache::prefetch`: after every getter's request); subscribers get
+  the file whose data arrived and redraw.
 
   ```rust
   impl ThumbCache {
@@ -979,7 +1027,8 @@ time; A§8.7 rules for every child).
   image), recorded frames in aligned blocks of 64 (`FRAME_BLOCK`); an
   entry larger than the whole budget is never kept. `PreviewData::Failed`
   names no chunk or block, so a failure counts for the file (and that
-  kind), asked again after 30 s (`RETRY_AFTER`).
+  kind), asked again after 30 s (`RETRY_AFTER`), for one entry at a time
+  until one works (then the rest as they are drawn).
 
   Textures are `gdk::MemoryTexture` (R8G8B8A8) built on the main thread
   from the shared bytes (R22), once per image, from a zero-copy slice of
@@ -1022,6 +1071,13 @@ time; A§8.7 rules for every child).
   until the engine, the player and the meter monitor reached NULL:
   `gtk4paintablesink` calls into the main context synchronously. The GTK
   thread never waits for those threads, and it holds both sinks until exit.
+  As built (rounds 1–2 review): `App::quit` destroys the window and polls
+  every 50 ms until `MediaHub::stopped()` (the player's `Stopped`, every
+  stopped `MeterMonitor::is_finished()`), at most 6 s
+  (`app::MEDIA_STOP_WAIT`), then quits; the exit code is the blocking
+  page's when one is up at the host's `Stopped` (a session crash during
+  the close: `HostFailed`, 1), else the close's. A panic in `activate`
+  quits with 1 (through the close when the app is up).
 - **R5.** No GStreamer call on the GTK thread before `gst_init::init()`
   returned Ok on a worker. Never `GtkMediaFile` or `GtkVideo` (libgtk-4
   links GStreamer and would initialize it on the main thread *(spike)*).
@@ -1081,10 +1137,16 @@ time; A§8.7 rules for every child).
   at most every 5 s; the closure returns its `AfterPanic` value (nothing,
   `false`, `Propagation::Proceed`, `ControlFlow::Break`: a repeating
   source stops) and the window carries on. A test greps the crate's
-  production code: GLib's source functions only in `guard.rs`, and every
-  `.connect_…(`, `.launch(` and `.open_containing_folder(` callback inside
-  `guarded!`. Virtual methods aren't grepped: each work package wraps its
+  production code (each `#[cfg(test)]` item taken out, wherever it is): GLib's source functions only in `guard.rs`, and every
+  `.connect_…(`, `.launch(` and `.open_containing_folder(` call whose last
+  argument is a `guarded!(…)` (a fn path, a variable or a closure of its
+  own is found). Virtual methods aren't grepped: each work package wraps its
   own (`snapshot`, `measure`, `dispose`, …) in `guard::run`.
+  `qrec-gui-io` (`media::io`) runs each job under `catch_unwind`: a panic
+  ends that job, and is told on the main thread like the others; a
+  `run_io_then` continuation stays on the main thread, and the work's
+  result comes back through the queue (`Inbound::Io`), so nothing of the
+  main thread is ever dropped on the worker.
 
 ### G§3.13 GPU environment (A§8.10)
 
@@ -1161,11 +1223,16 @@ time; A§8.7 rules for every child).
   custom widget through `Theme::subscribe` (gtk4-rs doesn't expose
   `css_changed`).
 - **UI scale** (100/125/150 %, `ui.scale`): every `<n>px` in the CSS text
-  is multiplied by the scale before loading; custom widgets multiply their
-  metrics by `theme.scale()` (D-46); the preview's `max_size` is
-  unaffected.
+  is multiplied by the scale before loading, and so is Fraunces' optical
+  size (`"opsz" <n>`, which follows the font size, within 9–144); custom
+  widgets multiply their metrics by `theme.scale()` (D-46): the C01
+  spinner's sizes are CSS (`qrec-spinner`, `.s14`, `.s12`, so they scale
+  with the icons), and `widgets::draw::hatch` takes the scale (a `scale`
+  parameter, added in the rounds 1–2 review: its stripes, pitch and edges);
+  the preview's `max_size` is unaffected.
 - **Motion**: `theme::motion::MotionPolicy { reduced }` per D-30, with the
-  window class `.reduced-motion`.
+  window class `.reduced-motion`, which follows the policy live
+  (`Theme::follow_motion`).
   - Curves: `EASE_STD` (0.4, 0, 0.2, 1), `EASE_OUT_EXPO` (0.16, 1, 0.3, 1),
     `EASE_IN` (0.4, 0, 1, 1).
   - Every Qrec animation is driven from code, never CSS `@keyframes`: tick
@@ -1211,7 +1278,9 @@ time; A§8.7 rules for every child).
   - `art/app-icon-24.svg` (`uH1BD`);
   - `art/quiet-swamp.svg` (`rfUfx`) and `art/signpost.svg` (`W1Ia5`), with
     `{{muted}}` and `{{border}}` placeholders substituted per theme, drawn
-    through `gtk::Svg::from_bytes` (GTK 4.22);
+    through `gtk::Svg` (GTK 4.22; `Svg::new`, its `error` handler, then
+    `load_from_bytes`: GtkSvg reports what it drops while it parses, so the
+    handler must be there first; `theme::art::paintable_checked` counts);
   - the app icon (`ptPs6`) as SVG plus PNG 128/64/32 (`rsvg-convert`) for
     packaging;
   - the REC glyph `qrec-record-symbolic.svg` (`w8imU`).
@@ -1260,9 +1329,12 @@ adw::ApplicationWindow #qrec  (default 1600×1000, min 800×600)
   `FloatingPassive`:
   - `Modal`, `Settings` and `Palette` add a `scrim` over 1600×968 (the
     content layer stops above the hint bar; stacked layers stack their
-    scrims), trap focus (the regions below get `can-target = false` and
-    leave the focus chain), give the initial focus the widget asks for,
-    and restore focus on close;
+    scrims), trap focus (the regions below, the toast host too, get
+    `can-target = false` and leave the focus chain; a widget in both the
+    content and the window base is out while either trap applies, and
+    each gets its own `can-target`/`can-focus` back when the trap goes,
+    so the hint bar never becomes focusable), give the initial focus the
+    widget asks for, and restore focus on close;
   - `Fullscreen` (the cheat sheet, gated) adds `scrim-strong` over the
     whole window;
   - `FloatingTrap` (the export panel in Setup, Done, Failed) traps focus
@@ -1414,29 +1486,31 @@ with `fn widget(&self) -> gtk::Widget`) and
 
 ### G§3.18 Test control channel (`src/testctl.rs`, WP0b)
 
-Active only under `QREC_GUI_TEST` (G§8.4). A socket
-`$XDG_RUNTIME_DIR/qrec-gui-test.sock` (0600, in the test's private runtime
-dir), served by its own thread (`qrec-testctl`); one JSON request line, one
-JSON reply line. Requests reach the main thread as `Inbound::Test`; the
-socket thread waits for the answer up to `timeoutMs` (default 10 000, at
-most 60 000) and then replies `{"ok":false,"error":"timed out"}`.
-`TestRequest` carries that `deadline`, so a `waitIdle` still polling gives
-up with `{"ok":false,"error":"not idle: <why>"}` (the queue, unanswered
-requests, previews, the player, opening, the portal).
+Active only under `QREC_GUI_TEST` (G§8.4). A socket per window,
+`$XDG_RUNTIME_DIR/qrec-gui-test-<pid>.sock` (0600, in the test's private
+runtime dir; the harness's `Gui::ctl` connects to its window's pid, so a
+case drives two windows at once), served by its own thread
+(`qrec-testctl`); one JSON request line, one JSON reply line. Requests
+reach the main thread as `Inbound::Test`; the socket thread waits for the
+answer up to `timeoutMs` (default 10 000, at most 60 000) and then replies
+`{"ok":false,"error":"timed out"}`. `TestRequest` carries that
+`deadline`, so a `waitIdle` still polling gives up with
+`{"ok":false,"error":"not idle: <why>"}` (the queue, unanswered requests,
+previews, the player, io, opening, the portal).
 
 | Request | Reply |
 | --- | --- |
-| `{"op":"waitIdle"}` | `{"ok":true,"rev":R}` once: `PreviewCache::in_flight()` is 0 and the player isn't loading or seeking (both checked before the queue: what they send is in the queue before they say they are idle); the inbound queue is empty; the GUI's own requests are answered; no source is `AwaitingPortal`; the window isn't opening; and a frame was drawn after all that and it still holds (frame clock `after-paint`) |
+| `{"op":"waitIdle"}` | `{"ok":true,"rev":R}` once: `PreviewCache::in_flight()` is 0, the player isn't loading or seeking, and every `qrec-gui-io` job finished with no `MediaHub::hold_io_busy` token held (all checked before the queue: what they send is in the queue before they say they are idle; a debounce that will send an io job holds a token); the inbound queue is empty; the GUI's own requests are answered; no source is `AwaitingPortal`; the window isn't opening; and a frame was drawn after all that and it still holds (frame clock `after-paint`) |
 | `{"op":"regions","names":[…]}` | `{"regions":{"<name>":[x,y,w,h],…}}`: window-logical bounds of every widget named `region-*` and of the named parts in G§8.4, plus the visible widgets named in `names` (a button a case clicks) |
 | `{"op":"labels","name":"region-header"}` | `{"ok":true,"labels":[…]}`: the text of every visible label under the widget `name` (default: the window), in tree order |
 | `{"op":"dispatch","command":{…},"confirmed":false}` | `Store::dispatch_with` with the default reply policy (confirmations open their modal); `{"ok":true}` at once |
 | `{"op":"action","id":"export.panel"}` | runs a binding or GUI action as its key would (pre-steps included) |
 | `{"op":"hints"}` | the rendered hint items (`keys`, `label`, `enabled`, `emphasized`) and the status text (`hintbar::current_items`) |
-| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion; the Store's `rev`; `panics` caught by the guard (G§3.12 R10) |
+| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid` |
 | `{"op":"a11y"}` | every visible icon-only button, focusable region or focusable custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 | `{"op":"fonts"}` | the family Pango loads for each bundled font; `ok` when each resolves to itself |
 | `{"op":"icons"}` | each custom symbolic icon drawn in a probe color: found, its pixels, recolored |
-| `{"op":"art"}` | each illustration through `gtk::Svg` (`theme::art`): loaded, its size and drawn pixels |
+| `{"op":"art"}` | each illustration through `gtk::Svg` (`theme::art`): loaded, its size, drawn pixels and `errors` (GtkSvg's, none for `ok`), and `probeErrors` of a known-bad SVG (`<foreignObject>`; at least one for `ok`: the count works) |
 
 Dispatches go through the Store (R8); the other ops only read.
 
@@ -2600,7 +2674,7 @@ backend):
   seeks show the frame plan's frame (A§11 parity); `load` keeps the
   position; rates 2 and 4, and a rate change while playing; reverse
   stepping; `Ended`; `Error` on a missing file; shutdown ≤ 5 s; with
-  `out_size`, frames arrive at that size;
+  `out_size`, frames arrive at the canvas fitted into it;
 - `plan_ges_take` and `scaled` snapshots; properties `without_tracks(p,
   None, ∅) == p` and `scaled(p, canvas size) == p`;
 - the measurement above.
@@ -2683,7 +2757,8 @@ Writes `LocalUi.{drag, viewport, hover_clip, trim_frame}`.
 transport and Save frame; S01a's source setup; take and trim previews on
 the stage; the player sync (G§3.10); D-04, the stage side of D-05 and
 D-17, D-09, D-16, D-26, D-27, D-32, D-33, the player side of D-40, the
-canvas side of D-43, D-44, the H-9 badge; the S24 overlay only after
+canvas side of D-43, D-44, the H-9 badge (its `proxy` input is
+`fit_size(canvas, out_size) != canvas`, G§3.10); the S24 overlay only after
 G§0.2. Writes `LocalUi.{layer_drag, first_run_checked, playing_rate}`.
 
 **Acceptance.**
@@ -2893,18 +2968,28 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   - renderer `pixman` by default, and then the client draws with Cairo
     too (`GDK_DISABLE=gl,vulkan`, below): nothing opens a GPU node, as on
     CI. `QREC_TEST_WLR=gles2` renders on
-    `WLR_RENDER_DRM_DEVICE=/dev/dri/renderD129` with Mesa's EGL pinned
-    (`__EGL_VENDOR_LIBRARY_FILENAMES`), and the client uses GSK GL: the
-    GL path (the header title's stray mark, G§3.14 fonts, only ever
+    `WLR_RENDER_DRM_DEVICE=<the first Intel or AMD render node>`, chosen
+    by PCI vendor (`gui_support::gl_node`; the node numbers swap between
+    boots on the dev machine, NVIDIA's is never used), with Mesa's EGL
+    pinned (`__EGL_VENDOR_LIBRARY_FILENAMES`), and the client uses GSK GL:
+    the GL path (the header title's stray mark, G§3.14 fonts, only ever
     showed there);
-  - config: `output HEADLESS-1 mode --custom 1600x1000@60Hz scale <s>`
-    (`QREC_TEST_SCALE`, default 1), `default_border none`, `xwayland
-    disable`, `swaybg_command -`, `swaynag_command -`;
+  - config: `output HEADLESS-1 mode --custom <1600·s>x<1000·s>@60Hz scale
+    <s>` (`QREC_TEST_SCALE` = s, default 1: a 1600×1000 logical output at
+    any scale; `Options::size(w, h)` for other logical sizes),
+    `default_border none`, `xwayland disable`, `swaybg_command -`,
+    `swaynag_command -`;
   - `DISPLAY` and `WAYLAND_DISPLAY` unset for sway; whole process groups
-    killed on teardown;
-  - a guard panics if the client's `XDG_RUNTIME_DIR` equals the user's, or
-    its `WAYLAND_DISPLAY` would reach the user's session. Never the user's
-    `wayland-1`.
+    killed on teardown (`kill(2)`), and each child also dies with the
+    test's thread (`PR_SET_PDEATHSIG`), so a test binary killed by Ctrl-C
+    or a runner's timeout leaves no sway, bus or window behind; every tool
+    run (grim, wtype, swaymsg, the CLI, ffmpeg probes) has a deadline;
+  - guards: the private runtime dir is never under `/run/user/`, the
+    nested display is a socket name right inside it, and a case can't give
+    a window `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `WAYLAND_SOCKET`,
+    `DISPLAY` or `GDK_BACKEND` (`gui_support::DISPLAY_VARS`, a panic);
+    grim and wtype get the nested display with `WAYLAND_SOCKET` removed.
+    Never the user's `wayland-1`.
 - **Client env.** The `TestEnv` vars (`HOME`, `XDG_*`,
   `QREC_RUNTIME_DIR`, `QREC_CAPTURE_BACKEND=fake`, `TZ=UTC0`: the fixture's
   recording times are UTC, so the bin's local HH:MM reads BRIEF's 14:31 …
@@ -2944,8 +3029,10 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
 - **Capture.** `grim -o HEADLESS-1
   <repo>/tmp/gui-shots/<area>/<case>-<name>.png` (`Nested::screenshot`;
   menus and tooltips included; a GL client doesn't tear *(spike)*), with
-  every log of the case (sway, the bus, the client's output) in
-  `<area>/logs/`.
+  every log of the case in `<area>/logs/`: sway, the bus, each window's
+  output, and, copied when the case ends (passed or failed, before its
+  `TestEnv` goes), each window's own GUI log and the projects'
+  `.qrec/logs`.
 - **Checks per case.**
   1. **Regions** (objective, fails the test): `regions` against the
      case's rects, ±1 px (× scale). The base set, BRIEF §2.1 at
@@ -3052,7 +3139,10 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
 
 - **Scale runs**: S02, S06, S09 and S14 at `QREC_TEST_SCALE=2` and 1.5:
   regions scale; the live sink's caps are 1920×1080 at 2; strip textures
-  are 144 px high; a scripted trim like S10 hits the same edge.
+  are 144 px high; a scripted trim like S10 hits the same edge. A case
+  takes its pixel probes in device px (× `opts.scale`) and passes
+  `opts.scale` to `assert_regions` (WP0b's gui_shell cases run at scale 1
+  only).
 - **Reduced motion**: S03 (static ring), S04 (static badge), S15c (plain
   bar) with `ui.reduced_motion = true`; zoom is a GTK-free test.
 - **Adaptive**: S02 at 1300×1000 and at 1000×1000 (sheet closed, then

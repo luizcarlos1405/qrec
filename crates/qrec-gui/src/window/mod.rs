@@ -200,16 +200,20 @@ impl MainWindow {
         stack.set_visible_child_name("editor");
         self.content_layer.set_child(Some(&stack));
         // The toasts float in the content layer, passive.
-        self.content_layer.add_overlay(&toasts.widget());
-        self.content_layer.set_clip_overlay(&toasts.widget(), false);
+        let toast_widget = toasts.widget();
+        self.content_layer.add_overlay(&toast_widget);
+        self.content_layer.set_clip_overlay(&toast_widget, false);
 
         let hint_widget = hintbar.widget();
         // The hint bar never takes the window's spare height.
         hint_widget.set_vexpand(false);
         self.root_box.append(&hint_widget);
+        // A trap takes what is below it out of the focus chain: the toasts
+        // too (Tab past a modal's last button reached a toast's button,
+        // and Space ran its action under the scrim).
         self.layers.set_base(
-            vec![stack.clone().upcast()],
-            vec![stack.clone().upcast(), hint_widget],
+            vec![stack.clone().upcast(), toast_widget.clone()],
+            vec![stack.clone().upcast(), hint_widget, toast_widget],
         );
 
         let parts = Rc::new(Parts {
@@ -383,8 +387,14 @@ fn apply_local(ctx: &Ctx, parts: &Rc<Parts>, local: &LocalUi) {
                 parts.page_slot.append(&page.widget());
                 *parts.page.borrow_mut() = Some(page);
             }
-            if parts.stack.visible_child_name().as_deref() != Some("page") {
+            let switching = parts.stack.visible_child_name().as_deref() != Some("page");
+            if switching {
                 parts.stack.set_visible_child_name("page");
+            }
+            // A page that replaces another takes the focus too: the old
+            // page's focused button is gone, and keys sent to a widget out
+            // of the window never reach it (X1 replaced by S23 lost Quit).
+            if switching || !reuse {
                 let parts = Rc::clone(parts);
                 guard::idle_local_once("window: the page's focus", move || {
                     // Cloned out first: focusing runs the window's focus

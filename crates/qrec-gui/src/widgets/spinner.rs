@@ -1,7 +1,9 @@
 //! C01 spinner (G§1.3, G§5.1): one 270° arc, one turn per second, 16, 14
 //! or 12 px; it keeps spinning under reduced motion. Driven by a tick
 //! callback reading `motion::now()`, so test mode freezes it at 0°. The
-//! arc takes the widget's CSS color.
+//! arc takes the widget's CSS color. Its size is CSS (`qrec-spinner`, and
+//! `.s14`, `.s12`: `common.css`), so `ui.scale` scales it like every icon
+//! (D-46); the arc follows the allocation.
 
 use std::f32::consts::PI;
 
@@ -54,8 +56,16 @@ mod imp {
 
     impl WidgetImpl for Spinner {
         fn measure(&self, _orientation: gtk::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
-            let size = self.size.get();
-            (size, size, -1, -1)
+            crate::guard::run("spinner: measure", || {
+                // A C01 size comes from the CSS (scaled); another one is
+                // the widget's own.
+                let size = self.size.get();
+                if super::css_class(size).is_some() {
+                    (0, 0, -1, -1)
+                } else {
+                    (size, size, -1, -1)
+                }
+            })
         }
 
         fn map(&self) {
@@ -128,7 +138,8 @@ impl Default for Spinner {
 }
 
 impl Spinner {
-    /// A spinner `size` px across (16, 14 or 12).
+    /// A spinner `size` px across (16, 14 or 12: sized by the CSS, × the UI
+    /// scale; another size is taken as it is).
     pub fn new(size: i32) -> Self {
         let spinner: Self = glib::Object::new();
         spinner.set_size(size);
@@ -137,7 +148,67 @@ impl Spinner {
     }
 
     pub fn set_size(&self, size: i32) {
-        self.imp().size.set(size.max(1));
+        let size = size.max(1);
+        self.imp().size.set(size);
+        for class in SIZE_CLASSES {
+            self.remove_css_class(class);
+        }
+        if let Some(Some(class)) = css_class(size) {
+            self.add_css_class(class);
+        }
         self.queue_resize();
+    }
+}
+
+/// The CSS classes of the C01 sizes but the default.
+const SIZE_CLASSES: [&str; 2] = ["s14", "s12"];
+
+/// The CSS class of a C01 size (`Some(None)`: 16, the plain node), or
+/// `None` for another size.
+pub(crate) fn css_class(size: i32) -> Option<Option<&'static str>> {
+    match size {
+        16 => Some(None),
+        14 => Some(Some("s14")),
+        12 => Some(Some("s12")),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::css::scale_px;
+
+    /// The spinner's sizes are CSS, so `ui.scale` scales them like the
+    /// icons it stands in for (a 16 px spinner beside 24 px icons at 1.5
+    /// was its own fixed measure).
+    #[test]
+    fn spinner_sizes_are_css_and_scale() {
+        let css = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("resources/theme/components/common.css"),
+        )
+        .unwrap();
+        for (size, selector) in [
+            (16, "\nqrec-spinner {"),
+            (14, "\nqrec-spinner.s14 {"),
+            (12, "\nqrec-spinner.s12 {"),
+        ] {
+            let class = css_class(size).expect("a C01 size");
+            assert_eq!(selector.contains(".s"), class.is_some(), "{size}");
+            let rule = css
+                .split(selector)
+                .nth(1)
+                .and_then(|r| r.split('}').next())
+                .unwrap_or_else(|| panic!("no {selector} rule"));
+            let at_1_5 = scale_px(rule, 1.5);
+            let scaled = format!("{}px", f64::from(size) * 1.5);
+            assert!(
+                at_1_5.contains(&format!("min-width: {scaled}"))
+                    && at_1_5.contains(&format!("min-height: {scaled}")),
+                "{selector} at 1.5: {at_1_5}"
+            );
+        }
+        assert_eq!(css_class(20), None);
     }
 }

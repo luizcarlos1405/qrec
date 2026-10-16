@@ -1803,12 +1803,15 @@ G§3.11) follow these rules with one rolling log instead of one per run: their
 stderr is piped to a thread that reads it line by line (`child::Stderr::Lines`)
 and appends each line, prefixed `[<pid> <kind>]`, to `.qrec/logs/preview.log`
 (the command first, how the run ended last), moved to `preview.1.log` past
-8 MiB; a failed run also writes its last 30 lines to its own
-`YYYYMMDD-HHMMSS-<our pid>-preview-<kind>.log`. Timeout 20 s + 30 s/GiB of
-input, at most 2 at once (1 while an export runs). Both prunes (`proc` and
-`media`) count only timestamp-named logs (`media::is_stamped_log_name`:
-`YYYYMMDD-HHMMSS-….log`) and leave `preview*.log` and any other name alone,
-so preview runs that work never evict export and host logs.
+8 MiB; the first failed run of a file version and kind (per cache) also
+writes its last 30 lines to its own `YYYYMMDD-HHMMSS-<our pid>-preview-<kind>.log`,
+and later ones only add a line naming it to `preview.log` (and a video whose
+header can't be read answers from memory for 30 s: its chunks share one
+probe). Timeout 20 s + 30 s/GiB of input, at most 2 at once (1 while an
+export runs). Both prunes (`proc` and `media`) count only timestamp-named
+logs (`media::is_stamped_log_name`: `YYYYMMDD-HHMMSS-….log`) and leave
+`preview*.log` and any other name alone, so preview runs that work never
+evict export and host logs, and a broken file costs one such log per kind.
 
 ### A§8.8 Output files: never overwrite
 
@@ -1940,15 +1943,28 @@ pipeline first. Paths in the plan are joined with the project dir.
   next one takes it. Its errors are preview problems (`LiveError`), never a
   source's. Without one: `compositor ! <canvas size> ! videoconvert ! RGBA !
   appsink` → `SideEvent::Preview` (tests). A new canvas (size, rate,
-  background) or new preview layers rebuild; a layout only moves pads. A
-  rebuilt pipeline is laid out (crops and pads, at each source's last
-  size) before it starts: a `videocrop` whose crop changes while a source's
-  first caps query crosses it answers no caps, and that source dies
-  "not-negotiated" (the sink's `async=false` lets the pipeline reach
-  PLAYING before its sources negotiated).
+  background) or new preview layers rebuild; a layout only moves pads and
+  sets crops. A rebuilt pipeline is laid out (crops and pads) before it
+  starts, at the size each source will deliver: a camera mode's own size,
+  else the last one that source (its whole spec: another mode or device
+  misses it) delivered; a source that dies before it negotiated forgets
+  it, so a crop sized for larger frames than the new ones (which leaves no
+  caps) is never used twice. A `videocrop` whose crop changes while a
+  source's first caps query crosses it answers no caps, and that source
+  dies "not-negotiated" (the sink's `async=false` lets the pipeline reach
+  PLAYING before its sources negotiated). Only crop sides that change are
+  written, and record bins link without RECONFIGURE, so a take's start
+  doesn't make its sources query their caps again. Still open (WP4): the
+  engine sets crops from its own thread while the pipeline streams (a
+  first build's `SourceSize`, layout changes, transient layouts during
+  drags), and one that lands inside a source's negotiation can still lose
+  that source (and a take recording it) the same way; a crop in the
+  compositor pad (`converter-config`'s source rectangle) or one set from
+  the streaming thread would not.
 - **`LiveControl`** (`control()`): `transient_layout(Some(scene))` lays the
-  preview pads out from that scene's layers, without a rebuild, until the
-  next `SetLive` (any) or `None` (D-32, D-33). Preview only.
+  preview out (pads and crops) from that scene's layers, without a
+  rebuild, until the next `SetLive` (any) or `None` (D-32, D-33). Preview
+  only, but a crop it changes falls under the race above.
 - **Left out**: a screen the portal refused, or a source that failed to
   start, stays out of the live pipeline, which runs with the rest, until
   the scene's sources change (a layout change, or Program mode and back,
@@ -1962,12 +1978,15 @@ pipeline first. Paths in the plan are joined with the project dir.
   elsewhere), so a live scene within it asks the portal nothing; then they
   close.
 - **`SideEvent::LiveStatus`**, whenever it changes: the live scene's
-  sources in its order (layers topmost first, then audio; one per device):
-  `Live` with the size it delivers (the last known one across rebuilds),
-  `Dead { message }` (it died, or failed to start), `Refused { cancelled }`
-  (`cancelled`: the portal's "cancelled in the dialog"), `AwaitingPortal`.
-  A source not started yet (its pipeline waits for another screen's
-  answer, or for the take to end) has no entry; no live scene, none.
+  sources in its order (layers in the scene's array order, bottom first
+  and the last on top, then audio; one per device; consumers look a source
+  up by name, `live_sources_view`): `Live` with the size it delivers (the
+  expected one until it negotiates), `Dead { message }` (it died, or
+  failed to start), `Refused { cancelled }` (`cancelled`: the portal's
+  "cancelled in the dialog"), `AwaitingPortal` (a screen asked of the
+  portal, also again: before its old dead branch or refusal). A source not
+  started yet (its pipeline waits for another screen's answer, or for the
+  take to end) has no entry; no live scene, none.
 - **`MeterMonitor`** (`capture/meters.rs`, D-03): per device, `pulsesrc
   device=X ! audioconvert ! level interval=50ms ! fakesink sync=false` (fake
   backend: the engine's tone) on `qrec-meters`; readings go out as
@@ -2359,12 +2378,21 @@ Program sink; calls return at once, loads and seeks coalesce (newest wins).
 - Seeks are FLUSH|ACCURATE and frame-aligned, one in flight, done when the
   first frame after the flush reaches the sink. Forward rates are seeks
   with the rate; reverse is stepping (accurate seeks, ≤ 15 a second, video
-  only), `Ended { reverse: true }` at 0. `scrub` plays 60 ms of sound.
+  only), `Ended { reverse: true }` at 0. `scrub` plays 60 ms of sound (a
+  plain seek while playing, or while a load waits: that load still says
+  `Loaded`).
 - Frames shorter than half a canvas frame are dropped at the sink: the 2 ms
   Matroska in-point nudge leaves slivers of background where a file runs
   out. QoS drops are counted (`Late`, ≤ once a second; H-8).
-- `shutdown`: NULL within 5 s, then `Stopped`. `AudioOut::Silent` under the
-  fake backend and in tests.
+- An error is reported before the pipeline stops. Stopping (READY after an
+  error or for an empty plan, NULL at `shutdown`) runs on a helper thread
+  for at most 5 s: a pipeline wedged past that (a streaming thread stuck
+  where flushing doesn't reach) is abandoned, leaked whole (the Program
+  sink is inside it), and every later load reports `player::STUCK`. A bus
+  error while a load or seek is in flight fails it at once; only a
+  reported failure's follow-on errors are logged.
+- `shutdown`: NULL within 5 s, then `Stopped` (at once when no pipeline is
+  left). `AudioOut::Silent` under the fake backend and in tests.
 - Measured (G§0.4): canvas size holds a 1080p30 canvas with two 1440p
   screens and a 720p camera (37.5–42.6 fps throughput; no late frames but
   in a run starved of CPU), so `out_size` stays `None`.

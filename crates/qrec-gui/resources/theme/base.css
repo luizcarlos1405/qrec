@@ -7,7 +7,8 @@
  *
  * Every color is a token; every px is multiplied by the UI scale before
  * loading (theme::css::scale_px). Fraunces' optical size follows the font
- * size ("opsz" = px), with SOFT and WONK per DESIGN.
+ * size ("opsz" = px; scale_px scales it with the px), with SOFT and WONK
+ * per DESIGN.
  */
 
 /* ------------------------------------------------------------- the window */

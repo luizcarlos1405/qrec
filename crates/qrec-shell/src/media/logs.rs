@@ -145,7 +145,8 @@ pub(crate) fn shell_words(argv: &[String]) -> String {
 /// Whether `name` is a timestamp-named log, `YYYYMMDD-HHMMSS-….log`: the
 /// logs the A§8.7 prune counts and deletes. Anything else is left alone,
 /// the GUI's rolling `preview.log` and `preview.1.log` included (docs/GUI.md
-/// G§3.11), so preview runs never evict export and host logs.
+/// G§3.11), so preview runs that work never evict export and host logs (a
+/// failed one writes one such log per file version and kind).
 pub fn is_stamped_log_name(name: &str) -> bool {
     let b = name.as_bytes();
     let digits = |s: &[u8]| s.iter().all(u8::is_ascii_digit);

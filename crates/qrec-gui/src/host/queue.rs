@@ -3,7 +3,8 @@
 //! Everything the window hears from other threads goes through it: the
 //! Session's snapshots and toasts (the port), the replies to the window's
 //! own requests, the host's life, the startup workers, the player, the
-//! preview cache, source discovery and the test control channel.
+//! preview cache, source discovery, the io worker's results and the test
+//! control channel.
 //!
 //! - [`Queue::push`] works from any thread and never waits for GTK: a
 //!   short mutex, then at most one wake-up pending (an `AtomicBool`).
@@ -28,6 +29,7 @@ use qrec_shell::player::PlayerEvent;
 use qrec_shell::sources::SourceInventory;
 use serde_json::Value;
 
+use crate::media::io::IoDone;
 use crate::startup::StartupEvent;
 use crate::testctl::TestRequest;
 
@@ -63,6 +65,9 @@ pub enum Inbound {
     Preview(PreviewData),
     /// A source discovery finished (`SharedSources::refresh`).
     Sources(SourceInventory),
+    /// An io job finished (`media::io`): a result for its continuation, or
+    /// a panic to tell.
+    Io(IoDone),
     /// A test control request (G§3.18, test mode only).
     Test(TestRequest),
 }
@@ -90,6 +95,7 @@ impl std::fmt::Debug for Inbound {
             Inbound::Player(event) => write!(f, "Player({event:?})"),
             Inbound::Preview(_) => f.write_str("Preview"),
             Inbound::Sources(_) => f.write_str("Sources"),
+            Inbound::Io(done) => write!(f, "{done:?}"),
             Inbound::Test(_) => f.write_str("Test"),
         }
     }

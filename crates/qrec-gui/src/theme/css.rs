@@ -1,9 +1,17 @@
 //! CSS preprocessing (G§3.14): the UI scale. Every `<n>px` in the CSS
-//! text is multiplied by `ui.scale` (100/125/150 %) before it is loaded;
+//! text is multiplied by `ui.scale` (100/125/150 %) before it is loaded,
+//! and so is Fraunces' optical size (`"opsz" <n>` in
+//! `font-variation-settings`, which follows the font size: "opsz" = px);
 //! custom-drawn widgets multiply their metrics by `Theme::scale` (D-46).
 
+/// Fraunces' optical size axis.
+const OPSZ: &str = "\"opsz\"";
+/// Fraunces' optical sizes.
+const OPSZ_RANGE: (f64, f64) = (9.0, 144.0);
+
 /// `css` with every `<number>px` multiplied by `scale` (rounded to 0.01;
-/// `0px` and percentages untouched). `scale` 1 returns it as it is.
+/// `0px` and percentages untouched), and every `"opsz" <number>` too
+/// (rounded, within Fraunces' 9–144). `scale` 1 returns it as it is.
 pub fn scale_px(css: &str, scale: f64) -> String {
     if (scale - 1.0).abs() < f64::EPSILON {
         return css.to_owned();
@@ -12,6 +20,10 @@ pub fn scale_px(css: &str, scale: f64) -> String {
     let mut out = String::with_capacity(css.len() + css.len() / 8);
     let mut i = 0;
     while i < bytes.len() {
+        if css[i..].starts_with(OPSZ) {
+            i += scale_opsz(&css[i..], scale, &mut out);
+            continue;
+        }
         let starts_number =
             (bytes[i].is_ascii_digit() || bytes[i] == b'.') && number_start(bytes, i);
         if starts_number {
@@ -38,6 +50,28 @@ pub fn scale_px(css: &str, scale: f64) -> String {
         i += ch.len_utf8();
     }
     out
+}
+
+/// `"opsz" <number>` at the start of `css`, its number scaled, into `out`;
+/// how many bytes it took (just the axis name when no number follows).
+fn scale_opsz(css: &str, scale: f64, out: &mut String) -> usize {
+    out.push_str(OPSZ);
+    let after = &css[OPSZ.len()..];
+    let gap = after.len() - after.trim_start_matches([' ', '\t']).len();
+    let rest = &after[gap..];
+    let digits = rest
+        .bytes()
+        .take_while(|b| b.is_ascii_digit() || *b == b'.')
+        .count();
+    match rest[..digits].parse::<f64>() {
+        Ok(size) if digits > 0 => {
+            let scaled = (size * scale).round().clamp(OPSZ_RANGE.0, OPSZ_RANGE.1);
+            out.push_str(&after[..gap]);
+            out.push_str(&format_number(scaled));
+            OPSZ.len() + gap + digits
+        }
+        _ => OPSZ.len(),
+    }
 }
 
 fn is_word_byte(b: u8) -> bool {
@@ -81,5 +115,44 @@ mod tests {
         assert_eq!(scale_px(".e2 h1px a1 { }", 2.0), ".e2 h1px a1 { }");
         assert_eq!(scale_px("x { width: 10pxs; }", 2.0), "x { width: 10pxs; }");
         assert_eq!(scale_px("— 4px —", 2.0), "— 8px —");
+    }
+
+    /// Fraunces' optical size follows the font size, so it scales with the
+    /// px (it stayed at its 100 % value: `.t-display` at 48 px kept opsz 32).
+    #[test]
+    fn the_optical_size_scales_too() {
+        let css =
+            "a { font-size: 32px; font-variation-settings: \"SOFT\" 50, \"WONK\" 1, \"opsz\" 32; }";
+        assert_eq!(
+            scale_px(css, 1.5),
+            "a { font-size: 48px; font-variation-settings: \"SOFT\" 50, \"WONK\" 1, \"opsz\" 48; }"
+        );
+        assert_eq!(scale_px(css, 1.0), css);
+        assert_eq!(scale_px("\"opsz\" 20;", 1.25), "\"opsz\" 25;");
+        assert_eq!(
+            scale_px("\"opsz\" 120", 1.5),
+            "\"opsz\" 144",
+            "Fraunces' largest"
+        );
+        assert_eq!(scale_px("\"opsz\" x", 2.0), "\"opsz\" x");
+        // The real roles keep opsz = px at every scale.
+        let base = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/theme/base.css"),
+        )
+        .unwrap();
+        let scaled = scale_px(&base, 1.5);
+        let rules: Vec<&str> = scaled
+            .split('}')
+            .filter(|r| r.contains("font-variation-settings"))
+            .collect();
+        assert!(rules.len() >= 3, "{rules:?}");
+        for rule in rules {
+            let px = rule
+                .split("font-size: ")
+                .nth(1)
+                .and_then(|r| r.split("px").next())
+                .expect("a font size");
+            assert!(rule.contains(&format!("\"opsz\" {px};")), "{rule}");
+        }
     }
 }

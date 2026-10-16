@@ -634,11 +634,138 @@ fn attach(
         let _ = pipeline.remove(&bin);
         return Err(format!("the record bin for {id} can't start: {e}"));
     }
-    if let Err(e) = tee_pad.link(&rec_bin.sink_pad) {
+    // Without a RECONFIGURE upstream: the tee gives its new pad the
+    // source's sticky caps, and the record bin takes any. One would make the
+    // source query its caps again at the take's start, through every
+    // preview layer's `videocrop`, and a crop that changes meanwhile (two
+    // caps transforms, each with another crop) leaves it no caps: the
+    // source dies "not-negotiated", and the take with it.
+    if let Err(e) = tee_pad.link_full(
+        &rec_bin.sink_pad,
+        gst::PadLinkCheck::DEFAULT | gst::PadLinkCheck::NO_RECONFIGURE,
+    ) {
         rec_bin.release_tee_pad();
         let _ = bin.set_state(gst::State::Null);
         let _ = pipeline.remove(&bin);
         return Err(format!("can't connect the record bin for {id}: {e:?}"));
     }
     Ok(rec_bin)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicUsize;
+    use std::time::{Duration, Instant};
+
+    use qrec_core::model::VideoSource;
+    use qrec_core::plans::VideoEncoder;
+
+    use super::*;
+    use crate::gst_init::testing::{assert_quiet_since, problems, serial};
+    use crate::testkit::TestEnv;
+
+    /// A take's record bin joins a running source's tee without asking the
+    /// source to negotiate again (no RECONFIGURE upstream), and still gets
+    /// the source's caps: a new caps query would cross every preview
+    /// layer's `videocrop` while the engine may change its crop (G§3.9).
+    #[test]
+    fn a_record_bin_joins_its_tee_without_a_reconfigure() {
+        let _serial = serial();
+        let quiet = problems();
+        crate::gst_init::init().expect("GStreamer");
+        let env = TestEnv::new();
+        let dir = env.empty_dir("attach");
+        let pipeline = gst::Pipeline::new();
+        let src = make("videotestsrc", "s0-src").unwrap();
+        set_value(&src, "is-live", true).unwrap();
+        let caps = capsfilter(
+            "s0-caps",
+            "video/x-raw,format=I420,width=320,height=240,framerate=30/1,colorimetry=bt709",
+        )
+        .unwrap();
+        let tee = make("tee", "s0-tee").unwrap();
+        set_value(&tee, "allow-not-linked", true).unwrap();
+        let sink = make("fakesink", "s0-sink").unwrap();
+        set_value(&sink, "sync", false).unwrap();
+        set_value(&sink, "async", false).unwrap();
+        pipeline.add_many([&src, &caps, &tee, &sink]).unwrap();
+        gst::Element::link_many([&src, &caps, &tee, &sink]).unwrap();
+        let reconfigures = Arc::new(AtomicUsize::new(0));
+        let flowing = Arc::new(AtomicBool::new(false));
+        let tee_sink = tee.static_pad("sink").unwrap();
+        {
+            let (reconfigures, flowing) = (Arc::clone(&reconfigures), Arc::clone(&flowing));
+            tee_sink.add_probe(
+                gst::PadProbeType::EVENT_UPSTREAM | gst::PadProbeType::BUFFER,
+                move |_, info| {
+                    match &info.data {
+                        Some(gst::PadProbeData::Event(e))
+                            if e.type_() == gst::EventType::Reconfigure =>
+                        {
+                            reconfigures.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Some(gst::PadProbeData::Buffer(_)) => {
+                            flowing.store(true, Ordering::SeqCst);
+                        }
+                        _ => {}
+                    }
+                    gst::PadProbeReturn::Ok
+                },
+            );
+        }
+        pipeline.set_state(gst::State::Playing).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !flowing.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "the source never ran");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let before = reconfigures.load(Ordering::SeqCst);
+        let rec = VideoRecord {
+            id: "L1".parse().unwrap(),
+            source: VideoSource::Screen {
+                output: "FAKE-1".into(),
+                label: "Fake FAKE-1".into(),
+            },
+            file: "L1-screen-FAKE-1.mkv".into(),
+            encoder: VideoEncoder::X264 {
+                pass: "qual".into(),
+                quantizer: 18,
+                speed_preset: "veryfast".into(),
+                tune: "zerolatency".into(),
+            },
+            key_int_max: 30,
+            camera_mode: None,
+        };
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let bin = attach_video(
+            &pipeline,
+            &tee,
+            0,
+            0,
+            &rec,
+            Fps::new(30, 1),
+            &dir.join(&rec.file),
+            rec.file.clone(),
+            "L1".into(),
+            &tx,
+            1,
+        )
+        .expect("the bin attaches");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while bin.sink_pad.current_caps().is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "the bin never got the source's caps"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(
+            reconfigures.load(Ordering::SeqCst),
+            before,
+            "the take's bin made the source negotiate again"
+        );
+        let _ = pipeline.set_state(gst::State::Null);
+        assert_quiet_since(quiet);
+    }
 }

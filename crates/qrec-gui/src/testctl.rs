@@ -7,27 +7,29 @@
 //! (D-30), `QREC_GUI_TEST_NOW` (RFC 3339) is the local time of the export's
 //! auto name, and the control channel listens. Flags, comma-separated:
 //! `stuck-gst` makes startup report GStreamer stuck without initializing it
-//! (the stuck page, exit 5).
+//! (the stuck page, exit 5); `panic-activate` panics in `activate` (the app
+//! quits with 1).
 //!
-//! **The control channel**: a socket `$XDG_RUNTIME_DIR/qrec-gui-test.sock`
-//! (0600, the test's private runtime dir), served by thread `qrec-testctl`:
-//! one JSON request line, one JSON reply line. Requests reach the main
-//! thread as `Inbound::Test`; the socket thread waits for the answer up to
-//! the request's `timeoutMs` (default 10 000, at most 60 000).
+//! **The control channel**: a socket `$XDG_RUNTIME_DIR/qrec-gui-test-<pid>.sock`
+//! (0600, the test's private runtime dir; one per window, so a test can
+//! drive two at once), served by thread `qrec-testctl`: one JSON request
+//! line, one JSON reply line. Requests reach the main thread as
+//! `Inbound::Test`; the socket thread waits for the answer up to the
+//! request's `timeoutMs` (default 10 000, at most 60 000).
 //!
 //! | op | reply |
 //! | --- | --- |
-//! | `waitIdle` | `{"ok":true,"rev":R}` once the queue is empty, the window's requests are answered, the previews and the player are idle, no source awaits the portal, the window isn't opening, and a frame was drawn after that |
+//! | `waitIdle` | `{"ok":true,"rev":R}` once the previews, the player and the io worker are idle (checked before the queue: what they send is queued before they say so), the queue is empty, the window's requests are answered, no source awaits the portal, the window isn't opening, and a frame was drawn after that |
 //! | `regions` | `{"regions":{"<name>":[x,y,w,h],…}}`: every `region-*` widget and named part (G§8.4), window coordinates; `names` adds widgets by name |
 //! | `labels` | the text of every visible label under the widget `name` (default: the window) |
 //! | `dispatch` | `Store::dispatch` of `command` (`confirmed`: as confirmed), `{"ok":true}` at once |
 //! | `action` | runs binding or GUI action `id` as its key would |
 //! | `hints` | the hint bar's items and status (`hintbar::current_items`) |
-//! | `local` | a summary of `LocalUi`, the theme, the caught panics |
+//! | `local` | a summary of `LocalUi`, the theme (and the window's `.reduced-motion`), the caught panics, the focused widget's path, the window's pid |
 //! | `a11y` | every visible icon-only button, focusable region or custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 //! | `fonts` | the family Pango loads for each bundled font |
 //! | `icons` | each custom symbolic icon drawn in a probe color: found, pixels, recolored |
-//! | `art` | each illustration through `gtk::Svg`: its size and drawn pixels |
+//! | `art` | each illustration through `gtk::Svg`: its size, drawn pixels and SVG errors (none for `ok`), and a known-bad probe whose errors must be counted |
 //!
 //! Dispatches go through the Store (R8); the other ops only read.
 
@@ -61,6 +63,8 @@ pub struct TestMode {
     pub on: bool,
     /// `stuck-gst`: report GStreamer stuck without initializing it.
     pub stuck_gst: bool,
+    /// `panic-activate`: panic in `activate`, after the app is up.
+    pub panic_activate: bool,
     /// The frozen animation clock (`QREC_GUI_TEST_T_MS`).
     pub t_ms: u64,
     /// The local time of the export's auto name (`QREC_GUI_TEST_NOW`: RFC
@@ -81,6 +85,7 @@ impl TestMode {
         Self {
             on,
             stuck_gst: on && flags.contains(&"stuck-gst"),
+            panic_activate: on && flags.contains(&"panic-activate"),
             t_ms: t_ms.and_then(|t| t.trim().parse().ok()).unwrap_or(0),
             now: now.and_then(|n| {
                 let n = n.trim();
@@ -129,8 +134,10 @@ impl std::fmt::Debug for TestRequest {
 
 // ------------------------------------------------------------- the socket
 
-/// The socket's file name in `$XDG_RUNTIME_DIR`.
-pub const SOCKET: &str = "qrec-gui-test.sock";
+/// The socket's file name in `$XDG_RUNTIME_DIR` for the window `pid`.
+pub fn socket_name(pid: u32) -> String {
+    format!("qrec-gui-test-{pid}.sock")
+}
 /// A request's default wait (`timeoutMs`).
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The longest wait a request may ask for (R6).
@@ -138,11 +145,11 @@ pub const MAX_TIMEOUT: Duration = Duration::from_secs(60);
 /// The longest request line.
 const MAX_LINE: u64 = 1 << 20;
 
-/// Where the socket is: `$XDG_RUNTIME_DIR/qrec-gui-test.sock`.
+/// Where this window's socket is: `$XDG_RUNTIME_DIR/qrec-gui-test-<pid>.sock`.
 pub fn socket_path() -> Option<PathBuf> {
     std::env::var_os("XDG_RUNTIME_DIR")
         .filter(|d| !d.is_empty())
-        .map(|dir| PathBuf::from(dir).join(SOCKET))
+        .map(|dir| PathBuf::from(dir).join(socket_name(std::process::id())))
 }
 
 /// The listening channel; the socket goes when it drops.
@@ -157,20 +164,14 @@ impl Drop for Channel {
     }
 }
 
-/// Listens in test mode (thread `qrec-testctl`); `None` outside test mode,
-/// or when another window of this runtime dir already listens.
+/// Listens in test mode (thread `qrec-testctl`) on this window's own
+/// socket; `None` outside test mode.
 pub fn listen(queue: Queue) -> Option<Channel> {
     if !mode().on {
         return None;
     }
     let path = socket_path()?;
-    if UnixStream::connect(&path).is_ok() {
-        tracing::warn!(
-            "test channel: {} is another window's; this one has none",
-            path.display()
-        );
-        return None;
-    }
+    // A dead process's socket of the same pid, if any.
     let _ = std::fs::remove_file(&path);
     let listener = match UnixListener::bind(&path) {
         Ok(listener) => listener,
@@ -288,6 +289,9 @@ fn busy(app: &App) -> Vec<String> {
     }
     if app.ctx.media.player().is_some_and(|p| !p.idle()) {
         why.push("the player".to_owned());
+    }
+    if !app.ctx.media.io_idle() {
+        why.push("io".to_owned());
     }
     if !store.queue().is_empty() {
         why.push("the inbound queue".to_owned());
@@ -474,9 +478,38 @@ fn local(app: &App) -> Value {
         "theme": theme::css_name(app.ctx.theme.id()),
         "scale": app.ctx.theme.scale(),
         "reducedMotion": app.ctx.theme.motion().reduced,
+        "reducedMotionClass": app.window.window.has_css_class("reduced-motion"),
         "rev": app.ctx.store.rev(),
         "panics": guard::panics(),
+        "focusPath": focus_path(app),
+        "focusInTopLayer": focus_in_top_layer(app),
+        "pid": std::process::id(),
     })
+}
+
+/// Whether the focused widget is inside the newest open layer (a modal,
+/// Settings…); `None` without an open layer.
+fn focus_in_top_layer(app: &App) -> Option<bool> {
+    let top = app.ctx.window.top_widget()?;
+    let focus = gtk::prelude::GtkWindowExt::focus(&app.window.window);
+    Some(focus.is_some_and(|f| f == top || f.is_ancestor(&top)))
+}
+
+/// The names (or types) of the focused widget and its ancestors, the
+/// focused one first; empty without a focus.
+fn focus_path(app: &App) -> Vec<String> {
+    let mut path = Vec::new();
+    let mut current = gtk::prelude::GtkWindowExt::focus(&app.window.window);
+    while let Some(widget) = current {
+        let name = widget.widget_name();
+        path.push(if name.is_empty() {
+            widget.type_().name().to_owned()
+        } else {
+            name.to_string()
+        });
+        current = widget.parent();
+    }
+    path
 }
 
 // ----------------------------------------------------------- a11y walk
@@ -690,25 +723,41 @@ fn icons(app: &App) -> Value {
 fn art(app: &App) -> Value {
     let mut all = true;
     let mut out = Vec::new();
+    let palette = app.ctx.theme.palette();
     for which in theme::art::Art::ALL {
-        let Some(svg) = app.ctx.theme.art(which) else {
+        let Some(svg) = theme::art::paintable_checked(which, &palette) else {
             all = false;
             out.push(json!({"name": which.name(), "loaded": false}));
             continue;
         };
-        let (w, h) = (svg.intrinsic_width(), svg.intrinsic_height());
+        let (w, h) = (svg.svg.intrinsic_width(), svg.svg.intrinsic_height());
         let snapshot = gtk::Snapshot::new();
-        svg.snapshot(&snapshot, f64::from(w), f64::from(h));
+        svg.svg.snapshot(&snapshot, f64::from(w), f64::from(h));
         let pixels = snapshot
             .to_node()
             .and_then(|node| render(app, &node, w as f32, h as f32))
             .unwrap_or_default();
         let drawn = pixels.chunks_exact(4).filter(|px| px[3] > 0).count();
-        all &= w > 0 && h > 0 && drawn > 0;
-        out.push(json!({"name": which.name(), "loaded": true, "size": [w, h], "pixels": drawn}));
+        let errors = svg.errors();
+        all &= w > 0 && h > 0 && drawn > 0 && errors == 0;
+        out.push(json!({
+            "name": which.name(),
+            "loaded": true,
+            "size": [w, h],
+            "pixels": drawn,
+            "errors": errors,
+        }));
     }
-    json!({"ok": all, "art": out})
+    // What GtkSvg drops while it parses is counted (an unsupported element
+    // here): the art's zero means something.
+    let probe = theme::art::load("probe", PROBE_SVG).errors();
+    all &= probe > 0;
+    json!({"ok": all, "art": out, "probeErrors": probe})
 }
+
+/// An SVG with an element GtkSvg doesn't support (`<foreignObject>`).
+const PROBE_SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\">\
+    <foreignObject width=\"8\" height=\"8\"/><rect width=\"8\" height=\"8\" fill=\"black\"/></svg>";
 
 #[cfg(test)]
 mod tests {

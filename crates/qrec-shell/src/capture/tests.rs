@@ -1755,6 +1755,117 @@ fn a_rebuilt_preview_keeps_a_cropped_camera() {
     }
 }
 
+/// A camera whose mode changes (a new canvas rate: the fake camera is
+/// 1280×720 at 30 fps and 640×480 at 60) starts laid out at its new mode's
+/// size. The size was cached by device: the rebuilt camera got the crop of
+/// a `cover` 9:16 box at 1280×720 (436 + 438 px), wider than its 640 px
+/// frames, so it had no caps and died "not-negotiated", and again on every
+/// retry and take, since a source that never negotiates never reports a
+/// new size.
+#[test]
+fn a_new_camera_mode_is_laid_out_at_its_own_size() {
+    let _serial = serial();
+    let (side_tx, side_rx) = crossbeam_channel::unbounded();
+    let mut h = Harness::with_side(Some(side_tx));
+    let scene = wide_scene(
+        vec![camera_layer("L2", FAKE_CAMERA, Rect::new(0, 0, 180, 320))],
+        Vec::new(),
+    );
+    let live_at = |size: (u32, u32)| {
+        move |s: &[LiveSourceStatus]| {
+            brief(s) == names(&[(FAKE_CAMERA, "live")]) && s[0].size == Some(size)
+        }
+    };
+    h.engine.set_live(Some(scene.clone()), h.inbox.clone());
+    statuses_until(&side_rx, "the 1280×720 mode", live_at((1280, 720)));
+    let mut fast = scene;
+    fast.canvas.fps = Fps::new(60, 1);
+    // Still live, at 640×480, after the rebuild and after a retry (which
+    // rebuilds without a change to report).
+    let stays_live = |side: &Receiver<SideEvent>, what: &str| {
+        std::thread::sleep(Duration::from_millis(500));
+        let later: Vec<SideEvent> = side
+            .try_iter()
+            .filter(|e| matches!(e, SideEvent::LiveStatus(_) | SideEvent::LiveError(_)))
+            .collect();
+        assert!(
+            later
+                .iter()
+                .all(|e| matches!(e, SideEvent::LiveStatus(s) if live_at((640, 480))(s))),
+            "{what}: {later:#?}"
+        );
+    };
+    h.engine.set_live(Some(fast), h.inbox.clone());
+    statuses_until(&side_rx, "the 640×480 mode", live_at((640, 480)));
+    stays_live(&side_rx, "the 640×480 mode");
+    let generation = h.engine.inspect().generation;
+    h.engine.retry_live(h.inbox.clone());
+    inspect_until(&h, "the retry's rebuild", |i| i.generation > generation);
+    stays_live(&side_rx, "the retry");
+}
+
+/// A screen asked of the portal again is `AwaitingPortal` while its dialog
+/// is open, not its last state: a dead screen the GUI retries (its dead
+/// branch stays in the pipeline until the answer), and a refused screen a
+/// take asks for again.
+#[test]
+fn a_screen_asked_again_awaits_the_portal() {
+    let _serial = serial();
+    let full = Rect::new(0, 0, 320, 180);
+    {
+        let (side_tx, side_rx) = crossbeam_channel::unbounded();
+        let mut h = Harness::with_side(Some(side_tx));
+        h.engine.share_fake_screens();
+        let scene = live_scene(vec![screen_layer("L1", "FAKE-1", full)], Vec::new(), true);
+        h.engine.set_live(Some(scene), h.inbox.clone());
+        let live = names(&[("FAKE-1", "live")]);
+        statuses_until(&side_rx, "the screen", |s| brief(s) == live);
+        h.engine.inject_fake_failure("FAKE-1", FakeFailure::Error);
+        statuses_until(&side_rx, "the screen's death", |s| {
+            brief(s) == names(&[("FAKE-1", "dead")])
+        });
+        h.engine.retry_live(h.inbox.clone());
+        let seen = statuses_until(&side_rx, "the retry", |s| brief(s) == live);
+        let briefs: Vec<_> = seen.iter().map(|s| brief(s)).collect();
+        assert_eq!(briefs, [names(&[("FAKE-1", "awaiting")]), live]);
+        assert_eq!(h.engine.inspect().portal_asks, 2);
+    }
+    let (side_tx, side_rx) = crossbeam_channel::unbounded();
+    let mut h = Harness::custom(Some(side_tx), |opts| {
+        opts.fake = FakeHooks {
+            portal: Some(FakePortal::Deny),
+            ..FakeHooks::default()
+        };
+    });
+    let scene = live_scene(
+        vec![screen_layer("L1", "FAKE-1", full)],
+        vec![audio_track("A1", FAKE_MIC)],
+        true,
+    );
+    h.engine.set_live(Some(scene), h.inbox.clone());
+    let refused = names(&[("FAKE-1", "refused"), (FAKE_MIC, "live")]);
+    statuses_until(&side_rx, "the refusal", |s| brief(s) == refused);
+    let dir = h.take_dir(1);
+    h.start(&plan(
+        1,
+        &dir,
+        vec![screen("L1", "FAKE-1")],
+        vec![audio("A1", FAKE_MIC, "mic")],
+    ));
+    let seen = statuses_until(&side_rx, "the take's refusal", |s| brief(s) == refused);
+    let briefs: Vec<_> = seen.iter().map(|s| brief(s)).collect();
+    assert_eq!(
+        briefs,
+        [
+            names(&[("FAKE-1", "awaiting"), (FAKE_MIC, "live")]),
+            refused
+        ]
+    );
+    h.wait_for("CaptureFailed", |e| {
+        matches!(e, Event::CaptureFailed { .. })
+    });
+}
+
 /// H-4: the screen casts outlive the live pipeline by `cast_grace` (a fake
 /// portal that shares: its call count), then close; without a grace they
 /// close at once.

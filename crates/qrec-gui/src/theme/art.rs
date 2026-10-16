@@ -11,6 +11,9 @@
 //! ready and tested; the PNG fallback of G§3.14 is only needed if
 //! `gtk::Svg` misrenders the real art.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gtk::{gdk, glib};
 
 use super::Palette;
@@ -90,13 +93,50 @@ pub fn css_hex(color: &gdk::RGBA) -> String {
 /// `which` in `palette`'s colors, as a paintable; `None` when its template
 /// is missing from the resources.
 pub fn paintable(which: Art, palette: &Palette) -> Option<gtk::Svg> {
+    paintable_checked(which, palette).map(|checked| checked.svg)
+}
+
+/// A loaded SVG and the errors GtkSvg reported for it (an element or an
+/// attribute it dropped while parsing, a rendering problem).
+#[derive(Debug, Clone)]
+pub struct CheckedSvg {
+    pub svg: gtk::Svg,
+    errors: Rc<Cell<u32>>,
+}
+
+impl CheckedSvg {
+    /// The errors so far (parsing ones are all in once it loaded).
+    pub fn errors(&self) -> u32 {
+        self.errors.get()
+    }
+}
+
+/// [`paintable`], with its errors counted (the test channel's `art`).
+pub fn paintable_checked(which: Art, palette: &Palette) -> Option<CheckedSvg> {
     let template = super::resource_text(which.resource())?;
-    let svg = substitute(&template, palette);
-    let paintable = gtk::Svg::from_bytes(&glib::Bytes::from_owned(svg.into_bytes()));
+    Some(load(which.name(), &substitute(&template, palette)))
+}
+
+/// `svg` as a paintable, its error handler connected before it parses:
+/// GtkSvg reports what it drops (an unsupported element, a bad attribute)
+/// while it parses, through the `error` signal, and `gtk::Svg::from_bytes`
+/// parses before a handler could be connected. Each error is logged as
+/// `name`'s and counted.
+pub fn load(name: &'static str, svg: &str) -> CheckedSvg {
+    let paintable = gtk::Svg::new();
+    let errors = Rc::new(Cell::new(0u32));
+    let count = Rc::clone(&errors);
+    // Only logged and counted: GTK warns against changing the paintable
+    // from its error handler.
     paintable.connect_error(crate::guarded!("art: an SVG error", move |_, error| {
-        tracing::warn!("art {}: {error}", which.name());
+        count.set(count.get() + 1);
+        tracing::warn!("art {name}: {error}");
     }));
-    Some(paintable)
+    paintable.load_from_bytes(&glib::Bytes::from_owned(svg.as_bytes().to_vec()));
+    CheckedSvg {
+        svg: paintable,
+        errors,
+    }
 }
 
 #[cfg(test)]

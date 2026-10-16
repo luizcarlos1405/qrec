@@ -169,8 +169,10 @@ pub enum SideEvent {
     Level(LevelReading),
     /// The live pipeline (not a take) has a problem.
     LiveError(String),
-    /// Every live source's state, after each build, portal answer, source
-    /// death and rebuild (docs/GUI.md G§3.9).
+    /// Every live source's state, whenever it changes (after builds,
+    /// portal answers, deaths and rebuilds that change a source's state or
+    /// size), in the scene's order; look a source up by name
+    /// ([`live_sources_view`]) (docs/GUI.md G§3.9).
     LiveStatus(Vec<LiveSourceStatus>),
 }
 
@@ -224,11 +226,14 @@ pub fn live_sources_view(statuses: &[LiveSourceStatus]) -> LiveSources {
 }
 
 /// Lays out the live preview's layers without a `SetLive`, for a layer
-/// drag or nudge in Live mode (GUI D-32, D-33): the geometry holds until
-/// the next `SetLive` (any) or a `None`. It moves only the preview
-/// compositor's pads: record bins record each source to its own file, so it
-/// never reaches a take, and it never touches State. Cheap to clone; every
-/// call returns at once.
+/// drag or nudge in Live mode (GUI D-32, D-33): the layout holds until the
+/// next `SetLive` (any) or a `None`. It sets the preview compositor's pads
+/// and each layer's `videocrop` crop, and never touches State; record bins
+/// record each source to its own file, so the layout itself never reaches
+/// a take. A crop that changes while a source negotiates its caps can still
+/// kill that source "not-negotiated" (and a take's stream of it; A§8.11):
+/// only the crop sides that change are written, so a move risks nothing.
+/// Cheap to clone; every call returns at once.
 ///
 /// From `GstCaptureEngine::control()`; one that isn't connected to an
 /// engine does nothing.

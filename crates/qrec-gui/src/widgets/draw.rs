@@ -1,7 +1,9 @@
 //! Drawing helpers for custom widgets (G§5.1): the C19 hatch, dashed and
 //! rounded rectangles, text. Colors come from the theme's `Palette` (GTK
-//! can't look CSS custom properties up from code); geometry is in the
-//! widget's px (already × the UI scale).
+//! can't look CSS custom properties up from code). Rects are in the
+//! widget's px; the design's own metrics (the hatch's stripes and edges)
+//! are multiplied by the `scale` a helper takes (`Theme::scale`, D-46), and
+//! a caller's widths and dashes must be scaled by the caller.
 
 use gtk::prelude::*;
 use gtk::{gdk, graphene, gsk, pango};
@@ -14,47 +16,87 @@ pub struct Edges {
     pub right: bool,
 }
 
-/// The C19 hatch: 45° stripes 2 px wide every 6 px, anchored to content x
-/// = 0 (so neighbouring areas line up), clipped to `rect`; `edge` lines
-/// where `edges` asks.
+/// The C19 hatch's geometry at `scale` (`Theme::scale`): its stripes'
+/// pitch and width and its edge lines' width, the design's 6, 2 and 1 px
+/// × the scale.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HatchMetrics {
+    pub pitch: f32,
+    pub stripe: f32,
+    pub edge: f32,
+}
+
+impl HatchMetrics {
+    pub fn at(scale: f32) -> Self {
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        Self {
+            pitch: 6.0 * scale,
+            stripe: 2.0 * scale,
+            edge: scale,
+        }
+    }
+
+    /// Where the stripes crossing `[x, x + width)` of a `height` px tall
+    /// area start at its bottom, anchored to content x = 0 (so
+    /// neighbouring areas line up); each runs 45° up to the right.
+    pub fn stripe_starts(&self, x: f32, width: f32, height: f32) -> Vec<f32> {
+        let first = ((x - height) / self.pitch).floor() * self.pitch;
+        let mut starts = Vec::new();
+        let mut at = first;
+        while at < x + width {
+            starts.push(at);
+            at += self.pitch;
+        }
+        starts
+    }
+}
+
+/// The C19 hatch: 45° stripes 2 px wide every 6 px (× `scale`, the UI
+/// scale), anchored to content x = 0, clipped to `rect`; `edge` lines (1 px
+/// × `scale`) where `edges` asks.
 pub fn hatch(
     snapshot: &gtk::Snapshot,
     rect: &graphene::Rect,
     stripe: &gdk::RGBA,
     edges: Edges,
     edge: &gdk::RGBA,
+    scale: f32,
 ) {
-    const PITCH: f32 = 6.0;
-    const WIDTH: f32 = 2.0;
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
+    let metrics = HatchMetrics::at(scale);
     snapshot.push_clip(rect);
     let builder = gsk::PathBuilder::new();
     let (top, bottom) = (rect.y(), rect.y() + rect.height());
     let h = rect.height();
-    // Stripes run from bottom-left to top-right; start where the first one
-    // can reach the rect.
-    let first = ((rect.x() - h) / PITCH).floor() * PITCH;
-    let mut x = first;
-    while x < rect.x() + rect.width() {
+    for x in metrics.stripe_starts(rect.x(), rect.width(), h) {
         builder.move_to(x, bottom);
         builder.line_to(x + h, top);
-        x += PITCH;
     }
-    let stroke = gsk::Stroke::new(WIDTH);
+    let stroke = gsk::Stroke::new(metrics.stripe);
     snapshot.append_stroke(&builder.to_path(), &stroke, stripe);
     snapshot.pop();
+    let width = metrics.edge.min(rect.width());
     if edges.left {
         snapshot.append_color(
             edge,
-            &graphene::Rect::new(rect.x(), rect.y(), 1.0, rect.height()),
+            &graphene::Rect::new(rect.x(), rect.y(), width, rect.height()),
         );
     }
     if edges.right {
         snapshot.append_color(
             edge,
-            &graphene::Rect::new(rect.x() + rect.width() - 1.0, rect.y(), 1.0, rect.height()),
+            &graphene::Rect::new(
+                rect.x() + rect.width() - width,
+                rect.y(),
+                width,
+                rect.height(),
+            ),
         );
     }
 }
@@ -100,4 +142,37 @@ pub fn text(snapshot: &gtk::Snapshot, layout: &pango::Layout, x: f32, y: f32, co
     snapshot.translate(&graphene::Point::new(x, y));
     snapshot.append_layout(layout, color);
     snapshot.restore();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The hatch's stripes, pitch and edges follow the UI scale (D-46):
+    /// 2 px every 6 px with 1 px edges at 100 %, 3 every 9 with 1.5 at
+    /// 150 % (they stayed 2, 6 and 1 next to 1.5× CSS).
+    #[test]
+    fn the_hatch_scales_with_the_ui() {
+        assert_eq!(
+            HatchMetrics::at(1.0),
+            HatchMetrics {
+                pitch: 6.0,
+                stripe: 2.0,
+                edge: 1.0
+            }
+        );
+        assert_eq!(
+            HatchMetrics::at(1.5),
+            HatchMetrics {
+                pitch: 9.0,
+                stripe: 3.0,
+                edge: 1.5
+            }
+        );
+        assert_eq!(HatchMetrics::at(f32::NAN), HatchMetrics::at(1.0));
+        // Anchored to x = 0: a neighbour's stripes continue these.
+        let starts = HatchMetrics::at(1.5).stripe_starts(10.0, 20.0, 9.0);
+        assert_eq!(starts, [0.0, 9.0, 18.0, 27.0]);
+        assert!(starts.iter().all(|s| (s / 9.0).fract() == 0.0));
+    }
 }

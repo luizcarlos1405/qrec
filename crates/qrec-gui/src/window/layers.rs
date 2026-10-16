@@ -66,6 +66,10 @@ struct Inner {
     /// editor, the page) and below the window layer's (also the hint bar).
     content_base: RefCell<Vec<gtk::Widget>>,
     window_base: RefCell<Vec<gtk::Widget>>,
+    /// The base widgets a trap took out, with their own `can-target` and
+    /// `can-focus` from before (given back when it goes: the hint bar
+    /// never takes the focus, whatever traps came and went).
+    taken: RefCell<Vec<(gtk::Widget, bool, bool)>>,
     open: RefCell<Vec<Open>>,
 }
 
@@ -94,6 +98,7 @@ impl WindowLayers {
                 content_layer: content_layer.clone(),
                 content_base: RefCell::new(Vec::new()),
                 window_base: RefCell::new(Vec::new()),
+                taken: RefCell::new(Vec::new()),
                 open: RefCell::new(Vec::new()),
             }),
         }
@@ -151,6 +156,12 @@ impl WindowLayers {
     /// The newest open layer.
     pub fn top(&self) -> Option<Layer> {
         self.inner.open.borrow().last().map(|o| o.layer)
+    }
+
+    /// The newest open layer's widget (the test channel's `local`: whether
+    /// the focus is inside it).
+    pub fn top_widget(&self) -> Option<gtk::Widget> {
+        self.inner.open.borrow().last().map(|o| o.widget.clone())
     }
 
     fn overlay_of(&self, layer: Layer) -> &gtk::Overlay {
@@ -220,12 +231,36 @@ impl WindowLayers {
         for (i, o) in open.iter().enumerate() {
             set_live(&o.widget, top_trap.is_none_or(|t| i >= t));
         }
+        // A widget of both bases (the stack, the toasts) is out when either
+        // trap applies, and one given back gets its own state again: the
+        // window base's pass used to make the content trap's stack and
+        // toasts live again (Tab left a modal), and the hint bar focusable.
         let content_trapped = top_trap.is_some();
-        for w in self.inner.content_base.borrow().iter() {
-            set_live(w, !content_trapped);
+        let content = self.inner.content_base.borrow();
+        let window = self.inner.window_base.borrow();
+        for w in content.iter().chain(window.iter()) {
+            let trapped =
+                (content_trapped && content.contains(w)) || (window_trap && window.contains(w));
+            self.take_out(w, trapped);
         }
-        for w in self.inner.window_base.borrow().iter() {
-            set_live(w, !window_trap);
+    }
+
+    /// Takes `widget` out of the pointer and the focus (`out`), keeping
+    /// what it had, or gives that back.
+    fn take_out(&self, widget: &gtk::Widget, out: bool) {
+        let mut taken = self.inner.taken.borrow_mut();
+        let at = taken.iter().position(|(w, _, _)| w == widget);
+        match (out, at) {
+            (true, None) => {
+                taken.push((widget.clone(), widget.can_target(), widget.can_focus()));
+                set_live(widget, false);
+            }
+            (false, Some(i)) => {
+                let (widget, target, focus) = taken.remove(i);
+                widget.set_can_target(target);
+                widget.set_can_focus(focus);
+            }
+            _ => {}
         }
     }
 }

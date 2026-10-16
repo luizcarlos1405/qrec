@@ -3,22 +3,32 @@
 //!
 //! - [`Nested::start`]: a private `TestEnv` (its own `XDG_RUNTIME_DIR`
 //!   under `/tmp`), a private session bus without service activation, and
-//!   sway headless on one output (`HEADLESS-1`, 1600×1000@60 by default,
-//!   scale `QREC_TEST_SCALE`). Renderer: pixman by default, with the window
-//!   drawing in software (`GDK_DISABLE=gl,vulkan`: nothing opens a GPU
-//!   node); `QREC_TEST_WLR=gles2` renders on `/dev/dri/renderD129` and the
-//!   window uses GL with Mesa's EGL pinned. Never `/dev/dri/renderD128`.
-//!   Dropping it kills the window, sway and the bus (whole process groups).
+//!   sway headless on one output (`HEADLESS-1`, 1600×1000 logical px @60 by
+//!   default, scale `QREC_TEST_SCALE`: the mode is 1600·s × 1000·s device
+//!   px). Renderer: pixman by default, with the window drawing in software
+//!   (`GDK_DISABLE=gl,vulkan`: nothing opens a GPU node); `QREC_TEST_WLR=gles2`
+//!   renders on the first Intel or AMD render node, chosen by vendor (node
+//!   numbers swap between boots), and the window uses GL with Mesa's EGL
+//!   pinned. Never an NVIDIA node.
+//!   Dropping it kills the window, sway and the bus (whole process groups,
+//!   by `kill(2)`), and each also dies with the test's thread
+//!   (`PR_SET_PDEATHSIG`), so a test binary killed by Ctrl-C or a runner's
+//!   timeout leaves none running.
 //! - [`Nested::launch`]: `qrec --project <dir> -v` in test mode
 //!   (`QREC_GUI_TEST=1`, the fake capture backend, the design inventory);
-//!   [`Gui`] talks to its test control channel (G§3.18): `waitIdle`,
-//!   `regions`, `hints`, `local`, `a11y`, …
+//!   [`Gui`] talks to its own window's test control channel (G§3.18,
+//!   `qrec-gui-test-<pid>.sock`): `waitIdle`, `regions`, `hints`, `local`,
+//!   `a11y`, … Its variables can't name a display or a runtime dir: the
+//!   window can only reach the nested compositor.
 //! - Input: [`Nested::pointer`], a virtual pointer that lives as long as it
 //!   is held (headless sway has no pointer device, and one-shot clicks were
 //!   lost); [`Nested::keys`], one `wtype` run per key sequence, `-s 400`
 //!   first so the compositor has the keyboard's keymap.
 //! - Output: [`Nested::screenshot`] (`grim -o HEADLESS-1`) into
-//!   `<repo>/tmp/gui-shots/<area>/`, with every log of the case.
+//!   `<repo>/tmp/gui-shots/<area>/`, with the case's logs in `logs/`: sway,
+//!   the bus, each window's output, and (copied when the case ends, passed
+//!   or failed) each window's own GUI log and the projects' `.qrec/logs`.
+//!   Every tool run (grim, wtype, swaymsg, the CLI) has a deadline.
 //! - Checks: [`assert_regions`] (BRIEF §2.1's rects, ±1 px), the `a11y`
 //!   walk (launch with `a11y: true`, `GTK_A11Y=test`).
 //!
@@ -30,10 +40,12 @@
 
 pub mod pointer;
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -41,15 +53,43 @@ use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use qrec_shell::testkit::TestEnv;
+use qrec_shell::gpu::{VENDOR_AMD, VENDOR_INTEL, VENDOR_NVIDIA, render_nodes};
+use qrec_shell::testkit::process::{self, Signal};
+use qrec_shell::testkit::{TestEnv, run_tool};
 use serde_json::{Value, json};
 
 pub use pointer::VirtualPointer;
 
-/// The render node the GL runs use (the Intel iGPU on the dev machine).
-pub const GL_NODE: &str = "/dev/dri/renderD129";
 /// Mesa's EGL vendor file (A§8.10): glvnd never picks NVIDIA's.
 pub const MESA_EGL: &str = "/run/opengl-driver/share/glvnd/egl_vendor.d/50_mesa.json";
+/// How long one grim, wtype or swaymsg run may take.
+pub const TOOL_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long one CLI run may take (`record stop` finalizes a take).
+pub const CLI_TIMEOUT: Duration = Duration::from_secs(120);
+/// Variables a window can't be given ([`Launch::with_env`]): they would
+/// point it at another display than the nested one (G§8.4).
+pub const DISPLAY_VARS: [&str; 5] = [
+    "XDG_RUNTIME_DIR",
+    "WAYLAND_DISPLAY",
+    "WAYLAND_SOCKET",
+    "DISPLAY",
+    "GDK_BACKEND",
+];
+
+/// The render node the GL runs use: the first Intel or AMD one, by its PCI
+/// vendor (the node numbers aren't stable: on the dev machine NVIDIA's is
+/// renderD128 on most boots and renderD129 on others). Never NVIDIA's.
+pub fn gl_node() -> String {
+    let nodes = render_nodes();
+    nodes
+        .iter()
+        .find(|n| matches!(n.vendor, Some(VENDOR_INTEL | VENDOR_AMD)))
+        .filter(|n| n.vendor != Some(VENDOR_NVIDIA))
+        .map(|n| n.path.clone())
+        .unwrap_or_else(|| {
+            panic!("QREC_TEST_WLR=gles2 needs an Intel or AMD render node; found {nodes:?}")
+        })
+}
 /// The nested output's name.
 pub const OUTPUT: &str = "HEADLESS-1";
 
@@ -90,7 +130,7 @@ impl Renderer {
 /// The nested output.
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// The output's mode in device px.
+    /// The output's mode in device px (logical px × `scale`).
     pub width: u32,
     pub height: u32,
     /// The output's scale (`QREC_TEST_SCALE`, default 1).
@@ -98,28 +138,37 @@ pub struct Options {
     pub renderer: Renderer,
 }
 
+/// `QREC_TEST_SCALE` (default 1).
+fn env_scale() -> f64 {
+    std::env::var("QREC_TEST_SCALE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|s: &f64| s.is_finite() && *s > 0.0)
+        .unwrap_or(1.0)
+}
+
 impl Default for Options {
+    /// BRIEF's 1600×1000 logical px at `QREC_TEST_SCALE`: at 2 the mode is
+    /// 3200×2000 device px, the window still 1600×1000 (a 1600×1000 mode
+    /// at 2 was 800×500 logical, under the window's minimum).
     fn default() -> Self {
-        Self {
-            width: 1600,
-            height: 1000,
-            scale: std::env::var("QREC_TEST_SCALE")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(1.0),
-            renderer: Renderer::from_env(),
-        }
+        Self::at_scale(1600, 1000, env_scale())
     }
 }
 
 impl Options {
     /// An output of `width`×`height` logical px at the default scale.
     pub fn size(width: u32, height: u32) -> Self {
-        let base = Self::default();
+        Self::at_scale(width, height, env_scale())
+    }
+
+    /// An output of `width`×`height` logical px at `scale`.
+    pub fn at_scale(width: u32, height: u32, scale: f64) -> Self {
         Self {
-            width: (f64::from(width) * base.scale).round() as u32,
-            height: (f64::from(height) * base.scale).round() as u32,
-            ..base
+            width: (f64::from(width) * scale).round() as u32,
+            height: (f64::from(height) * scale).round() as u32,
+            scale,
+            renderer: Renderer::from_env(),
         }
     }
 
@@ -139,6 +188,8 @@ struct Group {
 }
 
 impl Group {
+    /// `command` in a process group of its own, which also dies with this
+    /// thread ([`process::die_with_parent`]: a killed test leaves nothing).
     fn spawn(name: &'static str, mut command: Command, log: &Path) -> Group {
         let out = fs::File::create(log).unwrap_or_else(|e| panic!("{}: {e}", log.display()));
         let err = out.try_clone().expect("clone the log");
@@ -147,6 +198,7 @@ impl Group {
             .stdout(out)
             .stderr(err)
             .process_group(0);
+        process::die_with_parent(&mut command);
         let child = command
             .spawn()
             .unwrap_or_else(|e| panic!("can't start {name}: {e}"));
@@ -157,15 +209,22 @@ impl Group {
         self.child.id()
     }
 
-    fn signal_group(&self, signal: &str) {
-        let _ = Command::new("kill")
-            .args([
-                format!("-{signal}"),
-                "--".into(),
-                format!("-{}", self.pid()),
-            ])
-            .stderr(Stdio::null())
-            .status();
+    fn signal_group(&self, signal: Signal) -> bool {
+        process::signal_group(self.pid(), signal)
+    }
+
+    /// Whether it exited within `within`.
+    fn exits_within(&mut self, within: Duration) -> bool {
+        let deadline = Instant::now() + within;
+        loop {
+            if matches!(self.child.try_wait(), Ok(Some(_))) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
     }
 }
 
@@ -174,16 +233,20 @@ impl Drop for Group {
         if matches!(self.child.try_wait(), Ok(Some(_))) {
             return;
         }
-        self.signal_group("TERM");
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while Instant::now() < deadline {
-            if matches!(self.child.try_wait(), Ok(Some(_))) {
-                return;
-            }
-            thread::sleep(Duration::from_millis(20));
+        self.signal_group(Signal::Term);
+        if self.exits_within(Duration::from_secs(3)) {
+            return;
         }
-        self.signal_group("KILL");
-        let _ = self.child.wait();
+        if !self.signal_group(Signal::Kill) {
+            let _ = self.child.kill();
+        }
+        if !self.exits_within(Duration::from_secs(5)) {
+            eprintln!(
+                "gui_support: {} (pid {}) outlived SIGKILL (stuck in the kernel?); left behind",
+                self.name,
+                self.pid()
+            );
+        }
     }
 }
 
@@ -205,6 +268,9 @@ pub struct Nested {
     pub shots: PathBuf,
     /// The case's name (file name prefix).
     pub case: String,
+    /// The projects the case launched or ran the CLI on (their logs are
+    /// kept when it ends).
+    projects: RefCell<BTreeSet<PathBuf>>,
 }
 
 impl Nested {
@@ -212,7 +278,13 @@ impl Nested {
     pub fn start(area: &str, case: &str, opts: Options) -> Nested {
         let env = TestEnv::new();
         let runtime = env.xdg_runtime_dir();
-        // Never the developer's session (G§8.4).
+        // Never the developer's session (G§8.4): a private runtime dir, never
+        // a user's.
+        assert!(
+            !runtime.starts_with("/run/user/"),
+            "the nested compositor's runtime dir {} is a user's",
+            runtime.display()
+        );
         if let Some(user) = std::env::var_os("XDG_RUNTIME_DIR") {
             assert_ne!(
                 Path::new(&user),
@@ -269,12 +341,13 @@ impl Nested {
             }
             Renderer::Gles2 => {
                 sway.env("WLR_RENDERER", "gles2")
-                    .env("WLR_RENDER_DRM_DEVICE", GL_NODE)
+                    .env("WLR_RENDER_DRM_DEVICE", gl_node())
                     .env("__EGL_VENDOR_LIBRARY_FILENAMES", MESA_EGL);
             }
         }
         let sway = Group::spawn("sway", sway, &log("sway"));
 
+        let mut sway = sway;
         let deadline = Instant::now() + Duration::from_secs(15);
         let display = loop {
             let found = fs::read_dir(&runtime).ok().and_then(|entries| {
@@ -287,12 +360,30 @@ impl Nested {
                 break name;
             }
             assert!(
+                !matches!(sway.child.try_wait(), Ok(Some(_))),
+                "sway exited; see {}",
+                log("sway").display()
+            );
+            assert!(
                 Instant::now() < deadline,
                 "sway didn't start; see {}",
                 log("sway").display()
             );
             thread::sleep(Duration::from_millis(50));
         };
+        // The display is a socket right in the private runtime dir: a
+        // relative name, never a path out of it.
+        assert!(
+            !display.contains('/'),
+            "the nested display {display:?} is a path"
+        );
+        let socket = runtime.join(&display);
+        assert!(
+            fs::metadata(&socket).is_ok_and(|m| m.file_type().is_socket())
+                && socket.parent() == Some(runtime.as_path()),
+            "the nested display {} isn't a socket of the private runtime dir",
+            socket.display()
+        );
         let swaysock = loop {
             let found = fs::read_dir(&runtime).ok().and_then(|entries| {
                 entries.flatten().map(|e| e.path()).find(|p| {
@@ -320,6 +411,7 @@ impl Nested {
             schemas: schema_dirs(),
             shots,
             case: case.to_owned(),
+            projects: RefCell::new(BTreeSet::new()),
         }
     }
 
@@ -350,16 +442,23 @@ impl Nested {
         vars
     }
 
-    /// `qrec <args>` as the CLI, in the env (no display).
+    /// `qrec <args>` as the CLI, in the env (no display), within
+    /// [`CLI_TIMEOUT`].
     pub fn cli(&self, project: &Path, args: &[&str]) -> Output {
-        self.env
-            .command(&qrec_bin())
-            .arg("--project")
-            .arg(project)
-            .args(args)
-            .stdin(Stdio::null())
-            .output()
-            .expect("run qrec")
+        self.projects.borrow_mut().insert(project.to_path_buf());
+        let out = run_tool(
+            self.env
+                .command(&qrec_bin())
+                .arg("--project")
+                .arg(project)
+                .args(args),
+            CLI_TIMEOUT,
+        );
+        Output {
+            status: out.status,
+            stdout: out.stdout,
+            stderr: out.stderr.into_bytes(),
+        }
     }
 
     /// `qrec <args> --json`'s reply object (the last stdout line).
@@ -380,8 +479,16 @@ impl Nested {
         })
     }
 
-    /// Launches the window on `project` with `extra` variables.
+    /// Launches the window on `project` with `extra` variables (none may
+    /// name a display or a runtime dir: [`DISPLAY_VARS`]).
     pub fn launch(&mut self, project: &Path, launch: Launch) -> &mut Gui {
+        for (key, _) in &launch.env {
+            assert!(
+                !DISPLAY_VARS.contains(&key.as_str()),
+                "a window can't be given {key}: it would leave the nested compositor (G§8.4)"
+            );
+        }
+        self.projects.borrow_mut().insert(project.to_path_buf());
         let n = self.windows.len();
         let suffix = if n == 0 {
             String::new()
@@ -418,32 +525,41 @@ impl Nested {
         &mut self.windows[n]
     }
 
+    /// A command for a tool on the nested display (never another: the
+    /// display variables are the nested ones, `WAYLAND_SOCKET` gone).
+    fn nested_tool(&self, program: &str) -> Command {
+        let mut command = Command::new(program);
+        command
+            .env_remove("WAYLAND_SOCKET")
+            .env_remove("DISPLAY")
+            .env("WAYLAND_DISPLAY", &self.display)
+            .env("XDG_RUNTIME_DIR", self.env.xdg_runtime_dir());
+        command
+    }
+
     /// A screenshot of the output: `<shots>/<case>-<name>.png`.
     pub fn screenshot(&self, name: &str) -> PathBuf {
         let path = self.shots.join(format!("{}-{name}.png", self.case));
-        let status = Command::new("grim")
-            .args(["-o", OUTPUT])
-            .arg(&path)
-            .env("WAYLAND_DISPLAY", &self.display)
-            .env("XDG_RUNTIME_DIR", self.env.xdg_runtime_dir())
-            .stderr(Stdio::null())
-            .status()
-            .expect("run grim");
-        assert!(status.success(), "grim failed");
+        let out = run_tool(
+            self.nested_tool("grim").args(["-o", OUTPUT]).arg(&path),
+            TOOL_TIMEOUT,
+        );
+        assert!(out.status.success(), "grim failed: {}", out.stderr);
         path
     }
 
     /// One `wtype` run (one key sequence), after a 400 ms pause for the
     /// virtual keyboard's keymap: `keys(&["-M", "ctrl", "-k", "q", "-m", "ctrl"])`.
     pub fn keys(&self, args: &[&str]) {
-        let status = Command::new("wtype")
-            .args(["-s", "400"])
-            .args(args)
-            .env("WAYLAND_DISPLAY", &self.display)
-            .env("XDG_RUNTIME_DIR", self.env.xdg_runtime_dir())
-            .status()
-            .expect("run wtype");
-        assert!(status.success(), "wtype {args:?} failed");
+        let out = run_tool(
+            self.nested_tool("wtype").args(["-s", "400"]).args(args),
+            TOOL_TIMEOUT,
+        );
+        assert!(
+            out.status.success(),
+            "wtype {args:?} failed: {}",
+            out.stderr
+        );
     }
 
     /// A virtual pointer on the output (keep it while clicking).
@@ -453,11 +569,12 @@ impl Nested {
 
     /// `swaymsg <args>`.
     pub fn swaymsg(&self, args: &[&str]) -> String {
-        let out = Command::new("swaymsg")
-            .args(args)
-            .env("SWAYSOCK", &self.swaysock)
-            .output()
-            .expect("run swaymsg");
+        let out = run_tool(
+            Command::new("swaymsg")
+                .args(args)
+                .env("SWAYSOCK", &self.swaysock),
+            TOOL_TIMEOUT,
+        );
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
@@ -494,8 +611,43 @@ impl Nested {
 
 impl Drop for Nested {
     fn drop(&mut self) {
-        // The windows first, then sway and the bus (field order).
+        // The windows first (they exit and flush their logs), then sway and
+        // the bus (field order), and the env last: its logs are copied
+        // before it goes.
         self.windows.clear();
+        self.keep_logs();
+    }
+}
+
+impl Nested {
+    /// Copies the case's logs out of the env (deleted with it), whether
+    /// the case passed or failed: each window's own GUI log and the
+    /// projects' `.qrec/logs` (headless hosts, recorders, previews,
+    /// exports), into `<shots>/logs/<case>-…`. Errors are ignored: this
+    /// runs while a failed case unwinds.
+    fn keep_logs(&self) {
+        let logs = self.shots.join("logs");
+        let gui = self.env.state_home().join("qrec");
+        for entry in fs::read_dir(&gui).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("gui-") && name.contains(".log") {
+                let _ = fs::copy(entry.path(), logs.join(format!("{}-{name}", self.case)));
+            }
+        }
+        for project in self.projects.borrow().iter() {
+            let label = project.file_name().map_or_else(
+                || "project".to_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            let dir = project.join(".qrec/logs");
+            for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let _ = fs::copy(
+                    entry.path(),
+                    logs.join(format!("{}-{label}-{name}", self.case)),
+                );
+            }
+        }
     }
 }
 
@@ -539,9 +691,12 @@ impl Gui {
         self.group.pid()
     }
 
-    /// One request on the test control channel (G§3.18) and its reply.
+    /// One request on its window's test control channel (G§3.18,
+    /// `qrec-gui-test-<pid>.sock`) and its reply.
     pub fn ctl(&self, request: Value) -> Value {
-        let socket = self.runtime.join("qrec-gui-test.sock");
+        let socket = self
+            .runtime
+            .join(format!("qrec-gui-test-{}.sock", self.pid()));
         let wait = request["timeoutMs"].as_u64().unwrap_or(10_000);
         let deadline = Instant::now() + Duration::from_secs(20);
         let stream = loop {
@@ -599,6 +754,11 @@ impl Gui {
         let deadline = Instant::now() + within;
         loop {
             let local = self.local();
+            assert_eq!(
+                local["pid"].as_u64(),
+                Some(u64::from(self.pid())),
+                "another window answered: {local}"
+            );
             if local["startup"]["phase"] == phase {
                 return local;
             }
@@ -613,11 +773,8 @@ impl Gui {
 
     /// Sends `signal` (`TERM`, `INT`) to the window's process.
     pub fn signal(&self, signal: &str) {
-        let status = Command::new("kill")
-            .args([format!("-{signal}"), self.pid().to_string()])
-            .status()
-            .expect("run kill");
-        assert!(status.success(), "kill -{signal} failed");
+        let sig = Signal::from_name(signal).unwrap_or_else(|| panic!("no signal {signal}"));
+        assert!(process::signal(self.pid(), sig), "kill -{signal} failed");
     }
 
     /// Its exit code once it exits within `within` (`None`: still running).
@@ -756,5 +913,26 @@ pub fn wait_for_gui_host(nested: &Nested, project: &Path, within: Duration) -> V
         }
         assert!(Instant::now() < deadline, "no GUI host answered: {status}");
         thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The default output is BRIEF's 1600×1000 logical px at any scale (at
+    /// 2 it was a 1600×1000 mode: 800×500 logical, under the window's
+    /// 800×600 minimum, Narrow and compact).
+    #[test]
+    fn the_default_output_is_1600_by_1000_logical_at_any_scale() {
+        for scale in [1.0, 1.5, 2.0] {
+            let opts = Options::at_scale(1600, 1000, scale);
+            assert_eq!(opts.logical(), (1600.0, 1000.0), "at {scale}");
+        }
+        let two = Options::at_scale(1600, 1000, 2.0);
+        assert_eq!((two.width, two.height), (3200, 2000));
+        let default = Options::default();
+        assert_eq!(default.logical(), (1600.0, 1000.0));
+        assert_eq!(Options::size(1300, 1000).logical(), (1300.0, 1000.0));
     }
 }

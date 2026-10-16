@@ -1,7 +1,10 @@
 //! The waveform peak cache (G§3.11, C17 lanes). Owner: WP2.
 //!
 //! A miss requests the file's peaks from the preview cache and returns
-//! `None`; subscribers get the file whose peaks arrived (or failed). An LRU
+//! `None` (a getter on peaks asked for and not answered asks again: the
+//! preview cache moves them up; [`PeakCache::request`] prefetches, after
+//! every getter's request); subscribers get the file whose peaks arrived
+//! (or failed). An LRU
 //! by bytes keeps it under its budget (128 MiB: about eight hours of audio
 //! at 1, 16 and 256 ms per bucket). A file whose waveform failed isn't asked
 //! again for `thumbs::RETRY_AFTER`. The bookkeeping ([`PeakStore`]) is
@@ -58,11 +61,11 @@ impl PeakCache {
         levels
     }
 
-    /// Prefetches `file`'s peaks.
+    /// Prefetches `file`'s peaks (after every getter's request).
     pub fn request(&self, file: &str) {
         let request = self.store.borrow_mut().want(file, Instant::now());
         if let Some(request) = request {
-            self.cache.request(request);
+            self.cache.prefetch(request);
         }
     }
 
@@ -102,7 +105,9 @@ impl PeakStore {
         }
     }
 
-    /// The peaks if held, else the request to send (if any).
+    /// The peaks if held, else the request to send (if any): again for
+    /// peaks asked for and not answered (the preview cache moves them up:
+    /// they are on screen now).
     pub fn look(
         &mut self,
         file: &str,
@@ -110,6 +115,12 @@ impl PeakStore {
     ) -> (Option<Arc<PeakLevels>>, Option<PreviewRequest>) {
         match self.lru.get(file) {
             Some(levels) => (Some(Arc::clone(levels)), None),
+            None if self.pending.contains(file) => (
+                None,
+                Some(PreviewRequest::Peaks {
+                    file: file.to_owned(),
+                }),
+            ),
             None => (None, self.want(file, now)),
         }
     }
@@ -189,7 +200,16 @@ mod tests {
                 file: "a.mka".into()
             })
         );
-        assert_eq!(store.look("a.mka", now).1, None, "asked already");
+        assert_eq!(
+            store.look("a.mka", now).1,
+            request,
+            "asked again: the cache joins it and moves it up"
+        );
+        assert_eq!(
+            store.want("a.mka", now),
+            None,
+            "a prefetch doesn't ask again"
+        );
         assert_eq!(
             store.arrive(&arrived("a.mka", 2000), now).as_deref(),
             Some("a.mka")
@@ -253,7 +273,10 @@ mod tests {
                 match rng.below(6) {
                     0 | 1 => {
                         let (_, request) = store.look(file, now);
-                        if let Some(PreviewRequest::Peaks { file }) = request {
+                        // Asked again while out: the cache joins it (one answer).
+                        if let Some(PreviewRequest::Peaks { file }) = request
+                            && !out.contains(&file)
+                        {
                             out.push(file);
                         }
                     }

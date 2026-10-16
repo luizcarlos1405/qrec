@@ -16,6 +16,7 @@
 #[cfg(feature = "testkit")]
 pub mod design;
 mod media;
+pub mod process;
 mod project;
 mod tool;
 

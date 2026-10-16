@@ -489,9 +489,12 @@ struct Engine {
     broken: Option<String>,
     /// The sources `refused` and `failed` are about.
     known_sources: BTreeSet<SourceSpec>,
-    /// The size each video source delivered last, by device: a rebuilt
-    /// branch starts laid out (and reported) with it.
-    sizes: BTreeMap<String, (u32, u32)>,
+    /// The size each video source delivered last, by its whole spec (a
+    /// camera's mode too: another mode misses it): a rebuilt branch starts
+    /// laid out (and reported) with it ([`Self::expected_size`]). A branch
+    /// that dies before it negotiated forgets it: a crop sized for frames
+    /// larger than the new ones leaves the source no caps.
+    sizes: BTreeMap<SourceSpec, (u32, u32)>,
     /// [`LiveControl::transient_layout`]'s layers, until the next `SetLive`.
     transient: Option<Scene>,
     /// The last `SideEvent::LiveStatus` sent.
@@ -753,8 +756,9 @@ impl Engine {
         live.apply_layout(layers);
     }
 
-    /// `LiveControl::transient_layout` (GUI D-32, D-33): only the preview's
-    /// pads move, without a rebuild; `None` goes back to the live scene's.
+    /// `LiveControl::transient_layout` (GUI D-32, D-33): the preview is laid
+    /// out again (pads, and crops that change), without a rebuild; `None`
+    /// goes back to the live scene's.
     fn set_transient(&mut self, scene: Option<Scene>) {
         if scene.is_none() && self.transient.is_none() {
             return;
@@ -788,6 +792,10 @@ impl Engine {
             .filter_map(|name| self.casts.remove(name))
             .collect();
         self.close_casts(stale);
+        // A size a source failed with may be why it failed (a crop for
+        // larger frames): it starts uncropped and negotiates again.
+        self.sizes
+            .retain(|spec, _| !self.failed.contains_key(spec.device_name()));
         self.refused.clear();
         self.failed.clear();
         self.broken = None;
@@ -865,10 +873,13 @@ impl Engine {
             self.side(SideEvent::LiveError(message.clone()));
             match e.source {
                 // Without it, the rest starts (each round leaves one
-                // more source out, so this ends).
+                // more source out, so this ends). The size it was laid
+                // out with may be what failed it: the next try is
+                // uncropped.
                 Some(spec) => {
                     self.failed
                         .insert(spec.device_name().to_owned(), e.message.clone());
+                    self.sizes.remove(&spec);
                     return self.apply_desired(false);
                 }
                 None => self.broken = Some(e.message),
@@ -950,17 +961,23 @@ impl Engine {
         }
     }
 
-    /// Every source of the live scene, in its order (layers, topmost
-    /// first, then audio tracks; one entry per device), that has a state:
-    /// in the live pipeline (`Live`, or `Dead` once it failed or ended),
-    /// refused by the portal, waiting for it, or failed to start (`Dead`).
-    /// A source with none isn't started yet: its pipeline waits for the
-    /// portal's answer about another screen, or for the take to end.
+    /// Every source of the live scene, in the scene's order (its layers in
+    /// array order, bottom first and the last on top, then its audio
+    /// tracks; one entry per device; consumers look a source up by name,
+    /// `live_sources_view`), that has a state: waiting for the portal
+    /// (a screen asked again, a retry or a take's dialog: before its old
+    /// branch or refusal), in the live pipeline (`Live`, or `Dead` once it
+    /// failed or ended), refused by the portal, or failed to start
+    /// (`Dead`). A source with none isn't started yet: its pipeline waits
+    /// for the portal's answer about another screen, or for the take to
+    /// end.
     fn live_status(&self) -> Vec<LiveSourceStatus> {
         let Some(scene) = &self.desired else {
             return Vec::new();
         };
         let live = self.live.as_ref();
+        // The scene's specs as they are (no camera mode: picking one asks
+        // the devices, and this runs after every command).
         scene_sources(&scene.scene)
             .into_iter()
             .filter_map(|spec| {
@@ -968,10 +985,19 @@ impl Engine {
                 let screen = matches!(spec, SourceSpec::Screen { .. });
                 let branch =
                     live.and_then(|l| l.sources.iter().find(|b| b.spec.same_device(&spec)));
-                let known = branch
-                    .and_then(|b| b.size)
-                    .or_else(|| self.sizes.get(name).copied());
-                let (state, size) = if let Some(branch) = branch {
+                // A branch's size (expected at its build, then negotiated);
+                // without one, what the device delivered last in any mode.
+                let known = branch.and_then(|b| b.size).or_else(|| {
+                    self.sizes
+                        .iter()
+                        .find(|(cached, _)| cached.same_device(&spec))
+                        .map(|(_, size)| *size)
+                });
+                // A screen asked of the portal has no cast, so a branch of
+                // it is a dead one's and a refusal is the last answer.
+                let (state, size) = if screen && self.in_flight.contains(name) {
+                    (LiveSourceState::AwaitingPortal, None)
+                } else if let Some(branch) = branch {
                     let state = match &branch.dead {
                         Some(message) => LiveSourceState::Dead {
                             message: message.clone(),
@@ -985,8 +1011,6 @@ impl Engine {
                         message: message.clone(),
                     };
                     (state, None)
-                } else if screen && self.in_flight.contains(name) {
-                    (LiveSourceState::AwaitingPortal, None)
                 } else if let Some(message) = self.failed.get(name).or(self.broken.as_ref()) {
                     let state = LiveSourceState::Dead {
                         message: message.clone(),
@@ -1034,10 +1058,10 @@ impl Engine {
             preview: self.opts.preview.as_ref(),
         };
         let mut live = Live::build(specs, scene, &ctx)?;
-        // Laid out (and reported) at the size each source had last, until
-        // it negotiates again.
+        // Laid out (and reported) at the size each source will deliver,
+        // until it negotiates.
         for branch in live.sources.iter_mut().filter(|b| b.spec.is_video()) {
-            branch.size = self.sizes.get(branch.spec.device_name()).copied();
+            branch.size = self.expected_size(&branch.spec);
         }
         let generation = live.generation;
         let pipeline = live.pipeline.clone();
@@ -1069,6 +1093,22 @@ impl Engine {
         }
         self.broken = None;
         Ok(())
+    }
+
+    /// The size a branch for `spec` will deliver, before it negotiates: a
+    /// camera mode's own (its capsfilter, and `jpegdec` for MJPEG, force
+    /// it), or what that source delivered last. Never a size of another
+    /// mode or device: a crop sized for larger frames than the new ones
+    /// (a canvas rate that picks another mode: the fake camera's 1280×720 at
+    /// 30 fps, 640×480 at 60) leaves the source no caps, and it dies
+    /// "not-negotiated".
+    fn expected_size(&self, spec: &SourceSpec) -> Option<(u32, u32)> {
+        match spec {
+            SourceSpec::Camera {
+                mode: Some(mode), ..
+            } => Some((mode.width, mode.height)),
+            _ => self.sizes.get(spec).copied(),
+        }
     }
 
     /// Whether the fake backend has this device (the real one tries anything).
@@ -1923,8 +1963,14 @@ impl Engine {
         if let Some(source) = source {
             let spec = match &mut self.live {
                 Some(live) => {
-                    live.sources[source].dead = Some(message.clone());
-                    live.sources[source].spec.clone()
+                    let branch = &mut live.sources[source];
+                    branch.dead = Some(message.clone());
+                    if !branch.negotiated {
+                        // The size it was laid out with may be what
+                        // killed it: the next build starts uncropped.
+                        self.sizes.remove(&branch.spec);
+                    }
+                    branch.spec.clone()
                 }
                 None => return,
             };
@@ -1960,6 +2006,9 @@ impl Engine {
         if let Some(live) = &mut self.live {
             for source in &mut live.sources {
                 source.dead.get_or_insert_with(|| message.clone());
+                if !source.negotiated {
+                    self.sizes.remove(&source.spec);
+                }
             }
         }
         if all.is_empty() {
@@ -2114,8 +2163,8 @@ impl Engine {
             return;
         }
         let branch = &mut live.sources[source];
-        self.sizes
-            .insert(branch.spec.device_name().to_owned(), (width, height));
+        branch.negotiated = true;
+        self.sizes.insert(branch.spec.clone(), (width, height));
         if branch.size == Some((width, height)) {
             return;
         }
@@ -2138,6 +2187,9 @@ impl Engine {
             return;
         }
         branch.dead = Some(STOPPED_SENDING.to_owned());
+        if !branch.negotiated {
+            self.sizes.remove(&branch.spec);
+        }
         let text = format!("{}: {STOPPED_SENDING}", branch.spec.describe());
         tracing::warn!("capture: {text}");
         let recorded = self

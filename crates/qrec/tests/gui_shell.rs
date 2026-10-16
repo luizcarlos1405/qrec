@@ -19,6 +19,7 @@ use gui_support::{
     BRIEF_REGIONS, Launch, Nested, Options, WP0B_REGIONS, assert_regions, wait_for_gui_host,
 };
 use qrec_shell::testkit::design::{DesignVariant, design_fixture};
+use qrec_shell::testkit::run_tool;
 use serde_json::{Value, json};
 
 const OPEN: Duration = Duration::from_secs(60);
@@ -105,18 +106,19 @@ fn assert_lock_free(nested: &Nested, project: &Path) {
 
 /// The pixel at (`x`, `y`) of a PNG, as `#RRGGBB`.
 fn pixel(png: &Path, x: u32, y: u32) -> String {
-    let out = Command::new("ffmpeg")
-        .args(["-v", "error", "-i"])
-        .arg(png)
-        .args([
-            "-vf",
-            &format!("crop=1:1:{x}:{y},format=rgb24"),
-            "-f",
-            "rawvideo",
-            "-",
-        ])
-        .output()
-        .expect("run ffmpeg");
+    let out = run_tool(
+        Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(png)
+            .args([
+                "-vf",
+                &format!("crop=1:1:{x}:{y},format=rgb24"),
+                "-f",
+                "rawvideo",
+                "-",
+            ]),
+        Duration::from_secs(30),
+    );
     let rgb = out.stdout;
     assert_eq!(rgb.len(), 3, "one pixel from {}", png.display());
     format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2])
@@ -207,6 +209,10 @@ fn the_skeleton_on_the_design_fixture() {
     let local = gui.local();
     assert_eq!(local["panics"], 0, "{local}");
     assert_eq!(local["theme"], "swamp-night", "{local}");
+    assert_eq!(
+        local["reducedMotionClass"], local["reducedMotion"],
+        "{local}"
+    );
 
     // The stage's ground is the theme's `bg`, the hint bar's `surface`.
     let shot = nested.screenshot("final");
@@ -222,6 +228,12 @@ fn the_skeleton_on_the_design_fixture() {
     let log = nested.window(0).gui_log();
     assert!(!log.contains(" CSS "), "CSS errors:\n{log}");
     assert!(!log.contains(" ERROR "), "errors:\n{log}");
+    // R4: the main loop ran until the player and the meters reached NULL.
+    let quit = log.find("quitting with 0").expect("the quit line");
+    let stopped = log
+        .find("the player and the meters reached NULL")
+        .unwrap_or_else(|| panic!("no NULL line:\n{log}"));
+    assert!(quit < stopped, "{log}");
 }
 
 /// The header title drawn after a partial redraw equals a full redraw's: the
@@ -236,18 +248,19 @@ fn the_skeleton_on_the_design_fixture() {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn the_header_title_leaves_no_trace_of_the_old_one() {
     let crop = |shot: &Path| -> Vec<u8> {
-        let out = Command::new("ffmpeg")
-            .args(["-v", "error", "-i"])
-            .arg(shot)
-            .args([
-                "-vf",
-                "crop=480:48:560:0,format=rgb24",
-                "-f",
-                "rawvideo",
-                "-",
-            ])
-            .output()
-            .expect("run ffmpeg");
+        let out = run_tool(
+            Command::new("ffmpeg")
+                .args(["-v", "error", "-i"])
+                .arg(shot)
+                .args([
+                    "-vf",
+                    "crop=480:48:560:0,format=rgb24",
+                    "-f",
+                    "rawvideo",
+                    "-",
+                ]),
+            Duration::from_secs(30),
+        );
         out.stdout
     };
     let mut shots = Vec::new();
@@ -368,6 +381,53 @@ fn the_control_channel_ops_work() {
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
 }
 
+/// A trap takes the toasts out of the focus chain too (G§3.15): with an
+/// error toast up (it stays until dismissed) and a confirmation open, Tab
+/// keeps going round the modal. (It reached the toast's buttons, under the
+/// scrim, and Space or Enter ran their action while the confirmation was
+/// pending.)
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_modal_keeps_the_focus_from_the_toasts() {
+    let mut nested = Nested::start("wp0b", "modal-focus", Options::default());
+    let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
+    nested.launch(&project, Launch::default());
+    wait_for_gui_host(&nested, &project, OPEN);
+    let gui = nested.window(0);
+    gui.wait_phase("open", OPEN);
+    gui.wait_idle();
+    // Nothing to undo: an error toast, up until dismissed.
+    let reply = gui.ctl(json!({"op": "dispatch", "command": {"cmd": "undo"}}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    gui.wait_idle();
+    assert!(!gui.labels("toast-host").is_empty(), "a toast is up");
+    let reply = gui.ctl(json!({
+        "op": "dispatch",
+        "command": {"cmd": "takePurge", "takes": ["take-0002"]},
+    }));
+    assert_eq!(reply["ok"], true, "{reply}");
+    gui.wait_idle();
+    let in_modal = |local: &Value| {
+        local["focusInTopLayer"] == true
+            && local["focusPath"]
+                .as_array()
+                .is_some_and(|path| !path.iter().any(|n| n == "toast-host"))
+    };
+    assert!(in_modal(&gui.local()), "{}", gui.local());
+    for press in 1..=4 {
+        nested.keys(&["-k", "Tab"]);
+        let gui = nested.window(0);
+        gui.wait_idle();
+        let local = gui.local();
+        assert!(in_modal(&local), "Tab {press} left the modal: {local}");
+    }
+    nested.screenshot("modal");
+    nested.keys(&["-k", "Escape"]);
+    nested.window(0).wait_idle();
+    nested.close_window();
+    assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
+}
+
 /// A signal: 130 within 15 s, the lock free.
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
@@ -446,15 +506,11 @@ fn gstreamer_stuck_shows_its_page_and_exits_5() {
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(5));
 }
 
-/// No ffmpeg on the window's PATH: interim S23 with the lock free (the CLI
-/// works in-process meanwhile); Check again with ffmpeg back opens it.
-#[test]
-#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
-fn a_missing_ffmpeg_shows_s23_until_check_again_finds_it() {
-    let mut nested = Nested::start("wp0b", "s23", Options::default());
-    let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
+/// A `PATH` without ffmpeg, starting with an empty `bin` folder of the env
+/// (to put it back later), and where ffmpeg was.
+fn path_without_ffmpeg(nested: &Nested) -> (std::ffi::OsString, PathBuf, PathBuf) {
     let bin = nested.env.root().join("bin");
-    fs::create_dir(&bin).expect("a bin folder");
+    fs::create_dir_all(&bin).expect("a bin folder");
     let path = std::env::var_os("PATH").expect("PATH");
     let mut ffmpeg_dir = None;
     let mut dirs = vec![bin.clone()];
@@ -466,8 +522,19 @@ fn a_missing_ffmpeg_shows_s23_until_check_again_finds_it() {
         }
     }
     let ffmpeg_dir = ffmpeg_dir.expect("ffmpeg on PATH");
+    (std::env::join_paths(dirs).expect("a PATH"), bin, ffmpeg_dir)
+}
+
+/// No ffmpeg on the window's PATH: interim S23 with the lock free (the CLI
+/// works in-process meanwhile); Check again with ffmpeg back opens it.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_missing_ffmpeg_shows_s23_until_check_again_finds_it() {
+    let mut nested = Nested::start("wp0b", "s23", Options::default());
+    let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
+    let (path, bin, ffmpeg_dir) = path_without_ffmpeg(&nested);
     let launch = Launch {
-        path: Some(std::env::join_paths(dirs).expect("a PATH")),
+        path: Some(path),
         ..Launch::default()
     };
     nested.launch(&project, launch);
@@ -491,6 +558,80 @@ fn a_missing_ffmpeg_shows_s23_until_check_again_finds_it() {
     wait_for_gui_host(&nested, &project, OPEN);
     nested.close_window();
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
+}
+
+/// S23 stays over the takeover pages: a headless recording holds the
+/// project (X1, which asks the recording host again every second) and
+/// ffmpeg is missing (S23 once the doctor ran). The X1 worker's later pages
+/// used to replace S23 for good; Quit exits 5 (S23's) and the recording
+/// goes on.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s23_stays_over_a_cli_recordings_page() {
+    let mut nested = Nested::start("wp0b", "s23-over-x1", Options::default());
+    let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
+    let start = nested.cli_json(&project, &["record", "start"]);
+    assert_eq!(start["ok"], true, "{start}");
+    wait_phase(&nested, &project, "recording", Duration::from_secs(30));
+    let (path, _, _) = path_without_ffmpeg(&nested);
+    nested.launch(
+        &project,
+        Launch {
+            path: Some(path),
+            ..Launch::default()
+        },
+    );
+    let gui = nested.window(0);
+    gui.wait_phase("blocked", OPEN);
+    let deadline = Instant::now() + OPEN;
+    while page_of(&gui.local()) != "missingDeps" {
+        assert!(Instant::now() < deadline, "no S23: {}", gui.local());
+        thread::sleep(Duration::from_millis(100));
+    }
+    // Several of X1's polls later, S23 is still the page.
+    for _ in 0..5 {
+        thread::sleep(Duration::from_millis(600));
+        let local = gui.local();
+        assert_eq!(page_of(&local), "missingDeps", "{local}");
+    }
+    gui.wait_idle();
+    // The keyboard reaches the page that replaced X1 (its focused button
+    // went with X1).
+    let focus = gui.local()["focusPath"].clone();
+    assert!(
+        focus.as_array().is_some_and(|path| path.len() > 1),
+        "the focus is in the window: {focus}"
+    );
+    nested.screenshot("page");
+    ctrl_q(&nested);
+    assert_eq!(nested.window(0).wait_exit(EXIT), Some(5));
+    let status = nested.cli_json(&project, &["status"]);
+    assert_eq!(phase(&status), "recording", "{status}");
+    let stop = nested.cli_json(&project, &["record", "stop"]);
+    assert_eq!(stop["ok"], true, "{stop}");
+}
+
+/// A panic in `activate` (caught, G§3.12) quits with 1 instead of leaving a
+/// window that never shows holding the project (`QREC_GUI_TEST=panic-activate`
+/// panics there).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_panic_in_activate_quits_with_1() {
+    let mut nested = Nested::start("wp0b", "activate-panic", Options::default());
+    let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
+    nested.launch(
+        &project,
+        Launch::default().with_env("QREC_GUI_TEST", "1,panic-activate"),
+    );
+    let gui = nested.window(0);
+    assert_eq!(gui.wait_exit(EXIT), Some(1), "log {}", gui.log.display());
+    assert!(
+        gui.gui_log()
+            .contains("the window couldn't be built; quitting with 1"),
+        "{}",
+        gui.gui_log()
+    );
+    assert_lock_free(&nested, &project);
 }
 
 /// A corrupt `qrec.json`: interim X3 with the restore command; `qrec
@@ -603,13 +744,16 @@ fn a_second_window_gets_the_held_page_and_exits_6() {
     wait_for_gui_host(&nested, &project, OPEN);
     nested.window(0).wait_phase("open", OPEN);
     let second = nested.launch(&project, Launch::default()).pid();
-    // The second window has no test channel (the first holds it): its log.
-    let deadline = Instant::now() + OPEN;
-    while !nested.window(1).gui_log().contains("HeldByWindow") {
-        assert!(Instant::now() < deadline, "no held page");
-        thread::sleep(Duration::from_millis(100));
-    }
-    thread::sleep(Duration::from_millis(500));
+    // Each window has its own test channel.
+    let gui = nested.window(1);
+    let local = gui.wait_phase("blocked", OPEN);
+    assert_eq!(page_of(&local), "heldByWindow", "{local}");
+    gui.wait_idle();
+    assert_eq!(
+        nested.window(0).local()["startup"]["phase"],
+        "open",
+        "the first window answers for itself"
+    );
     nested.screenshot("held");
     nested.swaymsg(&[&format!("[pid={second}]"), "kill"]);
     assert_eq!(nested.window(1).wait_exit(EXIT), Some(6));
