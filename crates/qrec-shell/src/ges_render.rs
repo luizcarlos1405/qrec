@@ -15,7 +15,8 @@
 //!
 //! [`rebuild_into`] does the same to an existing timeline, in place: the
 //! GUI's Program player ([`crate::player`]) keeps one timeline and pipeline
-//! and rebuilds it for every new plan.
+//! and rebuilds it for every new plan. The old layers go into a [`Retired`]
+//! the caller keeps until the pipeline no longer runs their sources.
 //!
 //! Recorded files are Matroska, whose timestamps are whole milliseconds: a
 //! frame stamped up to 0.5 ms *after* its exact time would leave the
@@ -322,18 +323,20 @@ pub fn build(
 
 /// Rebuilds `timeline` (one [`build`] made) in place from `plan`, for the
 /// GUI's Program player (docs/GUI.md G§3.10), which keeps one timeline and
-/// pipeline for its whole life: every layer goes, the video track's
-/// restriction caps follow the plan's canvas (size and rate) when they
-/// changed, and the clips are added as [`build`] adds them, on the tracks
-/// the timeline has. The caller commits (the player waits for that with a
-/// deadline). On an error the timeline is left empty.
+/// pipeline for its whole life: every layer goes (into `retired`, see
+/// [`Retired`]), the video track's restriction caps follow the plan's
+/// canvas (size and rate) when they changed, and the clips are added as
+/// [`build`] adds them, on the tracks the timeline has. The caller commits
+/// (the player waits for that with a deadline). On an error the timeline is
+/// left empty.
 pub fn rebuild_into(
     timeline: &ges::Timeline,
     plan: &GesTimeline,
     project_dir: &Path,
+    retired: &mut Retired,
 ) -> Result<(), GesError> {
     init()?;
-    clear(timeline)?;
+    clear(timeline, retired)?;
     let mut tracks = Tracks::Video;
     for track in timeline.tracks() {
         let kind = track.track_type();
@@ -348,10 +351,37 @@ pub fn rebuild_into(
         }
     }
     fill(timeline, plan, project_dir, tracks).inspect_err(|_| {
-        if let Err(e) = clear(timeline) {
+        if let Err(e) = clear(timeline, retired) {
             tracing::warn!("ges: {e}");
         }
     })
+}
+
+/// The layers [`rebuild_into`] took off a timeline, and so their clips and
+/// sources. Keep them until the timeline's pipeline no longer runs those
+/// sources: once the commit that removes them applied (it sets them to
+/// NULL), or once the pipeline is READY or NULL; drop them then.
+///
+/// GES frees a removed clip's sources with the clip, while their
+/// `uridecodebin`s stay in the composition until the next commit removes
+/// them. One that was still starting then exposed its pad into GES's
+/// `pad-added` handler with the freed source: `ges_extractable_get_asset`
+/// criticals, then SIGSEGV in `_set_ghost_pad_target` (GES 1.26, the
+/// Program player loading a plan while the last one's sources started;
+/// `player::tests::back_to_back_loads_free_no_running_source`).
+#[derive(Debug, Default)]
+pub struct Retired(Vec<ges::Layer>);
+
+impl Retired {
+    /// Nothing is kept.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Drops what is kept: call it only once no pipeline runs those sources.
+    pub fn release(&mut self) {
+        self.0.clear();
+    }
 }
 
 /// Restriction caps from their text.
@@ -360,12 +390,14 @@ fn restriction(text: String) -> Result<gst::Caps, GesError> {
         .map_err(|_| GesError::Build(format!("invalid restriction caps {text:?}")))
 }
 
-/// Removes every layer of `timeline` (and so every clip).
-fn clear(timeline: &ges::Timeline) -> Result<(), GesError> {
+/// Removes every layer of `timeline` (and so every clip), keeping each one
+/// in `retired`.
+fn clear(timeline: &ges::Timeline, retired: &mut Retired) -> Result<(), GesError> {
     for layer in timeline.layers() {
         timeline
             .remove_layer(&layer)
             .map_err(|e| GesError::Build(format!("can't clear the timeline: {e}")))?;
+        retired.0.push(layer);
     }
     Ok(())
 }

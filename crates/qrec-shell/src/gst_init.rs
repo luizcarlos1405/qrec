@@ -126,8 +126,9 @@ pub(crate) mod testing {
         LOCK.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// GStreamer criticals and warnings (`g_critical`/`g_warning`, which
-    /// mean a bug like data before a segment) seen so far in this process.
+    /// GStreamer and GES criticals and warnings (`g_critical`/`g_warning`,
+    /// which mean a bug like data before a segment, or GES handed a freed
+    /// source) seen so far in this process.
     pub(crate) fn problems() -> u64 {
         install();
         PROBLEMS.load(Ordering::SeqCst)
@@ -147,17 +148,22 @@ pub(crate) mod testing {
     fn install() {
         HANDLER.call_once(|| {
             let levels = gst::glib::LogLevels::LEVEL_CRITICAL | gst::glib::LogLevels::LEVEL_WARNING;
-            gst::glib::log_set_handler(Some("GStreamer"), levels, false, false, |_, _, msg| {
-                // The first one with a backtrace: it names the element.
-                if PROBLEMS.fetch_add(1, Ordering::SeqCst) == 0 {
-                    eprintln!(
-                        "GStreamer: {msg}\n{}",
-                        std::backtrace::Backtrace::force_capture()
-                    );
-                } else {
-                    eprintln!("GStreamer: {msg}");
-                }
-            });
+            // GES's own domains too: a GES critical came first when the
+            // Program player freed a running source (ges_render::Retired).
+            for domain in ["GStreamer", "GES", "GStreamer-PBUtils"] {
+                gst::glib::log_set_handler(Some(domain), levels, false, false, |domain, _, msg| {
+                    let domain = domain.unwrap_or("GStreamer");
+                    // The first one with a backtrace: it names the element.
+                    if PROBLEMS.fetch_add(1, Ordering::SeqCst) == 0 {
+                        eprintln!(
+                            "{domain}: {msg}\n{}",
+                            std::backtrace::Backtrace::force_capture()
+                        );
+                    } else {
+                        eprintln!("{domain}: {msg}");
+                    }
+                });
+            }
         });
     }
 }

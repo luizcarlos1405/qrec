@@ -848,8 +848,13 @@ fn rebuild_into_replaces_a_timeline_in_place() {
     let mut smaller = without_tracks(plan.clone(), None, &muted);
     smaller.canvas = canvas(80, 60, Fps::new(25, 1));
     smaller.video[0].placement = full(80, 60);
-    rebuild_into(&timeline, &smaller, &dir).unwrap();
+    let mut retired = Retired::default();
+    rebuild_into(&timeline, &smaller, &dir, &mut retired).unwrap();
     timeline.commit_sync();
+    // The old layers are kept, with their clips, until the caller lets go.
+    assert_eq!(retired.0.len(), 4, "L1, the background, two audio lanes");
+    assert!(retired.0.iter().all(|layer| !layer.clips().is_empty()));
+    retired.release();
     assert_eq!(clip_kinds(&timeline), (2, 1));
     let video = timeline
         .tracks()
@@ -866,8 +871,12 @@ fn rebuild_into_replaces_a_timeline_in_place() {
     // A missing file: an error, and nothing left on the timeline.
     let mut broken = plan.clone();
     broken.video[0].file = "nope.mkv".into();
-    let err = rebuild_into(&timeline, &broken, &dir).unwrap_err();
+    let err = rebuild_into(&timeline, &broken, &dir, &mut retired).unwrap_err();
     assert!(err.to_string().ends_with("nope.mkv is missing"), "{err}");
     assert!(timeline.layers().is_empty());
+    assert!(
+        !retired.is_empty(),
+        "the old layers and the new ones are kept"
+    );
     assert_quiet_since(quiet);
 }

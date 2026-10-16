@@ -790,9 +790,15 @@ impl ProgramPlayer {
   life. `load`:
   1. pauses if playing;
   2. clears the layers and rebuilds from the plan (new
-     `ges_render::rebuild_into(&timeline, &plan, dir)`), updating the
-     restriction caps if the canvas or `out_size` changed;
+     `ges_render::rebuild_into(&timeline, &plan, dir, &mut retired)`),
+     updating the restriction caps if the canvas or `out_size` changed;
   3. `commit_sync()`, an accurate seek to `at_ns`, then resumes.
+
+  The old layers stay in `retired` (`ges_render::Retired`) until that
+  commit applied or the pipeline is READY or NULL: GES frees a removed
+  clip's sources with the clip while their `uridecodebin`s still run in
+  the composition, and one still starting calls into the freed source
+  (SIGSEGV in GES's `_set_ghost_pad_target`; found merging WP0b part 1).
 
   Asset discovery runs on the player thread only. The bus uses a sync
   handler, never a watch on the default MainContext (R5).

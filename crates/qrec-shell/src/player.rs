@@ -9,7 +9,10 @@
 //!   stopped pipeline prerolls instead), an accurate seek to `at_ns`, then
 //!   [`PlayerEvent::Loaded`] once that frame reached the video sink, and
 //!   play again if it was playing. An empty plan stops the pipeline (no
-//!   picture; `Loaded` with a zero duration).
+//!   picture; `Loaded` with a zero duration). The old layers are kept until
+//!   the commit applied or the pipeline stopped: GES frees a removed clip's
+//!   sources while their decoders may still call into them
+//!   ([`ges_render::Retired`]).
 //! - **Seeks** are `FLUSH | ACCURATE`, one in flight: a seek is done when
 //!   the first frame after its flush, at its time, reaches the video sink (a
 //!   pad probe), or the sink gets EOS. A seek past the last frame shows the
@@ -50,7 +53,7 @@ use qrec_core::model::Canvas;
 use qrec_core::plans::GesTimeline;
 use qrec_core::time::{frame_ns, ns_to_frame_ceil, ns_to_frame_floor};
 
-use crate::ges_render::{self, Tracks};
+use crate::ges_render::{self, Retired, Tracks};
 
 /// How long a load (its commit or preroll) or a seek may take before the
 /// player reports an error.
@@ -299,6 +302,10 @@ fn lock(slot: &AwaitedSlot) -> MutexGuard<'_, Option<Awaited>> {
 struct Pipeline {
     timeline: ges::Timeline,
     pipeline: ges::Pipeline,
+    /// The layers the last loads took off the timeline, kept until no
+    /// source of theirs runs: the commit that removes them applied, or the
+    /// pipeline is READY or NULL ([`ges_render::Retired`]).
+    retired: Retired,
     awaited: AwaitedSlot,
     /// Frames shorter than this never reach the video sink (see
     /// [`watch_frames`]): half a frame of the loaded plan.
@@ -655,6 +662,7 @@ impl Worker {
         Ok(Pipeline {
             timeline,
             pipeline,
+            retired: Retired::default(),
             awaited,
             sliver_ns,
             probe,
@@ -693,7 +701,7 @@ impl Worker {
             let _ = p.pipeline.set_state(gst::State::Paused);
             p.playing = false;
         }
-        let built = ges_render::rebuild_into(&p.timeline, &plan, &self.project_dir);
+        let built = ges_render::rebuild_into(&p.timeline, &plan, &self.project_dir, &mut p.retired);
         self.duration_ns = 0;
         if let Err(e) = built {
             self.seek = None;
@@ -725,6 +733,10 @@ impl Worker {
             self.seek = None;
             self.fail(message);
             return;
+        }
+        // The commit applied: the old sources are out and NULL.
+        if let Some(p) = self.gst.as_mut() {
+            p.retired.release();
         }
         let (at, kind) = self.seek.take().unwrap_or((self.position, SeekKind::Plain));
         self.do_seek(at, kind, After::Loaded, "loading");
@@ -790,7 +802,10 @@ impl Worker {
     fn halt(&mut self) {
         self.clear_awaited();
         if let Some(p) = self.gst.as_mut() {
-            let _ = p.pipeline.set_state(gst::State::Ready);
+            if p.pipeline.set_state(gst::State::Ready).is_ok() {
+                // Nothing streams in READY, the old sources neither.
+                p.retired.release();
+            }
             p.running = false;
             p.playing = false;
             p.at_eos = false;
@@ -1120,18 +1135,22 @@ impl Worker {
     }
 
     fn stop(mut self) {
-        if let Some(p) = self.gst.take() {
+        if let Some(mut p) = self.gst.take() {
             if let Some(bus) = p.pipeline.bus() {
                 bus.unset_sync_handler();
             }
-            if let Some((pad, id)) = p.probe {
+            if let Some((pad, id)) = p.probe.take() {
                 pad.remove_probe(id);
             }
-            if !ges_render::set_null_with_deadline(p.pipeline.clone().upcast(), STOP_TIMEOUT) {
+            if ges_render::set_null_with_deadline(p.pipeline.clone().upcast(), STOP_TIMEOUT) {
+                p.retired.release();
+            } else {
                 tracing::warn!(
                     "player: the pipeline didn't stop within {} s; abandoned",
                     STOP_TIMEOUT.as_secs()
                 );
+                // Its sources may still run: never free one under them.
+                std::mem::forget(std::mem::take(&mut p.retired));
             }
         }
         if let Some(total) = self.late.take_total() {

@@ -129,10 +129,27 @@ impl Tap {
 
     /// Waits until the newest frame is at `pts`.
     fn showing(&self, pts: u64) -> Seen {
-        wait_until(&format!("a frame at {pts} ns"), SETTLE, || {
-            self.last().is_some_and(|s| s.pts == pts)
-        });
-        self.last().unwrap()
+        self.showing_since(0, pts)
+    }
+
+    /// Waits until the newest frame is at `pts` and came after the first
+    /// `since` frames: a load at the time the picture already shows must
+    /// not pass on the old plan's frame, which `Loaded` may come before the
+    /// new one reaches the appsink (the player's probe is on the tap's
+    /// sink pad, ahead of its `videoconvert`).
+    fn showing_since(&self, since: usize, pts: u64) -> Seen {
+        let newest = || {
+            let seen = self.seen.lock().unwrap();
+            seen.last()
+                .copied()
+                .filter(|s| seen.len() > since && s.pts == pts)
+        };
+        wait_until(
+            &format!("a frame at {pts} ns after {since}"),
+            SETTLE,
+            || newest().is_some(),
+        );
+        newest().unwrap()
     }
 }
 
@@ -312,9 +329,10 @@ fn a_load_keeps_the_position_and_playing() {
     assert_eq!(player.position_ns(), ns(20));
 
     // Paused: the new plan at the same position.
+    let before = tap.all().len();
     player.load(plan_ges(&cut), ns(20));
     assert_eq!(events.loaded(2), ns(35));
-    assert_eq!(tap.showing(ns(20)).id, Some(75));
+    assert_eq!(tap.showing_since(before, ns(20)).id, Some(75));
     settle(&player);
     assert_eq!(player.position_ns(), ns(20));
 
@@ -342,6 +360,65 @@ fn a_load_keeps_the_position_and_playing() {
             assert_eq!(seen.id, Some(take_frame(&p.project, frame)), "{seen:?}");
         }
     }
+    assert!(events.errors().is_empty(), "{:?}", events.errors());
+    stop(player, &events);
+    assert_quiet_since(quiet);
+}
+
+/// Loads that come as soon as the last one showed, paused and playing, on
+/// plans with cuts: the sources the last load started may still be setting
+/// up their decoders when the next load takes their clips off the timeline.
+/// GES frees a removed source's element with its clip, and a decoder that
+/// exposed its pad afterwards called into the freed element (SIGSEGV in
+/// GES's `_set_ghost_pad_target`, after `ges_extractable_get_asset`
+/// criticals; seen once in `a_load_keeps_the_position_and_playing`). The
+/// player keeps the old layers until the commit that removes their sources
+/// applied, or the pipeline stopped.
+#[test]
+fn back_to_back_loads_free_no_running_source() {
+    // Freeing the old layers at once, 10 runs out of 10 crashed within
+    // these loads (and 10 of 10 with 40 loads, within their first 10).
+    const LOADS: usize = 12;
+    let _serial = serial();
+    let quiet = problems();
+    ges_render::init().unwrap();
+    let p = parity_project();
+    let camera = placements(&p.project)
+        .into_iter()
+        .find(|l| l.0 == "L2")
+        .unwrap()
+        .2
+        .dst;
+    let mut cut = p.project.clone();
+    cut.timeline.clips.retain(|c| c.in_ >= 55);
+    let projects = [&p.project, &cut];
+    let tap = Tap::new(Some(camera));
+    let events = Events::default();
+    let player = spawn(&tap, &p.dir, None, &events);
+    for i in 0..LOADS {
+        player.load(plan_ges(projects[i % 2]), ns((i as u64 * 7) % 30));
+        events.loaded(i + 1);
+        match i % 3 {
+            0 => player.play(1.0),
+            1 => player.pause(),
+            _ => {}
+        }
+    }
+    player.pause();
+    settle(&player);
+    // The last plan shows.
+    let last = projects[(LOADS - 1) % 2];
+    let before = tap.all().len();
+    player.seek(ns(12));
+    settle(&player);
+    assert_eq!(
+        tap.showing_since(before, ns(12)).id,
+        Some(take_frame(last, 12))
+    );
+    assert_eq!(
+        events.count(|e| matches!(e, PlayerEvent::Loaded { .. })),
+        LOADS
+    );
     assert!(events.errors().is_empty(), "{:?}", events.errors());
     stop(player, &events);
     assert_quiet_since(quiet);
