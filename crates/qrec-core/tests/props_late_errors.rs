@@ -190,7 +190,7 @@ fn failed(state: &State, ev: Event, variant: u8) -> Event {
             take: Some(take),
             source: Some("L1".into()),
             message: "access denied".into(),
-            missing: (variant % 2 == 0).then(|| "pipewiresrc".into()),
+            missing: variant.is_multiple_of(2).then(|| "pipewiresrc".into()),
         },
         Event::CaptureStopped { take, streams, .. } => Event::CaptureStopped {
             take,
@@ -232,7 +232,7 @@ fn failed(state: &State, ev: Event, variant: u8) -> Event {
                 job,
                 message: "ffmpeg exited with status 1".into(),
                 stderr_tail: vec!["No space left on device".into()],
-                log: if variant % 2 == 0 {
+                log: if variant.is_multiple_of(2) {
                     ".qrec/logs/20261014-153050-1-export.log".into()
                 } else {
                     String::new()

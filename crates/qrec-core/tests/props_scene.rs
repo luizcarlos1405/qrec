@@ -64,13 +64,11 @@ fn arb_split_project() -> impl Strategy<Value = Project> {
                 };
                 clips.insert(i + 1, right);
             }
-            if strip {
-                if let Some(take) = project.takes.values_mut().next() {
-                    for stream in &mut take.streams {
-                        stream.frames = None;
-                        stream.duration_ns = None;
-                        stream.fps = None;
-                    }
+            if strip && let Some(take) = project.takes.values_mut().next() {
+                for stream in &mut take.streams {
+                    stream.frames = None;
+                    stream.duration_ns = None;
+                    stream.fps = None;
                 }
             }
             project
@@ -243,8 +241,8 @@ fn edit_take(take: &mut Take, item: Index, op: u8, v: u8) {
             layer.rect.w = 1 + u32::from(v);
             layer.crop.left = u32::from(v);
             layer.opacity = f64::from(v) / 255.0;
-            layer.visible = v % 2 == 0;
-            layer.fit = if v % 3 == 0 {
+            layer.visible = v.is_multiple_of(2);
+            layer.fit = if v.is_multiple_of(3) {
                 qrec_core::Fit::Cover
             } else {
                 qrec_core::Fit::Contain

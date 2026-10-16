@@ -14,6 +14,8 @@ path = "src/main.rs"
 qrec-core.workspace = true
 qrec-cli.workspace = true
 qrec-shell.workspace = true
+# `qrec` without a command opens the window (docs/GUI.md G§3.2).
+qrec-gui.workspace = true
 # Local time in the host log.
 chrono = { workspace = true, features = ["clock"] }
 serde_json.workspace = true

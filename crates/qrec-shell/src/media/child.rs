@@ -505,10 +505,10 @@ fn signal_group(pid: u32, signal: rustix::process::Signal) {
     else {
         return;
     };
-    if let Err(e) = rustix::process::kill_process_group(pgid, signal) {
-        if e != rustix::io::Errno::SRCH {
-            tracing::warn!("can't signal process group {pid}: {e}");
-        }
+    if let Err(e) = rustix::process::kill_process_group(pgid, signal)
+        && e != rustix::io::Errno::SRCH
+    {
+        tracing::warn!("can't signal process group {pid}: {e}");
     }
 }
 

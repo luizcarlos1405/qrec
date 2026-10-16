@@ -562,25 +562,39 @@ fn close_gives_up_after_the_grace() {
 
 /// A responder that holds the session thread in `accepted` until the test
 /// lets it go (at most 10 s), so what the test queues meanwhile is
-/// certainly behind it.
+/// certainly behind it. `entered` is set once the session thread is in
+/// there: something that doesn't go through the FIFO (a signal) must wait
+/// for it, or the host may stop before the Session takes the request.
 struct Held {
+    entered: Arc<AtomicBool>,
     gate: Mutex<std::sync::mpsc::Receiver<()>>,
     then: Box<dyn Responder>,
 }
 
+/// What [`Held::wrap`] gives the test: the gate's key, whether the session
+/// thread is held, and the responder to submit.
+type HeldParts = (
+    std::sync::mpsc::Sender<()>,
+    Arc<AtomicBool>,
+    Box<dyn Responder>,
+);
+
 impl Held {
-    fn wrap(then: Box<dyn Responder>) -> (std::sync::mpsc::Sender<()>, Box<dyn Responder>) {
+    fn wrap(then: Box<dyn Responder>) -> HeldParts {
         let (go, gate) = std::sync::mpsc::channel();
+        let entered = Arc::new(AtomicBool::new(false));
         let held = Held {
+            entered: Arc::clone(&entered),
             gate: Mutex::new(gate),
             then,
         };
-        (go, Box::new(held))
+        (go, entered, Box::new(held))
     }
 }
 
 impl Responder for Held {
     fn accepted(&mut self) {
+        self.entered.store(true, Ordering::SeqCst);
         let _ = self
             .gate
             .lock()
@@ -611,7 +625,8 @@ fn close_comes_after_what_the_window_submitted() {
     host.open(Box::new(opener.clone()));
     assert!(port.wait_host(Duration::from_secs(5), |e| *e == HostEvent::Opened));
     let replies = Replies::default();
-    let (go, a) = Held::wrap(replies.responder());
+    // The close goes through the FIFO too: no need to wait for `entered`.
+    let (go, _entered, a) = Held::wrap(replies.responder());
     assert!(host.submit(Request::query(Query::ClipList), a));
     assert!(host.submit(Request::query(Query::Keys), replies.responder()));
     let set_ui = Command::SetUi {
@@ -656,10 +671,14 @@ fn requests_the_session_never_handled_hear_why() {
     host.open(Box::new(opener.clone()));
     assert!(port.wait_host(Duration::from_secs(5), |e| *e == HostEvent::Opened));
     let replies = Replies::default();
-    let (go, a) = Held::wrap(replies.responder());
+    let (go, entered, a) = Held::wrap(replies.responder());
     assert!(host.submit(Request::query(Query::ClipList), a));
     let late = Replies::default();
     assert!(host.submit(Request::query(Query::Keys), late.responder()));
+    // The signal doesn't go through the FIFO: once it is noted, a quiet
+    // host stops at the Session's next look, which may come before it took
+    // the first request. So the Session holds that one first.
+    assert!(wait_for(Duration::from_secs(5), || entered.load(Ordering::SeqCst)));
     interrupts.raise();
     assert!(wait_for(Duration::from_secs(5), || host
         .ctl
@@ -1408,7 +1427,15 @@ mod quiet_session {
     fn a_signal_while_the_session_opens_toasts_nothing() {
         let f = fixture();
         let interrupts = Interrupts::new();
-        let mut spec = f.spec(quick_rules());
+        // The grace counts from the signal, which comes before the Session
+        // opens: a slow open (a loaded machine) must not run it out, or the
+        // host drops the waiting request. The host still stops as soon as
+        // it is quiet, once the CLI has its reply.
+        let rules = ExitRules {
+            signal_grace: Duration::from_secs(30),
+            ..quick_rules()
+        };
+        let mut spec = f.spec(rules);
         spec.interrupts = Some(interrupts.clone());
         let init = Command::Init {
             canvas: None,

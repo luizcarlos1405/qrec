@@ -773,8 +773,18 @@ mod tests {
         assert_eq!(text.matches("=== qrec ").count(), 2, "both headers");
         drop(window);
 
-        // Nobody writes to it now: the next start rotates it.
-        drop(open_gui_log(&log, &swamp, at("2026-10-15T11:00:00Z")).unwrap());
+        // Nobody writes to it now: the next start rotates it. A child that
+        // another test thread spawned while `window` was open shares its
+        // lock until that child execs, so a start may still find the log in
+        // use for a moment (and append, as it should); a later one rotates.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            drop(open_gui_log(&log, &swamp, at("2026-10-15T11:00:00Z")).unwrap());
+            if rotated.exists() || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
         assert!(fs::metadata(&rotated).unwrap().len() > GUI_LOG_ROTATE_BYTES);
         assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 1);
     }

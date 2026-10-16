@@ -1,6 +1,6 @@
-//! The `qrec` binary. With no command it will open the GUI (blocked until
-//! the designs are approved, SPEC §15.1); everything else is the CLI over
-//! the imperative shell ([`shell::Shell`]).
+//! The `qrec` binary. With no command it opens the window (`qrec_gui`,
+//! docs/GUI.md G§3.2); everything else is the CLI over the imperative
+//! shell ([`shell::Shell`]).
 //!
 //! Order matters (A§8.10): a GPU probe child does its one job and exits;
 //! then the GPU environment (`LIBVA_DRIVER_NAME`, …) is set while the

@@ -416,20 +416,14 @@ mod wayland {
                 interface,
                 version,
             } = event
+                && interface == wl_output::WlOutput::interface().name
             {
-                if interface == wl_output::WlOutput::interface().name {
-                    let index = state.outputs.len();
-                    registry.bind::<wl_output::WlOutput, usize, State>(
-                        name,
-                        version.min(4),
-                        qh,
-                        index,
-                    );
-                    state.outputs.push(Output {
-                        scale: 1,
-                        ..Output::default()
-                    });
-                }
+                let index = state.outputs.len();
+                registry.bind::<wl_output::WlOutput, usize, State>(name, version.min(4), qh, index);
+                state.outputs.push(Output {
+                    scale: 1,
+                    ..Output::default()
+                });
             }
         }
     }

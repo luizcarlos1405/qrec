@@ -27,8 +27,7 @@
 //!   GUI (`qrec` without a command) logs to its project's GUI log
 //!   (`UserDirs::gui_log`: appended, a header per run, rotated past 8 MiB;
 //!   `info`, `debug` with `-v`), warnings also on stderr (docs/GUI.md
-//!   G§3.2). Until `qrec-gui` is wired in (WP0b) it then says the GUI
-//!   isn't built.
+//!   G§3.2), then runs `qrec_gui::run`.
 
 use std::ffi::OsString;
 use std::io::IsTerminal;
@@ -384,8 +383,7 @@ impl Backend for Shell {
     }
 
     /// `qrec` without a command (docs/GUI.md G§3.2): the GUI's logging,
-    /// then the window. `qrec-gui` is wired in by WP0b; until then this
-    /// build has no window.
+    /// then the window until it closes; its exit code.
     fn gui(&mut self, project: &Path, explicit: bool) -> Result<u8, CoreError> {
         self.init_gui_logging(project);
         tracing::info!(
@@ -397,8 +395,12 @@ impl Backend for Shell {
                 "the current folder"
             }
         );
-        tracing::info!("this build has no GUI yet");
-        Err(CoreError::unavailable(qrec_cli::GUI_NOT_BUILT))
+        let (verbose, _) = self.verbosity.unwrap_or((0, false));
+        qrec_gui::run(qrec_gui::GuiArgs {
+            project: project.to_path_buf(),
+            explicit,
+            verbose,
+        })
     }
 }
 

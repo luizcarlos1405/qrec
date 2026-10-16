@@ -72,6 +72,32 @@
           pulseaudio # pactl client only; the sound server is PipeWire
           v4l-utils
         ];
+
+      # The fonts bundled with the GUI (SPEC §15.3, docs/GUI.md G§6.3): the
+      # three variable fonts, found through $QREC_FONT_DIR in the dev shell
+      # and <exe>/../share/qrec/fonts in the package, with their OFL texts
+      # (vendored: the font packages don't install them).
+      qrecFonts =
+        pkgs:
+        pkgs.runCommand "qrec-fonts" { } ''
+          mkdir -p $out/share/qrec/fonts $out/share/licenses/qrec-fonts
+          cp '${pkgs.fraunces}/share/fonts/truetype/Fraunces[SOFT,WONK,opsz,wght].ttf' \
+             '${pkgs.atkinson-hyperlegible-next}/share/fonts/truetype/AtkinsonHyperlegibleNext[wght].ttf' \
+             '${pkgs.jetbrains-mono}/share/fonts/truetype/JetBrainsMono[wght].ttf' \
+             $out/share/qrec/fonts/
+          cp ${./crates/qrec-gui/resources/fonts}/OFL-*.txt $out/share/licenses/qrec-fonts/
+        '';
+
+      # What the window needs at runtime besides GTK: icon themes and the
+      # GSettings schemas (wrapGAppsHook4 puts them on XDG_DATA_DIRS for the
+      # package), and librsvg (SVG icons; rsvg-convert for the art PNGs).
+      guiData =
+        pkgs: with pkgs; [
+          adwaita-icon-theme
+          hicolor-icon-theme
+          gsettings-desktop-schemas
+          librsvg
+        ];
     in
     {
       devShells = forAllSystems (pkgs: {
@@ -86,8 +112,13 @@
             cargo-nextest
             pkg-config
             wrapGAppsHook4
+            # The GUI tests' nested compositor, screenshots and key presses
+            # (docs/GUI.md G§8.4); glib-compile-resources comes with glib.
+            sway
+            grim
+            wtype
           ];
-          buildInputs = (linkLibs pkgs) ++ (runtimeTools pkgs);
+          buildInputs = (linkLibs pkgs) ++ (runtimeTools pkgs) ++ (guiData pkgs);
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
           shellHook = filterGstPluginPath + ''
             # A registry of its own, so switching between this shell and the
@@ -107,6 +138,12 @@
                 fi
               done
             fi
+            # The GUI's bundled fonts (the package installs them next to the
+            # binary instead).
+            export QREC_FONT_DIR=${qrecFonts pkgs}/share/qrec/fonts
+            # GSettings schemas and icon themes, as wrapGAppsHook4 does for
+            # the package.
+            export XDG_DATA_DIRS="''${GSETTINGS_SCHEMAS_PATH:-}:${pkgs.adwaita-icon-theme}/share:${pkgs.hicolor-icon-theme}/share:''${XDG_DATA_DIRS:-}"
           '';
         };
       });
@@ -129,13 +166,22 @@
             pkg-config
             wrapGAppsHook4
             makeWrapper
+            glib # glib-compile-resources (qrec-gui's build.rs)
+            librsvg # rsvg-convert (icon PNGs)
           ];
-          buildInputs = linkLibs pkgs;
+          buildInputs = (linkLibs pkgs) ++ (guiData pkgs);
           # Integration tests need a session bus, devices and ffmpeg; run the
           # pure core tests only inside the sandbox.
           cargoTestFlags = [ "-p" "qrec-core" ];
           # Runs before wrapGAppsHook captures the plugin path.
           preBuild = filterGstPluginPath;
+          # The GUI's fonts next to the binary (<exe>/../share/qrec/fonts)
+          # and their licenses.
+          postInstall = ''
+            mkdir -p $out/share
+            cp -r ${qrecFonts pkgs}/share/qrec $out/share/
+            cp -r ${qrecFonts pkgs}/share/licenses $out/share/
+          '';
           preFixup = ''
             gappsWrapperArgs+=(--prefix PATH : ${pkgs.lib.makeBinPath (runtimeTools pkgs)})
           '';

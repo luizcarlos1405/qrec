@@ -78,11 +78,11 @@ fn snapped(spans: &[Interval], clip: &Clip, fps: Fps) -> Vec<[u64; 2]> {
         if a >= b {
             continue;
         }
-        if let Some(last) = out.last_mut() {
-            if a <= last[1] {
-                last[1] = last[1].max(b);
-                continue;
-            }
+        if let Some(last) = out.last_mut()
+            && a <= last[1]
+        {
+            last[1] = last[1].max(b);
+            continue;
         }
         out.push([a, b]);
     }
@@ -532,11 +532,10 @@ proptest! {
             .iter()
             .map(|&(start, end)| Interval { start_ns: start * 1_000, end_ns: end * 1_000 })
             .collect();
-        if open_end {
-            if let Some(last) = expected.last_mut() {
+        if open_end
+            && let Some(last) = expected.last_mut() {
                 last.end_ns = duration_cs * 10_000_000;
             }
-        }
         prop_assert_eq!(parse_silencedetect(&log), Ok(expected.clone()));
         if open_end {
             let given = duration_cs * 10_000_000 + 1_234;

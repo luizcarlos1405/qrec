@@ -1,0 +1,762 @@
+//! The GTK-side model (G§3.6, G§3.7): the newest `State` snapshot, the
+//! GUI-only [`LocalUi`], and the one way the window changes anything:
+//! [`Store::dispatch`] (R8, SPEC §4.2).
+//!
+//! - Snapshots arrive through the queue (`host::queue`), each a whole
+//!   `Arc<State>`; subscribers get the previous and the next state
+//!   ([`Change`]) and re-render from the newest without diffing.
+//! - [`Store::dispatch`] submits a Command to the GUI host, in one FIFO with
+//!   the CLI's requests, and applies the default reply policy
+//!   ([`replies`]); [`Store::dispatch_with`] hands the reply to the caller.
+//! - [`Store::notify`] shows a toast made by the GUI; the core's toasts come
+//!   the same way. The toast host subscribes ([`Store::subscribe_notices`]);
+//!   notices that come before it are kept for it.
+//! - The echo rule ([`SentValues`], [`echo`]): a widget that sent a UI value
+//!   keeps its own until a snapshot shows that value or one it didn't send.
+//!
+//! Main thread only (`Rc`). Only `store/`, `host/` and `startup/` touch the
+//! `GuiHost` (R8).
+
+pub mod local;
+pub mod replies;
+
+use std::cell::{Cell, Ref, RefCell};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::{Path, PathBuf};
+use std::rc::{Rc, Weak};
+use std::sync::Arc;
+
+use qrec_core::keymap::Keymap;
+use qrec_core::protocol::command::{Nullable, SeekTarget, UiPatch};
+use qrec_core::protocol::{Progress, Toast};
+use qrec_core::view::notices::Notice;
+use qrec_core::{Command, CoreError, LayerId, State, TrackId};
+use qrec_shell::host::GuiHost;
+use qrec_shell::msg::{Request, Responder};
+use serde_json::Value;
+
+pub use local::{LocalUi, Overlay};
+
+use crate::host::GuiResponder;
+use crate::host::queue::{Queue, Ticket};
+use replies::{ReplyAction, default_action};
+
+/// A snapshot replacing the previous one.
+#[derive(Debug, Clone)]
+pub struct Change {
+    pub prev: Arc<State>,
+    pub next: Arc<State>,
+}
+
+impl Change {
+    /// The timeline (clips) changed.
+    pub fn timeline(&self) -> bool {
+        self.prev.project.timeline != self.next.project.timeline
+    }
+
+    /// The project scene changed.
+    pub fn scene(&self) -> bool {
+        self.prev.project.scene != self.next.project.scene
+    }
+
+    /// `ui.json`'s state changed (selection, playhead, mode, zoom, …).
+    pub fn ui(&self) -> bool {
+        self.prev.ui != self.next.ui
+    }
+
+    /// The record phase changed (`RecordClock` included).
+    pub fn record(&self) -> bool {
+        self.prev.runtime.record != self.next.runtime.record
+    }
+
+    /// Jobs started, progressed or ended.
+    pub fn jobs(&self) -> bool {
+        self.prev.runtime.jobs != self.next.runtime.jobs
+    }
+
+    /// The media pool (takes and their scenes) changed.
+    pub fn takes(&self) -> bool {
+        self.prev.project.takes != self.next.project.takes
+    }
+
+    /// The history changed (cursor or entries).
+    pub fn history(&self) -> bool {
+        let (prev, next) = (&self.prev.history, &self.next.history);
+        prev.cursor != next.cursor
+            || (!Arc::ptr_eq(&prev.entries, &next.entries) && prev.entries != next.entries)
+    }
+}
+
+/// The answer to one request of the window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reply {
+    pub result: Result<Value, CoreError>,
+    /// An event's answer (H-7): the core toasted a late error itself.
+    pub late: bool,
+}
+
+/// The last value the window sent for each `UiPatch` field and for `Seek`
+/// (the echo rule, G§3.6). `None`: never sent.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SentValues {
+    /// `Some(None)`: fit.
+    pub zoom: Option<Option<f64>>,
+    pub scroll_px: Option<f64>,
+    pub bin_open: Option<bool>,
+    pub snapping: Option<bool>,
+    pub solo: Option<Option<TrackId>>,
+    pub lane_mute: Option<BTreeSet<TrackId>>,
+    pub selected_layer: Option<Option<LayerId>>,
+    pub panels: Option<BTreeMap<String, f64>>,
+    pub seek: Option<SeekTarget>,
+}
+
+impl SentValues {
+    fn record(&mut self, cmd: &Command) {
+        match cmd {
+            Command::SetUi { patch } => self.record_patch(patch),
+            Command::Seek { to } => self.seek = Some(to.clone()),
+            _ => {}
+        }
+    }
+
+    fn record_patch(&mut self, patch: &UiPatch) {
+        fn nullable<T: Clone>(n: &Nullable<T>) -> Option<Option<T>> {
+            match n {
+                Nullable::Keep => None,
+                Nullable::Clear => Some(None),
+                Nullable::Set(v) => Some(Some(v.clone())),
+            }
+        }
+        if let Some(zoom) = nullable(&patch.zoom) {
+            self.zoom = Some(zoom);
+        }
+        if let Some(solo) = nullable(&patch.solo) {
+            self.solo = Some(solo);
+        }
+        if let Some(layer) = nullable(&patch.selected_layer) {
+            self.selected_layer = Some(layer);
+        }
+        if let Some(v) = patch.scroll_px {
+            self.scroll_px = Some(v);
+        }
+        if let Some(v) = patch.bin_open {
+            self.bin_open = Some(v);
+        }
+        if let Some(v) = patch.snapping {
+            self.snapping = Some(v);
+        }
+        if let Some(v) = &patch.lane_mute {
+            self.lane_mute = Some(v.clone());
+        }
+        if let Some(v) = &patch.panels {
+            self.panels = Some(v.clone());
+        }
+    }
+}
+
+/// What a widget does with a snapshot's value of something it may have
+/// sent (the echo rule, G§3.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Echo {
+    /// Keep the widget's own value: the snapshot doesn't show the sent
+    /// value yet and nobody else changed it.
+    Keep,
+    /// Take the snapshot's value: it is the sent one, or someone else's.
+    Adopt,
+}
+
+/// The echo rule for one value: `sent` is the last value the widget sent,
+/// `prev` and `next` the snapshots' values.
+pub fn echo<T: PartialEq>(sent: Option<&T>, prev: &T, next: &T) -> Echo {
+    match sent {
+        Some(sent) if next == sent => Echo::Adopt,
+        _ if next != prev => Echo::Adopt,
+        None => Echo::Adopt,
+        Some(_) => Echo::Keep,
+    }
+}
+
+// ------------------------------------------------------------ subscriptions
+
+/// A subscriber.
+type Callback<T> = Rc<dyn Fn(&T)>;
+
+/// A change to `LocalUi` waiting for the subscribers to finish.
+type LocalEdit = Box<dyn FnOnce(&mut LocalUi)>;
+
+/// Callbacks that follow something; [`Subscription`]s remove them.
+pub struct Subscribers<T: ?Sized> {
+    inner: Rc<SubscriberList<T>>,
+}
+
+struct SubscriberList<T: ?Sized> {
+    next: Cell<u64>,
+    list: RefCell<Vec<(u64, Callback<T>)>>,
+}
+
+impl<T: ?Sized + 'static> Default for Subscribers<T> {
+    fn default() -> Self {
+        Self {
+            inner: Rc::new(SubscriberList {
+                next: Cell::new(1),
+                list: RefCell::new(Vec::new()),
+            }),
+        }
+    }
+}
+
+impl<T: ?Sized + 'static> Subscribers<T> {
+    /// Adds `f`; it is called until the subscription is dropped.
+    pub fn add(&self, f: impl Fn(&T) + 'static) -> Subscription {
+        let id = self.inner.next.get();
+        self.inner.next.set(id + 1);
+        self.inner.list.borrow_mut().push((id, Rc::new(f)));
+        let list = Rc::downgrade(&self.inner);
+        Subscription {
+            remove: Some(Box::new(move || {
+                if let Some(list) = list.upgrade() {
+                    list.list.borrow_mut().retain(|(i, _)| *i != id);
+                }
+            })),
+        }
+    }
+
+    /// Calls every subscriber with `value` (those added meanwhile wait for
+    /// the next call).
+    pub fn emit(&self, value: &T) {
+        let list: Vec<Callback<T>> = self
+            .inner
+            .list
+            .borrow()
+            .iter()
+            .map(|(_, f)| Rc::clone(f))
+            .collect();
+        for f in list {
+            f(value);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.list.borrow().is_empty()
+    }
+}
+
+/// Keeps a callback subscribed; dropping it unsubscribes.
+#[must_use = "dropping a Subscription unsubscribes at once; keep it or detach() it"]
+pub struct Subscription {
+    remove: Option<Box<dyn FnOnce()>>,
+}
+
+impl Subscription {
+    /// Stays subscribed for the life of what it follows (regions that live
+    /// as long as the window).
+    pub fn detach(mut self) {
+        self.remove = None;
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        if let Some(remove) = self.remove.take() {
+            remove();
+        }
+    }
+}
+
+impl std::fmt::Debug for Subscription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Subscription")
+    }
+}
+
+// -------------------------------------------------------------------- store
+
+/// The window's model. Cheap to clone (clones share it); main thread only.
+#[derive(Clone)]
+pub struct Store {
+    inner: Rc<Inner>,
+}
+
+struct Inner {
+    queue: Queue,
+    project_dir: PathBuf,
+    host: RefCell<Option<Arc<GuiHost>>>,
+    state: RefCell<Arc<State>>,
+    rev: Cell<u64>,
+    local: RefCell<LocalUi>,
+    /// `update_local` calls made while subscribers run, applied after.
+    deferred: RefCell<VecDeque<LocalEdit>>,
+    notifying_local: Cell<bool>,
+    keymap: RefCell<Rc<Keymap>>,
+    sent: RefCell<SentValues>,
+    next_ticket: Cell<Ticket>,
+    pending: RefCell<BTreeMap<Ticket, Pending>>,
+    changes: Subscribers<Change>,
+    locals: Subscribers<LocalUi>,
+    notices: Subscribers<Notice>,
+    /// Notices made before anyone shows them (the toast host comes with
+    /// the window).
+    unshown: RefCell<Vec<Notice>>,
+}
+
+struct Pending {
+    cmd: Command,
+    done: Box<dyn FnOnce(Reply)>,
+}
+
+impl std::fmt::Debug for Store {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Store")
+            .field("rev", &self.inner.rev.get())
+            .field("pending", &self.inner.pending.borrow().len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Store {
+    /// A store of the project in `project_dir` showing `state` (the
+    /// placeholder before the Session opens) that answers through `queue`.
+    pub fn new(
+        queue: Queue,
+        project_dir: PathBuf,
+        state: Arc<State>,
+        keymap: Keymap,
+        local: LocalUi,
+    ) -> Self {
+        Self {
+            inner: Rc::new(Inner {
+                queue,
+                project_dir,
+                host: RefCell::new(None),
+                state: RefCell::new(state),
+                rev: Cell::new(0),
+                local: RefCell::new(local),
+                deferred: RefCell::new(VecDeque::new()),
+                notifying_local: Cell::new(false),
+                keymap: RefCell::new(Rc::new(keymap)),
+                sent: RefCell::new(SentValues::default()),
+                next_ticket: Cell::new(1),
+                pending: RefCell::new(BTreeMap::new()),
+                changes: Subscribers::default(),
+                locals: Subscribers::default(),
+                notices: Subscribers::default(),
+                unshown: RefCell::new(Vec::new()),
+            }),
+        }
+    }
+
+    /// The newest snapshot.
+    pub fn state(&self) -> Arc<State> {
+        Arc::clone(&self.inner.state.borrow())
+    }
+
+    /// The newest snapshot's revision (0 before the Session opened).
+    pub fn rev(&self) -> u64 {
+        self.inner.rev.get()
+    }
+
+    /// The GUI-only state.
+    pub fn local(&self) -> Ref<'_, LocalUi> {
+        self.inner.local.borrow()
+    }
+
+    /// Changes the GUI-only state, then tells its subscribers. A call made
+    /// while they run is applied after them, in order.
+    pub fn update_local(&self, f: impl FnOnce(&mut LocalUi) + 'static) {
+        if self.inner.notifying_local.get() {
+            self.inner.deferred.borrow_mut().push_back(Box::new(f));
+            return;
+        }
+        let mut next: Option<LocalEdit> = Some(Box::new(f));
+        while let Some(f) = next {
+            let changed = {
+                let mut local = self.inner.local.borrow_mut();
+                let before = local.clone();
+                f(&mut local);
+                *local != before
+            };
+            if changed {
+                self.inner.notifying_local.set(true);
+                let local = self.inner.local.borrow();
+                self.inner.locals.emit(&local);
+                drop(local);
+                self.inner.notifying_local.set(false);
+            }
+            next = self.inner.deferred.borrow_mut().pop_front();
+        }
+    }
+
+    /// Follows snapshots.
+    pub fn subscribe(&self, f: impl Fn(&Change) + 'static) -> Subscription {
+        self.inner.changes.add(f)
+    }
+
+    /// Follows the GUI-only state (called after each change).
+    pub fn subscribe_local(&self, f: impl Fn(&LocalUi) + 'static) -> Subscription {
+        self.inner.locals.add(f)
+    }
+
+    /// Follows the toasts to show: the GUI's and the core's. Notices made
+    /// before the first subscriber are handed to it at once.
+    pub fn subscribe_notices(&self, f: impl Fn(&Notice) + 'static) -> Subscription {
+        let unshown = std::mem::take(&mut *self.inner.unshown.borrow_mut());
+        for notice in &unshown {
+            f(notice);
+        }
+        self.inner.notices.add(f)
+    }
+
+    /// Sends `cmd` with the default reply policy (G§3.7).
+    pub fn dispatch(&self, cmd: Command) {
+        let weak = Rc::downgrade(&self.inner);
+        let sent = cmd.clone();
+        self.dispatch_with(cmd, false, move |reply| {
+            if let Some(inner) = weak.upgrade() {
+                Store { inner }.apply_default(&sent, reply);
+            }
+        });
+    }
+
+    /// Sends `cmd` again, confirmed (a confirmation modal's button), with
+    /// the default reply policy: the core checks again.
+    pub fn dispatch_confirmed(&self, cmd: Command) {
+        let weak = Rc::downgrade(&self.inner);
+        let sent = cmd.clone();
+        self.dispatch_with(cmd, true, move |reply| {
+            if let Some(inner) = weak.upgrade() {
+                Store { inner }.apply_default(&sent, reply);
+            }
+        });
+    }
+
+    /// The live preview's "Try again" (D-50): `Msg::RetryLive` through the
+    /// host, ordered with the Session's other messages.
+    pub fn retry_live(&self) {
+        if let Some(host) = self.host() {
+            host.retry_live();
+        }
+    }
+
+    /// The canonical project folder.
+    pub fn project_dir(&self) -> &Path {
+        &self.inner.project_dir
+    }
+
+    /// Sends `cmd` (`confirmed`: the person confirmed it, SPEC §11) and
+    /// hands its reply to `done` on the main thread. Without a host yet,
+    /// `done` gets `busy`.
+    pub fn dispatch_with(&self, cmd: Command, confirmed: bool, done: impl FnOnce(Reply) + 'static) {
+        let ticket = self.inner.next_ticket.get();
+        self.inner.next_ticket.set(ticket + 1);
+        self.inner.sent.borrow_mut().record(&cmd);
+        tracing::debug!("dispatch #{ticket} {}", cmd.name());
+        self.inner.pending.borrow_mut().insert(
+            ticket,
+            Pending {
+                cmd: cmd.clone(),
+                done: Box::new(done),
+            },
+        );
+        let mut responder = GuiResponder::new(ticket, self.inner.queue.clone());
+        let host = self.inner.host.borrow().clone();
+        match host {
+            Some(host) => {
+                // `false`: the host stopped and answered the responder.
+                host.submit(Request::command(cmd, confirmed), Box::new(responder));
+            }
+            None => responder.reply(Err(CoreError::busy("the project isn't open yet"))),
+        }
+    }
+
+    /// Shows a toast made by the GUI.
+    pub fn notify(&self, notice: Notice) {
+        if self.inner.notices.is_empty() {
+            self.inner.unshown.borrow_mut().push(notice);
+        } else {
+            self.inner.notices.emit(&notice);
+        }
+    }
+
+    /// The effective keymap (defaults plus `keys.toml`).
+    pub fn keymap(&self) -> Rc<Keymap> {
+        Rc::clone(&self.inner.keymap.borrow())
+    }
+
+    /// Replaces the keymap (`keys.toml` changed, WP10) and its problems.
+    pub fn set_keymap(&self, keymap: Keymap, problems: Vec<String>) {
+        *self.inner.keymap.borrow_mut() = Rc::new(keymap);
+        self.update_local(move |l| l.keymap_problems = problems);
+    }
+
+    /// What the window sent last per UI value (the echo rule).
+    pub fn sent(&self) -> Ref<'_, SentValues> {
+        self.inner.sent.borrow()
+    }
+
+    /// Requests sent and not answered yet.
+    pub fn pending_requests(&self) -> usize {
+        self.inner.pending.borrow().len()
+    }
+
+    /// The queue the host answers through.
+    pub fn queue(&self) -> &Queue {
+        &self.inner.queue
+    }
+
+    // ------------------------------------------------- the inbound side
+
+    /// The GUI host requests go to (startup step 4); `None` once it stopped.
+    pub(crate) fn set_host(&self, host: Option<Arc<GuiHost>>) {
+        *self.inner.host.borrow_mut() = host;
+    }
+
+    /// The host requests go to, if any.
+    pub(crate) fn host(&self) -> Option<Arc<GuiHost>> {
+        self.inner.host.borrow().clone()
+    }
+
+    /// A snapshot from the Session.
+    pub(crate) fn on_snapshot(&self, rev: u64, next: Arc<State>) {
+        let prev = std::mem::replace(&mut *self.inner.state.borrow_mut(), Arc::clone(&next));
+        self.inner.rev.set(rev);
+        self.inner.changes.emit(&Change { prev, next });
+    }
+
+    /// The answer to the window's request `ticket`.
+    pub(crate) fn on_reply(&self, ticket: Ticket, result: Result<Value, CoreError>, late: bool) {
+        let Some(pending) = self.inner.pending.borrow_mut().remove(&ticket) else {
+            tracing::debug!("a reply to unknown request #{ticket}");
+            return;
+        };
+        if let Err(e) = &result {
+            tracing::debug!("#{ticket} {} failed: {e}", pending.cmd.name());
+        }
+        (pending.done)(Reply { result, late });
+    }
+
+    /// A request was accepted or reported progress (logged).
+    pub(crate) fn on_progress(&self, ticket: Ticket, progress: Option<&Progress>) {
+        match progress {
+            None => tracing::trace!("#{ticket} accepted"),
+            Some(p) => tracing::trace!("#{ticket} progress {p:?}"),
+        }
+    }
+
+    /// A core toast.
+    pub(crate) fn on_toast(&self, toast: Toast, recovery: bool) {
+        tracing::debug!(
+            "toast{}: {} {}",
+            if recovery { " (recovery)" } else { "" },
+            toast.title,
+            toast.body.as_deref().unwrap_or_default()
+        );
+        self.notify(Notice::from(toast));
+    }
+
+    fn apply_default(&self, cmd: &Command, reply: Reply) {
+        match default_action(cmd, &reply, &self.state()) {
+            ReplyAction::Nothing => {}
+            ReplyAction::Confirm { cmd, error } => {
+                self.update_local(move |l| l.overlays.push(Overlay::Confirm { cmd, error }));
+            }
+            ReplyAction::Toast(notice) => self.notify(notice),
+            ReplyAction::Log(line) => tracing::warn!("{line}"),
+        }
+    }
+
+    /// A weak handle, for callbacks that mustn't keep the store alive.
+    pub fn downgrade(&self) -> WeakStore {
+        WeakStore(Rc::downgrade(&self.inner))
+    }
+}
+
+/// A [`Store`] that doesn't keep it alive.
+#[derive(Clone)]
+pub struct WeakStore(Weak<Inner>);
+
+impl WeakStore {
+    pub fn upgrade(&self) -> Option<Store> {
+        self.0.upgrade().map(|inner| Store { inner })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use qrec_core::keymap;
+    use qrec_core::protocol::command::SelectOp;
+    use qrec_core::protocol::{ToastLevel, UiAction};
+    use qrec_core::{ErrorCode, TakeId, testkit};
+    use serde_json::json;
+
+    use super::*;
+    use crate::host::queue::Inbound;
+
+    fn store() -> Store {
+        Store::new(
+            Queue::new(|| {}),
+            PathBuf::from("/projects/rust-traits-talk"),
+            Arc::new(testkit::design_state()),
+            keymap::resolve(""),
+            LocalUi::default(),
+        )
+    }
+
+    /// The replies the store answered through its queue (no host).
+    fn drain(store: &Store) {
+        for item in store.queue().take_all() {
+            if let Inbound::Reply {
+                ticket,
+                result,
+                late,
+            } = item
+            {
+                store.on_reply(ticket, result, late);
+            }
+        }
+    }
+
+    #[test]
+    fn without_a_host_requests_are_answered_busy_in_order() {
+        let store = store();
+        let got = Rc::new(RefCell::new(Vec::new()));
+        for n in 0..3 {
+            let got = Rc::clone(&got);
+            store.dispatch_with(Command::Select { op: SelectOp::All }, false, move |r| {
+                got.borrow_mut().push((n, r.result.unwrap_err().code));
+            });
+        }
+        assert_eq!(store.pending_requests(), 3);
+        drain(&store);
+        assert_eq!(
+            *got.borrow(),
+            [
+                (0, ErrorCode::Busy),
+                (1, ErrorCode::Busy),
+                (2, ErrorCode::Busy)
+            ]
+        );
+        assert_eq!(store.pending_requests(), 0);
+    }
+
+    #[test]
+    fn the_default_policy_opens_a_confirmation_or_toasts() {
+        let store = store();
+        let toasts = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&toasts);
+        store
+            .subscribe_notices(move |n| seen.borrow_mut().push(n.title.clone()))
+            .detach();
+        let purge = Command::TakePurge {
+            takes: vec![TakeId::numbered(2)],
+        };
+        store.dispatch(purge.clone());
+        store.dispatch(Command::Select { op: SelectOp::All });
+        let items = store.queue().take_all();
+        assert_eq!(items.len(), 2);
+        // Answer them as the core would.
+        store.on_reply(
+            1,
+            Err(CoreError::new(ErrorCode::ConfirmationRequired, "sure?")),
+            false,
+        );
+        store.on_reply(2, Err(CoreError::invalid("nothing to select")), false);
+        assert_eq!(
+            store.local().overlays,
+            [Overlay::Confirm {
+                cmd: purge,
+                error: CoreError::new(ErrorCode::ConfirmationRequired, "sure?")
+            }]
+        );
+        assert_eq!(*toasts.borrow(), ["Nothing to select"]);
+    }
+
+    #[test]
+    fn notices_wait_for_the_toast_host() {
+        let store = store();
+        store.notify(Notice::new(ToastLevel::Warning, "early"));
+        store.on_toast(
+            Toast::new(ToastLevel::Success, "Take 9 landed").with_action(
+                "Undo",
+                UiAction::Dispatch(Box::new(Command::Undo { steps: 1 })),
+            ),
+            false,
+        );
+        let got = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&got);
+        let sub = store.subscribe_notices(move |n| seen.borrow_mut().push(n.clone()));
+        store.notify(Notice::new(ToastLevel::Info, "late"));
+        let titles: Vec<String> = got.borrow().iter().map(|n| n.title.clone()).collect();
+        assert_eq!(titles, ["early", "Take 9 landed", "late"]);
+        assert_eq!(got.borrow()[1].actions.len(), 1, "the core's action stays");
+        drop(sub);
+        store.notify(Notice::new(ToastLevel::Info, "kept for the next host"));
+        assert_eq!(got.borrow().len(), 3);
+    }
+
+    #[test]
+    fn snapshots_reach_subscribers_with_the_previous_state() {
+        let store = store();
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&changes);
+        let sub = store.subscribe(move |c| {
+            seen.borrow_mut()
+                .push((c.prev.ui.playhead, c.next.ui.playhead, c.ui(), c.timeline()));
+        });
+        let mut next = (*store.state()).clone();
+        next.ui.playhead = 10;
+        store.on_snapshot(5, Arc::new(next));
+        assert_eq!(store.rev(), 5);
+        assert_eq!(*changes.borrow(), [(2437, 10, true, false)]);
+        drop(sub);
+        store.on_snapshot(6, Arc::new(testkit::design_state()));
+        assert_eq!(changes.borrow().len(), 1, "unsubscribed");
+    }
+
+    #[test]
+    fn local_updates_made_by_subscribers_run_after_them() {
+        let store = store();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let (seen, inner) = (Rc::clone(&log), store.clone());
+        store
+            .subscribe_local(move |l| {
+                seen.borrow_mut().push(l.overlays.len());
+                if l.overlays.len() == 1 {
+                    inner.update_local(|l| l.overlays.push(Overlay::Menu));
+                }
+            })
+            .detach();
+        store.update_local(|l| l.overlays.push(Overlay::Palette));
+        assert_eq!(*log.borrow(), [1, 2]);
+        // No change, no call.
+        store.update_local(|_| {});
+        assert_eq!(log.borrow().len(), 2);
+    }
+
+    #[test]
+    fn sent_values_and_the_echo_rule() {
+        let store = store();
+        store.dispatch(Command::SetUi {
+            patch: UiPatch {
+                zoom: Nullable::Set(4.0),
+                scroll_px: Some(120.0),
+                ..UiPatch::default()
+            },
+        });
+        store.dispatch(Command::Seek {
+            to: SeekTarget::To(qrec_core::TimeArg::frames(40)),
+        });
+        let sent = store.sent().clone();
+        assert_eq!(sent.zoom, Some(Some(4.0)));
+        assert_eq!(sent.scroll_px, Some(120.0));
+        assert_eq!(sent.bin_open, None);
+        assert!(matches!(sent.seek, Some(SeekTarget::To(_))));
+        // The snapshot doesn't show it yet: keep the widget's value.
+        assert_eq!(echo(Some(&120.0), &0.0, &0.0), Echo::Keep);
+        // It shows it, or someone else's value: adopt.
+        assert_eq!(echo(Some(&120.0), &0.0, &120.0), Echo::Adopt);
+        assert_eq!(echo(Some(&120.0), &0.0, &64.0), Echo::Adopt);
+        assert_eq!(echo(None::<&f64>, &0.0, &0.0), Echo::Adopt);
+        let _ = json!(null);
+    }
+}
