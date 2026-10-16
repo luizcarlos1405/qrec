@@ -131,6 +131,7 @@ fn assert_clean(nested: &mut Nested) {
     let gui = nested.window(0);
     let local = gui.local();
     assert_eq!(local["panics"], 0, "{local}");
+    gui.assert_no_criticals();
     let log = gui.gui_log();
     let errors: Vec<&str> = log.lines().filter(|l| l.contains(" ERROR ")).collect();
     assert!(errors.is_empty(), "ERROR lines: {errors:#?}");

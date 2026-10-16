@@ -934,6 +934,19 @@ impl Gui {
     pub fn output(&self) -> String {
         fs::read_to_string(&self.log).unwrap_or_default()
     }
+
+    /// Fails on any GLib or GTK critical the window printed (`…-CRITICAL
+    /// **`): the WP7 integration audit found a GES fade's out-of-range
+    /// `volume` on every Program load and a tooltip allocated under its
+    /// minimum after each drag, both in the logs, failing nothing.
+    pub fn assert_no_criticals(&self) {
+        let output = self.output();
+        let criticals: Vec<&str> = output
+            .lines()
+            .filter(|l| l.contains("-CRITICAL **"))
+            .collect();
+        assert!(criticals.is_empty(), "criticals: {criticals:#?}");
+    }
 }
 
 /// GSettings schema folders from `XDG_DATA_DIRS` (Nix keeps them under

@@ -138,6 +138,39 @@ fn assert_stage_regions(nested: &mut Nested, expected: &[(&str, [f64; 4])]) {
     assert_regions(&regions, expected, &names, scale);
 }
 
+/// The hint bar draws its items whole (G§3.15): what it shows is the first
+/// `n` of them (all when `all`, fewer otherwise: a narrow window leaves the
+/// trailing ones out) and none runs past the bar. Returns the labels shown.
+fn assert_hints_whole(nested: &mut Nested, all: bool) -> Vec<String> {
+    let reply = nested.window(0).ctl(json!({"op": "hints"}));
+    let labels: Vec<String> = reply["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("hints: {reply}"))
+        .iter()
+        .filter_map(|i| i["label"].as_str().map(str::to_owned))
+        .collect();
+    let shown: Vec<String> = reply["shown"]
+        .as_array()
+        .unwrap_or_else(|| panic!("hints: {reply}"))
+        .iter()
+        .filter_map(|l| l.as_str().map(str::to_owned))
+        .collect();
+    assert_eq!(reply["cut"], false, "an item runs past the bar: {reply}");
+    assert!(
+        labels.starts_with(&shown),
+        "the bar shows {shown:?}, not the first of {labels:?}"
+    );
+    if all {
+        assert_eq!(shown, labels, "every item fits");
+    } else {
+        assert!(
+            !shown.is_empty() && shown.len() < labels.len(),
+            "a narrow bar leaves the trailing items out: {shown:?} of {labels:?}"
+        );
+    }
+    shown
+}
+
 /// The objective checks every case ends with: the a11y walk and no panic.
 /// The window's log stays next to the shots (`logs/<case>-gui.log`).
 fn assert_clean(nested: &mut Nested) {
@@ -147,6 +180,7 @@ fn assert_clean(nested: &mut Nested) {
     assert_eq!(reply["ok"], true, "a11y: {reply}");
     let local = gui.local();
     assert_eq!(local["panics"], 0, "{local}");
+    gui.assert_no_criticals();
 }
 
 /// Copies the window's log to `logs/<case>-gui.log`.
@@ -369,7 +403,9 @@ fn s06_at_scale_1_5() {
 /// S06 at `scale`: BRIEF's regions (logical px, ±1 px × scale), the
 /// program picture's labels, and the timeline's strip images 72 px × the
 /// window's scale factor high (144 at 2). As the frame: Face (L2) selected
-/// (the inspector) and BRIEF's meter levels pinned, like gui_panel's S06.
+/// (the inspector), BRIEF's meter levels pinned and the pointer over c2d1
+/// with its tooltip, like gui_panel's S06 (the scale runs had no pointer
+/// until the WP7 integration audit: no tooltip in their shots).
 fn program_at_scale(case: &str, scale: f64) {
     let mut nested = Nested::start(AREA, case, Options::at_scale(1600, 1000, scale));
     let mut preset = selecting(ui(CanvasMode::Program, 2437), &["c2d0"]);
@@ -400,6 +436,15 @@ fn program_at_scale(case: &str, scale: f64) {
         std::collections::BTreeSet::from([want]),
         "strip images {want} px high at scale {scale}"
     );
+    // The pointer over c2d1 shows its tooltip, as S06 draws it and the
+    // scale-1 case (gui_panel's) shoots it: the same logical point at every
+    // scale (the pointer moves in the output layout's logical px).
+    nested.pointer().move_to(700.0, 758.0);
+    gui_support::poll(Duration::from_secs(10), "c2d1's tooltip", || {
+        let tip = nested.window(0).labels("timeline-tooltip");
+        tip.iter().any(|l| l == "Take 5 · c2d1").then_some(())
+    });
+    nested.window(0).wait_idle();
     assert_clean(&mut nested);
     let shot = nested.screenshot("program");
     compare(&nested, &shot, "S06-program-with-selection.png");
@@ -448,6 +493,7 @@ fn s02_at_1300_wide() {
     assert_regions(&regions, &want, &names, 1.0);
     let labels = stage_labels(&mut nested);
     assert_shows(&labels, &["LIVE", "Live · 1920×1080 · 30 fps"]);
+    assert_hints_whole(&mut nested, true);
     assert_clean(&mut nested);
     let shot = nested.screenshot("live");
     gui_support::assert_live_picture_drawn_at(&shot, stage_parts(980.0, 608.0)[1].1);
@@ -479,6 +525,10 @@ fn s02_at_1000_wide_with_the_sheet() {
     want.extend(stage_parts(1000.0, 608.0));
     let names: Vec<&str> = want.iter().map(|(n, _)| *n).collect();
     assert_regions(&regions, &want, &names, 1.0);
+    // 1000 px can't hold S02's eight hints and the status: the last ones
+    // are left out whole (the `?` cap used to show without "All keys").
+    let shown = assert_hints_whole(&mut nested, false);
+    assert!(!shown.contains(&"All keys".to_owned()), "{shown:?}");
     assert_clean(&mut nested);
     let shot = nested.screenshot("closed");
     gui_support::assert_live_picture_drawn_at(&shot, stage_parts(1000.0, 608.0)[1].1);
@@ -535,6 +585,7 @@ fn s06_at_1600_by_800() {
     assert_regions(&regions, &want, &names, 1.0);
     let labels = stage_labels(&mut nested);
     assert_shows(&labels, &["PROGRAM", "00:01:21:07", " / 00:04:06:11"]);
+    assert_hints_whole(&mut nested, true);
     assert_clean(&mut nested);
     nested.screenshot("program");
 }

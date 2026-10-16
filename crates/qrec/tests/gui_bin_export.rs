@@ -62,6 +62,22 @@ fn program_ui() -> UiState {
     }
 }
 
+/// The Smoke fixture's S06 (S16, S16b, D-24): its middle clip c1b2 (take
+/// 3, frames 30–60) selected with the playhead inside it at 45, Face (L2)
+/// selected, as the frames select take 5's c2d0 at 2437. (S06's own preset
+/// named a clip and a playhead the 90-frame Smoke timeline doesn't have:
+/// nothing was selected, and the ruler's corner read 00:01:21:07 over a
+/// 00:00:03:00 transport, WP7 integration audit.)
+fn smoke_ui() -> UiState {
+    UiState {
+        canvas_mode: CanvasMode::Program,
+        selection: vec![ClipId::from_raw("c1b2")],
+        playhead: 45,
+        selected_layer: Some(LayerId::numbered(2)),
+        ..UiState::default()
+    }
+}
+
 /// S14's: S06 with the bin open.
 fn bin_ui() -> UiState {
     UiState {
@@ -165,13 +181,14 @@ fn hints(nested: &mut Nested) -> Vec<String> {
         .collect()
 }
 
-/// The a11y walk is empty and no panic was caught.
+/// The a11y walk is empty, no panic was caught and no critical printed.
 fn assert_clean(nested: &mut Nested) {
     let gui = nested.window(0);
     let reply = gui.ctl(json!({"op": "a11y"}));
     assert_eq!(reply["ok"], true, "a11y: {reply}");
     let local = gui.local();
     assert_eq!(local["panics"], 0, "{local}");
+    gui.assert_no_criticals();
 }
 
 fn close(nested: &mut Nested) {
@@ -232,8 +249,8 @@ fn click(nested: &mut Nested, name: &str) {
     nested.window(0).wait_idle();
 }
 
-/// A click and nothing after it: S16b's `Esc` has to beat the short Smoke
-/// export, so it doesn't wait for the job to start.
+/// A click and nothing after it (S16b watches the overlays itself: its
+/// `Esc` closes the panel while the slowed Smoke export runs).
 fn press(nested: &mut Nested, name: &str) {
     let (x, y) = center(nested, name);
     nested.pointer().click(x, y);
@@ -259,6 +276,94 @@ fn wait_label(
         assert!(Instant::now() < deadline, "no {what} in {labels:?}");
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// One playhead: the ruler's corner and the transport read the same
+/// `timecode`, over the timeline's `total` (they read 00:01:21:07 and
+/// 00:00:03:00 on the Smoke fixture under S06's preset, WP7 integration
+/// audit).
+fn assert_one_playhead(nested: &mut Nested, timecode: &str, total: &str) {
+    let gui = nested.window(0);
+    let corner = gui.labels("ruler");
+    assert!(
+        corner.contains(&timecode.to_owned()),
+        "the corner: {corner:?}"
+    );
+    let transport = gui.labels("transport");
+    assert_shows(&transport, &[timecode, &format!(" / {total}")]);
+}
+
+/// The mean spacing (px) between the bright stripes a hatch crosses along
+/// row `y` of a shot from `x` over `w` px: the luminance-weighted centers
+/// of the runs above the row's mean.
+fn stripe_spacing(png: &Path, x: u32, y: u32, w: u32) -> f64 {
+    let px = gui_support::rgb_pixels(png, [x, y, w, 1]);
+    let lum: Vec<f64> = px
+        .iter()
+        .map(|p| 0.3 * f64::from(p[0]) + 0.59 * f64::from(p[1]) + 0.11 * f64::from(p[2]))
+        .collect();
+    let mean = lum.iter().sum::<f64>() / lum.len() as f64;
+    let mut centers = Vec::new();
+    let mut i = 0;
+    while i < lum.len() {
+        if lum[i] > mean {
+            let start = i;
+            let (mut sum, mut weight) = (0.0, 0.0);
+            while i < lum.len() && lum[i] > mean {
+                sum += i as f64 * (lum[i] - mean);
+                weight += lum[i] - mean;
+                i += 1;
+            }
+            // Runs cut by the row's ends would pull their center inwards.
+            if start > 0 && i < lum.len() {
+                centers.push(sum / weight);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    assert!(centers.len() >= 4, "no hatch along y {y}: {centers:?}");
+    (centers[centers.len() - 1] - centers[0]) / (centers.len() - 1) as f64
+}
+
+/// A link's underline runs under its descenders (Pango's `low` underline,
+/// as the frames draw it; CSS's crossed the p and the g, their tails below
+/// it): the widest row of ink in `rect` (and 3 px under it) is the lowest.
+fn assert_underline_under_descenders(png: &Path, [x, y, w, h]: [f64; 4], what: &str) {
+    let (w, h) = (w as u32, h as u32 + 3);
+    let px = gui_support::rgb_pixels(png, [x as u32, y as u32, w, h]);
+    let ground = px[0];
+    let ink = |p: &[u8; 3]| p.iter().zip(ground).any(|(a, b)| a.abs_diff(b) > 40);
+    let rows: Vec<usize> = px
+        .chunks(w as usize)
+        .map(|row| row.iter().filter(|p| ink(p)).count())
+        .collect();
+    let (line, widest) = rows
+        .iter()
+        .copied()
+        .enumerate()
+        .max_by_key(|(_, n)| *n)
+        .expect("rows");
+    assert!(
+        widest as f64 > 0.8 * f64::from(w),
+        "{what}: no underline in {rows:?}"
+    );
+    let under: usize = rows[line + 1..].iter().sum();
+    assert_eq!(
+        under, 0,
+        "{what}: ink under its underline (row {line} of {rows:?})"
+    );
+}
+
+/// How many rows of the mud bar's column `x` (window px) are the
+/// sediment's `wood`: 2 above the 1 px border, as the frames draw it (3
+/// until the WP7 integration audit, the mud 15 px instead of 16).
+fn sediment_rows(png: &Path, [bx, by, _, bh]: [f64; 4], x: f64) -> usize {
+    let wood = gui_support::token_rgb("swamp-night", "wood");
+    gui_support::rgb_pixels(png, [(bx + x) as u32, by as u32, 1, bh as u32])
+        .iter()
+        .filter(|p| p.iter().zip(wood).all(|(a, b)| a.abs_diff(b) <= 6))
+        .count()
 }
 
 /// The `local` summary's overlays.
@@ -470,6 +575,30 @@ fn s14_the_bin_drawer() {
     let shot = nested.screenshot("bin");
     compare(&shot, "S14-bin-drawer.png", None, "");
     compare(&shot, "S14-bin-drawer.png", Some("352:608:0:48"), "-bin");
+    // Take 9's broken thumbnail: C19's hatch, 6 px apart across its 45°
+    // stripes, so 8.49 px along a row (as S14 draws it; it was 6 along x).
+    let regions = nested.window(0).regions(&["bin-thumb-9"]);
+    let [x, y, w, _] = regions["bin-thumb-9"];
+    let spacing = stripe_spacing(&shot, x as u32 + 2, y as u32 + 10, w as u32 - 4);
+    assert!(
+        (spacing - 6.0 * std::f64::consts::SQRT_2).abs() < 0.3,
+        "the hatch's stripes are {spacing:.2} px apart along x"
+    );
+    // Take 9's "Open log": 12 px (51 px wide, as drawn; 55 at 13 px) with
+    // its underline under the p and the g. Take 4's actions block is 78 px
+    // (76 until the WP7 integration audit).
+    let regions = nested
+        .window(0)
+        .regions(&["bin-open-log", "bin-row-actions"]);
+    let link = regions["bin-open-log"];
+    assert!(link[2] <= 53.0, "the bin's link is {} px wide", link[2]);
+    assert_underline_under_descenders(&shot, link, "Open log");
+    let actions = regions["bin-row-actions"];
+    assert!(
+        (actions[3] - 78.0).abs() <= 1.0,
+        "take 4's actions are {} px high",
+        actions[3]
+    );
     assert_clean(&mut nested);
     close(&mut nested);
 }
@@ -613,6 +742,9 @@ fn the_bin_keys_select_preview_and_insert() {
     let before = nested.cli_json(&project, &["clip", "list"])["data"]
         .as_array()
         .map_or(0, Vec::len);
+    let subscribers = nested.window(0).local()["themeSubscribers"]
+        .as_u64()
+        .expect("themeSubscribers");
     nested.keys(&["-k", "Return"]);
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
@@ -642,13 +774,26 @@ fn the_bin_keys_select_preview_and_insert() {
         );
         thread::sleep(Duration::from_millis(200));
     }
+    // Their thumbnails' theme subscriptions went with them: one fewer row,
+    // one fewer subscriber (a detached one stayed in the theme's list for
+    // the window's life, WP7 integration audit).
+    let now = nested.window(0).local()["themeSubscribers"]
+        .as_u64()
+        .expect("themeSubscribers");
+    assert_eq!(
+        now,
+        subscribers - 1,
+        "theme subscribers after the rebuild: {now}, before it {subscribers}"
+    );
     assert_clean(&mut nested);
     close(&mut nested);
 }
 
-/// D-38: take 4's row dragged onto the timeline inserts it at the slot it
-/// was dropped on (`ClipAdd{at: Index(k)}`); `LocalUi.drag` is `BinInsert`
-/// meanwhile.
+/// D-38: a bin row dragged onto the timeline inserts its take at the slot
+/// it was dropped on (`ClipAdd{at: Index(k)}`): take 4 at the very start
+/// (slot 1 of 11), then take 2 mid-timeline (slot 7 of 12, the insert
+/// index the WP7 integration audit asked for); `LocalUi.drag` is
+/// `BinInsert` meanwhile.
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn a_bin_row_drags_onto_the_timeline() {
@@ -697,6 +842,60 @@ fn a_bin_row_drags_onto_the_timeline() {
     assert_eq!(drag, "binInsert", "the drag's kind while over the timeline");
     nested.window(0).wait_idle();
     assert_eq!(nested.window(0).local()["drag"], Value::Null);
+
+    // Mid-timeline: take 2's row dropped just right of the 7th clip's start
+    // goes in there, slot 7 of 12 (`ClipAdd{at: Index(6)}`): the clips
+    // before it stay before it, the rest move one on.
+    let clips = nested.cli_json(&project, &["clip", "list"])["data"].clone();
+    let clips = clips.as_array().cloned().unwrap_or_default();
+    let ids: Vec<Value> = clips.iter().map(|c| c["id"].clone()).collect();
+    let frames = |c: &Value, key: &str| c[key].as_u64().unwrap_or(0) as f64;
+    let total = clips
+        .iter()
+        .map(|c| frames(c, "start") + frames(c, "duration"))
+        .fold(0.0, f64::max);
+    let regions = nested.window(0).regions(&[]);
+    let [tx, ty, tw, th] = regions["video-row"];
+    let boundary =
+        tx + frames(&clips[6], "start") * (tw - qrec_core::view::timeline::FIT_INSET_PX) / total;
+    let (x, y) = center(&mut nested, "bin-take-2");
+    let pointer = nested.pointer();
+    pointer.move_to(x, y);
+    pointer.button(gui_support::pointer::BUTTON_LEFT, true);
+    pointer.drag_to(x + 40.0, y + 40.0, 6);
+    pointer.drag_to(boundary + 2.0, ty + th / 2.0, 12);
+    thread::sleep(Duration::from_millis(400));
+    pointer.drag_to(boundary + 3.0, ty + th / 2.0, 2);
+    nested
+        .pointer()
+        .button(gui_support::pointer::BUTTON_LEFT, false);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let after = nested.cli_json(&project, &["clip", "list"])["data"].clone();
+        let after = after.as_array().cloned().unwrap_or_default();
+        if after.len() == 12 {
+            assert_eq!(
+                after[6]["take"], "take-0002",
+                "dropped at slot 7: {after:?}"
+            );
+            let kept: Vec<Value> = after
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != 6)
+                .map(|(_, c)| c["id"].clone())
+                .collect();
+            assert_eq!(kept, ids, "the others keep their order");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no clip added mid-timeline ({} clips)",
+            after.len()
+        );
+        thread::sleep(Duration::from_millis(200));
+    }
+    nested.window(0).wait_idle();
+    assert_eq!(nested.window(0).local()["drag"], Value::Null);
     assert_clean(&mut nested);
     close(&mut nested);
 }
@@ -731,6 +930,14 @@ fn s18_purging_two_takes_from_the_bin() {
         json!(["take-0004", "take-0002"])
     );
     assert_footer(&gui.labels("bin-footer"));
+    // "2 takes selected" in 13/600, 97 px wide as drawn (105 in
+    // `body-strong` 14 until the WP7 integration audit).
+    let footer = gui.regions(&["bin-footer-selected"])["bin-footer-selected"];
+    assert!(
+        footer[2] <= 100.0,
+        "the footer's label is {} px wide",
+        footer[2]
+    );
     click(&mut nested, "bin-purge-selected");
     let gui = nested.window(0);
     let labels = gui.labels("modal");
@@ -822,6 +1029,23 @@ fn s15a_export_setup() {
     );
     let regions = nested.window(0).regions(&[]);
     assert_regions(&regions, &BRIEF_REGIONS, &MERGED_REGIONS, 1.0);
+    // As S15a draws it: the content 16 px in (15 of padding after the
+    // border: it was 17, everything 1 px right and down), the body 355 high.
+    let body = assert_panel_placed(&mut nested);
+    let parts = nested
+        .window(0)
+        .regions(&["export-setup", "export-output", "export-start"]);
+    assert!(
+        (body[3] - 355.0).abs() <= 1.0,
+        "the setup is {} px high: {parts:?}",
+        body[3]
+    );
+    let quality = nested.window(0).regions(&["export-quality"])["export-quality"];
+    assert!(
+        (quality[0] - 1168.0).abs() <= 1.0,
+        "the content starts at x {}",
+        quality[0]
+    );
     let shot = nested.screenshot("setup");
     compare(&shot, "S15a-export-setup.png", None, "");
     compare(
@@ -902,8 +1126,15 @@ fn export_running(nested: &mut Nested, project: &Path, name: &str) {
         },
     );
     assert_eq!(overlays(nested), ["ExportPanel(Running)"]);
-    assert_panel_placed(nested);
+    // 269 high, as S15b draws it (271 until the WP7 integration audit).
+    let body = assert_panel_placed(nested);
+    assert!(
+        (body[3] - 269.0).abs() <= 1.0,
+        "the running page is {} px high",
+        body[3]
+    );
     let gui = nested.window(0);
+    let bar = gui.regions(&["export-bar"])["export-bar"];
     assert_shows(&labels, &["Exporting", "Cancel export"]);
     // The label counts the timeline's 10 clips, not the 9 render units.
     assert!(
@@ -924,6 +1155,15 @@ fn export_running(nested: &mut Nested, project: &Path, name: &str) {
             .any(|l| l.starts_with("Exporting the timeline as it was at ")),
         "{labels:?}"
     );
+    // The header slot's "42%" is `mono-sm` (JetBrains Mono 12, 7 px a
+    // glyph: about 22 px for three), as S15b draws it, not the button's
+    // Atkinson 14 (31 px; WP7 integration audit).
+    let slot = gui.regions(&["export-slot-percent"]);
+    let [_, _, w, _] = slot["export-slot-percent"];
+    assert!(
+        (18.0..=24.0).contains(&w),
+        "the slot's percent is {w} px wide"
+    );
     let local = gui.local();
     assert_ne!(
         local["focusInTopLayer"], true,
@@ -933,6 +1173,9 @@ fn export_running(nested: &mut Nested, project: &Path, name: &str) {
     // costs no frames (no tick callback, G§8.6; a moving clock animates it).
     assert_eq!(local["mudBarsTicking"], 0, "{local}");
     let shot = nested.screenshot(name);
+    // The mud's sediment shows 2 px over the bar's border (at the fill,
+    // 20 px in from the bar's left).
+    assert_eq!(sediment_rows(&shot, bar, 20.0), 2, "the sediment band");
     compare(&shot, "S15b-export-running.png", None, "");
     compare(
         &shot,
@@ -971,6 +1214,15 @@ fn s15c_webm_setup_and_the_reduced_motion_bar() {
             "Use AV1 (slower, smaller)",
             "exports/rust-traits-talk-20261014-153012.webm",
         ],
+    );
+    // 405 high, as the S15c board draws it: its AV1 row 12 px under the
+    // caption and its caption 2 px under its title (409 until the WP7
+    // integration audit).
+    let body = assert_panel_placed(&mut nested);
+    assert!(
+        (body[3] - 405.0).abs() <= 1.0,
+        "the WebM setup is {} px high",
+        body[3]
     );
     let shot = nested.screenshot("webm");
     compare(
@@ -1039,8 +1291,9 @@ fn s15c_webm_setup_and_the_reduced_motion_bar() {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s16_export_done() {
     let mut nested = Nested::start(AREA, "s16", Options::default());
-    let project = fixture(&nested, "smoke", DesignVariant::Smoke, Some(program_ui()));
+    let project = fixture(&nested, "smoke", DesignVariant::Smoke, Some(smoke_ui()));
     open(&mut nested, &project, launch());
+    assert_one_playhead(&mut nested, "00:00:01:15", "00:00:03:00");
     ctrl_e(&mut nested);
     click(&mut nested, "export-start");
     wait_overlays(
@@ -1087,6 +1340,13 @@ fn s16_export_done() {
     assert_eq!(
         hints(&mut nested),
         ["[Enter] Open file", "[Tab] Move focus", "[Esc] Close"]
+    );
+    // 216 high, as S16 draws it (218 until the WP7 integration audit).
+    let body = assert_panel_placed(&mut nested);
+    assert!(
+        (body[3] - 216.0).abs() <= 1.0,
+        "the Done page is {} px high",
+        body[3]
     );
     let shot = nested.screenshot("done");
     compare(&shot, "S16-export-done.png", None, "");
@@ -1142,11 +1402,28 @@ fn s16_export_done() {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s16b_the_done_toast_when_the_panel_is_closed() {
     let mut nested = Nested::start(AREA, "s16b", Options::default());
-    let project = fixture(&nested, "smoke", DesignVariant::Smoke, Some(program_ui()));
-    open(&mut nested, &project, launch());
+    let project = fixture(&nested, "smoke", DesignVariant::Smoke, Some(smoke_ui()));
+    // Each render unit starts 3 s late, so the panel is closed while the
+    // export runs, whatever the machine's load.
+    let launch = Launch {
+        path: Some(fail_ffmpeg::slow_path(nested.env.root(), 3)),
+        ..launch()
+    };
+    open(&mut nested, &project, launch);
+    assert_one_playhead(&mut nested, "00:00:01:15", "00:00:03:00");
     ctrl_e(&mut nested);
     press(&mut nested, "export-start");
+    wait_overlays(
+        &mut nested,
+        &["ExportPanel(Running)"],
+        Duration::from_secs(10),
+    );
     nested.keys(&["-k", "Escape"]);
+    wait_overlays(&mut nested, &[], Duration::from_secs(10));
+    assert!(
+        export_percent(&nested, &project).is_some(),
+        "closed while it runs"
+    );
     let deadline = Instant::now() + Duration::from_secs(120);
     let labels = loop {
         let gui = nested.window(0);
@@ -1177,10 +1454,19 @@ fn s16b_the_done_toast_when_the_panel_is_closed() {
     );
     assert_shows(&labels, &["Open file", "Open folder"]);
     assert!(!labels.contains(&"Copy path".to_owned()), "{labels:?}");
-    let regions = nested.window(0).regions(&["toast-host"]);
+    let regions = nested.window(0).regions(&["toast-host", "toast-action-0"]);
     let [x, y, w, h] = regions["toast-host"];
     assert!((y + h - 956.0).abs() <= 1.0, "{regions:?}");
     assert!((x + w / 2.0 - 800.0).abs() <= 1.0, "{regions:?}");
+    // The actions' flat buttons start at the text's x (16 + 20 + 12 in),
+    // their labels 8 px further, as S16b draws them (they were pulled 8 px
+    // left: WP7 integration audit).
+    let [ax, ..] = regions["toast-action-0"];
+    assert!(
+        (ax - (x + 48.0)).abs() <= 1.0,
+        "Open file's button at {} in a toast at {x}",
+        ax
+    );
     let shot = nested.screenshot("toast");
     compare(&shot, "S16b-export-done-panel-closed.png", None, "");
     compare(
@@ -1215,7 +1501,7 @@ fn s17_export_failed() {
     ctrl_e(&mut nested);
     click(&mut nested, "export-start");
     // While unit 3 waits for units 1 and 2, the label counts the timeline's
-    // clips: the third of ten is next.
+    // clips: the third of ten is next. Unit 3 fails once the case saw it.
     wait_label(
         &mut nested,
         "export-panel",
@@ -1223,6 +1509,7 @@ fn s17_export_failed() {
         Duration::from_secs(300),
         |l| l == "Rendering clip 3/10",
     );
+    fail_ffmpeg::go(nested.env.root());
     wait_overlays(
         &mut nested,
         &["ExportPanel(Failed)"],
@@ -1272,7 +1559,18 @@ fn s17_export_failed() {
         "no toast over the failed panel"
     );
     assert!(exports(&project).is_empty(), "nothing written");
+    // 472 high, as S17 draws it (the hint 10 px under the lead, the
+    // stderr text 11 px in), and "Open full log" underlined under its
+    // descenders.
+    let body = assert_panel_placed(&mut nested);
+    assert!(
+        (body[3] - 472.0).abs() <= 1.0,
+        "the Failed page is {} px high",
+        body[3]
+    );
+    let link = nested.window(0).regions(&["export-open-log"])["export-open-log"];
     let shot = nested.screenshot("failed");
+    assert_underline_under_descenders(&shot, link, "Open full log");
     compare(&shot, "S17-export-failed.png", None, "");
     compare(
         &shot,
@@ -1343,7 +1641,7 @@ fn a_cli_export_shows_running_then_the_core_toast() {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn d24_an_existing_file_asks_and_a_forbidden_path_says_why() {
     let mut nested = Nested::start(AREA, "d24", Options::default());
-    let project = fixture(&nested, "smoke", DesignVariant::Smoke, Some(program_ui()));
+    let project = fixture(&nested, "smoke", DesignVariant::Smoke, Some(smoke_ui()));
     let elsewhere = nested.env.empty_dir("videos");
     let existing = elsewhere.join("talk-final.mp4");
     fs::write(&existing, b"an older export").expect("the existing file");

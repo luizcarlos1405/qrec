@@ -151,6 +151,7 @@ fn assert_has(labels: &[String], wanted: &[&str]) {
 fn assert_clean(gui: &Gui) {
     let local = gui.local();
     assert_eq!(local["panics"], 0, "{local}");
+    gui.assert_no_criticals();
     let a11y = gui.ctl(json!({"op": "a11y"}));
     assert_eq!(a11y["ok"], true, "a11y: {a11y}");
 }
