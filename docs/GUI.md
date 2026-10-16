@@ -1312,7 +1312,10 @@ time; A§8.7 rules for every child).
     while an export runs with motion allowed and the clock moving
     (`mud_bar::animates`; done and failed bars, reduced motion and test
     mode's frozen clock, `motion::frozen()`, are still pictures; WP7
-    integration), like the meters' 30 Hz timer (G§8.6).
+    integration), like the meters' 30 Hz timer (G§8.6). The test channel's
+    `local` counts the bars ticking (`mudBarsTicking`): S15b and S15c's
+    running pages check none does under the frozen clock (WP7 integration
+    audit: no test held the merge to this before).
 - **Fonts** (SPEC §15.3, Q11):
   - bundled files `Fraunces[SOFT,WONK,opsz,wght].ttf`,
     `AtkinsonHyperlegibleNext[wght].ttf`, `JetBrainsMono[wght].ttf` from
@@ -1653,7 +1656,7 @@ previews, the player, io, opening, the portal).
 | `{"op":"dispatch","command":{…},"confirmed":false}` | `Store::dispatch_with` with the default reply policy (confirmations open their modal); `{"ok":true}` at once |
 | `{"op":"action","id":"export.panel"}` | runs a binding or GUI action as its key would (pre-steps included) |
 | `{"op":"hints"}` | the rendered hint items (`keys`, `label`, `enabled`, `emphasized`) and the status text (`hintbar::current_items`) |
-| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11; WP7 integration audit) |
+| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit) |
 | `{"op":"a11y"}` | every visible icon-only button, focusable region or focusable custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 | `{"op":"fonts"}` | the family Pango loads for each bundled font; `ok` when each resolves to itself |
 | `{"op":"icons"}` | each custom symbolic icon drawn in a probe color: found, its pixels, recolored |

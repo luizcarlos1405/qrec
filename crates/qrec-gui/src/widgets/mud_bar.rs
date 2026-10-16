@@ -77,6 +77,30 @@ impl MudState {
     }
 }
 
+thread_local! {
+    /// Every bar made, weakly (test mode only): what [`ticking`] counts.
+    static BARS: RefCell<Vec<glib::WeakRef<MudBar>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// How many bars run their tick callback now (test mode; `testctl`'s
+/// `local`, `mudBarsTicking`): none under test mode's frozen clock, whatever
+/// they show, as [`animates`] says (G§8.6).
+pub fn ticking() -> usize {
+    BARS.with(|bars| {
+        let mut bars = bars.borrow_mut();
+        bars.retain(|bar| bar.upgrade().is_some());
+        bars.iter()
+            .filter_map(glib::WeakRef::upgrade)
+            .filter(|bar| {
+                let tick = bar.imp().tick.take();
+                let on = tick.is_some();
+                bar.imp().tick.set(tick);
+                on
+            })
+            .count()
+    })
+}
+
 /// Whether a bar showing `state` animates, and so redraws every frame: only
 /// while an export runs (`Running`) with motion allowed (`reduced` false)
 /// and the animation clock moving (`frozen` false: test mode's stands
@@ -462,6 +486,9 @@ impl MudBar {
     /// them).
     pub fn new(theme: &crate::theme::Theme) -> Self {
         let bar = Self::default();
+        if crate::testctl::mode().on {
+            BARS.with(|bars| bars.borrow_mut().push(bar.downgrade()));
+        }
         bar.follow(theme);
         let weak = bar.downgrade();
         theme

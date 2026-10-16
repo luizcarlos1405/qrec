@@ -28,7 +28,7 @@
 //! | `dispatch` | `Store::dispatch` of `command` (`confirmed`: as confirmed), `{"ok":true}` at once |
 //! | `action` | runs binding or GUI action `id` as its key would |
 //! | `hints` | the hint bar's items and status (`hintbar::current_items`) |
-//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11) |
+//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11) and the mud bars ticking (`mudBarsTicking`: none under the frozen clock) |
 //! | `a11y` | every visible icon-only button, focusable region or custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 //! | `fonts` | the family Pango loads for each bundled font |
 //! | `icons` | each custom symbolic icon drawn in a probe color: found, pixels, recolored |
@@ -498,6 +498,7 @@ fn local(app: &App) -> Value {
         "autocutPreview": local.autocut_preview.as_deref(),
         "binSelection": local.bin_selection.iter().map(|t| t.as_str().to_owned()).collect::<Vec<_>>(),
         "binRowsAlive": crate::bin_drawer::rows_alive(),
+        "mudBarsTicking": crate::widgets::mud_bar::ticking(),
         "keymapProblems": local.keymap_problems,
         "theme": theme::css_name(app.ctx.theme.id()),
         "scale": app.ctx.theme.scale(),

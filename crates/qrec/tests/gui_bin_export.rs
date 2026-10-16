@@ -929,6 +929,9 @@ fn export_running(nested: &mut Nested, project: &Path, name: &str) {
         local["focusInTopLayer"], true,
         "passive: it doesn't take the focus"
     );
+    // Test mode's clock stands still: the running bar is one picture and
+    // costs no frames (no tick callback, G§8.6; a moving clock animates it).
+    assert_eq!(local["mudBarsTicking"], 0, "{local}");
     let shot = nested.screenshot(name);
     compare(&shot, "S15b-export-running.png", None, "");
     compare(
