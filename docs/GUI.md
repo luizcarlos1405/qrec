@@ -1194,6 +1194,11 @@ time; A§8.7 rules for every child).
   `downgrade()`. Widgets made again on a rebuild must go: the bin's rows
   are counted (`local`'s `binRowsAlive`; WP7 integration audit: a row's
   click gesture held its row, so every rebuild kept the rows it dropped).
+  Their subscriptions go with them: a widget made per row keeps its
+  `Subscription` (the meters' and the bin thumbnails' theme ones) and
+  drops it on `dispose`, never `detach()`es it (`local`'s
+  `themeSubscribers`; WP7 integration audit: each rebuild left its
+  thumbnails' callbacks in the theme's list).
 
 ### G§3.13 GPU environment (A§8.10)
 
@@ -1638,7 +1643,21 @@ in WP7's own files, `bin_drawer/row.rs` (a row's click gesture and drag
 source hold its widgets weakly, R11), `bin_drawer/mod.rs` and
 `widgets/mud_bar.rs` (test mode's weak lists of rows and bars those two
 count), `export/mod.rs` (an export not its own clears the panel's last
-outcome) and `gui_bin_export.rs`.
+outcome) and `gui_bin_export.rs`. Its final shot and code audits changed,
+outside WP7's files: in the core `view/timeline.rs` (`shown_playhead`
+clamps to the timeline's end); in the shell `session/open.rs` (the UI a
+session opens with goes through `ui_normalize`, A§5.10) and
+`ges_render.rs` (fade points span the clip, A§9.6); in the GUI
+`widgets/draw.rs` and `timeline/{paint,draw}.rs` (WP0b's and WP3's: the
+hatch's step along x), `hintbar.rs`, `header/export_slot.rs`, `toasts.rs`
+and `components/chrome.css` (WP6's: items left out whole, the slot's
+`mono-sm`, the toast's actions and body), `timeline/tips.rs` (WP3's: the
+tooltip measured again after a hide), `widgets/button.rs` (WP0b's: `link`),
+`theme/mod.rs`, `store/mod.rs` and `testctl.rs` (WP0b's: the theme's
+subscriber count, `hints`' `shown` and `cut`); and the harness and suites:
+`gui_support/mod.rs` (`Gui::assert_no_criticals`), `gui_stage.rs` (the
+adaptive cases' hint bar, the S06 scale runs' tooltip), `gui_timeline.rs`
+and `gui_panel.rs` (no criticals).
 
 ### G§3.18 Test control channel (`src/testctl.rs`, WP0b)
 
@@ -1661,8 +1680,8 @@ previews, the player, io, opening, the portal).
 | `{"op":"labels","name":"region-header"}` | `{"ok":true,"labels":[…],"entries":{…}}`: the text of every visible label under the widget `name` (default: the window), in tree order, and each visible text field's value by its nearest given name (`"inspector-x": "1280"`, `Gui::entries`; WP5 integration) |
 | `{"op":"dispatch","command":{…},"confirmed":false}` | `Store::dispatch_with` with the default reply policy (confirmations open their modal); `{"ok":true}` at once |
 | `{"op":"action","id":"export.panel"}` | runs a binding or GUI action as its key would (pre-steps included) |
-| `{"op":"hints"}` | the rendered hint items (`keys`, `label`, `enabled`, `emphasized`) and the status text (`hintbar::current_items`) |
-| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit) |
+| `{"op":"hints"}` | the rendered hint items (`keys`, `label`, `enabled`, `emphasized`) and the status text (`hintbar::current_items`); `shown`, the labels of the items the bar draws whole (a narrow window leaves the trailing ones out, `hintbar::fitting`), and `cut`, whether a drawn one runs past the bar (never; both WP7 integration audit) |
+| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit); `themeSubscribers`, the theme's callbacks (a dropped bin thumbnail's goes with it, R11; WP7 integration's shot and code audits) |
 | `{"op":"a11y"}` | every visible icon-only button, focusable region or focusable custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 | `{"op":"fonts"}` | the family Pango loads for each bundled font; `ok` when each resolves to itself |
 | `{"op":"icons"}` | each custom symbolic icon drawn in a probe color: found, its pixels, recolored |
@@ -2517,7 +2536,7 @@ below; read them with `Get` while `design/qrec.pen` is active).
 | C16 Clip | `L6XX2E` + states | drawn by `TimelineCanvas` (no widget per clip); textures via `append_texture`; cached render node per data/viewport change | WP3 |
 | C17 Lane headers and segments | `Q32yVJ`, `A1OIK`, `hBnjk` + states | headers are widgets (M/S focusable); segments drawn | WP3 |
 | C18 Playhead, caret | `AgTAK`, `pKx7D`, `NhiaL` | `TimelineOverlay`, a separate widget redrawn per frame; the caret also for bin drops (D-38) | WP3 |
-| C19 Hatch | `GjISD`, `S6jeR8`, `VJilp`, `pHuYi`, `vuBiA` | `widgets::draw::hatch(snapshot, rect, stripe, edges, edge, scale)`: 45°, 2 px stripe, 6 px pitch, 1 px edges, × the UI scale (`HatchMetrics`), anchored to content x; the timeline paints the same metrics in its pre-scaled snapshot (G§4.5) | WP0b |
+| C19 Hatch | `GjISD`, `S6jeR8`, `VJilp`, `pHuYi`, `vuBiA` | `widgets::draw::hatch(snapshot, rect, stripe, edges, edge, scale)`: 45°, 2 px stripe, 6 px pitch across the stripes (`HatchMetrics::step`, 6 · √2 = 8.49 px along x, as the frames draw it; the stripes started every 6 px along x, a 4.2 px pitch, until the WP7 integration audit), 1 px edges, × the UI scale (`HatchMetrics`), anchored to content x; the timeline paints the same metrics in its pre-scaled snapshot (G§4.5) | WP0b |
 | C20 List rows, checkbox | `flVDh`, `lYSdk`, `s0cPIL`, `m3mLzK`, `l3NPvv` | `gtk::ListBox` rows `.row-32/40/44/72`; `gtk::CheckButton` styled; R1 on `surface`, R2 on `raised` | WP0b (CSS) |
 | C21 Bin row, header, footer | `Se0zW` + states, `kD9zO`, `ZLlMZ` | custom row (`bin_drawer/row.rs`) whose actions show under it while it is the only one selected (a plain box, no `gtk::Revealer`: the frame draws no motion for them); `gtk::DragSource` (D-38); the drawer slides in `bin_drawer/slide.rs` (G§7.2) | WP7 |
 | C22 Status chip | `m3Gc2`, `yX8If`, `c9f9HC`, `pn17Q` | `widgets::Chip` | WP0b |
@@ -2528,7 +2547,7 @@ below; read them with `Get` while `design/qrec.pen` is active).
 | C27 Switch | `z9laF`, `p3tmIy` | `gtk::Switch` styled | WP0b |
 | C28 Segmented | `NZKuJ`, `L46uU`, `jmq6y` | `adw::ToggleGroup` styled; the Settings switcher too (`adw::ToggleGroup` + `gtk::Stack`: `adw::InlineViewSwitcher`'s pages can't be disabled, D-48; WP6) | WP0b, WP6 |
 | C29 Fields | `j1hIDi`, `oc5uM`, `vpmJy`, `EfoCl`, `oE7jW` | `gtk::Entry`; `NumericField` (Box `.field` + `gtk::Text` right-aligned + unit label; arrows and scroll step; no ± buttons); `gtk::DropDown`; `gtk::SearchEntry` | WP0b (CSS), WP5 |
-| C30 Mud bar, export progress | `S5YPm4`, `T2C2U5`, `J6HyOH`, `TKIqZ`, `c0pJo3`, `cUfiU` | `widgets::MudBar` (snapshot from `motion::now()` over the GTK-free `MudSim`, seeded PRNG; a tick callback only while it animates: running, motion allowed, the clock moving) | WP7 |
+| C30 Mud bar, export progress | `S5YPm4`, `T2C2U5`, `J6HyOH`, `TKIqZ`, `c0pJo3`, `cUfiU` | `widgets::MudBar` (snapshot from `motion::now()` over the GTK-free `MudSim`, seeded PRNG; frame A, the clock's 0, holds the frames' own bubbles: `RUNNING_FRAME_A`, S15b's and the S15c board's three, and the done page's `DONE_FRAME_A`, S16's two; the 3 px sediment band counted from the bar's outer bottom, 2 px of it above the border under 16 px of mud; a tick callback only while it animates: running, motion allowed, the clock moving) | WP7 |
 | C31 Empty states | `HVO2S`, `p3Dpn`, `uBSb8` | timeline (WP3), panel (WP5), blocking: interim pages (WP0b), drawn pages (WP8) | WP3, WP5, WP0b, WP8 |
 | C32 Theme card | `qqnCi` + themes | `ThemeCard` drawn from that theme's `Palette` | WP9 |
 | C33 Tooltip | `AbHWk`, `T7Ws1`, `m1fwku` | `widgets::tooltip::{text, keys}` via `query-tooltip` + `set_custom`; the clip tooltip is WP3 | WP0b |
@@ -2856,73 +2875,124 @@ S15a S15b S15c S16 S16b S17 S18**, the scale runs (S02, S06, S09 and S14
 at 2 and 1.5, and S10's trim at both), the reduced-motion runs (S03, S04,
 S15c, the panel's pages) and the adaptive runs (S02 at 1300×1000 and at
 1000×1000 with the sheet, S06 at 1600×800): every case and run of the
-table is final. Re-run after the integration: the workspace 1655 passed, 0
-failed, 105 ignored; nested, on pixman and on gles2 alike, gui_shell 21,
-gui_smoke 1, gui_chrome 11, gui_timeline 17, gui_stage 23, gui_panel 9,
-gui_bin_export 14, and gui_bin_export twice more on each (14 every time);
-gles2's warm frame-time p99 16.6 ms. Each shot is next to its frame in
-`tmp/gui-shots/final/<case>-compare.png` (the scale runs at their device
-size with the frame scaled up, `<case>-scale2`, `-scale1.5`; S15c's two
-panels next to its 1040×769 board; S03 and S04's reduced-motion shots
-next to the animated frames); the adaptive shots are there alone
-(`S02-1300`, `S02-1000-closed`, `S02-1000-sheet`, `S06-800`: no frames,
-G§0.3); the gles2 run's in `final/gles2/`. Visible departures of these
-shots (on top of the "everywhere" items above):
+table is final. Re-run after the integration's final shot and code audits
+(deea7bd…3a36df5), on a clean build of the workspace's crates: the
+workspace 1660 passed, 0 failed, 105 ignored; nested, on pixman and on
+gles2 alike, gui_shell 21, gui_smoke 1, gui_chrome 11, gui_timeline 17,
+gui_stage 23, gui_panel 9, gui_bin_export 14 (the stage, timeline, panel
+and bin suites with no GLib or GTK critical); gles2's warm frame-time p99
+16.60 ms (max 16.67). Each shot is next to its frame in
+`tmp/gui-shots/final/<case>-compare.png` (the scale
+runs at their device size with the frame scaled up, `<case>-scale2`,
+`-scale1.5`; S15c's two panels next to its 1040×769 board; S03 and S04's
+reduced-motion shots next to the animated frames); the adaptive shots are
+there alone (`S02-1300`, `S02-1000-closed`, `S02-1000-sheet`, `S06-800`:
+no frames, G§0.3); the gles2 run's in `final/gles2/`. Visible departures of
+these shots (on top of the "everywhere" items above), measured against the
+frames at full size in the final audit:
 
 - Everywhere: the fixture's files are small, so every size is the
   fixture's ("5 takes · 31.4 MB", "10 files (17.0 MB)", "1.6 MB").
+- Everywhere (the mono item above, for the UI font too): Atkinson's glyphs
+  advance whole pixels as well, so a UI line runs a few px off the frame's
+  width, wider or narrower with its size and letters (S16's "Layers! Like
+  an onion. Your video is ready." 264 px for 254, S17's first lead line 405
+  for 395, S14's "Recovered after Qrec closed mid-take." 195 for 200), and
+  12–13 px text renders a little lighter than the frames'. Text-sized
+  controls follow it: S15a's Draft and High
+  segments are 2 and 1 px narrower (55 and 54 for 57 and 55), the header
+  slot's mini bar 2 px left of the frame's (its "42%" 20 px of ink for
+  22), S16b's toast narrower (below).
+- Every timeline shot: the toolbar's left group sits right of the frames':
+  the Snap toggle is 102 px for 100 and its contents 2–4 px right, the
+  divider at x 224 for 217 (8 px each side of it where the frames leave 4
+  and 5), Autocut's icon at 241 for 231 and its label at 265 for 252, the
+  settings icon at 360 for 345 (WP3's toolbar spacing; with the stand-in
+  icons' widths, the right group sits up to 13 px left, as above).
+- S02, S03, S04b, S06, S07, S11, S13, S14, S15a, S15b, S17, S18, S18b
+  (every fit shot of the 10-clip timeline): take 1's second clip reads
+  "1" where the frame reads "Take 1" (G§1.3's fit inset: c8a1 is 63.8 px
+  wide, the frames' 64.3, G§4.5).
 - S14: the thumbnails are the fake test pattern's (take 6's from its
   first frame: 7 frames have no strip image); take 9's broken thumbnail
   carries `dialog-error-symbolic` and the bin's close Adwaita's smaller
-  `window-close-symbolic` (G§5.2's stand-ins for circle-x and x); take 2
-  reads "Removed from the timeline." where the frame reads "Discarded with
-  D." (the fixture writes no history, G§8.4).
+  `window-close-symbolic` (8×8 where the frame's x is 12×12; G§5.2's
+  stand-ins for circle-x and x); take 2 reads "Removed from the
+  timeline." where the frame reads "Discarded with D." (the fixture writes
+  no history, G§8.4).
 - S15a: "software encode (x264)" where the frame names VA-API on
   renderD129 (the fake backend probes no VA device, G§8.4).
 - S15b and S15c's running page: the file and "as it was at" carry the
   export's real start (the setup's preview is the test-mode now, 15:30:12;
-  the job is named when it starts); elapsed and left are real; at 42 %
-  eight units render at once, so the label is further on ("Rendering clip
-  8/10" at 42–43 %, the frame's 6/10 at 42 %).
+  the job is named when it starts); elapsed and left are real; the shot is
+  taken once `qrec status` has the job at 42 % or more, and it lands at
+  42–43 % (43–44 % on gles2), where several units render at once, so the
+  label is further on ("Rendering clip 8/10", the frame's 6/10 at 42 %).
 - S16, S16b: the Smoke fixture's export (3 clips of 30 frames: 1.6 MB,
-  00:00:03:00, took 00:00:01, its own name); around S16's panel the Smoke
-  project (the header's "3 clips · 00:00:03:00", its 3-clip timeline; no
-  c2d0, so nothing selected: Program is read-only and the panel's
-  inspector disabled, D-06, where the frame shows take 5's layout).
+  00:00:03:00, took 00:00:01, its own name), in the Smoke project: the
+  header's "3 clips · 00:00:03:00", its 3-clip timeline with its middle clip
+  c1b2 (take 3) selected and the playhead in it at 00:00:01:15 (the frame
+  selects take 5's c2d0 at 00:01:21:07), so the panel shows take 3's layout,
+  and the bin chip reads 6 (the takes its timeline doesn't use; the frame's
+  5). S16b shows that whole window, and its toast is 467 px wide where the
+  frame's is 500: it sizes to its text (DESIGN's 360–560), 12 px from the
+  body's end to the close button where the frame leaves 28.
 - S17: it fails at 11 % (units 1 and 2 rendered, 867 of 7,391 frames;
   the frame's 37 %); the status icon is `dialog-error-symbolic` (G§5.2's
   stand-in for circle-x); Open full log names the failed segment's log
   (`.qrec/logs/<stamp>-<pid>-j1-seg2.log`, ellipsized at its start) where
   the frame names `export-20261014-153012.log`; the frame's first stderr
-  line looks faded (not built: a pen-file need).
+  line looks faded (not built: a pen-file need). The box shows BRIEF's
+  last ten lines as drawn (the wrapper's render-node line comes first).
 - S18: the modal has no history clause (the frame's "…, and the 6
   history entries that mention these takes are removed too.": the fixture
-  has no history).
+  has no history), so it is 20 px shorter (y 287–713 where the frame's is
+  277–723).
 - Fixed on the way (WP7 integration): the core's "Export failed" toast
   showed over S17's panel, which already shows the failure (dropped now,
   like the done toast under S16's Done page, G§3.7); S18's loss list read
   in path order (A1, A2, L1, L2, recorder.log per take) where BRIEF and
   the frame list the layers, then the tracks, then the log (G§4.9).
+- Fixed in the final shot audit, measured (each with a check, WP7's "As
+  merged"): every hatch is 6 px apart across its stripes (8.49 along x, as
+  drawn; it was 6 along x: S04b, S05, S08, S12, S14); S16 and S16b read one
+  playhead; the hint bar leaves out the items that don't fit whole; the S06
+  scale runs have c2d1's tooltip; the export panel's content starts 16 px
+  in and its pages are the frames' heights (S15a 355, S15c's WebM 405, S15b
+  269, S16 216, S17 472), every text block within 1 px of the frames' (its
+  segments 26 px, "42%" on the frames line, the AV1 row, "Output", S17's
+  hint and stderr); the header slot's "42%" is `mono-sm`; the mud bar's
+  frame A is the frames' bubbles, its sediment 2 px; the links' underlines
+  sit under the descenders and the bin's link is 12 px; the bin's actions
+  block is 78 px and S18's footer label 13/600; S16b's toast actions start
+  at its text's x and its body sits 2 px under the title.
 - Scale runs: the departures of their cases at 1, nothing more at the
   device size (at 1.5 the window draws at its whole factor, 2, and sway
-  scales the buffer down: fractional-scale rendering is WP10's audit).
-- Reduced motion: S03's ring and digit hold still and S04's REC badge has
-  no torch glow (DESIGN's reduced motion; the frames are the animated
-  look at frame A); S15c's bar is flat with no bubbles, as the board's.
+  scales the buffer down, so every 1 px rule is 1.5 px smeared over two
+  device px: fractional-scale rendering is WP10's audit).
+- Reduced motion: S04's REC badge has no torch glow (DESIGN's reduced
+  motion; the frames are the animated look at frame A); S15c's bar is flat
+  with no bubbles, as the board's. S03 shows nothing of it: test mode holds
+  the countdown at its end (the digit at scale 1, a full ring) with motion
+  reduced or not, so S03-reduced is S03's picture but for its live pixels
+  (pixel for pixel on pixman; on gles2 the fake camera's moving dot and
+  the unpinned A2 meter, 144 px; it was offered as the static ring's
+  evidence until the final audit).
 - Adaptive (DESIGN Layout, G§3.15; no frames, so checked against the
   rules): S02 at 1300×1000 is Medium: the panel docked at 320 (its source
   lines ellipsize, "GIGA-BYT…"; with no layer selected the inspector shows
   its empty line, so its 2-up fields aren't in the shot), the stage 980
-  wide with the preview fitted at 948×533 and the transport under it, the
-  timeline 980 wide (the ruler's last label cut at its edge);
-  the header and hint bar keep every item. At 1000×1000 it is Narrow: no
-  docked panel, the stage and the timeline full width (the preview at
-  960×540), the header's layers button left of Record; the button opens
-  the sheet over the right 384 px from the header to the hint bar, the
-  content under it dimmed and the button pressed, and `Esc` closes it. S06
-  at 1600×800 is compact: the timeline 232 px (toolbar 36, ruler 28, video
-  72, lanes 48), the stage 488 with the preview fitted at 747×420 and the
-  transport under it, the panel 720 high; nothing else moves.
+  wide with the preview fitted at 948×534 and the transport under it, the
+  timeline 980 wide (the ruler's last label cut at its edge); the header
+  and hint bar keep every item. At 1000×1000 it is Narrow: no docked panel,
+  the stage and the timeline full width (the preview at 960×540), the
+  header's layers button left of Record, and the hint bar leaves out its
+  last item ("? All keys") whole; the button opens the sheet over the
+  right 384 px from the header to the hint bar, the content under it
+  dimmed and the button pressed, and `Esc` closes it. S06 at 1600×800 is
+  compact: the timeline 232 px (toolbar 36, ruler 28, video 72, lanes 48),
+  the stage 488 with the preview fitted at 746×420 and the transport under
+  it, the panel 720 high; nothing else moves.
 
 ### WP0a — Interfaces, GTK-free (alone, first)
 
@@ -3380,7 +3450,39 @@ case counts them), and the panel's own last Done or Failed page came
 back after another export ran over it, dropping that export's toast
 (now an export not its own clears it, so the panel closes when that one
 ends; S16 runs a CLI export over its Done page). S15b and S15c's running
-pages check no mud bar ticks under the frozen clock.
+pages check no mud bar ticks under the frozen clock. The final shots'
+audit, measured against the frames: the C19 hatch is 6 px apart across
+its stripes (8.49 along x; it started a stripe every 6 px along x
+wherever it was drawn: S04b, S05, S08, S12, S14); a playhead past the
+timeline's end (a `ui.json` older than the project: S16's Smoke cases
+used S06's preset) is clamped when the project opens (`ui_normalize`, as
+every commit) and by `shown_playhead`, so the ruler's corner no longer
+reads 00:01:21:07 over a 00:00:03:00 transport; the hint bar leaves out
+the items that don't fit whole (at 1000 px the `?` cap showed without
+"All keys"); the S06 scale runs hover c2d1 for its tooltip; the export
+panel's content is 16 px in (15 of padding after its border), its
+segments 26 px, the header slot's percent `mono-sm`, the running page's
+percent on the frames line's baseline, WebM's AV1 row 12 px under the
+caption, "Output" 3 px lower, the S17 stderr text 11 px in and its hint
+10 px under the lead; the mud bar's frame A is the frames' own bubbles
+(`RUNNING_FRAME_A`, `DONE_FRAME_A`) and its sediment shows 2 px over the
+border; the links' underlines run under the descenders
+(`widgets::button::link`, Pango's `low` underline) and the bin's link is
+12 px; the bin's actions block is 78 px; S18's footer label is 13/600;
+the toast's actions start at its text's x, its body 2 px under the title;
+S17's wrapper writes its node line first, so the box shows BRIEF's last
+ten lines. Its code audit's open items: bin thumbnails keep their theme
+subscription and drop it with themselves (`themeSubscribers`); a bin row
+dropped mid-timeline lands at its slot (slot 7 of 12); S16b's export is
+slowed (each unit 3 s late) so its `Esc` beats it on any machine, and
+S17's third unit fails on the case's go-ahead once it saw "Rendering clip
+3/10"; GES fades span their clip, in-point to end (a fade-out alone made
+GES's clamp extend its slope back to the in-point: GLib's out-of-range
+`volume`, 1300 for a 13 s clip at −6 dB, on every Program load); the
+timeline's tooltip is measured again when it shows after a hide (the
+first one after a drop was allocated at the previous one's size, GTK's
+"Allocation width too small"); and the stage, timeline, panel and bin
+suites fail on any GLib or GTK critical (`Gui::assert_no_criticals`).
 
 ### WP8 — Blocking screens as drawn (lane A, after WP7 and G§0.2)
 
@@ -3681,9 +3783,9 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
 | S15a | Base, `QREC_GUI_TEST_NOW=2026-10-14T15:30:12` | `wtype -M ctrl -k e -m ctrl` |
 | S15b | as S15a | `wtype -k Return`; poll `qrec status --json` until the job is at ≥ 42 %; capture |
 | S15c | as S15a | click WebM, capture; S15b again with `ui.reduced_motion = true` (plain bar) |
-| S16 | Smoke, panel open | export; `waitIdle` after done; then `qrec export` over the Done page: the panel follows it and closes when it ends, with the core's toast (WP7 integration audit) |
-| S16b | Smoke | export; `wtype -k Escape` before done; `waitIdle` after the toast |
-| S17 | Base, `tests/support/fail_ffmpeg.rs`'s wrapper first on the GUI's PATH (units 1 and 2 render, unit 3 fails after them, the rest wait) | export; "Rendering clip 3/10" while unit 3 waits; wait for Failed: "clip 3/10 (take 3, c1b2)", "Failed at 11%" |
+| S16 | Smoke with its own S06 preset (its middle clip c1b2 selected, the playhead at 45 in it, Face selected; S06's c2d0 and 2437 aren't on its 90-frame timeline), panel open | the ruler's corner and the transport read one playhead (00:00:01:15); export; `waitIdle` after done; then `qrec export` over the Done page: the panel follows it and closes when it ends, with the core's toast (WP7 integration audit) |
+| S16b | as S16, `tests/support/fail_ffmpeg.rs`'s slow wrapper first on the GUI's PATH (each render unit starts 3 s late, so the panel closes while the export runs on any machine; WP7 integration audit) | export; wait for the Running page; `wtype -k Escape`; `waitIdle` after the toast |
+| S17 | Base, `tests/support/fail_ffmpeg.rs`'s wrapper first on the GUI's PATH (units 1 and 2 render, unit 3 fails after them and the case's go-ahead, the rest wait) | export; "Rendering clip 3/10" while unit 3 waits, then `fail_ffmpeg::go` (it waited a fixed 2 s until the WP7 integration audit); wait for Failed: "clip 3/10 (take 3, c1b2)", "Failed at 11%" |
 | S18 | Base, bin open | click take 2, Ctrl+click take 4, click Purge from disk |
 | S18b | Base, Live | `wtype -M ctrl -k comma -m ctrl`; click Frame rate 25 |
 | S19–S25, X1–X3 | per WP8 and WP9 | — |
@@ -3696,7 +3798,10 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   only). The cases (WP7 integration, each in its owner's suite):
   `gui_stage`'s `s02_at_scale_2`, `s02_at_scale_1_5` (the live picture
   probed in device px, the sink's size from the GUI log),
-  `s06_at_scale_2`, `s06_at_scale_1_5`; `gui_timeline`'s
+  `s06_at_scale_2`, `s06_at_scale_1_5` (the pointer over c2d1 for its
+  tooltip, as at scale 1: the pointer moves in the output layout's logical
+  px; the runs had no pointer until the WP7 integration audit);
+  `gui_timeline`'s
   `s09_frame_level_at_scale_2`, `_1_5` and `s10_trimming_at_scale_2`,
   `_1_5` (the same logical drag trims c2d0 to 41 at every scale);
   `gui_bin_export`'s `s14_the_bin_drawer_at_scale_2`, `_1_5`. The image
@@ -3716,9 +3821,13 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   opened by the header button); S06 at 1600×800. The cases (WP7
   integration, in `gui_stage`, S02's and S06's owner's): `s02_at_1300_wide`,
   `s02_at_1000_wide_with_the_sheet`, `s06_at_1600_by_800`; each checks the
-  regions against G§3.15 (the preview by `view::canvas::stage_geometry`)
-  and the layout class. WP0b's `gui_shell` has the same three layouts on
-  the fixture's default UI (`medium_windows_dock_the_panel_at_320`,
+  regions against G§3.15 (the preview by `view::canvas::stage_geometry`),
+  the layout class and the hint bar's items whole (`hints`' `shown` and
+  `cut`: at 1000 the trailing ones are left out, at 1300 and 1600 none is;
+  the bar clipped them until the WP7 integration audit, the `?` cap
+  showing without "All keys"). WP0b's `gui_shell` has the same three
+  layouts on the fixture's default UI
+  (`medium_windows_dock_the_panel_at_320`,
   `narrow_windows_show_the_panel_as_a_sheet`,
   `short_windows_keep_a_232_px_timeline`).
 - **Suites** (round 3): `gui_shell` (WP0b's flows and the integration

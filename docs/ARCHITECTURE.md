@@ -1085,8 +1085,12 @@ Copy path; frame toast: path with Copy image / Open folder.
 ### A§5.10 UI normalization (`ui_normalize.rs`)
 
 `ui_normalize(prev: &Project, next: &Project, ui: &UiState) -> UiState` runs
-in every `commit`/`persist`: drop selection ids not on the timeline and sort
-the rest by index; after a record-over select the new clip; a removed run
+in every `commit`/`persist`, and on the `ui.json` a session opens with
+(`prev` = `next` = the loaded project: a UI written before the project
+changed, by a crash between their writes or a hand edit, is made
+consistent before anything reads it; GUI WP7 integration audit): drop
+selection ids not on the timeline and sort the rest by index; after a
+record-over select the new clip; a removed run
 that held a selected clip passes the selection to the clips put in its
 place (discard putting replaced clips back), and a selected clip that shrank
 and is followed by clips carved from its old range passes it to them
@@ -2378,8 +2382,12 @@ Near a tie (within ~1 ms) GES may still differ by one frame. Video: a `videocrop
 from `placement.src` and always `posx/posy/width/height` from
 `placement.dst`. Audio track caps `audio/x-raw,rate=48000,channels=2`;
 fades are 240-sample linear ramps on the source's `volume` through a
-`GstInterpolationControlSource`. `layer_priority` 0 is the take scene's top
-layer. A clip is cut at its stream's known end (`frames` for video,
+`GstInterpolationControlSource` whose points span the clip, in-point to
+end: a one-sided fade holds the volume to the other end (GES clamps a
+control source to its element's edges by extending the nearest segment, so
+a lone fade-out once reached a volume of thousands at the in-point).
+`layer_priority` 0 is the take scene's top layer. A clip is cut at its
+stream's known end (`frames` for video,
 `durationNs` for audio: GES refuses `inpoint + duration` past the media)
 and left out when nothing remains, where the export shows the background
 and silence. An audio clip fades in or out only where it is playing at the
