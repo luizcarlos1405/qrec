@@ -127,12 +127,34 @@ impl Tap {
         self.seen.lock().unwrap().last().copied()
     }
 
-    /// Waits until the newest frame is at `pts`.
+    /// Waits until the newest frame is at `pts`; a timeout names the last
+    /// frames that came instead.
     fn showing(&self, pts: u64) -> Seen {
-        wait_until(&format!("a frame at {pts} ns"), SETTLE, || {
-            self.last().is_some_and(|s| s.pts == pts)
-        });
-        self.last().unwrap()
+        self.showing_since(0, pts)
+    }
+
+    /// Waits until the newest frame is at `pts` and came after the first
+    /// `since` frames. `Loaded` comes once a frame reached the sink's pad,
+    /// a moment before this appsink records it: after a load at the
+    /// position shown already, the newest frame is the old plan's until then.
+    fn showing_since(&self, since: usize, pts: u64) -> Seen {
+        let deadline = Instant::now() + SETTLE;
+        loop {
+            let all = self.all();
+            if all.len() > since
+                && let Some(last) = all.last()
+                && last.pts == pts
+            {
+                return *last;
+            }
+            if Instant::now() >= deadline {
+                panic!(
+                    "a frame at {pts} ns: not within {SETTLE:?}; the last frames: {:?}",
+                    &all[all.len().saturating_sub(6)..]
+                );
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
     }
 }
 
@@ -312,9 +334,10 @@ fn a_load_keeps_the_position_and_playing() {
     assert_eq!(player.position_ns(), ns(20));
 
     // Paused: the new plan at the same position.
+    let before = tap.all().len();
     player.load(plan_ges(&cut), ns(20));
     assert_eq!(events.loaded(2), ns(35));
-    assert_eq!(tap.showing(ns(20)).id, Some(75));
+    assert_eq!(tap.showing_since(before, ns(20)).id, Some(75));
     settle(&player);
     assert_eq!(player.position_ns(), ns(20));
 

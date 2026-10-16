@@ -119,9 +119,10 @@ pub const PORTAL_TIMEOUT: Duration = Duration::from_secs(120);
 pub const GUI_CAST_GRACE: Duration = Duration::from_secs(60);
 
 /// Whether the engine composites the live preview into
-/// [`EngineOptions::preview`] (GUI H-1). While it doesn't, the preview is
-/// the RGBA appsink's [`SideEvent::Preview`] frames, also with a sink given.
-pub const PREVIEW_SINK_SUPPORTED: bool = false;
+/// [`EngineOptions::preview`] (GUI H-1): BGRx at the canvas fitted into its
+/// `max_size`, the same sink across rebuilds. Without a sink the preview is
+/// the RGBA appsink's [`SideEvent::Preview`] frames.
+pub const PREVIEW_SINK_SUPPORTED: bool = true;
 
 /// Which devices the engine records from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

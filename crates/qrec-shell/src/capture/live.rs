@@ -9,12 +9,18 @@
 //! audio: src [! caps] ! audioconvert [! level] ! tee
 //! tee ! fakesink sync=false async=false        (always)
 //! tee ! queue ! videocrop ! compositor.sink_N   (preview, per visible layer)
-//! compositor ! video/x-raw,WxH@fps ! videoconvert ! RGBA ! appsink → SideEvent::Preview
+//! the GUI's sink (GUI H-1), at the canvas fitted into its max size:
+//!   compositor ! video/x-raw,format=BGRx,PWxPH@fps ! queue leaky=downstream max-size-buffers=1
+//!     ! <sink sync=false async=false>
+//! without one (tests), at the canvas size:
+//!   compositor ! video/x-raw,WxH@fps ! videoconvert ! RGBA ! appsink → SideEvent::Preview
 //! ```
 //!
 //! Element names carry their branch (`s<N>-…`, `pv-…`) so bus errors can be
 //! attributed to one source. The pipeline runs on the system (monotonic)
-//! clock; audio sources slave to it.
+//! clock; audio sources slave to it. The GUI's sink is the same element in
+//! every pipeline: the engine takes it out of a pipeline it tore down (at
+//! NULL) and puts it in the next one.
 
 use std::collections::BTreeMap;
 use std::str::FromStr;
@@ -22,17 +28,18 @@ use std::str::FromStr;
 use crossbeam_channel::Sender;
 use gst::glib;
 use gst::prelude::*;
+use qrec_core::Fps;
+use qrec_core::ges_plan::fit_size;
 use qrec_core::layout::place;
-use qrec_core::model::Layer;
+use qrec_core::model::{Color, Layer, Rect};
 use qrec_core::plans::LiveScene;
 
 use super::bridge;
-use super::engine::Cmd;
+use super::engine::{Cmd, OpenCast};
 use super::fake::{FAKE_SCREEN_FPS, FAKE_SCREEN_SIZE, FakeTone, fake_screen_is_still, fake_tone};
-use super::portal::ScreenShare;
 use super::spec::{SourceSpec, tick_settings};
 use super::util::{capsfilter, make, set_str, set_value};
-use super::{Backend, LevelReading, PreviewFrame, SideEvent};
+use super::{Backend, LevelReading, PreviewFrame, PreviewOutput, SideEvent};
 
 /// One capture device.
 pub(super) struct SourceBranch {
@@ -60,24 +67,80 @@ pub(super) struct PreviewLayer {
 
 pub(super) struct Preview {
     pub layers: Vec<PreviewLayer>,
+    /// Layer rects are in canvas pixels; the compositor's pads in output
+    /// pixels: this scales one to the other.
+    pub scale: Scale,
+}
+
+/// From canvas pixels to the preview compositor's (G§3.9: the pads get
+/// `layout::place`'s rect × output / canvas).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Scale {
+    pub canvas: (u32, u32),
+    pub out: (u32, u32),
+}
+
+impl Scale {
+    /// `rect` in output pixels: each edge scaled and rounded to the nearest
+    /// pixel (so layers that touch keep touching), at least a pixel wide
+    /// and high (a compositor pad of width 0 would draw the input at its
+    /// own size).
+    pub fn rect(&self, rect: Rect) -> Rect {
+        if self.canvas == self.out || self.canvas.0 == 0 || self.canvas.1 == 0 {
+            return rect;
+        }
+        let edge = |v: i64, to: u32, from: u32| -> i64 {
+            // round(v · to / from), halves up, in exact integers.
+            let (num, den) = (v * i64::from(to), i64::from(from));
+            (2 * num + den).div_euclid(2 * den)
+        };
+        let (x, y) = (i64::from(rect.x), i64::from(rect.y));
+        let left = edge(x, self.out.0, self.canvas.0);
+        let right = edge(x + i64::from(rect.w), self.out.0, self.canvas.0);
+        let top = edge(y, self.out.1, self.canvas.1);
+        let bottom = edge(y + i64::from(rect.h), self.out.1, self.canvas.1);
+        let clamp = |v: i64| v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+        let side = |v: i64| v.clamp(1, i64::from(u32::MAX)) as u32;
+        Rect::new(
+            clamp(left),
+            clamp(top),
+            side(right - left),
+            side(bottom - top),
+        )
+    }
 }
 
 /// What a live pipeline was built for; equal keys ⇒ only layout changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct LiveKey {
     pub sources: Vec<SourceSpec>,
-    /// Preview layers (id and source) in z-order, `None` without preview.
-    pub preview: Option<Vec<(String, SourceSpec)>>,
+    /// The preview's canvas and layers, `None` without preview.
+    pub preview: Option<PreviewKey>,
+}
+
+/// What the preview branch was built for: the canvas (its compositor's
+/// size, rate and background) and the layers (id and source) in z-order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PreviewKey {
+    pub canvas: (u32, u32, Fps, Color),
+    pub layers: Vec<(String, SourceSpec)>,
 }
 
 impl LiveKey {
     pub fn of(sources: Vec<SourceSpec>, scene: Option<&LiveScene>) -> Self {
-        let preview = scene.filter(|s| s.preview).map(|s| {
-            s.scene
+        let preview = scene.filter(|s| s.preview).map(|s| PreviewKey {
+            canvas: (
+                s.canvas.width,
+                s.canvas.height,
+                s.canvas.fps,
+                s.canvas.background.clone(),
+            ),
+            layers: s
+                .scene
                 .layers
                 .iter()
                 .map(|l| (l.id.to_string(), SourceSpec::of_video(&l.source, None)))
-                .collect()
+                .collect(),
         });
         Self { sources, preview }
     }
@@ -122,7 +185,9 @@ pub(super) struct BuildCtx<'a> {
     pub tx: &'a Sender<Cmd>,
     pub side: Option<&'a Sender<SideEvent>>,
     /// Portal casts of the real backend's screens, by output.
-    pub casts: &'a BTreeMap<String, ScreenShare>,
+    pub casts: &'a BTreeMap<String, OpenCast>,
+    /// The GUI's preview sink (GUI H-1); `None`: the RGBA appsink.
+    pub preview: Option<&'a PreviewOutput>,
 }
 
 impl Live {
@@ -187,15 +252,17 @@ impl Live {
     }
 
     /// Updates the preview's per-layer crop, position, size, opacity and
-    /// z-order from `scene` (same layers and sources as when built).
-    pub fn apply_layout(&self, scene: &LiveScene) {
+    /// z-order from `layers` (a scene's, topmost first: the layers and
+    /// sources it was built with). Layers it wasn't built with are ignored,
+    /// and preview layers `layers` lacks keep their layout.
+    pub fn apply_layout(&self, layers: &[Layer]) {
         let Some(preview) = &self.preview else { return };
-        for (z, layer) in scene.scene.layers.iter().enumerate() {
+        for (z, layer) in layers.iter().enumerate() {
             let Some(pl) = preview.layers.iter().find(|p| p.layer.id == layer.id) else {
                 continue;
             };
             let size = self.sources[pl.source].size;
-            apply_layer(pl, layer, size, z as u32 + 1);
+            apply_layer(pl, layer, size, z as u32 + 1, preview.scale);
         }
     }
 }
@@ -271,6 +338,7 @@ fn add_source(
             let cast = ctx
                 .casts
                 .get(output)
+                .and_then(|cast| cast.share.as_ref())
                 .ok_or_else(|| err(format!("no screen-share session for {output}")))?;
             let src = make("pipewiresrc", &name("src")).map_err(err)?;
             set_value(&src, "fd", cast.fd_raw()).map_err(err)?;
@@ -351,6 +419,26 @@ fn add_source(
         .map_err(|e| err(format!("can't link the source branch: {e}")))?;
     tee.link(&sink)
         .map_err(|e| err(format!("can't link the source branch: {e}")))?;
+
+    // A source whose stream ends (EOS) is dead: nothing flows into its tee
+    // again, so a kept live pipeline rebuilds it instead of attaching the
+    // next take to it. (A take records it as lost through its bins.)
+    if let Some(pad) = tee.static_pad("sink") {
+        let tx = ctx.tx.clone();
+        let generation = ctx.generation;
+        pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_, info| {
+            if info
+                .event()
+                .is_some_and(|event| event.type_() == gst::EventType::Eos)
+            {
+                let _ = tx.send(Cmd::SourceEos {
+                    generation,
+                    source: index,
+                });
+            }
+            gst::PadProbeReturn::Ok
+        });
+    }
 
     if spec.is_video() {
         // Report the negotiated size (preview placement needs it).
@@ -446,8 +534,8 @@ fn first_buffer_only(src: &gst::Element) {
 }
 
 /// `audiotestsrc is-live=true wave=ticks`: a tone at the start of every
-/// period, digital silence in between.
-fn fake_audio_source(name: &str, tone: &FakeTone) -> Result<gst::Element, String> {
+/// period, digital silence in between (also the meter monitor's).
+pub(super) fn fake_audio_source(name: &str, tone: &FakeTone) -> Result<gst::Element, String> {
     let src = make("audiotestsrc", name)?;
     set_value(&src, "is-live", true)?;
     let (periods, interval) = tick_settings(tone);
@@ -464,10 +552,15 @@ fn fake_audio_source(name: &str, tone: &FakeTone) -> Result<gst::Element, String
 fn add_preview(live: &Live, scene: &LiveScene, ctx: &BuildCtx<'_>) -> Result<Preview, String> {
     let pipeline = &live.pipeline;
     let canvas = &scene.canvas;
-    let raw = |extra: &str| {
+    let full = (canvas.width, canvas.height);
+    // The GUI's sink gets the canvas fitted into its max size (GUI H-1).
+    let out = ctx
+        .preview
+        .map_or(full, |p| fit_size(canvas.width, canvas.height, p.max_size));
+    let raw = |(w, h): (u32, u32), format: &str| {
         format!(
-            "video/x-raw,width={},height={},framerate={}/{}{extra}",
-            canvas.width, canvas.height, canvas.fps.num, canvas.fps.den
+            "video/x-raw{format},width={w},height={h},framerate={}/{}",
+            canvas.fps.num, canvas.fps.den
         )
     };
     // The canvas background, as the bottom compositor input.
@@ -479,25 +572,62 @@ fn add_preview(live: &Live, scene: &LiveScene, ctx: &BuildCtx<'_>) -> Result<Pre
         "foreground-color",
         argb(canvas.background.as_str()),
     )?;
-    let background_caps = capsfilter("pv-background-caps", &raw(""))?;
     let compositor = make("compositor", "pv-compositor")?;
-    let out_caps = capsfilter("pv-caps", &raw(""))?;
-    let convert = make("videoconvert", "pv-convert")?;
-    let rgba = capsfilter("pv-rgba", "video/x-raw,format=RGBA")?;
-    let appsink = gst_app::AppSink::builder()
-        .name("pv-sink")
-        .sync(false)
-        .max_buffers(1)
-        .drop(true)
-        .build();
-    let tail: [&gst::Element; 4] = [&compositor, &out_caps, &convert, &rgba];
-    pipeline
-        .add_many([&background, &background_caps])
-        .map_err(|e| e.to_string())?;
-    pipeline.add_many(tail).map_err(|e| e.to_string())?;
-    pipeline
-        .add(appsink.upcast_ref::<gst::Element>())
-        .map_err(|e| e.to_string())?;
+    let background_caps = match ctx.preview {
+        Some(_) => {
+            let caps = capsfilter("pv-background-caps", &raw(out, ",format=BGRx"))?;
+            let tail = make("queue", "pv-out-queue")?;
+            set_str(&tail, "leaky", "downstream")?;
+            set_value(&tail, "max-size-buffers", 1u32)?;
+            set_value(&tail, "max-size-bytes", 0u32)?;
+            set_value(&tail, "max-size-time", 0u64)?;
+            let out_caps = capsfilter("pv-caps", &raw(out, ",format=BGRx"))?;
+            pipeline
+                .add_many([&background, &caps, &compositor, &out_caps, &tail])
+                .map_err(|e| e.to_string())?;
+            gst::Element::link_many([&compositor, &out_caps, &tail]).map_err(|e| e.to_string())?;
+            let sink = adopt_sink(pipeline, ctx.preview)?;
+            tail.link(&sink).map_err(|e| e.to_string())?;
+            caps
+        }
+        None => {
+            let caps = capsfilter("pv-background-caps", &raw(full, ""))?;
+            let out_caps = capsfilter("pv-caps", &raw(full, ""))?;
+            let convert = make("videoconvert", "pv-convert")?;
+            let rgba = capsfilter("pv-rgba", "video/x-raw,format=RGBA")?;
+            let appsink = gst_app::AppSink::builder()
+                .name("pv-sink")
+                .sync(false)
+                .max_buffers(1)
+                .drop(true)
+                .build();
+            let tail: [&gst::Element; 4] = [&compositor, &out_caps, &convert, &rgba];
+            pipeline
+                .add_many([&background, &caps])
+                .map_err(|e| e.to_string())?;
+            pipeline.add_many(tail).map_err(|e| e.to_string())?;
+            pipeline
+                .add(appsink.upcast_ref::<gst::Element>())
+                .map_err(|e| e.to_string())?;
+            gst::Element::link_many(tail).map_err(|e| e.to_string())?;
+            rgba.link(appsink.upcast_ref::<gst::Element>())
+                .map_err(|e| e.to_string())?;
+            if let Some(side) = ctx.side.cloned() {
+                appsink.set_callbacks(
+                    gst_app::AppSinkCallbacks::builder()
+                        .new_sample(move |sink| {
+                            let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                            if let Some(frame) = preview_frame(&sample) {
+                                let _ = side.send(SideEvent::Preview(frame));
+                            }
+                            Ok(gst::FlowSuccess::Ok)
+                        })
+                        .build(),
+                );
+            }
+            caps
+        }
+    };
     gst::Element::link_many([&background, &background_caps]).map_err(|e| e.to_string())?;
     let bg_pad = compositor
         .request_pad_simple("sink_%u")
@@ -508,24 +638,8 @@ fn add_preview(live: &Live, scene: &LiveScene, ctx: &BuildCtx<'_>) -> Result<Pre
         .ok_or("no background pad")?
         .link(&bg_pad)
         .map_err(|e| format!("{e:?}"))?;
-    gst::Element::link_many(tail).map_err(|e| e.to_string())?;
-    rgba.link(appsink.upcast_ref::<gst::Element>())
-        .map_err(|e| e.to_string())?;
 
-    if let Some(side) = ctx.side.cloned() {
-        appsink.set_callbacks(
-            gst_app::AppSinkCallbacks::builder()
-                .new_sample(move |sink| {
-                    let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                    if let Some(frame) = preview_frame(&sample) {
-                        let _ = side.send(SideEvent::Preview(frame));
-                    }
-                    Ok(gst::FlowSuccess::Ok)
-                })
-                .build(),
-        );
-    }
-
+    let scale = Scale { canvas: full, out };
     let mut layers = Vec::new();
     for (z, layer) in scene.scene.layers.iter().enumerate() {
         let wanted = SourceSpec::of_video(&layer.source, None);
@@ -557,6 +671,9 @@ fn add_preview(live: &Live, scene: &LiveScene, ctx: &BuildCtx<'_>) -> Result<Pre
         let pad = compositor
             .request_pad_simple("sink_%u")
             .ok_or("the compositor has no input pads")?;
+        if ctx.preview.is_some() {
+            scale_linearly(&pad);
+        }
         crop.static_pad("src")
             .ok_or("no crop pad")?
             .link(&pad)
@@ -567,14 +684,66 @@ fn add_preview(live: &Live, scene: &LiveScene, ctx: &BuildCtx<'_>) -> Result<Pre
             crop,
             pad,
         };
-        apply_layer(&pl, layer, None, z as u32 + 1);
+        apply_layer(&pl, layer, None, z as u32 + 1, scale);
         layers.push(pl);
     }
-    Ok(Preview { layers })
+    Ok(Preview { layers, scale })
+}
+
+/// A compositor pad scales its input bilinearly instead of with the default
+/// cubic resampler: the GUI's preview shrinks whole screens to a few
+/// hundred pixels, every frame (like the Program player's GES compositor,
+/// `ges_render::bilinear_compositors`).
+fn scale_linearly(pad: &gst::Pad) {
+    if pad.find_property("converter-config").is_none() {
+        return;
+    }
+    let config = gst::Structure::builder("GstVideoConverter")
+        .field(
+            "GstVideoConverter.resampler-method",
+            gst_video::VideoResamplerMethod::Linear,
+        )
+        .field(
+            "GstVideoConverter.chroma-resampler-method",
+            gst_video::VideoResamplerMethod::Linear,
+        )
+        .build();
+    pad.set_property("converter-config", config);
+}
+
+/// The GUI's preview sink, taken into `pipeline` (`sync=false`, and
+/// `async=false` so the pipeline never waits for the GUI to show a frame).
+/// A sink still in a pipeline that was never started (a build that failed
+/// after adding it) is taken out of it first.
+fn adopt_sink(
+    pipeline: &gst::Pipeline,
+    preview: Option<&PreviewOutput>,
+) -> Result<gst::Element, String> {
+    let sink = preview.map(|p| p.sink.clone()).ok_or("no preview sink")?;
+    if let Some(parent) = sink.parent().and_then(|p| p.downcast::<gst::Bin>().ok()) {
+        parent
+            .remove(&sink)
+            .map_err(|e| format!("the preview sink is still in use: {e}"))?;
+    }
+    for property in ["sync", "async"] {
+        if sink.find_property(property).is_some() {
+            set_value(&sink, property, false)?;
+        }
+    }
+    pipeline
+        .add(&sink)
+        .map_err(|e| format!("can't take the preview sink: {e}"))?;
+    Ok(sink)
 }
 
 /// Sets one preview layer's crop and compositor pad from its layout.
-fn apply_layer(pl: &PreviewLayer, layer: &Layer, size: Option<(u32, u32)>, zorder: u32) {
+fn apply_layer(
+    pl: &PreviewLayer,
+    layer: &Layer,
+    size: Option<(u32, u32)>,
+    zorder: u32,
+    scale: Scale,
+) {
     let placement = size.and_then(|(w, h)| place(w, h, layer.crop, layer.rect, layer.fit));
     let (crop, dst) = match (size, placement) {
         (Some((w, h)), Some(p)) => (
@@ -589,6 +758,7 @@ fn apply_layer(pl: &PreviewLayer, layer: &Layer, size: Option<(u32, u32)>, zorde
         // Size not known yet: no crop, the whole rect.
         _ => ((0, 0, 0, 0), layer.rect),
     };
+    let dst = scale.rect(dst);
     let (left, top, right, bottom) = crop;
     for (name, value) in [
         ("left", left),
@@ -660,5 +830,50 @@ mod tests {
         assert_eq!(argb("#000000"), 0xFF00_0000);
         assert_eq!(argb("#12170F"), 0xFF12_170F);
         assert_eq!(argb("bogus"), 0xFF00_0000);
+    }
+
+    /// Pads of the GUI's preview are the layout's rects × preview / canvas
+    /// (G§3.9), edge by edge, so layers that touch keep touching.
+    #[test]
+    fn preview_rects_scale_edge_by_edge() {
+        let half = Scale {
+            canvas: (1920, 1080),
+            out: (960, 540),
+        };
+        assert_eq!(
+            half.rect(Rect::new(0, 0, 1920, 1080)),
+            Rect::new(0, 0, 960, 540)
+        );
+        assert_eq!(
+            half.rect(Rect::new(1440, 810, 480, 270)),
+            Rect::new(720, 405, 240, 135)
+        );
+        // Off the canvas, partly.
+        assert_eq!(
+            half.rect(Rect::new(-101, -3, 301, 7)),
+            Rect::new(-50, -1, 150, 3)
+        );
+        // Two layers side by side stay side by side.
+        let third = Scale {
+            canvas: (1920, 1080),
+            out: (640, 360),
+        };
+        let (a, b) = (
+            third.rect(Rect::new(0, 0, 961, 540)),
+            third.rect(Rect::new(961, 0, 959, 540)),
+        );
+        assert_eq!(a.x + a.w as i32, b.x);
+        assert_eq!(b.x + b.w as i32, 640);
+        // Never thinner than a pixel (a pad of width 0 draws the input at its own size).
+        assert_eq!(third.rect(Rect::new(10, 10, 1, 1)).w, 1);
+        // The canvas itself (the RGBA appsink): unchanged.
+        let same = Scale {
+            canvas: (320, 180),
+            out: (320, 180),
+        };
+        assert_eq!(
+            same.rect(Rect::new(-7, 3, 1, 999)),
+            Rect::new(-7, 3, 1, 999)
+        );
     }
 }
