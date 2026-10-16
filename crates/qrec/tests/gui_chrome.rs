@@ -1150,6 +1150,60 @@ fn settings_rows_wait_while_recording() {
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
 }
 
+/// Settings reopens on the project's values (R35): a color typed in
+/// Background and left there (Close clicked: the blur's commit shows "Use
+/// #RRGGBB") doesn't come back with the dialog.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn settings_reopens_on_the_projects_values() {
+    let mut nested = Nested::start(AREA, "settings-reopen", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(live_ui()),
+    );
+    open(&mut nested, &project, Launch::a11y());
+    nested.keys(&["-M", "ctrl", "-k", "comma", "-m", "ctrl"]);
+    nested.window(0).wait_idle();
+    let regions = nested
+        .window(0)
+        .regions(&["settings-background", "settings-close"]);
+    let [bx, by, bw, bh] = regions["settings-background"];
+    nested.pointer().click(bx + bw / 2.0, by + bh / 2.0);
+    nested.window(0).wait_idle();
+    nested.keys(&["-M", "ctrl", "-k", "a", "-m", "ctrl", "-k", "BackSpace"]);
+    nested.keys(&["#12"]);
+    nested.window(0).wait_idle();
+    let typed = nested.window(0).entries("settings");
+    assert_eq!(typed["settings-background"], "#12", "{typed:?}");
+    // Close keeps the focus in the field (focus-on-click false) until the
+    // dialog goes.
+    let [cx, cy, cw, ch] = regions["settings-close"];
+    nested.pointer().click(cx + cw / 2.0, cy + ch / 2.0);
+    nested.window(0).wait_idle();
+    assert!(overlays(&mut nested).is_empty(), "Settings closed");
+    nested.keys(&["-M", "ctrl", "-k", "comma", "-m", "ctrl"]);
+    nested.window(0).wait_idle();
+    let status = nested.cli_json(&project, &["status"]);
+    let background = status["data"]["project"]["canvas"]["background"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{status}"))
+        .to_owned();
+    let gui = nested.window(0);
+    let shown = gui.entries("settings");
+    assert_eq!(shown["settings-background"], background, "{shown:?}");
+    let labels = gui.labels("settings");
+    assert!(!labels.contains(&"Use #RRGGBB".to_owned()), "{labels:?}");
+    nested.screenshot("reopened");
+    nested.keys(&["-k", "Escape"]);
+    nested.window(0).wait_idle();
+    assert_no_panics(&mut nested);
+    nested.window(0).assert_no_criticals();
+    nested.close_window();
+    assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
+}
+
 // --------------------------------------------------------------- D-12
 
 /// D-12: closing the window while an export runs asks first ("Quit while

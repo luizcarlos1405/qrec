@@ -2497,6 +2497,10 @@ otherwise an info toast titled with the reason.
   the page follows every snapshot, not only canvas changes. (They stayed
   enabled while recording: a Size pick the core refused left the
   dropdown on a size the project didn't have, across reopening.)
+- Review fix R35: the dialog opens on the project's values
+  (`ProjectPage::refresh` before the layer opens): text typed in
+  Background and left there, with its "Use #RRGGBB", no longer comes back
+  with it.
 
 ### G§4.11 Interim and draft view models (WP0a interim, WP8 and WP9 gated)
 

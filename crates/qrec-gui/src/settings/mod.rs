@@ -211,6 +211,8 @@ impl Dialog {
         self.syncing.set(false);
         self.stack.set_visible_child_name(page.name());
         if was.is_none() {
+            // Before it shows: the page drops what it was left with.
+            self.project.refresh();
             self.ctx.window.open(Layer::Settings, &self.root);
             // The scrim under it, for the region checks (G§8.4).
             if let Some(scrim) = self.root.prev_sibling() {

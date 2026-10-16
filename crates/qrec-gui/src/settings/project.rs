@@ -36,6 +36,7 @@ use crate::{Ctx, guarded};
 pub struct ProjectPage {
     root: gtk::Box,
     size: gtk::DropDown,
+    parts: Rc<Parts>,
 }
 
 impl ProjectPage {
@@ -159,7 +160,16 @@ impl ProjectPage {
         let follower = Rc::clone(&parts);
         ctx.store.subscribe(move |_| follower.sync()).detach();
         track_menu(ctx, &size);
-        Self { root, size }
+        Self { root, size, parts }
+    }
+
+    /// Shows the project as the newest snapshot has it, whatever the page
+    /// showed: the dialog opens on the project's values, not on what was
+    /// typed and left in Background when it last closed (R35). Call it
+    /// while the page is out of the window, so no field counts as being
+    /// typed in.
+    pub fn refresh(&self) {
+        self.parts.resync();
     }
 
     pub fn widget(&self) -> gtk::Widget {
