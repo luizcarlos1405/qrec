@@ -99,9 +99,16 @@ impl Knob {
 
     /// The unit in the value field.
     pub fn unit(self) -> &'static str {
+        self.units()[0]
+    }
+
+    /// The unit's spellings a person may type after the value, the shown
+    /// one first ("dB", "db"): [`Knob::parse`] and the field's arrow keys
+    /// take the same ones.
+    pub fn units(self) -> &'static [&'static str] {
         match self {
-            Knob::Threshold => "dB",
-            _ => "ms",
+            Knob::Threshold => &["dB", "db"],
+            _ => &["ms"],
         }
     }
 
@@ -160,7 +167,7 @@ impl Knob {
     /// The value field's text as the knob's value (clamped and rounded by
     /// [`Knob::set`]); `None` when it isn't a number.
     pub fn parse(self, text: &str) -> Option<f64> {
-        crate::view::panel::parse_number(text, &[self.unit()])
+        crate::view::panel::parse_number(text, self.units())
     }
 }
 
@@ -833,6 +840,11 @@ mod tests {
             serde_json::json!({"knobs": knobs, "tracks": track_items(&state)})
         );
         assert_eq!(Knob::Threshold.parse("\u{2212}35 dB"), Some(-35.0));
+        // The field's own alias parses too (R47: "−40 db" quietly reverted).
+        assert_eq!(Knob::Threshold.parse("-40 db"), Some(-40.0));
+        assert_eq!(Knob::Threshold.parse("-40db"), Some(-40.0));
+        assert_eq!(Knob::Threshold.units(), ["dB", "db"]);
+        assert_eq!(Knob::Padding.units(), ["ms"]);
         assert_eq!(Knob::MinKeep.parse("200ms"), Some(200.0));
         assert_eq!(Knob::MinKeep.parse("a lot"), None);
         assert_eq!(Knob::MinSilence.set(&draft, 5000.0).min_silence_ms, 2000);

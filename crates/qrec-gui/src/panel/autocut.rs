@@ -186,7 +186,8 @@ impl AutocutPage {
             let field = NumericField::new(knob.unit(), knob.label());
             field.set_step(step);
             field.set_format(numeric::whole);
-            field.set_unit_aliases(&["db"]);
+            // The spellings `Knob::parse` takes ("db" for the threshold).
+            field.set_unit_aliases(&knob.units()[1..]);
             field.widget().add_css_class("knob-field");
             field
                 .widget()
