@@ -17,12 +17,12 @@
 //! - Errors (Live: the portal refused the screen, a source died) and a
 //!   take's missing source replace the source line and the icon.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use gtk::graphene;
 use gtk::prelude::*;
-use qrec_core::protocol::command::LayerPatch;
+use qrec_core::protocol::command::{LayerPatch, SceneTarget};
 use qrec_core::view::DragKind;
 use qrec_core::view::panel::{self, LayerRow, NO_LAYERS};
 use qrec_core::{LayerId, State, VideoSource};
@@ -72,6 +72,10 @@ struct RowView {
     menu_button: gtk::MenuButton,
     menu: Menu,
     model: RefCell<Option<LayerRow>>,
+    /// The scene the row's rename edits (`edit_target`).
+    edits: RefCell<Option<Option<SceneTarget>>>,
+    /// A rename is being ended unsaved.
+    dropping: Rc<Cell<bool>>,
 }
 
 /// A row being dragged.
@@ -196,7 +200,10 @@ impl LayerList {
 
     fn rebuild(&self, rows: &[LayerRow]) {
         let inner = &self.inner;
-        for view in inner.rows.borrow_mut().drain(..) {
+        let old: Vec<RowView> = inner.rows.borrow_mut().drain(..).collect();
+        for view in old {
+            // A rename on a row that goes saves nothing.
+            view.drop_rename();
             inner.list.remove(&view.row);
         }
         let mut views = Vec::with_capacity(rows.len());
@@ -248,11 +255,13 @@ impl LayerList {
                     store.dispatch(cmd);
                 }
             }));
-        // A rename ends: save it (Esc already put the old name back).
+        // A rename ends: save it (Esc already put the old name back; one
+        // dropped because its scene went saves nothing).
         let store = ctx.store.clone();
         let id = layer.clone();
         let source = view.source.clone();
         let row = view.row.clone();
+        let dropping = Rc::clone(&view.dropping);
         view.name.connect_notify_local(
             Some("editing"),
             guarded!("panel: rename", move |label, _| {
@@ -267,6 +276,9 @@ impl LayerList {
                 }
                 label.set_can_target(false);
                 label.set_focusable(false);
+                if dropping.get() {
+                    return;
+                }
                 if let Some(cmd) = panel::layer_rename(&store.state(), &id, &label.text()) {
                     store.dispatch(cmd);
                 }
@@ -662,10 +674,29 @@ impl RowView {
             menu_button,
             menu,
             model: RefCell::new(None),
+            edits: RefCell::new(None),
+            dropping: Rc::new(Cell::new(false)),
         }
     }
 
+    /// Ends a rename in progress without saving it (the old name back).
+    fn drop_rename(&self) {
+        if !self.name.is_editing() {
+            return;
+        }
+        self.dropping.set(true);
+        self.name.stop_editing(false);
+        self.dropping.set(false);
+    }
+
     fn show(&self, row: &LayerRow, state: &State, rows: usize) {
+        // Another scene: a rename in progress was for the one that went.
+        let target = qrec_core::ui_normalize::edit_target(&state.project, &state.ui);
+        let scene_changed = self.edits.borrow().as_ref() != Some(&target);
+        *self.edits.borrow_mut() = Some(target);
+        if scene_changed {
+            self.drop_rename();
+        }
         if self.model.borrow().as_ref() == Some(row) {
             self.update_menu(row, state, rows);
             return;

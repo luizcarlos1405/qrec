@@ -515,6 +515,146 @@ fn s06_the_take_layout_and_the_inspector() {
     assert_clean(nested.window(0));
 }
 
+/// Track `id` in the project scene (`take: None`) or `take`'s.
+fn track(nested: &Nested, project: &Path, take: Option<&str>, id: &str) -> Value {
+    let status = nested.cli_json(project, &["status"]);
+    let p = &status["data"]["project"];
+    let scene = match take {
+        Some(take) => &p["takes"][take]["scene"],
+        None => &p["scene"],
+    };
+    scene["audio"]
+        .as_array()
+        .and_then(|tracks| tracks.iter().find(|t| t["id"] == id))
+        .cloned()
+        .unwrap_or_else(|| panic!("no {id} in {take:?}: {status}"))
+}
+
+/// R38: an edit belongs to the scene it was typed for. When the scene the
+/// panel edits changes under a field or a rename being edited (here the
+/// canvas mode, sent the way an agent's command comes: not by a click in
+/// the window), the field shows the new scene's value at once, the rename
+/// ends unsaved, and the edit's Enter sends nothing to either scene. Each
+/// edit is one held `wtype` run (the window is active only while one runs).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn an_edit_stays_with_its_scene() {
+    let mut nested = Nested::start(AREA, "edit-scene", Options::default());
+    let preset = ui(|u| {
+        u.selection = vec![clip("c2d0")];
+        u.selected_layer = Some(LayerId::numbered(2));
+        u.playhead = 2437;
+    });
+    let project = fixture(&nested, DesignVariant::Base, &preset);
+    open(&mut nested, &project, levels(DESIGN_LEVELS));
+    let before = history_cursor(&nested, &project);
+    let set_mode = |nested: &mut Nested, mode: &str| {
+        let command = json!({"cmd": "setCanvasMode", "mode": mode});
+        let reply = nested
+            .window(0)
+            .ctl(json!({"op": "dispatch", "command": command}));
+        assert_eq!(reply["ok"], true, "{reply}");
+    };
+    let entry = |nested: &mut Nested, under: &str, name: &str| {
+        nested.window(0).entries(under).get(name).cloned()
+    };
+    // Position X, typed for the project scene (Live); the panel turns to
+    // take 5's layout (Program) before Enter.
+    let (x, y) = center(region(nested.window(0), "inspector-x"));
+    nested.pointer().click(x, y);
+    let held = nested.keys_held(
+        &[
+            "-M", "ctrl", "-k", "a", "-m", "ctrl", "200", "-s", "5000", "-k", "Return",
+        ],
+        1500,
+    );
+    poll(Duration::from_secs(10), "200 typed in X", || {
+        (entry(&mut nested, "inspector", "inspector-x").as_deref() == Some("200")).then_some(())
+    });
+    set_mode(&mut nested, "program");
+    wait_for_label(nested.window(0), "Take 5 layout · edits this take only");
+    assert_eq!(
+        entry(&mut nested, "inspector", "inspector-x").as_deref(),
+        Some("1500"),
+        "take 5's value, the field still focused"
+    );
+    held.wait();
+    nested.window(0).wait_idle();
+    let x_of = |nested: &Nested, take| layer(nested, &project, take, "L2")["rect"]["x"].clone();
+    assert_eq!(x_of(&nested, Some("take-0005")), 1500, "take 5 untouched");
+    assert_eq!(x_of(&nested, None), 1500, "the project scene untouched");
+    assert_eq!(history_cursor(&nested, &project), before, "nothing sent");
+
+    // A1's gain, typed for take 5 (Program); back to Live before Enter.
+    let (x, y) = center(region(nested.window(0), "audio-gain-A1"));
+    nested.pointer().click(x, y);
+    let held = nested.keys_held(
+        &[
+            "-M",
+            "ctrl",
+            "-k",
+            "a",
+            "-m",
+            "ctrl",
+            "\u{2212}6",
+            "-s",
+            "5000",
+            "-k",
+            "Return",
+        ],
+        1500,
+    );
+    poll(Duration::from_secs(10), "−6 typed in A1's gain", || {
+        (entry(&mut nested, "audio-row-A1", "audio-gain-A1").as_deref() == Some("\u{2212}6"))
+            .then_some(())
+    });
+    set_mode(&mut nested, "live");
+    wait_for_label(nested.window(0), "Project scene · new takes use this");
+    assert_eq!(
+        entry(&mut nested, "audio-row-A1", "audio-gain-A1").as_deref(),
+        Some("0.0"),
+        "the project scene's gain, the field still focused"
+    );
+    held.wait();
+    nested.window(0).wait_idle();
+    let gain_of = |nested: &Nested, take| track(nested, &project, take, "A1")["gainDb"].clone();
+    assert_eq!(gain_of(&nested, Some("take-0005")), 0.0, "take 5 untouched");
+    assert_eq!(gain_of(&nested, None), 0.0, "the project scene untouched");
+    assert_eq!(history_cursor(&nested, &project), before, "nothing sent");
+
+    // L2's rename (the overflow's Rename), started in Live; Program before
+    // Enter: the edit ends, unsaved.
+    let (x, y) = center(region(nested.window(0), "layer-menu-L2"));
+    nested.pointer().click(x, y);
+    nested.window(0).wait_idle();
+    let held = nested.keys_held(
+        &[
+            "-k", "Return", "-s", "300", "-M", "ctrl", "-k", "a", "-m", "ctrl", "Webcam", "-s",
+            "5000", "-k", "Return",
+        ],
+        1500,
+    );
+    poll(Duration::from_secs(10), "Webcam typed in L2's name", || {
+        (entry(&mut nested, "layer-row-L2", "layer-row-L2").as_deref() == Some("Webcam"))
+            .then_some(())
+    });
+    set_mode(&mut nested, "program");
+    wait_for_label(nested.window(0), "Take 5 layout · edits this take only");
+    poll(Duration::from_secs(5), "the rename to end", || {
+        entry(&mut nested, "layer-row-L2", "layer-row-L2")
+            .is_none()
+            .then_some(())
+    });
+    held.wait();
+    nested.window(0).wait_idle();
+    let name_of = |nested: &Nested, take| layer(nested, &project, take, "L2")["name"].clone();
+    assert_eq!(name_of(&nested, Some("take-0005")), "Face", "take 5's name");
+    assert_eq!(name_of(&nested, None), "Face", "the project scene's name");
+    assert_eq!(history_cursor(&nested, &project), before, "nothing sent");
+    assert_has(&panel_labels(nested.window(0)), &["Face"]);
+    assert_clean(nested.window(0));
+}
+
 // ------------------------------------------------------------------ S13
 
 /// L2's box on the 1:2 Live preview at rest (BRIEF §3.1: (1500, 760, 384,

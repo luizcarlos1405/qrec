@@ -2240,6 +2240,13 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     −8192 and 8192", "Crop leaves nothing to show".
   - Enter or blur commits one `LayerSet{target: edit_target, layer,
     patch}`; the slider commits on release.
+  - An edit belongs to the scene and the layer (or track) it was typed
+    for: when either changes under it (the mode, the selection, an agent's
+    command), the field shows the new values at once, focused or not, and
+    a rename ends unsaved; nothing goes to the new scene (review R38). A
+    chrome button's change (the mode switch, Play) drops it the same way;
+    committing it first instead is open (`KeyRouter::run_binding` would
+    end the edit before it decides).
   - During a canvas drag or nudge burst the fields show
     `LocalUi.layer_drag`.
   - Empty: "Select a layer on the canvas or in the list to edit its

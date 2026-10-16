@@ -12,13 +12,16 @@
 //!   the meter stays live.
 //! - Live, a track whose device isn't live reads "Device not found. Plug
 //!   it in, or pick another source." in place of its meter.
+//! - An edit belongs to the scene it was typed for: when the scene the
+//!   panel edits changes under it, the fields show the new scene's values
+//!   and a rename ends unsaved (R38).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gtk::prelude::*;
 use qrec_core::ctx::AudioDeviceInfo;
-use qrec_core::protocol::command::AudioPatch;
+use qrec_core::protocol::command::{AudioPatch, SceneTarget};
 use qrec_core::view::panel::{self, AddGroup, AudioRow, NO_TRACKS};
 use qrec_core::{AudioRole, State, TrackId};
 
@@ -61,6 +64,10 @@ struct AudioRowView {
     sync_label: gtk::Label,
     sync: NumericField,
     model: RefCell<Option<AudioRow>>,
+    /// The scene the row's fields and rename edit (`edit_target`).
+    edits: RefCell<Option<Option<SceneTarget>>>,
+    /// A rename is being ended unsaved.
+    dropping: Cell<bool>,
     /// The toggle is being set from the model, not clicked.
     setting: Cell<bool>,
 }
@@ -111,7 +118,10 @@ impl AudioList {
             views.len() == rows.len() && views.iter().zip(rows).all(|(v, r)| v.track == r.track)
         };
         if !same {
-            for view in inner.rows.borrow_mut().drain(..) {
+            let old: Vec<Rc<AudioRowView>> = inner.rows.borrow_mut().drain(..).collect();
+            for view in old {
+                // A rename on a row that goes saves nothing.
+                view.drop_rename();
                 inner.list.remove(&view.root);
             }
             let mut views = Vec::with_capacity(rows.len());
@@ -233,6 +243,7 @@ fn wire(ctx: &Ctx, view: &Rc<AudioRowView>) {
     let store = ctx.store.clone();
     let track = view.track.clone();
     let menu = view.menu_button.clone();
+    let weak = Rc::downgrade(view);
     view.name.connect_notify_local(
         Some("editing"),
         guarded!("panel: rename a track", move |label, _| {
@@ -245,6 +256,9 @@ fn wire(ctx: &Ctx, view: &Rc<AudioRowView>) {
             }
             label.set_can_target(false);
             label.set_focusable(false);
+            if weak.upgrade().is_some_and(|view| view.dropping.get()) {
+                return;
+            }
             if let Some(cmd) = panel::audio_rename(&store.state(), &track, &label.text()) {
                 store.dispatch(cmd);
             }
@@ -334,6 +348,8 @@ impl AudioRowView {
         gain.set_format(numeric::tenths);
         gain.set_unit_aliases(&["db"]);
         gain.widget().add_css_class("audio-field");
+        gain.widget()
+            .set_widget_name(&format!("audio-gain-{track}"));
         let fill = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         fill.set_hexpand(true);
         let sync_label = gtk::Label::new(Some("Sync"));
@@ -344,6 +360,8 @@ impl AudioRowView {
         sync.set_step(10.0);
         sync.set_format(numeric::signed);
         sync.widget().add_css_class("audio-field");
+        sync.widget()
+            .set_widget_name(&format!("audio-sync-{track}"));
         line3.append(&gain_label);
         line3.append(&gain.widget());
         line3.append(&fill);
@@ -371,8 +389,20 @@ impl AudioRowView {
             sync_label,
             sync,
             model: RefCell::new(None),
+            edits: RefCell::new(None),
+            dropping: Cell::new(false),
             setting: Cell::new(false),
         }
+    }
+
+    /// Ends a rename in progress without saving it (the old name back).
+    fn drop_rename(&self) {
+        if !self.name.is_editing() {
+            return;
+        }
+        self.dropping.set(true);
+        self.name.stop_editing(false);
+        self.dropping.set(false);
     }
 
     fn show(
@@ -381,6 +411,16 @@ impl AudioRowView {
         state: &State,
         (mics, monitors): (&[AudioDeviceInfo], &[AudioDeviceInfo]),
     ) {
+        // Another scene: an edit in progress was for the one that went.
+        let target = qrec_core::ui_normalize::edit_target(&state.project, &state.ui);
+        let scene_changed = self.edits.borrow().as_ref() != Some(&target);
+        *self.edits.borrow_mut() = Some(target);
+        if scene_changed {
+            self.drop_rename();
+            self.gain.reset(&numeric::tenths(row.gain_db));
+            self.sync
+                .reset(&numeric::signed(f64::from(row.sync_offset_ms)));
+        }
         let scene = qrec_core::ui_normalize::canvas_scene(&state.project, &state.ui);
         let device = scene
             .track(&row.track)

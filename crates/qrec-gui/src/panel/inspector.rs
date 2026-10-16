@@ -11,6 +11,10 @@
 //! - The slider commits on release, the Fit segment at once.
 //! - During a canvas drag or nudge burst the fields show
 //!   `LocalUi.layer_drag` (WP4's transient geometry).
+//! - An edit belongs to the scene and the layer it was typed for: when
+//!   either changes under it (the mode, the selection, an agent's command)
+//!   the fields show the new layer's values at once, even the focused one,
+//!   and the edit is dropped, never committed to the new scene (R38).
 //! - The Medium layout (320 px) lays the crop fields 2-up.
 
 use std::cell::{Cell, RefCell};
@@ -58,6 +62,8 @@ struct Inner {
     setting: Cell<bool>,
     medium: Cell<bool>,
     shown: RefCell<Option<Inspector>>,
+    /// What the fields edit: the scene (`edit_target`) and the layer.
+    edits: RefCell<Option<(Option<SceneTarget>, qrec_core::LayerId)>>,
 }
 
 /// `InspectorField` as a map key.
@@ -287,6 +293,7 @@ impl InspectorView {
                 setting: Cell::new(false),
                 medium: Cell::new(true),
                 shown: RefCell::new(None),
+                edits: RefCell::new(None),
             }),
         };
         view.lay_out_crop(false);
@@ -450,21 +457,23 @@ impl InspectorView {
                 .empty
                 .set_sensitive(qrec_core::view::enabled(state, &probe()).is_ok());
             *inner.shown.borrow_mut() = None;
+            *inner.edits.borrow_mut() = None;
             self.clear_errors();
             return;
         };
         inner.empty.set_visible(false);
         inner.fields_box.set_visible(true);
-        let layer_changed = inner
-            .shown
-            .borrow()
-            .as_ref()
-            .is_none_or(|old| old.layer != insp.layer);
-        if layer_changed {
-            self.clear_errors();
-        }
+        // Another scene or layer: an edit in progress was for what went.
+        let edits = (edit_target(&state.project, &state.ui), insp.layer.clone());
+        let layer_changed = inner.edits.borrow().as_ref() != Some(&edits);
+        *inner.edits.borrow_mut() = Some(edits);
         for field in InspectorField::ALL {
-            inner.fields[&FieldKey::from(field)].set_value(&field.text(&insp));
+            let input = &inner.fields[&FieldKey::from(field)];
+            if layer_changed {
+                input.reset(&field.text(&insp));
+            } else {
+                input.set_value(&field.text(&insp));
+            }
         }
         inner.setting.set(true);
         if !inner.opacity.has_focus() || layer_changed {

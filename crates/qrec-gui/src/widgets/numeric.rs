@@ -138,6 +138,22 @@ impl FieldState {
         self.text.clone()
     }
 
+    /// What the field edits changed under it (another scene, another
+    /// layer): `model`'s text, even while the person edits (their edit was
+    /// for what went), and no error. The text to show, when it changes.
+    pub fn reset(&mut self, model: &str) -> Option<String> {
+        self.answer();
+        self.model = model.to_owned();
+        self.edited = false;
+        self.awaiting = None;
+        self.error = None;
+        if self.text == self.model {
+            return None;
+        }
+        self.text = self.model.clone();
+        Some(self.text.clone())
+    }
+
     /// The owner found the text invalid (`Some`, why): it stays the
     /// person's to fix (a new model value doesn't replace it while they are
     /// in the field). `None`: the text is fine.
@@ -262,6 +278,18 @@ impl NumericField {
     pub fn set_value(&self, text: &str) {
         let focused = self.inner.text.has_focus();
         let shown = self.inner.state.borrow_mut().set_value(text, focused);
+        if let Some(shown) = shown {
+            self.set_text(&shown);
+        }
+        self.sync_error();
+    }
+
+    /// What the field edits changed under it (another scene, another
+    /// layer): `text` shows at once, even while the person edits (their
+    /// edit was for what went, so it is dropped, never committed to what
+    /// came), and no error.
+    pub fn reset(&self, text: &str) {
+        let shown = self.inner.state.borrow_mut().reset(text);
         if let Some(shown) = shown {
             self.set_text(&shown);
         }
@@ -601,6 +629,25 @@ mod tests {
         f.typed("38");
         f.typed("384");
         assert_eq!(f.begin_commit(), None);
+    }
+
+    /// R38: what the field edits changed under the edit (another scene, an
+    /// other layer): the new value shows though the person edits, and the
+    /// edit is gone (nothing left to commit, no error).
+    #[test]
+    fn a_new_scene_drops_the_edit() {
+        let mut f = FieldState::default();
+        f.set_value("1500", false);
+        f.typed("200");
+        assert_eq!(f.set_value("1500", true), None, "the person edits");
+        assert_eq!(f.reset("1500").as_deref(), Some("1500"));
+        assert_eq!(f.begin_commit(), None, "nothing to commit");
+        f.typed("0");
+        f.begin_commit();
+        f.set_error(Some("Width must be at least 1"));
+        f.end_commit();
+        assert_eq!(f.reset("384").as_deref(), Some("384"));
+        assert_eq!(f.error(), None);
     }
 
     #[test]
