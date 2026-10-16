@@ -86,6 +86,11 @@ pub fn label_interval(px_per_frame: f64, fps: Fps) -> LabelInterval {
 
 /// The major and minor tick steps for label interval `interval` (G§4.5's
 /// table), in frames; `None` without minor ticks.
+///
+/// From 10 s up to a minute a major is a label's tick and the minors split
+/// the interval as the frames do: S12 (10 s) has a 5 px tick at 5 s and no
+/// 1 s ticks; S04, S05 and S05b (1 min) have 5 px ticks every 10 s and none
+/// taller at 30 s.
 pub fn tick_steps(interval: LabelInterval, fps: Fps) -> (Frame, Option<Frame>) {
     use LabelInterval::*;
     let s = |n: u32| Seconds(n).frames(fps);
@@ -95,8 +100,9 @@ pub fn tick_steps(interval: LabelInterval, fps: Fps) -> (Frame, Option<Frame>) {
         Seconds(1) => (s(1), Some(5)),
         Seconds(2) => (s(1), Some(10)),
         Seconds(5) => (s(1), None),
-        Seconds(10) | Seconds(15) => (s(5), Some(s(1))),
-        Seconds(_) | Minutes(1) => (s(30), Some(s(10))),
+        Seconds(n @ (10 | 15)) => (s(n), Some(s(5))),
+        Seconds(_) => (s(30), Some(s(10))),
+        Minutes(1) => (m(1), Some(s(10))),
         Minutes(2) | Minutes(5) => (m(1), Some(s(30))),
         Minutes(_) | Hours(_) => (m(5), Some(m(1))),
     }
@@ -329,6 +335,65 @@ mod tests {
             json,
             serde_json::json!({"x": 0.0, "kind": "major", "label": "00:00:00:00"})
         );
+    }
+
+    /// The frame a tick of `view` stands at.
+    fn frame_of(view: &Viewport, tick: &Tick) -> Frame {
+        ((tick.x + view.scroll_px) / view.px_per_frame).round() as Frame
+    }
+
+    /// S12 (10 px/s, c3e9 from x 0): a 10 px tick at each label (every
+    /// 10 s, window x 248, 348, …) and a 5 px tick halfway (5 s, x 197,
+    /// 298, …), nothing else: the frame draws no 1 s ticks and no 10 px
+    /// tick at 5 s.
+    #[test]
+    fn s12_ticks_are_the_labels_and_5_s_between() {
+        let ppf = 1040.0 / 3105.0;
+        let view = at(ppf, 4286.0 * ppf);
+        let ticks = ticks(&view, fps30(), 7391);
+        assert!(ticks.iter().all(|t| frame_of(&view, t).is_multiple_of(150)));
+        for tick in &ticks {
+            let at_label = frame_of(&view, tick).is_multiple_of(300);
+            assert_eq!(tick.kind == TickKind::Major, at_label, "{tick:?}");
+            assert_eq!(tick.label.is_some(), at_label && tick.x >= 0.0, "{tick:?}");
+        }
+        let window = |kind: TickKind| -> Vec<f64> {
+            ticks
+                .iter()
+                .filter(|t| t.kind == kind && t.x >= 0.0)
+                .map(|t| (t.x + 176.0).round())
+                .collect()
+        };
+        assert_eq!(window(TickKind::Major)[..3], [248.0, 348.0, 449.0]);
+        assert_eq!(window(TickKind::Minor)[..3], [197.0, 298.0, 398.0]);
+        assert_eq!(
+            ticks
+                .iter()
+                .find(|t| t.x >= 0.0 && t.label.is_some())
+                .and_then(|t| t.label.as_deref()),
+            Some("00:02:30:00")
+        );
+    }
+
+    /// S04, S05 and S05b (the recording fit, 0.0850 px/frame): a 10 px tick
+    /// at each label (every minute, window x 176, 329, 482, …) and 5 px
+    /// ticks every 10 s between, none taller at the half minute.
+    #[test]
+    fn recording_fit_ticks_are_the_labels_and_10_s_between() {
+        let view = at(0.0850, 0.0);
+        let ticks = ticks(&view, fps30(), 12_000);
+        assert!(ticks.iter().all(|t| frame_of(&view, t).is_multiple_of(300)));
+        for tick in &ticks {
+            let at_label = frame_of(&view, tick).is_multiple_of(1800);
+            assert_eq!(tick.kind == TickKind::Major, at_label, "{tick:?}");
+            assert_eq!(tick.label.is_some(), at_label, "{tick:?}");
+        }
+        let majors: Vec<f64> = ticks
+            .iter()
+            .filter(|t| t.kind == TickKind::Major)
+            .map(|t| (t.x + 176.0).round())
+            .collect();
+        assert_eq!(majors[..4], [176.0, 329.0, 482.0, 635.0]);
     }
 
     #[test]

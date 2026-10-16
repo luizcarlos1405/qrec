@@ -26,7 +26,7 @@
 //! | `dispatch` | `Store::dispatch` of `command` (`confirmed`: as confirmed), `{"ok":true}` at once |
 //! | `action` | runs binding or GUI action `id` as its key would |
 //! | `hints` | the hint bar's items and status (`hintbar::current_items`) |
-//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`), the theme (and the window's `.reduced-motion`), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player) |
+//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player) |
 //! | `a11y` | every visible icon-only button, focusable region or custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 //! | `fonts` | the family Pango loads for each bundled font |
 //! | `icons` | each custom symbolic icon drawn in a probe color: found, pixels, recolored |
@@ -498,12 +498,28 @@ fn local(app: &App) -> Value {
         "scale": app.ctx.theme.scale(),
         "reducedMotion": app.ctx.theme.motion().reduced,
         "reducedMotionClass": app.window.window.has_css_class("reduced-motion"),
+        "panelTransition": panel_transition(app),
         "rev": app.ctx.store.rev(),
         "panics": guard::panics(),
         "focusPath": focus_path(app),
         "focusInTopLayer": focus_in_top_layer(app),
         "pid": std::process::id(),
         "playerNs": app.ctx.media.position_ns(),
+    })
+}
+
+/// How the panel's pages switch (`panel::PAGES`): `"slide-left-right"`, or
+/// `"none"` under reduced motion (test mode turns GTK's animations off, so
+/// the stack's transition is what a case can see); `None` without a panel.
+fn panel_transition(app: &App) -> Option<&'static str> {
+    let root: gtk::Widget = app.window.window.clone().upcast();
+    let stack = crate::window::find_named(&root, crate::panel::PAGES)?
+        .downcast::<gtk::Stack>()
+        .ok()?;
+    Some(match stack.transition_type() {
+        gtk::StackTransitionType::None => "none",
+        gtk::StackTransitionType::SlideLeftRight => "slide-left-right",
+        _ => "other",
     })
 }
 

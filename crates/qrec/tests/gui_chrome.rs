@@ -16,7 +16,7 @@
 mod gui_support;
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -26,6 +26,7 @@ use gui_support::{
 use qrec_core::state::{CanvasMode, UiState};
 use qrec_core::{ClipId, TakeId};
 use qrec_shell::testkit::design::{DesignVariant, design_fixture, write_ui};
+use qrec_shell::testkit::run_tool;
 use serde_json::{Value, json};
 
 const OPEN: Duration = Duration::from_secs(60);
@@ -112,36 +113,39 @@ fn compare(shot: &Path, frame: &str, crop: Option<&str>) {
         Some(c) => format!("[0]crop={c}[a];[1]crop={c}[b];[a][b]hstack=inputs=2"),
         None => "[0][1]hstack=inputs=2".to_owned(),
     };
-    let status = Command::new("ffmpeg")
-        .args(["-v", "error", "-y", "-i"])
-        .arg(shot)
-        .arg("-i")
-        .arg(&png)
-        .args(["-filter_complex", &filter])
-        .arg(&out)
-        .status()
-        .expect("run ffmpeg");
+    let run = run_tool(
+        Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-i"])
+            .arg(shot)
+            .arg("-i")
+            .arg(&png)
+            .args(["-filter_complex", &filter])
+            .arg(&out),
+        gui_support::TOOL_TIMEOUT,
+    );
     assert!(
-        status.success(),
-        "ffmpeg hstack failed for {}",
-        shot.display()
+        run.status.success(),
+        "ffmpeg hstack failed for {}: {}",
+        shot.display(),
+        run.stderr
     );
 }
 
 /// The pixel at (`x`, `y`) of a PNG, as `#RRGGBB`.
 fn pixel(png: &Path, x: u32, y: u32) -> String {
-    let out = Command::new("ffmpeg")
-        .args(["-v", "error", "-i"])
-        .arg(png)
-        .args([
-            "-vf",
-            &format!("crop=1:1:{x}:{y},format=rgb24"),
-            "-f",
-            "rawvideo",
-            "-",
-        ])
-        .output()
-        .expect("run ffmpeg");
+    let out = run_tool(
+        Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(png)
+            .args([
+                "-vf",
+                &format!("crop=1:1:{x}:{y},format=rgb24"),
+                "-f",
+                "rawvideo",
+                "-",
+            ]),
+        gui_support::TOOL_TIMEOUT,
+    );
     let rgb = out.stdout;
     assert_eq!(rgb.len(), 3, "one pixel from {}", png.display());
     format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2])
@@ -394,7 +398,7 @@ fn s03_s04_s05_the_header_through_a_take() {
 
     // S03: the countdown (3 s, real time: shoot it at once). `record
     // start` answers once the take starts: it runs in the background.
-    let mut start = background_cli(&nested, &project, &["record", "start"]);
+    let start = background_cli(&nested, &project, &["record", "start"]);
     wait_phase(&nested, &project, "countdown", Duration::from_secs(10));
     nested.window(0).wait_idle();
     let countdown = hints(&mut nested);
@@ -406,7 +410,7 @@ fn s03_s04_s05_the_header_through_a_take() {
 
     // S04: recording.
     wait_phase(&nested, &project, "recording", Duration::from_secs(20));
-    let _ = start.wait();
+    reap(start, "qrec record start");
     nested.window(0).wait_idle();
     let recording = hints(&mut nested);
     let shot = nested.screenshot("s04-recording");
@@ -428,7 +432,7 @@ fn s03_s04_s05_the_header_through_a_take() {
     assert_a11y(&mut nested);
 
     // S05: finalizing (the fake EOS waits 8 s).
-    let mut stop = background_cli(&nested, &project, &["record", "stop"]);
+    let stop = background_cli(&nested, &project, &["record", "stop"]);
     wait_phase(&nested, &project, "finalizing", Duration::from_secs(20));
     nested.window(0).wait_idle();
     let finalizing = hints(&mut nested);
@@ -439,7 +443,7 @@ fn s03_s04_s05_the_header_through_a_take() {
         "Finalizing take 10. Waiting for every file to close (up to 10 s)."
     );
     assert!(header_text(&mut nested).contains("Saving\u{2026}"));
-    let _ = stop.wait();
+    reap(stop, "qrec record stop");
     wait_phase(&nested, &project, "idle", Duration::from_secs(30));
     nested.window(0).wait_idle();
     let text = header_text(&mut nested);
@@ -450,19 +454,15 @@ fn s03_s04_s05_the_header_through_a_take() {
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
 }
 
-/// `qrec <args>` in the background (its output goes nowhere).
+/// `qrec <args>` in the background (`Nested::cli_background`: its output
+/// in the case's `cli.log`); [`reap`] waits for it.
 fn background_cli(nested: &Nested, project: &Path, args: &[&str]) -> Child {
-    nested
-        .env
-        .command(&gui_support::qrec_bin())
-        .arg("--project")
-        .arg(project)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("run qrec")
+    nested.cli_background(project, args)
+}
+
+/// Waits for a [`background_cli`] run to exit (within the CLI's deadline).
+fn reap(child: Child, what: &str) {
+    let _ = gui_support::reap_within(child, gui_support::CLI_TIMEOUT, what);
 }
 
 /// S15b: an export from the CLI runs: the slot shows its percent and the
@@ -479,7 +479,7 @@ fn s15b_the_header_while_exporting() {
         Some(program_ui()),
     );
     open(&mut nested, &project, Launch::a11y());
-    let mut export = background_cli(&nested, &project, &["export", "--quality", "draft"]);
+    let export = background_cli(&nested, &project, &["export", "--quality", "draft"]);
     let deadline = Instant::now() + Duration::from_secs(120);
     let percent = loop {
         let status = nested.cli_json(&project, &["status"]);
@@ -510,7 +510,7 @@ fn s15b_the_header_while_exporting() {
     assert!(percent <= 100);
     let cancel = nested.cli_json(&project, &["export", "cancel"]);
     assert_eq!(cancel["ok"], true, "{cancel}");
-    let _ = export.wait();
+    reap(export, "qrec export");
     assert_a11y(&mut nested);
     assert_no_panics(&mut nested);
     nested.close_window();
@@ -1072,7 +1072,7 @@ fn d12_quitting_while_exporting_asks_first() {
         Some(live_ui()),
     );
     open(&mut nested, &project, Launch::a11y());
-    let mut export = background_cli(&nested, &project, &["export", "--quality", "draft"]);
+    let export = background_cli(&nested, &project, &["export", "--quality", "draft"]);
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let shown = nested.window(0).labels("export-button");
@@ -1113,7 +1113,7 @@ fn d12_quitting_while_exporting_asks_first() {
     nested.keys(&["-k", "Tab"]);
     nested.keys(&["-k", "Return"]);
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
-    let _ = export.wait();
+    reap(export, "qrec export");
     let status = nested.cli_json(&project, &["status"]);
     assert_eq!(
         status["data"]["host"],

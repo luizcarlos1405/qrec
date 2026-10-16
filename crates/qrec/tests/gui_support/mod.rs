@@ -465,6 +465,37 @@ impl Nested {
         }
     }
 
+    /// `qrec <args>` as the CLI in the background (a `record stop` that
+    /// waits for its take, an export): its output goes to
+    /// `<shots>/logs/<case>-cli.log`, it dies with the test's thread, and
+    /// [`reap_within`] waits for it.
+    pub fn cli_background(&self, project: &Path, args: &[&str]) -> Child {
+        self.projects.borrow_mut().insert(project.to_path_buf());
+        let log = self
+            .shots
+            .join("logs")
+            .join(format!("{}-cli.log", self.case));
+        let mut out = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+            .unwrap_or_else(|e| panic!("{}: {e}", log.display()));
+        let _ = writeln!(out, "== qrec {}", args.join(" "));
+        let err = out.try_clone().expect("clone the log");
+        let mut command = self.env.command(&qrec_bin());
+        command
+            .arg("--project")
+            .arg(project)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(out)
+            .stderr(err);
+        process::die_with_parent(&mut command);
+        command
+            .spawn()
+            .unwrap_or_else(|e| panic!("can't run qrec {args:?}: {e}"))
+    }
+
     /// `qrec <args> --json`'s reply object (the last stdout line).
     pub fn cli_json(&self, project: &Path, args: &[&str]) -> Value {
         let mut all: Vec<&str> = args.to_vec();
@@ -1115,6 +1146,24 @@ pub fn poll<T>(within: Duration, what: &str, mut check: impl FnMut() -> Option<T
     }
 }
 
+/// Waits for a background child ([`Nested::cli_background`]) to exit
+/// within `within`; past that it is killed and the case fails (every wait
+/// has a deadline, G§8.4).
+pub fn reap_within(mut child: Child, within: Duration, what: &str) -> std::process::ExitStatus {
+    let deadline = Instant::now() + within;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
+            other => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("{what} didn't exit within {within:?} ({other:?})");
+            }
+        }
+    }
+}
+
 /// Waits until `qrec status --json` says the project's host is a GUI.
 pub fn wait_for_gui_host(nested: &Nested, project: &Path, within: Duration) -> Value {
     let deadline = Instant::now() + within;
@@ -1146,5 +1195,40 @@ mod tests {
         let default = Options::default();
         assert_eq!(default.logical(), (1600.0, 1000.0));
         assert_eq!(Options::size(1300, 1000).logical(), (1300.0, 1000.0));
+    }
+
+    /// A background child that exits is reaped with its status.
+    #[test]
+    fn reap_within_returns_the_exit_status() {
+        let child = Command::new("sh")
+            .args(["-c", "exit 3"])
+            .spawn()
+            .expect("run sh");
+        let status = reap_within(child, Duration::from_secs(10), "sh");
+        assert_eq!(status.code(), Some(3));
+    }
+
+    /// One that outlives its deadline is killed and the case fails (a
+    /// `Child::wait` would have waited forever).
+    #[test]
+    fn reap_within_kills_a_child_past_its_deadline() {
+        let child = Command::new("sleep").arg("30").spawn().expect("run sleep");
+        let pid = child.id();
+        let started = Instant::now();
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            reap_within(child, Duration::from_millis(200), "sleep 30")
+        }));
+        let message = caught.expect_err("a panic past the deadline");
+        let text = message
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_default();
+        assert!(text.contains("sleep 30 didn't exit within"), "{text}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        // Killed and reaped: no such process any more.
+        assert!(
+            !Path::new(&format!("/proc/{pid}")).exists(),
+            "pid {pid} lives"
+        );
     }
 }

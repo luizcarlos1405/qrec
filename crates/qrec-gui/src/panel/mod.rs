@@ -36,6 +36,7 @@ use qrec_core::view::{PanelPageKind, autocut as autocut_view};
 use qrec_shell::capture::live_sources_view;
 
 use crate::Ctx;
+use crate::store::Subscription;
 use crate::store::local::{LayoutWidth, LocalUi};
 use audio::AudioList;
 use autocut::AutocutPage;
@@ -68,6 +69,22 @@ struct Inner {
     autocut: AutocutPage,
     /// What the last refresh showed (layout, page), to skip no-ops.
     shown: RefCell<Option<Shown>>,
+    /// The pages' transition follows the motion policy.
+    _motion: Subscription,
+}
+
+/// The name of the panel's page stack (the layers page and the autocut
+/// page; the test channel reports its transition, G§3.18).
+pub const PAGES: &str = "panel-pages";
+
+/// How the panel switches pages (C13): a 200 ms slide, instant under
+/// reduced motion (D-30: transitions are instant, G§3.14).
+pub fn page_transition(reduced: bool) -> gtk::StackTransitionType {
+    if reduced {
+        gtk::StackTransitionType::None
+    } else {
+        gtk::StackTransitionType::SlideLeftRight
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -163,8 +180,17 @@ impl Panel {
 
         let autocut = AutocutPage::new(ctx);
         let stack = gtk::Stack::new();
-        stack.set_transition_type(gtk::StackTransitionType::SlideLeftRight);
+        stack.set_widget_name(PAGES);
         stack.set_transition_duration(200);
+        // The pages slide unless motion is reduced (D-30), followed live.
+        let motion = ctx.theme.follow_motion({
+            let stack = stack.downgrade();
+            move |motion| {
+                if let Some(stack) = stack.upgrade() {
+                    stack.set_transition_type(page_transition(motion.reduced));
+                }
+            }
+        });
         stack.set_vexpand(true);
         stack.add_named(&layers_page, Some("layers"));
         stack.add_named(&autocut.widget(), Some("autocut"));
@@ -188,6 +214,7 @@ impl Panel {
             inspector,
             autocut,
             shown: RefCell::new(None),
+            _motion: motion,
         });
         let panel = Self {
             root,
@@ -315,4 +342,21 @@ impl Inner {
 /// A section's count caption ("2"; none when empty, S01a).
 fn layer_count(n: usize) -> String {
     if n == 0 { String::new() } else { n.to_string() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pages slide unless motion is reduced (D-30), when the switch is
+    /// instant (the nested `the_pages_slide_unless_motion_is_reduced`
+    /// checks the stack follows the policy).
+    #[test]
+    fn the_pages_switch_at_once_under_reduced_motion() {
+        assert_eq!(
+            page_transition(false),
+            gtk::StackTransitionType::SlideLeftRight
+        );
+        assert_eq!(page_transition(true), gtk::StackTransitionType::None);
+    }
 }

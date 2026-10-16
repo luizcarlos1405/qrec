@@ -23,6 +23,7 @@ use gui_support::{Launch, Nested, Options, assert_regions, qrec_bin, wait_for_gu
 use qrec_core::state::CanvasMode;
 use qrec_core::{ClipId, UiState};
 use qrec_shell::testkit::design::{DesignVariant, design_fixture, write_ui};
+use qrec_shell::testkit::run_tool;
 use serde_json::{Value, json};
 
 const OPEN: Duration = Duration::from_secs(60);
@@ -102,20 +103,25 @@ fn compare(nested: &Nested, shot: &Path, frame: &str) {
     let png = gui_support::repo().join("design/screens").join(frame);
     let out = nested.shots.join(format!("{}-compare.png", nested.case));
     let (w, h) = nested.opts.logical();
-    let status = Command::new("ffmpeg")
-        .args(["-v", "error", "-y", "-i"])
-        .arg(shot)
-        .arg("-i")
-        .arg(&png)
-        .args([
-            "-filter_complex",
-            &format!("[0:v]scale={w}:{h}[a];[1:v]scale={w}:{h}[b];[a][b]hstack=inputs=2"),
-        ])
-        .arg(&out)
-        .stdout(Stdio::null())
-        .status()
-        .expect("run ffmpeg");
-    assert!(status.success(), "the comparison of {}", shot.display());
+    let run = run_tool(
+        Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-i"])
+            .arg(shot)
+            .arg("-i")
+            .arg(&png)
+            .args([
+                "-filter_complex",
+                &format!("[0:v]scale={w}:{h}[a];[1:v]scale={w}:{h}[b];[a][b]hstack=inputs=2"),
+            ])
+            .arg(&out),
+        gui_support::TOOL_TIMEOUT,
+    );
+    assert!(
+        run.status.success(),
+        "the comparison of {}: {}",
+        shot.display(),
+        run.stderr
+    );
 }
 
 /// The stage's regions at 1600×1000 (BRIEF §2.1, G§3.15).
@@ -561,17 +567,7 @@ fn s05_finalizing() {
     assert_eq!(start["ok"], true, "{start}");
     wait_phase(&nested, &project, "recording", Duration::from_secs(30));
     // The stop waits for the take: in the background.
-    let mut stop = nested
-        .env
-        .command(&gui_support::qrec_bin())
-        .arg("--project")
-        .arg(&project)
-        .args(["record", "stop"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("qrec record stop");
+    let stop = nested.cli_background(&project, &["record", "stop"]);
     wait_phase(&nested, &project, "finalizing", Duration::from_secs(20));
     nested.window(0).wait_idle();
     let shot = nested.screenshot("finalizing");
@@ -581,7 +577,7 @@ fn s05_finalizing() {
     assert_clean(&mut nested);
     compare(&nested, &shot, "S05-finalizing.png");
     wait_phase(&nested, &project, "idle", Duration::from_secs(30));
-    let _ = stop.wait();
+    let _ = gui_support::reap_within(stop, gui_support::CLI_TIMEOUT, "qrec record stop");
 }
 
 // --------------------------------------------------------------- Program
@@ -652,8 +648,8 @@ fn program_on_an_empty_timeline() {
     let shot = nested.screenshot("empty-program");
     // The preview is the canvas background (black) inside its border.
     let png = shot.display().to_string();
-    let out = Command::new("ffmpeg")
-        .args([
+    let out = run_tool(
+        Command::new("ffmpeg").args([
             "-v",
             "error",
             "-i",
@@ -663,9 +659,9 @@ fn program_on_an_empty_timeline() {
             "-f",
             "rawvideo",
             "-",
-        ])
-        .output()
-        .expect("ffmpeg");
+        ]),
+        gui_support::TOOL_TIMEOUT,
+    );
     assert_eq!(out.stdout, [0, 0, 0], "the canvas background");
 }
 

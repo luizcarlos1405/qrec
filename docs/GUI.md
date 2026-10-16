@@ -1570,7 +1570,17 @@ segment first, and `recorder.log` says so). In WP5's own files: the dry
 runs' debounce token, `run_io_then` for the sources, `widgets/meter.rs`
 (a 30 Hz timer instead of a tick callback, redrawn only on change,
 G§8.6), `view::panel::inspector_shown` (S01a), and `gui_panel.rs` (S06's
-tooltip, S12's tuning step, S13's real drag).
+tooltip, S12's tuning step, S13's real drag). Its audit changed
+`view/ruler.rs` (WP3's: `tick_steps` at 10 s and 1 min, as S12, S04, S05
+and S05b draw, G§4.5), WP5's `panel/mod.rs` (the page switch follows the
+motion policy, D-30) with `testctl.rs` (`local`'s `panelTransition`) and
+`gui_panel.rs` (`the_pages_slide_unless_motion_is_reduced`), and, for
+G§8.4's deadlines, `gui_chrome.rs`,
+`gui_stage.rs` and `gui_timeline.rs` (their ffmpeg compares and probes
+through `run_tool`, their background CLIs through
+`Nested::cli_background` and `reap_within`), `gui_panel.rs` (the
+fixture's dry run through `run_tool`) and `gui_support/mod.rs` (those
+two helpers).
 
 ### G§3.18 Test control channel (`src/testctl.rs`, WP0b)
 
@@ -1594,7 +1604,7 @@ previews, the player, io, opening, the portal).
 | `{"op":"dispatch","command":{…},"confirmed":false}` | `Store::dispatch_with` with the default reply policy (confirmations open their modal); `{"ok":true}` at once |
 | `{"op":"action","id":"export.panel"}` | runs a binding or GUI action as its key would (pre-steps included) |
 | `{"op":"hints"}` | the rendered hint items (`keys`, `label`, `enabled`, `emphasized`) and the status text (`hintbar::current_items`) |
-| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration) |
+| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit) |
 | `{"op":"a11y"}` | every visible icon-only button, focusable region or focusable custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 | `{"op":"fonts"}` | the family Pango loads for each bundled font; `ok` when each resolves to itself |
 | `{"op":"icons"}` | each custom symbolic icon drawn in a probe color: found, its pixels, recolored |
@@ -1887,8 +1897,9 @@ As built (WP6, round 3):
   | 1s | 1s | 5f |
   | 2s | 1s | 10f |
   | 5s | 1s | — |
-  | 10s, 15s | 5s | 1s |
-  | 30s, 1min | 30s | 10s |
+  | 10s, 15s | L | 5s |
+  | 30s | 30s | 10s |
+  | 1min | 1min | 10s |
   | 2min, 5min | 1min | 30s |
   | ≥ 10min | 5min | 1min |
 
@@ -1904,7 +1915,13 @@ As built (WP6, round 3):
     frame's cell has an `accent-2-20` band.
   - Corner cell: the playhead timecode, `mono` `text`, at (12, 5).
   - Checks against the mocks: fit 0.1396 → 30 s / 30 s / 10 s; 48 px/s →
-    2 s / 1 s / 10 f; 10 px/s → 10 s; recording fit 0.0850 → 1 min.
+    2 s / 1 s / 10 f; 10 px/s → 10 s / 10 s / 5 s (S12); recording fit
+    0.0850 → 1 min / 1 min / 10 s (S04, S05, S05b). The table said 5 s / 1 s
+    for 10 s and 30 s / 10 s for 1 min, which drew 1 s ticks and a 10 px
+    tick at every 5 s in S12 and one at every 30 s in S04, S05 and S05b;
+    the frames have neither (WP5 integration audit, measured on the frames'
+    pixels; `s12_ticks_are_the_labels_and_5_s_between`,
+    `recording_fit_ticks_are_the_labels_and_10_s_between`).
 - **Playhead**: 2 px from the ruler to the last lane, line at +5.5, head
   path `M0 0h13v6l-6.5 6-6.5-6z`. Scrub flag at (playhead + 10, 3)
   inside the ruler (WP3; this said (+16, −2)): `mono-sm` `text` on
@@ -2409,7 +2426,7 @@ below; read them with `Get` while `design/qrec.pen` is active).
 | C10 Audio row | `b5Kxv` + states | composite; M/S `gtk::ToggleButton.track-toggle` | WP5 |
 | C11 Meter | `iZb1x` | `widgets::Meter` (snapshot; while shown it looks at its level slot 30 times a second from a timer, not a tick callback, G§8.6, and redraws only when what it shows changed; click resets the latch) | WP5 |
 | C12 Inspector | `NZZoN` | grid of `NumericField`; lock `gtk::ToggleButton`; `gtk::Scale`; `adw::ToggleGroup`; 2-up in the Medium layout | WP5 |
-| C13 Panel header, take banner, section header | `Osce5`, `KcYOV`, `XwpjR`, `trHYd` | boxes; `widgets::button::menu_button` + `gio::Menu`; panel/autocut page switch = `gtk::Stack` (slide) | WP5 |
+| C13 Panel header, take banner, section header | `Osce5`, `KcYOV`, `XwpjR`, `trHYd` | boxes; `widgets::button::menu_button` + `gio::Menu`; panel/autocut page switch = `gtk::Stack` (`panel-pages`): a 200 ms slide, instant under reduced motion (`panel::page_transition` through `Theme::follow_motion`, D-30; WP5 integration audit) | WP5 |
 | C14 Timeline toolbar | `AHVNt` + variants | toggle buttons, buttons, `gtk::Separator`, `gtk::Scale` | WP3 |
 | C15 Ruler | `I8Owg`, `D5MNZ`, `Gd3pF`, `BbhGo` | drawn by `TimelineCanvas` | WP3 |
 | C16 Clip | `L6XX2E` + states | drawn by `TimelineCanvas` (no widget per clip); textures via `append_texture`; cached render node per data/viewport change | WP3 |
@@ -3082,7 +3099,10 @@ refresh is `run_io_then`; `QREC_GUI_TEST_LEVELS` pins the meters (G§8.4);
 `widgets::button::menu_button` makes every menu's button (G§5.1);
 `gui_timeline`'s S12 opens the page from the toolbar's settings icon and
 probes the preview the canvas draws. The departures are folded into G§4.7,
-G§5.1, G§5.2 and G§8.4.
+G§5.1, G§5.2 and G§8.4. Its audit: the page switch slid under reduced
+motion too (WP5 was built before `Theme::follow_motion`, c07c00b): it
+follows the policy now, and a ninth nested case,
+`the_pages_slide_unless_motion_is_reduced`, checks both policies.
 
 ### WP6 — Header, hint bar, toasts, modals, Settings shell and Project page (lane B, after WP0b)
 
@@ -3274,7 +3294,12 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
     killed on teardown (`kill(2)`), and each child also dies with the
     test's thread (`PR_SET_PDEATHSIG`), so a test binary killed by Ctrl-C
     or a runner's timeout leaves no sway, bus or window behind; every tool
-    run (grim, wtype, swaymsg, the CLI, ffmpeg probes) has a deadline;
+    run (grim, wtype, swaymsg, the CLI, ffmpeg probes, the cases' own
+    ffmpeg compares) has a deadline, and a case's background CLI
+    (`Nested::cli_background`: a `record stop` that waits for its take, an
+    export) logs to `<shots>/logs/<case>-cli.log` and is reaped within one
+    (`reap_within`; the round 3 cases waited on them, and on their ffmpeg
+    runs, without one: WP5 integration audit);
   - guards: the private runtime dir is never under `/run/user/`, the
     nested display is a socket name right inside it, and a case can't give
     a window `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `WAYLAND_SOCKET`,
@@ -3456,7 +3481,10 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   `opts.scale` to `assert_regions` (WP0b's gui_shell cases run at scale 1
   only).
 - **Reduced motion**: S03 (static ring), S04 (static badge), S15c (plain
-  bar) with `ui.reduced_motion = true`; zoom is a GTK-free test.
+  bar) with `ui.reduced_motion = true`; zoom is a GTK-free test; the
+  panel's page switch is `gui_panel`'s
+  `the_pages_slide_unless_motion_is_reduced` (`local`'s
+  `panelTransition`).
 - **Adaptive**: S02 at 1300×1000 and at 1000×1000 (sheet closed, then
   opened by the header button); S06 at 1600×800.
 - **Suites** (round 3): `gui_shell` (WP0b's flows and the integration

@@ -28,6 +28,7 @@ use gui_support::{
 use qrec_core::ClipId;
 use qrec_core::state::{CanvasMode, UiState};
 use qrec_shell::testkit::design::{DesignVariant, design_fixture, perf_fixture, write_ui};
+use qrec_shell::testkit::run_tool;
 use serde_json::{Value, json};
 
 const OPEN: Duration = Duration::from_secs(90);
@@ -87,20 +88,23 @@ fn shoot(nested: &Nested, name: &str, png: Option<&str>) -> PathBuf {
         let out = nested
             .shots
             .join(format!("{}-{name}-compare.png", nested.case));
-        let status = Command::new("ffmpeg")
-            .args(["-v", "error", "-y", "-i"])
-            .arg(&shot)
-            .arg("-i")
-            .arg(&reference)
-            .args([
-                "-filter_complex",
-                "[0]scale=1600:1000[a];[1]scale=1600:1000[b];[a][b]hstack=inputs=2",
-            ])
-            .arg(&out)
-            .status();
+        let run = run_tool(
+            Command::new("ffmpeg")
+                .args(["-v", "error", "-y", "-i"])
+                .arg(&shot)
+                .arg("-i")
+                .arg(&reference)
+                .args([
+                    "-filter_complex",
+                    "[0]scale=1600:1000[a];[1]scale=1600:1000[b];[a][b]hstack=inputs=2",
+                ])
+                .arg(&out),
+            gui_support::TOOL_TIMEOUT,
+        );
         assert!(
-            status.is_ok_and(|s| s.success()),
-            "ffmpeg compare for {name}"
+            run.status.success(),
+            "ffmpeg compare for {name}: {}",
+            run.stderr
         );
     }
     shot

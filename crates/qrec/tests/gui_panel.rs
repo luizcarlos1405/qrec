@@ -877,6 +877,47 @@ fn the_panel_at_1300_wide() {
     crop(&nested, &shot, panel, "panel");
 }
 
+/// The layers and autocut pages slide (200 ms), and switch at once under
+/// reduced motion (D-30; `ui.reduced_motion` in `config.toml`, the only
+/// source in test mode). Test mode turns GTK's animations off, so the
+/// stack's transition is what the case reads (`local`'s
+/// `panelTransition`); the page still opens and closes.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_pages_slide_unless_motion_is_reduced() {
+    for reduced in [false, true] {
+        let case = if reduced { "reduced-motion" } else { "motion" };
+        let mut nested = Nested::start(AREA, case, Options::default());
+        if reduced {
+            let config = nested.env.config_home().join("qrec");
+            std::fs::create_dir_all(&config).expect("the config folder");
+            std::fs::write(config.join("config.toml"), "[ui]\nreduced_motion = true\n")
+                .expect("config.toml");
+        }
+        let preset = ui(|u| {
+            u.canvas_mode = CanvasMode::Program;
+            u.selection = vec![clip("c3e9")];
+        });
+        let project = fixture(&nested, DesignVariant::Base, &preset);
+        let gui = open(&mut nested, &project, Launch::a11y());
+        let local = gui.local();
+        assert_eq!(local["reducedMotion"], reduced, "{local}");
+        let want = if reduced { "none" } else { "slide-left-right" };
+        assert_eq!(local["panelTransition"], want, "{local}");
+        let reply = gui.ctl(json!({"op": "action", "id": "autocut.page"}));
+        assert_eq!(reply["ok"], true, "{reply}");
+        wait_for_label(gui, "Removes 4 silences");
+        assert_eq!(gui.local()["panelPage"], "autocut");
+        let reply = gui.ctl(json!({"op": "action", "id": "autocut.page"}));
+        assert_eq!(reply["ok"], true, "{reply}");
+        gui.wait_idle();
+        let local = gui.local();
+        assert_eq!(local["panelPage"], "layers", "{local}");
+        assert_eq!(local["panelTransition"], want, "{local}");
+        assert_clean(gui);
+    }
+}
+
 // ---------------------------------------------------- not in a compositor
 
 /// The fixture's dry run (BRIEF §3.6), as the CLI returns it, reads like
@@ -886,13 +927,13 @@ fn the_fixtures_dry_run_reads_like_s12() {
     let env = TestEnv::new();
     let dir = env.empty_dir("rust-traits-talk");
     let project = design_fixture(&dir, DesignVariant::Base);
-    let out = env
-        .command(&gui_support::qrec_bin())
-        .arg("--project")
-        .arg(&dir)
-        .args(["autocut", "--clips", "c3e9", "--dry-run", "--json"])
-        .output()
-        .expect("run qrec");
+    let out = run_tool(
+        env.command(&gui_support::qrec_bin())
+            .arg("--project")
+            .arg(&dir)
+            .args(["autocut", "--clips", "c3e9", "--dry-run", "--json"]),
+        gui_support::CLI_TIMEOUT,
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let last = stdout
         .lines()
