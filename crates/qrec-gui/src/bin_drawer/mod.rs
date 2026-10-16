@@ -190,8 +190,12 @@ impl Drawer {
         let footer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         footer.add_css_class("bin-footer");
         footer.set_widget_name("bin-footer");
+        // "2 takes selected": 13/600, as S18's frame draws it (it was
+        // `body-strong` 14 until the WP7 integration audit).
         let footer_selected = gtk::Label::new(None);
-        footer_selected.add_css_class("t-body-strong");
+        footer_selected.set_widget_name("bin-footer-selected");
+        footer_selected.add_css_class("t-body-sm");
+        footer_selected.add_css_class("bin-footer-selected");
         footer_selected.set_valign(gtk::Align::Center);
         footer.append(&footer_selected);
         let footer_size = gtk::Label::new(None);

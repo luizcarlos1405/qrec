@@ -330,6 +330,7 @@ impl Host {
         let mut buttons = Vec::new();
         let shown = shown_actions(notice);
         if !shown.is_empty() {
+            toast.add_css_class("with-actions");
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
             row.add_css_class("toast-actions");
             for (n, action) in shown.iter().enumerate() {

@@ -99,6 +99,7 @@ impl RowView {
         main.set_widget_name(&format!("bin-take-{}", take.number()));
         let thumb_box = gtk::Overlay::new();
         let thumb = Thumb::new(&ctx.media, &ctx.theme);
+        thumb.set_widget_name(&format!("bin-thumb-{}", take.number()));
         thumb_box.set_child(Some(&thumb));
         let error_icon = gtk::Image::from_icon_name("dialog-error-symbolic");
         error_icon.set_pixel_size(20);
@@ -140,8 +141,7 @@ impl RowView {
         secondary.set_ellipsize(gtk::pango::EllipsizeMode::End);
         secondary.set_max_width_chars(1);
         line.append(&secondary);
-        let log = gtk::Button::with_label("Open log");
-        log.add_css_class("qrec-link");
+        let log = button::link("Open log");
         log.set_widget_name("bin-open-log");
         log.set_focus_on_click(false);
         log.set_valign(gtk::Align::Center);
@@ -152,6 +152,7 @@ impl RowView {
 
         let actions = gtk::Box::new(gtk::Orientation::Vertical, 0);
         actions.add_css_class("bin-row-actions");
+        actions.set_widget_name("bin-row-actions");
         let first = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         first.add_css_class("bin-actions-row");
         let preview = flat("Preview", None, button::Kind::Flat);

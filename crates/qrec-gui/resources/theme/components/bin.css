@@ -73,8 +73,8 @@
 /* The actions: two rows of 32 px flat buttons (Preview, Insert at end,
    Insert after selection; reveal, Purge from disk). */
 .bin-row-actions {
-  padding: 5px 3px 5px 3px;
-  border-spacing: 2px;
+  padding: 7px 3px 6px;
+  border-spacing: 1px;
 }
 
 .bin-actions-row {
@@ -85,7 +85,9 @@ button.qrec-btn.bin-reveal image {
   -gtk-icon-size: 20px;
 }
 
-/* Links ("Open log"): `accent-text`, a real underline (README). */
+/* Links ("Open log"): `accent-text` 12/600 as S14 draws it, with a real
+   underline under the descenders (README; `button::link`'s Pango
+   attribute, not CSS's `text-decoration`). */
 .bin-row button.qrec-link {
   min-height: 0;
   min-width: 0;
@@ -98,16 +100,19 @@ button.qrec-btn.bin-reveal image {
 }
 
 .bin-row button.qrec-link label {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  line-height: 18px;
-  text-decoration-line: underline;
+  line-height: 16px;
 }
 
-/* S18: two or more takes selected. */
+/* S18: two or more takes selected; "2 takes selected" in 13/600. */
 .qrec-bin .bin-footer {
   min-height: 47px;
   padding: 0 8px 0 16px;
   border-top: 1px solid var(--qrec-border);
   border-spacing: 8px;
+}
+
+.qrec-bin .bin-footer .bin-footer-selected {
+  font-weight: 600;
 }

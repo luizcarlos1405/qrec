@@ -190,7 +190,11 @@ progressbar.mini-mud > trough > progress {
 
 /* ---------------------------------------------------------- C23 toast */
 
-/* `raised`, `lg` radius, e2 and a 1 px `border`; padding 12 12 12 16. */
+/* `raised`, `lg` radius, e2 and a 1 px `border`; padding 12 12 12 16, 10
+   under the actions; the body 2 px under the title, the actions' flat
+   buttons from the text's x (their labels 8 px in), as S16b draws them
+   (WP7 integration audit: the body and the actions sat 2 px high and the
+   actions 8 px left). */
 .qrec-toast {
   padding: 12px 12px 12px 16px;
   border-radius: 12px;
@@ -212,13 +216,17 @@ progressbar.mini-mud > trough > progress {
   color: var(--qrec-success);
 }
 
+.qrec-toast.with-actions {
+  padding-bottom: 10px;
+}
+
 .qrec-toast .toast-body {
+  margin-top: 2px;
   color: var(--qrec-muted);
 }
 
 .qrec-toast .toast-actions {
   margin-top: 6px;
-  margin-left: -8px;
 }
 
 .qrec-toast button.qrec-btn.toast-action {
