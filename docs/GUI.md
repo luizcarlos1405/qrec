@@ -2702,7 +2702,11 @@ round 3 merge (`tmp/gui-shots/{wp3,wp4,wp6}/`).
 
 Status after the WP5 merge (f84ad6d) and its integration: **final: S01a
 S01b S02 S03 S04 S04b S05 S05b S06 S07 S08 S09 S10 S11 S12 S13 S13b
-S18b**, every suite green on pixman and gles2. Each shot (pixman) is next
+S18b**, every suite green on pixman and gles2. Re-run after the WP5
+integration audit's fixes: the workspace 1620 passed, 0 failed, 82
+ignored; nested, on pixman and on gles2 alike, gui_shell 21, gui_smoke 1,
+gui_chrome 11, gui_timeline 14, gui_stage 17, gui_panel 9 (gles2's warm
+frame-time p99 16.51–16.61 ms in 6 runs). Each shot (pixman) is next
 to its frame in `tmp/gui-shots/final/<case>-compare.png` (S13b: the row
 crops stacked next to the state board). Still to come with WP7: S14, S15a,
 S15b, S15c, S16, S16b, S17, S18, and the widths, heights, scales and
@@ -2713,30 +2717,53 @@ reduced motion (WP1–WP7). Visible departures of the final shots:
   the cases that don't pin the meters (`QREC_GUI_TEST_LEVELS` pins only the
   panel's), real elapsed times, the test project's paths, no pointer in the
   shots; the icons are Adwaita stand-ins (G§5.2) and the empty-state art a
-  placeholder until the pen export (G§0.6). Mono text is the bundled
-  JetBrains Mono, as wide as the frames' within a pixel.
+  placeholder until the pen export (G§0.6).
+- Everywhere: mono text is the bundled JetBrains Mono, but each glyph
+  advances a whole pixel (7 px at 11 and 12 px, 8 px at 13 px, where the
+  frames advance 6.6, 7.2 and 7.8 px), so a mono string drifts 0.2–0.4 px
+  per character: the ruler's labels are 4 px wider than the frames', the
+  transport's "00:02:41:12 / 00:04:06:11" 4–5 px wider, S12's summary
+  lines ("00:01:43:15 → 00:01:37:09") 6 px narrower, S06's clip tooltip
+  12 px narrower; only a short field like "1500 px" (7 characters, the
+  one the integration compared) is within a pixel (measured on S02, S06
+  and S12 in the WP5 integration audit). With the stand-in icons' widths,
+  the timeline toolbar's right group (the clip count, the zoom slider,
+  Fit) sits up to 13 px left of the frames'.
 - S01a: (the inspector showed in the empty scene: fixed, hidden as BRIEF
   says). S01b: the first run names its layers and tracks after their
   sources ("Camera", "Screen FAKE-1", "Built-in Audio Analog Stereo", A2 at
   0.0 dB) where the frame reuses the fixture's (Face, Main screen, System
   audio at −6 dB).
-- S02, S11: at fit, take 1's second clip reads "1" where the frame reads
-  "Take 1" (G§4.5's label inset).
+- S02, S03, S04b, S06, S07, S11, S13, S18b (every fit shot of the 10-clip
+  timeline): take 1's second clip reads "1" where the frame reads "Take 1"
+  (G§1.3's fit inset: c8a1 is 63.8 px wide, the frames' 64.3, G§4.5; the
+  integration listed S02 and S11 only).
 - S04, S04b, S05: the timers read the real elapsed time
   (`00:02:41:27` for `00:02:41:12`).
+- S04, S05, S05b and S12: the ruler drew a 10 px tick every 30 s (the
+  recording fit) and every 5 s with 1 s ticks between (S12's 10 px/s),
+  where the frames tick only at their labels with 5 px ticks every 10 s
+  (5 s in S12): fixed in the WP5 integration audit (`ruler::tick_steps`,
+  G§4.5's table), and these shots re-taken.
 - S06, S09, S10, S11: "+ Add layer", "+ Add audio track" and the header's
   `+` are disabled in a take layout (D-07); the frames draw them enabled.
 - S07, S08: Program with no clip selected is read-only (D-06): the panel's
   rows, audio controls and adds are disabled where the frames draw them
   enabled.
 - S12: the toolbar's settings icon is `preferences-other-symbolic` (the
-  frame's sliders); the rest as drawn, the preview included.
+  frame's sliders); a knob's center travels to within 2–3 px of its
+  trough's ends where the frame's stops 7–8 px short of them, so Min
+  silence, Padding and Min keep sit 3.5–5 px left of the frame's
+  (Threshold, at the middle, matches); the summary heading is 11 px wider
+  (the gap before "(6.2 s)" 4 px, its mono 5 px). The preview is as drawn:
+  each region's hatch, edges and tag, and the dimmed rows, within 1–2 px.
 - S13: the frame shows the drag and L1's hover at once; the drag shot has
   no hover (L1's hover is its own shot, `s13-layer-editing`).
 - S13b: a dragged row's copy follows the pointer over the rows, with the
   drop line at the slot (the frame lifts the row above the line and moves
   the rows under it), and the row left behind keeps its hover reveal at
-  0.4; the rename field opens with the name selected.
+  0.4; the rename field opens with the name selected; the focus ring is
+  shot on L1 ("Main screen"), the board's on a "Face" row.
 - S18b: the Settings pages not built yet read disabled (D-48).
 
 ### WP0a — Interfaces, GTK-free (alone, first)
