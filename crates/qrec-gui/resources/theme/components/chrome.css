@@ -127,8 +127,8 @@ button.qrec-btn.record.saving qrec-spinner {
 
 /* --------------------------------------------------- the export slot */
 
-/* 104×32 secondary: `Export…`, or "42%" and a 40×4 mini mud bar while an
-   export runs; pressed while the export panel is open. */
+/* 104×32 secondary: `Export…`, or "42%" (`mono-sm`) and a 40×4 mini mud
+   bar while an export runs; pressed while the export panel is open. */
 button.qrec-btn.export-slot {
   min-width: 0;
   padding: 0 12px;
@@ -136,10 +136,6 @@ button.qrec-btn.export-slot {
 
 button.qrec-btn.export-slot.pressed {
   background-image: image(var(--qrec-pressed));
-}
-
-button.qrec-btn.export-slot .export-percent {
-  font-weight: 400;
 }
 
 progressbar.mini-mud {

@@ -141,6 +141,25 @@ pub fn icon(icon: &str, action: &str, binding: Option<&str>, keymap: &Keymap) ->
     button
 }
 
+/// A link button (`.qrec-link`: "Open log", "Open full log"; G§1.3: a real
+/// underline). The underline is Pango's `low` one, drawn under the text's
+/// descenders as the frames draw it (CSS `text-decoration` puts it at the
+/// font's underline position, 3–4 px higher, through the p and the g: WP7
+/// integration audit). Its size and color are the owner's CSS.
+pub fn link(text: &str) -> gtk::Button {
+    let button = gtk::Button::new();
+    button.add_css_class("qrec-link");
+    let label = gtk::Label::new(Some(text));
+    let attrs = gtk::pango::AttrList::new();
+    attrs.insert(gtk::pango::AttrInt::new_underline(
+        gtk::pango::Underline::Low,
+    ));
+    label.set_attributes(Some(&attrs));
+    button.set_child(Some(&label));
+    button.update_property(&[gtk::accessible::Property::Label(text)]);
+    button
+}
+
 /// C01's loading state: a 16 px spinner where the icon was (before the
 /// label when there is none), the label kept; `false` puts the icon back.
 /// Whether the button reacts meanwhile is the caller's (`set_sensitive`).

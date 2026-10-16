@@ -12,7 +12,7 @@ use qrec_core::view::export::Run;
 
 use crate::theme::Palette;
 use crate::widgets::keycap::{self, CapSize, CapVariant};
-use crate::widgets::mud_bar::MudBar;
+use crate::widgets::mud_bar::{self, MudBar};
 use crate::widgets::{Spinner, button};
 
 /// The arrow's tip from the panel's right edge, and its size (BRIEF §2.8).
@@ -202,7 +202,7 @@ impl SetupPage {
         let av1_text = gtk::Box::new(gtk::Orientation::Vertical, 0);
         av1_text.set_hexpand(true);
         av1_text.append(&label("Use AV1 (slower, smaller)", &["t-body"]));
-        let av1_caption = label("", &["t-caption", "muted"]);
+        let av1_caption = label("", &["t-caption", "muted", "export-av1-caption"]);
         av1_text.append(&av1_caption);
         av1_row.append(&av1_text);
         let av1 = gtk::Switch::new();
@@ -228,11 +228,15 @@ impl SetupPage {
             .update_property(&[gtk::accessible::Property::Label("Quality")]);
         root.append(&quality);
 
+        // "Output" 3 px under the middle of "Change…"'s row (CSS: top
+        // aligned with a 4 px margin), as S15a and the S15c board draw it
+        // (centered, it sat 3 px high: WP7 integration audit).
         let output_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         output_row.add_css_class("export-output-row");
         let output_label = group_label("Output");
+        output_label.add_css_class("export-output-label");
         output_label.set_hexpand(true);
-        output_label.set_valign(gtk::Align::Center);
+        output_label.set_valign(gtk::Align::Start);
         output_row.append(&output_label);
         let change = plain("Change\u{2026}", None, button::Kind::Flat);
         change.set_widget_name("export-change");
@@ -310,14 +314,17 @@ impl RunningPage {
         file.set_ellipsize(gtk::pango::EllipsizeMode::Start);
         file.set_max_width_chars(1);
         root.append(&file);
+        // "42%" sits on the frames line's baseline, as S15b draws it (it was
+        // centered on the two lines, 6 px higher: WP7 integration audit).
         let progress = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         progress.add_css_class("export-progress");
         let percent = label("", &["t-mono-xl", "export-percent"]);
         percent.set_widget_name("export-percent");
-        percent.set_valign(gtk::Align::Center);
+        percent.set_valign(gtk::Align::BaselineCenter);
         progress.append(&percent);
         let phase = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        phase.set_valign(gtk::Align::Center);
+        phase.set_valign(gtk::Align::BaselineCenter);
+        phase.set_baseline_child(1);
         let phase_label = label("", &["t-body"]);
         phase_label.set_widget_name("export-phase");
         phase.append(&phase_label);
@@ -399,6 +406,7 @@ impl DonePage {
         let details = RunsLine::new(&["t-caption", "muted"], &["t-mono-sm", "muted"]);
         root.append(&details.root);
         let bar = MudBar::new(theme);
+        bar.set_frame_a(&mud_bar::DONE_FRAME_A);
         bar.add_css_class("export-bar");
         root.append(&bar);
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -484,8 +492,7 @@ impl FailedPage {
         root.append(&scroller);
         let log_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         log_row.add_css_class("export-log");
-        let log_link = gtk::Button::with_label("Open full log");
-        log_link.add_css_class("qrec-link");
+        let log_link = button::link("Open full log");
         log_link.set_widget_name("export-open-log");
         log_link.set_focus_on_click(true);
         log_row.append(&log_link);

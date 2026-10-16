@@ -45,7 +45,12 @@ impl ExportSlot {
         stack.add_named(&idle, Some("idle"));
         let running = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         running.set_halign(gtk::Align::Center);
+        // "42%" in `mono-sm` (JetBrains Mono 12, as S15b and the S15c
+        // board draw it; it was the button's Atkinson 14 until the WP7
+        // integration audit).
         let percent = gtk::Label::new(Some("0%"));
+        percent.set_widget_name("export-slot-percent");
+        percent.add_css_class("t-mono-sm");
         percent.add_css_class("export-percent");
         let bar = gtk::ProgressBar::new();
         bar.add_css_class("mini-mud");

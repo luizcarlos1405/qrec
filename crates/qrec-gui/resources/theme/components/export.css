@@ -4,7 +4,10 @@
  *
  * 440 wide, 8 px from the window's right edge, the body's top at y 52
  * under a 12×6 arrow (BRIEF §2.8): `raised`, `lg` radius, e2, a 1 px
- * `border`, 16 px of padding (DESIGN Popover). The gaps are the frames'.
+ * `border`, 16 px of padding (DESIGN Popover). The pen's stroke is inside
+ * those 16 px, so the content starts 16 px in: 15 of padding after the
+ * 1 px border (it was 16 + 1 until the WP7 integration audit: everything
+ * 1 px right and down). The gaps are the frames'.
  */
 
 .qrec-export {
@@ -14,8 +17,8 @@
 
 .qrec-export .export-body {
   margin-top: 6px;
-  min-width: 406px;
-  padding: 16px;
+  min-width: 408px;
+  padding: 15px;
   border: 1px solid var(--qrec-border);
   border-radius: 12px;
   background-color: var(--qrec-raised);
@@ -37,14 +40,39 @@
   margin-bottom: 16px;
 }
 
+/* WebM's AV1 row sits 12 px under the caption (S15c's board), not the
+   caption's 16; its caption 2 px under its title. */
 .qrec-export .export-av1 {
+  margin-top: -4px;
   margin-bottom: 16px;
   border-spacing: 12px;
 }
 
+.qrec-export .export-av1-caption {
+  margin-top: 2px;
+}
+
+/* The panel's segmented controls (S15a): 26 px segments 2 px inside the
+   well (the header's mode switch is 28 and 1). */
+.qrec-export toggle-group.qrec-segmented {
+  min-height: 26px;
+  padding: 3px 2px;
+}
+
+.qrec-export toggle-group.qrec-segmented > toggle {
+  min-height: 26px;
+}
+
+/* "Output" 4 px under the top of the row, 3 px lower than centered on
+   "Change…" (18 px), as S15a draws it: the row is 20 px, the field 4 px
+   under it (6 under the 18 px row before). */
 .qrec-export .export-output-row {
   margin-top: 16px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
+}
+
+.qrec-export .export-output-row .export-output-label {
+  margin-top: 4px;
 }
 
 .qrec-export .export-field > label {
@@ -70,11 +98,11 @@
 /* Running (S15b): "Exporting", the file, 42% with its phase, the bar,
    the times, the note, Cancel export. */
 #export-running .export-title {
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 .qrec-export .export-file {
-  margin-bottom: 16px;
+  margin-bottom: 15px;
 }
 
 .qrec-export .export-progress {
@@ -83,6 +111,13 @@
 
 .qrec-export .export-bar {
   margin-top: 12px;
+}
+
+/* The running page's progress row is baseline-aligned ("42%" on the
+   frames line), so it is a little taller: its bar sits 12 px under the
+   lines' bottom, as S15b draws it. */
+#export-running .export-bar {
+  margin-top: 8px;
 }
 
 .qrec-export .export-times {
@@ -104,15 +139,15 @@
 }
 
 .qrec-export .export-line {
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 .qrec-export .export-path {
-  margin-bottom: 2px;
+  margin-bottom: 0;
 }
 
 .qrec-export .export-lead {
-  margin-bottom: 2px;
+  margin-bottom: 4px;
 }
 
 .qrec-export .export-failed-at {
@@ -130,7 +165,7 @@
 }
 
 .qrec-export .export-stderr-text {
-  padding: 0 12px;
+  padding: 0 10px;
   color: var(--qrec-text);
 }
 
@@ -150,11 +185,12 @@
   color: var(--qrec-accent-text);
 }
 
+/* "Open full log": 13/600 with a real underline under the descenders
+   (`button::link`'s Pango attribute, not CSS's `text-decoration`). */
 .qrec-export button.qrec-link label {
   font-size: 13px;
   font-weight: 600;
   line-height: 18px;
-  text-decoration-line: underline;
 }
 
 .qrec-export .export-buttons {

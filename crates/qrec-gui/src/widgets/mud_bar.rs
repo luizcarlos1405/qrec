@@ -19,6 +19,15 @@
 //! [`MudSim`] is the GTK-free part (the bubbles, the easing, the wobble):
 //! a pure function of the animation clock and its seed, so test mode
 //! (`motion::now()` frozen) draws frame A every time, bubbles included.
+//! Frame A, the clock's 0, holds the frames' own bubbles
+//! ([`RUNNING_FRAME_A`]: S15b and the S15c board; [`DONE_FRAME_A`]: S16's
+//! full bar); the seed draws every bubble after them (until the WP7
+//! integration audit frame A was the seed's, two bubbles where the frames
+//! draw three).
+//!
+//! The sediment band is 3 px from the bar's outer bottom, as the pen draws
+//! it under its 1 px inner stroke: 2 px of it show above the border, under
+//! 16 px of mud (it was 3 px above the border, under 15 px).
 
 use std::cell::{Cell, RefCell};
 use std::f64::consts::PI;
@@ -32,7 +41,8 @@ use crate::theme::motion::{self, Curve};
 
 /// The bar's height, logical px.
 pub const HEIGHT: f64 = 20.0;
-/// The sediment band.
+/// The sediment band, from the bar's outer bottom (its 1 px border covers
+/// the lowest px of it).
 const SEDIMENT: f64 = 3.0;
 /// The track's and the leading edge's radius.
 const RADIUS: f64 = 6.0;
@@ -49,9 +59,51 @@ const EASE_IN: Curve = Curve(0.42, 0.0, 1.0, 1.0);
 const MAX_BUBBLES: usize = 3;
 /// A bubble's pop.
 const POP_MS: f64 = 120.0;
-/// The simulation starts this long before the clock's 0, so frame A has
-/// its bubbles already rising (S15b, S15c).
-const PRE_ROLL_MS: f64 = 3000.0;
+
+/// A bubble as a frame draws it at the clock's 0 (frame A): where along the
+/// fill (a fraction of its width), its radius (px) and how far it has risen
+/// (px above where bubbles start, 1 px over the sediment).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrameBubble {
+    pub x: f64,
+    pub radius: f64,
+    pub rise: f64,
+}
+
+/// The running bar's frame A (S15b, the S15c board's frame A): bubbles of
+/// 4, 6 and 3 px at 23 %, 58 % and 87 % of the fill, risen 3, 5 and 3 px.
+pub const RUNNING_FRAME_A: [FrameBubble; 3] = [
+    FrameBubble {
+        x: 0.229,
+        radius: 2.0,
+        rise: 3.0,
+    },
+    FrameBubble {
+        x: 0.576,
+        radius: 3.0,
+        rise: 5.0,
+    },
+    FrameBubble {
+        x: 0.874,
+        radius: 1.5,
+        rise: 3.0,
+    },
+];
+
+/// The done bar's (S16's full bar): bubbles of 4 and 5 px at 30 % and 74 %,
+/// risen 4 and 5 px.
+pub const DONE_FRAME_A: [FrameBubble; 2] = [
+    FrameBubble {
+        x: 0.298,
+        radius: 2.0,
+        rise: 4.0,
+    },
+    FrameBubble {
+        x: 0.743,
+        radius: 2.5,
+        rise: 5.0,
+    },
+];
 
 /// What the bar shows.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -191,19 +243,46 @@ pub struct MudSim {
 }
 
 impl MudSim {
-    /// A simulation with its own `seed` (test mode uses a fixed one).
+    /// A simulation with its own `seed` (test mode uses a fixed one) and
+    /// the running bar's frame A ([`RUNNING_FRAME_A`]).
     pub fn new(seed: u64) -> Self {
-        let mut sim = Self {
-            rng: Rng(seed),
-            next_ms: -PRE_ROLL_MS,
-            lives: Vec::new(),
-            at_ms: -PRE_ROLL_MS,
+        Self::with_frame_a(seed, &RUNNING_FRAME_A)
+    }
+
+    /// A simulation whose clock's 0 shows `frame_a` (at most
+    /// [`MAX_BUBBLES`]): each bubble is a life born before 0 that has risen
+    /// as far as the frame draws it; the seed spawns every later one.
+    pub fn with_frame_a(seed: u64, frame_a: &[FrameBubble]) -> Self {
+        let mut rng = Rng(seed);
+        let lives = frame_a
+            .iter()
+            .take(MAX_BUBBLES)
+            .enumerate()
+            .map(|(n, b)| {
+                // Rises and durations inside DESIGN's ranges, a little
+                // apart so the three don't move as one.
+                let rise_px = (7.0 + n as f64).max(b.rise + 0.5).min(10.0);
+                let rise_ms = 1600.0 + 250.0 * n as f64;
+                let progress = progress_for(b.rise / rise_px);
+                Life {
+                    born_ms: -progress * rise_ms,
+                    rise_ms,
+                    rise_px,
+                    radius: b.radius,
+                    x: b.x,
+                }
+            })
+            .collect();
+        let next_ms = rng.range(600.0, 1400.0);
+        Self {
+            rng,
+            next_ms,
+            lives,
+            at_ms: 0.0,
             from: 0.0,
             to: 0.0,
             since_ms: f64::NEG_INFINITY,
-        };
-        sim.advance(0.0);
-        sim
+        }
     }
 
     /// Simulates up to `t` (ms; earlier times are ignored: the clock only
@@ -260,6 +339,25 @@ impl MudSim {
     }
 }
 
+/// The rise's progress (0–1) at which the ease-in has covered `fraction`
+/// of it (its inverse, by bisection: the curve is monotonic).
+fn progress_for(fraction: f64) -> f64 {
+    let fraction = fraction.clamp(0.0, 1.0);
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..50 {
+        let mid = (lo + hi) / 2.0;
+        if EASE_IN.at(mid) < fraction {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    (lo + hi) / 2.0
+}
+
+/// Every bar's seed: the same bubbles after frame A in every run.
+const SEED: u64 = 0x51EC_0D0E;
+
 /// The bar's colors (from the theme's palette).
 #[derive(Debug, Clone)]
 pub(crate) struct Colors {
@@ -298,7 +396,7 @@ mod imp {
     impl Default for MudBar {
         fn default() -> Self {
             Self {
-                sim: RefCell::new(MudSim::new(0x51EC_0D0E)),
+                sim: RefCell::new(MudSim::new(SEED)),
                 state: Cell::new(MudState::Running(0.0)),
                 reduced: Cell::new(false),
                 scale: Cell::new(1.0),
@@ -443,15 +541,18 @@ mod imp {
                 let fill = gsk::RoundedRect::new(fill_rect, flat, edge, edge, flat);
                 snapshot.push_rounded_clip(&fill);
                 snapshot.append_color(&colors.mud, &fill_rect);
+                // From the bar's outer bottom: the border covers its lowest
+                // px (the clip), as the pen's inner stroke does.
                 let sediment = SEDIMENT * s;
+                let sediment_top = top + bar_h - sediment;
                 snapshot.append_color(
                     &colors.wood,
-                    &rect(border, top + bar_h - border - sediment, fill_w, sediment),
+                    &rect(border, sediment_top, fill_w, sediment - border),
                 );
                 for b in bubbles {
                     let r = b.radius * s;
                     let cx = border + b.x * fill_w;
-                    let cy = top + bar_h - border - sediment - r - 1.0 * s - b.rise * s;
+                    let cy = sediment_top - r - 1.0 * s - b.rise * s;
                     if cx - r < border || cx + r > border + fill_w || cy - r < top {
                         continue;
                     }
@@ -539,6 +640,18 @@ impl MudBar {
         self.imp().shown.set(false);
     }
 
+    /// The bubbles its clock's 0 shows (the running bar's
+    /// [`RUNNING_FRAME_A`] unless set: the done page's bar draws S16's
+    /// [`DONE_FRAME_A`]).
+    pub fn set_frame_a(&self, frame_a: &[FrameBubble]) {
+        let imp = self.imp();
+        let mut sim = MudSim::with_frame_a(SEED, frame_a);
+        let level = imp.sim.borrow().level_at(f64::INFINITY);
+        sim.set_level(level, 0.0, true);
+        *imp.sim.borrow_mut() = sim;
+        self.queue_draw();
+    }
+
     /// What it shows.
     pub fn state(&self) -> MudState {
         self.imp().state.get()
@@ -549,16 +662,19 @@ impl MudBar {
 mod tests {
     use super::*;
 
-    /// The PRNG's sequence is the same everywhere (G§8.2): frame A is the
-    /// same picture in every run.
+    /// The PRNG's sequence is the same everywhere (G§8.2): every frame is
+    /// the same picture in every run.
     #[test]
     fn the_bubbles_are_a_function_of_the_seed_and_the_clock() {
-        let a = MudSim::new(7);
-        let b = MudSim::new(7);
+        let mut a = MudSim::new(7);
+        let mut b = MudSim::new(7);
         assert_eq!(a.bubbles(), b.bubbles());
-        assert!(!a.bubbles().is_empty(), "frame A has bubbles (pre-roll)");
+        assert!(!a.bubbles().is_empty(), "frame A has bubbles");
+        a.advance(5000.0);
+        b.advance(5000.0);
+        assert_eq!(a.bubbles(), b.bubbles());
         let mut c = MudSim::new(8);
-        c.advance(0.0);
+        c.advance(5000.0);
         assert_ne!(a.bubbles(), c.bubbles(), "another seed, other bubbles");
         // Advancing in steps or at once ends the same.
         let mut steps = MudSim::new(7);
@@ -582,7 +698,7 @@ mod tests {
             let bubbles = sim.bubbles();
             assert!(bubbles.len() <= MAX_BUBBLES, "{bubbles:?} at {t}");
             for b in &bubbles {
-                assert!((1.5..3.0).contains(&b.radius), "{b:?}");
+                assert!((1.5..=3.0).contains(&b.radius), "{b:?}");
                 assert!((0.0..10.0).contains(&b.rise), "{b:?}");
                 assert!((0.08..0.92).contains(&b.x), "{b:?}");
                 assert!((0.0..=1.0).contains(&b.alpha), "{b:?}");
@@ -593,6 +709,36 @@ mod tests {
         // A minute holds about 60 / 1 s spawns.
         let lives: Vec<Life> = sim.lives.clone();
         assert!(lives.iter().all(|l| (1400.0..2200.0).contains(&l.rise_ms)));
+    }
+
+    /// Frame A (the clock's 0, test mode's frozen time) is the frames' own
+    /// picture whatever the seed: S15b's and the S15c board's three bubbles
+    /// (4, 6 and 3 px at 23, 58 and 87 % of the fill), S16's two on the
+    /// done bar; later frames are the seed's, inside DESIGN's ranges.
+    #[test]
+    fn frame_a_is_the_frames() {
+        for seed in [1, 7, SEED] {
+            for frame in [&RUNNING_FRAME_A[..], &DONE_FRAME_A[..]] {
+                let sim = MudSim::with_frame_a(seed, frame);
+                let shown = sim.bubbles();
+                assert_eq!(shown.len(), frame.len(), "{shown:?}");
+                for (b, want) in shown.iter().zip(frame) {
+                    assert_eq!((b.x, b.radius), (want.x, want.radius));
+                    assert!((b.rise - want.rise).abs() < 1e-6, "{b:?} vs {want:?}");
+                    assert!((b.alpha - 1.0).abs() < 1e-9);
+                }
+            }
+        }
+        let running = MudSim::new(SEED).bubbles();
+        let diameters: Vec<f64> = running.iter().map(|b| b.radius * 2.0).collect();
+        assert_eq!(diameters, [4.0, 6.0, 3.0]);
+        // They rise on: 300 ms later each is higher (or popping).
+        let mut later = MudSim::new(SEED);
+        later.advance(300.0);
+        for (b, a) in later.bubbles().iter().zip(&running) {
+            assert!(b.rise > a.rise, "{b:?} after {a:?}");
+            assert!(b.rise < 10.0);
+        }
     }
 
     /// The level eases over 400 ms (ease-out) and a jump lands at once.
