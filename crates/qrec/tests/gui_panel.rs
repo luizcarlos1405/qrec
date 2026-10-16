@@ -385,13 +385,38 @@ fn s06_the_take_layout_and_the_inspector() {
         PANEL,
     );
 
-    // X: type 1280, Enter: one LayerSet on take 5's layout.
+    // X: type 1280, Enter: one LayerSet on take 5's layout. One held
+    // `wtype` run from the typing to past Enter: the window is active only
+    // while one runs, and the end of a run blurs the field, which commits
+    // too (R68; leaving the field is the W case below).
     let before = history_cursor(&nested, &project);
     let (x, y) = center(region(nested.window(0), "inspector-x"));
     nested.pointer().click(x, y);
-    nested.keys(&["-M", "ctrl", "-k", "a", "-m", "ctrl"]);
-    nested.keys(&["1280"]);
-    nested.keys(&["-k", "Return"]);
+    // Return comes ≈ 2.9 s into the run, which holds its keyboard 5 s more:
+    // what lands before `in_the_hold` came from Enter, not from the blur
+    // at the run's end.
+    let started = Instant::now();
+    let in_the_hold =
+        || (started + Duration::from_millis(6500)).saturating_duration_since(Instant::now());
+    let held = nested.keys_held(
+        &[
+            "-M", "ctrl", "-k", "a", "-m", "ctrl", "1280", "-s", "2500", "-k", "Return",
+        ],
+        5000,
+    );
+    poll(Duration::from_secs(10), "1280 typed in X", || {
+        let fields = nested.window(0).entries("inspector");
+        (fields.get("inspector-x").map(String::as_str) == Some("1280")).then_some(())
+    });
+    assert_eq!(
+        history_cursor(&nested, &project),
+        before,
+        "nothing sent while typing"
+    );
+    poll(in_the_hold(), "Enter's LayerSet, the keyboard held", || {
+        (history_cursor(&nested, &project) == before + 1).then_some(())
+    });
+    held.wait();
     nested.window(0).wait_idle();
     let l2 = layer(&nested, &project, Some("take-0005"), "L2");
     assert_eq!(l2["rect"]["x"], 1280, "{l2}");
@@ -401,16 +426,47 @@ fn s06_the_take_layout_and_the_inspector() {
         "the project scene is untouched"
     );
     let after = history_cursor(&nested, &project);
-    assert_eq!(after, before + 1, "one entry");
-    // W: 0 is refused with the helper text, nothing sent.
+    assert_eq!(
+        after,
+        before + 1,
+        "one entry: the blur commits nothing again"
+    );
+    // W: 0 and Enter (held again) is refused with the helper text, nothing
+    // sent.
     let (x, y) = center(region(nested.window(0), "inspector-w"));
     nested.pointer().click(x, y);
-    nested.keys(&["-M", "ctrl", "-k", "a", "-m", "ctrl"]);
-    nested.keys(&["0"]);
-    nested.keys(&["-k", "Return"]);
-    let gui = nested.window(0);
-    wait_for_label(gui, "Width must be at least 1");
+    let started = Instant::now();
+    let in_the_hold =
+        || (started + Duration::from_millis(6500)).saturating_duration_since(Instant::now());
+    let held = nested.keys_held(
+        &[
+            "-M", "ctrl", "-k", "a", "-m", "ctrl", "0", "-s", "2500", "-k", "Return",
+        ],
+        5000,
+    );
+    poll(Duration::from_secs(10), "0 typed in W", || {
+        let fields = nested.window(0).entries("inspector");
+        (fields.get("inspector-w").map(String::as_str) == Some("0")).then_some(())
+    });
+    assert!(
+        !panel_labels(nested.window(0))
+            .iter()
+            .any(|l| l == "Width must be at least 1"),
+        "no helper before Enter"
+    );
+    poll(
+        in_the_hold(),
+        "Enter's helper text, the keyboard held",
+        || {
+            panel_labels(nested.window(0))
+                .iter()
+                .any(|l| l == "Width must be at least 1")
+                .then_some(())
+        },
+    );
     assert_eq!(history_cursor(&nested, &project), after, "nothing sent");
+    held.wait();
+    nested.window(0).wait_idle();
     nested.screenshot("invalid");
     nested.keys(&["-k", "Escape"]);
     nested.window(0).wait_idle();
@@ -426,8 +482,10 @@ fn s06_the_take_layout_and_the_inspector() {
             .any(|l| l == "Width must be at least 1")
     };
     assert!(!helper_shown(&mut nested), "Esc clears the helper");
-    // Left invalid (the run ends: the window deactivates), then a snapshot
-    // (a click on the ruler seeks): the model's value and no helper.
+    // Leaving the field commits: 0 typed, then the run ends (the window
+    // deactivates, which blurs the field) and the helper shows. A snapshot
+    // then (a click on the ruler seeks) puts the model's value back, and
+    // no helper.
     let (x, y) = center(region(nested.window(0), "inspector-w"));
     nested.pointer().click(x, y);
     nested.keys(&["-M", "ctrl", "-k", "a", "-m", "ctrl", "0"]);
