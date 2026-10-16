@@ -1,0 +1,6 @@
+---
+source: crates/qrec-core/src/media_argv.rs
+expression: "format!(\"{}\\n{}\",\nstrip_argv(\"takes/take-0005/L2-camera-fake0.mkv\", 0, 72).join(\" \"),\nstrip_argv(\"takes/take-0005/L2-camera-fake0.mkv\", 3, 144).join(\" \"))"
+---
+ffmpeg -hide_banner -nostdin -nostats -loglevel info -y -ss 0.000000 -t 60 -skip_frame nokey -i file:takes/take-0005/L2-camera-fake0.mkv -an -vf fps=1,scale=-2:72 -f rawvideo -pix_fmt rgba pipe:1
+ffmpeg -hide_banner -nostdin -nostats -loglevel info -y -ss 180.000000 -t 60 -skip_frame nokey -i file:takes/take-0005/L2-camera-fake0.mkv -an -vf fps=1,scale=-2:144 -f rawvideo -pix_fmt rgba pipe:1

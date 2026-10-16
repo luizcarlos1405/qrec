@@ -1,0 +1,6 @@
+---
+source: crates/qrec-core/src/media_argv.rs
+expression: "format!(\"{}\\n{}\", argv.join(\" \"), probe.join(\" \"))"
+---
+ffmpeg -hide_banner -nostdin -nostats -loglevel info -y -i file:takes/take-0005/A1-mic.mka -map 0:a:0 -ac 1 -ar 48000 -f s16le pipe:1
+ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of json file:takes/take-0005/L1-screen-FAKE-1.mkv

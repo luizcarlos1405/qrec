@@ -1,0 +1,6 @@
+---
+source: crates/qrec-core/src/media_argv.rs
+expression: "format!(\"{a}\\n{}\",\nkey(PreviewKind::Peaks, \"takes/take-0001/A1-mic.mka\", 4096,\n1_760_000_000_123_456_789, \"\"))"
+---
+817c44d45203c107a993645c3bcfb6a928d98b6742cddd72ebed62f243b1f8a1
+983c3da853300478003e6b86ecd6cb55182ccb92095ef2a3f7318dc2ffa015a2

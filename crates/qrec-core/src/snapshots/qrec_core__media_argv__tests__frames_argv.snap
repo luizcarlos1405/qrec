@@ -1,0 +1,6 @@
+---
+source: crates/qrec-core/src/media_argv.rs
+expression: "format!(\"{}\\n{}\",\nframes_argv(\"takes/take-0005/L1-screen-FAKE-1.mkv\", frame_ns(1000, fps), 64,\n72).join(\" \"),\nframes_argv(\"takes/take-0005/L1-screen-FAKE-1.mkv\", 0, 10, 144).join(\" \"))"
+---
+ffmpeg -hide_banner -nostdin -nostats -loglevel info -y -ss 33.331333 -i file:takes/take-0005/L1-screen-FAKE-1.mkv -an -frames:v 64 -vf scale=-2:72 -f rawvideo -pix_fmt rgba pipe:1
+ffmpeg -hide_banner -nostdin -nostats -loglevel info -y -i file:takes/take-0005/L1-screen-FAKE-1.mkv -an -frames:v 10 -vf scale=-2:144 -f rawvideo -pix_fmt rgba pipe:1

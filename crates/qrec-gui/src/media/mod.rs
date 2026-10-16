@@ -43,7 +43,7 @@ use crossbeam_channel::Sender;
 use gtk::prelude::*;
 use gtk::{gdk, glib};
 use qrec_core::protocol::{Toast, ToastLevel};
-use qrec_core::state::{CanvasMode, State};
+use qrec_core::state::{CanvasMode, JobKind, State};
 use qrec_shell::capture::meters::MeterMonitor;
 use qrec_shell::capture::{
     Backend, LevelReading, LiveControl, LiveSourceStatus, PreviewFrame, SideEvent,
@@ -495,8 +495,17 @@ impl MediaHub {
             .set(self.inner.frames_shown.get() + 1);
     }
 
-    /// Runs the meter monitor exactly when it is wanted (D-03).
+    /// Runs the meter monitor exactly when it is wanted (D-03), and keeps
+    /// the preview cache to one ffmpeg while an export runs (G§3.11).
     fn follow(&self, state: &State) {
+        if let Some(cache) = self.preview_cache() {
+            let exporting = state
+                .runtime
+                .jobs
+                .values()
+                .any(|job| matches!(job.kind, JobKind::Export { .. }));
+            cache.set_exporting(exporting);
+        }
         let open = self.inner.store.local().is_open();
         let wanted =
             (open && state.runtime.record.is_idle() && state.ui.canvas_mode == CanvasMode::Program)

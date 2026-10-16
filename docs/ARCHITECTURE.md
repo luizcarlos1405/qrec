@@ -1799,13 +1799,16 @@ are never deleted. Auto names can't take that shape (`file_stem`, A§9.9)
 and a hand-picked `--out` in it is refused (A§5.9).
 
 The GUI's thumbnail, frame and waveform runs (`media::preview`, docs/GUI.md
-G§3.11; a stub so far: it ignores requests and runs nothing) follow these
-rules with one rolling log instead of one per run: `.qrec/logs/preview.log`,
-each stderr line prefixed `[<pid> <kind>]`, moved to `preview.1.log` past
+G§3.11) follow these rules with one rolling log instead of one per run: their
+stderr is piped to a thread that reads it line by line (`child::Stderr::Lines`)
+and appends each line, prefixed `[<pid> <kind>]`, to `.qrec/logs/preview.log`
+(the command first, how the run ended last), moved to `preview.1.log` past
 8 MiB; a failed run also writes its last 30 lines to its own
-`…-<pid>-preview-<kind>.log`. They come with a prune that counts only the
-timestamp-named logs and leaves `preview*.log` alone (today it counts every
-`*.log`), so preview runs never evict export and host logs.
+`YYYYMMDD-HHMMSS-<our pid>-preview-<kind>.log`. Timeout 20 s + 30 s/GiB of
+input, at most 2 at once (1 while an export runs). Both prunes (`proc` and
+`media`) count only timestamp-named logs (`media::is_stamped_log_name`:
+`YYYYMMDD-HHMMSS-….log`) and leave `preview*.log` and any other name alone,
+so preview runs that work never evict export and host logs.
 
 ### A§8.8 Output files: never overwrite
 
@@ -2097,6 +2100,12 @@ Every ffmpeg/ffprobe command line is built in the core (SPEC §3.1):
   at the file duration).
 - `parse/progress.rs` reads `-progress` blocks (`frame`, `out_time_us` — in
   ffmpeg 8.1 `out_time_ms` is also µs — `N/A` = 0, `progress=end`).
+- The GUI's previews (docs/GUI.md G§3.11): `strip_argv`, `frames_argv` and
+  `peaks_argv` write raw RGBA or mono s16le to `pipe:1` after `-f rawvideo
+  -pix_fmt rgba` or `-f s16le`; `preview_probe_argv` reads a video's size
+  and rate from its header (no `-count_packets`); `preview_width` is
+  `scale=-2:<h>`'s width; `preview_key`, `bucket_peaks` and `peak_levels`
+  are the cache key and the waveform's 1, 16 and 256 ms buckets.
 
 ### A§9.3 Export plan (`export_plan.rs`)
 
