@@ -17,8 +17,11 @@
 //!   the wheel steps only while the field has the focus, so scrolling the
 //!   panel never changes a value. A step changes the text; Enter or leaving
 //!   commits it (one command per commit).
-//! - [`NumericField::set_invalid`] draws the C29 invalid state (the text
-//!   stays the person's to fix); the caller shows the helper text.
+//! - [`NumericField::set_error`] draws the C29 invalid state with its
+//!   message (the text stays the person's to fix); the owner shows the
+//!   message where it goes ([`NumericField::on_error`]: a helper text, a
+//!   tooltip). The stroke and the message go together: typing, `Esc` and a
+//!   model value that replaces the text clear both.
 //!
 //! Keys reach the field: the window's router lets everything through while
 //! an editable has the focus (G§3.8 step 2).
@@ -52,6 +55,9 @@ pub struct FieldState {
     /// the model it was handed over against. The text stays until the
     /// model moves from it.
     awaiting: Option<String>,
+    /// Why the text is invalid (C29), until it is typed over, put back or
+    /// replaced.
+    error: Option<String>,
 }
 
 impl FieldState {
@@ -63,6 +69,11 @@ impl FieldState {
     /// The text differs from the model's.
     pub fn is_dirty(&self) -> bool {
         self.text != self.model
+    }
+
+    /// Why the text is invalid, if it is.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
     }
 
     /// The model's value came in (`focused`: the field has the focus): the
@@ -78,6 +89,7 @@ impl FieldState {
         }
         self.edited = false;
         self.awaiting = None;
+        self.error = None;
         if self.text == self.model {
             return None;
         }
@@ -85,10 +97,11 @@ impl FieldState {
         Some(self.text.clone())
     }
 
-    /// The person changed the text (typing, a step).
+    /// The person changed the text (typing, a step): an error goes.
     pub fn typed(&mut self, text: &str) {
         self.text = text.to_owned();
         self.edited = true;
+        self.error = None;
     }
 
     /// Enter or leaving: the text to hand to the owner, once per edit and
@@ -114,21 +127,29 @@ impl FieldState {
         self.answered = false;
     }
 
-    /// `Esc`, or the owner refused the text: the model's text back.
+    /// `Esc`, or the owner refused the text: the model's text back, and
+    /// no error.
     pub fn revert(&mut self) -> String {
         self.answer();
         self.edited = false;
         self.awaiting = None;
+        self.error = None;
         self.text = self.model.clone();
         self.text.clone()
     }
 
-    /// The owner found the text invalid: it stays the person's to fix (a
-    /// new model value doesn't replace it while they are in the field).
-    pub fn invalid(&mut self) {
-        self.answer();
-        self.awaiting = None;
-        self.edited = true;
+    /// The owner found the text invalid (`Some`, why): it stays the
+    /// person's to fix (a new model value doesn't replace it while they are
+    /// in the field). `None`: the text is fine.
+    pub fn set_error(&mut self, error: Option<&str>) {
+        if let Some(why) = error {
+            self.answer();
+            self.awaiting = None;
+            self.edited = true;
+            self.error = Some(why.to_owned());
+        } else {
+            self.error = None;
+        }
     }
 
     fn answer(&mut self) {
@@ -143,6 +164,9 @@ pub type Format = Rc<dyn Fn(f64) -> String>;
 
 /// Called with a committed text.
 pub type CommitFn = Rc<dyn Fn(&str)>;
+
+/// Called when the field's error changes (`None`: it went).
+pub type ErrorFn = Rc<dyn Fn(Option<&str>)>;
 
 /// A C29 numeric field. Cheap to clone; main thread only.
 #[derive(Clone)]
@@ -160,6 +184,9 @@ struct Inner {
     step: Cell<f64>,
     format: RefCell<Format>,
     on_commit: RefCell<Option<CommitFn>>,
+    on_error: RefCell<Option<ErrorFn>>,
+    /// The error the field draws (and told its owner about).
+    shown_error: RefCell<Option<String>>,
     /// Text set by the code, not typed.
     setting: Cell<bool>,
 }
@@ -206,6 +233,8 @@ impl NumericField {
                 step: Cell::new(1.0),
                 format: RefCell::new(Rc::new(|v: f64| whole(v))),
                 on_commit: RefCell::new(None),
+                on_error: RefCell::new(None),
+                shown_error: RefCell::new(None),
                 setting: Cell::new(false),
             }),
         };
@@ -236,6 +265,7 @@ impl NumericField {
         if let Some(shown) = shown {
             self.set_text(&shown);
         }
+        self.sync_error();
     }
 
     /// The text differs from the model's.
@@ -266,15 +296,40 @@ impl NumericField {
         *self.inner.on_commit.borrow_mut() = Some(Rc::new(f));
     }
 
-    /// The C29 invalid state (a `record-text` stroke). Invalid text stays
-    /// the person's to fix: a new model value doesn't replace it while they
-    /// are in the field.
-    pub fn set_invalid(&self, invalid: bool) {
-        if invalid {
-            self.inner.state.borrow_mut().invalid();
+    /// Called with the error each time it changes (`None`: it went), to
+    /// show its message: the inspector's helper text, a tooltip.
+    pub fn on_error(&self, f: impl Fn(Option<&str>) + 'static) {
+        *self.inner.on_error.borrow_mut() = Some(Rc::new(f));
+    }
+
+    /// The C29 invalid state (a `record-text` stroke) with why (`Some`), or
+    /// none. Invalid text stays the person's to fix: a new model value
+    /// doesn't replace it while they are in the field.
+    pub fn set_error(&self, error: Option<&str>) {
+        self.inner.state.borrow_mut().set_error(error);
+        self.sync_error();
+    }
+
+    /// Why the text is invalid, if it is.
+    pub fn error(&self) -> Option<String> {
+        self.inner.state.borrow().error().map(str::to_owned)
+    }
+
+    /// Draws the state's error and tells the owner when it changed.
+    fn sync_error(&self) {
+        let error = self.error();
+        if *self.inner.shown_error.borrow() == error {
+            return;
+        }
+        *self.inner.shown_error.borrow_mut() = error.clone();
+        if error.is_some() {
             self.inner.root.add_css_class("invalid");
         } else {
             self.inner.root.remove_css_class("invalid");
+        }
+        let hook = self.inner.on_error.borrow().clone();
+        if let Some(f) = hook {
+            f(error.as_deref());
         }
     }
 
@@ -287,11 +342,11 @@ impl NumericField {
         self.inner.unit.clone()
     }
 
-    /// Puts the model's value back.
+    /// Puts the model's value back (and no error).
     pub fn revert(&self) {
         let model = self.inner.state.borrow_mut().revert();
         self.set_text(&model);
-        self.set_invalid(false);
+        self.sync_error();
     }
 
     /// Hands the person's text to the owner, once per edit, if it changed
@@ -329,6 +384,7 @@ impl NumericField {
         self.inner.state.borrow_mut().typed(&next);
         self.set_text(&next);
         self.inner.text.set_position(-1);
+        self.sync_error();
     }
 
     fn wire(&self) {
@@ -405,7 +461,8 @@ impl NumericField {
             }
         }));
         inner.root.add_controller(click);
-        // Typing makes the text the person's and clears the invalid state.
+        // Typing makes the text the person's and clears the invalid state
+        // (the stroke and its message).
         let weak = Rc::downgrade(inner);
         inner
             .text
@@ -414,7 +471,7 @@ impl NumericField {
                     && !inner.setting.get()
                 {
                     inner.state.borrow_mut().typed(&text.text());
-                    inner.root.remove_css_class("invalid");
+                    NumericField { inner }.sync_error();
                 }
             }));
     }
@@ -519,17 +576,27 @@ mod tests {
         f.set_value("384", false);
         f.typed("0");
         assert_eq!(f.begin_commit().as_deref(), Some("0"));
-        f.invalid();
+        f.set_error(Some("Width must be at least 1"));
         f.end_commit();
         assert_eq!(f.set_value("384", true), None, "the person fixes it");
         assert_eq!(f.text(), "0");
+        assert_eq!(f.error(), Some("Width must be at least 1"));
         assert_eq!(f.revert(), "384");
+        assert_eq!(f.error(), None, "Esc clears the error too");
         assert_eq!(f.begin_commit(), None);
         f.typed("0");
         assert_eq!(f.begin_commit().as_deref(), Some("0"));
-        f.invalid();
+        f.set_error(Some("Width must be at least 1"));
         f.end_commit();
         assert_eq!(f.set_value("384", false).as_deref(), Some("384"), "left");
+        assert_eq!(f.error(), None, "a value that replaces the text clears it");
+        // Typing clears it as it clears the stroke.
+        f.typed("0");
+        f.begin_commit();
+        f.set_error(Some("Width must be at least 1"));
+        f.end_commit();
+        f.typed("1");
+        assert_eq!(f.error(), None);
         // Typed back to the model's text: nothing to commit.
         f.typed("38");
         f.typed("384");

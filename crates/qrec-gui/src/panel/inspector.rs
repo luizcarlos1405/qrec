@@ -5,7 +5,9 @@
 //!
 //! - Enter or leaving a field commits one `LayerSet{target: edit_target,
 //!   layer, patch}` (`view::panel::inspector_commit_with`); an invalid value
-//!   shows the field's invalid state and the helper text under its row.
+//!   shows the field's invalid state and the helper text under its row,
+//!   which go together (`Esc`, typing or the model's value clear both; a
+//!   row's helper reads its newest error).
 //! - The slider commits on release, the Fit segment at once.
 //! - During a canvas drag or nudge burst the fields show
 //!   `LocalUi.layer_drag` (WP4's transient geometry).
@@ -47,6 +49,8 @@ struct Inner {
     crop: gtk::Grid,
     crop_groups: Vec<gtk::Box>,
     helpers: BTreeMap<Row, gtk::Label>,
+    /// The field whose error each row's helper reads.
+    helper_owners: RefCell<BTreeMap<Row, InspectorField>>,
     lock: gtk::ToggleButton,
     opacity: gtk::Scale,
     _opacity_tooltip: ValueTooltip,
@@ -275,6 +279,7 @@ impl InspectorView {
                 crop,
                 crop_groups,
                 helpers,
+                helper_owners: RefCell::new(BTreeMap::new()),
                 lock,
                 opacity,
                 _opacity_tooltip: tooltip,
@@ -328,6 +333,12 @@ impl InspectorView {
                     InspectorView { inner }.commit(field, text);
                 }
             });
+            let weak = Rc::downgrade(inner);
+            inner.fields[&FieldKey::from(field)].on_error(move |error| {
+                if let Some(inner) = weak.upgrade() {
+                    InspectorView { inner }.show_error(field, error);
+                }
+            });
         }
         // The slider moves the field along; it commits on release.
         let weak = Rc::downgrade(inner);
@@ -370,21 +381,55 @@ impl InspectorView {
             source_size: live_size(&state, &store.local()),
         };
         let input = &inner.fields[&FieldKey::from(field)];
-        let helper = &inner.helpers[&row_of(field)];
         match panel::inspector_commit_with(&state, field, text, &options) {
             Ok(cmd) => {
-                input.set_invalid(false);
-                helper.set_visible(false);
+                input.set_error(None);
                 match cmd {
                     Some(cmd) => store.dispatch(cmd),
                     None => input.revert(),
                 }
             }
-            Err(why) => {
-                input.set_invalid(true);
+            Err(why) => input.set_error(Some(&why)),
+        }
+    }
+
+    /// `field`'s error changed: its row's helper reads it, or, when it
+    /// went, another error of the row, else nothing (reverting W never
+    /// hides H's error).
+    fn show_error(&self, field: InspectorField, error: Option<&str>) {
+        let inner = &self.inner;
+        let row = row_of(field);
+        let helper = &inner.helpers[&row];
+        let mut owners = inner.helper_owners.borrow_mut();
+        if let Some(why) = error {
+            owners.insert(row, field);
+            helper.set_text(why);
+            helper.set_visible(true);
+            return;
+        }
+        if owners.get(&row) != Some(&field) {
+            return;
+        }
+        let other = InspectorField::ALL
+            .into_iter()
+            .filter(|f| *f != field && row_of(*f) == row)
+            .find_map(|f| Some((f, inner.fields[&FieldKey::from(f)].error()?)));
+        match other {
+            Some((f, why)) => {
+                owners.insert(row, f);
                 helper.set_text(&why);
-                helper.set_visible(true);
             }
+            None => {
+                owners.remove(&row);
+                helper.set_visible(false);
+            }
+        }
+    }
+
+    /// Every field without its error (and so every helper hidden).
+    fn clear_errors(&self) {
+        for field in self.inner.fields.values() {
+            field.set_error(None);
         }
     }
 
@@ -405,9 +450,7 @@ impl InspectorView {
                 .empty
                 .set_sensitive(qrec_core::view::enabled(state, &probe()).is_ok());
             *inner.shown.borrow_mut() = None;
-            for helper in inner.helpers.values() {
-                helper.set_visible(false);
-            }
+            self.clear_errors();
             return;
         };
         inner.empty.set_visible(false);
@@ -418,13 +461,7 @@ impl InspectorView {
             .as_ref()
             .is_none_or(|old| old.layer != insp.layer);
         if layer_changed {
-            for (key, field) in &inner.fields {
-                field.set_invalid(false);
-                let _ = key;
-            }
-            for helper in inner.helpers.values() {
-                helper.set_visible(false);
-            }
+            self.clear_errors();
         }
         for field in InspectorField::ALL {
             inner.fields[&FieldKey::from(field)].set_value(&field.text(&insp));

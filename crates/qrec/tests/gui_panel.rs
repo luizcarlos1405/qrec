@@ -414,6 +414,30 @@ fn s06_the_take_layout_and_the_inspector() {
     nested.screenshot("invalid");
     nested.keys(&["-k", "Escape"]);
     nested.window(0).wait_idle();
+    // Esc puts 384 back, and the helper goes with the stroke (R45).
+    let width = |nested: &mut Nested| {
+        let fields = nested.window(0).entries("inspector");
+        fields.get("inspector-w").cloned()
+    };
+    assert_eq!(width(&mut nested).as_deref(), Some("384"));
+    let helper_shown = |nested: &mut Nested| {
+        panel_labels(nested.window(0))
+            .iter()
+            .any(|l| l == "Width must be at least 1")
+    };
+    assert!(!helper_shown(&mut nested), "Esc clears the helper");
+    // Left invalid (the run ends: the window deactivates), then a snapshot
+    // (a click on the ruler seeks): the model's value and no helper.
+    let (x, y) = center(region(nested.window(0), "inspector-w"));
+    nested.pointer().click(x, y);
+    nested.keys(&["-M", "ctrl", "-k", "a", "-m", "ctrl", "0"]);
+    let gui = nested.window(0);
+    wait_for_label(gui, "Width must be at least 1");
+    nested.pointer().click(600.0, 706.0);
+    nested.window(0).wait_idle();
+    assert_eq!(width(&mut nested).as_deref(), Some("384"));
+    assert!(!helper_shown(&mut nested), "the snapshot clears the helper");
+    assert_eq!(history_cursor(&nested, &project), after, "nothing sent");
     // Layout ▸ Reset take to project scene: one SceneApply.
     let (x, y) = center(region(nested.window(0), "layout-menu"));
     nested.pointer().click(x, y);

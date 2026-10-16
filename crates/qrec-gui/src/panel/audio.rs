@@ -166,14 +166,23 @@ fn wire(ctx: &Ctx, view: &Rc<AudioRowView>) {
                 store.dispatch(cmd);
             }
         }));
+    // An invalid value's message is the field's tooltip, as long as its
+    // stroke shows.
+    for field in [&view.gain, &view.sync] {
+        let widget = field.widget().downgrade();
+        field.on_error(move |error| {
+            if let Some(widget) = widget.upgrade() {
+                widget.set_tooltip_text(error);
+            }
+        });
+    }
     let store = ctx.store.clone();
     let weak = Rc::downgrade(view);
     view.gain.on_commit(move |text| {
         let Some(view) = weak.upgrade() else { return };
         match panel::parse_gain(text) {
             Ok(db) => {
-                view.gain.set_invalid(false);
-                view.gain.widget().set_tooltip_text(None);
+                view.gain.set_error(None);
                 let unchanged = view
                     .model
                     .borrow()
@@ -191,10 +200,7 @@ fn wire(ctx: &Ctx, view: &Rc<AudioRowView>) {
                     store.dispatch(cmd);
                 }
             }
-            Err(why) => {
-                view.gain.set_invalid(true);
-                view.gain.widget().set_tooltip_text(Some(&why));
-            }
+            Err(why) => view.gain.set_error(Some(&why)),
         }
     });
     let store = ctx.store.clone();
@@ -203,8 +209,7 @@ fn wire(ctx: &Ctx, view: &Rc<AudioRowView>) {
         let Some(view) = weak.upgrade() else { return };
         match panel::parse_sync(text) {
             Ok(ms) => {
-                view.sync.set_invalid(false);
-                view.sync.widget().set_tooltip_text(None);
+                view.sync.set_error(None);
                 let unchanged = view
                     .model
                     .borrow()
@@ -222,10 +227,7 @@ fn wire(ctx: &Ctx, view: &Rc<AudioRowView>) {
                     store.dispatch(cmd);
                 }
             }
-            Err(why) => {
-                view.sync.set_invalid(true);
-                view.sync.widget().set_tooltip_text(Some(&why));
-            }
+            Err(why) => view.sync.set_error(Some(&why)),
         }
     });
     let store = ctx.store.clone();
