@@ -1982,8 +1982,8 @@ As built (WP6, round 3):
   | L | Major | Minor |
   | --- | --- | --- |
   | ≤ 15f | L | 1f |
-  | 1s | 1s | 5f |
-  | 2s | 1s | 10f |
+  | 1s | 1s | 5f (4f at 24 fps) |
+  | 2s | 1s | 10f (8f at 24 fps, 5f at 25) |
   | 5s | 1s | — |
   | 10s, 15s | L | 5s |
   | 30s | 30s | 10s |
@@ -1993,6 +1993,11 @@ As built (WP6, round 3):
 
   - Minor ticks are hidden when closer than 6 px. Ticks are `muted`,
     rising from the bottom edge: major 10 px, minor 5 px.
+  - The 1s and 2s rows' frame minors divide the nominal second (the
+    largest divisor up to 5f and 10f, `ruler::second_minor`), and the
+    ticks are the union of the major and the minor grid, so no second's
+    major or label is skipped (review: at 24 fps 5f minors drew a label
+    every 5 s at 1s labels, and at 25 fps no major at the odd seconds).
   - Labels: `HH:MM:SS:FF`, `mono-xs` `muted`, at y 4, 4 px right of the
     tick. A label shows while its tick shows: cut at the right edge,
     dropped at the left, as S07, S08 and S12 draw (WP3; this said "clipped,
