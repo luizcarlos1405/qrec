@@ -13,6 +13,14 @@
 //!   engine reports `Live` has its size and the picture drew
 //!   [`FIRST_FRAMES`] frames since (the sink's paintable has no size before
 //!   its first frame; the fake screen showed 0.2–0.7 s late without it).
+//!   A rebuild whose sources keep their states and sizes (an audio track
+//!   added: S01b's steps) sends no `LiveStatus`, and its new pipeline
+//!   draws black until its sources deliver: so `waitIdle` also waits for
+//!   the engine's [`LiveControl::progress`] (every `SetLive` handled, each
+//!   video source negotiated in the pipeline it built), then counts
+//!   [`FIRST_FRAMES`] again for each new pipeline.
+//!
+//! [`LiveControl::progress`]: qrec_shell::capture::LiveControl::progress
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -22,7 +30,7 @@ use gtk::prelude::*;
 use qrec_core::model::Scene;
 use qrec_core::view::canvas::source_name;
 use qrec_core::view::{LiveSourceState, LiveSources};
-use qrec_shell::capture::{LiveSourceStatus, live_sources_view};
+use qrec_shell::capture::{LiveProgress, LiveSourceStatus, live_sources_view};
 
 use crate::{Ctx, guarded};
 
@@ -94,17 +102,36 @@ pub struct LiveWatch {
     readiness: Cell<Readiness>,
     /// Since when the stage waits for a report.
     waiting_since: Cell<Option<Instant>>,
+    /// The stage shows the live picture.
+    showing: Cell<bool>,
+    /// The engine's [`LiveProgress`] (`None`: no engine).
+    progress: Box<dyn Fn() -> Option<LiveProgress>>,
+    /// The live pipeline the frames are counted for.
+    generation: Cell<Option<u64>>,
+    /// Since when the engine hasn't settled its live scenes.
+    unsettled_since: Cell<Option<Instant>>,
 }
 
 impl LiveWatch {
-    /// Follows the live paintable's frames (once per window).
-    pub fn install(ctx: &Ctx) -> Rc<LiveWatch> {
-        let watch = Rc::new(LiveWatch {
+    fn new(progress: Box<dyn Fn() -> Option<LiveProgress>>) -> Self {
+        LiveWatch {
             frames: Cell::new(0),
             ready_at: Cell::new(None),
             readiness: Cell::new(Readiness::Settled),
             waiting_since: Cell::new(None),
-        });
+            showing: Cell::new(false),
+            progress,
+            generation: Cell::new(None),
+            unsettled_since: Cell::new(None),
+        }
+    }
+
+    /// Follows the live paintable's frames (once per window).
+    pub fn install(ctx: &Ctx) -> Rc<LiveWatch> {
+        let media = ctx.media.clone();
+        let watch = Rc::new(LiveWatch::new(Box::new(move || {
+            media.live_control().progress()
+        })));
         let weak = Rc::downgrade(&watch);
         let paintable = ctx.media.live_paintable();
         paintable.connect_invalidate_contents(guarded!("live picture: a frame", move |_| {
@@ -126,6 +153,7 @@ impl LiveWatch {
 
     /// The stage shows the live picture (`showing`) with these statuses.
     pub fn update(&self, showing: bool, scene: &Scene, live: &LiveSources) {
+        self.showing.set(showing);
         let now = if showing {
             readiness(scene, live)
         } else {
@@ -135,6 +163,8 @@ impl LiveWatch {
         match now {
             Readiness::Ready if before != Readiness::Ready => {
                 self.ready_at.set(Some(self.frames.get()));
+                // The pipeline these frames come from.
+                self.generation.set((self.progress)().map(|p| p.generation));
             }
             Readiness::Ready => {}
             _ => self.ready_at.set(None),
@@ -150,6 +180,31 @@ impl LiveWatch {
 
     /// Why the live picture isn't shown yet.
     fn busy(&self) -> Option<String> {
+        if !self.showing.get() {
+            return None;
+        }
+        if let Some(progress) = (self.progress)() {
+            if !progress.settled {
+                let since = self.unsettled_since.get().unwrap_or_else(Instant::now);
+                self.unsettled_since.set(Some(since));
+                // An engine that never settles (a wedged one) is waited
+                // for as long as one that never reports.
+                if since.elapsed() < REPORT_WAIT {
+                    return Some("the live pipeline".to_owned());
+                }
+            } else {
+                self.unsettled_since.set(None);
+                if self.readiness.get() == Readiness::Ready
+                    && self.generation.replace(Some(progress.generation))
+                        != Some(progress.generation)
+                {
+                    // A new pipeline whose sources negotiated now: the
+                    // frames drawn before (the last pipeline's, then black)
+                    // don't count.
+                    self.ready_at.set(Some(self.frames.get()));
+                }
+            }
+        }
         match self.readiness.get() {
             Readiness::Settled => None,
             Readiness::Negotiating => {
@@ -249,12 +304,8 @@ mod tests {
 
     #[test]
     fn frames_count_from_readiness() {
-        let watch = LiveWatch {
-            frames: Cell::new(100),
-            ready_at: Cell::new(None),
-            readiness: Cell::new(Readiness::Settled),
-            waiting_since: Cell::new(None),
-        };
+        let watch = LiveWatch::new(Box::new(|| None));
+        watch.frames.set(100);
         let scene = testkit::design_project().scene;
         let mut live = LiveSources::new();
         watch.update(true, &scene, &live);
@@ -269,6 +320,75 @@ mod tests {
         assert_eq!(watch.busy(), None);
         // Not showing the live picture: never busy.
         watch.update(false, &scene, &LiveSources::new());
+        assert_eq!(watch.busy(), None);
+    }
+
+    /// A rebuild that keeps every source's state and size (S01b's audio
+    /// tracks) sends no status: the engine's progress holds `waitIdle`
+    /// until the new pipeline's sources negotiated, then its own first
+    /// frames count. Before, `waitIdle` answered at once and the S01b shot
+    /// caught the new pipeline's black frames.
+    #[test]
+    fn a_rebuild_without_a_new_status_waits_for_its_own_frames() {
+        let progress = Rc::new(Cell::new(LiveProgress {
+            settled: true,
+            generation: 1,
+        }));
+        let watch = LiveWatch::new(Box::new({
+            let progress = Rc::clone(&progress);
+            move || Some(progress.get())
+        }));
+        let scene = testkit::design_project().scene;
+        let mut live = LiveSources::new();
+        for (name, size) in [("DP-4", (2560, 1440)), ("/dev/video0", (1280, 720))] {
+            live.insert(name.into(), view(LiveSourceState::Live, Some(size)));
+        }
+        watch.update(true, &scene, &live);
+        watch.frames.set(FIRST_FRAMES);
+        assert_eq!(watch.busy(), None, "pipeline 1 shown");
+        // An audio track added: the engine rebuilds; the statuses stay.
+        progress.set(LiveProgress {
+            settled: false,
+            generation: 1,
+        });
+        watch.update(true, &scene, &live);
+        assert_eq!(watch.busy().as_deref(), Some("the live pipeline"));
+        progress.set(LiveProgress {
+            settled: false,
+            generation: 2,
+        });
+        watch.frames.set(3 * FIRST_FRAMES);
+        assert_eq!(watch.busy().as_deref(), Some("the live pipeline"));
+        // Negotiated: pipeline 2's frames count from now.
+        progress.set(LiveProgress {
+            settled: true,
+            generation: 2,
+        });
+        assert_eq!(
+            watch.busy().as_deref(),
+            Some("the live picture's first frames")
+        );
+        watch.frames.set(4 * FIRST_FRAMES - 1);
+        assert!(watch.busy().is_some(), "one frame short");
+        watch.frames.set(4 * FIRST_FRAMES);
+        assert_eq!(watch.busy(), None);
+        // A layout change settles in the same pipeline: nothing to count.
+        progress.set(LiveProgress {
+            settled: false,
+            generation: 2,
+        });
+        assert!(watch.busy().is_some());
+        progress.set(LiveProgress {
+            settled: true,
+            generation: 2,
+        });
+        assert_eq!(watch.busy(), None);
+        // Not showing the live picture: the engine isn't waited for.
+        progress.set(LiveProgress {
+            settled: false,
+            generation: 3,
+        });
+        watch.update(false, &scene, &live);
         assert_eq!(watch.busy(), None);
     }
 }

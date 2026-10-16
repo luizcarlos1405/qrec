@@ -186,6 +186,24 @@ fn s07_fit() {
         toolbar.contains(&"5".to_owned()),
         "the bin's count: {toolbar:?}"
     );
+    // The toggles' count chip and key caps sit centered in the 36 px
+    // toolbar at their 16 px (S02, S07), like the labeled buttons' caps:
+    // they used to fill the 28 px buttons.
+    let parts = nested
+        .window(0)
+        .regions(&["tl-bin-count", "tl-cap-bin", "tl-cap-snap"]);
+    let bar = parts["timeline-toolbar"];
+    for name in ["tl-bin-count", "tl-cap-bin", "tl-cap-snap"] {
+        let [_, y, _, h] = parts
+            .get(name)
+            .copied()
+            .unwrap_or_else(|| panic!("no {name}: {parts:?}"));
+        let off = (y + h / 2.0) - (bar[1] + bar[3] / 2.0);
+        assert!(
+            (h - 16.0).abs() <= 1.0 && off.abs() <= 1.0,
+            "{name}: y {y}, h {h} (centered 16 px tall in {bar:?})"
+        );
+    }
     shoot(&nested, "fit", Some("S07-timeline-fit.png"));
     assert_clean(&mut nested);
 }
@@ -574,17 +592,25 @@ fn s01b_empty_timeline() {
     let mut nested = Nested::start(AREA, "s01b", Options::default());
     let project = nested.env.empty_dir("rust-traits-talk");
     open(&mut nested, &project, Launch::a11y());
-    for command in [
+    for (i, command) in [
         json!({"cmd": "layerAdd", "target": "project", "source": {"screen": {"output": "FAKE-1"}}, "name": "Main screen"}),
         json!({"cmd": "layerAdd", "target": "project", "source": {"camera": {"device": "/dev/fake0"}}, "name": "Face"}),
         json!({"cmd": "audioAdd", "target": "project", "role": "mic", "source": "alsa_input.fake", "label": "Yeti Nano"}),
         json!({"cmd": "audioAdd", "target": "project", "role": "system", "source": "alsa_output.fake.monitor", "label": "System audio"}),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let reply = nested
             .window(0)
             .ctl(json!({"op": "dispatch", "command": command}));
         assert_eq!(reply["ok"], true, "{reply}");
         nested.window(0).wait_idle();
+        // Each source rebuilds the live pipeline. The audio tracks' keep
+        // both video sources' states and sizes (no new status): waitIdle
+        // waits for the engine's progress, or the picture is the new
+        // pipeline's black (G§3.18).
+        gui_support::assert_live_picture_drawn(&nested.screenshot(&format!("step-{}", i + 1)));
     }
     let gui = nested.window(0);
     let regions = gui.regions(&[]);
@@ -619,7 +645,8 @@ fn s01b_empty_timeline() {
         assert!(labels.contains(&want.to_owned()), "{want:?} in {labels:?}");
     }
     assert_a11y(&mut nested);
-    shoot(&nested, "empty", Some("S01b-first-run-sources-added.png"));
+    let shot = shoot(&nested, "empty", Some("S01b-first-run-sources-added.png"));
+    gui_support::assert_live_picture_drawn(&shot);
     assert_clean(&mut nested);
 }
 

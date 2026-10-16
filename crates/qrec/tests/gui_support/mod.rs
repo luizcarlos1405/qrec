@@ -924,6 +924,44 @@ pub fn assert_regions(
     );
 }
 
+/// The mean grey level (0–255) of `rect` (x, y, w, h in the PNG's px) of
+/// a screenshot: ffmpeg's 16×9 grey thumbnail of it.
+pub fn mean_grey(png: &Path, [x, y, w, h]: [u32; 4]) -> f64 {
+    let out = run_tool(
+        Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(png)
+            .args([
+                "-vf",
+                &format!("crop={w}:{h}:{x}:{y},scale=16:9,format=gray"),
+                "-f",
+                "rawvideo",
+                "-",
+            ]),
+        TOOL_TIMEOUT,
+    );
+    assert_eq!(
+        out.stdout.len(),
+        16 * 9,
+        "a 16×9 thumbnail of {}: {}",
+        png.display(),
+        out.stderr
+    );
+    out.stdout.iter().map(|&b| f64::from(b)).sum::<f64>() / (16.0 * 9.0)
+}
+
+/// The live picture at BRIEF's 1:2 preview (128, 64, 960, 540) of a
+/// 1600×1000 shot isn't black: the fake sources' bars show (a pipeline the
+/// engine just rebuilt draws black until its sources deliver, G§3.18).
+pub fn assert_live_picture_drawn(png: &Path) {
+    let grey = mean_grey(png, [128, 64, 960, 540]);
+    assert!(
+        grey > 40.0,
+        "the live picture is black (mean grey {grey:.1}): {}",
+        png.display()
+    );
+}
+
 /// Waits until `qrec status --json` says the project's host is a GUI.
 pub fn wait_for_gui_host(nested: &Nested, project: &Path, within: Duration) -> Value {
     let deadline = Instant::now() + within;

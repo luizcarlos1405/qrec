@@ -69,6 +69,7 @@ mod util;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use qrec_core::ctx::{CameraMode, ScreenInfo};
@@ -237,11 +238,15 @@ pub fn live_sources_view(statuses: &[LiveSourceStatus]) -> LiveSources {
 /// renegotiation, so the layout never reaches a take.
 /// Cheap to clone; every call returns at once.
 ///
+/// It also tells where the live picture is ([`Self::progress`], for the
+/// GUI's `waitIdle`, G§3.18).
+///
 /// From `GstCaptureEngine::control()`; one that isn't connected to an
 /// engine does nothing.
 #[derive(Clone, Default)]
 pub struct LiveControl {
     apply: Option<Arc<dyn Fn(Option<Scene>) + Send + Sync>>,
+    tracker: Option<Arc<LiveTracker>>,
 }
 
 impl LiveControl {
@@ -249,7 +254,14 @@ impl LiveControl {
     pub fn new(apply: impl Fn(Option<Scene>) + Send + Sync + 'static) -> Self {
         Self {
             apply: Some(Arc::new(apply)),
+            tracker: None,
         }
+    }
+
+    /// Reports `tracker`'s [`progress`](Self::progress).
+    pub fn with_tracker(mut self, tracker: Arc<LiveTracker>) -> Self {
+        self.tracker = Some(tracker);
+        self
     }
 
     /// A control that does nothing.
@@ -264,13 +276,98 @@ impl LiveControl {
             apply(scene);
         }
     }
+
+    /// Where the engine is with the live scenes it was given; `None`
+    /// without an engine.
+    pub fn progress(&self) -> Option<LiveProgress> {
+        self.tracker.as_ref().map(|t| t.progress())
+    }
 }
 
 impl std::fmt::Debug for LiveControl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LiveControl")
             .field("connected", &self.apply.is_some())
+            .field("progress", &self.progress())
             .finish()
+    }
+}
+
+/// [`LiveControl::progress`]: where the engine is with the live scenes it
+/// was given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveProgress {
+    /// Every `set_live` and `retry_live` so far was handled, and each
+    /// video source of the live pipeline negotiated its caps in it (or
+    /// died); also with no live pipeline (Program, a portal dialog open,
+    /// none wanted). A rebuild that keeps every source's state and size
+    /// sends no `LiveStatus`: this is how a GUI knows it is in progress.
+    pub settled: bool,
+    /// The live pipeline the preview comes from (bumped by every build, 0
+    /// before the first): a new one draws its own first frames.
+    pub generation: u64,
+}
+
+/// The engine's side of [`LiveProgress`], shared by `GstCaptureEngine`,
+/// its thread and its [`LiveControl`]s. `set_live` and `retry_live` count
+/// themselves on the caller's thread before the engine thread can see
+/// them, so a `waitIdle` that comes after a request was answered never
+/// sees the last pipeline as settled; the engine thread publishes what it
+/// handled after each command (negotiation first, then the count).
+#[derive(Debug)]
+pub struct LiveTracker {
+    asked: AtomicU64,
+    handled: AtomicU64,
+    negotiated: AtomicBool,
+    generation: AtomicU64,
+}
+
+impl Default for LiveTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LiveTracker {
+    /// A tracker with nothing asked yet (settled).
+    pub fn new() -> Self {
+        Self {
+            asked: AtomicU64::new(0),
+            handled: AtomicU64::new(0),
+            negotiated: AtomicBool::new(true),
+            generation: AtomicU64::new(0),
+        }
+    }
+
+    /// A `set_live` or `retry_live` is on its way to the engine thread.
+    pub fn ask(&self) {
+        self.asked.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// One that [`ask`](Self::ask) counted never reached the engine thread.
+    pub fn unask(&self) {
+        self.asked.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// The engine thread, after a command: it handled `handled` asks in
+    /// all, the live pipeline `generation` (0: none) shows, and its video
+    /// sources negotiated (or died, or there is none) when `negotiated`.
+    pub fn publish(&self, handled: u64, negotiated: bool, generation: u64) {
+        self.generation.store(generation, Ordering::SeqCst);
+        self.negotiated.store(negotiated, Ordering::SeqCst);
+        self.handled.store(handled, Ordering::SeqCst);
+    }
+
+    pub fn progress(&self) -> LiveProgress {
+        // `handled` first: a count that includes the last ask comes with
+        // the negotiation state published with it, or a later one.
+        let handled = self.handled.load(Ordering::SeqCst);
+        let negotiated = self.negotiated.load(Ordering::SeqCst);
+        let asked = self.asked.load(Ordering::SeqCst);
+        LiveProgress {
+            settled: handled >= asked && negotiated,
+            generation: self.generation.load(Ordering::SeqCst),
+        }
     }
 }
 
@@ -549,5 +646,38 @@ mod unit_tests {
         // Not connected: nothing happens.
         LiveControl::noop().transient_layout(None);
         assert!(format!("{:?}", LiveControl::default()).contains("connected: false"));
+    }
+
+    /// The engine's side of `LiveControl::progress`: an ask counts from the
+    /// caller's thread, so the last pipeline's state never settles it; the
+    /// engine settles it once it handled it and the pipeline it shows has
+    /// every video source negotiated.
+    #[test]
+    fn the_live_tracker_settles_an_ask_once_its_pipeline_negotiated() {
+        let tracker = Arc::new(LiveTracker::new());
+        let control = LiveControl::noop().with_tracker(Arc::clone(&tracker));
+        let at = |settled, generation| {
+            Some(LiveProgress {
+                settled,
+                generation,
+            })
+        };
+        assert_eq!(control.progress(), at(true, 0), "nothing asked");
+        tracker.publish(0, true, 1);
+        assert_eq!(control.progress(), at(true, 1));
+        tracker.ask();
+        // Not handled yet: pipeline 1 negotiated, but that's the old one.
+        assert_eq!(control.progress(), at(false, 1));
+        // Handled: it built pipeline 2, whose sources negotiate.
+        tracker.publish(1, false, 2);
+        assert_eq!(control.progress(), at(false, 2));
+        tracker.publish(1, true, 2);
+        assert_eq!(control.progress(), at(true, 2));
+        // One that never reached the engine thread.
+        tracker.ask();
+        tracker.unask();
+        assert_eq!(control.progress(), at(true, 2));
+        assert!(format!("{control:?}").contains("settled: true"));
+        assert_eq!(LiveControl::noop().progress(), None);
     }
 }

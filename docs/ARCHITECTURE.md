@@ -1972,7 +1972,17 @@ pipeline first. Paths in the plan are joined with the project dir.
 - **`LiveControl`** (`control()`): `transient_layout(Some(scene))` lays the
   preview out (pads at once, changed crops on the streaming thread) from
   that scene's layers, without a rebuild, until the next `SetLive` (any)
-  or `None` (D-32, D-33). Preview only: it never reaches a take.
+  or `None` (D-32, D-33). Preview only: it never reaches a take. Its
+  `progress()` (`LiveProgress { settled, generation }`, from a
+  `LiveTracker` the engine shares) says whether every `set_live` and
+  `retry_live` so far was handled and each video source of the live
+  pipeline negotiated in it (or died; trivially without a pipeline), and
+  which pipeline the preview comes from. The asks are counted on the
+  caller's thread, so a reader after a request's answer never sees the
+  old pipeline as the new one; the engine thread publishes after each
+  command. A rebuild whose sources keep their states and sizes sends no
+  `LiveStatus` (a rebuilt branch reports its cached size at once), so
+  this is how the GUI's test channel waits for it (GUI.md G§3.18).
 - **Left out**: a screen the portal refused, or a source that failed to
   start, stays out of the live pipeline, which runs with the rest, until
   the scene's sources change (a layout change, or Program mode and back,

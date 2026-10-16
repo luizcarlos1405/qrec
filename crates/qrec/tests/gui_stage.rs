@@ -257,6 +257,9 @@ fn s01b_sources_added() {
     assert_stage_regions(&mut nested, &STAGE);
     assert_clean(&mut nested);
     let shot = nested.screenshot("sources-added");
+    // The four adds rebuilt the live pipeline; the last rebuilds (the
+    // audio tracks) send no status (G§3.18).
+    gui_support::assert_live_picture_drawn(&shot);
     compare(&nested, &shot, "S01b-first-run-sources-added.png");
 }
 

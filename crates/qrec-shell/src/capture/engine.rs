@@ -72,7 +72,8 @@ use super::spec::{
 use super::util::{error_text, missing_element, object_path, running_time, set_null_with_deadline};
 use super::{
     Backend, CLOCK_INTERVAL, EngineOptions, FILL_GRACE, LiveControl, LiveSource, LiveSourceState,
-    LiveSourceStatus, PIPELINE_START_TIMEOUT, STALL_LIMIT, SideEvent, TEARDOWN_TIMEOUT,
+    LiveSourceStatus, LiveTracker, PIPELINE_START_TIMEOUT, STALL_LIMIT, SideEvent,
+    TEARDOWN_TIMEOUT,
 };
 use crate::deps::CaptureEngine;
 use crate::gst_init::{self, InitError};
@@ -153,6 +154,8 @@ pub(super) struct LiveInfo {
     /// Bumped by every rebuild; `None` without a pipeline.
     pub generation: Option<u64>,
     pub sources: Vec<SourceSpec>,
+    /// Whether each source's caps reached its tee in this pipeline.
+    pub negotiated: Vec<bool>,
     pub preview: bool,
     /// The preview goes to the GUI's sink (else the RGBA appsink).
     pub preview_sink: bool,
@@ -217,6 +220,8 @@ pub struct GstCaptureEngine {
     thread: Option<JoinHandle<()>>,
     /// The last inbox, for reporting when the engine thread is gone.
     out: Arc<Mutex<Option<Inbox>>>,
+    /// Where the engine is with the live scenes ([`LiveControl::progress`]).
+    tracker: Arc<LiveTracker>,
 }
 
 impl GstCaptureEngine {
@@ -225,7 +230,8 @@ impl GstCaptureEngine {
     pub fn spawn(opts: EngineOptions) -> std::io::Result<Self> {
         let (tx, rx) = crossbeam_channel::unbounded();
         let out = Arc::new(Mutex::new(None));
-        let engine = Engine::new(opts, tx.clone(), rx, out.clone());
+        let tracker = Arc::new(LiveTracker::new());
+        let engine = Engine::new(opts, tx.clone(), rx, out.clone(), Arc::clone(&tracker));
         let shared = out.clone();
         let thread = thread::Builder::new()
             .name("qrec-capture".into())
@@ -246,6 +252,7 @@ impl GstCaptureEngine {
             tx,
             thread: Some(thread),
             out,
+            tracker,
         })
     }
 
@@ -269,12 +276,15 @@ impl GstCaptureEngine {
     /// Moves the live preview's layers during a drag or nudge (docs/GUI.md
     /// G§3.9, D-32, D-33): each layout goes to the engine thread, which sets
     /// the preview compositor's pads without a rebuild until the next
-    /// `SetLive` or a `None`. Never reaches a take or State.
+    /// `SetLive` or a `None`. Never reaches a take or State. It also tells
+    /// where the engine is with the live scenes it was given
+    /// ([`LiveControl::progress`]).
     pub fn control(&self) -> LiveControl {
         let tx = self.tx.clone();
         LiveControl::new(move |scene| {
             let _ = tx.send(Cmd::Transient(scene));
         })
+        .with_tracker(Arc::clone(&self.tracker))
     }
 
     /// Fake backend only: makes the source `source` (an output, camera
@@ -301,7 +311,11 @@ impl GstCaptureEngine {
 impl CaptureEngine for GstCaptureEngine {
     fn set_live(&mut self, live: Option<LiveScene>, out: Inbox) {
         self.remember(&out);
-        let _ = self.tx.send(Cmd::SetLive(live, out));
+        // Counted before the engine thread can see it (`LiveTracker`).
+        self.tracker.ask();
+        if self.tx.send(Cmd::SetLive(live, out)).is_err() {
+            self.tracker.unask();
+        }
     }
 
     fn start(&mut self, plan: CapturePlan, out: Inbox) {
@@ -339,7 +353,10 @@ impl CaptureEngine for GstCaptureEngine {
 
     fn retry_live(&mut self, out: Inbox) {
         self.remember(&out);
-        let _ = self.tx.send(Cmd::RetryLive(out));
+        self.tracker.ask();
+        if self.tx.send(Cmd::RetryLive(out)).is_err() {
+            self.tracker.unask();
+        }
     }
 
     fn shutdown(&mut self) {
@@ -499,6 +516,11 @@ struct Engine {
     transient: Option<Scene>,
     /// The last `SideEvent::LiveStatus` sent.
     status: Vec<LiveSourceStatus>,
+    /// Where the live picture is, for `LiveControl::progress`.
+    tracker: Arc<LiveTracker>,
+    /// `SetLive`s and `RetryLive`s handled so far (`LiveTracker::ask`
+    /// counted each on the caller's thread).
+    handled: u64,
     /// Test hook: the fake screens go through a sharing fake portal.
     #[cfg(test)]
     share_fake_screens: bool,
@@ -513,6 +535,7 @@ impl Engine {
         tx: Sender<Cmd>,
         rx: Receiver<Cmd>,
         shared_out: Arc<Mutex<Option<Inbox>>>,
+        tracker: Arc<LiveTracker>,
     ) -> Self {
         Self {
             project: ProjectPaths::new(&opts.project_dir),
@@ -542,6 +565,8 @@ impl Engine {
             sizes: BTreeMap::new(),
             transient: None,
             status: Vec::new(),
+            tracker,
+            handled: 0,
             #[cfg(test)]
             share_fake_screens: false,
             shutdown_ack: None,
@@ -578,7 +603,26 @@ impl Engine {
             self.tick();
             self.maybe_finish_shutdown();
             self.report_status();
+            self.publish_progress();
         }
+    }
+
+    /// Publishes where the live picture is (`LiveControl::progress`): the
+    /// asks handled, and whether each video source of the live pipeline
+    /// negotiated in it or died (none to wait for without a pipeline). A
+    /// rebuild whose sources keep their states and sizes reports no new
+    /// `LiveStatus`; this is how the GUI's `waitIdle` waits for it.
+    fn publish_progress(&self) {
+        let (negotiated, generation) = match &self.live {
+            Some(live) => (
+                live.sources
+                    .iter()
+                    .all(|b| !b.spec.is_video() || b.negotiated || b.dead.is_some()),
+                live.generation,
+            ),
+            None => (true, 0),
+        };
+        self.tracker.publish(self.handled, negotiated, generation);
     }
 
     fn emit(&self, event: Event) {
@@ -590,6 +634,7 @@ impl Engine {
     fn handle(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::SetLive(scene, out) => {
+                self.handled += 1;
                 self.set_out(out);
                 self.set_live(scene);
             }
@@ -600,6 +645,7 @@ impl Engine {
             Cmd::Stop { take, cancel } => self.stop(take, cancel),
             Cmd::Shutdown(ack) => self.begin_shutdown(ack),
             Cmd::RetryLive(out) => {
+                self.handled += 1;
                 self.set_out(out);
                 self.retry_live();
             }
@@ -668,6 +714,9 @@ impl Engine {
             generation: live.map(|l| l.generation),
             sources: live
                 .map(|l| l.sources.iter().map(|s| s.spec.clone()).collect())
+                .unwrap_or_default(),
+            negotiated: live
+                .map(|l| l.sources.iter().map(|s| s.negotiated).collect())
                 .unwrap_or_default(),
             preview: preview.is_some(),
             preview_sink: match (&self.opts.preview, live) {

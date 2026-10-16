@@ -748,8 +748,15 @@ named `region-<name>`; the focused widget's nearest such ancestor).
   asked of the portal again (a retry, a take's dialog) is `AwaitingPortal`
   while the dialog is open, before its old `Dead` branch or `Refused`.
 - **`LiveControl`** (`GstCaptureEngine::control()`, `Clone`):
-  `transient_layout(Option<Scene>)` only. It lays the preview out until
-  the next `SetLive` (any) or `None`, and never touches State: the
+  `transient_layout(Option<Scene>)`, and `progress()` (round 3
+  integration fixes): `LiveProgress { settled, generation }`, where the
+  engine is with the live scenes it was given, for `waitIdle` (G§3.18):
+  `settled` once every `set_live`/`retry_live` so far was handled and each
+  video source of the live pipeline negotiated in it (or died, or there is
+  no pipeline); `generation` is the pipeline the preview comes from
+  (`capture::LiveTracker`, counted on the caller's thread). It lays the
+  preview out until the next `SetLive` (any) or `None`, and never touches
+  State: the
   compositor's pads move at once; a changed `videocrop` crop goes with its
   pad to the layer's streaming thread, which applies both before the next
   caps event or buffer (so a Live crop shows at the source's next frame; a
@@ -1230,7 +1237,10 @@ time; A§8.7 rules for every child).
   `Chip`, the tooltips and the interim pages had their own spacing too,
   which doubled the CSS's (16 px in buttons, 4 px between a chord's caps;
   WP6 worked around it in its CSS); fixed at the source in round 3, and
-  `labeled` centers its key cap vertically. The test
+  `labeled` centers its key cap vertically, as the timeline toolbar's
+  toggles (Bin, Snap) center theirs and the bin's count chip (round 3
+  integration fixes: they filled the 28 px buttons; `s07_fit` checks them
+  16 px tall on the toolbar's middle). The test
   `boxes_the_css_spaces_have_no_spacing_of_their_own` greps for it.
 - **libadwaita bridge** (`adwaita.css`):
   `--window-bg-color: var(--qrec-bg)`, `--window-fg-color:
@@ -1532,7 +1542,13 @@ labels; round 3: the required regions and two integration cases),
 methods, not signal connections), `base.css`, `common.css`,
 `widgets/{button,keycap,chip,tooltip}.rs`, `blocking/interim.rs`,
 `theme/css.rs` (round 3: G§3.14's focus ring and box spacing), and
-`gui_support/mod.rs` (round 3: `MERGED_REGIONS`).
+`gui_support/mod.rs` (round 3: `MERGED_REGIONS`). The round 3 integration
+fixes: `capture/{mod,engine}.rs` and `capture/tests.rs` (`LiveTracker`,
+`LiveControl::progress`, G§3.9), `media/live.rs` (WP4's: `LiveWatch` waits
+for it, G§3.18), `timeline/toolbar.rs` (WP3's: the toggles' centered caps
+and count chip, G§3.14), `gui_support/mod.rs` (`mean_grey`,
+`assert_live_picture_drawn`), and the S01b and S07 checks in
+`gui_timeline.rs` and `gui_stage.rs`.
 | root | `Cargo.toml`, `Cargo.lock`, `flake.nix` | G§6 (desktop file and icon install: WP10) | WP0b, WP10 |
 | docs | `ARCHITECTURE.md` | WP0a's list; A§1.2 after G§0.1 (WP0b); final pass (WP10) | WP0a, WP0b, WP10 |
 
@@ -1552,7 +1568,7 @@ previews, the player, io, opening, the portal).
 
 | Request | Reply |
 | --- | --- |
-| `{"op":"waitIdle"}` | `{"ok":true,"rev":R}` once: `PreviewCache::in_flight()` is 0, the player isn't loading or seeking, and every `qrec-gui-io` job finished with no `MediaHub::hold_io_busy` token held (all checked before the queue: what they send is in the queue before they say they are idle; a debounce that will send an io job holds a token); the inbound queue is empty; the GUI's own requests are answered; no source is `AwaitingPortal`; the window isn't opening; the stage is idle (`stage::busy`, WP4: no program reload is due, and in Live the picture drew 10 frames since its visible live sources had sizes, `media::live::LiveWatch`); and a frame was drawn after all that and it still holds (frame clock `after-paint`) |
+| `{"op":"waitIdle"}` | `{"ok":true,"rev":R}` once: `PreviewCache::in_flight()` is 0, the player isn't loading or seeking, and every `qrec-gui-io` job finished with no `MediaHub::hold_io_busy` token held (all checked before the queue: what they send is in the queue before they say they are idle; a debounce that will send an io job holds a token); the inbound queue is empty; the GUI's own requests are answered; no source is `AwaitingPortal`; the window isn't opening; the stage is idle (`stage::busy`, WP4: no program reload is due, and in Live the engine settled its live scenes, `LiveControl::progress`, and the picture drew 10 frames since its visible live sources had sizes, again for each new pipeline, `media::live::LiveWatch`); and a frame was drawn after all that and it still holds (frame clock `after-paint`) |
 | `{"op":"regions","names":[…]}` | `{"regions":{"<name>":[x,y,w,h],…}}`: window-logical bounds of every widget named `region-*` and of the named parts in G§8.4, plus the visible widgets named in `names` (a button a case clicks) |
 | `{"op":"labels","name":"region-header"}` | `{"ok":true,"labels":[…]}`: the text of every visible label under the widget `name` (default: the window), in tree order |
 | `{"op":"dispatch","command":{…},"confirmed":false}` | `Store::dispatch_with` with the default reply policy (confirmations open their modal); `{"ok":true}` at once |
@@ -1570,7 +1586,18 @@ The live picture's first frames: WP4's `LiveWatch` makes `waitIdle`
 wait, in Live, until the visible live sources have sizes and the picture
 drew 10 frames since (before, the stage could still show the sink's black
 placeholder 0.2–0.7 s after a window opened; logged as "the live picture
-is W×H").
+is W×H"). A rebuild whose sources keep their states and sizes (an audio
+track added: S01b's steps; a rebuilt branch reports its cached size at
+once) sends no `LiveStatus`, and its new pipeline draws black until its
+sources deliver, so `LiveWatch` also reads the engine's
+`LiveControl::progress()` (round 3 integration fixes): busy ("the live
+pipeline") until every `set_live`/`retry_live` so far was handled and
+each video source of the live pipeline negotiated there (or died; at most
+15 s), then 10 frames again for each new pipeline (`generation`). The
+asks are counted on the session thread before the engine thread sees
+them, so a `waitIdle` after a dispatch's answer never takes the old
+pipeline for the new one (the S01b shots were black in nearly every run
+before).
 
 ---
 

@@ -27,8 +27,8 @@ use super::fake::{FAKE_CAMERA, FAKE_MIC, FAKE_MONITOR};
 use super::meters::MeterMonitor;
 use super::spec::SourceSpec;
 use super::{
-    Backend, EngineOptions, FakeFailure, FakeHooks, FakePortal, GstCaptureEngine, LiveSourceState,
-    LiveSourceStatus, PreviewOutput, STALL_LIMIT, SideEvent,
+    Backend, EngineOptions, FakeFailure, FakeHooks, FakePortal, GstCaptureEngine, LiveProgress,
+    LiveSourceState, LiveSourceStatus, PreviewOutput, STALL_LIMIT, SideEvent,
 };
 use crate::deps::CaptureEngine;
 use crate::gst_init::testing::{assert_quiet_since, problems, serial};
@@ -1534,6 +1534,111 @@ fn live_status_follows_a_build() {
     h.engine.set_live(Some(scene), h.inbox.clone());
     let seen = statuses_until(&side_rx, "a status", |_| true);
     assert_eq!(seen[0], last);
+}
+
+/// `LiveControl::progress` (the GUI's `waitIdle`, G§3.18): a `set_live` is
+/// unsettled from the moment it returns until the engine handled it and
+/// every video source of the pipeline it built negotiated there, also for
+/// the rebuilds S01b's audio tracks make, which keep both video sources'
+/// states and sizes and so send no status that could tell a GUI (the
+/// S01b shot caught the new pipeline's black frames). A layout change
+/// settles in the same pipeline; no live scene settles with none.
+#[test]
+fn the_live_progress_waits_for_each_rebuild_to_negotiate() {
+    let _serial = serial();
+    let (side_tx, side_rx) = crossbeam_channel::unbounded();
+    let mut h = Harness::with_side(Some(side_tx));
+    let control = h.engine.control();
+    assert_eq!(
+        control.progress(),
+        Some(LiveProgress {
+            settled: true,
+            generation: 0
+        })
+    );
+    let settled = |what: &str| -> LiveProgress {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let progress = control.progress().expect("an engine's control");
+            if progress.settled {
+                return progress;
+            }
+            assert!(Instant::now() < deadline, "{what}: not settled in {WAIT:?}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    let full = Rect::new(0, 0, 320, 180);
+    let video = vec![
+        screen_layer("L1", "FAKE-1", full),
+        camera_layer("L2", FAKE_CAMERA, full),
+    ];
+    let mut generation = 0;
+    for (i, audio) in [
+        vec![],
+        vec![audio_track("A1", FAKE_MIC)],
+        vec![audio_track("A1", FAKE_MIC), audio_track("A2", FAKE_MONITOR)],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        h.engine.set_live(
+            Some(live_scene(video.clone(), audio, true)),
+            h.inbox.clone(),
+        );
+        assert!(
+            !control.progress().unwrap().settled,
+            "scene {i}: settled before the engine saw it"
+        );
+        let progress = settled(&format!("scene {i}"));
+        assert!(
+            progress.generation > generation,
+            "scene {i}: a new pipeline"
+        );
+        generation = progress.generation;
+        let info = h.engine.inspect();
+        assert_eq!(info.generation, Some(generation), "scene {i}");
+        let video: Vec<bool> = info
+            .sources
+            .iter()
+            .zip(&info.negotiated)
+            .filter(|(spec, _)| spec.is_video())
+            .map(|(_, negotiated)| *negotiated)
+            .collect();
+        assert_eq!(video, [true, true], "scene {i}: {info:?}");
+    }
+    // The audio tracks' rebuilds told nothing of the video sources: their
+    // sizes were there in every status (the cached ones at once).
+    let statuses: Vec<Vec<LiveSourceStatus>> = side_rx
+        .try_iter()
+        .filter_map(|e| match e {
+            SideEvent::LiveStatus(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    let with_audio: Vec<_> = statuses.iter().filter(|s| s.len() > 2).collect();
+    assert!(!with_audio.is_empty(), "{statuses:#?}");
+    assert!(
+        with_audio.iter().all(|s| s[..2]
+            .iter()
+            .all(|v| v.state == LiveSourceState::Live && v.size.is_some())),
+        "{statuses:#?}"
+    );
+
+    // A layout change: no rebuild, settled in the same pipeline.
+    let mut moved = video.clone();
+    moved[1].rect = Rect::new(160, 90, 160, 90);
+    h.engine.set_live(
+        Some(live_scene(
+            moved,
+            vec![audio_track("A1", FAKE_MIC), audio_track("A2", FAKE_MONITOR)],
+            true,
+        )),
+        h.inbox.clone(),
+    );
+    assert_eq!(settled("the layout").generation, generation);
+    // No live scene: settled without a pipeline.
+    h.engine.set_live(None, h.inbox.clone());
+    assert_eq!(settled("no live scene").generation, 0);
 }
 
 /// G§3.9 `LiveStatus` for a refusal (`QREC_FAKE_PORTAL=deny` and

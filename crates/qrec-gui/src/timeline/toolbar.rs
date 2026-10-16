@@ -55,12 +55,19 @@ fn toggle(
     content.add_css_class("tl-content");
     content.append(&gtk::Image::from_icon_name(icon));
     content.append(&gtk::Label::new(Some(label)));
+    // The count chip and the key cap are centered like `button::labeled`'s
+    // (S02 draws them 16 px tall; filling the 28 px button they stretched).
     if let Some(extra) = extra {
+        extra.set_valign(gtk::Align::Center);
         content.append(extra);
     }
     let caps = button::binding_caps(&keymap, binding);
     if let Some(caps) = &caps {
-        content.append(&keycap::chord(caps, CapSize::Sm, CapVariant::Plain));
+        let cap = keycap::chord(caps, CapSize::Sm, CapVariant::Plain);
+        cap.set_valign(gtk::Align::Center);
+        // For the nested cases (G§8.4): `tl-cap-bin`, `tl-cap-snap`.
+        cap.set_widget_name(&format!("tl-cap-{}", label.to_lowercase()));
+        content.append(&cap);
     }
     button.set_child(Some(&content));
     button.update_property(&[gtk::accessible::Property::Label(&button::accessible_name(
@@ -118,6 +125,7 @@ impl Toolbar {
         left.set_valign(gtk::Align::Center);
         let bin_count = gtk::Label::new(None);
         bin_count.add_css_class("tl-count");
+        bin_count.set_widget_name("tl-bin-count");
         let bin = toggle(
             ctx,
             "Bin",
