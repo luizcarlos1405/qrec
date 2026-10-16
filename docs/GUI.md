@@ -1530,6 +1530,8 @@ with `fn widget(&self) -> gtk::Widget`) and
 | qrec | `tests/gui_support/**` (`mod.rs`, `pointer.rs`, `scripts/`), `tests/gui_smoke.rs`, `tests/gui_shell.rs` | harness (G§8.4), smoke (G§8.5), WP0b's flows | WP0b (smoke completed by WP10) |
 | qrec | `tests/preview.rs` | `CachedSilence` reads what `qrec autocut --dry-run` cached | WP2 |
 | qrec | `tests/gui_<area>.rs`, `tests/gui_<area>_data/` | screenshot cases and their data | each area's owner |
+| root | `Cargo.toml`, `Cargo.lock`, `flake.nix` | G§6 (desktop file and icon install: WP10) | WP0b, WP10 |
+| docs | `ARCHITECTURE.md` | WP0a's list; A§1.2 after G§0.1 (WP0b); final pass (WP10) | WP0a, WP0b, WP10 |
 
 Files of another owner the round 3 WPs and their integration changed
 (G§7.0 lets only the integrator do it; each is in its merge or integration
@@ -1549,8 +1551,26 @@ for it, G§3.18), `timeline/toolbar.rs` (WP3's: the toggles' centered caps
 and count chip, G§3.14), `gui_support/mod.rs` (`mean_grey`,
 `assert_live_picture_drawn`), and the S01b and S07 checks in
 `gui_timeline.rs` and `gui_stage.rs`.
-| root | `Cargo.toml`, `Cargo.lock`, `flake.nix` | G§6 (desktop file and icon install: WP10) | WP0b, WP10 |
-| docs | `ARCHITECTURE.md` | WP0a's list; A§1.2 after G§0.1 (WP0b); final pass (WP10) | WP0a, WP0b, WP10 |
+
+The WP5 merge (f84ad6d) and its integration changed: `testctl.rs`
+(`labels` also returns `entries`, each text field's value by its
+nearest given name; `local` reports `panelPage` and `autocutPreview`;
+the doc names `QREC_GUI_TEST_LEVELS`), `widgets/button.rs`
+(`menu_button` and `set_menu_label`, moved from `panel::menus`, with
+`every_menu_button_is_made_by_the_helper`), `timeline/toolbar.rs` (the
+settings icon is named `tl-autocut-settings`), `timeline/draw.rs` (the
+preview's doc), `gui_support/mod.rs` (`Gui::entries`,
+`Nested::keys_held` and `HeldKeys`, moved from `gui_panel.rs`, `poll`,
+`rgb_pixels`, `count_near`, `token_rgb`), `gui_timeline.rs` (S12 opens
+the page from the settings icon and probes the preview), `gui_chrome.rs`
+(S18's Tab shot holds its keyboard), `gui_stage.rs` (S01a checks the
+panel), and in the shell `capture/{record,engine}.rs` with A§8.11 (a
+record bin that would get a buffer before any segment gets its zero
+segment first, and `recorder.log` says so). In WP5's own files: the dry
+runs' debounce token, `run_io_then` for the sources, `widgets/meter.rs`
+(a 30 Hz timer instead of a tick callback, redrawn only on change,
+G§8.6), `view::panel::inspector_shown` (S01a), and `gui_panel.rs` (S06's
+tooltip, S12's tuning step, S13's real drag).
 
 ### G§3.18 Test control channel (`src/testctl.rs`, WP0b)
 
@@ -1568,13 +1588,13 @@ previews, the player, io, opening, the portal).
 
 | Request | Reply |
 | --- | --- |
-| `{"op":"waitIdle"}` | `{"ok":true,"rev":R}` once: `PreviewCache::in_flight()` is 0, the player isn't loading or seeking, and every `qrec-gui-io` job finished with no `MediaHub::hold_io_busy` token held (all checked before the queue: what they send is in the queue before they say they are idle; a debounce that will send an io job holds a token); the inbound queue is empty; the GUI's own requests are answered; no source is `AwaitingPortal`; the window isn't opening; the stage is idle (`stage::busy`, WP4: no program reload is due, and in Live the engine settled its live scenes, `LiveControl::progress`, and the picture drew 10 frames since its visible live sources had sizes, again for each new pipeline, `media::live::LiveWatch`); and a frame was drawn after all that and it still holds (frame clock `after-paint`) |
+| `{"op":"waitIdle"}` | `{"ok":true,"rev":R}` once: `PreviewCache::in_flight()` is 0, the player isn't loading or seeking, and every `qrec-gui-io` job finished with no `MediaHub::hold_io_busy` token held (all checked before the queue: what they send is in the queue before they say they are idle; a debounce that leads to io work holds a token, as the autocut page's 250 ms dry-run debounce does until its dry run is sent, WP5); the inbound queue is empty; the GUI's own requests are answered; no source is `AwaitingPortal`; the window isn't opening; the stage is idle (`stage::busy`, WP4: no program reload is due, and in Live the engine settled its live scenes, `LiveControl::progress`, and the picture drew 10 frames since its visible live sources had sizes, again for each new pipeline, `media::live::LiveWatch`); and a frame was drawn after all that and it still holds (frame clock `after-paint`) |
 | `{"op":"regions","names":[…]}` | `{"regions":{"<name>":[x,y,w,h],…}}`: window-logical bounds of every widget named `region-*` and of the named parts in G§8.4, plus the visible widgets named in `names` (a button a case clicks) |
-| `{"op":"labels","name":"region-header"}` | `{"ok":true,"labels":[…]}`: the text of every visible label under the widget `name` (default: the window), in tree order |
+| `{"op":"labels","name":"region-header"}` | `{"ok":true,"labels":[…],"entries":{…}}`: the text of every visible label under the widget `name` (default: the window), in tree order, and each visible text field's value by its nearest given name (`"inspector-x": "1280"`, `Gui::entries`; WP5 integration) |
 | `{"op":"dispatch","command":{…},"confirmed":false}` | `Store::dispatch_with` with the default reply policy (confirmations open their modal); `{"ok":true}` at once |
 | `{"op":"action","id":"export.panel"}` | runs a binding or GUI action as its key would (pre-steps included) |
 | `{"op":"hints"}` | the rendered hint items (`keys`, `label`, `enabled`, `emphasized`) and the status text (`hintbar::current_items`) |
-| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3) |
+| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration) |
 | `{"op":"a11y"}` | every visible icon-only button, focusable region or focusable custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 | `{"op":"fonts"}` | the family Pango loads for each bundled font; `ok` when each resolves to itself |
 | `{"op":"icons"}` | each custom symbolic icon drawn in a probe color: found, its pixels, recolored |
@@ -2118,7 +2138,8 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
   - During a canvas drag or nudge burst the fields show
     `LocalUi.layer_drag`.
   - Empty: "Select a layer on the canvas or in the list to edit its
-    position, size and crop."
+    position, size and crop." An empty scene shows no inspector at all
+    (BRIEF S01a; `panel::inspector_shown`, the WP5 integration).
 - **Autocut page** (`view::autocut`, S12, D-15):
   - `AutocutDraft::from(&Project)`. Ranges: threshold −60…−10 dB step 1;
     min silence 100…2000 ms step 50; padding 0…500 ms step 10; min keep
@@ -2139,6 +2160,21 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     the clip minus what is kept, in timeline frames before the cut.
   - Header subtitle: "Previewing take 8 · c3e9" (one clip), "Previewing 4
     clips", "Previewing all 10 clips".
+- **As built** (WP5, 99197b5): Apply's answer is a GUI-owned success toast
+  (S25 #6's copy from the reply, with Undo); a dry run's or Apply's error
+  reads in the summary ("Nothing to cut" and the core's reason); the
+  summary adds a "Skipped" row when the plan skipped clips; the dropdown
+  shows the scene's first mic while `autocut.track` is null. A missing
+  device's line replaces its meter; Change source lists the devices of
+  the track's role; a layer problem's icon is `qrec-monitor-x-symbolic`
+  (a screen), `dialog-error-symbolic` (another source) or
+  `dialog-warning-symbolic` (missing in the take). Medium (320 px): the
+  region rows are `mono-xs` with 8 px padding, ellipsized (no frame draws
+  S12 that wide). The timeline draws `LocalUi.autocut_preview` (WP3's
+  canvas): each region hatched in `warning` with its edges on its lane,
+  the same range dimmed (`bg-55`) on the video row and the other lanes,
+  its tag 22 px above the lane; the toolbar's settings icon runs
+  `autocut.page` (`autocut.preview`, G§3.8 step 10).
 
 ### G§4.8 `view::bin` and `view::export` (WP7)
 
@@ -2369,11 +2405,11 @@ below; read them with `Get` while `design/qrec.pen` is active).
 | C06 Badges, REC cluster, Saving | `D4pSZ`, `DlEnG`, `oHR8h`, `KwxRc`, `h5PLfO`, `hyWmc` | boxes in the stage overlay; the torch from `motion::now()` (G§3.14); timer label on the frame clock | WP4 |
 | C07 Countdown | `sTIwH`, `HPxd8`, `Q6JiWV` | `CountdownOverlay` (snapshot: `gsk::PathBuilder` arc, `gsk::Stroke` 6 px; Pango digit) | WP4 |
 | C08 Selection box, guides, readout | `QW4cD`, `RzfIE`, `qcdxC`, `HxSV4`, `j2VytN`, `Q72wi` | `CanvasOverlay` (snapshot; dashes with `gsk::Stroke::set_dash(&[4.0, 4.0])`) | WP4 |
-| C09 Layer row | `zuB2D` + states | `gtk::ListBox` row; `gtk::EditableLabel`; `DragSource`/`DropTarget`; toggles revealed by opacity only | WP5 |
+| C09 Layer row | `zuB2D` + states | `gtk::ListBox` row; `gtk::EditableLabel` that takes no pointer or focus until Rename (a click selects the row; the source line hides while renaming); reorder is a `GestureDrag` inside the list (a lifted ghost row, a 2 px drop line, `Esc` through D-42's drag cancel), not `DragSource`/`DropTarget`; grip, eye and lock revealed by opacity on hover, or when the keyboard reaches them; a focused row wears only its ring | WP5 |
 | C10 Audio row | `b5Kxv` + states | composite; M/S `gtk::ToggleButton.track-toggle` | WP5 |
-| C11 Meter | `iZb1x` | `widgets::Meter` (snapshot + tick callback; click resets the latch) | WP5 |
+| C11 Meter | `iZb1x` | `widgets::Meter` (snapshot; while shown it looks at its level slot 30 times a second from a timer, not a tick callback, G§8.6, and redraws only when what it shows changed; click resets the latch) | WP5 |
 | C12 Inspector | `NZZoN` | grid of `NumericField`; lock `gtk::ToggleButton`; `gtk::Scale`; `adw::ToggleGroup`; 2-up in the Medium layout | WP5 |
-| C13 Panel header, take banner, section header | `Osce5`, `KcYOV`, `XwpjR`, `trHYd` | boxes; `gtk::MenuButton` + `gio::Menu`; panel/autocut page switch = `gtk::Stack` (slide) | WP5 |
+| C13 Panel header, take banner, section header | `Osce5`, `KcYOV`, `XwpjR`, `trHYd` | boxes; `widgets::button::menu_button` + `gio::Menu`; panel/autocut page switch = `gtk::Stack` (slide) | WP5 |
 | C14 Timeline toolbar | `AHVNt` + variants | toggle buttons, buttons, `gtk::Separator`, `gtk::Scale` | WP3 |
 | C15 Ruler | `I8Owg`, `D5MNZ`, `Gd3pF`, `BbhGo` | drawn by `TimelineCanvas` | WP3 |
 | C16 Clip | `L6XX2E` + states | drawn by `TimelineCanvas` (no widget per clip); textures via `append_texture`; cached render node per data/viewport change | WP3 |
@@ -2385,8 +2421,8 @@ below; read them with `Get` while `design/qrec.pen` is active).
 | C22 Status chip | `m3Gc2`, `yX8If`, `c9f9HC`, `pn17Q` | `widgets::Chip` | WP0b |
 | C23 Toast | `R7g4Dq` + levels, `PaHF5` | `ToastHost` / `ToastView` in `content_layer`; a body that starts with an action's path is `mono-sm` (S16b), others `body-sm`; a "+N" queue chip (not drawn) follows the title; Undo is guarded by the history cursor | WP6 |
 | C24 Modal | `x5RrCQ`, `VDIBZ`, `NdrWq`, scrim `Y83G19` | `ModalView` in `content_layer` (scrim to y 968, stacked over Settings); Cancel focused | WP6 (text stub: WP0b) |
-| C25 Popover, menu | `b2lnKh`, `S0EgQ`, `KTUMs` | the export panel is in-window (trap or passive layer, D-49); menus are `gtk::PopoverMenu` styled R2 (common.css) | WP0b, WP7 |
-| C26 Slider | `Bn6sz` + states | `gtk::Scale` styled; ticks with `add_mark`; the value tooltip while dragging (`widgets::scale_tooltip`) | WP0b (CSS), WP5 |
+| C25 Popover, menu | `b2lnKh`, `S0EgQ`, `KTUMs` | the export panel is in-window (trap or passive layer, D-49); menus are `gtk::PopoverMenu` styled R2 (common.css); every menu's button is `widgets::button::menu_button` (its inner button styled as C01 and, like the MenuButton, named for screen readers; a test greps for others) | WP0b, WP7 |
+| C26 Slider | `Bn6sz` + states | `gtk::Scale` styled; ticks with `add_mark`; the value tooltip while dragging (`widgets::scale_tooltip`); S12's end labels are their own row flush with the track's ends (GTK centers mark labels) and the ticks sit at the trough's ends (S12 insets them by the thumb's radius, ~2 px) | WP0b (CSS), WP5 |
 | C27 Switch | `z9laF`, `p3tmIy` | `gtk::Switch` styled | WP0b |
 | C28 Segmented | `NZKuJ`, `L46uU`, `jmq6y` | `adw::ToggleGroup` styled; the Settings switcher too (`adw::ToggleGroup` + `gtk::Stack`: `adw::InlineViewSwitcher`'s pages can't be disabled, D-48; WP6) | WP0b, WP6 |
 | C29 Fields | `j1hIDi`, `oc5uM`, `vpmJy`, `EfoCl`, `oE7jW` | `gtk::Entry`; `NumericField` (Box `.field` + `gtk::Text` right-aligned + unit label; arrows and scroll step; no ± buttons); `gtk::DropDown`; `gtk::SearchEntry` | WP0b (CSS), WP5 |
@@ -2426,11 +2462,11 @@ Names checked against adwaita-icon-theme 50.0 (pinned nixpkgs).
 | link-2 (aspect lock) / pencil / rotate-ccw | `insert-link-symbolic` / `document-edit-symbolic` / `edit-undo-symbolic` |
 | arrow-left (ripple tag) | `go-previous-symbolic` |
 
-The transport, badge, first-run (WP4) and toolbar (WP3) icons are these
-Adwaita symbolics, not the frames' Lucide outlines, until the pen export;
-so are the Program segment's film (`video-x-generic-symbolic` draws a
-camera) and the info toast (`dialog-information-symbolic` draws a bulb)
-(WP6).
+The transport, badge, first-run (WP4), toolbar (WP3) and panel (WP5) icons
+are these Adwaita symbolics, not the frames' Lucide outlines, until the
+pen export; so are the Program segment's film (`video-x-generic-symbolic`
+draws a camera) and the info toast (`dialog-information-symbolic` draws a
+bulb) (WP6).
 
 Custom symbolic icons (WP0b, 16 px grid, fills only, ISC notice in
 `resources/icons/LICENSE-lucide.txt` where the geometry follows Lucide):
@@ -2644,11 +2680,47 @@ cases in the merge commit ("final: S02 S06 …") and sends a failure back to
 the case's first-shot owner.
 
 Status after round 3 (WP0a, WP0b, WP1, WP2, WP3, WP4 and WP6 merged): no
-case is final. S01a needs WP5 too; S01b, S02, S03, S04, S04b, S05, S05b,
-S06, S07, S08, S09, S10, S11, S12, S13, S13b and S18b need WP1–WP6, so
-WP5; S14–S18 and S16b need WP7 as well. The first shots of WP3, WP4 and WP6
-(and their stub-based parts) were re-shot at each round 3 merge
-(`tmp/gui-shots/{wp3,wp4,wp6}/`).
+case was final; the first shots of WP3, WP4 and WP6 were re-shot at each
+round 3 merge (`tmp/gui-shots/{wp3,wp4,wp6}/`).
+
+Status after the WP5 merge (f84ad6d) and its integration: **final: S01a
+S01b S02 S03 S04 S04b S05 S05b S06 S07 S08 S09 S10 S11 S12 S13 S13b
+S18b**, every suite green on pixman and gles2. Each shot (pixman) is next
+to its frame in `tmp/gui-shots/final/<case>-compare.png` (S13b: the row
+crops stacked next to the state board). Still to come with WP7: S14, S15a,
+S15b, S15c, S16, S16b, S17, S18, and the widths, heights, scales and
+reduced motion (WP1–WP7). Visible departures of the final shots:
+
+- Everywhere, by design (G§8.4's known differences): the fake sources'
+  names and test patterns, the fake tone's levels and block waveforms in
+  the cases that don't pin the meters (`QREC_GUI_TEST_LEVELS` pins only the
+  panel's), real elapsed times, the test project's paths, no pointer in the
+  shots; the icons are Adwaita stand-ins (G§5.2) and the empty-state art a
+  placeholder until the pen export (G§0.6). Mono text is the bundled
+  JetBrains Mono, as wide as the frames' within a pixel.
+- S01a: (the inspector showed in the empty scene: fixed, hidden as BRIEF
+  says). S01b: the first run names its layers and tracks after their
+  sources ("Camera", "Screen FAKE-1", "Built-in Audio Analog Stereo", A2 at
+  0.0 dB) where the frame reuses the fixture's (Face, Main screen, System
+  audio at −6 dB).
+- S02, S11: at fit, take 1's second clip reads "1" where the frame reads
+  "Take 1" (G§4.5's label inset).
+- S04, S04b, S05: the timers read the real elapsed time
+  (`00:02:41:27` for `00:02:41:12`).
+- S06, S09, S10, S11: "+ Add layer", "+ Add audio track" and the header's
+  `+` are disabled in a take layout (D-07); the frames draw them enabled.
+- S07, S08: Program with no clip selected is read-only (D-06): the panel's
+  rows, audio controls and adds are disabled where the frames draw them
+  enabled.
+- S12: the toolbar's settings icon is `preferences-other-symbolic` (the
+  frame's sliders); the rest as drawn, the preview included.
+- S13: the frame shows the drag and L1's hover at once; the drag shot has
+  no hover (L1's hover is its own shot, `s13-layer-editing`).
+- S13b: a dragged row's copy follows the pointer over the rows, with the
+  drop line at the slot (the frame lifts the row above the line and moves
+  the rows under it), and the row left behind keeps its hover reveal at
+  0.4; the rename field opens with the name selected.
+- S18b: the Settings pages not built yet read disabled (D-48).
 
 ### WP0a — Interfaces, GTK-free (alone, first)
 
@@ -2926,8 +2998,9 @@ S04, S04b, S05, S05b, S07, S08, S09 and at scale 2, S10 with a real trim,
 Esc and undo, S11 with a real move and Esc, S12's zoom, the compact
 timeline, the 300-clip probe). Stub-based when it was built: S01b added
 its sources over the test channel (no first-run page yet; WP4's now
-exists) and S12 shows the zoom only (no WP5 autocut page, so no preview
-hatches). Measured: warm pass gles2 p50 16.14, p99 16.61, max 16.67 ms;
+exists) and S12 showed the zoom only (no WP5 autocut page; since the WP5
+integration it opens the page from the toolbar's settings icon and probes
+the preview). Measured: warm pass gles2 p50 16.14, p99 16.61, max 16.67 ms;
 pixman p50 16.05, p99 16.60 ms. The departures are folded into G§4.5,
 D-38 and D-40.
 
@@ -2994,6 +3067,22 @@ autocut_preview}`.
 - Screenshots: the panel of S02, S06 and S13; S13b, each state produced
   through the CLI, the fixture or `QREC_FAKE_PORTAL` and cropped; the S12
   page; the panel at 1300 wide.
+
+**As merged** (99197b5, merged in f84ad6d, round 4): `gui_panel.rs` has 8
+nested cases (S02 with `M` and Add layer; S06 with one inspector commit, an
+invalid value and Layout's reset; S13 dragging L2 on WP4's canvas, the
+inspector reading x 1280 from `LocalUi.layer_drag` before anything is
+sent; S13b's states, each produced for real and cropped, the focus ring
+and the inline rename with a held keyboard; the portal's refusal; a take's
+missing source; S12: open, a region's seek, a tuning change's dry run
+after one `waitIdle`, `Esc`, Apply; the panel at 1300 wide) and the
+fixture's dry run read through `view::autocut`. The integration: the dry
+runs' 250 ms debounce holds the io worker busy (G§3.18); the Add menus'
+refresh is `run_io_then`; `QREC_GUI_TEST_LEVELS` pins the meters (G§8.4);
+`widgets::button::menu_button` makes every menu's button (G§5.1);
+`gui_timeline`'s S12 opens the page from the toolbar's settings icon and
+probes the preview the canvas draws. The departures are folded into G§4.7,
+G§5.1, G§5.2 and G§8.4.
 
 ### WP6 — Header, hint bar, toasts, modals, Settings shell and Project page (lane B, after WP0b)
 
@@ -3213,6 +3302,9 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
     ring, toasts risen, the drawer open);
   - cursor blink off; a seeded PRNG; `QREC_GUI_TEST_NOW` (RFC 3339) as
     the local time of the auto-name preview (S15a);
+  - `QREC_GUI_TEST_LEVELS=<device>=<rms>/<peak>,…` (dBFS) pins the
+    meters (WP5): BRIEF's −22/−16 on A1 and −52/−48 on A2 in the panel
+    cases, a clipping A1 for S13b's latch;
   - the control channel (G§3.18).
 - **Driving.** `qrec --project <dir> … --json` with the `TestEnv`
   (`Nested::cli`, `cli_json`); the pointer: `Nested::pointer()`, one
@@ -3235,9 +3327,12 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   focused, ring-less); one before any key keeps the ring a widget got
   from `grab_focus` and `set_focus_visible`. GTK 4.22 also drops focus
   visibility 3 s after it was last set (`VISIBLE_FOCUS_DURATION`) and
-  sets it again on the release of a key that moved the focus. A
-  persistent virtual keyboard (like the pointer) would keep the window
-  active as a person's does.
+  sets it again on the release of a key that moved the focus.
+  `Nested::keys_held(args, hold_ms)` runs one `wtype` in the background
+  that keeps its keyboard `hold_ms` after its keys, so the window stays
+  active for a shot taken meanwhile (`poll` for what the keys did, then
+  `waitIdle`): S13b's focus ring and inline rename, S18's Tab (WP5
+  integration).
 - **Readiness.** `waitIdle` (never a fixed sleep), then capture.
 - **Capture.** `grim -o HEADLESS-1
   <repo>/tmp/gui-shots/<area>/<case>-<name>.png` (`Nested::screenshot`;
@@ -3340,7 +3435,7 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
 | S09 | Base, Program, zoom 32, view from frame 3160, selection [c2d1], playhead 3176 | launch |
 | S10 | as S08, selection [c2d0] | press on c2d0's start edge, move +46.4 px, `waitIdle`, capture, `Esc` |
 | S11 | as S07 | press c8a1, move to x 405, `waitIdle`, capture, `Esc` |
-| S12 | Base, Program, selection [c3e9], playhead 4842 | `wtype -k z`; `wtype -M shift -k c -m shift`; `waitIdle`; click region row 1; `waitIdle` |
+| S12 | Base, Program, selection [c3e9], playhead 4842 | `wtype -k z`; `wtype -M shift -k c -m shift` (`gui_timeline`: a click on the toolbar's settings icon, then the preview's pixels probed); `waitIdle`; click region row 1; `waitIdle` |
 | S13 | Base, Live | press L2's center, move until the left edge snaps at 1280, `waitIdle`, capture |
 | S13b | Base; `QREC_FAKE_PORTAL=deny` for the error row; `MissingL2` for the missing row | `qrec scene layer set L1 --visible false`, then `--locked true`; L2's overflow → Rename (renaming); select c2d0 in `MissingL2` (missing); crop the panel per state |
 | S14 | Base, Program, bin open | click take 4's row |
@@ -3369,8 +3464,9 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   driving WP6's "[Enter] Add N sources"; `a_ruler_scrub_leaves_the_player_on_the_playhead`,
   WP3's scrub through WP4's sync with no seek after it, read from the
   GUI log's "program sync:" lines and `local`'s `playerNs`), `gui_smoke`,
-  `gui_chrome` (WP6), `gui_timeline` (WP3), `gui_stage` (WP4), each run
-  with `-- --ignored --test-threads=1` on pixman and on gles2.
+  `gui_chrome` (WP6), `gui_timeline` (WP3), `gui_stage` (WP4), `gui_panel`
+  (WP5), each run with `-- --ignored --test-threads=1` on pixman and on
+  gles2.
 
 ### G§8.5 End-to-end smoke (SPEC §17)
 
@@ -3406,7 +3502,11 @@ compositor, llvmpipe and ffmpeg share the CPU).
 - **Frame time**: frame-clock intervals (p50, p99) while zooming and
   scrolling the 300-clip perf fixture. Target p99 < 16.7 ms, asserted only
   under `QREC_TEST_WLR=gles2` on the dev machine (WP3), recorded under
-  pixman (CI).
+  pixman (CI). With WP5's panel the meters first ran a tick callback each:
+  the warm p99 went bimodal (16.1x or 16.7x ms, about half the runs over
+  16.7, also with their levels pinned and nothing redrawn; 16.53–16.55
+  without the callbacks). On a 30 Hz timer: 16.55–16.60 ms in 6 of 6 runs
+  (WP5 integration).
 - **Program playback**: WP1's measurement (G§3.10).
 - **Live preview CPU**: manual, against *(spike)*: 29 % for one 1080p30
   BGRx stream into the sink with GSK GL, 46–65 % for a two-source 1080p30

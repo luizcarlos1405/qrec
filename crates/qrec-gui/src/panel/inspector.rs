@@ -391,6 +391,8 @@ impl InspectorView {
     /// Shows the inspector of `state` (with `local`'s drag preview).
     pub fn update(&self, state: &State, local: &LocalUi) {
         let inner = &self.inner;
+        // S01a: an empty scene shows no inspector at all.
+        inner.root.set_visible(panel::inspector_shown(state));
         self.lay_out_crop(local.layout.width == crate::store::local::LayoutWidth::Medium);
         let shown = panel::inspector(state).map(|i| with_drag(i, state, local.layer_drag.as_ref()));
         inner

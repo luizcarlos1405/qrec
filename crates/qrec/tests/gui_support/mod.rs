@@ -23,7 +23,11 @@
 //! - Input: [`Nested::pointer`], a virtual pointer that lives as long as it
 //!   is held (headless sway has no pointer device, and one-shot clicks were
 //!   lost); [`Nested::keys`], one `wtype` run per key sequence, `-s 400`
-//!   first so the compositor has the keyboard's keymap.
+//!   first so the compositor has the keyboard's keymap;
+//!   [`Nested::keys_held`], a run in the background that keeps its
+//!   keyboard (and so the window active: focus rings, inline edits) for a
+//!   while after its keys, for a shot taken meanwhile ([`poll`] for what
+//!   the keys did, then `waitIdle`).
 //! - Output: [`Nested::screenshot`] (`grim -o HEADLESS-1`) into
 //!   `<repo>/tmp/gui-shots/<area>/`, with the case's logs in `logs/`: sway,
 //!   the bus, each window's output, and (copied when the case ends, passed
@@ -562,6 +566,40 @@ impl Nested {
         );
     }
 
+    /// One `wtype` run in the background whose virtual keyboard stays
+    /// `hold_ms` after its keys: the seat has a keyboard only while a
+    /// `wtype` runs, so only then is the window active, with focus rings
+    /// drawn and inline edits kept (G§8.4). Its output goes to
+    /// `<shots>/logs/<case>-wtype.log`; [`HeldKeys::wait`] reaps it, and
+    /// dropping it kills it.
+    pub fn keys_held(&self, args: &[&str], hold_ms: u32) -> HeldKeys {
+        let log = self
+            .shots
+            .join("logs")
+            .join(format!("{}-wtype.log", self.case));
+        let out = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+            .unwrap_or_else(|e| panic!("{}: {e}", log.display()));
+        let err = out.try_clone().expect("clone the log");
+        let mut command = self.nested_tool("wtype");
+        command
+            .args(["-s", "400"])
+            .args(args)
+            .args(["-s", &hold_ms.to_string()])
+            .stdin(Stdio::null())
+            .stdout(out)
+            .stderr(err);
+        process::die_with_parent(&mut command);
+        let child = command.spawn().expect("run wtype");
+        HeldKeys {
+            child: Some(child),
+            within: Duration::from_millis(u64::from(hold_ms)) + TOOL_TIMEOUT,
+            args: args.iter().map(|a| (*a).to_owned()).collect(),
+        }
+    }
+
     /// A virtual pointer on the output (keep it while clicking).
     pub fn pointer(&mut self) -> &mut VirtualPointer {
         &mut self.pointer
@@ -647,6 +685,50 @@ impl Nested {
                     logs.join(format!("{}-{label}-{name}", self.case)),
                 );
             }
+        }
+    }
+}
+
+/// A `wtype` run holding its keyboard ([`Nested::keys_held`]).
+pub struct HeldKeys {
+    child: Option<Child>,
+    /// Its hold plus a tool's deadline.
+    within: Duration,
+    args: Vec<String>,
+}
+
+impl HeldKeys {
+    /// Waits for the run to end (its keys typed and its hold over) and
+    /// checks it succeeded.
+    pub fn wait(mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let deadline = Instant::now() + self.within;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    assert!(status.success(), "wtype {:?} failed: {status}", self.args);
+                    return;
+                }
+                Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("wtype {:?} never exited", self.args);
+                }
+            }
+        }
+    }
+}
+
+impl Drop for HeldKeys {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take()
+            && matches!(child.try_wait(), Ok(None))
+        {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }
@@ -881,9 +963,9 @@ pub const WP0B_REGIONS: [&str; 5] = [
 ];
 
 /// The regions every window on the design fixture has since round 3
-/// (WP3, WP4 and WP6 merged): all of BRIEF §2.1's, the stage's preview and
-/// transport (WP4) and the timeline's parts (WP3) with them; the panel is
-/// WP0b's stub until WP5.
+/// (WP3, WP4 and WP6 merged; the panel is WP5's since its merge): all of
+/// BRIEF §2.1's, the stage's preview and transport (WP4) and the timeline's
+/// parts (WP3) with them.
 pub const MERGED_REGIONS: [&str; 14] = [
     "region-header",
     "region-stage",
@@ -957,6 +1039,57 @@ pub fn mean_grey(png: &Path, [x, y, w, h]: [u32; 4]) -> f64 {
     out.stdout.iter().map(|&b| f64::from(b)).sum::<f64>() / (16.0 * 9.0)
 }
 
+/// The pixels (RGB) of `rect` (x, y, w, h in the PNG's px) of a screenshot,
+/// row by row.
+pub fn rgb_pixels(png: &Path, [x, y, w, h]: [u32; 4]) -> Vec<[u8; 3]> {
+    let out = run_tool(
+        Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(png)
+            .args([
+                "-vf",
+                &format!("crop={w}:{h}:{x}:{y},format=rgb24"),
+                "-f",
+                "rawvideo",
+                "-",
+            ]),
+        TOOL_TIMEOUT,
+    );
+    assert_eq!(
+        out.stdout.len(),
+        (w * h * 3) as usize,
+        "{w}×{h} pixels of {}: {}",
+        png.display(),
+        out.stderr
+    );
+    out.stdout
+        .chunks_exact(3)
+        .map(|c| [c[0], c[1], c[2]])
+        .collect()
+}
+
+/// How many pixels of `rect` are within `tolerance` of `color` on every
+/// channel.
+pub fn count_near(png: &Path, rect: [u32; 4], color: [u8; 3], tolerance: u8) -> usize {
+    rgb_pixels(png, rect)
+        .iter()
+        .filter(|p| p.iter().zip(color).all(|(a, b)| a.abs_diff(b) <= tolerance))
+        .count()
+}
+
+/// A color token of a theme (`design/tokens/qrec-tokens.json`), as RGB (its
+/// alpha left out).
+pub fn token_rgb(theme: &str, name: &str) -> [u8; 3] {
+    let path = repo().join("design/tokens/qrec-tokens.json");
+    let tokens: Value =
+        serde_json::from_str(&fs::read_to_string(path).expect("the tokens")).expect("tokens JSON");
+    let hex = tokens["colors"][name][theme]
+        .as_str()
+        .unwrap_or_else(|| panic!("no color {name} in {theme}"));
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).expect("a hex color");
+    [byte(1), byte(3), byte(5)]
+}
+
 /// The live picture at BRIEF's 1:2 preview (128, 64, 960, 540) of a
 /// 1600×1000 shot isn't black: the fake sources' bars show (a pipeline the
 /// engine just rebuilt draws black until its sources deliver, G§3.18).
@@ -967,6 +1100,19 @@ pub fn assert_live_picture_drawn(png: &Path) {
         "the live picture is black (mean grey {grey:.1}): {}",
         png.display()
     );
+}
+
+/// Polls `check` every 50 ms until it gives `Some` (within `within`): what
+/// a held key run (`Nested::keys_held`) waits on before a shot.
+pub fn poll<T>(within: Duration, what: &str, mut check: impl FnMut() -> Option<T>) -> T {
+    let deadline = Instant::now() + within;
+    loop {
+        if let Some(found) = check() {
+            return found;
+        }
+        assert!(Instant::now() < deadline, "{what} never happened");
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// Waits until `qrec status --json` says the project's host is a GUI.

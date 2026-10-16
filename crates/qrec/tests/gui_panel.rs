@@ -2,7 +2,8 @@
 //! panel of S02, S06 and S13, S13b's row states (each produced through the
 //! CLI, the fixture or a fake hook, and cropped), the S12 autocut page and
 //! the panel at 1300 wide, in a nested headless sway on the design
-//! fixture. Regions WP5 doesn't own show what has merged (stub-based).
+//! fixture. The other regions are their owners' (merged) but the bin and
+//! the export panel (WP0b's stubs until WP7). S13 drags on WP4's canvas.
 //!
 //! `cargo test -p qrec --test gui_panel -- --ignored --test-threads=1`
 //! (inside the dev shell: sway, grim, wtype, dbus-daemon; `QREC_TEST_WLR=
@@ -17,12 +18,12 @@ mod gui_support;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use gui_support::pointer::BUTTON_LEFT;
-use gui_support::{Gui, Launch, Nested, Options, assert_regions, wait_for_gui_host};
+use gui_support::{Gui, Launch, Nested, Options, assert_regions, poll, wait_for_gui_host};
 use qrec_core::state::{CanvasMode, UiState};
 use qrec_core::view::autocut;
 use qrec_core::view::panel::{ACCESS_DENIED, INSPECTOR_EMPTY, MISSING_IN_TAKE};
@@ -212,39 +213,6 @@ fn layer(nested: &Nested, project: &Path, take: Option<&str>, id: &str) -> Value
         .unwrap_or_else(|| panic!("no {id} in {take:?}: {status}"))
 }
 
-/// `wtype` on `args` in the background, its virtual keyboard kept for
-/// `hold_ms` after the keys: GTK draws a focus ring only in an active
-/// window, and between `wtype` runs the seat has no keyboard. `reap` it.
-fn keys_held(nested: &Nested, args: &[&str], hold_ms: u32) -> Child {
-    Command::new("wtype")
-        .args(["-s", "400"])
-        .args(args)
-        .args(["-s", &hold_ms.to_string()])
-        .env("WAYLAND_DISPLAY", &nested.display)
-        .env("XDG_RUNTIME_DIR", nested.env.xdg_runtime_dir())
-        .spawn()
-        .expect("run wtype")
-}
-
-/// Waits for a `keys_held` run (10 s).
-fn reap(mut child: Child) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                assert!(status.success(), "wtype failed: {status}");
-                return;
-            }
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("wtype never exited");
-            }
-        }
-    }
-}
-
 fn clip_count(nested: &Nested, project: &Path) -> usize {
     let list = nested.cli_json(project, &["clip", "list"]);
     list["data"].as_array().map_or(0, Vec::len)
@@ -398,6 +366,14 @@ fn s06_the_take_layout_and_the_inspector() {
         ],
     );
     assert_clean(gui);
+    // The pointer over c2d1 (the second take 5 clip, at fit) shows its
+    // tooltip, as S06 draws it.
+    nested.pointer().move_to(700.0, 758.0);
+    poll(Duration::from_secs(10), "c2d1's tooltip", || {
+        let tip = nested.window(0).labels("timeline-tooltip");
+        tip.iter().any(|l| l == "Take 5 · c2d1").then_some(())
+    });
+    nested.window(0).wait_idle();
     let shot = nested.screenshot("program");
     crop(&nested, &shot, PANEL, "panel");
     compare(
@@ -601,11 +577,13 @@ fn s13b_row_states() {
     // keyboard is attached.
     nested.keys(&["-k", "Down"]);
     nested.window(0).wait_idle();
-    let held = keys_held(&nested, &["-k", "Down"], 3000);
-    thread::sleep(Duration::from_millis(1200));
+    let held = nested.keys_held(&["-k", "Down"], 3000);
+    poll(Duration::from_secs(10), "the focus on L1's row", || {
+        (nested.window(0).local()["focusPath"][0] == "layer-row-L1").then_some(())
+    });
     nested.window(0).wait_idle();
     row_shot(&mut nested, "L1", "focus");
-    reap(held);
+    held.wait();
 
     // Renaming: L2's overflow, Rename; the name becomes a field; a new
     // name then Esc cancels and nothing is sent. One `wtype` run keeps its
@@ -618,15 +596,18 @@ fn s13b_row_states() {
     nested.screenshot("overflow");
     // The pointer leaves the row (no hover reveal in the shot).
     nested.pointer().move_to(1400.0, 940.0);
-    let held = keys_held(
-        &nested,
+    let held = nested.keys_held(
         &["-k", "Return", "-s", "2500", "Webcam", "-k", "Escape"],
         500,
     );
-    thread::sleep(Duration::from_millis(1600));
+    // Rename (the menu's first item) makes the name a field.
+    poll(Duration::from_secs(10), "L2's name as a field", || {
+        let fields = nested.window(0).entries("layer-row-L2");
+        (fields.get("layer-row-L2").map(String::as_str) == Some("Face")).then_some(())
+    });
     nested.window(0).wait_idle();
     row_shot(&mut nested, "L2", "renaming");
-    reap(held);
+    held.wait();
     let labels = panel_labels(nested.window(0));
     assert_has(&labels, &["Face"]);
     assert!(!labels.iter().any(|l| l == "Webcam"), "{labels:#?}");
@@ -685,15 +666,14 @@ fn s13b_row_states() {
     let (x, y) = center(region(nested.window(0), "layer-menu-L2"));
     nested.pointer().click(x, y);
     nested.window(0).wait_idle();
-    let held = keys_held(
-        &nested,
+    let held = nested.keys_held(
         &[
             "-k", "Return", "-s", "300", "-M", "ctrl", "-k", "a", "-m", "ctrl", "Webcam", "-k",
             "Return",
         ],
         300,
     );
-    reap(held);
+    held.wait();
     wait_for_label(nested.window(0), "Webcam");
     assert_eq!(layer(&nested, &project, None, "L2")["name"], "Webcam");
     assert_clean(nested.window(0));
@@ -819,7 +799,9 @@ fn s12_the_autocut_page() {
     gui.wait_idle();
     let labels = panel_labels(gui);
     assert!(
-        !labels.iter().any(|l| l == "(6.2 s)" || l == autocut::ANALYZING),
+        !labels
+            .iter()
+            .any(|l| l == "(6.2 s)" || l == autocut::ANALYZING),
         "one waitIdle after a change shows its dry run: {labels:#?}"
     );
     // Esc: back to the layers, nothing sent (out of the field first: in a

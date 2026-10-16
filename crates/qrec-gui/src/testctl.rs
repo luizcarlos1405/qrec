@@ -26,7 +26,7 @@
 //! | `dispatch` | `Store::dispatch` of `command` (`confirmed`: as confirmed), `{"ok":true}` at once |
 //! | `action` | runs binding or GUI action `id` as its key would |
 //! | `hints` | the hint bar's items and status (`hintbar::current_items`) |
-//! | `local` | a summary of `LocalUi`, the theme (and the window's `.reduced-motion`), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player) |
+//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`), the theme (and the window's `.reduced-motion`), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player) |
 //! | `a11y` | every visible icon-only button, focusable region or custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 //! | `fonts` | the family Pango loads for each bundled font |
 //! | `icons` | each custom symbolic icon drawn in a probe color: found, pixels, recolored |
@@ -490,6 +490,8 @@ fn local(app: &App) -> Value {
             "compact": local.layout.compact,
         },
         "playingRate": local.playing_rate,
+        "panelPage": local.panel_page,
+        "autocutPreview": local.autocut_preview.as_deref(),
         "binSelection": local.bin_selection.iter().map(|t| t.as_str().to_owned()).collect::<Vec<_>>(),
         "keymapProblems": local.keymap_problems,
         "theme": theme::css_name(app.ctx.theme.id()),

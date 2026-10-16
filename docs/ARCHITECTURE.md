@@ -2027,6 +2027,18 @@ them with `eos=`), a lost stream gets `<id> lost: <message>`, and the stop
 `stop|cancel at T1 = …`. A rebuild without `qrec.json` and the commit
 record reads them back (A§7.7; `spec::start_offset_line`,
 `stream_lost_line`, `stop_line`, `read_take_log`).
+A buffer about to reach a bin that has no segment yet gets the bin's zero
+segment pushed first (with the stream start and the caps if those are
+missing too), and `recorder.log` gets `<id>: no segment before the first
+buffer; pushed one` (once per bin; `record::segment_pushed_line`). Once, a
+stop-and-cancel while starting gave the audio bin a buffer before any
+segment ("Got data flow before segment event" on every pad of the bin,
+then `gst_segment_to_running_time` assertions in the muxer) and its file
+came out unreadable; the round 3 integration's repeated runs never
+brought it back, so the cause is unknown: the guard keeps the file valid
+and leaves the line as evidence. `a_record_bin_gets_its_segment_before_a_buffer_without_one`
+drops the segment on its way into a bin (the same warnings without the
+guard) and checks the file reads like finalization reads it.
 - Video: `queue ! videorate skip-to-first=true ! video/x-raw,framerate=N/D !
   videoconvert ! video/x-raw,format=I420|NV12,colorimetry=bt709 ! <encoder>
   ! h264parse ! matroskamux offset-to-zero=true ! filesink`. Without

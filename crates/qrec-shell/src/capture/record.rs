@@ -20,7 +20,12 @@
 //! its offset from the first buffer queued when the header is written, and
 //! for FLAC that is an untimestamped header buffer, so audio files started
 //! at T0 + δ instead of 0. The property stays set; it's a no-op now.)
-//! A probe on the filesink's pad reports the first write (for
+//! A buffer about to reach a bin that has no segment yet gets the bin's
+//! zero segment pushed first (and the stream start and caps if those are
+//! missing too), with one `recorder.log` line ([`segment_pushed_line`]):
+//! once, in a stop-and-cancel while starting, a buffer reached the audio
+//! bin before any segment and the file came out unreadable (not
+//! reproduced). A probe on the filesink's pad reports the first write (for
 //! `CaptureStarted`) and EOS (for `CaptureStopped`). Closing a bin unlinks
 //! it from the tee in an IDLE probe, fills video up to T1 with copies of the
 //! last frame (a static screen may not produce another one), pads audio
@@ -64,6 +69,9 @@ pub(super) struct RecProbe {
     pub t1: AtomicU64,
     /// The filesink got its first buffer.
     pub written: AtomicBool,
+    /// The bin's segment was pushed by [`RecProbe::ensure_segment`] (it
+    /// came in without one); logged once.
+    pub pushed_segment: AtomicBool,
     pub state: Mutex<ProbeState>,
 }
 
@@ -93,6 +101,7 @@ impl RecProbe {
             t0: AtomicU64::new(u64::MAX),
             t1: AtomicU64::new(u64::MAX),
             written: AtomicBool::new(false),
+            pushed_segment: AtomicBool::new(false),
             state: Mutex::new(ProbeState::default()),
         })
     }
@@ -173,10 +182,48 @@ impl RecProbe {
             // nothing can read, so the first buffer at or after T0 always
             // passes, and it is also the last.
             state.reached_end = true;
-            drop(state);
+        }
+        drop(state);
+        self.ensure_segment(pad, tx, tag);
+        if at_end {
             let _ = tx.send(Cmd::Probe(tag, ProbeEvent::ReachedEnd(self.index)));
         }
         gst::PadProbeReturn::Ok
+    }
+
+    /// A buffer passes to the bin (the tee's pad, its peer the bin's ghost
+    /// pad): one that would get there before any segment gets the bin's
+    /// `[0, ∞)` segment pushed first ([`Self::on_segment`] would have passed
+    /// that one), with the stream start and the caps if those are missing
+    /// too, so the file stays valid; the first time, the take's log says so
+    /// (`ProbeEvent::SegmentPushed`). Streaming thread, the probe's state
+    /// unlocked.
+    fn ensure_segment(&self, pad: &gst::Pad, tx: &Sender<Cmd>, tag: u64) {
+        let Some(peer) = pad.peer() else {
+            return;
+        };
+        if peer.sticky_event::<gst::event::Segment>(0).is_some() {
+            return;
+        }
+        if peer.sticky_event::<gst::event::StreamStart>(0).is_none() {
+            let start = pad
+                .sticky_event::<gst::event::StreamStart>(0)
+                .map(gst::Event::from)
+                .unwrap_or_else(|| {
+                    gst::event::StreamStart::new(&format!("qrec-record-{}", self.index))
+                });
+            let _ = peer.send_event(start);
+        }
+        if peer.current_caps().is_none()
+            && let Some(caps) = pad.current_caps()
+        {
+            let _ = peer.send_event(gst::event::Caps::new(&caps));
+        }
+        let zero = gst::FormattedSegment::<gst::ClockTime>::new();
+        let _ = peer.send_event(gst::event::Segment::new(&zero));
+        if !self.pushed_segment.swap(true, Ordering::SeqCst) {
+            let _ = tx.send(Cmd::Probe(tag, ProbeEvent::SegmentPushed(self.index)));
+        }
     }
 
     /// Passes the bin one `[0, ∞)` segment (file time) and remembers the
@@ -212,6 +259,13 @@ impl RecProbe {
         info.data = Some(gst::PadProbeData::Event(gst::event::Segment::new(&zero)));
         gst::PadProbeReturn::Ok
     }
+}
+
+/// The `recorder.log` line of a bin whose segment
+/// [`RecProbe::ensure_segment`] pushed: `<id>: no segment before the first
+/// buffer; pushed one`.
+pub(super) fn segment_pushed_line(id: &str) -> String {
+    format!("{id}: no segment before the first buffer; pushed one")
 }
 
 /// One attached record bin.
@@ -766,6 +820,150 @@ mod tests {
             "the take's bin made the source negotiate again"
         );
         let _ = pipeline.set_state(gst::State::Null);
+        assert_quiet_since(quiet);
+    }
+
+    /// Waits (10 s) for `want` on the probe channel; returns what came.
+    fn wait_for(rx: &crossbeam_channel::Receiver<Cmd>, want: ProbeEvent) -> Vec<ProbeEvent> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut seen = Vec::new();
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(left) {
+                Ok(Cmd::Probe(_, event)) => {
+                    let done = event == want;
+                    seen.push(event);
+                    if done {
+                        return seen;
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => panic!("no {want:?}; got {seen:?}"),
+            }
+        }
+    }
+
+    /// A buffer that would reach a record bin before any segment gets the
+    /// bin's zero segment pushed first (once, a stop-and-cancel while
+    /// starting gave the audio bin one, with GStreamer's "data flow before
+    /// segment" warnings, and its file came out unreadable): no warning, a
+    /// file that probes the way finalization reads it, and one
+    /// `SegmentPushed` (its `recorder.log` line). Here a probe after the
+    /// record probe drops the segment on its way to the bin.
+    #[test]
+    fn a_record_bin_gets_its_segment_before_a_buffer_without_one() {
+        use qrec_core::media_argv::probe_argv;
+        use qrec_core::parse::ffprobe::parse_ffprobe;
+        use qrec_core::plans::AudioRecord;
+
+        let _serial = serial();
+        let quiet = problems();
+        crate::gst_init::init().expect("GStreamer");
+        let env = TestEnv::new();
+        let dir = env.empty_dir("no-segment");
+        let pipeline = gst::Pipeline::new();
+        let caps = gst::Caps::builder("audio/x-raw")
+            .field("format", "S16LE")
+            .field("rate", 48_000i32)
+            .field("channels", 1i32)
+            .field("layout", "interleaved")
+            .build();
+        let src = gst_app::AppSrc::builder()
+            .name("s0-src")
+            .caps(&caps)
+            .format(gst::Format::Time)
+            .build();
+        let tee = make("tee", "s0-tee").unwrap();
+        set_value(&tee, "allow-not-linked", true).unwrap();
+        pipeline.add_many([src.upcast_ref(), &tee]).unwrap();
+        src.link(&tee).unwrap();
+        pipeline.set_state(gst::State::Playing).unwrap();
+        let rec = AudioRecord {
+            id: "A1".parse().unwrap(),
+            device: "fake".into(),
+            file: "A1-mic.mka".into(),
+            sample_rate: 48_000,
+        };
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut bin = attach_audio(
+            &pipeline,
+            &tee,
+            0,
+            0,
+            &rec,
+            &dir.join(&rec.file),
+            rec.file.clone(),
+            "A1".into(),
+            &tx,
+            7,
+        )
+        .expect("the bin attaches");
+        // The segment never reaches the bin.
+        let drops = Arc::new(AtomicUsize::new(0));
+        {
+            let drops = Arc::clone(&drops);
+            bin.tee_pad.as_ref().unwrap().add_probe(
+                gst::PadProbeType::EVENT_DOWNSTREAM,
+                move |_, info| match &info.data {
+                    Some(gst::PadProbeData::Event(e)) if e.type_() == gst::EventType::Segment => {
+                        drops.fetch_add(1, Ordering::SeqCst);
+                        gst::PadProbeReturn::Drop
+                    }
+                    _ => gst::PadProbeReturn::Ok,
+                },
+            );
+        }
+        bin.probe.t0.store(0, Ordering::SeqCst);
+        // 200 ms of silence in 20 ms buffers from 0.
+        for i in 0..10u64 {
+            let mut buffer = gst::Buffer::with_size(960 * 2).unwrap();
+            {
+                let b = buffer.get_mut().unwrap();
+                b.set_pts(gst::ClockTime::from_mseconds(20 * i));
+                b.set_duration(gst::ClockTime::from_mseconds(20));
+            }
+            src.push_buffer(buffer).expect("push a buffer");
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while bin.probe.lock().passed < 10 {
+            assert!(
+                Instant::now() < deadline,
+                "the buffers never reached the bin"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            drops.load(Ordering::SeqCst) > 0,
+            "the segment was never dropped"
+        );
+        // Closed like the engine closes it: unlinked when idle, then EOS.
+        bin.begin_close(&tx, 7);
+        let mut seen = wait_for(&rx, ProbeEvent::Unlinked(0));
+        bin.release_tee_pad();
+        bin.finish_close(Fps::new(30, 1), false);
+        seen.extend(wait_for(&rx, ProbeEvent::SinkEos(0)));
+        let _ = pipeline.set_state(gst::State::Null);
+        let pushed = seen
+            .iter()
+            .filter(|e| **e == ProbeEvent::SegmentPushed(0))
+            .count();
+        assert_eq!(pushed, 1, "{seen:?}");
+        assert_eq!(
+            segment_pushed_line(&bin.id),
+            "A1: no segment before the first buffer; pushed one"
+        );
+        // The file reads the way finalization reads it.
+        let argv = probe_argv(&rec.file, StreamKind::Audio);
+        let out = crate::testkit::run_tool(
+            std::process::Command::new(&argv[0])
+                .args(&argv[1..])
+                .current_dir(&dir),
+            Duration::from_secs(30),
+        );
+        assert!(out.status.success(), "unreadable: {}", out.stderr);
+        let info = parse_ffprobe(&String::from_utf8_lossy(&out.stdout), StreamKind::Audio)
+            .expect("an audio file");
+        assert!(info.duration_ns >= Some(190_000_000), "{info:?}");
         assert_quiet_since(quiet);
     }
 }

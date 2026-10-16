@@ -565,6 +565,13 @@ pub fn inspector(state: &State) -> Option<Inspector> {
     })
 }
 
+/// Whether the panel shows the inspector section at all: not for an empty
+/// scene (BRIEF S01a: "the inspector is hidden"); with layers and none
+/// selected it reads [`INSPECTOR_EMPTY`].
+pub fn inspector_shown(state: &State) -> bool {
+    !canvas_scene(&state.project, &state.ui).layers.is_empty()
+}
+
 /// The inspector section's caption: the selected layer, "Face · L2".
 pub fn inspector_heading(state: &State) -> Option<String> {
     let id = state.ui.selected_layer.as_ref()?;
@@ -1084,6 +1091,17 @@ mod tests {
     /// S02: Live, nothing selected.
     fn s02() -> State {
         testkit::design_state()
+    }
+
+    /// S01a hides the inspector (an empty scene); S02 shows its empty line,
+    /// S06 the selected layer's fields.
+    #[test]
+    fn the_inspector_hides_in_an_empty_scene() {
+        let empty = testkit::state(testkit::ProjectBuilder::new().build());
+        assert!(!inspector_shown(&empty));
+        assert!(inspector(&empty).is_none());
+        assert!(inspector_shown(&s02()) && inspector(&s02()).is_none());
+        assert!(inspector_shown(&s06()) && inspector(&s06()).is_some());
     }
 
     /// S06: Program, c2d0 selected, L2 selected.

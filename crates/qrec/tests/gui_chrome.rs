@@ -790,9 +790,17 @@ fn s18_the_purge_modal_and_its_focus() {
     let reply = nested.window(0).ctl(purge);
     assert_eq!(reply["ok"], true, "{reply}");
     nested.window(0).wait_idle();
-    nested.keys(&["-k", "Tab"]);
+    // Tab with its keyboard kept: the window stays active, so the purge
+    // button wears its focus ring in the shot (G§8.4).
+    let held = nested.keys_held(&["-k", "Tab"], 2000);
+    gui_support::poll(
+        Duration::from_secs(10),
+        "the focus on the purge button",
+        || (nested.window(0).local()["focusPath"][0] == "modal-confirm").then_some(()),
+    );
     nested.window(0).wait_idle();
     nested.screenshot("modal-tab");
+    held.wait();
     nested.keys(&["-k", "Return"]);
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {

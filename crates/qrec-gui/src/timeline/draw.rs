@@ -354,9 +354,10 @@ fn silences(s: &gtk::Snapshot, sc: &Scene<'_>) {
     }
 }
 
-/// The autocut page's preview (S12): each region hatched at full strength
-/// on its lane, the same range dimmed on the other rows, and its "−1.6 s"
-/// tag 20 px above the lane.
+/// The autocut page's preview (S12, `LocalUi.autocut_preview`, WP5's):
+/// each region hatched in `warning` at full strength on its lane, with its
+/// warning edges, the same range dimmed (`bg-55`) on the video row and the
+/// other lanes, and its "−1.6 s" tag 22 px above the lane.
 fn autocut(s: &gtk::Snapshot, sc: &Scene<'_>, preview: &AutocutPreview) {
     let p = sc.palette;
     let rows = sc.rows;

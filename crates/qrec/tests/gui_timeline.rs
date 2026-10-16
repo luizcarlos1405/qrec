@@ -1,9 +1,10 @@
 //! WP3's screenshot cases (docs/GUI.md G§8.4, G§7 WP3): the timeline of
 //! S01b, S04, S04b, S05, S05b, S07, S08, S09, S10, S11 and S12, S09 at
 //! scale 2, the compact timeline at 1600×800, and the frame-time probe on
-//! the 300-clip fixture (G§8.6). Stub-based where other work packages'
-//! regions haven't landed (G§7.0): the header, the stage, the panel and
-//! the hint bar show WP0b's stubs until WP4, WP5 and WP6 merge.
+//! the 300-clip fixture (G§8.6). The header, the stage, the panel and the
+//! hint bar are WP4's, WP5's and WP6's (merged); only the bin and the export
+//! panel are WP0b's stubs until WP7 (G§7.0). S12 opens WP5's autocut page
+//! and checks the preview the canvas draws.
 //!
 //! Each case checks the regions it can (BRIEF §2.1 and the timeline's named
 //! parts, ±1 px), takes a screenshot into `tmp/gui-shots/wp3/` and puts it
@@ -427,9 +428,22 @@ fn s11_drag_move() {
 
 // ------------------------------------------------------------- S12
 
+/// The center of widget `name` (it must show).
+fn center_of(nested: &mut Nested, name: &str) -> (f64, f64) {
+    let regions = nested.window(0).regions(&[name]);
+    let [x, y, w, h] = *regions
+        .get(name)
+        .unwrap_or_else(|| panic!("no {name}: {regions:#?}"));
+    (x + w / 2.0, y + h / 2.0)
+}
+
 /// S12's timeline: `z` with c3e9 selected fills the time area with it
-/// (0.335 px/frame, "10 px/s"); the `SetUi` follows 300 ms later.
-/// Stub-based: the autocut page (WP5) isn't there, so no preview hatches.
+/// (0.335 px/frame, "10 px/s"); the `SetUi` follows 300 ms later. The
+/// toolbar's settings icon (`autocut.preview`) then opens WP5's autocut
+/// page, whose preview (`LocalUi.autocut_preview`) the canvas draws: each
+/// region hatched in `warning` on A1, its tag 22 px above the lane, the
+/// same range dimmed on A2. The icon again closes the page: the preview
+/// goes (the A2 lane isn't dimmed any more).
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s12_zoom_to_c3e9() {
@@ -462,7 +476,92 @@ fn s12_zoom_to_c3e9() {
     }
     nested.window(0).wait_idle();
     check_regions(&mut nested, &["lane-A2"]);
-    shoot(&nested, "zoom-c3e9", Some("S12-autocut-preview.png"));
+    shoot(&nested, "zoom-c3e9", None);
+
+    // The settings icon opens the autocut page; its preview is drawn.
+    let (x, y) = center_of(&mut nested, "tl-autocut-settings");
+    nested.pointer().click(x, y);
+    wait_for_labels(&mut nested, "region-panel", "Removes 4 silences");
+    nested.window(0).wait_idle();
+    let open_local = local(&mut nested);
+    assert_eq!(open_local["panelPage"], "autocut", "{open_local}");
+    let spans = open_local["autocutPreview"]["spans"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(spans.len(), 4, "{open_local}");
+    let ui = nested.cli_json(&project, &["status"])["data"]["ui"].clone();
+    let zoom = ui["zoom"].as_f64().expect("a zoom");
+    let scroll = ui["scrollPx"].as_f64().unwrap_or_default();
+    // Window x of a timeline frame (the time area starts at 176).
+    let x_of = |f: &Value| 176.0 + f.as_f64().expect("a frame") * zoom - scroll;
+    let xs: Vec<(f64, f64)> = spans
+        .iter()
+        .map(|s| (x_of(&s["from"]), x_of(&s["to"])))
+        .collect();
+    let shot = shoot(&nested, "page", Some("S12-autocut-preview.png"));
+    let s = nested.opts.scale;
+    let px = |v: f64| (v * s).round().max(1.0) as u32;
+    let warning = gui_support::token_rgb("swamp-night", "warning");
+    // A2 (860–916) over `range` (x0, width), and just left of it.
+    let a2 = |shot: &Path, x0: f64, w: f64| {
+        let inside = gui_support::mean_grey(shot, [px(x0 + 2.0), px(864.0), px(w - 4.0), px(48.0)]);
+        let outside = gui_support::mean_grey(shot, [px(x0 - 14.0), px(864.0), px(8.0), px(48.0)]);
+        (inside, outside)
+    };
+    for (span, &(x0, x1)) in spans.iter().zip(&xs) {
+        let w = x1 - x0;
+        // The hatch on A1 (800–856), inside the edges.
+        let hatch = gui_support::count_near(
+            &shot,
+            [px(x0 + 3.0), px(804.0), px(w - 6.0), px(48.0)],
+            warning,
+            40,
+        );
+        assert!(hatch > 20, "no hatch over {span}: {hatch} px");
+        // The tag ("−1.6 s", `warning-text` on a plate) 22 px above A1.
+        let tag = gui_support::count_near(
+            &shot,
+            [px(x0 + 2.0), px(778.0), px(30.0), px(18.0)],
+            warning,
+            60,
+        );
+        assert!(tag > 3, "no tag over {span}: {tag} px");
+        let (inside, outside) = a2(&shot, x0, w);
+        assert!(
+            inside + 3.0 < outside,
+            "A2 not dimmed over {span}: {inside:.1} vs {outside:.1}"
+        );
+    }
+    // Nothing between the first two regions.
+    let (a, b) = (xs[0].1, xs[1].0);
+    let between = gui_support::count_near(
+        &shot,
+        [px(a + 10.0), px(804.0), px(b - a - 20.0), px(48.0)],
+        warning,
+        40,
+    );
+    assert_eq!(between, 0, "a hatch between the regions");
+
+    // The icon again: the page closes and the preview goes.
+    let (x, y) = center_of(&mut nested, "tl-autocut-settings");
+    nested.pointer().click(x, y);
+    wait_for_labels(&mut nested, "region-panel", "Onion layers");
+    nested.window(0).wait_idle();
+    let closed_local = local(&mut nested);
+    assert_eq!(closed_local["panelPage"], "layers", "{closed_local}");
+    assert_eq!(
+        closed_local["autocutPreview"],
+        Value::Null,
+        "{closed_local}"
+    );
+    let shot = shoot(&nested, "page-closed", None);
+    let (x0, x1) = xs[0];
+    let (inside, outside) = a2(&shot, x0, x1 - x0);
+    assert!(
+        (inside - outside).abs() < 3.0,
+        "A2 still dimmed: {inside:.1} vs {outside:.1}"
+    );
     assert_clean(&mut nested);
 }
 

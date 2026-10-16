@@ -1,5 +1,8 @@
-//! C11 meter (G§5.1): a level meter drawn from `MediaHub::level` on each
-//! frame tick; a click resets the clip latch. Owner: WP5.
+//! C11 meter (G§5.1): a level meter drawn from `MediaHub::level`, looked at
+//! [`REFRESH_MS`] apart while it shows (a timer, not a frame-clock tick: a
+//! tick callback per meter perturbed the window's frame timing, G§8.6, and
+//! readings come at 20 Hz); a frame redraws the bar only when what it shows
+//! changed. A click resets the clip latch. Owner: WP5.
 //!
 //! [`Meter`] is the bar (a custom widget, `qrec-meter`) and the `mono-xs`
 //! readout after it. The bar draws `view::meter::view` of its
@@ -38,6 +41,10 @@ pub type ReadoutFn = Rc<dyn Fn(&str, bool)>;
 
 /// A slot that doesn't change for this long reads as silence.
 pub const STALE_MS: u64 = 1500;
+
+/// How often a showing meter looks at its slot (30 Hz: readings come at
+/// 20 Hz, and a falling peak moves in steps under a dB).
+pub const REFRESH_MS: u64 = 33;
 
 /// The loudest channel of a reading: (RMS, peak) in dBFS.
 pub fn loudest(reading: &LevelReading) -> (f64, f64) {
@@ -126,10 +133,13 @@ mod imp {
         pub palette: RefCell<Rc<Palette>>,
         pub device: RefCell<String>,
         pub media: RefCell<Option<MediaHub>>,
-        pub tick: Cell<Option<gtk::TickCallbackId>>,
+        pub timer: RefCell<Option<glib::SourceId>>,
         pub on_change: RefCell<Option<ReadoutFn>>,
         pub shown: RefCell<(String, bool)>,
         pub theme: RefCell<Option<crate::store::Subscription>>,
+        /// What the bar drew last: a frame that would draw the same asks
+        /// for no redraw (a meter at rest costs the frame clock nothing).
+        pub drawn: RefCell<Option<meter::MeterView>>,
     }
 
     impl Default for MeterBar {
@@ -145,10 +155,11 @@ mod imp {
                 ))),
                 device: RefCell::new(String::new()),
                 media: RefCell::new(None),
-                tick: Cell::new(None),
+                timer: RefCell::new(None),
                 on_change: RefCell::new(None),
                 shown: RefCell::new((String::new(), false)),
                 theme: RefCell::new(None),
+                drawn: RefCell::new(None),
             }
         }
     }
@@ -168,8 +179,8 @@ mod imp {
     impl ObjectImpl for MeterBar {
         fn dispose(&self) {
             crate::guard::run("meter: dispose", || {
-                if let Some(tick) = self.tick.take() {
-                    tick.remove();
+                if let Some(timer) = self.timer.borrow_mut().take() {
+                    timer.remove();
                 }
                 self.theme.borrow_mut().take();
                 self.on_change.borrow_mut().take();
@@ -194,20 +205,30 @@ mod imp {
         fn map(&self) {
             self.parent_map();
             crate::guard::run("meter: map", || {
-                let tick = crate::guard::tick(&*self.obj(), "meter: tick", |bar, _clock| {
-                    bar.on_frame();
-                    glib::ControlFlow::Continue
-                });
-                if let Some(old) = self.tick.replace(Some(tick)) {
+                let weak = self.obj().downgrade();
+                let timer = crate::guard::timeout_local(
+                    std::time::Duration::from_millis(REFRESH_MS),
+                    "meter: refresh",
+                    move || match weak.upgrade() {
+                        Some(bar) => {
+                            bar.on_frame();
+                            glib::ControlFlow::Continue
+                        }
+                        None => glib::ControlFlow::Break,
+                    },
+                );
+                if let Some(old) = self.timer.borrow_mut().replace(timer) {
                     old.remove();
                 }
+                // Current at once, not a refresh later.
+                self.obj().on_frame();
             });
         }
 
         fn unmap(&self) {
             crate::guard::run("meter: unmap", || {
-                if let Some(tick) = self.tick.take() {
-                    tick.remove();
+                if let Some(timer) = self.timer.borrow_mut().take() {
+                    timer.remove();
                 }
             });
             self.parent_unmap();
@@ -219,18 +240,26 @@ mod imp {
     }
 
     impl MeterBar {
+        /// The view a frame draws now.
+        pub(super) fn current_view(&self) -> meter::MeterView {
+            let scale = self.scale.get().max(0.1);
+            let width = f64::from(self.obj().width()) / scale;
+            meter::view(
+                &self.state.get(),
+                self.now_ms.get(),
+                width,
+                self.muted.get(),
+            )
+        }
+
         fn draw(&self, snapshot: &gtk::Snapshot) {
             let obj = self.obj();
             let scale = self.scale.get().max(0.1);
             let width = f64::from(obj.width()) / scale;
             let height = meter::BAR_HEIGHT;
             let palette = self.palette.borrow().clone();
-            let view = meter::view(
-                &self.state.get(),
-                self.now_ms.get(),
-                width,
-                self.muted.get(),
-            );
+            let view = self.current_view();
+            *self.drawn.borrow_mut() = Some(view.clone());
             let rect = |x: f64, w: f64| {
                 graphene::Rect::new(
                     (x * scale) as f32,
@@ -298,7 +327,12 @@ impl MeterBar {
         let mut state = imp.state.get();
         imp.feed.borrow_mut().feed(&mut state, reading, now);
         imp.state.set(state);
-        self.queue_draw();
+        // Only a look that changes what the bar shows redraws it: readings
+        // come at 20 Hz and a held peak falls for a while; a meter at rest
+        // draws nothing.
+        if imp.drawn.borrow().as_ref() != Some(&imp.current_view()) {
+            self.queue_draw();
+        }
         self.report();
     }
 
@@ -386,6 +420,8 @@ impl Meter {
                 *bar.imp().palette.borrow_mut() = theme.palette();
                 bar.imp().scale.set(theme.scale());
                 bar.queue_resize();
+                // New colors draw the same view: the frames' check skips it.
+                bar.queue_draw();
             }
         });
         *meter.bar.imp().theme.borrow_mut() = Some(subscription);

@@ -138,43 +138,14 @@ pub fn add_signature(items: &[AddItem]) -> String {
         .join("\n")
 }
 
-/// A `gtk::MenuButton` over `menu`: its inner button is styled as C01
-/// (`qrec-btn` plus `classes`) and, like the menu button, named `label`
-/// for screen readers (the a11y walk sees both).
+/// A `gtk::MenuButton` over `menu` (`widgets::button::menu_button`: its
+/// inner button styled as C01 with `classes`, both named `label` for
+/// screen readers).
 pub fn menu_button(menu: &Menu, classes: &[&str], label: &str) -> gtk::MenuButton {
-    let button = gtk::MenuButton::new();
-    button.set_menu_model(Some(&menu.model()));
-    button.add_css_class("qrec-menu-button");
-    if let Some(inner) = inner_button(&button) {
-        inner.add_css_class("qrec-btn");
-        for class in classes {
-            inner.add_css_class(class);
-        }
-        inner.set_focus_on_click(false);
-    }
-    set_menu_label(&button, label);
-    button
+    crate::widgets::button::menu_button(&menu.model(), classes, label)
 }
 
-/// Names `button` and its inner button for screen readers.
-pub fn set_menu_label(button: &gtk::MenuButton, label: &str) {
-    button.update_property(&[gtk::accessible::Property::Label(label)]);
-    if let Some(inner) = inner_button(button) {
-        inner.update_property(&[gtk::accessible::Property::Label(label)]);
-    }
-}
-
-/// The toggle button a `gtk::MenuButton` draws.
-fn inner_button(button: &gtk::MenuButton) -> Option<gtk::Widget> {
-    let mut child = button.first_child();
-    while let Some(widget) = child {
-        if widget.is::<gtk::Button>() {
-            return Some(widget);
-        }
-        child = widget.next_sibling();
-    }
-    None
-}
+pub use crate::widgets::button::set_menu_label;
 
 /// Wraps `button` (a `gtk::MenuButton`): while its menu is open the
 /// window's overlays say `Menu`; `on_open` runs as it opens.

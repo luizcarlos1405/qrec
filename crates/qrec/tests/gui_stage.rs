@@ -212,6 +212,10 @@ fn s01a_first_run() {
         &["Screens ask for permission once. Your desktop shows a picker for each one."],
     );
     assert_hides(&labels, &["LIVE"]);
+    // The panel (WP5): both sections empty, no inspector (BRIEF S01a).
+    let panel = nested.window(0).labels("region-panel");
+    assert_shows(&panel, &["No layers yet", "No audio tracks"]);
+    assert_hides(&panel, &["Inspector"]);
     assert_clean(&mut nested);
     let shot = nested.screenshot("first-run");
     compare(&nested, &shot, "S01a-first-run-no-sources.png");

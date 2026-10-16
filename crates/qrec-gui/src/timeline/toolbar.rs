@@ -137,12 +137,15 @@ impl Toolbar {
         let divider = gtk::Separator::new(gtk::Orientation::Vertical);
         divider.add_css_class("tl-divider");
         let autocut = labeled(ctx, "Autocut", "edit-cut-symbolic", "autocut.run");
+        // `autocut.preview` runs WP5's `autocut.page` (G§3.8 step 10):
+        // opens the autocut page, or closes it when it shows.
         let settings = icon(
             ctx,
             "preferences-other-symbolic",
             "Autocut settings and preview",
             "autocut.preview",
         );
+        settings.set_widget_name("tl-autocut-settings");
         left.append(&bin);
         left.append(&snap);
         left.append(&divider);

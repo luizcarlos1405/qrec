@@ -64,7 +64,7 @@ use qrec_core::{Event, Fps, TakeId};
 use super::fake::{fake_camera_modes, is_fake_audio, is_fake_camera, is_fake_screen};
 use super::live::{BuildCtx, BuildError, Live, LiveKey, level_reading};
 use super::portal::{OpenRequest, PortalWorker, ScreenShare};
-use super::record::{RecordBin, attach_audio, attach_video};
+use super::record::{RecordBin, attach_audio, attach_video, segment_pushed_line};
 use super::spec::{
     CameraKey, SourceSpec, audio_label, plan_sources, record_file_rel, scene_sources,
     start_offset_line, stop_line, stream_lost_line, video_label,
@@ -201,6 +201,9 @@ pub(super) enum ProbeEvent {
     Unlinked(usize),
     /// EOS reached the filesink.
     SinkEos(usize),
+    /// A buffer was about to reach the bin before any segment: the probe
+    /// pushed the bin's zero segment first (A§8.11). Sent once per bin.
+    SegmentPushed(usize),
 }
 
 /// How a fake source fails (tests of `StreamLost`).
@@ -1898,6 +1901,11 @@ impl Engine {
             ProbeEvent::FirstWrite(i) => {
                 if let Some(bin) = run.bins.get(i) {
                     run.log.line(format!("{}: writing {}", bin.id, bin.file));
+                }
+            }
+            ProbeEvent::SegmentPushed(i) => {
+                if let Some(bin) = run.bins.get(i) {
+                    run.log.line(segment_pushed_line(&bin.id));
                 }
             }
             ProbeEvent::ReachedEnd(i) => {

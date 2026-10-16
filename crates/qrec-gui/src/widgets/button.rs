@@ -6,6 +6,8 @@
 //! names the key in its accessible label ("Settings, Ctrl+Comma"; every
 //! icon-only button needs one, G§5.1). A button with a binding runs it
 //! through `KeyRouter::run_binding` (G§3.7), so the key's pre-steps apply.
+//! A menu's button (C25) is [`menu_button`], which names its inner button
+//! for screen readers too.
 
 use gtk::prelude::*;
 use qrec_core::keymap::{Keymap, usable_keys};
@@ -178,6 +180,51 @@ pub fn set_loading(button: &gtk::Button, loading: bool) {
     }
 }
 
+/// A C25 menu's button: a `gtk::MenuButton` over `model`, its inner toggle
+/// styled as C01 (`qrec-btn` plus `classes`, `focus-on-click = false`) and
+/// both named `label` for screen readers ([`set_menu_label`]). Every
+/// MenuButton is made here: GTK keeps an accessible label on the
+/// MenuButton, and the a11y walk (G§3.18) sees its inner button too.
+pub fn menu_button(
+    model: &impl IsA<gtk::gio::MenuModel>,
+    classes: &[&str],
+    label: &str,
+) -> gtk::MenuButton {
+    let button = gtk::MenuButton::new();
+    button.set_menu_model(Some(model));
+    button.add_css_class("qrec-menu-button");
+    if let Some(inner) = menu_inner_button(&button) {
+        inner.add_css_class("qrec-btn");
+        for class in classes {
+            inner.add_css_class(class);
+        }
+        inner.set_focus_on_click(false);
+    }
+    set_menu_label(&button, label);
+    button
+}
+
+/// Names a menu button and its inner button for screen readers (a row's
+/// overflow says whose it is: "More for layer Face").
+pub fn set_menu_label(button: &gtk::MenuButton, label: &str) {
+    button.update_property(&[gtk::accessible::Property::Label(label)]);
+    if let Some(inner) = menu_inner_button(button) {
+        inner.update_property(&[gtk::accessible::Property::Label(label)]);
+    }
+}
+
+/// The toggle button a `gtk::MenuButton` draws.
+fn menu_inner_button(button: &gtk::MenuButton) -> Option<gtk::Widget> {
+    let mut child = button.first_child();
+    while let Some(widget) = child {
+        if widget.is::<gtk::Button>() {
+            return Some(widget);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
 /// The header's close button (32×32): it asks its window to close, which
 /// runs the window's close sequence (D-12).
 pub fn close_window(keymap: &Keymap) -> gtk::Button {
@@ -218,5 +265,39 @@ mod tests {
             Some(vec!["F9".into()])
         );
         assert_eq!(spoken_keys(&["Shift".into(), "←".into()]), "Shift+Left");
+    }
+
+    /// Every `gtk::MenuButton` comes from [`menu_button`], which names its
+    /// inner button too: one made elsewhere leaves that button unnamed for
+    /// screen readers (and the a11y walk).
+    #[test]
+    fn every_menu_button_is_made_by_the_helper() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        let mut dirs = vec![root.clone()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs") || path.ends_with("widgets/button.rs")
+                {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                for (i, line) in text.lines().enumerate() {
+                    let code = line.split("//").next().unwrap_or_default();
+                    if code.contains("MenuButton::new(") || code.contains("MenuButton::builder(") {
+                        offenders.push(format!("{}:{}", path.display(), i + 1));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "use button::menu_button: {offenders:#?}"
+        );
     }
 }
