@@ -1097,10 +1097,10 @@ fn s15b_export_running_then_cancelled() {
     close(&mut nested);
 }
 
-/// Opens the panel, picks Draft, exports, waits for 42 %, checks the
-/// running panel and shoots it as `name` (`waitIdle` while it runs: the
-/// window's own export settles once its job runs, G§3.18).
-fn export_running(nested: &mut Nested, project: &Path, name: &str) {
+/// Opens the panel, picks Draft and exports: the panel shows Running
+/// (`waitIdle` while it runs: the window's own export settles once its job
+/// runs, G§3.18).
+fn start_draft_export(nested: &mut Nested) {
     ctrl_e(nested);
     let regions = nested.window(0).regions(&["export-quality"]);
     let [qx, qy, qw, qh] = regions["export-quality"];
@@ -1113,6 +1113,12 @@ fn export_running(nested: &mut Nested, project: &Path, name: &str) {
         ["ExportPanel(Running)"],
         "waitIdle returned with the export running"
     );
+}
+
+/// Opens the panel, picks Draft, exports, waits for 42 %, checks the
+/// running panel and shoots it as `name`.
+fn export_running(nested: &mut Nested, project: &Path, name: &str) {
+    start_draft_export(nested);
     wait_export_at(nested, project, 42, Duration::from_secs(300));
     let labels = wait_label(
         nested,
@@ -1183,6 +1189,66 @@ fn export_running(nested: &mut Nested, project: &Path, name: &str) {
         Some("456:340:1144:0"),
         "-panel",
     );
+}
+
+/// `r` while exporting toasts D-34's "Can't record while exporting" with
+/// Show export (the toast host stays live under the passive panel).
+fn show_export_toast(nested: &mut Nested) {
+    nested.keys(&["-k", "r"]);
+    let labels = wait_label(
+        nested,
+        "toast-host",
+        "D-34's toast",
+        Duration::from_secs(20),
+        |l| l == "Can't record while exporting",
+    );
+    assert_shows(&labels, &["Show export"]);
+}
+
+/// D-34's Show export opens the export panel and leaves an open one as it
+/// is: with the passive Running panel open, the toast's button closed it
+/// (it ran the panel's toggle); with the panel closed, it opens it.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_show_export_toast_opens_the_panel_and_never_closes_it() {
+    let mut nested = Nested::start(AREA, "show-export", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(program_ui()),
+    );
+    // Each render unit starts 4 s late: the export outlasts the case's
+    // presses on a loaded machine too.
+    let launch = Launch {
+        path: Some(fail_ffmpeg::slow_path(nested.env.root(), 4)),
+        ..launch()
+    };
+    open(&mut nested, &project, launch);
+    start_draft_export(&mut nested);
+    show_export_toast(&mut nested);
+    click(&mut nested, "toast-action-0");
+    assert_eq!(
+        overlays(&mut nested),
+        ["ExportPanel(Running)"],
+        "Show export left the panel open"
+    );
+    // Closed (`Esc`, D-49): the toast's Show export opens it again.
+    nested.keys(&["-k", "Escape"]);
+    wait_overlays(&mut nested, &[], Duration::from_secs(10));
+    show_export_toast(&mut nested);
+    click(&mut nested, "toast-action-0");
+    assert_eq!(overlays(&mut nested), ["ExportPanel(Running)"]);
+    assert!(
+        export_percent(&nested, &project).is_some(),
+        "still exporting"
+    );
+    click(&mut nested, "export-cancel");
+    wait_export_gone(&nested, &project, Duration::from_secs(30));
+    wait_overlays(&mut nested, &[], Duration::from_secs(10));
+    nested.window(0).wait_idle();
+    assert_clean(&mut nested);
+    close(&mut nested);
 }
 
 /// S15c: the WebM setup (the AV1 switch and its caption), then a running

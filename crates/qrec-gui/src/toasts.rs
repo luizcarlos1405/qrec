@@ -88,6 +88,18 @@ pub fn shown_by_the_panel(notice: &Notice, panel: Option<ExportPanelMode>) -> bo
     }
 }
 
+/// The GUI action (G§3.8) a toast button runs, for the buttons that open
+/// a region: Show export the export panel (`export.show`: it opens it and
+/// leaves an open one as it is; `export.panel`, a toggle, closed the
+/// passive panel the toast shows under), Open settings Settings.
+pub fn gui_action(action: &NoticeAction) -> Option<&'static str> {
+    match action {
+        NoticeAction::ShowExport => Some(crate::export::SHOW),
+        NoticeAction::OpenSettings(_) => Some("settings.open"),
+        _ => None,
+    }
+}
+
 /// The body is a path a toast action names (`exports/….mp4 · 88.4 MB`,
 /// `frames/….png`): it reads in the mono face (S16b).
 pub fn body_is_path(notice: &Notice) -> bool {
@@ -498,8 +510,10 @@ impl Host {
                     &toast_action.action,
                 );
             }
-            NoticeAction::ShowExport => {
-                ctx.actions.run("export.panel");
+            NoticeAction::ShowExport | NoticeAction::OpenSettings(_) => {
+                if let Some(id) = gui_action(action) {
+                    ctx.actions.run(id);
+                }
             }
             NoticeAction::OpenBin => ctx.store.dispatch(Command::SetUi {
                 patch: UiPatch {
@@ -507,9 +521,6 @@ impl Host {
                     ..UiPatch::default()
                 },
             }),
-            NoticeAction::OpenSettings(_) => {
-                ctx.actions.run("settings.open");
-            }
             NoticeAction::RetrySource(_) => ctx.store.retry_live(),
         }
     }
@@ -641,6 +652,34 @@ mod tests {
         assert!(!shown_by_the_panel(&other, Some(ExportPanelMode::Failed)));
         let warning = Notice::new(ToastLevel::Warning, EXPORT_FAILED_TITLE);
         assert!(!is_export_failed(&warning), "only the core's error toast");
+    }
+
+    /// D-34's Show export opens the export panel and leaves an open one as
+    /// it is: the toast shows under the passive Running panel, whose toggle
+    /// closed the very panel the button names.
+    #[test]
+    fn show_export_opens_the_panel_and_never_closes_it() {
+        use crate::export::{ACTIONS, PanelStep, panel_step};
+        let id = gui_action(&NoticeAction::ShowExport).expect("a GUI action");
+        let (_, request) = ACTIONS
+            .iter()
+            .find(|(i, _)| *i == id)
+            .unwrap_or_else(|| panic!("{id} isn't the panel's"));
+        assert_eq!(panel_step(None, *request), PanelStep::Open);
+        for mode in [ExportPanelMode::Running, ExportPanelMode::Done] {
+            assert_eq!(
+                panel_step(Some(mode), *request),
+                PanelStep::Stay,
+                "{mode:?}"
+            );
+        }
+        assert_eq!(
+            gui_action(&NoticeAction::OpenSettings(
+                crate::store::local::SettingsPage::Project
+            )),
+            Some("settings.open")
+        );
+        assert_eq!(gui_action(&NoticeAction::OpenBin), None);
     }
 
     #[test]

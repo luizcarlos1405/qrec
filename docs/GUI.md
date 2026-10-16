@@ -702,7 +702,9 @@ Pre-steps:
 `ActionRouter` (`keys/actions.rs`, WP0b): `register(id, Rc<dyn Fn()>)`,
 `run(id)`; each region registers its ids in its own constructor.
 Registered by: `zoom.in`, `zoom.out`, `zoom.selection` (WP3);
-`settings.open` (WP6); `export.panel`, `bin.preview` (WP7);
+`settings.open` (WP6); `export.panel`, `export.show`, `bin.preview` (WP7;
+`export.show`, a toast's Show export, only opens the panel: the toggle
+closed the passive panel the D-34 toast shows under);
 `autocut.page` (WP5); `region.next`, `region.prev`, `app.quit`, and
 `keys.help` and `palette.open` as the "Not built yet" toast (WP0b; WP9
 re-registers them). An id nobody registered logs at debug level.

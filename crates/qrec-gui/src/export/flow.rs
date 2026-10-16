@@ -94,6 +94,45 @@ pub struct ExportPanelState {
     pub outcome: Option<Outcome>,
 }
 
+/// What one of the panel's GUI actions asks of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelRequest {
+    /// Open it, or close it when it is open (`Ctrl+E`, the header slot, the
+    /// `Esc` chain, D-49).
+    Toggle,
+    /// Open it; an open one stays as it is (a toast's Show export, D-34).
+    Show,
+}
+
+/// `export.panel`: toggles the panel.
+pub const TOGGLE: &str = "export.panel";
+/// `export.show`: opens it (a toast's Show export).
+pub const SHOW: &str = "export.show";
+
+/// The panel's GUI actions (G§3.8): `export.panel` toggles it,
+/// `export.show` only opens it (a toggle closed the passive panel the
+/// toast's Show export meant to show).
+pub const ACTIONS: [(&str, PanelRequest); 2] =
+    [(TOGGLE, PanelRequest::Toggle), (SHOW, PanelRequest::Show)];
+
+/// What a request does to the panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelStep {
+    Open,
+    Close,
+    /// It stays as it is.
+    Stay,
+}
+
+/// What `request` does to the panel showing `open` (`None`: closed).
+pub fn panel_step(open: Option<ExportPanelMode>, request: PanelRequest) -> PanelStep {
+    match (open, request) {
+        (None, _) => PanelStep::Open,
+        (Some(_), PanelRequest::Toggle) => PanelStep::Close,
+        (Some(_), PanelRequest::Show) => PanelStep::Stay,
+    }
+}
+
 /// What the open panel shows (D-49): `exporting` an export runs; `waiting`
 /// its own export left the table and its answer hasn't come.
 pub fn mode(exporting: bool, waiting: bool, outcome: Option<&Outcome>) -> ExportPanelMode {
@@ -240,6 +279,31 @@ mod tests {
             percent: 37,
         };
         assert_eq!(mode(false, false, Some(&failed)), ExportPanelMode::Failed);
+    }
+
+    /// `export.panel` toggles the panel; `export.show` (a toast's Show
+    /// export) opens a closed one and leaves an open one as it is.
+    #[test]
+    fn show_opens_and_toggle_closes() {
+        let request = |id: &str| {
+            ACTIONS
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map(|(_, r)| *r)
+                .unwrap_or_else(|| panic!("no action {id}"))
+        };
+        let (toggle, show) = (request("export.panel"), request("export.show"));
+        assert_eq!(panel_step(None, toggle), PanelStep::Open);
+        assert_eq!(panel_step(None, show), PanelStep::Open);
+        for mode in [
+            ExportPanelMode::Setup,
+            ExportPanelMode::Running,
+            ExportPanelMode::Done,
+            ExportPanelMode::Failed,
+        ] {
+            assert_eq!(panel_step(Some(mode), toggle), PanelStep::Close, "{mode:?}");
+            assert_eq!(panel_step(Some(mode), show), PanelStep::Stay, "{mode:?}");
+        }
     }
 
     #[test]

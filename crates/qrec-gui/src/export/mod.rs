@@ -1,7 +1,8 @@
 //! The export panel (S15a, S15b, S15c, S16, S17, C25, C29, C30): setup,
 //! running (passive, D-49), done, failed; in-window, under the header's
 //! Export slot. Owner: WP7. Registers `export.panel` (it toggles the
-//! panel; the `Esc` chain runs it to close the passive one).
+//! panel; the `Esc` chain runs it to close the passive one) and
+//! `export.show` (it only opens it: a toast's Show export, D-34).
 //!
 //! - Setup, Done and Failed trap the focus (`Layer::FloatingTrap`: the
 //!   overlay keys, an outside click closes them); Running is passive
@@ -45,7 +46,10 @@ use qrec_core::state::{Job, JobKind, State};
 use qrec_core::view::export::{self as view, FailedExport};
 use qrec_core::view::format;
 
-pub use flow::{Answer, Draft, ExportPanelState, Outcome};
+pub use flow::{
+    ACTIONS, Answer, Draft, ExportPanelState, Outcome, PanelRequest, PanelStep, SHOW, TOGGLE,
+    panel_step,
+};
 
 use crate::store::local::{ExportPanelMode, Overlay};
 use crate::store::replies::{ReplyAction, default_action};
@@ -206,15 +210,17 @@ impl Panel {
         });
         panel.connect();
         panel.read_config();
-        let weak = Rc::downgrade(&panel);
-        ctx.actions.register(
-            "export.panel",
-            Rc::new(move || {
-                if let Some(panel) = weak.upgrade() {
-                    panel.toggle();
-                }
-            }),
-        );
+        for (id, request) in ACTIONS {
+            let weak = Rc::downgrade(&panel);
+            ctx.actions.register(
+                id,
+                Rc::new(move || {
+                    if let Some(panel) = weak.upgrade() {
+                        panel.request(request);
+                    }
+                }),
+            );
+        }
         let weak = Rc::downgrade(&panel);
         ctx.store
             .subscribe(move |change| {
@@ -387,13 +393,20 @@ impl Panel {
 
     // ------------------------------------------------------- opening
 
-    /// `export.panel`: opens the panel (Running while an export runs, else
-    /// Setup), or closes it.
-    fn toggle(self: &Rc<Self>) {
-        if self.ctx.store.local().export_panel().is_some() {
-            self.close();
-            return;
+    /// `export.panel` (`PanelRequest::Toggle`): opens the panel or closes
+    /// it; `export.show` (`Show`, a toast's Show export): opens it, and
+    /// leaves an open one as it is.
+    fn request(self: &Rc<Self>, request: PanelRequest) {
+        let open = self.ctx.store.local().export_panel();
+        match panel_step(open, request) {
+            PanelStep::Open => self.open(),
+            PanelStep::Close => self.close(),
+            PanelStep::Stay => {}
         }
+    }
+
+    /// Opens the panel: Running while an export runs, else Setup.
+    fn open(self: &Rc<Self>) {
         let state = self.ctx.store.state();
         let exporting = export_job(&state).is_some();
         if !exporting
