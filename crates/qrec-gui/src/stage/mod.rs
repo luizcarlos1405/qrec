@@ -33,9 +33,11 @@
 //! `LayerSet`. Arrow keys (the router's `layer.nudge-*` GUI actions) nudge
 //! in bursts: one `LayerSet` on the key release, or 300 ms after the last
 //! press. In Live the preview follows a gesture through
-//! `LiveControl::transient_layout` (until the `LayerSet`'s `SetLive`; `None`
-//! on `Esc` or a failed release); in Program the box and the readout move
-//! and the picture changes on release. The box shows while the canvas has
+//! `LiveControl::transient_layout` (`None` once the newest `LayerSet`'s
+//! reply came, after its `SetLive`, or on `Esc`); in Program the box and
+//! the readout move and the picture changes on release. A gesture's
+//! `LayerSet` shows until its own reply ([`edit::InFlight`]), and a drag
+//! or nudge that starts meanwhile starts from it (R23). The box shows while the canvas has
 //! the focus or a gesture runs (S06 and S14 show none with the focus
 //! elsewhere). The edit preview is `LocalUi.layer_drag` (the inspector's).
 
@@ -53,6 +55,7 @@ use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
 use gtk::{gdk, glib};
+use qrec_core::model::Scene;
 use qrec_core::protocol::ToastLevel;
 use qrec_core::protocol::command::{LayerPatch, Nullable, SceneTarget, UiPatch};
 use qrec_core::state::{CanvasMode, RecordPhase};
@@ -75,7 +78,7 @@ use crate::theme::motion;
 use crate::widgets::button::binding_caps;
 use canvas::{CanvasDraw, StageCanvas};
 use countdown::{Countdown, CountdownState};
-use edit::{DRAG_THRESHOLD, DragSession, NudgeCoalescer, with_layer};
+use edit::{DRAG_THRESHOLD, DragSession, InFlight, NudgeCoalescer, newest, with_layer};
 use first_run::FirstRun;
 use overlays::{ModeBadges, RecCluster, TrimPlateView, center_plate};
 use picture::{Frame as PictureFrame, StagePicture};
@@ -123,8 +126,9 @@ struct Editing {
     /// The drag's last offset (widget px): a modifier change re-applies it.
     last_offset: (f64, f64),
     nudges: NudgeCoalescer,
-    /// A gesture's `LayerSet` waits for its reply: its preview stays.
-    pending: Option<LayerDragPreview>,
+    /// Gestures' `LayerSet`s wait for their replies: the newest one's
+    /// preview stays until its own reply (R23).
+    pending: InFlight,
 }
 
 impl Editing {
@@ -133,7 +137,7 @@ impl Editing {
     fn active(&self) -> bool {
         self.drag.as_ref().is_some_and(|d| d.moved)
             || self.nudges.active().is_some()
-            || self.pending.is_some()
+            || self.pending.current().is_some()
     }
 
     /// The layout the gesture has for a layer now.
@@ -144,7 +148,16 @@ impl Editing {
         if let Some(burst) = self.nudges.active() {
             return Some(burst.preview());
         }
-        self.pending.clone()
+        self.pending.current().cloned()
+    }
+
+    /// `scene` (of `target`) as the newest unanswered commit left it: what
+    /// the box shows, so a press hits and starts from that (R23).
+    fn newest_scene(&self, scene: &Scene, target: &SceneTarget) -> Scene {
+        match self.pending.current().filter(|p| p.target == *target) {
+            Some(p) => with_layer(scene, &p.layer, p.rect, p.crop),
+            None => scene.clone(),
+        }
     }
 }
 
@@ -858,6 +871,7 @@ impl Inner {
         let Some(scene) = scene_of(&state.project, &target) else {
             return;
         };
+        let scene = &self.edit.borrow().newest_scene(scene, &target);
         let live_sources = live::live_sources(&local.live_status);
         let sizes = source_sizes(&state.project, &target, &live_sources);
         let (preview, _) = self.preview_scale(&state);
@@ -1026,28 +1040,33 @@ impl Inner {
         let state = self.ctx.store.state();
         let Some(cmd) = cmd else {
             // Back where it began: the live preview's own layout again.
-            self.end_preview(&state, true);
+            self.end_preview(&state);
             return;
         };
-        self.edit.borrow_mut().pending = Some(preview);
+        let ticket = self.edit.borrow_mut().pending.issue(preview);
         let weak = Rc::downgrade(self);
         let sent = cmd.clone();
         self.ctx.store.dispatch_with(cmd, false, move |reply| {
             if let Some(this) = weak.upgrade() {
-                this.committed(&sent, reply);
+                this.committed(ticket, &sent, reply);
             }
         });
         self.render();
     }
 
-    fn committed(self: &Rc<Self>, cmd: &Command, reply: Reply) {
-        self.edit.borrow_mut().pending = None;
+    /// The reply of commit `ticket`: the newest one's ends its preview (an
+    /// older one's leaves a newer commit's alone, R23); an error toasts.
+    fn committed(self: &Rc<Self>, ticket: u64, cmd: &Command, reply: Reply) {
+        let newest = self.edit.borrow_mut().pending.answered(ticket);
         let state = self.ctx.store.state();
         match &reply.result {
-            Ok(_) => self.end_preview(&state, false),
+            Ok(_) if newest => self.end_preview(&state),
+            Ok(_) => {}
             Err(err) => {
                 // Back where it was, and why (the snapshot didn't move it).
-                self.end_preview(&state, true);
+                if newest {
+                    self.end_preview(&state);
+                }
                 if !reply.late
                     && let Some(notice) = error_notice(err, cmd, &state)
                 {
@@ -1057,19 +1076,22 @@ impl Inner {
         }
     }
 
-    /// The preview goes (unless another gesture runs); `restore`: the live
-    /// preview goes back to the scene's own layout too.
-    fn end_preview(self: &Rc<Self>, state: &State, restore: bool) {
+    /// The preview goes (unless another gesture runs), and in Live the
+    /// live preview shows the scene's own layout again. A reply comes after
+    /// its `LayerSet`'s `SetLive`; but a no-op `LayerSet` sends none, and a
+    /// gesture started once that `SetLive` was in set a transient again,
+    /// which stayed (R23).
+    fn end_preview(self: &Rc<Self>, state: &State) {
         let busy = {
             let edit = self.edit.borrow();
             edit.drag.as_ref().is_some_and(|d| d.moved)
                 || edit.nudges.active().is_some()
-                || edit.pending.is_some()
+                || edit.pending.current().is_some()
         };
         if busy {
             return;
         }
-        if restore && state.ui.canvas_mode == CanvasMode::Live {
+        if state.ui.canvas_mode == CanvasMode::Live {
             live::transient(&self.ctx, None);
         }
         self.ctx.store.update_local(|l| l.layer_drag = None);
@@ -1091,8 +1113,20 @@ impl Inner {
         self.ctx.keys.set_drag_cancel(None);
         self.hover_cursor_reset();
         let state = self.ctx.store.state();
-        if state.ui.canvas_mode == CanvasMode::Live && self.edit.borrow().pending.is_none() {
-            live::transient(&self.ctx, None);
+        if state.ui.canvas_mode == CanvasMode::Live {
+            // With a commit unanswered the live preview shows its layout
+            // (its `SetLive` may be in already), not the cancelled one (R23).
+            let pending = self
+                .edit
+                .borrow()
+                .pending
+                .current()
+                .filter(|p| p.target == SceneTarget::Project)
+                .cloned();
+            live::transient(
+                &self.ctx,
+                pending.map(|p| with_layer(&state.project.scene, &p.layer, p.rect, p.crop)),
+            );
         }
         self.ctx.store.update_local(|l| {
             l.drag = None;
@@ -1104,16 +1138,23 @@ impl Inner {
     /// A snapshot mid-gesture: carry on from the layer's new layout, or
     /// cancel when it (or the scene being edited) went.
     fn check_drag(self: &Rc<Self>, state: &State) {
-        let gone = {
+        let (gone, rebased) = {
             let mut edit = self.edit.borrow_mut();
             let Some(session) = edit.drag.as_mut() else {
                 return;
             };
+            let before = session.frame.clone();
             let target_kept = edit_target(state).as_ref() == Some(&session.target);
-            !(target_kept && session.rebase(scene_of(&state.project, &session.target)))
+            let kept = target_kept && session.rebase(scene_of(&state.project, &session.target));
+            let rebased = (kept && session.moved && session.frame != before)
+                .then(|| (session.kind(), session.preview()));
+            (!kept, rebased)
         };
         if gone {
             self.cancel();
+        } else if let Some((kind, preview)) = rebased {
+            // The drag goes on from the layer's new layout at once (R23).
+            self.show_gesture(state, Some(kind), preview);
         }
     }
 
@@ -1133,6 +1174,7 @@ impl Inner {
             }
             let target = edit_target(&state)?;
             let scene = scene_of(&state.project, &target)?;
+            let scene = &self.edit.borrow().newest_scene(scene, &target);
             let live_sources = live::live_sources(&local.live_status);
             let sizes = source_sizes(&state.project, &target, &live_sources);
             let (preview, _) = self.preview_scale(&state);
@@ -1199,15 +1241,9 @@ impl Inner {
         let now = self.now_ms();
         let (preview, flushed, deadline) = {
             let mut edit = self.edit.borrow_mut();
-            // A burst's `LayerSet` still unanswered: go on from where it
-            // put the layer.
-            if let Some(p) = &edit.pending
-                && p.layer == layer_id
-                && p.target == target
-            {
-                layer.rect = p.rect;
-                layer.crop = p.crop;
-            }
+            // A `LayerSet` still unanswered: go on from where it put the
+            // layer (the newest one's, R23).
+            layer = newest(&layer, &target, edit.pending.current());
             let (burst, flushed) = edit.nudges.press(&target, &layer, step, now);
             let preview = burst.preview();
             (preview, flushed, edit.nudges.deadline())
@@ -1320,7 +1356,7 @@ mod tests {
     fn a_gesture_is_active_while_it_shows() {
         let mut edit = Editing::default();
         assert!(!edit.active());
-        edit.pending = Some(LayerDragPreview {
+        edit.pending.issue(LayerDragPreview {
             target: SceneTarget::Project,
             layer: LayerId::numbered(2),
             rect: qrec_core::model::Rect::new(0, 0, 16, 16),

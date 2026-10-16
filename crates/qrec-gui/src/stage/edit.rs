@@ -66,6 +66,9 @@ pub struct DragSession {
     pub frame: DragFrame,
     /// Past [`DRAG_THRESHOLD`]: a drag, not a click.
     pub moved: bool,
+    /// The last update, in canvas px, with its aspect and snapping: a
+    /// rebase applies it to the new start.
+    last: Option<(f64, f64, bool, Option<Snap>)>,
 }
 
 impl DragSession {
@@ -83,6 +86,7 @@ impl DragSession {
             },
             start,
             moved: false,
+            last: None,
         }
     }
 
@@ -101,14 +105,9 @@ impl DragSession {
             self.moved = true;
         }
         if self.moved {
-            self.frame = drag(
-                &self.start,
-                self.op,
-                dx / scale.x.max(1e-9),
-                dy / scale.y.max(1e-9),
-                free_aspect,
-                snap,
-            );
+            let (cx, cy) = (dx / scale.x.max(1e-9), dy / scale.y.max(1e-9));
+            self.frame = drag(&self.start, self.op, cx, cy, free_aspect, snap);
+            self.last = Some((cx, cy, free_aspect, snap.copied()));
         }
         became
     }
@@ -152,7 +151,9 @@ impl DragSession {
     }
 
     /// The layer changed under the drag (a snapshot mid-drag): carry on from
-    /// its new layout. `false` when it is gone (the drag is cancelled).
+    /// its new layout, the drag's offset applied to it at once (a release
+    /// without another motion sends that, R23). `false` when it is gone
+    /// (the drag is cancelled).
     pub fn rebase(&mut self, scene: Option<&Scene>) -> bool {
         let Some(layer) = scene.and_then(|s| s.layer(&self.layer)) else {
             return false;
@@ -160,9 +161,66 @@ impl DragSession {
         if layer.rect != self.start.rect || layer.crop != self.start.crop {
             let source = self.start.source;
             self.start = DragStart::of(layer, source);
+            self.frame = match (self.moved, self.last) {
+                (true, Some((cx, cy, free, snap))) => {
+                    drag(&self.start, self.op, cx, cy, free, snap.as_ref())
+                }
+                _ => DragFrame {
+                    rect: self.start.rect,
+                    crop: self.start.crop,
+                    guides: Vec::new(),
+                },
+            };
         }
         true
     }
+}
+
+/// The gestures' `LayerSet`s waiting for their replies (D-41): the
+/// newest one's layout shows until its own reply. An older reply ends
+/// nothing (R23: it cleared a newer commit's preview, and the next gesture
+/// started from the snapshot's older layout).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InFlight {
+    next: u64,
+    newest: Option<(u64, LayerDragPreview)>,
+}
+
+impl InFlight {
+    /// A gesture's `LayerSet` goes out with `preview`: its ticket.
+    pub fn issue(&mut self, preview: LayerDragPreview) -> u64 {
+        self.next += 1;
+        self.newest = Some((self.next, preview));
+        self.next
+    }
+
+    /// The reply of `ticket` came: `true` when it was the newest commit's
+    /// (its preview goes).
+    pub fn answered(&mut self, ticket: u64) -> bool {
+        if self.newest.as_ref().is_some_and(|(t, _)| *t == ticket) {
+            self.newest = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The newest unanswered commit's layout.
+    pub fn current(&self) -> Option<&LayerDragPreview> {
+        self.newest.as_ref().map(|(_, p)| p)
+    }
+}
+
+/// `layer` of `target` as the newest gesture left it: an unanswered
+/// commit's layout (what the box shows) when it is that layer's, else as
+/// the snapshot has it. A drag or a nudge starts from it (R23).
+pub fn newest(layer: &Layer, target: &SceneTarget, pending: Option<&LayerDragPreview>) -> Layer {
+    let mut layer = layer.clone();
+    if let Some(p) = pending.filter(|p| p.layer == layer.id && p.target == *target) {
+        layer.rect = p.rect;
+        layer.crop = p.crop;
+    }
+    layer
 }
 
 /// A nudge burst in progress (D-33).
@@ -418,6 +476,65 @@ mod tests {
             None,
         );
         assert_eq!(resize.kind(), DragKind::LayerResize);
+    }
+
+    fn preview_at(x: i32) -> LayerDragPreview {
+        let (target, layer) = face();
+        LayerDragPreview {
+            target,
+            layer: layer.id,
+            rect: Rect::new(x, 760, 384, 288),
+            crop: Crop::default(),
+        }
+    }
+
+    /// R23: an older reply leaves a newer commit's preview alone; the
+    /// newest one's reply ends it.
+    #[test]
+    fn only_the_newest_commits_reply_ends_its_preview() {
+        let mut flight = InFlight::default();
+        let a = flight.issue(preview_at(1499));
+        let b = flight.issue(preview_at(1498));
+        assert!(!flight.answered(a), "A's reply isn't the newest");
+        assert_eq!(flight.current().map(|p| p.rect.x), Some(1498));
+        assert!(flight.answered(b));
+        assert_eq!(flight.current(), None);
+        assert!(!flight.answered(b), "once");
+    }
+
+    /// R23: a gesture that starts while a commit is unanswered starts from
+    /// its layout (the box drawn), not from the snapshot's older one; a
+    /// commit of another layer or scene doesn't count.
+    #[test]
+    fn a_gesture_starts_from_the_unanswered_layout() {
+        let (target, layer) = face();
+        let pending = preview_at(1400);
+        assert_eq!(newest(&layer, &target, Some(&pending)).rect.x, 1400);
+        assert_eq!(newest(&layer, &target, None).rect.x, 1500);
+        let other = SceneTarget::Take(qrec_core::TakeId::numbered(5));
+        assert_eq!(newest(&layer, &other, Some(&pending)).rect.x, 1500);
+        let mut screen = layer.clone();
+        screen.id = LayerId::numbered(1);
+        assert_eq!(newest(&screen, &target, Some(&pending)).rect, screen.rect);
+    }
+
+    /// R23: a snapshot that moves the layer mid-drag carries the drag on
+    /// at once: the release sends the start plus the offset, not the frame
+    /// of the last motion.
+    #[test]
+    fn a_rebase_mid_drag_moves_the_frame_too() {
+        let (target, layer) = face();
+        let mut scene = testkit::design_project().scene;
+        let mut drag = DragSession::new(target, &layer, DragOp::Move, None);
+        drag.update(20.0, 0.0, half(), false, None);
+        assert_eq!(drag.frame.rect, Rect::new(1540, 760, 384, 288));
+        scene.layers[1].rect.y = 700;
+        assert!(drag.rebase(Some(&scene)));
+        assert_eq!(drag.frame.rect, Rect::new(1540, 700, 384, 288));
+        assert_eq!(
+            drag.command().as_ref().and_then(rect_of),
+            Some(Rect::new(1540, 700, 384, 288))
+        );
     }
 
     #[test]
