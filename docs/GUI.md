@@ -1632,7 +1632,13 @@ job literal); and the harness and other suites: `gui_support/mod.rs`
 (`preview_heights`, `scale_factor`, `assert_live_picture_drawn_at`),
 `gui_stage.rs` (S02 at 1.5, S06 at 2 and 1.5, the adaptive S02 and S06
 cases), `gui_timeline.rs` (S09 at 1.5 and the frames' heights, S10's trim
-at 2 and 1.5), `gui_chrome.rs` (S16b's body, WP7's copy).
+at 2 and 1.5), `gui_chrome.rs` (S16b's body, WP7's copy). Its audit
+changed `testctl.rs` (`local`'s `binRowsAlive` and `mudBarsTicking`) and,
+in WP7's own files, `bin_drawer/row.rs` (a row's click gesture and drag
+source hold its widgets weakly, R11), `bin_drawer/mod.rs` and
+`widgets/mud_bar.rs` (test mode's weak lists of rows and bars those two
+count), `export/mod.rs` (an export not its own clears the panel's last
+outcome) and `gui_bin_export.rs`.
 
 ### G§3.18 Test control channel (`src/testctl.rs`, WP0b)
 
@@ -2329,7 +2335,7 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
 
     ```rust
     pub struct ExportReadout {
-        pub percent: u8,          // floor(100 · done / total), done = 0.9·Σseg_done + 0.1·stitch (export_progress_view)
+        pub percent: u8,          // 100 · done / total to the nearest (half up, never 100 before the end), done = 0.9·Σseg_done + 0.1·stitch (export_progress_view)
         pub rendered: u64,        // Σ min(seg_done, seg_frames): the frames line
         pub total: u64,
         pub label: String,        // "Rendering clip 6/10" | "Stitching"
@@ -3368,7 +3374,13 @@ Done or Failed; the running and failed lines count the timeline's clips
 (G§4.8); S17's wrapper fails the third unit after the first two rendered
 (11 %); `waitIdle` settles the window's own running export (G§3.18), so
 the cases click Export and wait idle like any. Its departures are in
-G§7.2's list.
+G§7.2's list. The integration audit: a bin row's click gesture held the
+row (a cycle: every rebuild kept the rows it dropped; R11, the bin keys
+case counts them), and the panel's own last Done or Failed page came
+back after another export ran over it, dropping that export's toast
+(now an export not its own clears it, so the panel closes when that one
+ends; S16 runs a CLI export over its Done page). S15b and S15c's running
+pages check no mud bar ticks under the frozen clock.
 
 ### WP8 — Blocking screens as drawn (lane A, after WP7 and G§0.2)
 
