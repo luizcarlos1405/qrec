@@ -31,8 +31,9 @@
 //!     the autocut page; a `layer.nudge-*` that can run goes to the stage's
 //!     nudge burst (D-33: one `LayerSet` per burst, not per press).
 //! 11. `keymap::action_for` on the state with the player's frame as the
-//!     playhead while playing: a command (after its pre-steps), a GUI
-//!     action, or why it can't run (D-34).
+//!     playhead while the program plays: a command (after its pre-steps:
+//!     first a seek to the player's frame, R18), a GUI action, or why it
+//!     can't run (D-34).
 //!
 //! Before the Session is open (startup, blocking pages) only `app.quit`
 //! runs; other keys go to the page's buttons.
@@ -42,6 +43,7 @@ use std::borrow::Cow;
 use qrec_core::keymap::{Action, KeyChord, KeyContext, Keymap, action_for, lookup, usable_keys};
 use qrec_core::protocol::command::{SeekTarget, ShuttleDir};
 use qrec_core::state::CanvasMode;
+use qrec_core::time::Sign;
 use qrec_core::ui_normalize::edit_target;
 use qrec_core::view::notices::{Notice, unavailable_notice};
 use qrec_core::view::{DragKind, FocusRegion, PanelPageKind};
@@ -112,8 +114,8 @@ pub enum KeyDecision {
 /// What a command needs first (G§3.8).
 #[derive(Debug, Clone, PartialEq)]
 pub enum PreStep {
-    /// Seek to the player's frame (a playhead-dependent command while
-    /// playing).
+    /// Seek to the player's frame: the program plays and the core's
+    /// playhead lags it (R18).
     Seek(Frame),
     /// Switch the canvas to Live (a recording started in Program, D-05).
     SetLive,
@@ -123,18 +125,6 @@ pub enum PreStep {
     /// while playing changes no state it could follow (D-44).
     PlayerRate(f64),
 }
-
-/// The bindings whose command reads the playhead (G§3.8 pre-steps).
-const PLAYHEAD_BINDINGS: [&str; 8] = [
-    "clip.split",
-    "clip.trim-start",
-    "clip.trim-end",
-    "clip.nudge-start",
-    "clip.nudge-end",
-    "clip.nudge-start-10",
-    "clip.nudge-end-10",
-    "frame.save",
-];
 
 /// The layer nudges (D-33): the stage coalesces a burst of them into one
 /// `LayerSet` (its GUI actions of the same ids).
@@ -241,7 +231,7 @@ pub fn decide_binding(id: &str, rs: &RouterState<'_>) -> KeyDecision {
         Some(Action::Run(_)) if NUDGE_BINDINGS.contains(&id) => gui(id),
         Some(Action::Run(cmd)) => KeyDecision::Run {
             id: id.to_owned(),
-            pre: pre_steps(id, rs),
+            pre: pre_steps(id, &cmd, rs),
             cmd,
         },
         Some(Action::Gui) => gui(id),
@@ -285,12 +275,18 @@ pub fn effective_state<'a>(rs: &RouterState<'a>) -> Cow<'a, State> {
     }
 }
 
-/// The pre-steps of binding `id` (G§3.8).
-fn pre_steps(id: &str, rs: &RouterState<'_>) -> Vec<PreStep> {
+/// The pre-steps of binding `id`, whose command is `cmd` (G§3.8).
+fn pre_steps(id: &str, cmd: &Command, rs: &RouterState<'_>) -> Vec<PreStep> {
     let state = rs.state;
     let mut pre = Vec::new();
+    // While the program plays the core's playhead only moves with the
+    // sync's once-a-second seek: a command resolved from it (a split, a
+    // frame step, ±1 s, an edit jump, a shuttle's start, a selection by
+    // the playhead…) first puts it on the player's frame (R18). Not an
+    // absolute seek, which doesn't read it.
     if let Some(frame) = rs.player_frame
-        && PLAYHEAD_BINDINGS.contains(&id)
+        && frame != state.ui.playhead
+        && !absolute_seek(cmd)
     {
         pre.push(PreStep::Seek(frame));
     }
@@ -315,6 +311,20 @@ fn pre_steps(id: &str, rs: &RouterState<'_>) -> Vec<PreStep> {
         }
     }
     pre
+}
+
+/// A seek that doesn't read the playhead: to a frame, the start, the end.
+fn absolute_seek(cmd: &Command) -> bool {
+    matches!(
+        cmd,
+        Command::Seek {
+            to: SeekTarget::To(TimeArg {
+                sign: Sign::Absolute,
+                ..
+            }) | SeekTarget::Start
+                | SeekTarget::End
+        }
+    )
 }
 
 /// The shuttle rate after pressing `dir` (G§3.10 step 7): `L` 1 → 2 → 4,

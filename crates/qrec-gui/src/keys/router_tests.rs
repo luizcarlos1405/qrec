@@ -480,12 +480,24 @@ fn pre_steps() {
             timeline: true
         })
     );
-    // Not for commands that don't read the playhead.
-    assert_eq!(playing.calls("comma").len(), 1);
-    // Shuttle: L while playing at 1 → 2, told to the player too (D-44).
+    // Every command does (R18): `,` reads the playhead too with nothing
+    // selected (the clip under it).
+    let seek_2500 = dispatch(Command::Seek {
+        to: qrec_core::protocol::command::SeekTarget::To(TimeArg::frames(2500)),
+    });
+    assert_eq!(
+        playing.calls("comma"),
+        [
+            seek_2500.clone(),
+            dispatch(Command::Select { op: SelectOp::Prev })
+        ]
+    );
+    // Shuttle: L while playing at 1 → 2, told to the player too (D-44),
+    // after the seek.
     assert_eq!(
         playing.calls("l"),
         [
+            seek_2500.clone(),
             Call::Rate(2.0),
             Call::PlayerRate(2.0),
             dispatch(Command::Shuttle {
@@ -494,16 +506,17 @@ fn pre_steps() {
         ]
     );
     playing.local.playing_rate = 4.0;
-    assert_eq!(playing.calls("l")[0], Call::Rate(4.0));
-    assert_eq!(playing.calls("j")[0], Call::Rate(-1.0));
+    assert_eq!(playing.calls("l")[1], Call::Rate(4.0));
+    assert_eq!(playing.calls("j")[1], Call::Rate(-1.0));
     playing.local.playing_rate = -2.0;
     assert_eq!(
-        playing.calls("j")[..2],
+        playing.calls("j")[1..3],
         [Call::Rate(-4.0), Call::PlayerRate(-4.0)]
     );
     assert_eq!(
         playing.calls("k"),
         [
+            seek_2500,
             Call::Rate(1.0),
             dispatch(Command::Shuttle {
                 dir: ShuttleDir::Stop
@@ -711,4 +724,77 @@ fn rebound_and_conflicting_keys_follow_the_users_keymap() {
         scene.press("b").0,
         decide_binding("bin.toggle", &scene.rs())
     );
+}
+
+/// The state the press leaves: its dispatched commands run through the
+/// core in order (what the person ends on).
+fn fold(scene: &Scene, chord: &str) -> State {
+    let ctx = testkit::ctx("2026-10-14T15:00:00Z", 7);
+    scene
+        .calls(chord)
+        .into_iter()
+        .fold(scene.state.clone(), |state, call| match call {
+            Call::Dispatch(cmd) => {
+                qrec_core::apply::apply(&state, &ctx, cmd).map_or(state, |out| out.state)
+            }
+            _ => state,
+        })
+}
+
+/// R18: while the program plays the core's playhead lags the player (it
+/// moves with the sync's once-a-second seek), and frame steps, ±1 s, edit
+/// jumps and shuttles are resolved from it: each press first seeks it to
+/// the player's frame, so the person lands where the player was, not up
+/// to a second back (and a shuttle doesn't restart at 0 or stop at 0 on a
+/// stale playhead).
+#[test]
+fn relative_seeks_and_shuttles_while_playing_start_at_the_player() {
+    use qrec_core::protocol::command::SeekTarget;
+    let mut playing = Scene::program();
+    playing.state.runtime.playing = true;
+    playing.player_frame = Some(2500);
+    let seek_2500 = dispatch(Command::Seek {
+        to: SeekTarget::To(TimeArg::frames(2500)),
+    });
+    for chord in ["Right", "Left", "shift+Right", "shift+Left", "Up", "Down"] {
+        let calls = playing.calls(chord);
+        assert_eq!(calls.len(), 2, "{chord}: {calls:?}");
+        assert_eq!(calls[0], seek_2500, "{chord}");
+    }
+    assert_eq!(fold(&playing, "Right").ui.playhead, 2501);
+    assert_eq!(fold(&playing, "Left").ui.playhead, 2499);
+    assert_eq!(fold(&playing, "shift+Right").ui.playhead, 2530);
+    // The edit points around 2500: c2d0's start (2084) and end (3176).
+    assert_eq!(fold(&playing, "Up").ui.playhead, 2084);
+    assert_eq!(fold(&playing, "Down").ui.playhead, 3176);
+    // An absolute seek doesn't read the playhead; the player on the core's
+    // playhead needs no seek.
+    assert_eq!(
+        playing.calls("Home"),
+        [dispatch(Command::Seek {
+            to: SeekTarget::Start
+        })]
+    );
+    playing.player_frame = Some(2437);
+    assert_eq!(playing.calls("Right").len(), 1);
+
+    // L after the end (the core's playhead still at the total while the
+    // player reversed 10 frames): on from the player, not from 0.
+    let total = 7391;
+    let mut ended = Scene::program();
+    ended.state.runtime.playing = true;
+    ended.state.ui.playhead = total;
+    ended.player_frame = Some(total - 10);
+    ended.local.playing_rate = -1.0;
+    let state = fold(&ended, "l");
+    assert_eq!(state.ui.playhead, total - 10);
+    assert!(state.runtime.playing);
+    // J just after a start from 0: backwards, not a stop at 0.
+    let mut started = Scene::program();
+    started.state.runtime.playing = true;
+    started.state.ui.playhead = 0;
+    started.player_frame = Some(15);
+    let state = fold(&started, "j");
+    assert!(state.runtime.playing, "reverse from 15");
+    assert_eq!(state.ui.playhead, 15);
 }

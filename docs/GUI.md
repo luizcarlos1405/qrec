@@ -694,9 +694,14 @@ each key press, first match:
     Stop propagation.
 
 Pre-steps:
-- Playhead-dependent commands (`clip.split`, `clip.trim-*`,
-  `clip.nudge-*`, `frame.save`) while playing → `Seek{To(player_frame)}`
-  first.
+- While the program plays, every command but an absolute seek
+  (`Seek{To(f)}`, `Start`, `End`), when the player's frame isn't the
+  core's playhead → `Seek{To(player_frame)}` first. The core resolves
+  splits, trims, nudges, `frame.save`, frame steps, ±1 s, edit jumps, a
+  shuttle's start (the forward reset at the end, the reverse stop at 0)
+  and a selection by the playhead from `ui.playhead`, which lags the
+  player by up to a second while playing (R18; it was only the first
+  four).
 - `record.toggle` and `record.over` from Idle in Program mode →
   `SetCanvasMode{Live}` first (D-05).
 - `shuttle.*` → set `LocalUi.playing_rate` first; while already playing,
