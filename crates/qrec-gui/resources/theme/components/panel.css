@@ -1,1 +1,456 @@
-/* The Onion layers panel (C09-C13). Owner: WP5. */
+/*
+ * The Onion layers panel (C09-C13, C26's value tooltip, C29's numeric
+ * field) and the autocut page (S12). Owner: WP5.
+ *
+ * Metrics are the approved frames' (S02, S06, S12, S13, S13b): a 48 px
+ * header, 16 px side padding, 32 px section headers, 44 px layer rows,
+ * 92 px audio rows, 52 px inspector groups 4 px apart. GTK's min-width
+ * and min-height size the content box: padding and borders come on top.
+ */
+
+/* ------------------------------------------------------------ the region */
+
+#region-panel.qrec-panel {
+  background-color: var(--qrec-surface);
+  box-shadow: inset 1px 0 var(--qrec-border);
+}
+
+.qrec-panel .panel-header {
+  min-height: 48px;
+  padding: 0 8px 0 16px;
+}
+
+.qrec-panel .panel-header button.panel-add-icon image {
+  -gtk-icon-size: 16px;
+}
+
+.qrec-panel .panel-column {
+  padding: 0 16px 16px 16px;
+}
+
+/* --------------------------------------------- C13 banner, sections */
+
+.qrec-panel .take-banner {
+  min-height: 40px;
+  padding: 0 6px 0 12px;
+  margin-bottom: 8px;
+  border-radius: 6px;
+  background-color: var(--qrec-raised);
+  box-shadow: inset 0 0 0 1px var(--qrec-border);
+}
+
+.qrec-panel .take-banner button.qrec-btn.sm {
+  min-height: 28px;
+}
+
+.qrec-panel .take-banner button image {
+  -gtk-icon-size: 16px;
+}
+
+.qrec-panel .section-header {
+  min-height: 32px;
+}
+
+.qrec-panel .panel-section {
+  margin-bottom: 16px;
+}
+
+.qrec-panel button.add-button {
+  margin-top: 4px;
+}
+
+/* An empty section (S01a): an icon and a muted caption. */
+.qrec-panel .empty-row {
+  min-height: 32px;
+  margin: 4px 0;
+  padding: 0 12px;
+}
+
+.qrec-panel .empty-row image {
+  -gtk-icon-size: 16px;
+}
+
+/* ------------------------------------------------------- C09 layer rows */
+
+.qrec-panel list.layer-list {
+  background-color: transparent;
+}
+
+.qrec-panel list.layer-list > row.layer-row {
+  min-height: 44px;
+  padding: 0 4px 0 0;
+  border-radius: 6px;
+}
+
+.qrec-panel .layer-row .row-slot {
+  min-width: 24px;
+  min-height: 24px;
+}
+
+.qrec-panel .layer-row image.row-slot,
+.qrec-panel .layer-row button.row-slot image {
+  -gtk-icon-size: 16px;
+}
+
+.qrec-panel .layer-row .row-texts {
+  margin-left: 6px;
+}
+
+.qrec-panel .layer-row button.lock {
+  margin-right: 4px;
+}
+
+/* Grip, eye and lock show on hover (revealed by opacity only, C09); a
+   focused row wears only its ring (S13b), an eye or a lock the keyboard
+   reaches shows itself. */
+.qrec-panel .layer-row .reveal {
+  opacity: 0;
+  transition: opacity 120ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.qrec-panel .layer-row:hover .reveal,
+.qrec-panel .layer-row .reveal:focus-within,
+.qrec-panel .layer-row.ghost .reveal {
+  opacity: 1;
+}
+
+/* Hidden: eye-off, the name and the source in muted. */
+.qrec-panel .layer-row.hidden .row-name,
+.qrec-panel .layer-row.hidden .row-source {
+  color: var(--qrec-muted);
+}
+
+/* An error or a missing source: the message reads in text (DESIGN). */
+.qrec-panel .layer-row.problem .row-source {
+  color: var(--qrec-text);
+}
+
+.qrec-panel .layer-row.selected .row-source {
+  color: var(--qrec-text);
+}
+
+/* Renaming: the name becomes a field (Enter saves, Esc cancels); its
+   accent stroke is the focus indicator (S13b draws no ring around it). */
+.qrec-panel editablelabel.row-name.editing > stack > text {
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background-color: var(--qrec-field);
+  box-shadow: inset 0 0 0 1px var(--qrec-accent);
+  color: var(--qrec-text);
+  outline: none;
+}
+
+/* Dragging: the row lifts (e1) over a 2 px drop line. */
+.qrec-panel .layer-row.drag-source {
+  opacity: 0.4;
+}
+
+.qrec-panel .layer-row.ghost {
+  min-height: 44px;
+  padding: 0 4px 0 0;
+  border-radius: 6px;
+  background-color: var(--qrec-raised);
+  box-shadow: 0 2px 6px var(--qrec-shadow-e1);
+}
+
+.qrec-panel .drop-line {
+  min-height: 8px;
+}
+
+.qrec-panel .drop-line .drop-dot {
+  min-width: 4px;
+  min-height: 4px;
+  border-radius: 999px;
+  border: 2px solid var(--qrec-accent);
+  background-color: var(--qrec-surface);
+}
+
+.qrec-panel .drop-line .drop-bar {
+  min-height: 2px;
+  background-color: var(--qrec-accent);
+}
+
+/* ------------------------------------------------------- C10 audio rows */
+
+.qrec-panel .audio-row {
+  min-height: 83px;
+  padding: 4px 0 5px 0;
+}
+
+.qrec-panel .audio-row .audio-line1 {
+  min-height: 24px;
+}
+
+.qrec-panel .audio-row .role-icon {
+  -gtk-icon-size: 16px;
+  margin-right: 6px;
+}
+
+.qrec-panel .audio-row .row-name {
+  margin-right: 8px;
+}
+
+/* The id chip: mono-xs muted in a 1 px border, 16 tall. */
+.qrec-panel .audio-row .track-id {
+  min-height: 16px;
+  padding: 0 4px;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px var(--qrec-border);
+  margin-right: 8px;
+}
+
+/* The Autocut tag: scissors and a caption on raised. */
+.qrec-panel .audio-row .autocut-tag {
+  min-height: 18px;
+  padding: 0 6px 0 4px;
+  border-radius: 4px;
+  background-color: var(--qrec-raised);
+  color: var(--qrec-muted);
+}
+
+.qrec-panel .audio-row .autocut-tag image {
+  -gtk-icon-size: 12px;
+}
+
+/* M: 24x24, caption-strong; on, warning at 20 % with a warning stroke. */
+.qrec-panel .audio-row button.track-toggle {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  margin-right: 8px;
+  border-radius: 4px;
+  border: none;
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+  color: var(--qrec-text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.qrec-panel .audio-row button.track-toggle:hover {
+  background-image: image(var(--qrec-hover));
+}
+
+.qrec-panel .audio-row button.track-toggle:checked {
+  background-color: var(--qrec-warning-20);
+  box-shadow: inset 0 0 0 1px var(--qrec-warning);
+}
+
+/* The meter line is 14 tall (the readout's), its 8 px bar centered. */
+.qrec-panel .audio-row .meter {
+  margin-top: 7px;
+}
+
+.qrec-panel .audio-row .meter-readout {
+  min-width: 56px;
+}
+
+.qrec-panel .audio-row .device-missing {
+  margin-top: 6px;
+  min-height: 16px;
+}
+
+.qrec-panel .audio-row .device-missing image {
+  -gtk-icon-size: 12px;
+}
+
+.qrec-panel .audio-row .audio-line3 {
+  margin-top: 6px;
+}
+
+.qrec-panel .audio-row .field-caption {
+  min-width: 25px;
+  margin-right: 8px;
+}
+
+/* Gain and Sync: 104 px fields. */
+.qrec-panel .audio-row .audio-field {
+  min-width: 88px;
+}
+
+/* ------------------------------------------------------- C12 inspector */
+
+.qrec-panel .inspector .field-caption {
+  min-height: 16px;
+}
+
+.qrec-panel .aspect-lock-slot {
+  margin: 0 8px;
+}
+
+.qrec-panel button.aspect-lock {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  margin-bottom: 4px;
+  border-radius: 4px;
+  background-color: transparent;
+  background-image: none;
+  box-shadow: inset 0 0 0 1px var(--qrec-border-strong);
+  color: var(--qrec-muted);
+}
+
+.qrec-panel button.aspect-lock image {
+  -gtk-icon-size: 16px;
+}
+
+.qrec-panel button.aspect-lock:checked {
+  background-color: var(--qrec-selected);
+  box-shadow: inset 0 0 0 1px var(--qrec-accent);
+  color: var(--qrec-text);
+}
+
+.qrec-panel .opacity-field {
+  min-width: 48px;
+}
+
+.qrec-panel .field-helper {
+  margin-top: 0;
+}
+
+/* ---------------------------------------------- C29 numeric field */
+
+.qrec-panel .field.numeric > text {
+  min-height: 30px;
+  background: none;
+  color: var(--qrec-text);
+}
+
+/* ----------------------------------------------- C26 value tooltip */
+
+popover.qrec-value-tooltip > contents {
+  padding: 4px 8px;
+  border-radius: 6px;
+  background-color: var(--qrec-raised);
+  border: 1px solid var(--qrec-border);
+  box-shadow: 0 2px 6px var(--qrec-shadow-e1);
+}
+
+/* ------------------------------------------------------ S12 autocut */
+
+.qrec-panel .autocut-header {
+  padding: 0 16px 0 12px;
+}
+
+.qrec-panel .autocut-content {
+  padding: 16px 16px 16px 16px;
+}
+
+.qrec-panel .autocut-block {
+  margin-bottom: 16px;
+}
+
+.qrec-panel .autocut-block > .field-caption {
+  min-height: 16px;
+  margin-bottom: 2px;
+}
+
+.qrec-panel .knob-field {
+  min-width: 80px;
+}
+
+/* A knob's track: centered on its field (the trough at the field's
+   middle), the ticks 6 px under it, the end labels 6 px under those. */
+.qrec-panel .knob scale {
+  padding: 0;
+  margin-top: 11px;
+  /* The slider (16) and the ticks under it (6 + 4). */
+  min-height: 26px;
+}
+
+/* GTK lays the ticks right under the trough: a 10 px indicator draws
+   only its last 4 px, so the tick sits 6 px under the thumb (S12). */
+.qrec-panel .knob scale > marks > mark > indicator {
+  min-width: 2px;
+  min-height: 10px;
+  background-color: transparent;
+  background-image: linear-gradient(to bottom, transparent 6px, var(--qrec-muted) 6px);
+}
+
+.qrec-panel .knob .knob-ends {
+  margin-top: 3px;
+}
+
+.qrec-panel .autocut-summary {
+  margin-top: 9px;
+}
+
+.qrec-panel .summary-mono {
+  font-family: var(--qrec-font-mono), "DejaVu Sans Mono", monospace;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 22px;
+  font-feature-settings: "tnum" 1;
+}
+
+.qrec-panel .summary-rows > label {
+  min-height: 16px;
+}
+
+/* The values line up 72 px in (S12). */
+.qrec-panel .summary-rows .summary-key {
+  min-width: 60px;
+}
+
+.qrec-panel .summary-value {
+  color: var(--qrec-text);
+}
+
+/* "before → after": the before and the arrow in muted, the after
+   stronger. */
+.qrec-panel .summary-before {
+  font-weight: 400;
+}
+
+.qrec-panel .summary-after {
+  font-weight: 600;
+}
+
+.qrec-panel list.region-list {
+  margin-top: 10px;
+  background-color: transparent;
+}
+
+.qrec-panel list.region-list > row.region-row {
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 6px;
+}
+
+.qrec-panel .region-row .region-n {
+  min-width: 21px;
+}
+
+.qrec-panel .autocut-switch-row {
+  margin-top: 24px;
+  min-height: 22px;
+}
+
+.qrec-panel .autocut-note {
+  margin-top: 12px;
+}
+
+.qrec-panel .autocut-footer {
+  padding: 15px 16px 16px 16px;
+  box-shadow: inset 0 1px var(--qrec-border);
+}
+
+/* ------------------------------------------- Medium (320 px, G§3.15) */
+
+/* The region rows fit 288 px: mono-xs and tighter padding (no frame
+   draws S12 at this width). */
+.panel-medium list.region-list > row.region-row {
+  padding: 0 8px;
+}
+
+.panel-medium .region-row label {
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.panel-medium .region-row .region-n {
+  min-width: 14px;
+}

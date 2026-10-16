@@ -1,0 +1,54 @@
+---
+source: crates/qrec-core/src/view/autocut.rs
+expression: "serde_json::json!({\"knobs\": knobs, \"tracks\": track_items(&state)})"
+---
+{
+  "knobs": [
+    {
+      "ends": [
+        "−60",
+        "−10"
+      ],
+      "label": "Threshold",
+      "text": "−35",
+      "unit": "dB"
+    },
+    {
+      "ends": [
+        "100",
+        "2000"
+      ],
+      "label": "Min silence",
+      "text": "400",
+      "unit": "ms"
+    },
+    {
+      "ends": [
+        "0",
+        "500"
+      ],
+      "label": "Padding",
+      "text": "120",
+      "unit": "ms"
+    },
+    {
+      "ends": [
+        "0",
+        "1000"
+      ],
+      "label": "Min keep",
+      "text": "200",
+      "unit": "ms"
+    }
+  ],
+  "tracks": [
+    {
+      "label": "A1 · Yeti Nano (mic)",
+      "track": "A1"
+    },
+    {
+      "label": "A2 · System audio (system)",
+      "track": "A2"
+    }
+  ]
+}

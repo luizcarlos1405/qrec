@@ -5,10 +5,11 @@
 //! animation clock is frozen at `QREC_GUI_TEST_T_MS` (default 0), one-shot
 //! animations jump to their end, reduced motion comes from the config only
 //! (D-30), `QREC_GUI_TEST_NOW` (RFC 3339) is the local time of the export's
-//! auto name, and the control channel listens. Flags, comma-separated:
-//! `stuck-gst` makes startup report GStreamer stuck without initializing it
-//! (the stuck page, exit 5); `panic-activate` panics in `activate` (the app
-//! quits with 1).
+//! auto name, `QREC_GUI_TEST_LEVELS` (`<device>=<rms>/<peak>,…`, dBFS) pins
+//! the meters' readings (`widgets::meter`), and the control channel
+//! listens. Flags, comma-separated: `stuck-gst` makes startup report
+//! GStreamer stuck without initializing it (the stuck page, exit 5);
+//! `panic-activate` panics in `activate` (the app quits with 1).
 //!
 //! **The control channel**: a socket `$XDG_RUNTIME_DIR/qrec-gui-test-<pid>.sock`
 //! (0600, the test's private runtime dir; one per window, so a test can
@@ -21,7 +22,7 @@
 //! | --- | --- |
 //! | `waitIdle` | `{"ok":true,"rev":R}` once the previews, the player and the io worker are idle (checked before the queue: what they send is queued before they say so), the queue is empty, the window's requests are answered, no source awaits the portal, the window isn't opening, the stage is idle (no program reload due; in Live, the engine settled its live scenes and the picture drew its live sources, also after a rebuild that sent no status: `media::live`), and a frame was drawn after that |
 //! | `regions` | `{"regions":{"<name>":[x,y,w,h],…}}`: every `region-*` widget and named part (G§8.4), window coordinates; `names` adds widgets by name |
-//! | `labels` | the text of every visible label under the widget `name` (default: the window) |
+//! | `labels` | the text of every visible label under the widget `name` (default: the window), and `entries`: each visible text field's value by its nearest given name (`{"inspector-x":"1280"}`) |
 //! | `dispatch` | `Store::dispatch` of `command` (`confirmed`: as confirmed), `{"ok":true}` at once |
 //! | `action` | runs binding or GUI action `id` as its key would |
 //! | `hints` | the hint bar's items and status (`hintbar::current_items`) |
@@ -415,15 +416,28 @@ fn labels(app: &App, request: &Value) -> Value {
         None => root,
     };
     let mut texts = Vec::new();
+    let mut entries = serde_json::Map::new();
     walk_visible(&start, &mut |w| {
         if let Some(label) = w.downcast_ref::<gtk::Label>()
             && !label.text().is_empty()
         {
             texts.push(label.text().to_string());
         }
+        // A text field's value under its nearest given name, its own or an
+        // ancestor's (a `NumericField`'s box: `inspector-x`; GTK names an
+        // unnamed widget after its type).
+        if let Some(text) = w.downcast_ref::<gtk::Text>() {
+            let mut at = Some(w.clone());
+            while let Some(n) = at.as_ref().filter(|n| n.widget_name() == n.type_().name()) {
+                at = n.parent();
+            }
+            if let Some(n) = at {
+                entries.insert(n.widget_name().to_string(), json!(text.text().to_string()));
+            }
+        }
         true
     });
-    json!({"ok": true, "labels": texts})
+    json!({"ok": true, "labels": texts, "entries": entries})
 }
 
 fn dispatch(app: &App, request: &Value) -> Value {

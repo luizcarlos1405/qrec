@@ -1,0 +1,76 @@
+---
+source: crates/qrec-core/src/view/panel.rs
+expression: cmds
+---
+[
+  {
+    "cmd": "setUi",
+    "patch": {
+      "selectedLayer": "L2"
+    }
+  },
+  {
+    "cmd": "layerSet",
+    "layer": "L2",
+    "patch": {
+      "visible": false
+    },
+    "target": "project"
+  },
+  {
+    "cmd": "layerSet",
+    "layer": "L2",
+    "patch": {
+      "locked": true
+    },
+    "target": "project"
+  },
+  {
+    "cmd": "layerSet",
+    "layer": "L2",
+    "patch": {
+      "name": "Face cam"
+    },
+    "target": "project"
+  },
+  {
+    "cmd": "layerRemove",
+    "layer": "L2",
+    "target": "project"
+  },
+  {
+    "cmd": "audioSet",
+    "patch": {
+      "muted": true
+    },
+    "target": "project",
+    "track": "A1"
+  },
+  {
+    "cmd": "audioSet",
+    "patch": {
+      "label": "Desk mic"
+    },
+    "target": "project",
+    "track": "A1"
+  },
+  {
+    "cmd": "audioRemove",
+    "target": "project",
+    "track": "A1"
+  },
+  {
+    "cmd": "autocutSettings",
+    "patch": {
+      "track": "A2"
+    }
+  },
+  {
+    "cmd": "audioSet",
+    "patch": {
+      "gainDb": -3.5
+    },
+    "target": "take-0005",
+    "track": "A1"
+  }
+]

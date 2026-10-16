@@ -1,3 +1,348 @@
 //! C29 numeric field (G§5.1): a `.field` box with a right-aligned
-//! `gtk::Text` and a unit label; arrows and scroll step the value; no ±
-//! buttons. Owner: WP5. Stub until WP5 lands.
+//! `gtk::Text` and a unit label; the arrow keys and the scroll wheel step
+//! the value; no ± buttons. Owner: WP5.
+//!
+//! - The model's value comes in with [`NumericField::set_value`]; while
+//!   the person edits (the field has the focus and its text differs from
+//!   the model's), a new model value doesn't overwrite what they type.
+//! - Enter and leaving the field commit: the commit callback gets the text
+//!   (once per commit, and only when it differs from the model's). `Esc`
+//!   puts the model's value back.
+//! - `↑` `↓` step by the step (`Shift`: ×10), `PgUp` `PgDn` by ten steps;
+//!   the wheel steps only while the field has the focus, so scrolling the
+//!   panel never changes a value. A step changes the text; Enter or leaving
+//!   commits it (one command per commit).
+//! - [`NumericField::set_invalid`] draws the C29 invalid state; the caller
+//!   shows the helper text.
+//!
+//! Keys reach the field: the window's router lets everything through while
+//! an editable has the focus (G§3.8 step 2).
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use gtk::prelude::*;
+use gtk::{gdk, glib};
+use qrec_core::view::panel::parse_number;
+
+use crate::guarded;
+
+/// How a field writes a stepped value ("1280", "−6.5").
+pub type Format = Rc<dyn Fn(f64) -> String>;
+
+/// Called with a committed text.
+pub type CommitFn = Rc<dyn Fn(&str)>;
+
+/// A C29 numeric field. Cheap to clone; main thread only.
+#[derive(Clone)]
+pub struct NumericField {
+    inner: Rc<Inner>,
+}
+
+struct Inner {
+    root: gtk::Box,
+    text: gtk::Text,
+    unit: gtk::Label,
+    units: RefCell<Vec<String>>,
+    /// The model's text.
+    model: RefCell<String>,
+    step: Cell<f64>,
+    format: RefCell<Format>,
+    on_commit: RefCell<Option<CommitFn>>,
+    /// Text set by the code, not typed.
+    setting: Cell<bool>,
+}
+
+impl std::fmt::Debug for NumericField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NumericField")
+            .field("text", &self.text())
+            .field("model", &*self.inner.model.borrow())
+            .finish()
+    }
+}
+
+impl NumericField {
+    /// A field showing `unit` ("px", "%", "dB", "ms") after the value; its
+    /// accessible name is `name` ("Position X").
+    pub fn new(unit: &str, name: &str) -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        root.add_css_class("field");
+        root.add_css_class("numeric");
+        // The text expands inside the box; the box's width is its parent's
+        // call (a 104 px gain field, a column of the inspector).
+        root.set_hexpand(false);
+        let text = gtk::Text::new();
+        text.set_hexpand(true);
+        text.set_alignment(1.0);
+        text.set_width_chars(1);
+        text.set_max_width_chars(1);
+        text.set_input_purpose(gtk::InputPurpose::Number);
+        text.update_property(&[gtk::accessible::Property::Label(name)]);
+        let unit_label = gtk::Label::new(Some(unit));
+        unit_label.add_css_class("field-unit");
+        unit_label.set_visible(!unit.is_empty());
+        unit_label.set_can_target(false);
+        root.append(&text);
+        root.append(&unit_label);
+        let field = Self {
+            inner: Rc::new(Inner {
+                root,
+                text,
+                unit: unit_label,
+                units: RefCell::new(vec![unit.to_owned()]),
+                model: RefCell::new(String::new()),
+                step: Cell::new(1.0),
+                format: RefCell::new(Rc::new(|v: f64| whole(v))),
+                on_commit: RefCell::new(None),
+                setting: Cell::new(false),
+            }),
+        };
+        field.wire();
+        field
+    }
+
+    pub fn widget(&self) -> gtk::Widget {
+        self.inner.root.clone().upcast()
+    }
+
+    /// The text widget (focus, accessibility).
+    pub fn text_widget(&self) -> gtk::Text {
+        self.inner.text.clone()
+    }
+
+    /// What the field shows now.
+    pub fn text(&self) -> String {
+        self.inner.text.text().to_string()
+    }
+
+    /// The model's value as text. Shown at once unless the person is
+    /// editing; `Esc` and a cancelled edit come back to it.
+    pub fn set_value(&self, text: &str) {
+        let editing = self.inner.text.has_focus() && self.is_dirty();
+        *self.inner.model.borrow_mut() = text.to_owned();
+        if !editing && self.inner.text.text() != text {
+            self.set_text(text);
+        }
+    }
+
+    /// The text differs from the model's.
+    pub fn is_dirty(&self) -> bool {
+        self.inner.text.text() != *self.inner.model.borrow()
+    }
+
+    /// The arrow keys' step.
+    pub fn set_step(&self, step: f64) {
+        self.inner.step.set(step);
+    }
+
+    /// How a stepped value is written.
+    pub fn set_format(&self, format: impl Fn(f64) -> String + 'static) {
+        *self.inner.format.borrow_mut() = Rc::new(format);
+    }
+
+    /// Other spellings of the unit the person may type ("db" for "dB").
+    pub fn set_unit_aliases(&self, aliases: &[&str]) {
+        let mut units = self.inner.units.borrow_mut();
+        units.truncate(1);
+        units.extend(aliases.iter().map(|a| (*a).to_owned()));
+    }
+
+    /// Called with the text on each commit (Enter, leaving the field)
+    /// that changed it.
+    pub fn on_commit(&self, f: impl Fn(&str) + 'static) {
+        *self.inner.on_commit.borrow_mut() = Some(Rc::new(f));
+    }
+
+    /// The C29 invalid state (a `record-text` stroke).
+    pub fn set_invalid(&self, invalid: bool) {
+        if invalid {
+            self.inner.root.add_css_class("invalid");
+        } else {
+            self.inner.root.remove_css_class("invalid");
+        }
+    }
+
+    pub fn set_sensitive(&self, sensitive: bool) {
+        self.inner.root.set_sensitive(sensitive);
+    }
+
+    /// The unit label (its text: "px").
+    pub fn unit(&self) -> gtk::Label {
+        self.inner.unit.clone()
+    }
+
+    /// Puts the model's value back.
+    pub fn revert(&self) {
+        let model = self.inner.model.borrow().clone();
+        self.set_text(&model);
+        self.set_invalid(false);
+    }
+
+    /// Commits the text if it changed.
+    pub fn commit(&self) {
+        if !self.is_dirty() {
+            return;
+        }
+        let callback = self.inner.on_commit.borrow().clone();
+        if let Some(f) = callback {
+            f(&self.text());
+        }
+    }
+
+    fn set_text(&self, text: &str) {
+        self.inner.setting.set(true);
+        self.inner.text.set_text(text);
+        self.inner.setting.set(false);
+    }
+
+    /// Steps the value by `steps` steps (text only; Enter commits).
+    pub fn step_by(&self, steps: f64) {
+        let units = self.inner.units.borrow().clone();
+        let units: Vec<&str> = units.iter().map(String::as_str).collect();
+        let current = parse_number(&self.text(), &units)
+            .or_else(|| parse_number(&self.inner.model.borrow(), &units))
+            .unwrap_or(0.0);
+        let next = current + steps * self.inner.step.get();
+        let format = self.inner.format.borrow().clone();
+        self.set_text(&format(next));
+        self.inner.text.set_position(-1);
+    }
+
+    fn wire(&self) {
+        let inner = &self.inner;
+        // Enter commits.
+        let weak = Rc::downgrade(inner);
+        inner
+            .text
+            .connect_activate(guarded!("numeric field: activate", move |_| {
+                if let Some(inner) = weak.upgrade() {
+                    NumericField { inner }.commit();
+                }
+            }));
+        // Leaving commits.
+        let focus = gtk::EventControllerFocus::new();
+        let weak = Rc::downgrade(inner);
+        focus.connect_leave(guarded!("numeric field: leave", move |_| {
+            if let Some(inner) = weak.upgrade() {
+                NumericField { inner }.commit();
+            }
+        }));
+        inner.text.add_controller(focus);
+        // Arrows step, Esc reverts (before the text widget sees them).
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(inner);
+        keys.connect_key_pressed(guarded!(
+            "numeric field: keys",
+            move |_, key, _code, modifiers| {
+                let Some(inner) = weak.upgrade() else {
+                    return glib::Propagation::Proceed;
+                };
+                let field = NumericField { inner };
+                let shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
+                let ten = if shift { 10.0 } else { 1.0 };
+                match key {
+                    gdk::Key::Up | gdk::Key::KP_Up => field.step_by(ten),
+                    gdk::Key::Down | gdk::Key::KP_Down => field.step_by(-ten),
+                    gdk::Key::Page_Up | gdk::Key::KP_Page_Up => field.step_by(10.0),
+                    gdk::Key::Page_Down | gdk::Key::KP_Page_Down => field.step_by(-10.0),
+                    gdk::Key::Escape => field.revert(),
+                    _ => return glib::Propagation::Proceed,
+                }
+                glib::Propagation::Stop
+            }
+        ));
+        inner.root.add_controller(keys);
+        // The wheel steps while the field has the focus.
+        let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        let weak = Rc::downgrade(inner);
+        scroll.connect_scroll(guarded!(
+            "numeric field: scroll",
+            after_panic = glib::Propagation::Proceed,
+            move |_, _dx, dy| {
+                let Some(inner) = weak.upgrade() else {
+                    return glib::Propagation::Proceed;
+                };
+                if !inner.text.has_focus() || dy == 0.0 {
+                    return glib::Propagation::Proceed;
+                }
+                NumericField { inner }.step_by(if dy < 0.0 { 1.0 } else { -1.0 });
+                glib::Propagation::Stop
+            }
+        ));
+        inner.root.add_controller(scroll);
+        // A click anywhere on the box focuses the text.
+        let click = gtk::GestureClick::new();
+        let weak = Rc::downgrade(inner);
+        click.connect_pressed(guarded!("numeric field: click", move |_, _, _, _| {
+            if let Some(inner) = weak.upgrade()
+                && !inner.text.has_focus()
+            {
+                inner.text.grab_focus();
+            }
+        }));
+        inner.root.add_controller(click);
+        // Typing clears the invalid state.
+        let weak = Rc::downgrade(inner);
+        inner
+            .text
+            .connect_changed(guarded!("numeric field: changed", move |_| {
+                if let Some(inner) = weak.upgrade()
+                    && !inner.setting.get()
+                {
+                    inner.root.remove_css_class("invalid");
+                }
+            }));
+    }
+}
+
+/// A whole number with the true minus ("1280", "−20").
+pub fn whole(v: f64) -> String {
+    let v = v.round() as i64;
+    if v < 0 {
+        format!("\u{2212}{}", v.unsigned_abs())
+    } else {
+        v.to_string()
+    }
+}
+
+/// One decimal with the true minus ("0.0", "−6.5").
+pub fn tenths(v: f64) -> String {
+    let text = format!("{:.1}", v.abs());
+    if v < 0.0 && text != "0.0" {
+        format!("\u{2212}{text}")
+    } else {
+        text
+    }
+}
+
+/// A signed whole number ("+0", "+80", "−20"): sync offsets.
+pub fn signed(v: f64) -> String {
+    let v = v.round() as i64;
+    if v < 0 {
+        format!("\u{2212}{}", v.unsigned_abs())
+    } else {
+        format!("+{v}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_use_the_true_minus() {
+        assert_eq!(whole(1280.0), "1280");
+        assert_eq!(whole(-20.4), "\u{2212}20");
+        assert_eq!(tenths(-6.0), "\u{2212}6.0");
+        assert_eq!(tenths(-0.04), "0.0");
+        assert_eq!(tenths(3.5), "3.5");
+        assert_eq!(signed(0.0), "+0");
+        assert_eq!(signed(-20.0), "\u{2212}20");
+        // What a step writes parses back.
+        for text in [whole(-20.0), tenths(-6.5), signed(-30.0)] {
+            assert!(parse_number(&text, &[]).is_some(), "{text}");
+        }
+    }
+}

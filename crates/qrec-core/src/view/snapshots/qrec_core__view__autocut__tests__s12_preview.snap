@@ -1,0 +1,34 @@
+---
+source: crates/qrec-core/src/view/autocut.rs
+expression: "preview_spans(&s12_plan(), &state)"
+---
+[
+  {
+    "clip": "c3e9",
+    "track": "A1",
+    "from": 4842,
+    "to": 4890,
+    "tag": "−1.6 s"
+  },
+  {
+    "clip": "c3e9",
+    "track": "A1",
+    "from": 5570,
+    "to": 5612,
+    "tag": "−1.4 s"
+  },
+  {
+    "clip": "c3e9",
+    "track": "A1",
+    "from": 6276,
+    "to": 6315,
+    "tag": "−1.3 s"
+  },
+  {
+    "clip": "c3e9",
+    "track": "A1",
+    "from": 6948,
+    "to": 7005,
+    "tag": "−1.9 s"
+  }
+]

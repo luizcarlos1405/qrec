@@ -1,0 +1,168 @@
+---
+source: crates/qrec-core/src/view/panel.rs
+expression: rows
+---
+{
+  "hidden, locked, refused, dead, device missing": [
+    [
+      {
+        "layer": "L2",
+        "name": "Face",
+        "source": "Camera · Logitech C920",
+        "selected": false,
+        "hidden": false,
+        "locked": false,
+        "error": "The camera stopped sending frames",
+        "missing": null,
+        "enabled": true
+      },
+      {
+        "layer": "L1",
+        "name": "Main screen",
+        "source": "Screen · DP-4 · GIGA-BYTE GS27QA",
+        "selected": false,
+        "hidden": true,
+        "locked": true,
+        "error": "Access denied by the desktop portal",
+        "missing": null,
+        "enabled": true
+      }
+    ],
+    [
+      {
+        "track": "A1",
+        "role": "mic",
+        "label": "Yeti Nano",
+        "autocut": true,
+        "muted": false,
+        "gain": "0.0 dB",
+        "gainDb": 0.0,
+        "sync": "+0 ms",
+        "syncOffsetMs": 0,
+        "deviceMissing": null,
+        "enabled": true
+      },
+      {
+        "track": "A2",
+        "role": "system",
+        "label": "System audio",
+        "autocut": false,
+        "muted": false,
+        "gain": "−6.0 dB",
+        "gainDb": -6.0,
+        "sync": "+0 ms",
+        "syncOffsetMs": 0,
+        "deviceMissing": "Device not found. Plug it in, or pick another source.",
+        "enabled": true
+      }
+    ]
+  ],
+  "missing in take 5": [
+    [
+      {
+        "layer": "L2",
+        "name": "Face",
+        "source": "Camera · Logitech C920",
+        "selected": true,
+        "hidden": false,
+        "locked": false,
+        "error": null,
+        "missing": "Missing in this take",
+        "enabled": true
+      },
+      {
+        "layer": "L1",
+        "name": "Main screen",
+        "source": "Screen · DP-4 · GIGA-BYTE GS27QA",
+        "selected": false,
+        "hidden": false,
+        "locked": false,
+        "error": null,
+        "missing": null,
+        "enabled": true
+      }
+    ],
+    [
+      {
+        "track": "A1",
+        "role": "mic",
+        "label": "Yeti Nano",
+        "autocut": true,
+        "muted": false,
+        "gain": "0.0 dB",
+        "gainDb": 0.0,
+        "sync": "+0 ms",
+        "syncOffsetMs": 0,
+        "deviceMissing": null,
+        "enabled": true
+      },
+      {
+        "track": "A2",
+        "role": "system",
+        "label": "System audio",
+        "autocut": false,
+        "muted": false,
+        "gain": "−6.0 dB",
+        "gainDb": -6.0,
+        "sync": "+0 ms",
+        "syncOffsetMs": 0,
+        "deviceMissing": null,
+        "enabled": true
+      }
+    ]
+  ],
+  "picker closed": [
+    [
+      {
+        "layer": "L2",
+        "name": "Face",
+        "source": "Camera · Logitech C920",
+        "selected": false,
+        "hidden": false,
+        "locked": false,
+        "error": null,
+        "missing": null,
+        "enabled": true
+      },
+      {
+        "layer": "L1",
+        "name": "Main screen",
+        "source": "Screen · DP-4 · GIGA-BYTE GS27QA",
+        "selected": false,
+        "hidden": true,
+        "locked": true,
+        "error": "Screen picker closed",
+        "missing": null,
+        "enabled": true
+      }
+    ],
+    [
+      {
+        "track": "A1",
+        "role": "mic",
+        "label": "Yeti Nano",
+        "autocut": true,
+        "muted": false,
+        "gain": "0.0 dB",
+        "gainDb": 0.0,
+        "sync": "+0 ms",
+        "syncOffsetMs": 0,
+        "deviceMissing": "Device not found. Plug it in, or pick another source.",
+        "enabled": true
+      },
+      {
+        "track": "A2",
+        "role": "system",
+        "label": "System audio",
+        "autocut": false,
+        "muted": false,
+        "gain": "−6.0 dB",
+        "gainDb": -6.0,
+        "sync": "+0 ms",
+        "syncOffsetMs": 0,
+        "deviceMissing": "Device not found. Plug it in, or pick another source.",
+        "enabled": true
+      }
+    ]
+  ]
+}

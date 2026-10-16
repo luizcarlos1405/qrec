@@ -1,0 +1,34 @@
+---
+source: crates/qrec-core/src/view/panel.rs
+expression: commands
+---
+[
+  {
+    "command": {
+      "cmd": "sceneApply",
+      "from": "take-0005",
+      "to": "allTakes"
+    },
+    "label": "Apply this layout to all takes"
+  },
+  {
+    "command": {
+      "cmd": "sceneApply",
+      "from": "take-0005",
+      "to": "project"
+    },
+    "label": "Use this layout for new takes"
+  },
+  {
+    "command": {
+      "cmd": "sceneApply",
+      "from": "project",
+      "to": {
+        "takes": [
+          "take-0005"
+        ]
+      }
+    },
+    "label": "Reset take to project scene"
+  }
+]

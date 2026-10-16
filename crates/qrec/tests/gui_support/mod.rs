@@ -744,6 +744,13 @@ impl Gui {
         serde_json::from_value(reply["labels"].clone()).unwrap_or_default()
     }
 
+    /// The values of the text fields under widget `name`, by their nearest
+    /// given name (`"inspector-x": "1280"`).
+    pub fn entries(&self, name: &str) -> BTreeMap<String, String> {
+        let reply = self.ctl(json!({"op": "labels", "name": name}));
+        serde_json::from_value(reply["entries"].clone()).unwrap_or_default()
+    }
+
     /// The `local` summary.
     pub fn local(&self) -> Value {
         self.ctl(json!({"op": "local"}))

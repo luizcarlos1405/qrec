@@ -1,0 +1,98 @@
+---
+source: crates/qrec-core/src/view/panel.rs
+expression: menus
+---
+{
+  "addAudio": [
+    {
+      "command": {
+        "cmd": "audioAdd",
+        "label": null,
+        "role": "mic",
+        "source": "alsa_input.usb-Blue_Microphones_Yeti_Nano_2041SG000000-00.analog-stereo",
+        "target": "project"
+      },
+      "group": "mic",
+      "inUse": true,
+      "label": "Yeti Nano"
+    },
+    {
+      "command": {
+        "cmd": "audioAdd",
+        "label": null,
+        "role": "system",
+        "source": "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor",
+        "target": "project"
+      },
+      "group": "systemAudio",
+      "inUse": true,
+      "label": "Built-in Audio Analog Stereo"
+    }
+  ],
+  "addLayer": [
+    {
+      "command": {
+        "cmd": "layerAdd",
+        "name": null,
+        "rect": null,
+        "source": {
+          "screen": {
+            "output": "DP-4"
+          }
+        },
+        "target": "project"
+      },
+      "group": "screen",
+      "inUse": true,
+      "label": "DP-4 · GIGA-BYTE GS27QA"
+    },
+    {
+      "command": {
+        "cmd": "layerAdd",
+        "name": null,
+        "rect": null,
+        "source": {
+          "screen": {
+            "output": "HDMI-A-1"
+          }
+        },
+        "target": "project"
+      },
+      "group": "screen",
+      "inUse": false,
+      "label": "HDMI-A-1 · Dell U2720Q"
+    },
+    {
+      "command": {
+        "cmd": "layerAdd",
+        "name": null,
+        "rect": null,
+        "source": {
+          "camera": {
+            "device": "/dev/video0"
+          }
+        },
+        "target": "project"
+      },
+      "group": "camera",
+      "inUse": true,
+      "label": "Logitech C920"
+    }
+  ],
+  "changeSourceA1": [
+    {
+      "command": {
+        "cmd": "audioSet",
+        "patch": {
+          "source": "alsa_input.usb-Blue_Microphones_Yeti_Nano_2041SG000000-00.analog-stereo"
+        },
+        "target": "project",
+        "track": "A1"
+      },
+      "group": "mic",
+      "inUse": true,
+      "label": "Yeti Nano"
+    }
+  ],
+  "changeSourceInATake": []
+}
