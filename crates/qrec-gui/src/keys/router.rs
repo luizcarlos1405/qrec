@@ -36,7 +36,8 @@
 //!     action, or why it can't run (D-34).
 //!
 //! Before the Session is open (startup, blocking pages) only `app.quit`
-//! runs; other keys go to the page's buttons.
+//! runs; other keys go to the page's buttons. Buttons with a binding
+//! follow the same rule ([`decide_button`]).
 
 use std::borrow::Cow;
 
@@ -263,6 +264,18 @@ pub fn decide_binding(id: &str, rs: &RouterState<'_>) -> KeyDecision {
             KeyDecision::Propagate
         }
     }
+}
+
+/// What a button or menu item with binding `id` does
+/// (`KeyRouter::run_binding`, G§3.7): what its key does, so before the
+/// Session is open nothing but `app.quit` (R36: the header's gear opened
+/// Settings over the opening window, where `Ctrl+,` did nothing, and it
+/// stayed over the blocking page that followed).
+pub fn decide_button(id: &str, rs: &RouterState<'_>) -> KeyDecision {
+    if !rs.local.is_open() && id != "app.quit" {
+        return KeyDecision::Swallow;
+    }
+    decide_binding(id, rs)
 }
 
 /// Step 8: the context the press is looked up in.

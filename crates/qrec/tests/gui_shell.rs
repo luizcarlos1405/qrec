@@ -823,6 +823,46 @@ fn a_cli_recording_shows_x1_stop_and_open_or_quit() {
     assert_eq!(nested.window(1).wait_exit(EXIT), Some(0));
 }
 
+/// R36: before the project opens a button does what its key does (only
+/// Quit), so the header's gear opens no Settings over the opening window,
+/// and the X1 page that follows keeps the keyboard: `Return` is its focused
+/// Stop & open. (Settings opened while the window waited for a CLI
+/// countdown, then stayed over X1 with its scrim, and `Esc` couldn't close
+/// it.)
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn nothing_opens_over_the_opening_window() {
+    let mut nested = Nested::start("wp0b", "opening-settings", Options::default());
+    let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
+    // A CLI take counting down: the window opens once it records, its
+    // remaining time plus 3 s later (G§3.4.3), and shows X1.
+    let start = nested.cli_background(&project, &["record", "start", "--countdown", "6"]);
+    wait_phase(&nested, &project, "countdown", Duration::from_secs(30));
+    nested.launch(&project, Launch::default());
+    let gui = nested.window(0);
+    gui.wait_phase("opening", OPEN);
+    // The header's gear (`run_binding`, as the test channel's action).
+    let reply = gui.ctl(json!({"op": "action", "id": "settings.open"}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let local = gui.local();
+    assert_eq!(local["startup"]["phase"], "opening", "{local}");
+    assert_eq!(local["overlays"], json!([]), "nothing opened: {local}");
+    let local = gui.wait_phase("blocked", OPEN);
+    assert_eq!(page_of(&local), "cliRecording", "{local}");
+    gui.wait_idle();
+    let local = gui.local();
+    assert_eq!(local["overlays"], json!([]), "{local}");
+    nested.screenshot("x1");
+    nested.keys(&["-k", "Return"]);
+    let gui = nested.window(0);
+    gui.wait_phase("open", OPEN);
+    gui.wait_idle();
+    let _ = gui_support::reap_within(start, gui_support::CLI_TIMEOUT, "qrec record start");
+    assert_eq!(nested.window(0).local()["panics"], 0);
+    nested.close_window();
+    assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
+}
+
 // --------------------------------------------------------------- the config
 
 /// `theme = "swamp-day"` gives Swamp Day's tokens from the first frame;

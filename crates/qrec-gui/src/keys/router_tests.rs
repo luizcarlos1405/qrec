@@ -787,3 +787,55 @@ fn the_hint_bar_names_keys_the_router_honors() {
     // The sheet alone: `Esc` closes it.
     assert_eq!(cases[1].1.calls("Escape"), [Call::CloseOverlay]);
 }
+
+/// A button does what its key does before the project opens (R36): only
+/// `app.quit`. The header's gear opened Settings over the opening window,
+/// and it stayed over the blocking page that followed.
+#[test]
+fn buttons_wait_for_the_project_like_their_keys() {
+    let ids = [
+        "settings.open",
+        "record.toggle",
+        "export",
+        "palette.open",
+        "canvas.mode",
+        "bin.toggle",
+        "frame.save",
+    ];
+    for startup in [
+        StartupPhase::Opening { slow: false },
+        StartupPhase::Blocked(qrec_core::view::blocking::BlockKind::GstStuck),
+        StartupPhase::Closing,
+    ] {
+        let mut scene = Scene::program();
+        scene.local.startup = startup.clone();
+        for id in ids {
+            assert_eq!(
+                decide_button(id, &scene.rs()),
+                KeyDecision::Swallow,
+                "{id} {startup:?}"
+            );
+        }
+        assert_eq!(
+            decide_button("app.quit", &scene.rs()),
+            KeyDecision::Gui {
+                id: "app.quit".into()
+            }
+        );
+    }
+    // Open: what the key's steps 10 and 11 do.
+    let scene = Scene::program();
+    for id in ids.into_iter().chain(["app.quit"]) {
+        assert_eq!(
+            decide_button(id, &scene.rs()),
+            decide_binding(id, &scene.rs()),
+            "{id}"
+        );
+    }
+    assert_eq!(
+        decide_button("settings.open", &scene.rs()),
+        KeyDecision::Gui {
+            id: "settings.open".into()
+        }
+    );
+}

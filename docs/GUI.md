@@ -305,6 +305,12 @@ queues in the GUI instead of spawning a headless recorder.
 - A signal before step 4 quits with 130 (the workers check `Interrupts`
   between steps). From step 4 on, the host handles signals (A§8.6), also
   before the Session is open.
+- Until the Session is open the header's buttons do what their keys do:
+  nothing but Quit (`router::decide_button`). A blocking page (startup's
+  or a session that crashed) clears `LocalUi.overlays` in the update that
+  shows it, so no dialog stays over the page (review fix R36: Settings
+  opened from the gear while the window waited, then covered X1 with its
+  scrim, and `Esc` couldn't close it).
 
 ### G§3.4 GUI host (shell)
 
@@ -579,7 +585,8 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
 ### G§3.7 Dispatch, gestures, confirmations, toasts
 
 - **One path.** A button or menu item with a binding calls
-  `ctx.keys.run_binding(id)`, so it gets the key's pre-steps (G§3.8).
+  `ctx.keys.run_binding(id)`, so it gets the key's pre-steps (G§3.8) and,
+  like the key, runs nothing but `app.quit` before the project opens.
   Others build a `Command` and call `ctx.store.dispatch`. Nothing else
   submits requests (R8).
 - **Default reply policy** (`store/replies.rs`):

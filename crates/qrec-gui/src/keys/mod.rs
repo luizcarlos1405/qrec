@@ -84,7 +84,8 @@ impl KeyRouter {
     }
 
     /// Runs binding `id` as its key would, pre-steps included (a button
-    /// or menu item with a key, G§3.7).
+    /// or menu item with a key, G§3.7): before the project opens, only
+    /// `app.quit` (`router::decide_button`).
     pub fn run_binding(&self, id: &str) {
         let store = &self.inner.store;
         let state = store.state();
@@ -97,7 +98,7 @@ impl KeyRouter {
                 keymap: &keymap,
                 player_frame: self.player_frame(&local),
             };
-            router::decide_binding(id, &rs)
+            router::decide_button(id, &rs)
         };
         self.carry_out(&decision, &state);
     }
