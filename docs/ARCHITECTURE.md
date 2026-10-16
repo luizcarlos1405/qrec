@@ -2421,9 +2421,14 @@ that sets `HOME`, `QREC_RUNTIME_DIR`, `XDG_{CONFIG,STATE,CACHE,RUNTIME}_HOME`,
 `QREC_CAPTURE_BACKEND=fake` and `TZ=UTC0` (local times read as UTC on any
 machine, so the design fixture's UTC times show as BRIEF's) for every
 spawned `qrec` (tests never touch the developer's config, tokens or
-running GUI); `.qrec()` returns an
-`assert_cmd::Command`. Other inherited `QREC_*` variables are dropped, so a
-fake hook (below) applies only where a test sets it. `MediaSpec { video:
+running GUI); `.qrec()` returns a `std::process::Command`. Other inherited
+`QREC_*` variables are dropped, so a fake hook (below) applies only where a
+test sets it, and so are `DISPLAY`, `WAYLAND_DISPLAY` and `WAYLAND_SOCKET`
+(`qrec` without a command opens the window, never on the developer's
+display). Dropping a `TestEnv` SIGKILLs every process still running with
+its `QREC_RUNTIME_DIR` (what it spawned, the hosts a `qrec record start`
+detached, their children), also after a failed test, then deletes its
+dirs. `MediaSpec { video:
 Option<(w, h, fps, frames)>, audio: Option<{ sample_rate, channels,
 speech_ms: [(start, end)] }> }` and
 `fixture(&MediaSpec) -> PathBuf`, generated with ffmpeg (`testsrc2`, `sine`

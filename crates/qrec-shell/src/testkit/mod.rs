@@ -326,6 +326,45 @@ mod tests {
         assert!(env.runtime_dir().as_os_str().len() + 1 + 64 + ".sock".len() <= 107);
     }
 
+    /// What the env spawns never reaches the developer's display, whatever
+    /// the test process inherited: `qrec` without a command opens the
+    /// window. Checked in a child of this test binary given a display
+    /// (`tmp/dev` unsets the real one, so this process has none to pass
+    /// on); the values point nowhere, in case one ever got through.
+    #[test]
+    fn commands_never_reach_the_developers_display() {
+        const CHILD: &str = "QREC_TESTKIT_DISPLAY_CHILD";
+        const NAME: &str = "testkit::tests::commands_never_reach_the_developers_display";
+        if std::env::var_os(CHILD).is_some() {
+            let env = TestEnv::new();
+            let output = env
+                .command(Path::new("sh"))
+                .args([
+                    "-c",
+                    "printf '%s|%s|%s' \"${DISPLAY-unset}\" \"${WAYLAND_DISPLAY-unset}\" \"${WAYLAND_SOCKET-unset}\"",
+                ])
+                .output()
+                .expect("run sh");
+            assert!(output.status.success());
+            assert_eq!(String::from_utf8_lossy(&output.stdout), "unset|unset|unset");
+            return;
+        }
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+            .env(CHILD, "1")
+            .env("DISPLAY", "qrec-test-nowhere.invalid:99")
+            .env("WAYLAND_DISPLAY", "/nonexistent/qrec-test-wayland-0")
+            .env("WAYLAND_SOCKET", "-1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     #[test]
     fn paths_env_matches_the_spawned_environment() {
         let env = TestEnv::new();

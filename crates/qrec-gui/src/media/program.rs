@@ -3,4 +3,5 @@
 //! the `ProgramPlayer` (load, seek, play with a rate, pause, scrub), the
 //! trim scrub (`LocalUi.trim_frame`) and the bin preview
 //! (`LocalUi.take_preview`). Owner: WP4. Stub until WP4 lands: nothing
-//! plays (the player isn't built yet either).
+//! plays. The `ProgramPlayer` itself is built (WP1 part 1) and
+//! `MediaHub::on_opened` spawns it, but nothing loads a plan into it yet.
