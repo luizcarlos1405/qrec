@@ -1204,6 +1204,49 @@ fn settings_reopens_on_the_projects_values() {
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
 }
 
+// --------------------------------------------------------------- keys
+
+/// R30: a held key repeats only what is meant to repeat. Holding `R` past
+/// the compositor's repeat delay (sway's 600 ms, 25 a second) starts one
+/// take and leaves it recording: each repeat used to toggle it again,
+/// stopping the take 600 ms in, then starting and stopping more.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn holding_r_records_one_take() {
+    let mut nested = Nested::start(AREA, "held-r", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(live_ui()),
+    );
+    open(&mut nested, &project, Launch::a11y());
+    let before = takes(&nested, &project).len();
+    nested.keys(&["-P", "r", "-s", "1500", "-p", "r"]);
+    nested.window(0).wait_idle();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        let status = nested.cli_json(&project, &["status"]);
+        if phase(&status) != "starting" {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "still starting: {status}");
+        thread::sleep(Duration::from_millis(100));
+    };
+    let record = &status["data"]["runtime"]["record"];
+    assert_eq!(phase(&status), "recording", "{record}");
+    assert_eq!(takes(&nested, &project).len(), before + 1, "one take");
+    let toasts = nested.window(0).labels("toast-host");
+    assert!(toasts.is_empty(), "{toasts:?}");
+    let stop = nested.cli_json(&project, &["record", "stop"]);
+    assert_eq!(stop["ok"], true, "{stop}");
+    wait_phase(&nested, &project, "idle", Duration::from_secs(30));
+    assert_eq!(takes(&nested, &project).len(), before + 1, "it landed");
+    assert_no_panics(&mut nested);
+    nested.close_window();
+    assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
+}
+
 // --------------------------------------------------------------- D-12
 
 /// D-12: closing the window while an export runs asks first ("Quit while

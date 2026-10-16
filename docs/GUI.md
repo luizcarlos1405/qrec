@@ -661,7 +661,22 @@ each key press, first match:
    `None` → let it propagate.
 2. Focus in an editable (`gtk::Text`, `Entry`, `SearchEntry`,
    `EditableLabel` while editing, `NumericField`) → propagate. The field
-   handles `Enter`, `Esc` and `Tab`.
+   handles `Enter`, `Esc` and `Tab`, and a held key's repeats.
+
+   Auto-repeat (review fix R30): Wayland clients repeat a held key as
+   presses with no release between, and GTK has no repeat flag, so the
+   controller follows the releases too and keeps the hardware keycodes
+   held (`router::HeldKeys`, forgotten when the window stops being
+   active): a press of one already down is a repeat (`KeyInput.repeat`).
+   A repeat goes on with the steps below only when they run one of
+   `REPEATING_BINDINGS` (`seek.*`, `select.prev`/`next`, `clip.move-*`,
+   `clip.nudge-*`, `layer.nudge-*`, `zoom.in`/`out`,
+   `history.undo`/`redo`), or propagate a key that isn't `Enter` or
+   `Space` (a focused widget's, a list's or an overlay's navigation);
+   anything else is swallowed: toggles, `record.*`, `cancel` and step 5's
+   chain, a button's activation, a reason already said. (Holding `R` past
+   the repeat delay started a take and stopped it 600 ms later; held
+   `Space`, `Tab`, `b` and `n` flapped.)
 3. A drag in progress (`LocalUi.drag`) → D-42: `Esc` cancels it; `n`
    toggles snapping during a trim; modifiers go to the gesture; during a
    `LayerNudge` drag the `layer.nudge-*` keys go on with the burst (D-33,

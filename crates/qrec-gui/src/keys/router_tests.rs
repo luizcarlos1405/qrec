@@ -233,6 +233,7 @@ fn keys_nothing_is_bound_to_propagate() {
         chord: None,
         editable: false,
         activatable: false,
+        repeat: false,
     };
     assert_eq!(scene.decide_input(&unbindable).0, KeyDecision::Propagate);
 }
@@ -302,6 +303,7 @@ fn editables_get_every_key() {
             chord: Some(KeyChord::parse(chord).unwrap()),
             editable: true,
             activatable: false,
+            repeat: false,
         };
         assert_eq!(
             scene.decide_input(&input).0,
@@ -342,6 +344,7 @@ fn keys_during_a_drag() {
         chord: Some(KeyChord::parse("Escape").unwrap()),
         editable: true,
         activatable: false,
+        repeat: false,
     };
     assert_eq!(scene.decide_input(&input).0, KeyDecision::Propagate);
 }
@@ -375,6 +378,7 @@ fn focused_buttons_keep_the_navigation_keys() {
             chord: Some(KeyChord::parse(chord).unwrap()),
             editable: false,
             activatable: true,
+            repeat: false,
         };
         assert_eq!(
             scene.decide_input(&input).0,
@@ -387,6 +391,7 @@ fn focused_buttons_keep_the_navigation_keys() {
         chord: Some(KeyChord::parse("s").unwrap()),
         editable: false,
         activatable: true,
+        repeat: false,
     };
     assert!(matches!(
         scene.decide_input(&input).0,
@@ -838,4 +843,126 @@ fn buttons_wait_for_the_project_like_their_keys() {
             id: "settings.open".into()
         }
     );
+}
+
+/// The held keys tell a key's auto-repeat from a new press (R30), by its
+/// keycode, until its release or the window losing the keyboard.
+#[test]
+fn held_keys_tell_repeats_from_presses() {
+    let mut held = HeldKeys::default();
+    assert!(!held.press(27), "a new press");
+    assert!(held.press(27), "held: its repeat");
+    assert!(!held.press(28), "another key");
+    held.release(27);
+    assert!(!held.press(27), "pressed again");
+    held.clear();
+    assert!(!held.press(27), "the window lost the keyboard");
+    assert!(!held.press(28));
+}
+
+/// A held key repeats only what is meant to repeat (R30): holding `R`
+/// started a take and its repeats stopped it; held toggles flapped.
+#[test]
+fn a_held_key_repeats_only_what_is_meant_to() {
+    let held = |scene: &Scene, chord: &str| {
+        let mut input = KeyInput::chord(KeyChord::parse(chord).unwrap());
+        input.repeat = true;
+        scene.decide_input(&input)
+    };
+    let swallowed = (KeyDecision::Swallow, vec![]);
+    // Recording: `R` stops the take once.
+    let recording = Scene::recording();
+    assert_eq!(
+        recording.calls("r"),
+        [dispatch(Command::RecordToggle { wait: false })]
+    );
+    assert_eq!(held(&recording, "r"), swallowed);
+    assert_eq!(held(&recording, "Escape"), swallowed);
+    // Program: toggles and one-off actions happen once per press…
+    let program = Scene::program();
+    for chord in [
+        "space", "Tab", "b", "n", "s", "p", "c", "l", "Escape", "ctrl+e", "x",
+    ] {
+        assert!(!program.calls(chord).is_empty(), "{chord} does something");
+        assert_eq!(held(&program, chord), swallowed, "{chord}");
+    }
+    // … moving, selecting, nudging and zooming go on.
+    for chord in [
+        "Left",
+        "Right",
+        "shift+Left",
+        "Up",
+        "comma",
+        "period",
+        "less",
+        "greater",
+        "alt+bracketleft",
+        "equal",
+    ] {
+        let (decision, calls) = held(&program, chord);
+        assert!(
+            matches!(calls[..], [Call::Dispatch(_)] | [Call::Gui(_)]),
+            "{chord}: {decision:?}"
+        );
+        assert_eq!(calls, program.calls(chord), "{chord}");
+    }
+    // An unavailable binding said why on its press: Space in Live.
+    assert_eq!(
+        Scene::new().calls("space"),
+        [Call::Notice(keymap::PLAY_IN_LIVE.to_owned())]
+    );
+    assert_eq!(held(&Scene::new(), "space"), swallowed);
+    // The canvas: layer nudges repeat, in a nudge burst too (D-33).
+    assert_eq!(held(&Scene::canvas(), "Left").1, [gui("layer.nudge-left")]);
+    let mut burst = Scene::canvas();
+    burst.local.drag = Some(DragKind::LayerNudge);
+    assert_eq!(held(&burst, "shift+Up").1, [gui("layer.nudge-up-10")]);
+    assert_eq!(held(&burst, "Escape"), swallowed);
+    // Widgets keep their navigation keys, not `Enter` and `Space`.
+    let mut bin = Scene::program();
+    bin.local.focus = FocusRegion::Bin;
+    assert_eq!(held(&bin, "Down").0, KeyDecision::Propagate);
+    assert_eq!(held(&bin, "Return"), swallowed);
+    let overlay = Scene::overlay();
+    for chord in ["Tab", "Down", "Up"] {
+        assert_eq!(held(&overlay, chord).0, KeyDecision::Propagate, "{chord}");
+    }
+    for chord in ["Return", "space", "Escape"] {
+        assert_eq!(held(&overlay, chord), swallowed, "{chord}");
+    }
+    let focused = |chord: &str| KeyInput {
+        chord: Some(KeyChord::parse(chord).unwrap()),
+        editable: false,
+        activatable: true,
+        repeat: true,
+    };
+    assert_eq!(
+        program.decide_input(&focused("Right")).0,
+        KeyDecision::Propagate
+    );
+    assert_eq!(program.decide_input(&focused("space")), swallowed);
+    // A field gets every repeat (typing, Backspace).
+    for chord in ["BackSpace", "r", "space"] {
+        let typing = KeyInput {
+            chord: Some(KeyChord::parse(chord).unwrap()),
+            editable: true,
+            activatable: false,
+            repeat: true,
+        };
+        assert_eq!(
+            program.decide_input(&typing).0,
+            KeyDecision::Propagate,
+            "{chord}"
+        );
+    }
+    // Before the project opens: a page's button activates once.
+    let mut opening = Scene::program();
+    opening.local.startup = StartupPhase::Opening { slow: false };
+    assert_eq!(held(&opening, "Return"), swallowed);
+    assert_eq!(held(&opening, "Tab").0, KeyDecision::Propagate);
+    // Undo goes on (while there is something to undo).
+    let undo = program.calls("ctrl+z");
+    if matches!(undo[..], [Call::Dispatch(Command::Undo { .. })]) {
+        assert_eq!(held(&program, "ctrl+z").1, undo);
+    }
 }

@@ -1,7 +1,9 @@
 //! Keyboard (G§3.8, A§9.7): one `gtk::EventControllerKey` on the window
 //! in the capture phase asks the GTK-free [`router::decide`] about every
 //! press and carries the decision out ([`router::apply`]) over the store,
-//! the GUI actions and the player.
+//! the GUI actions and the player. It follows the releases too, so a press
+//! of a key already down is known as its auto-repeat ([`router::HeldKeys`],
+//! R30); the held keys are forgotten when the window loses the keyboard.
 //!
 //! Buttons and menu items that have a binding call
 //! [`KeyRouter::run_binding`], so they get the key's pre-steps (G§3.7).
@@ -30,7 +32,7 @@ use crate::guarded;
 use crate::media::MediaHub;
 use crate::store::Store;
 use actions::ActionRouter;
-use router::{KeyDecision, KeyInput, KeySink, RouterState};
+use router::{HeldKeys, KeyDecision, KeyInput, KeySink, RouterState};
 
 /// The window's key router. Cheap to clone; main thread only.
 #[derive(Clone)]
@@ -43,6 +45,8 @@ struct Inner {
     actions: ActionRouter,
     media: MediaHub,
     drag_cancel: RefCell<Option<Rc<dyn Fn()>>>,
+    /// The keys down in the window (auto-repeats).
+    held: RefCell<HeldKeys>,
 }
 
 impl std::fmt::Debug for KeyRouter {
@@ -59,6 +63,7 @@ impl KeyRouter {
                 actions,
                 media,
                 drag_cancel: RefCell::new(None),
+                held: RefCell::new(HeldKeys::default()),
             }),
         }
     }
@@ -69,18 +74,33 @@ impl KeyRouter {
         controller.set_propagation_phase(gtk::PropagationPhase::Capture);
         let router = self.clone();
         let win = window.as_ref().downgrade();
-        controller.connect_key_pressed(guarded!("keys", move |_, keyval, _code, modifiers| {
+        controller.connect_key_pressed(guarded!("keys", move |_, keyval, code, modifiers| {
             let Some(window) = win.upgrade() else {
                 return glib::Propagation::Proceed;
             };
-            let input = key_input(&window, keyval, modifiers);
+            let repeat = router.inner.held.borrow_mut().press(code);
+            let input = key_input(&window, keyval, modifiers, repeat);
             if router.handle(&input) {
                 glib::Propagation::Stop
             } else {
                 glib::Propagation::Proceed
             }
         }));
+        let router = self.clone();
+        controller.connect_key_released(guarded!("keys: a release", move |_, _, code, _| {
+            router.inner.held.borrow_mut().release(code);
+        }));
         window.as_ref().add_controller(controller);
+        // A window that loses the keyboard mid-hold never hears the release.
+        let router = self.clone();
+        window.as_ref().connect_is_active_notify(guarded!(
+            "keys: the window's activity",
+            move |window| {
+                if !window.is_active() {
+                    router.inner.held.borrow_mut().clear();
+                }
+            }
+        ));
     }
 
     /// Runs binding `id` as its key would, pre-steps included (a button
@@ -125,13 +145,14 @@ impl KeyRouter {
             router::decide(input, &rs)
         };
         tracing::debug!(
-            "key {} (editable {}, activatable {}): {decision:?}",
+            "key {} (editable {}, activatable {}, repeat {}): {decision:?}",
             input
                 .chord
                 .as_ref()
                 .map_or_else(|| "-".to_owned(), ToString::to_string),
             input.editable,
-            input.activatable
+            input.activatable,
+            input.repeat
         );
         self.carry_out(&decision, &state)
     }
@@ -208,8 +229,13 @@ impl KeySink for GtkSink<'_> {
     }
 }
 
-/// The router's view of a press in `window`.
-fn key_input(window: &gtk::Window, keyval: gdk::Key, modifiers: gdk::ModifierType) -> KeyInput {
+/// The router's view of a press in `window` (`repeat`: the key was down).
+fn key_input(
+    window: &gtk::Window,
+    keyval: gdk::Key,
+    modifiers: gdk::ModifierType,
+    repeat: bool,
+) -> KeyInput {
     let chord = keyval.name().and_then(|name| {
         KeyChord::from_gdk(
             name.as_str(),
@@ -224,6 +250,7 @@ fn key_input(window: &gtk::Window, keyval: gdk::Key, modifiers: gdk::ModifierTyp
         chord,
         editable: focus.as_ref().is_some_and(is_editable),
         activatable: window.gets_focus_visible() && focus.as_ref().is_some_and(is_activatable),
+        repeat,
     }
 }
 
