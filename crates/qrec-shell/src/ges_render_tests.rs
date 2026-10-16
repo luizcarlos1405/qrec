@@ -756,6 +756,80 @@ fn audio_clips_play_with_their_volume_and_fades() {
     assert_quiet_since(quiet);
 }
 
+/// A clip with one fade: its points still span the clip, in-point to end,
+/// so GES's clamp to the element's edges finds a point there and extends
+/// no fade's slope (a fade-out alone was extended back to the in-point: a
+/// volume of thousands, out of `volume`'s 0–10, every time the Program
+/// player loaded the design timeline; WP7 integration audit).
+#[test]
+fn one_sided_fades_hold_the_volume_to_the_other_end() {
+    let second = 1_000_000_000;
+    let ramp = samples_ns(240);
+    let clip = |fade_in: u32, fade_out: u32| GesAudioClip {
+        take: TakeId::numbered(1),
+        track: "A1".parse().expect("a track id"),
+        file: "A1-mic.mka".into(),
+        start_ns: 0,
+        inpoint_ns: second,
+        duration_ns: 13 * second,
+        volume: 0.5,
+        fade_in_samples: fade_in,
+        fade_out_samples: fade_out,
+    };
+    let end = 14 * second;
+    assert_eq!(
+        fade_points(&clip(0, 240)),
+        [(second, 0.5), (end - ramp, 0.5), (end, 0.0)]
+    );
+    assert_eq!(
+        fade_points(&clip(240, 0)),
+        [(second, 0.0), (second + ramp, 0.5), (end, 0.5)]
+    );
+    assert_eq!(
+        fade_points(&clip(240, 240)),
+        [
+            (second, 0.0),
+            (second + ramp, 0.5),
+            (end - ramp, 0.5),
+            (end, 0.0)
+        ]
+    );
+    assert!(fade_points(&clip(0, 0)).is_empty());
+
+    // In GES: the binding stays within the volume's range at the edges.
+    let _serial = serial();
+    let quiet = problems();
+    let env = TestEnv::new();
+    let dir = env.empty_dir("one-sided");
+    let tone = fixture(&MediaSpec::audio(48_000, 1, 15_000, &[(0, 15_000)]));
+    fs::copy(&tone, dir.join("A1-mic.mka")).unwrap();
+    let plan = GesTimeline {
+        canvas: canvas(64, 36, FPS),
+        duration_ns: 13 * second,
+        video: vec![],
+        audio: vec![clip(0, 240)],
+    };
+    let timeline = build_timeline(&plan, &dir).unwrap();
+    let source = timeline
+        .layers()
+        .iter()
+        .flat_map(|layer| layer.clips())
+        .find_map(|c| c.find_track_element(None::<&ges::Track>, ges::AudioSource::static_type()))
+        .expect("the audio source");
+    let binding = source.control_binding("volume").expect("a fade binding");
+    let at = |ns: u64| -> f64 {
+        ControlBindingExt::value(&binding, gst::ClockTime::from_nseconds(ns))
+            .unwrap()
+            .get()
+            .unwrap()
+    };
+    for ns in [second, 2 * second, end - ramp] {
+        assert!((at(ns) - 0.5).abs() < 1e-9, "{} at {ns}", at(ns));
+    }
+    assert_eq!(at(end), 0.0);
+    assert_quiet_since(quiet);
+}
+
 /// A `width`×`height` canvas at `fps` on black.
 pub(crate) fn canvas(width: u32, height: u32, fps: Fps) -> Canvas {
     serde_json::from_value(json!({

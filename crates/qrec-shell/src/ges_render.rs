@@ -211,22 +211,35 @@ pub fn samples_ns(n: u32) -> u64 {
 /// linear ramps from 0 over `fade_in_samples` at its in-point and down to 0
 /// over `fade_out_samples` at its end. Empty without fades. Times are the
 /// clip's internal (media) time, as GES expects them.
+///
+/// The points always span the whole clip, in-point to end: with one fade
+/// only, the other end holds the clip's volume. GES clamps a control
+/// source to its element's in- and out-point (`auto-clamp-control-sources`)
+/// and puts a point at each by extending the nearest segment: a fade-out
+/// alone was extended back to the in-point along its 5 ms slope, a volume
+/// of thousands (GLib's "out of range for property 'volume'" every time the
+/// Program player loaded the design timeline; WP7 integration audit).
 pub fn fade_points(clip: &GesAudioClip) -> Vec<(u64, f64)> {
     let start = clip.inpoint_ns;
     let end = clip.inpoint_ns + clip.duration_ns;
     let fade_in = samples_ns(clip.fade_in_samples).min(clip.duration_ns);
     let fade_out = samples_ns(clip.fade_out_samples).min(clip.duration_ns);
-    let mut points = Vec::new();
+    if fade_in == 0 && fade_out == 0 {
+        return Vec::new();
+    }
+    let mut points = vec![(start, if fade_in > 0 { 0.0 } else { clip.volume })];
     if fade_in > 0 {
-        points.push((start, 0.0));
         points.push((start + fade_in, clip.volume));
     }
+    let last = points.last().map_or(start, |p| p.0);
     if fade_out > 0 {
-        let from = (end - fade_out).max(points.last().map_or(start, |p| p.0));
-        if points.last().is_none_or(|p| p.0 < from) {
+        let from = (end - fade_out).max(last);
+        if from > last {
             points.push((from, clip.volume));
         }
         points.push((end, 0.0));
+    } else if end > last {
+        points.push((end, clip.volume));
     }
     points
 }
