@@ -8,6 +8,9 @@
 //!   overlay keys, an outside click closes them); Running is passive
 //!   (`Layer::FloatingPassive`: keys and clicks reach the window, S15b's
 //!   hints stay live) and `Esc`, `Ctrl+E` or the header slot close it.
+//!   It changes its layer only while it is the top overlay
+//!   (`flow::layer`): its export ending under Settings or a modal opened
+//!   over the passive panel, it takes the trap once they close.
 //! - What it shows follows [`flow::mode`]: any running export (the CLI's
 //!   too) shows Running; its own export's outcome shows Done or Failed
 //!   until it closes; else Setup. A foreign export that ends closes it
@@ -531,11 +534,13 @@ impl Panel {
     }
 
     fn show(self: &Rc<Self>, mode: ExportPanelMode, state: &State) {
-        let layer = if mode == ExportPanelMode::Running {
-            Layer::FloatingPassive
-        } else {
-            Layer::FloatingTrap
-        };
+        // Under Settings or a modal opened over the passive panel, it waits
+        // for them to close before it takes the trap (G§3.15).
+        let on_top = matches!(
+            self.ctx.store.local().top_overlay(),
+            Some(Overlay::ExportPanel(_))
+        );
+        let layer = flow::layer(mode, on_top, self.layer.get());
         let page_changed = self.shown.replace(Some(mode)) != Some(mode);
         let name = match mode {
             ExportPanelMode::Setup => "setup",
@@ -550,6 +555,7 @@ impl Panel {
             ExportPanelMode::Done => self.fill_done(),
             ExportPanelMode::Failed => self.fill_failed(),
         }
+        let trapped = self.layer.get() != Some(layer) && layer == Layer::FloatingTrap;
         if self.layer.get() != Some(layer) {
             if let Some(old) = self.layer.take() {
                 self.ctx.window.close(old);
@@ -567,7 +573,9 @@ impl Panel {
             }
             self.layer.set(Some(layer));
         }
-        if page_changed && layer == Layer::FloatingTrap {
+        // A page shown in the trap, or the trap taken (the Done page once
+        // Settings over it closed): its primary has the focus.
+        if (page_changed || trapped) && layer == Layer::FloatingTrap && on_top {
             // Enter activates the page's primary (it has the focus).
             let primary = match mode {
                 ExportPanelMode::Setup => &self.setup.export,

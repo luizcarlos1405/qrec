@@ -23,6 +23,7 @@ use serde_json::Value;
 
 use crate::store::Reply;
 use crate::store::local::ExportPanelMode;
+use crate::window::layers::Layer;
 
 /// The setup step's choices (S15a, S15c), kept while the panel is closed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +131,20 @@ pub fn panel_step(open: Option<ExportPanelMode>, request: PanelRequest) -> Panel
         (None, _) => PanelStep::Open,
         (Some(_), PanelRequest::Toggle) => PanelStep::Close,
         (Some(_), PanelRequest::Show) => PanelStep::Stay,
+    }
+}
+
+/// The layer the open panel showing `mode` goes in (D-49, G§3.15):
+/// Running is passive, Setup, Done and Failed trap the focus. Under
+/// another overlay (`on_top` false: Settings or a modal opened over the
+/// passive panel) it keeps the layer it is in (`current`) until it is on
+/// top again: a trap taken then went over that overlay while `LocalUi`
+/// has it under (its keys, hints and clicks), and took the focus from it.
+pub fn layer(mode: ExportPanelMode, on_top: bool, current: Option<Layer>) -> Layer {
+    match current {
+        Some(current) if !on_top => current,
+        _ if mode == ExportPanelMode::Running => Layer::FloatingPassive,
+        _ => Layer::FloatingTrap,
     }
 }
 
@@ -279,6 +294,27 @@ mod tests {
             percent: 37,
         };
         assert_eq!(mode(false, false, Some(&failed)), ExportPanelMode::Failed);
+    }
+
+    /// Running is passive, the other pages trap; under another overlay the
+    /// panel keeps its layer until it is on top: its export ending under
+    /// Settings or a modal (opened over the passive panel) didn't make it
+    /// the trap over them.
+    #[test]
+    fn the_panel_takes_the_trap_only_on_top() {
+        use ExportPanelMode::{Done, Failed, Running, Setup};
+        use Layer::{FloatingPassive as Passive, FloatingTrap as Trap};
+        assert_eq!(layer(Running, true, None), Passive);
+        assert_eq!(layer(Setup, true, None), Trap);
+        assert_eq!(layer(Done, true, Some(Passive)), Trap);
+        assert_eq!(layer(Running, true, Some(Trap)), Passive);
+        for mode in [Done, Failed] {
+            assert_eq!(layer(mode, false, Some(Passive)), Passive, "{mode:?}");
+        }
+        // The Replace modal over Setup (D-24): Setup stays the trap under it.
+        assert_eq!(layer(Setup, false, Some(Trap)), Trap);
+        assert_eq!(layer(Running, false, Some(Trap)), Trap);
+        assert_eq!(layer(Done, false, None), Trap, "nothing to keep");
     }
 
     /// `export.panel` toggles the panel; `export.show` (a toast's Show

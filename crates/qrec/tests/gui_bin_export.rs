@@ -1461,6 +1461,144 @@ fn s16_export_done() {
     close(&mut nested);
 }
 
+/// The names of the focused widget and its ancestors (`local`'s
+/// `focusPath`), the focused one first.
+fn focus_path(nested: &mut Nested) -> Vec<String> {
+    let local = nested.window(0).local();
+    local["focusPath"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.as_str().map(str::to_owned))
+        .collect()
+}
+
+/// D-49 and G§3.15: Settings opened over the passive panel stays on top
+/// when the panel's export ends under it: Settings keeps the focus and the
+/// keys (its hints; `Esc` closes it), and only then does the Done page take
+/// the trap, Open file focused. (The Done page took the trap over Settings
+/// and the focus with it, while `Esc` closed Settings behind it.) Closed,
+/// the Done page gives the focus back to the timeline, where it was before
+/// the panel and Settings opened (it had taken it from inside Settings).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn an_export_ending_under_settings_leaves_settings_on_top() {
+    let mut nested = Nested::start(AREA, "under-settings", Options::default());
+    let project = fixture(&nested, "smoke", DesignVariant::Smoke, Some(smoke_ui()));
+    // Each render unit starts 5 s late: Settings opens while it runs.
+    let launch = Launch {
+        path: Some(fail_ffmpeg::slow_path(nested.env.root(), 5)),
+        ..launch()
+    };
+    open(&mut nested, &project, launch);
+    // The timeline has the focus (a click on c1b2).
+    let [vx, vy, vw, vh] = nested.window(0).regions(&[])["video-row"];
+    let x = vx + clip_middle(&nested, &project, "c1b2", vw);
+    nested.pointer().click(x, vy + vh / 2.0);
+    nested.window(0).wait_idle();
+    assert_eq!(nested.window(0).local()["focus"], "timeline");
+    ctrl_e(&mut nested);
+    press(&mut nested, "export-start");
+    wait_overlays(
+        &mut nested,
+        &["ExportPanel(Running)"],
+        Duration::from_secs(10),
+    );
+    nested.keys(&["-M", "ctrl", "-k", "comma", "-m", "ctrl"]);
+    wait_overlays(
+        &mut nested,
+        &["ExportPanel(Running)", "Settings(Project)"],
+        Duration::from_secs(10),
+    );
+    assert!(
+        export_percent(&nested, &project).is_some(),
+        "Settings opened while it exports"
+    );
+    wait_overlays(
+        &mut nested,
+        &["ExportPanel(Done)", "Settings(Project)"],
+        Duration::from_secs(120),
+    );
+    nested.window(0).wait_idle();
+    let path = focus_path(&mut nested);
+    assert!(
+        path.iter().any(|p| p == "settings") && !path.iter().any(|p| p == "export-panel"),
+        "Settings keeps the focus: {path:?}"
+    );
+    assert_eq!(hints(&mut nested), ["[Tab] Move focus", "[Esc] Close"]);
+    nested.screenshot("done-under-settings");
+    // Esc closes Settings, the top overlay: the Done page is on top now.
+    nested.keys(&["-k", "Escape"]);
+    wait_overlays(&mut nested, &["ExportPanel(Done)"], Duration::from_secs(10));
+    nested.window(0).wait_idle();
+    let path = focus_path(&mut nested);
+    assert_eq!(
+        path.first().map(String::as_str),
+        Some("export-open-file"),
+        "{path:?}"
+    );
+    assert_eq!(
+        hints(&mut nested),
+        ["[Enter] Open file", "[Tab] Move focus", "[Esc] Close"]
+    );
+    nested.keys(&["-k", "Escape"]);
+    wait_overlays(&mut nested, &[], Duration::from_secs(10));
+    nested.window(0).wait_idle();
+    let local = nested.window(0).local();
+    assert_eq!(local["focus"], "timeline", "the focus came back: {local}");
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
+/// G§3.15: the passive panel closing under Settings (its CLI export ended:
+/// a foreign export's end closes it) leaves the focus in Settings, the top
+/// trap (the layer gave it back to what had it before the panel opened,
+/// under Settings' scrim).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_cli_export_ending_under_settings_leaves_settings_the_focus() {
+    let mut nested = Nested::start(AREA, "cli-under-settings", Options::default());
+    let project = fixture(&nested, "smoke", DesignVariant::Smoke, Some(smoke_ui()));
+    // The window's host runs the CLI's export: each render unit starts 5 s
+    // late, so Settings opens while it runs.
+    let launch = Launch {
+        path: Some(fail_ffmpeg::slow_path(nested.env.root(), 5)),
+        ..launch()
+    };
+    open(&mut nested, &project, launch);
+    let export = nested.cli_background(&project, &["export", "--quality", "draft"]);
+    wait_export_at(&nested, &project, 0, Duration::from_secs(60));
+    let reply = nested
+        .window(0)
+        .ctl(json!({"op": "action", "id": "export.panel"}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    wait_overlays(
+        &mut nested,
+        &["ExportPanel(Running)"],
+        Duration::from_secs(10),
+    );
+    nested.keys(&["-M", "ctrl", "-k", "comma", "-m", "ctrl"]);
+    wait_overlays(
+        &mut nested,
+        &["ExportPanel(Running)", "Settings(Project)"],
+        Duration::from_secs(10),
+    );
+    let done = reap_within(export, CLI_TIMEOUT, "qrec export");
+    assert!(done.success(), "qrec export: {done}");
+    wait_overlays(&mut nested, &["Settings(Project)"], Duration::from_secs(30));
+    nested.window(0).wait_idle();
+    let path = focus_path(&mut nested);
+    assert!(
+        path.iter().any(|p| p == "settings"),
+        "Settings keeps the focus: {path:?}"
+    );
+    nested.keys(&["-k", "Escape"]);
+    wait_overlays(&mut nested, &[], Duration::from_secs(10));
+    nested.window(0).wait_idle();
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
 /// S16b: the export from the panel, which is closed (`Esc`) before it ends:
 /// the core's success toast, "<path> · <size>" with Open file and Open
 /// folder (the copy WP7 changed).

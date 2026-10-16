@@ -15,8 +15,10 @@
 //!
 //! Opening moves the focus into the widget (its first focusable child; the
 //! caller may focus another one right after); closing gives the focus back
-//! to what had it. Where a widget sits is its own `halign`, `valign` and
-//! margins (BRIEF §2.8 placements).
+//! to what had it, unless a trap stays open above that (the focus stays in
+//! the top trap); a layer opened over it that took the focus from inside
+//! it gives it back where this one would have. Where a widget sits is its
+//! own `halign`, `valign` and margins (BRIEF §2.8 placements).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -123,13 +125,32 @@ impl WindowLayers {
         self.open_with(Layer::FloatingTrap, widget.as_ref(), Some(Rc::new(dismiss)));
     }
 
-    /// Closes `layer` if it is open; the focus goes back to what had it.
+    /// Closes `layer` if it is open; the focus goes back to what had it, as
+    /// long as no trap stays open above that: a layer closing under a trap
+    /// (the passive export panel under Settings, Settings under the export
+    /// panel's Done page) never takes the focus out of the top trap.
     pub fn close(&self, layer: Layer) {
         let closed = {
             let mut open = self.inner.open.borrow_mut();
-            open.iter()
+            let closed = open
+                .iter()
                 .position(|o| o.layer == layer)
-                .map(|i| open.remove(i))
+                .map(|i| (i, open.remove(i)));
+            // A layer opened over it took the focus from inside it: it gives
+            // the focus back to where this one would have.
+            if let Some((i, closed)) = &closed {
+                for above in open.iter_mut().skip(*i) {
+                    let inside = above
+                        .focus_before
+                        .as_ref()
+                        .and_then(glib::WeakRef::upgrade)
+                        .is_none_or(|w| w == closed.widget || w.is_ancestor(&closed.widget));
+                    if inside {
+                        above.focus_before.clone_from(&closed.focus_before);
+                    }
+                }
+            }
+            closed.map(|(_, closed)| closed)
         };
         let Some(closed) = closed else {
             return;
@@ -140,12 +161,37 @@ impl WindowLayers {
         }
         parent.remove_overlay(&closed.widget);
         self.refresh();
-        if let Some(before) = closed.focus_before.and_then(|w| w.upgrade())
-            && before.root().is_some()
-            && before.is_sensitive()
-        {
-            before.grab_focus();
+        let top = self.top_trap();
+        let before = closed
+            .focus_before
+            .and_then(|w| w.upgrade())
+            .filter(|w| w.root().is_some() && w.is_sensitive());
+        match (top, before) {
+            (None, Some(before)) => {
+                before.grab_focus();
+            }
+            (Some(top), Some(before)) if before == top || before.is_ancestor(&top) => {
+                before.grab_focus();
+            }
+            (Some(top), _) => {
+                let focus = parent.root().and_then(|root| root.focus());
+                if !focus.is_some_and(|f| f == top || f.is_ancestor(&top)) {
+                    top.child_focus(gtk::DirectionType::TabForward);
+                }
+            }
+            (None, None) => {}
         }
+    }
+
+    /// The top trap's widget, if a trap is open.
+    fn top_trap(&self) -> Option<gtk::Widget> {
+        self.inner
+            .open
+            .borrow()
+            .iter()
+            .rev()
+            .find(|o| o.layer.traps())
+            .map(|o| o.widget.clone())
     }
 
     /// Whether `layer` is open.

@@ -1422,6 +1422,17 @@ adw::ApplicationWindow #qrec  (default 1600×1000, min 800×600)
     and adds a transparent click-catcher that closes it, like a popover;
   - `FloatingPassive` (the export panel while Running, D-49) adds nothing:
     no trap, no click-catcher.
+  - The layers' order is `LocalUi.overlays`' (top last): the export panel
+    changes its layer only while it is the top overlay
+    (`export::flow::layer`), so its export ending under Settings or a
+    modal opened over the passive panel keeps it passive (and inert) under
+    them; it takes the trap, Open file or Try again focused, once they
+    close (review fix: it took the trap over them, and the focus, while
+    `Esc` and the hints were theirs). A layer closing under a trap never
+    takes the focus out of the top trap, and a layer opened over it that
+    took the focus from inside it gives the focus back where it would
+    have (the Done page opened over Settings gives it back to the timeline
+    that had it before Settings).
 - The export panel and the toasts are in-window widgets, not GTK popovers:
   an exact 12×6 arrow and deterministic screenshots. Menus (Layout ▾, Add
   layer, Add audio track, row overflows, dropdowns) are
