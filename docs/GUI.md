@@ -3666,7 +3666,7 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
 | S15a | Base, `QREC_GUI_TEST_NOW=2026-10-14T15:30:12` | `wtype -M ctrl -k e -m ctrl` |
 | S15b | as S15a | `wtype -k Return`; poll `qrec status --json` until the job is at ≥ 42 %; capture |
 | S15c | as S15a | click WebM, capture; S15b again with `ui.reduced_motion = true` (plain bar) |
-| S16 | Smoke, panel open | export; `waitIdle` after done |
+| S16 | Smoke, panel open | export; `waitIdle` after done; then `qrec export` over the Done page: the panel follows it and closes when it ends, with the core's toast (WP7 integration audit) |
 | S16b | Smoke | export; `wtype -k Escape` before done; `waitIdle` after the toast |
 | S17 | Base, `tests/support/fail_ffmpeg.rs`'s wrapper first on the GUI's PATH (units 1 and 2 render, unit 3 fails after them, the rest wait) | export; "Rendering clip 3/10" while unit 3 waits; wait for Failed: "clip 3/10 (take 3, c1b2)", "Failed at 11%" |
 | S18 | Base, bin open | click take 2, Ctrl+click take 4, click Purge from disk |

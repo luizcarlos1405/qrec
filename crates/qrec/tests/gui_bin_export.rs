@@ -1093,6 +1093,41 @@ fn s16_export_done() {
         Some("456:300:1144:0"),
         "-panel",
     );
+    // A CLI export while the Done page is open: the panel follows it
+    // (D-49), and when it ends the panel closes and the core's toast says
+    // so, as for any export not its own; its own export's Done page
+    // doesn't come back (and drop that toast).
+    let cli = nested.cli_json(&project, &["export", "--quality", "draft"]);
+    assert_eq!(cli["ok"], true, "qrec export: {cli}");
+    let second: Vec<PathBuf> = exports(&project)
+        .into_iter()
+        .filter(|p| *p != written[0])
+        .collect();
+    assert_eq!(second.len(), 1, "the CLI's export: {second:?}");
+    let second = second[0]
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    wait_overlays(&mut nested, &[], Duration::from_secs(30));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let gui = nested.window(0);
+        gui.wait_idle();
+        let labels = gui.labels("toast-host");
+        if labels
+            .iter()
+            .any(|l| l.starts_with(&format!("exports/{second} · ")))
+        {
+            assert_shows(&labels, &["Layers! Like an onion. Your video is ready."]);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no toast for {second}: {labels:?}"
+        );
+        thread::sleep(Duration::from_millis(200));
+    }
     assert_clean(&mut nested);
     close(&mut nested);
 }

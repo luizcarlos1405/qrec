@@ -450,6 +450,7 @@ impl Panel {
     fn on_change(self: &Rc<Self>, change: &Change) {
         if let Some(job) = export_job(&change.next) {
             let mut own = self.own.borrow_mut();
+            let foreign = own.is_none();
             if let Some(own) = own.as_mut() {
                 if own.started.is_none() {
                     own.started = Some(Arc::clone(&change.next));
@@ -457,6 +458,16 @@ impl Panel {
                 own.last = Some(job.clone());
             }
             drop(own);
+            // Another export runs (the CLI's: its own left the table before
+            // its answer came): the panel follows that one now, so the Done
+            // or Failed page of its own last export is history. Kept, it
+            // would come back when this one ends, and drop that one's toast
+            // (`toasts::shown_by_the_panel`) instead of closing (D-49).
+            if foreign && self.ctx.store.local().export_view.outcome.is_some() {
+                self.ctx
+                    .store
+                    .update_local(|l| l.export_view.outcome = None);
+            }
             if self.ctx.store.local().export_view.draft.starting {
                 self.ctx
                     .store
