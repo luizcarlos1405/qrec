@@ -353,7 +353,7 @@ Snapshots (`insta`) of `Outcome`s require `Debug, Clone, PartialEq,
 Serialize, Deserialize` on every state, protocol and plan type.
 
 `laneMute` is the timeline lanes' `M` (`solo` is their `S`; GUI D-08), for
-playback only: the Program player (docs/GUI.md G§3.10, not built yet)
+playback only: the Program player (A§9.6, `ges_plan::without_tracks`)
 leaves those tracks out, while a scene's `AudioTrack.muted` (the Onion
 layers panel's `M`) changes the export. `SetUi` replaces the whole set, ids
 no scene has are dropped (A§5.10), and a `ui.json` without it mutes
@@ -1378,9 +1378,9 @@ rewrites every file with its next commit, and the replies they send are
   by `tests/props_late_errors.rs`), so the GUI only logs late errors and
   toasts immediate ones. `RetryLive` is the GUI's live-preview retry: the
   session thread calls `CaptureEngine::retry_live` (forget the sources the
-  portal refused and those that died, and rebuild; the default, and the
-  engine so far, does nothing), in order with the `SetLive`s and
-  `StartCapture`s it sent, and logs it; it changes no state.
+  portal refused, those that failed to start and those that died, and
+  rebuild, A§8.11; the default does nothing), in order with the `SetLive`s
+  and `StartCapture`s it sent, and logs it; it changes no state.
 - Workers are std threads that only talk to the session through `Inbox`:
   process runners, timers, the inotify watcher, IPC connections, and the
   capture engine thread. No tokio; ashpd runs under `futures_lite::block_on`
@@ -1925,10 +1925,52 @@ Stop: EOS within 10 s, teardown within 5 s; a missed teardown ⇒
 `EngineWedged` (a headless host then exits via `process::exit`). Level meters
 and the preview paintable go to the GUI over a side channel, never through
 `on_event`. `record start` while the GUI isn't in Live mode starts the
-pipeline first. Paths in the plan are joined with the project dir. What
-else the GUI gets (a preview sink of its own, each live source's state,
-`LiveControl` for layer drags, a cast grace, the meter monitor) is in
-docs/GUI.md G§3.9; so far those are types and stubs that do nothing.
+pipeline first. Paths in the plan are joined with the project dir.
+
+**For the GUI** (docs/GUI.md G§3.9):
+- **Preview sink** (`EngineOptions.preview`, GUI H-1): the preview branch
+  ends in `compositor ! video/x-raw,format=BGRx,<fit_size(canvas,
+  max_size)>,framerate=fps ! queue leaky=downstream max-size-buffers=1 !
+  <the GUI's sink, sync=false async=false>`; compositor pads get the
+  layout's rects × output / canvas, edge by edge. The sink is one element
+  for the engine's life: a torn-down pipeline lets go of it at NULL, the
+  next one takes it. Its errors are preview problems (`LiveError`), never a
+  source's. Without one: `compositor ! <canvas size> ! videoconvert ! RGBA !
+  appsink` → `SideEvent::Preview` (tests). A new canvas (size, rate,
+  background) or new preview layers rebuild; a layout only moves pads. A
+  rebuilt pipeline is laid out (crops and pads, at each source's last
+  size) before it starts: a `videocrop` whose crop changes while a source's
+  first caps query crosses it answers no caps, and that source dies
+  "not-negotiated" (the sink's `async=false` lets the pipeline reach
+  PLAYING before its sources negotiated).
+- **`LiveControl`** (`control()`): `transient_layout(Some(scene))` lays the
+  preview pads out from that scene's layers, without a rebuild, until the
+  next `SetLive` (any) or `None` (D-32, D-33). Preview only.
+- **Left out**: a screen the portal refused, or a source that failed to
+  start, stays out of the live pipeline, which runs with the rest, until
+  the scene's sources change (a layout change, or Program mode and back,
+  keep it out) or `retry_live` (D-50), which also forgets the dead
+  sources and the casts of screens that failed or died, and rebuilds (a
+  take running: once it ends). A source error, a stall while recording, or
+  its stream's EOS makes a branch dead: the next live scene, take or retry
+  rebuilds it.
+- **Cast grace** (GUI H-4): once no live scene is wanted (and no take
+  runs), screen casts stay open for `cast_grace` (the GUI's 60 s; zero
+  elsewhere), so a live scene within it asks the portal nothing; then they
+  close.
+- **`SideEvent::LiveStatus`**, whenever it changes: the live scene's
+  sources in its order (layers topmost first, then audio; one per device):
+  `Live` with the size it delivers (the last known one across rebuilds),
+  `Dead { message }` (it died, or failed to start), `Refused { cancelled }`
+  (`cancelled`: the portal's "cancelled in the dialog"), `AwaitingPortal`.
+  A source not started yet (its pipeline waits for another screen's
+  answer, or for the take to end) has no entry; no live scene, none.
+- **`MeterMonitor`** (`capture/meters.rs`, D-03): per device, `pulsesrc
+  device=X ! audioconvert ! level interval=50ms ! fakesink sync=false` (fake
+  backend: the engine's tone) on `qrec-meters`; readings go out as
+  `SideEvent::Level` from the bus's sync handler. `stop()` returns at once
+  (no reading after it); the pipelines reach NULL within 5 s
+  (`is_finished()`). A device that can't open stays idle (logged).
 
 **Record bins** *(measured)*: T0 = the pipeline running time chosen at start;
 a buffer probe on each bin's sink pad drops buffers with PTS < T0 and
@@ -2281,6 +2323,43 @@ and silence. An audio clip fades in or out only where it is playing at the
 unit's cut (the export fades the unit's mix). The parity test (A§11)
 checks GES against the frame plan.
 
+For the GUI's player (docs/GUI.md G§3.10): `plan_ges_take(&Project,
+&TakeId)` plays one take whole, `[0, durationFrames)` in its take scene, as
+if it were the only clip (S10's trim scrub, D-17's bin preview; an unknown
+or empty take plans nothing); `without_tracks(plan, solo, &muted)` drops
+the audio of lanes muted for playback or not soloed (D-08; video stays, the
+export never sees it); `scaled(plan, w, h)` composites at a smaller size
+(H-9: destination rects scaled edge by edge to even pixels; source crops
+stay in file pixels, GES crops before it scales); `fit_size(w, h, max)` is
+a canvas fitted into a bound (even, never larger): the player's `out_size`
+and the live preview's size. Properties: `without_tracks(p, None, ∅) == p`
+and `scaled(p, canvas size) == p`.
+
+**Program player** (`player.rs`, GUI H-2): one GES timeline and
+`FULL_PREVIEW` pipeline per session on thread `qrec-player`, into the GUI's
+Program sink; calls return at once, loads and seeks coalesce (newest wins).
+- `load`: pause, `ges_render::rebuild_into` (layers cleared, restriction
+  caps from the plan), commit and wait ≤ 10 s for "commited" (a stopped
+  pipeline prerolls first: it applies a commit only as it starts; seeking
+  before that met the old timeline), an accurate seek to `at_ns`, `Loaded`
+  once that frame reached the sink, then play again if it was playing. An
+  empty plan stops the pipeline (no picture). The layers taken off stay in
+  a `ges_render::Retired` until that commit applied or the pipeline is
+  READY or NULL (abandoned past 5 s: leaked): GES frees a removed clip's
+  sources with it while their decoders may still be starting.
+- Seeks are FLUSH|ACCURATE and frame-aligned, one in flight, done when the
+  first frame after the flush reaches the sink. Forward rates are seeks
+  with the rate; reverse is stepping (accurate seeks, ≤ 15 a second, video
+  only), `Ended { reverse: true }` at 0. `scrub` plays 60 ms of sound.
+- Frames shorter than half a canvas frame are dropped at the sink: the 2 ms
+  Matroska in-point nudge leaves slivers of background where a file runs
+  out. QoS drops are counted (`Late`, ≤ once a second; H-8).
+- `shutdown`: NULL within 5 s, then `Stopped`. `AudioOut::Silent` under the
+  fake backend and in tests.
+- Measured (G§0.4): canvas size holds a 1080p30 canvas with two 1440p
+  screens and a 720p camera (37.5–42.6 fps throughput; no late frames but
+  in a run starved of CPU), so `out_size` stays `None`.
+
 ### A§9.7 Keymap (`keymap.rs`)
 
 ```rust
@@ -2398,7 +2477,8 @@ strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
 | Planner snapshots | `insta`: export/frame/probe/silence argv, capture plan, GES plan, keymap, every `Command` JSON |
 | Shell | store order and crash points, lock/socket protocol, history persistence, IPC round trip, process runner timeouts |
 | CLI integration | `crates/qrec/tests/<area>.rs` with `assert_cmd` |
-| Fake capture | `QREC_CAPTURE_BACKEND=fake` record start/stop end to end (M2) |
+| Fake capture | `QREC_CAPTURE_BACKEND=fake` record start/stop end to end (M2); the GUI's parts (`capture/tests.rs`): the preview into an appsink standing in for the paintable sink (BGRx at the fitted size, one element through rebuilds), `transient_layout`, `retry_live`, the cast grace (a sharing fake portal's call count), `LiveStatus` for builds, refusals and deaths, a rebuilt preview keeping a cropped camera (both paths), `MeterMonitor` |
+| Player | `player_tests.rs`: an appsink and the frame-ID fixture: accurate seeks show the frame plan's frame, `load` keeps the position, back-to-back loads free no running source (`Retired`), rates and reverse stepping, `Ended`, `Error`, `out_size`, shutdown ≤ 5 s |
 | Parity | GES vs frame plan: SSIM ≥ 0.98 **per layer rect**, plus a frame-ID fixture (frame index drawn as binary bars) asserting the exact source frame in both renderers; at another recorded rate, export segments, frame saves and GES all show `shown_frame` (A§9.3) in units starting anywhere |
 | Late errors | `tests/props_late_errors.rs`: an `on_event` outcome that replies `Err` to a requester also has a `Notify` (A§8.1), over random requests answered late, out of order or as failures, plus a table of every known path |
 | GUI host | `host/gui_tests.rs`: `GuiHost` with a fake `GuiPort` and Session (`ipc::testing`) and shortened `ExitRules`: no idle exit, `first` ahead of early requests, one FIFO, `fail`, a failed open, close (after what the window submitted before it; dropping autocut analyses; the grace ending a recovery hold), every window request answered once (also unhandled ones, and at once while the Session drops), `first`'s toasts only while serving, signals (the second in a child process), the `shutdown` refusal, a crash; with a real Session and no capture (a closing window's autocut cuts nothing; a signal while it opens toasts nothing); and once with a real Session on the fake capture backend (the port as its observer and notifier: `first` initializes an empty folder, a CLI take records, the window's stop is answered after its state, close); `host/takeover_tests.rs` against hosts with a fake Session, and Stop & open on a real fake-backend recording and countdown (`crates/qrec/tests/cli.rs`) |

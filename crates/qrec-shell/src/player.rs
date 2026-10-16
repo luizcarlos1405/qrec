@@ -5,8 +5,9 @@
 //! in order, and loads and seeks that pile up while it is busy coalesce
 //! (the newest wins). Owner: capture.
 //!
-//! - **Load**: pause if playing, [`ges_render::rebuild_into`], commit (a
-//!   stopped pipeline prerolls instead), an accurate seek to `at_ns`, then
+//! - **Load**: pause if playing, [`ges_render::rebuild_into`], commit and
+//!   wait for GES to apply it (a stopped pipeline prerolls first: it
+//!   applies a commit only as it starts), an accurate seek to `at_ns`, then
 //!   [`PlayerEvent::Loaded`] once that frame reached the video sink, and
 //!   play again if it was playing. An empty plan stops the pipeline (no
 //!   picture; `Loaded` with a zero duration). The old layers are kept until
@@ -722,13 +723,14 @@ impl Worker {
             self.emit(PlayerEvent::Loaded { duration_ns: 0 });
             return;
         }
-        let ready = if p.running {
-            commit_and_wait(&p.timeline, SEEK_TIMEOUT, &self.shared.stopping)
-        } else {
-            // A stopped pipeline applies the commit as it starts.
-            let _ = p.timeline.commit();
-            self.start()
-        };
+        let (timeline, running) = (p.timeline.clone(), p.running);
+        let shared = Arc::clone(&self.shared);
+        // A stopped pipeline applies the commit only as it starts: the seek
+        // waits for that too, or it can meet the old timeline (after an
+        // empty plan, nothing: it ends at once and no frame shows).
+        let ready = commit_and_wait(&timeline, SEEK_TIMEOUT, &shared.stopping, || {
+            if running { Ok(()) } else { self.start() }
+        });
         if let Err(message) = ready {
             self.seek = None;
             self.fail(message);
@@ -1225,19 +1227,22 @@ fn watch_frames(
     Some((pad, id))
 }
 
-/// Commits `timeline` in a running pipeline and waits for GES to apply it,
-/// at most `timeout` (less once `stopping`).
+/// Commits `timeline` and waits for GES to apply it, at most `timeout`
+/// (less once `stopping`). `start` runs between the commit and the wait: a
+/// stopped pipeline applies a commit only once it prerolls.
 fn commit_and_wait(
     timeline: &ges::Timeline,
     timeout: Duration,
     stopping: &AtomicBool,
+    start: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
     let (tx, rx) = mpsc::sync_channel::<()>(1);
     let handler = timeline.connect_commited(move |_| {
         let _ = tx.try_send(());
     });
-    let mut result = Ok(());
-    if timeline.commit() {
+    let committed = timeline.commit();
+    let mut result = start();
+    if result.is_ok() && committed {
         let deadline = Instant::now() + timeout;
         result = loop {
             match rx.recv_timeout(Duration::from_millis(100)) {

@@ -191,8 +191,9 @@ impl MediaHub {
         hub
     }
 
-    /// The live picture: the appsink's frames now, the live sink's
-    /// paintable once the engine composites into it (WP1). Stable.
+    /// The live picture: the live sink's paintable, which the engine
+    /// composites into (WP1; the appsink's frames while
+    /// `capture::PREVIEW_SINK_SUPPORTED` is false). Stable.
     pub fn live_paintable(&self) -> gdk::Paintable {
         self.inner.live.clone().upcast()
     }

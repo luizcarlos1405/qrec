@@ -31,6 +31,16 @@
 //!
 //! The live pipeline stays up between takes while a live scene is wanted
 //! (`set_live`); `start` builds it from the plan when needed.
+//!
+//! For the GUI (docs/GUI.md G§3.9): the preview goes to its sink when it
+//! gives one (`EngineOptions::preview`, the same element in every rebuilt
+//! pipeline); [`LiveControl`] lays the preview out during a drag until the
+//! next `SetLive`; `retry_live` forgets what was refused or failed and
+//! rebuilds; screen casts outlive the pipeline by `cast_grace`; and every
+//! change to a live source's state goes out as `SideEvent::LiveStatus`.
+//! A source that fails to start (or a screen the portal refused) stays out
+//! of the live pipeline, which runs with the rest, until the scene's
+//! sources change or a retry.
 
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -46,7 +56,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use gst::prelude::*;
 use qrec_core::ctx::CameraMode;
-use qrec_core::model::{StreamKind, VideoSource};
+use qrec_core::model::{Layer, Scene, StreamKind, VideoSource};
 use qrec_core::plans::{CapturePlan, LiveScene};
 use qrec_core::protocol::RecordedStream;
 use qrec_core::{Event, Fps, TakeId};
@@ -61,8 +71,8 @@ use super::spec::{
 };
 use super::util::{error_text, missing_element, object_path, running_time, set_null_with_deadline};
 use super::{
-    Backend, CLOCK_INTERVAL, EngineOptions, FILL_GRACE, LiveControl, PIPELINE_START_TIMEOUT,
-    STALL_LIMIT, SideEvent, TEARDOWN_TIMEOUT,
+    Backend, CLOCK_INTERVAL, EngineOptions, FILL_GRACE, LiveControl, LiveSource, LiveSourceState,
+    LiveSourceStatus, PIPELINE_START_TIMEOUT, STALL_LIMIT, SideEvent, TEARDOWN_TIMEOUT,
 };
 use crate::deps::CaptureEngine;
 use crate::gst_init::{self, InitError};
@@ -73,6 +83,13 @@ use crate::paths::ProjectPaths;
 /// finalized first (EOS within the default 10 s, then teardown within 5 s).
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(16);
 
+/// How the portal words a closed screen-share dialog (`capture::portal`,
+/// and the fake portal's `cancel`): `LiveSourceState::Refused { cancelled }`.
+const CANCELLED_IN_THE_DIALOG: &str = "cancelled in the dialog";
+
+/// Why a live source that ended is dead.
+const STOPPED_SENDING: &str = "it stopped sending data";
+
 /// Messages to the engine thread.
 pub(super) enum Cmd {
     SetLive(Option<LiveScene>, Inbox),
@@ -82,6 +99,12 @@ pub(super) enum Cmd {
         cancel: bool,
     },
     Shutdown(Sender<()>),
+    /// The GUI's retry (D-50): forget refused, failed and dead sources and
+    /// rebuild.
+    RetryLive(Inbox),
+    /// [`LiveControl::transient_layout`]: the preview's layers laid out as
+    /// this scene's until the next `SetLive` (`None`: as the live scene's).
+    Transient(Option<Scene>),
     /// A bus message of the live pipeline with this generation.
     Bus(u64, gst::Message),
     /// A record-bin probe of the take with this tag.
@@ -93,16 +116,31 @@ pub(super) enum Cmd {
         width: u32,
         height: u32,
     },
+    /// A source of the live pipeline with this generation ended (EOS).
+    SourceEos {
+        generation: u64,
+        source: usize,
+    },
     /// The portal worker finished an open request.
     PortalDone {
         id: u64,
         results: Vec<(String, Result<ScreenShare, String>)>,
+    },
+    /// The fake backend's portal answered: a refusal (`QREC_FAKE_PORTAL`)
+    /// or, in tests, a share without a session.
+    FakePortalDone {
+        id: u64,
+        results: Vec<(String, Result<(), String>)>,
     },
     /// Test hook (fake backend only): make a source fail.
     Inject {
         source: String,
         failure: FakeFailure,
     },
+    /// Test hook: the fake screens go through a fake portal that shares
+    /// them (like a real one would), so casts and their grace can be seen.
+    #[cfg(test)]
+    ShareFakeScreens,
     /// Test hook: what the live pipeline is right now.
     #[cfg(test)]
     Inspect(Sender<LiveInfo>),
@@ -110,12 +148,41 @@ pub(super) enum Cmd {
 
 /// The live pipeline as tests see it.
 #[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct LiveInfo {
     /// Bumped by every rebuild; `None` without a pipeline.
     pub generation: Option<u64>,
     pub sources: Vec<SourceSpec>,
     pub preview: bool,
+    /// The preview goes to the GUI's sink (else the RGBA appsink).
+    pub preview_sink: bool,
+    /// What the preview compositor outputs.
+    pub preview_size: Option<(u32, u32)>,
+    /// Each preview layer's compositor pad.
+    pub layers: Vec<PadInfo>,
+    /// Outputs with an open screen share.
+    pub casts: Vec<String>,
+    /// Screens asked of the portal so far (one per screen per request).
+    pub portal_asks: u64,
+    /// A transient layout is in place.
+    pub transient: bool,
+}
+
+/// A preview layer's compositor pad, in output pixels.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct PadInfo {
+    pub layer: String,
+    pub rect: (i32, i32, i32, i32),
+    pub alpha: f64,
+    pub zorder: u32,
+}
+
+/// An open screen share: the portal session of a real screen, or none for
+/// a fake screen shared by the tests' fake portal. Kept while a live
+/// pipeline (or a take) uses it, and for the cast grace after.
+pub(super) struct OpenCast {
+    pub share: Option<ScreenShare>,
 }
 
 /// What a record bin's probes saw (index = position in the take's bins).
@@ -191,10 +258,23 @@ impl GstCaptureEngine {
             .expect("the engine answers")
     }
 
-    /// Moves the live preview's layers during a drag (docs/GUI.md G§3.9).
-    /// Not connected yet: the control it returns does nothing.
+    /// Test hook (fake backend): from now on the fake screens are shared
+    /// through a fake portal, answered through the queue like the real
+    /// one's dialog, so the engine holds casts for them.
+    #[cfg(test)]
+    pub(super) fn share_fake_screens(&self) {
+        let _ = self.tx.send(Cmd::ShareFakeScreens);
+    }
+
+    /// Moves the live preview's layers during a drag or nudge (docs/GUI.md
+    /// G§3.9, D-32, D-33): each layout goes to the engine thread, which sets
+    /// the preview compositor's pads without a rebuild until the next
+    /// `SetLive` or a `None`. Never reaches a take or State.
     pub fn control(&self) -> LiveControl {
-        LiveControl::noop()
+        let tx = self.tx.clone();
+        LiveControl::new(move |scene| {
+            let _ = tx.send(Cmd::Transient(scene));
+        })
     }
 
     /// Fake backend only: makes the source `source` (an output, camera
@@ -255,6 +335,11 @@ impl CaptureEngine for GstCaptureEngine {
                 timed_out: true,
             });
         }
+    }
+
+    fn retry_live(&mut self, out: Inbox) {
+        self.remember(&out);
+        let _ = self.tx.send(Cmd::RetryLive(out));
     }
 
     fn shutdown(&mut self) {
@@ -386,13 +471,34 @@ struct Engine {
     take: Option<TakeRun>,
     tags: u64,
     portal: Option<PortalWorker>,
-    casts: BTreeMap<String, ScreenShare>,
+    casts: BTreeMap<String, OpenCast>,
+    /// When the casts kept after the live pipeline stopped close (GUI H-4).
+    casts_close_at: Option<Instant>,
     portal_seq: u64,
+    /// Screens asked of the portal so far, one per screen per request.
+    portal_asks: u64,
     /// Outputs asked of the portal and not answered yet.
     in_flight: BTreeSet<String>,
-    /// Outputs the portal refused for the current live scene (not asked
-    /// again until the scene changes).
+    /// Outputs the portal refused for the live scene's sources (left out of
+    /// the live pipeline until they change or a retry, D-50).
     refused: BTreeMap<String, String>,
+    /// Sources of the live scene that failed to start, by device, and why:
+    /// left out like refused screens.
+    failed: BTreeMap<String, String>,
+    /// Why the last live pipeline couldn't start at all (no source to blame).
+    broken: Option<String>,
+    /// The sources `refused` and `failed` are about.
+    known_sources: BTreeSet<SourceSpec>,
+    /// The size each video source delivered last, by device: a rebuilt
+    /// branch starts laid out (and reported) with it.
+    sizes: BTreeMap<String, (u32, u32)>,
+    /// [`LiveControl::transient_layout`]'s layers, until the next `SetLive`.
+    transient: Option<Scene>,
+    /// The last `SideEvent::LiveStatus` sent.
+    status: Vec<LiveSourceStatus>,
+    /// Test hook: the fake screens go through a sharing fake portal.
+    #[cfg(test)]
+    share_fake_screens: bool,
     shutdown_ack: Option<Sender<()>>,
     exiting: bool,
     done: bool,
@@ -422,9 +528,19 @@ impl Engine {
             tags: 0,
             portal: None,
             casts: BTreeMap::new(),
+            casts_close_at: None,
             portal_seq: 0,
+            portal_asks: 0,
             in_flight: BTreeSet::new(),
             refused: BTreeMap::new(),
+            failed: BTreeMap::new(),
+            broken: None,
+            known_sources: BTreeSet::new(),
+            sizes: BTreeMap::new(),
+            transient: None,
+            status: Vec::new(),
+            #[cfg(test)]
+            share_fake_screens: false,
             shutdown_ack: None,
             exiting: false,
             done: false,
@@ -458,6 +574,7 @@ impl Engine {
             }
             self.tick();
             self.maybe_finish_shutdown();
+            self.report_status();
         }
     }
 
@@ -479,6 +596,11 @@ impl Engine {
             }
             Cmd::Stop { take, cancel } => self.stop(take, cancel),
             Cmd::Shutdown(ack) => self.begin_shutdown(ack),
+            Cmd::RetryLive(out) => {
+                self.set_out(out);
+                self.retry_live();
+            }
+            Cmd::Transient(scene) => self.set_transient(scene),
             Cmd::Bus(generation, msg) => self.on_bus(generation, &msg),
             Cmd::Probe(tag, event) => self.on_probe(tag, event),
             Cmd::SourceSize {
@@ -487,24 +609,75 @@ impl Engine {
                 width,
                 height,
             } => self.on_source_size(generation, source, width, height),
+            Cmd::SourceEos { generation, source } => self.on_source_eos(generation, source),
             Cmd::PortalDone { id, results } => {
                 tracing::debug!("capture: portal answer {id}");
+                let results = results
+                    .into_iter()
+                    .map(|(output, result)| {
+                        (output, result.map(|share| OpenCast { share: Some(share) }))
+                    })
+                    .collect();
+                self.on_portal(results);
+            }
+            Cmd::FakePortalDone { id, results } => {
+                tracing::debug!("capture: fake portal answer {id}");
+                let results = results
+                    .into_iter()
+                    .map(|(output, result)| (output, result.map(|()| OpenCast { share: None })))
+                    .collect();
                 self.on_portal(results);
             }
             Cmd::Inject { source, failure } => self.inject(&source, failure),
             #[cfg(test)]
+            Cmd::ShareFakeScreens => self.share_fake_screens = true,
+            #[cfg(test)]
             Cmd::Inspect(reply) => {
-                let info = LiveInfo {
-                    generation: self.live.as_ref().map(|l| l.generation),
-                    sources: self
-                        .live
-                        .as_ref()
-                        .map(|l| l.sources.iter().map(|s| s.spec.clone()).collect())
-                        .unwrap_or_default(),
-                    preview: self.live.as_ref().is_some_and(|l| l.preview.is_some()),
-                };
-                let _ = reply.send(info);
+                let _ = reply.send(self.inspect());
             }
+        }
+    }
+
+    /// What tests see of the live pipeline (`Cmd::Inspect`).
+    #[cfg(test)]
+    fn inspect(&self) -> LiveInfo {
+        let live = self.live.as_ref();
+        let preview = live.and_then(|l| l.preview.as_ref());
+        let layers = preview
+            .map(|p| {
+                p.layers
+                    .iter()
+                    .map(|pl| PadInfo {
+                        layer: pl.layer.id.to_string(),
+                        rect: (
+                            pl.pad.property::<i32>("xpos"),
+                            pl.pad.property::<i32>("ypos"),
+                            pl.pad.property::<i32>("width"),
+                            pl.pad.property::<i32>("height"),
+                        ),
+                        alpha: pl.pad.property::<f64>("alpha"),
+                        zorder: pl.pad.property::<u32>("zorder"),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        LiveInfo {
+            generation: live.map(|l| l.generation),
+            sources: live
+                .map(|l| l.sources.iter().map(|s| s.spec.clone()).collect())
+                .unwrap_or_default(),
+            preview: preview.is_some(),
+            preview_sink: match (&self.opts.preview, live) {
+                (Some(out), Some(live)) => {
+                    out.sink.parent().as_ref() == Some(live.pipeline.upcast_ref::<gst::Object>())
+                }
+                _ => false,
+            },
+            preview_size: preview.map(|p| p.scale.out),
+            layers,
+            casts: self.casts.keys().cloned().collect(),
+            portal_asks: self.portal_asks,
+            transient: self.transient.is_some(),
         }
     }
 
@@ -536,24 +709,91 @@ impl Engine {
     // ------------------------------------------------------------ live
 
     /// The core sends the live scene it wants whenever that changes (A§8.11);
-    /// an equal scene with a healthy pipeline changes nothing.
+    /// an equal scene with a healthy pipeline changes nothing. Any `SetLive`
+    /// ends a transient layout.
     fn set_live(&mut self, scene: Option<LiveScene>) {
-        if scene == self.desired && self.live_is_healthy() {
-            return;
+        let transient = self.transient.take().is_some();
+        if let Some(next) = &scene {
+            let sources: BTreeSet<SourceSpec> = scene_sources(&next.scene).into_iter().collect();
+            if sources != self.known_sources {
+                // New sources may be picked differently in the dialog, or
+                // be plugged in now: try them again. (A layout change, or
+                // Program mode and back, keeps what was refused: the GUI's
+                // retry asks again, D-50.)
+                self.refused.clear();
+                self.failed.clear();
+                self.known_sources = sources;
+            }
         }
-        if scene.as_ref().map(|s| &s.scene) != self.desired.as_ref().map(|s| &s.scene) {
-            // New sources may be picked differently in the dialog: ask again.
-            self.refused.clear();
+        if scene == self.desired && self.live_is_healthy() {
+            if transient {
+                self.apply_layout();
+            }
+            return;
         }
         self.desired = scene;
         if self.take.is_some() {
             // Layout changes show now; source changes wait for the take's end.
-            if let (Some(live), Some(scene)) = (&self.live, &self.desired) {
-                live.apply_layout(scene);
-            }
+            self.apply_layout();
             return;
         }
-        self.apply_desired();
+        self.apply_desired(false);
+    }
+
+    /// Lays the live preview out as the live scene, or as the transient
+    /// layout while one is in place.
+    fn apply_layout(&self) {
+        let (Some(live), Some(scene)) = (&self.live, &self.desired) else {
+            return;
+        };
+        let layers: &[Layer] = match &self.transient {
+            Some(transient) => &transient.layers,
+            None => &scene.scene.layers,
+        };
+        live.apply_layout(layers);
+    }
+
+    /// `LiveControl::transient_layout` (GUI D-32, D-33): only the preview's
+    /// pads move, without a rebuild; `None` goes back to the live scene's.
+    fn set_transient(&mut self, scene: Option<Scene>) {
+        if scene.is_none() && self.transient.is_none() {
+            return;
+        }
+        self.transient = scene;
+        self.apply_layout();
+    }
+
+    /// The GUI's "Try again" (D-50, `Msg::RetryLive`): forget the screens the
+    /// portal refused, the sources that failed to start and the dead ones,
+    /// and rebuild the live pipeline (asking the portal again). Screens that
+    /// failed or died lose their cast, which is stale. During a take the
+    /// rebuild waits for its end, like every source change.
+    fn retry_live(&mut self) {
+        let dead: Vec<String> = self
+            .live
+            .iter()
+            .flat_map(|live| &live.sources)
+            .filter(|s| s.dead.is_some())
+            .map(|s| s.spec.device_name().to_owned())
+            .collect();
+        tracing::info!(
+            "capture: retrying the live preview: {} refused, {} failed, {} dead",
+            self.refused.len(),
+            self.failed.len(),
+            dead.len()
+        );
+        let stale: Vec<OpenCast> = dead
+            .iter()
+            .chain(self.failed.keys())
+            .filter_map(|name| self.casts.remove(name))
+            .collect();
+        self.close_casts(stale);
+        self.refused.clear();
+        self.failed.clear();
+        self.broken = None;
+        if self.take.is_none() && self.desired.is_some() && !self.exiting {
+            self.apply_desired(true);
+        }
     }
 
     /// The pipeline matches `desired`: none wanted and none running, or one
@@ -566,13 +806,17 @@ impl Engine {
         }
     }
 
-    /// Makes the live pipeline match `desired` (no take running).
-    fn apply_desired(&mut self) {
+    /// Makes the live pipeline match `desired` (no take running); `force`
+    /// rebuilds it even when it matches (a retry).
+    fn apply_desired(&mut self, force: bool) {
         let Some(scene) = self.desired.clone() else {
             self.teardown_live();
-            self.close_unused_casts(&[]);
+            self.release_casts();
             return;
         };
+        // A live scene again: the casts it shows stay, the others close
+        // once it runs.
+        self.casts_close_at = None;
         if self.wedged.is_some() {
             return;
         }
@@ -583,19 +827,21 @@ impl Engine {
             }
             return;
         }
-        // Screens the portal refused stay out of the preview until the
-        // scene changes; the rest still shows.
+        // Screens the portal refused and sources that failed to start stay
+        // out of the preview until the scene's sources change or a retry;
+        // the rest still shows.
         let specs: Vec<SourceSpec> = self
             .scene_specs(&scene)
             .into_iter()
-            .filter(|s| !matches!(s, SourceSpec::Screen { output } if self.refused.contains_key(output)))
+            .filter(|s| !self.left_out(s))
             .collect();
         let key = LiveKey::of(specs.clone(), Some(&scene));
-        if let Some(live) = &self.live
+        if !force
+            && let Some(live) = &self.live
             && live.key == key
             && live.sources.iter().all(|s| s.dead.is_none())
         {
-            live.apply_layout(&scene);
+            self.apply_layout();
             return;
         }
         match self.await_casts(&specs) {
@@ -607,25 +853,36 @@ impl Engine {
                     self.refused.insert(output, message.clone());
                 }
                 self.side(SideEvent::LiveError(message));
-                return self.apply_desired();
+                return self.apply_desired(force);
             }
         }
-        match self.rebuild_live(&specs, Some(&scene)) {
-            Ok(()) => {
-                if let Some(live) = &self.live {
-                    live.apply_layout(&scene);
+        if let Err(e) = self.rebuild_live(&specs, Some(&scene)) {
+            let message = match &e.source {
+                Some(spec) => format!("{}: {}", spec.describe(), e.message),
+                None => e.message.clone(),
+            };
+            tracing::warn!("capture: the live pipeline can't start: {message}");
+            self.side(SideEvent::LiveError(message.clone()));
+            match e.source {
+                // Without it, the rest starts (each round leaves one
+                // more source out, so this ends).
+                Some(spec) => {
+                    self.failed
+                        .insert(spec.device_name().to_owned(), e.message.clone());
+                    return self.apply_desired(false);
                 }
-            }
-            Err(e) => {
-                let message = match &e.source {
-                    Some(spec) => format!("{}: {}", spec.describe(), e.message),
-                    None => e.message.clone(),
-                };
-                tracing::warn!("capture: the live pipeline can't start: {message}");
-                self.side(SideEvent::LiveError(message));
+                None => self.broken = Some(e.message),
             }
         }
         self.close_unused_casts(&specs);
+    }
+
+    /// Whether the live pipeline leaves `spec` out: a screen the portal
+    /// refused, or a source that failed to start.
+    fn left_out(&self, spec: &SourceSpec) -> bool {
+        let name = spec.device_name();
+        self.failed.contains_key(name)
+            || matches!(spec, SourceSpec::Screen { .. }) && self.refused.contains_key(name)
     }
 
     /// The scene's sources, cameras with the mode the engine negotiates.
@@ -678,7 +935,77 @@ impl Engine {
         }
     }
 
-    /// Replaces the live pipeline with one for `specs` and starts it.
+    /// Sends `SideEvent::LiveStatus` when a live source's state or size
+    /// changed: after builds and rebuilds, portal answers, deaths, sizes
+    /// negotiated, a retry, and a scene that drops or adds sources.
+    fn report_status(&mut self) {
+        if self.opts.side.is_none() {
+            return;
+        }
+        let status = self.live_status();
+        if status != self.status {
+            tracing::debug!("capture: live status {status:?}");
+            self.side(SideEvent::LiveStatus(status.clone()));
+            self.status = status;
+        }
+    }
+
+    /// Every source of the live scene, in its order (layers, topmost
+    /// first, then audio tracks; one entry per device), that has a state:
+    /// in the live pipeline (`Live`, or `Dead` once it failed or ended),
+    /// refused by the portal, waiting for it, or failed to start (`Dead`).
+    /// A source with none isn't started yet: its pipeline waits for the
+    /// portal's answer about another screen, or for the take to end.
+    fn live_status(&self) -> Vec<LiveSourceStatus> {
+        let Some(scene) = &self.desired else {
+            return Vec::new();
+        };
+        let live = self.live.as_ref();
+        scene_sources(&scene.scene)
+            .into_iter()
+            .filter_map(|spec| {
+                let name = spec.device_name();
+                let screen = matches!(spec, SourceSpec::Screen { .. });
+                let branch =
+                    live.and_then(|l| l.sources.iter().find(|b| b.spec.same_device(&spec)));
+                let known = branch
+                    .and_then(|b| b.size)
+                    .or_else(|| self.sizes.get(name).copied());
+                let (state, size) = if let Some(branch) = branch {
+                    let state = match &branch.dead {
+                        Some(message) => LiveSourceState::Dead {
+                            message: message.clone(),
+                        },
+                        None => LiveSourceState::Live,
+                    };
+                    (state, known)
+                } else if let Some(message) = self.refused.get(name).filter(|_| screen) {
+                    let state = LiveSourceState::Refused {
+                        cancelled: message.contains(CANCELLED_IN_THE_DIALOG),
+                        message: message.clone(),
+                    };
+                    (state, None)
+                } else if screen && self.in_flight.contains(name) {
+                    (LiveSourceState::AwaitingPortal, None)
+                } else if let Some(message) = self.failed.get(name).or(self.broken.as_ref()) {
+                    let state = LiveSourceState::Dead {
+                        message: message.clone(),
+                    };
+                    (state, known)
+                } else {
+                    return None;
+                };
+                Some(LiveSourceStatus {
+                    source: live_source(&spec),
+                    state,
+                    size: size.filter(|_| spec.is_video()),
+                })
+            })
+            .collect()
+    }
+
+    /// Replaces the live pipeline with one for `specs`, laid out (the
+    /// preview, as [`Self::apply_layout`] does) before it starts.
     fn rebuild_live(
         &mut self,
         specs: &[SourceSpec],
@@ -704,11 +1031,23 @@ impl Engine {
             tx: &self.tx,
             side: self.opts.side.as_ref(),
             casts: &self.casts,
+            preview: self.opts.preview.as_ref(),
         };
-        let live = Live::build(specs, scene, &ctx)?;
+        let mut live = Live::build(specs, scene, &ctx)?;
+        // Laid out (and reported) at the size each source had last, until
+        // it negotiates again.
+        for branch in live.sources.iter_mut().filter(|b| b.spec.is_video()) {
+            branch.size = self.sizes.get(branch.spec.device_name()).copied();
+        }
         let generation = live.generation;
         let pipeline = live.pipeline.clone();
         self.live = Some(live);
+        // Before it starts: a crop that changes while a source's first caps
+        // query crosses its `videocrop` (two caps transforms, each with
+        // another crop) leaves no common caps, and the source dies
+        // "not-negotiated". The GUI's sink (`async=false`) lets the
+        // pipeline reach PLAYING before its sources negotiated.
+        self.apply_layout();
         if let Err(message) = self.start_pipeline(&pipeline, generation) {
             let source = self.collect_start_error(generation);
             self.teardown_live();
@@ -723,6 +1062,12 @@ impl Engine {
                 },
             });
         }
+        // What started isn't failing any more (a take may start a source
+        // the preview had left out).
+        for spec in specs {
+            self.failed.remove(spec.device_name());
+        }
+        self.broken = None;
         Ok(())
     }
 
@@ -792,24 +1137,52 @@ impl Engine {
 
     fn teardown_live(&mut self) {
         if let Some(live) = self.live.take() {
-            let ok = set_null_with_deadline(vec![live.pipeline.upcast()], TEARDOWN_TIMEOUT);
+            let ok = set_null_with_deadline(vec![live.pipeline.clone().upcast()], TEARDOWN_TIMEOUT);
             if !ok {
                 self.wedge(
                     "the capture engine is stuck stopping the live pipeline (GPU driver?); restart Qrec"
                         .into(),
                 );
+                return;
+            }
+            // At NULL: the GUI's sink leaves with nothing in flight, for the
+            // next pipeline (GUI H-1).
+            if let Some(out) = &self.opts.preview
+                && out.sink.parent().as_ref() == Some(live.pipeline.upcast_ref::<gst::Object>())
+                && let Err(e) = live.pipeline.remove(&out.sink)
+            {
+                tracing::warn!(
+                    "capture: can't take the preview sink out of the live pipeline: {e}"
+                );
             }
         }
+    }
+
+    /// Whether `src` (a bus message's) is the GUI's preview sink or inside it.
+    fn is_preview_sink(&self, src: Option<&gst::Object>) -> bool {
+        let Some(out) = &self.opts.preview else {
+            return false;
+        };
+        let sink = out.sink.upcast_ref::<gst::Object>();
+        let mut current = src.cloned();
+        while let Some(object) = current {
+            if &object == sink {
+                return true;
+            }
+            current = object.parent();
+        }
+        false
     }
 
     // ------------------------------------------------------------ portal
 
     /// Screens of `specs` that need a portal session (real backend; the fake
-    /// one's screens only with `QREC_FAKE_PORTAL`, whose portal refuses them).
+    /// one's screens only with `QREC_FAKE_PORTAL`, whose portal refuses them,
+    /// or a test's sharing fake portal).
     fn missing_casts(&self, specs: &[SourceSpec]) -> Vec<String> {
         let portal = match self.opts.backend {
             Backend::Real => true,
-            Backend::Fake => self.opts.fake.portal.is_some(),
+            Backend::Fake => self.opts.fake.portal.is_some() || self.fake_portal_shares(),
         };
         if !portal {
             return Vec::new();
@@ -843,16 +1216,37 @@ impl Engine {
         Ok(true)
     }
 
+    /// Test hook: the fake screens go through a fake portal that shares them.
+    fn fake_portal_shares(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.share_fake_screens
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
+
     fn request_casts(&mut self, outputs: Vec<String>) -> Result<(), String> {
-        if let (Backend::Fake, Some(portal)) = (self.opts.backend, self.opts.fake.portal) {
-            // QREC_FAKE_PORTAL: refused, answered later like the real
-            // portal's dialog (through the queue, as its worker does).
+        self.portal_asks += outputs.len() as u64;
+        if self.opts.backend == Backend::Fake {
+            // QREC_FAKE_PORTAL: refused (a test's fake portal: shared),
+            // answered later like the real portal's dialog (through the
+            // queue, as its worker does).
             self.portal_seq += 1;
+            let refusal = self.opts.fake.portal;
             let results = outputs
                 .iter()
-                .map(|output| (output.clone(), Err(portal.refusal(output))))
+                .map(|output| {
+                    let answer = match refusal {
+                        Some(portal) => Err(portal.refusal(output)),
+                        None => Ok(()),
+                    };
+                    (output.clone(), answer)
+                })
                 .collect();
-            let _ = self.tx.send(Cmd::PortalDone {
+            let _ = self.tx.send(Cmd::FakePortalDone {
                 id: self.portal_seq,
                 results,
             });
@@ -892,17 +1286,15 @@ impl Engine {
         Ok(())
     }
 
-    fn on_portal(&mut self, results: Vec<(String, Result<ScreenShare, String>)>) {
+    fn on_portal(&mut self, results: Vec<(String, Result<OpenCast, String>)>) {
         let mut failures = Vec::new();
         for (output, result) in results {
             self.in_flight.remove(&output);
             match result {
                 Ok(cast) => {
                     self.refused.remove(&output);
-                    if let Some(old) = self.casts.insert(output, cast)
-                        && let Some(worker) = &self.portal
-                    {
-                        worker.close(vec![old]);
+                    if let Some(old) = self.casts.insert(output, cast) {
+                        self.close_casts(vec![old]);
                     }
                 }
                 Err(message) => failures.push((output, message)),
@@ -940,7 +1332,7 @@ impl Engine {
                 self.refused.insert(output, message);
             }
             if self.take.is_none() {
-                self.apply_desired();
+                self.apply_desired(false);
             }
         }
     }
@@ -960,13 +1352,55 @@ impl Engine {
             })
             .cloned()
             .collect();
-        let casts: Vec<ScreenShare> = unused
+        let casts: Vec<OpenCast> = unused
             .iter()
             .filter_map(|output| self.casts.remove(output))
             .collect();
-        if let Some(worker) = &self.portal {
-            worker.close(casts);
+        self.close_casts(casts);
+        if self.casts.is_empty() {
+            self.casts_close_at = None;
         }
+    }
+
+    /// Ends these screen shares' portal sessions (on the portal thread).
+    fn close_casts(&self, casts: Vec<OpenCast>) {
+        let shares: Vec<ScreenShare> = casts.into_iter().filter_map(|c| c.share).collect();
+        if let Some(worker) = &self.portal {
+            worker.close(shares);
+        }
+    }
+
+    /// The live pipeline stopped (no live scene is wanted): its screen
+    /// casts close now, or once `cast_grace` passed without a live scene,
+    /// so the GUI's `Tab` back to Live doesn't ask the portal again (H-4).
+    fn release_casts(&mut self) {
+        if self.casts.is_empty() || self.take.is_some() {
+            return;
+        }
+        let grace = self.opts.cast_grace;
+        if grace.is_zero() || self.exiting {
+            return self.close_unused_casts(&[]);
+        }
+        if self.casts_close_at.is_none() {
+            tracing::debug!(
+                "capture: keeping {} screen share(s) open for {} s",
+                self.casts.len(),
+                grace.as_secs_f64()
+            );
+            self.casts_close_at = Some(Instant::now() + grace);
+        }
+    }
+
+    /// The cast grace is over: the casts no wanted scene shows close.
+    fn end_cast_grace(&mut self) {
+        self.casts_close_at = None;
+        let keep = self
+            .desired
+            .clone()
+            .map(|scene| self.scene_specs(&scene))
+            .unwrap_or_default();
+        tracing::debug!("capture: the cast grace is over");
+        self.close_unused_casts(&keep);
     }
 
     // ------------------------------------------------------------ takes
@@ -1101,12 +1535,7 @@ impl Engine {
         }
         let scene = self.desired.clone();
         match self.rebuild_live(&specs, scene.as_ref()) {
-            Ok(()) => {
-                if let (Some(live), Some(scene)) = (&self.live, &scene) {
-                    live.apply_layout(scene);
-                }
-                self.attach_take();
-            }
+            Ok(()) => self.attach_take(),
             Err(e) => {
                 let source = e.source.as_ref().map(|spec| self.label_for(spec));
                 self.fail_take(source, e.message);
@@ -1439,6 +1868,11 @@ impl Engine {
                     run.log
                         .line(format!("error from {}: {detailed}", path.join(" < ")));
                 }
+                if self.is_preview_sink(msg.src()) {
+                    // The GUI's sink: a preview problem, never a source's.
+                    self.side(SideEvent::LiveError(format!("preview: {message}")));
+                    return;
+                }
                 self.on_error(&path, message);
             }
             gst::MessageView::Warning(w) => {
@@ -1671,7 +2105,7 @@ impl Engine {
         if self.exiting {
             return;
         }
-        self.apply_desired();
+        self.apply_desired(false);
     }
 
     fn on_source_size(&mut self, generation: u64, source: usize, width: u32, height: u32) {
@@ -1679,12 +2113,39 @@ impl Engine {
         if live.generation != generation || source >= live.sources.len() {
             return;
         }
-        if live.sources[source].size == Some((width, height)) {
+        let branch = &mut live.sources[source];
+        self.sizes
+            .insert(branch.spec.device_name().to_owned(), (width, height));
+        if branch.size == Some((width, height)) {
             return;
         }
-        live.sources[source].size = Some((width, height));
-        if let Some(scene) = &self.desired {
-            live.apply_layout(scene);
+        branch.size = Some((width, height));
+        self.apply_layout();
+    }
+
+    /// A live source's stream ended (EOS into its tee): it is dead, so the
+    /// next live scene, take or retry rebuilds it. A take that records it
+    /// loses those streams through its bins' EOS (`StreamLost`).
+    fn on_source_eos(&mut self, generation: u64, source: usize) {
+        let Some(live) = &mut self.live else { return };
+        if live.generation != generation {
+            return;
+        }
+        let Some(branch) = live.sources.get_mut(source) else {
+            return;
+        };
+        if branch.dead.is_some() {
+            return;
+        }
+        branch.dead = Some(STOPPED_SENDING.to_owned());
+        let text = format!("{}: {STOPPED_SENDING}", branch.spec.describe());
+        tracing::warn!("capture: {text}");
+        let recorded = self
+            .take
+            .as_ref()
+            .is_some_and(|run| run.bins.iter().any(|b| b.source == source));
+        if !recorded {
+            self.side(SideEvent::LiveError(text));
         }
     }
 
@@ -1722,6 +2183,13 @@ impl Engine {
     // ------------------------------------------------------------ time
 
     fn next_deadline(&self) -> Option<Instant> {
+        match (self.take_deadline(), self.casts_close_at) {
+            (Some(take), Some(casts)) => Some(take.min(casts)),
+            (take, casts) => take.or(casts),
+        }
+    }
+
+    fn take_deadline(&self) -> Option<Instant> {
         let run = self.take.as_ref()?;
         match &run.phase {
             Phase::New => None,
@@ -1757,6 +2225,9 @@ impl Engine {
 
     fn tick(&mut self) {
         let now = Instant::now();
+        if self.casts_close_at.is_some_and(|at| now >= at) {
+            self.end_cast_grace();
+        }
         let Some(run) = &mut self.take else { return };
         match run.phase {
             Phase::New => {}
@@ -1933,14 +2404,28 @@ impl Engine {
             return;
         }
         self.teardown_live();
-        let casts: Vec<ScreenShare> = std::mem::take(&mut self.casts).into_values().collect();
-        if let Some(worker) = &self.portal {
-            worker.close(casts);
-        }
+        let casts: Vec<OpenCast> = std::mem::take(&mut self.casts).into_values().collect();
+        self.close_casts(casts);
+        self.casts_close_at = None;
         if let Some(ack) = self.shutdown_ack.take() {
             let _ = ack.send(());
         }
         self.done = true;
+    }
+}
+
+/// The live source a [`SourceSpec`] is, for `SideEvent::LiveStatus`.
+fn live_source(spec: &SourceSpec) -> LiveSource {
+    match spec {
+        SourceSpec::Screen { output } => LiveSource::Screen {
+            output: output.clone(),
+        },
+        SourceSpec::Camera { device, .. } => LiveSource::Camera {
+            device: device.clone(),
+        },
+        SourceSpec::Audio { device } => LiveSource::Audio {
+            device: device.clone(),
+        },
     }
 }
 
@@ -2010,6 +2495,39 @@ fn silence_reason(plan: &CapturePlan, id: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::FakePortal;
+
+    /// `LiveSourceState::Refused { cancelled }` comes from the portal's
+    /// words: a closed dialog (the real portal's `ResponseError::Cancelled`
+    /// and the fake portal's `cancel`) reads "cancelled in the dialog".
+    #[test]
+    fn a_closed_dialog_is_told_from_a_denial() {
+        let cancelled = FakePortal::Cancel.refusal("FAKE-1");
+        let denied = FakePortal::Deny.refusal("FAKE-1");
+        assert!(cancelled.contains(CANCELLED_IN_THE_DIALOG), "{cancelled}");
+        assert!(!denied.contains(CANCELLED_IN_THE_DIALOG), "{denied}");
+    }
+
+    #[test]
+    fn statuses_name_their_source() {
+        let camera = SourceSpec::Camera {
+            device: "/dev/video0".into(),
+            mode: None,
+        };
+        assert_eq!(
+            live_source(&camera),
+            LiveSource::Camera {
+                device: "/dev/video0".into()
+            }
+        );
+        assert_eq!(
+            live_source(&SourceSpec::Screen {
+                output: "DP-4".into()
+            })
+            .name(),
+            "DP-4"
+        );
+    }
 
     #[test]
     fn only_watched_bins_silent_past_the_limit_are_stalled() {

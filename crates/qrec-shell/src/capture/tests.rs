@@ -1,13 +1,17 @@
 //! Engine tests with the fake backend: real GStreamer pipelines fed by
 //! `videotestsrc`/`audiotestsrc`, files checked with ffprobe. Never touches
-//! the portal, cameras, PulseAudio or a GPU (x264 only).
+//! the portal, cameras, PulseAudio or a GPU (x264 only). The GUI's parts
+//! (docs/GUI.md G§3.9) too: an appsink stands in for its paintable sink.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
+use gst::prelude::*;
 use qrec_core::ctx::CameraMode;
 use qrec_core::media_argv::probe_argv;
 use qrec_core::model::{
@@ -20,7 +24,12 @@ use qrec_core::{Event, Fps, TakeId};
 use serde_json::Value;
 
 use super::fake::{FAKE_CAMERA, FAKE_MIC, FAKE_MONITOR};
-use super::{Backend, EngineOptions, FakeFailure, GstCaptureEngine, STALL_LIMIT, SideEvent};
+use super::meters::MeterMonitor;
+use super::spec::SourceSpec;
+use super::{
+    Backend, EngineOptions, FakeFailure, FakeHooks, FakePortal, GstCaptureEngine, LiveSourceState,
+    LiveSourceStatus, PreviewOutput, STALL_LIMIT, SideEvent,
+};
 use crate::deps::CaptureEngine;
 use crate::gst_init::testing::{assert_quiet_since, problems, serial};
 use crate::msg::{Inbox, Msg};
@@ -55,7 +64,13 @@ impl Harness {
         Self::with_side(None)
     }
 
-    fn with_side(side: Option<crossbeam_channel::Sender<SideEvent>>) -> Self {
+    fn with_side(side: Option<Sender<SideEvent>>) -> Self {
+        Self::custom(side, |_| {})
+    }
+
+    /// An engine with `side` and whatever else `configure` sets (the GUI's
+    /// preview sink, a cast grace, fake hooks).
+    fn custom(side: Option<Sender<SideEvent>>, configure: impl FnOnce(&mut EngineOptions)) -> Self {
         let env = TestEnv::new();
         let project = env.empty_dir("swamp");
         fs::create_dir(project.join("takes")).unwrap();
@@ -63,6 +78,7 @@ impl Harness {
         let mut opts = EngineOptions::new(&project, Backend::Fake, &dirs);
         opts.register_app_id = false;
         opts.side = side;
+        configure(&mut opts);
         let engine = GstCaptureEngine::spawn(opts).unwrap();
         let (inbox, rx) = Inbox::channel();
         Self {
@@ -860,6 +876,12 @@ fn live_pipeline_previews_and_records() {
     let level = level.expect("a level reading");
     assert_eq!(level.device, FAKE_MIC);
     assert_eq!(level.rms_db.len(), 1);
+    // Without a sink of the GUI's: the RGBA appsink, at the canvas size.
+    let info = h.engine.inspect();
+    assert!(info.preview && !info.preview_sink, "{info:?}");
+    assert_eq!(info.preview_size, Some((320, 180)));
+    assert_eq!(info.layers.len(), 1);
+    assert_eq!(info.layers[0].rect, (0, 0, 320, 180));
 
     // A layout change applies without errors.
     let mut moved = scene.clone();
@@ -1124,4 +1146,719 @@ fn a_hung_camera_is_rebuilt_for_the_next_take() {
         !timed_out && streams.iter().all(|s| s.eos),
         "{streams:?} {skipped:?}"
     );
+}
+
+// ------------------------------------------------- the GUI's parts (G§3.9)
+
+/// An appsink standing in for the GUI's `gtk4paintablesink`: it records
+/// what it gets and keeps the last frame.
+struct PreviewTap {
+    sink: gst::Element,
+    seen: Arc<Mutex<TapFrames>>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct TapFrames {
+    count: u64,
+    format: String,
+    size: (u32, u32),
+    stride: usize,
+    last: Vec<u8>,
+}
+
+impl TapFrames {
+    /// (B, G, R) of the last BGRx frame at (x, y).
+    fn bgr(&self, x: usize, y: usize) -> (u8, u8, u8) {
+        let i = y * self.stride + x * 4;
+        (self.last[i], self.last[i + 1], self.last[i + 2])
+    }
+
+    /// Whether the last frame shows [`BACKGROUND`] at (x, y).
+    fn background_at(&self, x: usize, y: usize) -> bool {
+        let (b, g, r) = self.bgr(x, y);
+        let near = |have: u8, want: u8| have.abs_diff(want) <= 12;
+        near(r, 0x12) && near(g, 0x34) && near(b, 0x56)
+    }
+}
+
+/// The canvas background of the GUI tests: no SMPTE bar is near it.
+const BACKGROUND: &str = "#123456";
+
+impl PreviewTap {
+    fn new() -> Self {
+        crate::gst_init::init().expect("GStreamer");
+        let seen = Arc::new(Mutex::new(TapFrames::default()));
+        let record = Arc::clone(&seen);
+        let sink = gst_app::AppSink::builder()
+            .name("gui-preview-sink")
+            .max_buffers(1)
+            .drop(true)
+            .callbacks(
+                gst_app::AppSinkCallbacks::builder()
+                    .new_sample(move |sink| {
+                        let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                        let info = sample
+                            .caps()
+                            .and_then(|caps| gst_video::VideoInfo::from_caps(caps).ok());
+                        if let (Some(info), Some(buffer)) = (info, sample.buffer())
+                            && let Ok(map) = buffer.map_readable()
+                        {
+                            let mut seen = record.lock().unwrap();
+                            seen.count += 1;
+                            seen.format = info.format().to_str().to_string();
+                            seen.size = (info.width(), info.height());
+                            seen.stride = info.stride()[0] as usize;
+                            seen.last = map.as_slice().to_vec();
+                        }
+                        Ok(gst::FlowSuccess::Ok)
+                    })
+                    .build(),
+            )
+            .build();
+        Self {
+            sink: sink.upcast(),
+            seen,
+        }
+    }
+
+    fn frames(&self) -> TapFrames {
+        self.seen.lock().unwrap().clone()
+    }
+
+    /// Polls the frames until `done` holds for them.
+    fn wait(&self, what: &str, done: impl Fn(&TapFrames) -> bool) -> TapFrames {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let frames = self.frames();
+            if frames.count > 0 && done(&frames) {
+                return frames;
+            }
+            assert!(Instant::now() < deadline, "{what}: not within {WAIT:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn output(&self, max_size: (u32, u32)) -> PreviewOutput {
+        PreviewOutput {
+            sink: self.sink.clone(),
+            max_size,
+        }
+    }
+}
+
+/// A 1280×720 scene with the GUI tests' background.
+fn wide_scene(layers: Vec<Layer>, audio: Vec<AudioTrack>) -> LiveScene {
+    LiveScene {
+        canvas: Canvas {
+            width: 1280,
+            height: 720,
+            fps: Fps::new(30, 1),
+            background: BACKGROUND.parse().unwrap(),
+        },
+        scene: Scene { layers, audio },
+        preview: true,
+    }
+}
+
+/// Polls the engine until `done` holds for what it shows.
+fn inspect_until(
+    h: &Harness,
+    what: &str,
+    done: impl Fn(&super::engine::LiveInfo) -> bool,
+) -> super::engine::LiveInfo {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let info = h.engine.inspect();
+        if done(&info) {
+            return info;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{what}: not within {WAIT:?}; {info:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// H-1: the preview goes to the GUI's sink, BGRx at the canvas fitted into
+/// its max size, and the same element serves every rebuilt pipeline; no
+/// RGBA frames then.
+#[test]
+fn the_preview_goes_to_the_given_sink_through_rebuilds() {
+    let _serial = serial();
+    let tap = PreviewTap::new();
+    let (side_tx, side_rx) = crossbeam_channel::unbounded();
+    let mut h = Harness::custom(Some(side_tx), |opts| {
+        opts.preview = Some(tap.output((320, 180)));
+    });
+    let quarter = Rect::new(0, 0, 640, 360);
+    let mut scene = wide_scene(vec![screen_layer("L1", "FAKE-1", quarter)], Vec::new());
+    h.engine.set_live(Some(scene.clone()), h.inbox.clone());
+    let mut info = h.engine.inspect();
+    assert!(info.preview_sink, "{info:?}");
+    assert_eq!(info.preview_size, Some((320, 180)));
+    // The layer's rect × 320 / 1280.
+    assert_eq!(info.layers[0].rect, (0, 0, 160, 90));
+    let frames = tap.wait("BGRx frames", |f| f.count >= 5);
+    assert_eq!((frames.format.as_str(), frames.size), ("BGRx", (320, 180)));
+    assert!(frames.background_at(240, 135), "outside the layer");
+    tap.wait("the test card in the layer", |f| !f.background_at(40, 45));
+
+    // Two rebuilds (new sources): the same sink, in the new pipeline.
+    let more_audio = {
+        let mut next = scene.clone();
+        next.scene.audio.push(audio_track("A1", FAKE_MIC));
+        next
+    };
+    let more_video = {
+        let mut next = more_audio.clone();
+        next.scene
+            .layers
+            .push(screen_layer("L2", "FAKE-2", Rect::new(640, 360, 640, 360)));
+        next
+    };
+    for next in [more_audio, more_video] {
+        let before = info.generation;
+        h.engine.set_live(Some(next.clone()), h.inbox.clone());
+        info = h.engine.inspect();
+        assert!(info.generation > before, "{info:?}");
+        assert!(info.preview_sink, "{info:?}");
+        let parent = tap.sink.parent().expect("in the live pipeline");
+        assert_eq!(
+            parent.name().as_str(),
+            format!("qrec-live-{}", info.generation.unwrap())
+        );
+        let count = tap.frames().count;
+        let frames = tap.wait("frames of the rebuilt pipeline", |f| f.count >= count + 5);
+        assert_eq!((frames.format.as_str(), frames.size), ("BGRx", (320, 180)));
+        scene = next;
+    }
+    assert_eq!(info.layers[1].rect, (160, 90, 160, 90));
+    // Only the sink got the preview.
+    assert!(
+        !side_rx
+            .try_iter()
+            .any(|e| matches!(e, SideEvent::Preview(_))),
+        "RGBA frames with a sink given"
+    );
+
+    // No live scene: the pipeline is gone and the sink out of it, ready for
+    // the next one.
+    h.engine.set_live(None, h.inbox.clone());
+    assert_eq!(h.engine.inspect().generation, None);
+    assert!(tap.sink.parent().is_none());
+    h.engine.set_live(Some(scene), h.inbox.clone());
+    assert!(h.engine.inspect().preview_sink);
+    let count = tap.frames().count;
+    tap.wait("frames again", |f| f.count >= count + 5);
+}
+
+/// The preview's size is the canvas fitted into the sink's max size, never
+/// larger than the canvas.
+#[test]
+fn the_preview_size_fits_the_canvas_into_the_max_size() {
+    let _serial = serial();
+    let tap = PreviewTap::new();
+    let mut h = Harness::custom(None, |opts| opts.preview = Some(tap.output((960, 540))));
+    let mut square = wide_scene(
+        vec![screen_layer("L1", "FAKE-1", Rect::new(0, 0, 1080, 1080))],
+        Vec::new(),
+    );
+    square.canvas.width = 1080;
+    square.canvas.height = 1080;
+    h.engine.set_live(Some(square.clone()), h.inbox.clone());
+    assert_eq!(h.engine.inspect().preview_size, Some((540, 540)));
+    tap.wait("a 540×540 frame", |f| f.size == (540, 540));
+    // A small canvas isn't scaled up.
+    let mut small = square;
+    small.canvas.width = 320;
+    small.canvas.height = 180;
+    small.scene.layers[0].rect = Rect::new(0, 0, 320, 180);
+    h.engine.set_live(Some(small), h.inbox.clone());
+    assert_eq!(h.engine.inspect().preview_size, Some((320, 180)));
+    tap.wait("a 320×180 frame", |f| f.size == (320, 180));
+}
+
+/// D-32, D-33: `LiveControl::transient_layout` moves preview layers without
+/// a rebuild, until the next `SetLive` (any) or a `None`.
+#[test]
+fn a_transient_layout_moves_the_preview_until_the_next_set_live() {
+    let _serial = serial();
+    let tap = PreviewTap::new();
+    let mut h = Harness::custom(None, |opts| opts.preview = Some(tap.output((320, 180))));
+    let top_left = Rect::new(0, 0, 640, 360);
+    let scene = wide_scene(vec![screen_layer("L1", "FAKE-1", top_left)], Vec::new());
+    h.engine.set_live(Some(scene.clone()), h.inbox.clone());
+    let generation = h.engine.inspect().generation;
+    assert!(generation.is_some());
+    let at_top_left = |f: &TapFrames| !f.background_at(40, 45) && f.background_at(240, 135);
+    let at_bottom_right = |f: &TapFrames| f.background_at(40, 45) && !f.background_at(240, 135);
+    tap.wait("the layer at the top left", at_top_left);
+
+    let control = h.engine.control();
+    let mut moved = scene.scene.clone();
+    moved.layers[0].rect = Rect::new(640, 360, 640, 360);
+    moved.layers[0].opacity = 0.5;
+    control.transient_layout(Some(moved.clone()));
+    let info = h.engine.inspect();
+    assert_eq!(info.generation, generation, "no rebuild");
+    assert!(info.transient);
+    assert_eq!(info.layers[0].rect, (160, 90, 160, 90));
+    assert_eq!(info.layers[0].alpha, 0.5);
+    tap.wait("the layer at the bottom right", at_bottom_right);
+
+    // The next SetLive, even of the same scene, ends it.
+    h.engine.set_live(Some(scene.clone()), h.inbox.clone());
+    let info = h.engine.inspect();
+    assert_eq!(info.generation, generation);
+    assert!(!info.transient);
+    assert_eq!(info.layers[0].rect, (0, 0, 160, 90));
+    assert_eq!(info.layers[0].alpha, 1.0);
+    tap.wait("the layer back at the top left", at_top_left);
+
+    // `None` ends it too.
+    control.transient_layout(Some(moved.clone()));
+    assert_eq!(h.engine.inspect().layers[0].rect, (160, 90, 160, 90));
+    control.transient_layout(None);
+    let info = h.engine.inspect();
+    assert!(!info.transient);
+    assert_eq!(info.layers[0].rect, (0, 0, 160, 90));
+
+    // A SetLive with another layout (no rebuild) ends it and shows its own.
+    control.transient_layout(Some(moved));
+    let mut lower = scene.clone();
+    lower.scene.layers[0].rect = Rect::new(0, 360, 640, 360);
+    h.engine.set_live(Some(lower), h.inbox.clone());
+    let info = h.engine.inspect();
+    assert_eq!(info.generation, generation);
+    assert!(!info.transient);
+    assert_eq!(info.layers[0].rect, (0, 90, 160, 90));
+}
+
+/// A compact form of a status list: each source's name and state.
+fn brief(statuses: &[LiveSourceStatus]) -> Vec<(String, &'static str)> {
+    statuses
+        .iter()
+        .map(|s| {
+            let state = match &s.state {
+                LiveSourceState::AwaitingPortal => "awaiting",
+                LiveSourceState::Live => "live",
+                LiveSourceState::Refused {
+                    cancelled: true, ..
+                } => "cancelled",
+                LiveSourceState::Refused { .. } => "refused",
+                LiveSourceState::Dead { .. } => "dead",
+            };
+            (s.source.name().to_owned(), state)
+        })
+        .collect()
+}
+
+fn names(list: &[(&str, &'static str)]) -> Vec<(String, &'static str)> {
+    list.iter().map(|(n, s)| ((*n).to_owned(), *s)).collect()
+}
+
+/// The `LiveStatus` events up to the first that `done` accepts (it last).
+fn statuses_until(
+    side: &Receiver<SideEvent>,
+    what: &str,
+    done: impl Fn(&[LiveSourceStatus]) -> bool,
+) -> Vec<Vec<LiveSourceStatus>> {
+    let deadline = Instant::now() + WAIT;
+    let mut seen = Vec::new();
+    loop {
+        match side.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(SideEvent::LiveStatus(status)) => {
+                let finished = done(&status);
+                seen.push(status);
+                if finished {
+                    return seen;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => panic!("no {what} within {WAIT:?}; got {seen:#?}"),
+        }
+    }
+}
+
+/// G§3.9 `LiveStatus` for a build: every source live, in the scene's
+/// order, then with the sizes they negotiated; nothing awaits a portal. A
+/// rebuilt pipeline reports the sizes at once; no live scene, no sources.
+#[test]
+fn live_status_follows_a_build() {
+    let _serial = serial();
+    let (side_tx, side_rx) = crossbeam_channel::unbounded();
+    let mut h = Harness::with_side(Some(side_tx));
+    let full = Rect::new(0, 0, 320, 180);
+    let scene = live_scene(
+        vec![
+            camera_layer("L2", FAKE_CAMERA, full),
+            screen_layer("L1", "FAKE-1", full),
+        ],
+        vec![audio_track("A1", FAKE_MIC)],
+        true,
+    );
+    h.engine.set_live(Some(scene.clone()), h.inbox.clone());
+    let seen = statuses_until(&side_rx, "the sizes", |s| {
+        s.len() == 3 && s[..2].iter().all(|s| s.size.is_some())
+    });
+    let all_live = names(&[
+        (FAKE_CAMERA, "live"),
+        ("FAKE-1", "live"),
+        (FAKE_MIC, "live"),
+    ]);
+    for status in &seen {
+        assert_eq!(brief(status), all_live, "{seen:#?}");
+    }
+    let last = seen.last().unwrap().clone();
+    assert_eq!(
+        last[0].size,
+        Some((1280, 720)),
+        "the fake camera's 1280×720 mode"
+    );
+    assert_eq!(last[1].size, Some((1280, 720)));
+    assert_eq!(last[2].size, None, "audio has no size");
+    // Nothing changes: nothing is sent.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        !side_rx
+            .try_iter()
+            .any(|e| matches!(e, SideEvent::LiveStatus(_))),
+        "a status without a change"
+    );
+
+    // No live scene: no sources. Back: live, with the sizes known already.
+    h.engine.set_live(None, h.inbox.clone());
+    let seen = statuses_until(&side_rx, "an empty status", <[_]>::is_empty);
+    assert_eq!(seen.len(), 1, "{seen:#?}");
+    h.engine.set_live(Some(scene), h.inbox.clone());
+    let seen = statuses_until(&side_rx, "a status", |_| true);
+    assert_eq!(seen[0], last);
+}
+
+/// G§3.9 `LiveStatus` for a refusal (`QREC_FAKE_PORTAL=deny` and
+/// `cancel`): the screen awaits the portal, then is refused (cancelled for
+/// a closed picker) while the rest goes live. A layout change, or Program
+/// mode and back, doesn't ask again; `retry_live` does (D-50).
+#[test]
+fn live_status_follows_a_refusal() {
+    let _serial = serial();
+    for (portal, refused) in [
+        (FakePortal::Deny, "refused"),
+        (FakePortal::Cancel, "cancelled"),
+    ] {
+        let (side_tx, side_rx) = crossbeam_channel::unbounded();
+        let mut h = Harness::custom(Some(side_tx), |opts| {
+            opts.fake = FakeHooks {
+                portal: Some(portal),
+                ..FakeHooks::default()
+            };
+        });
+        let full = Rect::new(0, 0, 320, 180);
+        let scene = live_scene(
+            vec![screen_layer("L1", "FAKE-1", full)],
+            vec![audio_track("A1", FAKE_MIC)],
+            true,
+        );
+        h.engine.set_live(Some(scene.clone()), h.inbox.clone());
+        let answered = names(&[("FAKE-1", refused), (FAKE_MIC, "live")]);
+        let seen = statuses_until(&side_rx, "the refusal", |s| brief(s) == answered);
+        let briefs: Vec<_> = seen.iter().map(|s| brief(s)).collect();
+        assert_eq!(
+            briefs,
+            [names(&[("FAKE-1", "awaiting")]), answered.clone()],
+            "{portal:?}"
+        );
+        let LiveSourceState::Refused { message, .. } = &seen[1][0].state else {
+            unreachable!()
+        };
+        assert!(message.contains("FAKE-1"), "{message}");
+        assert_eq!(seen[1][0].size, None);
+        let info = h.engine.inspect();
+        assert_eq!(info.portal_asks, 1);
+        assert_eq!(
+            info.sources,
+            vec![SourceSpec::Audio {
+                device: FAKE_MIC.into()
+            }]
+        );
+
+        // Moving the layer keeps the refusal: no dialog again.
+        let mut moved = scene.clone();
+        moved.scene.layers[0].rect = Rect::new(10, 10, 160, 90);
+        h.engine.set_live(Some(moved.clone()), h.inbox.clone());
+        assert_eq!(h.engine.inspect().portal_asks, 1, "{portal:?}");
+        // Program mode and back keeps it too.
+        h.engine.set_live(None, h.inbox.clone());
+        h.engine.set_live(Some(moved), h.inbox.clone());
+        assert_eq!(h.engine.inspect().portal_asks, 1, "{portal:?}");
+        statuses_until(&side_rx, "the refusal again", |s| brief(s) == answered);
+
+        // The GUI's retry asks again.
+        h.engine.retry_live(h.inbox.clone());
+        let seen = statuses_until(&side_rx, "the second refusal", |s| brief(s) == answered);
+        assert_eq!(
+            brief(&seen[0]),
+            names(&[("FAKE-1", "awaiting"), (FAKE_MIC, "live")]),
+            "{portal:?}: {seen:#?}"
+        );
+        assert_eq!(h.engine.inspect().portal_asks, 2);
+    }
+}
+
+/// G§3.9 `LiveStatus` for a source's death (an error, a stream that ends)
+/// and for a source that can't start: dead, while the rest stays live; a
+/// retry brings them back.
+#[test]
+fn live_status_follows_a_death() {
+    let _serial = serial();
+    let (side_tx, side_rx) = crossbeam_channel::unbounded();
+    let mut h = Harness::with_side(Some(side_tx));
+    let full = Rect::new(0, 0, 320, 180);
+    let scene = live_scene(
+        vec![
+            screen_layer("L1", "FAKE-1", full),
+            camera_layer("L2", FAKE_CAMERA, full),
+        ],
+        vec![audio_track("A1", FAKE_MIC)],
+        true,
+    );
+    h.engine.set_live(Some(scene.clone()), h.inbox.clone());
+    let all_live = names(&[
+        ("FAKE-1", "live"),
+        (FAKE_CAMERA, "live"),
+        (FAKE_MIC, "live"),
+    ]);
+    statuses_until(&side_rx, "a build", |s| {
+        brief(s) == all_live && s[1].size.is_some()
+    });
+    let generation = h.engine.inspect().generation;
+
+    // The camera is unplugged.
+    h.engine
+        .inject_fake_failure(FAKE_CAMERA, FakeFailure::Error);
+    let camera_dead = names(&[
+        ("FAKE-1", "live"),
+        (FAKE_CAMERA, "dead"),
+        (FAKE_MIC, "live"),
+    ]);
+    let seen = statuses_until(&side_rx, "the camera's death", |s| brief(s) == camera_dead);
+    let last = seen.last().unwrap();
+    let LiveSourceState::Dead { message } = &last[1].state else {
+        unreachable!()
+    };
+    assert!(message.contains("unplugged"), "{message}");
+    // Its last size stays known (the layer box).
+    assert_eq!(last[1].size, Some((1280, 720)));
+    // The mic's stream ends.
+    h.engine.inject_fake_failure(FAKE_MIC, FakeFailure::Eos);
+    let both_dead = names(&[
+        ("FAKE-1", "live"),
+        (FAKE_CAMERA, "dead"),
+        (FAKE_MIC, "dead"),
+    ]);
+    let seen = statuses_until(&side_rx, "the mic's end", |s| brief(s) == both_dead);
+    let LiveSourceState::Dead { message } = &seen.last().unwrap()[2].state else {
+        unreachable!()
+    };
+    assert!(message.contains("stopped sending data"), "{message}");
+    assert_eq!(h.engine.inspect().generation, generation, "no rebuild yet");
+
+    // The GUI's retry rebuilds: everything is live again.
+    h.engine.retry_live(h.inbox.clone());
+    statuses_until(&side_rx, "the retry", |s| brief(s) == all_live);
+    let retried = h.engine.inspect().generation;
+    assert!(retried > generation);
+    // A retry with nothing wrong rebuilds too.
+    h.engine.retry_live(h.inbox.clone());
+    assert!(h.engine.inspect().generation > retried);
+
+    // A source that can't start is dead; the rest runs without it.
+    let mut broken = scene;
+    broken.scene.layers[1] = camera_layer("L2", "/dev/video0", full);
+    h.engine.set_live(Some(broken), h.inbox.clone());
+    let failed = names(&[
+        ("FAKE-1", "live"),
+        ("/dev/video0", "dead"),
+        (FAKE_MIC, "live"),
+    ]);
+    let seen = statuses_until(&side_rx, "a failed start", |s| brief(s) == failed);
+    let LiveSourceState::Dead { message } = &seen.last().unwrap()[1].state else {
+        unreachable!()
+    };
+    assert!(message.contains("no fake camera"), "{message}");
+    let info = h.engine.inspect();
+    assert_eq!(info.sources.len(), 2, "{info:?}");
+    assert!(info.preview);
+}
+
+/// A preview rebuilt with its sources' sizes known (Program mode and back,
+/// or a take that adds a source) keeps a camera its layer crops (`cover`
+/// in a box of another aspect), with the GUI's sink and with the RGBA
+/// appsink. The rebuilt pipeline used to be laid out only once it ran: the
+/// crop then changed while the camera's first caps query crossed its
+/// `videocrop` (two caps transforms with different crops, no common caps),
+/// and the camera died "not-negotiated" in about half the round trips of
+/// the GUI's Live mode, and broke a take whose pipeline it rebuilt.
+#[test]
+fn a_rebuilt_preview_keeps_a_cropped_camera() {
+    const ROUND_TRIPS: usize = 12;
+    let _serial = serial();
+    for with_sink in [true, false] {
+        let tap = PreviewTap::new();
+        let (side_tx, side_rx) = crossbeam_channel::unbounded();
+        let mut h = Harness::custom(Some(side_tx), |opts| {
+            if with_sink {
+                opts.preview = Some(tap.output((960, 540)));
+            }
+        });
+        // A 4:3 box: `cover` crops the fake camera's 1280×720 to 960×720.
+        let scene = wide_scene(
+            vec![
+                camera_layer("L2", FAKE_CAMERA, Rect::new(960, 480, 320, 240)),
+                screen_layer("L1", "FAKE-1", Rect::new(0, 0, 1280, 720)),
+            ],
+            Vec::new(),
+        );
+        let all_live = names(&[(FAKE_CAMERA, "live"), ("FAKE-1", "live")]);
+        h.engine.set_live(Some(scene.clone()), h.inbox.clone());
+        statuses_until(&side_rx, "the sizes", |s| {
+            brief(s) == all_live && s.iter().all(|s| s.size.is_some())
+        });
+        for round in 1..=ROUND_TRIPS {
+            h.engine.set_live(None, h.inbox.clone());
+            statuses_until(&side_rx, "no sources", <[_]>::is_empty);
+            h.engine.set_live(Some(scene.clone()), h.inbox.clone());
+            // The sources negotiate within milliseconds of the start.
+            std::thread::sleep(Duration::from_millis(200));
+            let seen: Vec<SideEvent> = side_rx
+                .try_iter()
+                .filter(|e| matches!(e, SideEvent::LiveStatus(_) | SideEvent::LiveError(_)))
+                .collect();
+            let all_fine = seen
+                .iter()
+                .all(|e| matches!(e, SideEvent::LiveStatus(s) if brief(s) == all_live));
+            assert!(
+                !seen.is_empty() && all_fine,
+                "round trip {round} (GUI sink: {with_sink}): {seen:#?}"
+            );
+        }
+        // Still laid out with the crop: the camera's pad is the box × 3/4.
+        let info = h.engine.inspect();
+        assert_eq!(info.preview_sink, with_sink, "{info:?}");
+        let scale = |v: i32| if with_sink { v * 3 / 4 } else { v };
+        assert_eq!(
+            info.layers[0].rect,
+            (scale(960), scale(480), scale(320), scale(240)),
+            "{info:?}"
+        );
+    }
+}
+
+/// H-4: the screen casts outlive the live pipeline by `cast_grace` (a fake
+/// portal that shares: its call count), then close; without a grace they
+/// close at once.
+#[test]
+fn screen_casts_stay_open_for_the_cast_grace() {
+    let _serial = serial();
+    let grace = Duration::from_millis(1500);
+    let mut h = Harness::custom(None, |opts| opts.cast_grace = grace);
+    h.engine.share_fake_screens();
+    let full = Rect::new(0, 0, 320, 180);
+    let scene = live_scene(vec![screen_layer("L1", "FAKE-1", full)], Vec::new(), true);
+    let shown = |h: &Harness| inspect_until(h, "the live pipeline", |i| i.generation.is_some());
+    h.engine.set_live(Some(scene.clone()), h.inbox.clone());
+    let info = shown(&h);
+    assert_eq!(info.portal_asks, 1);
+    assert_eq!(info.casts, ["FAKE-1"]);
+
+    // Program mode: the pipeline stops, the cast stays.
+    h.engine.set_live(None, h.inbox.clone());
+    let info = h.engine.inspect();
+    assert_eq!(info.generation, None);
+    assert_eq!(info.casts, ["FAKE-1"]);
+    // Live again within the grace: no new dialog.
+    h.engine.set_live(Some(scene.clone()), h.inbox.clone());
+    assert_eq!(shown(&h).portal_asks, 1);
+
+    // Past the grace the cast is closed, and Live asks again.
+    h.engine.set_live(None, h.inbox.clone());
+    std::thread::sleep(grace + Duration::from_millis(500));
+    assert!(h.engine.inspect().casts.is_empty());
+    h.engine.set_live(Some(scene.clone()), h.inbox.clone());
+    let info = shown(&h);
+    assert_eq!((info.portal_asks, info.casts.len()), (2, 1));
+    drop(h);
+
+    // Hosts without a grace close their casts with the pipeline.
+    let mut h = Harness::new();
+    h.engine.share_fake_screens();
+    h.engine.set_live(Some(scene), h.inbox.clone());
+    assert_eq!(shown(&h).casts.len(), 1);
+    h.engine.set_live(None, h.inbox.clone());
+    assert!(h.engine.inspect().casts.is_empty());
+}
+
+/// D-03: the meter monitor reads the fake tone about every 50 ms per device
+/// (once per device; one it doesn't have stays idle), and stops within 5 s.
+#[test]
+fn the_meter_monitor_reads_the_fake_tone() {
+    let _serial = serial();
+    let problems_before = problems();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let devices = [FAKE_MIC, FAKE_MONITOR, FAKE_MIC, "alsa_input.not-fake"];
+    let monitor = MeterMonitor::start(
+        devices.iter().map(|d| (*d).to_owned()).collect(),
+        Backend::Fake,
+        tx,
+    )
+    .expect("starts");
+    let mut readings: BTreeMap<String, Vec<(Instant, f64)>> = BTreeMap::new();
+    let window = Duration::from_millis(3200);
+    let began = Instant::now();
+    while began.elapsed() < window {
+        match rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(SideEvent::Level(level)) => readings
+                .entry(level.device.clone())
+                .or_default()
+                .push((Instant::now(), level.rms_db[0])),
+            Ok(other) => panic!("{other:?}"),
+            Err(_) => {}
+        }
+    }
+    assert_eq!(
+        readings.keys().map(String::as_str).collect::<Vec<_>>(),
+        [FAKE_MIC, FAKE_MONITOR]
+    );
+    for (device, seen) in &readings {
+        // About 20 a second, each ~50 ms after the one before.
+        assert!(
+            (50..=75).contains(&seen.len()),
+            "{device}: {} readings",
+            seen.len()
+        );
+        let mut gaps: Vec<Duration> = seen.windows(2).map(|w| w[1].0 - w[0].0).collect();
+        gaps.sort();
+        let median = gaps[gaps.len() / 2];
+        assert!(
+            (Duration::from_millis(35)..=Duration::from_millis(65)).contains(&median),
+            "{device}: median gap {median:?}"
+        );
+        // The tone and its silences.
+        assert!(seen.iter().any(|(_, db)| *db > -20.0), "{device}: {seen:?}");
+        assert!(seen.iter().any(|(_, db)| *db < -60.0), "{device}: {seen:?}");
+    }
+
+    let stopping = Instant::now();
+    monitor.stop();
+    while !monitor.is_finished() {
+        assert!(stopping.elapsed() < Duration::from_secs(5), "not stopped");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // Nothing after it stopped.
+    rx.try_iter().for_each(drop);
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(rx.try_recv().is_err(), "a reading after the stop");
+    drop(monitor);
+    assert_quiet_since(problems_before);
 }

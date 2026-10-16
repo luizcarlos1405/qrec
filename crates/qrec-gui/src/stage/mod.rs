@@ -3,9 +3,9 @@
 //! (gated). Owner: WP4.
 //!
 //! Until WP4 lands this is WP0b's stub: the region (`region-stage`) with
-//! the media hub's picture (Live: the engine's appsink frames; Program: the
-//! program sink) letterboxed where the preview goes, and the caption
-//! "Opening <name>…" while step 7 is slow (G§3.3).
+//! the media hub's picture (Live: the live sink's paintable, G§3.9;
+//! Program: the program sink) letterboxed where the preview goes, and the
+//! caption "Opening <name>…" while step 7 is slow (G§3.3).
 
 use gtk::prelude::*;
 use qrec_core::state::CanvasMode;

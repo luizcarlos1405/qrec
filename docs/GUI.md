@@ -718,6 +718,13 @@ named `region-<name>`; the focused widget's nearest such ancestor).
     (≤ 5 s), the sink is removed from it and added to the new one.
   - Without `preview`, the RGBA appsink → `SideEvent::Preview` path stays
     (tests, and the GUI before WP1 merges).
+  - `PREVIEW_SINK_SUPPORTED = true` since WP1 part 2 merged (2026-10-16):
+    the opener passes the live sink and `MediaHub`'s live picture follows
+    its paintable (`FramePaintable::set_source`), so WP0b's interim stage
+    already shows it; checked in nested sway through Program and back and
+    a take. The engine lays a rebuilt pipeline out before it starts (A§8.11):
+    with the sink's `async=false`, a crop changed after the start killed a
+    `cover`-cropped camera "not-negotiated" in about half the round trips.
 - The GTK thread creates the sink (G§3.3 step 5) and holds a reference
   until exit, so the paintable is always finalized on the main thread. It
   never waits on the engine (R4).
@@ -792,7 +799,9 @@ impl ProgramPlayer {
   2. clears the layers and rebuilds from the plan (new
      `ges_render::rebuild_into(&timeline, &plan, dir, &mut retired)`),
      updating the restriction caps if the canvas or `out_size` changed;
-  3. `commit_sync()`, an accurate seek to `at_ns`, then resumes.
+  3. commits and waits for "commited" (a stopped pipeline prerolls first:
+     it applies a commit only as it starts), an accurate seek to `at_ns`,
+     then resumes.
 
   The old layers stay in `retired` (`ges_render::Retired`) until that
   commit applied or the pipeline is READY or NULL: GES frees a removed

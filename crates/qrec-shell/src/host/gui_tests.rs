@@ -1699,7 +1699,8 @@ mod real_session {
             "{:?}",
             port.last().map(|s| s.runtime.record.clone())
         );
-        // D-50's retry reaches the engine in order (a no-op until WP1).
+        // D-50's retry reaches the engine in order (during a take the
+        // engine rebuilds the live pipeline once the take ends, A§8.11).
         host.retry_live();
 
         // The window stops it: its answer comes once the take is final.

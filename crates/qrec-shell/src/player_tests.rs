@@ -127,29 +127,35 @@ impl Tap {
         self.seen.lock().unwrap().last().copied()
     }
 
-    /// Waits until the newest frame is at `pts`.
+    /// Waits until the newest frame is at `pts`; a timeout names the last
+    /// frames that came instead.
     fn showing(&self, pts: u64) -> Seen {
         self.showing_since(0, pts)
     }
 
     /// Waits until the newest frame is at `pts` and came after the first
     /// `since` frames: a load at the time the picture already shows must
-    /// not pass on the old plan's frame, which `Loaded` may come before the
-    /// new one reaches the appsink (the player's probe is on the tap's
-    /// sink pad, ahead of its `videoconvert`).
+    /// not pass on the old plan's frame. `Loaded` comes once a frame reached
+    /// the sink's pad (the player's probe is on the tap's sink pad, ahead of
+    /// its `videoconvert`), a moment before this appsink records it.
     fn showing_since(&self, since: usize, pts: u64) -> Seen {
-        let newest = || {
-            let seen = self.seen.lock().unwrap();
-            seen.last()
-                .copied()
-                .filter(|s| seen.len() > since && s.pts == pts)
-        };
-        wait_until(
-            &format!("a frame at {pts} ns after {since}"),
-            SETTLE,
-            || newest().is_some(),
-        );
-        newest().unwrap()
+        let deadline = Instant::now() + SETTLE;
+        loop {
+            let all = self.all();
+            if all.len() > since
+                && let Some(last) = all.last()
+                && last.pts == pts
+            {
+                return *last;
+            }
+            if Instant::now() >= deadline {
+                panic!(
+                    "a frame at {pts} ns: not within {SETTLE:?}; the last frames: {:?}",
+                    &all[all.len().saturating_sub(6)..]
+                );
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
     }
 }
 
