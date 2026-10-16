@@ -495,6 +495,8 @@ fn local(app: &App) -> Value {
             "width": format!("{:?}", local.layout.width),
             "compact": local.layout.compact,
         },
+        "playing": local.playing,
+        "programPlaying": local.program_playing,
         "playingRate": local.playing_rate,
         "panelPage": local.panel_page,
         "autocutPreview": local.autocut_preview.as_deref(),

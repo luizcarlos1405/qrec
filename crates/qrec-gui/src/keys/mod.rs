@@ -148,9 +148,10 @@ impl KeyRouter {
         used
     }
 
-    /// The player's frame while it plays (the effective playhead).
+    /// The player's frame while the program plays (the effective
+    /// playhead); `None` while a bin preview's take plays.
     fn player_frame(&self, local: &crate::store::LocalUi) -> Option<Frame> {
-        if !local.playing {
+        if !local.program_playing {
             return None;
         }
         let ns = self.inner.media.position_ns()?;

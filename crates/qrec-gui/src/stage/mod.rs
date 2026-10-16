@@ -580,8 +580,11 @@ impl Inner {
             )
             .max(0) as Frame
         });
-        let t = transport(&state, player_frame, local.playing, local.playing_rate);
-        self.transport.update(&t, &state, local.playing);
+        // The program's transport: a bin preview's take playing isn't the
+        // program playing (R16).
+        let playing = local.program_playing;
+        let t = transport(&state, player_frame, playing, local.playing_rate);
+        self.transport.update(&t, &state, playing);
 
         // The canvas.
         let editable =

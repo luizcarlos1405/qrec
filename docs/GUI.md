@@ -541,6 +541,8 @@ pub struct LocalUi {
     pub first_run_checked: Option<usize>,        // WP4 → WP6 hint "Add N sources"
     pub live_status: Arc<Vec<LiveSourceStatus>>, // WP0b side pump
     pub sources: Option<Arc<SourceInventory>>,   // WP0b refresh (S01a, Add menus)
+    pub playing: bool,                           // WP4 player sync: the player plays, the program or a take
+    pub program_playing: bool,                   // WP4 player sync: the program plays (G§3.10 step 3)
     pub playing_rate: f64,                       // WP4 player sync (D-44)
     pub export_view: ExportPanelState,           // WP7
     pub layout: LayoutClass,                     // WP0b: Wide | Medium | Narrow, and compact (G§3.15)
@@ -683,7 +685,8 @@ each key press, first match:
     → GUI action `autocut.page`; a runnable `layer.nudge-*` → the stage's
     GUI action of that id (D-33's burst, the stage registers them; WP4).
 11. `keymap::action_for(id, &effective_state)`, where `effective_state`
-    is the snapshot with `ui.playhead` = the player's frame while playing:
+    is the snapshot with `ui.playhead` = the player's frame while the
+    program plays (`LocalUi.program_playing`, G§3.10 step 3):
     - `Run(cmd)` → pre-steps, then dispatch;
     - `Gui` → `ActionRouter::run(id)`;
     - `Unavailable(reason)` → D-34.
@@ -895,7 +898,13 @@ pub const STUCK: &str = "the Program picture is stuck; restart Qrec";
      resets to 1.
   3. While playing, the drawn playhead is `position_ns`;
      `Seek{To(player_frame)}` goes out every second (an own seek); the
-     timeline auto-pages.
+     timeline auto-pages. "Playing" is `LocalUi.program_playing`: the
+     program plays in the player, not a bin preview's take (R00, R16), and
+     only once the program's load after a take landed (the player idle),
+     since until then `position_ns` is the take's. The timeline's playhead,
+     auto-page and corner, the transport, the key router's effective
+     playhead and `GuiFacts::playing` (the hint bar's Play/Pause) follow
+     it; `LocalUi.playing` says the player plays anything.
   4. Paused: a snapshot playhead the player isn't on → `seek()`, except
      while a ruler scrub holds it (step 9). While playing, a playhead more
      than 2 frames off the player's (one the GUI didn't set by its
@@ -909,7 +918,9 @@ pub const STUCK: &str = "the Program picture is stuck; restart Qrec";
      (`LocalUi.take_preview`): `load(plan_ges_take(..), frame)`; when they
      end, `load(program plan, ui.playhead)`. When a bin preview plays to
      its end the sync sets `take_preview.playing = false` (WP7 owns the
-     field).
+     field). A bin preview that takes over a playing program pauses it
+     (`Pause`, no seek: a playhead change ends the preview), so the core
+     doesn't play under the take (R16).
   9. Ruler scrub (D-40, round 3): the timeline calls
      `media::program::scrub(frame)` on each motion of a ruler drag and
      dispatches the throttled `Seek`s itself. The sync scrubs a paused
@@ -1742,7 +1753,7 @@ pub struct GuiFacts {
     pub fit_px_per_frame: f64,
     pub first_run_checked: Option<usize>,
     pub portal_denied: bool,                   // a screen is Refused in LiveStatus (used once S24 is approved)
-    pub playing: bool,                         // the player, not runtime.playing
+    pub playing: bool,                         // the program in the player (LocalUi.program_playing), not runtime.playing
     pub bin_selection: usize,
     pub built: Built,                          // { palette, cheat_sheet, settings_pages }: false until WP9
 }
