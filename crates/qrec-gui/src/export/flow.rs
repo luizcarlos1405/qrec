@@ -60,6 +60,29 @@ impl Draft {
         (self.format == ExportFormat::Webm && self.av1).then_some(VideoCodec::Av1)
     }
 
+    /// The Format switch (S15a, S15c): picks `format`. A file picked with
+    /// Change… whose name ends in the old format's extension (`talk.mp4`,
+    /// any case) gets the new one's (`talk.webm`): the export writes the
+    /// format's container whatever the name says. Another name stays as it
+    /// was picked.
+    pub fn set_format(&mut self, format: ExportFormat) {
+        let old = std::mem::replace(&mut self.format, format);
+        let Some(chosen) = &mut self.chosen else {
+            return;
+        };
+        let path = std::path::Path::new(chosen.as_str());
+        let named = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case(old.extension()));
+        if old != format && named {
+            *chosen = path
+                .with_extension(format.extension())
+                .to_string_lossy()
+                .into_owned();
+        }
+    }
+
     /// The `Export` command of the draft.
     pub fn command(&self) -> Command {
         Command::Export {
@@ -361,6 +384,44 @@ mod tests {
         );
         draft.format = ExportFormat::Mp4;
         assert_eq!(draft.codec(), None, "AV1 is WebM's only");
+    }
+
+    /// A file picked with Change… follows the Format switch: `talk.mp4`
+    /// becomes `talk.webm` (the export writes the format's container,
+    /// whatever the name: WebM into talk.mp4); a name without the old
+    /// format's extension stays as it was picked.
+    #[test]
+    fn a_picked_file_follows_the_format() {
+        let picked = |path: &str| Draft {
+            chosen: Some(path.into()),
+            ..Draft::default()
+        };
+        let out = |draft: &Draft| match draft.command() {
+            Command::Export { format, out, .. } => (format, out),
+            other => panic!("{other:?}"),
+        };
+        let mut draft = picked("/home/me/Videos/talk.mp4");
+        draft.set_format(ExportFormat::Webm);
+        assert_eq!(
+            out(&draft),
+            (ExportFormat::Webm, Some("/home/me/Videos/talk.webm".into()))
+        );
+        draft.set_format(ExportFormat::Mp4);
+        assert_eq!(
+            out(&draft),
+            (ExportFormat::Mp4, Some("/home/me/Videos/talk.mp4".into()))
+        );
+        let mut upper = picked("/home/me/TALK.MP4");
+        upper.set_format(ExportFormat::Webm);
+        assert_eq!(out(&upper).1.as_deref(), Some("/home/me/TALK.webm"));
+        for kept in ["/home/me/talk", "/home/me/talk.mkv", "/home/me.d/talk"] {
+            let mut draft = picked(kept);
+            draft.set_format(ExportFormat::Webm);
+            assert_eq!(out(&draft), (ExportFormat::Webm, Some(kept.into())));
+        }
+        let mut auto = Draft::default();
+        auto.set_format(ExportFormat::Webm);
+        assert_eq!(out(&auto), (ExportFormat::Webm, None), "the auto name");
     }
 
     /// D-24: an existing file asks (the Replace modal), a refused path says

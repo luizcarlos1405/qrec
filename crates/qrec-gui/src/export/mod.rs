@@ -289,7 +289,7 @@ impl Panel {
                     Some("webm") => ExportFormat::Webm,
                     _ => ExportFormat::Mp4,
                 };
-                e(Box::new(move |d| d.format = format));
+                e(Box::new(move |d| d.set_format(format)));
             }));
         let e = Rc::clone(&edit);
         self.setup

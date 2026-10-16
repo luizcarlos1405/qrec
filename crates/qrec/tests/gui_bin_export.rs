@@ -1908,6 +1908,48 @@ fn a_cli_export_shows_running_then_the_core_toast() {
     close(&mut nested);
 }
 
+/// A file picked with "Change…" follows the Format switch: `talk.mp4`
+/// reads `talk.webm` once WebM is picked, and `talk.mp4` again with MP4
+/// (the export wrote WebM into talk.mp4).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_picked_file_follows_the_format() {
+    let mut nested = Nested::start(AREA, "picked-format", Options::default());
+    let project = fixture(&nested, "smoke", DesignVariant::Smoke, Some(smoke_ui()));
+    let videos = nested.env.empty_dir("videos");
+    let picked = videos.join("talk.mp4");
+    let launch = launch().with_env("QREC_GUI_TEST_SAVE_AS", &picked.display().to_string());
+    open(&mut nested, &project, launch);
+    ctrl_e(&mut nested);
+    click(&mut nested, "export-change");
+    let output = |nested: &mut Nested| nested.window(0).labels("export-output");
+    let shown = output(&mut nested);
+    assert!(
+        shown.iter().any(|l| l.ends_with("/talk.mp4")),
+        "the pick: {shown:?}"
+    );
+    let regions = nested.window(0).regions(&["export-format"]);
+    let [fx, fy, fw, fh] = regions["export-format"];
+    nested.pointer().click(fx + fw * 0.75, fy + fh / 2.0);
+    nested.window(0).wait_idle();
+    let shown = output(&mut nested);
+    assert!(
+        shown.iter().any(|l| l.ends_with("/talk.webm")),
+        "WebM: {shown:?}"
+    );
+    nested.pointer().click(fx + fw * 0.25, fy + fh / 2.0);
+    nested.window(0).wait_idle();
+    let shown = output(&mut nested);
+    assert!(
+        shown.iter().any(|l| l.ends_with("/talk.mp4")),
+        "MP4 again: {shown:?}"
+    );
+    nested.keys(&["-k", "Escape"]);
+    nested.window(0).wait_idle();
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
 /// D-24: "Change…" picks a file that exists (the test's stand-in for the
 /// portal dialog): Export asks first (the Replace modal), and confirming
 /// sends it again, confirmed, as the panel's own export: the file is
