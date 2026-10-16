@@ -512,6 +512,7 @@ impl Store {
     pub fn subscribe_local(&self, f: impl Fn(&LocalUi) + 'static) -> Subscription;
     pub fn dispatch(&self, cmd: Command);                          // default reply policy (G§3.7)
     pub fn dispatch_with(&self, cmd: Command, confirmed: bool, done: impl FnOnce(Reply) + 'static);
+    pub fn dispatch_then(&self, cmd: Command, after: impl FnOnce(&Reply) + 'static); // default policy, then `after` (a refused pick shows the project again)
     pub fn notify(&self, notice: Notice);                          // a toast made by the GUI
     pub fn keymap(&self) -> Rc<Keymap>;
     pub fn sent(&self) -> std::cell::Ref<'_, SentValues>;          // echo rule
@@ -2473,7 +2474,10 @@ otherwise an info toast titled with the reason.
   rate (segmented 24 / 25 / 30 / 50 / 60; none selected for another rate);
   Background (`#RRGGBB` field); the footer "Saved in this project's
   ~/videos/rust-traits-talk/qrec.json." The row captions are taken from
-  the pen frame `GPmrg` (the PNG cuts them off).
+  the pen frame `GPmrg` (the PNG cuts them off). `disabled`: why the rows
+  wait (D-43: `view::enabled` of their `ProjectSet`, so while a take
+  records or finalizes and while `qrec.json` on disk is invalid), or
+  `None`; one reason fits the three rows.
 - Commands: Size → `ProjectSet{canvas}` with the new size; Frame rate →
   `ProjectSet{canvas}` with the new fps (with takes →
   `confirmation_required` → the S18b modal over Settings); Background →
@@ -2482,10 +2486,17 @@ otherwise an info toast titled with the reason.
 - As built (WP6): `ProjectPage` has `caption` and `footer_path`; the
   captions are stand-ins in `view::settings` until the pen export
   (`GPmrg`). The tabs are `adw::ToggleGroup` + `gtk::Stack`, not
-  `adw::InlineViewSwitcher` (its pages can't be disabled, D-48). Controls
-  snap back to the project's value after a pick (the rate reads 30 under
-  S18b's modal, as drawn), the Size dropdown is tracked as a Menu overlay,
-  and the dialog is centered on the window (G§3.15).
+  `adw::InlineViewSwitcher` (its pages can't be disabled, D-48). The rate
+  snaps back to the project's value after a pick (it reads 30 under
+  S18b's modal, as drawn); Size and Background show the pick until its
+  snapshot, and a refused one shows the project's value again
+  (`Store::dispatch_then`). The Size dropdown is tracked as a Menu
+  overlay, and the dialog is centered on the window (G§3.15).
+- Review fix R27: the rows follow D-43. While `disabled` is set they are
+  insensitive with it as their tooltip, and an open Size list closes;
+  the page follows every snapshot, not only canvas changes. (They stayed
+  enabled while recording: a Size pick the core refused left the
+  dropdown on a size the project didn't have, across reopening.)
 
 ### G§4.11 Interim and draft view models (WP0a interim, WP8 and WP9 gated)
 

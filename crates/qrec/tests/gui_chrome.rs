@@ -1065,6 +1065,91 @@ fn s18b_settings_and_the_fps_confirmation() {
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
 }
 
+/// The overlays `local` reports, as their debug names.
+fn overlays(nested: &mut Nested) -> Vec<String> {
+    let local = nested.window(0).local();
+    local["overlays"]
+        .as_array()
+        .unwrap_or_else(|| panic!("local: {local}"))
+        .iter()
+        .filter_map(|o| o.as_str().map(str::to_owned))
+        .collect()
+}
+
+/// D-43 in Settings › Project (R27): while a take records, the rows wait
+/// (the Size list doesn't open, a rate sends nothing), so no pick can show
+/// a size or rate the project doesn't have; once the take is done they
+/// work again. (A refused Size pick used to leave the dropdown on the
+/// refused size, across closing and reopening.)
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn settings_rows_wait_while_recording() {
+    let mut nested = Nested::start(AREA, "settings-recording", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(live_ui()),
+    );
+    open(&mut nested, &project, Launch::a11y());
+    nested.keys(&["-M", "ctrl", "-k", "comma", "-m", "ctrl"]);
+    nested.window(0).wait_idle();
+    let regions = nested
+        .window(0)
+        .regions(&["settings-size", "settings-rate"]);
+    let size_label = || "1920\u{d7}1080 (16:9)".to_owned();
+
+    // A take starts from outside the window (niri's `qrec record toggle`).
+    let start = nested.cli_json(&project, &["record", "start"]);
+    assert_eq!(start["ok"], true, "{start}");
+    wait_phase(&nested, &project, "recording", Duration::from_secs(20));
+    nested.window(0).wait_idle();
+    let [sx, sy, sw, sh] = regions["settings-size"];
+    nested.pointer().click(sx + sw / 2.0, sy + sh / 2.0);
+    nested.window(0).wait_idle();
+    thread::sleep(Duration::from_millis(300));
+    nested.window(0).wait_idle();
+    assert_eq!(overlays(&mut nested), ["Settings(Project)"], "no Size list");
+    // 25 fps: nothing is sent (no confirmation, no refusal toast).
+    let [rx, ry, _, rh] = regions["settings-rate"];
+    nested.pointer().click(rx + 2.0 + 44.0 * 1.5, ry + rh / 2.0);
+    nested.window(0).wait_idle();
+    thread::sleep(Duration::from_millis(300));
+    let gui = nested.window(0);
+    gui.wait_idle();
+    assert_eq!(gui.labels("settings-size"), [size_label()]);
+    assert!(
+        gui.labels("toast-host").is_empty(),
+        "{:?}",
+        gui.labels("toast-host")
+    );
+    nested.screenshot("recording");
+    assert_eq!(overlays(&mut nested), ["Settings(Project)"]);
+    let status = nested.cli_json(&project, &["status"]);
+    let canvas = &status["data"]["project"]["canvas"];
+    assert_eq!(canvas["width"], 1920, "{status}");
+    assert_eq!(canvas["fps"], json!({"num": 30, "den": 1}), "{status}");
+
+    // The take is done: the rows work again.
+    let stop = nested.cli_json(&project, &["record", "stop"]);
+    assert_eq!(stop["ok"], true, "{stop}");
+    wait_phase(&nested, &project, "idle", Duration::from_secs(30));
+    nested.window(0).wait_idle();
+    nested.pointer().click(sx + sw / 2.0, sy + sh / 2.0);
+    gui_support::poll(Duration::from_secs(10), "the Size list", || {
+        nested.window(0).wait_idle();
+        (overlays(&mut nested) == ["Settings(Project)", "Menu"]).then_some(())
+    });
+    nested.keys(&["-k", "Escape"]);
+    nested.window(0).wait_idle();
+    assert_eq!(overlays(&mut nested), ["Settings(Project)"]);
+    assert_eq!(nested.window(0).labels("settings-size"), [size_label()]);
+    assert_no_panics(&mut nested);
+    nested.window(0).assert_no_criticals();
+    nested.close_window();
+    assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
+}
+
 // --------------------------------------------------------------- D-12
 
 /// D-12: closing the window while an export runs asks first ("Quit while

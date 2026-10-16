@@ -5,12 +5,18 @@
 //! Each row is 60 px with a hairline under it: the label (`body`) over its
 //! caption (`caption` `muted`), the control on the right (260 px dropdown
 //! and field, the 220 px segmented rate). The controls show the project as
-//! the snapshots have it: a pick sends its `ProjectSet` and the control
-//! goes back to the project's value at once, so under the S18b modal the
-//! rate still reads 30 (the frame) until the change is confirmed. The
-//! Background field commits on Enter or when it loses the focus; an
-//! invalid color shows "Use #RRGGBB" under it (C29 invalid); `Esc` puts the
-//! project's color back.
+//! the snapshots have it: a pick sends its `ProjectSet` and the rate goes
+//! back to the project's value at once, so under the S18b modal it still
+//! reads 30 (the frame) until the change is confirmed. The Background field
+//! commits on Enter or when it loses the focus; an invalid color shows "Use
+//! #RRGGBB" under it (C29 invalid); `Esc` puts the project's color back.
+//!
+//! D-43: while a take records or finalizes, or `qrec.json` on disk is
+//! invalid, the three rows are disabled with the reason as their tooltip
+//! (`ProjectPage.disabled`), and an open Size list closes. A pick the core
+//! refuses all the same (a race with the gate) puts the project's value
+//! back (`Store::dispatch_then`): the Size dropdown used to keep showing a
+//! size the project didn't have (R27).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -34,7 +40,8 @@ pub struct ProjectPage {
 
 impl ProjectPage {
     pub fn new(ctx: &Ctx) -> Self {
-        let view = page_view(ctx);
+        let dir_display = dir_display(ctx);
+        let view = page_view(ctx, &dir_display);
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.set_widget_name("settings-project");
         root.add_css_class("settings-page");
@@ -133,6 +140,7 @@ impl ProjectPage {
 
         let parts = Rc::new(Parts {
             ctx: ctx.clone(),
+            dir_display,
             size: size.clone(),
             sizes: RefCell::new(view.size.options.iter().map(|o| o.label.clone()).collect()),
             size_caption,
@@ -146,14 +154,10 @@ impl ProjectPage {
         });
         parts.sync();
         parts.connect(&size, &rate, &field);
+        // Every snapshot: the canvas, and the gates of D-43 (the record
+        // phase, `disk_invalid`); `sync` skips a page that reads the same.
         let follower = Rc::clone(&parts);
-        ctx.store
-            .subscribe(move |change| {
-                if change.prev.project.canvas != change.next.project.canvas {
-                    follower.sync();
-                }
-            })
-            .detach();
+        ctx.store.subscribe(move |_| follower.sync()).detach();
         track_menu(ctx, &size);
         Self { root, size }
     }
@@ -168,12 +172,16 @@ impl ProjectPage {
     }
 }
 
-/// The page's view for the newest snapshot.
-fn page_view(ctx: &Ctx) -> View {
+/// The project folder as people read it (`~/videos/rust-traits-talk`).
+fn dir_display(ctx: &Ctx) -> String {
     let dir = ctx.store.project_dir().display().to_string();
     let home = std::env::var("HOME").ok();
-    let shown = format::display_path(&dir, &dir, home.as_deref());
-    project_page(&ctx.store.state(), &shown)
+    format::display_path(&dir, &dir, home.as_deref())
+}
+
+/// The page's view for the newest snapshot.
+fn page_view(ctx: &Ctx, dir_display: &str) -> View {
+    project_page(&ctx.store.state(), dir_display)
 }
 
 fn caption_label(text: &str) -> gtk::Label {
@@ -209,6 +217,8 @@ fn row(label: &str, caption: &str, control: &impl IsA<gtk::Widget>) -> (gtk::Box
 /// The page's controls and what they show.
 struct Parts {
     ctx: Ctx,
+    /// The project folder as shown in the footer.
+    dir_display: String,
     size: gtk::DropDown,
     sizes: RefCell<Vec<String>>,
     size_caption: gtk::Label,
@@ -225,11 +235,28 @@ struct Parts {
 impl Parts {
     /// Shows the project as the newest snapshot has it.
     fn sync(&self) {
-        let view = page_view(&self.ctx);
+        let view = page_view(&self.ctx, &self.dir_display);
         if self.shown.borrow().as_ref() == Some(&view) {
             return;
         }
         self.syncing.set(true);
+        // D-43: the rows wait while their `ProjectSet` would be refused.
+        let on = view.disabled.is_none();
+        let rows: [&gtk::Widget; 3] = [
+            self.size.upcast_ref(),
+            self.rate.upcast_ref(),
+            self.field.upcast_ref(),
+        ];
+        for row in rows {
+            if row.is_sensitive() != on {
+                row.set_sensitive(on);
+            }
+            row.set_tooltip_text(view.disabled.as_deref());
+        }
+        // An open list would stay up, insensitive, with no key to close it.
+        if !on && let Some(list) = list_popover(&self.size) {
+            list.popdown();
+        }
         let labels: Vec<String> = view.size.options.iter().map(|o| o.label.clone()).collect();
         if *self.sizes.borrow() != labels {
             let strs: Vec<&str> = labels.iter().map(String::as_str).collect();
@@ -264,6 +291,12 @@ impl Parts {
             .is_some_and(|focus| focus.is_ancestor(&self.field))
     }
 
+    /// Shows the project again, whatever was shown (a pick was refused).
+    fn resync(&self) {
+        *self.shown.borrow_mut() = None;
+        self.sync();
+    }
+
     fn set_invalid(&self, error: Option<&str>) {
         match error {
             Some(text) => {
@@ -294,10 +327,19 @@ impl Parts {
             if let Some(option) = picked
                 && (option.width, option.height) != (canvas.width, canvas.height)
             {
-                parts
-                    .ctx
-                    .store
-                    .dispatch(size_command(&state, option.width, option.height));
+                // The pick shows until its snapshot comes; refused (a take
+                // started meanwhile), the project's size shows again.
+                let weak = Rc::downgrade(&parts);
+                parts.ctx.store.dispatch_then(
+                    size_command(&state, option.width, option.height),
+                    move |reply| {
+                        if reply.result.is_err()
+                            && let Some(parts) = weak.upgrade()
+                        {
+                            parts.resync();
+                        }
+                    },
+                );
             }
         }));
         let parts = Rc::clone(self);
@@ -351,8 +393,9 @@ impl Parts {
     }
 
     /// The Background field committed: `ProjectSet{background}` when it
-    /// changed, or the field's error.
-    fn commit(&self, text: &str) {
+    /// changed, or the field's error. Refused, the field shows the
+    /// project's color again (unless it is being typed in).
+    fn commit(self: &Rc<Self>, text: &str) {
         match background_command(text) {
             Ok(cmd) => {
                 self.set_invalid(None);
@@ -361,12 +404,31 @@ impl Parts {
                     .trim()
                     .eq_ignore_ascii_case(state.project.canvas.background.as_str());
                 if !same {
-                    self.ctx.store.dispatch(cmd);
+                    let weak = Rc::downgrade(self);
+                    self.ctx.store.dispatch_then(cmd, move |reply| {
+                        if reply.result.is_err()
+                            && let Some(parts) = weak.upgrade()
+                        {
+                            parts.resync();
+                        }
+                    });
                 }
             }
             Err(error) => self.set_invalid(Some(&error)),
         }
     }
+}
+
+/// The dropdown's list (its `gtk::Popover` child), if any.
+fn list_popover(dropdown: &gtk::DropDown) -> Option<gtk::Popover> {
+    let mut child = dropdown.first_child();
+    while let Some(c) = child {
+        if let Ok(popover) = c.clone().downcast::<gtk::Popover>() {
+            return Some(popover);
+        }
+        child = c.next_sibling();
+    }
+    None
 }
 
 /// While the Size dropdown's list is open, the top overlay is a `Menu`: its

@@ -448,6 +448,21 @@ impl Store {
         });
     }
 
+    /// [`Store::dispatch`] (the default reply policy), then `after` with the
+    /// reply: a control that keeps showing its pick until the snapshot
+    /// comes puts the project's value back when the pick is refused
+    /// (Settings' Size and Background, D-43's races).
+    pub fn dispatch_then(&self, cmd: Command, after: impl FnOnce(&Reply) + 'static) {
+        let weak = Rc::downgrade(&self.inner);
+        let sent = cmd.clone();
+        self.dispatch_with(cmd, false, move |reply| {
+            if let Some(inner) = weak.upgrade() {
+                Store { inner }.apply_default(&sent, reply.clone());
+            }
+            after(&reply);
+        });
+    }
+
     /// Sends `cmd` again, confirmed (a confirmation modal's button), with
     /// the default reply policy: the core checks again. When the region
     /// that asked left a hook ([`Store::ask_confirmation`]), it gets `cmd`
@@ -757,6 +772,31 @@ mod tests {
             }]
         );
         assert_eq!(*toasts.borrow(), ["Nothing to select"]);
+    }
+
+    /// `dispatch_then`: the default policy (here a toast), then the caller
+    /// sees the reply, refused or not.
+    #[test]
+    fn dispatch_then_applies_the_policy_then_tells_the_caller() {
+        let store = store();
+        let toasts = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&toasts);
+        store
+            .subscribe_notices(move |n| seen.borrow_mut().push(n.title.clone()))
+            .detach();
+        let got = Rc::new(RefCell::new(Vec::new()));
+        for _ in 0..2 {
+            let (got, toasts) = (Rc::clone(&got), Rc::clone(&toasts));
+            store.dispatch_then(Command::Select { op: SelectOp::All }, move |reply| {
+                got.borrow_mut()
+                    .push((reply.result.is_ok(), toasts.borrow().len()));
+            });
+        }
+        store.on_reply(1, Err(CoreError::invalid("nothing to select")), false);
+        store.on_reply(2, Ok(json!({})), false);
+        assert_eq!(*toasts.borrow(), ["Nothing to select"]);
+        assert_eq!(*got.borrow(), [(false, 1), (true, 1)], "after the toast");
+        assert_eq!(store.pending_requests(), 0);
     }
 
     /// D-24: a confirmation a region asked for itself goes back to it once
