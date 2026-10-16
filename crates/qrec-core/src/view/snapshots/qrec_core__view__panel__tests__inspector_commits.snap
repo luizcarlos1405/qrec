@@ -1,0 +1,241 @@
+---
+source: crates/qrec-core/src/view/panel.rs
+expression: cases
+---
+[
+  [
+    "X 1280",
+    {
+      "Ok": {
+        "cmd": "layerSet",
+        "layer": "L2",
+        "patch": {
+          "rect": {
+            "h": 288,
+            "w": 384,
+            "x": 1280,
+            "y": 760
+          }
+        },
+        "target": "take-0005"
+      }
+    }
+  ],
+  [
+    "X 1280 px",
+    {
+      "Ok": {
+        "cmd": "layerSet",
+        "layer": "L2",
+        "patch": {
+          "rect": {
+            "h": 288,
+            "w": 384,
+            "x": 1280,
+            "y": 760
+          }
+        },
+        "target": "take-0005"
+      }
+    }
+  ],
+  [
+    "X −20 (true minus)",
+    {
+      "Ok": {
+        "cmd": "layerSet",
+        "layer": "L2",
+        "patch": {
+          "rect": {
+            "h": 288,
+            "w": 384,
+            "x": -20,
+            "y": 760
+          }
+        },
+        "target": "take-0005"
+      }
+    }
+  ],
+  [
+    "X unchanged",
+    {
+      "Ok": null
+    }
+  ],
+  [
+    "X 9000",
+    {
+      "Err": "X must be between −8192 and 8192"
+    }
+  ],
+  [
+    "X abc",
+    {
+      "Err": "X must be a whole number"
+    }
+  ],
+  [
+    "X 12.5",
+    {
+      "Err": "X must be a whole number"
+    }
+  ],
+  [
+    "Y 700",
+    {
+      "Ok": {
+        "cmd": "layerSet",
+        "layer": "L2",
+        "patch": {
+          "rect": {
+            "h": 288,
+            "w": 384,
+            "x": 1500,
+            "y": 700
+          }
+        },
+        "target": "take-0005"
+      }
+    }
+  ],
+  [
+    "W 480 unlocked",
+    {
+      "Ok": {
+        "cmd": "layerSet",
+        "layer": "L2",
+        "patch": {
+          "rect": {
+            "h": 288,
+            "w": 480,
+            "x": 1500,
+            "y": 760
+          }
+        },
+        "target": "take-0005"
+      }
+    }
+  ],
+  [
+    "W 480 locked",
+    {
+      "Ok": {
+        "cmd": "layerSet",
+        "layer": "L2",
+        "patch": {
+          "rect": {
+            "h": 360,
+            "w": 480,
+            "x": 1500,
+            "y": 760
+          }
+        },
+        "target": "take-0005"
+      }
+    }
+  ],
+  [
+    "H 144 locked",
+    {
+      "Ok": {
+        "cmd": "layerSet",
+        "layer": "L2",
+        "patch": {
+          "rect": {
+            "h": 144,
+            "w": 192,
+            "x": 1500,
+            "y": 760
+          }
+        },
+        "target": "take-0005"
+      }
+    }
+  ],
+  [
+    "W 0",
+    {
+      "Err": "Width must be at least 1"
+    }
+  ],
+  [
+    "H 99999",
+    {
+      "Err": "Height must be at most 16384"
+    }
+  ],
+  [
+    "crop top 40",
+    {
+      "Ok": {
+        "cmd": "layerSet",
+        "layer": "L2",
+        "patch": {
+          "crop": {
+            "bottom": 0,
+            "left": 0,
+            "right": 0,
+            "top": 40
+          }
+        },
+        "target": "take-0005"
+      }
+    }
+  ],
+  [
+    "crop left 640 of 1280",
+    {
+      "Ok": {
+        "cmd": "layerSet",
+        "layer": "L2",
+        "patch": {
+          "crop": {
+            "bottom": 0,
+            "left": 640,
+            "right": 0,
+            "top": 0
+          }
+        },
+        "target": "take-0005"
+      }
+    }
+  ],
+  [
+    "crop right 1280 of 1280",
+    {
+      "Err": "Crop leaves nothing to show"
+    }
+  ],
+  [
+    "crop bottom −1",
+    {
+      "Err": "Crop can't be negative"
+    }
+  ],
+  [
+    "opacity 50",
+    {
+      "Ok": {
+        "cmd": "layerSet",
+        "layer": "L2",
+        "patch": {
+          "opacity": 0.5
+        },
+        "target": "take-0005"
+      }
+    }
+  ],
+  [
+    "opacity 100 unchanged",
+    {
+      "Ok": null
+    }
+  ],
+  [
+    "opacity 120",
+    {
+      "Err": "Opacity must be between 0 and 100"
+    }
+  ]
+]

@@ -1,0 +1,71 @@
+---
+source: crates/qrec-core/src/view/meter.rs
+expression: summary
+---
+[
+  {
+    "alpha": 1.0,
+    "lastSegment": {
+      "lit": 1.4666666666666686,
+      "x": 186.0,
+      "zone": "green"
+    },
+    "latched": false,
+    "litSegments": 63,
+    "name": "A1",
+    "peakX": 217.06666666666666,
+    "readout": "−16.0"
+  },
+  {
+    "alpha": 1.0,
+    "lastSegment": {
+      "lit": 0.46666666666666856,
+      "x": 39.0,
+      "zone": "green"
+    },
+    "latched": false,
+    "litSegments": 14,
+    "name": "A2",
+    "peakX": 59.2,
+    "readout": "−48.0"
+  },
+  {
+    "alpha": 0.35,
+    "lastSegment": {
+      "lit": 1.4666666666666686,
+      "x": 186.0,
+      "zone": "green"
+    },
+    "latched": false,
+    "litSegments": 63,
+    "name": "A1 muted",
+    "peakX": 217.06666666666666,
+    "readout": "−16.0"
+  },
+  {
+    "alpha": 1.0,
+    "lastSegment": {
+      "lit": 2.0,
+      "x": 279.0,
+      "zone": "red"
+    },
+    "latched": true,
+    "litSegments": 94,
+    "name": "clipping",
+    "peakX": 294.0,
+    "readout": "0.0"
+  },
+  {
+    "alpha": 1.0,
+    "lastSegment": {
+      "lit": 2.0,
+      "x": 144.0,
+      "zone": "green"
+    },
+    "latched": false,
+    "litSegments": 49,
+    "name": "A1 at 320",
+    "peakX": 170.13333333333333,
+    "readout": "−16.0"
+  }
+]

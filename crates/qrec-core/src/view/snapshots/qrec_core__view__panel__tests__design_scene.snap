@@ -1,0 +1,381 @@
+---
+source: crates/qrec-core/src/view/panel.rs
+expression: screens
+---
+{
+  "S02 live": {
+    "header": {
+      "title": "Onion layers",
+      "subtitle": "Project scene · new takes use this",
+      "banner": null,
+      "layoutMenu": []
+    },
+    "layers": [
+      {
+        "layer": "L2",
+        "name": "Face",
+        "source": "Camera · Logitech C920",
+        "selected": false,
+        "hidden": false,
+        "locked": false,
+        "error": null,
+        "missing": null,
+        "enabled": true
+      },
+      {
+        "layer": "L1",
+        "name": "Main screen",
+        "source": "Screen · DP-4 · GIGA-BYTE GS27QA",
+        "selected": false,
+        "hidden": false,
+        "locked": false,
+        "error": null,
+        "missing": null,
+        "enabled": true
+      }
+    ],
+    "audio": [
+      {
+        "track": "A1",
+        "role": "mic",
+        "label": "Yeti Nano",
+        "autocut": true,
+        "muted": false,
+        "gain": "0.0 dB",
+        "gainDb": 0.0,
+        "sync": "+0 ms",
+        "syncOffsetMs": 0,
+        "deviceMissing": null,
+        "enabled": true
+      },
+      {
+        "track": "A2",
+        "role": "system",
+        "label": "System audio",
+        "autocut": false,
+        "muted": false,
+        "gain": "−6.0 dB",
+        "gainDb": -6.0,
+        "sync": "+0 ms",
+        "syncOffsetMs": 0,
+        "deviceMissing": null,
+        "enabled": true
+      }
+    ],
+    "inspector": null,
+    "inspectorHeading": null,
+    "add": {
+      "Ok": null
+    }
+  },
+  "S03 recording": {
+    "header": {
+      "title": "Onion layers",
+      "subtitle": "Project scene · new takes use this",
+      "banner": null,
+      "layoutMenu": []
+    },
+    "layers": [
+      {
+        "layer": "L2",
+        "name": "Face",
+        "source": "Camera · Logitech C920",
+        "selected": false,
+        "hidden": false,
+        "locked": false,
+        "error": null,
+        "missing": null,
+        "enabled": false
+      },
+      {
+        "layer": "L1",
+        "name": "Main screen",
+        "source": "Screen · DP-4 · GIGA-BYTE GS27QA",
+        "selected": false,
+        "hidden": false,
+        "locked": false,
+        "error": null,
+        "missing": null,
+        "enabled": false
+      }
+    ],
+    "audio": [
+      {
+        "track": "A1",
+        "role": "mic",
+        "label": "Yeti Nano",
+        "autocut": true,
+        "muted": false,
+        "gain": "0.0 dB",
+        "gainDb": 0.0,
+        "sync": "+0 ms",
+        "syncOffsetMs": 0,
+        "deviceMissing": null,
+        "enabled": false
+      },
+      {
+        "track": "A2",
+        "role": "system",
+        "label": "System audio",
+        "autocut": false,
+        "muted": false,
+        "gain": "−6.0 dB",
+        "gainDb": -6.0,
+        "sync": "+0 ms",
+        "syncOffsetMs": 0,
+        "deviceMissing": null,
+        "enabled": false
+      }
+    ],
+    "inspector": null,
+    "inspectorHeading": null,
+    "add": {
+      "Err": "Not while recording"
+    }
+  },
+  "S06 program, c2d0 and L2 selected": {
+    "header": {
+      "title": "Onion layers",
+      "subtitle": "Take 5 layout · edits this take only",
+      "banner": "Changes here only affect take 5.",
+      "layoutMenu": [
+        {
+          "label": "Apply this layout to all takes",
+          "from": "take-0005",
+          "to": "allTakes"
+        },
+        {
+          "label": "Use this layout for new takes",
+          "from": "take-0005",
+          "to": "project"
+        },
+        {
+          "label": "Reset take to project scene",
+          "from": "project",
+          "to": {
+            "takes": [
+              "take-0005"
+            ]
+          }
+        }
+      ]
+    },
+    "layers": [
+      {
+        "layer": "L2",
+        "name": "Face",
+        "source": "Camera · Logitech C920",
+        "selected": true,
+        "hidden": false,
+        "locked": false,
+        "error": null,
+        "missing": null,
+        "enabled": true
+      },
+      {
+        "layer": "L1",
+        "name": "Main screen",
+        "source": "Screen · DP-4 · GIGA-BYTE GS27QA",
+        "selected": false,
+        "hidden": false,
+        "locked": false,
+        "error": null,
+        "missing": null,
+        "enabled": true
+      }
+    ],
+    "audio": [
+      {
+        "track": "A1",
+        "role": "mic",
+        "label": "Yeti Nano",
+        "autocut": true,
+        "muted": false,
+        "gain": "0.0 dB",
+        "gainDb": 0.0,
+        "sync": "+0 ms",
+        "syncOffsetMs": 0,
+        "deviceMissing": null,
+        "enabled": true
+      },
+      {
+        "track": "A2",
+        "role": "system",
+        "label": "System audio",
+        "autocut": false,
+        "muted": false,
+        "gain": "−6.0 dB",
+        "gainDb": -6.0,
+        "sync": "+0 ms",
+        "syncOffsetMs": 0,
+        "deviceMissing": null,
+        "enabled": true
+      }
+    ],
+    "inspector": {
+      "layer": "L2",
+      "x": 1500,
+      "y": 760,
+      "w": 384,
+      "h": 288,
+      "crop": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "opacityPercent": 100,
+      "fit": "cover",
+      "enabled": true
+    },
+    "inspectorHeading": "Face · L2",
+    "add": {
+      "Err": "Add sources in Live mode (Tab): they go into the project scene"
+    }
+  },
+  "S07 program, nothing selected": {
+    "header": {
+      "title": "Onion layers",
+      "subtitle": "Select a clip to edit its take layout",
+      "banner": null,
+      "layoutMenu": []
+    },
+    "layers": [
+      {
+        "layer": "L2",
+        "name": "Face",
+        "source": "Camera · Logitech C920",
+        "selected": false,
+        "hidden": false,
+        "locked": false,
+        "error": null,
+        "missing": null,
+        "enabled": false
+      },
+      {
+        "layer": "L1",
+        "name": "Main screen",
+        "source": "Screen · DP-4 · GIGA-BYTE GS27QA",
+        "selected": false,
+        "hidden": false,
+        "locked": false,
+        "error": null,
+        "missing": null,
+        "enabled": false
+      }
+    ],
+    "audio": [
+      {
+        "track": "A1",
+        "role": "mic",
+        "label": "Yeti Nano",
+        "autocut": true,
+        "muted": false,
+        "gain": "0.0 dB",
+        "gainDb": 0.0,
+        "sync": "+0 ms",
+        "syncOffsetMs": 0,
+        "deviceMissing": null,
+        "enabled": false
+      },
+      {
+        "track": "A2",
+        "role": "system",
+        "label": "System audio",
+        "autocut": false,
+        "muted": false,
+        "gain": "−6.0 dB",
+        "gainDb": -6.0,
+        "sync": "+0 ms",
+        "syncOffsetMs": 0,
+        "deviceMissing": null,
+        "enabled": false
+      }
+    ],
+    "inspector": null,
+    "inspectorHeading": null,
+    "add": {
+      "Err": "Add sources in Live mode (Tab): they go into the project scene"
+    }
+  },
+  "S13 live, L2 selected": {
+    "header": {
+      "title": "Onion layers",
+      "subtitle": "Project scene · new takes use this",
+      "banner": null,
+      "layoutMenu": []
+    },
+    "layers": [
+      {
+        "layer": "L2",
+        "name": "Face",
+        "source": "Camera · Logitech C920",
+        "selected": true,
+        "hidden": false,
+        "locked": false,
+        "error": null,
+        "missing": null,
+        "enabled": true
+      },
+      {
+        "layer": "L1",
+        "name": "Main screen",
+        "source": "Screen · DP-4 · GIGA-BYTE GS27QA",
+        "selected": false,
+        "hidden": false,
+        "locked": false,
+        "error": null,
+        "missing": null,
+        "enabled": true
+      }
+    ],
+    "audio": [
+      {
+        "track": "A1",
+        "role": "mic",
+        "label": "Yeti Nano",
+        "autocut": true,
+        "muted": false,
+        "gain": "0.0 dB",
+        "gainDb": 0.0,
+        "sync": "+0 ms",
+        "syncOffsetMs": 0,
+        "deviceMissing": null,
+        "enabled": true
+      },
+      {
+        "track": "A2",
+        "role": "system",
+        "label": "System audio",
+        "autocut": false,
+        "muted": false,
+        "gain": "−6.0 dB",
+        "gainDb": -6.0,
+        "sync": "+0 ms",
+        "syncOffsetMs": 0,
+        "deviceMissing": null,
+        "enabled": true
+      }
+    ],
+    "inspector": {
+      "layer": "L2",
+      "x": 1500,
+      "y": 760,
+      "w": 384,
+      "h": 288,
+      "crop": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "opacityPercent": 100,
+      "fit": "cover",
+      "enabled": true
+    },
+    "inspectorHeading": "Face · L2",
+    "add": {
+      "Ok": null
+    }
+  }
+}

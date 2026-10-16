@@ -1,0 +1,60 @@
+---
+source: crates/qrec-core/src/view/autocut.rs
+expression: "serde_json::json!({\n    \"dryRun\": dry_run(&state, &tuned).to_json(), \"applyUnchanged\":\n    json(unchanged), \"applyTuned\": json(apply(&state, &tuned)), \"autoRun\":\n    auto_run(true).to_json(),\n})"
+---
+{
+  "applyTuned": [
+    {
+      "cmd": "autocutSettings",
+      "patch": {
+        "paddingMs": 90,
+        "thresholdDb": -42.0,
+        "track": "A2"
+      }
+    },
+    {
+      "cmd": "autocut",
+      "dryRun": false,
+      "overrides": {},
+      "scope": {
+        "clips": [
+          "c3e9"
+        ]
+      }
+    }
+  ],
+  "applyUnchanged": [
+    {
+      "cmd": "autocut",
+      "dryRun": false,
+      "overrides": {},
+      "scope": {
+        "clips": [
+          "c3e9"
+        ]
+      }
+    }
+  ],
+  "autoRun": {
+    "cmd": "autocutSettings",
+    "patch": {
+      "autoRunAfterTake": true
+    }
+  },
+  "dryRun": {
+    "cmd": "autocut",
+    "dryRun": true,
+    "overrides": {
+      "minKeepMs": 200,
+      "minSilenceMs": 400,
+      "paddingMs": 90,
+      "thresholdDb": -42.0,
+      "track": "A2"
+    },
+    "scope": {
+      "clips": [
+        "c3e9"
+      ]
+    }
+  }
+}
