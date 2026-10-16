@@ -2093,7 +2093,12 @@ As built (WP6, round 3):
 - **Headers** (C17): Video, "Thumbnails: Face (L2)" (the project scene's
   topmost visible layer); lanes: role icon, label, id chip, scissors on
   `autocut.track`, `M` (D-08), `S` (`SetUi{solo}` toggle; tooltip "Solo
-  A1 while playing (export unaffected)").
+  A1 while playing (export unaffected)"). The header column and the named
+  rows (`video-row`, `lane-A1`, …) stack at the canvas rows' whole px at
+  the UI scale (`Rows::px_heights`: differences of rounded tops, so they
+  stay on the lanes the canvas paints at `y × scale`; review: the headers
+  asked for their 100 % heights, 40 px above A1's lane at 150 %), named
+  `header-video`, `header-A1`, ….
 - **Thumbnails** (Q4): per clip, the topmost visible layer of its take
   scene (`thumbnail_layer`), whatever its media. When that layer has none
   (`missing`, or no video stream: `thumbnail_stream` is `None`) nothing

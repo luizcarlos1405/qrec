@@ -14,8 +14,9 @@ use qrec_core::{Command, State};
 use crate::store::Store;
 use crate::{Ctx, guarded};
 
-/// What the column shows: the headers at the rows' heights.
-type Shown = (VideoHeader, Vec<LaneHeader>, Rows);
+/// What the column shows: the headers at the rows' heights and the UI
+/// scale (its bits).
+type Shown = (VideoHeader, Vec<LaneHeader>, Rows, u64);
 
 /// The header column.
 pub struct Headers {
@@ -39,42 +40,45 @@ impl Headers {
         }
     }
 
-    /// Shows `state`'s headers at `rows`' heights (rebuilt only when they
-    /// change).
-    pub fn update(&self, state: &State, rows: Rows) {
+    /// Shows `state`'s headers at `rows`' heights at UI scale `scale`, the
+    /// canvas rows' whole px (`Rows::px_heights`, D-46); rebuilt only when
+    /// they change.
+    pub fn update(&self, state: &State, rows: Rows, scale: f64) {
         let video = qrec_core::view::timeline::video_header(state);
         let lanes = qrec_core::view::timeline::lane_headers(state);
-        let key: Shown = (video, lanes, rows);
+        let key: Shown = (video, lanes, rows, scale.to_bits());
         if self.shown.borrow().as_ref() == Some(&key) {
             return;
         }
         while let Some(child) = self.root.first_child() {
             self.root.remove(&child);
         }
-        let (video, lanes, _) = &key;
+        let (video, lanes, _, _) = &key;
+        let (video_px, lane_px) = rows.px_heights(lanes.len(), scale);
         // The compact rows' 48 px lanes take 3 px paddings (G§3.15).
         if rows == qrec_core::view::timeline::COMPACT_ROWS {
             self.root.add_css_class("compact");
         } else {
             self.root.remove_css_class("compact");
         }
-        self.root.append(&video_header(video, rows));
-        for lane in lanes {
-            if rows.gap > 0.0 {
+        self.root.append(&video_header(video, video_px));
+        for (lane, (gap_px, height)) in lanes.iter().zip(lane_px) {
+            if gap_px > 0 {
                 let gap = gtk::Box::new(gtk::Orientation::Vertical, 0);
-                gap.set_size_request(-1, rows.gap as i32);
+                gap.set_size_request(-1, gap_px);
                 self.root.append(&gap);
             }
-            self.root.append(&lane_header(&self.store, lane, rows));
+            self.root.append(&lane_header(&self.store, lane, height));
         }
         *self.shown.borrow_mut() = Some(key);
     }
 }
 
-fn video_header(header: &VideoHeader, rows: Rows) -> gtk::Box {
+fn video_header(header: &VideoHeader, height: i32) -> gtk::Box {
     let b = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    b.set_widget_name("header-video");
     b.add_css_class("tl-video-header");
-    b.set_size_request(-1, rows.video as i32);
+    b.set_size_request(-1, height);
     // Its centered content expands inside it, not the column.
     b.set_vexpand(false);
     b.set_valign(gtk::Align::Start);
@@ -98,11 +102,12 @@ fn video_header(header: &VideoHeader, rows: Rows) -> gtk::Box {
     b
 }
 
-fn lane_header(store: &Store, header: &LaneHeader, rows: Rows) -> gtk::Box {
+fn lane_header(store: &Store, header: &LaneHeader, height: i32) -> gtk::Box {
     let lane = &header.lane;
     let b = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    b.set_widget_name(&format!("header-{}", lane.track));
     b.add_css_class("tl-lane-header");
-    b.set_size_request(-1, rows.lane as i32);
+    b.set_size_request(-1, height);
     b.set_vexpand(false);
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     line.add_css_class("tl-lane-line");

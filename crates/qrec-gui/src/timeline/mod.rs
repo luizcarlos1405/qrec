@@ -943,7 +943,7 @@ impl Inner {
         };
         let opened = self.ctx.store.local().is_open();
         let empty = state.project.timeline.clips.is_empty() && state.runtime.record.is_idle();
-        self.headers.update(&state, rows);
+        self.headers.update(&state, rows, self.scale());
         self.toolbar
             .update(&tl::toolbar(&state, view.as_ref(), total));
         let page = if empty && opened { "empty" } else { "canvas" };
@@ -1009,13 +1009,15 @@ impl Inner {
                 self.rows_box.append(&row);
             }
         }
-        self.rows_box.set_spacing((rows.gap * s) as i32);
+        // The headers' whole px (`Rows::px_heights`): each row at its
+        // rounded top on the canvas, a lane's gap as its top margin.
+        let (video, lane_px) = rows.px_heights(lanes.len(), s);
         let mut c = self.rows_box.first_child();
-        let mut first = true;
+        let mut heights = std::iter::once((0, video)).chain(lane_px);
         while let Some(row) = c {
-            let h = if first { rows.video } else { rows.lane };
-            row.set_size_request(-1, (h * s).round() as i32);
-            first = false;
+            let (gap, h) = heights.next().unwrap_or((0, 0));
+            row.set_margin_top(gap);
+            row.set_size_request(-1, h);
             c = row.next_sibling();
         }
     }

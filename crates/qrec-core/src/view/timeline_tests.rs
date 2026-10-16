@@ -977,6 +977,33 @@ fn the_empty_state_without_a_record_key_names_the_button() {
     }
 }
 
+/// The rows in whole px at 100 %, 125 %, 130 %, 150 % and 200 %: stacked,
+/// each row starts at its rounded top on the canvas, regular and compact,
+/// and at 100 % they are the rows' own (76, then 4 + 56 per lane).
+#[test]
+fn rows_in_whole_px_stay_on_the_canvas() {
+    for rows in [ROWS, COMPACT_ROWS] {
+        for scale in [1.0, 1.25, 1.3, 1.5, 2.0] {
+            let (video, lanes) = rows.px_heights(5, scale);
+            assert_eq!(video, (rows.video * scale).round() as i32);
+            let mut y = video;
+            for (i, (gap, lane)) in lanes.iter().enumerate() {
+                y += gap;
+                let top = rows.lane_y(i) * scale;
+                assert_eq!(y, top.round() as i32, "{rows:?} at {scale}: lane {i}");
+                y += lane;
+                assert_eq!(y, (top + rows.lane * scale).round() as i32);
+            }
+        }
+    }
+    assert_eq!(ROWS.px_heights(2, 1.0), (76, vec![(4, 56), (4, 56)]));
+    assert_eq!(
+        COMPACT_ROWS.px_heights(2, 1.0),
+        (72, vec![(0, 48), (0, 48)])
+    );
+    assert_eq!(ROWS.px_heights(2, 1.5), (114, vec![(6, 84), (6, 84)]));
+}
+
 #[test]
 fn compact_rows_fit_232_px() {
     let rows = COMPACT_ROWS;

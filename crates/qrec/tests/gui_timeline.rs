@@ -787,6 +787,75 @@ fn s01b_empty_timeline() {
     assert_clean(&mut nested);
 }
 
+// ------------------------------------------------------------- ui.scale
+
+/// `ui.scale = scale` in the user's `config.toml` (the interface scale,
+/// D-46; the scale runs' `QREC_TEST_SCALE` is the output's).
+fn ui_scale(nested: &Nested, scale: f64) {
+    let config = nested.env.config_home().join("qrec");
+    fs::create_dir_all(&config).expect("the config folder");
+    fs::write(
+        config.join("config.toml"),
+        format!("[ui]\nscale = {scale}\n"),
+    )
+    .expect("config.toml");
+}
+
+/// At `ui.scale` 1.5 the track headers line up with their rows: each
+/// header's top and center are its row's (±1 px). They asked for their
+/// 100 % heights (A1's header 40 px above its lane, A2's 51 px).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn headers_line_up_at_ui_scale_1_5() {
+    headers_line_up("headers-ui-1.5", 1.5, Options::default());
+}
+
+/// The same at 1.25 in the compact rows.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn headers_line_up_at_ui_scale_1_25_compact() {
+    headers_line_up("headers-ui-1.25-compact", 1.25, Options::size(1600, 800));
+}
+
+/// The same at 1.5 in the compact rows.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn headers_line_up_at_ui_scale_1_5_compact() {
+    headers_line_up("headers-ui-1.5-compact", 1.5, Options::size(1600, 800));
+}
+
+fn headers_line_up(case: &str, scale: f64, opts: Options) {
+    let mut nested = Nested::start(AREA, case, opts);
+    ui_scale(&nested, scale);
+    let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
+    open(&mut nested, &project, Launch::default());
+    assert_eq!(local(&mut nested)["scale"], scale);
+    let pairs = [
+        ("header-video", "video-row"),
+        ("header-A1", "lane-A1"),
+        ("header-A2", "lane-A2"),
+    ];
+    let names: Vec<&str> = pairs.iter().flat_map(|(h, r)| [*h, *r]).collect();
+    let regions = nested.window(0).regions(&names);
+    for (header, row) in pairs {
+        let (Some(h), Some(r)) = (regions.get(header), regions.get(row)) else {
+            panic!("no {header} or {row}: {regions:#?}");
+        };
+        // On its row: its top and center within 1 px. A compact lane
+        // header's content is 1.5 px taller than its 60 px row at 125 %
+        // (its 18 px line rounds up), centered on it.
+        let center = |v: &[f64; 4]| v[1] + v[3] / 2.0;
+        assert!(
+            (h[1] - r[1]).abs() <= 1.0
+                && (center(h) - center(r)).abs() <= 1.0
+                && (h[3] - r[3]).abs() <= 2.0,
+            "{header} {h:?} beside {row} {r:?}"
+        );
+    }
+    shoot(&nested, "headers", None);
+    assert_clean(&mut nested);
+}
+
 // ------------------------------------------------------------- compact
 
 /// G§3.15 at 1600×800: the compact rows (toolbar 36, ruler 28, video 72,
