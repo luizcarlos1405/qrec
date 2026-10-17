@@ -276,9 +276,35 @@ pub fn choose_track(
     }
 }
 
+/// The tracks autocut analyzes for `clips` ([`choose_track`] of each one's
+/// take with `override_track`), in clip order, each once. A take recorded
+/// with a track the project scene no longer has may be analyzed on it, and
+/// takes of different scenes on different tracks: the page's "Detect
+/// silence on" shows its scope's first, the lanes' scissors sit on each
+/// (R77's audit). A clip whose take lacks the track (skipped) adds none.
+pub fn analyzed_tracks<'a>(
+    project: &Project,
+    clips: impl IntoIterator<Item = &'a Clip>,
+    override_track: Option<&TrackId>,
+) -> Vec<TrackId> {
+    let mut tracks: Vec<TrackId> = Vec::new();
+    for clip in clips {
+        let Some(take) = project.take(&clip.take) else {
+            continue;
+        };
+        if let Some(track) = choose_track(project, take, override_track)
+            && !tracks.contains(&track)
+        {
+            tracks.push(track);
+        }
+    }
+    tracks
+}
+
 /// The track autocut listens to in `scene` when no track is named: its
 /// first mic, else its first track. The one rule every view of it follows
-/// (the panel's "Autocut" tag, the page's "Detect silence on", the lane's
+/// (the panel's "Autocut" tag on the scene it shows, and through
+/// [`analyzed_tracks`] the page's "Detect silence on" and the lanes'
 /// scissors).
 pub fn default_track(scene: &Scene) -> Option<&AudioTrack> {
     scene

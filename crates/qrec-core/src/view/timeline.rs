@@ -846,7 +846,10 @@ pub struct Lane {
     pub track: TrackId,
     pub label: String,
     pub role: AudioRole,
-    /// The `autocut.track` (scissors).
+    /// Autocut listens to it (scissors): `autocut.track`, else a track the
+    /// timeline's clips are analyzed on (`autocut::analyzed_tracks`: each
+    /// take's first mic, else its first track; takes of other scenes may
+    /// put the scissors on several lanes, R77's audit).
     pub autocut: bool,
     /// In `ui.lane_mute` (D-08).
     pub muted: bool,
@@ -872,7 +875,7 @@ pub fn lanes(state: &State) -> Vec<Lane> {
         }
     }
     tracks.extend(others.into_values());
-    let autocut = autocut_lane(state, &tracks);
+    let autocut = autocut_lanes(state);
     tracks
         .into_iter()
         .map(|track| {
@@ -882,7 +885,7 @@ pub fn lanes(state: &State) -> Vec<Lane> {
                 track: track.id.clone(),
                 label: track.label.clone(),
                 role: track.role,
-                autocut: autocut.as_ref() == Some(&track.id),
+                autocut: autocut.contains(&track.id),
                 muted,
                 solo,
                 dimmed: muted || (state.ui.solo.is_some() && !solo),
@@ -891,16 +894,23 @@ pub fn lanes(state: &State) -> Vec<Lane> {
         .collect()
 }
 
-/// The lane with the scissors: `autocut.track`, else the first mic, else
-/// the first track.
-fn autocut_lane(state: &State, tracks: &[&AudioTrack]) -> Option<TrackId> {
-    state.project.autocut.track.clone().or_else(|| {
-        tracks
-            .iter()
-            .find(|t| t.role == AudioRole::Mic)
-            .or_else(|| tracks.first())
-            .map(|t| t.id.clone())
-    })
+/// The lanes with the scissors: `autocut.track`, else the tracks the dry
+/// run analyzes the timeline's clips on (`autocut::analyzed_tracks`), else,
+/// with no clip, the project scene's (what a take recorded from it is
+/// analyzed on). The lanes' own rule (the first mic among every lane) put
+/// them on a track another take's clips aren't analyzed on (R77's audit).
+fn autocut_lanes(state: &State) -> Vec<TrackId> {
+    let project = &state.project;
+    if let Some(track) = &project.autocut.track {
+        return vec![track.clone()];
+    }
+    let analyzed = crate::autocut::analyzed_tracks(project, &project.timeline.clips, None);
+    if !analyzed.is_empty() {
+        return analyzed;
+    }
+    crate::autocut::default_track(&project.scene)
+        .map(|t| vec![t.id.clone()])
+        .unwrap_or_default()
 }
 
 /// One clip's part of a lane (C17).

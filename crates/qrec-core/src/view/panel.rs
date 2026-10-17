@@ -381,7 +381,12 @@ pub struct AudioRow {
 
 /// The audio rows of the scene the canvas shows. The "Autocut" tag sits on
 /// `autocut.track`, or on the scene's first mic (else its first track)
-/// when it is unset: the track autocut then uses. In Live mode, once the
+/// when it is unset: the track autocut then uses for a take of that scene.
+/// In Program that is the selected clip's take, what its clips are
+/// analyzed on; in Live the project scene, what the next take is analyzed
+/// on (an older take recorded with another scene may be analyzed on a
+/// track this one lacks: the page's dropdown and the lanes' scissors say
+/// so, R77's audit). In Live mode, once the
 /// engine reported its sources, a track whose device isn't live reads
 /// "Device not found".
 pub fn audio_rows(state: &State, live: &LiveSources) -> Vec<AudioRow> {

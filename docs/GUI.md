@@ -2246,7 +2246,8 @@ As built (WP6, round 3):
   variants (S01a, S04).
 - **Headers** (C17): Video, "Thumbnails: Face (L2)" (the project scene's
   topmost visible layer); lanes: role icon, label, id chip, scissors on
-  `autocut.track`, `M` (D-08), `S` (`SetUi{solo}` toggle; tooltip "Solo
+  `autocut.track` (unset: each lane a clip is analyzed on, G§4.7's
+  autocut page), `M` (D-08), `S` (`SetUi{solo}` toggle; tooltip "Solo
   A1 while playing (export unaffected)"). The header column and the named
   rows (`video-row`, `lane-A1`, …) stack at the canvas rows' whole px at
   the UI scale (`Rows::px_heights`: differences of rounded tops, so they
@@ -2453,7 +2454,8 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
   - `AutocutDraft::from(&Project)`. Ranges: threshold −60…−10 dB step 1;
     min silence 100…2000 ms step 50; padding 0…500 ms step 10; min keep
     0…1000 ms step 10. "Detect silence on": the project scene's tracks,
-    "A1 · Yeti Nano (mic)".
+    "A1 · Yeti Nano (mic)", then a track the scope's clips are analyzed on
+    that the project scene no longer has (a take recorded with it).
   - `dry_run(&State, &draft) -> Command`: scope = the selection, or All;
     overrides = the draft. `dry_run_key(&State, &draft) -> DryRunKey`: the
     command and what it doesn't carry but its answer is worked out on (the
@@ -2482,7 +2484,17 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
   summary adds a "Skipped" row when the plan skipped clips; while
   `autocut.track` is null the dropdown, the "Autocut" tag and the hatches
   name the track the dry run analyzes (`autocut::default_track`: the
-  scene's first mic, else its first track; review R77). The dropdown's
+  scene's first mic, else its first track; review R77). Each take is
+  analyzed on its own scene's (`autocut::analyzed_tracks`), so a take
+  recorded with a track the project scene no longer has is analyzed on
+  it: the dropdown shows the track its scope's first clip is analyzed on,
+  each clip's hatch sits on its own, and the scissors on every lane a
+  clip is analyzed on; the tag names the scene the panel shows (in
+  Program the selected clip's take, in Live the project scene: what the
+  next take is analyzed on). The dropdown and the Live tag read only the
+  project scene, and the scissors the first mic among every lane (R77's
+  audit: a take with a mic the project scene lost was cut on the mic
+  while the page said "System audio"). The dropdown's
   open list is `Overlay::Menu` (`panel::menus::track_dropdown`, the
   helper for any `gtk::DropDown`; review R32, R41): measured on GTK 4.22,
   an open list's keys go to its popover and never reach the window's key
