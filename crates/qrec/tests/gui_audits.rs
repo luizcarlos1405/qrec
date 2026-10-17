@@ -408,6 +408,374 @@ fn under_reduced_motion_the_narrow_sheet_neither_slides_in_nor_out() {
     assert_eq!(animations, [false, true, true], "GTK's animations");
 }
 
+/// The header's layers button (window px).
+fn layers_button(nested: &mut Nested) -> [f64; 4] {
+    nested.window(0).regions(&["layers-button"])["layers-button"]
+}
+
+/// A click on the layers button, then until the sheet is at its place.
+fn open_the_sheet(nested: &mut Nested) {
+    let [x, y, w, h] = layers_button(nested);
+    nested.pointer().click(x + w / 2.0, y + h / 2.0);
+    gui_support::poll(Duration::from_secs(10), "the sheet at its place", || {
+        let regions = nested.window(0).regions(&[]);
+        regions
+            .get("region-panel")
+            .is_some_and(|r| (r[0] - 616.0).abs() <= 1.0)
+            .then_some(())
+    });
+}
+
+/// GTK's `gtk-enable-animations`, as the window reads it.
+fn gtk_animations(nested: &mut Nested) -> bool {
+    nested.window(0).local()["gtkAnimations"] == true
+}
+
+/// D-30 with the live follower (WP10's code audit, D2): `ui.reduced_motion
+/// = true` set while the Narrow sheet is open holds it still from then on,
+/// so its close by `Esc` doesn't slide (the window held GTK's animations
+/// off only from a sheet's opening: one opened before the change slid out);
+/// and `false` set while it is held lets it slide again.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn reduced_motion_set_while_the_sheet_is_open_holds_it_still() {
+    let mut nested = Nested::start(AREA, "sheet-live", Options::size(1000, 1000));
+    let ui = UiState {
+        playhead: 7391,
+        ..UiState::default()
+    };
+    let project = fixture(&nested, &ui);
+    open(
+        &mut nested,
+        0,
+        &project,
+        Launch::a11y().with_env("QREC_GUI_TEST", "1,animations"),
+    );
+    let config_set = |nested: &mut Nested, value: &str| {
+        let out = nested.cli(&project, &["config", "set", "ui.reduced_motion", value]);
+        assert!(out.status.success(), "qrec config set: {out:?}");
+        gui_support::poll(Duration::from_secs(10), "the change applied", || {
+            let local = nested.window(0).local();
+            (local["reducedMotion"] == (value == "true") && local["settingsPending"] == false)
+                .then_some(())
+        });
+        nested.window(0).wait_idle();
+    };
+    open_the_sheet(&mut nested);
+    assert!(gtk_animations(&mut nested), "motion allowed: not held");
+    config_set(&mut nested, "true");
+    assert!(
+        !gtk_animations(&mut nested),
+        "reduced motion now: GTK's animations held off while the sheet is open"
+    );
+    nested.keys(&["-k", "Escape"]);
+    let closing = sample_sheet(&mut nested, 800);
+    assert!(
+        closing.last() == Some(&None),
+        "it closed: {}",
+        runs(&closing)
+    );
+    assert!(!slid(&closing), "the sheet slid out: {}", runs(&closing));
+    assert!(gtk_animations(&mut nested), "on again once it went");
+
+    // Held still from its opening, then motion allowed again: it slides.
+    open_the_sheet(&mut nested);
+    assert!(!gtk_animations(&mut nested), "held from its opening");
+    config_set(&mut nested, "false");
+    assert!(
+        gtk_animations(&mut nested),
+        "motion allowed: no longer held"
+    );
+    nested.keys(&["-k", "Escape"]);
+    let closing = sample_sheet(&mut nested, 800);
+    assert!(slid(&closing), "no slide caught: {}", runs(&closing));
+    assert_clean(&mut nested, 0);
+    let record = nested.shots.join("sheet-live-samples.txt");
+    fs::write(record, format!("closing: {}\n", runs(&closing))).expect("the samples");
+}
+
+/// D-30's system setting, followed live, and the Narrow sheet's hold on it
+/// (WP10's code audit, D1): the window holds GTK's `gtk-enable-animations`
+/// off while the sheet is open under reduced motion, reads that as its own
+/// (not the desktop asking for less motion: `ui.reduced_motion = false`
+/// while the sheet is held lets it go), and gives the setting back to the
+/// desktop when the sheet goes (`gtk::Settings::reset_property`: a value
+/// the window sets itself, `true` too, is the application's to GTK, which
+/// then ignores every later desktop change). The desktop is a stand-in
+/// Settings portal on the nested bus (GDK reads the setting from the
+/// portal only, `GDK_DEBUG=portals` forcing it without a portal service
+/// file; libadwaita left to its own settings, `ADW_DISABLE_PORTAL`), and
+/// test mode lets the system's settings count (`system-motion`): the
+/// desktop's animations off make the window's motion reduced, before the
+/// sheet and after it.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_desktops_animations_reach_the_window_after_the_sheet() {
+    let mut nested = Nested::start(AREA, "sheet-desktop", Options::size(1000, 1000));
+    let ui = UiState {
+        playhead: 7391,
+        ..UiState::default()
+    };
+    let project = fixture(&nested, &ui);
+    let bus = format!(
+        "unix:path={}",
+        nested.env.xdg_runtime_dir().join("bus").display()
+    );
+    let desktop = portal::serve(&bus, true);
+    open(
+        &mut nested,
+        0,
+        &project,
+        Launch::a11y()
+            .with_env("QREC_GUI_TEST", "1,animations,system-motion")
+            .with_env("GDK_DEBUG", "portals")
+            .with_env("ADW_DISABLE_PORTAL", "1"),
+    );
+    // GTK's setting and the window's motion policy, as the window reads them.
+    let motion = |nested: &mut Nested| {
+        let local = nested.window(0).local();
+        (
+            local["gtkAnimations"] == true,
+            local["reducedMotion"] == true,
+        )
+    };
+    let wait_motion = |nested: &mut Nested, want: (bool, bool), what: &str| {
+        gui_support::poll(Duration::from_secs(10), what, || {
+            (motion(nested) == want).then_some(())
+        });
+    };
+    let config_set = |nested: &mut Nested, value: &str| {
+        let out = nested.cli(&project, &["config", "set", "ui.reduced_motion", value]);
+        assert!(out.status.success(), "qrec config set: {out:?}");
+        gui_support::poll(Duration::from_secs(10), "the change applied", || {
+            (nested.window(0).local()["settingsPending"] == false).then_some(())
+        });
+        nested.window(0).wait_idle();
+    };
+    assert_eq!(motion(&mut nested), (true, false), "the desktop's: on");
+    // Before the sheet: the window follows the desktop (D-30's system).
+    desktop.set_animations(false);
+    wait_motion(&mut nested, (false, true), "the desktop's off: reduced");
+    desktop.set_animations(true);
+    wait_motion(&mut nested, (true, false), "the desktop's on again");
+    // Reduced by the config: the sheet holds GTK's animations off while it
+    // is open; motion allowed meanwhile gives them back at once.
+    config_set(&mut nested, "true");
+    assert_eq!(motion(&mut nested), (true, true), "reduced by the config");
+    open_the_sheet(&mut nested);
+    assert_eq!(motion(&mut nested), (false, true), "held off while open");
+    config_set(&mut nested, "false");
+    wait_motion(
+        &mut nested,
+        (true, false),
+        "the window's own hold isn't the desktop's: motion allowed, given back",
+    );
+    config_set(&mut nested, "true");
+    assert_eq!(motion(&mut nested), (false, true), "held again");
+    nested.keys(&["-k", "Escape"]);
+    gui_support::poll(Duration::from_secs(10), "the sheet gone", || {
+        nested.window(0).local()["overlays"]
+            .as_array()
+            .is_some_and(Vec::is_empty)
+            .then_some(())
+    });
+    assert_eq!(motion(&mut nested), (true, true), "given back once it went");
+    config_set(&mut nested, "false");
+    assert_eq!(motion(&mut nested), (true, false));
+    // After the sheet: the desktop's changes still reach the window.
+    desktop.set_animations(false);
+    wait_motion(&mut nested, (false, true), "the desktop's off, after");
+    desktop.set_animations(true);
+    wait_motion(&mut nested, (true, false), "the desktop's on, after");
+    assert_clean(&mut nested, 0);
+}
+
+/// A stand-in `org.freedesktop.portal.Settings` on the nested bus (the
+/// desktop's settings as GDK reads them on Wayland: `ReadAll` once, then
+/// `SettingChanged`), with `org.gnome.desktop.interface`'s
+/// `enable-animations` only. GIO's D-Bus (the workspace's gtk, as
+/// `gui_a11y`'s registry), on a thread and main context of its own; the
+/// window's calls are answered while the case lasts.
+mod portal {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, mpsc};
+    use std::thread;
+    use std::time::Duration;
+
+    use gtk::glib::variant::ToVariant;
+    use gtk::{gio, glib};
+
+    const NAME: &str = "org.freedesktop.portal.Desktop";
+    const PATH: &str = "/org/freedesktop/portal/desktop";
+    const SETTINGS: &str = "org.freedesktop.portal.Settings";
+    const NAMESPACE: &str = "org.gnome.desktop.interface";
+    const KEY: &str = "enable-animations";
+    const NODE: &str = r#"<node>
+  <interface name="org.freedesktop.portal.Settings">
+    <method name="ReadAll">
+      <arg name="namespaces" type="as" direction="in"/>
+      <arg name="value" type="a{sa{sv}}" direction="out"/>
+    </method>
+    <method name="Read">
+      <arg name="namespace" type="s" direction="in"/>
+      <arg name="key" type="s" direction="in"/>
+      <arg name="value" type="v" direction="out"/>
+    </method>
+    <method name="ReadOne">
+      <arg name="namespace" type="s" direction="in"/>
+      <arg name="key" type="s" direction="in"/>
+      <arg name="value" type="v" direction="out"/>
+    </method>
+    <signal name="SettingChanged">
+      <arg name="namespace" type="s"/>
+      <arg name="key" type="s"/>
+      <arg name="value" type="v"/>
+    </signal>
+    <property name="version" type="u" access="read"/>
+  </interface>
+</node>"#;
+    /// How long a call to the bus may take.
+    const CALL_MS: i32 = 5000;
+
+    /// The desktop, served: its animation setting and its connection.
+    pub struct Desktop {
+        animations: Arc<AtomicBool>,
+        conn: gio::DBusConnection,
+    }
+
+    impl Desktop {
+        /// The desktop turns its animations on or off: the setting, and
+        /// `SettingChanged` for it.
+        pub fn set_animations(&self, on: bool) {
+            self.animations.store(on, Ordering::SeqCst);
+            let value = on.to_variant();
+            self.conn
+                .emit_signal(
+                    None,
+                    PATH,
+                    SETTINGS,
+                    "SettingChanged",
+                    Some(&(NAMESPACE, KEY, value).to_variant()),
+                )
+                .expect("SettingChanged");
+            self.conn
+                .flush_sync(gio::Cancellable::NONE)
+                .expect("the signal sent");
+        }
+    }
+
+    /// Serves the portal on the bus at `address`, its animations `on`,
+    /// until the bus goes (the case's end).
+    pub fn serve(address: &str, on: bool) -> Desktop {
+        let animations = Arc::new(AtomicBool::new(on));
+        let (ready_tx, ready) = mpsc::channel();
+        let (address, setting) = (address.to_owned(), Arc::clone(&animations));
+        thread::spawn(move || {
+            // The calls come on the main context the object was registered
+            // under: this thread's own.
+            let context = glib::MainContext::new();
+            let ran = context.with_thread_default(|| {
+                let (conn, gone) = match start(&address, setting) {
+                    Ok(up) => up,
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(e.to_string()));
+                        return;
+                    }
+                };
+                let _ = ready_tx.send(Ok(conn.clone()));
+                // Until the bus goes with the case.
+                while !gone.load(Ordering::SeqCst) {
+                    context.iteration(true);
+                }
+            });
+            if let Err(e) = ran {
+                eprintln!("portal: no main context: {e}");
+            }
+        });
+        match ready.recv_timeout(Duration::from_secs(10)) {
+            Ok(Ok(conn)) => Desktop { animations, conn },
+            Ok(Err(e)) => panic!("the stand-in Settings portal: {e}"),
+            Err(e) => panic!("the stand-in Settings portal never started: {e}"),
+        }
+    }
+
+    /// Connects, serves the object and takes the portal's name, last.
+    fn start(
+        address: &str,
+        animations: Arc<AtomicBool>,
+    ) -> Result<(gio::DBusConnection, Arc<AtomicBool>), glib::Error> {
+        let conn = gio::DBusConnection::for_address_sync(
+            address,
+            gio::DBusConnectionFlags::AUTHENTICATION_CLIENT
+                | gio::DBusConnectionFlags::MESSAGE_BUS_CONNECTION,
+            None,
+            gio::Cancellable::NONE,
+        )?;
+        let gone = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&gone);
+        conn.connect_closed(move |_, _, _| flag.store(true, Ordering::SeqCst));
+        let node = gio::DBusNodeInfo::for_xml(NODE)?;
+        let info = node.lookup_interface(SETTINGS).expect("the interface");
+        conn.register_object(PATH, &info)
+            .method_call(move |_, _, _, _, method, params, invocation| {
+                let on = animations.load(Ordering::SeqCst);
+                let ours = |namespace: &str, key: &str| namespace == NAMESPACE && key == KEY;
+                match method {
+                    // `a{sa{sv}}`: each namespace, then each key's value.
+                    "ReadAll" => {
+                        let mut keys = std::collections::HashMap::new();
+                        keys.insert(KEY.to_owned(), on.to_variant());
+                        let mut all = std::collections::HashMap::new();
+                        all.insert(NAMESPACE.to_owned(), keys);
+                        invocation.return_value(Some(&(all,).to_variant()));
+                    }
+                    "Read" | "ReadOne" => {
+                        let (namespace, key) = params.get::<(String, String)>().unwrap_or_default();
+                        if ours(&namespace, &key) {
+                            // `(v)`; `Read`, the older call, wraps the
+                            // value once more.
+                            let value = if method == "Read" {
+                                glib::Variant::from_variant(&on.to_variant())
+                            } else {
+                                on.to_variant()
+                            };
+                            invocation.return_value(Some(&(value,).to_variant()));
+                        } else {
+                            invocation.return_dbus_error(
+                                "org.freedesktop.portal.Error.NotFound",
+                                &format!("no {namespace} {key} here"),
+                            );
+                        }
+                    }
+                    other => invocation.return_dbus_error(
+                        "org.freedesktop.DBus.Error.UnknownMethod",
+                        &format!("the stand-in has no {other}"),
+                    ),
+                }
+            })
+            // Its one property, `version`.
+            .property(|_, _, _, _, _| 2u32.to_variant())
+            .build()?;
+        let reply = conn.call_sync(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "RequestName",
+            Some(&(NAME, 0u32).to_variant()),
+            Some(glib::VariantTy::new("(u)").expect("a type")),
+            gio::DBusCallFlags::NONE,
+            CALL_MS,
+            gio::Cancellable::NONE,
+        )?;
+        // 1: the name's primary owner.
+        if reply.child_value(0).get::<u32>() != Some(1) {
+            let why = format!("the portal's name isn't ours: {reply}");
+            return Err(glib::Error::new(gio::IOErrorEnum::Failed, &why));
+        }
+        Ok((conn, gone))
+    }
+}
+
 /// The twin: with motion allowed libadwaita slides the sheet in and out,
 /// and the samples catch it (so the reduced case's would).
 #[test]

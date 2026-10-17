@@ -1587,7 +1587,8 @@ time; A§8.7 rules for every child).
     ids, bad keys, as `keys_file::load` and the core word them; an edit
     that keeps a conflict toasts nothing new);
   - the system's reduced-motion setting and GTK's animations are followed
-    too (D-30; test mode: the config's only);
+    too (D-30; test mode: the config's only, but with its `system-motion`
+    flag);
   - a live scale re-scales what was sized once: the timeline's corner
     cell and track-header column (`HEADER_WIDTH` × scale on every refresh;
     they kept 176 px), and the empty timeline's art takes the new palette.
@@ -1644,15 +1645,25 @@ time; A§8.7 rules for every child).
     animations go at once meanwhile. The zoom is the timeline's own
     easing on its frame clock and the sheet libadwaita's spring, not
     `adw::TimedAnimation` (which the bin drawer and the toasts use).
-    With the live follower (WP10 integration): the window's own
-    `gtk-enable-animations` off reads, outside test mode, as the system
-    asking for less motion (`MotionPolicy::from_settings`), so while the
-    sheet is held still a live `ui.reduced_motion = false` keeps the window
-    reduced until the sheet goes; turning the setting back on then notifies
-    the follower (`settings: GTK's animations`), which works the policy out
-    again from the config. A system change of that setting while the sheet
-    is open is lost when it goes (it turns them on again). Test mode
-    ignores the system's settings, so no nested case shows either.
+    With the live follower (WP10 integration, fixed after WP10's code
+    audit): the hold follows the policy while the sheet is open
+    (`window::follow_sheet_motion`: `ui.reduced_motion = true` set while it
+    is open holds it from then on, so its `Esc` close doesn't slide; motion
+    allowed again gives the setting back at once), and the policy reads the
+    window's own hold as the desktop's animations on
+    (`motion::hold_animations_off`: the desktop had them on when the window
+    took them), so a live `ui.reduced_motion = false` unreduces the window
+    while the sheet is held. The setting goes back with
+    `gtk::Settings::reset_property`: GTK takes any value the application
+    sets, `true` too, as the application's and ignores the desktop's
+    changes from then on (`gtksettings.c`), so turning them on again made
+    the window deaf to the desktop's animations for the session after its
+    first sheet (the audit's D1). A desktop change while the sheet is held
+    comes when it goes (GTK reads the desktop's value again then).
+    `gui_audits`' `reduced_motion_set_while_the_sheet_is_open_holds_it_still`
+    and `the_desktops_animations_reach_the_window_after_the_sheet` (a
+    stand-in Settings portal on the nested bus, and test mode's
+    `system-motion` flag, so the system's settings count) hold these.
 - **Fonts** (SPEC §15.3, Q11):
   - bundled files `Fraunces[SOFT,WONK,opsz,wght].ttf`,
     `AtkinsonHyperlegibleNext[wght].ttf`, `JetBrainsMono[wght].ttf` from
@@ -4467,7 +4478,9 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
     animations stay on, Qrec's own still at their end, so `gui_audits`
     sees libadwaita's sheet slide, or not). Reduced motion comes from
     `config.toml` only (D-30): cases shoot the animated look unless they
-    set `ui.reduced_motion = true`;
+    set `ui.reduced_motion = true` (with `animations,system-motion` the
+    system's settings count too, as outside test mode: `gui_audits`' case
+    with a stand-in desktop);
   - `motion::now()` is frozen: looping animations at phase
     `QREC_GUI_TEST_T_MS` (default 0: the torch at frame A with its glow,
     the mud bar at frame A with its bubbles, spinners at 0°), one-shot
@@ -4689,7 +4702,16 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   close and its own close (at its place or gone, never between; GTK's
   animations off while it is open, on after), and its twin
   `with_motion_allowed_the_narrow_sheet_slides` sees the same samples
-  catch libadwaita's slide.
+  catch libadwaita's slide. After WP10's code audit, live:
+  `reduced_motion_set_while_the_sheet_is_open_holds_it_still` (`qrec
+  config set ui.reduced_motion true` while it is open: its `Esc` close
+  doesn't slide; `false` while it is held: it slides again), and
+  `the_desktops_animations_reach_the_window_after_the_sheet` (a stand-in
+  `org.freedesktop.portal.Settings` on the nested bus, `GDK_DEBUG=portals`
+  and `ADW_DISABLE_PORTAL=1` for the window, test mode's `system-motion`:
+  the desktop's `enable-animations` off reduces the window's motion before
+  a sheet and after it; `ui.reduced_motion = false` while the sheet is
+  held gives GTK's setting back at once).
 - **Adaptive**: S02 at 1300×1000 and at 1000×1000 (sheet closed, then
   opened by the header button); S06 at 1600×800. The cases (WP7
   integration, in `gui_stage`, S02's and S06's owner's): `s02_at_1300_wide`,
@@ -4719,7 +4741,8 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   a rebound key and the caps that follow it; a conflict's toasts),
   `gui_a11y` (announcements and focus order, G§3.7, G§3.8),
   `gui_audits` (the GPU device opens, G§8.6, and the Narrow sheet under
-  reduced motion), `gui_themes` (the theme proofs; its composited probes
+  reduced motion, also changed live and with the desktop's setting),
+  `gui_themes` (the theme proofs; its composited probes
   allow 2 levels a channel on pixman and 4 on gles2, the GL slack not
   measured by its lane) and `gui_text` (G§3.14:
   `the_text_setup_is_manual_with_whole_pixel_advances`, and

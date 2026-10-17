@@ -7,10 +7,39 @@
 //! `QREC_GUI_TEST_T_MS` (default 0) and one-shot animations jump to their
 //! end (G§8.4).
 
+use std::cell::Cell;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::testctl;
+
+thread_local! {
+    /// GTK's animations are off by the window's own doing: the Narrow sheet
+    /// held still under reduced motion (`window::still_sheet`), which turns
+    /// them off only while the desktop has them on.
+    static HELD_OFF: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The window turns GTK's `gtk-enable-animations` off itself (`true`), or
+/// gives the setting back to the desktop (`false`). Meanwhile
+/// [`MotionPolicy::from_settings`] reads the desktop's as on: it was when
+/// the window took it (and the desktop's changes meanwhile come when it is
+/// given back, GTK's `reset_property`).
+pub fn hold_animations_off(held: bool) {
+    HELD_OFF.with(|h| h.set(held));
+}
+
+/// Whether the window holds GTK's animations off ([`hold_animations_off`]).
+pub fn animations_held_off() -> bool {
+    HELD_OFF.with(Cell::get)
+}
+
+/// The desktop's animations, from GTK's `setting`: on while the window
+/// holds them off itself (the setting is the window's then, not the
+/// desktop's asking for less motion).
+fn desktop_animations(setting: bool) -> bool {
+    setting || animations_held_off()
+}
 
 /// Whether animations are reduced (D-30): the window gets the class
 /// `.reduced-motion`; looping animations hold still, transitions are
@@ -24,7 +53,7 @@ impl MotionPolicy {
     /// D-30: the config's `ui.reduced_motion`, or the system's
     /// (`gtk-interface-reduced-motion = reduce`, or animations off). Under
     /// `QREC_GUI_TEST` only the config counts: test mode turns GTK's
-    /// animations off itself (R29).
+    /// animations off itself (R29; but with its `system-motion` flag).
     pub fn decide(config: bool, test_mode: bool, system_reduce: bool, animations: bool) -> Self {
         let system = !test_mode && (system_reduce || !animations);
         Self {
@@ -32,16 +61,20 @@ impl MotionPolicy {
         }
     }
 
-    /// The window's policy now: the config's choice and GTK's settings.
+    /// The window's policy now: the config's choice and GTK's settings
+    /// (the desktop's: not GTK's animations the window holds off itself,
+    /// [`hold_animations_off`]).
     pub fn from_settings(config: bool) -> Self {
-        let test_mode = testctl::mode().on;
+        // Test mode's `system-motion` flag lets the system count there too.
+        let mode = testctl::mode();
+        let test_mode = mode.on && !mode.system_motion;
         let (reduce, animations) = gtk::Settings::default().map_or((false, true), |s| {
             (
                 s.gtk_interface_reduced_motion() == gtk::ReducedMotion::Reduce,
                 s.is_gtk_enable_animations(),
             )
         });
-        Self::decide(config, test_mode, reduce, animations)
+        Self::decide(config, test_mode, reduce, desktop_animations(animations))
     }
 }
 
@@ -121,6 +154,22 @@ mod tests {
         // Test mode: only the config (it turns animations off itself).
         assert!(!decide(false, true, true, false).reduced);
         assert!(decide(true, true, false, false).reduced);
+    }
+
+    /// GTK's animations the window holds off itself (the Narrow sheet under
+    /// reduced motion) aren't the desktop asking for less motion: a live
+    /// `ui.reduced_motion = false` while the sheet is held still unreduces
+    /// the window (WP10's code audit).
+    #[test]
+    fn animations_the_window_holds_off_are_the_desktops_on() {
+        assert!(!desktop_animations(false), "the desktop's off");
+        assert!(desktop_animations(true));
+        hold_animations_off(true);
+        assert!(animations_held_off());
+        assert!(desktop_animations(false), "held off by the window");
+        assert!(!MotionPolicy::decide(false, false, false, desktop_animations(false)).reduced);
+        hold_animations_off(false);
+        assert!(!desktop_animations(false), "given back");
     }
 
     #[test]

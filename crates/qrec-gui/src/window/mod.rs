@@ -46,6 +46,7 @@ use crate::panel::Panel;
 use crate::settings::Settings;
 use crate::stage::Stage;
 use crate::store::local::{LayoutClass, LayoutWidth, LocalUi, Overlay, StartupPhase};
+use crate::theme::motion;
 use crate::timeline::Timeline;
 use crate::toasts::ToastHost;
 use crate::{Ctx, guard, guarded};
@@ -247,6 +248,7 @@ impl MainWindow {
 
         adaptive::install(&self.window, &ctx.store);
         self.follow_local(ctx, &parts);
+        follow_sheet_motion(ctx, &parts);
         self.follow_focus(ctx);
         self.register_actions(ctx);
         apply_local(ctx, &parts, &ctx.store.local());
@@ -434,22 +436,57 @@ fn apply_local(ctx: &Ctx, parts: &Rc<Parts>, local: &LocalUi) {
 /// DESIGN Motion's panel overlay: no motion). `adw::OverlaySplitView`
 /// slides it with a spring that follows only GTK's `gtk-enable-animations`
 /// (`adw_get_enable_animations`; libadwaita reads no reduced motion), so
-/// that is off from the sheet's opening until it goes: its own close (a
-/// click on the content it dims) is libadwaita's too. [`unstill_sheet`]
-/// turns it on again. The other animations meanwhile go at once, also
-/// still under reduced motion.
+/// that is off while the sheet is open under reduced motion, from its
+/// opening or from the policy's change ([`follow_sheet_motion`]) until it
+/// goes: its own close (a click on the content it dims) is libadwaita's
+/// too. [`unstill_sheet`] gives the setting back. The other animations
+/// meanwhile go at once, also still under reduced motion; the policy reads
+/// the setting as the desktop's on meanwhile (`motion::hold_animations_off`).
 fn still_sheet(parts: &Parts, reduced: bool) {
     let settings = parts.split.settings();
     if reduced && settings.is_gtk_enable_animations() && !parts.stilled.replace(true) {
+        motion::hold_animations_off(true);
         settings.set_gtk_enable_animations(false);
     }
 }
 
-/// GTK's animations on again once the sheet went (or docked).
+/// GTK's animations back to the desktop's once the sheet went (or docked,
+/// or motion is allowed again): `reset_property`, so GTK follows the
+/// desktop's setting again (a value the window sets, `true` too, is the
+/// application's to GTK, which ignores the desktop's changes from then on:
+/// WP10's code audit).
 fn unstill_sheet(parts: &Parts) {
     if parts.stilled.replace(false) {
-        parts.split.settings().set_gtk_enable_animations(true);
+        motion::hold_animations_off(false);
+        parts
+            .split
+            .settings()
+            .reset_property("gtk-enable-animations");
     }
+}
+
+/// The open Narrow sheet follows a live change of the motion policy (the
+/// config's `ui.reduced_motion`, the system's): held still when motion is
+/// reduced while it is open, so its close doesn't slide either, and given
+/// back to GTK's animations when motion is allowed again (WP10's code
+/// audit: only a sheet's opening held it).
+fn follow_sheet_motion(ctx: &Ctx, parts: &Rc<Parts>) {
+    let weak = Rc::downgrade(parts);
+    ctx.theme
+        .follow_motion(move |policy| {
+            let Some(parts) = weak.upgrade() else {
+                return;
+            };
+            if !(parts.split.is_collapsed() && parts.split.shows_sidebar()) {
+                return;
+            }
+            if policy.reduced {
+                still_sheet(&parts, true);
+            } else {
+                unstill_sheet(&parts);
+            }
+        })
+        .detach();
 }
 
 fn set_panel_width(split: &adw::OverlaySplitView, width: i32) {

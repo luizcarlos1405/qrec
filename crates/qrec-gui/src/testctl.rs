@@ -20,7 +20,10 @@
 //! panics in `activate` (the app quits with 1); `animations` leaves GTK's
 //! own animations on (libadwaita's, the stacks', CSS transitions; Qrec's
 //! own still jump to their end): WP10's reduced-motion audit sees
-//! libadwaita's sheet slide, or not.
+//! libadwaita's sheet slide, or not; `system-motion` (with `animations`)
+//! lets the system's reduced-motion settings count as outside test mode
+//! (D-30: GTK's `gtk-interface-reduced-motion` and animations), so a case
+//! with a stand-in desktop sees the window follow it.
 //!
 //! **The control channel**: a socket `$XDG_RUNTIME_DIR/qrec-gui-test-<pid>.sock`
 //! (0600, the test's private runtime dir; one per window, so a test can
@@ -83,6 +86,9 @@ pub struct TestMode {
     /// `animations`: GTK's own animations stay on (test mode turns them
     /// off otherwise, G§8.4).
     pub animations: bool,
+    /// `system-motion`: the system's reduced-motion settings count (test
+    /// mode takes reduced motion from the config only otherwise, R29).
+    pub system_motion: bool,
     /// `QREC_GUI_TEST_PANIC_ONCE`: the guarded callbacks (by their `what`)
     /// whose first run panics (caught: what they drive must come back,
     /// G§3.12 R10).
@@ -139,6 +145,7 @@ impl TestMode {
             stuck_gst: on && flags.contains(&"stuck-gst"),
             panic_activate: on && flags.contains(&"panic-activate"),
             animations: on && flags.contains(&"animations"),
+            system_motion: on && flags.contains(&"system-motion"),
             panic_once: panic_once
                 .filter(|_| on)
                 .map(|names| {
@@ -1114,6 +1121,10 @@ mod tests {
         assert!(!on.animations);
         let animated = TestMode::parse(Some("1,animations"), None, None);
         assert!(animated.on && animated.animations && !animated.stuck_gst);
+        // The system's motion settings count only when asked.
+        assert!(!animated.system_motion);
+        let system = TestMode::parse(Some("1,animations,system-motion"), None, None);
+        assert!(system.animations && system.system_motion);
         let vars = TestVars {
             panic_once: Some("timeline: a frame| meter: refresh |"),
             send_delay_ms: Some("225"),
