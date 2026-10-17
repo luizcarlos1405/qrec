@@ -896,6 +896,65 @@ fn s05_finalizing() {
     let _ = gui_support::reap_within(stop, gui_support::CLI_TIMEOUT, "qrec record stop");
 }
 
+/// S05's saving ghost at the frozen clock's `t_ms` (`QREC_GUI_TEST_T_MS`),
+/// motion reduced or not: the pixels of its hatch's lower half, under the
+/// label and its spinner (which spins under reduced motion too, G§1.3).
+fn saving_ghost(case: &str, reduced: bool, t_ms: &str) -> Vec<[u8; 3]> {
+    let mut nested = Nested::start(AREA, case, Options::default());
+    let project = fixture(
+        &nested,
+        DesignVariant::Base,
+        Some(ui(CanvasMode::Live, 7391)),
+    );
+    if reduced {
+        reduced_motion(&nested);
+    }
+    open(
+        &mut nested,
+        &project,
+        Launch::a11y()
+            .with_env("QREC_FAKE_RECORD_OFFSET_FRAMES", "4842")
+            .with_env("QREC_FAKE_EOS_DELAY_MS", "8000")
+            .with_env("QREC_GUI_TEST_T_MS", t_ms),
+    );
+    let start = nested.cli_json(&project, &["record", "start"]);
+    assert_eq!(start["ok"], true, "{start}");
+    wait_phase(&nested, &project, "recording", Duration::from_secs(30));
+    let stop = nested.cli_background(&project, &["record", "stop"]);
+    wait_phase(&nested, &project, "finalizing", Duration::from_secs(20));
+    nested.window(0).wait_idle();
+    let shot = nested.screenshot("saving-ghost");
+    assert_clean(&mut nested);
+    // The ghost spans x 798–1208 of the video row (y 720–796).
+    let pixels = gui_support::rgb_pixels(&shot, nested.opts.rect_px([830.0, 760.0, 340.0, 30.0]));
+    wait_phase(&nested, &project, "idle", Duration::from_secs(30));
+    let _ = gui_support::reap_within(stop, gui_support::CLI_TIMEOUT, "qrec record stop");
+    pixels
+}
+
+/// The saving ghost's stripes hold still under reduced motion (DESIGN
+/// Progress: static stripes; WP10's audit, `draw::Scene::still`): finalizing
+/// at two moments of the frozen clock half a stripe's step apart (0 and
+/// 600 ms of its 1.2 s step), its hatch is the same picture; with motion
+/// allowed the later moment moves it (the check has teeth). WP10's code
+/// audit: only `saving_phase` was tested, not the timeline's use of the
+/// motion policy.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s05_the_saving_ghost_holds_still_under_reduced_motion() {
+    let still_at_0 = saving_ghost("S05-still-0", true, "0");
+    let still_at_600 = saving_ghost("S05-still-600", true, "600");
+    let moving_at_600 = saving_ghost("S05-moving-600", false, "600");
+    assert!(
+        still_at_0 == still_at_600,
+        "under reduced motion the stripes moved with the clock"
+    );
+    assert!(
+        moving_at_600 != still_at_600,
+        "with motion allowed the clock didn't move the stripes"
+    );
+}
+
 // --------------------------------------------------------------- Program
 
 /// S06: Program, c2d0 selected, the playhead at 00:01:21:07: the program
