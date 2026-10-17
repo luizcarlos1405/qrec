@@ -846,6 +846,41 @@ fn fit_right_after_a_zoom_wins() {
     assert_clean(&mut nested);
 }
 
+/// A zoom made right before the window closes, within the 300 ms its
+/// `SetUi` waits, is saved (G§3.4.1: what the window debounced goes out
+/// ahead of the close in the host's FIFO). Its timer fired after the close
+/// and the closing host refused it ("the Qrec window is closing"): the next
+/// open showed the old zoom (review R66).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_zoom_right_before_the_close_is_saved() {
+    let mut nested = Nested::start(AREA, "zoom-then-close", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
+    open(&mut nested, &project, Launch::default());
+    let gui = nested.window(0);
+    assert_eq!(gui.local()["panics"], 0);
+    // Both on the main thread within a few ms, well inside the 300 ms.
+    let zoom = gui.ctl(json!({"op": "action", "id": "zoom.in"}));
+    assert_eq!(zoom["ok"], true, "{zoom}");
+    let quit = gui.ctl(json!({"op": "action", "id": "app.quit"}));
+    assert_eq!(quit["ok"], true, "{quit}");
+    assert_eq!(gui.wait_exit(Duration::from_secs(70)), Some(0), "the exit");
+    let path = project.join(".qrec").join("ui.json");
+    let ui: Value = serde_json::from_slice(&fs::read(&path).expect("ui.json")).expect("its JSON");
+    assert!(
+        ui["zoom"].as_f64().is_some_and(|z| z > 0.0),
+        "the zoom wasn't saved: {ui}"
+    );
+    gui.assert_no_criticals();
+    let log = gui.gui_log();
+    let errors: Vec<&str> = log.lines().filter(|l| l.contains(" ERROR ")).collect();
+    assert!(errors.is_empty(), "ERROR lines: {errors:#?}");
+    assert!(
+        !log.contains("window is closing"),
+        "a request refused by the closing host:\n{log}"
+    );
+}
+
 // ------------------------------------------------------------- ghosts
 
 /// S04: recording with the clock at 00:02:41:12: fit includes the ghost,

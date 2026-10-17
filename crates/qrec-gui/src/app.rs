@@ -571,6 +571,8 @@ impl App {
         }
         *self.hold.borrow_mut() = Some(self.app.hold());
         self.ctx.media.shutdown();
+        // What the regions debounced goes ahead of the close (G§3.4.1).
+        self.ctx.store.before_close();
         self.startup.close_host();
         self.window.window.set_visible(false);
     }

@@ -339,8 +339,9 @@ impl GuiHost {
 
 - `close` takes the window's FIFO (a status query whose answer asks the
   host to close), so everything the window submitted before runs first: a
-  debounced `SetUi` or `Seek` flushed as it closes, D-12's stop, D-16's
-  N commands. `submit` wraps `to` (`AnswerOnDrop`): a request the Session
+  debounced `SetUi` or `Seek` flushed as it closes (`Store::before_close`,
+  G§3.6 Debounces), D-12's stop, D-16's N commands. `submit` wraps `to`
+  (`AnswerOnDrop`): a request the Session
   never handled because the host stopped first (still queued, parked or
   waiting for a late reply) answers with why, so a `Store::dispatch_with`
   `done` (G§3.7) always runs. Once the host finishes, requests are refused
@@ -576,7 +577,13 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
   event; `Seek` while playing at most once per second (G§3.10), while
   scrubbing at most 10 per second (D-40); player reload 100 ms; autocut
   dry run 250 ms, one in flight (D-15); bin sizes 500 ms; inspector
-  fields on commit.
+  fields on commit. A debounce still waiting when the window closes goes
+  out right before its host closes: `Store::before_close` (in
+  `close_host_then_quit`, before `GuiHost::close`) runs each
+  `Store::subscribe_close` callback, so the command enters the FIFO ahead
+  of the close (G§3.4.1). The timeline's `SetUi` does (review R66: a zoom
+  closed within its 300 ms was sent when its timer fired, to a closing
+  host that refused it, and never reached `ui.json`).
 
 ### G§3.7 Dispatch, gestures, confirmations, toasts
 

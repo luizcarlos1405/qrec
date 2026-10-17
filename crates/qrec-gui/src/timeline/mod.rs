@@ -424,6 +424,17 @@ impl Inner {
                 }
             }
         }));
+        // A zoom or scroll still waiting for its `SetUi` goes out before
+        // the host closes (G§3.4.1), not when its timer fires after.
+        subs.push(self.ctx.store.subscribe_close({
+            let me = me.clone();
+            move |_| {
+                if let Some(inner) = me.upgrade() {
+                    inner.flush_source.stop();
+                    inner.flush();
+                }
+            }
+        }));
         *self.subs.borrow_mut() = subs;
 
         let draw_me = me.clone();
