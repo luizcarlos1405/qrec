@@ -124,11 +124,14 @@ qrec-spinner.s12 {
 
 /* --------------------------------------------------------- C02 key cap */
 
-/* Medium (20 tall, min 20 wide): 1 px border with a 2 px bottom edge. */
+/* Medium (20 tall, min 20 wide): 1 px border with a 2 px bottom edge.
+   DESIGN's padding (0 5) counts the stroke, which pen draws inside: GTK's
+   border comes on top of the padding, so the padding is a pixel less
+   (multi-letter caps were 2 px wider than the frames': Tab 33 for 30). */
 keycap {
   min-height: 17px;
-  min-width: 8px;
-  padding: 0 5px;
+  min-width: 10px;
+  padding: 0 4px;
   border-radius: 4px;
   border: 1px solid var(--qrec-border);
   border-bottom-width: 2px;
@@ -143,18 +146,24 @@ keycap > label {
   line-height: 14px;
 }
 
-/* Small (tooltips): 16 tall. */
+/* Small (tooltips): 16 tall (its legend's line 12 px: 14 made it 17),
+   padding 0 4 with the stroke. */
 keycap.sm {
   min-height: 13px;
-  min-width: 6px;
-  padding: 0 4px;
+  min-width: 8px;
+  padding: 0 3px;
 }
 
-/* Large (cheat sheet, "Press [R]"): 28 tall, min 28 wide. */
+keycap.sm > label {
+  line-height: 12px;
+}
+
+/* Large (cheat sheet, "Press [R]"): 28 tall, min 28 wide, padding 0 8
+   with the stroke. */
 keycap.lg {
   min-height: 25px;
-  min-width: 10px;
-  padding: 0 8px;
+  min-width: 12px;
+  padding: 0 7px;
   border-radius: 6px;
 }
 

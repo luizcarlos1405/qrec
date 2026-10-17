@@ -198,16 +198,22 @@ fn s07_fit() {
     let parts = nested
         .window(0)
         .regions(&["tl-bin-count", "tl-cap-bin", "tl-cap-snap"]);
+    // The caps are medium ones, 20 px (S02; DESIGN gives buttons medium
+    // caps: they were small, 17 px, until WP10's shot review).
     let bar = parts["timeline-toolbar"];
-    for name in ["tl-bin-count", "tl-cap-bin", "tl-cap-snap"] {
+    for (name, tall) in [
+        ("tl-bin-count", 16.0),
+        ("tl-cap-bin", 20.0),
+        ("tl-cap-snap", 20.0),
+    ] {
         let [_, y, _, h] = parts
             .get(name)
             .copied()
             .unwrap_or_else(|| panic!("no {name}: {parts:?}"));
         let off = (y + h / 2.0) - (bar[1] + bar[3] / 2.0);
         assert!(
-            (h - 16.0).abs() <= 1.0 && off.abs() <= 1.0,
-            "{name}: y {y}, h {h} (centered 16 px tall in {bar:?})"
+            (h - tall).abs() <= 0.5 && off.abs() <= 1.0,
+            "{name}: y {y}, h {h} (centered {tall} px tall in {bar:?})"
         );
     }
     let shot = shoot(&nested, "fit", Some("S07-timeline-fit.png"));

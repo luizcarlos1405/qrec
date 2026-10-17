@@ -305,6 +305,14 @@ fn s02_the_header_at_rest() {
     assert_eq!(pixel(&nested, &shot, 1244.0, 12.0), token("record"));
     // The hint bar's ground, under its top hairline.
     assert_eq!(pixel(&nested, &shot, 1596.0, 976.0), token("surface"));
+    // WP10's shot review: the mode switch's Tab cap is S02's, its `keycap`
+    // fill 28 px wide (30 with the stroke). DESIGN's padding counts the
+    // stroke, which GTK drew outside it: the fill was 31.
+    let fills = gui_support::keycap_fills(&nested.opts, &shot, [280.0, 12.0, 60.0, 24.0]);
+    assert!(
+        fills.len() == 1 && (fills[0][2] - 28.0).abs() <= 1.0,
+        "the Tab cap's fill: {fills:?}"
+    );
     assert_no_panics(&mut nested);
     nested.close_window();
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));

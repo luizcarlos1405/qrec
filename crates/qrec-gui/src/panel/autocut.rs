@@ -319,7 +319,7 @@ impl AutocutPage {
                     &content,
                     Some(&esc),
                     button::BINDING_CAP,
-                    CapSize::Sm,
+                    CapSize::Md,
                     CapVariant::Plain,
                 );
             }
@@ -1018,8 +1018,9 @@ fn labeled_with_caps(text: &str, caps: &[String], kind: Kind) -> gtk::Button {
     } else {
         CapVariant::Plain
     };
-    // The caps keep their own height, centered (S12), not the button's.
-    let chord = keycap::chord(caps, CapSize::Sm, variant);
+    // The caps keep their own height, centered (S12), not the button's:
+    // medium ones, as DESIGN gives buttons (S12's Esc is 20 px).
+    let chord = keycap::chord(caps, CapSize::Md, variant);
     chord.set_valign(gtk::Align::Center);
     chord.set_widget_name(button::BINDING_CAP);
     content.append(&chord);

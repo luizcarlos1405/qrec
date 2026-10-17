@@ -1285,6 +1285,46 @@ pub fn token_rgb(theme: &str, name: &str) -> [u8; 3] {
     [byte(1), byte(3), byte(5)]
 }
 
+/// The key caps' fills (Swamp Night's `keycap`) in `rect` (logical px) of a
+/// screenshot, left to right, as logical `[x, y, w, h]`: each run of
+/// columns with 4 or more `keycap` pixels, and the rows of the run with 4
+/// or more (a cap's size and place inside its 1 px stroke and 2 px bottom
+/// edge; WP10's shot review). A legend can split a small cap's fill. At a
+/// fractional scale an edge of a fill blends with the stroke: a device px
+/// less.
+pub fn keycap_fills(opts: &Options, png: &Path, rect: [f64; 4]) -> Vec<[f64; 4]> {
+    let [x, y, w, h] = opts.rect_px(rect);
+    let pixels = rgb_pixels(png, [x, y, w, h]);
+    let keycap = token_rgb("swamp-night", "keycap");
+    let at = |c: u32, r: u32| pixels[(r * w + c) as usize] == keycap;
+    let filled = |c: u32| (0..h).filter(|&r| at(c, r)).count() >= 4;
+    let logical = |v: u32| f64::from(v) / opts.scale;
+    let mut fills = Vec::new();
+    let mut c = 0;
+    while c < w {
+        if !filled(c) {
+            c += 1;
+            continue;
+        }
+        let first = c;
+        while c < w && filled(c) {
+            c += 1;
+        }
+        let rows: Vec<u32> = (0..h)
+            .filter(|&r| (first..c).filter(|&k| at(k, r)).count() >= 4)
+            .collect();
+        if let (Some(&top), Some(&bottom)) = (rows.first(), rows.last()) {
+            fills.push([
+                logical(x + first),
+                logical(y + top),
+                logical(c - first),
+                logical(bottom + 1 - top),
+            ]);
+        }
+    }
+    fills
+}
+
 /// A PNG's size in px (its `IHDR`).
 pub fn png_size(png: &Path) -> (u32, u32) {
     let mut head = [0u8; 24];

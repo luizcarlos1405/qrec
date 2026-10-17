@@ -218,7 +218,9 @@ pub fn labeled(
     follow_keymap(&button, keymap, move |button, keymap| {
         let caps = binding_caps(keymap, &binding);
         if let Some(content) = button.child().and_downcast::<gtk::Box>() {
-            show_binding_cap(&content, caps.as_deref(), BINDING_CAP, CapSize::Sm, variant);
+            // A button's cap is a medium one (DESIGN Key-cap chip; S02's
+            // toolbar, S12's footer).
+            show_binding_cap(&content, caps.as_deref(), BINDING_CAP, CapSize::Md, variant);
         }
         button.update_property(&[gtk::accessible::Property::Label(&accessible_name(
             &label,

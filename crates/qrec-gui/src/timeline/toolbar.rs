@@ -56,7 +56,8 @@ fn toggle(
     content.append(&gtk::Image::from_icon_name(icon));
     content.append(&gtk::Label::new(Some(label)));
     // The count chip and the key cap are centered like `button::labeled`'s
-    // (S02 draws them 16 px tall; filling the 28 px button they stretched).
+    // (S02 draws the chip 16 px tall and the cap a medium one, 20 px, as
+    // DESIGN gives buttons; filling the 28 px button they stretched).
     if let Some(extra) = extra {
         extra.set_valign(gtk::Align::Center);
         content.append(extra);
@@ -76,7 +77,7 @@ fn toggle(
                 &content,
                 caps.as_deref(),
                 &cap_name,
-                CapSize::Sm,
+                CapSize::Md,
                 CapVariant::Plain,
             );
         }

@@ -1767,6 +1767,14 @@ fn s12_the_autocut_page() {
     let shot = nested.screenshot("page");
     crop(&nested, &shot, PANEL, "panel");
     compare(&nested, &shot, "S12-autocut-preview.png", PANEL, PANEL);
+    // WP10's shot review: the footer's Esc cap is a medium one, its
+    // `keycap` fill 17 px tall (20 with the stroke; the small one's was
+    // 13).
+    let caps = gui_support::keycap_fills(&nested.opts, &shot, [1340.0, 915.0, 100.0, 40.0]);
+    assert!(
+        caps.len() == 1 && (caps[0][3] - 17.0).abs() <= 1.0,
+        "the Esc cap's fill: {caps:?}"
+    );
     // A tuning change sends its dry run 250 ms later: one waitIdle covers
     // the debounce (the page holds the io worker busy) and the reply.
     let (x, y) = center(region(nested.window(0), "knob-field-2"));

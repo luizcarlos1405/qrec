@@ -92,7 +92,7 @@ pub fn primary_with_key(text: &str, key: &str) -> gtk::Button {
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     let text_label = gtk::Label::new(Some(text));
     content.append(&text_label);
-    let cap = keycap::chord(&[key.to_owned()], CapSize::Sm, CapVariant::OnFill);
+    let cap = keycap::chord(&[key.to_owned()], CapSize::Md, CapVariant::OnFill);
     cap.set_valign(gtk::Align::Center);
     content.append(&cap);
     let spinner = Spinner::new(16);
