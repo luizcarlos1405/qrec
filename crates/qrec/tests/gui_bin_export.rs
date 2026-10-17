@@ -954,6 +954,69 @@ fn a_bin_row_drags_onto_the_timeline() {
     close(&mut nested);
 }
 
+/// SPEC §7.1, D-38: a bin row dragged onto an empty timeline (S01b: its
+/// page replaces the canvas) inserts its take, slot 1 of 1 (the drop
+/// target was on the canvas alone, and refused every drop there).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_bin_row_drags_onto_an_empty_timeline() {
+    let mut nested = Nested::start(AREA, "bin-drag-empty", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(bin_ui()),
+    );
+    for clip in [
+        "c7f3", "c8a1", "c1b2", "c1b3", "c1b4", "c1b5", "c1b6", "c2d0", "c2d1", "c3e9",
+    ] {
+        let removed = nested.cli_json(&project, &["clip", "remove", clip]);
+        assert_eq!(removed["ok"], true, "{removed}");
+    }
+    open(&mut nested, &project, launch());
+    let (x, y) = center(&mut nested, "bin-take-4");
+    let regions = nested.window(0).regions(&[]);
+    let [ax, ay, aw, ah] = regions["time-area"];
+    let (cx, cy) = (ax + aw / 2.0, ay + ah / 2.0);
+    let pointer = nested.pointer();
+    pointer.move_to(x, y);
+    pointer.button(gui_support::pointer::BUTTON_LEFT, true);
+    pointer.drag_to(x + 40.0, y + 40.0, 6);
+    pointer.drag_to(cx, cy, 12);
+    thread::sleep(Duration::from_millis(400));
+    pointer.drag_to(cx + 1.0, cy, 2);
+    let drag = nested.window(0).local()["drag"].clone();
+    let over = nested.window(0).labels("region-timeline");
+    nested.screenshot("over-empty-timeline");
+    nested
+        .pointer()
+        .button(gui_support::pointer::BUTTON_LEFT, false);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let clips = nested.cli_json(&project, &["clip", "list"])["data"].clone();
+        let clips = clips.as_array().cloned().unwrap_or_default();
+        if !clips.is_empty() {
+            assert_eq!(clips.len(), 1, "{clips:?}");
+            assert_eq!(clips[0]["take"], "take-0004", "{clips:?}");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no clip added (drag was {drag}, the timeline read {over:?})"
+        );
+        thread::sleep(Duration::from_millis(200));
+    }
+    assert_eq!(drag, "binInsert", "the drag's kind over the empty timeline");
+    assert!(
+        over.iter().any(|l| l == "Insert take 4 \u{b7} slot 1 of 1"),
+        "the hover's tooltip: {over:?}"
+    );
+    nested.window(0).wait_idle();
+    assert_eq!(nested.window(0).local()["drag"], Value::Null);
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
 /// S18's base: takes 2 and 4 selected in the bin (a click, `Ctrl`+click),
 /// "Purge from disk" in the footer asks first (the modal over the bin);
 /// confirming purges them (`TakePurge`, confirmed).

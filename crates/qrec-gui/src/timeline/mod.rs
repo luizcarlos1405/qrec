@@ -701,7 +701,8 @@ impl Inner {
         self.ruler.add_controller(scroll);
     }
 
-    /// D-38: bin rows drag `qrec-take:<id>` strings onto the canvas.
+    /// D-38: bin rows drag `qrec-take:<id>` strings onto the time area:
+    /// the canvas, or the empty timeline's page (S01b) that replaces it.
     fn connect_drop(&self) {
         let target = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::COPY);
         // The take is read while it hovers (the caret, the tooltip): a
@@ -711,7 +712,7 @@ impl Inner {
         target.connect_motion(guarded!(
             "timeline: a drop over",
             after_panic = gdk::DragAction::empty(),
-            move |t, x, _y| {
+            move |t, x, y| {
                 let Some(inner) = me.upgrade() else {
                     return gdk::DragAction::empty();
                 };
@@ -719,20 +720,20 @@ impl Inner {
                     .value()
                     .and_then(|v| v.get::<String>().ok())
                     .and_then(|s| control::parse_drop(&s));
-                inner.drop_over(take, x)
+                inner.drop_over(take, (x, y))
             }
         ));
         let me = self.me.clone();
         target.connect_leave(guarded!("timeline: a drop leaves", move |_| {
             if let Some(inner) = me.upgrade() {
-                inner.drop_over(None, 0.0);
+                inner.drop_over(None, (0.0, 0.0));
             }
         }));
         let me = self.me.clone();
         target.connect_drop(guarded!(
             "timeline: a drop",
             after_panic = false,
-            move |_, value, x, _y| {
+            move |_, value, x, y| {
                 let Some(inner) = me.upgrade() else {
                     return false;
                 };
@@ -740,10 +741,30 @@ impl Inner {
                     .get::<String>()
                     .ok()
                     .and_then(|s| control::parse_drop(&s));
-                inner.drop_at(take, x)
+                inner.drop_at(take, (x, y))
             }
         ));
-        self.canvas.add_controller(target);
+        // The time area holds both pages: on the canvas alone, an empty
+        // timeline (its page shown instead) refused every drop.
+        self.drop_area().add_controller(target);
+    }
+
+    /// The time area (`time-area`, the pages' stack's parent): the drop
+    /// target's widget.
+    fn drop_area(&self) -> gtk::Widget {
+        self.stack
+            .parent()
+            .unwrap_or_else(|| self.canvas.clone().upcast())
+    }
+
+    /// A point of the time area as canvas px at 100 %.
+    fn drop_x(&self, (x, y): (f64, f64)) -> f64 {
+        let point = graphene::Point::new(x as f32, y as f32);
+        let x = self
+            .drop_area()
+            .compute_point(&self.canvas, &point)
+            .map_or(x, |p| f64::from(p.x()));
+        x / self.scale()
     }
 
     // ------------------------------------------------------- state
@@ -1445,29 +1466,42 @@ impl Inner {
 
     // ------------------------------------------------------- drops
 
-    /// A bin drag over the canvas: the caret at the nearest boundary and
-    /// "Insert take 4 · slot k of n + 1" (D-38).
-    fn drop_over(&self, take: Option<TakeId>, x: f64) -> gdk::DragAction {
+    /// A bin drag over the time area: the caret at the nearest boundary and
+    /// "Insert take 4 · slot k of n + 1" (D-38); over an empty timeline's
+    /// page, "slot 1 of 1" by the pointer.
+    fn drop_over(&self, take: Option<TakeId>, at: (f64, f64)) -> gdk::DragAction {
         let state = self.ctx.store.state();
-        let x = x / self.scale();
+        let x = self.drop_x(at);
         let now = self.now();
+        let clips = &state.project.timeline.clips;
         let view = self.m.borrow().vm.shown(now);
         let ok = take
             .as_ref()
-            .zip(view.as_ref())
-            .and_then(|(t, v)| control::decide_drop(&state, v, t, x).map(|_| (t.clone(), *v)));
+            .and_then(|t| control::decide_drop(&state, view.as_ref(), t, x).map(|_| t.clone()));
         match ok {
-            Some((take, view)) => {
-                let clips = &state.project.timeline.clips;
-                let slot = tl::drop_slot(&view, clips, x);
-                let caret = tl::boundary_x(&view, clips, slot);
-                self.m.borrow_mut().drop = Some((take.clone(), caret));
+            Some(take) => {
+                let (slot, tip_at) = match view.filter(|_| !clips.is_empty()) {
+                    Some(view) => {
+                        let slot = tl::drop_slot(&view, clips, x);
+                        let caret = tl::boundary_x(&view, clips, slot);
+                        self.m.borrow_mut().drop = Some((take.clone(), caret));
+                        (slot, self.to_layer((caret, 30.0)))
+                    }
+                    None => {
+                        // No canvas to draw a caret on: the tooltip by the
+                        // pointer.
+                        self.m.borrow_mut().drop = Some((take.clone(), 0.0));
+                        let point = graphene::Point::new(at.0 as f32, at.1 as f32);
+                        let tip = self
+                            .drop_area()
+                            .compute_point(&self.tips.layer, &point)
+                            .map_or(at, |p| (f64::from(p.x()), f64::from(p.y())));
+                        (0, tip)
+                    }
+                };
                 self.set_drop_drag(true);
                 let text = tl::drop_tooltip(&take, slot, clips.len());
-                self.tips.show(
-                    &[vec![(text, tips::Ink::Plain)]],
-                    self.to_layer((caret, 30.0)),
-                );
+                self.tips.show(&[vec![(text, tips::Ink::Plain)]], tip_at);
                 self.bump();
                 self.canvas.queue_draw();
                 gdk::DragAction::COPY
@@ -1511,19 +1545,19 @@ impl Inner {
         });
     }
 
-    fn drop_at(&self, take: Option<TakeId>, x: f64) -> bool {
+    fn drop_at(&self, take: Option<TakeId>, at: (f64, f64)) -> bool {
         let state = self.ctx.store.state();
-        let x = x / self.scale();
+        let x = self.drop_x(at);
         let view = self.m.borrow().vm.shown(self.now());
         self.m.borrow_mut().drop = None;
         self.set_drop_drag(false);
         self.tips.hide();
         self.bump();
         self.canvas.queue_draw();
-        let (Some(take), Some(view)) = (take, view) else {
+        let Some(take) = take else {
             return false;
         };
-        match control::decide_drop(&state, &view, &take, x) {
+        match control::decide_drop(&state, view.as_ref(), &take, x) {
             Some(cmd) => {
                 self.ctx.store.dispatch(cmd);
                 true
