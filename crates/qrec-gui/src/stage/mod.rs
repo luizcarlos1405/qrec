@@ -1310,7 +1310,10 @@ impl Inner {
     /// and they never reached a controller on the stage: every burst ended
     /// by its timeout, so a held key split into two `LayerSet`s and quick
     /// taps merged into one (R19). Added at the first nudge (the stage is
-    /// in the window by then); it only listens.
+    /// in the window by then); it only listens. It sees the release because
+    /// it comes after the router's controller: GTK runs a widget's
+    /// controllers newest first, and stops at a key controller that handled
+    /// the event (the router's claims the release of a press it took).
     fn watch_releases(self: &Rc<Self>) {
         if self.release_watch.get() {
             return;
