@@ -810,6 +810,7 @@ impl Panel {
             draft.starting = true;
             draft.error = None;
             l.export_view.outcome = None;
+            l.export_view.toast_due = false;
         });
         let weak = Rc::downgrade(self);
         let sent = cmd.clone();
@@ -915,6 +916,9 @@ impl Panel {
         self.ctx.store.update_local(move |l| {
             l.export_view.draft.starting = false;
             if l.export_panel().is_some() {
+                // Its page shows this end: the core's toast of it, right
+                // behind this reply, is dropped (G§3.7), and no other.
+                l.export_view.toast_due = outcome.is_some();
                 l.export_view.outcome = outcome;
             }
         });

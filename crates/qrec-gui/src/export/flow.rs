@@ -118,6 +118,12 @@ pub enum Outcome {
 pub struct ExportPanelState {
     pub draft: Draft,
     pub outcome: Option<Outcome>,
+    /// Its own export's answer set `outcome`, and the core's toast of that
+    /// export's end, next in the queue (the reply comes first), hasn't come
+    /// yet: the toast host drops that toast, the one the Done or Failed
+    /// page shows, and only that one (G§3.7; the next export toast takes
+    /// it back).
+    pub toast_due: bool,
 }
 
 /// What one of the panel's GUI actions asks of it.

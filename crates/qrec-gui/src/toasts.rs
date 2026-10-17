@@ -11,7 +11,8 @@
 //! the core's export-done and export-failed toasts are dropped while the
 //! export panel shows that export's Done or Failed state
 //! ([`shown_by_the_panel`]; the failed one since the WP7 integration: S17
-//! draws no toast).
+//! draws no toast): only the toast the panel's own answer said is next
+//! (`ExportPanelState::toast_due`), never another export's.
 //!
 //! A toast is `raised`, `lg` radius, e2 with a 1 px `border`: a 20 px level
 //! icon, the `body-strong` title over a `body-sm` `muted` body (a path in
@@ -78,12 +79,21 @@ pub fn is_export_failed(notice: &Notice) -> bool {
     notice.title == EXPORT_FAILED_TITLE && notice.level == ToastLevel::Error
 }
 
-/// Whether the export panel open in `panel` shows what `notice` says (its
-/// own export's Done or Failed page: it answers before the core's toast
-/// comes), so the toast is dropped. A closed panel, or one showing
-/// Running or Setup, lets it through (S16b, a CLI export).
-pub fn shown_by_the_panel(notice: &Notice, panel: Option<ExportPanelMode>) -> bool {
-    match panel {
+/// The core's toast of an export's end: done or failed.
+pub fn is_export_end(notice: &Notice) -> bool {
+    is_export_done(notice) || is_export_failed(notice)
+}
+
+/// Whether the export panel open in `panel` shows what `notice` says, so
+/// the toast is dropped (G§3.7): its own export's Done or Failed page
+/// shows that export's end, and `notice` is that export's toast (`due`:
+/// the panel's answer came, and its toast is the next export toast; the
+/// core sends the reply first, through the same queue). Another export's
+/// toast shows whatever the panel shows (a CLI export the window never saw
+/// run, while the panel still shows its own last Done page), and so does
+/// any with the panel closed or on Running or Setup (S16b, a CLI export).
+pub fn shown_by_the_panel(notice: &Notice, panel: Option<ExportPanelMode>, due: bool) -> bool {
+    due && match panel {
         Some(ExportPanelMode::Done) => is_export_done(notice),
         Some(ExportPanelMode::Failed) => is_export_failed(notice),
         _ => false,
@@ -269,11 +279,22 @@ impl Host {
             notice.title,
             notice.body.as_deref().unwrap_or_default()
         );
-        // The export panel shows this result already (its Done or Failed
-        // state).
-        if shown_by_the_panel(&notice, self.ctx.store.local().export_panel()) {
-            tracing::debug!("toast: the export panel shows it; dropped");
-            return;
+        // The export panel shows this result already (its own export's
+        // Done or Failed page): the export toast its answer said is next.
+        if is_export_end(&notice) {
+            let (panel, due) = {
+                let local = self.ctx.store.local();
+                (local.export_panel(), local.export_view.toast_due)
+            };
+            if due {
+                self.ctx
+                    .store
+                    .update_local(|l| l.export_view.toast_due = false);
+            }
+            if shown_by_the_panel(&notice, panel, due) {
+                tracing::debug!("toast: the export panel shows it; dropped");
+                return;
+            }
         }
         let cursor = self.ctx.store.state().history.cursor;
         let leaving = self.inner.borrow().leaving;
@@ -741,29 +762,45 @@ mod tests {
         assert!(shown_actions(&Notice::new(ToastLevel::Info, "x")).is_empty());
     }
 
-    /// S16 and S17: the panel's Done or Failed page shows the export's end,
-    /// so the core's toast for it is dropped; with the panel closed, or
-    /// still on Running (a CLI export), it shows (S16b).
+    /// S16 and S17: the panel's Done or Failed page shows its export's end,
+    /// so the core's toast for it (due: the panel's answer came, and its
+    /// toast is next) is dropped; with the panel closed, or still on
+    /// Running (a CLI export), it shows (S16b).
     #[test]
     fn the_panels_own_ending_drops_its_toast() {
+        use ExportPanelMode::{Done, Failed, Running, Setup};
         let done = Notice::new(ToastLevel::Success, EXPORT_DONE_TITLE);
         let failed = Notice::new(ToastLevel::Error, EXPORT_FAILED_TITLE);
         let other = Notice::new(ToastLevel::Error, "Couldn't open exports/a.mp4");
-        assert!(shown_by_the_panel(&done, Some(ExportPanelMode::Done)));
-        assert!(shown_by_the_panel(&failed, Some(ExportPanelMode::Failed)));
-        assert!(!shown_by_the_panel(&failed, Some(ExportPanelMode::Done)));
-        assert!(!shown_by_the_panel(&done, Some(ExportPanelMode::Failed)));
-        for panel in [
-            None,
-            Some(ExportPanelMode::Running),
-            Some(ExportPanelMode::Setup),
-        ] {
-            assert!(!shown_by_the_panel(&done, panel), "{panel:?}");
-            assert!(!shown_by_the_panel(&failed, panel), "{panel:?}");
+        let own = |notice: &Notice, panel| shown_by_the_panel(notice, panel, true);
+        assert!(own(&done, Some(Done)));
+        assert!(own(&failed, Some(Failed)));
+        assert!(!own(&failed, Some(Done)));
+        assert!(!own(&done, Some(Failed)));
+        for panel in [None, Some(Running), Some(Setup)] {
+            assert!(!own(&done, panel), "{panel:?}");
+            assert!(!own(&failed, panel), "{panel:?}");
         }
-        assert!(!shown_by_the_panel(&other, Some(ExportPanelMode::Failed)));
+        assert!(!own(&other, Some(Failed)));
+        assert!(is_export_end(&done) && is_export_end(&failed));
+        assert!(!is_export_end(&other));
         let warning = Notice::new(ToastLevel::Warning, EXPORT_FAILED_TITLE);
         assert!(!is_export_failed(&warning), "only the core's error toast");
+    }
+
+    /// G§3.7: only the panel's own export's toast goes. Another export's (a
+    /// CLI export the window never saw run: its start and end snapshots
+    /// coalesced in the queue, so its job never cleared the panel's last
+    /// outcome) shows even while the panel still shows its own last Done
+    /// or Failed page: it was dropped, and that export's end showed
+    /// nowhere.
+    #[test]
+    fn another_exports_toast_shows_over_the_panels_own_page() {
+        use ExportPanelMode::{Done, Failed};
+        let done = Notice::new(ToastLevel::Success, EXPORT_DONE_TITLE);
+        let failed = Notice::new(ToastLevel::Error, EXPORT_FAILED_TITLE);
+        assert!(!shown_by_the_panel(&done, Some(Done), false));
+        assert!(!shown_by_the_panel(&failed, Some(Failed), false));
     }
 
     /// D-34's Show export opens the export panel and leaves an open one as

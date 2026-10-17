@@ -638,7 +638,12 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
   that export's Done state, and the export-failed one while it shows its
   Failed state (`toasts::shown_by_the_panel`; WP7 integration: S17 draws
   no toast over the panel). The panel answers first: the core sends the
-  reply before the toast, through the same queue.
+  reply before the toast, through the same queue. Only that export's: its
+  answer marks the next export toast as the one its page shows
+  (`ExportPanelState::toast_due`, which that toast takes back), so another
+  export's toast shows whatever the panel shows (review fix: a CLI export
+  the window never saw run, its snapshots coalesced in the queue, lost its
+  toast to the panel's own last Done page).
 - **`UiAction`** (`desktop.rs`, WP0b):
   - `OpenPath` → `gtk::FileLauncher::launch`;
   - `RevealPath` → `gtk::FileLauncher::open_containing_folder`;
