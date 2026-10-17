@@ -625,7 +625,12 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
   and success 5 s (8 s with actions), warning 8 s, error until dismissed;
   at most two actions are shown (DESIGN). `Dispatch(Undo{..})` stays
   enabled only while `history.cursor` equals its value when the toast
-  arrived. A done-export toast is dropped while the export panel shows
+  arrived. A toast equal to the newest one (shown, or the last waiting) is
+  that toast again: it takes the newest arrival's cursor and the shown
+  one's time starts over (`ToastQueue::push`, `Pushed::Coalesced`; review
+  fix: a held key whose action is unavailable queued one toast per
+  auto-repeat, "+36" after 2 s); one between others still counts (A, B, A
+  is "+2"), and one arriving while the shown one fades out waits after it. A done-export toast is dropped while the export panel shows
   that export's Done state, and the export-failed one while it shows its
   Failed state (`toasts::shown_by_the_panel`; WP7 integration: S17 draws
   no toast over the panel). The panel answers first: the core sends the

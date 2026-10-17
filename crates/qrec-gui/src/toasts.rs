@@ -4,7 +4,9 @@
 //! most two actions. Owner: WP6.
 //!
 //! [`ToastQueue`] is the GTK-free part (timings, the queue, the actions
-//! shown, the Undo guard): an Undo (`Dispatch(Undo{..})`) stays enabled
+//! shown, the Undo guard): a toast equal to the newest one is that one
+//! again (a held key's auto-repeat toasts once, its time starting over), an
+//! Undo (`Dispatch(Undo{..})`) stays enabled
 //! only while `history.cursor` is what it was when the toast arrived, and
 //! the core's export-done and export-failed toasts are dropped while the
 //! export panel shows that export's Done or Failed state
@@ -137,16 +139,45 @@ pub struct ToastQueue {
     waiting: VecDeque<Queued>,
 }
 
+/// Where a pushed toast went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pushed {
+    /// It shows now (nothing was showing).
+    Shown,
+    /// It waits behind the one shown (the "+N" chip).
+    Queued,
+    /// The newest toast says the same: it is that one again (its history
+    /// cursor the new one's), shown or waiting.
+    Coalesced { shown: bool },
+}
+
 impl ToastQueue {
-    /// Adds a toast; `true` when it shows at once (nothing was showing).
-    pub fn push(&mut self, notice: Notice, cursor: u64) -> bool {
+    /// Adds a toast at history cursor `cursor`. One that says what the
+    /// newest toast says (a held key's auto-repeat: "Nothing to undo" 25
+    /// times a second) is that toast again; `coalesce_shown` false (the
+    /// shown toast is fading out) queues it after the shown one instead.
+    pub fn push(&mut self, notice: Notice, cursor: u64, coalesce_shown: bool) -> Pushed {
+        if let Some(newest) = self.waiting.back_mut()
+            && newest.notice == notice
+        {
+            newest.cursor = cursor;
+            return Pushed::Coalesced { shown: false };
+        }
+        if let Some(shown) = &mut self.showing
+            && self.waiting.is_empty()
+            && coalesce_shown
+            && shown.notice == notice
+        {
+            shown.cursor = cursor;
+            return Pushed::Coalesced { shown: true };
+        }
         let queued = Queued { notice, cursor };
         if self.showing.is_none() {
             self.showing = Some(queued);
-            true
+            Pushed::Shown
         } else {
             self.waiting.push_back(queued);
-            false
+            Pushed::Queued
         }
     }
 
@@ -245,11 +276,41 @@ impl Host {
             return;
         }
         let cursor = self.ctx.store.state().history.cursor;
-        let now = self.inner.borrow_mut().queue.push(notice, cursor);
-        if now {
-            self.show_current();
-        } else {
-            self.refresh_chip();
+        let leaving = self.inner.borrow().leaving;
+        let pushed = self.inner.borrow_mut().queue.push(notice, cursor, !leaving);
+        match pushed {
+            Pushed::Shown => self.show_current(),
+            Pushed::Queued => self.refresh_chip(),
+            // The toast on screen again: its time starts over (a held key
+            // keeps one up, gone its time after the last repeat), its Undo
+            // follows the newest arrival.
+            Pushed::Coalesced { shown: true } => {
+                self.start_timer();
+                self.refresh_actions();
+            }
+            Pushed::Coalesced { shown: false } => {}
+        }
+    }
+
+    /// The shown toast's timer, from now (none for an error, dismissed by
+    /// hand).
+    fn start_timer(self: &Rc<Self>) {
+        if let Some(timer) = self.inner.borrow_mut().timer.take() {
+            timer.remove();
+        }
+        let after = self
+            .inner
+            .borrow()
+            .queue
+            .current()
+            .and_then(|q| duration(&q.notice));
+        if let Some(after) = after {
+            let host = Rc::clone(self);
+            let id = guard::timeout_local_once(after, "toast: timer", move || {
+                host.inner.borrow_mut().timer = None;
+                host.dismiss();
+            });
+            self.inner.borrow_mut().timer = Some(id);
         }
     }
 
@@ -274,14 +335,7 @@ impl Host {
         self.root.set_visible(true);
         self.refresh_actions();
         self.animate_in(&toast);
-        if let Some(after) = duration(&queued.notice) {
-            let host = Rc::clone(self);
-            let id = guard::timeout_local_once(after, "toast: timer", move || {
-                host.inner.borrow_mut().timer = None;
-                host.dismiss();
-            });
-            self.inner.borrow_mut().timer = Some(id);
-        }
+        self.start_timer();
     }
 
     fn build(
@@ -593,9 +647,21 @@ mod tests {
     fn one_toast_at_a_time_and_the_queue_chip() {
         let mut queue = ToastQueue::default();
         assert!(queue.current().is_none());
-        assert!(queue.push(Notice::new(ToastLevel::Info, "first"), 3));
-        assert!(!queue.push(Notice::new(ToastLevel::Warning, "second"), 3));
-        assert!(!queue.push(Notice::new(ToastLevel::Error, "third"), 4));
+        let push = |queue: &mut ToastQueue, level, title: &str, cursor| {
+            queue.push(Notice::new(level, title), cursor, true)
+        };
+        assert_eq!(
+            push(&mut queue, ToastLevel::Info, "first", 3),
+            Pushed::Shown
+        );
+        assert_eq!(
+            push(&mut queue, ToastLevel::Warning, "second", 3),
+            Pushed::Queued
+        );
+        assert_eq!(
+            push(&mut queue, ToastLevel::Error, "third", 4),
+            Pushed::Queued
+        );
         assert_eq!(queue.current().unwrap().notice.title, "first");
         assert_eq!(queue.waiting(), 2);
         assert_eq!(chip_text(queue.waiting()).as_deref(), Some("+2"));
@@ -607,7 +673,53 @@ mod tests {
         assert!(queue.done().is_none());
         assert!(queue.current().is_none());
         // Empty again: the next toast shows at once.
-        assert!(queue.push(Notice::new(ToastLevel::Info, "again"), 5));
+        assert_eq!(
+            push(&mut queue, ToastLevel::Info, "again", 5),
+            Pushed::Shown
+        );
+    }
+
+    /// A held key whose action is unavailable (`Ctrl+Z` past the oldest
+    /// entry: GTK delivers each auto-repeat as a press) toasts one
+    /// "Nothing to undo", not one per repeat queued minutes ahead of real
+    /// toasts; the same toast between others still counts (S25's "+2").
+    #[test]
+    fn a_repeated_toast_is_the_same_toast() {
+        let mut queue = ToastQueue::default();
+        let nothing = Notice::new(ToastLevel::Info, "Nothing to undo");
+        assert_eq!(queue.push(nothing.clone(), 7, true), Pushed::Shown);
+        for _ in 0..34 {
+            assert_eq!(
+                queue.push(nothing.clone(), 7, true),
+                Pushed::Coalesced { shown: true }
+            );
+        }
+        assert_eq!(queue.waiting(), 0);
+        assert_eq!(queue.current().map(|q| &q.notice), Some(&nothing));
+        // Behind another, it is the newest waiting one again.
+        let error = Notice::new(ToastLevel::Error, "Recording didn't start");
+        assert_eq!(queue.push(error.clone(), 7, true), Pushed::Queued);
+        assert_eq!(
+            queue.push(error.clone(), 7, true),
+            Pushed::Coalesced { shown: false }
+        );
+        assert_eq!(queue.waiting(), 1);
+        // A, B, A: three toasts.
+        assert_eq!(queue.push(nothing.clone(), 7, true), Pushed::Queued);
+        assert_eq!(queue.waiting(), 2);
+        // Fading out, the shown one takes no more: the next shows after it.
+        let mut leaving = ToastQueue::default();
+        leaving.push(nothing.clone(), 7, true);
+        assert_eq!(leaving.push(nothing.clone(), 7, false), Pushed::Queued);
+        // The newest arrival's history cursor: its Undo is the one enabled.
+        let mut undos = ToastQueue::default();
+        let removed = Notice::new(ToastLevel::Success, "Removed a clip").with_action(undo());
+        undos.push(removed.clone(), 5, true);
+        assert_eq!(
+            undos.push(removed, 6, true),
+            Pushed::Coalesced { shown: true }
+        );
+        assert_eq!(undos.current().map(|q| q.cursor), Some(6));
     }
 
     #[test]

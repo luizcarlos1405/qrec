@@ -1136,6 +1136,31 @@ fn s15a_export_setup() {
     close(&mut nested);
 }
 
+/// G§3.7: a held key whose action is unavailable (`x` with no clip
+/// selected: GTK delivers each auto-repeat as a press) shows one toast,
+/// not one per repeat queued behind it (a "+34" chip, minutes of them).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_held_unavailable_key_toasts_once() {
+    let mut nested = Nested::start(AREA, "held-key", Options::default());
+    let ui = UiState {
+        canvas_mode: CanvasMode::Program,
+        ..UiState::default()
+    };
+    let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base, Some(ui));
+    open(&mut nested, &project, launch());
+    nested.keys(&["-P", "x", "-s", "2000", "-p", "x"]);
+    nested.window(0).wait_idle();
+    let labels = nested.window(0).labels("toast-host");
+    assert_shows(&labels, &["Select the clips to remove"]);
+    assert!(
+        !labels.iter().any(|l| l.starts_with('+')),
+        "one toast, no queue: {labels:?}"
+    );
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
 /// D-34: `Ctrl+E` on an empty timeline says why ("The timeline is empty",
 /// an info toast) and opens nothing (it opened nothing, silently).
 #[test]
