@@ -1526,6 +1526,26 @@ time; A§8.7 rules for every child).
     `local` counts the bars ticking (`mudBarsTicking`): S15b and S15c's
     running pages check none does under the frozen clock (WP7 integration
     audit: no test held the merge to this before).
+  - Reduced motion, audited (WP10): every row of DESIGN's motion table
+    holds still under `ui.reduced_motion = true`, checked row by row
+    through the widgets' own decisions (`theme::motion`'s table test,
+    `theme/motion_table.rs`: `slide::plan`, `toasts::lift`,
+    `countdown::{sweep, settle}`, `overlays::torch_look`,
+    `mud_bar::frame_look`, the zoom's and the gap's `instant`, the
+    stylesheets' transitions colors-only within 120 ms; DESIGN.md's rows
+    and the crate's animation sites are both inventoried, so a new row or
+    a new animation fails until it is classified). Two fixes: the saving
+    ghost's stripes moved under reduced motion (DESIGN Progress: static;
+    `draw::Scene::still`, `saving_phase`), and the Narrow sheet slid in
+    and out with libadwaita's spring, which reads only
+    `gtk-enable-animations` (no reduced motion; `adw::OverlaySplitView`
+    has no switch of its own): the window turns `gtk-enable-animations`
+    off from the sheet's opening under reduced motion until it goes,
+    its own close (a click on the content it dims) included
+    (`window::still_sheet`), so it shows and goes at once; GTK's other
+    animations go at once meanwhile. The zoom is the timeline's own
+    easing on its frame clock and the sheet libadwaita's spring, not
+    `adw::TimedAnimation` (which the bin drawer and the toasts use).
 - **Fonts** (SPEC §15.3, Q11):
   - bundled files `Fraunces[SOFT,WONK,opsz,wght].ttf`,
     `AtkinsonHyperlegibleNext[wght].ttf`, `JetBrainsMono[wght].ttf` from
@@ -1898,7 +1918,7 @@ previews, the player, io, opening, the portal).
 | `{"op":"action","id":"export.panel"}` | runs a binding or GUI action as its key would (pre-steps included) |
 | `{"op":"sources"}` | `{"ok":true,"inventory":…}`: discovery's last answer (`LocalUi.sources`, null before one); with `"inventory": <SourceInventory>`, that answer instead, pushed through the queue as discovery's own (`Inbound::Sources`; the first run's rows follow it; R25's audit) |
 | `{"op":"hints"}` | the rendered hint items (`keys`, `label`, `enabled`, `emphasized`) and the status text (`hintbar::current_items`); `shown`, the labels of the items the bar draws whole (a narrow window leaves the trailing ones out, `hintbar::fitting`), and `cut`, whether a drawn one runs past the bar (never; both WP7 integration audit) |
-| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `playing`, the player plays (the program or a bin preview's take), and `programPlaying`, the program plays in it (`LocalUi.program_playing`, G§3.10 step 3; review R00, R16); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and the panel's (`layerRowsAlive`, `audioRowsAlive`; review R43), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit); `metersTicking`, the meter bars on their refresh timer, and `exportClockTicking`, the export panel's Running clock (null without a panel): each comes back with the next change after a caught panic (G§3.12; R65's audit); `themeSubscribers`, the theme's callbacks (a dropped bin thumbnail's goes with it, R11; WP7 integration's shot and code audits); `timelinePaints`, how many times the timeline's canvas made its render node again (not while only the playhead moves, C16; review R10); `timelineGhostColumns`, how many columns of the ghost's waveform the last paint with a ghost worked out a lane (those in the time area, G§4.5; R01's audit); `binSlide`, the bin drawer's last slide as asked (`open`, `animate`: test mode animates nothing, so a case reads whether the open at start would have slid in; review fix, G§3.3); `takePreview`, the bin preview (`take`, `playing`: `Space` pauses it; null without one; review fix, D-17) |
+| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `playing`, the player plays (the program or a bin preview's take), and `programPlaying`, the program plays in it (`LocalUi.program_playing`, G§3.10 step 3; review R00, R16); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `gtkAnimations`, GTK's `gtk-enable-animations` (off in test mode but with its `animations` flag, and while the Narrow sheet is open under reduced motion; WP10); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and the panel's (`layerRowsAlive`, `audioRowsAlive`; review R43), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit); `metersTicking`, the meter bars on their refresh timer, and `exportClockTicking`, the export panel's Running clock (null without a panel): each comes back with the next change after a caught panic (G§3.12; R65's audit); `themeSubscribers`, the theme's callbacks (a dropped bin thumbnail's goes with it, R11; WP7 integration's shot and code audits); `timelinePaints`, how many times the timeline's canvas made its render node again (not while only the playhead moves, C16; review R10); `timelineGhostColumns`, how many columns of the ghost's waveform the last paint with a ghost worked out a lane (those in the time area, G§4.5; R01's audit); `binSlide`, the bin drawer's last slide as asked (`open`, `animate`: test mode animates nothing, so a case reads whether the open at start would have slid in; review fix, G§3.3); `takePreview`, the bin preview (`take`, `playing`: `Space` pauses it; null without one; review fix, D-17) |
 | `{"op":"a11y"}` | every visible icon-only button, focusable region or focusable custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 | `{"op":"fonts"}` | the family Pango loads for each bundled font; `ok` when each resolves to itself |
 | `{"op":"icons"}` | each custom symbolic icon drawn in a probe color: found, its pixels, recolored |
@@ -3435,6 +3455,37 @@ frame-time p99 16.58–16.60 ms in 3 runs (max 16.67). No final shot
 changed (nothing the follow-ups touched draws differently), so none was
 re-shot.
 
+WP10's audits (the audits lane, on 56e2629). **Every final case at
+scale 1.5 and 2**, suite-wide (G§8.4's scale runs: `QREC_TEST_SCALE`, the
+shots under `tmp/gui-shots/scale/<s>/`), on pixman. Before, at 2, the
+cases' probes read logical px: gui_shell failed 2 of 22, gui_chrome 6 of
+14 (113ee2e gave every probe device px). Then at 2: gui_shell 22,
+gui_chrome 14, gui_stage 31, gui_timeline 30, gui_panel 21,
+gui_bin_export 28, gui_smoke 1, gui_audits 3; at 1.5 the same but four
+cases, each run down: gui_shell's ruler scrub (GStreamer refused the
+drag's last seek and the player dropped it: the picture stayed on an
+older frame than the playhead; the player now sends a refused seek again,
+ec8c200), gui_chrome's take (the window never opened: GStreamer's and
+GTK's fundamental types took one ID, a startup race; 119448d),
+gui_bin_export's bin preview park (the takeover parks a few main-loop
+turns after the action, 16–18 frames at a scale factor of 2 on pixman:
+its bound follows the factor, e03a632), and gui_chrome's d12 (`waitIdle`
+past 30 s with an export running at a load of 45: it passed on its
+re-run). Visible at 1.5 (on pixman GTK draws at the whole factor, 2, as
+Cairo renders no fractional scale, and sway scales the buffer down): a
+1 px rule spreads over two device px; the GL renderer's fractional
+scaling (`wp_fractional_scale_v1`) is the gles2 run's to look at.
+**The G§8.6 probes**: the main loop's on the smoke run (0 stalls over
+50 ms at scale 1, the worst timer run 23 ms late), the GPU device opens
+(`gui_audits`: no render node opened on pixman; `gpu-opens.sh` counted
+Qrec's own vendor reads in /sys as NVIDIA touches until then), the cache
+bounds (`scripts/cache-bounds.sh`: as WP2 measured them); the frame-time
+probe stays gles2's assertion. **Reduced motion**: DESIGN's motion table
+row by row (`theme::motion`'s table test) and the Narrow sheet in
+`gui_audits`; fixed, the saving ghost's moving stripes (a344fdb) and the
+sheet's libadwaita slide (7a5f96f). The workspace 1786 passed, 0 failed,
+159 ignored.
+
 ### WP0a — Interfaces, GTK-free (alone, first)
 
 **Goal.** Every GTK-free interface of G§3 and G§4 exists, the GUI host
@@ -4071,8 +4122,11 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   `QREC_*`); under pixman also `GDK_DISABLE=gl,vulkan`.
 - **Test mode** (`QREC_GUI_TEST=1`):
   - `gtk-enable-animations = false`, so GTK and libadwaita transitions are
-    instant. Reduced motion comes from `config.toml` only (D-30): cases
-    shoot the animated look unless they set `ui.reduced_motion = true`;
+    instant (but with `QREC_GUI_TEST=1,animations`, WP10: GTK's own
+    animations stay on, Qrec's own still at their end, so `gui_audits`
+    sees libadwaita's sheet slide, or not). Reduced motion comes from
+    `config.toml` only (D-30): cases shoot the animated look unless they
+    set `ui.reduced_motion = true`;
   - `motion::now()` is frozen: looping animations at phase
     `QREC_GUI_TEST_T_MS` (default 0: the torch at frame A with its glow,
     the mud bar at frame A with its bubbles, spinners at 0°), one-shot
@@ -4261,6 +4315,19 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   the window's whole scale factor, 2 (`gui_support::scale_factor`), and the
   compositor scales the buffer down: the sink is 1920×1080 and the images
   144 px high there too.
+  Suite-wide (WP10's audit): every case of every suite runs at a
+  `QREC_TEST_SCALE` (`Options::default()` and `Options::size` take it);
+  such a run writes its shots under `tmp/gui-shots/scale/<s>/<area>/`
+  (`gui_support::shots_dir`: the scale-1 shots of the same names stay).
+  The cases probe in device px (`Options::px`, `rect_px`, `device`, and
+  `pixel_px`, the device pixel under a logical pixel's center: a 1 px
+  rule reads its own color at 1.5, where sway spreads it over two),
+  pass the scale to `assert_regions`, crop side-by-sides in device px
+  next to the frame scaled up to them, and scale what is scaled (the
+  live sink's caps, the hatch's spacing, the sediment's rows);
+  `assert_live_picture_drawn` reads the scale from the shot's width.
+  Measured on pixman: every suite passes at 2 and at 1.5 (see G§7.2's
+  WP10 status for the counts and the re-runs).
 - **Reduced motion**: S03 (static ring), S04 (static badge), S15c (plain
   bar) with `ui.reduced_motion = true`; zoom is a GTK-free test; the
   panel's page switch is `gui_panel`'s
@@ -4268,6 +4335,15 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   `panelTransition`). The cases: `gui_stage`'s
   `s03_countdown_reduced_motion` and `s04_recording_reduced_motion`,
   `gui_bin_export`'s `s15c_webm_setup_and_the_reduced_motion_bar`.
+  WP10's audit: DESIGN's whole motion table, row by row, in
+  `theme::motion`'s table test (GTK-free, G§3.14); libadwaita's own
+  animation, the Narrow sheet's, in `gui_audits` with GTK's animations on
+  (`QREC_GUI_TEST=1,animations`): `under_reduced_motion_the_narrow_sheet_
+  neither_slides_in_nor_out` samples its x through its opening, its `Esc`
+  close and its own close (at its place or gone, never between; GTK's
+  animations off while it is open, on after), and its twin
+  `with_motion_allowed_the_narrow_sheet_slides` sees the same samples
+  catch libadwaita's slide.
 - **Adaptive**: S02 at 1300×1000 and at 1000×1000 (sheet closed, then
   opened by the header button); S06 at 1600×800. The cases (WP7
   integration, in `gui_stage`, S02's and S06's owner's): `s02_at_1300_wide`,
@@ -4288,7 +4364,8 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   GUI log's "program sync:" lines and `local`'s `playerNs`), `gui_smoke`,
   `gui_chrome` (WP6), `gui_timeline` (WP3), `gui_stage` (WP4), `gui_panel`
   (WP5), `gui_bin_export` (WP7), each run with `-- --ignored
-  --test-threads=1` on pixman and on gles2.
+  --test-threads=1` on pixman and on gles2; WP10 adds `gui_audits` (the
+  GPU device opens, G§8.6, and the Narrow sheet under reduced motion).
 
 ### G§8.5 End-to-end smoke (SPEC §17)
 
@@ -4321,6 +4398,17 @@ compositor, llvmpipe and ffmpeg share the CPU).
 
 - **Main loop** (`QREC_GUI_PROBE=1`): a 10 ms GLib timeout logs any drift
   over 50 ms with the name of the dispatch running.
+  As built (WP10, `probe`): from the window's first frame to its quit;
+  each stall's line names the longest guarded dispatch since the probe's
+  previous run (`guard::catch`'s `what`, the outermost: the callback GLib
+  or GTK was running; "no guarded callback ran" for GTK's own layout or
+  paint), and the quit logs "N stalls over 50 ms in T s; the worst timer
+  run M ms late". `QREC_GUI_PROBE` is a list: `1` or `main` for this one,
+  `timeline` for the frame-time probe. The smoke run turns it on and ends
+  with `Nested::check_main_loop`: the lines kept as
+  `<case>-main-loop-<renderer>.txt`, a stall failing the run under gles2
+  only (G§8.5). Pixman, the smoke at scale 1: 0 stalls in 2 s, the worst
+  run 23 ms late.
 - **Frame time**: frame-clock intervals (p50, p99) while zooming and
   scrolling the 300-clip perf fixture. Target p99 < 16.7 ms, asserted only
   under `QREC_TEST_WLR=gles2` on the dev machine (WP3), recorded under
@@ -4335,10 +4423,31 @@ compositor, llvmpipe and ffmpeg share the CPU).
   composite; ours composites at 960×540 and should cost less.
 - **GPU device opens**: `gui_support/scripts/gpu-opens.sh` (strace) shows
   only the chosen render node.
+  As built (WP10): `gui_audits`' `a_window_opens_only_the_chosen_render_
+  node` starts the window twice under `strace -f` (`Launch::traced`; the
+  second plays the Program a moment) and checks each trace: the
+  /dev/dri nodes opened are the chosen one at most (the first Intel or
+  AMD node), never NVIDIA's, and the script reports no NVIDIA touch. The
+  script counted every line naming an NVIDIA node, so each traced start
+  was a touch: Qrec's own `gpu::render_nodes` reads
+  /sys/class/drm/renderD*/device/vendor; it now counts opens of NVIDIA's
+  device nodes and driver code only (no /sys or /proc read, no open that
+  found no file; `gpu_opens_counts_devices_and_drivers_not_vendor_reads`).
+  Measured on pixman: no render node opened at all, by the window or
+  anything it starts. GStreamer's registry is the dev shell's
+  (`GST_REGISTRY_1_0`, kept as the user set it, A§8.10), so no first-ever
+  plugin scan runs in the tests; that scan's `va` plugin probes every
+  render node and is never forced on the dev machine.
 - **Cache bounds**: `ThumbCache::bytes()` and `PeakCache::bytes()` stay
   under budget while a one-hour fixture scrolls (WP2, in the nested
   texture run: at most 24,330,240 bytes of a 24 MiB thumbnail budget; an
   hour of peaks, 3,600,000 buckets, in 15,356,252 of 134,217,728 bytes).
+  The run is `gui_support/scripts/cache-bounds.sh` (WP10: qrec-gui's
+  ignored `textures_in_a_nested_compositor` as a client of a private
+  headless sway on pixman, `run-nested.sh`; its logs in
+  `tmp/gui-shots/cache-bounds/`). Re-run by WP10 (pixman): the same, at most 24,330,240 of
+  25,165,824 thumbnail bytes and 3,600,000 buckets in 15,356,252 of
+  134,217,728 bytes.
 
 ### G§8.7 Manual checks for the product owner
 
