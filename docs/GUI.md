@@ -3104,7 +3104,7 @@ below; read them with `Get` while `design/qrec.pen` is active).
 | C01 Spinner | `U574U` | `widgets::Spinner` (one 270° arc, 1 turn/s; 16/14/12 px) | WP0b |
 | C02 Key cap | `siZBm`, `vBUAG`, `G9zt10`, `CIRyG`, `RpGdo`, `NtDyY`, `TC7rA` | `widgets::KeyCap` (`gtk::Label`, CSS name `keycap`, not focusable or targetable; sm/md/lg, on-fill, disabled, rebound, capture, conflict). CSS `min-width` applies to the content box: subtract padding and border | WP0b |
 | C03 Hint bar | `g8llw` | `HintBar` from `view::hints` | WP6 |
-| C04 Header | `cnIdP` + variants, `Xba2H` minimal | `adw::HeaderBar` + custom title; Export slot is a `gtk::Stack` (button / progress); `headerbar.recording { box-shadow: inset 0 -2px var(--qrec-record) }` | WP6 (minimal: WP0b) |
+| C04 Header | `cnIdP` + variants, `Xba2H` minimal | `adw::HeaderBar` + custom title; Export slot is a `gtk::Stack` (button / progress); `headerbar.recording { box-shadow: inset 0 -2px var(--qrec-record), inset 0 -1px var(--qrec-border) }` (the hairline over the line's last row) | WP6 (minimal: WP0b) |
 | C05 Mode switch | `UUcbL` | `adw::ToggleGroup` (icons + labels) + the Tab key cap | WP6 |
 | C06 Badges, REC cluster, Saving | `D4pSZ`, `DlEnG`, `oHR8h`, `KwxRc`, `h5PLfO`, `hyWmc` | boxes in the stage overlay; the torch from `motion::now()` (G§3.14); timer label on the frame clock | WP4 |
 | C07 Countdown | `sTIwH`, `HPxd8`, `Q6JiWV` | `CountdownOverlay` (snapshot: `gsk::PathBuilder` arc, `gsk::Stroke` 6 px; Pango digit) | WP4 |
@@ -3583,126 +3583,198 @@ over in gles2's S09-scale1.5) and for S02-1000-sheet, whose dimmed content
 is the theme's shadow now (the themes lane's bridge, below). Each shot is
 next to its frame in `tmp/gui-shots/final/<case>-compare.png` as before,
 the gles2 run's in `final/gles2/`, the theme boards in `final/themes/` and
-`final/gles2/themes/`. Visible departures of the final shots after WP10,
-re-measured on this re-shoot (the items of the lists after the WP5 and WP7
-merges carried over where their shots didn't change, the ones fixed since
-dropped):
+`final/gles2/themes/`.
+
+Status after WP10's fixes (883d5d8…433327c and this paragraph's commit,
+on the code audit and the shot review of 335a33b): the code audit's two
+defects are fixed (883d5d8: the Narrow sheet gives
+`gtk-enable-animations` back to the desktop when it goes,
+`reset_property`, and holds GTK's animations off while it shows under
+reduced motion, a `ui.reduced_motion` change while it shows included:
+D1, D2; `gui_audits`' two sheet cases serve the desktop's setting from a
+portal stand-in), its three weak tests fail without their fix now (the
+invalid `config.toml` toast, 42e91a5; the refused-seek counter ends with
+its test, 3bd9ab1; `register_fundamentals`' call, b9f8263) and the
+saving ghost's stillness is held end to end (976c97e); toasts are spoken
+without the CLI's backticks (dad470d), G§8.6 says 400 ms (0d1bef5), and
+the pack lane's note is fixed: the wrapper sets the package's plugin
+path and unsets the user's (3acc096). The shot review's findings 1–14
+and 16 are fixed, one commit each (3005e51…33bdb36), and so is S11's
+caret, which the lifted copy hid (f71dd45, found re-measuring this
+list); each has a probe that fails with its fix undone
+(`tmp/fix12/revert/`; with all of them undone,
+`tmp/fix12/nested-pre-*`). Finding 15 (the fit inset's effect) and the
+list's stale numbers are in the list below. On the head: the workspace
+1847 passed, 0 failed, 189 ignored; nested (on f71dd45: 433327c changes
+two cases' probes only, re-run below), on pixman and on gles2 alike,
+gui_shell 22, gui_smoke 2 (the packaged build's case on `nix build`'s
+`/nix/store/7k649qwjxfbrlkdyv6szj8y7vv8lbvra-qrec-0.1.0`), gui_chrome
+14, gui_timeline 30, gui_stage 32, gui_panel 21, gui_bin_export 28,
+gui_live 9, gui_themes 5, gui_a11y 10, gui_audits 5, gui_text 2: 180
+cases each, no GLib or GTK critical (pixman's warm frame time p50 / p99
+16.21 / 18.94 ms, gles2's p99 16.52 ms, max 16.67); the seven suites
+with new probes (gui_chrome, gui_timeline, gui_stage, gui_panel,
+gui_bin_export, gui_smoke, gui_themes: 132 cases) again at
+`QREC_TEST_SCALE` 1.5 and 2 on pixman, side by side: all pass at both
+but S07 and S12, whose new probes were too tight there (433327c: since,
+both pass at 1, 1.5 and 2 on pixman and at 1 on gles2). Every final shot
+is re-shot, with its compare, the theme boards and each renderer's
+per-theme shots (`final/themes/`, `final/gles2/themes/`: the gles2 run
+no longer overwrites pixman's). Visible departures of the final shots
+after WP10's fixes, measured on this re-shoot against the frames at full
+size (pixman's numbers; gles2's the same where not named;
+`tmp/fix12/notes/`):
 
 - Everywhere, by design (G§8.4's known differences): the fake sources'
   names and test patterns, the fake tone's levels and block waveforms in
-  the cases that don't pin the meters (`QREC_GUI_TEST_LEVELS` pins only the
-  panel's: the re-shoot caught S09's and S11's A2 meter in a silent block
-  where the shots before caught it in the tone), real elapsed times and
-  dates (the exports' and logs' names), the test project's paths, no
-  pointer in the shots; the icons are Adwaita stand-ins (G§5.2) and the
+  the cases that don't pin the meters (`QREC_GUI_TEST_LEVELS` pins only
+  the panel's), real elapsed times and dates (the exports' and logs'
+  names), the test project's paths, no pointer in the shots (S11's frame
+  draws the hand); the icons are Adwaita stand-ins (G§5.2) and the
   empty-state art a placeholder until the pen export (G§0.6).
 - Everywhere: the fixture's files are small, so every size is the
   fixture's ("5 takes · 31.4 MB", "10 files (17.0 MB)", "1.6 MB").
 - Everywhere: mono text is the bundled JetBrains Mono, but each glyph
   advances a whole pixel (7 px at 11 and 12 px, 8 px at 13 px, where the
-  frames advance 6.6, 7.2 and 7.8 px), so a mono string drifts 0.2–0.4 px
-  per character, as WP10's text-rendering experiment measured it (G§3.14):
-  the ruler's labels +4, the ruler corner's "00:04:06:11" +2, S06's
-  transport +4.8, its clip tooltip's second line −9.5, S12's summary
-  timecodes −2 each, S14's take lines −2, S16's file path −8.8 and S17's
-  stderr lines −5…−10 (51 characters: −10); 4 of the 21 mono texts it
-  measured are within a pixel of the frames (a short field like "1500 px"
-  is). Kept: the setups that bring every text within a pixel (unhinted
-  metrics, 21 of 21) bring back the header title's stray mark on GL (PO's
-  call, G§8.7 #9). With the stand-in icons' widths, the timeline toolbar's
-  right group (the clip count, the zoom slider, Fit) sits up to 13 px
-  left of the frames'.
-- Everywhere: Atkinson's glyphs advance whole pixels as well, so a UI line
-  runs a few px off the frame's width, wider or narrower with its size and
-  letters: of 48 UI texts the experiment measured, 30 are within a pixel
-  (unhinted metrics: 46, the other two style), the rest −5.2…+9.8 (S16's
-  body "Layers! Like an onion. Your video is ready." +9.8, S17's lead
-  +9.3, the header title "rust-traits-talk" +3.5, S12's "Removes 4
-  silences" +2.3, take 7's line in S14 −4.8, S12's subtitle −2.7). The
-  UI text's ink weighs the frames' (100 % on average), the mono text's a
-  little lighter (93 %), in every setup. Text-sized controls follow the
-  widths: S15a's Draft and High segments are 2 and 1 px narrower (55 and
-  54 for 57 and 55), the header slot's mini bar 2 px left of the frame's
-  (its "42%" 20 px of ink for 22), S16b's toast narrower (below). The
-  experiment's crops (8×, and the scale-2 shots at 4×) and numbers are in
-  `tmp/text-rendering/` for the PO.
-- Every timeline shot: the toolbar's left group sits right of the frames':
-  the Snap toggle is 102 px for 100 and its contents 2–4 px right, the
-  divider at x 224 for 217 (8 px each side of it where the frames leave 4
-  and 5), Autocut's icon at 241 for 231 and its label at 265 for 252, the
-  settings icon at 360 for 345 (WP3's toolbar spacing; with the stand-in
-  icons' widths, the right group sits up to 13 px left, as above).
-- Every fit shot of the 10-clip timeline (S02, S03, S04b, S06, S07, S11,
-  S13, S14, S15a, S15b, S17, S18, S18b): take 1's second clip reads "1"
-  where the frame reads "Take 1" (G§1.3's fit inset: c8a1 is 63.8 px
-  wide, the frames' 64.3, G§4.5).
+  frames advance 6.6, 7.2 and 7.8 px), so a mono string drifts 0.2–0.4
+  px per character, as WP10's text-rendering experiment measured it
+  (G§3.14): the ruler's labels +4, the ruler corner's "00:04:06:11" +2,
+  S06's transport +4.8, its clip tooltip's second line −9.9, S12's
+  summary timecodes −2 each, S14's take lines −2, S16's file path −8.8
+  and S17's stderr lines −5…−10 (51 characters: −10; re-wrapped, below);
+  4 of the 21 mono texts it measured are within a pixel of the frames (a
+  short field like "1500 px" is). Kept: the setups that bring every text
+  within a pixel (unhinted metrics, 21 of 21) bring back the header
+  title's stray mark on GL (PO's call, G§8.7 #9). Key caps follow their
+  legends: the medium caps' fills are the frames' but for a pixel or two
+  in a multi-letter legend (the mode switch's Tab 29 px for 28, so the
+  switch is 177 px for 176; Ctrl 43 for 41, Esc 29 for 28).
+- Everywhere: Atkinson's glyphs advance whole pixels as well, so a UI
+  line runs a few px off the frame's width, wider or narrower with its
+  size and letters: of 48 UI texts the experiment measured, 30 are
+  within a pixel (unhinted metrics: 46, the other two style), the rest
+  −5.2…+9.8 (S16's body "Layers! Like an onion. Your video is ready."
+  +9.8, S17's lead +9.3, the header title "rust-traits-talk" +3.5, S12's
+  "Removes 4 silences" +2.3, take 7's line in S14 −4.8, S12's subtitle
+  −2.7). The UI text's ink weighs the frames' (100 % on average), the
+  mono text's a little lighter (93 %), in every setup. Some lines sit a
+  pixel or so off the frames' baselines: S02's track names 1.0–1.7 px
+  high, S14's take lines about 1 px high; S12's summary heading is on
+  the frame's baseline, its title's glyphs a pixel shorter and its
+  mono's a pixel taller; on gles2 some rows sit half a pixel to a pixel
+  lower than on pixman (S12's summary rows from y 588 for 587).
+  Text-sized controls follow the widths: S15a's Draft and High segments
+  are 2 and 1 px narrower (55 and 54 for 57 and 55), S04's REC badge 70
+  px wide for 68 (72 with gles2's softer edge), the header slot's mini
+  bar 2 px left of the frame's (its percentage 20 px of ink for 22),
+  S16b's toast narrower (below), the hint bar's items (below). The
+  experiment's crops (8×, and the scale-2 shots at 4×) and numbers are
+  in `tmp/text-rendering/` for the PO; WP10's fixes re-measured its 69
+  items on their re-shoot (`tmp/fix12/notes/`): the same widths, but
+  where a fix moved or re-wrapped a text.
+- Every shot's hint bar: its items follow their caps' and texts' widths,
+  within 3 px of the frames' (S12's and S17's last items 2–3 px right,
+  S06's and S14's 1–3 px left).
+- Every timeline shot: the toolbar's items are the frames' within 1–2 px
+  (the key caps' fills from x 90, 189, 311 and 1098 for 89, 188, 309 and
+  1099; the Snap toggle 95 px as the frames', 1 px right; the divider at
+  218 for 217), the stand-in icons a few px wider or narrower; in the
+  right group the clip count is 3.7 px narrower (its mono) and the zoom
+  slider's track ends at x 1003 for 1007.
+- Every fit shot (G§1.3's fit inset: the timeline fits into 8 px less
+  than the frames' 1040): clip edges, the playhead and S11's caret sit
+  up to 8 px left of the frames' (S11's caret at 403 for 404.9), the end
+  playhead whole at x 1207–1208 where the frames' is cut at 1215 (S02,
+  S03, S04, S05, S05b), and in the 10-clip timeline (S02, S03, S04b,
+  S06, S07, S11, S13, S14, S15a, S15b, S17, S18, S18b) take 1's second
+  clip reads "1" where the frame reads "Take 1" (c8a1 is 63.8 px wide,
+  the frames' 64.3, G§4.5).
+- S01a: the frame's "Add a layer or audio track first" tooltip is not in
+  its compare: gui_chrome's `s01a-header-tooltip` shoots it.
 - S01b: the first run names its layers and tracks after their sources
-  ("Camera", "Screen FAKE-1", "Built-in Audio Analog Stereo", A2 at
-  0.0 dB) where the frame reuses the fixture's (Face, Main screen, System
-  audio at −6 dB).
-- S04, S04b, S05: the timers read the real elapsed time
-  (`00:02:41:27` for `00:02:41:12`).
+  ("Camera", "Screen FAKE-1", "Built-in Audio Analog Stereo", A2 at 0.0
+  dB) where the frame reuses the fixture's (Face, Main screen, System
+  audio at −6 dB); "Press [R]"'s large cap sits 2 px left and 1 px up of
+  the frame's (its 26×25 fill as theirs).
+- S04, S04b, S05: the timers read the real elapsed time (`00:02:41:27`
+  for `00:02:41:12`).
 - S04, S04b, S05 (and S04's reduced-motion run): the ghost's lanes carry
   the live waveform only where the level ring has readings, the seconds
   since the window opened, at the ghost's right edge, and are silent to
   their left (the fake hook's record offset starts take 10 before any
   reading: 2:41 back, S04b's 31 s), where the frames' takes have levels
   all along.
-- S06, S09, S10, S11: "+ Add layer", "+ Add audio track" and the header's
-  `+` are disabled in a take layout (D-07); the frames draw them enabled.
-- S07, S08: Program with no clip selected is read-only (D-06): the panel's
-  rows, audio controls and adds are disabled where the frames draw them
-  enabled.
+- S04b: the record-over hatch over c2d0's lanes is fainter than the
+  frame's: its stripes #4E4133 at their middle for #625542 (#504233 on
+  gles2), the lane's ground #322820 for #342920 (gles2's the frame's).
+- S06, S09, S10, S11: "+ Add layer", "+ Add audio track" and the
+  header's `+` are disabled in a take layout (D-07); the frames draw
+  them enabled.
+- S06, S07, S10, S11: the timeline tooltips sit as the frames' and are
+  as tall (S06's and S07's clip tooltip 78 px, its caps' 14×13 fills
+  theirs; S10's and S11's 44 px), their widths their text's: the clip
+  tooltip 341 px of fill for 350, S10's 214 for 222 (S11's 179 is the
+  frame's).
+- S07, S08: Program with no clip selected is read-only (D-06): the
+  panel's rows, audio controls and adds are disabled where the frames
+  draw them enabled.
+- S11: the lifted copy's top 4 px (its take stripe, which the frame
+  draws over the ruler's bottom edge) are cut at the canvas's top.
 - S12: the toolbar's settings icon is `preferences-other-symbolic` (the
-  frame's sliders); a knob's center travels to within 2–3 px of its
-  trough's ends where the frame's stops 7–8 px short of them, so Min
-  silence, Padding and Min keep sit 3.5–5 px left of the frame's
-  (Threshold, at the middle, matches); the summary heading is 11 px wider
-  (the gap before "(6.2 s)" 4 px, its mono 5 px). The preview is as drawn:
-  each region's hatch, edges and tag, and the dimmed rows, within 1–2 px.
-- S13: the frame shows the drag and L1's hover at once; the drag shot has
-  no hover (L1's hover is its own shot, `s13-layer-editing`).
+  frame's sliders); the summary heading is 11 px wider (its title +2.3,
+  the gap before "(6.2 s)" and the mono the rest). The knobs, the
+  regions' rows and the preview are as drawn: each region's hatch, edges
+  and tag, and the dimmed rows, within 1–2 px.
+- S13: the frame shows the drag and L1's hover at once; the drag shot
+  has no hover (L1's hover is its own shot, `s13-layer-editing`).
 - S13b: a dragged row's copy follows the pointer over the rows, with the
-  drop line at the slot (the frame lifts the row above the line and moves
-  the rows under it), and the row left behind keeps its hover reveal at
-  0.4; the rename field opens with the name selected; the focus ring is
-  shot on L1 ("Main screen"), the board's on a "Face" row.
+  drop line at the slot (the frame lifts the row above the line and
+  moves the rows under it), and the row left behind keeps its hover
+  reveal at 0.4; the rename field opens with the name selected; the
+  focus ring is shot on L1 ("Main screen"), the board's on a "Face" row.
 - S14: the thumbnails are the fake test pattern's (take 6's from its
   first frame: 7 frames have no strip image); take 9's broken thumbnail
   carries `dialog-error-symbolic` and the bin's close Adwaita's smaller
   `window-close-symbolic` (8×8 where the frame's x is 12×12; G§5.2's
   stand-ins for circle-x and x); take 2 reads "Removed from the
-  timeline." where the frame reads "Discarded with D." (the fixture writes
-  no history, G§8.4).
+  timeline." where the frame reads "Discarded with D." (the fixture
+  writes no history, G§8.4).
 - S15a: "software encode (x264)" where the frame names VA-API on
   renderD129 (the fake backend probes no VA device, G§8.4).
 - S15b and S15c's running page: the file and "as it was at" carry the
-  export's real start (the setup's preview is the test-mode now, 15:30:12;
-  the job is named when it starts); elapsed and left are real; the shot is
-  taken once `qrec status` has the job at 42 % or more, and it lands at
-  42–44 % on either renderer (44 % on pixman, 43 % on gles2 in WP10's
+  export's real start (the setup's preview is the test-mode now,
+  15:30:12; the job is named when it starts); elapsed and left are real;
+  the shot is taken once `qrec status` has the job at 42 % or more, and
+  it lands at 42–44 % on either renderer (43 % on both in WP10's fixes'
   re-shoot), where several units render at once, so the label is further
   on ("Rendering clip 8/10", the frame's 6/10 at 42 %).
 - S16, S16b: the Smoke fixture's export (3 clips of 30 frames: 1.6 MB,
-  00:00:03:00, took 00:00:01 or 02, its own name), in the Smoke project: the
-  header's "3 clips · 00:00:03:00", its 3-clip timeline with its middle clip
-  c1b2 (take 3) selected and the playhead in it at 00:00:01:15 (the frame
-  selects take 5's c2d0 at 00:01:21:07), so the panel shows take 3's layout,
-  and the bin chip reads 6 (the takes its timeline doesn't use; the frame's
-  5). S16b shows that whole window, and its toast is 467 px wide where the
-  frame's is 500: it sizes to its text (DESIGN's 360–560), 12 px from the
-  body's end to the close button where the frame leaves 28.
+  00:00:03:00, took 00:00:01 or 02, its own name), in the Smoke project:
+  the header's "3 clips · 00:00:03:00", its 3-clip timeline with its
+  middle clip c1b2 (take 3) selected and the playhead in it at
+  00:00:01:15 (the frame selects take 5's c2d0 at 00:01:21:07), so the
+  panel shows take 3's layout, and the bin chip reads 6 (the takes its
+  timeline doesn't use; the frame's 5). S16b shows that whole window,
+  and its toast is 467 px wide where the frame's is 500: it sizes to its
+  text (DESIGN's 360–560), 12 px from the body's end to the close button
+  where the frame leaves 28.
 - S17: it fails at 11 % (units 1 and 2 rendered, 867 of 7,391 frames;
   the frame's 37 %); the status icon is `dialog-error-symbolic` (G§5.2's
   stand-in for circle-x); Open full log names the failed segment's log
-  (`.qrec/logs/<stamp>-<pid>-j1-seg2.log`, ellipsized at its start) where
-  the frame names `export-20261014-153012.log`; the frame's first stderr
-  line looks faded (not built: a pen-file need). The box shows BRIEF's
-  last ten lines as drawn (the wrapper's render-node line comes first).
+  (`.qrec/logs/<stamp>-<pid>-j1-seg2.log`, ellipsized at its start)
+  where the frame names `export-20261014-153012.log`; the frame's first
+  stderr line looks faded (not built: a pen-file need). The box shows
+  BRIEF's last lines, wrapped on its narrower mono where the frame's
+  break: its "initialise VAAPI connection: -1 (unknown libva error)."
+  fits one row (the frame puts "error)." on the next), so its ten rows
+  start a row earlier, at the end of ffmpeg's `Stream #1:0` line (the
+  wrapper's render-node line comes first). Its scroll bar is the
+  frame's.
 - S18: the modal has no history clause (the frame's "…, and the 6
-  history entries that mention these takes are removed too.": the fixture
-  has no history), so it is 20 px shorter (y 287–713 where the frame's is
-  277–723).
+  history entries that mention these takes are removed too.": the
+  fixture has no history), so it is 20 px shorter (y 287–712 where the
+  frame's is 277–722) and its list 10 px higher, its scroll bar too (x
+  1026–1029 as the frame's, y 430–579 for 440–587).
 - S18b: the Settings pages not built yet read disabled (D-48).
 - Scale runs: the departures of their cases at 1, nothing more at the
   device size. At 1.5 on pixman the window draws at its whole factor, 2,
@@ -3712,13 +3784,14 @@ dropped):
   device row of `border`, #3A4A2C, under one halfway to `surface`,
   #2B3721, on either renderer).
 - Reduced motion: S04's REC badge has no torch glow (DESIGN's reduced
-  motion; the frames are the animated look at frame A); S15c's bar is flat
-  with no bubbles, as the board's. S03 shows nothing of it: test mode holds
-  the countdown at its end (the digit at scale 1, a full ring) with motion
-  reduced or not, so S03-reduced is S03's picture but for its live pixels
-  (the fake camera's moving dot; on gles2 also the unpinned A2 meter).
-  Not in a shot: the Narrow sheet shows and goes at once under reduced
-  motion, where DESIGN asks a 120 ms fade (WP10's audit, G§3.14).
+  motion; the frames are the animated look at frame A); S15c's bar is
+  flat with no bubbles, as the board's. S03 shows nothing of it: test
+  mode holds the countdown at its end (the digit at scale 1, a full
+  ring) with motion reduced or not, so S03-reduced is S03's picture but
+  for the fake camera's moving dot (146 px on pixman; on gles2 152, and
+  32 px of the unpinned A2 meter). Not in a shot: the Narrow sheet shows
+  and goes at once under reduced motion, where DESIGN asks a 120 ms fade
+  (WP10's audit, G§3.14).
 - Adaptive (DESIGN Layout, G§3.15; no frames, so checked against the
   rules): S02 at 1300×1000 is Medium: the panel docked at 320 (its source
   lines ellipsize, "GIGA-BYT…"; with no layer selected the inspector shows
@@ -4392,9 +4465,13 @@ icons (placeholders); frames for the theme proofs (no PNG of them in
 and WP8/WP9's screens. Open after the integration: G§8.5's 50 ms on gles2
 (the smoke's stalls of 60–215 ms at steps 4–8, G§8.6), the PO's calls on
 the text setup (G§8.7 #9), on the gtk dev-dependency of `qrec`'s tests
-(A§1.2, the AT-SPI case) and on the contrast of the pressed states and of
+(A§1.2, the AT-SPI case), on the contrast of the pressed states and of
 the countdown digit over a white screen (the themes lane's questions,
-below), and ARCHITECTURE.md's final pass (with WP8/WP9). The themes lane's
+below) and on the warnings' politeness (a warning toast such as "Camera
+disconnected" is announced politely, like info; WP10's code audit), and
+ARCHITECTURE.md's final pass (with WP8/WP9). The code audit's and the
+shot review's findings are fixed since (G§7.2's "Status after WP10's
+fixes"). The themes lane's
 questions for the PO, not held by any test: `accent-text` and
 `record-text` under `pressed` on `raised` read 3.7–4.8 (DESIGN's audit
 covers hover only); the countdown's 160 px digit over a white screen is
@@ -4703,6 +4780,11 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   next to the frame scaled up to them, and scale what is scaled (the
   live sink's caps, the hatch's spacing, the sediment's rows);
   `assert_live_picture_drawn` reads the scale from the shot's width.
+  The probes of WP10's fixes read a shot the same way: a token at a
+  pixel (`token_rgb`, `pixel_px`), a scroll bar's columns
+  (`assert_scroll_bar`), a text's first ink row (gui_panel's `ink_top`),
+  the key caps' fills (`gui_support::keycap_fills`), with a device px of
+  slack for an edge at a fractional scale.
   Measured on pixman: every suite passes at 2 and at 1.5 (see G§7.2's
   WP10 status for the counts and the re-runs).
 - **Reduced motion**: S03 (static ring), S04 (static badge), S15c (plain
