@@ -873,6 +873,56 @@ fn rebuilt_rows_go() {
     assert_clean(nested.window(0));
 }
 
+/// R44: a snapshot during an opacity drag (here a seek from the CLI)
+/// leaves the slider and its field where the pointer has them, and the
+/// release sends that value (it used to snap back to the model's and send
+/// nothing).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_snapshot_mid_drag_keeps_the_slider() {
+    let mut nested = Nested::start(AREA, "opacity-drag", Options::default());
+    let preset = ui(|u| u.selected_layer = Some(LayerId::numbered(2)));
+    let project = fixture(&nested, DesignVariant::Base, &preset);
+    open(&mut nested, &project, levels(DESIGN_LEVELS));
+    let opacity = |nested: &mut Nested| {
+        let fields = nested.window(0).entries("inspector");
+        fields.get("inspector-opacity").cloned()
+    };
+    assert_eq!(opacity(&mut nested).as_deref(), Some("100"));
+    let [x, y, w, h] = region(nested.window(0), "inspector-opacity-slider");
+    let row = y + h / 2.0;
+    // The thumb sits at the trough's right end; drag it to about 40 %.
+    let pointer = nested.pointer();
+    pointer.move_to(x + w - 6.0, row);
+    pointer.button(BUTTON_LEFT, true);
+    for i in 1..=12 {
+        let to = x + w - 6.0 - (w * 0.6) * f64::from(i) / 12.0;
+        pointer.move_to(to, row);
+        thread::sleep(Duration::from_millis(16));
+    }
+    nested.window(0).wait_idle();
+    let dragged = opacity(&mut nested).expect("the opacity field");
+    let percent: u32 = dragged.parse().unwrap_or_else(|_| panic!("{dragged:?}"));
+    assert!((30..=55).contains(&percent), "dragged to {dragged}");
+    cli_ok(&nested, &project, &["seek", "--to", "30f"]);
+    nested.window(0).wait_idle();
+    assert_eq!(
+        opacity(&mut nested).as_deref(),
+        Some(dragged.as_str()),
+        "the snapshot kept the drag's value"
+    );
+    nested.pointer().button(BUTTON_LEFT, false);
+    nested.window(0).wait_idle();
+    let l2 = layer(&nested, &project, None, "L2");
+    let saved = l2["opacity"].as_f64().unwrap_or_else(|| panic!("{l2}"));
+    assert!(
+        (saved - f64::from(percent) / 100.0).abs() < 1e-9,
+        "the release sent {dragged} %: {l2}"
+    );
+    assert_eq!(opacity(&mut nested).as_deref(), Some(dragged.as_str()));
+    assert_clean(nested.window(0));
+}
+
 // ------------------------------------------------------------------ S13
 
 /// L2's box on the 1:2 Live preview at rest (BRIEF §3.1: (1500, 760, 384,

@@ -201,7 +201,8 @@ impl AutocutPage {
             let tooltip = scale_tooltip::attach(
                 &scale,
                 move |v| format!("{} {unit}", numeric::whole(v)),
-                |_| {},
+                // The draft follows the slider as it moves: nothing to send.
+                |_| false,
             );
             knobs.push(KnobView {
                 knob,

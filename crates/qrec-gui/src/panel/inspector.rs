@@ -8,7 +8,10 @@
 //!   shows the field's invalid state and the helper text under its row,
 //!   which go together (`Esc`, typing or the model's value clear both; a
 //!   row's helper reads its newest error).
-//! - The slider commits on release, the Fit segment at once.
+//! - The slider commits on release, the Fit segment at once. While it is
+//!   being changed (dragged, or a key moved it), a snapshot leaves it and
+//!   its field where the person has them; a change that ends unsent shows
+//!   the model's value again (R44).
 //! - During a canvas drag or nudge burst the fields show
 //!   `LocalUi.layer_drag` (WP4's transient geometry).
 //! - An edit belongs to the scene and the layer it was typed for: when
@@ -57,7 +60,7 @@ struct Inner {
     helper_owners: RefCell<BTreeMap<Row, InspectorField>>,
     lock: gtk::ToggleButton,
     opacity: gtk::Scale,
-    _opacity_tooltip: ValueTooltip,
+    opacity_tooltip: ValueTooltip,
     fit: adw::ToggleGroup,
     setting: Cell<bool>,
     medium: Cell<bool>,
@@ -235,6 +238,7 @@ impl InspectorView {
         opacity.set_hexpand(true);
         opacity.set_valign(gtk::Align::Center);
         opacity.set_focus_on_click(false);
+        opacity.set_widget_name("inspector-opacity-slider");
         opacity.update_property(&[gtk::accessible::Property::Label("Opacity")]);
         let opacity_field = get(InspectorField::Opacity);
         opacity_field.add_css_class("opacity-field");
@@ -268,10 +272,12 @@ impl InspectorView {
         let tooltip = scale_tooltip::attach(
             &opacity,
             |v| format!("{} %", v.round()),
-            move |value| {
-                if let Some(cmd) = panel::opacity_commit(&store.state(), value) {
+            move |value| match panel::opacity_commit(&store.state(), value) {
+                Some(cmd) => {
                     store.dispatch(cmd);
+                    true
                 }
+                None => false,
             },
         );
         let view = Self {
@@ -288,7 +294,7 @@ impl InspectorView {
                 helper_owners: RefCell::new(BTreeMap::new()),
                 lock,
                 opacity,
-                _opacity_tooltip: tooltip,
+                opacity_tooltip: tooltip,
                 fit,
                 setting: Cell::new(false),
                 medium: Cell::new(true),
@@ -347,6 +353,16 @@ impl InspectorView {
                 }
             });
         }
+        // A change that ended unsent: the model's value again (no snapshot
+        // may come to put it back).
+        let weak = Rc::downgrade(inner);
+        inner.opacity_tooltip.connect_end(move |sent| {
+            if let Some(inner) = weak.upgrade()
+                && !sent
+            {
+                InspectorView { inner }.show_model_opacity();
+            }
+        });
         // The slider moves the field along; it commits on release.
         let weak = Rc::downgrade(inner);
         inner
@@ -433,6 +449,19 @@ impl InspectorView {
         }
     }
 
+    /// The opacity slider and field at the model's value.
+    fn show_model_opacity(&self) {
+        let inner = &self.inner;
+        let Some(insp) = panel::inspector(&inner.ctx.store.state()) else {
+            return;
+        };
+        inner.setting.set(true);
+        inner.opacity.set_value(f64::from(insp.opacity_percent));
+        inner.setting.set(false);
+        inner.fields[&FieldKey::from(InspectorField::Opacity)]
+            .set_value(&InspectorField::Opacity.text(&insp));
+    }
+
     /// Every field without its error (and so every helper hidden).
     fn clear_errors(&self) {
         for field in self.inner.fields.values() {
@@ -469,7 +498,16 @@ impl InspectorView {
         let edits = (edit_target(&state.project, &state.ui), insp.layer.clone());
         let layer_changed = inner.edits.borrow().as_ref() != Some(&edits);
         *inner.edits.borrow_mut() = Some(edits);
+        // A slider change under way keeps the slider and its field (R44);
+        // one for a layer that went sends nothing.
+        if layer_changed {
+            inner.opacity_tooltip.cancel();
+        }
+        let sliding = inner.opacity_tooltip.changing() && !layer_changed;
         for field in InspectorField::ALL {
+            if sliding && field == InspectorField::Opacity {
+                continue;
+            }
             let input = &inner.fields[&FieldKey::from(field)];
             if layer_changed || !insp.enabled {
                 input.reset(&field.text(&insp));
@@ -478,7 +516,7 @@ impl InspectorView {
             }
         }
         inner.setting.set(true);
-        if !inner.opacity.has_focus() || layer_changed {
+        if !sliding {
             inner.opacity.set_value(f64::from(insp.opacity_percent));
         }
         inner.fit.set_active_name(Some(match insp.fit {

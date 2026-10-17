@@ -2244,7 +2244,10 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
   - Invalid → helper text: "Width must be at least 1", "X must be between
     −8192 and 8192", "Crop leaves nothing to show".
   - Enter or blur commits one `LayerSet{target: edit_target, layer,
-    patch}`; the slider commits on release.
+    patch}`; the slider commits on release. While the slider is being
+    changed (dragged, or a key moved it) a snapshot leaves it and its field
+    where the person has them; a change that ends unsent shows the model's
+    value again (`ValueTooltip::changing`, `connect_end`; review R44).
   - An edit belongs to the scene and the layer (or track) it was typed
     for: when either changes under it (the mode, the selection, an agent's
     command), the field shows the new values at once, focused or not, and
