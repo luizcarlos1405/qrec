@@ -411,9 +411,12 @@ fn s02_live_idle() {
     assert_clean(&mut nested);
     let shot = nested.screenshot("live");
     compare(&nested, &shot, "S02-live-idle.png");
+    // 960×540 × the window's scale factor (G§8.4 scale runs).
+    let f = gui_support::scale_factor(nested.opts.scale);
+    let caps = format!("the live picture is {}×{}", 960 * f, 540 * f);
     assert!(
-        gui_log(&mut nested).contains("the live picture is 960×540"),
-        "the sink composites at 960×540"
+        gui_log(&mut nested).contains(&caps),
+        "the sink composites: {caps}"
     );
 }
 
@@ -552,6 +555,7 @@ fn stage_parts(w: f64, h: f64) -> [(&'static str, [f64; 4]); 3] {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s02_at_1300_wide() {
     let mut nested = Nested::start(AREA, "S02-1300", Options::size(1300, 1000));
+    let scale = nested.opts.scale;
     let project = fixture(
         &nested,
         DesignVariant::Base,
@@ -569,13 +573,14 @@ fn s02_at_1300_wide() {
     ];
     want.extend(stage_parts(980.0, 608.0));
     let names: Vec<&str> = want.iter().map(|(n, _)| *n).collect();
-    assert_regions(&regions, &want, &names, 1.0);
+    assert_regions(&regions, &want, &names, scale);
     let labels = stage_labels(&mut nested);
     assert_shows(&labels, &["LIVE", "Live · 1920×1080 · 30 fps"]);
     assert_hints_whole(&mut nested, true);
     assert_clean(&mut nested);
     let shot = nested.screenshot("live");
-    gui_support::assert_live_picture_drawn_at(&shot, stage_parts(980.0, 608.0)[1].1);
+    let preview = nested.opts.device(stage_parts(980.0, 608.0)[1].1);
+    gui_support::assert_live_picture_drawn_at(&shot, preview);
 }
 
 /// S02 at 1000×1000: Narrow, the panel an overlay sheet: closed, the stage
@@ -586,6 +591,7 @@ fn s02_at_1300_wide() {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s02_at_1000_wide_with_the_sheet() {
     let mut nested = Nested::start(AREA, "S02-1000", Options::size(1000, 1000));
+    let scale = nested.opts.scale;
     let project = fixture(
         &nested,
         DesignVariant::Base,
@@ -603,14 +609,15 @@ fn s02_at_1000_wide_with_the_sheet() {
     ];
     want.extend(stage_parts(1000.0, 608.0));
     let names: Vec<&str> = want.iter().map(|(n, _)| *n).collect();
-    assert_regions(&regions, &want, &names, 1.0);
+    assert_regions(&regions, &want, &names, scale);
     // 1000 px can't hold S02's eight hints and the status: the last ones
     // are left out whole (the `?` cap used to show without "All keys").
     let shown = assert_hints_whole(&mut nested, false);
     assert!(!shown.contains(&"All keys".to_owned()), "{shown:?}");
     assert_clean(&mut nested);
     let shot = nested.screenshot("closed");
-    gui_support::assert_live_picture_drawn_at(&shot, stage_parts(1000.0, 608.0)[1].1);
+    let preview = nested.opts.device(stage_parts(1000.0, 608.0)[1].1);
+    gui_support::assert_live_picture_drawn_at(&shot, preview);
     let [x, y, w, h] = regions["layers-button"];
     nested.pointer().click(x + w / 2.0, y + h / 2.0);
     let open = gui_support::poll(Duration::from_secs(10), "the sheet", || {
@@ -623,7 +630,7 @@ fn s02_at_1000_wide_with_the_sheet() {
         &open,
         &[("region-panel", [616.0, 48.0, 384.0, 920.0])],
         &["region-panel"],
-        1.0,
+        scale,
     );
     let overlays = nested.window(0).local()["overlays"].clone();
     assert_eq!(overlays, json!(["LayersSheet"]), "{overlays}");
@@ -645,6 +652,7 @@ fn s02_at_1000_wide_with_the_sheet() {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s06_at_1600_by_800() {
     let mut nested = Nested::start(AREA, "S06-800", Options::size(1600, 800));
+    let scale = nested.opts.scale;
     let preset = selecting(ui(CanvasMode::Program, 2437), &["c2d0"]);
     let project = fixture(&nested, DesignVariant::Base, Some(preset));
     open(&mut nested, &project, Launch::a11y());
@@ -661,7 +669,7 @@ fn s06_at_1600_by_800() {
     ];
     want.extend(stage_parts(1216.0, 488.0));
     let names: Vec<&str> = want.iter().map(|(n, _)| *n).collect();
-    assert_regions(&regions, &want, &names, 1.0);
+    assert_regions(&regions, &want, &names, scale);
     let labels = stage_labels(&mut nested);
     assert_shows(&labels, &["PROGRAM", "00:01:21:07", " / 00:04:06:11"]);
     assert_hints_whole(&mut nested, true);
@@ -956,6 +964,7 @@ fn program_on_an_empty_timeline() {
     let shot = nested.screenshot("empty-program");
     // The preview is the canvas background (black) inside its border.
     let png = shot.display().to_string();
+    let (x, y) = nested.opts.pixel_px(600.0, 300.0);
     let out = run_tool(
         Command::new("ffmpeg").args([
             "-v",
@@ -963,7 +972,7 @@ fn program_on_an_empty_timeline() {
             "-i",
             &png,
             "-vf",
-            "crop=1:1:600:300,format=rgb24",
+            &format!("crop=1:1:{x}:{y},format=rgb24"),
             "-f",
             "rawvideo",
             "-",

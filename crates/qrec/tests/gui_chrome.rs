@@ -99,8 +99,9 @@ fn header_text(nested: &mut Nested) -> String {
 }
 
 /// `ffmpeg … hstack` of a shot and its approved frame (G§8.4 check 4),
-/// optionally both cropped to `crop` (`w:h:x:y`).
-fn compare(shot: &Path, frame: &str, crop: Option<&str>) {
+/// optionally both cropped to `crop` (`w:h:x:y`, logical px). At an output
+/// scale the frame is scaled up to the shot's device px.
+fn compare(nested: &Nested, shot: &Path, frame: &str, crop: Option<&str>) {
     let png = gui_support::repo().join("design/screens").join(frame);
     if !png.exists() {
         return;
@@ -109,9 +110,23 @@ fn compare(shot: &Path, frame: &str, crop: Option<&str>) {
         "{}-compare.png",
         shot.file_stem().unwrap_or_default().to_string_lossy()
     ));
+    let s = nested.opts.scale;
+    let up = format!("scale=iw*{s}:ih*{s}");
     let filter = match crop {
-        Some(c) => format!("[0]crop={c}[a];[1]crop={c}[b];[a][b]hstack=inputs=2"),
-        None => "[0][1]hstack=inputs=2".to_owned(),
+        Some(c) => {
+            let c: Vec<String> = c
+                .split(':')
+                .map(|v| {
+                    nested
+                        .opts
+                        .px(v.parse().expect("a crop's number"))
+                        .to_string()
+                })
+                .collect();
+            let c = c.join(":");
+            format!("[0]crop={c}[a];[1]{up},crop={c}[b];[a][b]hstack=inputs=2")
+        }
+        None => format!("[1]{up}[b];[0][b]hstack=inputs=2"),
     };
     let run = run_tool(
         Command::new("ffmpeg")
@@ -131,8 +146,10 @@ fn compare(shot: &Path, frame: &str, crop: Option<&str>) {
     );
 }
 
-/// The pixel at (`x`, `y`) of a PNG, as `#RRGGBB`.
-fn pixel(png: &Path, x: u32, y: u32) -> String {
+/// The pixel at logical (`x`, `y`) of a shot, as `#RRGGBB` (the device
+/// pixel under its center, at any output scale).
+fn pixel(nested: &Nested, png: &Path, x: f64, y: f64) -> String {
+    let (x, y) = nested.opts.pixel_px(x, y);
     let out = run_tool(
         Command::new("ffmpeg")
             .args(["-v", "error", "-i"])
@@ -228,9 +245,10 @@ const HEADER_PARTS: [(&str, [f64; 4]); 6] = [
 
 fn assert_header_parts(nested: &mut Nested) {
     let names: Vec<&str> = HEADER_PARTS.iter().map(|(n, _)| *n).collect();
+    let scale = nested.opts.scale;
     let regions = nested.window(0).regions(&names);
-    assert_regions(&regions, &HEADER_PARTS, &names, 1.0);
-    assert_regions(&regions, &BRIEF_REGIONS, &WP0B_REGIONS, 1.0);
+    assert_regions(&regions, &HEADER_PARTS, &names, scale);
+    assert_regions(&regions, &BRIEF_REGIONS, &WP0B_REGIONS, scale);
 }
 
 // -------------------------------------------------------------- the header
@@ -250,8 +268,8 @@ fn s02_the_header_at_rest() {
     );
     open(&mut nested, &project, Launch::a11y());
     let shot = nested.screenshot("header");
-    compare(&shot, "S02-live-idle.png", Some("1600:48:0:0"));
-    compare(&shot, "S02-live-idle.png", None);
+    compare(&nested, &shot, "S02-live-idle.png", Some("1600:48:0:0"));
+    compare(&nested, &shot, "S02-live-idle.png", None);
     assert_header_parts(&mut nested);
     let labels = nested.window(0).labels("region-header");
     for want in [
@@ -282,11 +300,11 @@ fn s02_the_header_at_rest() {
     assert_a11y(&mut nested);
     // The header's ground is `surface`, its hairline `border`; the record
     // button is `record`.
-    assert_eq!(pixel(&shot, 1000, 20), token("surface"));
-    assert_eq!(pixel(&shot, 1000, 47), token("border"));
-    assert_eq!(pixel(&shot, 1244, 12), token("record"));
+    assert_eq!(pixel(&nested, &shot, 1000.0, 20.0), token("surface"));
+    assert_eq!(pixel(&nested, &shot, 1000.0, 47.0), token("border"));
+    assert_eq!(pixel(&nested, &shot, 1244.0, 12.0), token("record"));
     // The hint bar's ground, under its top hairline.
-    assert_eq!(pixel(&shot, 1596, 976), token("surface"));
+    assert_eq!(pixel(&nested, &shot, 1596.0, 976.0), token("surface"));
     assert_no_panics(&mut nested);
     nested.close_window();
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
@@ -305,7 +323,12 @@ fn s06_the_header_in_program() {
     );
     open(&mut nested, &project, Launch::a11y());
     let shot = nested.screenshot("header");
-    compare(&shot, "S06-program-with-selection.png", Some("1600:48:0:0"));
+    compare(
+        &nested,
+        &shot,
+        "S06-program-with-selection.png",
+        Some("1600:48:0:0"),
+    );
     assert_header_parts(&mut nested);
     assert_eq!(
         hints(&mut nested),
@@ -367,7 +390,12 @@ fn s01a_the_header_of_an_empty_project() {
     thread::sleep(Duration::from_millis(1500));
     nested.window(0).wait_idle();
     let shot = nested.screenshot("header-tooltip");
-    compare(&shot, "S01a-first-run-no-sources.png", Some("1600:80:0:0"));
+    compare(
+        &nested,
+        &shot,
+        "S01a-first-run-no-sources.png",
+        Some("1600:80:0:0"),
+    );
     assert_a11y(&mut nested);
     assert_no_panics(&mut nested);
     nested.close_window();
@@ -403,7 +431,7 @@ fn s03_s04_s05_the_header_through_a_take() {
     nested.window(0).wait_idle();
     let countdown = hints(&mut nested);
     let shot = nested.screenshot("s03-countdown");
-    compare(&shot, "S03-countdown.png", Some("1600:48:0:0"));
+    compare(&nested, &shot, "S03-countdown.png", Some("1600:48:0:0"));
     assert_eq!(countdown, ["[Esc] Cancel", "[R] Cancel"]);
     let text = header_text(&mut nested);
     assert!(text.contains("Cancel"), "{text:?}");
@@ -414,7 +442,7 @@ fn s03_s04_s05_the_header_through_a_take() {
     nested.window(0).wait_idle();
     let recording = hints(&mut nested);
     let shot = nested.screenshot("s04-recording");
-    compare(&shot, "S04-recording.png", Some("1600:48:0:0"));
+    compare(&nested, &shot, "S04-recording.png", Some("1600:48:0:0"));
     assert_eq!(
         recording,
         [
@@ -427,8 +455,8 @@ fn s03_s04_s05_the_header_through_a_take() {
     );
     assert!(header_text(&mut nested).contains("Stop"));
     // The 2 px `record` line under the header.
-    assert_eq!(pixel(&shot, 1000, 47), token("record"));
-    assert_eq!(pixel(&shot, 1000, 46), token("record"));
+    assert_eq!(pixel(&nested, &shot, 1000.0, 47.0), token("record"));
+    assert_eq!(pixel(&nested, &shot, 1000.0, 46.0), token("record"));
     assert_a11y(&mut nested);
 
     // S05: finalizing (the fake EOS waits 8 s).
@@ -437,7 +465,7 @@ fn s03_s04_s05_the_header_through_a_take() {
     nested.window(0).wait_idle();
     let finalizing = hints(&mut nested);
     let shot = nested.screenshot("s05-finalizing");
-    compare(&shot, "S05-finalizing.png", Some("1600:48:0:0"));
+    compare(&nested, &shot, "S05-finalizing.png", Some("1600:48:0:0"));
     assert_eq!(
         finalizing[0],
         "Finalizing take 10. Waiting for every file to close (up to 10 s)."
@@ -500,7 +528,12 @@ fn s15b_the_header_while_exporting() {
     };
     nested.window(0).wait_idle();
     let shot = nested.screenshot("header-exporting");
-    compare(&shot, "S15b-export-running.png", Some("1600:48:0:0"));
+    compare(
+        &nested,
+        &shot,
+        "S15b-export-running.png",
+        Some("1600:48:0:0"),
+    );
     let items = hints(&mut nested);
     assert_eq!(items[0], "[Ctrl][E] Show export", "{items:?}");
     assert!(
@@ -523,6 +556,7 @@ fn s15b_the_header_while_exporting() {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn the_narrow_header_has_the_layers_button() {
     let mut nested = Nested::start(AREA, "narrow", Options::size(1000, 1000));
+    let scale = nested.opts.scale;
     let project = fixture(
         &nested,
         "rust-traits-talk",
@@ -547,7 +581,7 @@ fn the_narrow_header_has_the_layers_button() {
             "record-button",
             "close-button",
         ],
-        1.0,
+        scale,
     );
     nested.screenshot("header");
     assert_a11y(&mut nested);
@@ -600,8 +634,9 @@ fn s16b_the_export_done_toast() {
         "the body: {labels:?}"
     );
     let shot = nested.screenshot("toast");
-    compare(&shot, "S16b-export-done-panel-closed.png", None);
+    compare(&nested, &shot, "S16b-export-done-panel-closed.png", None);
     compare(
+        &nested,
         &shot,
         "S16b-export-done-panel-closed.png",
         Some("520:120:540:848"),
@@ -735,6 +770,7 @@ fn takes(nested: &Nested, project: &Path) -> Vec<String> {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s18_the_purge_modal_and_its_focus() {
     let mut nested = Nested::start(AREA, "s18", Options::default());
+    let scale = nested.opts.scale;
     let mut ui = program_ui();
     ui.bin_open = true;
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base, Some(ui));
@@ -757,7 +793,7 @@ fn s18_the_purge_modal_and_its_focus() {
         &regions,
         &[("scrim-modal", [0.0, 0.0, 1600.0, 968.0])],
         &["scrim-modal"],
-        1.0,
+        scale,
     );
     let labels = gui.labels("modal");
     for want in [
@@ -779,10 +815,15 @@ fn s18_the_purge_modal_and_its_focus() {
     );
     assert_a11y(&mut nested);
     let shot = nested.screenshot("modal");
-    compare(&shot, "S18-destructive-modal.png", None);
-    compare(&shot, "S18-destructive-modal.png", Some("540:460:530:270"));
+    compare(&nested, &shot, "S18-destructive-modal.png", None);
+    compare(
+        &nested,
+        &shot,
+        "S18-destructive-modal.png",
+        Some("540:460:530:270"),
+    );
     // The hint bar is outside the scrim: its ground is plain `surface`.
-    assert_eq!(pixel(&shot, 1596, 976), token("surface"));
+    assert_eq!(pixel(&nested, &shot, 1596.0, 976.0), token("surface"));
 
     // Enter right away: Cancel. Nothing is purged.
     nested.keys(&["-k", "Return"]);
@@ -838,6 +879,7 @@ fn s18_the_purge_modal_and_its_focus() {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s18b_settings_and_the_fps_confirmation() {
     let mut nested = Nested::start(AREA, "s18b", Options::default());
+    let scale = nested.opts.scale;
     let project = fixture(
         &nested,
         "rust-traits-talk",
@@ -856,7 +898,7 @@ fn s18b_settings_and_the_fps_confirmation() {
             ("scrim-settings", [0.0, 0.0, 1600.0, 968.0]),
         ],
         &["settings", "scrim-settings"],
-        1.0,
+        scale,
     );
     let labels = gui.labels("settings");
     for want in [
@@ -911,7 +953,7 @@ fn s18b_settings_and_the_fps_confirmation() {
             ("scrim-modal", [0.0, 0.0, 1600.0, 968.0]),
         ],
         &["settings", "scrim-settings", "scrim-modal"],
-        1.0,
+        scale,
     );
     let [mx, _, mw, _] = regions["modal"];
     assert!((mw - 520.0).abs() <= 1.0 && (mx + mw / 2.0 - 800.0).abs() <= 1.0);
@@ -932,16 +974,17 @@ fn s18b_settings_and_the_fps_confirmation() {
         ]
     );
     let shot = nested.screenshot("confirmation");
-    compare(&shot, "S18b-change-fps-confirmation.png", None);
+    compare(&nested, &shot, "S18b-change-fps-confirmation.png", None);
     compare(
+        &nested,
         &shot,
         "S18b-change-fps-confirmation.png",
         Some("840:640:380:180"),
     );
     // Both scrims end at the hint bar: above it the panel's `surface` is
     // dimmed; the bar's own `surface` isn't.
-    assert_eq!(pixel(&shot, 1596, 976), token("surface"));
-    assert_ne!(pixel(&shot, 1596, 964), token("surface"));
+    assert_eq!(pixel(&nested, &shot, 1596.0, 976.0), token("surface"));
+    assert_ne!(pixel(&nested, &shot, 1596.0, 964.0), token("surface"));
     let status = nested.cli_json(&project, &["status"]);
     assert_eq!(
         status["data"]["project"]["canvas"]["fps"],

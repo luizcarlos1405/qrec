@@ -114,8 +114,9 @@ fn launch() -> Launch {
 }
 
 /// The shot next to the approved frame (G§8.4 check 4), whole or both
-/// cropped to `crop` (`w:h:x:y`).
-fn compare(shot: &Path, frame: &str, crop: Option<&str>, suffix: &str) {
+/// cropped to `crop` (`w:h:x:y`, logical px: at an output scale the crop is
+/// the shot's device px and the frame is scaled up to them).
+fn compare(nested: &Nested, shot: &Path, frame: &str, crop: Option<&str>, suffix: &str) {
     let png = gui_support::repo().join("design/screens").join(frame);
     if !png.exists() {
         return;
@@ -124,8 +125,21 @@ fn compare(shot: &Path, frame: &str, crop: Option<&str>, suffix: &str) {
         "{}-compare{suffix}.png",
         shot.file_stem().unwrap_or_default().to_string_lossy()
     ));
+    let s = nested.opts.scale;
     let filter = match crop {
-        Some(c) => format!("[0]crop={c}[a];[1]crop={c}[b];[a][b]hstack=inputs=2"),
+        Some(c) => {
+            let c: Vec<String> = c
+                .split(':')
+                .map(|v| {
+                    nested
+                        .opts
+                        .px(v.parse().expect("a crop's number"))
+                        .to_string()
+                })
+                .collect();
+            let c = c.join(":");
+            format!("[0]crop={c}[a];[1]scale=iw*{s}:ih*{s},crop={c}[b];[a][b]hstack=inputs=2")
+        }
         None => "[0]scale=1600:1000[a];[1]scale=1600:1000[b];[a][b]hstack=inputs=2".to_owned(),
     };
     let run = run_tool(
@@ -328,10 +342,16 @@ fn stripe_spacing(png: &Path, x: u32, y: u32, w: u32) -> f64 {
 
 /// A link's underline runs under its descenders (Pango's `low` underline,
 /// as the frames draw it; CSS's crossed the p and the g, their tails below
-/// it): the widest row of ink in `rect` (and 3 px under it) is the lowest.
-fn assert_underline_under_descenders(png: &Path, [x, y, w, h]: [f64; 4], what: &str) {
-    let (w, h) = (w as u32, h as u32 + 3);
-    let px = gui_support::rgb_pixels(png, [x as u32, y as u32, w, h]);
+/// it): the widest row of ink in `rect` (logical px, and 3 px under it) is
+/// the lowest, in the shot's device px at any output scale.
+fn assert_underline_under_descenders(
+    nested: &Nested,
+    png: &Path,
+    [x, y, w, h]: [f64; 4],
+    what: &str,
+) {
+    let [x, y, w, h] = nested.opts.device([x, y, w, h + 3.0]).map(|v| v as u32);
+    let px = gui_support::rgb_pixels(png, [x, y, w, h]);
     let ground = px[0];
     let ink = |p: &[u8; 3]| p.iter().zip(ground).any(|(a, b)| a.abs_diff(b) > 40);
     let rows: Vec<usize> = px
@@ -355,12 +375,14 @@ fn assert_underline_under_descenders(png: &Path, [x, y, w, h]: [f64; 4], what: &
     );
 }
 
-/// How many rows of the mud bar's column `x` (window px) are the
-/// sediment's `wood`: 2 above the 1 px border, as the frames draw it (3
-/// until the WP7 integration audit, the mud 15 px instead of 16).
-fn sediment_rows(png: &Path, [bx, by, _, bh]: [f64; 4], x: f64) -> usize {
+/// How many rows of the mud bar's column `x` (window px; the shot's
+/// device rows at an output scale) are the sediment's `wood`: 2 above the
+/// 1 px border, as the frames draw it (3 until the WP7 integration audit,
+/// the mud 15 px instead of 16).
+fn sediment_rows(nested: &Nested, png: &Path, [bx, by, _, bh]: [f64; 4], x: f64) -> usize {
     let wood = gui_support::token_rgb("swamp-night", "wood");
-    gui_support::rgb_pixels(png, [(bx + x) as u32, by as u32, 1, bh as u32])
+    let [x, y, _, h] = nested.opts.rect_px([bx + x, by, 1.0, bh]);
+    gui_support::rgb_pixels(png, [x, y, 1, h])
         .iter()
         .filter(|p| p.iter().zip(wood).all(|(a, b)| a.abs_diff(b) <= 6))
         .count()
@@ -477,6 +499,7 @@ fn ctrl_e(nested: &mut Nested) {
 /// The export panel's body where BRIEF §2.8 puts it: 440 wide, 8 px from
 /// the right edge, its top at y 52 (the arrow above it from y 46).
 fn assert_panel_placed(nested: &mut Nested) -> [f64; 4] {
+    let scale = nested.opts.scale;
     let regions = nested.window(0).regions(&["export-body", "export-panel"]);
     let body = *regions
         .get("export-body")
@@ -488,7 +511,7 @@ fn assert_panel_placed(nested: &mut Nested) -> [f64; 4] {
             ("export-panel", [1152.0, 46.0, 440.0, body[3] + 6.0]),
         ],
         &["export-body", "export-panel"],
-        1.0,
+        scale,
     );
     body
 }
@@ -502,6 +525,7 @@ fn assert_panel_placed(nested: &mut Nested) -> [f64; 4] {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s14_the_bin_drawer() {
     let mut nested = Nested::start(AREA, "s14", Options::default());
+    let scale = nested.opts.scale;
     let project = fixture(
         &nested,
         "rust-traits-talk",
@@ -524,7 +548,7 @@ fn s14_the_bin_drawer() {
             ("transport", [368.0, 612.0, 832.0, 36.0]),
         ],
         &["region-bin", "preview", "transport"],
-        1.0,
+        scale,
     );
     assert!(regions.contains_key("bin-preview"), "take 4's actions show");
     let labels = gui.labels("region-bin");
@@ -573,13 +597,20 @@ fn s14_the_bin_drawer() {
         ]
     );
     let shot = nested.screenshot("bin");
-    compare(&shot, "S14-bin-drawer.png", None, "");
-    compare(&shot, "S14-bin-drawer.png", Some("352:608:0:48"), "-bin");
+    compare(&nested, &shot, "S14-bin-drawer.png", None, "");
+    compare(
+        &nested,
+        &shot,
+        "S14-bin-drawer.png",
+        Some("352:608:0:48"),
+        "-bin",
+    );
     // Take 9's broken thumbnail: C19's hatch, 6 px apart across its 45°
     // stripes, so 8.49 px along a row (as S14 draws it; it was 6 along x).
     let regions = nested.window(0).regions(&["bin-thumb-9"]);
     let [x, y, w, _] = regions["bin-thumb-9"];
-    let spacing = stripe_spacing(&shot, x as u32 + 2, y as u32 + 10, w as u32 - 4);
+    let [x, y, w, _] = nested.opts.rect_px([x + 2.0, y + 10.0, w - 4.0, 1.0]);
+    let spacing = stripe_spacing(&shot, x, y, w) / scale;
     assert!(
         (spacing - 6.0 * std::f64::consts::SQRT_2).abs() < 0.3,
         "the hatch's stripes are {spacing:.2} px apart along x"
@@ -592,7 +623,7 @@ fn s14_the_bin_drawer() {
         .regions(&["bin-open-log", "bin-row-actions"]);
     let link = regions["bin-open-log"];
     assert!(link[2] <= 53.0, "the bin's link is {} px wide", link[2]);
-    assert_underline_under_descenders(&shot, link, "Open log");
+    assert_underline_under_descenders(&nested, &shot, link, "Open log");
     let actions = regions["bin-row-actions"];
     assert!(
         (actions[3] - 78.0).abs() <= 1.0,
@@ -695,7 +726,7 @@ fn bin_at_scale(case: &str, scale: f64) {
         "strip images {want} px high at scale {scale}"
     );
     let shot = nested.screenshot("bin");
-    compare(&shot, "S14-bin-drawer.png", None, "");
+    compare(&nested, &shot, "S14-bin-drawer.png", None, "");
     assert_clean(&mut nested);
     close(&mut nested);
 }
@@ -763,7 +794,7 @@ fn the_bin_keys_select_preview_and_insert() {
         "Live switched to Program (D-17)"
     );
     let shot = nested.screenshot("preview");
-    compare(&shot, "S14-bin-drawer.png", None, "");
+    compare(&nested, &shot, "S14-bin-drawer.png", None, "");
     assert_eq!(
         nested.window(0).local()["takePreview"],
         json!({"take": "take-0004", "playing": true})
@@ -1272,8 +1303,9 @@ fn s18_purging_two_takes_from_the_bin() {
         ],
     );
     let shot = nested.screenshot("modal");
-    compare(&shot, "S18-destructive-modal.png", None, "");
+    compare(&nested, &shot, "S18-destructive-modal.png", None, "");
     compare(
+        &nested,
         &shot,
         "S18-destructive-modal.png",
         Some("352:608:0:48"),
@@ -1391,6 +1423,7 @@ fn purging_from_the_bin_waits_for_the_recording() {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s15a_export_setup() {
     let mut nested = Nested::start(AREA, "s15a", Options::default());
+    let scale = nested.opts.scale;
     let project = fixture(
         &nested,
         "rust-traits-talk",
@@ -1428,7 +1461,7 @@ fn s15a_export_setup() {
         ["[Enter] Export", "[Tab] Move focus", "[Esc] Close"]
     );
     let regions = nested.window(0).regions(&[]);
-    assert_regions(&regions, &BRIEF_REGIONS, &MERGED_REGIONS, 1.0);
+    assert_regions(&regions, &BRIEF_REGIONS, &MERGED_REGIONS, scale);
     // As S15a draws it: the content 16 px in (15 of padding after the
     // border: it was 17, everything 1 px right and down), the body 355 high.
     let body = assert_panel_placed(&mut nested);
@@ -1447,8 +1480,9 @@ fn s15a_export_setup() {
         quality[0]
     );
     let shot = nested.screenshot("setup");
-    compare(&shot, "S15a-export-setup.png", None, "");
+    compare(&nested, &shot, "S15a-export-setup.png", None, "");
     compare(
+        &nested,
         &shot,
         "S15a-export-setup.png",
         Some("456:380:1144:40"),
@@ -1780,9 +1814,23 @@ fn export_running(nested: &mut Nested, project: &Path, name: &str) {
     let shot = nested.screenshot(name);
     // The mud's sediment shows 2 px over the bar's border (at the fill,
     // 20 px in from the bar's left).
-    assert_eq!(sediment_rows(&shot, bar, 20.0), 2, "the sediment band");
-    compare(&shot, "S15b-export-running.png", None, "");
+    // 2 px: 2·s device rows at an output scale s; at a fractional one the
+    // compositor mixes the band's edge rows with the mud and the border.
+    let s = nested.opts.scale;
+    let rows = sediment_rows(nested, &shot, bar, 20.0);
+    let exact = 2.0 * s;
+    let range = if s.fract() == 0.0 {
+        exact as usize..=exact as usize
+    } else {
+        exact.floor() as usize - 1..=exact.ceil() as usize
+    };
+    assert!(
+        range.contains(&rows),
+        "the sediment band: {rows} rows at scale {s}"
+    );
+    compare(nested, &shot, "S15b-export-running.png", None, "");
     compare(
+        nested,
         &shot,
         "S15b-export-running.png",
         Some("456:340:1144:0"),
@@ -1891,6 +1939,7 @@ fn s15c_webm_setup_and_the_reduced_motion_bar() {
     );
     let shot = nested.screenshot("webm");
     compare(
+        &nested,
         &shot,
         "S15c-export-panel-frames.png",
         Some("456:420:1144:40"),
@@ -2014,8 +2063,9 @@ fn s16_export_done() {
         body[3]
     );
     let shot = nested.screenshot("done");
-    compare(&shot, "S16-export-done.png", None, "");
+    compare(&nested, &shot, "S16-export-done.png", None, "");
     compare(
+        &nested,
         &shot,
         "S16-export-done.png",
         Some("456:300:1144:0"),
@@ -2271,8 +2321,15 @@ fn s16b_the_done_toast_when_the_panel_is_closed() {
         ax
     );
     let shot = nested.screenshot("toast");
-    compare(&shot, "S16b-export-done-panel-closed.png", None, "");
     compare(
+        &nested,
+        &shot,
+        "S16b-export-done-panel-closed.png",
+        None,
+        "",
+    );
+    compare(
+        &nested,
         &shot,
         "S16b-export-done-panel-closed.png",
         Some("520:120:540:848"),
@@ -2373,9 +2430,10 @@ fn s17_export_failed() {
     );
     let link = nested.window(0).regions(&["export-open-log"])["export-open-log"];
     let shot = nested.screenshot("failed");
-    assert_underline_under_descenders(&shot, link, "Open full log");
-    compare(&shot, "S17-export-failed.png", None, "");
+    assert_underline_under_descenders(&nested, &shot, link, "Open full log");
+    compare(&nested, &shot, "S17-export-failed.png", None, "");
     compare(
+        &nested,
         &shot,
         "S17-export-failed.png",
         Some("456:560:1144:40"),
@@ -2536,6 +2594,7 @@ fn d24_an_existing_file_asks_and_a_forbidden_path_says_why() {
     assert_eq!(overlays(&mut nested), ["ExportPanel(Setup)"]);
     let shot = nested.screenshot("forbidden");
     compare(
+        &nested,
         &shot,
         "S15a-export-setup.png",
         Some("456:420:1144:40"),

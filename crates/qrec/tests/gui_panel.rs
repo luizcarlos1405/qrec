@@ -227,10 +227,16 @@ fn clip_count(nested: &Nested, project: &Path) -> usize {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s02_the_panel_in_live_mode() {
     let mut nested = Nested::start(AREA, "s02", Options::default());
+    let scale = nested.opts.scale;
     let project = fixture(&nested, DesignVariant::Base, &ui(|_| {}));
     let gui = open(&mut nested, &project, levels(DESIGN_LEVELS));
     let regions = gui.regions(&[]);
-    assert_regions(&regions, &[("region-panel", PANEL)], &["region-panel"], 1.0);
+    assert_regions(
+        &regions,
+        &[("region-panel", PANEL)],
+        &["region-panel"],
+        scale,
+    );
     // BRIEF §2.5's blocks.
     let rows: Regions = gui.regions(&[
         "layer-row-L2",
@@ -255,7 +261,7 @@ fn s02_the_panel_in_live_mode() {
             "audio-row-A1",
             "audio-row-A2",
         ],
-        1.0,
+        scale,
     );
     assert_has(
         &panel_labels(gui),
@@ -326,6 +332,7 @@ fn s02_the_panel_in_live_mode() {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s06_the_take_layout_and_the_inspector() {
     let mut nested = Nested::start(AREA, "s06", Options::default());
+    let scale = nested.opts.scale;
     let preset = ui(|u| {
         u.canvas_mode = CanvasMode::Program;
         u.selection = vec![clip("c2d0")];
@@ -342,7 +349,7 @@ fn s06_the_take_layout_and_the_inspector() {
             ("layer-row-L2", [1232.0, 176.0, 352.0, 44.0]),
         ],
         &["take-banner", "layer-row-L2", "inspector"],
-        1.0,
+        scale,
     );
     assert_has(
         &panel_labels(gui),
@@ -2088,6 +2095,7 @@ fn the_autocut_preview_follows_the_timeline() {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn the_panel_at_1300_wide() {
     let mut nested = Nested::start(AREA, "medium", Options::size(1300, 1000));
+    let scale = nested.opts.scale;
     let preset = ui(|u| {
         u.canvas_mode = CanvasMode::Program;
         u.selection = vec![clip("c2d0")];
@@ -2101,7 +2109,7 @@ fn the_panel_at_1300_wide() {
         &gui.regions(&[]),
         &[("region-panel", panel)],
         &["region-panel"],
-        1.0,
+        scale,
     );
     assert_eq!(gui.local()["layout"]["width"], "Medium");
     let rows: Regions = gui.regions(&["layer-row-L2", "audio-row-A1"]);
@@ -2112,7 +2120,7 @@ fn the_panel_at_1300_wide() {
             ("audio-row-A1", [996.0, 348.0, 288.0, 92.0]),
         ],
         &["layer-row-L2", "audio-row-A1"],
-        1.0,
+        scale,
     );
     assert_clean(gui);
     let shot = nested.screenshot("panel");
