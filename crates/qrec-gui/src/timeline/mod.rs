@@ -168,7 +168,8 @@ struct Inner {
     subs: RefCell<Vec<Subscription>>,
     /// The project folder (the silence files' facts).
     project: PathBuf,
-    /// The lane offset a middle drag started from.
+    /// The lane offset a middle drag started from (widget px): the pan
+    /// sets it absolutely, from there (`Sink::pan_lanes`).
     pan_from: Cell<Option<f64>>,
     /// The frame-time probe in progress (G§8.6, `QREC_GUI_PROBE=timeline`).
     probe: RefCell<Option<Probe>>,
@@ -1087,11 +1088,22 @@ impl Inner {
                 lanes: m.lanes.len(),
                 playhead,
                 now,
+                rows_top: self.rows_top(),
             };
             f(&cx, &mut m, &mut pending)
         };
         self.apply(pending);
         Some(result)
+    }
+
+    /// The rows' top in the lanes' scrolled window (100 % px) as the canvas
+    /// is laid out now: the transform GTK gave this event's coordinates.
+    fn rows_top(&self) -> f64 {
+        let origin = graphene::Point::new(0.0, 0.0);
+        self.canvas
+            .compute_point(&self.scroller, &origin)
+            .map_or(0.0, |p| f64::from(p.y()))
+            / self.scale()
     }
 
     fn press(&self, area: Area, button: u32, x: f64, y: f64, mods: Mods) -> bool {
@@ -1940,10 +1952,10 @@ impl Inner {
         for notice in notices {
             self.ctx.store.notify(notice);
         }
-        if !pans.is_empty() {
-            let adj = self.scroller.vadjustment();
-            let total: f64 = pans.iter().sum();
-            adj.set_value(adj.value() + total * self.scale());
+        if let (Some(dy), Some(from)) = (pans.last(), self.pan_from.get()) {
+            self.scroller
+                .vadjustment()
+                .set_value(from - dy * self.scale());
         }
     }
 }

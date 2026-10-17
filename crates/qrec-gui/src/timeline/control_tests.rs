@@ -96,6 +96,7 @@ fn cx<'a>(state: &'a State, view: Viewport, total: Frame, now: Duration) -> Cx<'
         lanes: 2,
         playhead: state.ui.playhead,
         now,
+        rows_top: 0.0,
     }
 }
 
@@ -525,7 +526,11 @@ fn a_middle_drag_pans_and_sends_one_set_ui() {
     let c = cx(&state, view, total, ms(64));
     g.decide_release(&c, &mut sink, (400.0, 40.0));
     assert!(sink.commands.is_empty(), "nothing at once");
-    assert_eq!(sink.pans, [-10.0], "the lanes follow the vertical drag");
+    assert_eq!(
+        sink.pans,
+        [10.0, 10.0, 10.0],
+        "the lanes follow the vertical drag: 10 px down from the press"
+    );
     assert_eq!(vm.flush(&state, ms(300)), None);
     let Some(Command::SetUi { patch }) = vm.flush(&state, ms(348)) else {
         panic!("one SetUi 300 ms after the last motion")
@@ -907,4 +912,52 @@ fn a_send_echoed_once_is_forgotten() {
     vm.on_state(&fitted, total, ms(600));
     assert!(!vm.dirty(), "the CLI's fit wins");
     assert_eq!(vm.flush(&fitted, ms(900)), None);
+}
+
+/// R04: a middle drag pans the lanes with the pointer. Five lanes overflow
+/// the rows, scrolled 20 px; the pointer goes up 5 px a frame for 12
+/// frames, and GTK reports each motion against the canvas as laid out
+/// then (it moves with the scroll the pan sets): the lanes follow 5 px a
+/// frame, 60 in all (stepping by the canvas-relative travel gave 5, 0, 5,
+/// 0, …: half the pointer, and a stutter).
+#[test]
+fn a_middle_drag_pans_the_lanes_with_the_pointer() {
+    let state = seconds();
+    let (mut vm, view, total) = setup(&state);
+    let mut g = Gestures::new();
+    let mut sink = Recorder::default();
+    let from = 20.0;
+    // The canvas is laid out at -from; the press at y 120 in the window.
+    let mut laid_out = from;
+    let mut c = cx(&state, view, total, ms(0));
+    c.rows_top = -laid_out;
+    let press = Press {
+        button: Button::Middle,
+        y: 120.0 + laid_out,
+        ..rows(500.0)
+    };
+    g.decide_press(&c, &mut sink, &mut vm, press);
+    let mut lanes = from;
+    let mut steps = Vec::new();
+    for frame in 1..=12u64 {
+        let window_y = 120.0 - 5.0 * frame as f64;
+        let mut c = cx(&state, view, total, ms(16 * frame));
+        c.rows_top = -laid_out;
+        // GTK's canvas-relative y, against the layout of this frame.
+        let y = window_y + laid_out;
+        g.decide_motion(&c, &mut sink, &mut vm, Area::Rows, (500.0, y));
+        // The glue: the lanes' offset is the press's minus the travel.
+        let before = lanes;
+        if let Some(dy) = sink.pans.last() {
+            lanes = from - dy;
+        }
+        steps.push(lanes - before);
+        // The next frame's layout puts the canvas at the new offset.
+        laid_out = lanes;
+    }
+    assert!(
+        steps.iter().all(|s| (s - 5.0).abs() < 1e-9),
+        "the lanes follow the pointer: {steps:?}"
+    );
+    assert!((lanes - from - 60.0).abs() < 1e-9, "{lanes}");
 }

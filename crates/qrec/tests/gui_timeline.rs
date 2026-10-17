@@ -464,6 +464,56 @@ fn s11_drag_move() {
     assert_clean(&mut nested);
 }
 
+/// A middle drag pans the lanes with the pointer (D-25, D-39): with five
+/// lanes over the rows, dragged up 60 px in 5 px steps (a frame each), A1
+/// goes up 60 px. The pan stepped by the canvas-relative travel, and the
+/// canvas moves with the scroll it sets: about half the pointer, or a
+/// swing back and forth.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_middle_drag_pans_the_lanes() {
+    let mut nested = Nested::start(AREA, "middle-pan", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
+    open(&mut nested, &project, Launch::default());
+    for n in 3..=5 {
+        let command = json!({
+            "cmd": "audioAdd", "target": "project", "role": "mic",
+            "source": format!("alsa_input.fake-{n}"), "label": format!("Mic {n}"),
+        });
+        let reply = nested
+            .window(0)
+            .ctl(json!({"op": "dispatch", "command": command}));
+        assert_eq!(reply["ok"], true, "{reply}");
+        nested.window(0).wait_idle();
+    }
+    let a1 = |nested: &mut Nested| {
+        let regions = nested.window(0).regions(&["lane-A1", "lane-A5"]);
+        assert!(regions.contains_key("lane-A5"), "five lanes: {regions:?}");
+        regions["lane-A1"][1]
+    };
+    let before = a1(&mut nested);
+    // On A2, in the middle of the rows.
+    let (x, y) = (700.0, 880.0);
+    nested.pointer().move_to(x, y);
+    nested
+        .pointer()
+        .button(gui_support::pointer::BUTTON_MIDDLE, true);
+    for i in 1..=12 {
+        nested.pointer().move_to(x, y - 5.0 * f64::from(i));
+        nested.window(0).wait_idle();
+    }
+    nested
+        .pointer()
+        .button(gui_support::pointer::BUTTON_MIDDLE, false);
+    nested.window(0).wait_idle();
+    let after = a1(&mut nested);
+    assert!(
+        (before - after - 60.0).abs() <= 1.0,
+        "A1 from y {before} to {after}: not 60 px up"
+    );
+    assert_clean(&mut nested);
+}
+
 // ------------------------------------------------------------- S12
 
 /// The center of widget `name` (it must show).

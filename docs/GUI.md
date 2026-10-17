@@ -1958,7 +1958,12 @@ As built (WP6, round 3):
     at each `RecordClock`, 4 Hz, with a 200 ms ease, they ran up to 25 %
     past the time area between clocks early in a take.)
 - **Wheel, pan, scrub**: D-39, D-40. `scroll_for_wheel`, `zoom_at(ppf,
-  factor, anchor_x)` and `scrub_frame(x)` are pure.
+  factor, anchor_x)` and `scrub_frame(x)` are pure. The middle-drag pan's
+  vertical part follows the pointer in the lanes' scrolled window (the
+  event's y plus `Cx::rows_top`, the canvas's top there as laid out for
+  the event) and sets the lanes' offset from the press's: the canvas moves
+  with the scroll the pan sets, so its own y fed back (review: the lanes
+  moved half the pointer's travel, or swung back and forth).
 - **Clip boxes** (time-area x = start × ppf − scroll; w = len × ppf, no
   minimum):
 

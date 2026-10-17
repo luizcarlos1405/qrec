@@ -53,7 +53,9 @@ pub trait Sink {
     fn scrub(&mut self, frame: Frame);
     /// A toast (D-34).
     fn notice(&mut self, notice: Notice);
-    /// The lanes scroll vertically by `dy` px (D-25, a middle drag).
+    /// The lanes follow a middle drag (D-25, D-39): their offset is the
+    /// press's minus `dy`, the pointer's travel since the press in the
+    /// lanes' window (100 % px; up is negative).
     fn pan_lanes(&mut self, dy: f64);
 }
 
@@ -496,6 +498,11 @@ pub struct Cx<'a> {
     /// The playhead as drawn (snapping, D-40).
     pub playhead: Frame,
     pub now: Duration,
+    /// The rows' top in the lanes' scrolled window as the canvas is laid
+    /// out for this event: 0, or above it by the lanes' scroll (D-25). An
+    /// event's y plus it is where the pointer is in the window, which a
+    /// vertical pan doesn't move.
+    pub rows_top: f64,
 }
 
 impl Cx<'_> {
@@ -539,13 +546,10 @@ pub enum Drag {
         last_seek: Duration,
         seeked: Frame,
     },
-    /// Panning with the middle button (D-39).
-    Pan {
-        x0: f64,
-        y0: f64,
-        scroll0: f64,
-        dy: f64,
-    },
+    /// Panning with the middle button (D-39): from the press's x and its
+    /// y in the lanes' window (`Cx::rows_top`), which the pan doesn't
+    /// move, and the scroll then.
+    Pan { x0: f64, y0: f64, scroll0: f64 },
 }
 
 /// The timeline's gestures (module docs).
@@ -597,9 +601,8 @@ impl Gestures {
             };
             self.drag = Some(Drag::Pan {
                 x0: x,
-                y0: y,
+                y0: y + cx.rows_top,
                 scroll0: shown.scroll_px,
-                dy: 0.0,
             });
             return true;
         }
@@ -765,19 +768,11 @@ impl Gestures {
                     *last_seek = cx.now;
                 }
             }
-            Some(Drag::Pan {
-                x0,
-                y0,
-                scroll0,
-                dy,
-            }) => {
+            Some(Drag::Pan { x0, y0, scroll0 }) => {
                 view.scroll_to(*scroll0 - (x - *x0), cx.now);
-                let total_dy = y - *y0;
-                let step = total_dy - *dy;
-                *dy = total_dy;
-                if step.abs() > f64::EPSILON {
-                    sink.pan_lanes(-step);
-                }
+                // Absolute, in the lanes' window: the canvas moves with the
+                // scroll the pan sets, so its own y would feed back.
+                sink.pan_lanes(y + cx.rows_top - *y0);
             }
         }
     }
