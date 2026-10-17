@@ -1410,6 +1410,39 @@ fn a_held_unavailable_key_toasts_once() {
     close(&mut nested);
 }
 
+/// G§3.7: a toast that says what the newest one says is that toast again,
+/// whatever sends it: `keys.help` run 30 times through the test channel's
+/// `action` op (as a button would; no key repeat to filter) shows one
+/// "Not built yet" toast and no "+N" chip (R29's audit: the held-key case
+/// above passes without the coalescing since R30 swallows a held
+/// unavailable key's repeats; without it this one reads "+29").
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_same_toast_thirty_times_is_one() {
+    let mut nested = Nested::start(AREA, "same-toast", Options::default());
+    let ui = UiState {
+        canvas_mode: CanvasMode::Program,
+        ..UiState::default()
+    };
+    let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base, Some(ui));
+    open(&mut nested, &project, launch());
+    let gui = nested.window(0);
+    for _ in 0..30 {
+        let reply = gui.ctl(json!({"op": "action", "id": "keys.help"}));
+        assert_eq!(reply["ok"], true, "{reply}");
+    }
+    gui.wait_idle();
+    let labels = gui.labels("toast-host");
+    let titles = labels.iter().filter(|l| *l == "Not built yet").count();
+    assert_eq!(titles, 1, "one toast: {labels:?}");
+    assert!(
+        !labels.iter().any(|l| l.starts_with('+')),
+        "no queue: {labels:?}"
+    );
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
 /// D-34: `Ctrl+E` on an empty timeline says why ("The timeline is empty",
 /// an info toast) and opens nothing (it opened nothing, silently).
 #[test]

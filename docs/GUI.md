@@ -660,8 +660,14 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
   that toast again: it takes the newest arrival's cursor and the shown
   one's time starts over (`ToastQueue::push`, `Pushed::Coalesced`; review
   fix: a held key whose action is unavailable queued one toast per
-  auto-repeat, "+36" after 2 s); one between others still counts (A, B, A
-  is "+2"), and one arriving while the shown one fades out waits after it. A done-export toast is dropped while the export panel shows
+  auto-repeat, "+36" after 2 s). Since R30 the key router swallows such a
+  key's repeats itself (`router::on_repeat`), so the coalescing is for the
+  same notice sent again by any other path: a button or menu item pressed
+  again, the same action run repeatedly, the core's same toast twice
+  (`the_same_toast_thirty_times_is_one`: `keys.help` 30 times through the
+  test channel, one toast; R29's audit). One between others still counts
+  (A, B, A is "+2"), and one arriving while the shown one fades out waits
+  after it. A done-export toast is dropped while the export panel shows
   that export's Done state, and the export-failed one while it shows its
   Failed state (`toasts::shown_by_the_panel`; WP7 integration: S17 draws
   no toast over the panel). The panel answers first: the core sends the
