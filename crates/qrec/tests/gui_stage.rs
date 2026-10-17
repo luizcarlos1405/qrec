@@ -261,6 +261,85 @@ fn s01a_first_run() {
     compare(&nested, &shot, "S01a-first-run-no-sources.png");
 }
 
+/// R25 (its audit: the GTK half was untested): the first run keeps the
+/// person's picks and the focus when discovery answers again with
+/// something else. The camera unchecked ("Add 3 sources"), a new mic comes
+/// (the test channel's `sources` op stands in for discovery's answer): its
+/// row is there unchecked, the camera stays unchecked with the focus on
+/// its row, and the button still reads "Add 3 sources", which it adds.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_first_run_keeps_its_picks_across_a_new_inventory() {
+    let mut nested = Nested::start(AREA, "first-run-picks", Options::default());
+    let project = nested.env.empty_dir("rust-traits-talk");
+    open(&mut nested, &project, Launch::a11y());
+    assert_shows(&stage_labels(&mut nested), &["Add 4 sources"]);
+    // The camera's row (screens, then cameras, mics, system audio).
+    let row = nested.window(0).regions(&["first-run-row-2"])["first-run-row-2"];
+    nested
+        .pointer()
+        .click(row[0] + row[2] / 2.0, row[1] + row[3] / 2.0);
+    nested.window(0).wait_idle();
+    let labels = stage_labels(&mut nested);
+    assert_shows(&labels, &["Camera · Logitech C920", "Add 3 sources"]);
+    let reply = nested.window(0).ctl(json!({"op": "sources"}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let mut inventory = reply["inventory"].clone();
+    assert!(inventory["mics"].is_array(), "no mics: {inventory}");
+    inventory["mics"]
+        .as_array_mut()
+        .expect("the mics")
+        .push(json!({
+            "name": "alsa_input.usb-Elgato_Wave_3-00.mono-fallback",
+            "description": "Wave:3",
+            "isMonitor": false,
+        }));
+    let pushed = nested
+        .window(0)
+        .ctl(json!({"op": "sources", "inventory": inventory}));
+    assert_eq!(pushed["ok"], true, "{pushed}");
+    let labels = gui_support::poll(Duration::from_secs(10), "the new mic's row", || {
+        let labels = stage_labels(&mut nested);
+        labels.iter().any(|l| l == "Mic · Wave:3").then_some(labels)
+    });
+    assert_shows(&labels, &["Add 3 sources"]);
+    assert_hides(&labels, &["Add 4 sources", "Add 5 sources"]);
+    // The camera's new row has the focus, in the window (GTK moves a
+    // focus whose widget went to the list's first row after a frame).
+    nested.window(0).wait_idle();
+    let local = nested.window(0).local();
+    let path: Vec<&str> = local["focusPath"]
+        .as_array()
+        .map(|p| p.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    assert!(
+        path.first() == Some(&"first-run-row-2") && path.contains(&"region-stage"),
+        "the camera's row keeps the focus: {path:?}"
+    );
+    // The button adds what it says: the first screen, the default mic and
+    // system audio, no camera.
+    let row = nested.window(0).regions(&["first-run-add"]);
+    let add = row
+        .get("first-run-add")
+        .copied()
+        .unwrap_or_else(|| panic!("no Add button: {row:?}"));
+    nested
+        .pointer()
+        .click(add[0] + add[2] / 2.0, add[1] + add[3] / 2.0);
+    let scene = gui_support::poll(Duration::from_secs(20), "the three sources", || {
+        let scene = status(&nested, &project)["project"]["scene"].clone();
+        let layers = scene["layers"].as_array().map_or(0, Vec::len);
+        let audio = scene["audio"].as_array().map_or(0, Vec::len);
+        (layers + audio == 3).then_some(scene)
+    });
+    assert_eq!(scene["layers"].as_array().map_or(0, Vec::len), 1, "{scene}");
+    assert_eq!(scene["layers"][0]["source"]["kind"], "screen", "{scene}");
+    assert_eq!(scene["audio"][0]["role"], "mic", "{scene}");
+    assert_eq!(scene["audio"][1]["role"], "system", "{scene}");
+    nested.window(0).wait_idle();
+    assert_clean(&mut nested);
+}
+
 /// S01b: `Enter` on S01a adds the four sources (D-16: the screen, the
 /// camera, the mic, system audio, in that order, so the camera is on top),
 /// and the Live picture shows them.

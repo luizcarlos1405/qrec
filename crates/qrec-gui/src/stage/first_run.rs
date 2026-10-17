@@ -70,6 +70,8 @@ impl FirstRun {
         button.add_css_class("primary");
         button.add_css_class("lg");
         button.add_css_class("first-run-add");
+        // Named for the nested cases (G§8.4), as its rows are.
+        button.set_widget_name("first-run-add");
         button.set_halign(gtk::Align::Start);
         button.set_focus_on_click(false);
         // 8 px apart by CSS (`button.qrec-btn > box`, common.css).
@@ -135,11 +137,16 @@ impl FirstRun {
             return;
         }
         *self.inventory.borrow_mut() = inventory.cloned();
+        // The window's focus widget, active or not: discovery may answer
+        // while the window is in the background (`has_focus` is false
+        // then, and GTK moved the focus to the first row once its widget
+        // went; R25's audit).
+        let focus = self.list.root().and_then(|root| root.focus());
         let focused = self
             .rows
             .borrow()
             .iter()
-            .find(|(_, check)| check.has_focus())
+            .find(|(_, check)| focus.as_ref() == Some(check.upcast_ref::<gtk::Widget>()))
             .map(|(row, _)| (row.kind, row.source.clone()));
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);

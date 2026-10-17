@@ -33,6 +33,7 @@
 //! | `labels` | the text of every visible label under the widget `name` (default: the window), and `entries`: each visible text field's value by its nearest given name (`{"inspector-x":"1280"}`) |
 //! | `dispatch` | `Store::dispatch` of `command` (`confirmed`: as confirmed), `{"ok":true}` at once |
 //! | `action` | runs binding or GUI action `id` as its key would |
+//! | `sources` | the source discovery's last answer (`LocalUi.sources`, `inventory`: `null` before one); with `inventory` (a `SourceInventory`), that answer instead, through the queue as discovery's own (the first run's rows follow it, R25) |
 //! | `hints` | the hint bar's items and status (`hintbar::current_items`), the labels of the items it draws whole (`shown`: a narrow window leaves the trailing ones out) and whether a drawn one runs past the bar (`cut`, never) |
 //! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`; whether the player plays, the program or a take, `playing`, and the program, `programPlaying`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11) and the panel's (`layerRowsAlive`, `audioRowsAlive`), the bin drawer's last slide as asked (`binSlide`: `open`, `animate`; nothing animates on start), the bin preview (`takePreview`: `take`, `playing`; `null` without one), the theme's subscribers (`themeSubscribers`: a dropped bin thumbnail's goes with it), the mud bars ticking (`mudBarsTicking`: none under the frozen clock), the meter bars on their refresh timer (`metersTicking`) and whether the export panel's Running clock runs (`exportClockTicking`: both come back with the next change after a caught panic, R65), how many times the timeline's canvas re-rendered (`timelinePaints`: not while only the playhead moves), and how many columns of the ghost's waveform its last paint with one worked out (`timelineGhostColumns`: those in view, R01) |
 //! | `a11y` | every visible icon-only button, focusable region or custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
@@ -40,7 +41,8 @@
 //! | `icons` | each custom symbolic icon drawn in a probe color: found, pixels, recolored |
 //! | `art` | each illustration through `gtk::Svg`: its size, drawn pixels and SVG errors (none for `ok`), and a known-bad probe whose errors must be counted |
 //!
-//! Dispatches go through the Store (R8); the other ops only read.
+//! Dispatches go through the Store (R8), a pushed inventory through the
+//! queue as discovery's answer; the other ops only read.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -326,6 +328,7 @@ pub fn handle(app: &Rc<App>, request: TestRequest) {
         "labels" => labels(app, &request),
         "dispatch" => dispatch(app, &request),
         "action" => action(app, &request),
+        "sources" => sources(app, &request),
         "hints" => hints(app),
         "local" => local(app),
         "a11y" => a11y(app),
@@ -531,6 +534,22 @@ fn action(app: &App, request: &Value) -> Value {
         json!({"ok": true})
     } else {
         json!({"ok": false, "error": format!("no binding or GUI action {id}")})
+    }
+}
+
+/// `sources`: the discovery's last answer, or a new one in its place.
+fn sources(app: &App, request: &Value) -> Value {
+    let wanted = &request["inventory"];
+    if wanted.is_null() {
+        let local = app.ctx.store.local();
+        return json!({"ok": true, "inventory": local.sources.as_deref()});
+    }
+    match serde_json::from_value::<qrec_shell::sources::SourceInventory>(wanted.clone()) {
+        Ok(inventory) => {
+            app.ctx.store.queue().push(Inbound::Sources(inventory));
+            json!({"ok": true})
+        }
+        Err(e) => json!({"ok": false, "error": format!("not an inventory: {e}")}),
     }
 }
 
