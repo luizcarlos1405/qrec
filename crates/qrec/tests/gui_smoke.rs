@@ -251,6 +251,8 @@ fn smoke_steps_1_to_10() {
     );
     let header = nested.window(0).labels("region-header").join(" ");
     assert!(header.contains("Stop"), "{header:?}");
+    let a11y = nested.window(0).ctl(json!({"op": "a11y"}));
+    assert_eq!(a11y["ok"], true, "the a11y walk while recording: {a11y}");
     // At least MIN_TAKE_FRAMES (10) recorded before the stop.
     thread::sleep(Duration::from_millis(1000));
     let stop = nested.cli_json(&project, &["record", "stop"]);
