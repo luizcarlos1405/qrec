@@ -1269,6 +1269,33 @@ fn purging_from_the_bin_waits_for_the_recording() {
         takes(&nested, &project).contains(&"take-0004".to_owned()),
         "take 4 stays"
     );
+    // S18's footer waits too (R57's audit: its gate was untested). Ctrl+
+    // click take 2 (Ctrl held from 400 to 1600 ms of the `wtype` run), then
+    // the footer's Purge from disk.
+    let (x, y) = center(&mut nested, "bin-take-2");
+    let held = nested.keys_held(&["-M", "ctrl", "-s", "1200", "-m", "ctrl"], 200);
+    thread::sleep(Duration::from_millis(900));
+    nested.pointer().click(x, y);
+    held.wait();
+    nested.window(0).wait_idle();
+    assert_eq!(
+        nested.window(0).local()["binSelection"],
+        json!(["take-0004", "take-0002"])
+    );
+    click(&mut nested, "bin-purge-selected");
+    let toasts = nested.window(0).labels("toast-host");
+    assert!(
+        !toasts.iter().any(|l| l.starts_with("Recording take")),
+        "the footer's purge was sent: {toasts:?}"
+    );
+    assert!(overlays(&mut nested).is_empty(), "nothing to confirm");
+    let kept = takes(&nested, &project);
+    assert!(
+        ["take-0002", "take-0004"]
+            .iter()
+            .all(|t| kept.contains(&(*t).to_owned())),
+        "takes 2 and 4 stay: {kept:?}"
+    );
     let stop = nested.cli_json(&project, &["record", "stop"]);
     assert_eq!(stop["ok"], true, "qrec record stop: {stop}");
     wait_record_phase(&nested, &project, "idle");
