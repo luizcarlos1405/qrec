@@ -259,6 +259,23 @@ fn s01a_first_run() {
     assert_clean(&mut nested);
     let shot = nested.screenshot("first-run");
     compare(&nested, &shot, "S01a-first-run-no-sources.png");
+    // WP10's shot review: S01a's card is 204 px for its five rows, 40 px
+    // apart (39 for the first and the last, under the card's own stroke),
+    // each separator straight across its whole inside (x 368–847: the
+    // rounded check buttons bent their ends up, the card was 202 tall).
+    let border = gui_support::token_rgb("swamp-night", "border");
+    let px = |x: f64, y: f64| {
+        let (dx, dy) = nested.opts.pixel_px(x, y);
+        gui_support::rgb_pixels(&shot, [dx, dy, 1, 1])[0]
+    };
+    for y in [208.0, 248.0, 289.0, 330.0, 371.0, 411.0] {
+        assert_eq!(px(600.0, y), border, "the card's line at y {y}");
+    }
+    for y in [248.0, 289.0, 330.0, 371.0] {
+        for x in [368.0, 847.0] {
+            assert_eq!(px(x, y), border, "the separator at y {y} reaches x {x}");
+        }
+    }
 }
 
 /// R25 (its audit: the GTK half was untested): the first run keeps the

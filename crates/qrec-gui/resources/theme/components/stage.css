@@ -145,15 +145,25 @@
   padding: 1px;
 }
 
+/* S01a's card: rows 40 px apart, each under a 1 px `border` separator
+   across the card's whole inside (square rows: libadwaita's rounded check
+   buttons bent the separators' ends up), the card's own stroke over the
+   first row's top and the last row's bottom pixel (39, 40, 40, 40, 39:
+   204 px for five, WP10's shot review). */
 checkbutton.first-run-row {
-  min-height: 40px;
+  min-height: 39px;
   padding: 0 12px;
   border-spacing: 12px;
+  border-radius: 0;
 }
 
 checkbutton.first-run-row:not(:first-child) {
-  min-height: 39px;
+  min-height: 40px;
   border-top: 1px solid var(--qrec-border);
+}
+
+checkbutton.first-run-row:last-child:not(:first-child) {
+  min-height: 39px;
 }
 
 checkbutton.first-run-row > check {
