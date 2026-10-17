@@ -3218,6 +3218,13 @@ frames at full size in the final audit:
   sit under the descenders and the bin's link is 12 px; the bin's actions
   block is 78 px and S18's footer label 13/600; S16b's toast actions start
   at its text's x and its body sits 2 px under the title.
+- S04, S04b, S05 (and S04's reduced-motion run): the ghost's lanes carry
+  the live waveform only where the level ring has readings, the seconds
+  since the window opened, at the ghost's right edge, and are silent to
+  their left (the fake hook's record offset starts take 10 before any
+  reading: 2:41 back, S04b's 31 s), where the frames' takes have levels
+  all along (review R01: a column older than the readings drew the oldest
+  one, so the fake tone's block waveform ran across the whole ghost).
 - Scale runs: the departures of their cases at 1, nothing more at the
   device size (at 1.5 the window draws at its whole factor, 2, and sway
   scales the buffer down, so every 1 px rule is 1.5 px smeared over two
@@ -3241,10 +3248,39 @@ frames at full size in the final audit:
   header's layers button left of Record, and the hint bar leaves out its
   last item ("? All keys") whole; the button opens the sheet over the
   right 384 px from the header to the hint bar, the content under it
-  dimmed and the button pressed, and `Esc` closes it. S06 at 1600×800 is
-  compact: the timeline 232 px (toolbar 36, ruler 28, video 72, lanes 48),
-  the stage 488 with the preview fitted at 746×420 and the transport under
-  it, the panel 720 high; nothing else moves.
+  dimmed and the button pressed, the hint bar naming the sheet's keys
+  only, `[Tab] Move focus · [Esc] Close` (review R33: it named the
+  editor's, which the sheet's keyboard trap swallowed), and `Esc` closes
+  it. S06 at 1600×800 is compact: the timeline 232 px (toolbar 36, ruler
+  28, video 72, lanes 48), the stage 488 with the preview fitted at
+  746×420 and the transport under it, the panel 720 high; nothing else
+  moves.
+
+Review of round 3, WP5 and WP7 (on 2101517): 84 confirmed findings (2
+high, 33 medium, 49 low) in 70 groups, fixed in five lanes, merged in
+this order: playback and stage (29edeeb), timeline (fde6481), panel
+(12d9ae7), chrome and keys (9733525), bin and export (4942fb2); the
+integration (57d65df) gave one home each to three rules two lanes had
+each written (the export panel's, the first run's, a dropdown list's Menu
+overlay). **Fixed: 64 groups** (74 findings), each with its tests (the
+high one, R00+R16: a bin preview is never the program playing,
+`LocalUi.program_playing`). **Already fixed: 6** (10 findings: R13,
+R51+R62+R71, R54, R60+R72, R61+R81, R64, by f2bbc25, 05b8c31, c156e44,
+e3b30a0, 86f63e8 and 88fbfe8). **Not a defect: none** (in part: R10's
+corner label, which GTK doesn't set again unchanged; R32+R41's symptoms,
+which GTK 4.22 doesn't show, though the open list wasn't a Menu overlay:
+fixed). **Left: none** (in part, R65: the sources and ticks outside the
+timeline still keep raw ids, to move to `guard::Slot`). Re-run on the
+integration: the workspace 1735 passed, 0 failed, 138 ignored; nested, on
+pixman and on gles2 alike, gui_shell 22, gui_smoke 1, gui_chrome 14,
+gui_timeline 28, gui_stage 23, gui_panel 17, gui_bin_export 24 (no GLib
+or GTK critical); gles2's warm frame-time p99 16.54–16.58 ms in 3 runs
+(max 16.67). Re-shot, with their compares, on both renderers: S04, its
+reduced-motion run, S04b and S05 (R01, the ghost's waveform, above) and
+S02-1000-sheet (R33, its hint bar, above); and gles2's S18 (its shot had
+caught the footer button's hover under the scrim: the case moves the
+pointer off it first now). Every other final shot is the picture it was
+but for its live pixels.
 
 ### WP0a — Interfaces, GTK-free (alone, first)
 
