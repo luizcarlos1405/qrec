@@ -196,16 +196,120 @@ fn watch_crop(crop: &gst::Element, pad: &gst::Pad, slot: &Arc<Mutex<CropSlot>>) 
             if !caps_or_buffer {
                 return gst::PadProbeReturn::Ok;
             }
-            let pending = lock_slot(&slot).take();
-            if let (Some(layout), Some(crop), Some(pad)) = (pending, crop.upgrade(), pad.upgrade())
-            {
-                set_crop(&crop, layout.crop);
-                set_pad(&pad, &layout);
-                lock_slot(&slot).done(layout.crop);
+            if let (Some(crop), Some(pad)) = (crop.upgrade(), pad.upgrade()) {
+                apply_pending(&slot, |layout| {
+                    set_crop(&crop, layout.crop);
+                    set_pad(&pad, layout);
+                });
             }
             gst::PadProbeReturn::Ok
         },
     );
+}
+
+/// The streaming thread's half of a [`CropSlot`]: takes the pending layout
+/// (the slot then says one is being applied), `write`s it outside the lock,
+/// and records its crop as applied. An engine layout offered meanwhile
+/// waits for the next frame ([`CropSlot::offer`], R24).
+fn apply_pending(slot: &Mutex<CropSlot>, write: impl FnOnce(&PadLayout)) {
+    let Some(layout) = lock_slot(slot).take() else {
+        return;
+    };
+    #[cfg(test)]
+    hold::taken();
+    write(&layout);
+    lock_slot(slot).done(layout.crop);
+}
+
+/// Test hook: the streaming thread waits right after it took a layout (the
+/// first one after [`arm`](hold::arm)), so a test can offer the engine's next
+/// layout while the probe is writing one (R24's audit: the engine path, not
+/// only the slot).
+#[cfg(test)]
+pub(super) mod hold {
+    use std::sync::{Arc, Condvar, Mutex, PoisonError};
+    use std::time::{Duration, Instant};
+
+    /// How long a held streaming thread waits for its release at most.
+    const HELD_AT_MOST: Duration = Duration::from_secs(10);
+
+    #[derive(Debug, Default)]
+    struct State {
+        held: bool,
+        released: bool,
+    }
+
+    type Shared = Arc<(Mutex<State>, Condvar)>;
+
+    static ARMED: Mutex<Option<Shared>> = Mutex::new(None);
+
+    /// The armed hold; dropping it releases the thread.
+    pub struct Hold(Shared);
+
+    /// Holds the next layout the streaming thread takes.
+    pub fn arm() -> Hold {
+        let shared: Shared = Arc::default();
+        *ARMED.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&shared));
+        Hold(shared)
+    }
+
+    impl Hold {
+        /// Whether the streaming thread took a layout and waits, within
+        /// `within`.
+        pub fn wait_held(&self, within: Duration) -> bool {
+            let (lock, cv) = &*self.0;
+            let deadline = Instant::now() + within;
+            let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            while !state.held {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return false;
+                }
+                state = cv
+                    .wait_timeout(state, left)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0;
+            }
+            true
+        }
+
+        /// The streaming thread goes on writing the layout it took.
+        pub fn release(&self) {
+            let (lock, cv) = &*self.0;
+            lock.lock().unwrap_or_else(PoisonError::into_inner).released = true;
+            cv.notify_all();
+        }
+    }
+
+    impl Drop for Hold {
+        fn drop(&mut self) {
+            ARMED.lock().unwrap_or_else(PoisonError::into_inner).take();
+            self.release();
+        }
+    }
+
+    /// The streaming thread took a layout: waits while a hold is armed
+    /// (once; at most [`HELD_AT_MOST`]).
+    pub(super) fn taken() {
+        let Some(shared) = ARMED.lock().unwrap_or_else(PoisonError::into_inner).take() else {
+            return;
+        };
+        let (lock, cv) = &*shared;
+        let deadline = Instant::now() + HELD_AT_MOST;
+        let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        state.held = true;
+        cv.notify_all();
+        while !state.released {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return;
+            }
+            state = cv
+                .wait_timeout(state, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
 }
 
 pub(super) struct Preview {

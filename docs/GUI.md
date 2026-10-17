@@ -1674,7 +1674,7 @@ with `fn widget(&self) -> gtk::Widget`) and
 | shell | `capture/mod.rs` | `PreviewOutput`, `LiveSourceStatus`…, `SideEvent::LiveStatus`, `cast_grace`, `LiveControl` + `control()` as no-ops, `PREVIEW_SINK_SUPPORTED = false` (WP1 sets it true) | WP0a |
 | shell | `capture/fake.rs` | test hooks (G§8.4): `QREC_FAKE_EOS_DELAY_MS`, `QREC_FAKE_PORTAL=deny\|cancel`, `QREC_FAKE_RECORD_OFFSET_FRAMES`, `QREC_FAKE_INVENTORY=design` | WP0a |
 | shell | `capture/{engine,live,meters}.rs`, `capture/tests.rs` | G§3.9 (`meters.rs` stub: WP0a) | WP1 |
-| shell | `capture/live.rs`, `capture/tests.rs` | the crop race (A§8.11): the `videoscale` guard, crops applied on the streaming thread (`CropSlot`), `transient_crops_never_lose_a_source` (WP4); only changed crop sides written (rounds 1–2 review, kept in `set_crop`), `takes_keep_every_stream_under_transient_crops` (round 3) | WP4 |
+| shell | `capture/live.rs`, `capture/tests.rs` | the crop race (A§8.11): the `videoscale` guard, crops applied on the streaming thread (`CropSlot`), `transient_crops_never_lose_a_source` (WP4); only changed crop sides written (rounds 1–2 review, kept in `set_crop`), `takes_keep_every_stream_under_transient_crops` (round 3); a layout offered while the probe writes one waits for the next frame (`CropSlot::offer`, review R24), on the engine's path with the probe held after it took a layout (`live::hold`, `a_layout_back_on_the_applied_crop_waits_for_the_crop_in_flight`) | WP4 |
 | shell | `player.rs` (new) | API stub (WP0a), implementation (WP1) | WP0a, WP1 |
 | shell | `ges_render.rs` | `rebuild_into` | WP1 |
 | shell | `media/preview.rs`, `media/sizes.rs` (new) | stubs (WP0a), implementation (WP2) | WP0a, WP2 |

@@ -2164,6 +2164,63 @@ fn takes_keep_every_stream_under_transient_crops() {
     tap.wait("more frames", |f| f.count > before + 5);
 }
 
+/// R24 on the engine's path (its audit): the streaming thread took a
+/// layout with a new crop (L1, a 1:1 box elsewhere) and is held right after
+/// (`live::hold`), as if still writing it; meanwhile an `Esc` brings back
+/// the scene's layout, whose crop is the one recorded as applied. It waits
+/// for the next frame and lands there. Sent to the pad at once, it was
+/// overwritten as the probe finished L1, and the preview kept the cancelled
+/// layout (a probe that took the pending layout without saying it was
+/// applying one passed the slot's own test).
+#[test]
+fn a_layout_back_on_the_applied_crop_waits_for_the_crop_in_flight() {
+    let _serial = serial();
+    let tap = PreviewTap::new();
+    let (side_tx, side_rx) = crossbeam_channel::unbounded();
+    let mut h = Harness::custom(Some(side_tx), |opts| {
+        opts.preview = Some(tap.output((960, 540)));
+    });
+    // A 4:3 box: `cover` crops the fake camera's 1280×720 to 960×720.
+    let scene = wide_scene(
+        vec![camera_layer(
+            "L2",
+            FAKE_CAMERA,
+            Rect::new(960, 480, 320, 240),
+        )],
+        Vec::new(),
+    );
+    let live = names(&[(FAKE_CAMERA, "live")]);
+    h.engine.set_live(Some(scene.clone()), h.inbox.clone());
+    statuses_until(&side_rx, "the size", |s| {
+        brief(s) == live && s.iter().all(|s| s.size.is_some())
+    });
+    // The pads are the canvas's × 3/4.
+    let rest = (720, 360, 240, 180);
+    inspect_until(&h, "the scene's layout", |i| {
+        i.layers.first().is_some_and(|l| l.rect == rest)
+    });
+    let control = h.engine.control();
+    let hold = super::live::hold::arm();
+    let mut moved = scene.scene.clone();
+    moved.layers[0].rect = Rect::new(640, 360, 240, 240);
+    control.transient_layout(Some(moved));
+    assert!(hold.wait_held(WAIT), "the probe never took L1");
+    // `Esc` while L1 is being written; the inspect after it, through the
+    // same queue, says the engine offered it.
+    control.transient_layout(None);
+    let during = h.engine.inspect();
+    hold.release();
+    let before = tap.frames().count;
+    tap.wait("more frames", |f| f.count > before + 5);
+    let info = h.engine.inspect();
+    assert_eq!(
+        info.layers[0].rect, rest,
+        "the cancelled layout stayed (while held: {:?}); {info:?}",
+        during.layers
+    );
+    assert!(!info.transient, "{info:?}");
+}
+
 /// H-4: the screen casts outlive the live pipeline by `cast_grace` (a fake
 /// portal that shares: its call count), then close; without a grace they
 /// close at once.
