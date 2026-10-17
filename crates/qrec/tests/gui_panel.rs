@@ -1830,14 +1830,16 @@ fn s12_the_autocut_page() {
         gui_support::token_rgb("swamp-night", "accent"),
         "c3e9's stroke inside a region"
     );
-    // The summary's heading 8 px under the knobs' end labels: its ink from
-    // y 562 as S12's (it sat 2 px low), its rows' from 587. The footer's
-    // Esc cap is a medium one, its `keycap` fill 17 px tall (20 with the
-    // stroke; the small one's was 13). WP10's shot review.
+    // The summary's heading 8 px under the knobs' end labels, on S12's
+    // baseline: its title's ink from y 563 (its glyphs a pixel shorter than
+    // the frame's, from 562; it sat a pixel lower, from 564), its rows' from
+    // 587. The footer's Esc cap is a medium one, its `keycap` fill 17 px
+    // tall (20 with the stroke; the small one's was 13). WP10's shot
+    // review.
     let surface = px(1300.0, 552.0);
     let heading = ink_top(&nested, &shot, [1228.0, 550.0, 154.0, 30.0], surface);
     assert!(
-        (heading - 562.0).abs() <= 1.0,
+        (heading - 563.0).abs() <= 0.75,
         "the summary's heading from y {heading}"
     );
     let rows = ink_top(&nested, &shot, [1300.0, 580.0, 190.0, 20.0], surface);
