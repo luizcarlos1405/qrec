@@ -3,8 +3,8 @@
 //! Everything the window hears from other threads goes through it: the
 //! Session's snapshots and toasts (the port), the replies to the window's
 //! own requests, the host's life, the startup workers, the player, the
-//! preview cache, source discovery, the io worker's results and the test
-//! control channel.
+//! preview cache, source discovery, the io worker's results, the settings
+//! watcher and the test control channel.
 //!
 //! - [`Queue::push`] works from any thread and never waits for GTK: a
 //!   short mutex, then at most one wake-up pending (an `AtomicBool`).
@@ -27,6 +27,7 @@ use qrec_shell::host::HostEvent;
 use qrec_shell::media::preview::PreviewData;
 use qrec_shell::player::PlayerEvent;
 use qrec_shell::sources::SourceInventory;
+use qrec_shell::watcher::SettingsEvent;
 use serde_json::Value;
 
 use crate::media::io::IoDone;
@@ -68,6 +69,9 @@ pub enum Inbound {
     /// An io job finished (`media::io`): a result for its continuation, or
     /// a panic to tell.
     Io(IoDone),
+    /// The settings watcher: `config.toml` or `keys.toml` changed (WP10,
+    /// `crate::follow`).
+    Settings(SettingsEvent),
     /// A test control request (G§3.18, test mode only).
     Test(TestRequest),
 }
@@ -96,6 +100,8 @@ impl std::fmt::Debug for Inbound {
             Inbound::Preview(_) => f.write_str("Preview"),
             Inbound::Sources(_) => f.write_str("Sources"),
             Inbound::Io(done) => write!(f, "{done:?}"),
+            Inbound::Settings(SettingsEvent::Pending) => f.write_str("Settings(Pending)"),
+            Inbound::Settings(SettingsEvent::Settled(_)) => f.write_str("Settings(Settled)"),
             Inbound::Test(_) => f.write_str("Test"),
         }
     }

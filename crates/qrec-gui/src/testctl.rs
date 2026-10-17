@@ -35,7 +35,7 @@
 //! | `action` | runs binding or GUI action `id` as its key would |
 //! | `sources` | the source discovery's last answer (`LocalUi.sources`, `inventory`: `null` before one); with `inventory` (a `SourceInventory`), that answer instead, through the queue as discovery's own (the first run's rows follow it, R25) |
 //! | `hints` | the hint bar's items and status (`hintbar::current_items`), the labels of the items it draws whole (`shown`: a narrow window leaves the trailing ones out) and whether a drawn one runs past the bar (`cut`, never) |
-//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`; whether the player plays, the program or a take, `playing`, and the program, `programPlaying`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11) and the panel's (`layerRowsAlive`, `audioRowsAlive`), the bin drawer's last slide as asked (`binSlide`: `open`, `animate`; nothing animates on start), the bin preview (`takePreview`: `take`, `playing`; `null` without one), the theme's subscribers (`themeSubscribers`: a dropped bin thumbnail's goes with it), the mud bars ticking (`mudBarsTicking`: none under the frozen clock), the meter bars on their refresh timer (`metersTicking`) and whether the export panel's Running clock runs (`exportClockTicking`: both come back with the next change after a caught panic, R65), how many times the timeline's canvas re-rendered (`timelinePaints`: not while only the playhead moves), and how many columns of the ghost's waveform its last paint with one worked out (`timelineGhostColumns`: those in view, R01) |
+//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`; whether the player plays, the program or a take, `playing`, and the program, `programPlaying`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it; libadwaita's color scheme, `colorScheme`: `scheme`, `dark`), the settings changes the follower applied and whether one is pending (`settingsApplied`, `settingsPending`, WP10), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11) and the panel's (`layerRowsAlive`, `audioRowsAlive`), the bin drawer's last slide as asked (`binSlide`: `open`, `animate`; nothing animates on start), the bin preview (`takePreview`: `take`, `playing`; `null` without one), the theme's subscribers (`themeSubscribers`: a dropped bin thumbnail's goes with it), the mud bars ticking (`mudBarsTicking`: none under the frozen clock), the meter bars on their refresh timer (`metersTicking`) and whether the export panel's Running clock runs (`exportClockTicking`: both come back with the next change after a caught panic, R65), how many times the timeline's canvas re-rendered (`timelinePaints`: not while only the playhead moves), and how many columns of the ghost's waveform its last paint with one worked out (`timelineGhostColumns`: those in view, R01) |
 //! | `a11y` | every visible icon-only button, focusable region or custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 //! | `fonts` | the family Pango loads for each bundled font |
 //! | `icons` | each custom symbolic icon drawn in a probe color: found, pixels, recolored |
@@ -600,6 +600,9 @@ fn local(app: &App) -> Value {
         "scale": app.ctx.theme.scale(),
         "reducedMotion": app.ctx.theme.motion().reduced,
         "reducedMotionClass": app.window.window.has_css_class("reduced-motion"),
+        "colorScheme": color_scheme(),
+        "settingsApplied": app.follower.applied(),
+        "settingsPending": app.follower.pending(),
         "panelTransition": panel_transition(app),
         "rev": app.ctx.store.rev(),
         "panics": guard::panics(),
@@ -608,6 +611,21 @@ fn local(app: &App) -> Value {
         "pid": std::process::id(),
         "playerNs": app.ctx.media.position_ns(),
     })
+}
+
+/// libadwaita's color scheme as set (`"force-light"`, `"force-dark"`, …)
+/// and whether it draws dark (WP10: Swamp Day forces light, the others
+/// dark).
+fn color_scheme() -> Value {
+    let manager = adw::StyleManager::default();
+    let scheme = match manager.color_scheme() {
+        adw::ColorScheme::ForceLight => "force-light",
+        adw::ColorScheme::ForceDark => "force-dark",
+        adw::ColorScheme::PreferLight => "prefer-light",
+        adw::ColorScheme::PreferDark => "prefer-dark",
+        _ => "default",
+    };
+    json!({"scheme": scheme, "dark": manager.is_dark()})
 }
 
 /// How the panel's pages switch (`panel::PAGES`): `"slide-left-right"`, or

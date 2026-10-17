@@ -10,7 +10,8 @@
 //!   its Wayland backend (no X11 fallback) unless `GDK_BACKEND` says
 //!   otherwise; without a display `run` fails before touching the folder.
 //! - `activate`: the store, the media hub, the key router, the theme and the
-//!   window; the X2 or unreadable-folder page; the first drain.
+//!   window; the settings follower (`config.toml` and `keys.toml` live,
+//!   WP10); the X2 or unreadable-folder page; the first drain.
 //! - The drain: everything the queue holds, in order, on the main thread
 //!   (a thread-local holds the app; before it is up the items wait).
 //! - Closing (window close, `app.quit`, D-12): a countdown is cancelled; a
@@ -81,6 +82,8 @@ pub struct App {
     pub ctx: Ctx,
     pub window: MainWindow,
     pub startup: Startup,
+    /// The user's settings, followed live (WP10).
+    pub follower: crate::follow::Follower,
     closing: Cell<Closing>,
     /// The exit code once the host stopped (a page's, or 0).
     exit_after_host: Cell<u8>,
@@ -268,11 +271,20 @@ fn activate(app: &adw::Application, startup: Startup) {
         window: window.layers.clone(),
     };
     let blocked = prepared.folder.is_err();
+    // `config.toml` and `keys.toml` from now on (G§3.14, WP10).
+    let follower = crate::follow::Follower::start(
+        &ctx,
+        &queue,
+        prepared.dirs.as_ref(),
+        prepared.config_file.as_ref(),
+        prepared.config.ui.reduced_motion,
+    );
     let the_app = Rc::new(App {
         app: app.clone(),
         ctx: ctx.clone(),
         window,
         startup,
+        follower,
         closing: Cell::new(Closing::No),
         exit_after_host: Cell::new(0),
         hold: RefCell::new(None),
@@ -424,6 +436,7 @@ impl App {
                 store.update_local(move |l| l.sources = Some(inventory));
             }
             Inbound::Io(done) => self.ctx.media.on_io(done),
+            Inbound::Settings(event) => self.follower.on_event(event),
             Inbound::Test(request) => testctl::handle(self, request),
         }
     }
