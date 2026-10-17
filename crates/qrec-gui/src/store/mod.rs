@@ -196,7 +196,17 @@ pub struct Subscribers<T: ?Sized> {
 
 struct SubscriberList<T: ?Sized> {
     next: Cell<u64>,
-    list: RefCell<Vec<(u64, Callback<T>)>>,
+    /// Each one's id, callback and guard name ([`subscriber_name`]).
+    list: RefCell<Vec<(u64, Callback<T>, Rc<str>)>>,
+}
+
+/// A subscriber's guard name (G§3.12): where it subscribed, so a panic and
+/// the main-loop probe (G§8.6) say which one ran ("a subscriber
+/// (stage/mod.rs:812)").
+fn subscriber_name(at: &std::panic::Location<'_>) -> Rc<str> {
+    let file = at.file();
+    let file = file.rsplit_once("/src/").map_or(file, |(_, rest)| rest);
+    format!("a subscriber ({file}:{})", at.line()).into()
 }
 
 impl<T: ?Sized + 'static> Default for Subscribers<T> {
@@ -211,16 +221,20 @@ impl<T: ?Sized + 'static> Default for Subscribers<T> {
 }
 
 impl<T: ?Sized + 'static> Subscribers<T> {
-    /// Adds `f`; it is called until the subscription is dropped.
+    /// Adds `f`; it is called until the subscription is dropped. Its guard
+    /// name is where it was added from (the caller of a `#[track_caller]`
+    /// wrapper such as [`Store::subscribe`]).
+    #[track_caller]
     pub fn add(&self, f: impl Fn(&T) + 'static) -> Subscription {
+        let name = subscriber_name(std::panic::Location::caller());
         let id = self.inner.next.get();
         self.inner.next.set(id + 1);
-        self.inner.list.borrow_mut().push((id, Rc::new(f)));
+        self.inner.list.borrow_mut().push((id, Rc::new(f), name));
         let list = Rc::downgrade(&self.inner);
         Subscription {
             remove: Some(Box::new(move || {
                 if let Some(list) = list.upgrade() {
-                    list.list.borrow_mut().retain(|(i, _)| *i != id);
+                    list.list.borrow_mut().retain(|(i, _, _)| *i != id);
                 }
             })),
         }
@@ -230,15 +244,15 @@ impl<T: ?Sized + 'static> Subscribers<T> {
     /// the next call). A subscriber that panics is reported and the others
     /// still run (`guard`, G§3.12).
     pub fn emit(&self, value: &T) {
-        let list: Vec<Callback<T>> = self
+        let list: Vec<(Callback<T>, Rc<str>)> = self
             .inner
             .list
             .borrow()
             .iter()
-            .map(|(_, f)| Rc::clone(f))
+            .map(|(_, f, name)| (Rc::clone(f), Rc::clone(name)))
             .collect();
-        for f in list {
-            crate::guard::run("a subscriber", || f(value));
+        for (f, name) in list {
+            crate::guard::run(&name, || f(value));
         }
     }
 
@@ -426,11 +440,13 @@ impl Store {
     }
 
     /// Follows snapshots.
+    #[track_caller]
     pub fn subscribe(&self, f: impl Fn(&Change) + 'static) -> Subscription {
         self.inner.changes.add(f)
     }
 
     /// Follows the GUI-only state (called after each change).
+    #[track_caller]
     pub fn subscribe_local(&self, f: impl Fn(&LocalUi) + 'static) -> Subscription {
         self.inner.locals.add(f)
     }
@@ -438,6 +454,7 @@ impl Store {
     /// Runs `f` right before the window closes its host (G§3.4.1): what a
     /// region still debounces (the timeline's `SetUi`) goes out now, ahead
     /// of the close in the host's FIFO, instead of after it, refused.
+    #[track_caller]
     pub fn subscribe_close(&self, f: impl Fn(&()) + 'static) -> Subscription {
         self.inner.closing.add(f)
     }
@@ -449,6 +466,7 @@ impl Store {
 
     /// Follows the toasts to show: the GUI's and the core's. Notices made
     /// before the first subscriber are handed to it at once.
+    #[track_caller]
     pub fn subscribe_notices(&self, f: impl Fn(&Notice) + 'static) -> Subscription {
         let unshown = std::mem::take(&mut *self.inner.unshown.borrow_mut());
         for notice in &unshown {
@@ -803,6 +821,24 @@ mod tests {
         assert!(ran.borrow().is_empty(), "nothing before the close");
         store.before_close();
         assert_eq!(*ran.borrow(), ["timeline", "stage"]);
+    }
+
+    /// A subscriber's guard name is where it subscribed (G§3.12): a panic
+    /// in it says which one, and so does the main-loop probe (G§8.6), where
+    /// every one was "a subscriber".
+    #[test]
+    fn a_subscriber_is_named_where_it_subscribed() {
+        let store = store();
+        let told = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&told);
+        crate::guard::set_reporter(move |what, _| seen.borrow_mut().push(what.to_owned()));
+        let line = line!() + 1;
+        let _broken = store.subscribe_close(|_| panic!("a broken region"));
+        store.before_close();
+        assert_eq!(
+            *told.borrow(),
+            [format!("a subscriber (store/mod.rs:{line})")]
+        );
     }
 
     #[test]
