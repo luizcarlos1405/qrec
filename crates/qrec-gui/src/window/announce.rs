@@ -131,6 +131,9 @@ fn landed(state: &State, take: &TakeId) -> Option<Announcement> {
 
 /// What a toast says: its title, then the first line of its body unless
 /// the body is a path (`exports/….mp4 · 88.4 MB`); assertive for an error.
+/// The CLI-style backticks of the core's copy (`` `qrec history` ``, a
+/// binding's id) aren't said: a screen reader reads them out as they are
+/// (WP10's code audit).
 pub fn toast(notice: &Notice) -> Announcement {
     let mut message = notice.title.trim().to_owned();
     let line = notice
@@ -147,6 +150,7 @@ pub fn toast(notice: &Notice) -> Announcement {
         });
         message.push_str(line);
     }
+    let message = message.replace('`', "");
     match notice.level {
         ToastLevel::Error => Announcement::assertive(message),
         _ => Announcement::polite(message),
@@ -365,6 +369,17 @@ mod tests {
         assert_eq!(
             toast(&short),
             Announcement::polite("That was shorter than Lord Farquaad. Take moved to the bin.")
+        );
+        // The copy's CLI-style backticks aren't said.
+        let unknown = Notice::new(ToastLevel::Warning, "keys.toml has a problem").with_body(
+            "keys.toml: unknown binding `nope.nothing` (`qrec keys` lists the ids)",
+        );
+        assert_eq!(
+            toast(&unknown),
+            Announcement::polite(
+                "keys.toml has a problem. keys.toml: unknown binding nope.nothing (qrec keys \
+                 lists the ids)"
+            )
         );
     }
 }

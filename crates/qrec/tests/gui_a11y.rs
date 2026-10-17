@@ -328,6 +328,17 @@ fn a_repeated_toast_is_announced_once() {
         m.starts_with("Nothing to undo")
     });
     assert_eq!(after[0].priority, "polite", "a warning: {after:?}");
+    // Its body's CLI-style backticks (`qrec history`) are shown, not said.
+    let shown = gui.gui_log();
+    let toast = shown
+        .lines()
+        .find(|l| l.contains("toast: Nothing to undo"))
+        .unwrap_or_default();
+    assert!(toast.contains("`qrec history`"), "the toast: {toast}");
+    assert!(
+        after[0].message.contains("qrec history") && !after[0].message.contains('`'),
+        "said: {after:?}"
+    );
     let spoken = announcements(gui);
     let repeated = spoken
         .iter()

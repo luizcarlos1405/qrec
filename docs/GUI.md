@@ -698,7 +698,10 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
   `gtk::Accessible::announce` on the window, `Medium` (AT-SPI's polite),
   `High` (assertive) for an error. The toast host announces each toast as
   it comes, its title and the first line of a body that isn't a path
-  (`Pushed::Shown` or `Queued`, not a coalesced one), also the export end
+  (`Pushed::Shown` or `Queued`, not a coalesced one), without the core
+  copy's CLI-style backticks (a screen reader says them as they are:
+  "Nothing to undo. qrec history lists the entries…"; WP10's code
+  audit), also the export end
   the panel's own page drops ("Layers! Like an onion. Your video is
   ready.", "Export failed. <why>"); the record button announces what no
   toast says, from the snapshots: a take that starts recording, in the
