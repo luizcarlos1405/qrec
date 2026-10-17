@@ -991,7 +991,9 @@ pub const STUCK: &str = "the Program picture is stuck; restart Qrec";
      player's frame (G§3.8; the key router tells the sync the frame it
      took, `media::program::key_took_player_frame`, and a playhead at it
      within a second is own: at 2×/4× or stepping in reverse the player is
-     past it by the time its snapshot comes, R22).
+     past it by the time its snapshot comes, R22;
+     `a_keys_seek_while_playing_never_pulls_the_player_back` sees the
+     wiring, with every command held 200 ms, R22's audit).
   5. `Ended` → `Pause`, then `Seek{End}` (reverse: `Seek{Start}`).
   6. `Error` → error toast "Playback stopped" with the message; stays
      paused. A bin preview's take that fails gets `take_preview.playing =

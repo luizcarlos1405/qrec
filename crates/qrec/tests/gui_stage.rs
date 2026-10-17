@@ -1157,6 +1157,63 @@ fn a_drag_during_a_commit_starts_from_it() {
     assert_clean(&mut nested);
 }
 
+/// R22's wiring (its audit): a key while the program plays seeks the
+/// playhead to the player's frame first (R18), and the sync takes that
+/// seek as its own (`KeyRouter::player_frame` tells it,
+/// `key_took_player_frame`), so the playing player isn't pulled back. With
+/// every command held 200 ms on its way, the second `l` (2×) seeks to the
+/// player's frame, whose snapshot comes 200 ms of playing later: the
+/// player is 6 and more frames on, past the 2-frame tolerance, and a seek
+/// the sync didn't know for its own sought it back ("program sync: seek").
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_keys_seek_while_playing_never_pulls_the_player_back() {
+    let mut nested = Nested::start(AREA, "key-seek-playing", Options::default());
+    let project = fixture(
+        &nested,
+        DesignVariant::Base,
+        Some(ui(CanvasMode::Program, 1200)),
+    );
+    open(
+        &mut nested,
+        &project,
+        Launch::a11y().with_env("QREC_GUI_TEST_SEND_DELAY_MS", "200"),
+    );
+    nested.keys(&["-k", "l"]);
+    gui_support::poll(Duration::from_secs(20), "the program playing", || {
+        let local = nested.window(0).local();
+        (local["programPlaying"] == true).then_some(())
+    });
+    thread::sleep(Duration::from_millis(500));
+    let before = gui_log(&mut nested).lines().count();
+    nested.keys(&["-k", "l"]);
+    gui_support::poll(Duration::from_secs(10), "2x", || {
+        let local = nested.window(0).local();
+        (local["playingRate"] == 2.0).then_some(())
+    });
+    // The pre-step's snapshot, 200 ms on, and the sync's step after it.
+    thread::sleep(Duration::from_millis(1000));
+    let log = gui_log(&mut nested);
+    let after: Vec<&str> = log.lines().skip(before).collect();
+    assert!(
+        after
+            .iter()
+            .any(|l| l.contains("dispatch") && l.contains("seek")),
+        "the key's pre-step seek went out: {after:#?}"
+    );
+    let pulled: Vec<&&str> = after
+        .iter()
+        .filter(|l| l.contains("program sync: seek"))
+        .collect();
+    assert!(pulled.is_empty(), "the player was sought back: {pulled:#?}");
+    let pause = nested
+        .window(0)
+        .ctl(json!({"op": "dispatch", "command": {"cmd": "pause"}}));
+    assert_eq!(pause["ok"], true, "{pause}");
+    nested.window(0).wait_idle();
+    assert_clean(&mut nested);
+}
+
 /// S10's canvas: a trim of c2d0's start edge (S08's seconds zoom, +29
 /// frames) shows take 5 frame 41 with the 2 px accent stroke and "Trim
 /// start · take 5 · frame 41". The trim drag is WP3's timeline: its rows
