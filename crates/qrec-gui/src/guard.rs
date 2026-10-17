@@ -111,6 +111,9 @@ pub fn run<R: AfterPanic>(what: &str, f: impl FnOnce() -> R) -> R {
 
 /// Runs `f`; `None` when it panicked (the panic is reported).
 pub fn catch<R>(what: &str, f: impl FnOnce() -> R) -> Option<R> {
+    // The main-loop probe times every guarded callback by its name (G§8.6;
+    // nothing while it is off).
+    let _timing = crate::probe::enter(what);
     match catch_unwind(AssertUnwindSafe(|| {
         panic_once(what);
         f()

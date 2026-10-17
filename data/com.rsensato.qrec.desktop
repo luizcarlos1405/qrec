@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Qrec
+GenericName=Screen Recorder
+Comment=Record your screen and camera, then edit the takes on a timeline
+Exec=qrec
+Icon=com.rsensato.qrec
+Terminal=false
+Categories=AudioVideo;Video;Recorder;
+Keywords=screen;camera;record;recorder;screencast;video;editor;
+StartupNotify=true
+StartupWMClass=com.rsensato.qrec

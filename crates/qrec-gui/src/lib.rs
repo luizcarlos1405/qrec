@@ -41,6 +41,7 @@ pub mod media;
 pub mod modal;
 pub mod palette;
 pub mod panel;
+pub mod probe;
 pub mod settings;
 pub mod stage;
 pub mod startup;

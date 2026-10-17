@@ -40,6 +40,7 @@
 //! | `fonts` | the family Pango loads for each bundled font |
 //! | `icons` | each custom symbolic icon drawn in a probe color: found, pixels, recolored |
 //! | `art` | each illustration through `gtk::Svg`: its size, drawn pixels and SVG errors (none for `ok`), and a known-bad probe whose errors must be counted |
+//! | `probe` | the main-loop probe's report (`probe::report`, G§8.6): `on`, its `ticks`, `stalls` (over 50 ms), `longestMs` and the newest stalls `kept` (`atMs`, `driftMs`, `ran`: the dispatch that held the loop); `on: false` without `QREC_GUI_PROBE=1` |
 //!
 //! Dispatches go through the Store (R8), a pushed inventory through the
 //! queue as discovery's answer; the other ops only read.
@@ -341,6 +342,7 @@ pub fn handle(app: &Rc<App>, request: TestRequest) {
         }
         "icons" => icons(app),
         "art" => art(app),
+        "probe" => crate::probe::report(),
         other => json!({"ok": false, "error": format!("no op {other:?}")}),
     };
     answer(&reply, value);

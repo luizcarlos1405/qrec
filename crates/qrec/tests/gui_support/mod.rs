@@ -523,6 +523,12 @@ impl Nested {
                 "a window can't be given {key}: it would leave the nested compositor (G§8.4)"
             );
         }
+        for key in &launch.unset {
+            assert!(
+                !DISPLAY_VARS.contains(&key.as_str()),
+                "a window keeps the nested {key} (G§8.4)"
+            );
+        }
         self.projects.borrow_mut().insert(project.to_path_buf());
         let n = self.windows.len();
         let suffix = if n == 0 {
@@ -534,7 +540,8 @@ impl Nested {
             .shots
             .join("logs")
             .join(format!("{}-client{suffix}.log", self.case));
-        let mut command = self.env.command(&qrec_bin());
+        let bin = launch.bin.clone().unwrap_or_else(qrec_bin);
+        let mut command = self.env.command(&bin);
         command.envs(self.display_env());
         command.env("GTK_A11Y", if launch.a11y { "test" } else { "none" });
         for (key, value) in &launch.env {
@@ -542,6 +549,9 @@ impl Nested {
         }
         if let Some(path) = &launch.path {
             command.env("PATH", path);
+        }
+        for key in &launch.unset {
+            command.env_remove(key);
         }
         command.arg("--project").arg(project).arg("-v");
         let group = Group::spawn("qrec", command, &log);
@@ -775,6 +785,13 @@ pub struct Launch {
     pub env: Vec<(String, String)>,
     /// A `PATH` of its own (a missing ffmpeg).
     pub path: Option<OsString>,
+    /// Another `qrec` than the one Cargo built: the package's
+    /// (`result/bin/qrec`, G§6.4; WP10).
+    pub bin: Option<PathBuf>,
+    /// Variables the window doesn't get, from the env or the harness (the
+    /// dev shell's plugin, schema and font paths, which the package's
+    /// wrapper sets itself); never [`DISPLAY_VARS`].
+    pub unset: Vec<String>,
 }
 
 impl Launch {

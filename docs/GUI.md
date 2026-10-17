@@ -1988,6 +1988,7 @@ previews, the player, io, opening, the portal).
 | `{"op":"fonts"}` | the family Pango loads for each bundled font; `ok` when each resolves to itself |
 | `{"op":"icons"}` | each custom symbolic icon drawn in a probe color: found, its pixels, recolored |
 | `{"op":"art"}` | each illustration through `gtk::Svg` (`theme::art`): loaded, its size, drawn pixels and `errors` (GtkSvg's, none for `ok`), and `probeErrors` of a known-bad SVG (`<foreignObject>`; at least one for `ok`: the count works) |
+| `{"op":"probe"}` | the main-loop probe's report (G§8.6, WP10): `on`, `ticks`, `stalls` (over 50 ms), `longestMs`, `runningMs` and the newest 64 stalls `kept` (`atMs` since it started, `driftMs`, `ran`: the dispatch that held the loop, or null); `{"ok":true,"on":false}` without `QREC_GUI_PROBE=1` |
 
 Dispatches go through the Store (R8); the other ops only read.
 
@@ -3147,6 +3148,26 @@ devShells.default = pkgs.mkShell {
   icons in `share/icons/hicolor/{scalable,128x128,64x64,32x32}/apps/com.rsensato.qrec.*`
   and `share/icons/hicolor/symbolic/apps/com.rsensato.qrec-symbolic.svg`.
 - `cargoTestFlags` unchanged (core tests only in the sandbox).
+
+As built (WP10): the entry is `data/com.rsensato.qrec.desktop` (Name
+Qrec, `Exec=qrec` per R18, `Icon=com.rsensato.qrec`: SPEC's App ID row
+names the icon after the app id; Categories `AudioVideo;Video;Recorder;`,
+`StartupWMClass=com.rsensato.qrec`, the GTK application id), and
+`data/install.sh <prefix>` installs it with the icons: the scalable icon is
+the theme's placeholder art `resources/art/app-icon-24.svg` with its
+`{{token}}`s in Swamp Night's colors, the PNGs come from it through
+`rsvg-convert` at build time, and the symbolic icon is the REC glyph (the
+app icon's symbolic form, DESIGN). All of it stays a placeholder until the
+pen export (G§0.6). `postInstall` runs the script, then
+`desktop-file-validate` (`desktop-file-utils` in `nativeBuildInputs`).
+wrapGAppsHook4 puts the GSettings schemas and `$out/share` on the
+wrapper's `XDG_DATA_DIRS` but not the icon themes (the line above was
+wrong: the packaged window missed 18 of the Adwaita symbolic icons G§5.2
+uses), so `preFixup` adds `adwaita-icon-theme` and `hicolor-icon-theme`
+too. The package's source leaves out `docs/`, `*.md` and the tests of
+every crate but the core's, so editing them doesn't rebuild it. Checks:
+`qrec-gui/tests/package_data.rs` (the entry's keys, the script's output and
+the 128 px icon's colors) and `gui_smoke`'s packaged case (G§8.5).
 
 ---
 
@@ -4459,10 +4480,70 @@ is empty. The main-loop probe (G§8.6) records stalls; a stall over 50 ms
 fails the run only under `QREC_TEST_WLR=gles2` (with pixman, the
 compositor, llvmpipe and ffmpeg share the CPU).
 
+As built (WP10): `smoke_steps_1_to_10`, one window for all ten steps, with
+`QREC_GUI_PROBE=1`. Step 4 also checks that no headless host spawned and
+that the shot has the 2 px `record` line and Stop. The bin count is the
+toolbar's `tl-bin-count`. Step 6 waits for the window to settle after the
+pause (its own seek parks the playhead at the paused player's frame) and
+checks that the playhead is past 10 and within a frame of
+`local.playerNs`. Step 8 checks that every line before the reply is a
+progress event and that ffprobe's packet count is the reply's frames. No
+GLib or GTK critical either. The stalls before the window first settles
+(the project opening: on pixman one of 55–80 ms at the first frame) are
+reported, not failed; under gles2 any stall after that fails. The
+probe's report, the paused playhead and player position, and each step's
+time go to `tmp/gui-shots/smoke/smoke-measurements.json`.
+
+Seen in step 6's shot, not fixed here (`media/program.rs`, G§3.10, D-51):
+the paused picture is the frame after the parked playhead. Take 8's frame
+1 showed at playhead 60, and take 1's frame 29 at playhead 28 with the
+player at 28.97 frames: on a pause the sink renders its preroll frame,
+the next one. A step from "the frame shown" (D-51) then starts one frame
+behind the picture.
+`the_packaged_build_opens_the_smoke_fixture` runs `nix build`'s
+`result/bin/qrec` (or `$QREC_PACKAGE/bin/qrec`; without one it says so
+and passes). It first checks the package's files (the desktop entry equal
+to `data/`'s, so a stale result fails; icon sizes; fonts and licenses) and
+its wrapper (the filtered gst-plugins-bad only, GES, gst-plugins-rs, the
+schemas, ffmpeg). Then it launches the package on the Smoke fixture with
+none of the dev shell's plugin, schema or font paths and an empty `PATH`:
+its own CLI finds the window, the window's environment is the wrapper's,
+the regions are BRIEF's, `fonts`/`icons`/`art` pass, the GUI log shows the
+fonts loaded from `<exe>/../share/qrec/fonts`, the live picture draws and
+Program plays and pauses (GES). GStreamer's registry is the one Qrec
+picks without `GST_REGISTRY_1_0`
+(`$XDG_CACHE_HOME/qrec/gstreamer-registry-<arch>.bin`,
+`gpu::plan_gst_env`), seeded with the dev shell's (the same plugin store
+paths) and never updated (`GST_REGISTRY_UPDATE=no`): a scan loads the va
+plugin, which opens every render node, NVIDIA's too. With
+`GST_DEBUG=GST_PLUGIN_LOADING:4` the case checks that the va plugin never
+loaded and that the registry is still the seeded one.
+
 ### G§8.6 Performance and robustness probes
 
 - **Main loop** (`QREC_GUI_PROBE=1`): a 10 ms GLib timeout logs any drift
-  over 50 ms with the name of the dispatch running.
+  over 50 ms with the name of the dispatch running. As built (WP10,
+  `src/probe.rs`): `guard::catch` times every guarded callback by its
+  G§3.12 name while the probe runs. A stall is logged as a warning with the
+  slowest callback since the tick before and the slowest one inside it, on
+  down (`the queue's drain (88 ms) > an inbound item (88 ms) > a subscriber
+  (timeline/mod.rs:406) (45 ms)`: a store subscriber is named where it
+  subscribed, `#[track_caller]`), or "none guarded" when GTK's own layout
+  or drawing held the loop. It starts at the end of `activate`, logs a
+  summary at the quit, and the test channel's `probe` op reports it.
+  `QREC_GUI_PROBE` also takes `main-loop`, and `1,timeline` runs both
+  probes. Tests: `probe.rs`'s unit tests and
+  `qrec-gui/tests/main_loop_probe.rs` (a 150 ms dispatch on the default
+  main context is a stall named after it).
+  The smoke's numbers (WP10, pixman, 8 runs on a machine busy with other
+  builds): 930–1,000 ticks in 13–14 s; none or one stall of 55–80 ms at
+  the first frame; during the steps 1–6 stalls of 50–140 ms, all in steps
+  7 and 8 (the keyed take stopping and landing, the export starting).
+  They name the hint bar's subscriber (`hintbar.rs:111`, 106 ms, 44 of
+  them disposing key caps), the timeline's snapshot subscriber
+  (`timeline/mod.rs:406`, up to 45 ms), the timeline surface's snapshot
+  (up to 35 ms), the stage's render (up to 72 ms) and GTK's own work.
+  Under gles2 they fail the smoke unless they stay under 50 ms there.
 - **Frame time**: frame-clock intervals (p50, p99) while zooming and
   scrolling the 300-clip perf fixture. Target p99 < 16.7 ms, asserted only
   under `QREC_TEST_WLR=gles2` on the dev machine (WP3), recorded under
