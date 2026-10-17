@@ -94,7 +94,7 @@ pub fn canvas(s: &gtk::Snapshot, sc: &Scene<'_>, height: f64) {
         let segments = tl::lane_segments(sc.state, &sc.view, &sc.boxes, lane);
         for (seg, b) in segments.iter().zip(&sc.boxes) {
             if sc.visible(seg.x, seg.w) {
-                segment(s, sc, seg, b.opacity, sc.rows.lane_y(i));
+                segment(s, sc, seg, b, sc.rows.lane_y(i));
             }
         }
     }
@@ -205,9 +205,11 @@ fn selection(s: &gtk::Snapshot, sc: &Scene<'_>, b: &ClipBox, dy: f64) {
     }
 }
 
-/// The selection's stroke and handles.
+/// The selection's stroke and handles; none on a clip being recorded over
+/// (S04b: the hatch shows the take replacing it, the frame draws no
+/// selection on c2d0; WP10's shot review).
 fn selection_marks(s: &gtk::Snapshot, sc: &Scene<'_>, b: &ClipBox, dy: f64) {
-    if !b.selected {
+    if !b.selected || b.recorded_over {
         return;
     }
     let p = sc.palette;
@@ -321,17 +323,20 @@ fn filmstrip(s: &gtk::Snapshot, sc: &Scene<'_>, b: &ClipBox, dy: f64) {
     s.pop();
 }
 
-/// A lane segment (C17): the take tint, the selection tint, the waveform,
-/// the divider.
-fn segment(s: &gtk::Snapshot, sc: &Scene<'_>, seg: &LaneSegment, opacity: f64, y: f64) {
+/// A lane segment (C17) of clip `b`: the take tint, the selection tint, the
+/// waveform, the divider; under a clip being recorded over, no selection
+/// tint and the video row's `muted` hatch over it all (S04b hatches the
+/// lanes under c2d0 too; WP10's shot review).
+fn segment(s: &gtk::Snapshot, sc: &Scene<'_>, seg: &LaneSegment, b: &ClipBox, y: f64) {
     let p = sc.palette;
     let h = sc.rows.lane;
     let r = rect(seg.x, y, seg.w, h);
+    let opacity = b.opacity;
     if opacity < 1.0 {
         s.push_opacity(opacity);
     }
     s.append_color(&p.take_tint[seg.color % 8], &r);
-    if seg.selected {
+    if seg.selected && !b.recorded_over {
         s.append_color(&p.selected, &r);
     }
     if let (Some(file), Some(peaks)) = (&seg.file, sc.peaks)
@@ -350,6 +355,9 @@ fn segment(s: &gtk::Snapshot, sc: &Scene<'_>, seg: &LaneSegment, opacity: f64, y
             &amps,
             ink,
         );
+    }
+    if b.recorded_over {
+        paint::hatch(s, &r, &p.muted_40, 0.0);
     }
     if seg.w >= 2.0 {
         s.append_color(&p.bg, &rect(seg.x + seg.w - 1.0, y, 1.0, h));
@@ -672,7 +680,7 @@ fn lifted_copy(s: &gtk::Snapshot, sc: &Scene<'_>, boxes: &[ClipBox]) {
     for (i, lane) in sc.lanes.iter().enumerate() {
         let segments = tl::lane_segments(sc.state, &sc.view, boxes, lane);
         for (seg, b) in segments.iter().zip(boxes) {
-            segment(s, sc, seg, b.opacity, sc.rows.lane_y(i) - 4.0);
+            segment(s, sc, seg, b, sc.rows.lane_y(i) - 4.0);
         }
     }
     for b in boxes {

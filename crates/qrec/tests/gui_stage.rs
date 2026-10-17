@@ -874,6 +874,47 @@ fn s04b_record_over() {
     );
     assert_clean(&mut nested);
     compare(&nested, &shot, "S04b-recording-over-c2d0.png");
+    // WP10's shot review: the clip recorded over is hatched in its lanes
+    // too, and it shows no selection: S04b draws neither its 2 px stroke
+    // (c2d0's right edge at x 617–618) nor the lanes' selected tint (the
+    // lanes were a flat tint + `selected`, the stroke dimmed `accent`).
+    let lane = gui_support::rgb_pixels(&shot, nested.opts.rect_px([460.0, 801.0, 140.0, 12.0]));
+    let stripes = lane.iter().filter(|p| p[0] >= 0x44).count();
+    assert!(stripes > 50, "the hatch over A1 under c2d0: {stripes} px");
+    // An `accent` stroke at the recording's 0.6 opacity (D-43) keeps every
+    // channel at 0.6 of `accent`'s or more, whatever is under it; the
+    // thumbnails under c2d0's right edge stay under 0.55 of it (128 and 137
+    // of these 216 px were the stroke's before).
+    let accent = gui_support::token_rgb("swamp-night", "accent");
+    let edge = gui_support::rgb_pixels(&shot, nested.opts.rect_px([616.0, 722.0, 3.0, 72.0]));
+    let stroked = edge
+        .iter()
+        .filter(|p| {
+            p.iter()
+                .zip(accent)
+                .all(|(&c, a)| f64::from(c) >= 0.55 * f64::from(a))
+        })
+        .count();
+    assert_eq!(
+        stroked, 0,
+        "c2d0 shows no selection stroke while recorded over"
+    );
+    // Between the stripes, the lane's ground is its take's tint, as S04b's
+    // `#342920` (with the selection's tint over it, `#3C3421`): a third of
+    // the lane at least, within the suites' 4 levels.
+    let ground = lane
+        .iter()
+        .filter(|p| {
+            p.iter()
+                .zip([0x34, 0x29, 0x20])
+                .all(|(a, b)| a.abs_diff(b) <= 4)
+        })
+        .count();
+    assert!(
+        ground * 3 >= lane.len(),
+        "the lane's ground under c2d0 is its take's tint: {ground} of {} px",
+        lane.len()
+    );
     let stop = nested.cli_json(&project, &["record", "stop"]);
     assert_eq!(stop["ok"], true, "{stop}");
     wait_phase(&nested, &project, "idle", Duration::from_secs(30));
