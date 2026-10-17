@@ -335,6 +335,8 @@ fn activate(app: &adw::Application, startup: Startup) {
     the_app.startup.watch_signals(&the_app);
     // What the workers reported while the window was being built.
     queue.kick();
+    // The main-loop probe (`QREC_GUI_PROBE=1`, G§8.6), now the window is built.
+    crate::probe::start_if_wanted();
     if blocked {
         tracing::info!(
             "startup stops at a page: {:?}",
@@ -623,6 +625,7 @@ impl App {
         }
         EXIT_CODE.with(|c| c.set(code));
         tracing::info!("quitting with {code}");
+        crate::probe::finish();
         self.ctx.media.shutdown();
         // The window goes now; the application lives on until NULL. One
         // that never showed (a panic in `activate`) stays: GTK 4.22

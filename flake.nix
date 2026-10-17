@@ -158,8 +158,20 @@
               path: type:
               let
                 base = baseNameOf path;
+                relative = pkgs.lib.removePrefix (toString ./. + "/") (toString path);
               in
-              !(builtins.elem base [ "target" "result" ".direnv" ".claude" "design" ]);
+              !(builtins.elem base [ "target" "result" ".direnv" ".claude" "design" "tmp" ])
+              # Not part of the build, so editing them doesn't rebuild the
+              # package: the docs, and the tests of every crate but the
+              # core's (the sandbox runs only qrec-core's).
+              && !(builtins.elem relative [
+                "docs"
+                "crates/qrec/tests"
+                "crates/qrec-cli/tests"
+                "crates/qrec-gui/tests"
+                "crates/qrec-shell/tests"
+              ])
+              && !(type == "regular" && pkgs.lib.hasSuffix ".md" base);
           };
           cargoLock.lockFile = ./Cargo.lock;
           nativeBuildInputs = with pkgs; [
@@ -168,6 +180,7 @@
             makeWrapper
             glib # glib-compile-resources (qrec-gui's build.rs)
             librsvg # rsvg-convert (icon PNGs)
+            desktop-file-utils # desktop-file-validate
           ];
           buildInputs = (linkLibs pkgs) ++ (guiData pkgs);
           # Integration tests need a session bus, devices and ffmpeg; run the
@@ -176,14 +189,22 @@
           # Runs before wrapGAppsHook captures the plugin path.
           preBuild = filterGstPluginPath;
           # The GUI's fonts next to the binary (<exe>/../share/qrec/fonts)
-          # and their licenses.
+          # and their licenses; the desktop entry and the hicolor icons
+          # (G§6.4: data/install.sh, the PNGs rendered by rsvg-convert; the
+          # app icon is the theme's placeholder art until the pen export).
           postInstall = ''
             mkdir -p $out/share
             cp -r ${qrecFonts pkgs}/share/qrec $out/share/
             cp -r ${qrecFonts pkgs}/share/licenses $out/share/
+            sh data/install.sh $out
+            desktop-file-validate $out/share/applications/com.rsensato.qrec.desktop
           '';
+          # The runtime tools, and the icon themes (G§5.2 uses Adwaita's
+          # symbolic icons): wrapGAppsHook4 puts the GSettings schemas on
+          # XDG_DATA_DIRS but not the icon themes.
           preFixup = ''
             gappsWrapperArgs+=(--prefix PATH : ${pkgs.lib.makeBinPath (runtimeTools pkgs)})
+            gappsWrapperArgs+=(--prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share:${pkgs.hicolor-icon-theme}/share)
           '';
           meta = {
             description = "Quick Wayland screen and camera recorder with a built-in editor";
