@@ -851,7 +851,9 @@ pub struct ConflictNote {
 
 /// The keymap's conflicts, one per key and set of bindings: two bindings
 /// that clash in several contexts (`global` and `recording`) are one
-/// conflict for people. In the order `keys.toml`'s conflicts were found.
+/// conflict for people, and so is a clash of some of them in one context
+/// (`recording`) that the others' clash (`global`) holds. In the order
+/// `keys.toml`'s conflicts were found.
 pub fn conflict_notes(map: &Keymap) -> Vec<ConflictNote> {
     let mut out: Vec<ConflictNote> = Vec::new();
     for c in &map.conflicts {
@@ -861,10 +863,11 @@ pub fn conflict_notes(map: &Keymap) -> Vec<ConflictNote> {
         let ids: Vec<String> = bindings.iter().map(|b| b.id.to_owned()).collect();
         if out
             .iter()
-            .any(|n| n.chord == c.chord && same_ids(&n.ids, &ids))
+            .any(|n| n.chord == c.chord && contains_all(&n.ids, &ids))
         {
             continue;
         }
+        out.retain(|n| !(n.chord == c.chord && contains_all(&ids, &n.ids)));
         out.push(ConflictNote {
             chord: c.chord.clone(),
             key: key_name(&c.chord),
@@ -875,8 +878,9 @@ pub fn conflict_notes(map: &Keymap) -> Vec<ConflictNote> {
     out
 }
 
-fn same_ids(a: &[String], b: &[String]) -> bool {
-    a.len() == b.len() && a.iter().all(|id| b.contains(id))
+/// Every id of `part` is in `all`.
+fn contains_all(all: &[String], part: &[String]) -> bool {
+    part.iter().all(|id| all.contains(id))
 }
 
 // --------------------------------------------------- editing keys.toml
@@ -3205,6 +3209,12 @@ mod tests {
         let notes = conflict_notes(&map);
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert_eq!(notes[0].ids, ["zoom.selection", "record.toggle"]);
+        // Three on S in `global`, two of them in `recording` too: one.
+        let map = resolve("[bindings]\nbin.toggle = \"s\"\nzoom.fit = \"s\"\n");
+        assert_eq!(map.conflicts.len(), 2, "{:?}", map.conflicts);
+        let notes = conflict_notes(&map);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].ids, ["zoom.fit", "bin.toggle", "clip.split"]);
         assert_eq!(key_name(&chord("ctrl+shift+z")), "Ctrl+Shift+Z");
         assert_eq!(key_name(&chord("alt+bracketleft")), "Alt+[");
         assert!(conflict_notes(&resolve("")).is_empty());

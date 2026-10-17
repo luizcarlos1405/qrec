@@ -1,0 +1,69 @@
+---
+source: crates/qrec-core/src/view/preferences.rs
+expression: text(&page)
+---
+! 1 conflict in ~/.config/qrec/keys.toml <Open keys.toml>
+!   X is bound to both Autocut the selection, or every clip and Remove selected clips (to the bin). Neither runs until one is changed.
+## Record
+Start / stop recording                   [R]                      Default
+Record over the selection                [O]                      Default
+Discard the last take (to the bin)       [D]                      Default
+Cancel recording, deselect, close overlay [Esc]                    Default
+## Playback
+Play / pause                             [Space]                  Default
+Shuttle reverse (again: 2×, 4×)          [J]                      Default
+Shuttle stop                             [K]                      Default
+Shuttle forward (again: 2×, 4×)          [L]                      Default
+Previous frame                           [←]                      Default
+Next frame                               [→]                      Default
+Back 1 s                                 [Shift][←]               Default
+Forward 1 s                              [Shift][→]               Default
+Previous edit point                      [↑]                      Default
+Next edit point                          [↓]                      Default
+Timeline start                           [Home]                   Default
+Timeline end                             [End]                    Default
+## Edit
+Select previous clip                     [,]                      Default
+Select next clip                         [.]                      Default
+Move selection left one slot             [<]                      Default
+Move selection right one slot            [>]                      Default
+Split clip at the playhead               [S]                      Default
+Trim start to the playhead               [[]                      Default
+Trim end to the playhead                 []]                      Default
+Trim 1 frame off the start               [Alt][[]                 Default
+Trim 1 frame off the end                 [Alt][]]                 Default
+Trim 10 frames off the start             [Alt][{]                 Default
+Trim 10 frames off the end               [Alt][}]                 Default
+Remove selected clips (to the bin)       [Del] [X]! [Backspace]   Conflict · Also bound to Autocut the selection, or every clip
+Autocut the selection, or every clip     [X]!                     Conflict · default C · Also bound to Remove selected clips (to the bin) · <reset>
+Autocut settings and preview             [Shift][C]               Default
+Undo                                     [Ctrl][Z]                Default
+Redo                                     [Ctrl][Shift][Z] [Ctrl][Y] Default
+Select all clips                         [Ctrl][A]                Default
+## Output
+Save the frame at the playhead (PNG)     [F]                      Rebound · default P · <reset>
+Export…                                  [Ctrl][E]                Default
+## View
+Zoom timeline in                         [=]                      Default
+Zoom timeline out                        [−]                      Default
+Zoom to fit                              [\]                      Default
+Zoom to the selection                    [Z]                      Default
+Toggle snapping                          […]                      Default · Press a key · Esc cancels · Backspace clears
+Switch canvas Live / Program             [Tab]                    Default
+Toggle the bin                           [B]                      Default
+Cheat sheet                              [?]                      Default
+Command palette                          [Ctrl][K] [:]            Default
+Settings                                 [Ctrl][,]                Default
+Focus the next region                    [F6]                     Default
+Focus the previous region                [Shift][F6]              Default
+Quit                                     [Ctrl][Q]                Default
+## Canvas
+Nudge layer left 1 px                    [←]                      Default
+Nudge layer right 1 px                   [→]                      Default
+Nudge layer up 1 px                      [↑]                      Default
+Nudge layer down 1 px                    [↓]                      Default
+Nudge layer left 10 px                   [Shift][←]               Default
+Nudge layer right 10 px                  [Shift][→]               Default
+Nudge layer up 10 px                     [Shift][↑]               Default
+Nudge layer down 10 px                   [Shift][↓]               Default
+-- Changes are saved to ~/.config/qrec/keys.toml.

@@ -1,0 +1,90 @@
+---
+source: crates/qrec-core/src/view/preferences.rs
+expression: "appearance_page(&UserConfig::default())"
+---
+{
+  "themeTitle": "Theme",
+  "themes": [
+    {
+      "id": "swamp-night",
+      "name": "Swamp Night",
+      "caption": "Default",
+      "selected": true,
+      "setting": [
+        "theme",
+        "swamp-night"
+      ]
+    },
+    {
+      "id": "swamp-day",
+      "name": "Swamp Day",
+      "caption": null,
+      "selected": false,
+      "setting": [
+        "theme",
+        "swamp-day"
+      ]
+    },
+    {
+      "id": "dragons-keep",
+      "name": "Dragon's Keep",
+      "caption": null,
+      "selected": false,
+      "setting": [
+        "theme",
+        "dragons-keep"
+      ]
+    },
+    {
+      "id": "ogre-mode",
+      "name": "Ogre Mode",
+      "caption": null,
+      "selected": false,
+      "setting": [
+        "theme",
+        "ogre-mode"
+      ]
+    }
+  ],
+  "scaleTitle": "Interface size",
+  "scales": [
+    {
+      "label": "100%",
+      "selected": true,
+      "setting": [
+        "ui.scale",
+        "1"
+      ]
+    },
+    {
+      "label": "125%",
+      "selected": false,
+      "setting": [
+        "ui.scale",
+        "1.25"
+      ]
+    },
+    {
+      "label": "150%",
+      "selected": false,
+      "setting": [
+        "ui.scale",
+        "1.5"
+      ]
+    }
+  ],
+  "reducedMotion": {
+    "title": "Reduce motion",
+    "label": null,
+    "caption": "Also on when your system asks for less motion.",
+    "on": false,
+    "key": "ui.reduced_motion"
+  },
+  "sounds": {
+    "title": "Sounds",
+    "label": "Squelch on record start and stop",
+    "caption": null,
+    "on": false,
+    "key": "ui.sounds"
+  }
+}
