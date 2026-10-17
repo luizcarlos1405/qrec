@@ -74,7 +74,15 @@ fn fonts(case: &str, spec: &str) -> Value {
         "measure": [digits(11.0), digits(12.0), digits(13.0)],
     }));
     assert_eq!(reply["ok"], true, "{reply}");
+    assert_clean(gui);
     reply
+}
+
+/// No panic caught and no GLib or GTK critical (the nested suites' rule).
+fn assert_clean(gui: &gui_support::Gui) {
+    let local = gui.local();
+    assert_eq!(local["panics"], 0, "{local}");
+    gui.assert_no_criticals();
 }
 
 /// Each measured text's advance: its logical width over its characters.
@@ -168,6 +176,7 @@ fn title_trace(case: &str, spec: &str) -> (usize, Vec<PathBuf>, Vec<Value>) {
         assert_eq!(split["ok"], true, "{split}");
         nested.window(0).wait_idle();
         shots.push(nested.screenshot("header"));
+        assert_clean(nested.window(0));
     }
     let (partial, full) = (crop(&shots[0]), crop(&shots[1]));
     assert_eq!(partial.len(), 480 * 48 * 3);
