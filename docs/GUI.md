@@ -1544,7 +1544,9 @@ time; A§8.7 rules for every child).
     they kept 176 px), and the empty timeline's art takes the new palette.
   - Known limits: a `config.toml` or `keys.toml` that is a symlink into
     another folder (a dotfiles manager) is re-read only when the link
-    itself changes; key caps drawn per render follow at their next render.
+    itself changes; key caps drawn per render follow at their next render,
+    and so does the export panel's Failed page's stderr well, whose height
+    follows a live scale at its next refresh.
 - **UI scale** (100/125/150 %, `ui.scale`): every `<n>px` in the CSS text
   is multiplied by the scale before loading, and so is Fraunces' optical
   size (`"opsz" <n>`, which follows the font size, within 9–144); custom

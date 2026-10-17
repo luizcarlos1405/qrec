@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gui_support::{Gui, Launch, Nested, Options, assert_regions, poll, wait_for_gui_host};
 use qrec_core::state::CanvasMode;
@@ -188,8 +188,15 @@ fn the_theme_follows_qrec_config_set() {
         let gui = nested.window(0);
         let before = applied_count(gui);
         config_set(&nested, &project, "theme", theme);
+        let set = Instant::now();
         let gui = nested.window(0);
         let local = applied(gui, before);
+        // A measurement for the record: the debounce (200 ms), the reload
+        // and a frame after `qrec config set` returned.
+        eprintln!(
+            "{theme}: applied and drawn {} ms after qrec config set",
+            set.elapsed().as_millis()
+        );
         assert_eq!(local["theme"], theme, "{local}");
         let light = theme == "swamp-day";
         let scheme = if light { "force-light" } else { "force-dark" };
@@ -264,6 +271,60 @@ fn the_empty_timelines_art_takes_the_new_theme() {
     let stale = gui_support::count_near(&shot, rect, night, 2);
     assert!(now > 500, "{now} pixels of Swamp Day's border");
     assert_eq!(stale, 0, "Swamp Night's border is still drawn");
+    assert_clean(nested.window(0));
+}
+
+/// The bin drawer's thumbnails (custom-drawn on `raised`: the broken take
+/// 9's hatch, every take's stripe) and the export panel's arrow (`raised`
+/// and `border`) take the new theme: nothing of the old `raised` is left in
+/// the bin or under Export.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_bins_thumbnails_and_the_export_arrow_take_the_new_theme() {
+    let mut nested = Nested::start(AREA, "bin-arrow", Options::default());
+    let s = nested.opts.scale;
+    let mut preset = s06();
+    preset.bin_open = true;
+    let project = fixture(&nested, "rust-traits-talk", &preset);
+    open(&mut nested, 0, &project, Launch::default());
+    // The export panel's Setup page: its arrow points at Export.
+    let gui = nested.window(0);
+    let opened = gui.ctl(json!({"op": "action", "id": "export"}));
+    assert_eq!(opened["ok"], true, "{opened}");
+    poll(Duration::from_secs(10), "the export panel", || {
+        gui.regions(&["export-panel"])
+            .contains_key("export-panel")
+            .then_some(())
+    });
+    gui.wait_idle();
+    let bin = gui.regions(&[])["region-bin"];
+    // BRIEF §2.8: the arrow's tip 172 px left of the panel's right edge
+    // (1592), at y 52.
+    let arrow = [1400.0, 46.0, 40.0, 14.0];
+    let night = gui_support::token_rgb("swamp-night", "raised");
+    let shot = nested.screenshot("swamp-night");
+    assert!(
+        gui_support::count_near(&shot, device(bin, s), night, 2) > (500.0 * s * s) as usize,
+        "the thumbnails on Swamp Night's raised"
+    );
+    assert!(gui_support::count_near(&shot, device(arrow, s), night, 2) > 0);
+
+    let before = applied_count(nested.window(0));
+    config_set(&nested, &project, "theme", "swamp-day");
+    applied(nested.window(0), before);
+    let shot = nested.screenshot("swamp-day");
+    let stale_bin = gui_support::count_near(&shot, device(bin, s), night, 2);
+    let stale_arrow = gui_support::count_near(&shot, device(arrow, s), night, 2);
+    assert_eq!(
+        stale_bin, 0,
+        "Swamp Night's raised is still drawn in the bin"
+    );
+    assert_eq!(
+        stale_arrow, 0,
+        "the arrow is still drawn in Swamp Night's raised"
+    );
+    let day = gui_support::token_rgb("swamp-day", "raised");
+    assert!(gui_support::count_near(&shot, device(bin, s), day, 2) > (500.0 * s * s) as usize);
     assert_clean(nested.window(0));
 }
 
@@ -439,6 +500,8 @@ fn a_rebound_key_works_once_keys_toml_changes() {
         vec!["Tab".to_owned()],
     );
     assert_eq!(shown_caps(nested.window(0)), defaults);
+    let keyed = nested.window(0).local()["keyedControls"].clone();
+    assert!(keyed.as_u64() > Some(5), "{keyed}");
 
     let gui = nested.window(0);
     let before = applied_count(gui);
@@ -448,6 +511,10 @@ fn a_rebound_key_works_once_keys_toml_changes() {
     );
     let local = applied(nested.window(0), before);
     assert_eq!(local["keymapProblems"], json!([]), "{local}");
+    assert_eq!(
+        local["keyedControls"], keyed,
+        "the reload made no new control"
+    );
     assert_eq!(
         shown_caps(nested.window(0)),
         (
