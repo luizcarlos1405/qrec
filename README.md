@@ -9,6 +9,7 @@ _Ogres have layers. So do your recordings._
 
 - `SPEC.md` — the product spec (what Qrec does and why).
 - `docs/ARCHITECTURE.md` — the engineering contract (types, protocols, rules).
+- `docs/GUI.md` — the window's plan: its architecture, work packages and tests.
 - `docs/RECORDING.md` — capture lessons from the earlier `qrec-tui`.
 - `design/README.md` — the pen.dev designs and the decisions waiting for review.
 
@@ -20,8 +21,8 @@ _Ogres have layers. So do your recordings._
 | M2 Capture engine + hosts | Done: GStreamer engine (screens through the portal, cameras, mics, system audio), fake backend, headless host, IPC, locking, crash recovery, `doctor` |
 | M0 Spikes | Export ↔ GES parity verified (per-layer SSIM ≥ 0.986, exact frames). Portal restore tokens, screen/system-audio sync and a 10-minute take verified on real hardware; the camera clap test needs a person (below) |
 | M3 Design | Swamp Night vertical slice in `design/qrec.pen`, **approved** 2026-10-15 (contrast decisions in DESIGN.md) |
-| M4 GUI | In progress: GTK4/libadwaita implementation of the approved slice |
-| M5 Polish | Keymap, cheat-sheet data, themes as tokens and Nix packaging are in; GUI parts wait for M4 |
+| M4 GUI | Built, in review: the approved slice (S01–S18b) in GTK4/libadwaita: header, stage and canvas, timeline, onion layers panel, bin, export, toasts, modals and Settings › Project, with the adaptive layouts and the end-to-end smoke. The drafted screens (the blocking pages, the command palette, the cheat sheet, the other Settings pages) wait for the design's export and show interim pages meanwhile (docs/GUI.md G§1.1) |
+| M5 Polish | Keymap, cheat-sheet data and themes as tokens are in. Packaging is done: `nix build` installs a desktop entry and icons, and the app icon is a placeholder until the design's is exported. The live theme switch, the theme proofs, accessibility and the audits are in progress (WP10) |
 
 ## Build and run
 
@@ -34,6 +35,26 @@ cargo build            # target/debug/qrec
 nix build              # the packaged, wrapped binary in ./result/bin/qrec
 nix run . -- --help
 ```
+
+## The window
+
+`qrec` with no command opens the window on the current folder (`--project
+DIR` names another; an empty folder becomes a project named after it).
+While the window is open, `qrec …` from a terminal or a compositor bind
+talks to it instead of starting a host of its own, and both change the
+project through the same commands.
+
+```sh
+nix run . -- --project ~/videos/my-video    # the packaged build
+cargo run -- --project ~/videos/my-video    # the dev build (inside nix develop)
+QREC_CAPTURE_BACKEND=fake cargo run -- --project tmp/try   # test patterns, no devices
+```
+
+The package also installs `share/applications/com.rsensato.qrec.desktop`
+and hicolor icons, so `nix profile install .` puts Qrec in the app
+launcher (the app icon is a placeholder until the design's is exported).
+A launcher starts Qrec in `$HOME`, which isn't a project: the window says
+"Not my swamp". Start it from a project folder, or with `--project`.
 
 ## Quick start (CLI)
 
@@ -76,7 +97,7 @@ binds {
 ```
 
 Compositor binds run in `$HOME`; the CLI then finds the single running
-Qrec (a headless recording host or, later, the GUI). With nothing running
+Qrec (a headless recording host or the window). With nothing running
 yet, `$HOME` isn't a project ("Not my swamp"): either start the first take
 from the project folder, or name it in the bind with
 `"qrec" "--project" "/home/me/videos/my-video" "record" "toggle"`.
@@ -103,11 +124,32 @@ my-video/
 ## Development
 
 ```sh
-cargo test --workspace                               # ~1,100 tests; CLI tests spawn ffmpeg
+cargo test --workspace                               # ~1,750 tests; CLI tests spawn ffmpeg
 cargo clippy --workspace --all-targets -- -D warnings
 cargo check -p qrec-core                             # the pure core on its own
 QREC_CAPTURE_BACKEND=fake qrec record start          # record test patterns, no devices
 ```
+
+The window's tests are ignored by default: each `crates/qrec/tests/gui_*.rs`
+suite runs the window in a nested headless sway, never on your desktop,
+with the fake capture backend. Screenshots and logs go to
+`tmp/gui-shots/<area>/` (docs/GUI.md G§8.4):
+
+```sh
+cargo test -p qrec --test gui_smoke -- --ignored --test-threads=1   # the end-to-end smoke (G§8.5)
+for suite in crates/qrec/tests/gui_*.rs; do                         # every suite, one window at a time
+  cargo test -p qrec --test "$(basename "$suite" .rs)" -- --ignored --test-threads=1
+done
+QREC_TEST_WLR=gles2 cargo test -p qrec --test gui_smoke -- --ignored --test-threads=1
+QREC_TEST_SCALE=2 cargo test -p qrec --test gui_stage -- --ignored --test-threads=1
+nix build && cargo test -p qrec --test gui_smoke packaged -- --ignored   # the package in nested sway
+```
+
+The compositor renders with pixman by default (software: nothing opens a
+GPU node). `QREC_TEST_WLR=gles2` uses GL on the first Intel or AMD render
+node, never NVIDIA's, and `QREC_TEST_SCALE` sets the output's scale. With
+`QREC_GUI_PROBE=1` the window logs every main-loop stall over 50 ms and
+what was running (the smoke runs with it).
 
 The crates follow FCIS: `qrec-core` is pure (no I/O, clocks or
 randomness; enforced by clippy), `qrec-shell` runs the effects, `qrec-cli`
