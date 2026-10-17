@@ -1660,15 +1660,67 @@ time; A§8.7 rules for every child).
   - `theme::fonts` checks through Pango that each bundled family resolves
     to itself (the test channel's `fonts`);
   - **manual font rendering**: startup sets `gtk-font-rendering = manual`
-    (`theme::fonts::configure_rendering`; the desktop's antialiasing and
-    hinting, applied alike to layout and drawing). GTK 4.22's automatic
-    mode lays a label's text out a pixel shorter at the top than it draws
-    it, so a partial redraw of a changed label (the header title: the
-    folder's name, then the project's) left the old text's ascender tops
-    above the new one under the GL renderer; `GSK_DEBUG=full-redraw` or
-    the manual mode removes it (`gui_shell`'s
-    `the_header_title_leaves_no_trace_of_the_old_one`, which fails by 8 px
-    on gles2 without it).
+    with GTK's default `gtk-hint-font-metrics` (on) and the desktop's
+    antialiasing and hinting (`theme::fonts::configure_rendering`,
+    `Rendering::QREC`), applied alike to layout and drawing. GTK 4.22's
+    automatic mode lays a label's text out a pixel shorter at the top than
+    it draws it, so a partial redraw of a changed label (the header title:
+    the folder's name, then the project's) left the old text's ascender
+    tops above the new one under the GL renderer; `GSK_DEBUG=full-redraw`
+    or the manual mode removes it (`gui_text`'s
+    `the_header_title_leaves_no_trace_on_gl`, below; `gui_shell`'s
+    `the_header_title_leaves_no_trace_of_the_old_one`, which failed by 8 px
+    on gles2 without it at WP0b, no longer can in today's header layout
+    (WP6's): its all-ascender title shows no mark on GL in automatic mode
+    or with metrics off, only with `hintstyle=none`, 4 px). The cost: Cairo
+    hints the metrics and Pango rounds the positions, so every glyph
+    advances a whole pixel: JetBrains Mono 7, 7 and 8 px at 11, 12 and
+    13 px where the frames advance 6.6, 7.2 and 7.8, and Atkinson's lines
+    drift a few px with their letters (G§7.2's departures).
+  - **The text-rendering experiment** (WP10, pixman; the crops and numbers
+    in `tmp/text-rendering/`, the PO's call, G§8.7): test mode's
+    `QREC_GUI_TEST_FONT_RENDERING` names another setup
+    (`theme::fonts::Rendering`: `mode=manual|automatic`, `metrics=on|off`,
+    `hintstyle=desktop|none|slight|medium|full`; the harness hands the test
+    run's value to every window, a case's own wins; the `fonts` op reports
+    the settings as they are). GTK 4.22 has no other text setting worth a
+    candidate: `gtk-xft-rgba` is ignored (GTK 4 antialiases in grayscale
+    only), `gtk-xft-antialias = 0` is aliased text, and per-widget font
+    options can't unhint the metrics (`gtk-hint-font-metrics` wins). 69
+    single-label texts of S02, S06, S12, S14, S16 and S17 measured against
+    the frames (the ink between its 50 % crossings, `tmp/text-rendering/
+    tools/measure.py`; the 21 mono and 48 UI texts):
+
+    | Setup | Mono within 1 px (mean \|Δ\|) | UI within 1 px (mean \|Δ\|) | The title | Glyphs |
+    | --- | --- | --- | --- | --- |
+    | Qrec's: manual, metrics hinted | 4 of 21 (4.3 px; −9.5…+4.8) | 30 of 48 (1.5 px; −5.2…+9.8) | 0 px | crisp; uneven letter gaps |
+    | automatic | 21 (0.18 px) | 46 (0.27 px) | **12 px** | as the frames' |
+    | manual, metrics off (the desktop's slight hinting) | 21 (0.18 px) | 46 (0.27 px) | **12 px** | as the frames' |
+    | manual, metrics off, `hintstyle=none` | 21 (0.18 px) | 46 (0.27 px) | 0 px; **4 px** on the all-ascender title | blurred: every horizontal edge over two rows |
+    | manual, metrics off, `hintstyle=full` (`medium` is the same to Cairo: FreeType's normal hinting) | 21 (0.28 px) | 45 (0.61 px) | **12 px** | misshapen |
+
+    The UI texts the fractional setups leave over 1 px are style, the same
+    in every setup (S06's clip tooltip title −6, S14's Preview +2). Scale 2
+    measures the same (text is laid out at 1×) and looks alike in every
+    setup. The ink's weight doesn't move with the setup (the UI texts 100 %
+    of the frames' ink on average, the mono ones 93 %: lighter, in every
+    setup). Unhinted metrics also round line heights differently: S16's Done
+    page is 214 px high (the frame's and Qrec's 216: `gui_bin_export`'s
+    `s16_export_done` fails), and the stderr box wraps "filter" to its own
+    line (51 mono characters at 7.2 px don't fit it, where the frame's do).
+    "The title" is `gui_text`'s GL case: on GSK's GL renderer in software
+    (Mesa's llvmpipe; no GPU node opened: every open of the experiment's
+    GL runs traced), the header title after a partial redraw against a
+    full one's, the folder named in accented capitals (`ÅÉÂ…`, the tallest
+    ink a title draws). GL draws a hinted font's glyphs on a whole-pixel
+    baseline while the bounds that limit a partial redraw are the unhinted
+    ink at the exact one; with unhinted metrics the baselines are
+    fractional and the accents' tops land a row above the bounds (the mark,
+    GL only: Cairo draws inside them, so the pixman runs never show it).
+    Unhinted glyphs (`hintstyle=none`) GL puts on quarter pixels instead,
+    which leaves a fainter mark (4 px on the all-ascender title). So Qrec
+    keeps its setup: every setup that matches the frames' widths brings the
+    mark back.
 - **Icons**: Adwaita symbolic names (G§5.2). Custom symbolic SVGs (16 px
   viewBox, fills only) live in
   `resources/icons/scalable/actions/qrec-*-symbolic.svg`, registered with
@@ -2021,7 +2073,7 @@ previews, the player, io, opening, the portal).
 | `{"op":"hints"}` | the rendered hint items (`keys`, `label`, `enabled`, `emphasized`) and the status text (`hintbar::current_items`); `shown`, the labels of the items the bar draws whole (a narrow window leaves the trailing ones out, `hintbar::fitting`), and `cut`, whether a drawn one runs past the bar (never; both WP7 integration audit) |
 | `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class; `colorScheme`, libadwaita's `scheme` as set and whether it draws `dark`; `settingsApplied`, the settings changes the follower applied, and `settingsPending`, one is being debounced: WP10, G§3.14); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); `focusBounds` and `focusType`, the focused widget's window bounds and GType, and `focusVisible`, the window's (WP10's focus walks); `announcements`, what the window announced to screen readers (`message`, `priority`, `sent`: false without a context that announces; WP10, G§3.7); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `playing`, the player plays (the program or a bin preview's take), and `programPlaying`, the program plays in it (`LocalUi.program_playing`, G§3.10 step 3; review R00, R16); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `gtkAnimations`, GTK's `gtk-enable-animations` (off in test mode but with its `animations` flag, and while the Narrow sheet is open under reduced motion; WP10); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and the panel's (`layerRowsAlive`, `audioRowsAlive`; review R43), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit); `metersTicking`, the meter bars on their refresh timer, and `exportClockTicking`, the export panel's Running clock (null without a panel): each comes back with the next change after a caught panic (G§3.12; R65's audit); `themeSubscribers`, the theme's callbacks (a dropped bin thumbnail's goes with it, R11; WP7 integration's shot and code audits); `timelinePaints`, how many times the timeline's canvas made its render node again (not while only the playhead moves, C16; review R10); `timelineGhostColumns`, how many columns of the ghost's waveform the last paint with a ghost worked out a lane (those in the time area, G§4.5; R01's audit); `binSlide`, the bin drawer's last slide as asked (`open`, `animate`: test mode animates nothing, so a case reads whether the open at start would have slid in; review fix, G§3.3); `takePreview`, the bin preview (`take`, `playing`: `Space` pauses it; null without one; review fix, D-17) |
 | `{"op":"a11y"}` | every visible icon-only button, focusable region or focusable custom widget without an accessible label; since WP10 also every focusable, sensitive widget the keyboard lands on (not the scrolled windows and lists that pass the focus to their rows) that a screen reader isn't told of (a `gtk::Text` GTK leaves out of the tree, role `None`, counts as the entry, spin button or editable label it belongs to; one of none lacks a `role`), can't name (a label, a labelled-by relation or text of its own; a text box by a label or relation alone: its text is its value) or can't say what it is (an editable label's generic role), and every focusable custom widget whose role says nothing (`Generic`, `Widget`, `None`, `Presentation`: the timeline canvas is a `Group` now). Each item says what it `lacks` (`label`, `name`, `role`). Expected empty; needs `GTK_A11Y=test` |
-| `{"op":"fonts"}` | the family Pango loads for each bundled font; `ok` when each resolves to itself |
+| `{"op":"fonts"}` | the family Pango loads for each bundled font; `ok` when each resolves to itself; `rendering`, GTK's text settings as they are (`mode`, `hintMetrics`, `hinting`, `hintStyle`, `antialias`: G§3.14's experiment), and `renderer`, the window's GSK renderer (`GskGLRenderer`, `GskCairoRenderer`); with `"measure": [{"family", "sizePx", "weight", "text"}]`, `widths`: each text laid out in the window's Pango context, its `logical` and `ink` widths in px (WP10) |
 | `{"op":"icons"}` | each custom symbolic icon drawn in a probe color: found, its pixels, recolored |
 | `{"op":"art"}` | each illustration through `gtk::Svg` (`theme::art`): loaded, its size, drawn pixels and `errors` (GtkSvg's, none for `ok`), and `probeErrors` of a known-bad SVG (`<foreignObject>`; at least one for `ok`: the count works) |
 | `{"op":"probe"}` | the main-loop probe's report (G§8.6, WP10): `on`, `ticks`, `stalls` (over 50 ms), `longestMs`, `runningMs` and the newest 64 stalls `kept` (`atMs` since it started, `driftMs`, `ran`: the dispatch that held the loop, or null); `{"ok":true,"on":false}` without `QREC_GUI_PROBE=1` |
@@ -3345,7 +3397,14 @@ reduced motion (WP1–WP7). Visible departures of the final shots:
   one the integration compared) is within a pixel (measured on S02, S06
   and S12 in the WP5 integration audit). With the stand-in icons' widths,
   the timeline toolbar's right group (the clip count, the zoom slider,
-  Fit) sits up to 13 px left of the frames'.
+  Fit) sits up to 13 px left of the frames'. Kept by WP10's text-rendering
+  experiment (G§3.14: unhinted metrics would bring every mono text within
+  a pixel of the frames, 21 of 21 measured where Qrec's setup has 4, and
+  bring back the header title's stray mark on GL); measured again there:
+  the ruler's labels +4, the ruler corner's "00:04:06:11" +2, S06's
+  transport +4.8, its tooltip's second line −9.5, S12's summary
+  timecodes −2 each, S14's take lines −2, S16's file path −8.8 and S17's
+  stderr lines −5…−10 (51 characters: −10).
 - S01a: (the inspector showed in the empty scene: fixed, hidden as BRIEF
   says). S01b: the first run names its layers and tracks after their
   sources ("Camera", "Screen FAKE-1", "Built-in Audio Analog Stereo", A2 at
@@ -3417,11 +3476,20 @@ frames at full size in the final audit:
   width, wider or narrower with its size and letters (S16's "Layers! Like
   an onion. Your video is ready." 264 px for 254, S17's first lead line 405
   for 395, S14's "Recovered after Qrec closed mid-take." 195 for 200), and
-  12–13 px text renders a little lighter than the frames'. Text-sized
-  controls follow it: S15a's Draft and High
+  the mono text renders a little lighter than the frames' (the UI text
+  doesn't: WP10's measure below; this item read "12–13 px text" until
+  then). Text-sized controls follow it: S15a's Draft and High
   segments are 2 and 1 px narrower (55 and 54 for 57 and 55), the header
   slot's mini bar 2 px left of the frame's (its "42%" 20 px of ink for
-  22), S16b's toast narrower (below).
+  22), S16b's toast narrower (below). Kept by WP10's text-rendering
+  experiment (G§3.14), which measured 48 UI texts of S02, S06, S12, S14,
+  S16 and S17: 30 within a pixel of the frames (unhinted metrics: 46,
+  the other two style), the rest −5.2…+9.8 (S16's body +9.8, S17's lead
+  +9.3, the header title "rust-traits-talk" +3.5, S12's "Removes 4
+  silences" +2.3, take 7's line −4.8, S12's subtitle −2.7); the ink's
+  weight is the frames' for the UI font (100 % on average, every setup)
+  and lighter for the mono one (93 %). Its crops (8×, and the scale-2
+  shots at 4×) and numbers are in `tmp/text-rendering/` for the PO.
 - Every timeline shot: the toolbar's left group sits right of the frames':
   the Snap toggle is 102 px for 100 and its contents 2–4 px right, the
   divider at x 224 for 217 (8 px each side of it where the frames leave 4
@@ -4236,6 +4304,17 @@ and the unit tests of the watcher's debounce, event filter and reads
   track Yeti Nano": C09, C10; `a_rename_field_is_a_named_text_box`). Every
   suite's cases walk (G§8.4 suites).
 
+**As built (the text lane).** G§3.14's text-rendering experiment: every
+setup GTK 4.22 offers measured against the frames on S02, S06, S12, S14,
+S16 and S17, with crops at scale 1 and 2 and the stray mark on GL; none
+kept the mark away with the frames' widths, so Qrec's setup stays (manual,
+hinted metrics) and the crops and numbers are the PO's (G§8.7 #9). Built
+for it: test mode's `QREC_GUI_TEST_FONT_RENDERING` (G§8.4), the `fonts`
+op's `rendering`, `renderer` and `widths` (G§3.18), and `gui_text` (its GL
+case guards the mark now: in today's header layout `gui_shell`'s title
+case, all ascenders, shows it in no setup but unhinted fractional
+metrics).
+
 ---
 
 ## G§8 Verification
@@ -4317,7 +4396,15 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   `GTK_A11Y=none` except for the a11y walk; a private `dbus-daemon` with no
   service activation; `QREC_GUI_TEST=1`; `QREC_FAKE_INVENTORY=design`;
   Mesa's EGL vendor file; `QREC_FONT_DIR` passed through (`TestEnv` drops
-  `QREC_*`); under pixman also `GDK_DISABLE=gl,vulkan`.
+  `QREC_*`), and `QREC_GUI_TEST_FONT_RENDERING` when the test run has it
+  (`gui_support::FONT_RENDERING`, G§3.14; a case's own wins); under pixman
+  also `GDK_DISABLE=gl,vulkan`. `gui_text`'s GL case gives its windows
+  `GDK_DISABLE=vulkan`, `GSK_RENDERER=gl`, `LIBGL_ALWAYS_SOFTWARE=1`,
+  `GALLIUM_DRIVER=llvmpipe` and `LP_NUM_THREADS=2`: GSK's GL renderer on
+  Mesa's llvmpipe, which opens no GPU node either (WP10 traced every open
+  of 15 such runs: no device node under `/dev/dri` or `/dev/nvidia`, only
+  listings of the `/dev/dri` folder, one a window by Qrec's own GPU facts,
+  as in any pixman run, and one by Mesa's).
 - **Test mode** (`QREC_GUI_TEST=1`):
   - `gtk-enable-animations = false`, so GTK and libadwaita transitions are
     instant (but with `QREC_GUI_TEST=1,animations`, WP10: GTK's own
@@ -4349,6 +4436,11 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
     Session, so a reply comes after the next gesture (the stage's
     in-flight commits, R23's audit; a key's pre-step seek while playing,
     R22's audit);
+  - `QREC_GUI_TEST_FONT_RENDERING=<spec>` sets GTK's text up otherwise
+    (`theme::fonts::Rendering::parse`: `mode=automatic`, `metrics=off`,
+    `hintstyle=none`, …; empty: Qrec's own; a spec that doesn't parse is
+    an error in the GUI log and Qrec's own): G§3.14's experiment, and
+    `gui_text`'s cases (WP10);
   - the control channel (G§3.18).
 - **Driving.** `qrec --project <dir> … --json` with the `TestEnv`
   (`Nested::cli`, `cli_json`); the pointer: `Nested::pointer()`, one
@@ -4571,9 +4663,14 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   a rebound key and the caps that follow it; a conflict's toasts),
   `gui_a11y` (announcements and focus order, G§3.7, G§3.8),
   `gui_audits` (the GPU device opens, G§8.6, and the Narrow sheet under
-  reduced motion) and `gui_themes` (the theme proofs; its composited
-  probes allow 2 levels a channel on pixman and 4 on gles2, the GL slack
-  not measured by its lane). Since WP10 every case of every suite runs the a11y walk on the states it shows
+  reduced motion), `gui_themes` (the theme proofs; its composited probes
+  allow 2 levels a channel on pixman and 4 on gles2, the GL slack not
+  measured by its lane) and `gui_text` (G§3.14:
+  `the_text_setup_is_manual_with_whole_pixel_advances`, and
+  `the_header_title_leaves_no_trace_on_gl`, whose windows run GSK's GL
+  renderer in software under either compositor renderer, with GTK's
+  automatic mode as its control: 12 px of mark there). Since WP10 every
+  case of every suite runs the a11y walk on the states it shows
   (launched with `Launch::a11y()`), but a window that never shows
   (`a_panic_in_activate_quits_with_1`), the frame-time probe (G§8.6:
   `GTK_A11Y=none`, as measured) and
@@ -4744,6 +4841,14 @@ At the M4 review:
 6. Fraunces axes: DESIGN's SOFT/WONK against the PNGs' defaults.
 7. The interim pages of G§1.1 #2, while G§0.2 is open.
 8. Closing while recording and while exporting (D-12).
+9. Text rendering (G§3.14, WP10's experiment): Qrec keeps whole-pixel
+   advances (its texts up to 10 px off the frames' widths, the mono
+   strings 0.2–0.4 px per character) because GTK's setups that match the
+   frames bring back the header title's stray mark on GL. The crops and
+   numbers in `tmp/text-rendering/`: `quality/` (each setup next to the
+   frame: 8× at scale 1, 4× at scale 2, and the mark itself,
+   `gl-stray-mark-automatic.png`), `out-scale1/` and `out-scale2/` (each
+   measured text, and `widths.md`), `gl/` (the GL runs).
 
 At M5: the drafted screens as built; the Swamp Day, Dragon's Keep and Ogre
 Mode proofs; reduced motion; 125 % and 150 %.
