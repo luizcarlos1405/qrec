@@ -231,6 +231,20 @@ fn s07_fit() {
     for y in [694.0, 708.0, 716.0, 718.0] {
         assert_eq!(px(175.0, y), border, "the corner's right hairline at y {y}");
     }
+    // The toolbar's caps where S07 draws them, their `keycap` fills from x
+    // 89 (Bin), 188 (Snap), 309 (Autocut) and 1099 (Fit): items 4 px apart,
+    // a button 8 px in and 6 past its cap (with small caps 6 px apart,
+    // Autocut's sat 15 px right; WP10's shot review).
+    let starts: Vec<f64> =
+        gui_support::keycap_fills(&nested.opts, &shot, [0.0, 660.0, 1216.0, 30.0])
+            .iter()
+            .map(|fill| fill[0])
+            .collect();
+    let want = [89.0, 188.0, 309.0, 1099.0];
+    assert!(
+        starts.len() == want.len() && starts.iter().zip(want).all(|(x, w)| (x - w).abs() <= 2.0),
+        "the toolbar's caps from x {starts:?}, for {want:?}"
+    );
     assert_clean(&mut nested);
 }
 

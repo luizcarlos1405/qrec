@@ -22,17 +22,26 @@
   box-shadow: inset 0 -1px var(--qrec-border);
 }
 
+/* S02's toolbar, measured (WP10's shot review): items 4 px apart (the
+   divider too); a button 8 px in to its icon and 6 past its key cap; the
+   label 6 px after the icon, the count chip and the cap 7 after what they
+   follow. Items were 6 apart with 8 px each side, so the left group drifted
+   right (Autocut's C 21 px with the medium caps). */
 .timeline-toolbar .tl-group {
-  border-spacing: 6px;
+  border-spacing: 4px;
 }
 
 .timeline-toolbar button.qrec-btn {
   min-height: 28px;
-  padding: 0 8px;
+  padding: 0 6px 0 8px;
 }
 
-.timeline-toolbar button.qrec-btn > box.tl-content {
+.timeline-toolbar button.qrec-btn > box {
   border-spacing: 7px;
+}
+
+.timeline-toolbar button.qrec-btn > box > image + label {
+  margin-left: -1px;
 }
 
 .timeline-toolbar button.qrec-btn.icon-32 {
@@ -67,7 +76,7 @@
 
 .tl-divider {
   min-width: 1px;
-  margin: 6px 2px;
+  margin: 6px 0;
   background-color: var(--qrec-border);
 }
 
