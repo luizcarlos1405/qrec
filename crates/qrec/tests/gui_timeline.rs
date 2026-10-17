@@ -1199,6 +1199,38 @@ fn s01b_empty_timeline() {
     assert_clean(&mut nested);
 }
 
+/// R79 (its audit's minor gap: no GUI test): with no key for
+/// `record.toggle` (`keys.toml`), the empty timeline names the button and
+/// shows no key cap: "Click Record" "and make some noise.", without the
+/// default cap's "R" (`show_empty_copy` hides it).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_empty_timeline_without_a_record_key_shows_no_cap() {
+    let mut nested = Nested::start(AREA, "empty-no-record-key", Options::default());
+    let config = nested.env.config_home().join("qrec");
+    fs::create_dir_all(&config).expect("the config folder");
+    fs::write(
+        config.join("keys.toml"),
+        "[bindings]\n\"record.toggle\" = []\n",
+    )
+    .expect("keys.toml");
+    let project = nested.env.empty_dir("rust-traits-talk");
+    open(&mut nested, &project, Launch::a11y());
+    let labels = nested.window(0).labels("region-timeline");
+    for want in [
+        "This swamp is quiet.",
+        "Click Record",
+        "and make some noise.",
+    ] {
+        assert!(labels.contains(&want.to_owned()), "{want:?} in {labels:?}");
+    }
+    for gone in ["R", "Press"] {
+        assert!(!labels.contains(&gone.to_owned()), "{gone:?} in {labels:?}");
+    }
+    assert_a11y(&mut nested);
+    assert_clean(&mut nested);
+}
+
 // ------------------------------------------------------------- ui.scale
 
 /// `ui.scale = scale` in the user's `config.toml` (the interface scale,
