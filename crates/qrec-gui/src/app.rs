@@ -90,6 +90,21 @@ pub struct App {
     channel: RefCell<Option<testctl::Channel>>,
 }
 
+/// Registers GTK's fundamental types (`GdkEvent`, `GskRenderNode`,
+/// `GtkExpression`) on the main thread before any other thread can register
+/// one. GLib hands out a fundamental type's ID (`g_type_fundamental_next`)
+/// and registers it in a second step, so two threads registering at once
+/// can take the same ID: GStreamer's init does on `qrec-gst` (`GstFlagSet`,
+/// `GstFraction`, … for its values) while `gtk::init` runs here, and once
+/// (WP10's scale runs, under load) "cannot register existing fundamental
+/// type 'GstFlagSet' (as 'GdkEvent')": GTK had no event type, and the
+/// window never opened. Registering a type needs no display.
+pub fn register_fundamentals() {
+    let _ = gtk::gdk::Event::static_type();
+    let _ = gtk::gsk::RenderNode::static_type();
+    let _ = gtk::Expression::static_type();
+}
+
 /// `qrec_gui::run`.
 pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
     log_panics();
@@ -115,6 +130,9 @@ pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
     QUEUE.with(|q| *q.borrow_mut() = Some(queue.clone()));
     let startup = Startup::new(prepared, queue);
     let wanted = startup.prepared().folder.is_ok();
+    // Before any worker: step 3's `gst::init()` registers GStreamer's
+    // fundamental types on its thread while GTK registers its own here.
+    register_fundamentals();
     // Steps 3 and 4 now, while GTK starts: the lock and the socket come
     // first. Not without a Wayland display: nothing is touched then.
     let gdk_backend = std::env::var_os("GDK_BACKEND");
