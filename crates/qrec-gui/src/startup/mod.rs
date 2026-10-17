@@ -189,23 +189,21 @@ pub fn prepare(args: &GuiArgs, interrupts: Interrupts) -> Prepared {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| dir.to_string_lossy().into_owned());
-    let mut keymap_problems = Vec::new();
-    let (config, config_file, keys_text) = match &dirs {
+    // The keymap's problems as the live reload words them too (WP10).
+    let (config, config_file, (keymap, keymap_problems)) = match &dirs {
         Ok(dirs) => {
             let (config, file) = config_file::read(&dirs.config_file());
-            let keys = keys_file::read(&dirs.keys_file()).unwrap_or_else(|why| {
-                keymap_problems.push(format!("{why}; using the default keys"));
-                String::new()
-            });
-            (config, Some(file), keys)
+            (config, Some(file), keys_file::load(&dirs.keys_file()))
         }
         Err(e) => {
             tracing::warn!("no user dirs ({e}): default settings and keys");
-            (UserConfig::default(), None, String::new())
+            (
+                UserConfig::default(),
+                None,
+                (keymap::resolve(""), Vec::new()),
+            )
         }
     };
-    let keymap = keymap::resolve(&keys_text);
-    keymap_problems.extend(keymap::problems(&keymap));
     let folder = match (folder, &dirs) {
         (Ok(_), Err(e)) => Err(BlockKind::HostFailed { error: e.clone() }),
         (folder, _) => folder,

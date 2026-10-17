@@ -31,6 +31,7 @@ pub mod blocking;
 pub mod cheatsheet;
 pub mod desktop;
 pub mod export;
+pub mod follow;
 pub mod guard;
 pub mod header;
 pub mod hintbar;

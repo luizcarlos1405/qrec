@@ -309,6 +309,25 @@ impl AutocutPage {
         let esc = button::binding_caps(&keymap, "cancel").unwrap_or_else(|| vec!["Esc".to_owned()]);
         let cancel = labeled_with_caps("Cancel", &esc, Kind::Secondary);
         cancel.set_widget_name("autocut-cancel");
+        // `cancel`'s key, also after `keys.toml` changes (WP10).
+        button::follow_keymap(&cancel, &keymap, |cancel, keymap| {
+            use crate::widgets::keycap::{CapSize, CapVariant};
+            let esc =
+                button::binding_caps(keymap, "cancel").unwrap_or_else(|| vec!["Esc".to_owned()]);
+            if let Some(content) = cancel.child().and_downcast::<gtk::Box>() {
+                button::show_binding_cap(
+                    &content,
+                    Some(&esc),
+                    button::BINDING_CAP,
+                    CapSize::Sm,
+                    CapVariant::Plain,
+                );
+            }
+            cancel.update_property(&[gtk::accessible::Property::Label(&button::accessible_name(
+                "Cancel",
+                Some(&esc),
+            ))]);
+        });
         let apply = labeled_with_caps("Apply autocut", &["Enter".to_owned()], Kind::Primary);
         apply.set_widget_name("autocut-apply");
         footer.append(&fill);
@@ -1002,6 +1021,7 @@ fn labeled_with_caps(text: &str, caps: &[String], kind: Kind) -> gtk::Button {
     // The caps keep their own height, centered (S12), not the button's.
     let chord = keycap::chord(caps, CapSize::Sm, variant);
     chord.set_valign(gtk::Align::Center);
+    chord.set_widget_name(button::BINDING_CAP);
     content.append(&chord);
     button.set_child(Some(&content));
     button.update_property(&[gtk::accessible::Property::Label(&button::accessible_name(

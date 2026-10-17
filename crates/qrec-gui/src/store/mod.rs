@@ -613,9 +613,14 @@ impl Store {
         Rc::clone(&self.inner.keymap.borrow())
     }
 
-    /// Replaces the keymap (`keys.toml` changed, WP10) and its problems.
+    /// Replaces the keymap (`keys.toml` changed, WP10) and its problems: the
+    /// controls built with a binding show its new keys
+    /// (`button::keymap_changed`), and whatever follows `LocalUi` (the hint
+    /// bar, the header, the transport) renders again.
     pub fn set_keymap(&self, keymap: Keymap, problems: Vec<String>) {
-        *self.inner.keymap.borrow_mut() = Rc::new(keymap);
+        let keymap = Rc::new(keymap);
+        *self.inner.keymap.borrow_mut() = Rc::clone(&keymap);
+        crate::widgets::button::keymap_changed(&keymap);
         self.update_local(move |l| l.keymap_problems = problems);
     }
 

@@ -8,11 +8,110 @@
 //! through `KeyRouter::run_binding` (G§3.7), so the key's pre-steps apply.
 //! A menu's button (C25) is [`menu_button`], which names its inner button
 //! for screen readers too.
+//!
+//! The keys shown follow the keymap live (WP10): a control built from a
+//! binding shows its keys through [`follow_keymap`], which shows them
+//! again for a new keymap ([`keymap_changed`], `keys.toml` reloaded) as
+//! long as the control lives: the cap ([`show_binding_cap`]), the
+//! tooltip's caps and the accessible name.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use gtk::glib;
 use gtk::prelude::*;
 use qrec_core::keymap::{Keymap, usable_keys};
 
 use super::keycap::{self, CapSize, CapVariant};
+
+/// How a control shows a keymap's keys.
+type ShowKeys = Rc<dyn Fn(&gtk::Widget, &Keymap)>;
+
+thread_local! {
+    /// The controls that show a binding's keys, each with how it shows them
+    /// (main thread only; a gone control's entry is dropped).
+    static KEYED: RefCell<Vec<(glib::WeakRef<gtk::Widget>, ShowKeys)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Shows `keymap`'s keys on `widget` with `show` now, and the keys of each
+/// new keymap ([`keymap_changed`]) while `widget` lives. `show` gets the
+/// widget (it holds no strong reference to it, G§3.12 R11).
+pub fn follow_keymap<W: IsA<gtk::Widget>>(
+    widget: &W,
+    keymap: &Keymap,
+    show: impl Fn(&W, &Keymap) + 'static,
+) {
+    show(widget, keymap);
+    let show: ShowKeys = Rc::new(move |widget, keymap| {
+        if let Some(widget) = widget.downcast_ref::<W>() {
+            show(widget, keymap);
+        }
+    });
+    KEYED.with(|keyed| {
+        let mut keyed = keyed.borrow_mut();
+        keyed.retain(|(w, _)| w.upgrade().is_some());
+        keyed.push((widget.upcast_ref::<gtk::Widget>().downgrade(), show));
+    });
+}
+
+/// The keymap changed (`Store::set_keymap`): every control that follows it
+/// shows its keys again.
+pub fn keymap_changed(keymap: &Keymap) {
+    // Out of the list first: a control's `show` may build widgets that
+    // follow the keymap too.
+    let live: Vec<(gtk::Widget, ShowKeys)> = KEYED.with(|keyed| {
+        let mut keyed = keyed.borrow_mut();
+        keyed.retain(|(w, _)| w.upgrade().is_some());
+        keyed
+            .iter()
+            .filter_map(|(w, show)| Some((w.upgrade()?, Rc::clone(show))))
+            .collect()
+    });
+    for (widget, show) in live {
+        show(&widget, keymap);
+    }
+}
+
+/// How many live controls follow the keymap.
+pub fn keyed() -> usize {
+    KEYED.with(|keyed| {
+        keyed
+            .borrow()
+            .iter()
+            .filter(|(w, _)| w.upgrade().is_some())
+            .count()
+    })
+}
+
+/// The name of the cap a control shows for its binding (in its content
+/// box, last).
+pub const BINDING_CAP: &str = "binding-cap";
+
+/// Shows `caps` as `content`'s last child (the chord, vertically centered,
+/// named `name`), in place of the one it showed (named `name` too); none
+/// for `None`.
+pub fn show_binding_cap(
+    content: &gtk::Box,
+    caps: Option<&[String]>,
+    name: &str,
+    size: CapSize,
+    variant: CapVariant,
+) {
+    let mut child = content.first_child();
+    while let Some(c) = child {
+        child = c.next_sibling();
+        if c.widget_name() == name {
+            content.remove(&c);
+        }
+    }
+    if let Some(caps) = caps {
+        let cap = keycap::chord(caps, size, variant);
+        cap.set_valign(gtk::Align::Center);
+        cap.set_widget_name(name);
+        content.append(&cap);
+    }
+}
 
 /// The C01 kinds.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -87,10 +186,11 @@ fn base(kind: Kind) -> gtk::Button {
 }
 
 /// A labeled button: optional icon, the label, and the key cap of
-/// `binding` (looked up in `keymap`), vertically centered. Its content box
-/// is 8 px apart by CSS (`button.qrec-btn > box`'s `border-spacing`:
-/// GtkBox adds it to its own spacing, which stays 0, and only CSS px follow
-/// the UI scale); a button that builds its own content does the same.
+/// `binding` (looked up in `keymap`, and in each new one: [`follow_keymap`]),
+/// vertically centered. Its content box is 8 px apart by CSS
+/// (`button.qrec-btn > box`'s `border-spacing`: GtkBox adds it to its own
+/// spacing, which stays 0, and only CSS px follow the UI scale); a button
+/// that builds its own content does the same.
 pub fn labeled(
     label: &str,
     icon: Option<&str>,
@@ -104,40 +204,55 @@ pub fn labeled(
         content.append(&gtk::Image::from_icon_name(icon));
     }
     content.append(&gtk::Label::new(Some(label)));
-    let caps = binding.and_then(|b| binding_caps(keymap, b));
-    if let Some(caps) = &caps {
-        let variant = if matches!(kind, Kind::Primary | Kind::Destructive) {
-            CapVariant::OnFill
-        } else {
-            CapVariant::Plain
-        };
-        let cap = keycap::chord(caps, CapSize::Sm, variant);
-        cap.set_valign(gtk::Align::Center);
-        content.append(&cap);
-    }
     button.set_child(Some(&content));
-    button.update_property(&[gtk::accessible::Property::Label(&accessible_name(
-        label,
-        caps.as_deref(),
-    ))]);
+    let Some(binding) = binding else {
+        button.update_property(&[gtk::accessible::Property::Label(label)]);
+        return button;
+    };
+    let variant = if matches!(kind, Kind::Primary | Kind::Destructive) {
+        CapVariant::OnFill
+    } else {
+        CapVariant::Plain
+    };
+    let (label, binding) = (label.to_owned(), binding.to_owned());
+    follow_keymap(&button, keymap, move |button, keymap| {
+        let caps = binding_caps(keymap, &binding);
+        if let Some(content) = button.child().and_downcast::<gtk::Box>() {
+            show_binding_cap(&content, caps.as_deref(), BINDING_CAP, CapSize::Sm, variant);
+        }
+        button.update_property(&[gtk::accessible::Property::Label(&accessible_name(
+            &label,
+            caps.as_deref(),
+        ))]);
+    });
     button
 }
 
 /// An icon-only button (`.icon-32`): its tooltip and accessible name say
-/// the action and the key of `binding`.
+/// the action and the key of `binding` (and of each new keymap's:
+/// [`follow_keymap`]).
 pub fn icon(icon: &str, action: &str, binding: Option<&str>, keymap: &Keymap) -> gtk::Button {
     let button = base(Kind::Flat);
     button.add_css_class("icon-32");
     button.set_icon_name(icon);
-    let caps = binding.and_then(|b| binding_caps(keymap, b));
-    button.update_property(&[gtk::accessible::Property::Label(&accessible_name(
-        action,
-        caps.as_deref(),
-    ))]);
-    match &caps {
-        Some(caps) => super::tooltip::keys(&button, action, std::slice::from_ref(caps)),
-        None => super::tooltip::text(&button, action),
-    }
+    let Some(binding) = binding else {
+        button.update_property(&[gtk::accessible::Property::Label(action)]);
+        super::tooltip::text(&button, action);
+        return button;
+    };
+    let tip = super::tooltip::keys(&button, action, &[]);
+    let (action, binding) = (action.to_owned(), binding.to_owned());
+    follow_keymap(&button, keymap, move |button, keymap| {
+        let caps = binding_caps(keymap, &binding);
+        button.update_property(&[gtk::accessible::Property::Label(&accessible_name(
+            &action,
+            caps.as_deref(),
+        ))]);
+        // Without a key, GTK's own text tooltip.
+        tip.set(caps.as_slice());
+        button.set_tooltip_text(caps.is_none().then_some(action.as_str()));
+        button.set_has_tooltip(true);
+    });
     button
 }
 

@@ -331,7 +331,9 @@ pub fn audio_facts(sources_json: &str, info_json: &str) -> Result<AudioInventory
 
 // ------------------------------------------------------------------- config
 
-/// `config.toml`, re-read when its size or mtime changes.
+/// `config.toml`, re-read when its size, mtime, inode or change time
+/// changes (a temp file renamed over it, as `qrec config set` does, is a
+/// new inode whatever its size and mtime).
 ///
 /// A file that can't be used (bad TOML, an unknown key, a wrong type, a
 /// value out of range, or one that can't be read) gives the defaults, and
@@ -363,8 +365,8 @@ enum Seen {
     Missing,
     /// `stat` failed otherwise (a config folder that can't be searched).
     Unreadable(String),
-    /// A file of this size and mtime.
-    File(u64, SystemTime),
+    /// A file of this size, mtime, inode and change time (s, ns).
+    File(u64, SystemTime, u64, (i64, i64)),
 }
 
 impl ConfigFile {
@@ -387,7 +389,12 @@ impl ConfigFile {
     /// none or it can't be used (then [`ConfigFile::take_problem`] says why).
     pub fn get(&self) -> UserConfig {
         let seen = match fs::metadata(&self.path) {
-            Ok(m) => Seen::File(m.len(), m.modified().unwrap_or(SystemTime::UNIX_EPOCH)),
+            Ok(m) => Seen::File(
+                m.len(),
+                m.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                m.ino(),
+                (m.ctime(), m.ctime_nsec()),
+            ),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Seen::Missing,
             Err(e) => Seen::Unreadable(e.to_string()),
         };
@@ -1125,6 +1132,36 @@ mod tests {
             let problem = problem.unwrap();
             assert!(problem.starts_with("can't read "), "{problem}");
         }
+    }
+
+    /// A temp file renamed over `config.toml` (`qrec config set`, an editor)
+    /// is read again even with the old one's size and mtime: the window
+    /// follows the file live (WP10) and two quick `config set`s can match
+    /// both (`swamp-day` and `ogre-mode` are as long).
+    #[test]
+    fn a_config_replaced_with_the_same_size_and_mtime_is_read_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        fs::write(&path, "theme = \"swamp-day\"\n").unwrap();
+        let file = ConfigFile::new(path.clone());
+        assert_eq!(file.get().theme, Theme::SwampDay);
+        let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+        let next = tmp.path().join(".config.toml.tmp-1");
+        fs::write(&next, "theme = \"ogre-mode\"\n").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&next)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        fs::rename(&next, &path).unwrap();
+        let meta = fs::metadata(&path).unwrap();
+        assert_eq!(
+            (meta.len(), meta.modified().unwrap()),
+            (20, mtime),
+            "the same size and mtime"
+        );
+        assert_eq!(file.get().theme, Theme::OgreMode);
     }
 
     /// What `pactl` printed on the dev machine, trimmed: a mic and a monitor

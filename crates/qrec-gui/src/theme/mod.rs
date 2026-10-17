@@ -1,8 +1,11 @@
 //! Theme, scale and motion (G§3.14). The theme, the UI scale and the
 //! motion policy come from `config.toml` at startup step 1, before the
-//! window maps; a switch later (WP10's config watcher, S21) reloads the
-//! tokens, swaps the [`Palette`] and tells subscribers, so custom-drawn
-//! widgets redraw (gtk4-rs doesn't expose `css_changed`).
+//! window maps; a switch later (WP10's config follower, `crate::follow`;
+//! S21) goes through [`Theme::apply`]: it swaps the [`Palette`], reloads
+//! the providers once (the tokens, every px at the new scale, libadwaita's
+//! color scheme) and tells the subscribers once, so custom-drawn widgets
+//! take the new palette and scale and redraw (gtk4-rs doesn't expose
+//! `css_changed`).
 //!
 //! Providers (all from the GResource, every `px` multiplied by `ui.scale`
 //! through [`css::scale_px`]):
@@ -152,33 +155,59 @@ impl Theme {
 
     /// Switches the theme live (WP10, S21).
     pub fn set_theme(&self, id: ThemeId) {
-        if self.id() == id {
-            return;
-        }
-        self.inner.id.set(id);
-        *self.inner.palette.borrow_mut() = Rc::new(Palette::for_theme(id));
-        self.reload();
-        self.inner.changed.emit(self);
+        self.apply(id, self.scale(), self.motion());
     }
 
     /// Changes the UI scale live (WP10).
     pub fn set_scale(&self, scale: f64) {
-        let scale = sane_scale(scale);
-        if (self.scale() - scale).abs() < f64::EPSILON {
-            return;
-        }
-        self.inner.scale.set(scale);
-        self.reload();
-        self.inner.changed.emit(self);
+        self.apply(self.id(), scale, self.motion());
     }
 
     /// Changes the motion policy live (WP10, the system setting).
     pub fn set_motion(&self, motion: MotionPolicy) {
-        if self.motion() == motion {
-            return;
+        self.apply(self.id(), self.scale(), motion);
+    }
+
+    /// Switches the theme, the UI scale and the motion policy at once (the
+    /// config follower, WP10): the theme's palette, then one reload of the
+    /// providers when the theme or the scale changed (the tokens, every px
+    /// scaled, libadwaita's color scheme), then the subscribers hear of it
+    /// once, so custom-drawn widgets take the new palette and scale and
+    /// redraw. Whether anything changed.
+    pub fn apply(&self, id: ThemeId, scale: f64, motion: MotionPolicy) -> bool {
+        let scale = sane_scale(scale);
+        let new_theme = self.id() != id;
+        let new_scale = (self.scale() - scale).abs() >= f64::EPSILON;
+        let new_motion = self.motion() != motion;
+        if !(new_theme || new_scale || new_motion) {
+            return false;
         }
+        if new_theme {
+            self.inner.id.set(id);
+            *self.inner.palette.borrow_mut() = Rc::new(Palette::for_theme(id));
+        }
+        self.inner.scale.set(scale);
         self.inner.motion.set(motion);
+        if new_theme || new_scale {
+            self.reload();
+        }
+        tracing::info!(
+            "theme {} at scale {scale}{} (live)",
+            css_name(id),
+            if motion.reduced {
+                ", reduced motion"
+            } else {
+                ""
+            }
+        );
         self.inner.changed.emit(self);
+        true
+    }
+
+    /// libadwaita's color scheme for the theme in use: forced light for
+    /// Swamp Day, forced dark for the others (the test channel's `local`).
+    pub fn color_scheme(&self) -> adw::ColorScheme {
+        color_scheme(self.id())
     }
 
     /// (Re)loads the providers for the current theme and scale and sets
@@ -215,12 +244,18 @@ impl Theme {
         for provider in old {
             gtk::style_context_remove_provider_for_display(&display, &provider);
         }
-        adw::StyleManager::default().set_color_scheme(if is_light(self.id()) {
-            adw::ColorScheme::ForceLight
-        } else {
-            adw::ColorScheme::ForceDark
-        });
+        adw::StyleManager::default().set_color_scheme(self.color_scheme());
         tracing::debug!("theme {} at scale {scale} loaded", css_name(self.id()));
+    }
+}
+
+/// libadwaita's color scheme for theme `id`: Swamp Day forces light, the
+/// others dark (G§3.14).
+pub fn color_scheme(id: ThemeId) -> adw::ColorScheme {
+    if is_light(id) {
+        adw::ColorScheme::ForceLight
+    } else {
+        adw::ColorScheme::ForceDark
     }
 }
 
@@ -357,6 +392,62 @@ mod tests {
             *seen.borrow(),
             [false, true, false],
             "a scale change isn't one"
+        );
+    }
+
+    /// A live switch of theme, scale and motion together is one change for
+    /// the subscribers (the follower applies a whole `config.toml`); the
+    /// same settings again are none; the palette follows the theme and the
+    /// scale stays within what the CSS takes.
+    #[test]
+    fn a_switch_is_one_change_for_the_subscribers() {
+        let theme = Theme::new(ThemeId::SwampNight, 1.0, MotionPolicy::default());
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let record = Rc::clone(&seen);
+        let _sub = theme.subscribe(move |t| {
+            record
+                .borrow_mut()
+                .push((t.id(), t.scale(), t.motion().reduced, t.palette().bg))
+        });
+        let reduced = MotionPolicy { reduced: true };
+        assert!(theme.apply(ThemeId::SwampDay, 1.5, reduced));
+        assert!(!theme.apply(ThemeId::SwampDay, 1.5, reduced), "no change");
+        theme.set_scale(9.0);
+        theme.set_theme(ThemeId::OgreMode);
+        theme.set_motion(MotionPolicy::default());
+        assert_eq!(
+            *seen.borrow(),
+            [
+                (
+                    ThemeId::SwampDay,
+                    1.5,
+                    true,
+                    Palette::for_theme(ThemeId::SwampDay).bg
+                ),
+                (
+                    ThemeId::SwampDay,
+                    2.0,
+                    true,
+                    Palette::for_theme(ThemeId::SwampDay).bg
+                ),
+                (
+                    ThemeId::OgreMode,
+                    2.0,
+                    true,
+                    Palette::for_theme(ThemeId::OgreMode).bg
+                ),
+                (
+                    ThemeId::OgreMode,
+                    2.0,
+                    false,
+                    Palette::for_theme(ThemeId::OgreMode).bg
+                ),
+            ]
+        );
+        assert_eq!(theme.color_scheme(), adw::ColorScheme::ForceDark);
+        assert_eq!(
+            color_scheme(ThemeId::SwampDay),
+            adw::ColorScheme::ForceLight
         );
     }
 

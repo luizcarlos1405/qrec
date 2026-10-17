@@ -1,11 +1,13 @@
 //! `keys.toml` (A§9.7): reading it for the GUI's startup (docs/GUI.md
-//! G§3.3 step 1, then `keymap::resolve`) and for `Query::Keys` (the
-//! Session's facts), within the bounds of [`config_file::read_text`]. The
-//! CLI's `qrec keys` reads it with that same reader, through
-//! `Backend::settings_text`. Editing bindings comes with the GUI's Settings
-//! pages. Owner: meta.
+//! G§3.3 step 1, then `keymap::resolve`), for its live reload (WP10, the
+//! settings watcher) and for `Query::Keys` (the Session's facts), within
+//! the bounds of [`config_file::read_text`]. The CLI's `qrec keys` reads it
+//! with that same reader, through `Backend::settings_text`. Editing
+//! bindings comes with the GUI's Settings pages. Owner: meta.
 
 use std::path::Path;
+
+use qrec_core::keymap::{self, Keymap};
 
 use crate::config_file;
 
@@ -15,6 +17,22 @@ use crate::config_file;
 /// default bindings and says so.
 pub fn read(path: &Path) -> Result<String, String> {
     config_file::read_text(path).map(Option::unwrap_or_default)
+}
+
+/// The keymap of `keys.toml` at `path` and what is wrong with it, one line
+/// each: why it can't be read ("…; using the default keys": the defaults
+/// then), then `keymap::problems` (the conflicts, unknown ids and bad keys,
+/// as the core words them). What the window loads at startup and again
+/// when the file changes (G§3.3 step 1, WP10).
+pub fn load(path: &Path) -> (Keymap, Vec<String>) {
+    let mut problems = Vec::new();
+    let text = read(path).unwrap_or_else(|why| {
+        problems.push(format!("{why}; using the default keys"));
+        String::new()
+    });
+    let keymap = keymap::resolve(&text);
+    problems.extend(keymap::problems(&keymap));
+    (keymap, problems)
 }
 
 #[cfg(test)]
@@ -39,5 +57,29 @@ mod tests {
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
         assert!(read(&path).unwrap_err().starts_with("can't read "));
+    }
+
+    /// `load`: the keymap and its problems, why the file can't be read
+    /// first (with the default keys), then the core's.
+    #[test]
+    fn keys_toml_loads_with_its_problems() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("keys.toml");
+        let (keymap, problems) = load(&path);
+        assert_eq!(keymap, keymap::resolve(""));
+        assert!(problems.is_empty());
+
+        fs::write(&path, "[bindings]\n\"autocut.run\" = \"x\"\n").unwrap();
+        let (keymap, problems) = load(&path);
+        assert_eq!(problems, keymap::problems(&keymap));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let (keymap, problems) = load(&path);
+        assert_eq!(keymap, keymap::resolve(""));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].starts_with("can't read "), "{problems:?}");
+        assert!(problems[0].ends_with("; using the default keys"));
     }
 }

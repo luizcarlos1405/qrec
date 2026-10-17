@@ -1884,6 +1884,23 @@ is processed first and the request re-dispatched against the new state (no
 effect of the old outcome has run yet). After 3 re-dispatches in a row the
 outcome is saved over the change.
 
+**The user's settings** (`watcher::watch_settings`, GUI WP10, docs/GUI.md
+G§3.14): the window follows `config.toml` and `keys.toml` live. A thread
+of its own (`qrec-settings`) watches the config dir the same way (the
+directory, `IN_CLOSE_WRITE|IN_MOVED_*|IN_CREATE|IN_DELETE`; reads never
+count), from the nearest existing folder while the config dir doesn't
+exist yet, moving the watch in once it is made (and back up when it goes,
+by its inode). A burst is one change: `SettingsEvent::Pending` at its
+first event, `Settled` once quiet 200 ms (at most 1 s) with both files read
+there (`Settings::read`: the config through the window's `ConfigFile`,
+whose problem it takes, so the "config.toml is invalid" warning is still
+once per change of the file between the window and its Session; the keymap
+and its problems through `keys_file::load`), and one pair as soon as the
+watch is up. Dropping the watcher waits at most 2 s for its thread. Hosts
+without a window don't watch: a Session reads `config.toml` again whenever
+its size, mtime, inode or change time changed (`ConfigFile`), and
+`keys.toml` per `Query::Keys`.
+
 ### A§8.10 GPU safety and GStreamer init
 
 - At the very top of `main()`, before any thread or GTK/GStreamer call
@@ -2487,7 +2504,10 @@ can't start: the capture engine is stuck ("The capture engine is stuck
 GUI's Record button says the same); an invalid `qrec.json` isn't one, since
 a take moves the bad file aside first (A§7.7).
 `keys.toml`: `[bindings]` id → string or array. `qrec keys --json` prints
-`[{"id","group","label","keys":[..],"cli","contexts"}]`.
+`[{"id","group","label","keys":[..],"cli","contexts"}]`. An open window
+reloads it when the file changes (A§8.9's settings watcher): the new keys
+work and show at once, and each problem it didn't have is a toast (GUI
+G§3.14).
 
 ### A§9.8 User config (`config.rs`)
 
@@ -2511,7 +2531,9 @@ pub fn set(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> Result<(
 shell only reads and atomically writes the file. Hosts read it as
 `Facts.config`: a file `parse` refuses gives all the defaults, and people
 get a "config.toml is invalid" warning once per change of the file
-(A§4.2), so a typo never drops the settings silently.
+(A§4.2), so a typo never drops the settings silently. An open window
+applies `theme`, `ui.scale` and `ui.reduced_motion` as soon as the file
+changes (A§8.9's settings watcher; GUI G§3.14).
 
 ### A§9.9 Naming (`naming.rs`)
 

@@ -13,7 +13,7 @@ use gtk::prelude::*;
 use qrec_core::view::timeline::ToolbarView;
 
 use crate::widgets::button::{self, Kind};
-use crate::widgets::keycap::{self, CapSize, CapVariant};
+use crate::widgets::keycap::{CapSize, CapVariant};
 use crate::{Ctx, guarded};
 
 /// The toolbar's widgets.
@@ -61,19 +61,30 @@ fn toggle(
         extra.set_valign(gtk::Align::Center);
         content.append(extra);
     }
-    let caps = button::binding_caps(&keymap, binding);
-    if let Some(caps) = &caps {
-        let cap = keycap::chord(caps, CapSize::Sm, CapVariant::Plain);
-        cap.set_valign(gtk::Align::Center);
-        // For the nested cases (G§8.4): `tl-cap-bin`, `tl-cap-snap`.
-        cap.set_widget_name(&format!("tl-cap-{}", label.to_lowercase()));
-        content.append(&cap);
-    }
     button.set_child(Some(&content));
-    button.update_property(&[gtk::accessible::Property::Label(&button::accessible_name(
-        label,
-        caps.as_deref(),
-    ))]);
+    // Its key, also after `keys.toml` changes (WP10). For the nested cases
+    // (G§8.4) the cap is `tl-cap-bin`, `tl-cap-snap`.
+    let (label, cap_name, id) = (
+        label.to_owned(),
+        format!("tl-cap-{}", label.to_lowercase()),
+        binding.to_owned(),
+    );
+    button::follow_keymap(&button, &keymap, move |button, keymap| {
+        let caps = button::binding_caps(keymap, &id);
+        if let Some(content) = button.child().and_downcast::<gtk::Box>() {
+            button::show_binding_cap(
+                &content,
+                caps.as_deref(),
+                &cap_name,
+                CapSize::Sm,
+                CapVariant::Plain,
+            );
+        }
+        button.update_property(&[gtk::accessible::Property::Label(&button::accessible_name(
+            &label,
+            caps.as_deref(),
+        ))]);
+    });
     let keys = ctx.keys.clone();
     let id = binding.to_owned();
     button.connect_clicked(guarded!("timeline: a toolbar toggle", move |_| {
