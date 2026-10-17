@@ -166,6 +166,11 @@ fn the_skeleton_on_the_design_fixture() {
     gui.wait_phase("open", OPEN);
     gui.wait_idle();
     assert_eq!(nested.window_rect(), Some([0.0, 0.0, 1600.0, 1000.0]));
+    // GTK's fundamental types were all registered before GStreamer's init
+    // started on its thread (`app::register_fundamentals`: the two once
+    // took one type ID, and the window never opened; WP10's code audit).
+    let local = nested.window(0).local();
+    assert_eq!(local["fundamentalsFirst"], true, "{local}");
 
     let scale = nested.opts.scale;
     let gui = nested.window(0);

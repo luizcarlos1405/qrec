@@ -108,6 +108,35 @@ pub fn register_fundamentals() {
     let _ = gtk::Expression::static_type();
 }
 
+/// GTK's fundamental types, by name (the ones [`register_fundamentals`]
+/// registers).
+const FUNDAMENTALS: [&str; 3] = ["GdkEvent", "GskRenderNode", "GtkExpression"];
+
+thread_local! {
+    /// Whether GTK's fundamental types were all registered when the workers
+    /// started (the test channel's `local`: `fundamentalsFirst`), `None`
+    /// before they start.
+    static FUNDAMENTALS_FIRST: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// Starts startup's workers (steps 3 and 4: GStreamer's init on
+/// `qrec-gst`), noting whether GTK's fundamental types were registered
+/// before them (WP10's code audit: no test held `run` to registering them
+/// first).
+fn start_workers(startup: &Startup) {
+    let registered = FUNDAMENTALS
+        .iter()
+        .all(|name| glib::Type::from_name(*name).is_some());
+    FUNDAMENTALS_FIRST.with(|f| f.set(Some(registered)));
+    startup.start_workers();
+}
+
+/// Whether GTK's fundamental types were registered before the workers
+/// started (`None`: they haven't).
+pub fn fundamentals_first() -> Option<bool> {
+    FUNDAMENTALS_FIRST.with(Cell::get)
+}
+
 /// `qrec_gui::run`.
 pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
     log_panics();
@@ -141,7 +170,7 @@ pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
     let gdk_backend = std::env::var_os("GDK_BACKEND");
     let early = wanted && display_reachable(&DisplayEnv::from_process());
     if early {
-        startup.start_workers();
+        start_workers(&startup);
     }
     // A Wayland app: GDK never falls back to X11 (an X server of the
     // session, say), unless GDK_BACKEND asks for another backend.
@@ -157,7 +186,7 @@ pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
         return Err(CoreError::unavailable(format!("libadwaita: {e}")));
     }
     if wanted && !early {
-        startup.start_workers();
+        start_workers(&startup);
     }
     let app = adw::Application::builder()
         .application_id(APP_ID)
