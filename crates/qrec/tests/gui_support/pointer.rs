@@ -253,6 +253,23 @@ impl VirtualPointer {
         self.roundtrip();
     }
 
+    /// `notches` notches of a mouse wheel on the vertical axis (positive
+    /// scrolls down): `axis_source(wheel)`, `axis_discrete` (15 per notch,
+    /// as a wheel's `wl_fixed` value), `frame`.
+    pub fn wheel(&mut self, notches: i32) {
+        let time = self.time();
+        self.send(&Message::new(POINTER, 5).uint(0));
+        self.send(
+            &Message::new(POINTER, 7)
+                .uint(time)
+                .uint(0)
+                .uint((15 * 256 * notches) as u32)
+                .uint(notches as u32),
+        );
+        self.send(&Message::new(POINTER, 4));
+        self.roundtrip();
+    }
+
     /// A left click at (`x`, `y`).
     pub fn click(&mut self, x: f64, y: f64) {
         self.move_to(x, y);

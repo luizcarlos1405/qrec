@@ -1936,7 +1936,9 @@ As built (WP6, round 3):
     "<round(ppf)> px/frame".
   - Steps: `=` / `−` ×2 or ÷2 (clamped), anchored at the playhead (the
     viewport center when the playhead is off-screen); Ctrl+wheel ×1.25 per
-    notch, anchored at the pointer; `\` fits.
+    notch, anchored at the pointer, taken from the scroll event itself, over
+    the rows and over the ruler (review: the ruler recorded no pointer and
+    zoomed at the time area's left edge); `\` fits.
   - `z` (zoom to selection): ppf = width ÷ the selection's frame span,
     scroll = span start × ppf: the selection fills the time area exactly,
     no margin (S12: 1040 / 3105 = 0.335 px/frame, c3e9 from x 176 to

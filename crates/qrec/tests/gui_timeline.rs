@@ -514,6 +514,74 @@ fn a_middle_drag_pans_the_lanes() {
     assert_clean(&mut nested);
 }
 
+/// Ctrl+wheel zooms ×1.25 per notch at the pointer (D-39): one notch at
+/// time-area x 700 keeps the frame under it there, over the ruler (where
+/// nothing records the pointer: it zoomed at the time area's left edge),
+/// over the rows, and over the ruler after a scrub (a stale x).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn ctrl_wheel_zooms_at_the_pointer() {
+    let mut nested = Nested::start(AREA, "ctrl-wheel", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
+    open(&mut nested, &project, Launch::default());
+    let ruler_y = center_of(&mut nested, "ruler").1;
+    // At fit: (1040 − 8) / 7391 px per frame, no scroll.
+    let fit = 1032.0 / 7391.0;
+    let mut view = (fit, 0.0);
+    let wheel_at = |nested: &mut Nested, (x, y): (f64, f64), from: (f64, f64), what: &str| {
+        // The frame under time-area x 700 before.
+        let frame = (700.0 + from.1) / from.0;
+        nested.pointer().move_to(x, y);
+        nested.window(0).wait_idle();
+        // Ctrl held by a `wtype` from 400 ms after it starts for 2.5 s; the
+        // notch 1.5 s in (a loaded machine starts `wtype` late).
+        let held = nested.keys_held(&["-M", "ctrl", "-s", "2500", "-m", "ctrl"], 200);
+        thread::sleep(Duration::from_millis(1500));
+        nested.pointer().wheel(-1);
+        held.wait();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let ui = loop {
+            let ui = nested.cli_json(&project, &["status"])["data"]["ui"].clone();
+            let zoom = ui["zoom"].as_f64().unwrap_or_default();
+            if (zoom - from.0 * 1.25).abs() < 1e-9 {
+                break ui;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{what}: no zoom ×1.25 from {from:?}: {ui}"
+            );
+            thread::sleep(Duration::from_millis(100));
+        };
+        let (zoom, scroll) = (
+            ui["zoom"].as_f64().unwrap_or_default(),
+            ui["scrollPx"].as_f64().unwrap_or_default(),
+        );
+        let under = (700.0 + scroll) / zoom;
+        assert!(
+            (under - frame).abs() <= 0.5,
+            "{what}: frame {under:.1} under x 700, was {frame:.1} ({ui})"
+        );
+        (zoom, scroll)
+    };
+    // Over the clips, then up to the ruler at the same x.
+    nested.pointer().move_to(876.0, VIDEO_Y);
+    view = wheel_at(&mut nested, (876.0, ruler_y), view, "over the ruler");
+    view = wheel_at(&mut nested, (876.0, VIDEO_Y), view, "over the rows");
+    // A scrub on the ruler, the pointer moved along it, then the wheel.
+    let pointer = nested.pointer();
+    pointer.move_to(500.0, ruler_y);
+    pointer.drag_to(600.0, ruler_y, 4);
+    pointer.move_to(876.0, ruler_y);
+    nested.window(0).wait_idle();
+    wheel_at(
+        &mut nested,
+        (876.0, ruler_y),
+        view,
+        "over the ruler after a scrub",
+    );
+    assert_clean(&mut nested);
+}
+
 // ------------------------------------------------------------- S12
 
 /// The center of widget `name` (it must show).

@@ -1223,7 +1223,12 @@ impl Inner {
             return true;
         }
         if state.contains(gdk::ModifierType::CONTROL_MASK) {
-            let anchor = self.m.borrow().pointer.map_or(0.0, |(x, _)| x);
+            // At the pointer, from the event itself: over the ruler nothing
+            // records the pointer, and a stale x could be left from a scrub.
+            let anchor = event_x(c)
+                .map(|x| x / self.scale())
+                .or_else(|| self.m.borrow().pointer.map(|(x, _)| x))
+                .unwrap_or_else(|| self.m.borrow().vm.width() / 2.0);
             self.m.borrow_mut().vm.zoom_wheel(notches.1, anchor, now);
         } else {
             self.m
@@ -2028,6 +2033,29 @@ fn lifted_boxes(state: &State, view: &Viewport, block: &[ClipId], pointer_x: f64
             b
         })
         .collect()
+}
+
+/// Where the pointer is for the event a controller handles, as an x in
+/// its widget's px: the event's surface position, or the seat pointer's on
+/// the surface, mapped into the widget. A scroll event has no position on
+/// GTK 4.22, and asking its own device ("Wayland Wheel Scrolling") for one
+/// stalled the window.
+fn event_x(c: &impl IsA<gtk::EventController>) -> Option<f64> {
+    let c = c.as_ref();
+    let widget = c.widget()?;
+    let native = widget.native()?;
+    let (sx, sy) = match c.current_event().and_then(|e| e.position()) {
+        Some(at) => at,
+        None => {
+            let pointer = widget.display().default_seat()?.pointer()?;
+            let (x, y, _) = native.surface()?.device_position(&pointer)?;
+            (x, y)
+        }
+    };
+    let (tx, ty) = native.surface_transform();
+    let point = graphene::Point::new((sx - tx) as f32, (sy - ty) as f32);
+    let at = native.compute_point(&widget, &point)?;
+    Some(f64::from(at.x()))
 }
 
 fn mods_of(state: gdk::ModifierType) -> Mods {
