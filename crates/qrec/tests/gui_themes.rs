@@ -260,8 +260,9 @@ fn brightness(c: [u8; 3]) -> u32 {
 /// Every color outside `video` (logical px: the preview, the filmstrips,
 /// what is drawn over video) follows the theme: Swamp Night and Swamp Day
 /// share no color token, so a spot that reads the same in both shots of a
-/// case is drawn in a color no token gives (a hard-coded color in custom
-/// drawing, a libadwaita default). Spots, not single pixels: 8×8 cells with
+/// case is drawn in a color no token gives: one hard-coded in custom
+/// drawing (`gdk::RGBA::BLACK`) or in CSS (`white`), which the tokens
+/// test's hex grep doesn't see. Spots, not single pixels: 8×8 cells with
 /// 4 or more pixels alike (an antialiased edge may match by chance; none
 /// did in any shot). A hard-coded hairline at a fractional x mixes with
 /// each theme's ground and reads apart: the probes are for those.

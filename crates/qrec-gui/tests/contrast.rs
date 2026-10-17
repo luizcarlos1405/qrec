@@ -8,15 +8,16 @@
 //! every state it is drawn in: hover included) and indicators, focus,
 //! control outlines and graphical objects 3:1 (SC 1.4.11), each with a 0.05
 //! rounding margin: text forms reach 4.55, indicators 3.05. No token is
-//! drawn only at a large size (the display titles, the REC timer and the
-//! export percentage are `text` and `record-text`, drawn small elsewhere),
-//! so the 3:1 large-text floor never binds a pair.
+//! drawn only at a large size (the display titles and the export
+//! percentage are `text`, or `record-text` once it failed; the REC timer
+//! is `video-text`: each is drawn small elsewhere too), so the 3:1
+//! large-text floor never binds a pair.
 //!
 //! An alpha token (`hover`, `selected`, `warning-20`, `video-scrim`, …)
 //! composites over its background as the screen shows it: in sRGB, each
 //! channel rounded to 8 bits. DESIGN's audit reads that way to its two
 //! decimals ([`the_decided_values_bind_where_design_says`]); float
-//! compositing reads up to 0.03 lower and would fail P6 by 0.0004.
+//! compositing reads up to 0.03 lower (Ogre Mode's P6 pair at 4.52).
 //!
 //! The one waiver is the PO's P4: Swamp Day's `text-on-record` on `record`
 //! is 4.53 ("passes AA; not darkened further, which would shrink the
@@ -401,6 +402,11 @@ const PAIRS: &[Pair] = &[
     ),
     indicator("playhead", Token("raised"), "the scrub flag's stroke (R4)"),
     indicator("caret", Token("bg"), "the insertion caret across the lanes"),
+    indicator(
+        "record-text",
+        Token("field"),
+        "an invalid field's stroke (Inputs)",
+    ),
 ];
 
 /// A pair the PO accepted under the margin (it must still pass AA).
