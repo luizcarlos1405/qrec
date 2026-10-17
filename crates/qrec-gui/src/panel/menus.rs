@@ -176,17 +176,18 @@ pub fn track_menu(ctx: &Ctx, button: &gtk::MenuButton, on_open: Option<Rc<dyn Fn
 /// its popover, and the window's router doesn't see them; the overlay
 /// keeps `LocalUi` saying what is open). It follows the list's popover being
 /// mapped, so the entry also goes when the dropdown hides under an open
-/// list (its page closes).
+/// list (its page closes). Every dropdown's: the autocut page's track list
+/// and Settings › Project's Size.
 pub fn track_dropdown(ctx: &Ctx, dropdown: &gtk::DropDown) {
     let mut child = dropdown.first_child();
     while let Some(c) = child {
         if let Ok(popover) = c.clone().downcast::<gtk::Popover>() {
             let store = ctx.store.clone();
-            popover.connect_map(guarded!("panel: a list opens", move |_| {
+            popover.connect_map(guarded!("menus: a list opens", move |_| {
                 store.update_local(|l| l.overlays.push(Overlay::Menu));
             }));
             let store = ctx.store.clone();
-            popover.connect_unmap(guarded!("panel: a list closes", move |_| {
+            popover.connect_unmap(guarded!("menus: a list closes", move |_| {
                 store.update_local(|l| {
                     if let Some(at) = l.overlays.iter().rposition(|o| *o == Overlay::Menu) {
                         l.overlays.remove(at);

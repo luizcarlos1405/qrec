@@ -29,7 +29,6 @@ use qrec_core::view::settings::{
     ProjectPage as View, RATES, background_command, project_page, rate_command, size_command,
 };
 
-use crate::store::local::Overlay;
 use crate::{Ctx, guarded};
 
 /// The Project page.
@@ -159,7 +158,10 @@ impl ProjectPage {
         // phase, `disk_invalid`); `sync` skips a page that reads the same.
         let follower = Rc::clone(&parts);
         ctx.store.subscribe(move |_| follower.sync()).detach();
-        track_menu(ctx, &size);
+        // While the Size list is open, the top overlay is a `Menu`: its keys
+        // reach the list, and `Esc` closes the list, not Settings (G§3.8
+        // step 4).
+        crate::panel::menus::track_dropdown(ctx, &size);
         Self { root, size, parts }
     }
 
@@ -439,28 +441,4 @@ fn list_popover(dropdown: &gtk::DropDown) -> Option<gtk::Popover> {
         child = c.next_sibling();
     }
     None
-}
-
-/// While the Size dropdown's list is open, the top overlay is a `Menu`: its
-/// keys reach the list, and `Esc` closes the list, not Settings (G§3.8 step
-/// 4).
-fn track_menu(ctx: &Ctx, dropdown: &gtk::DropDown) {
-    let mut child = dropdown.first_child();
-    while let Some(c) = child {
-        if let Ok(popover) = c.clone().downcast::<gtk::Popover>() {
-            let store = ctx.store.clone();
-            popover.connect_map(guarded!("settings: a list opens", move |_| {
-                store.update_local(|l| l.overlays.push(Overlay::Menu));
-            }));
-            let store = ctx.store.clone();
-            popover.connect_unmap(guarded!("settings: a list closes", move |_| {
-                store.update_local(|l| {
-                    if let Some(i) = l.overlays.iter().rposition(|o| *o == Overlay::Menu) {
-                        l.overlays.remove(i);
-                    }
-                });
-            }));
-        }
-        child = c.next_sibling();
-    }
 }

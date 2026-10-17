@@ -524,6 +524,9 @@ impl Store {
     pub fn dispatch(&self, cmd: Command);                          // default reply policy (G§3.7)
     pub fn dispatch_with(&self, cmd: Command, confirmed: bool, done: impl FnOnce(Reply) + 'static);
     pub fn dispatch_then(&self, cmd: Command, after: impl FnOnce(&Reply) + 'static); // default policy, then `after` (a refused pick shows the project again)
+    pub fn apply_default(&self, cmd: &Command, reply: Reply);     // the default policy, for a `dispatch_with` handler's own first step (R46)
+    pub fn subscribe_close(&self, f: impl Fn(&()) + 'static) -> Subscription; // a debounce sent before the host closes (G§3.4.1, R66)
+    pub fn before_close(&self);                                    // runs them (`close_host_then_quit`)
     pub fn notify(&self, notice: Notice);                          // a toast made by the GUI
     pub fn keymap(&self) -> Rc<Keymap>;
     pub fn sent(&self) -> std::cell::Ref<'_, SentValues>;          // echo rule
@@ -1930,7 +1933,8 @@ conflicting chords drop out (`keymap::usable_keys`, made `pub`).
 6. focus Bin → Bin.
 7. focus Stage with `edit_target` and a selected layer → LayerEdit.
 8. Live mode and the project scene empty → FirstRun (the stage shows S01a
-   only in Live, D-27; in Program an empty scene goes on to step 9).
+   only in Live, D-27; in Program an empty scene goes on to step 9; one
+   rule for both, `view::canvas::first_run`).
 9. a screen refused and S24 approved → PortalDenied.
 10. timeline empty → Empty.
 11. px/frame ≥ 24 → FrameZoom.
@@ -2021,7 +2025,8 @@ As built (WP6, round 3):
   | Finalizing | `Saving…` + spinner, disabled, line kept | "Take N is finalizing" |
 
 - Export slot: `Export…`, disabled on an empty timeline ("The timeline is
-  empty") and while recording ("Not while recording"). While any export
+  empty") and while recording ("Not while recording"):
+  `view::export::panel_enabled`, `Ctrl+E`'s rule (G§4.8). While any export
   job runs (whoever started it): "42%" + mini bar (`export_readout`),
   tooltip "Exporting 42%" + `Ctrl` `E`, pressed look while the panel is
   open; a click toggles the panel.
@@ -2340,7 +2345,8 @@ anchor's frame under the anchor; a move preview's command, applied with
   - As built (WP4): the Starting/Saving pill is 28 px, `body-strong`,
     with a 14 px spinner; the trim plate 28 px; the countdown ring 200 px
     with a 6 px stroke, its plate 12 px under it.
-- **First run** (S01a):
+- **First run** (S01a): `first_run(&State)`, when: Live mode with an empty
+  scene (D-27; the hint bar's FirstRun state reads it too, G§4.3 step 8);
   `first_run_rows(screens, cameras, mics, monitors, default_mic,
   default_monitor) -> Vec<SourceRow { kind, label, meta, checked }>`
   (labels "Screen · DP-4 · GIGA-BYTE GS27QA" with meta "2560×1440";
@@ -2556,9 +2562,9 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     an export runs, else not while recording ("Not while recording") or
     on an empty timeline ("The timeline is empty"); a refused `Ctrl+E`
     toasts that reason (D-34, `unavailable_notice("export", …)`; review
-    fix: it opened nothing, silently). The header slot's enablement and
-    `hint_enabled("export.panel")` read the same rule (each still its own
-    copy: to switch to this one).
+    fix: it opened nothing, silently). The header slot (enabled, its
+    reason the tooltip) and `hint_enabled("export.panel")` follow it (each
+    kept its own copy of the rule until the review's integration).
   - Captions, `caption(format, codec, &State, &UserConfig)` (built by
     WP0a; the GUI passes the user config it read at startup, the one it
     gives `Ctx::preview`): MP4 "H.264 + AAC 192 kbps · VA-API on

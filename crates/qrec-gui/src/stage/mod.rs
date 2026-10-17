@@ -531,11 +531,10 @@ impl Inner {
         let live_sources = live::live_sources(&local.live_status);
         let trim = Self::trim(&local);
         let take_preview = local.take_preview.as_ref().map(|t| t.take.clone());
-        let first_run = open
-            && mode == CanvasMode::Live
-            && state.project.scene.is_empty()
-            && take_preview.is_none()
-            && trim.is_none();
+        // The first run (S01a: Live, an empty scene; the hint bar's rule
+        // too), unless a bin preview or a trim scrub has the picture.
+        let first_run =
+            open && view::canvas::first_run(&state) && take_preview.is_none() && trim.is_none();
         let live_after_take = mode == CanvasMode::Live
             && !state.runtime.record.is_idle()
             && self.take_in_program.get();

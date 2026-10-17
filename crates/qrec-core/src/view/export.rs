@@ -97,8 +97,8 @@ pub fn av1_unavailable(caps: &Capabilities) -> Option<String> {
 /// always while an export runs (it shows it, D-49); else not while
 /// recording ("Not while recording") or on an empty timeline ("The
 /// timeline is empty"). `Err` is the reason a refused `Ctrl+E` toasts
-/// (D-34), the header slot's tooltip (`view::header`'s export slot reads
-/// the same).
+/// (D-34) and the header slot's tooltip: `view::header`'s export slot and
+/// the hint bar's export item (`view::hints::hint_enabled`) follow it.
 pub fn panel_enabled(state: &State) -> Result<(), String> {
     let exporting = state
         .runtime
@@ -501,6 +501,53 @@ mod tests {
         )
         .expect("a toast");
         assert_eq!(notice.title, "The timeline is empty");
+    }
+
+    /// One rule opens the panel: the header's export slot (enabled, its
+    /// reason the tooltip) and the hint bar's `Ctrl+E` item follow
+    /// `panel_enabled` (each kept its own copy of it).
+    #[test]
+    fn the_header_slot_and_the_hint_follow_the_panels_rule() {
+        use crate::state::{RecordMode, RecordPhase};
+        use crate::view::GuiFacts;
+        use crate::view::header::header;
+        use crate::view::hints::hint_enabled;
+        let keymap = crate::keymap::resolve("");
+        let mut empty = testkit::design_state();
+        empty.project.timeline.clips.clear();
+        let mut recording = testkit::design_state();
+        recording.runtime.record = RecordPhase::Recording {
+            take: crate::ids::TakeId::numbered(10),
+            mode: RecordMode::Append,
+            elapsed_ns: 0,
+            waiters: vec![],
+        };
+        let mut running_empty = exporting();
+        running_empty.project.timeline.clips.clear();
+        let cases = [
+            ("idle", testkit::design_state()),
+            ("empty", empty),
+            ("recording", recording),
+            ("exporting", exporting()),
+            ("exporting, the timeline emptied", running_empty),
+        ];
+        let facts = GuiFacts::default();
+        for (name, state) in &cases {
+            let rule = panel_enabled(state);
+            let slot = header(state, &facts, &keymap, false).export;
+            assert_eq!(slot.enabled, rule.is_ok(), "{name}");
+            if slot.percent.is_none() {
+                let why = rule.clone().err().unwrap_or_else(|| "Export".to_owned());
+                assert_eq!(slot.tooltip, why, "{name}");
+            }
+            for id in ["export.panel", "export"] {
+                assert_eq!(
+                    hint_enabled(id, state, &facts),
+                    rule.is_ok(),
+                    "{name}: {id}"
+                );
+            }
+        }
     }
 
     /// The caption names the encoder the export will use: VA-API only where

@@ -179,7 +179,8 @@ fn record_button(state: &State, keys: Vec<Vec<String>>) -> RecordButton {
 
 /// The export slot: a running export's percent (a click toggles its
 /// panel), else `Export…`, disabled while recording and on an empty
-/// timeline.
+/// timeline: `view::export::panel_enabled`, the rule of `Ctrl+E` and its
+/// hint, its reason the tooltip.
 fn export_slot(state: &State, facts: &GuiFacts, keys: Vec<Vec<String>>) -> ExportSlot {
     let pressed = facts.export_panel.is_some();
     let running = state
@@ -198,18 +199,15 @@ fn export_slot(state: &State, facts: &GuiFacts, keys: Vec<Vec<String>>) -> Expor
             keys,
         };
     }
-    let (enabled, tooltip) = if !state.runtime.record.is_idle() {
-        (false, "Not while recording")
-    } else if state.project.timeline.clips.is_empty() {
-        (false, "The timeline is empty")
-    } else {
-        (true, "Export")
+    let (enabled, tooltip) = match crate::view::export::panel_enabled(state) {
+        Ok(()) => (true, "Export".to_owned()),
+        Err(why) => (false, why),
     };
     ExportSlot {
         percent: None,
         enabled,
         pressed,
-        tooltip: tooltip.to_owned(),
+        tooltip,
         keys,
     }
 }

@@ -18,8 +18,9 @@
 //!   position [`readout`].
 //! - **Overlays**: [`countdown`], [`rec`], [`transport`], [`badges`], the
 //!   S10 [`trim_plate`].
-//! - **First run** (S01a, D-16): [`first_run_rows`], [`with_choices`] (the
-//!   person's picks across a refreshed inventory), [`first_run_commands`],
+//! - **First run** (S01a, D-16): [`first_run`] (when: Live, an empty
+//!   scene), [`first_run_rows`], [`with_choices`] (the person's picks
+//!   across a refreshed inventory), [`first_run_commands`],
 //!   [`add_sources_label`].
 //!
 //! Geometry is in logical px at 100 % UI scale (D-46); canvas edits are in
@@ -1080,6 +1081,14 @@ fn row_label(kind: &str, parts: &[&str]) -> String {
     label
 }
 
+/// Whether the project is in its first run (S01a, D-27): Live mode with an
+/// empty scene. The stage shows the source list then (unless a bin preview
+/// or a trim scrub has the picture), and the hint bar's state is FirstRun
+/// (G§4.3 step 8): in Program an empty scene isn't one.
+pub fn first_run(state: &State) -> bool {
+    state.ui.canvas_mode == CanvasMode::Live && state.project.scene.is_empty()
+}
+
 /// The first-run rows: screens, cameras, mics, monitors; the first screen
 /// and camera and the default mic and monitor checked (D-16; the first one
 /// when the system names no default).
@@ -1908,6 +1917,20 @@ mod tests {
             ]
         );
         insta::assert_json_snapshot!("first_run", json!({"rows": rows, "commands": cmds}));
+    }
+
+    /// D-27, R80: the first run is Live mode's with an empty scene; in
+    /// Program, or with a layer or a track, there is none (the stage and the
+    /// hint bar read this one rule).
+    #[test]
+    fn the_first_run_is_live_with_an_empty_scene() {
+        let mut state = testkit::design_state();
+        state.ui.canvas_mode = CanvasMode::Live;
+        assert!(!first_run(&state), "the design scene has layers");
+        state.project.scene = Scene::default();
+        assert!(first_run(&state));
+        state.ui.canvas_mode = CanvasMode::Program;
+        assert!(!first_run(&state));
     }
 
     /// R25: an inventory refresh (a mic plugged in, an Add menu's

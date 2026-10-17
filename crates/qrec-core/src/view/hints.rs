@@ -126,9 +126,9 @@ pub fn hint_state(state: &State, facts: &GuiFacts) -> HintState {
         return HintState::LayerEdit;
     }
     // 8.–13. What the project holds and how it is shown. The first run is
-    //    Live mode's, as the stage shows it (D-27): in Program an empty
-    //    scene leaves the states below.
-    if state.ui.canvas_mode == CanvasMode::Live && state.project.scene.is_empty() {
+    //    Live mode's, as the stage shows it (D-27, `canvas::first_run`):
+    //    in Program an empty scene leaves the states below.
+    if crate::view::canvas::first_run(state) {
         return HintState::FirstRun;
     }
     // S24 is approved (G§0.2): a refused screen is its own state.
@@ -179,8 +179,9 @@ pub fn hint_enabled(id: &str, state: &State, facts: &GuiFacts) -> bool {
     let idle = state.runtime.record.is_idle();
     match id {
         // The keys of `export` and `autocut.preview` open their GUI (G§3.8
-        // step 10), whatever `action_for` says of the command.
-        "export.panel" | "export" => exporting(state) || (clips && idle),
+        // step 10), whatever `action_for` says of the command: the export
+        // panel by the rule `Ctrl+E` and the header's slot follow.
+        "export.panel" | "export" => crate::view::export::panel_enabled(state).is_ok(),
         "autocut.page" | "autocut.preview" => clips && idle,
         "zoom.selection" => !state.ui.selection.is_empty(),
         "zoom.in" => facts.px_per_frame < MAX_PX_PER_FRAME,
