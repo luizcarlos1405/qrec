@@ -23,7 +23,11 @@
 //!    for the snapshots to get there ([`SyncMachine::note_key_park`]).
 //! 3. While playing, `Seek{To(player frame)}` goes out once a second (an
 //!    own seek); a playhead the GUI didn't set that way (nor by a key's
-//!    pre-step seek to the player's frame, R22) moves the player.
+//!    pre-step seek to the player's frame, R22) moves the player. The own
+//!    seek waits while a `Seek` the window sent is unanswered
+//!    (`Inputs::seek_unanswered`: Home, End, a click on the ruler): sent
+//!    from a snapshot without it, it came after it and undid it, and the
+//!    player went back with the playhead.
 //!    `LocalUi.program_playing` says the program plays in the player (not
 //!    a take; and only once the program's load after a take landed, the
 //!    player idle, since until then its position is the take's): what the
@@ -93,6 +97,10 @@ pub const SCRUB_ECHO_MS: u64 = 1000;
 /// How often the sync looks whether the program's load after a take
 /// landed (the player is idle): until then its position is the take's.
 pub const SETTLE_POLL_MS: u64 = 50;
+/// How often a once-a-second seek that fell due while it had to wait (a
+/// `Seek` the window sent unanswered, a step's park on its way) looks
+/// again.
+pub const SEEK_WAIT_POLL_MS: u64 = 20;
 
 /// What the player is asked to do.
 #[derive(Debug, Clone, PartialEq)]
@@ -131,6 +139,11 @@ pub struct Inputs<'a> {
     /// The player has nothing to load or seek, queued or in flight
     /// (`ProgramPlayer::idle`): its position is the last load's or seek's.
     pub player_idle: bool,
+    /// A `Seek` the window sent isn't answered yet, its snapshot maybe not
+    /// in either (`Store::seek_unanswered`): the once-a-second seek waits,
+    /// since one sent now, from a snapshot without it, would come after it
+    /// and undo it (step 3).
+    pub seek_unanswered: bool,
     pub now_ms: u64,
 }
 
@@ -238,6 +251,9 @@ pub struct SyncMachine {
     /// playhead on). The stop leaves the playhead to that seek, and the
     /// paused player holds until the snapshots reach it.
     key_park: Option<(u64, Frame)>,
+    /// The once-a-second seek fell due while it had to wait (step 3): when
+    /// it looks again.
+    seek_wait: Option<u64>,
 }
 
 impl Default for SyncMachine {
@@ -268,6 +284,7 @@ impl SyncMachine {
             preview_paused: false,
             key_seeks: Vec::new(),
             key_park: None,
+            seek_wait: None,
         }
     }
 
@@ -346,7 +363,10 @@ impl SyncMachine {
     pub fn deadline(&self) -> Option<u64> {
         let seek =
             (self.told_playing && matches!(self.content, Content::Program(_)) && !self.settling)
-                .then(|| self.auto_seek.map_or(0, |(at, _)| at + SEEK_EVERY_MS));
+                .then(|| {
+                    let due = self.auto_seek.map_or(0, |(at, _)| at + SEEK_EVERY_MS);
+                    self.seek_wait.map_or(due, |at| at.max(due))
+                });
         let echo = self
             .scrubbed
             .and(self.scrub_ended_at)
@@ -497,6 +517,7 @@ impl SyncMachine {
             self.scrubbed = None;
             self.scrub_ended_at = None;
             self.key_park = None;
+            self.seek_wait = None;
             let armed = self
                 .rate_armed_at
                 .is_some_and(|at| inp.now_ms.saturating_sub(at) <= RATE_ARMED_MS);
@@ -531,16 +552,22 @@ impl SyncMachine {
             if moved && !own && playhead.abs_diff(inp.player_frame()) > NEAR_FRAMES {
                 out.player.push(PlayerCmd::Seek(inp.ns(playhead)));
                 self.auto_seek = Some((inp.now_ms, playhead));
-            } else if self.key_park.is_none()
-                && self
-                    .auto_seek
-                    .is_none_or(|(at, _)| inp.now_ms.saturating_sub(at) >= SEEK_EVERY_MS)
+                self.seek_wait = None;
+            } else if self
+                .auto_seek
+                .is_none_or(|(at, _)| inp.now_ms.saturating_sub(at) >= SEEK_EVERY_MS)
             {
-                // (Not while a step's pause is on its way: an own seek now
-                // would come after the step's and undo it, D-51.)
-                let frame = inp.player_frame();
-                out.dispatch.push(seek_to(frame));
-                self.auto_seek = Some((inp.now_ms, frame));
+                if self.key_park.is_some() || inp.seek_unanswered {
+                    // A seek the window sent is on its way (a step's, D-51;
+                    // Home's, a ruler click's): an own seek now, from a
+                    // snapshot without it, would come after it and undo it.
+                    self.seek_wait = Some(inp.now_ms + SEEK_WAIT_POLL_MS);
+                } else {
+                    let frame = inp.player_frame();
+                    out.dispatch.push(seek_to(frame));
+                    self.auto_seek = Some((inp.now_ms, frame));
+                    self.seek_wait = None;
+                }
             }
         } else if !now_playing && self.shown_frame != Some(playhead) {
             // Paused: the player follows the playhead, but a ruler scrub
@@ -601,6 +628,7 @@ impl SyncMachine {
         }
         self.ended = false;
         self.auto_seek = None;
+        self.seek_wait = None;
     }
 
     /// The program plan in the player: loaded at once when the player held
@@ -980,6 +1008,7 @@ impl ProgramSync {
             position_ns: player.as_ref().map_or(0, |p| p.position_ns()),
             has_player: player.is_some() && local.is_open(),
             player_idle: player.as_ref().is_none_or(|p| p.idle()),
+            seek_unanswered: self.ctx.store.seek_unanswered(),
             now_ms: self.now_ms(),
         }
     }
@@ -1210,6 +1239,7 @@ mod tests {
         own_seek: Option<Frame>,
         position: Frame,
         player_idle: bool,
+        seek_unanswered: bool,
         now: u64,
     }
 
@@ -1227,6 +1257,7 @@ mod tests {
                 own_seek: None,
                 position: 0,
                 player_idle: true,
+                seek_unanswered: false,
                 now: 1000,
             }
         }
@@ -1244,6 +1275,7 @@ mod tests {
                 position_ns: frame_ns(self.position as i64, fps) as u64,
                 has_player: true,
                 player_idle: self.player_idle,
+                seek_unanswered: self.seek_unanswered,
                 now_ms: self.now,
             }
         }
@@ -1392,6 +1424,52 @@ mod tests {
         // That seek's snapshot doesn't seek again.
         rig.state.ui.playhead = 130;
         assert_eq!(rig.sync(), Out::default());
+    }
+
+    /// Step 3: Home while playing (`Seek{Start}`, a seek the window sent:
+    /// the program plays on from the start) lands whatever the
+    /// once-a-second seek does meanwhile. That seek falls due while Home's
+    /// is unanswered, its snapshot not in yet, and waits: sent then, to the
+    /// player's frame, it came after Home's seek and undid it, and the
+    /// player went to the start, then back with the playhead. Once Home's
+    /// seek is answered the own seeks go on from where it landed.
+    #[test]
+    fn the_once_a_second_seek_waits_for_the_windows_seek() {
+        let mut rig = Rig::new(program()).loaded();
+        assert_eq!(rig.play().player, [PlayerCmd::Play(1.0)]);
+        // Home goes out 900 ms in; the own seek falls due before its
+        // snapshot comes.
+        rig.now += 900;
+        rig.position = 2464;
+        rig.seek_unanswered = true;
+        rig.now += 100;
+        rig.position = 2467;
+        let out = rig.sync();
+        assert_eq!(out.dispatch, [], "no own seek over Home's: {out:?}");
+        assert_eq!(
+            rig.machine.deadline(),
+            Some(rig.now + SEEK_WAIT_POLL_MS),
+            "a look again soon"
+        );
+        rig.now += SEEK_WAIT_POLL_MS;
+        assert_eq!(rig.sync(), Out::default(), "still unanswered");
+        // Home's snapshot (before its reply): the player goes to the start
+        // and plays on.
+        rig.state.ui.playhead = 0;
+        let out = rig.sync();
+        assert_eq!(out.player, [PlayerCmd::Seek(0)]);
+        assert_eq!(out.dispatch, []);
+        assert_eq!(rig.machine.deadline(), Some(rig.now + SEEK_EVERY_MS));
+        // The reply: the own seeks go on from there, a second on.
+        rig.seek_unanswered = false;
+        rig.position = 1;
+        rig.now += SEEK_WAIT_POLL_MS;
+        assert_eq!(rig.sync(), Out::default());
+        rig.now += SEEK_EVERY_MS;
+        rig.position = 31;
+        assert_eq!(rig.sync().dispatch, [seek_cmd(31)]);
+        rig.state.ui.playhead = 31;
+        assert_eq!(rig.sync(), Out::default(), "its snapshot is own");
     }
 
     #[test]

@@ -629,6 +629,17 @@ impl Store {
         self.inner.pending.borrow().len()
     }
 
+    /// A `Seek` the window sent isn't answered yet, so its snapshot may not
+    /// have come either (a command's snapshot comes before its reply): the
+    /// program sync's once-a-second seek waits for it (G§3.10 step 3).
+    pub fn seek_unanswered(&self) -> bool {
+        self.inner
+            .pending
+            .borrow()
+            .values()
+            .any(|p| matches!(p.cmd, Command::Seek { .. }))
+    }
+
     /// The unanswered requests `waitIdle` waits for (G§3.18): all but the
     /// window's own exports whose job runs (it reported progress and an
     /// export is in the job table). Their progress comes as snapshots and
@@ -815,6 +826,23 @@ mod tests {
             ]
         );
         assert_eq!(store.pending_requests(), 0);
+    }
+
+    /// The program sync's once-a-second seek waits while a `Seek` the
+    /// window sent is unanswered (G§3.10 step 3); other requests don't
+    /// count.
+    #[test]
+    fn a_seek_is_unanswered_until_its_reply() {
+        let store = store();
+        store.dispatch(Command::Select { op: SelectOp::All });
+        assert!(!store.seek_unanswered(), "not a seek");
+        store.dispatch(Command::Seek {
+            to: SeekTarget::Start,
+        });
+        assert!(store.seek_unanswered());
+        drain(&store);
+        assert_eq!(store.pending_requests(), 0);
+        assert!(!store.seek_unanswered(), "answered");
     }
 
     #[test]

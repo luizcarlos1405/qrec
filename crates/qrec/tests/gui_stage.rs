@@ -1400,6 +1400,107 @@ fn a_step_while_playing_pauses_and_goes_from_the_frame_shown() {
     assert_clean(&mut nested);
 }
 
+/// D-51's other half: Home while the program plays (an absolute seek: the
+/// program plays on from the start) and a click on the ruler land, whatever
+/// the sync's once-a-second seek does meanwhile. Every command is held
+/// 400 ms on its way (`QREC_GUI_TEST_SEND_DELAY_MS`, a slow Session) and
+/// each seek goes out 700 ms into playback, so that seek falls due while
+/// the window's is on its way, its snapshot not in yet: sent then, to the
+/// player's frame, it came after the window's seek and undid it, and the
+/// player went back with the playhead (at full speed the window is the
+/// 20–30 ms a seek takes to come back, each second). The sync holds its
+/// seek while a seek the window sent is unanswered (G§3.10 step 3).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_seek_while_playing_lands_and_plays_on() {
+    let mut nested = Nested::start(AREA, "seek-playing", Options::default());
+    let project = fixture(
+        &nested,
+        DesignVariant::Base,
+        Some(ui(CanvasMode::Program, 1200)),
+    );
+    open(
+        &mut nested,
+        &project,
+        Launch::a11y().with_env("QREC_GUI_TEST_SEND_DELAY_MS", "400"),
+    );
+    // The frame a player position shows at the fixture's 30 fps (as
+    // `ns_to_frame_floor`).
+    let frame_of = |ns: u64| ((ns + 1) * 30 - 1) / 1_000_000_000;
+    let shown = |nested: &mut Nested| {
+        let local = nested.window(0).local();
+        frame_of(
+            local["playerNs"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("{local}")),
+        )
+    };
+    let ctl_ok = |nested: &mut Nested, request: Value| {
+        let reply = nested.window(0).ctl(request.clone());
+        assert_eq!(reply["ok"], true, "{request}: {reply}");
+    };
+    // Plays from 1200 (the CLI's seek, not held: after the window's last
+    // pause and its park are answered), 700 ms in.
+    let play_from_1200 = |nested: &mut Nested| {
+        nested.window(0).wait_idle();
+        nested.cli_json(&project, &["seek", "--to", "1200f"]);
+        nested.window(0).wait_idle();
+        ctl_ok(
+            nested,
+            json!({"op": "dispatch", "command": {"cmd": "play"}}),
+        );
+        gui_support::poll(Duration::from_secs(20), "the program playing", || {
+            (nested.window(0).local()["programPlaying"] == true).then_some(())
+        });
+        let from = shown(nested);
+        assert!((1200..1230).contains(&from), "plays from {from}, not 1200");
+        thread::sleep(Duration::from_millis(700));
+    };
+    // 1.6 s after the seek (held 400 ms of it): the picture plays on from
+    // the start (5 s at most: a pull back puts it past 1200), and the
+    // playhead is there too.
+    let plays_on_from_the_start = |nested: &mut Nested, what: &str| {
+        thread::sleep(Duration::from_millis(1600));
+        let at = shown(nested);
+        assert!(
+            at < 150,
+            "{what} while playing: the picture at {at} 1.6 s after it"
+        );
+        let local = nested.window(0).local();
+        assert_eq!(local["programPlaying"], true, "{what}: plays on: {local}");
+        let playhead = status(nested, &project)["ui"]["playhead"]
+            .as_u64()
+            .expect("a playhead");
+        assert!(playhead < 150, "{what}: the playhead at {playhead}");
+        ctl_ok(
+            nested,
+            json!({"op": "dispatch", "command": {"cmd": "pause"}}),
+        );
+        gui_support::poll(Duration::from_secs(10), "the pause", || {
+            (status(nested, &project)["runtime"]["playing"] == false).then_some(())
+        });
+    };
+
+    // Home (`seek.start`, as its key and a button run it).
+    play_from_1200(&mut nested);
+    ctl_ok(&mut nested, json!({"op": "action", "id": "seek.start"}));
+    plays_on_from_the_start(&mut nested, "Home");
+
+    // A click on the ruler, 10 px into the time area: a frame near the
+    // start (some 40 at fit).
+    let regions = nested.window(0).regions(&["ruler", "time-area"]);
+    let part = |name: &str| {
+        *regions
+            .get(name)
+            .unwrap_or_else(|| panic!("no {name}: {regions:#?}"))
+    };
+    let ([_, ry, _, rh], [tx, ..]) = (part("ruler"), part("time-area"));
+    play_from_1200(&mut nested);
+    nested.pointer().click(tx + 10.0, ry + rh / 2.0);
+    plays_on_from_the_start(&mut nested, "A click on the ruler");
+    assert_clean(&mut nested);
+}
+
 /// Closes the window through `app.quit` and waits for its exit (0): what
 /// it debounced went out before its host closed, or never.
 fn quit_and_wait(nested: &mut Nested) {
