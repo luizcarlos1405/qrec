@@ -34,7 +34,9 @@
 //! element itself renegotiates in order. A `videoscale` in front (in
 //! passthrough while the sizes match) answers the source's own caps and
 //! accept-caps queries for any size, so they don't depend on the crop at
-//! all. A layout that keeps the crop moves the pad at once.
+//! all. A layout that keeps the crop moves the pad at once, unless the
+//! streaming thread is applying one: then it waits for the next frame too
+//! ([`CropSlot::offer`]).
 
 use std::collections::BTreeMap;
 use std::str::FromStr;
@@ -106,6 +108,41 @@ pub(super) struct CropSlot {
     pub pending: Option<PadLayout>,
     /// The crop the `videocrop` has.
     pub applied: Option<CropPx>,
+    /// The streaming thread took a layout and is writing it (outside the
+    /// lock: no GStreamer call holds it).
+    pub applying: bool,
+}
+
+impl CropSlot {
+    /// The engine thread's `layout` for a streaming pipeline: `Some` when
+    /// it goes to the pad at once (it keeps the crop the `videocrop` has,
+    /// and no other layout is being applied), else it waits in `pending`
+    /// for the streaming thread's next caps event or buffer. A layout that
+    /// went to the pad while the probe wrote an older one was overwritten
+    /// by it (R24: an `Esc` back to the applied crop left the cancelled
+    /// layout in the preview).
+    pub fn offer(&mut self, layout: PadLayout) -> Option<PadLayout> {
+        if !self.applying && self.applied == Some(layout.crop) {
+            self.pending = None;
+            Some(layout)
+        } else {
+            self.pending = Some(layout);
+            None
+        }
+    }
+
+    /// The streaming thread takes the pending layout to apply it.
+    pub fn take(&mut self) -> Option<PadLayout> {
+        let layout = self.pending.take();
+        self.applying = layout.is_some();
+        layout
+    }
+
+    /// The streaming thread applied `crop` (and its pad).
+    pub fn done(&mut self, crop: CropPx) {
+        self.applied = Some(crop);
+        self.applying = false;
+    }
 }
 
 /// Sets `pad`'s geometry, opacity and z-order from `layout`.
@@ -159,12 +196,12 @@ fn watch_crop(crop: &gst::Element, pad: &gst::Pad, slot: &Arc<Mutex<CropSlot>>) 
             if !caps_or_buffer {
                 return gst::PadProbeReturn::Ok;
             }
-            let pending = lock_slot(&slot).pending.take();
+            let pending = lock_slot(&slot).take();
             if let (Some(layout), Some(crop), Some(pad)) = (pending, crop.upgrade(), pad.upgrade())
             {
                 set_crop(&crop, layout.crop);
                 set_pad(&pad, &layout);
-                lock_slot(&slot).applied = Some(layout.crop);
+                lock_slot(&slot).done(layout.crop);
             }
             gst::PadProbeReturn::Ok
         },
@@ -872,12 +909,9 @@ fn apply_layer(
         drop(slot);
         set_crop(&pl.crop, layout.crop);
         set_pad(&pl.pad, &layout);
-    } else if slot.applied == Some(layout.crop) {
-        slot.pending = None;
+    } else if let Some(layout) = slot.offer(layout) {
         drop(slot);
         set_pad(&pl.pad, &layout);
-    } else {
-        slot.pending = Some(layout);
     }
 }
 
@@ -949,6 +983,47 @@ pub(super) fn level_reading(device: &str, s: &gst::StructureRef) -> Option<Level
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn layout(x: i32, crop: CropPx) -> PadLayout {
+        PadLayout {
+            crop,
+            dst: Rect::new(x, 0, 320, 180),
+            alpha: 1.0,
+            zorder: 1,
+        }
+    }
+
+    /// R24: the streaming thread took L1 (a new crop) and applies it
+    /// outside the lock; meanwhile the engine gets L2, back on the crop
+    /// still recorded as applied (an `Esc`). L2 must not go to the pad
+    /// before L1 lands, or L1 overwrites it: it waits, and the next frame
+    /// applies it.
+    #[test]
+    fn a_layout_never_races_a_crop_in_flight() {
+        let (c0, c1) = ((0, 0, 0, 0), (40, 0, 40, 0));
+        let mut slot = CropSlot {
+            applied: Some(c0),
+            ..CropSlot::default()
+        };
+        assert_eq!(slot.offer(layout(10, c1)), None, "a new crop waits");
+        let l1 = slot.take().expect("the probe takes L1");
+        // The engine, while the probe writes L1's crop and pad:
+        assert_eq!(
+            slot.offer(layout(0, c0)),
+            None,
+            "not at once: L1 is in flight"
+        );
+        slot.done(l1.crop);
+        // The next frame: L2.
+        let next = slot.take().expect("L2 waits for the next frame");
+        assert_eq!(next, layout(0, c0));
+        slot.done(next.crop);
+        assert_eq!(slot.applied, Some(c0));
+        // Nothing in flight: a layout that keeps the crop moves the pad at
+        // once.
+        assert_eq!(slot.offer(layout(5, c0)), Some(layout(5, c0)));
+        assert_eq!(slot.take(), None);
+    }
 
     #[test]
     fn colors_become_argb() {

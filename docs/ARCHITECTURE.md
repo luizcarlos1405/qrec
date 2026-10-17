@@ -1970,7 +1970,10 @@ pipeline first. Paths in the plan are joined with the project dir.
   changes one leaves it, with the pad's geometry, in the layer's slot,
   and a probe on the `videocrop`'s sink applies both on the streaming
   thread before the next caps event or buffer (a still screen: at its
-  500 ms keepalive); a layout that keeps the crop moves the pad at once.
+  500 ms keepalive); a layout that keeps the crop moves the pad at once,
+  unless the probe is writing a layout it took (it does so outside the
+  slot's lock): then it waits in the slot for the next frame too, so the
+  older layout never lands over it.
   Before the pipeline starts (a rebuild is laid out first) both are set at
   once. Only the crop sides that change are written (each write makes the
   element renegotiate), and record bins link to their tee without
