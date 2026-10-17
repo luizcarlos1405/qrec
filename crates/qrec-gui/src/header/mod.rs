@@ -84,12 +84,23 @@ impl Header {
         start.append(&wordmark);
         let mode = ModeSwitch::new(ctx);
         start.append(&mode.widget());
-        if let Some(caps) = button::binding_caps(&keymap, "canvas.mode") {
-            let cap = keycap::chord(&caps, CapSize::Md, CapVariant::Plain);
-            cap.set_margin_start(8);
-            cap.set_valign(gtk::Align::Center);
-            start.append(&cap);
-        }
+        // The switch's key, also after `keys.toml` changes (WP10).
+        button::follow_keymap(&start, &keymap, |start, keymap| {
+            let caps = button::binding_caps(keymap, "canvas.mode");
+            button::show_binding_cap(
+                start,
+                caps.as_deref(),
+                button::BINDING_CAP,
+                CapSize::Md,
+                CapVariant::Plain,
+            );
+            if let Some(cap) = start
+                .last_child()
+                .filter(|c| c.widget_name() == button::BINDING_CAP)
+            {
+                cap.set_margin_start(8);
+            }
+        });
         root.pack_start(&start);
 
         // Center: the title over the summary.

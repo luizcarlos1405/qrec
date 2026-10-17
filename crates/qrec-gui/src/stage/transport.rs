@@ -20,7 +20,7 @@ use qrec_core::view::canvas::{TRANSPORT_LIVE_TOOLTIP, Transport, TransportLeft};
 use qrec_core::view::{enabled, format};
 use qrec_core::{Frame, State};
 
-use crate::widgets::button::{accessible_name, binding_caps};
+use crate::widgets::button::{self, accessible_name, binding_caps};
 use crate::widgets::keycap::{self, CapSize, CapVariant};
 use crate::{Ctx, guarded};
 
@@ -174,17 +174,24 @@ impl TransportRow {
         let save_label = gtk::Label::new(Some("Save frame"));
         save_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         content.append(&save_label);
-        let caps = binding_caps(&keymap, "frame.save");
-        if let Some(caps) = &caps {
-            let cap = keycap::chord(caps, CapSize::Md, CapVariant::Plain);
-            cap.set_valign(gtk::Align::Center);
-            content.append(&cap);
-        }
         save.set_child(Some(&content));
-        save.update_property(&[gtk::accessible::Property::Label(&accessible_name(
-            "Save frame",
-            caps.as_deref(),
-        ))]);
+        // Its key, also after `keys.toml` changes (WP10).
+        button::follow_keymap(&save, &keymap, |save, keymap| {
+            let caps = binding_caps(keymap, "frame.save");
+            if let Some(content) = save.child().and_downcast::<gtk::Box>() {
+                button::show_binding_cap(
+                    &content,
+                    caps.as_deref(),
+                    button::BINDING_CAP,
+                    CapSize::Md,
+                    CapVariant::Plain,
+                );
+            }
+            save.update_property(&[gtk::accessible::Property::Label(&accessible_name(
+                "Save frame",
+                caps.as_deref(),
+            ))]);
+        });
         let keys = ctx.keys.clone();
         save.connect_clicked(guarded!("transport: save frame", move |_| keys
             .run_binding("frame.save")));
