@@ -1652,6 +1652,87 @@ fn the_autocut_page_goes_with_the_narrow_sheet() {
     assert_clean(nested.window(0));
 }
 
+/// The autocut preview's spans (from, to) as `local` reports them.
+fn preview_spans(gui: &Gui) -> Vec<(u64, u64)> {
+    let local = gui.local();
+    local["autocutPreview"]["spans"]
+        .as_array()
+        .map(|spans| {
+            spans
+                .iter()
+                .filter_map(|s| Some((s["from"].as_u64()?, s["to"].as_u64()?)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// R40, R76: the page's preview follows the timeline, not only the
+/// selection and the knobs. A trim of c2d1 (before c3e9: the scope stays
+/// c3e9) moves c3e9's hatches and regions 30 frames earlier and the
+/// Timeline row 30 frames shorter; its undo moves them back; c3e9 trimmed
+/// to before its first silence leaves nothing to cut. (No dry run went:
+/// the page kept the first plan's frames, past the trim.)
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_autocut_preview_follows_the_timeline() {
+    let mut nested = Nested::start(AREA, "autocut-follows", Options::default());
+    let preset = ui(|u| {
+        u.canvas_mode = CanvasMode::Program;
+        u.selection = vec![clip("c3e9")];
+        u.playhead = 4842;
+    });
+    let project = fixture(&nested, DesignVariant::Base, &preset);
+    open(&mut nested, &project, levels(DESIGN_LEVELS));
+    nested.keys(&["-M", "shift", "-k", "c", "-m", "shift"]);
+    wait_for_label(nested.window(0), "Removes 4 silences");
+    let s12 = vec![(4842, 4890), (5570, 5612), (6276, 6315), (6948, 7005)];
+    assert_eq!(preview_spans(nested.window(0)), s12);
+    let settle = |nested: &mut Nested, want: &[(u64, u64)], what: &str| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            nested.window(0).wait_idle();
+            let now = preview_spans(nested.window(0));
+            if now == want {
+                return;
+            }
+            assert!(Instant::now() < deadline, "{what}: {now:?}, not {want:?}");
+            thread::sleep(Duration::from_millis(100));
+        }
+    };
+    // c2d1 ends 30 frames earlier: c3e9 starts at 4256.
+    cli_ok(
+        &nested,
+        &project,
+        &["clip", "trim", "c2d1", "--end", "-30f"],
+    );
+    let earlier: Vec<(u64, u64)> = s12.iter().map(|(a, b)| (a - 30, b - 30)).collect();
+    settle(&mut nested, &earlier, "the hatches after c2d1's trim");
+    assert_has(
+        &wait_for_label(nested.window(0), "Removes 4 silences"),
+        &["00:02:40:12 → 00:02:42:00", "00:04:05:11", "00:03:59:05"],
+    );
+    // Its undo: S12's frames again.
+    cli_ok(&nested, &project, &["undo"]);
+    settle(&mut nested, &s12, "the hatches after the undo");
+    assert_has(
+        &wait_for_label(nested.window(0), "Removes 4 silences"),
+        &["00:02:41:12 → 00:02:43:00", "00:04:06:11", "00:04:00:05"],
+    );
+    // c3e9 kept up to its first silence: nothing to cut.
+    cli_ok(
+        &nested,
+        &project,
+        &["clip", "trim", "c3e9", "--end", "556f"],
+    );
+    settle(&mut nested, &[], "no hatches on the trimmed clip");
+    let labels = wait_for_label(nested.window(0), autocut::NOTHING_TO_CUT);
+    assert!(
+        !labels.iter().any(|l| l.starts_with("00:02:41:12")),
+        "no region left: {labels:#?}"
+    );
+    assert_clean(nested.window(0));
+}
+
 // ------------------------------------------------------- 1300 wide (Medium)
 
 /// The panel docked at 320 (G§3.15 Medium): the inspector's crop fields

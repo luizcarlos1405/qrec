@@ -33,7 +33,8 @@ use qrec_core::protocol::command::SeekTarget;
 use qrec_core::protocol::reply::AutocutPlanView;
 use qrec_core::protocol::{ToastAction, ToastLevel, UiAction};
 use qrec_core::view::autocut::{
-    self, AUTO_RUN, AutocutDraft, AutocutSummary, DETECT_ON, Knob, NOTE, RegionRow, TITLE,
+    self, AUTO_RUN, AutocutDraft, AutocutSummary, DETECT_ON, DryRunKey, Knob, NOTE, RegionRow,
+    TITLE,
 };
 use qrec_core::view::notices::{Notice, NoticeAction, error_notice};
 use qrec_core::view::{AutocutPreview, PanelPageKind, format};
@@ -86,8 +87,9 @@ struct Inner {
     /// request counts once sent).
     debounce_busy: RefCell<Option<BusyToken>>,
     draft: RefCell<AutocutDraft>,
-    /// The dry run the page wants now (draft and scope).
-    wanted: RefCell<Option<Command>>,
+    /// The dry run the page wants now (draft and scope) and what its answer
+    /// is worked out on (the clips, the setting's track: R40, R76).
+    wanted: RefCell<Option<DryRunKey>>,
     summary: RefCell<Option<AutocutSummary>>,
     spans: RefCell<Vec<qrec_core::view::AutocutPreviewSpan>>,
     open: Cell<bool>,
@@ -514,8 +516,9 @@ impl AutocutPage {
         inner.selected_region.set(None);
         self.show_draft(&state);
         self.show_summary();
-        let cmd = autocut::dry_run(&state, &inner.draft.borrow());
-        *inner.wanted.borrow_mut() = Some(cmd.clone());
+        let key = autocut::dry_run_key(&state, &inner.draft.borrow());
+        let cmd = key.cmd.clone();
+        *inner.wanted.borrow_mut() = Some(key);
         let step = inner.runs.borrow_mut().open(cmd, self.now_ms());
         // Narrow: the page shows in the sheet (one already open stays the
         // person's when the page closes).
@@ -623,14 +626,26 @@ impl AutocutPage {
         self.request(&state);
     }
 
-    /// The dry run the page wants changed: debounce it.
+    /// The dry run the page wants changed (the draft, the scope, or what
+    /// its answer is worked out on): debounce it. When the timeline changed
+    /// under the shown plan its frames are wrong: the hatches, the summary
+    /// and the regions go until the new answer comes (a reply to an older
+    /// dry run is never shown once a change waits, `DryRuns::replied`).
     fn request(&self, state: &State) {
         let inner = &self.inner;
-        let cmd = autocut::dry_run(state, &inner.draft.borrow());
-        if inner.wanted.borrow().as_ref() == Some(&cmd) {
-            return;
+        let key = autocut::dry_run_key(state, &inner.draft.borrow());
+        let stale = match inner.wanted.borrow().as_ref() {
+            Some(wanted) if *wanted == key => return,
+            Some(wanted) => wanted.stale_for(&key),
+            None => false,
+        };
+        let cmd = key.cmd.clone();
+        *inner.wanted.borrow_mut() = Some(key);
+        if stale {
+            inner.spans.borrow_mut().clear();
+            *inner.summary.borrow_mut() = None;
+            inner.selected_region.set(None);
         }
-        *inner.wanted.borrow_mut() = Some(cmd.clone());
         let step = inner.runs.borrow_mut().change(cmd, self.now_ms());
         self.carry_out(step);
         self.publish();
@@ -764,9 +779,10 @@ impl AutocutPage {
         }
     }
 
-    /// Follows a new snapshot while open: the scope (the selection) and
-    /// the clips change the dry run; a recording or an empty timeline
-    /// closes the page.
+    /// Follows a new snapshot while open: the scope (the selection), the
+    /// clips (a trim, a move, an undo, another client's edit) and the
+    /// setting's track change the dry run (`view::autocut::dry_run_key`);
+    /// a recording or an empty timeline closes the page.
     pub fn update(&self, state: &State) {
         let inner = &self.inner;
         if !inner.open.get() {
@@ -783,12 +799,12 @@ impl AutocutPage {
             .set_active(state.project.autocut.auto_run_after_take);
         inner.setting.set(false);
         self.show_tracks(state);
-        let timeline_changed = inner
+        let changed = inner
             .wanted
             .borrow()
             .as_ref()
-            .is_some_and(|w| *w != autocut::dry_run(state, &inner.draft.borrow()));
-        if timeline_changed {
+            .is_some_and(|w| *w != autocut::dry_run_key(state, &inner.draft.borrow()));
+        if changed {
             self.request(state);
         }
     }
@@ -864,7 +880,10 @@ impl AutocutPage {
                 inner.summary_mono.set_text("");
             }
         }
-        if analyzing {
+        // While a new dry run comes, a summary still right for the timeline
+        // keeps its rows and regions (another knob, another scope); none
+        // (just opened, or gone stale) shows none.
+        if analyzing && summary.is_some() {
             return;
         }
         // The rows and the regions of the shown summary.

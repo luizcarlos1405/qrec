@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::autocut::{ClipCut, db_label};
 use crate::ids::{Frame, TakeId, TrackId};
-use crate::model::Project;
+use crate::model::{Clip, Project};
 use crate::protocol::command::{AutocutOverrides, AutocutPatch, ClipScope, Command, Nullable};
 use crate::protocol::reply::AutocutPlanView;
 use crate::state::State;
@@ -244,6 +244,41 @@ pub fn dry_run(state: &State, draft: &AutocutDraft) -> Command {
         scope: scope(state),
         overrides: overrides(draft),
         dry_run: true,
+    }
+}
+
+/// What a dry run's answer is worked out on: its command, and what the
+/// command doesn't carry (R40, R76). The timeline's clips: the summary,
+/// the regions and the hatches are their frames, and a trim, a move, an
+/// undo or another client's edit under the same selection changes them.
+/// And the project's `autocut.track` while the draft names no track: the
+/// track the core then analyzes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DryRunKey {
+    pub cmd: Command,
+    pub clips: Vec<Clip>,
+    /// The setting's track when the draft leaves the track to it.
+    pub setting_track: Option<TrackId>,
+}
+
+impl DryRunKey {
+    /// A plan shown for `self` no longer matches `next`'s timeline (or
+    /// track): its frames are out of date, not only its draft or scope.
+    pub fn stale_for(&self, next: &DryRunKey) -> bool {
+        self.clips != next.clips || self.setting_track != next.setting_track
+    }
+}
+
+/// The key of the dry run of `draft` on `state`: the page asks again when
+/// it changes, not only when the command does.
+pub fn dry_run_key(state: &State, draft: &AutocutDraft) -> DryRunKey {
+    DryRunKey {
+        cmd: dry_run(state, draft),
+        clips: state.project.timeline.clips.clone(),
+        setting_track: match &draft.track {
+            Some(_) => None,
+            None => state.project.autocut.track.clone(),
+        },
     }
 }
 
@@ -604,6 +639,67 @@ mod tests {
         state.ui.selection = vec![id("c3e9")];
         state.ui.playhead = 4842;
         state
+    }
+
+    /// R40, R76: a dry run is keyed on what its answer is worked out on.
+    /// A trim under the same selection, or its undo, leaves the command as
+    /// it was but changes the key, and the plan shown goes stale; a seek
+    /// changes neither; a knob changes the command but leaves the plan's
+    /// frames right; the setting's track counts for a draft that names no
+    /// track only.
+    #[test]
+    fn a_dry_run_is_keyed_on_the_timeline() {
+        let ctx = testkit::ctx(testkit::CREATED_AT, 1);
+        let run = |state: &State, cmd: Command| crate::apply(state, &ctx, cmd).unwrap().state;
+        let before = s12();
+        let draft = AutocutDraft::from(&before.project);
+        let key = dry_run_key(&before, &draft);
+        // c2d1, before c3e9, 30 frames shorter: the scope stays c3e9.
+        let trimmed = run(
+            &before,
+            Command::ClipTrim {
+                clip: id("c2d1"),
+                start: None,
+                end: Some(crate::TimeArg::minus_frames(30)),
+                timeline: false,
+            },
+        );
+        assert_eq!(trimmed.ui.selection, [id("c3e9")]);
+        assert_eq!(dry_run(&trimmed, &draft), dry_run(&before, &draft));
+        let after = dry_run_key(&trimmed, &draft);
+        assert_ne!(after, key);
+        assert!(key.stale_for(&after));
+        // Its undo: the first key again.
+        let undone = run(&trimmed, Command::Undo { steps: 1 });
+        assert_eq!(dry_run_key(&undone, &draft), key);
+        // A seek changes nothing the plan is worked out on.
+        let mut moved = before.clone();
+        moved.ui.playhead = 30;
+        assert_eq!(dry_run_key(&moved, &draft), key);
+        // A knob: another command, the same frames.
+        let tuned = Knob::Padding.set(&draft, 500.0);
+        let tuned_key = dry_run_key(&before, &tuned);
+        assert_ne!(tuned_key, key);
+        assert!(!key.stale_for(&tuned_key));
+        // "Use for autocut" A2: the track a draft without one analyzes.
+        let set_a2 = |state: &State| {
+            run(
+                state,
+                Command::AutocutSettings {
+                    patch: AutocutPatch {
+                        track: Nullable::Set("A2".parse().unwrap()),
+                        ..AutocutPatch::default()
+                    },
+                },
+            )
+        };
+        let mut unnamed = draft.clone();
+        unnamed.track = None;
+        let a2 = set_a2(&before);
+        assert!(dry_run_key(&before, &unnamed).stale_for(&dry_run_key(&a2, &unnamed)));
+        let mut named = draft.clone();
+        named.track = Some("A1".parse().unwrap());
+        assert_eq!(dry_run_key(&a2, &named), dry_run_key(&before, &named));
     }
 
     /// The dry run of the design fixture (BRIEF §3.6): `qrec autocut

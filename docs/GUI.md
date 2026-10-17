@@ -2270,7 +2270,14 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     0…1000 ms step 10. "Detect silence on": the project scene's tracks,
     "A1 · Yeti Nano (mic)".
   - `dry_run(&State, &draft) -> Command`: scope = the selection, or All;
-    overrides = the draft.
+    overrides = the draft. `dry_run_key(&State, &draft) -> DryRunKey`: the
+    command and what it doesn't carry but its answer is worked out on (the
+    timeline's clips; the setting's track while the draft names none). The
+    page asks again when the key changes, not only the command: a trim, a
+    move, an undo or another client's edit under the same selection; and
+    when the clips changed under the shown plan (`DryRunKey::stale_for`)
+    its hatches, summary and regions go until the new answer (review R40,
+    R76).
   - `apply(&State, &draft) -> Vec<Command>` (D-15).
   - `summary(&AutocutPlanView, &State) -> AutocutSummary { title, rows:
     Vec<(String, String)>, regions: Vec<RegionRow> }`, matching the S12
