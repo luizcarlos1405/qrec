@@ -1090,6 +1090,43 @@ fn scrubs_end_on_the_scrubbed_frame() {
     assert_quiet_since(quiet);
 }
 
+/// A seek the pipeline refuses goes again a moment later, newest wins
+/// (WP10's audit: the last scrub of a fast ruler drag, refused, left the
+/// picture on an older frame than the playhead for good). GStreamer refuses
+/// one only now and then, so the test has the next ones refused
+/// (`REFUSE_SEEKS`): a scrub and a plain seek still land on their frames.
+#[test]
+fn a_refused_seek_goes_again() {
+    let _serial = serial();
+    let quiet = problems();
+    ges_render::init().unwrap();
+    let env = TestEnv::new();
+    let dir = env.empty_dir("refused");
+    let plan = frame_id_plan(&dir, 120);
+    let tap = Tap::new(Some(ID_RECT));
+    let events = Events::default();
+    let player = spawn(&tap, &dir, None, &events);
+    player.load(plan, 0);
+    events.loaded(1);
+    REFUSE_SEEKS.store(3, Ordering::SeqCst);
+    player.scrub(ns(40));
+    settle(&player);
+    assert_eq!(REFUSE_SEEKS.load(Ordering::SeqCst), 0, "three refusals");
+    assert_eq!(player.position_ns(), ns(40));
+    assert_eq!(tap.showing(ns(40)).id, Some(40));
+    // Refused twice, a newer seek waiting meanwhile: the newer one lands.
+    REFUSE_SEEKS.store(2, Ordering::SeqCst);
+    player.seek(ns(60));
+    player.seek(ns(70));
+    settle(&player);
+    assert_eq!(REFUSE_SEEKS.load(Ordering::SeqCst), 0);
+    assert_eq!(player.position_ns(), ns(70));
+    assert_eq!(tap.showing(ns(70)).id, Some(70));
+    assert!(events.errors().is_empty(), "{:?}", events.errors());
+    stop(player, &events);
+    assert_quiet_since(quiet);
+}
+
 /// Shutdown while playing reaches NULL and says `Stopped` within 5 s;
 /// calls afterwards do nothing.
 #[test]
