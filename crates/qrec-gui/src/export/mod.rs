@@ -48,6 +48,7 @@ use qrec_core::protocol::command::{ExportFormat, Quality};
 use qrec_core::state::{Job, JobKind, State};
 use qrec_core::view::export::{self as view, FailedExport};
 use qrec_core::view::format;
+use qrec_core::view::notices::unavailable_notice;
 
 pub use flow::{
     ACTIONS, Answer, Draft, ExportPanelState, Outcome, PanelRequest, PanelStep, SHOW, TOGGLE,
@@ -416,10 +417,11 @@ impl Panel {
     fn open(self: &Rc<Self>) {
         let state = self.ctx.store.state();
         let exporting = export_job(&state).is_some();
-        if !exporting
-            && (state.project.timeline.clips.is_empty() || !state.runtime.record.is_idle())
-        {
-            tracing::debug!("export panel: nothing to export now");
+        // D-34: a refused Ctrl+E says why (an empty timeline, a take).
+        if let Err(why) = view::panel_enabled(&state) {
+            if let Some(notice) = unavailable_notice("export", &why, &state) {
+                self.ctx.store.notify(notice);
+            }
             return;
         }
         self.refresh_preview();

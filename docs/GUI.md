@@ -2353,6 +2353,13 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     `qrec.json` invalid, the row's button and the S18 footer's; review fix:
     both stayed live and the core's refusal toasted).
 - **Export**:
+  - `panel_enabled(&State) -> Result<(), String>`: the panel opens while
+    an export runs, else not while recording ("Not while recording") or
+    on an empty timeline ("The timeline is empty"); a refused `Ctrl+E`
+    toasts that reason (D-34, `unavailable_notice("export", …)`; review
+    fix: it opened nothing, silently). The header slot's enablement and
+    `hint_enabled("export.panel")` read the same rule (each still its own
+    copy: to switch to this one).
   - Captions, `caption(format, codec, &State, &UserConfig)` (built by
     WP0a; the GUI passes the user config it read at startup, the one it
     gives `Ctx::preview`): MP4 "H.264 + AAC 192 kbps · VA-API on

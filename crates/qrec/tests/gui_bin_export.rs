@@ -1136,6 +1136,32 @@ fn s15a_export_setup() {
     close(&mut nested);
 }
 
+/// D-34: `Ctrl+E` on an empty timeline says why ("The timeline is empty",
+/// an info toast) and opens nothing (it opened nothing, silently).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn ctrl_e_on_an_empty_timeline_says_why() {
+    let mut nested = Nested::start(AREA, "empty-export", Options::default());
+    let ui = UiState {
+        canvas_mode: CanvasMode::Program,
+        ..UiState::default()
+    };
+    let project = fixture(&nested, "smoke", DesignVariant::Smoke, Some(ui));
+    for clip in ["c7f3", "c1b2", "c3e9"] {
+        let removed = nested.cli_json(&project, &["clip", "remove", clip]);
+        assert_eq!(removed["ok"], true, "{removed}");
+    }
+    open(&mut nested, &project, launch());
+    ctrl_e(&mut nested);
+    assert!(overlays(&mut nested).is_empty(), "no panel");
+    assert_shows(
+        &nested.window(0).labels("toast-host"),
+        &["The timeline is empty"],
+    );
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
 /// S15b, then a cancel: Export starts the export (Draft, to be quick); the
 /// panel follows it passively (no trap: the S06 hints with the export
 /// prefix), and once `qrec status` has it at 42 % or more it is shot.
