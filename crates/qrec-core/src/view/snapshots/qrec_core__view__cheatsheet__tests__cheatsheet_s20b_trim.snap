@@ -1,0 +1,17 @@
+---
+source: crates/qrec-core/src/view/cheatsheet.rs
+expression: text(&sheet)
+---
+# Keyboard shortcuts [Search shortcuts]
+(6 shortcuts match “Trim”)
+=== column 1
+=== column 2
+=== column 3
+## Edit
+[[]                    [Trim] start to the playhead
+[]]                    [Trim] end to the playhead
+[Alt][[]               [Trim] 1 frame off the start
+[Alt][]]               [Trim] 1 frame off the end
+[Alt][{]               [Trim] 10 frames off the start
+[Alt][}]               [Trim] 10 frames off the end
+-- Keys come from ~/.config/qrec/keys.toml. Change them in Settings › Keyboard.
