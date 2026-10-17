@@ -595,11 +595,20 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
   dry run 250 ms, one in flight (D-15); bin sizes 500 ms; inspector
   fields on commit. A debounce still waiting when the window closes goes
   out right before its host closes: `Store::before_close` (in
-  `close_host_then_quit`, before `GuiHost::close`) runs each
-  `Store::subscribe_close` callback, so the command enters the FIFO ahead
-  of the close (G§3.4.1). The timeline's `SetUi` does (review R66: a zoom
-  closed within its 300 ms was sent when its timer fired, to a closing
-  host that refused it, and never reached `ui.json`).
+  `close_host_then_quit`, before the media stop and `GuiHost::close`) runs
+  each `Store::subscribe_close` callback, so the command enters the FIFO
+  ahead of the close (G§3.4.1). The timeline's `SetUi` does (review R66: a
+  zoom closed within its 300 ms was sent when its timer fired, to a
+  closing host that refused it, and never reached `ui.json`), and so do
+  the playing program's playhead (`SyncMachine::on_close`: `Seek{To(the
+  player's frame)}`, as a stop parks it; the next once-a-second seek came
+  after the close) and a nudge burst still waiting for its key's release
+  (its one `LayerSet`; A1's audit of R66:
+  `a_playing_programs_playhead_is_saved_at_the_close`,
+  `a_nudge_burst_is_saved_at_the_close`). The others send nothing that
+  stays: the dry run, the bin's sizes and the player's reload; a scrub or
+  a drag still held ends with the window, unsent, as an `Esc` would end
+  it.
 
 ### G§3.7 Dispatch, gestures, confirmations, toasts
 

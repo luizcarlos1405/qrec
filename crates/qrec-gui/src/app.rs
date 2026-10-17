@@ -570,9 +570,10 @@ impl App {
                 .update_local(|l| l.startup = StartupPhase::Closing);
         }
         *self.hold.borrow_mut() = Some(self.app.hold());
-        self.ctx.media.shutdown();
-        // What the regions debounced goes ahead of the close (G§3.4.1).
+        // What the regions debounced goes ahead of the close (G§3.4.1),
+        // the playing program's playhead too: before the player stops.
         self.ctx.store.before_close();
+        self.ctx.media.shutdown();
         self.startup.close_host();
         self.window.window.set_visible(false);
     }

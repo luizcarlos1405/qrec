@@ -460,6 +460,17 @@ impl Inner {
                 }
             })
             .detach();
+        // A nudge burst still waiting for its key's release (or its
+        // timeout) sends its `LayerSet` before the host closes (G§3.6; A1's
+        // audit: the timer fired after the close, and the burst was lost).
+        let weak = Rc::downgrade(self);
+        ctx.store
+            .subscribe_close(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.end_burst(NudgeCoalescer::release);
+                }
+            })
+            .detach();
         let weak = Rc::downgrade(self);
         ctx.theme
             .subscribe(move |theme| {

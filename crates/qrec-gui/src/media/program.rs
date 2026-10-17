@@ -272,6 +272,26 @@ impl SyncMachine {
         self.key_seeks.push((now_ms, frame));
     }
 
+    /// The window closes its host next (`Store::before_close`, G§3.6): a
+    /// program playing in the player parks the playhead at its frame now,
+    /// as a stop does. The once-a-second seek still to come went out after
+    /// the close, refused, and the reopened project showed the playhead up
+    /// to a second earlier (A1's audit). Nothing for a paused program, a
+    /// take in the player, or a program whose load after a take hasn't
+    /// landed (its position is still the take's).
+    pub fn on_close(&mut self, inp: &Inputs<'_>) -> Option<Command> {
+        let playing = inp.has_player
+            && self.told_playing
+            && matches!(self.content, Content::Program(_))
+            && !self.settling;
+        if !playing {
+            return None;
+        }
+        let frame = inp.player_frame();
+        self.auto_seek = Some((inp.now_ms, frame));
+        Some(seek_to(frame))
+    }
+
     /// A reload is due (the test channel's `waitIdle`).
     pub fn busy(&self) -> bool {
         self.reload_due.is_some()
@@ -804,8 +824,34 @@ impl ProgramSync {
                 sync.schedule();
             })
             .detach();
+        // The playing program's playhead goes out before the host closes.
+        let weak = Rc::downgrade(&sync);
+        ctx.store
+            .subscribe_close(move |_| {
+                if let Some(sync) = weak.upgrade() {
+                    sync.close();
+                }
+            })
+            .detach();
         SYNC.with(|s| *s.borrow_mut() = Some(Rc::clone(&sync)));
         sync
+    }
+
+    /// The window closes its host next ([`SyncMachine::on_close`]).
+    fn close(self: &Rc<Self>) {
+        let state = self.ctx.store.state();
+        let plan = self.plan(&state);
+        let cmd = {
+            let mut inp = self.inputs(&state, &plan);
+            // The window says it is closing already (not open): its player
+            // still plays until the media stop right after.
+            inp.has_player = self.ctx.media.player().is_some();
+            self.machine.borrow_mut().on_close(&inp)
+        };
+        if let Some(cmd) = cmd {
+            tracing::debug!("program sync: the playhead before the close");
+            self.ctx.store.dispatch(cmd);
+        }
     }
 
     fn now_ms(&self) -> u64 {
@@ -1677,6 +1723,35 @@ mod tests {
         // still moves it.
         rig.state.ui.playhead = 100;
         assert_eq!(rig.sync().player, [PlayerCmd::Seek(rig.ns(100))]);
+    }
+
+    /// G§3.6 (A1's audit): at the close a playing program parks the
+    /// playhead at the player's frame (the once-a-second seek still to
+    /// come went out after the close, refused); nothing paused, nothing
+    /// for a take in the player.
+    #[test]
+    fn the_close_parks_a_playing_programs_playhead() {
+        let mut rig = Rig::new(program()).loaded();
+        let mut machine = std::mem::take(&mut rig.machine);
+        assert_eq!(machine.on_close(&rig.inputs()), None, "paused");
+        rig.machine = machine;
+        assert_eq!(rig.play().player, [PlayerCmd::Play(1.0)]);
+        rig.now += 600;
+        rig.position = rig.state.ui.playhead + 18;
+        let mut machine = std::mem::take(&mut rig.machine);
+        assert_eq!(
+            machine.on_close(&rig.inputs()),
+            Some(seek_cmd(rig.position)),
+            "playing: the player's frame"
+        );
+        rig.machine = machine;
+        // A bin preview's take in the player: the program isn't playing.
+        let mut rig = Rig::new(program()).loaded();
+        rig.take_preview = Some((TakeId::numbered(4), true));
+        rig.sync();
+        let mut machine = std::mem::take(&mut rig.machine);
+        assert_eq!(machine.on_close(&rig.inputs()), None, "a take");
+        rig.machine = machine;
     }
 
     #[test]

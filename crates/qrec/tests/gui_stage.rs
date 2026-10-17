@@ -1293,6 +1293,101 @@ fn a_keys_seek_while_playing_never_pulls_the_player_back() {
     assert_clean(&mut nested);
 }
 
+/// Closes the window through `app.quit` and waits for its exit (0): what
+/// it debounced went out before its host closed, or never.
+fn quit_and_wait(nested: &mut Nested) {
+    let gui = nested.window(0);
+    let quit = gui.ctl(json!({"op": "action", "id": "app.quit"}));
+    assert_eq!(quit["ok"], true, "{quit}");
+    assert_eq!(gui.wait_exit(Duration::from_secs(70)), Some(0), "the exit");
+    gui.assert_no_criticals();
+    let log = gui.gui_log();
+    assert!(
+        !log.contains("window is closing"),
+        "a request refused by the closing host:\n{log}"
+    );
+}
+
+/// The project's `qrec.json` (the window gone: its host saved it).
+fn saved_project(project: &Path) -> Value {
+    let text = fs::read(project.join("qrec.json")).expect("qrec.json");
+    serde_json::from_slice(&text).expect("its JSON")
+}
+
+/// G§3.6 (A1's audit: only the timeline's `SetUi` went out before the
+/// close): a playing program's playhead goes out before the host closes.
+/// Closed 600 ms after a once-a-second seek landed, `ui.json` has the
+/// player's frame, not that seek's: the next one would have come after the
+/// close, refused, and the reopened project showed the playhead up to a
+/// second earlier.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_playing_programs_playhead_is_saved_at_the_close() {
+    let mut nested = Nested::start(AREA, "close-playing", Options::default());
+    let project = fixture(
+        &nested,
+        DesignVariant::Base,
+        Some(ui(CanvasMode::Program, 1200)),
+    );
+    open(&mut nested, &project, Launch::a11y());
+    let play = nested
+        .window(0)
+        .ctl(json!({"op": "dispatch", "command": {"cmd": "play"}}));
+    assert_eq!(play["ok"], true, "{play}");
+    let seeked = gui_support::poll(Duration::from_secs(20), "a once-a-second seek", || {
+        let at = status(&nested, &project)["ui"]["playhead"].as_u64()?;
+        (at > 1200).then_some(at)
+    });
+    thread::sleep(Duration::from_millis(600));
+    let local = nested.window(0).local();
+    let ns = local["playerNs"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("no player: {local}"));
+    // 30 fps.
+    let player = ns * 30 / 1_000_000_000;
+    assert!(
+        player > seeked + 10,
+        "it played on: {player} after {seeked}"
+    );
+    quit_and_wait(&mut nested);
+    let path = project.join(".qrec").join("ui.json");
+    let ui: Value = serde_json::from_slice(&fs::read(&path).expect("ui.json")).expect("its JSON");
+    let saved = ui["playhead"].as_u64().unwrap_or_else(|| panic!("{ui}"));
+    assert!(
+        (player..=player + 15).contains(&saved),
+        "the playhead saved at {saved}: the player was at {player}, the last seek at {seeked}"
+    );
+}
+
+/// G§3.6 (A1's audit): a nudge burst still waiting for its key's release
+/// goes out before the host closes. Left pressed and not released (the
+/// burst waits up to a second for the release) and the window closed: L2
+/// is saved moved. Its timer fired after the close, refused, and the burst
+/// was lost.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_nudge_burst_is_saved_at_the_close() {
+    let mut nested = Nested::start(AREA, "close-nudging", Options::default());
+    let project = fixture(
+        &nested,
+        DesignVariant::Base,
+        Some(ui(CanvasMode::Live, 7391)),
+    );
+    open(&mut nested, &project, Launch::a11y());
+    select_l2(&mut nested, &project);
+    let held = nested.keys_held(&["-P", "Left"], 4000);
+    gui_support::poll(Duration::from_secs(5), "the burst", || {
+        (nested.window(0).local()["drag"] == "layerNudge").then_some(())
+    });
+    quit_and_wait(&mut nested);
+    drop(held);
+    let saved = saved_project(&project);
+    let x = saved["scene"]["layers"][1]["rect"]["x"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("no L2: {saved}"));
+    assert!(x < 1500, "the burst wasn't saved: L2 at x {x}");
+}
+
 /// S10's canvas: a trim of c2d0's start edge (S08's seconds zoom, +29
 /// frames) shows take 5 frame 41 with the 2 px accent stroke and "Trim
 /// start · take 5 · frame 41". The trim drag is WP3's timeline: its rows
