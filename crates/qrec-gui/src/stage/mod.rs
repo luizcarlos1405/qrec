@@ -64,7 +64,7 @@ use qrec_core::protocol::command::{LayerPatch, Nullable, SceneTarget, UiPatch};
 use qrec_core::state::{CanvasMode, RecordPhase};
 use qrec_core::view::canvas::{
     DragOp, Guide, Hit, LIVE_AFTER_TAKE, Scale, Snap, badges, countdown, countdown_plate,
-    edit_target, hit, layer_boxes, nudge_step, placed, readout, readout_origin, rec, scene_of,
+    edit_target, hit, layer_boxes, nudge_step, readout, readout_origin, rec, scene_of,
     source_sizes, stage_geometry, transport, trim_plate,
 };
 use qrec_core::view::notices::{Notice, error_notice};
@@ -609,7 +609,7 @@ impl Inner {
         let editable =
             open && !first_run && take_preview.is_none() && trim.is_none() && !live_after_take;
         self.canvas.set_visible(!first_run);
-        self.render_canvas(&state, &local, editable, &live_sources);
+        self.render_canvas(&state, &local, editable);
 
         // Last: what other regions read.
         let checked = first_run.then(|| self.first_run.checked());
@@ -661,13 +661,7 @@ impl Inner {
 
     /// The selection box, the guides and the readout of the scene being
     /// edited.
-    fn render_canvas(
-        &self,
-        state: &State,
-        local: &LocalUi,
-        editable: bool,
-        live_sources: &view::LiveSources,
-    ) {
+    fn render_canvas(&self, state: &State, local: &LocalUi, editable: bool) {
         let canvas_size = (
             f64::from(state.project.canvas.width),
             f64::from(state.project.canvas.height),
@@ -701,23 +695,24 @@ impl Inner {
             .or_else(|| preview.as_ref().map(|p| p.layer.clone()));
         let active = edit.active();
         let show = selected.is_some() && (local.focus == FocusRegion::Stage || active);
-        let sizes = source_sizes(&state.project, &target, live_sources);
         let selection = selected.as_ref().and_then(|id| {
             let layer = scene.layer(id)?;
             if !layer.visible {
                 return None;
             }
-            let (rect, crop) = match &preview {
-                Some(p) if &p.layer == id => (p.rect, p.crop),
-                _ => (layer.rect, layer.crop),
+            let rect = match &preview {
+                Some(p) if &p.layer == id => p.rect,
+                _ => layer.rect,
             };
-            let dst = placed(rect, crop, layer.fit, sizes.get(id).copied());
+            // The box is the rect, which the handles and the edits act on
+            // (for a Contain layer of another aspect the picture is inside
+            // it, R20).
             Some((
                 Rect::new(
-                    f64::from(dst.x),
-                    f64::from(dst.y),
-                    f64::from(dst.w),
-                    f64::from(dst.h),
+                    f64::from(rect.x),
+                    f64::from(rect.y),
+                    f64::from(rect.w),
+                    f64::from(rect.h),
                 ),
                 rect,
             ))

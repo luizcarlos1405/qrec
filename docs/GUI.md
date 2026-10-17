@@ -2150,7 +2150,12 @@ anchor's frame under the anchor; a move preview's command, applied with
   (750, 380, 192, 144); dragged to x 1280 (S13) at (640, 380, 192, 144).
 - **Hit**: the topmost visible box under the point. Handles: 8×8 on the
   corners and edge midpoints, 12 px hit area; with `Alt`, edge handles
-  become crop brackets. Locked layers can be selected, never dragged
+  become crop brackets. The selection box and its handles are the layer's
+  rect (`LayerBox.frame`), which resizes, crops and snapping change; a
+  press on a body hits the picture (`LayerBox.rect`, place's dst). The two
+  differ only for a Contain layer whose source has another aspect (a
+  16:10 screen on a 16:9 canvas: pillarboxed inside its box); the handles
+  sat on the picture, so a grabbed one drifted off the pointer (R20). Locked layers can be selected, never dragged
   ("Layer L2 is locked").
 - **Snapping** (D-09): lines x ∈ {0, W/3, W/2, 2W/3, W} and y ∈ {0, H/3,
   H/2, 2H/3, H}; layer features left, center, right and top, middle,

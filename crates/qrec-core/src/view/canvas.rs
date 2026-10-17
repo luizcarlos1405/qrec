@@ -9,7 +9,9 @@
 //! - **Layer boxes** ([`layer_boxes`]): `layout::place`'s destination of
 //!   each layer × preview / canvas, preview-local, from the sources' sizes
 //!   ([`source_sizes`]: the live status in Live, the take's streams in
-//!   Program, the rect while unknown).
+//!   Program, the rect while unknown): what a press hits. The selection
+//!   box and its handles are the layer's rect (its `frame`), what the
+//!   edits change (R20).
 //! - **Edits** (D-09, D-32, D-33): [`hit`] (the selected box's handles, then
 //!   the topmost visible box), [`drag`] (move, resize, crop, snapped to the
 //!   canvas' edges, thirds and center), [`nudge`] for nudge bursts, and the
@@ -96,8 +98,15 @@ pub fn stage_geometry(stage_w: f64, stage_h: f64, canvas: &Canvas) -> StageGeome
 #[serde(rename_all = "camelCase")]
 pub struct LayerBox {
     pub layer: LayerId,
-    /// Preview-local.
+    /// The picture, preview-local (`layout::place`'s dst): what a press on
+    /// the body hits.
     pub rect: Rect,
+    /// The layer's rect, preview-local: the selection box and its handles
+    /// (what a resize, a move's snapping and the readout act on). It is
+    /// the picture's box but for a Contain layer whose source has another
+    /// aspect (R20: the handles sat on the fitted picture while the edits
+    /// moved the rect's edges, so a grabbed handle drifted off the pointer).
+    pub frame: Rect,
     pub visible: bool,
     pub locked: bool,
     /// Array order: the last is on top.
@@ -118,17 +127,21 @@ pub fn layer_boxes(
         .layers
         .iter()
         .enumerate()
-        .map(|(z, layer)| LayerBox {
-            layer: layer.id.clone(),
-            rect: scale.rect(placed(
+        .map(|(z, layer)| {
+            let rect = scale.rect(placed(
                 layer.rect,
                 layer.crop,
                 layer.fit,
                 sizes.get(&layer.id).copied(),
-            )),
-            visible: layer.visible,
-            locked: layer.locked,
-            z,
+            ));
+            LayerBox {
+                layer: layer.id.clone(),
+                rect,
+                frame: scale.rect(layer.rect),
+                visible: layer.visible,
+                locked: layer.locked,
+                z,
+            }
         })
         .collect()
 }
@@ -338,12 +351,13 @@ pub enum Hit {
     Handle { layer: LayerId, handle: Handle },
 }
 
-/// The selected box's handles first (each grabs a 12 px square), then the
-/// topmost visible box under the point (preview-local).
+/// The selected box's handles first (each grabs a 12 px square on its
+/// frame, the rect), then the topmost visible picture under the point
+/// (preview-local).
 pub fn hit(boxes: &[LayerBox], selected: Option<&LayerId>, x: f64, y: f64) -> Hit {
     if let Some(sel) = selected.and_then(|id| boxes.iter().find(|b| &b.layer == id && b.visible)) {
         for handle in Handle::ALL {
-            if handle.square(sel.rect, HANDLE_HIT).contains(x, y) {
+            if handle.square(sel.frame, HANDLE_HIT).contains(x, y) {
                 return Hit::Handle {
                     layer: sel.layer.clone(),
                     handle,
@@ -1287,6 +1301,58 @@ mod tests {
         assert_eq!(take_sizes.get(&"L2".parse().unwrap()), Some(&(1280, 720)));
         assert_eq!(take_sizes.get(&"L1".parse().unwrap()), Some(&(2560, 1440)));
         insta::assert_json_snapshot!("design_layer_boxes", json!({"live": boxes, "moved": moved}));
+    }
+
+    /// R20: a Contain layer whose rect's aspect isn't its source's (a
+    /// 16:10 screen on the 16:9 canvas: screens' default fit) is
+    /// pillarboxed. The handles sit on the rect, which a resize edits, so
+    /// a grabbed handle follows the pointer; the body is the picture.
+    #[test]
+    fn contain_handles_sit_on_the_rect_they_edit() {
+        let mut state = testkit::design_state();
+        state.project.scene.layers.truncate(1);
+        let canvas = state.project.canvas.clone();
+        let preview = Rect::new(0.0, 0.0, 960.0, 540.0);
+        let l1: LayerId = "L1".parse().unwrap();
+        let sizes: BTreeMap<LayerId, (u32, u32)> = [(l1.clone(), (2560, 1600))].into();
+        let boxes = layer_boxes(&state.project.scene, &canvas, &sizes, preview);
+        assert_eq!(
+            rounded(boxes[0].rect),
+            [48.0, 0.0, 864.0, 540.0],
+            "the picture"
+        );
+        assert_eq!(
+            rounded(boxes[0].frame),
+            [0.0, 0.0, 960.0, 540.0],
+            "the rect"
+        );
+        // The left handle is on the rect's left edge; the pillarbox isn't
+        // the body.
+        assert_eq!(
+            hit(&boxes, Some(&l1), 2.0, 270.0),
+            Hit::Handle {
+                layer: l1.clone(),
+                handle: Handle::Left
+            }
+        );
+        assert_eq!(hit(&boxes, None, 20.0, 270.0), Hit::None);
+        // Dragged 50 preview px (100 canvas px) left, the handle is 50 px
+        // further left too: under the pointer.
+        let layer = state.project.scene.layers[0].clone();
+        let frame = drag(
+            &DragStart::of(&layer, Some((2560, 1600))),
+            DragOp::Resize {
+                handle: Handle::Left,
+            },
+            -100.0,
+            0.0,
+            false,
+            None,
+        );
+        let mut scene = state.project.scene.clone();
+        scene.layers[0].rect = frame.rect;
+        let moved = layer_boxes(&scene, &canvas, &sizes, preview);
+        assert_eq!(Handle::Left.center(moved[0].frame).0.round(), -50.0);
     }
 
     #[test]
