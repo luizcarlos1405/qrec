@@ -1052,6 +1052,106 @@ fn the_wheel_over_a_slider_scrolls_the_panel() {
     assert_clean(nested.window(0));
 }
 
+/// R42's audit: on GTK 4.22 a pointer press makes the slider the window's
+/// focus widget (`focus_on_click(false)` notwithstanding), so after a drag
+/// the wheel moved the slider whenever the window was active, and saved
+/// it. A pointer drag gives the keyboard nothing: with the keyboard held
+/// (the window active) two notches over the slider scroll the column, and
+/// neither the value nor the history moves.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_wheel_after_a_drag_scrolls_past_the_slider() {
+    let mut nested = Nested::start(AREA, "slider-wheel-after-drag", Options::size(1600, 800));
+    let preset = ui(|u| {
+        u.canvas_mode = CanvasMode::Program;
+        u.selection = vec![clip("c3e9")];
+        u.selected_layer = Some(LayerId::numbered(2));
+        u.playhead = 4842;
+    });
+    let project = fixture(&nested, DesignVariant::Base, &preset);
+    open(&mut nested, &project, levels(DESIGN_LEVELS));
+    let take = Some("take-0008");
+    cli_ok(
+        &nested,
+        &project,
+        &[
+            "scene",
+            "layer",
+            "set",
+            "L2",
+            "--take",
+            "take-0008",
+            "--opacity",
+            "0.5",
+        ],
+    );
+    nested.window(0).wait_idle();
+    let opacity = |nested: &mut Nested| {
+        let fields = nested.window(0).entries("inspector");
+        fields.get("inspector-opacity").cloned()
+    };
+    // The column to its end, where the slider shows.
+    nested.pointer().move_to(PANEL[0] + PANEL[2] / 2.0, 200.0);
+    nested.pointer().wheel(12);
+    nested.window(0).wait_idle();
+    let [x, y, w, h] = region(nested.window(0), "inspector-opacity-slider");
+    assert!(y + h <= 768.0, "the slider shows: {:?}", [x, y, w, h]);
+    // Drag the thumb (at 50 %) a tenth of the trough left, and let go.
+    let before = history_cursor(&nested, &project);
+    let row = y + h / 2.0;
+    let pointer = nested.pointer();
+    pointer.move_to(x + w / 2.0, row);
+    pointer.button(BUTTON_LEFT, true);
+    for i in 1..=8 {
+        pointer.move_to(x + w / 2.0 - (w * 0.1) * f64::from(i) / 8.0, row);
+        thread::sleep(Duration::from_millis(16));
+    }
+    pointer.button(BUTTON_LEFT, false);
+    nested.window(0).wait_idle();
+    let saved = poll(Duration::from_secs(5), "the drag's LayerSet", || {
+        let saved = layer(&nested, &project, take, "L2")["opacity"].as_f64()?;
+        (saved < 0.5).then_some(saved)
+    });
+    assert_eq!(
+        history_cursor(&nested, &project),
+        before + 1,
+        "the drag's one entry"
+    );
+    let dragged = opacity(&mut nested).expect("the opacity field");
+    let local = nested.window(0).local();
+    assert_eq!(
+        local["focusPath"][0], "inspector-opacity-slider",
+        "GTK 4.22 focused the slider on the press: {local}"
+    );
+    // The window active (a held keyboard), two notches over the slider.
+    let held = nested.keys_held(&[], 3000);
+    thread::sleep(Duration::from_millis(800));
+    nested.pointer().move_to(x + w / 2.0, row);
+    nested.pointer().wheel(-2);
+    // Past a wheel burst's end (300 ms).
+    thread::sleep(Duration::from_millis(600));
+    nested.window(0).wait_idle();
+    let moved = region(nested.window(0), "inspector-opacity-slider");
+    assert_eq!(
+        opacity(&mut nested).as_deref(),
+        Some(dragged.as_str()),
+        "the wheel moved the value"
+    );
+    assert_eq!(
+        layer(&nested, &project, take, "L2")["opacity"].as_f64(),
+        Some(saved),
+        "the wheel saved a value"
+    );
+    assert_eq!(history_cursor(&nested, &project), before + 1, "no entry");
+    assert!(
+        moved[1] > y,
+        "the column scrolled: the slider went from y {y} to {}",
+        moved[1]
+    );
+    held.wait();
+    assert_clean(nested.window(0));
+}
+
 // ------------------------------------------------------------------ S13
 
 /// L2's box on the 1:2 Live preview at rest (BRIEF §3.1: (1500, 760, 384,

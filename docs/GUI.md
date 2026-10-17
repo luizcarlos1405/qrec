@@ -2464,7 +2464,11 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     wheel moves a slider (this one, the autocut page's) only while the
     keyboard is on it, a burst of notches being one change that ends
     300 ms after its last notch; over another slider it scrolls the panel,
-    as over a field (review R42).
+    as over a field (review R42). The keyboard is on a slider it moved the
+    focus to, or that a key moved since: GTK 4.22 focuses a pressed slider
+    despite `focus_on_click(false)`, so after a drag the wheel moved the
+    slider and saved it whenever the window was active (R42's audit:
+    `the_wheel_after_a_drag_scrolls_past_the_slider`).
   - An edit belongs to the scene and the layer (or track) it was typed
     for: when either changes under it (the mode, the selection, an agent's
     command), the field shows the new values at once, focused or not, and
@@ -2828,7 +2832,7 @@ below; read them with `Get` while `design/qrec.pen` is active).
 | C23 Toast | `R7g4Dq` + levels, `PaHF5` | `ToastHost` / `ToastView` in `content_layer`; a body that starts with an action's path is `mono-sm` (S16b), others `body-sm`; a "+N" queue chip (not drawn) follows the title; Undo is guarded by the history cursor | WP6 |
 | C24 Modal | `x5RrCQ`, `VDIBZ`, `NdrWq`, scrim `Y83G19` | `ModalView` in `content_layer` (scrim to y 968, stacked over Settings); Cancel focused | WP6 (text stub: WP0b) |
 | C25 Popover, menu | `b2lnKh`, `S0EgQ`, `KTUMs` | the export panel is in-window (trap or passive layer, D-49); menus are `gtk::PopoverMenu` styled R2 (common.css); every menu's button is `widgets::button::menu_button` (its inner button styled as C01 and, like the MenuButton, named for screen readers; a test greps for others) | WP0b, WP7 |
-| C26 Slider | `Bn6sz` + states | `gtk::Scale` styled; ticks with `add_mark`; the value tooltip while dragging (`widgets::scale_tooltip`, which also gives the range's own wheel only to a focused slider: R42); S12's end labels are their own row flush with the track's ends (GTK centers mark labels) and the ticks sit at the trough's ends (S12 insets them by the thumb's radius, ~2 px) | WP0b (CSS), WP5 |
+| C26 Slider | `Bn6sz` + states | `gtk::Scale` styled; ticks with `add_mark`; the value tooltip while dragging (`widgets::scale_tooltip`, which also gives the range's own wheel only to a slider the keyboard is on, not one a press focused: R42 and its audit); S12's end labels are their own row flush with the track's ends (GTK centers mark labels) and the ticks sit at the trough's ends (S12 insets them by the thumb's radius, ~2 px) | WP0b (CSS), WP5 |
 | C27 Switch | `z9laF`, `p3tmIy` | `gtk::Switch` styled | WP0b |
 | C28 Segmented | `NZKuJ`, `L46uU`, `jmq6y` | `adw::ToggleGroup` styled; the Settings switcher too (`adw::ToggleGroup` + `gtk::Stack`: `adw::InlineViewSwitcher`'s pages can't be disabled, D-48; WP6) | WP0b, WP6 |
 | C29 Fields | `j1hIDi`, `oc5uM`, `vpmJy`, `EfoCl`, `oE7jW` | `gtk::Entry`; `NumericField` (Box `.field` + `gtk::Text` right-aligned + unit label; arrows and scroll step; no ± buttons); `gtk::DropDown`; `gtk::SearchEntry` | WP0b (CSS), WP5 |

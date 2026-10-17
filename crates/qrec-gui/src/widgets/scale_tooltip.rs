@@ -14,9 +14,13 @@
 //!   snapshot then leaves the slider where the person has it (R44);
 //! - the wheel as a `NumericField` takes it (R42): over a slider the
 //!   keyboard isn't on, it scrolls what holds the slider (the panel's
-//!   column, the autocut page's) and changes no value; on a focused slider
-//!   GTK's own wheel moves it, and a burst of notches is one change, ended
-//!   [`WHEEL_END_MS`] after its last notch (one command for the burst).
+//!   column, the autocut page's) and changes no value; with the keyboard on
+//!   it GTK's own wheel moves it, and a burst of notches is one change,
+//!   ended [`WHEEL_END_MS`] after its last notch (one command for the
+//!   burst). The keyboard is on a slider it moved the focus to (Tab, Shift+
+//!   Tab), or that a key moved since; not on one the pointer pressed: GTK
+//!   4.22 focuses a pressed slider despite `focus_on_click(false)`, and the
+//!   wheel then moved it after a drag (R42's audit).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -58,6 +62,10 @@ struct Inner {
     /// The range's own wheel controllers and their phases: on only while
     /// the keyboard is on the slider (R42).
     range_wheel: Vec<(gtk::EventController, gtk::PropagationPhase)>,
+    /// The pointer pressed the slider since the keyboard last moved the
+    /// focus to it or moved it (GTK focused it on the press): the wheel
+    /// scrolls past it.
+    pointer_took: Cell<bool>,
     /// Ends a wheel change after its last notch (a slot, R65).
     wheel_end: guard::Slot,
 }
@@ -103,6 +111,7 @@ pub fn attach(
             on_release: RefCell::new(Some(Rc::new(on_release))),
             on_end: RefCell::new(None),
             range_wheel,
+            pointer_took: Cell::new(false),
             wheel_end: guard::Slot::new(),
         }),
     };
@@ -155,6 +164,10 @@ impl ValueTooltip {
                     let tooltip = ValueTooltip { inner };
                     match event.event_type() {
                         gdk::EventType::ButtonPress | gdk::EventType::TouchBegin => {
+                            // The pointer took the slider: not the
+                            // keyboard's, whatever GTK does with the focus.
+                            tooltip.inner.pointer_took.set(true);
+                            tooltip.inner.follow_keyboard();
                             tooltip.begin();
                         }
                         gdk::EventType::ButtonRelease
@@ -176,10 +189,14 @@ impl ValueTooltip {
             move |_, key, _code, _modifiers| {
                 if let Some(inner) = weak.upgrade()
                     && moves_a_range(key)
-                    && inner.start.get().is_none()
                 {
-                    inner.cancelled.set(false);
-                    inner.start.set(Some(inner.scale.value()));
+                    // A key moves it: the keyboard is on it.
+                    inner.pointer_took.set(false);
+                    inner.follow_keyboard();
+                    if inner.start.get().is_none() {
+                        inner.cancelled.set(false);
+                        inner.start.set(Some(inner.scale.value()));
+                    }
                 }
                 glib::Propagation::Proceed
             }
@@ -204,10 +221,20 @@ impl ValueTooltip {
             .scale
             .connect_has_focus_notify(guarded!("slider: focus", move |scale| {
                 if let Some(inner) = weak.upgrade() {
-                    inner.wheel_moves_value(scale.has_focus());
+                    // The focus went elsewhere (not only the window going
+                    // inactive, which keeps its focus widget): a later one
+                    // the keyboard brings is the keyboard's.
+                    let still = scale
+                        .root()
+                        .and_then(|root| root.focus())
+                        .is_some_and(|focus| focus == *scale.upcast_ref::<gtk::Widget>());
+                    if !scale.has_focus() && !still {
+                        inner.pointer_took.set(false);
+                    }
+                    inner.follow_keyboard();
                 }
             }));
-        inner.wheel_moves_value(inner.scale.has_focus());
+        inner.follow_keyboard();
         let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
         wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak = Rc::downgrade(inner);
@@ -216,7 +243,7 @@ impl ValueTooltip {
             after_panic = glib::Propagation::Proceed,
             move |_, _dx, _dy| {
                 if let Some(inner) = weak.upgrade()
-                    && inner.scale.has_focus()
+                    && inner.keyboard_on()
                     && !inner.dragging.get()
                 {
                     ValueTooltip { inner }.wheeled();
@@ -329,11 +356,19 @@ impl ValueTooltip {
 }
 
 impl Inner {
-    /// The range's own wheel moves the value (the keyboard is on the
-    /// slider), or is off and the wheel goes on to the slider's ancestors.
-    fn wheel_moves_value(&self, focused: bool) {
+    /// The keyboard is on the slider: it has the focus, and the pointer
+    /// didn't take it since the keyboard did.
+    fn keyboard_on(&self) -> bool {
+        self.scale.has_focus() && !self.pointer_took.get()
+    }
+
+    /// The range's own wheel moves the value while the keyboard is on the
+    /// slider, and is off otherwise (the wheel goes on to the slider's
+    /// ancestors).
+    fn follow_keyboard(&self) {
+        let on = self.keyboard_on();
         for (controller, phase) in &self.range_wheel {
-            let now = if focused {
+            let now = if on {
                 *phase
             } else {
                 gtk::PropagationPhase::None
