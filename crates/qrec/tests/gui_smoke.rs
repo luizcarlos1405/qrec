@@ -30,7 +30,9 @@ fn smoke_steps_1_to_3_and_10() {
     let mut nested = Nested::start("wp0b", "smoke", Options::default());
     let project = nested.env.empty_dir("smoke");
     design_fixture(&project, DesignVariant::Smoke);
-    let pid = nested.launch(&project, Launch::a11y()).pid();
+    // The main-loop probe records the stalls (G§8.6).
+    let launch = Launch::a11y().with_env("QREC_GUI_PROBE", "1");
+    let pid = nested.launch(&project, launch).pid();
 
     // 1. The GUI host answers, with the window's pid.
     let status = wait_for_gui_host(&nested, &project, Duration::from_secs(60));
@@ -93,4 +95,8 @@ fn smoke_steps_1_to_3_and_10() {
         "a panic: {}",
         gui.log.display()
     );
+    // Throughout: the main loop's stalls, kept with the shots; one over
+    // 50 ms fails the run under gles2 only (G§8.5).
+    let stalls = nested.check_main_loop(0);
+    eprintln!("main-loop stalls: {}", stalls.len());
 }

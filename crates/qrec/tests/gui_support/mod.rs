@@ -728,6 +728,44 @@ impl Nested {
     pub fn close_window(&self) {
         self.swaymsg(&["kill"]);
     }
+
+    /// The main-loop probe's lines (G§8.6: the window launched with
+    /// `QREC_GUI_PROBE=1`) in window `n`'s GUI log, kept as
+    /// `<shots>/<case>-main-loop-<renderer>.txt`, and its stalls (a run of
+    /// its 10 ms timer over 50 ms late). A stall fails the case only under
+    /// `QREC_TEST_WLR=gles2`: with pixman the compositor, the software
+    /// renderer and ffmpeg share the CPU (G§8.5).
+    pub fn check_main_loop(&self, n: usize) -> Vec<String> {
+        let log = self.windows[n].gui_log();
+        let lines: Vec<&str> = log
+            .lines()
+            .filter(|l| l.contains("main-loop probe:"))
+            .collect();
+        assert!(
+            lines.iter().any(|l| l.contains("main-loop probe: on")),
+            "the main-loop probe didn't run (QREC_GUI_PROBE=1): {lines:#?}"
+        );
+        let renderer = match self.opts.renderer {
+            Renderer::Pixman => "pixman",
+            Renderer::Gles2 => "gles2",
+        };
+        let record = self
+            .shots
+            .join(format!("{}-main-loop-{renderer}.txt", self.case));
+        fs::write(&record, lines.join("\n") + "\n").expect("the main-loop record");
+        let stalls: Vec<String> = lines
+            .iter()
+            .filter(|l| l.contains(" ms stall "))
+            .map(|l| (*l).to_owned())
+            .collect();
+        if self.opts.renderer == Renderer::Gles2 {
+            assert!(
+                stalls.is_empty(),
+                "main-loop stalls over 50 ms (G§8.6): {stalls:#?}"
+            );
+        }
+        stalls
+    }
 }
 
 impl Drop for Nested {

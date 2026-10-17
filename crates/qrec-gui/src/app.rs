@@ -329,6 +329,11 @@ fn activate(app: &adw::Application, startup: Startup) {
         .detach();
     the_app.window.window.present();
     tracing::info!("the window is presented");
+    // The main-loop probe (G§8.6, `QREC_GUI_PROBE=1`), from the first frame
+    // to the quit.
+    if crate::probe::requested() {
+        crate::probe::start();
+    }
     if testctl::mode().on {
         log_regions_when_mapped(&the_app);
     }
@@ -623,6 +628,7 @@ impl App {
         }
         EXIT_CODE.with(|c| c.set(code));
         tracing::info!("quitting with {code}");
+        crate::probe::stop();
         self.ctx.media.shutdown();
         // The window goes now; the application lives on until NULL. One
         // that never showed (a panic in `activate`) stays: GTK 4.22
