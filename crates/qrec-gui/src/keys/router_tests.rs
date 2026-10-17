@@ -251,6 +251,7 @@ fn the_esc_chain_closes_the_newest_thing_first() {
     scene.local.take_preview = Some(TakePreview {
         take: TakeId::numbered(4),
         playing: true,
+        parking: false,
     });
     // 1. the passive export panel (D-49)
     assert_eq!(scene.calls("Escape"), [gui("export.panel")]);

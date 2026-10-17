@@ -174,13 +174,22 @@ pub fn space(preview: Option<&TakeId>, single: Option<&TakeId>) -> SpaceStep {
 
 /// Whether a bin preview of `take` ends with the snapshot `next` after
 /// `prev` (D-17): the bin closed, a timeline action, a recording, or the
-/// take left the bin.
-pub fn preview_ends(prev: &State, next: &State, take: &TakeId, in_bin: bool) -> bool {
+/// take left the bin. While `parking` (it took the player from the playing
+/// program, whose park at the frame the player showed is on its way,
+/// G§3.10 step 8), a playhead change is the program's own, not a timeline
+/// action: the park's, or a once-a-second seek still on its way.
+pub fn preview_ends(
+    prev: &State,
+    next: &State,
+    take: &TakeId,
+    in_bin: bool,
+    parking: bool,
+) -> bool {
     !next.ui.bin_open
         || !in_bin
         || prev.project.timeline != next.project.timeline
         || prev.ui.selection != next.ui.selection
-        || prev.ui.playhead != next.ui.playhead
+        || (prev.ui.playhead != next.ui.playhead && !parking)
         || (!prev.runtime.playing && next.runtime.playing)
         || (prev.ui.canvas_mode == CanvasMode::Program && next.ui.canvas_mode == CanvasMode::Live)
         || !next.runtime.record.is_idle()
@@ -343,11 +352,11 @@ mod tests {
         prev.ui.bin_open = true;
         prev.ui.canvas_mode = CanvasMode::Program;
         let take = t(4);
-        assert!(!preview_ends(&prev, &prev, &take, true));
+        assert!(!preview_ends(&prev, &prev, &take, true, false));
         let ends = |f: &dyn Fn(&mut State)| {
             let mut next = prev.clone();
             f(&mut next);
-            preview_ends(&prev, &next, &take, true)
+            preview_ends(&prev, &next, &take, true, false)
         };
         assert!(ends(&|s| s.ui.bin_open = false));
         assert!(ends(&|s| s.ui.playhead = 10));
@@ -361,6 +370,19 @@ mod tests {
             s.project.takes.remove(&TakeId::numbered(4));
         }));
         assert!(!ends(&|s| s.ui.zoom = Some(2.0)), "a zoom isn't an edit");
-        assert!(preview_ends(&prev, &prev, &take, false), "it left the bin");
+        assert!(
+            preview_ends(&prev, &prev, &take, false, false),
+            "it left the bin"
+        );
+        // The park of the program it took the player from (G§3.10 step 8):
+        // the playhead moves, the preview stays; anything else still ends it.
+        let parking = |f: &dyn Fn(&mut State)| {
+            let mut next = prev.clone();
+            f(&mut next);
+            preview_ends(&prev, &next, &take, true, true)
+        };
+        assert!(!parking(&|s| s.ui.playhead = 2455), "the park's own");
+        assert!(parking(&|s| s.ui.bin_open = false));
+        assert!(parking(&|s| s.ui.selection = vec![ClipId::from_raw("c2d0")]));
     }
 }

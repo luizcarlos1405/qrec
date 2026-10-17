@@ -36,7 +36,10 @@
 //!    (`LocalUi.take_preview`, D-17) load `plan_ges_take` (at the trimmed
 //!    frame, or from 0); when they end the program plan loads again at
 //!    `ui.playhead`. A bin preview that takes over a playing program
-//!    pauses it (`Pause`; no seek, which would end the preview).
+//!    pauses it and parks its playhead at the frame the player showed
+//!    (`Pause`, `Seek{To(f)}`, as a stop does: not at the last
+//!    once-a-second seek), a seek the preview takes as its own until its
+//!    reply (`TakePreview::parking`: it doesn't end the preview).
 //! 9. A ruler drag (D-40) scrubs through the sync ([`scrub`], the
 //!    timeline's): the paused program player scrubs to every frame; the
 //!    drag's own throttled seeks never move it, and after the drag the
@@ -172,6 +175,11 @@ pub struct Out {
     /// The bin preview played to its end or failed
     /// (`take_preview.playing` = false).
     pub take_preview_ended: bool,
+    /// The bin preview took the player from the playing program: its
+    /// playhead parks at this frame, the one the player showed (step 8,
+    /// `Seek{To(frame)}` after the `Pause`), a seek the preview takes as its
+    /// own (`TakePreview::parking`: it doesn't end it).
+    pub park: Option<Frame>,
 }
 
 /// What the player holds.
@@ -403,9 +411,18 @@ impl SyncMachine {
         }
         if let Some((take, play)) = &inp.take_preview {
             // The preview takes the player: the program doesn't play under
-            // it (R16). No seek: the playhead moving ends the preview.
+            // it (R16), and its playhead parks at the frame the player
+            // showed, as a stop does (step 2), not at the last once-a-second
+            // seek (read before the take loads: the position is still the
+            // program's). The park is the preview's own: it doesn't end it.
             if now_playing && !self.preview_paused {
                 out.dispatch.push(Command::Pause);
+                let program = self.told_playing
+                    && matches!(self.content, Content::Program(_))
+                    && !self.settling;
+                if program && inp.player_frame() != inp.playhead() {
+                    out.park = Some(inp.player_frame());
+                }
                 self.preview_paused = true;
                 self.auto_seek = None;
                 if inp.rate != 1.0 {
@@ -983,6 +1000,9 @@ impl ProgramSync {
         for cmd in out.dispatch {
             self.ctx.store.dispatch(cmd);
         }
+        if let Some(frame) = out.park {
+            self.park_for_preview(frame);
+        }
         if let Some(notice) = out.notice {
             self.ctx.store.notify(notice);
         }
@@ -1013,6 +1033,28 @@ impl ProgramSync {
                 }
             });
         }
+    }
+
+    /// The bin preview took the player from the playing program (step 8):
+    /// `Seek{To(frame)}` parks its playhead at the frame the player showed.
+    /// Until its reply the preview takes a playhead change as the
+    /// program's own, not a timeline action (`TakePreview::parking`, D-17):
+    /// the park's, and a once-a-second seek still on its way.
+    fn park_for_preview(&self, frame: Frame) {
+        let set = |parking: bool| {
+            move |l: &mut crate::store::LocalUi| {
+                if let Some(preview) = &mut l.take_preview {
+                    preview.parking = parking;
+                }
+            }
+        };
+        self.ctx.store.update_local(set(true));
+        let store = self.ctx.store.downgrade();
+        self.ctx.store.dispatch_then(seek_to(frame), move |_| {
+            if let Some(store) = store.upgrade() {
+                store.update_local(set(false));
+            }
+        });
     }
 
     /// One timeout to the machine's next deadline.
@@ -1540,13 +1582,59 @@ mod tests {
         let out = rig.sync();
         assert_eq!(out.program_playing, Some(false), "{out:?}");
         assert_eq!(out.dispatch, [Command::Pause], "the program pauses");
-        // The pause's snapshot: nothing more (no second pause, and no seek:
-        // the playhead moving would end the preview).
+        assert_eq!(out.park, Some(2460), "parked where it showed");
+        // The pause's snapshot: nothing more (no second pause or park).
         rig.state.runtime.playing = false;
         let out = rig.sync();
         assert_eq!(out.dispatch, []);
+        assert_eq!(out.park, None);
         assert_eq!(out.program_playing, None);
         assert_eq!(out.player, []);
+    }
+
+    /// R16's follow-up: a bin preview that takes over a playing program
+    /// parks its playhead at the frame the player showed (`Pause`, then the
+    /// park's `Seek{To(f)}`, as a stop does, step 2), not at the last
+    /// once-a-second seek, up to a second behind; the program comes back
+    /// there when the preview ends. Nothing to park while the program
+    /// doesn't play.
+    #[test]
+    fn a_preview_parks_a_playing_programs_playhead() {
+        let mut rig = Rig::new(program()).loaded();
+        let take4 = TakeId::numbered(4);
+        assert_eq!(rig.play().player, [PlayerCmd::Play(1.0)]);
+        rig.now += 600;
+        rig.position = 2455;
+        assert_eq!(rig.sync(), Out::default(), "before the once-a-second seek");
+        rig.take_preview = Some((take4.clone(), true));
+        let out = rig.sync();
+        assert_eq!(out.dispatch, [Command::Pause], "{out:?}");
+        assert_eq!(out.park, Some(2455), "parked at the player's frame");
+        // The take loads after the position was read.
+        assert!(
+            matches!(&out.player[..], [PlayerCmd::Load { at_ns: 0, .. }, ..]),
+            "{out:?}"
+        );
+        // The pause's and the park's snapshots: nothing more.
+        rig.position = 30;
+        rig.state.runtime.playing = false;
+        rig.state.ui.playhead = 2455;
+        let out = rig.sync();
+        assert_eq!((&out.dispatch[..], out.park), (&[][..], None), "{out:?}");
+        // The preview ends: the program comes back where it was parked.
+        rig.take_preview = None;
+        let out = rig.sync();
+        assert!(
+            matches!(&out.player[..], [PlayerCmd::Load { at_ns, .. }, ..] if *at_ns == rig.ns(2455)),
+            "{out:?}"
+        );
+        // A preview over the paused program parks nothing.
+        rig.player_idle = true;
+        rig.position = 2455;
+        rig.sync();
+        rig.take_preview = Some((take4, true));
+        let out = rig.sync();
+        assert_eq!((&out.dispatch[..], out.park), (&[][..], None), "{out:?}");
     }
 
     /// R00: after a preview the program counts as playing only once its

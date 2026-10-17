@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use gui_support::{
     BRIEF_REGIONS, CLI_TIMEOUT, Launch, MERGED_REGIONS, Nested, Options, TOOL_TIMEOUT,
-    assert_regions, reap_within, wait_for_gui_host,
+    assert_regions, poll, reap_within, wait_for_gui_host,
 };
 use qrec_core::state::{CanvasMode, UiState};
 use qrec_core::{ClipId, LayerId};
@@ -956,6 +956,84 @@ fn a_playing_bin_preview_leaves_the_program_playhead() {
         !gui.labels("region-stage").iter().any(|l| l == "TAKE 4"),
         "the split ended the preview"
     );
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
+/// R16's follow-up (G§3.10 step 8): a bin preview that takes over the
+/// playing program parks its playhead at the frame the player showed, as a
+/// stop does (it parked at the last once-a-second seek, up to a second
+/// behind the picture); the park doesn't end the preview, and when the
+/// preview ends the program comes back on that frame.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_bin_preview_parks_the_playing_program_where_it_showed() {
+    let mut nested = Nested::start(AREA, "bin-preview-park", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(bin_ui()),
+    );
+    open(&mut nested, &project, launch());
+    click(&mut nested, "bin-take-4");
+    let reply = nested
+        .window(0)
+        .ctl(json!({"op": "dispatch", "command": {"cmd": "play"}}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    poll(Duration::from_secs(20), "the program to play", || {
+        (nested.window(0).local()["programPlaying"] == true).then_some(())
+    });
+    // Its once-a-second seek moved the playhead; 400 ms after it the
+    // picture is some 12 frames past it.
+    poll(Duration::from_secs(10), "a once-a-second seek", || {
+        (status(&nested, &project)["ui"]["playhead"] != 2437).then_some(())
+    });
+    thread::sleep(Duration::from_millis(400));
+    // The frame a player position shows at the fixture's 30 fps (as
+    // `ns_to_frame_floor`: a frame's start is rounded down to the ns).
+    let frame_of = |ns: &Value| ns.as_u64().map(|ns| ((ns + 1) * 30 - 1) / 1_000_000_000);
+    let shown = frame_of(&nested.window(0).local()["playerNs"]).expect("a player");
+    let reply = nested
+        .window(0)
+        .ctl(json!({"op": "action", "id": "bin.preview"}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    poll(Duration::from_secs(20), "the TAKE 4 badge", || {
+        let gui = nested.window(0);
+        gui.wait_idle();
+        gui.labels("region-stage")
+            .iter()
+            .any(|l| l == "TAKE 4")
+            .then_some(())
+    });
+    let now = status(&nested, &project);
+    let parked = now["ui"]["playhead"].as_u64().expect("a playhead");
+    assert!(
+        (shown..=shown + 15).contains(&parked),
+        "parked at {parked}, the picture showed {shown}: {}",
+        now["ui"]
+    );
+    assert_eq!(now["runtime"]["playing"], false, "the program paused");
+    let local = nested.window(0).local();
+    assert_eq!(
+        local["takePreview"],
+        json!({"take": "take-0004", "playing": true}),
+        "the park didn't end the preview: {local}"
+    );
+    assert_eq!(local["programPlaying"], false, "{local}");
+    // Esc ends the preview: the program loads again on the parked frame.
+    nested.keys(&["-k", "Escape"]);
+    poll(
+        Duration::from_secs(20),
+        "the program back on its frame",
+        || {
+            let gui = nested.window(0);
+            gui.wait_idle();
+            let back = !gui.labels("region-stage").iter().any(|l| l == "TAKE 4");
+            (back && frame_of(&gui.local()["playerNs"]) == Some(parked)).then_some(())
+        },
+    );
+    assert_eq!(status(&nested, &project)["ui"]["playhead"], parked);
     assert_clean(&mut nested);
     close(&mut nested);
 }

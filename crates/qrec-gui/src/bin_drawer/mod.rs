@@ -398,7 +398,7 @@ impl Drawer {
         let preview = self.ctx.store.local().take_preview.clone();
         if let Some(preview) = preview {
             let in_bin = view::bin_takes(next).contains(&preview.take);
-            if select::preview_ends(prev, next, &preview.take, in_bin) {
+            if select::preview_ends(prev, next, &preview.take, in_bin, preview.parking) {
                 self.end_preview();
             }
         }
@@ -801,6 +801,7 @@ impl Drawer {
             l.take_preview = Some(TakePreview {
                 take,
                 playing: true,
+                parking: false,
             });
         });
     }

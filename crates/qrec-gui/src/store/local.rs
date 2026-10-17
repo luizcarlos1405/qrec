@@ -243,6 +243,12 @@ pub struct TakePreview {
     pub take: TakeId,
     /// Playing (else paused on its frame).
     pub playing: bool,
+    /// It took the player from the playing program, whose playhead's park
+    /// at the frame the player showed hasn't been answered yet (WP4's
+    /// sync, G§3.10 step 8): until then a playhead change is the program's
+    /// own (the park, a once-a-second seek on its way), not a timeline
+    /// action, and doesn't end the preview.
+    pub parking: bool,
 }
 
 /// The frame a trim drag shows on the stage (S10): `frame` of `take`'s
