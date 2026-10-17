@@ -113,17 +113,65 @@ pub enum Outcome {
 }
 
 /// The panel's own state (`LocalUi::export_view`, G§3.6): the draft and its
-/// own export's outcome (until the panel closes).
+/// own export's end on the Done or Failed page (until the panel closes).
+///
+/// The page and its toast's mark are one private field: a Done or Failed
+/// page comes only through [`ExportPanelState::show_end`], which marks the
+/// core's toast of that end as due, so no path to the page can forget the
+/// mark (only `Panel::answered` set it, by hand, and a path that forgot it
+/// would have shown the toast over the page that shows the same end).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExportPanelState {
     pub draft: Draft,
-    pub outcome: Option<Outcome>,
-    /// Its own export's answer set `outcome`, and the core's toast of that
-    /// export's end, next in the queue (the reply comes first), hasn't come
-    /// yet: the toast host drops that toast, the one the Done or Failed
-    /// page shows, and only that one (G§3.7; the next export toast takes
-    /// it back).
-    pub toast_due: bool,
+    end: Option<ShownEnd>,
+}
+
+/// Its own export's end on the panel's page.
+#[derive(Debug, Clone, PartialEq)]
+struct ShownEnd {
+    outcome: Outcome,
+    /// The core's toast of this end, next in the queue (the reply comes
+    /// first), hasn't come yet: the toast host drops that toast, the one
+    /// the Done or Failed page shows, and only that one (G§3.7; the next
+    /// export toast takes it back).
+    toast_due: bool,
+}
+
+impl ExportPanelState {
+    /// Its own export's end the Done or Failed page shows, if one does.
+    pub fn outcome(&self) -> Option<&Outcome> {
+        self.end.as_ref().map(|end| &end.outcome)
+    }
+
+    /// Its own export ended on a page (S16 Done, S17 Failed): the page
+    /// shows `outcome`, and the core's toast of that end is due (G§3.7).
+    /// The only way to a Done or Failed page.
+    pub fn show_end(&mut self, outcome: Outcome) {
+        self.end = Some(ShownEnd {
+            outcome,
+            toast_due: true,
+        });
+    }
+
+    /// The page goes (the panel closed or opened again, another export
+    /// runs, its own export goes out again), and its toast's mark with it:
+    /// a toast still to come shows.
+    pub fn clear_end(&mut self) {
+        self.end = None;
+    }
+
+    /// The core's toast of the end the page shows hasn't come yet.
+    pub fn toast_due(&self) -> bool {
+        self.end.as_ref().is_some_and(|end| end.toast_due)
+    }
+
+    /// An export toast came (`toasts::panel_shows`): it takes the mark
+    /// back, whatever is dropped. Whether it was set.
+    pub fn take_toast_due(&mut self) -> bool {
+        self.end
+            .as_mut()
+            .is_some_and(|end| std::mem::take(&mut end.toast_due))
+    }
 }
 
 /// What one of the panel's GUI actions asks of it.
@@ -337,6 +385,45 @@ mod tests {
             percent: 37,
         };
         assert_eq!(mode(false, false, Some(&failed)), ExportPanelMode::Failed);
+    }
+
+    /// A Done or Failed page comes with its toast's mark (G§3.7): the core's
+    /// toast of that end, right behind the reply, is dropped under the page
+    /// that shows it. `show_end` is the only way to the page, and marks it;
+    /// the next export toast takes the mark back once; the page going takes
+    /// it too. A path to the page without the mark showed the toast over it
+    /// (S16 and S17 draw none).
+    #[test]
+    fn a_done_or_failed_page_comes_with_its_toasts_mark() {
+        let done = Outcome::Done {
+            view: Done::default(),
+            file: "/p/exports/a.mp4".into(),
+        };
+        let failed = Outcome::Failed {
+            view: Failed::default(),
+            retry: Box::new(export(None)),
+            copy: String::new(),
+            percent: 37,
+        };
+        for (outcome, page) in [
+            (done, ExportPanelMode::Done),
+            (failed, ExportPanelMode::Failed),
+        ] {
+            let mut state = ExportPanelState::default();
+            assert_eq!(mode(false, false, state.outcome()), ExportPanelMode::Setup);
+            assert!(!state.toast_due(), "no page, no mark");
+            state.show_end(outcome.clone());
+            assert_eq!(mode(false, false, state.outcome()), page);
+            assert!(state.toast_due(), "{page:?} came without its toast's mark");
+            assert!(state.take_toast_due(), "the export's toast takes it");
+            assert!(!state.toast_due(), "taken back");
+            assert!(!state.take_toast_due(), "once");
+            assert_eq!(state.outcome(), Some(&outcome), "the page stays");
+            state.show_end(outcome);
+            state.clear_end();
+            assert!(!state.toast_due(), "the mark goes with the page");
+            assert_eq!(mode(false, false, state.outcome()), ExportPanelMode::Setup);
+        }
     }
 
     /// Running is passive, the other pages trap; under another overlay the

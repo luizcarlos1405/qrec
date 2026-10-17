@@ -369,7 +369,7 @@ impl Panel {
             .retry
             .connect_clicked(guarded!("export: try again", move |_| {
                 let Some(panel) = weak.upgrade() else { return };
-                let retry = match &panel.ctx.store.local().export_view.outcome {
+                let retry = match panel.ctx.store.local().export_view.outcome() {
                     Some(Outcome::Failed { retry, .. }) => Some((**retry).clone()),
                     _ => None,
                 };
@@ -390,7 +390,7 @@ impl Panel {
             .copy
             .connect_clicked(guarded!("export: copy error", move |_| {
                 let Some(panel) = weak.upgrade() else { return };
-                let text = match &panel.ctx.store.local().export_view.outcome {
+                let text = match panel.ctx.store.local().export_view.outcome() {
                     Some(Outcome::Failed { copy, .. }) => Some(copy.clone()),
                     _ => None,
                 };
@@ -403,7 +403,7 @@ impl Panel {
             .log_link
             .connect_clicked(guarded!("export: open the log", move |_| {
                 let Some(panel) = weak.upgrade() else { return };
-                let log = match &panel.ctx.store.local().export_view.outcome {
+                let log = match panel.ctx.store.local().export_view.outcome() {
                     Some(Outcome::Failed { view, .. }) => view.log.clone(),
                     _ => None,
                 };
@@ -444,7 +444,7 @@ impl Panel {
         let mode = flow::mode(exporting, self.waiting(&state), None);
         self.ctx.store.update_local(move |l| {
             l.export_view.draft.error = None;
-            l.export_view.outcome = None;
+            l.export_view.clear_end();
             l.overlays.push(Overlay::ExportPanel(mode));
         });
     }
@@ -453,7 +453,7 @@ impl Panel {
     fn close(&self) {
         self.ctx.store.update_local(|l| {
             l.close_overlays(|o| matches!(o, Overlay::ExportPanel(_)));
-            l.export_view.outcome = None;
+            l.export_view.clear_end();
         });
     }
 
@@ -517,10 +517,8 @@ impl Panel {
             // or Failed page of its own last export is history. Kept, it
             // would come back when this one ends, and drop that one's toast
             // (`toasts::shown_by_the_panel`) instead of closing (D-49).
-            if foreign && self.ctx.store.local().export_view.outcome.is_some() {
-                self.ctx
-                    .store
-                    .update_local(|l| l.export_view.outcome = None);
+            if foreign && self.ctx.store.local().export_view.outcome().is_some() {
+                self.ctx.store.update_local(|l| l.export_view.clear_end());
             }
             if self.ctx.store.local().export_view.draft.starting {
                 self.ctx
@@ -538,7 +536,7 @@ impl Panel {
             let local = self.ctx.store.local();
             (
                 local.export_panel(),
-                local.export_view.outcome.clone(),
+                local.export_view.outcome().cloned(),
                 local.export_view.draft.starting,
             )
         };
@@ -758,7 +756,8 @@ impl Panel {
     }
 
     fn fill_done(&self) {
-        let Some(Outcome::Done { view, .. }) = self.ctx.store.local().export_view.outcome.clone()
+        let Some(Outcome::Done { view, .. }) =
+            self.ctx.store.local().export_view.outcome().cloned()
         else {
             return;
         };
@@ -770,7 +769,7 @@ impl Panel {
 
     fn fill_failed(&self) {
         let Some(Outcome::Failed { view, percent, .. }) =
-            self.ctx.store.local().export_view.outcome.clone()
+            self.ctx.store.local().export_view.outcome().cloned()
         else {
             return;
         };
@@ -819,8 +818,7 @@ impl Panel {
             let draft = &mut l.export_view.draft;
             draft.starting = true;
             draft.error = None;
-            l.export_view.outcome = None;
-            l.export_view.toast_due = false;
+            l.export_view.clear_end();
         });
         let weak = Rc::downgrade(self);
         let sent = cmd.clone();
@@ -928,8 +926,10 @@ impl Panel {
             if l.export_panel().is_some() {
                 // Its page shows this end: the core's toast of it, right
                 // behind this reply, is dropped (G§3.7), and no other.
-                l.export_view.toast_due = outcome.is_some();
-                l.export_view.outcome = outcome;
+                match outcome {
+                    Some(outcome) => l.export_view.show_end(outcome),
+                    None => l.export_view.clear_end(),
+                }
             }
         });
         // The panel may have shown Running for an answer on its way.
@@ -937,7 +937,8 @@ impl Panel {
     }
 
     fn done_action(&self, what: &str) {
-        let Some(Outcome::Done { file, .. }) = self.ctx.store.local().export_view.outcome.clone()
+        let Some(Outcome::Done { file, .. }) =
+            self.ctx.store.local().export_view.outcome().cloned()
         else {
             return;
         };

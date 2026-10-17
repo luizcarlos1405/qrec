@@ -688,7 +688,11 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
   toast to the panel's own last Done page). `toasts::panel_shows` makes
   that decision and the take-back in one step, on the Store, and a unit
   test drives the sequence (R37's audit: the host's own take-back could go
-  unnoticed).
+  unnoticed). The page and its mark are one private field of
+  `ExportPanelState`: `show_end`, the only way to a Done or Failed page,
+  sets the mark with it, and the page going (`clear_end`) takes the mark
+  along, so no path to the page can forget it (only `Panel::answered` set
+  it, by hand; `a_done_or_failed_page_comes_with_its_toasts_mark`).
 - **`UiAction`** (`desktop.rs`, WP0b):
   - `OpenPath` → `gtk::FileLauncher::launch`;
   - `RevealPath` → `gtk::FileLauncher::open_containing_folder`;

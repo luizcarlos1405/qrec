@@ -115,10 +115,12 @@ pub fn panel_shows(store: &Store, notice: &Notice) -> bool {
     }
     let (panel, due) = {
         let local = store.local();
-        (local.export_panel(), local.export_view.toast_due)
+        (local.export_panel(), local.export_view.toast_due())
     };
     if due {
-        store.update_local(|l| l.export_view.toast_due = false);
+        store.update_local(|l| {
+            l.export_view.take_toast_due();
+        });
     }
     shown_by_the_panel(notice, panel, due)
 }
@@ -827,10 +829,15 @@ mod tests {
             qrec_core::keymap::resolve(""),
             LocalUi::default(),
         );
-        let due = |store: &Store| store.local().export_view.toast_due;
-        store.update_local(|l| {
+        let due = |store: &Store| store.local().export_view.toast_due();
+        // The panel's own export's answer: its Done page, the toast due.
+        let end = || crate::export::Outcome::Done {
+            view: qrec_core::view::export::Done::default(),
+            file: "/projects/rust-traits-talk/exports/talk.mp4".into(),
+        };
+        store.update_local(move |l| {
             l.overlays.push(Overlay::ExportPanel(ExportPanelMode::Done));
-            l.export_view.toast_due = true;
+            l.export_view.show_end(end());
         });
         let done = Notice::new(ToastLevel::Success, EXPORT_DONE_TITLE);
         assert!(panel_shows(&store, &done), "the panel's own: dropped");
@@ -840,7 +847,7 @@ mod tests {
             "another export's: shown over the old Done page"
         );
         // A toast of no export's leaves the mark to the export's own.
-        store.update_local(|l| l.export_view.toast_due = true);
+        store.update_local(move |l| l.export_view.show_end(end()));
         let other = Notice::new(ToastLevel::Info, "Frame saved");
         assert!(!panel_shows(&store, &other));
         assert!(due(&store), "kept for the export's own");
@@ -849,9 +856,9 @@ mod tests {
         assert!(!panel_shows(&store, &failed));
         assert!(!due(&store));
         // The panel closed: shown, and the mark goes with it.
-        store.update_local(|l| {
+        store.update_local(move |l| {
             l.overlays.clear();
-            l.export_view.toast_due = true;
+            l.export_view.show_end(end());
         });
         assert!(!panel_shows(&store, &done));
         assert!(!due(&store));
