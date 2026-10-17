@@ -64,7 +64,7 @@ twice).
 | toml 1.1, toml_edit 0.25 | config and keys files | core |
 | proptest, insta, pretty_assertions | tests; core feature `testkit` exposes proptest strategies | core |
 | gstreamer(-app/-video/-audio/-pbutils/-allocators), gstreamer-editing-services | 0.25, features ≤ `v1_24` (`gstreamer-allocators` approved after the fact, 2026-10-15) | shell (feature `gst`, default on); `gstreamer` also gui |
-| gtk4 (`gtk`), libadwaita (`adw`), pango | 0.11.5 `v4_22`, 0.9.2 `v1_9`, 0.22.9 `v1_56` (`FontMap::add_font_file` for the bundled fonts); approved 2026-10-15 (docs/GUI.md G§0.1, G§6.1). Built against GTK 4.22, libadwaita 1.9, Pango 1.57: `gtk/v4_24` and `adw/v1_10` don't build in the dev env. No `gst-plugin-gtk4` crate (a second glib): the system `gtk4paintablesink` plugin; no `glib-build-tools` (`build.rs` runs `glib-compile-resources`) | gui |
+| gtk4 (`gtk`), libadwaita (`adw`), pango | 0.11.5 `v4_22`, 0.9.2 `v1_9`, 0.22.9 `v1_56` (`FontMap::add_font_file` for the bundled fonts); approved 2026-10-15 (docs/GUI.md G§0.1, G§6.1). Built against GTK 4.22, libadwaita 1.9, Pango 1.57: `gtk/v4_24` and `adw/v1_10` don't build in the dev env. No `gst-plugin-gtk4` crate (a second glib): the system `gtk4paintablesink` plugin; no `glib-build-tools` (`build.rs` runs `glib-compile-resources`) | gui; gtk also qrec's tests (`gui_a11y`'s stand-in AT-SPI registry: GIO's D-Bus, WP10) |
 | ashpd | 0.13, `default-features = false`, `async-io, screencast, camera` (no tokio anywhere) | shell |
 | futures-lite | 2.6 (`block_on` for ashpd) | shell |
 | crossbeam-channel | 0.5 | shell, gui |

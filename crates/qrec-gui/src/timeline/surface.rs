@@ -95,6 +95,14 @@ impl Surface {
         Self::default()
     }
 
+    /// One with an accessible role (the canvas, which takes the keyboard:
+    /// a screen reader says what it is; WP10's a11y walk).
+    pub fn with_role(role: gtk::AccessibleRole) -> Self {
+        glib::Object::builder()
+            .property("accessible-role", role)
+            .build()
+    }
+
     /// What draws it.
     pub fn set_draw(&self, f: impl Fn(&gtk::Snapshot, f64, f64) + 'static) {
         *self.imp().draw.borrow_mut() = Some(Rc::new(f));

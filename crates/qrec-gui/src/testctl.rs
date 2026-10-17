@@ -35,7 +35,7 @@
 //! | `action` | runs binding or GUI action `id` as its key would |
 //! | `sources` | the source discovery's last answer (`LocalUi.sources`, `inventory`: `null` before one); with `inventory` (a `SourceInventory`), that answer instead, through the queue as discovery's own (the first run's rows follow it, R25) |
 //! | `hints` | the hint bar's items and status (`hintbar::current_items`), the labels of the items it draws whole (`shown`: a narrow window leaves the trailing ones out) and whether a drawn one runs past the bar (`cut`, never) |
-//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`; whether the player plays, the program or a take, `playing`, and the program, `programPlaying`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it; libadwaita's color scheme, `colorScheme`: `scheme`, `dark`), the settings changes the follower applied and whether one is pending (`settingsApplied`, `settingsPending`, WP10), the live controls that show a binding's keys (`keyedControls`: a keymap reload makes none), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11) and the panel's (`layerRowsAlive`, `audioRowsAlive`), the bin drawer's last slide as asked (`binSlide`: `open`, `animate`; nothing animates on start), the bin preview (`takePreview`: `take`, `playing`; `null` without one), the theme's subscribers (`themeSubscribers`: a dropped bin thumbnail's goes with it), the mud bars ticking (`mudBarsTicking`: none under the frozen clock), the meter bars on their refresh timer (`metersTicking`) and whether the export panel's Running clock runs (`exportClockTicking`: both come back with the next change after a caught panic, R65), how many times the timeline's canvas re-rendered (`timelinePaints`: not while only the playhead moves), and how many columns of the ghost's waveform its last paint with one worked out (`timelineGhostColumns`: those in view, R01) |
+//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`; whether the player plays, the program or a take, `playing`, and the program, `programPlaying`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it; libadwaita's color scheme, `colorScheme`: `scheme`, `dark`), the settings changes the follower applied and whether one is pending (`settingsApplied`, `settingsPending`, WP10), the live controls that show a binding's keys (`keyedControls`: a keymap reload makes none), the caught panics, the focused widget's path and its bounds (`focusBounds`), whether the window shows focus (`focusVisible`), what it announced to screen readers (`announcements`: `message`, `priority`, and `sent`, false without a context that announces: WP10), the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11) and the panel's (`layerRowsAlive`, `audioRowsAlive`), the bin drawer's last slide as asked (`binSlide`: `open`, `animate`; nothing animates on start), the bin preview (`takePreview`: `take`, `playing`; `null` without one), the theme's subscribers (`themeSubscribers`: a dropped bin thumbnail's goes with it), the mud bars ticking (`mudBarsTicking`: none under the frozen clock), the meter bars on their refresh timer (`metersTicking`) and whether the export panel's Running clock runs (`exportClockTicking`: both come back with the next change after a caught panic, R65), how many times the timeline's canvas re-rendered (`timelinePaints`: not while only the playhead moves), and how many columns of the ghost's waveform its last paint with one worked out (`timelineGhostColumns`: those in view, R01) |
 //! | `a11y` | every visible icon-only button, focusable region or custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 //! | `fonts` | the family Pango loads for each bundled font |
 //! | `icons` | each custom symbolic icon drawn in a probe color: found, pixels, recolored |
@@ -568,7 +568,7 @@ fn local(app: &App) -> Value {
         StartupPhase::Blocked(kind) => json!({"phase": "blocked", "page": kind}),
         StartupPhase::Closing => json!({"phase": "closing"}),
     };
-    json!({
+    let mut summary = json!({
         "startup": startup,
         "focus": local.focus,
         "overlays": local.overlays.iter().map(|o| format!("{o:?}")).collect::<Vec<_>>(),
@@ -596,6 +596,10 @@ fn local(app: &App) -> Value {
         "timelinePaints": crate::timeline::canvas_paints(),
         "timelineGhostColumns": crate::timeline::ghost_columns(),
         "keymapProblems": local.keymap_problems,
+    });
+    // The rest in a second `json!`: one with every key passes serde_json's
+    // macro recursion limit (WP10 integration).
+    let rest = json!({
         "theme": theme::css_name(app.ctx.theme.id()),
         "scale": app.ctx.theme.scale(),
         "reducedMotion": app.ctx.theme.motion().reduced,
@@ -608,10 +612,19 @@ fn local(app: &App) -> Value {
         "rev": app.ctx.store.rev(),
         "panics": guard::panics(),
         "focusPath": focus_path(app),
+        "focusBounds": focus_bounds(app),
+        "focusType": gtk::prelude::GtkWindowExt::focus(&app.window.window)
+            .map(|f| f.type_().name().to_owned()),
+        "focusVisible": app.window.window.gets_focus_visible(),
         "focusInTopLayer": focus_in_top_layer(app),
         "pid": std::process::id(),
         "playerNs": app.ctx.media.position_ns(),
-    })
+        "announcements": crate::window::announce::announced(),
+    });
+    if let (Some(summary), Value::Object(rest)) = (summary.as_object_mut(), rest) {
+        summary.extend(rest);
+    }
+    summary
 }
 
 /// libadwaita's color scheme as set (`"force-light"`, `"force-dark"`, …)
@@ -652,6 +665,15 @@ fn focus_in_top_layer(app: &App) -> Option<bool> {
     Some(focus.is_some_and(|f| f == top || f.is_ancestor(&top)))
 }
 
+/// The focused widget's bounds in window coordinates (logical px; WP10's
+/// focus ring probes); `None` without a focus.
+fn focus_bounds(app: &App) -> Option<[f32; 4]> {
+    let window = &app.window.window;
+    let focus = gtk::prelude::GtkWindowExt::focus(window)?;
+    let b = focus.compute_bounds(window)?;
+    Some([b.x(), b.y(), b.width(), b.height()])
+}
+
 /// The names (or types) of the focused widget and its ancestors, the
 /// focused one first; empty without a focus.
 fn focus_path(app: &App) -> Vec<String> {
@@ -674,6 +696,9 @@ fn focus_path(app: &App) -> Vec<String> {
 /// Every visible icon-only button, focusable region and focusable custom
 /// widget (ours: `Qrec…` types) without an accessible label or a
 /// labelled-by relation. Window controls are GTK's own (labeled by it).
+/// And (WP10) every widget the focus lands on that a screen reader isn't
+/// told of, can't name (a text box by its label alone: its text is its
+/// value) or can't say what it is; each item says what it `lacks`.
 fn a11y(app: &App) -> Value {
     if std::env::var("GTK_A11Y").as_deref() != Ok("test") {
         return json!({"ok": false, "error": "the a11y walk needs GTK_A11Y=test"});
@@ -688,15 +713,108 @@ fn a11y(app: &App) -> Value {
         let name = w.widget_name().to_string();
         let custom = type_name.starts_with("Qrec") && w.is_focusable();
         let region = name.starts_with("region-") && w.is_focusable();
-        if (is_icon_only_button(w) || custom || region) && !has_label(w) {
+        let lacks = if (is_icon_only_button(w) || custom || region) && !has_label(w) {
+            Some("label")
+        } else if lands_focus(w) {
+            // WP10: what the keyboard lands on reaches a screen reader (a
+            // widget GTK skips belongs to an editable it shows instead),
+            // named by a label or its own text (a button's, a row's; a text
+            // box's text is its value, not its name), and says what it is.
+            match exposed(w) {
+                None => Some("role"),
+                Some(shown)
+                    if !has_label(&shown)
+                        && (is_text_box(shown.accessible_role()) || !has_text(&shown)) =>
+                {
+                    Some("name")
+                }
+                Some(shown) if shown != *w && is_generic(shown.accessible_role()) => Some("role"),
+                Some(_) => None,
+            }
+        } else {
+            None
+        };
+        let lacks = lacks.or_else(|| {
+            // WP10: and a custom widget says what it is.
+            (custom && is_generic(w.accessible_role())).then_some("role")
+        });
+        if let Some(lacks) = lacks {
             let bounds = w
                 .compute_bounds(&app.window.window)
                 .map(|b| [b.x(), b.y(), b.width(), b.height()]);
-            missing.push(json!({"type": type_name, "name": name, "bounds": bounds}));
+            missing.push(json!({
+                "type": type_name,
+                "name": name,
+                "bounds": bounds,
+                "lacks": lacks,
+            }));
         }
         true
     });
     json!({"ok": missing.is_empty(), "missing": missing})
+}
+
+/// A widget the keyboard focus lands on: focusable and sensitive, and not
+/// a container that takes the focus only when nothing in it can (a
+/// scrolled window, a list: its rows are what lands).
+fn lands_focus(w: &gtk::Widget) -> bool {
+    w.is_focusable()
+        && w.is_sensitive()
+        && !(w.is::<gtk::ScrolledWindow>()
+            || w.is::<gtk::Viewport>()
+            || w.is::<gtk::ListBox>()
+            || w.is::<gtk::ListView>()
+            || w.is::<gtk::GridView>())
+}
+
+/// What a screen reader is told of the focus on `w`: `w`, or, for a widget
+/// GTK leaves out of the tree (`GtkText`'s role is `None`: an editable's
+/// delegate), the editable it belongs to (an entry, a spin button, an
+/// editable label); `None` when it belongs to none: a focus no screen
+/// reader hears of.
+fn exposed(w: &gtk::Widget) -> Option<gtk::Widget> {
+    let skipped = matches!(
+        w.accessible_role(),
+        gtk::AccessibleRole::None | gtk::AccessibleRole::Presentation
+    );
+    if !skipped {
+        return Some(w.clone());
+    }
+    let mut at = w.parent();
+    for _ in 0..3 {
+        let p = at?;
+        if p.is::<gtk::Entry>()
+            || p.is::<gtk::SpinButton>()
+            || p.is::<gtk::SearchEntry>()
+            || p.is::<gtk::PasswordEntry>()
+            || p.is::<gtk::EditableLabel>()
+        {
+            return Some(p);
+        }
+        at = p.parent();
+    }
+    None
+}
+
+/// A role whose text is the value typed, which names nothing.
+fn is_text_box(role: gtk::AccessibleRole) -> bool {
+    matches!(
+        role,
+        gtk::AccessibleRole::TextBox
+            | gtk::AccessibleRole::SearchBox
+            | gtk::AccessibleRole::SpinButton
+    )
+}
+
+/// A role that says nothing of what the widget is.
+fn is_generic(role: gtk::AccessibleRole) -> bool {
+    matches!(
+        role,
+        gtk::AccessibleRole::Generic
+            | gtk::AccessibleRole::Widget
+            | gtk::AccessibleRole::None
+            | gtk::AccessibleRole::Presentation
+    )
 }
 
 /// Visits the visible, mapped widgets under `root`; `f` returns whether to

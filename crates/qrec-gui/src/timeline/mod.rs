@@ -262,12 +262,15 @@ impl Inner {
             ruler_row.append(&corner_col);
             ruler_row.append(&ruler);
 
-            let canvas = Surface::new();
+            // A group of the clips, as the stage canvas is of the layers.
+            let canvas = Surface::with_role(gtk::AccessibleRole::Group);
             canvas.add_css_class("tl-canvas");
             canvas.set_hexpand(true);
             canvas.set_vexpand(true);
             canvas.set_focusable(true);
             canvas.set_focus_on_click(true);
+            // Where F6 enters the timeline region (`window::region_entry`).
+            canvas.set_widget_name(crate::window::TIMELINE_CANVAS);
             canvas.update_property(&[gtk::accessible::Property::Label("Timeline clips")]);
             let rows_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
             rows_box.set_valign(gtk::Align::Start);
@@ -325,7 +328,6 @@ impl Inner {
             root.append(&body);
             root.set_hexpand(true);
             root.set_vexpand(false);
-            root.set_focus_target(&canvas);
 
             Inner {
                 ctx: ctx.clone(),

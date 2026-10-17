@@ -1574,6 +1574,9 @@ fn s13b_row_states() {
     });
     nested.window(0).wait_idle();
     row_shot(&mut nested, "L2", "renaming");
+    // The field reaches a screen reader as a named text box (WP10).
+    let a11y = nested.window(0).ctl(json!({"op": "a11y"}));
+    assert_eq!(a11y["ok"], true, "a11y while renaming: {a11y}");
     held.wait();
     let labels = panel_labels(nested.window(0));
     assert_has(&labels, &["Face"]);
@@ -2206,6 +2209,8 @@ fn a_meter_comes_back_after_a_caught_panic() {
     gui.wait_idle();
     assert_eq!(ticking(&mut nested), (2, 1), "mapped again");
     nested.window(0).assert_no_criticals();
+    let a11y = nested.window(0).ctl(json!({"op": "a11y"}));
+    assert_eq!(a11y["ok"], true, "a11y: {a11y}");
 }
 
 // ---------------------------------------------------- not in a compositor

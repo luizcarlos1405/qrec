@@ -1905,6 +1905,7 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "chrono",
+ "gtk4",
  "predicates",
  "qrec-cli",
  "qrec-core",

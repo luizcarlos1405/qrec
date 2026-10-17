@@ -226,7 +226,12 @@ impl NumericField {
         // The text expands inside the box; the box's width is its parent's
         // call (a 104 px gain field, a column of the inspector).
         root.set_hexpand(false);
-        let text = gtk::Text::new();
+        // A text box to screen readers: a bare `GtkText` is an editable's
+        // delegate, left out of the tree (role `None`), so its name was
+        // heard nowhere (WP10's a11y walk).
+        let text = gtk::Text::builder()
+            .accessible_role(gtk::AccessibleRole::TextBox)
+            .build();
         text.set_hexpand(true);
         text.set_alignment(1.0);
         text.set_width_chars(1);

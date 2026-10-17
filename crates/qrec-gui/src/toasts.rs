@@ -15,6 +15,10 @@
 //! (`ExportPanelState::toast_due`, taken back by the next export toast
 //! whatever happens to it: [`panel_shows`]), never another export's.
 //!
+//! Each toast is announced to screen readers as it comes, also one the
+//! export panel drops, but not one that is the newest again
+//! (`window::announce`, WP10): polite, assertive for an error.
+//!
 //! A toast is `raised`, `lg` radius, e2 with a 1 px `border`: a 20 px level
 //! icon, the `body-strong` title over a `body-sm` `muted` body (a path in
 //! the mono face, S16b), up to two flat `accent-text` actions under them,
@@ -37,6 +41,7 @@ use crate::store::Store;
 use crate::store::local::ExportPanelMode;
 use crate::theme::motion::{self, EASE_IN, EASE_OUT_EXPO};
 use crate::widgets::button;
+use crate::window::announce;
 use crate::{Ctx, desktop, guard, guarded};
 
 /// How long a toast stays: `None` until dismissed (errors).
@@ -309,13 +314,21 @@ impl Host {
         );
         // The export panel shows this result already (its own export's
         // Done or Failed page): the export toast its answer said is next.
+        // A screen reader still hears it (WP10: the export's end).
         if panel_shows(&self.ctx.store, &notice) {
             tracing::debug!("toast: the export panel shows it; dropped");
+            announce::announce(&self.root, &announce::toast(&notice));
             return;
         }
         let cursor = self.ctx.store.state().history.cursor;
         let leaving = self.inner.borrow().leaving;
+        let spoken = announce::toast(&notice);
         let pushed = self.inner.borrow_mut().queue.push(notice, cursor, !leaving);
+        // A new toast is announced as it comes; one that is the newest again
+        // (a held key's repeats) isn't, so a screen reader isn't flooded.
+        if matches!(pushed, Pushed::Shown | Pushed::Queued) {
+            announce::announce(&self.root, &spoken);
+        }
         match pushed {
             Pushed::Shown => self.show_current(),
             Pushed::Queued => self.refresh_chip(),

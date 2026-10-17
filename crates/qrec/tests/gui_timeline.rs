@@ -296,11 +296,12 @@ fn s08_seconds() {
     );
     let dry = nested.cli_json(&project, &["autocut", "--clips", "c2d0", "--dry-run"]);
     assert_eq!(dry["ok"], true, "{dry}");
-    open(&mut nested, &project, Launch::default());
+    open(&mut nested, &project, Launch::a11y());
     check_regions(&mut nested, &["lane-A2"]);
     let toolbar = nested.window(0).labels("timeline-toolbar");
     assert!(toolbar.contains(&"48 px/s".to_owned()), "{toolbar:?}");
     shoot(&nested, "seconds", Some("S08-timeline-seconds.png"));
+    assert_a11y(&mut nested);
     assert_clean(&mut nested);
 }
 
@@ -332,7 +333,7 @@ fn a_new_min_silence_shows_its_cached_silences() {
         let dry = nested.cli_json(&project, args);
         assert_eq!(dry["ok"], true, "{dry}");
     }
-    open(&mut nested, &project, Launch::default());
+    open(&mut nested, &project, Launch::a11y());
     let s = nested.opts.scale;
     let px = |v: f64| (v * s).round().max(1.0) as u32;
     let warning = gui_support::token_rgb("swamp-night", "warning");
@@ -367,6 +368,7 @@ fn a_new_min_silence_shows_its_cached_silences() {
         );
         thread::sleep(Duration::from_millis(200));
     }
+    assert_a11y(&mut nested);
     assert_clean(&mut nested);
 }
 
@@ -459,7 +461,7 @@ fn trimming(case: &str, opts: Options) {
     );
     let dry = nested.cli_json(&project, &["autocut", "--clips", "c2d0", "--dry-run"]);
     assert_eq!(dry["ok"], true, "{dry}");
-    open(&mut nested, &project, Launch::default());
+    open(&mut nested, &project, Launch::a11y());
     let before = clip_rows(&nested, &project);
     // c2d0 starts at window x 390.4.
     press_and_drag(&mut nested, (391.0, VIDEO_Y), 437.4, 8);
@@ -485,6 +487,7 @@ fn trimming(case: &str, opts: Options) {
     let undo = nested.cli_json(&project, &["undo"]);
     assert_eq!(undo["ok"], true, "{undo}");
     assert_eq!(clip_rows(&nested, &project), before);
+    assert_a11y(&mut nested);
     assert_clean(&mut nested);
 }
 
@@ -495,7 +498,7 @@ fn trimming(case: &str, opts: Options) {
 fn s11_drag_move() {
     let mut nested = Nested::start(AREA, "s11", Options::default());
     let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
-    open(&mut nested, &project, Launch::default());
+    open(&mut nested, &project, Launch::a11y());
     let before = clip_rows(&nested, &project);
     // c8a1 is at window x 233.2 → 297.1 at fit.
     press_and_drag(&mut nested, (265.0, VIDEO_Y), 405.0, 10);
@@ -527,6 +530,7 @@ fn s11_drag_move() {
             "c7f3", "c1b2", "c1b3", "c1b4", "c1b5", "c1b6", "c8a1", "c2d0", "c2d1", "c3e9"
         ]
     );
+    assert_a11y(&mut nested);
     assert_clean(&mut nested);
 }
 
@@ -540,7 +544,7 @@ fn s11_drag_move() {
 fn a_middle_drag_pans_the_lanes() {
     let mut nested = Nested::start(AREA, "middle-pan", Options::default());
     let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
-    open(&mut nested, &project, Launch::default());
+    open(&mut nested, &project, Launch::a11y());
     for n in 3..=5 {
         let command = json!({
             "cmd": "audioAdd", "target": "project", "role": "mic",
@@ -577,6 +581,7 @@ fn a_middle_drag_pans_the_lanes() {
         (before - after - 60.0).abs() <= 1.0,
         "A1 from y {before} to {after}: not 60 px up"
     );
+    assert_a11y(&mut nested);
     assert_clean(&mut nested);
 }
 
@@ -589,7 +594,7 @@ fn a_middle_drag_pans_the_lanes() {
 fn ctrl_wheel_zooms_at_the_pointer() {
     let mut nested = Nested::start(AREA, "ctrl-wheel", Options::default());
     let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
-    open(&mut nested, &project, Launch::default());
+    open(&mut nested, &project, Launch::a11y());
     let ruler_y = center_of(&mut nested, "ruler").1;
     // At fit: (1040 − 8) / 7391 px per frame, no scroll.
     let fit = 1032.0 / 7391.0;
@@ -645,6 +650,7 @@ fn ctrl_wheel_zooms_at_the_pointer() {
         view,
         "over the ruler after a scrub",
     );
+    assert_a11y(&mut nested);
     assert_clean(&mut nested);
 }
 
@@ -657,7 +663,7 @@ fn ctrl_wheel_zooms_at_the_pointer() {
 fn a_scrub_ends_when_the_timeline_empties() {
     let mut nested = Nested::start(AREA, "scrub-emptied", Options::default());
     let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
-    open(&mut nested, &project, Launch::default());
+    open(&mut nested, &project, Launch::a11y());
     let ruler_y = center_of(&mut nested, "ruler").1;
     let pointer = nested.pointer();
     pointer.move_to(500.0, ruler_y);
@@ -678,6 +684,7 @@ fn a_scrub_ends_when_the_timeline_empties() {
     release(&mut nested);
     nested.window(0).wait_idle();
     assert_eq!(local(&mut nested)["drag"], Value::Null);
+    assert_a11y(&mut nested);
     assert_clean(&mut nested);
 }
 
@@ -708,7 +715,7 @@ fn s12_zoom_to_c3e9() {
         DesignVariant::Base,
         &program(&["c3e9"], 4842, None),
     );
-    open(&mut nested, &project, Launch::default());
+    open(&mut nested, &project, Launch::a11y());
     nested.keys(&["-k", "z"]);
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -817,6 +824,7 @@ fn s12_zoom_to_c3e9() {
         (inside - outside).abs() < 3.0,
         "A2 still dimmed: {inside:.1} vs {outside:.1}"
     );
+    assert_a11y(&mut nested);
     assert_clean(&mut nested);
 }
 
@@ -829,7 +837,7 @@ fn s12_zoom_to_c3e9() {
 fn fit_right_after_a_zoom_wins() {
     let mut nested = Nested::start(AREA, "fit-after-zoom", Options::default());
     let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
-    open(&mut nested, &project, Launch::default());
+    open(&mut nested, &project, Launch::a11y());
     nested.keys(&["-k", "equal", "-k", "backslash"]);
     // Past the zoom's 300 ms debounce.
     thread::sleep(Duration::from_millis(800));
@@ -843,6 +851,7 @@ fn fit_right_after_a_zoom_wins() {
             .any(|l| l.ends_with(" px/s") || l.ends_with(" px/frame")),
         "the readout shows a zoom: {toolbar:?}"
     );
+    assert_a11y(&mut nested);
     assert_clean(&mut nested);
 }
 
@@ -856,7 +865,9 @@ fn fit_right_after_a_zoom_wins() {
 fn a_zoom_right_before_the_close_is_saved() {
     let mut nested = Nested::start(AREA, "zoom-then-close", Options::default());
     let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
-    open(&mut nested, &project, Launch::default());
+    open(&mut nested, &project, Launch::a11y());
+    // Walked before the zoom: the zoom and the quit go within a few ms.
+    assert_a11y(&mut nested);
     let gui = nested.window(0);
     assert_eq!(gui.local()["panics"], 0);
     // Both on the main thread within a few ms, well inside the 300 ms.
@@ -892,7 +903,7 @@ fn a_zoom_right_before_the_close_is_saved() {
 fn the_canvas_rests_while_the_program_plays() {
     let mut nested = Nested::start(AREA, "playing", Options::default());
     let project = fixture(&nested, DesignVariant::Base, &program(&[], 1200, None));
-    open(&mut nested, &project, Launch::default());
+    open(&mut nested, &project, Launch::a11y());
     let gui = nested.window(0);
     let at = |gui: &mut gui_support::Gui| {
         let local = gui.local();
@@ -924,6 +935,7 @@ fn the_canvas_rests_while_the_program_plays() {
         after - started,
         after - before
     );
+    assert_a11y(&mut nested);
     assert_clean(&mut nested);
 }
 
@@ -947,7 +959,7 @@ fn the_frame_clock_comes_back_after_a_caught_panic() {
     open(
         &mut nested,
         &project,
-        Launch::default().with_env("QREC_GUI_TEST_PANIC_ONCE", "timeline: a frame"),
+        Launch::a11y().with_env("QREC_GUI_TEST_PANIC_ONCE", "timeline: a frame"),
     );
     let scroll = |nested: &Nested| {
         nested.cli_json(&project, &["status"])["data"]["ui"]["scrollPx"]
@@ -977,6 +989,7 @@ fn the_frame_clock_comes_back_after_a_caught_panic() {
         .window(0)
         .ctl(json!({"op": "dispatch", "command": {"cmd": "pause"}}));
     assert_eq!(pause["ok"], true, "{pause}");
+    assert_a11y(&mut nested);
     let gui = nested.window(0);
     assert_eq!(gui.local()["panics"], 1, "the one panic");
     gui.assert_no_criticals();
@@ -994,7 +1007,7 @@ fn s04_recording_ghost() {
     open(
         &mut nested,
         &project,
-        Launch::default().with_env("QREC_FAKE_RECORD_OFFSET_FRAMES", "4842"),
+        Launch::a11y().with_env("QREC_FAKE_RECORD_OFFSET_FRAMES", "4842"),
     );
     let start = nested.cli_json(&project, &["record", "start"]);
     assert_eq!(start["ok"], true, "{start}");
@@ -1004,6 +1017,7 @@ fn s04_recording_ghost() {
     shoot(&nested, "recording", Some("S04-recording.png"));
     let stop = nested.cli_json(&project, &["record", "stop"]);
     assert_eq!(stop["ok"], true, "{stop}");
+    assert_a11y(&mut nested);
     assert_clean(&mut nested);
 }
 
@@ -1026,7 +1040,7 @@ fn a_zoomed_ghost_works_out_only_its_columns_in_view() {
     open(
         &mut nested,
         &project,
-        Launch::default().with_env("QREC_FAKE_RECORD_OFFSET_FRAMES", "4842"),
+        Launch::a11y().with_env("QREC_FAKE_RECORD_OFFSET_FRAMES", "4842"),
     );
     let start = nested.cli_json(&project, &["record", "start"]);
     assert_eq!(start["ok"], true, "{start}");
@@ -1045,6 +1059,7 @@ fn a_zoomed_ghost_works_out_only_its_columns_in_view() {
     assert_eq!(ui["zoom"], 2.0, "{ui}");
     let stop = nested.cli_json(&project, &["record", "stop"]);
     assert_eq!(stop["ok"], true, "{stop}");
+    assert_a11y(&mut nested);
     assert_clean(&mut nested);
 }
 
@@ -1062,7 +1077,7 @@ fn s04b_recording_over() {
     open(
         &mut nested,
         &project,
-        Launch::default().with_env("QREC_FAKE_RECORD_OFFSET_FRAMES", "932"),
+        Launch::a11y().with_env("QREC_FAKE_RECORD_OFFSET_FRAMES", "932"),
     );
     nested.keys(&["-k", "o"]);
     wait_record_phase(&nested, &project, "recording");
@@ -1074,6 +1089,7 @@ fn s04b_recording_over() {
     );
     let stop = nested.cli_json(&project, &["record", "stop"]);
     assert_eq!(stop["ok"], true, "{stop}");
+    assert_a11y(&mut nested);
     assert_clean(&mut nested);
 }
 
@@ -1086,7 +1102,7 @@ fn s05_finalizing_ghost() {
     open(
         &mut nested,
         &project,
-        Launch::default()
+        Launch::a11y()
             .with_env("QREC_FAKE_RECORD_OFFSET_FRAMES", "4842")
             .with_env("QREC_FAKE_EOS_DELAY_MS", "8000"),
     );
@@ -1104,6 +1120,7 @@ fn s05_finalizing_ghost() {
         stopped.success(),
         "qrec record stop: {stopped} (see its cli.log)"
     );
+    assert_a11y(&mut nested);
     assert_clean(&mut nested);
 }
 
@@ -1118,7 +1135,7 @@ fn s05b_take_lands() {
         ..UiState::default()
     };
     let project = fixture(&nested, DesignVariant::Take10Landed, &ui);
-    open(&mut nested, &project, Launch::default());
+    open(&mut nested, &project, Launch::a11y());
     check_regions(&mut nested, &["lane-A2"]);
     let toolbar = nested.window(0).labels("timeline-toolbar");
     assert!(
@@ -1126,6 +1143,7 @@ fn s05b_take_lands() {
         "{toolbar:?}"
     );
     shoot(&nested, "take-lands", Some("S05b-take-lands.png"));
+    assert_a11y(&mut nested);
     assert_clean(&mut nested);
 }
 
@@ -1273,7 +1291,7 @@ fn at_ui_scale(case: &str, scale: f64, opts: Options) {
     let mut nested = Nested::start(AREA, case, opts);
     ui_scale(&nested, scale);
     let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
-    open(&mut nested, &project, Launch::default());
+    open(&mut nested, &project, Launch::a11y());
     assert_eq!(local(&mut nested)["scale"], scale);
     let pairs = [
         ("header-video", "video-row"),
@@ -1309,6 +1327,7 @@ fn at_ui_scale(case: &str, scale: f64, opts: Options) {
         "strip images {want} px high"
     );
     shoot(&nested, "ui-scale", None);
+    assert_a11y(&mut nested);
     assert_clean(&mut nested);
 }
 
@@ -1321,7 +1340,7 @@ fn at_ui_scale(case: &str, scale: f64, opts: Options) {
 fn compact_timeline_at_1600x800() {
     let mut nested = Nested::start(AREA, "compact", Options::size(1600, 800));
     let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
-    open(&mut nested, &project, Launch::default());
+    open(&mut nested, &project, Launch::a11y());
     let regions = nested.window(0).regions(&[]);
     let parts = [
         ("region-timeline", [0.0, 536.0, 1216.0, 232.0]),
@@ -1336,6 +1355,7 @@ fn compact_timeline_at_1600x800() {
     let names: Vec<&str> = parts.iter().map(|(n, _)| *n).collect();
     assert_regions(&regions, &parts, &names, 1.0);
     shoot(&nested, "compact", None);
+    assert_a11y(&mut nested);
     assert_clean(&mut nested);
 }
 

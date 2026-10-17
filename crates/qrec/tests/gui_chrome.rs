@@ -1123,6 +1123,7 @@ fn settings_rows_wait_while_recording() {
         "{:?}",
         gui.labels("toast-host")
     );
+    assert_a11y(&mut nested);
     nested.screenshot("recording");
     assert_eq!(overlays(&mut nested), ["Settings(Project)"]);
     let status = nested.cli_json(&project, &["status"]);
@@ -1144,6 +1145,7 @@ fn settings_rows_wait_while_recording() {
     nested.window(0).wait_idle();
     assert_eq!(overlays(&mut nested), ["Settings(Project)"]);
     assert_eq!(nested.window(0).labels("settings-size"), [size_label()]);
+    assert_a11y(&mut nested);
     assert_no_panics(&mut nested);
     nested.window(0).assert_no_criticals();
     nested.close_window();
@@ -1195,6 +1197,7 @@ fn settings_reopens_on_the_projects_values() {
     assert_eq!(shown["settings-background"], background, "{shown:?}");
     let labels = gui.labels("settings");
     assert!(!labels.contains(&"Use #RRGGBB".to_owned()), "{labels:?}");
+    assert_a11y(&mut nested);
     nested.screenshot("reopened");
     nested.keys(&["-k", "Escape"]);
     nested.window(0).wait_idle();
@@ -1238,10 +1241,13 @@ fn holding_r_records_one_take() {
     assert_eq!(takes(&nested, &project).len(), before + 1, "one take");
     let toasts = nested.window(0).labels("toast-host");
     assert!(toasts.is_empty(), "{toasts:?}");
+    assert_a11y(&mut nested);
     let stop = nested.cli_json(&project, &["record", "stop"]);
     assert_eq!(stop["ok"], true, "{stop}");
     wait_phase(&nested, &project, "idle", Duration::from_secs(30));
     assert_eq!(takes(&nested, &project).len(), before + 1, "it landed");
+    nested.window(0).wait_idle();
+    assert_a11y(&mut nested);
     assert_no_panics(&mut nested);
     nested.close_window();
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));

@@ -1,24 +1,20 @@
-//! The timeline region's root (`region-timeline`): a vertical box whose
-//! keyboard focus goes to the timeline canvas. `region.next` and
-//! `region.prev` (D-10) focus a region with `child_focus`; GTK's own order
-//! would land on the toolbar's first button (the toolbar is its own region,
-//! `timeline-toolbar`), so the root hands the focus to the canvas unless it
-//! already has it.
+//! The timeline region's root (`region-timeline`): a vertical box of the
+//! toolbar and the body. GTK's own focus chain goes through it in order
+//! (BRIEF §6: the toolbar's controls, the track headers', then the canvas);
+//! `region.next` and `region.prev` (D-10) enter the region at its canvas
+//! (`window::region_entry`: the toolbar is a region of its own). It used to
+//! hand any focus that entered it to the canvas, so `Tab` and `Shift+Tab`
+//! skipped the toolbar and the track headers (WP10's focus audit).
 
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 
 mod imp {
-    use std::cell::RefCell;
-
     use super::*;
 
     #[derive(Default)]
-    pub struct TimelineRoot {
-        /// Where the region's focus goes (the canvas).
-        pub target: RefCell<Option<glib::WeakRef<gtk::Widget>>>,
-    }
+    pub struct TimelineRoot;
 
     #[glib::object_subclass]
     impl ObjectSubclass for TimelineRoot {
@@ -40,22 +36,7 @@ mod imp {
         }
     }
 
-    impl WidgetImpl for TimelineRoot {
-        fn focus(&self, direction: gtk::DirectionType) -> bool {
-            let fallback = || self.parent_focus(direction);
-            crate::guard::catch("timeline root: focus", || {
-                let target = self.target.borrow().as_ref().and_then(|w| w.upgrade());
-                match target {
-                    Some(t) if t.is_sensitive() && t.is_visible() && !t.has_focus() => {
-                        t.grab_focus() || fallback()
-                    }
-                    Some(t) if t.has_focus() => false,
-                    _ => fallback(),
-                }
-            })
-            .unwrap_or(false)
-        }
-    }
+    impl WidgetImpl for TimelineRoot {}
 
     impl BoxImpl for TimelineRoot {}
 }
@@ -159,10 +140,5 @@ impl Default for TimelineRoot {
 impl TimelineRoot {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// The widget the region's focus goes to.
-    pub fn set_focus_target(&self, target: &impl IsA<gtk::Widget>) {
-        *self.imp().target.borrow_mut() = Some(target.as_ref().downgrade());
     }
 }

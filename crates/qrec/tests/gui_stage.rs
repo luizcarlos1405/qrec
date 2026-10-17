@@ -1538,6 +1538,9 @@ fn a_playing_programs_playhead_is_saved_at_the_close() {
         Some(ui(CanvasMode::Program, 1200)),
     );
     open(&mut nested, &project, Launch::a11y());
+    // Walked before it plays: the close's timing is the case's.
+    let a11y = nested.window(0).ctl(json!({"op": "a11y"}));
+    assert_eq!(a11y["ok"], true, "a11y: {a11y}");
     let play = nested
         .window(0)
         .ctl(json!({"op": "dispatch", "command": {"cmd": "play"}}));
@@ -1583,6 +1586,9 @@ fn a_nudge_burst_is_saved_at_the_close() {
     );
     open(&mut nested, &project, Launch::a11y());
     select_l2(&mut nested, &project);
+    // Walked before the burst (it closes the window within its second).
+    let a11y = nested.window(0).ctl(json!({"op": "a11y"}));
+    assert_eq!(a11y["ok"], true, "a11y: {a11y}");
     let held = nested.keys_held(&["-P", "Left"], 4000);
     gui_support::poll(Duration::from_secs(5), "the burst", || {
         (nested.window(0).local()["drag"] == "layerNudge").then_some(())
