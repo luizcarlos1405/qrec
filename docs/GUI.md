@@ -2245,7 +2245,10 @@ As built (WP6, round 3):
   - lanes under the ghost draw the live waveform from the level ring
     buffer (RMS per 50 ms, × √2: a sine's peak, so a steady tone keeps
     its height when the take lands), newest at the right edge, where the
-    playhead is parked.
+    playhead is parked; worked out for the ghost's columns in the time
+    area only (`view::timeline::ghost_columns`: a long take zoomed in is
+    a window of columns, not its length; review R01, and `local`'s
+    `timelineGhostColumns` in the nested case its audit asked for).
   - As built (WP3): with record-over, the following clips move once the
     ghost outgrows the replaced run; several replaced clips read "over N
     clips"; a cancelled take's ghost hides while it finalizes.

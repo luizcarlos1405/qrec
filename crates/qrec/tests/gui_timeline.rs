@@ -1007,6 +1007,47 @@ fn s04_recording_ghost() {
     assert_clean(&mut nested);
 }
 
+/// R01 (its audit): the ghost's live waveform is worked out for its
+/// columns in the time area only. Zoomed in on take 10 recording at 2:41
+/// (4,842 frames at 2 px a frame: a ghost 9,684 px wide in a time area of
+/// 1,040), the last paint worked out at most 1,041 columns a lane. S04, at
+/// fit, can't tell: its ghost fits the time area. A paint working out
+/// every column of the ghost passed every test.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_zoomed_ghost_works_out_only_its_columns_in_view() {
+    let mut nested = Nested::start(AREA, "ghost-zoomed", Options::default());
+    let ui = UiState {
+        zoom: Some(2.0),
+        scroll_px: 2.0 * 9000.0,
+        ..UiState::default()
+    };
+    let project = fixture(&nested, DesignVariant::Base, &ui);
+    open(
+        &mut nested,
+        &project,
+        Launch::default().with_env("QREC_FAKE_RECORD_OFFSET_FRAMES", "4842"),
+    );
+    let start = nested.cli_json(&project, &["record", "start"]);
+    assert_eq!(start["ok"], true, "{start}");
+    wait_record_phase(&nested, &project, "recording");
+    nested.window(0).wait_idle();
+    let local = local(&mut nested);
+    let columns = local["timelineGhostColumns"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("no ghost painted: {local}"));
+    assert!(
+        (1..=1041).contains(&columns),
+        "{columns} columns a lane for a time area 1,040 px wide"
+    );
+    // Still zoomed: the ghost is far wider than the time area.
+    let ui = nested.cli_json(&project, &["status"])["data"]["ui"].clone();
+    assert_eq!(ui["zoom"], 2.0, "{ui}");
+    let stop = nested.cli_json(&project, &["record", "stop"]);
+    assert_eq!(stop["ok"], true, "{stop}");
+    assert_clean(&mut nested);
+}
+
 /// S04b: `o` with c2d0 selected records over it: the ghost in its slot,
 /// c2d0 hatched.
 #[test]

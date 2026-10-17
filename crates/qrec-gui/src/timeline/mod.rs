@@ -78,6 +78,16 @@ const FLASH: Duration = Duration::from_millis(300);
 thread_local! {
     /// How many times the canvas made its render node again (a cache miss).
     static CANVAS_PAINTS: Cell<u64> = const { Cell::new(0) };
+    /// The columns the last paint with a ghost worked its waveform out for
+    /// (its longest lane's).
+    static GHOST_COLUMNS: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+/// How many columns of the ghost's waveform the last paint with one worked
+/// out, per lane (testctl's `local`, `timelineGhostColumns`): the ones in
+/// the time area, not the whole take (R01; its audit).
+pub fn ghost_columns() -> Option<usize> {
+    GHOST_COLUMNS.with(Cell::get)
 }
 
 /// How many times the canvas re-rendered (testctl's `local`,
@@ -1853,6 +1863,10 @@ impl Inner {
         let ghost_waves = ghost
             .as_ref()
             .and_then(|g| self.ghost_waves(&state, &m.lanes, g, elapsed, view.width));
+        if let Some(waves) = &ghost_waves {
+            let columns = waves.lanes.iter().map(Vec::len).max().unwrap_or(0);
+            GHOST_COLUMNS.with(|c| c.set(Some(columns)));
+        }
         let scene = Scene {
             widget: &widget,
             texts: &self.texts,
