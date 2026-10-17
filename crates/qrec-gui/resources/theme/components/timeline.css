@@ -61,13 +61,13 @@
   background-image: image(var(--qrec-hover));
 }
 
-/* The bin's count: a small round chip. */
+/* The bin's count: a small round `raised` chip (S02). */
 .tl-count {
   min-width: 8px;
   min-height: 16px;
   padding: 0 4px;
   border-radius: 999px;
-  background-color: var(--qrec-pressed);
+  background-color: var(--qrec-raised);
   color: var(--qrec-text);
   font-size: 12px;
   font-weight: 600;

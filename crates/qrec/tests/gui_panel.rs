@@ -294,6 +294,14 @@ fn s02_the_panel_in_live_mode() {
     let shot = nested.screenshot("live");
     crop(&nested, &shot, PANEL, "panel");
     compare(&nested, &shot, "S02-live-idle.png", PANEL, PANEL);
+    // WP10's shot review: the bin's count chip is `raised` (S02; it was
+    // the `pressed` overlay).
+    let (cx, cy) = nested.opts.pixel_px(68.0, 674.0);
+    assert_eq!(
+        gui_support::rgb_pixels(&shot, [cx, cy, 1, 1])[0],
+        gui_support::token_rgb("swamp-night", "raised"),
+        "the count chip's fill"
+    );
 
     // M: AudioSet{muted} on the project scene.
     let (x, y) = center(region(nested.window(0), "audio-mute-A1"));
