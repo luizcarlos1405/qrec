@@ -2354,6 +2354,16 @@ fn s16b_the_done_toast_when_the_panel_is_closed() {
         Some("520:120:540:848"),
         "-toast",
     );
+    // WP10's shot review: the toast's shadow falls over the hint bar as
+    // S16b draws it (`surface` darkened, #181F13 at y 971 under the toast's
+    // middle); the bar, painted after the toast's layer, cut it at y 968.
+    let (sx, sy) = nested.opts.pixel_px(800.0, 971.0);
+    let under = gui_support::rgb_pixels(&shot, [sx, sy, 1, 1])[0];
+    let surface = gui_support::token_rgb("swamp-night", "surface");
+    assert!(
+        under.iter().zip(surface).all(|(a, b)| *a + 2 < b),
+        "the toast's shadow over the hint bar: {under:02X?} (surface {surface:02X?})"
+    );
     assert_clean(&mut nested);
     close(&mut nested);
 }

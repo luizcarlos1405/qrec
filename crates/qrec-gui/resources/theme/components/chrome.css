@@ -193,6 +193,13 @@ progressbar.mini-mud > trough > progress {
 
 /* ---------------------------------------------------------- C23 toast */
 
+/* The host sits over the hint bar in the content layer, so the toast's
+   shadow falls over the bar (S16b): its bottom margin is the bar's 32 px,
+   the toast's own 12 px rise above it is the code's (toasts.rs). */
+#toast-host {
+  margin-bottom: 32px;
+}
+
 /* `raised`, `lg` radius, e2 and a 1 px `border`; padding 12 12 12 16, 10
    under the actions; the body 2 px under the title, the actions' flat
    buttons from the text's x (their labels 8 px in), as S16b draws them

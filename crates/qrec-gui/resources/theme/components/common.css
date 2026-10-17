@@ -595,7 +595,10 @@ tooltip .qrec-tooltip {
 
 /* ------------------------------------------------- scrims (G§3.15) */
 
+/* Over the content layer down to the hint bar, which it leaves live (S18,
+   S18b: 1600×968). The layer spans the hint bar too (window/mod.rs). */
 .scrim {
+  margin-bottom: 32px;
   background-color: var(--qrec-scrim);
 }
 

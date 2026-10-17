@@ -1,10 +1,11 @@
 //! The window's overlay layers (G§3.15): what opens over the editor and
 //! how it keeps the keyboard.
 //!
-//! - `Modal`, `Settings` and `Palette` go into the content layer (above
-//!   the hint bar, which stays live: S18, S18b) over a `scrim`; stacked
-//!   layers stack their scrims. They trap focus: everything below stops
-//!   taking pointer events and leaves the focus chain.
+//! - `Modal`, `Settings` and `Palette` go into the content layer over a
+//!   `scrim` that stops above the hint bar (its CSS bottom margin: the
+//!   bar stays live, S18, S18b); stacked layers stack their scrims. They
+//!   trap focus: everything below stops taking pointer events and leaves
+//!   the focus chain.
 //! - `Fullscreen` (the cheat sheet, gated) covers the whole window with a
 //!   `scrim-strong`.
 //! - `FloatingTrap` (the export panel in Setup, Done and Failed) traps focus

@@ -47,10 +47,9 @@ impl Settings {
         root.add_css_class("qrec-settings");
         root.set_size_request(840, 640);
         root.set_halign(gtk::Align::Center);
+        // Centered on the window (BRIEF §2.8: at (380, 180) in 1600×1000):
+        // the content layer spans it, the hint bar too (window/mod.rs).
         root.set_valign(gtk::Align::Center);
-        // Centered on the window (BRIEF §2.8: at (380, 180) in 1600×1000),
-        // above the 32 px hint bar the layer stops at.
-        root.set_margin_top(32);
         root.update_property(&[gtk::accessible::Property::Label("Settings")]);
         let keymap = ctx.store.keymap();
 

@@ -4,17 +4,18 @@
 //! ```text
 //! adw::ApplicationWindow #qrec  (default 1600×1000, min 800×600)
 //! └ gtk::Overlay  window_layer          ← CheatSheet (scrim-strong over everything)
-//!   └ Box V
-//!     ├ gtk::Overlay  content_layer     ← Modal, Settings, Palette (scrim to y 968), ExportPanel, ToastHost
-//!     │ └ gtk::Stack: editor | page
-//!     │   ├ adw::ToolbarView  editor
-//!     │   │ ├ top: Header
-//!     │   │ └ adw::OverlaySplitView, sidebar at the end: Panel (384; 320; overlay sheet)
-//!     │   │   └ Box V  work
-//!     │   │       ├ Box H  stage_row: BinDrawer (352) | Stage (hexpand)
-//!     │   │       └ Timeline (312 px; 232 compact)
-//!     │   └ adw::ToolbarView  page: minimal header + BlockingPage
-//!     └ HintBar (32 px, not focusable)
+//!   └ gtk::Overlay  content_layer       ← Modal, Settings, Palette (scrim to y 968), ExportPanel, ToastHost
+//!     └ Box V
+//!       ├ gtk::Stack: editor | page
+//!       │ ├ adw::ToolbarView  editor
+//!       │ │ ├ top: Header
+//!       │ │ └ adw::OverlaySplitView, sidebar at the end: Panel (384; 320; overlay sheet)
+//!       │ │   └ Box V  work
+//!       │ │       ├ Box H  stage_row: BinDrawer (352) | Stage (hexpand)
+//!       │ │       └ Timeline (312 px; 232 compact)
+//!       │ └ adw::ToolbarView  page: minimal header + BlockingPage
+//!       └ HintBar (32 px, not focusable; under the content layer's overlays
+//!         since WP10's shot review: a toast's shadow falls over it)
 //! ```
 //!
 //! `LocalUi.focus` follows the window's focus widget: the nearest ancestor
@@ -76,7 +77,6 @@ pub struct MainWindow {
     pub window: adw::ApplicationWindow,
     pub layers: WindowLayers,
     content_layer: gtk::Overlay,
-    root_box: gtk::Box,
     parts: RefCell<Option<Rc<Parts>>>,
 }
 
@@ -124,18 +124,17 @@ impl MainWindow {
         window.set_widget_name("qrec");
         window.add_css_class("qrec");
         let window_layer = gtk::Overlay::new();
-        let root_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        // The whole window: the editor (or a page) and the hint bar under
+        // it (`populate`), the content layer's overlays over both.
         let content_layer = gtk::Overlay::new();
         content_layer.set_vexpand(true);
-        root_box.append(&content_layer);
-        window_layer.set_child(Some(&root_box));
+        window_layer.set_child(Some(&content_layer));
         window.set_content(Some(&window_layer));
         let layers = WindowLayers::new(&window_layer, &content_layer);
         Self {
             window,
             layers,
             content_layer,
-            root_box,
             parts: RefCell::new(None),
         }
     }
@@ -203,16 +202,23 @@ impl MainWindow {
         stack.add_named(&editor, Some("editor"));
         stack.add_named(&page_view, Some("page"));
         stack.set_visible_child_name("editor");
-        self.content_layer.set_child(Some(&stack));
-        // The toasts float in the content layer, passive.
-        let toast_widget = toasts.widget();
-        self.content_layer.add_overlay(&toast_widget);
-        self.content_layer.set_clip_overlay(&toast_widget, false);
-
+        stack.set_vexpand(true);
         let hint_widget = hintbar.widget();
         // The hint bar never takes the window's spare height.
         hint_widget.set_vexpand(false);
-        self.root_box.append(&hint_widget);
+        // The hint bar is in the content layer, under its overlays: a
+        // toast's shadow falls over it (the bar, drawn after the layer,
+        // cut it at y 968; WP10's shot review), and the scrims stop above
+        // it (`.scrim`'s bottom margin), so it stays live under a modal.
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        content.append(&stack);
+        content.append(&hint_widget);
+        self.content_layer.set_child(Some(&content));
+        // The toasts float in the content layer, passive, 12 px above the
+        // hint bar (`#toast-host`'s bottom margin is the bar's height).
+        let toast_widget = toasts.widget();
+        self.content_layer.add_overlay(&toast_widget);
+        self.content_layer.set_clip_overlay(&toast_widget, false);
         // A trap takes what is below it out of the focus chain: the toasts
         // too (Tab past a modal's last button reached a toast's button,
         // and Space ran its action under the scrim).

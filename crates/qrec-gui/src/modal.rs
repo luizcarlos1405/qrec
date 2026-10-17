@@ -17,7 +17,8 @@
 //! loss list (a `field` well, `mono-sm` rows with right-aligned sizes, 8
 //! rows visible, then it scrolls) and the footer's large buttons, Cancel
 //! (secondary) then the destructive one. Centered on the window like the
-//! frames (S18, S18b: y 277 to 723 at 1000 high), not on the 968 px layer.
+//! frames (S18, S18b: y 277 to 723 at 1000 high), not on the 968 px above
+//! the hint bar: the content layer spans the window.
 //!
 //! An overwrite names a file the core can't describe: the GUI shows its
 //! path for people and the time it was modified (stat on the io worker,
@@ -137,10 +138,9 @@ fn build(ctx: &Ctx, overlay: &Overlay, content: &ModalContent) -> ModalView {
     root.add_css_class("qrec-modal");
     root.set_width_request(520);
     root.set_halign(gtk::Align::Center);
+    // Centered on the window (S18: top 277 for 446 px): the content layer
+    // spans it, the hint bar too (window/mod.rs).
     root.set_valign(gtk::Align::Center);
-    // Centered on the window, above the 32 px hint bar: the layer ends at
-    // 968, so push it down by half the bar (S18: top 277 for 446 px).
-    root.set_margin_top(32);
     root.update_property(&[gtk::accessible::Property::Label(&content.title)]);
 
     let title = label(&content.title, &["t-display-sm", "modal-title"]);

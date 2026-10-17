@@ -1795,23 +1795,31 @@ time; A§8.7 rules for every child).
 ```
 adw::ApplicationWindow #qrec  (default 1600×1000, min 800×600)
 └ gtk::Overlay  window_layer          ← CheatSheet (scrim-strong over everything)
-  └ Box V
-    ├ gtk::Overlay  content_layer     ← Modal, Settings, Palette (scrim to y 968), ExportPanel, ToastHost
-    │ └ adw::ToolbarView
-    │   ├ top: Header (adw::HeaderBar, custom title, own close button, end title buttons off)
-    │   └ Box H
-    │     ├ Box V  work
-    │     │   ├ Box H  stage_row: BinDrawer (0 ↔ 352, animated) | Stage (hexpand)
-    │     │   └ Timeline (312 px; 232 compact)
-    │     └ adw::OverlaySplitView, sidebar at the end: Panel (384; 320; overlay sheet)
-    └ HintBar (32 px, not focusable)
+  └ gtk::Overlay  content_layer       ← Modal, Settings, Palette (scrim to y 968), ExportPanel, ToastHost
+    └ Box V
+      ├ adw::ToolbarView
+      │ ├ top: Header (adw::HeaderBar, custom title, own close button, end title buttons off)
+      │ └ Box H
+      │   ├ Box V  work
+      │   │   ├ Box H  stage_row: BinDrawer (0 ↔ 352, animated) | Stage (hexpand)
+      │   │   └ Timeline (312 px; 232 compact)
+      │   └ adw::OverlaySplitView, sidebar at the end: Panel (384; 320; overlay sheet)
+      └ HintBar (32 px, not focusable)
 ```
+
+Since WP10's shot review the hint bar is in the content layer, under its
+overlays: a toast's shadow falls over it as S16b draws it (the bar,
+painted after the layer, cut it at y 968); the scrims keep a 32 px bottom
+margin (`.scrim`), so they stop above it and it stays live under a modal,
+and the toast host's bottom margin is the bar's height (`#toast-host`).
+The modal and Settings center on the layer, which is the window now (they
+were pushed down by half the bar).
 
 - `WindowLayers::open(layer, widget)` and `close(layer)`, `layer` one of
   `Modal`, `Settings`, `Palette`, `Fullscreen`, `FloatingTrap`,
   `FloatingPassive`:
-  - `Modal`, `Settings` and `Palette` add a `scrim` over 1600×968 (the
-    content layer stops above the hint bar; stacked layers stack their
+  - `Modal`, `Settings` and `Palette` add a `scrim` over 1600×968 (its
+    bottom margin leaves the hint bar; stacked layers stack their
     scrims), trap focus (the regions below, the toast host too, get
     `can-target = false` and leave the focus chain; a widget in both the
     content and the window base is out while either trap applies, and
@@ -1843,8 +1851,9 @@ adw::ApplicationWindow #qrec  (default 1600×1000, min 800×600)
   360–560 wide; export panel 440 wide, 8 px from the right edge, top at
   y 52, arrow 172 px left of its right edge (under Export); palette 640
   wide at y 96; modal 520 wide, centered on the window (S18's frame:
-  y 277 to 723), not in the 968 px content height; Settings 840×640 at
-  (380, 180), centered on the window too; cheat sheet inset 40 px (WP6).
+  y 277 to 723), not in the 968 px above the hint bar; Settings 840×640
+  at (380, 180), centered on the window too; cheat sheet inset 40 px
+  (WP6).
 - **Stage geometry**: the preview is the canvas aspect fitted into
   (stage_w − 32) × (stage_h − 68), centered in x ∈ [16, stage_w − 16] and
   y ∈ [16, stage_h − 52]. The 36 px transport row is anchored to the
