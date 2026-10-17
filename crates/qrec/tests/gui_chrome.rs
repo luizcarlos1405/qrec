@@ -462,9 +462,11 @@ fn s03_s04_s05_the_header_through_a_take() {
         ]
     );
     assert!(header_text(&mut nested).contains("Stop"));
-    // The 2 px `record` line under the header.
-    assert_eq!(pixel(&nested, &shot, 1000.0, 47.0), token("record"));
+    // The `record` line along the header's bottom edge, just above its
+    // kept hairline (S04: `record` at y 46, `border` at 47; the line
+    // covered the hairline until WP10's shot review).
     assert_eq!(pixel(&nested, &shot, 1000.0, 46.0), token("record"));
+    assert_eq!(pixel(&nested, &shot, 1000.0, 47.0), token("border"));
     assert_a11y(&mut nested);
 
     // S05: finalizing (the fake EOS waits 8 s).

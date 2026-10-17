@@ -2313,7 +2313,7 @@ As built (WP6, round 3):
   | Idle, export running | disabled | "Wait for the export to finish" |
   | `runtime.engine_stuck` | disabled | "The capture engine is stuck (GPU driver?); restart Qrec" |
   | Countdown | outlined `Cancel [R]` | "Cancel the countdown" + key |
-  | Starting, Recording | `■ Stop [R]`, 2 px `record` line under the header | "Stop recording" + key |
+  | Starting, Recording | `■ Stop [R]`, a `record` line along the header's bottom, its hairline kept under it (S04: y 46, `border` at 47) | "Stop recording" + key |
   | Finalizing | `Saving…` + spinner, disabled, line kept | "Take N is finalizing" |
 
 - Export slot: `Export…`, disabled on an empty timeline ("The timeline is
@@ -4800,7 +4800,8 @@ hang, `GLES2_HANG_MS`) and reports the others with what held the loop
 
 As built (WP10): `smoke_steps_1_to_10`, one window for all ten steps, with
 `QREC_GUI_PROBE=1`. Step 4 also checks that no headless host spawned and
-that the shot has the 2 px `record` line and Stop. The bin count is the
+that the shot has the `record` line at y 46 over the kept hairline at
+47, and Stop. The bin count is the
 toolbar's `tl-bin-count`. Step 6 waits for the window to settle after the
 pause (its own seek parks the playhead at the paused player's frame) and
 checks that the playhead is past 10 and within a frame of

@@ -20,9 +20,12 @@ headerbar.qrec-header {
   box-shadow: inset 0 -1px var(--qrec-border);
 }
 
-/* While a take is recorded: a 2 px `record` line along the bottom edge. */
+/* While a take is recorded: a `record` line along the bottom edge, the
+   header's hairline kept under it (S04, S04b, S05: `record` at y 46,
+   `border` at 47). GTK paints inset shadows in their order: the 2 px
+   `record` one first, the hairline over its last row. */
 headerbar.qrec-header.recording {
-  box-shadow: inset 0 -2px var(--qrec-record);
+  box-shadow: inset 0 -2px var(--qrec-record), inset 0 -1px var(--qrec-border);
 }
 
 headerbar.qrec-header > windowhandle > box {

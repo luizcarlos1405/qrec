@@ -15,7 +15,8 @@
 //! Everything it shows comes from `view::header`, recomputed on every
 //! snapshot and `LocalUi` change. Its buttons run their bindings through
 //! the key router (G§3.7), so a click does what the key does. While a take
-//! is recorded a 2 px `record` line runs under it (`.recording`).
+//! is recorded a `record` line runs along its bottom edge, just above its
+//! hairline (`.recording`).
 
 mod export_slot;
 mod mode_switch;

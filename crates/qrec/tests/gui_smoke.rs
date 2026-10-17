@@ -258,13 +258,26 @@ fn smoke_steps_1_to_10() {
     );
     nested.window(0).wait_idle();
     let shot = nested.screenshot("recording");
-    // REC: the 2 px `record` line under the header and Stop in it.
-    let line = device_px(&nested, [200.0, 46.0, 1200.0, 2.0]);
+    // REC: the `record` line along the header's bottom edge, just above
+    // its kept hairline (S04: `record` at y 46, `border` at 47), and Stop
+    // in it.
+    // Each 1 px row as the device row under its center (at 1.5 the rows
+    // spread over two device px).
+    let row = |y: f64| {
+        let [x, _, w, _] = device_px(&nested, [200.0, y, 1200.0, 1.0]);
+        [x, nested.opts.pixel_px(200.0, y).1, w, 1]
+    };
+    let line = row(46.0);
     let red = count_near(&shot, line, token_rgb("swamp-night", "record"), 2);
+    let hairline = row(47.0);
+    let border = count_near(&shot, hairline, token_rgb("swamp-night", "border"), 2);
     assert_eq!(
-        red,
-        (line[2] * line[3]) as usize,
-        "the record line under the header: {}",
+        (red, border),
+        (
+            (line[2] * line[3]) as usize,
+            (hairline[2] * hairline[3]) as usize
+        ),
+        "the record line over the header's hairline: {}",
         shot.display()
     );
     let header = nested.window(0).labels("region-header").join(" ");
