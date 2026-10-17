@@ -40,6 +40,7 @@ pub mod state;
 pub mod testkit;
 pub mod time;
 pub mod timeline;
+mod toml_text;
 pub mod ui_normalize;
 pub mod validate;
 pub mod view;
