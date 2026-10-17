@@ -160,6 +160,9 @@ fn wait_record_phase(nested: &Nested, project: &Path, want: &str) -> Value {
 /// A point inside the video row at window `x`.
 const VIDEO_Y: f64 = 758.0;
 
+/// S11's drag in the video row (the frame's tooltip implies it).
+const S11_Y: f64 = 766.0;
+
 // ------------------------------------------------------------- fit (S07)
 
 /// S07: fit zoom, nothing selected, the clip tooltip on c1b6; labels
@@ -219,7 +222,8 @@ fn s07_fit() {
     let shot = shoot(&nested, "fit", Some("S07-timeline-fit.png"));
     // WP10's shot review: the ruler's bottom hairline across the time area
     // and the corner (S07: `border` at y 719), the corner's right hairline
-    // its whole height (it stopped 5 px short).
+    // its whole height (it stopped 5 px short), and C33's clip variant 80
+    // px tall at (452, 792), 8 px under the pointer (it was 76).
     let border = gui_support::token_rgb("swamp-night", "border");
     let px = |x: f64, y: f64| {
         let (dx, dy) = nested.opts.pixel_px(x, y);
@@ -245,7 +249,41 @@ fn s07_fit() {
         starts.len() == want.len() && starts.iter().zip(want).all(|(x, w)| (x - w).abs() <= 2.0),
         "the toolbar's caps from x {starts:?}, for {want:?}"
     );
+    assert_tooltip(&mut nested, (452.0, 792.0), 80.0);
+    // Its single-letter key caps are small ones, 16 px: S07's `keycap`
+    // fills are 14×13 inside the stroke and the 2 px bottom edge (with the
+    // hints' 12 px legends and a small cap's 14 px line they were 15×16).
+    // A fractional scale blends a device px of each edge.
+    let tolerance = if nested.opts.scale.fract() == 0.0 {
+        0.5
+    } else {
+        1.0
+    };
+    let caps: Vec<[f64; 4]> =
+        gui_support::keycap_fills(&nested.opts, &shot, [452.0, 792.0, 360.0, 80.0])
+            .into_iter()
+            .filter(|fill| fill[2] >= 10.0)
+            .collect();
+    assert!(
+        caps.len() == 2
+            && caps.iter().all(|fill| {
+                (fill[2] - 14.0).abs() <= tolerance && (fill[3] - 13.0).abs() <= tolerance
+            }),
+        "the tooltip's single-letter caps: {caps:?}"
+    );
     assert_clean(&mut nested);
+}
+
+/// The timeline's tooltip is at `at` (window px, its stroke's outer edge)
+/// and `tall` px tall.
+fn assert_tooltip(nested: &mut Nested, at: (f64, f64), tall: f64) {
+    let tip = nested.window(0).regions(&["timeline-tooltip"])["timeline-tooltip"];
+    assert!(
+        (tip[0] - at.0).abs() <= 0.5
+            && (tip[1] - at.1).abs() <= 0.5
+            && (tip[3] - tall).abs() <= 0.5,
+        "the tooltip at {at:?}, {tall} tall: {tip:?}"
+    );
 }
 
 /// Polls the labels under `name` until one equals `want`.
@@ -503,6 +541,10 @@ fn trimming(case: &str, opts: Options) {
     nested.window(0).wait_idle();
     let tip = wait_for_labels(&mut nested, "timeline-tooltip", "00:00:01:11");
     assert!(tip.contains(&"In".to_owned()), "{tip:?}");
+    // WP10's shot review: C33's text variant as S10 draws it, 8 px right of
+    // the trimmed edge and under the pointer, 46 px for its two lines (it
+    // was 50, at the edge).
+    assert_tooltip(&mut nested, (445.0, 766.0), 46.0);
     shoot(&nested, "trimming", Some("S10-trimming.png"));
     nested.keys(&["-k", "Escape"]);
     wait_drag(&mut nested, Value::Null);
@@ -534,8 +576,10 @@ fn s11_drag_move() {
     let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
     open(&mut nested, &project, Launch::a11y());
     let before = clip_rows(&nested, &project);
-    // c8a1 is at window x 233.2 → 297.1 at fit.
-    press_and_drag(&mut nested, (265.0, VIDEO_Y), 405.0, 10);
+    // c8a1 is at window x 233.2 → 297.1 at fit. Lower in the video row
+    // than the other drags: S11's tooltip (at (413, 774), 8 px right of and
+    // under the pointer) puts the pointer at y 766.
+    press_and_drag(&mut nested, (265.0, S11_Y), 405.0, 10);
     wait_drag(&mut nested, json!("move"));
     nested.window(0).wait_idle();
     wait_for_labels(
@@ -543,6 +587,9 @@ fn s11_drag_move() {
         "timeline-tooltip",
         "Move after c1b6 · slot 7 of 10",
     );
+    // WP10's shot review: at (413, 774), 46 px tall, as S11 draws it (it
+    // was 52 px, at the pointer).
+    assert_tooltip(&mut nested, (413.0, 774.0), 46.0);
     shoot(&nested, "drag-move", Some("S11-drag-move.png"));
     nested.keys(&["-k", "Escape"]);
     wait_drag(&mut nested, Value::Null);

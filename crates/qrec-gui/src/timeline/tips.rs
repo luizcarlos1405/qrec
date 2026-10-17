@@ -11,6 +11,11 @@ use qrec_core::view::timeline::ClipTooltip;
 
 use crate::widgets::keycap::{self, CapSize, CapVariant};
 
+/// How far right of a drag's pointer (or a trim's edge) its tooltip starts:
+/// S10 and S11 draw theirs 8 px right of where the drag is (the hand
+/// pointer's width; WP10's shot review), the hover tooltip at the pointer.
+pub const DRAG_DX: f64 = 8.0;
+
 /// A run of a tooltip line in one style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ink {
@@ -54,9 +59,12 @@ impl Tips {
         }
     }
 
-    /// Shows lines of styled runs 8 px under (`x`, `y`), layer px.
+    /// Shows lines of styled runs by a drag at (`x`, `y`), layer px: 8 px
+    /// under it and [`DRAG_DX`] right of it.
     pub fn show(&self, lines: &[Vec<(String, Ink)>], (x, y): (f64, f64)) {
         self.clear();
+        // C33's text variant (S10, S11): its own insets (timeline.css).
+        self.tip.remove_css_class("clip");
         for line in lines {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
             for (text, ink) in line {
@@ -64,13 +72,15 @@ impl Tips {
             }
             self.tip.append(&row);
         }
-        self.place(x, y);
+        self.place(x + DRAG_DX, y);
     }
 
     /// The clip tooltip (S06, S07): "Take 5 · c2d1", the times in mono, the
     /// keys.
     pub fn show_clip(&self, tip: &ClipTooltip, (x, y): (f64, f64)) {
         self.clear();
+        // C33's clip variant (S06, S07): its own insets (timeline.css).
+        self.tip.add_css_class("clip");
         self.tip.append(&run(&tip.title, Ink::Strong));
         self.tip.append(&run(&tip.times, Ink::Mono));
         // The keys as the S06 and S07 frames draw them: no separators.
@@ -116,6 +126,9 @@ impl Tips {
 fn run(text: &str, ink: Ink) -> gtk::Label {
     let label = gtk::Label::new(Some(text));
     label.set_xalign(0.0);
+    // At its line's top (the line is 18 px, `timeline.css`): a 16 px mono
+    // run centered in it sat a pixel low (S11's "Starts at" line).
+    label.set_valign(gtk::Align::Start);
     match ink {
         Ink::Plain => {}
         Ink::Strong => label.add_css_class("tl-tip-strong"),

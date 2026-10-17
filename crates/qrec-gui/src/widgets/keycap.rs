@@ -168,6 +168,10 @@ impl KeyCap {
 pub fn chord(legends: &[String], size: CapSize, variant: CapVariant) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     row.add_css_class("keycaps");
+    // The caps keep their own height, centered in a taller line: a
+    // tooltip's 18 px line stretched its 16 px caps to 18 (S06, S07; WP10's
+    // shot review).
+    row.set_valign(gtk::Align::Center);
     for legend in legends {
         let cap = KeyCap::new(legend);
         cap.set_size(size);

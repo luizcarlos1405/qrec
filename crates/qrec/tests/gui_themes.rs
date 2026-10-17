@@ -520,7 +520,8 @@ fn s06_program_with_selection_in_every_theme() {
             &gui_support::MERGED_REGIONS,
             opts.scale,
         );
-        nested.pointer().move_to(700.0, 758.0);
+        // Where S06's tooltip puts the pointer (gui_panel's S06).
+        nested.pointer().move_to(692.0, 756.0);
         gui_support::poll(Duration::from_secs(10), "c2d1's tooltip", || {
             let tip = nested.window(0).labels("timeline-tooltip");
             tip.iter().any(|l| l == "Take 5 · c2d1").then_some(())

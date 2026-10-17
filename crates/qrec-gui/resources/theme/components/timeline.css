@@ -230,16 +230,31 @@ timeline-surface.tl-canvas:focus:focus-visible {
 /* ------------------------------------------------------ C33 clip tooltip */
 
 /* Like GTK's tooltips (common.css): `raised`, `md` radius, e1, a 1 px
-   `border`, `body-sm`. */
+   `border` drawn inside (as pen draws it), `body-sm`. The text variant
+   (S10, S11): 46 px for two lines, 20 px apart, the first line's ink 8 px
+   under its top edge. */
 .qrec-tl-tooltip {
-  padding: 6px 8px;
+  padding: 5px 8px 3px;
   border-radius: 6px;
   background-color: var(--qrec-raised);
   color: var(--qrec-text);
-  box-shadow: 0 0 0 1px var(--qrec-border), 0 2px 6px var(--qrec-shadow-e1);
+  box-shadow: inset 0 0 0 1px var(--qrec-border), 0 2px 6px var(--qrec-shadow-e1);
   font-size: 13px;
   line-height: 18px;
-  border-spacing: 4px;
+  border-spacing: 2px;
+}
+
+/* Its lines are 18 px, a mono-only one too (S10's "Δ −29 f"). */
+.qrec-tl-tooltip > box {
+  min-height: 18px;
+}
+
+/* The clip variant (S06, S07): 80 px for its three rows, the title's ink
+   13 px under its top edge, the times' 24 px under the title's, the key
+   caps 21 px under those, 10 px in from the left, 12 past the times. */
+.qrec-tl-tooltip.clip {
+  padding: 10px 11px 7px 10px;
+  border-spacing: 6px;
 }
 
 .qrec-tl-tooltip .tl-tip-strong {
@@ -247,7 +262,7 @@ timeline-surface.tl-canvas:focus:focus-visible {
 }
 
 .qrec-tl-tooltip .tl-tip-keys {
-  margin-top: 2px;
+  margin-top: -1px;
   border-spacing: 10px;
 }
 
@@ -255,7 +270,9 @@ timeline-surface.tl-canvas:focus:focus-visible {
   border-spacing: 4px;
 }
 
-.qrec-tl-tooltip .tl-tip-keys label {
+/* The hints' labels, not the caps' legends (they keep the cap's type:
+   12 px legends made the caps 17×19 for the frames' 16×16). */
+.qrec-tl-tooltip .tl-tip-hint > label {
   font-size: 12px;
   line-height: 16px;
 }

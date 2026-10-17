@@ -537,8 +537,9 @@ fn program_at_scale(case: &str, scale: f64) {
     );
     // The pointer over c2d1 shows its tooltip, as S06 draws it and the
     // scale-1 case (gui_panel's) shoots it: the same logical point at every
-    // scale (the pointer moves in the output layout's logical px).
-    nested.pointer().move_to(700.0, 758.0);
+    // scale (the pointer moves in the output layout's logical px), where
+    // S06's tooltip puts it (692, 756).
+    nested.pointer().move_to(692.0, 756.0);
     gui_support::poll(Duration::from_secs(10), "c2d1's tooltip", || {
         let tip = nested.window(0).labels("timeline-tooltip");
         tip.iter().any(|l| l == "Take 5 · c2d1").then_some(())

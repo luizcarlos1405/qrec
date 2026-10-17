@@ -383,8 +383,9 @@ fn s06_the_take_layout_and_the_inspector() {
     );
     assert_clean(gui);
     // The pointer over c2d1 (the second take 5 clip, at fit) shows its
-    // tooltip, as S06 draws it.
-    nested.pointer().move_to(700.0, 758.0);
+    // tooltip, as S06 draws it: at (692, 764), 8 px under the pointer
+    // (BRIEF's tooltips), so the pointer is at (692, 756).
+    nested.pointer().move_to(692.0, 756.0);
     poll(Duration::from_secs(10), "c2d1's tooltip", || {
         let tip = nested.window(0).labels("timeline-tooltip");
         tip.iter().any(|l| l == "Take 5 · c2d1").then_some(())
