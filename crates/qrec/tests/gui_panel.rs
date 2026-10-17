@@ -796,6 +796,83 @@ fn a_rename_that_lands_nowhere_shows_the_name() {
     assert_clean(nested.window(0));
 }
 
+/// R43+R63: the rows a rebuild drops go (nothing a row's own callbacks
+/// hold keeps it alive, G§3.12 R11). A reorder, a removed track and its
+/// undo make the lists again, and only the rows shown live on; a rename
+/// open on a row that goes ends unsaved, and nothing panics.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn rebuilt_rows_go() {
+    let mut nested = Nested::start(AREA, "rows-go", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &ui(|_| {}));
+    open(&mut nested, &project, levels(DESIGN_LEVELS));
+    let alive = |nested: &mut Nested| {
+        let local = nested.window(0).local();
+        (
+            local["layerRowsAlive"].as_u64(),
+            local["audioRowsAlive"].as_u64(),
+        )
+    };
+    let settle = |nested: &mut Nested, want: (u64, u64), what: &str| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            nested.window(0).wait_idle();
+            let now = alive(nested);
+            if now == (Some(want.0), Some(want.1)) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{what}: {now:?} rows alive (layers, audio), {want:?} shown"
+            );
+            thread::sleep(Duration::from_millis(200));
+        }
+    };
+    settle(&mut nested, (2, 2), "the design rows");
+    // L1 to the top: the layer rows are made again.
+    cli_ok(
+        &nested,
+        &project,
+        &["scene", "layer", "order", "L1", "--to", "1"],
+    );
+    settle(&mut nested, (2, 2), "after a reorder");
+    // A2 removed, then back: the audio rows are made again twice.
+    cli_ok(&nested, &project, &["scene", "audio", "remove", "A2"]);
+    settle(&mut nested, (2, 1), "after a track's removal");
+    cli_ok(&nested, &project, &["undo"]);
+    settle(&mut nested, (2, 2), "after its undo");
+    // A rename open on L2 when a reorder makes the rows again.
+    let (x, y) = center(region(nested.window(0), "layer-menu-L2"));
+    nested.pointer().click(x, y);
+    nested.window(0).wait_idle();
+    let held = nested.keys_held(
+        &[
+            "-k", "Return", "-s", "300", "-M", "ctrl", "-k", "a", "-m", "ctrl", "Webcam",
+        ],
+        4000,
+    );
+    poll(Duration::from_secs(10), "Webcam typed in L2's name", || {
+        let fields = nested.window(0).entries("layer-row-L2");
+        (fields.get("layer-row-L2").map(String::as_str) == Some("Webcam")).then_some(())
+    });
+    cli_ok(
+        &nested,
+        &project,
+        &["scene", "layer", "order", "L2", "--to", "1"],
+    );
+    settle(&mut nested, (2, 2), "after a reorder mid-rename");
+    let fields = nested.window(0).entries("layer-row-L2");
+    assert!(
+        !fields.contains_key("layer-row-L2"),
+        "the rename ended: {fields:?}"
+    );
+    held.wait();
+    nested.window(0).wait_idle();
+    assert_eq!(layer(&nested, &project, None, "L2")["name"], "Face");
+    assert_has(&nested.window(0).labels("layer-row-L2"), &["Face"]);
+    assert_clean(nested.window(0));
+}
+
 // ------------------------------------------------------------------ S13
 
 /// L2's box on the 1:2 Live preview at rest (BRIEF §3.1: (1500, 760, 384,

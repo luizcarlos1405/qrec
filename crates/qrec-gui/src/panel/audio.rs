@@ -19,6 +19,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use gtk::glib;
 use gtk::prelude::*;
 use qrec_core::ctx::AudioDeviceInfo;
 use qrec_core::protocol::command::{AudioPatch, SceneTarget};
@@ -31,6 +32,23 @@ use crate::Ctx;
 use crate::guarded;
 use crate::widgets::meter::Meter;
 use crate::widgets::numeric::{self, NumericField};
+
+thread_local! {
+    /// Each audio row made so far, weakly; test mode only: what
+    /// [`rows_alive`] counts.
+    static ROWS: RefCell<Vec<glib::WeakRef<gtk::Box>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// How many audio rows are alive (test mode; `testctl`'s `local`,
+/// `audioRowsAlive`): the rows shown, once those a rebuild dropped are
+/// gone (G§3.12 R11).
+pub fn rows_alive() -> usize {
+    ROWS.with(|rows| {
+        let mut rows = rows.borrow_mut();
+        rows.retain(|row| row.upgrade().is_some());
+        rows.len()
+    })
+}
 
 /// The audio rows. Cheap to clone; main thread only.
 #[derive(Clone)]
@@ -286,6 +304,9 @@ fn wire(ctx: &Ctx, view: &Rc<AudioRowView>) {
 impl AudioRowView {
     fn new(ctx: &Ctx, track: &TrackId) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        if crate::testctl::mode().on {
+            ROWS.with(|rows| rows.borrow_mut().push(root.downgrade()));
+        }
         root.add_css_class("audio-row");
         root.set_widget_name(&format!("audio-row-{track}"));
         // Line 1.

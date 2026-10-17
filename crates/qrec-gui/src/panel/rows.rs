@@ -20,8 +20,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use gtk::graphene;
 use gtk::prelude::*;
+use gtk::{glib, graphene};
 use qrec_core::protocol::command::{LayerPatch, SceneTarget};
 use qrec_core::view::DragKind;
 use qrec_core::view::panel::{self, LayerRow, NO_LAYERS, RenameOutcome};
@@ -33,6 +33,24 @@ use crate::guarded;
 
 /// How far a press moves before it is a reorder drag.
 const DRAG_THRESHOLD: f64 = 4.0;
+
+thread_local! {
+    /// Each layer row made so far, weakly; test mode only: what
+    /// [`rows_alive`] counts.
+    static ROWS: RefCell<Vec<glib::WeakRef<gtk::ListBoxRow>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// How many layer rows are alive (test mode; `testctl`'s `local`,
+/// `layerRowsAlive`): the rows shown, once those a rebuild dropped are
+/// gone. A row a callback of its own holds strongly would outlive its
+/// rebuild (G§3.12 R11).
+pub fn rows_alive() -> usize {
+    ROWS.with(|rows| {
+        let mut rows = rows.borrow_mut();
+        rows.retain(|row| row.upgrade().is_some());
+        rows.len()
+    })
+}
 
 /// The layer rows. Cheap to clone; main thread only.
 #[derive(Clone)]
@@ -259,8 +277,10 @@ impl LayerList {
         // dropped because its scene went saves nothing).
         let store = ctx.store.clone();
         let id = layer.clone();
-        let source = view.source.clone();
-        let row = view.row.clone();
+        // The row and its source line weakly: the name is inside the row, so
+        // a strong hold would keep the row alive past its rebuild (R11).
+        let source = view.source.downgrade();
+        let row = view.row.downgrade();
         let dropping = Rc::clone(&view.dropping);
         view.name.connect_notify_local(
             Some("editing"),
@@ -268,10 +288,14 @@ impl LayerList {
                 if label.is_editing() {
                     return;
                 }
-                source.set_visible(true);
+                if let Some(source) = source.upgrade() {
+                    source.set_visible(true);
+                }
                 // The keyboard comes back to the row (the name takes no
                 // focus outside an edit).
-                if label.has_focus() || label.focus_child().is_some() {
+                if (label.has_focus() || label.focus_child().is_some())
+                    && let Some(row) = row.upgrade()
+                {
                     row.grab_focus();
                 }
                 label.set_can_target(false);
@@ -307,8 +331,12 @@ impl LayerList {
         drag.set_button(1);
         let weak = Rc::downgrade(&self.inner);
         let id = layer.clone();
-        let row = view.row.clone();
-        drag.connect_drag_begin(guarded!("panel: row drag", move |_, _x, y| {
+        // The row from the gesture: holding it would be a cycle (the row
+        // owns the gesture, R11).
+        drag.connect_drag_begin(guarded!("panel: row drag", move |gesture, _x, y| {
+            let Some(row) = gesture.widget().and_downcast::<gtk::ListBoxRow>() else {
+                return;
+            };
             if let Some(inner) = weak.upgrade() {
                 LayerList { inner }.press(&id, &row, y);
             }
@@ -636,6 +664,9 @@ fn row_button(icon: &str) -> (gtk::Button, gtk::Image) {
 impl RowView {
     fn new(ctx: &Ctx, layer: &LayerId) -> Self {
         let row = gtk::ListBoxRow::new();
+        if crate::testctl::mode().on {
+            ROWS.with(|rows| rows.borrow_mut().push(row.downgrade()));
+        }
         row.add_css_class("layer-row");
         row.add_css_class("r1");
         row.add_css_class("row-44");
