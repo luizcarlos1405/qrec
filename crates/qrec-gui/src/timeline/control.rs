@@ -15,7 +15,13 @@
 
 use std::time::Duration;
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use qrec_core::ctx::FileFact;
+use qrec_core::model::AutocutSettings;
 use qrec_core::protocol::command::{Nullable, SeekTarget, SelectOp, UiPatch};
+use qrec_core::protocol::event::Interval;
+use qrec_core::state::{RecordPhase, SilenceKey};
 use qrec_core::view::DragKind;
 use qrec_core::view::notices::Notice;
 use qrec_core::view::timeline::{
@@ -33,6 +39,9 @@ pub const SCRUB_EVERY: Duration = Duration::from_millis(100);
 pub const ZOOM_EASE: Duration = Duration::from_millis(200);
 /// A move drag's neighbours close the gap over this long (G§4.5).
 pub const GAP_EASE: Duration = Duration::from_millis(120);
+/// The ghost grows on the frame clock at most this far past the last
+/// record clock (G§4.5).
+pub const GHOST_LEAD: Duration = Duration::from_millis(300);
 
 /// What the timeline's logic asks of the window (the GTK glue; a recorder
 /// in tests).
@@ -49,7 +58,9 @@ pub trait Sink {
     fn scrub(&mut self, frame: Frame);
     /// A toast (D-34).
     fn notice(&mut self, notice: Notice);
-    /// The lanes scroll vertically by `dy` px (D-25, a middle drag).
+    /// The lanes follow a middle drag (D-25, D-39): their offset is the
+    /// press's minus `dy`, the pointer's travel since the press in the
+    /// lanes' window (100 % px; up is negative).
     fn pan_lanes(&mut self, dy: f64);
 }
 
@@ -157,6 +168,11 @@ impl ViewModel {
         }
     }
 
+    /// Nothing eases (reduced motion, test mode).
+    pub fn instant(&self) -> bool {
+        self.instant
+    }
+
     /// Reduced motion changed.
     pub fn set_instant(&mut self, instant: bool) {
         self.instant = instant;
@@ -236,9 +252,14 @@ impl ViewModel {
                 let changed = !ui.same(&prev);
                 let ours = self.sent.is_some_and(|s| s.same(&ui));
                 if changed && !ours {
-                    // Someone else's (`\`, the CLI): theirs wins.
+                    // Someone else's (the CLI): theirs wins.
                     self.target = Some(ui);
                     self.flush_at = None;
+                }
+                if ours {
+                    // Its echo came: a later snapshot back at this value is
+                    // someone else's.
+                    self.sent = None;
                 }
             }
         }
@@ -339,6 +360,26 @@ impl ViewModel {
         }
     }
 
+    /// `\` and the toolbar's Fit (the timeline's `zoom.fit`, G§3.8 step
+    /// 10): fit at once, easing, in place of a local zoom still waiting;
+    /// the `SetUi` clears the state's zoom unless it is at fit. `false`
+    /// without a view (an empty timeline).
+    pub fn zoom_fit(&mut self, now: Duration) -> bool {
+        let (Some(view), Some(fit)) = (self.target_view(), self.fit()) else {
+            return false;
+        };
+        self.set_view(
+            Viewport {
+                px_per_frame: fit,
+                scroll_px: 0.0,
+                ..view
+            },
+            now,
+            true,
+        );
+        true
+    }
+
     /// `Ctrl`+wheel: ×1.25 per notch at `anchor_x`.
     pub fn zoom_wheel(&mut self, notches: f64, anchor_x: f64, now: Duration) {
         let (Some(view), Some(fit)) = (self.target_view(), self.fit()) else {
@@ -384,6 +425,21 @@ impl ViewModel {
         };
         let scroll = view.scroll_for_wheel(dx, dy, self.total);
         self.scroll_to(scroll, now);
+    }
+
+    /// The frames shown grew on the frame clock: a recording's ghost
+    /// between record clocks (G§4.5). The view follows at once, never
+    /// easing (an ease in flight lands on it), so at fit the ghost's end
+    /// and the playhead parked there stay inside the 8 px inset.
+    pub fn follow_ghost(&mut self, total: Frame) {
+        if total <= self.total {
+            return;
+        }
+        self.total = total;
+        let to = self.target_view();
+        if let (Some(anim), Some(to)) = (self.anim.as_mut(), to) {
+            anim.to = to;
+        }
     }
 
     /// Scrolls to `scroll` px (a pan, auto-page).
@@ -452,6 +508,11 @@ pub struct Cx<'a> {
     /// The playhead as drawn (snapping, D-40).
     pub playhead: Frame,
     pub now: Duration,
+    /// The rows' top in the lanes' scrolled window as the canvas is laid
+    /// out for this event: 0, or above it by the lanes' scroll (D-25). An
+    /// event's y plus it is where the pointer is in the window, which a
+    /// vertical pan doesn't move.
+    pub rows_top: f64,
 }
 
 impl Cx<'_> {
@@ -495,13 +556,10 @@ pub enum Drag {
         last_seek: Duration,
         seeked: Frame,
     },
-    /// Panning with the middle button (D-39).
-    Pan {
-        x0: f64,
-        y0: f64,
-        scroll0: f64,
-        dy: f64,
-    },
+    /// Panning with the middle button (D-39): from the press's x and its
+    /// y in the lanes' window (`Cx::rows_top`), which the pan doesn't
+    /// move, and the scroll then.
+    Pan { x0: f64, y0: f64, scroll0: f64 },
 }
 
 /// The timeline's gestures (module docs).
@@ -553,9 +611,8 @@ impl Gestures {
             };
             self.drag = Some(Drag::Pan {
                 x0: x,
-                y0: y,
+                y0: y + cx.rows_top,
                 scroll0: shown.scroll_px,
-                dy: 0.0,
             });
             return true;
         }
@@ -721,19 +778,11 @@ impl Gestures {
                     *last_seek = cx.now;
                 }
             }
-            Some(Drag::Pan {
-                x0,
-                y0,
-                scroll0,
-                dy,
-            }) => {
+            Some(Drag::Pan { x0, y0, scroll0 }) => {
                 view.scroll_to(*scroll0 - (x - *x0), cx.now);
-                let total_dy = y - *y0;
-                let step = total_dy - *dy;
-                *dy = total_dy;
-                if step.abs() > f64::EPSILON {
-                    sink.pan_lanes(-step);
-                }
+                // Absolute, in the lanes' window: the canvas moves with the
+                // scroll the pan sets, so its own y would feed back.
+                sink.pan_lanes(y + cx.rows_top - *y0);
             }
         }
     }
@@ -819,13 +868,17 @@ impl Gestures {
         }
     }
 
-    /// A snapshot mid-drag: a drag whose clip is gone is cancelled.
-    pub fn on_state(&mut self, state: &State, sink: &mut dyn Sink) {
+    /// A snapshot mid-drag: a drag whose clip is gone is cancelled, and a
+    /// scrub or a pan once the timeline has no view (`has_view`: it went
+    /// empty, the ruler and the canvas with it, so their release never
+    /// comes).
+    pub fn on_state(&mut self, state: &State, has_view: bool, sink: &mut dyn Sink) {
         let gone = |id: &ClipId| state.project.clip(id).is_none();
         let cancel = match &self.drag {
             Some(Drag::Move { block, .. }) => block.iter().all(gone),
             Some(Drag::Trim { clip, .. }) | Some(Drag::Pending { clip, .. }) => gone(clip),
-            _ => false,
+            Some(Drag::Scrub { .. } | Drag::Pan { .. }) => !has_view,
+            None => false,
         };
         if cancel {
             self.decide_cancel(sink);
@@ -856,6 +909,315 @@ pub fn decide_drop(state: &State, view: &Viewport, take: &TakeId, x: f64) -> Opt
     }
     let slot = tl::drop_slot(view, &state.project.timeline.clips, x);
     Some(tl::drop_command(take, slot))
+}
+
+// ------------------------------------------------- the move drag's gap
+
+/// A move drag's other clips easing to their places (G§4.5: they close the
+/// gap in 120 ms `EASE_OUT_EXPO`; at once under reduced motion and in test
+/// mode). A clip's place is its start in timeline frames, so a zoom or a
+/// scroll during the drag moves the boxes, not the eases. An ease starts
+/// where the clip is drawn when its place moves, so a slot change in the
+/// middle of one never jumps.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GapEase {
+    /// Each clip's place the last preview gave (frames).
+    places: BTreeMap<ClipId, f64>,
+    /// The eases in flight: from where the clip was drawn, to its place
+    /// (frames), and when.
+    eases: BTreeMap<ClipId, (f64, f64, Duration)>,
+}
+
+impl GapEase {
+    /// A preview's `places` at `now` (each clip's start, frames). The
+    /// drag's first starts from `rest` (where they were before it). A clip
+    /// whose place moved eases from where it is drawn to there; `instant`:
+    /// it is there at once.
+    pub fn retarget(
+        &mut self,
+        places: &[(ClipId, f64)],
+        rest: impl FnOnce() -> Vec<(ClipId, f64)>,
+        now: Duration,
+        instant: bool,
+    ) {
+        if self.places.is_empty() {
+            self.places = rest().into_iter().collect();
+        }
+        for (clip, place) in places {
+            match self.places.get(clip) {
+                Some(old) if (old - place).abs() > 1e-9 => {
+                    let drawn = old + self.offset(clip, now);
+                    if instant {
+                        self.eases.remove(clip);
+                    } else {
+                        self.eases.insert(clip.clone(), (drawn, *place, now));
+                    }
+                }
+                // The same place: its ease, if any, goes on.
+                Some(_) => {}
+                None => {
+                    self.eases.remove(clip);
+                }
+            }
+        }
+        self.places = places.iter().cloned().collect();
+        let places = &self.places;
+        self.eases.retain(|clip, (_, _, at)| {
+            places.contains_key(clip) && now.saturating_sub(*at) < GAP_EASE
+        });
+    }
+
+    /// How far from its place `clip` is drawn at `now` (frames).
+    pub fn offset(&self, clip: &ClipId, now: Duration) -> f64 {
+        let Some(&(from, to, at)) = self.eases.get(clip) else {
+            return 0.0;
+        };
+        let t = now.saturating_sub(at).as_secs_f64() / GAP_EASE.as_secs_f64();
+        if t >= 1.0 {
+            0.0
+        } else {
+            (from - to) * (1.0 - EASE_OUT_EXPO.at(t))
+        }
+    }
+
+    /// `boxes` (in `view`) as drawn at `now`: each moved by what is left of
+    /// its ease.
+    pub fn ease(&self, boxes: &mut [ClipBox], view: &Viewport, now: Duration) {
+        for b in boxes {
+            b.x += self.offset(&b.clip, now) * view.px_per_frame;
+        }
+    }
+
+    /// An ease runs at `now`.
+    pub fn animating(&self, now: Duration) -> bool {
+        self.values()
+            .any(|(_, _, at)| now.saturating_sub(*at) < GAP_EASE)
+    }
+
+    /// The eases in flight: (from, to, when).
+    pub fn values(&self) -> impl Iterator<Item = &(f64, f64, Duration)> {
+        self.eases.values()
+    }
+
+    /// The drag ended (released or cancelled).
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Each box's clip and its start (frames) in `view`.
+pub fn box_places(boxes: &[ClipBox], view: &Viewport) -> Vec<(ClipId, f64)> {
+    boxes
+        .iter()
+        .map(|b| (b.clip.clone(), (b.x + view.scroll_px) / view.px_per_frame))
+        .collect()
+}
+
+// ------------------------------------------------------- the frame clock
+
+/// What moves on the timeline at a frame of its frame clock. The canvas
+/// re-renders only for what it draws itself (C16); the playing playhead
+/// and the snap flash are the overlay's (and the ruler's cell), drawn over
+/// the canvas's cached render node (C18).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TickFacts {
+    /// A zoom or scroll eases.
+    pub easing: bool,
+    /// A take counts down, records or saves (the ghost grows, the saving
+    /// stripes move); never under test mode's frozen clock.
+    pub recording: bool,
+    /// An autocut analysis runs (its clips' spinners turn); not frozen.
+    pub analyzing: bool,
+    /// The fit grew with the ghost this frame.
+    pub grew: bool,
+    /// The move drag's neighbours ease to their places.
+    pub gap_easing: bool,
+    /// A trim drag started: it snaps to the playhead.
+    pub trimming: bool,
+    /// The Program plays: the playhead moves.
+    pub playing: bool,
+    /// The snap guide flashes.
+    pub flash: bool,
+}
+
+impl TickFacts {
+    /// What `state` moves: a take recording, an analysis running (nothing
+    /// under the `frozen` clock).
+    pub fn of(state: &State, frozen: bool) -> Self {
+        Self {
+            recording: !frozen && !state.runtime.record.is_idle(),
+            analyzing: !frozen
+                && state.runtime.jobs.values().any(|j| {
+                    matches!(
+                        j.kind,
+                        qrec_core::state::JobKind::Autocut { dry_run: false, .. }
+                    )
+                }),
+            ..Self::default()
+        }
+    }
+
+    /// The canvas draws something new this frame.
+    pub fn canvas_moves(&self) -> bool {
+        self.easing
+            || self.recording
+            || self.analyzing
+            || self.grew
+            || self.gap_easing
+            || (self.trimming && self.playing)
+    }
+}
+
+// ------------------------------------------------------------- the ghost
+
+/// The record clock as last seen, for the ghost's growth between clocks.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GhostClock {
+    pub take: Option<TakeId>,
+    pub elapsed_ns: u64,
+    pub at: Duration,
+    /// Recording (it grows); finalizing keeps the last length.
+    pub running: bool,
+}
+
+impl GhostClock {
+    /// Follows a snapshot's record phase at `now`; `true` while it is the
+    /// take it followed before and records: the frame clock may have grown
+    /// its ghost past this clock.
+    pub fn follow(&mut self, record: &RecordPhase, now: Duration) -> bool {
+        let before = self.take.clone();
+        match record {
+            RecordPhase::Recording {
+                take, elapsed_ns, ..
+            } => {
+                if self.take.as_ref() != Some(take) || self.elapsed_ns != *elapsed_ns {
+                    *self = GhostClock {
+                        take: Some(take.clone()),
+                        elapsed_ns: *elapsed_ns,
+                        at: now,
+                        running: true,
+                    };
+                }
+            }
+            RecordPhase::Finalizing { take, .. } => {
+                if self.take.as_ref() == Some(take) {
+                    self.running = false;
+                } else {
+                    *self = GhostClock::default();
+                }
+            }
+            _ => *self = GhostClock::default(),
+        }
+        self.running && before.is_some() && before == self.take
+    }
+
+    /// The ghost's length at `now`: the last record clock, grown on the
+    /// frame clock for at most 300 ms; the clock's once it finalizes, and
+    /// when `frozen` (test mode: screenshots show the clock).
+    pub fn elapsed(&self, now: Duration, frozen: bool) -> u64 {
+        if !self.running || frozen {
+            return self.elapsed_ns;
+        }
+        let lead = now.saturating_sub(self.at).min(GHOST_LEAD);
+        self.elapsed_ns + lead.as_nanos() as u64
+    }
+}
+
+/// The level ring's readings are this far apart (20 Hz).
+pub const READING_MS: f64 = 50.0;
+
+/// The live waveform under a ghost `ghost_w` px wide whose take is
+/// `elapsed_ms` long (G§4.5), for `columns` (counted from its right edge
+/// leftward, as `tl::ghost_columns` gives them), in screen order: per column
+/// the loudest RMS among the level readings in its time (`history` oldest
+/// first, one per 50 ms, the newest at the right edge), drawn as the peak
+/// of a sine of that RMS (× √2), so a steady tone keeps its height when the
+/// take lands and its peaks are drawn. A column older than the readings
+/// reach is silent (0).
+pub fn ghost_amplitudes<T>(
+    history: &[T],
+    rms_db: impl Fn(&T) -> f32,
+    elapsed_ms: f64,
+    ghost_w: f64,
+    columns: std::ops::Range<usize>,
+) -> Vec<f32> {
+    let per_px_ms = if ghost_w > 0.0 {
+        elapsed_ms / ghost_w
+    } else {
+        READING_MS
+    };
+    let n = history.len() as f64;
+    columns
+        .rev()
+        .map(|c| {
+            // The readings in the column's time: from `b` (its left edge)
+            // to `a` (its right), as indices from the oldest.
+            let t1 = c as f64 * per_px_ms;
+            let t0 = t1 + per_px_ms;
+            let a = n - 1.0 - t1 / READING_MS;
+            let b = n - 1.0 - t0 / READING_MS;
+            if a < 0.0 {
+                return 0.0;
+            }
+            let (lo, hi) = (b.floor().max(0.0) as usize, a.ceil() as usize);
+            let hi = hi.min(history.len() - 1);
+            // The loudest first, one `powf` (dB to amplitude is monotone).
+            let db = history[lo..=hi]
+                .iter()
+                .map(&rms_db)
+                .fold(f32::NEG_INFINITY, f32::max);
+            (10f32.powf(db / 20.0) * std::f32::consts::SQRT_2).min(1.0)
+        })
+        .collect()
+}
+
+/// How many of the newest level readings [`ghost_amplitudes`] reads for
+/// `columns` (the oldest one's time, and one more).
+pub fn ghost_readings(elapsed_ms: f64, ghost_w: f64, columns: &std::ops::Range<usize>) -> usize {
+    let per_px_ms = if ghost_w > 0.0 {
+        elapsed_ms / ghost_w
+    } else {
+        READING_MS
+    };
+    let all = (elapsed_ms / READING_MS).ceil().max(0.0);
+    let oldest = (columns.end as f64 * per_px_ms / READING_MS).ceil() + 2.0;
+    all.min(oldest) as usize
+}
+
+/// The cached analyses to ask the preview cache for (G§3.11): each silence
+/// file's at the project's threshold and minimum silence, as (file, the
+/// `SilenceKey` its answer carries), unless that key was asked for or
+/// answered already.
+pub fn silence_requests(
+    files: &BTreeMap<String, FileFact>,
+    settings: &AutocutSettings,
+    asked: &BTreeSet<SilenceKey>,
+    cached: &BTreeMap<SilenceKey, Vec<Interval>>,
+) -> Vec<(String, SilenceKey)> {
+    let key = |f: &FileFact| {
+        SilenceKey::compute(
+            &f.path,
+            f.bytes,
+            f.mtime_ns,
+            settings.threshold_db,
+            settings.min_silence_ms,
+        )
+    };
+    files
+        .values()
+        .map(|f| (f.path.clone(), key(f)))
+        .filter(|(_, k)| !asked.contains(k) && !cached.contains_key(k))
+        .collect()
+}
+
+/// The height thumbnails are made at, in device px (G§3.11): the
+/// filmstrip's 72 px × the UI scale (the canvas paints scaled by it, D-46)
+/// × the window's scale factor, so a texture is drawn at its own size
+/// (72/90/108 at 100/125/150 % on a 1× output, twice that on a 2× one);
+/// at most 1080.
+pub fn thumb_px(ui_scale: f64, scale_factor: i32) -> u32 {
+    let device = ui_scale.max(1.0) * f64::from(scale_factor.max(1));
+    ((72.0 * device).ceil() as u32).min(1080)
 }
 
 /// The take a drag's string names: `qrec-take:<id>` (D-38).

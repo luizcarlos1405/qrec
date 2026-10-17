@@ -158,8 +158,9 @@ fn expected(scene: &Scene, id: &str, ctx: KeyContext) -> Vec<Call> {
         _ => {}
     }
     match action_for(id, &scene.state).expect("a known id") {
-        // D-33: the stage coalesces nudge bursts.
-        Action::Run(_) if NUDGE_BINDINGS.contains(&id) => vec![gui(id)],
+        // D-33: the stage coalesces nudge bursts; the timeline fits its
+        // own view (`zoom.fit`, step 10).
+        Action::Run(_) if NUDGE_BINDINGS.contains(&id) || id == "zoom.fit" => vec![gui(id)],
         Action::Run(cmd) => {
             let mut calls = Vec::new();
             let state = &scene.state;

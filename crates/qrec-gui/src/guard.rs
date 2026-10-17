@@ -9,7 +9,10 @@
 //!
 //! - Sources: [`idle`] (from any thread), [`idle_local_once`],
 //!   [`timeout_local`], [`timeout_local_once`], [`invoke`], [`tick`]. Only
-//!   this file calls GLib's own (a test greps the crate).
+//!   this file calls GLib's own (a test greps the crate). A [`Slot`] holds
+//!   one its owner stops or starts again: it empties itself however the
+//!   callback ends (an id kept past a caught panic is dead: a check of it
+//!   waits forever, and `SourceId::remove` panics on it).
 //! - Signal handlers and async callbacks: [`guarded!`](crate::guarded),
 //!   `button.connect_clicked(guarded!("what", move |_| …))` (a test greps
 //!   every `.connect_…(`).
@@ -234,6 +237,143 @@ pub fn tick<W: IsA<gtk::Widget>>(
     widget.add_tick_callback(move |w, clock| run(what, || f(w, clock)))
 }
 
+// ------------------------------------------------------------- slots
+
+/// Where an owner keeps a repeating source, a one-shot timer or a tick
+/// callback it starts through it ([`Slot::tick`], [`Slot::timeout`],
+/// [`Slot::timeout_once`]; each guarded like [`tick`] and the others):
+/// whatever ends the callback (it returned `Break` or fired, it panicked,
+/// it was removed, its widget went) empties the slot, so the owner sees
+/// whether one runs and starts it again when it needs one (a panic doesn't
+/// leave it holding a dead id, waiting forever), and [`Slot::stop`] never
+/// removes a source GLib already destroyed (`SourceId::remove` panics on
+/// one). Main thread only.
+#[derive(Default)]
+pub struct Slot {
+    inner: std::rc::Rc<SlotInner>,
+}
+
+#[derive(Default)]
+struct SlotInner {
+    /// The running callback's number; 0: none.
+    running: Cell<u64>,
+    /// The last number handed out.
+    started: Cell<u64>,
+    /// What stops the running one.
+    id: Cell<Option<SlotId>>,
+}
+
+enum SlotId {
+    Source(glib::SourceId),
+    Tick(gtk::TickCallbackId),
+}
+
+/// Moved into a slot's callback: dropped with it (GLib's or GTK's destroy
+/// notify, at the callback's end whatever ends it), it empties the slot
+/// unless the slot started another one meanwhile. It touches `Cell`s only:
+/// a destroy notify can run inside [`Slot::stop`].
+struct Ended {
+    slot: std::rc::Weak<SlotInner>,
+    number: u64,
+}
+
+impl Ended {
+    /// Keeps it in a closure that has nothing else to do with it.
+    fn keep(&self) {}
+}
+
+impl Drop for Ended {
+    fn drop(&mut self) {
+        if let Some(slot) = self.slot.upgrade()
+            && slot.running.get() == self.number
+        {
+            slot.running.set(0);
+            drop(slot.id.take());
+        }
+    }
+}
+
+impl Slot {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether its callback runs (is still to fire, for a one-shot).
+    pub fn is_running(&self) -> bool {
+        self.inner.running.get() != 0
+    }
+
+    /// Stops the running one, if any (never one already gone).
+    pub fn stop(&self) {
+        self.inner.running.set(0);
+        match self.inner.id.take() {
+            Some(SlotId::Source(id)) => id.remove(),
+            Some(SlotId::Tick(id)) => id.remove(),
+            None => {}
+        }
+    }
+
+    /// The sentinel of a new callback, which is now the running one.
+    fn start(&self) -> Ended {
+        self.stop();
+        let number = self.inner.started.get() + 1;
+        self.inner.started.set(number);
+        self.inner.running.set(number);
+        Ended {
+            slot: std::rc::Rc::downgrade(&self.inner),
+            number,
+        }
+    }
+
+    /// [`tick`] in place of the running one.
+    pub fn tick<W: IsA<gtk::Widget>>(
+        &self,
+        widget: &W,
+        what: &'static str,
+        f: impl Fn(&W, &gtk::gdk::FrameClock) -> glib::ControlFlow + 'static,
+    ) {
+        let ended = self.start();
+        let id = widget.add_tick_callback(move |w, clock| {
+            ended.keep();
+            run(what, || f(w, clock))
+        });
+        self.inner.id.set(Some(SlotId::Tick(id)));
+    }
+
+    /// [`timeout_local`] in place of the running one.
+    pub fn timeout(
+        &self,
+        interval: Duration,
+        what: &'static str,
+        mut f: impl FnMut() -> glib::ControlFlow + 'static,
+    ) {
+        let ended = self.start();
+        let id = glib::timeout_add_local(interval, move || {
+            ended.keep();
+            run(what, &mut f)
+        });
+        self.inner.id.set(Some(SlotId::Source(id)));
+    }
+
+    /// [`timeout_local_once`] in place of the running one; the slot is
+    /// empty while `f` runs (it may start the next one).
+    pub fn timeout_once(&self, interval: Duration, what: &'static str, f: impl FnOnce() + 'static) {
+        let ended = self.start();
+        let id = glib::timeout_add_local_once(interval, move || {
+            drop(ended);
+            run(what, f)
+        });
+        self.inner.id.set(Some(SlotId::Source(id)));
+    }
+}
+
+impl Drop for Slot {
+    /// Its owner went: so does its callback.
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -289,7 +429,9 @@ mod tests {
     }
 
     /// G§3.12: GLib's source functions are only called here, and every
-    /// signal connection and async callback goes through `guarded!`.
+    /// signal connection, async callback (GIO's: a call taking a
+    /// `Cancellable`) and animation target goes through `guarded!` (an
+    /// animation target's closure may be one `guard::run` call instead).
     #[test]
     fn every_callback_into_rust_is_guarded() {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -497,10 +639,89 @@ mod tests {
         None
     }
 
+    /// The marker of an animation target's callback (libadwaita calls it).
+    const ANIMATION_TARGET: &str = "CallbackAnimationTarget::new(";
+
+    /// Whether a call's last argument is a `guarded!(…)`.
+    fn is_guarded(last: &str) -> bool {
+        ["guarded!(", "crate::guarded!(", "$crate::guarded!("]
+            .iter()
+            .any(|g| last.starts_with(g))
+    }
+
+    /// Where the `)` closing the call whose `(` is just before `args` is.
+    fn close_of(args: &str) -> Option<usize> {
+        let mut depth = 1usize;
+        let mut chars = Literals::new(args);
+        while let Some((i, c)) = chars.next_code() {
+            match c {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// A closure whose whole body is one `guard::run` or `guard::catch`
+    /// call (`move |v| { guard::run("…", || …); }`): nothing in it runs
+    /// outside the guard.
+    fn runs_guarded(arg: &str) -> bool {
+        let arg = arg.strip_prefix("move").map_or(arg, str::trim_start);
+        let Some(params) = arg.strip_prefix('|') else {
+            return false;
+        };
+        let Some(end) = params.find('|') else {
+            return false;
+        };
+        let body = params[end + 1..].trim();
+        // A block's one statement, or the expression itself.
+        let body = match body.strip_prefix('{').and_then(|b| b.strip_suffix('}')) {
+            Some(inner) => inner.trim().trim_end_matches(';').trim_end(),
+            None => body,
+        };
+        let calls = [
+            "guard::run(",
+            "crate::guard::run(",
+            "guard::catch(",
+            "crate::guard::catch(",
+        ];
+        let Some(call) = calls.iter().find(|g| body.starts_with(**g)) else {
+            return false;
+        };
+        close_of(&body[call.len()..]).is_some_and(|i| call.len() + i + 1 == body.len())
+    }
+
+    /// An argument naming a `Cancellable` (`gio::Cancellable::NONE`,
+    /// `Some(&cancellable)`), not a closure.
+    fn names_a_cancellable(arg: &str) -> bool {
+        !arg.starts_with('|')
+            && !arg.starts_with("move |")
+            && !arg.starts_with("move|")
+            && (arg.contains("Cancellable") || arg.contains("cancellable"))
+    }
+
+    /// Whether the `(` at `open` in `code` is a call's: a name just before
+    /// it (a tuple or a pattern has none), not a `fn`'s parameters.
+    fn is_call(code: &str, open: usize) -> bool {
+        let before = &code[..open];
+        let name = before.trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_');
+        name.len() < before.len() && !name.trim_end().ends_with("fn")
+    }
+
     /// The unguarded callbacks in `code` (comments stripped): GLib's source
-    /// functions outside guard.rs, and every `.connect_…(`, `.launch(` and
-    /// `.open_containing_folder(` call whose last argument isn't a
-    /// `guarded!(…)` (a fn path, a variable, a closure of its own).
+    /// functions outside guard.rs, and every call whose callback isn't a
+    /// `guarded!(…)` (a fn path, a variable, a closure of its own): each
+    /// `.connect_…(`, `.launch(` and `.open_containing_folder(`, every call
+    /// that takes a `Cancellable` before its last argument (GIO's async
+    /// calls: `FileDialog::save`, `AlertDialog::choose`, any `*_async`), and
+    /// each `CallbackAnimationTarget::new(` (or its closure's body is a
+    /// `guard::run`).
     fn unguarded(file: &str, code: &str) -> Vec<String> {
         let code: String = code
             .lines()
@@ -516,11 +737,19 @@ mod tests {
                 }
             }
         }
-        for marker in [".connect_", ".launch(", ".open_containing_folder("] {
+        // The `(` of each call a marker checked (the async rule below skips
+        // them: one finding a call).
+        let mut checked = std::collections::BTreeSet::new();
+        for marker in [
+            ".connect_",
+            ".launch(",
+            ".open_containing_folder(",
+            ANIMATION_TARGET,
+        ] {
             for (at, _) in code.match_indices(marker) {
                 let rest = &code[at + marker.len()..];
                 // `.connect_name(`: skip the signal name.
-                let args = if marker == ".connect_" {
+                let (open, args) = if marker == ".connect_" {
                     let Some(open) = rest.find('(') else { continue };
                     if !rest[..open]
                         .chars()
@@ -528,10 +757,11 @@ mod tests {
                     {
                         continue;
                     }
-                    &rest[open + 1..]
+                    (at + marker.len() + open, &rest[open + 1..])
                 } else {
-                    rest
+                    (at + marker.len() - 1, rest)
                 };
+                checked.insert(open);
                 let args = call_args(args);
                 // `.connect_…()` without arguments is a method of ours that
                 // wires things up (a signal connection takes its callback).
@@ -539,9 +769,7 @@ mod tests {
                     continue;
                 }
                 let guarded = args.and_then(|a| a.last().copied()).is_some_and(|last| {
-                    ["guarded!(", "crate::guarded!(", "$crate::guarded!("]
-                        .iter()
-                        .any(|g| last.starts_with(g))
+                    is_guarded(last) || (marker == ANIMATION_TARGET && runs_guarded(last))
                 });
                 if !guarded {
                     found.push(format!(
@@ -549,6 +777,26 @@ mod tests {
                         line_of(at)
                     ));
                 }
+            }
+        }
+        // GIO's async calls: a Cancellable, then the callback GIO calls
+        // from its C frames (a sync call takes its Cancellable last).
+        let mut chars = Literals::new(&code);
+        while let Some((open, c)) = chars.next_code() {
+            if c != '(' || checked.contains(&open) || !is_call(&code, open) {
+                continue;
+            }
+            let Some(args) = call_args(&code[open + 1..]) else {
+                continue;
+            };
+            let Some((last, before)) = args.split_last() else {
+                continue;
+            };
+            if before.iter().any(|a| names_a_cancellable(a)) && !is_guarded(last) {
+                found.push(format!(
+                    "{file}:{}: a call taking a Cancellable without guarded!",
+                    line_of(open)
+                ));
             }
         }
         found
@@ -585,10 +833,37 @@ mod tests {
             "a.connect_clicked(|b| b.grab_focus());",
             "let h = move |_| go(); a.connect_clicked(h);",
             "a.connect_clicked(move |_| go(\"guarded!(\"));",
+            // GIO's async calls (a Cancellable before the callback), and an
+            // animation target's closure: libadwaita and GIO call them
+            // from their C frames (review R73).
+            "dialog.save(w.as_ref(), gtk::gio::Cancellable::NONE, move |r| f(r));",
+            "dialog.select_folder(Some(&w), Some(&cancellable), done);",
+            "file.load_bytes_async(gio::Cancellable::NONE, |r| f(r));",
+            "let t = adw::CallbackAnimationTarget::new(move |v| w.set_opacity(v));",
+            "let t = adw::CallbackAnimationTarget::new(move |v| { go(v); guard::run(\"x\", || ()); });",
+            "let t = adw::CallbackAnimationTarget::new(move |v| { guard::run(\"x\", || ()); go(v); });",
         ] {
             let code = format!("{unguarded_call}{after}");
             assert_eq!(unguarded("x.rs", &code).len(), 1, "{code}");
         }
+        // Guarded, or none of those: the crate's own `save`, `open` and
+        // `choose`, a sync GIO call (its Cancellable last), a Cancellable
+        // in a pattern or a fn's parameters.
+        let fine = "snapshot.save();\nctx.window.open(Layer::Modal, &view.root);\n\
+                    self.startup.choose(Choice::Quit);\n\
+                    dialog.save(w.as_ref(), gtk::gio::Cancellable::NONE, guarded!(\"save\", move |r| f(r)));\n\
+                    launcher.launch(Some(&w), gio::Cancellable::NONE, crate::guarded!(\"open\", move |r| f(r)));\n\
+                    let t = adw::CallbackAnimationTarget::new(guarded!(\"in\", move |v| w.set_opacity(v)));\n\
+                    let t = adw::CallbackAnimationTarget::new(move |v| {\n    guard::run(\"out\", || w.set_opacity(v));\n});\n\
+                    let t = adw::CallbackAnimationTarget::new(move |v| crate::guard::run(\"slide\", || s.set(v)));\n\
+                    let bytes = file.load_contents(gio::Cancellable::NONE);\nlet c = Some(&cancellable);\n\
+                    let (cancellable, done) = pair;\n\
+                    fn open_with(cancellable: &gio::Cancellable, done: impl FnOnce()) {}";
+        assert!(
+            unguarded("x.rs", fine).is_empty(),
+            "{:?}",
+            unguarded("x.rs", fine)
+        );
         // A test-only item above production code hides nothing below it.
         let file = "impl X {\n    #[cfg(test)]\n    fn helper(&self) -> u32 { 1 }\n}\n\
                     fn real(g: &gtk::GestureClick) { g.connect_pressed(move |_, _, _, _| go()); }\n\

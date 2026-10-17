@@ -5,8 +5,21 @@
 //!   5s, 10s, 15s, 30s, 1min, 2min, 5min, 10min, 15min, 30min, 1h that is
 //!   at least 90 px wide; L picks the major and minor ticks ([`tick_steps`]).
 //!   Minor ticks closer than 6 px are hidden.
-//! - Labels are `HH:MM:SS:FF` 4 px right of their tick; one whose tick is
-//!   left of the view still shows its visible part (clipped, never dropped).
+//! - Labels are `HH:MM:SS:FF` 4 px right of their tick and show while
+//!   their tick shows: cut at the right edge, dropped at the left (S07, S08,
+//!   S12; G§4.5). A tick left of the view never has a label:
+//!
+//!   ```
+//!   use qrec_core::Fps;
+//!   use qrec_core::view::ruler::{self, TickKind};
+//!   use qrec_core::view::timeline::Viewport;
+//!
+//!   // S08: 48 px/s from 00:01:05:00; 00:01:04:00's major is 48 px left.
+//!   let view = Viewport { width: 1040.0, px_per_frame: 1.6, scroll_px: 1950.0 * 1.6, lanes_scroll_px: 0.0 };
+//!   let ticks = ruler::ticks(&view, Fps::new(30, 1), 7391);
+//!   assert!(ticks.iter().any(|t| t.x < 0.0 && t.kind == TickKind::Major));
+//!   assert!(ticks.iter().filter(|t| t.x < 0.0).all(|t| t.label.is_none()));
+//!   ```
 //! - Frame level (≥ 24 px per frame): a tick per frame with its `FF`
 //!   centered in the cell, and at each second a tall tick with the full
 //!   timecode; the playhead's cell gets a band ([`current_cell`]).
@@ -24,8 +37,10 @@ use crate::view::timeline::Viewport;
 pub const LABEL_MIN_PX: f64 = 90.0;
 /// Minor ticks closer than this are hidden.
 pub const MINOR_MIN_PX: f64 = 6.0;
-/// How far left of the view a label's tick may be and still show (a label
-/// is about 77 px of `mono-xs`).
+/// How far left of the view ticks are still listed, unlabeled: nothing it
+/// adds shows (a label left of the view is dropped, and the frame cell the
+/// left edge cuts is listed anyway: the first frame is the floor of the
+/// time at the edge).
 pub const LABEL_REACH_PX: f64 = 84.0;
 
 /// How far apart labels are: the smallest of 1f, 2f, 5f, 10f, 15f, 1s,
@@ -91,14 +106,18 @@ pub fn label_interval(px_per_frame: f64, fps: Fps) -> LabelInterval {
 /// the interval as the frames do: S12 (10 s) has a 5 px tick at 5 s and no
 /// 1 s ticks; S04, S05 and S05b (1 min) have 5 px ticks every 10 s and none
 /// taller at 30 s.
+///
+/// The 1 s and 2 s intervals' frame minors divide the nominal second
+/// ([`second_minor`]): 5 f and 10 f at 30, 50 and 60 fps, 4 f and 8 f at
+/// 24, 5 f at 25.
 pub fn tick_steps(interval: LabelInterval, fps: Fps) -> (Frame, Option<Frame>) {
     use LabelInterval::*;
     let s = |n: u32| Seconds(n).frames(fps);
     let m = |n: u32| Minutes(n).frames(fps);
     match interval {
         Frames(n) => (Frame::from(n), Some(1)),
-        Seconds(1) => (s(1), Some(5)),
-        Seconds(2) => (s(1), Some(10)),
+        Seconds(1) => (s(1), Some(second_minor(fps, 5))),
+        Seconds(2) => (s(1), Some(second_minor(fps, 10))),
         Seconds(5) => (s(1), None),
         Seconds(n @ (10 | 15)) => (s(n), Some(s(5))),
         Seconds(_) => (s(30), Some(s(10))),
@@ -106,6 +125,25 @@ pub fn tick_steps(interval: LabelInterval, fps: Fps) -> (Frame, Option<Frame>) {
         Minutes(2) | Minutes(5) => (m(1), Some(s(30))),
         Minutes(_) | Hours(_) => (m(5), Some(m(1))),
     }
+}
+
+/// A frame minor of at most `most` frames that splits the nominal second
+/// evenly (its largest divisor up to `most`), so the minors land on each
+/// second's major: 5 f in a 30 f second, 4 f in a 24 f one, 1 f in a 13 f
+/// one (12.5 fps).
+pub fn second_minor(fps: Fps, most: Frame) -> Frame {
+    let second = Frame::from(fps.nominal().max(1));
+    (1..=most.min(second))
+        .rev()
+        .find(|m| second.is_multiple_of(*m))
+        .unwrap_or(1)
+}
+
+fn gcd(mut a: Frame, mut b: Frame) -> Frame {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
 }
 
 /// What a tick is.
@@ -136,11 +174,12 @@ pub struct Tick {
     pub cell: Option<String>,
 }
 
-/// The ticks visible in `viewport`, from a little left of it (the frame
-/// cells cut by its left edge). A tick left of the view has no label: the
-/// frames show a label while its tick shows, cut at the right edge, never
-/// at the left (S07, S08, S12). `total` is the timeline's length; the ruler
-/// runs on past it to the view's edge.
+/// The ticks visible in `viewport` (the frame cell its left edge cuts
+/// included), and a few unlabeled ones left of it ([`LABEL_REACH_PX`]). A
+/// tick left of the view has no label: the frames show a label while its
+/// tick shows, cut at the right edge, never at the left (S07, S08, S12).
+/// `total` is the timeline's length; the ruler runs on past it to the
+/// view's edge.
 pub fn ticks(viewport: &Viewport, fps: Fps, total: Frame) -> Vec<Tick> {
     let _ = total;
     let ppf = viewport.px_per_frame;
@@ -172,23 +211,28 @@ pub fn ticks(viewport: &Viewport, fps: Fps, total: Frame) -> Vec<Tick> {
     let interval = label_interval(ppf, fps);
     let label_every = interval.frames(fps);
     let (major, minor) = tick_steps(interval, fps);
-    let step = minor
-        .filter(|m| *m as f64 * ppf >= MINOR_MIN_PX)
-        .unwrap_or(major);
+    let minor = minor.filter(|m| *m as f64 * ppf >= MINOR_MIN_PX);
+    // Every major and every shown minor, whether or not one divides the
+    // other: stepping by their gcd visits both grids (a label's frame is a
+    // major's).
+    let step = minor.map_or(major, |m| gcd(major, m)).max(1);
     let mut f = first.div_ceil(step) * step;
     while f <= last {
-        let is_major = f % major == 0;
-        let x = viewport.x_of_frame(f);
-        out.push(Tick {
-            x,
-            kind: if is_major {
-                TickKind::Major
-            } else {
-                TickKind::Minor
-            },
-            label: (f % label_every == 0 && x >= 0.0).then(|| format::timecode(f, fps)),
-            cell: None,
-        });
+        let is_major = f.is_multiple_of(major);
+        if is_major || minor.is_some_and(|m| f.is_multiple_of(m)) {
+            let x = viewport.x_of_frame(f);
+            out.push(Tick {
+                x,
+                kind: if is_major {
+                    TickKind::Major
+                } else {
+                    TickKind::Minor
+                },
+                label: (f.is_multiple_of(label_every) && x >= 0.0)
+                    .then(|| format::timecode(f, fps)),
+                cell: None,
+            });
+        }
         f += step;
     }
     out
@@ -413,5 +457,85 @@ mod tests {
 
     fn ticks_of(view: &Viewport) -> Vec<Tick> {
         ticks(view, fps30(), 0)
+    }
+
+    /// 24 fps at 4 px/frame labels every second (11 labels in 1040 px), and
+    /// 25 fps at 2 px/frame has its 1 s major at frame 25: the frame minors
+    /// (5 f, 10 f at 30 fps) didn't divide those seconds, so stepping by
+    /// them skipped the majors and labels between their common multiples.
+    #[test]
+    fn every_second_shows_at_24_and_25_fps() {
+        let labels: Vec<String> = ticks(&at(4.0, 0.0), Fps::new(24, 1), 0)
+            .into_iter()
+            .filter_map(|t| t.label)
+            .collect();
+        let want: Vec<String> = (0..=10).map(|s| format!("00:00:{s:02}:00")).collect();
+        assert_eq!(labels, want);
+        let ticks = ticks(&at(2.0, 0.0), Fps::new(25, 1), 0);
+        let at_50 = ticks.iter().find(|t| (t.x - 50.0).abs() < 1e-9);
+        assert_eq!(at_50.map(|t| t.kind), Some(TickKind::Major), "{ticks:?}");
+        assert_eq!(
+            tick_steps(LabelInterval::Seconds(1), Fps::new(24, 1)),
+            (24, Some(4))
+        );
+        assert_eq!(
+            tick_steps(LabelInterval::Seconds(2), Fps::new(24, 1)),
+            (24, Some(8))
+        );
+        assert_eq!(
+            tick_steps(LabelInterval::Seconds(2), Fps::new(25, 1)),
+            (25, Some(5))
+        );
+    }
+
+    /// At each offered rate (and 23.976, 29.97), from an hour per label to
+    /// just under frame level: every multiple of the major in view has a
+    /// major tick, every multiple of the label interval in view a label,
+    /// and the 1 s and 2 s intervals' frame minors split the second evenly.
+    #[test]
+    fn majors_and_labels_show_at_every_rate() {
+        let rates = crate::view::settings::RATES
+            .iter()
+            .map(|&n| Fps::new(n, 1))
+            .chain([Fps::new(24_000, 1001), Fps::new(30_000, 1001)]);
+        for fps in rates {
+            let second = Frame::from(fps.nominal());
+            let mut ppf = 0.003;
+            while ppf < 23.9 {
+                for scroll in [0.0, 333.3, 12_345.6] {
+                    let view = at(ppf, scroll);
+                    let ticks = ticks(&view, fps, 0);
+                    let interval = label_interval(ppf, fps);
+                    let (major, minor) = tick_steps(interval, fps);
+                    let every = interval.frames(fps);
+                    let frame = |t: &Tick| ((t.x + scroll) / ppf).round() as Frame;
+                    let majors: std::collections::BTreeSet<Frame> = ticks
+                        .iter()
+                        .filter(|t| t.kind == TickKind::Major)
+                        .map(frame)
+                        .collect();
+                    let labeled: std::collections::BTreeSet<Frame> = ticks
+                        .iter()
+                        .filter(|t| t.label.is_some())
+                        .map(frame)
+                        .collect();
+                    let first = view.time_at_x(-LABEL_REACH_PX).floor().max(0.0) as Frame;
+                    let last = view.time_at_x(view.width).floor().max(0.0) as Frame;
+                    let mut f = first.div_ceil(major) * major;
+                    while f <= last {
+                        let case = format!("{fps:?} at {ppf} px/frame from {scroll}: frame {f}");
+                        assert!(majors.contains(&f), "no major: {case}");
+                        if f % every == 0 && view.x_of_frame(f) >= 0.0 {
+                            assert!(labeled.contains(&f), "no label: {case}");
+                        }
+                        f += major;
+                    }
+                    if let (LabelInterval::Seconds(1 | 2), Some(m)) = (interval, minor) {
+                        assert_eq!(second % m, 0, "{fps:?}: {m} f minors");
+                    }
+                }
+                ppf *= 1.07;
+            }
+        }
     }
 }

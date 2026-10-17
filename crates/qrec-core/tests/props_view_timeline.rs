@@ -2,7 +2,9 @@
 //! the timeline, the label rank is monotone in width, frames and x round
 //! trip, `zoom_at` keeps the anchor's frame under the anchor, a move
 //! preview's command gives the previewed order, a trim preview's command
-//! gives the previewed range, and `drop_slot` is monotone in x.
+//! gives the previewed range, `drop_slot` is monotone in x, the ruler's
+//! labels show only in view (dropped at the left edge), and a ghost's
+//! waveform columns are exactly its columns in view.
 
 use proptest::prelude::*;
 use proptest::sample::Index;
@@ -10,9 +12,10 @@ use qrec_core::apply::apply;
 use qrec_core::protocol::command::Command;
 use qrec_core::testkit::{self, strategies};
 use qrec_core::timeline::total_frames;
+use qrec_core::view::ruler::{self, TickKind};
 use qrec_core::view::timeline::{
-    ClipLabel, MAX_PX_PER_FRAME, TrimEdge, Viewport, clamp_zoom, clip_boxes, drop_slot,
-    move_preview, trim_preview,
+    ClipLabel, Ghost, MAX_PX_PER_FRAME, TrimEdge, Viewport, clamp_zoom, clip_boxes, drop_slot,
+    ghost_columns, move_preview, trim_preview,
 };
 use qrec_core::{ClipId, Frame, State, TakeId};
 
@@ -201,5 +204,81 @@ proptest! {
         let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
         prop_assert!(drop_slot(&view, clips, lo) <= drop_slot(&view, clips, hi));
         prop_assert!(drop_slot(&view, clips, hi) <= clips.len());
+    }
+
+    /// G§4.5: a label shows while its tick shows, cut at the right edge and
+    /// dropped at the left; at frame level the cell the left edge cuts is
+    /// there with its number.
+    #[test]
+    fn ruler_labels_show_only_in_view(
+        fps in strategies::arb_fps(),
+        ppf in (-4.0f64..2.31).prop_map(|e| 10f64.powf(e)),
+        scroll in 0.0f64..1e6,
+    ) {
+        let view = Viewport {
+            width: 1040.0,
+            px_per_frame: ppf,
+            scroll_px: scroll,
+            lanes_scroll_px: 0.0,
+        };
+        let ticks = ruler::ticks(&view, fps, 0);
+        for tick in &ticks {
+            if tick.x < 0.0 {
+                prop_assert!(tick.label.is_none(), "{tick:?}");
+            }
+            if tick.label.is_some() {
+                prop_assert!(tick.x >= 0.0 && tick.x <= view.width, "{tick:?}");
+            }
+        }
+        if view.is_frame_level() {
+            let cut = ticks
+                .iter()
+                .find(|t| t.x <= 0.0 && 0.0 < t.x + ppf)
+                .map(|t| (t.kind, t.cell.is_some()));
+            prop_assert!(
+                matches!(cut, Some((TickKind::Frame | TickKind::Second, true))),
+                "{cut:?}"
+            );
+        }
+    }
+
+    /// A ghost's waveform columns (counted from its right edge) are those
+    /// whose x is in `[0, width)`, every one of them: at most a view's
+    /// worth whatever the ghost's length.
+    #[test]
+    fn ghost_columns_are_those_in_view(
+        x in -1e6f64..3000.0,
+        w in 0.0f64..1e6,
+        width in 100.0f64..3000.0,
+    ) {
+        let ghost = Ghost {
+            take: TakeId::numbered(10),
+            color: 0,
+            x,
+            w,
+            plate: String::new(),
+            over: None,
+            replaced: Vec::new(),
+            saving: false,
+        };
+        let right = (x + w).floor();
+        let all = w.ceil() as usize;
+        let x_of = |c: usize| right - 1.0 - c as f64;
+        let shown = |c: usize| (0.0..width).contains(&x_of(c));
+        match ghost_columns(&ghost, width) {
+            None => {
+                let any = (0..all).find(|&c| shown(c) && x_of(c) + 1.0 > x && x_of(c) < x + w);
+                prop_assert!(any.is_none(), "column {any:?} shows");
+            }
+            Some(cols) => {
+                let (start, end) = (cols.columns.start, cols.columns.end);
+                prop_assert!(end - start <= width.ceil() as usize + 1);
+                prop_assert!(end <= all);
+                prop_assert!((cols.x0 - x_of(end - 1)).abs() < 1e-9);
+                prop_assert!(shown(start) && shown(end - 1));
+                prop_assert!(start == 0 || !shown(start - 1));
+                prop_assert!(end == all || !shown(end));
+            }
+        }
     }
 }

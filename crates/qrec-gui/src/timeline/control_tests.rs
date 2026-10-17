@@ -96,6 +96,7 @@ fn cx<'a>(state: &'a State, view: Viewport, total: Frame, now: Duration) -> Cx<'
         lanes: 2,
         playhead: state.ui.playhead,
         now,
+        rows_top: 0.0,
     }
 }
 
@@ -525,7 +526,11 @@ fn a_middle_drag_pans_and_sends_one_set_ui() {
     let c = cx(&state, view, total, ms(64));
     g.decide_release(&c, &mut sink, (400.0, 40.0));
     assert!(sink.commands.is_empty(), "nothing at once");
-    assert_eq!(sink.pans, [-10.0], "the lanes follow the vertical drag");
+    assert_eq!(
+        sink.pans,
+        [10.0, 10.0, 10.0],
+        "the lanes follow the vertical drag: 10 px down from the press"
+    );
     assert_eq!(vm.flush(&state, ms(300)), None);
     let Some(Command::SetUi { patch }) = vm.flush(&state, ms(348)) else {
         panic!("one SetUi 300 ms after the last motion")
@@ -653,7 +658,7 @@ fn snapshots_cancel_drags_whose_clip_is_gone() {
     g.decide_motion(&c, &mut sink, &mut vm, Area::Rows, (229.0, 30.0));
     let mut gone = state.clone();
     gone.project.timeline.clips.remove(1);
-    g.on_state(&gone, &mut sink);
+    g.on_state(&gone, true, &mut sink);
     assert_eq!(g.drag(), None);
     assert_eq!(sink.drags, [Some(DragKind::Move), None]);
 }
@@ -692,4 +697,557 @@ fn bin_drops_insert_at_the_nearest_boundary() {
     assert_eq!(parse_drop("qrec-take:take-0004"), Some(TakeId::numbered(4)));
     assert_eq!(parse_drop("take-0004"), None);
     assert_eq!(parse_drop("qrec-take:nope"), None);
+}
+
+// ------------------------------------------------------------- the ghost
+
+/// RMS readings in dB, oldest first.
+fn readings(db: &[f32]) -> Vec<f32> {
+    db.to_vec()
+}
+
+/// The ghost's waveform for a window of its columns is that window of the
+/// whole width's (review: only the columns on screen are computed).
+#[test]
+fn the_ghost_waveform_in_a_window_is_the_window_of_the_whole() {
+    let history = readings(
+        &(0..400)
+            .map(|i| -60.0 + (i % 37) as f32 * 1.5)
+            .collect::<Vec<_>>(),
+    );
+    let (ms, w): (f64, f64) = (20_000.0, 733.4);
+    let all = w.ceil() as usize;
+    let full = ghost_amplitudes(&history, |db| *db, ms, w, 0..all);
+    assert_eq!(full.len(), all);
+    for (lo, hi) in [(0, 10), (100, 400), (700, all), (0, all)] {
+        let window = ghost_amplitudes(&history, |db| *db, ms, w, lo..hi);
+        assert_eq!(window, full[all - hi..all - lo], "{lo}..{hi}");
+        // Reading only the newest readings the window needs changes nothing.
+        let wanted = ghost_readings(ms, w, &(lo..hi));
+        let newest = &history[history.len().saturating_sub(wanted)..];
+        assert_eq!(
+            ghost_amplitudes(newest, |db| *db, ms, w, lo..hi),
+            window,
+            "{lo}..{hi} from the newest {wanted}"
+        );
+    }
+}
+
+/// Columns older than the readings reach are silent, not a flat band at
+/// the oldest reading's level (review): ten readings (500 ms) under a 60 s
+/// ghost of 1000 px fill its newest 8 columns.
+#[test]
+fn columns_older_than_the_readings_are_silent() {
+    let history = readings(&[-6.0; 10]);
+    let amps = ghost_amplitudes(&history, |db| *db, 60_000.0, 1000.0, 0..1000);
+    let loud = (10f32.powf(-6.0 / 20.0) * std::f32::consts::SQRT_2).min(1.0);
+    // Screen order: the newest (column 0) is last.
+    let newest: Vec<f32> = amps.iter().rev().take(8).copied().collect();
+    assert!(newest.iter().all(|a| (a - loud).abs() < 1e-6), "{newest:?}");
+    assert!(
+        amps[..992].iter().all(|a| *a == 0.0),
+        "{:?}",
+        &amps[980..992]
+    );
+}
+
+/// R05: a new project's first take at fit (no clips, 30 fps, 1000 px), its
+/// record clocks every 250 ms from 1 s, a frame every 10 ms: the ghost's
+/// end and the playhead parked there never pass the fit's 8 px inset, also
+/// between clocks (the ghost grows on the frame clock by up to 300 ms; at
+/// 1 s it ran 25 % past the time area when the fit followed the clocks
+/// only).
+#[test]
+fn fit_follows_the_ghost_between_record_clocks() {
+    use qrec_core::view::timeline::{FIT_INSET_PX, ghost, shown_playhead};
+    let mut state = testkit::design_state();
+    state.project.timeline.clips.clear();
+    let recording = |elapsed_ns: u64| RecordPhase::Recording {
+        take: TakeId::numbered(10),
+        mode: RecordMode::Append,
+        elapsed_ns,
+        waiters: vec![],
+    };
+    let mut vm = ViewModel::new(false);
+    vm.set_width(1000.0);
+    let mut clock = GhostClock::default();
+    let mut elapsed = 1_000_000_000u64;
+    let mut last_clock = ms(0);
+    // A snapshot: what `Inner::on_change` does.
+    let snapshot = |state: &State, vm: &mut ViewModel, clock: &mut GhostClock, now| {
+        let grows = clock.follow(&state.runtime.record, now);
+        let mut total = shown_total(state, clock.elapsed_ns);
+        if grows {
+            vm.follow_ghost(total);
+            total = vm.total();
+        }
+        vm.on_state(state, total, now);
+    };
+    state.runtime.record = recording(elapsed);
+    snapshot(&state, &mut vm, &mut clock, ms(0));
+    for step in 0..=300u64 {
+        let now = ms(step * 10);
+        // A clock 250 ms after the last (one late by 60 ms, past the lead).
+        let every = if step / 25 == 4 { 310 } else { 250 };
+        if now.saturating_sub(last_clock) >= ms(every) {
+            elapsed += (now - last_clock).as_nanos() as u64;
+            last_clock = now;
+            state.runtime.record = recording(elapsed);
+            snapshot(&state, &mut vm, &mut clock, now);
+        }
+        // A frame: what `Inner::on_tick` does.
+        let e = clock.elapsed(now, false);
+        vm.follow_ghost(shown_total(&state, e));
+        let view = vm.shown(now).unwrap();
+        let bound = view.width - FIT_INSET_PX + 1e-6;
+        let parked = view.x_of_frame(shown_playhead(&state, e, None));
+        assert!(parked <= bound, "{now:?}: the playhead at {parked}");
+        let g = ghost(&state, &view, e).unwrap();
+        assert!(
+            g.x + g.w <= bound,
+            "{now:?}: the ghost ends at {}",
+            g.x + g.w
+        );
+    }
+    // Stopped: the ghost keeps the last clock's length, and the fit too.
+    state.runtime.record = RecordPhase::Finalizing {
+        take: TakeId::numbered(10),
+        mode: RecordMode::Append,
+        cancelled: false,
+        stop_reqs: vec![],
+        waiters: vec![],
+        discard: None,
+    };
+    snapshot(&state, &mut vm, &mut clock, ms(3010));
+    assert_eq!(vm.total(), shown_total(&state, elapsed));
+}
+
+/// R14: the filmstrip is drawn 72 px × the UI scale × the window's scale
+/// factor high: its textures are made at that height, not upscaled.
+#[test]
+fn thumbnails_are_made_at_the_drawn_height() {
+    for (ui, factor, want) in [
+        (1.0, 1, 72),
+        (1.25, 1, 90),
+        (1.5, 1, 108),
+        (1.0, 2, 144),
+        (1.25, 2, 180),
+        (1.5, 2, 216),
+        (2.0, 0, 144),
+    ] {
+        assert_eq!(thumb_px(ui, factor), want, "ui {ui} at {factor}");
+    }
+}
+
+// ------------------------------------------------------------- fit
+
+/// R03: `\` (and the toolbar's Fit) go to the timeline's own GUI action,
+/// so a local zoom still waiting for its `SetUi` can't win over them: from
+/// fit, the core's `SetUi{zoom: Clear}` changes nothing a snapshot shows.
+#[test]
+fn fit_goes_through_the_timeline() {
+    use crate::keys::router::{KeyDecision, RouterState, decide_binding};
+    let state = testkit::design_state();
+    let keymap = qrec_core::keymap::resolve("");
+    let local = crate::store::LocalUi::default();
+    let rs = RouterState {
+        state: &state,
+        local: &local,
+        keymap: &keymap,
+        player_frame: None,
+    };
+    assert_eq!(
+        decide_binding("zoom.fit", &rs),
+        KeyDecision::Gui {
+            id: "zoom.fit".into()
+        }
+    );
+}
+
+/// `=` from fit, then `\` within the 300 ms: fit shows at once and nothing
+/// goes out (the state is at fit already); from a zoom it sends the clear.
+#[test]
+fn fit_drops_a_waiting_local_zoom() {
+    let state = testkit::design_state();
+    let (mut vm, fit, _) = setup(&state);
+    vm.zoom_step(true, 2437, ms(0));
+    assert!(vm.zoom_fit(ms(100)));
+    assert_eq!(vm.shown(ms(100)), Some(fit));
+    assert_eq!(vm.flush(&state, ms(400)), None);
+    assert!(!vm.dirty());
+    let zoomed = seconds();
+    let (mut vm, _, _) = setup(&zoomed);
+    assert!(vm.zoom_fit(ms(0)));
+    let Some(Command::SetUi { patch }) = vm.flush(&zoomed, ms(300)) else {
+        panic!("the clear goes out")
+    };
+    assert_eq!(patch.zoom, Nullable::Clear);
+    // No view (an empty timeline): nothing to fit here.
+    let mut empty = state.clone();
+    empty.project.timeline.clips.clear();
+    let mut vm = ViewModel::new(true);
+    vm.set_width(W);
+    vm.on_state(&empty, 0, ms(0));
+    assert!(!vm.zoom_fit(ms(0)));
+}
+
+/// The echo rule with a stale send: once a snapshot showed what the
+/// timeline sent, a later snapshot back at that value is someone else's
+/// (the CLI fitting while a local zoom waits): adopted, the local one
+/// dropped.
+#[test]
+fn a_send_echoed_once_is_forgotten() {
+    let zoomed = seconds();
+    let (mut vm, _, total) = setup(&zoomed);
+    // The timeline fits (`\`): the clear goes out, its echo comes back.
+    vm.zoom_fit(ms(0));
+    vm.flush(&zoomed, ms(300)).expect("the clear");
+    let mut fitted = zoomed.clone();
+    fitted.ui.zoom = None;
+    fitted.ui.scroll_px = 0.0;
+    vm.on_state(&fitted, total, ms(310));
+    // The CLI zooms; then a local zoom waits while the CLI fits again.
+    vm.on_state(&zoomed, total, ms(400));
+    vm.zoom_step(true, 2437, ms(500));
+    vm.on_state(&fitted, total, ms(600));
+    assert!(!vm.dirty(), "the CLI's fit wins");
+    assert_eq!(vm.flush(&fitted, ms(900)), None);
+}
+
+/// R04: a middle drag pans the lanes with the pointer. Five lanes overflow
+/// the rows, scrolled 20 px; the pointer goes up 5 px a frame for 12
+/// frames, and GTK reports each motion against the canvas as laid out
+/// then (it moves with the scroll the pan sets): the lanes follow 5 px a
+/// frame, 60 in all (stepping by the canvas-relative travel gave 5, 0, 5,
+/// 0, …: half the pointer, and a stutter).
+#[test]
+fn a_middle_drag_pans_the_lanes_with_the_pointer() {
+    let state = seconds();
+    let (mut vm, view, total) = setup(&state);
+    let mut g = Gestures::new();
+    let mut sink = Recorder::default();
+    let from = 20.0;
+    // The canvas is laid out at -from; the press at y 120 in the window.
+    let mut laid_out = from;
+    let mut c = cx(&state, view, total, ms(0));
+    c.rows_top = -laid_out;
+    let press = Press {
+        button: Button::Middle,
+        y: 120.0 + laid_out,
+        ..rows(500.0)
+    };
+    g.decide_press(&c, &mut sink, &mut vm, press);
+    let mut lanes = from;
+    let mut steps = Vec::new();
+    for frame in 1..=12u64 {
+        let window_y = 120.0 - 5.0 * frame as f64;
+        let mut c = cx(&state, view, total, ms(16 * frame));
+        c.rows_top = -laid_out;
+        // GTK's canvas-relative y, against the layout of this frame.
+        let y = window_y + laid_out;
+        g.decide_motion(&c, &mut sink, &mut vm, Area::Rows, (500.0, y));
+        // The glue: the lanes' offset is the press's minus the travel.
+        let before = lanes;
+        if let Some(dy) = sink.pans.last() {
+            lanes = from - dy;
+        }
+        steps.push(lanes - before);
+        // The next frame's layout puts the canvas at the new offset.
+        laid_out = lanes;
+    }
+    assert!(
+        steps.iter().all(|s| (s - 5.0).abs() < 1e-9),
+        "the lanes follow the pointer: {steps:?}"
+    );
+    assert!((lanes - from - 60.0).abs() < 1e-9, "{lanes}");
+}
+
+/// R07: a ruler scrub or a middle-drag pan whose timeline goes empty
+/// (another client's `clip remove` or `undo`) ends with it: the ruler and
+/// the canvas are gone, so their release never comes, and the scrub kept
+/// `LocalUi.drag` (the router swallowed every key but `Esc`) and the pan the
+/// next press.
+#[test]
+fn drags_end_when_the_timeline_has_no_view() {
+    let state = testkit::design_state();
+    let mut empty = state.clone();
+    empty.project.timeline.clips.clear();
+    for button in [Button::Left, Button::Middle] {
+        let (mut vm, view, total) = setup(&state);
+        let c = cx(&state, view, total, ms(0));
+        let mut g = Gestures::new();
+        let mut sink = Recorder::default();
+        let at = Press {
+            button,
+            ..press(Area::Ruler, 10.0, 0.0, Mods::default())
+        };
+        assert!(g.decide_press(&c, &mut sink, &mut vm, at));
+        assert!(g.drag().is_some(), "{button:?}");
+        vm.on_state(&empty, 0, ms(10));
+        g.on_state(&empty, vm.target_view().is_some(), &mut sink);
+        assert_eq!(g.drag(), None, "{button:?}");
+        if button == Button::Left {
+            assert_eq!(sink.drags, [Some(DragKind::Scrub), None]);
+        }
+        // The clips come back: a press is a press again.
+        let (mut vm, view, total) = setup(&state);
+        let c = cx(&state, view, total, ms(20));
+        let mut sink = Recorder::default();
+        g.decide_press(&c, &mut sink, &mut vm, rows(350.0));
+        assert!(matches!(g.drag(), Some(Drag::Pending { .. })), "{button:?}");
+    }
+    // A pan over a recording's ghost on an empty timeline goes on: it has a
+    // view.
+    let mut recording = empty.clone();
+    recording.runtime.record = RecordPhase::Recording {
+        take: TakeId::numbered(10),
+        mode: RecordMode::Append,
+        elapsed_ns: 10_000_000_000,
+        waiters: vec![],
+    };
+    let mut vm = ViewModel::new(true);
+    vm.set_width(W);
+    vm.on_state(&recording, shown_total(&recording, 10_000_000_000), ms(0));
+    let view = vm.shown(ms(0)).unwrap();
+    let c = cx(&recording, view, vm.total(), ms(0));
+    let mut g = Gestures::new();
+    let mut sink = Recorder::default();
+    let middle = Press {
+        button: Button::Middle,
+        ..rows(300.0)
+    };
+    g.decide_press(&c, &mut sink, &mut vm, middle);
+    g.on_state(&recording, vm.target_view().is_some(), &mut sink);
+    assert!(matches!(g.drag(), Some(Drag::Pan { .. })));
+}
+
+// ------------------------------------------------------------- silences
+
+/// R08: the cached analyses are asked for by the key their answer carries,
+/// the minimum silence in it: with c2d0's file asked at −35 dB and 400 ms,
+/// a change to 600 ms asks again (the dedupe left the minimum out, so the
+/// 600 ms analysis on disk was never fetched and the hatch went).
+#[test]
+fn a_new_min_silence_asks_for_its_cached_analysis() {
+    use qrec_core::model::AutocutSettings;
+    let file = "takes/take-0005/A1-mic.mka";
+    let files = std::collections::BTreeMap::from([(
+        file.to_owned(),
+        qrec_core::ctx::FileFact {
+            path: file.to_owned(),
+            bytes: 4_000_000,
+            mtime_ns: 1_760_000_000_000_000_000,
+        },
+    )]);
+    let at = |min_silence_ms| AutocutSettings {
+        threshold_db: -35.0,
+        min_silence_ms,
+        ..AutocutSettings::default()
+    };
+    let none = std::collections::BTreeMap::new();
+    let mut asked = std::collections::BTreeSet::new();
+    let first = silence_requests(&files, &at(400), &asked, &none);
+    assert_eq!(first.len(), 1);
+    asked.extend(first.into_iter().map(|(_, k)| k));
+    assert!(silence_requests(&files, &at(400), &asked, &none).is_empty());
+    let six = silence_requests(&files, &at(600), &asked, &none);
+    let key = SilenceKey::compute(file, 4_000_000, 1_760_000_000_000_000_000, -35.0, 600);
+    assert_eq!(six, [(file.to_owned(), key.clone())]);
+    // Answered already (this session analyzed it): nothing to ask.
+    let cached = std::collections::BTreeMap::from([(key, Vec::new())]);
+    assert!(
+        silence_requests(
+            &files,
+            &at(600),
+            &std::collections::BTreeSet::new(),
+            &cached
+        )
+        .is_empty()
+    );
+}
+
+/// C16, C18: the playing playhead and the snap flash move nothing the
+/// canvas draws (the overlay draws them over its cached node), so a frame
+/// of them alone doesn't re-render it; easing, a take recording, an
+/// analysis, the fit growing with the ghost, the gap closing and a trim
+/// snapping to the playing playhead do. The canvas re-rendered every frame
+/// of a playback (review R10).
+#[test]
+fn only_what_the_canvas_draws_moving_re_renders_it() {
+    let still = [
+        TickFacts {
+            playing: true,
+            ..TickFacts::default()
+        },
+        TickFacts {
+            flash: true,
+            playing: true,
+            ..TickFacts::default()
+        },
+        TickFacts {
+            trimming: true,
+            ..TickFacts::default()
+        },
+        TickFacts::default(),
+    ];
+    for facts in still {
+        assert!(!facts.canvas_moves(), "{facts:?}");
+    }
+    let moving = [
+        TickFacts {
+            easing: true,
+            playing: true,
+            ..TickFacts::default()
+        },
+        TickFacts {
+            recording: true,
+            ..TickFacts::default()
+        },
+        TickFacts {
+            analyzing: true,
+            ..TickFacts::default()
+        },
+        TickFacts {
+            grew: true,
+            ..TickFacts::default()
+        },
+        TickFacts {
+            gap_easing: true,
+            ..TickFacts::default()
+        },
+        TickFacts {
+            trimming: true,
+            playing: true,
+            ..TickFacts::default()
+        },
+    ];
+    for facts in moving {
+        assert!(facts.canvas_moves(), "{facts:?}");
+    }
+    // A take recording moves it, but not under test mode's frozen clock.
+    let mut state = testkit::design_state();
+    assert_eq!(TickFacts::of(&state, false), TickFacts::default());
+    state.runtime.record = RecordPhase::Recording {
+        take: TakeId::numbered(10),
+        mode: RecordMode::Append,
+        elapsed_ns: 1_000_000_000,
+        waiters: vec![],
+    };
+    assert!(TickFacts::of(&state, false).recording);
+    assert!(!TickFacts::of(&state, true).canvas_moves());
+}
+
+// ------------------------------------------------------------- the gap
+
+/// G§4.5, DESIGN Motion: a move drag's other clips close the gap in 120 ms
+/// `EASE_OUT_EXPO` (S11: c8a1 after c1b6, c1b2–c1b6 one c8a1 to the left),
+/// starting where they are drawn; at once under reduced motion. They
+/// jumped there in one frame: nothing eased (review R11).
+#[test]
+fn a_move_drags_neighbours_ease_to_their_places() {
+    let state = testkit::design_state();
+    let (_, view, _) = setup(&state);
+    let resting = tl::clip_boxes(&state, &view, None);
+    let rest = || box_places(&resting, &view);
+    let x_of = |boxes: &[ClipBox], clip: &str| {
+        boxes
+            .iter()
+            .find(|b| b.clip == id(clip))
+            .map(|b| b.x)
+            .unwrap()
+    };
+    // x 405 in the window (S11).
+    let p = tl::move_preview(&state, &view, &[id("c8a1")], 229.0).expect("a preview");
+    assert_eq!(p.tooltip[0], "Move after c1b6 \u{b7} slot 7 of 10");
+    let (rest_x, target_x) = (x_of(&resting, "c1b2"), x_of(&p.boxes, "c1b2"));
+    let c8a1 = resting.iter().find(|b| b.clip == id("c8a1")).unwrap().w;
+    assert!(
+        (rest_x - target_x - c8a1).abs() < 1e-6,
+        "{rest_x} → {target_x}"
+    );
+    let mut gap = GapEase::default();
+    gap.retarget(&box_places(&p.boxes, &view), rest, ms(0), false);
+    let drawn = |gap: &GapEase, now: Duration, clip: &str| {
+        let mut boxes = p.boxes.clone();
+        gap.ease(&mut boxes, &view, now);
+        x_of(&boxes, clip)
+    };
+    assert!(
+        (drawn(&gap, ms(0), "c1b2") - rest_x).abs() < 1e-6,
+        "where it was"
+    );
+    let mid = drawn(&gap, ms(60), "c1b2");
+    assert!(target_x < mid && mid < rest_x, "{mid}");
+    assert!(
+        (rest_x - mid) / (rest_x - target_x) > 0.9,
+        "expo-out: most of the way at 60 ms ({mid})"
+    );
+    assert!((drawn(&gap, ms(120), "c1b2") - target_x).abs() < 1e-6);
+    assert!(gap.animating(ms(60)) && !gap.animating(ms(120)));
+    for clip in ["c1b3", "c1b6"] {
+        assert!((drawn(&gap, ms(0), clip) - x_of(&resting, clip)).abs() < 1e-6);
+    }
+    // c7f3 (before the block) and c2d0 (after its slot) don't move.
+    for clip in ["c7f3", "c2d0"] {
+        assert_eq!(gap.offset(&id(clip), ms(0)), 0.0, "{clip}");
+        assert!((drawn(&gap, ms(0), clip) - x_of(&resting, clip)).abs() < 1e-6);
+    }
+    // Reduced motion (and test mode): there at once.
+    let mut instant = GapEase::default();
+    instant.retarget(&box_places(&p.boxes, &view), rest, ms(0), true);
+    assert!((drawn(&instant, ms(0), "c1b2") - target_x).abs() < 1e-6);
+    assert!(!instant.animating(ms(0)));
+}
+
+/// A slot change in the middle of an ease starts the next from where the
+/// clip is drawn (no jump of a block's width); a clip whose place didn't
+/// change goes on easing; a zoom moves the boxes, not the eases (frames);
+/// the release drops them.
+#[test]
+fn a_slot_change_in_the_middle_of_an_ease_never_jumps() {
+    let (a, b) = (id("c1b2"), id("c1b3"));
+    let rest = || vec![(id("c1b2"), 100.0), (id("c1b3"), 200.0)];
+    let mut gap = GapEase::default();
+    // The block went past them: both 50 frames to the left.
+    gap.retarget(&[(a.clone(), 50.0), (b.clone(), 150.0)], rest, ms(0), false);
+    let at = |gap: &GapEase, clip: &ClipId, place: f64, now| place + gap.offset(clip, now);
+    let (a_before, b_before) = (at(&gap, &a, 50.0, ms(30)), at(&gap, &b, 150.0, ms(30)));
+    assert!(50.0 < a_before && a_before < 100.0, "{a_before}");
+    // Back across one boundary 30 ms in: `a` heads back to 100.
+    gap.retarget(
+        &[(a.clone(), 100.0), (b.clone(), 150.0)],
+        rest,
+        ms(30),
+        false,
+    );
+    let a_after = at(&gap, &a, 100.0, ms(30));
+    assert!((a_after - a_before).abs() < 1e-9, "{a_before} → {a_after}");
+    assert!((at(&gap, &b, 150.0, ms(30)) - b_before).abs() < 1e-9);
+    assert!((at(&gap, &b, 150.0, ms(120)) - 150.0).abs() < 1e-9);
+    assert!((at(&gap, &a, 100.0, ms(150)) - 100.0).abs() < 1e-9);
+    assert!(gap.animating(ms(149)) && !gap.animating(ms(150)));
+    // The same ease in a view zoomed ×2: twice the px, the same frames.
+    let view = Viewport {
+        width: W,
+        px_per_frame: 1.0,
+        scroll_px: 0.0,
+        lanes_scroll_px: 0.0,
+    };
+    let zoomed = Viewport {
+        px_per_frame: 2.0,
+        ..view
+    };
+    let state = testkit::design_state();
+    let mut one = tl::clip_boxes(&state, &view, None);
+    let mut two = tl::clip_boxes(&state, &zoomed, None);
+    let x_of = |boxes: &[ClipBox]| boxes.iter().find(|c| c.clip == a).unwrap().x;
+    let (x1, x2) = (x_of(&one), x_of(&two));
+    gap.ease(&mut one, &view, ms(60));
+    gap.ease(&mut two, &zoomed, ms(60));
+    assert!(x_of(&one) != x1, "still easing at 60 ms");
+    assert!(((x_of(&two) - x2) - 2.0 * (x_of(&one) - x1)).abs() < 1e-9);
+    // Released (or `Esc`): none left.
+    gap.clear();
+    assert_eq!(gap.offset(&a, ms(31)), 0.0);
+    assert!(!gap.animating(ms(31)));
 }

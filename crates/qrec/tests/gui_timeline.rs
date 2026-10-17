@@ -304,6 +304,72 @@ fn s08_seconds() {
     assert_clean(&mut nested);
 }
 
+/// A new min silence (`qrec autocut settings --min-silence-ms 600`)
+/// hatches its cached analysis at once: c2d0's file was analyzed at 400 and
+/// 600 ms before the window opened at 400. The requests were deduplicated
+/// without the min silence, and a settings change asked for nothing: the
+/// hatch went.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_new_min_silence_shows_its_cached_silences() {
+    let mut nested = Nested::start(AREA, "min-silence", Options::default());
+    let project = fixture(
+        &nested,
+        DesignVariant::Base,
+        &program(&[], 2437, Some((1.6, 1950))),
+    );
+    for args in [
+        &["autocut", "--clips", "c2d0", "--dry-run"][..],
+        &[
+            "autocut",
+            "--clips",
+            "c2d0",
+            "--dry-run",
+            "--min-silence-ms",
+            "600",
+        ],
+    ] {
+        let dry = nested.cli_json(&project, args);
+        assert_eq!(dry["ok"], true, "{dry}");
+    }
+    open(&mut nested, &project, Launch::default());
+    let s = nested.opts.scale;
+    let px = |v: f64| (v * s).round().max(1.0) as u32;
+    let warning = gui_support::token_rgb("swamp-night", "warning");
+    // A1's hatches' warning edges over c2d0 (from window x 390), left of
+    // the playhead (at 955, near `warning`).
+    let edges = |nested: &Nested, name: &str| {
+        let shot = nested.screenshot(name);
+        gui_support::count_near(
+            &shot,
+            [px(390.0), px(800.0), px(550.0), px(56.0)],
+            warning,
+            40,
+        )
+    };
+    let at_400 = edges(&nested, "at-400");
+    assert!(at_400 > 0, "no hatch at 400 ms");
+    let set = nested.cli_json(
+        &project,
+        &["autocut", "settings", "--min-silence-ms", "600"],
+    );
+    assert_eq!(set["ok"], true, "{set}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        nested.window(0).wait_idle();
+        let at_600 = edges(&nested, "at-600");
+        if at_600 > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no hatch at 600 ms ({at_400} px at 400)"
+        );
+        thread::sleep(Duration::from_millis(200));
+    }
+    assert_clean(&mut nested);
+}
+
 /// S09: 32 px/frame from frame 3160, c2d1 selected, the playhead at the
 /// c2d0 | c2d1 cut (x 688).
 #[test]
@@ -464,6 +530,157 @@ fn s11_drag_move() {
     assert_clean(&mut nested);
 }
 
+/// A middle drag pans the lanes with the pointer (D-25, D-39): with five
+/// lanes over the rows, dragged up 60 px in 5 px steps (a frame each), A1
+/// goes up 60 px. The pan stepped by the canvas-relative travel, and the
+/// canvas moves with the scroll it sets: about half the pointer, or a
+/// swing back and forth.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_middle_drag_pans_the_lanes() {
+    let mut nested = Nested::start(AREA, "middle-pan", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
+    open(&mut nested, &project, Launch::default());
+    for n in 3..=5 {
+        let command = json!({
+            "cmd": "audioAdd", "target": "project", "role": "mic",
+            "source": format!("alsa_input.fake-{n}"), "label": format!("Mic {n}"),
+        });
+        let reply = nested
+            .window(0)
+            .ctl(json!({"op": "dispatch", "command": command}));
+        assert_eq!(reply["ok"], true, "{reply}");
+        nested.window(0).wait_idle();
+    }
+    let a1 = |nested: &mut Nested| {
+        let regions = nested.window(0).regions(&["lane-A1", "lane-A5"]);
+        assert!(regions.contains_key("lane-A5"), "five lanes: {regions:?}");
+        regions["lane-A1"][1]
+    };
+    let before = a1(&mut nested);
+    // On A2, in the middle of the rows.
+    let (x, y) = (700.0, 880.0);
+    nested.pointer().move_to(x, y);
+    nested
+        .pointer()
+        .button(gui_support::pointer::BUTTON_MIDDLE, true);
+    for i in 1..=12 {
+        nested.pointer().move_to(x, y - 5.0 * f64::from(i));
+        nested.window(0).wait_idle();
+    }
+    nested
+        .pointer()
+        .button(gui_support::pointer::BUTTON_MIDDLE, false);
+    nested.window(0).wait_idle();
+    let after = a1(&mut nested);
+    assert!(
+        (before - after - 60.0).abs() <= 1.0,
+        "A1 from y {before} to {after}: not 60 px up"
+    );
+    assert_clean(&mut nested);
+}
+
+/// Ctrl+wheel zooms ×1.25 per notch at the pointer (D-39): one notch at
+/// time-area x 700 keeps the frame under it there, over the ruler (where
+/// nothing records the pointer: it zoomed at the time area's left edge),
+/// over the rows, and over the ruler after a scrub (a stale x).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn ctrl_wheel_zooms_at_the_pointer() {
+    let mut nested = Nested::start(AREA, "ctrl-wheel", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
+    open(&mut nested, &project, Launch::default());
+    let ruler_y = center_of(&mut nested, "ruler").1;
+    // At fit: (1040 − 8) / 7391 px per frame, no scroll.
+    let fit = 1032.0 / 7391.0;
+    let mut view = (fit, 0.0);
+    let wheel_at = |nested: &mut Nested, (x, y): (f64, f64), from: (f64, f64), what: &str| {
+        // The frame under time-area x 700 before.
+        let frame = (700.0 + from.1) / from.0;
+        nested.pointer().move_to(x, y);
+        nested.window(0).wait_idle();
+        // Ctrl held by a `wtype` from 400 ms after it starts for 2.5 s; the
+        // notch 1.5 s in (a loaded machine starts `wtype` late).
+        let held = nested.keys_held(&["-M", "ctrl", "-s", "2500", "-m", "ctrl"], 200);
+        thread::sleep(Duration::from_millis(1500));
+        nested.pointer().wheel(-1);
+        held.wait();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let ui = loop {
+            let ui = nested.cli_json(&project, &["status"])["data"]["ui"].clone();
+            let zoom = ui["zoom"].as_f64().unwrap_or_default();
+            if (zoom - from.0 * 1.25).abs() < 1e-9 {
+                break ui;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{what}: no zoom ×1.25 from {from:?}: {ui}"
+            );
+            thread::sleep(Duration::from_millis(100));
+        };
+        let (zoom, scroll) = (
+            ui["zoom"].as_f64().unwrap_or_default(),
+            ui["scrollPx"].as_f64().unwrap_or_default(),
+        );
+        let under = (700.0 + scroll) / zoom;
+        assert!(
+            (under - frame).abs() <= 0.5,
+            "{what}: frame {under:.1} under x 700, was {frame:.1} ({ui})"
+        );
+        (zoom, scroll)
+    };
+    // Over the clips, then up to the ruler at the same x.
+    nested.pointer().move_to(876.0, VIDEO_Y);
+    view = wheel_at(&mut nested, (876.0, ruler_y), view, "over the ruler");
+    view = wheel_at(&mut nested, (876.0, VIDEO_Y), view, "over the rows");
+    // A scrub on the ruler, the pointer moved along it, then the wheel.
+    let pointer = nested.pointer();
+    pointer.move_to(500.0, ruler_y);
+    pointer.drag_to(600.0, ruler_y, 4);
+    pointer.move_to(876.0, ruler_y);
+    nested.window(0).wait_idle();
+    wheel_at(
+        &mut nested,
+        (876.0, ruler_y),
+        view,
+        "over the ruler after a scrub",
+    );
+    assert_clean(&mut nested);
+}
+
+/// A ruler scrub whose timeline goes empty mid-drag (every clip removed
+/// while the button is down) ends with it: the ruler is gone, so its
+/// release never comes, and `LocalUi.drag` stayed `scrub` (the router then
+/// swallowed every key but `Esc`).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_scrub_ends_when_the_timeline_empties() {
+    let mut nested = Nested::start(AREA, "scrub-emptied", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
+    open(&mut nested, &project, Launch::default());
+    let ruler_y = center_of(&mut nested, "ruler").1;
+    let pointer = nested.pointer();
+    pointer.move_to(500.0, ruler_y);
+    pointer.button(gui_support::pointer::BUTTON_LEFT, true);
+    pointer.move_to(540.0, ruler_y);
+    wait_drag(&mut nested, json!("scrub"));
+    let clips: Vec<String> = clip_rows(&nested, &project)
+        .into_iter()
+        .map(|c| c.0)
+        .collect();
+    let reply = nested.window(0).ctl(json!({
+        "op": "dispatch",
+        "command": {"cmd": "clipRemove", "clips": clips},
+    }));
+    assert_eq!(reply["ok"], true, "{reply}");
+    nested.window(0).wait_idle();
+    wait_drag(&mut nested, Value::Null);
+    release(&mut nested);
+    nested.window(0).wait_idle();
+    assert_eq!(local(&mut nested)["drag"], Value::Null);
+    assert_clean(&mut nested);
+}
+
 // ------------------------------------------------------------- S12
 
 /// The center of widget `name` (it must show).
@@ -603,6 +820,168 @@ fn s12_zoom_to_c3e9() {
     assert_clean(&mut nested);
 }
 
+/// `=` then `\` within the 300 ms the zoom's `SetUi` waits (one `wtype`
+/// run): the view fits and stays fit. The core's `SetUi{zoom: Clear}`
+/// changed nothing from fit, so the waiting zoom went out after it and was
+/// saved (review).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn fit_right_after_a_zoom_wins() {
+    let mut nested = Nested::start(AREA, "fit-after-zoom", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
+    open(&mut nested, &project, Launch::default());
+    nested.keys(&["-k", "equal", "-k", "backslash"]);
+    // Past the zoom's 300 ms debounce.
+    thread::sleep(Duration::from_millis(800));
+    nested.window(0).wait_idle();
+    let ui = nested.cli_json(&project, &["status"])["data"]["ui"].clone();
+    assert_eq!(ui["zoom"], Value::Null, "{ui}");
+    let toolbar = nested.window(0).labels("timeline-toolbar");
+    assert!(
+        !toolbar
+            .iter()
+            .any(|l| l.ends_with(" px/s") || l.ends_with(" px/frame")),
+        "the readout shows a zoom: {toolbar:?}"
+    );
+    assert_clean(&mut nested);
+}
+
+/// A zoom made right before the window closes, within the 300 ms its
+/// `SetUi` waits, is saved (G§3.4.1: what the window debounced goes out
+/// ahead of the close in the host's FIFO). Its timer fired after the close
+/// and the closing host refused it ("the Qrec window is closing"): the next
+/// open showed the old zoom (review R66).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_zoom_right_before_the_close_is_saved() {
+    let mut nested = Nested::start(AREA, "zoom-then-close", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
+    open(&mut nested, &project, Launch::default());
+    let gui = nested.window(0);
+    assert_eq!(gui.local()["panics"], 0);
+    // Both on the main thread within a few ms, well inside the 300 ms.
+    let zoom = gui.ctl(json!({"op": "action", "id": "zoom.in"}));
+    assert_eq!(zoom["ok"], true, "{zoom}");
+    let quit = gui.ctl(json!({"op": "action", "id": "app.quit"}));
+    assert_eq!(quit["ok"], true, "{quit}");
+    assert_eq!(gui.wait_exit(Duration::from_secs(70)), Some(0), "the exit");
+    let path = project.join(".qrec").join("ui.json");
+    let ui: Value = serde_json::from_slice(&fs::read(&path).expect("ui.json")).expect("its JSON");
+    assert!(
+        ui["zoom"].as_f64().is_some_and(|z| z > 0.0),
+        "the zoom wasn't saved: {ui}"
+    );
+    gui.assert_no_criticals();
+    let log = gui.gui_log();
+    let errors: Vec<&str> = log.lines().filter(|l| l.contains(" ERROR ")).collect();
+    assert!(errors.is_empty(), "ERROR lines: {errors:#?}");
+    assert!(
+        !log.contains("window is closing"),
+        "a request refused by the closing host:\n{log}"
+    );
+}
+
+/// While the Program plays at fit nothing on the canvas moves: the overlay
+/// (the playhead), the ruler and the corner redraw each frame over the
+/// canvas's cached render node (C16, C18). The canvas re-rendered every
+/// frame of a playback, every clip, waveform and thumbnail (review R10).
+/// Over a second and a half of playing: a few renders (the play flip, the
+/// own seek each second), not one a frame.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_canvas_rests_while_the_program_plays() {
+    let mut nested = Nested::start(AREA, "playing", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &program(&[], 1200, None));
+    open(&mut nested, &project, Launch::default());
+    let gui = nested.window(0);
+    let at = |gui: &mut gui_support::Gui| {
+        let local = gui.local();
+        let paints = local["timelinePaints"].as_u64().expect("timelinePaints");
+        (paints, local["playerNs"].as_u64().unwrap_or(0))
+    };
+    let (before, from_ns) = at(gui);
+    let play = gui.ctl(json!({"op": "dispatch", "command": {"cmd": "play"}}));
+    assert_eq!(play["ok"], true, "{play}");
+    // Playing: the player's position runs.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while at(gui).1 < from_ns + 200_000_000 {
+        assert!(Instant::now() < deadline, "the Program never played");
+        thread::sleep(Duration::from_millis(50));
+    }
+    let (started, _) = at(gui);
+    thread::sleep(Duration::from_millis(1500));
+    let (after, to_ns) = at(gui);
+    let pause = gui.ctl(json!({"op": "dispatch", "command": {"cmd": "pause"}}));
+    assert_eq!(pause["ok"], true, "{pause}");
+    assert!(
+        to_ns >= from_ns + 1_200_000_000,
+        "it played {} ms",
+        (to_ns - from_ns) / 1_000_000
+    );
+    assert!(
+        after - started <= 6,
+        "the canvas re-rendered {} times in 1.5 s of playing ({} from the play)",
+        after - started,
+        after - before
+    );
+    assert_clean(&mut nested);
+}
+
+/// A caught panic in the timeline's frame clock doesn't stop it for good
+/// (G§3.12 R10): test mode's `panic-tick` panics in its first frame, and
+/// the next change starts it again, so the playing playhead still pages
+/// the view at frame level. The slot kept the dead callback's id and never
+/// started another: no auto-page for the rest of the session, the
+/// playhead moving once a second (review R09, R65).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_frame_clock_comes_back_after_a_caught_panic() {
+    let mut nested = Nested::start(AREA, "tick-panic", Options::default());
+    // 32 px/frame from frame 3160, the playhead at x 896 of 1040: playing,
+    // it passes the right edge within five frames.
+    let project = fixture(
+        &nested,
+        DesignVariant::Base,
+        &program(&[], 3188, Some((32.0, 3160))),
+    );
+    open(
+        &mut nested,
+        &project,
+        Launch::default().with_env("QREC_GUI_TEST", "1,panic-tick"),
+    );
+    let scroll = |nested: &Nested| {
+        nested.cli_json(&project, &["status"])["data"]["ui"]["scrollPx"]
+            .as_f64()
+            .expect("ui.scrollPx")
+    };
+    let before = scroll(&nested);
+    assert_eq!(before, 32.0 * 3160.0);
+    let gui = nested.window(0);
+    let play = gui.ctl(json!({"op": "dispatch", "command": {"cmd": "play"}}));
+    assert_eq!(play["ok"], true, "{play}");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while nested.window(0).local()["panics"] != 1 {
+        assert!(Instant::now() < deadline, "the frame never panicked");
+        thread::sleep(Duration::from_millis(50));
+    }
+    // Paged: the view follows the playhead once the frame clock is back.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while scroll(&nested) == before {
+        assert!(
+            Instant::now() < deadline,
+            "never paged: the frame clock didn't come back"
+        );
+        thread::sleep(Duration::from_millis(200));
+    }
+    let pause = nested
+        .window(0)
+        .ctl(json!({"op": "dispatch", "command": {"cmd": "pause"}}));
+    assert_eq!(pause["ok"], true, "{pause}");
+    let gui = nested.window(0);
+    assert_eq!(gui.local()["panics"], 1, "the one panic");
+    gui.assert_no_criticals();
+}
+
 // ------------------------------------------------------------- ghosts
 
 /// S04: recording with the clock at 00:02:41:12: fit includes the ghost,
@@ -673,25 +1052,17 @@ fn s05_finalizing_ghost() {
     let start = nested.cli_json(&project, &["record", "start"]);
     assert_eq!(start["ok"], true, "{start}");
     wait_record_phase(&nested, &project, "recording");
-    let mut stop = nested
-        .env
-        .command(&gui_support::qrec_bin())
-        .arg("--project")
-        .arg(&project)
-        .args(["record", "stop", "--json"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("qrec record stop");
+    // The stop waits for the take: in the background, its reply in the
+    // case's cli.log, killed past its deadline.
+    let stop = nested.cli_background(&project, &["record", "stop", "--json"]);
     wait_record_phase(&nested, &project, "finalizing");
     nested.window(0).wait_idle();
     shoot(&nested, "finalizing", Some("S05-finalizing.png"));
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while stop.try_wait().ok().flatten().is_none() {
-        assert!(Instant::now() < deadline, "record stop never returned");
-        thread::sleep(Duration::from_millis(100));
-    }
+    let stopped = gui_support::reap_within(stop, gui_support::CLI_TIMEOUT, "qrec record stop");
+    assert!(
+        stopped.success(),
+        "qrec record stop: {stopped} (see its cli.log)"
+    );
     assert_clean(&mut nested);
 }
 
@@ -784,6 +1155,87 @@ fn s01b_empty_timeline() {
     assert_a11y(&mut nested);
     let shot = shoot(&nested, "empty", Some("S01b-first-run-sources-added.png"));
     gui_support::assert_live_picture_drawn(&shot);
+    assert_clean(&mut nested);
+}
+
+// ------------------------------------------------------------- ui.scale
+
+/// `ui.scale = scale` in the user's `config.toml` (the interface scale,
+/// D-46; the scale runs' `QREC_TEST_SCALE` is the output's).
+fn ui_scale(nested: &Nested, scale: f64) {
+    let config = nested.env.config_home().join("qrec");
+    fs::create_dir_all(&config).expect("the config folder");
+    fs::write(
+        config.join("config.toml"),
+        format!("[ui]\nscale = {scale}\n"),
+    )
+    .expect("config.toml");
+}
+
+/// At `ui.scale` 1.5 (D-46): the track headers line up with their rows,
+/// each header's top and center its row's (±1 px; they asked for their
+/// 100 % heights, A1's header 40 px above its lane, A2's 51 px), and the
+/// thumbnails are made at 72 × 1.5 px (they were made at 72 and upscaled).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn ui_scale_1_5() {
+    at_ui_scale("ui-scale-1.5", 1.5, Options::default());
+}
+
+/// The same at 1.25 in the compact rows.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn ui_scale_1_25_compact() {
+    at_ui_scale("ui-scale-1.25-compact", 1.25, Options::size(1600, 800));
+}
+
+/// The same at 1.5 in the compact rows.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn ui_scale_1_5_compact() {
+    at_ui_scale("ui-scale-1.5-compact", 1.5, Options::size(1600, 800));
+}
+
+fn at_ui_scale(case: &str, scale: f64, opts: Options) {
+    let mut nested = Nested::start(AREA, case, opts);
+    ui_scale(&nested, scale);
+    let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
+    open(&mut nested, &project, Launch::default());
+    assert_eq!(local(&mut nested)["scale"], scale);
+    let pairs = [
+        ("header-video", "video-row"),
+        ("header-A1", "lane-A1"),
+        ("header-A2", "lane-A2"),
+    ];
+    let names: Vec<&str> = pairs.iter().flat_map(|(h, r)| [*h, *r]).collect();
+    let regions = nested.window(0).regions(&names);
+    for (header, row) in pairs {
+        let (Some(h), Some(r)) = (regions.get(header), regions.get(row)) else {
+            panic!("no {header} or {row}: {regions:#?}");
+        };
+        // On its row: its top and center within 1 px. A compact lane
+        // header's content is 1.5 px taller than its 60 px row at 125 %
+        // (its 18 px line rounds up), centered on it.
+        let center = |v: &[f64; 4]| v[1] + v[3] / 2.0;
+        assert!(
+            (h[1] - r[1]).abs() <= 1.0
+                && (center(h) - center(r)).abs() <= 1.0
+                && (h[3] - r[3]).abs() <= 2.0,
+            "{header} {h:?} beside {row} {r:?}"
+        );
+    }
+    let want = (72.0 * scale).ceil() as u32 * gui_support::scale_factor(nested.opts.scale);
+    let heights = gui_support::poll(Duration::from_secs(20), "the strip images", || {
+        nested.window(0).wait_idle();
+        let heights = gui_support::preview_heights(&project);
+        (!heights.is_empty()).then_some(heights)
+    });
+    assert_eq!(
+        heights,
+        std::collections::BTreeSet::from([want]),
+        "strip images {want} px high"
+    );
+    shoot(&nested, "ui-scale", None);
     assert_clean(&mut nested);
 }
 
@@ -882,4 +1334,26 @@ fn probe(nested: &mut Nested, n: usize) -> String {
         assert!(Instant::now() < deadline, "no probe result {n}");
         thread::sleep(Duration::from_millis(200));
     }
+}
+
+// ---------------------------------------------------- not in a compositor
+
+/// G§3.17, G§8.4: this suite's CLIs go through `gui_support` (`cli`,
+/// `cli_json`, and `cli_background` with `reap_within` for one that waits),
+/// so each has a deadline and its output in the case's logs. S05's
+/// background `record stop` was spawned here by hand: its output dropped,
+/// and past its 60 s wait the case failed with it still running and
+/// nothing said why (review R69).
+#[test]
+fn every_cli_goes_through_the_harness() {
+    let source = include_str!("gui_timeline.rs");
+    let by_hand: Vec<(usize, &str)> = source
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| {
+            l.contains(concat!("qrec", "_bin()")) || l.contains(concat!(".spawn", "("))
+        })
+        .map(|(i, l)| (i + 1, l.trim()))
+        .collect();
+    assert!(by_hand.is_empty(), "spawned by hand: {by_hand:?}");
 }

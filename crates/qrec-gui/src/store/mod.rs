@@ -311,6 +311,9 @@ struct Inner {
     /// Notices made before anyone shows them (the toast host comes with
     /// the window).
     unshown: RefCell<Vec<Notice>>,
+    /// Who sends what they debounced before the host closes
+    /// ([`Store::subscribe_close`]).
+    closing: Subscribers<()>,
 }
 
 struct Pending {
@@ -364,6 +367,7 @@ impl Store {
                 locals: Subscribers::default(),
                 notices: Subscribers::default(),
                 unshown: RefCell::new(Vec::new()),
+                closing: Subscribers::default(),
             }),
         }
     }
@@ -425,6 +429,18 @@ impl Store {
     /// Follows the GUI-only state (called after each change).
     pub fn subscribe_local(&self, f: impl Fn(&LocalUi) + 'static) -> Subscription {
         self.inner.locals.add(f)
+    }
+
+    /// Runs `f` right before the window closes its host (G§3.4.1): what a
+    /// region still debounces (the timeline's `SetUi`) goes out now, ahead
+    /// of the close in the host's FIFO, instead of after it, refused.
+    pub fn subscribe_close(&self, f: impl Fn(&()) + 'static) -> Subscription {
+        self.inner.closing.add(f)
+    }
+
+    /// The window closes its host next ([`Store::subscribe_close`]).
+    pub fn before_close(&self) {
+        self.inner.closing.emit(&());
     }
 
     /// Follows the toasts to show: the GUI's and the core's. Notices made
@@ -702,6 +718,26 @@ mod tests {
                 store.on_reply(ticket, result, late);
             }
         }
+    }
+
+    /// G§3.4.1: right before the host closes, each region sends what it
+    /// still debounces (`before_close`), in the order they subscribed; a
+    /// dropped subscription is gone, and a panicking one stops no other.
+    #[test]
+    fn before_close_runs_the_close_subscribers() {
+        let store = store();
+        let ran = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&ran);
+        let _timeline = store.subscribe_close(move |_| seen.borrow_mut().push("timeline"));
+        let seen = Rc::clone(&ran);
+        let gone = store.subscribe_close(move |_| seen.borrow_mut().push("gone"));
+        let _broken = store.subscribe_close(|_| panic!("a broken region"));
+        let seen = Rc::clone(&ran);
+        let _stage = store.subscribe_close(move |_| seen.borrow_mut().push("stage"));
+        drop(gone);
+        assert!(ran.borrow().is_empty(), "nothing before the close");
+        store.before_close();
+        assert_eq!(*ran.borrow(), ["timeline", "stage"]);
     }
 
     #[test]

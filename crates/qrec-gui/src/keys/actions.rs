@@ -4,7 +4,7 @@
 //!
 //! | ids | registered by |
 //! | --- | --- |
-//! | `zoom.in`, `zoom.out`, `zoom.selection` | WP3 (timeline) |
+//! | `zoom.in`, `zoom.out`, `zoom.fit`, `zoom.selection` | WP3 (timeline) |
 //! | `settings.open` | WP6 (Settings) |
 //! | `export.panel`, `bin.preview` | WP7 (export panel, bin) |
 //! | `autocut.page` | WP5 (panel) |

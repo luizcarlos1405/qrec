@@ -305,6 +305,41 @@ fn ghosts() {
     insta::assert_json_snapshot!("ghosts", [ghost04, ghost04b, ghost05]);
 }
 
+/// A ghost `w` px wide from `x`.
+fn ghost_at(x: f64, w: f64) -> Ghost {
+    Ghost {
+        take: TakeId::numbered(10),
+        color: 0,
+        x,
+        w,
+        plate: String::new(),
+        over: None,
+        replaced: Vec::new(),
+        saving: false,
+    }
+}
+
+/// The ghost's live waveform covers only its columns on screen (review: a
+/// 10 min take at 32 px/frame is 576,000 columns a lane, all of them
+/// computed every frame): the newest 8 at the right edge of a 1600 px view,
+/// the oldest 1000 when it is scrolled to its start, none off screen.
+#[test]
+fn the_ghost_waveform_covers_its_columns_on_screen() {
+    let at_end = ghost_columns(&ghost_at(1592.0, 576_000.0), 1600.0).unwrap();
+    assert_eq!(at_end.columns, 575_992..576_000);
+    assert_eq!(at_end.x0, 1592.0);
+    let at_start = ghost_columns(&ghost_at(-575_000.0, 576_000.0), 1600.0).unwrap();
+    assert_eq!(at_start.columns, 0..1000);
+    assert_eq!(at_start.x0, 0.0);
+    assert_eq!(ghost_columns(&ghost_at(1600.0, 500.0), 1600.0), None);
+    assert_eq!(ghost_columns(&ghost_at(-500.0, 500.0), 1600.0), None);
+    assert_eq!(ghost_columns(&ghost_at(10.0, 0.0), 1600.0), None);
+    // A short ghost inside the view: every one of its columns.
+    let short = ghost_columns(&ghost_at(100.25, 40.5), 1600.0).unwrap();
+    assert_eq!(short.columns, 0..41);
+    assert_eq!(short.x0, 140.0 - 41.0);
+}
+
 // ------------------------------------------------------------- previews
 
 /// S10: c2d0's start edge dragged right by 46.4 px at 48 px/s.
@@ -736,6 +771,34 @@ fn thumbnails() {
     assert!(thumb_tiles(&missing, &view, &mboxes[7]).is_empty());
 }
 
+/// G§4.5 (review): the thumbnail layer is the take's topmost visible one
+/// whatever its media; without media there is no fallback to a lower
+/// layer (the clip is hatched as missing, DESIGN's "thumbnails replaced by
+/// hatch"). A hidden top layer hands over to the one below it.
+#[test]
+fn the_thumbnail_layer_never_falls_back_to_a_lower_one() {
+    let mut missing = testkit::design_state();
+    let take = missing.project.takes.get_mut(&TakeId::numbered(5)).unwrap();
+    take.scene.layers[1].missing = true;
+    let take = &missing.project.takes[&TakeId::numbered(5)];
+    assert_eq!(thumbnail_layer(take).map(|l| l.id.as_str()), Some("L2"));
+    assert_eq!(thumbnail_stream(take), None, "no L1 frames instead");
+    let mut hidden = testkit::design_state();
+    let take = hidden.project.takes.get_mut(&TakeId::numbered(5)).unwrap();
+    take.scene.layers[1].visible = false;
+    let view = Viewport::from_state(&hidden, W).unwrap();
+    let c2d0 = clip_boxes(&hidden, &view, None)[7].clone();
+    assert_eq!(c2d0.clip, id("c2d0"));
+    assert!(!c2d0.missing);
+    let tiles = thumb_tiles(&hidden, &view, &c2d0);
+    assert!(!tiles.is_empty());
+    assert!(
+        tiles.iter().all(|t| matches!(&t.image,
+            ThumbImage::Strip { file, .. } if file.starts_with("takes/take-0005/L1-"))),
+        "{tiles:?}"
+    );
+}
+
 // ------------------------------------------------------------- tooltip
 
 #[test]
@@ -871,9 +934,74 @@ fn the_empty_state_has_the_record_key() {
         ),
         ("This swamp is quiet.", "Press", "and make some noise.")
     );
-    assert_eq!(empty.key, vec!["R".to_owned()]);
+    assert_eq!(empty.key, Some(vec!["R".to_owned()]));
     let f9 = empty_state(&keymap::resolve("[bindings]\n\"record.toggle\" = \"F9\"\n"));
-    assert_eq!(f9.key, vec!["F9".to_owned()]);
+    assert_eq!(f9.key, Some(vec!["F9".to_owned()]));
+}
+
+/// `record.toggle` unbound, or in a keys.toml conflict (neither binding
+/// runs): no cap, and a line that needs none, as the hint bar leaves the
+/// Record item out.
+#[test]
+fn the_empty_state_without_a_record_key_names_the_button() {
+    let state = testkit::design_state();
+    for toml in [
+        "",
+        "[bindings]\n\"record.toggle\" = []\n",
+        "[bindings]\n\"record.over\" = \"r\"\n",
+        "[bindings]\n\"record.toggle\" = \"F9\"\n",
+    ] {
+        let map = keymap::resolve(toml);
+        let empty = empty_state(&map);
+        let (items, _) = crate::view::hints::hint_bar(
+            &crate::view::hints::HintState::Empty,
+            &state,
+            &crate::view::GuiFacts::default(),
+            &map,
+        );
+        let record = items.iter().any(|i| i.label == "Record");
+        assert_eq!(empty.key.is_some(), record, "{toml:?}: {empty:?}");
+        let line = match &empty.key {
+            Some(key) => format!("{} [{}] {}", empty.before, key.join("+"), empty.after),
+            None => format!("{} {}", empty.before, empty.after),
+        };
+        let want = if record {
+            format!(
+                "Press [{}] and make some noise.",
+                empty.key.clone().unwrap().join("+")
+            )
+        } else {
+            "Click Record and make some noise.".to_owned()
+        };
+        assert_eq!(line, want, "{toml:?}");
+    }
+}
+
+/// The rows in whole px at 100 %, 125 %, 130 %, 150 % and 200 %: stacked,
+/// each row starts at its rounded top on the canvas, regular and compact,
+/// and at 100 % they are the rows' own (76, then 4 + 56 per lane).
+#[test]
+fn rows_in_whole_px_stay_on_the_canvas() {
+    for rows in [ROWS, COMPACT_ROWS] {
+        for scale in [1.0, 1.25, 1.3, 1.5, 2.0] {
+            let (video, lanes) = rows.px_heights(5, scale);
+            assert_eq!(video, (rows.video * scale).round() as i32);
+            let mut y = video;
+            for (i, (gap, lane)) in lanes.iter().enumerate() {
+                y += gap;
+                let top = rows.lane_y(i) * scale;
+                assert_eq!(y, top.round() as i32, "{rows:?} at {scale}: lane {i}");
+                y += lane;
+                assert_eq!(y, (top + rows.lane * scale).round() as i32);
+            }
+        }
+    }
+    assert_eq!(ROWS.px_heights(2, 1.0), (76, vec![(4, 56), (4, 56)]));
+    assert_eq!(
+        COMPACT_ROWS.px_heights(2, 1.0),
+        (72, vec![(0, 48), (0, 48)])
+    );
+    assert_eq!(ROWS.px_heights(2, 1.5), (114, vec![(6, 84), (6, 84)]));
 }
 
 #[test]

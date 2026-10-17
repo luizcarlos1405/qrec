@@ -118,6 +118,28 @@ impl Rows {
     pub fn filmstrip(&self) -> f64 {
         self.video - STRIPE_PX
     }
+
+    /// The rows in whole widget px at UI scale `scale` (D-46): the video
+    /// row's height, then each lane's gap above it and its height. Each is
+    /// the difference of two rounded tops (`round(y × scale)`), so widgets
+    /// stacked at these heights (the track headers, the named rows) stay
+    /// on the canvas, which paints the rows at `y × scale`, whatever the
+    /// scale and the number of lanes.
+    pub fn px_heights(&self, lanes: usize, scale: f64) -> (i32, Vec<(i32, i32)>) {
+        let px = |y: f64| (y * scale).round() as i32;
+        let video = px(self.video);
+        let mut bottom = video;
+        let lanes = (0..lanes)
+            .map(|i| {
+                let top = px(self.lane_y(i));
+                let end = px(self.lane_y(i) + self.lane);
+                let gap = top - bottom;
+                bottom = end;
+                (gap, end - top)
+            })
+            .collect();
+        (video, lanes)
+    }
 }
 
 // ------------------------------------------------------------- viewport
@@ -779,6 +801,38 @@ pub fn ghost(state: &State, viewport: &Viewport, elapsed_ns: u64) -> Option<Ghos
         over,
         replaced: slot.replaced,
         saving: slot.saving,
+    })
+}
+
+/// The px columns of a ghost's live waveform that show (G§4.5): column `c`
+/// counts from the ghost's right edge leftward (0 is the newest) and is at
+/// x = ⌊x + w⌋ − 1 − c; only those in the time area, `[0, width)`, are
+/// drawn, so a long take zoomed in costs one view of columns, not its
+/// whole length.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GhostColumns {
+    /// The leftmost visible column's x.
+    pub x0: f64,
+    /// The visible columns, counted from the right edge: in screen order
+    /// they run from `columns.end − 1` (at `x0`) down to `columns.start`.
+    pub columns: std::ops::Range<usize>,
+}
+
+/// The columns of `ghost` that show in a time area `width` wide; `None`
+/// when none does.
+pub fn ghost_columns(ghost: &Ghost, width: f64) -> Option<GhostColumns> {
+    let (x, w) = (ghost.x, ghost.w);
+    if !(w > 0.0 && x.is_finite() && w.is_finite()) || x >= width || x + w <= 0.0 {
+        return None;
+    }
+    let right = (x + w).floor();
+    let all = w.ceil();
+    // x = right − 1 − c ≥ 0 and < width.
+    let end = all.min(right.max(0.0));
+    let start = (right - width).floor().max(0.0);
+    (start < end).then_some(GhostColumns {
+        x0: right - end,
+        columns: start as usize..end as usize,
     })
 }
 
@@ -1880,21 +1934,28 @@ pub fn lane_headers(state: &State) -> Vec<LaneHeader> {
 pub struct EmptyState {
     /// "This swamp is quiet." (`display`).
     pub title: String,
-    /// "Press", the cap of `record.toggle`, "and make some noise."
+    /// "Press", the cap of `record.toggle`, "and make some noise."; "Click
+    /// Record" and no cap when `record.toggle` has no key that runs.
     pub before: String,
-    pub key: Vec<String>,
+    pub key: Option<Vec<String>>,
     pub after: String,
 }
 
-/// The empty state with the user's record key.
+/// The empty state with the user's record key. Without one that runs
+/// (unbound, or in a keys.toml conflict) the line names the header's Record
+/// button instead, as the hint bar leaves its Record item out.
 pub fn empty_state(keymap: &Keymap) -> EmptyState {
     let key = keymap
         .binding("record.toggle")
-        .and_then(|b| usable_keys(keymap, b).first().map(|k| k.cap_legends()))
-        .unwrap_or_else(|| vec!["R".to_owned()]);
+        .and_then(|b| usable_keys(keymap, b).first().map(|k| k.cap_legends()));
     EmptyState {
         title: "This swamp is quiet.".to_owned(),
-        before: "Press".to_owned(),
+        before: if key.is_some() {
+            "Press"
+        } else {
+            "Click Record"
+        }
+        .to_owned(),
         key,
         after: "and make some noise.".to_owned(),
     }

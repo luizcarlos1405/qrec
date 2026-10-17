@@ -1,8 +1,8 @@
 //! The timeline (S01b–S12, C14–C18): toolbar, ruler, track headers, the
 //! canvas of clips and lanes, the playhead overlay, gestures, the drop
 //! target, the clip tooltip, zoom. Owner: WP3. Registers `zoom.in`,
-//! `zoom.out`, `zoom.selection`; writes `LocalUi.{drag, viewport,
-//! fit_px_per_frame, hover_clip, trim_frame}`.
+//! `zoom.out`, `zoom.fit`, `zoom.selection`; writes `LocalUi.{drag,
+//! viewport, fit_px_per_frame, hover_clip, trim_frame}`.
 //!
 //! ```text
 //! region-timeline (TimelineRoot, 312 px; compact 232)
@@ -39,7 +39,7 @@ mod tips;
 mod toolbar;
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -49,7 +49,7 @@ use gtk::prelude::*;
 use gtk::{gdk, glib, graphene};
 use qrec_core::ctx::FileFact;
 use qrec_core::protocol::event::Interval;
-use qrec_core::state::{RecordPhase, SilenceKey};
+use qrec_core::state::SilenceKey;
 use qrec_core::view::DragKind;
 use qrec_core::view::notices::unavailable_notice;
 use qrec_core::view::timeline::{self as tl, ClipBox, HEADER_WIDTH, Lane, Rows, Viewport};
@@ -61,7 +61,7 @@ use crate::store::{Change, Subscription};
 use crate::theme::motion;
 use crate::widgets::keycap::{CapSize, KeyCap};
 use crate::{Ctx, guard, guarded, testctl};
-use control::{Area, Button, Cx, Drag, Gestures, Mods, Press, Sink, ViewModel};
+use control::{Area, Button, Cx, Drag, Gestures, GhostClock, Mods, Press, Sink, ViewModel};
 use draw::Scene;
 use paint::Texts;
 use root::{Column, TimelineRoot};
@@ -74,9 +74,19 @@ use toolbar::Toolbar;
 const HOVER_DELAY: Duration = Duration::from_millis(500);
 /// The snap guide flashes this long (G§4.5).
 const FLASH: Duration = Duration::from_millis(300);
-/// The ghost grows on the frame clock at most this far past the last
-/// record clock (G§4.5).
-const GHOST_LEAD: Duration = Duration::from_millis(300);
+
+thread_local! {
+    /// How many times the canvas made its render node again (a cache miss).
+    static CANVAS_PAINTS: Cell<u64> = const { Cell::new(0) };
+    /// Test mode's `panic-tick` panicked already.
+    static TICK_PANICKED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// How many times the canvas re-rendered (testctl's `local`,
+/// `timelinePaints`): not while only the playhead moves (C16, C18).
+pub fn canvas_paints() -> u64 {
+    CANVAS_PAINTS.with(Cell::get)
+}
 
 /// The timeline region (`region-timeline`).
 pub struct Timeline {
@@ -95,16 +105,6 @@ impl Timeline {
     }
 }
 
-/// The record clock as last seen, for the ghost's growth between ticks.
-#[derive(Debug, Clone, Default)]
-struct GhostClock {
-    take: Option<TakeId>,
-    elapsed_ns: u64,
-    at: Duration,
-    /// Recording (it grows); finalizing keeps the last length.
-    running: bool,
-}
-
 /// What the timeline knows besides the state.
 struct Model {
     vm: ViewModel,
@@ -121,8 +121,8 @@ struct Model {
     silences: Option<(Arc<State>, u64, Rc<Vec<tl::SilenceSpan>>)>,
     /// What the facts were asked for (files, threshold, min silence).
     silence_key: Option<(Vec<String>, u64, u32)>,
-    /// The CachedSilence requests sent, per file version.
-    silence_asked: Vec<(String, i64, u64)>,
+    /// The CachedSilence requests sent: the keys their answers carry.
+    silence_asked: BTreeSet<SilenceKey>,
     /// A bin drag over the canvas: its take and x.
     drop: Option<(TakeId, f64)>,
     /// The drop target set `LocalUi.drag = BinInsert` (and clears it):
@@ -136,16 +136,19 @@ struct Model {
     tip_clip: Option<ClipId>,
     /// The last trim snap target (a new one flashes).
     snapped: Option<f64>,
-    /// The canvas's cached render node and what it shows.
-    cache: Option<(u64, (i32, i32), gtk::gsk::RenderNode)>,
+    /// The canvas's cached render node and what it shows: its generation,
+    /// size and thumbnail height (a new scale factor makes new textures).
+    cache: Option<(u64, (i32, i32, u32), gtk::gsk::RenderNode)>,
     /// Bumps on every change of what the canvas shows.
     generation: u64,
+    /// The last frame moved the canvas: the next renders it once more.
+    canvas_moved: bool,
     /// The thumbnail and peak caches are followed.
     caches_hooked: bool,
     /// What `LocalUi.viewport` says.
     local_view: Option<(Viewport, f64)>,
     /// The move drag's neighbours easing to their places (G§4.5).
-    gap: BTreeMap<ClipId, (f64, f64, Duration)>,
+    gap: control::GapEase,
     /// The scrolled-to lane offset (D-25) before a pan.
     opened: bool,
 }
@@ -166,19 +169,25 @@ struct Inner {
     overlay: Surface,
     tips: Tips,
     empty_key: KeyCap,
+    /// "Press" (or "Click Record" without a record key) before the cap.
+    empty_before: gtk::Label,
     /// The quiet swamp and its fixed-width column (smaller in the compact
     /// rows).
     empty_art: Option<(Column, gtk::Picture)>,
     texts: Texts,
     started: Instant,
     m: RefCell<Model>,
-    tick: RefCell<Option<gtk::TickCallbackId>>,
-    flush_source: RefCell<Option<glib::SourceId>>,
-    hover_source: RefCell<Option<glib::SourceId>>,
+    /// The frame clock's callback, the `SetUi` timer and the tooltip's:
+    /// each slot empties however its callback ends (a caught panic too), so
+    /// the next change starts it again (G§3.12 R10).
+    tick: guard::Slot,
+    flush_source: guard::Slot,
+    hover_source: guard::Slot,
     subs: RefCell<Vec<Subscription>>,
     /// The project folder (the silence files' facts).
     project: PathBuf,
-    /// The lane offset a middle drag started from.
+    /// The lane offset a middle drag started from (widget px): the pan
+    /// sets it absolutely, from there (`Sink::pan_lanes`).
     pan_from: Cell<Option<f64>>,
     /// The frame-time probe in progress (G§8.6, `QREC_GUI_PROBE=timeline`).
     probe: RefCell<Option<Probe>>,
@@ -259,7 +268,7 @@ impl Inner {
 
             let empty_key = KeyCap::new("R");
             empty_key.set_size(CapSize::Lg);
-            let (empty, empty_art) = empty_state(ctx, &empty_key);
+            let (empty, empty_before, empty_art) = empty_state(ctx, &empty_key);
             // Not homogeneous: the hidden page must not size the rows.
             let stack = gtk::Stack::new();
             stack.set_hhomogeneous(false);
@@ -323,6 +332,7 @@ impl Inner {
                 overlay,
                 tips,
                 empty_key,
+                empty_before,
                 empty_art,
                 texts: Texts::default(),
                 started: Instant::now(),
@@ -337,7 +347,7 @@ impl Inner {
                     silence_version: 0,
                     silences: None,
                     silence_key: None,
-                    silence_asked: Vec::new(),
+                    silence_asked: BTreeSet::new(),
                     drop: None,
                     drop_drag: false,
                     flash: None,
@@ -346,14 +356,15 @@ impl Inner {
                     snapped: None,
                     cache: None,
                     generation: 0,
+                    canvas_moved: false,
                     caches_hooked: false,
                     local_view: None,
-                    gap: BTreeMap::new(),
+                    gap: control::GapEase::default(),
                     opened: false,
                 }),
-                tick: RefCell::new(None),
-                flush_source: RefCell::new(None),
-                hover_source: RefCell::new(None),
+                tick: guard::Slot::new(),
+                flush_source: guard::Slot::new(),
+                hover_source: guard::Slot::new(),
                 subs: RefCell::new(Vec::new()),
                 project: ctx.store.project_dir().to_path_buf(),
                 pan_from: Cell::new(None),
@@ -372,6 +383,11 @@ impl Inner {
     /// The UI scale (D-46): view geometry × it is widget px.
     fn scale(&self) -> f64 {
         self.ctx.theme.scale()
+    }
+
+    /// The thumbnails' height in device px (G§3.11).
+    fn thumb_px(&self) -> u32 {
+        control::thumb_px(self.scale(), self.canvas.scale_factor())
     }
 
     // ------------------------------------------------------- wiring
@@ -399,7 +415,9 @@ impl Inner {
             let me = me.clone();
             move |_| {
                 if let Some(inner) = me.upgrade() {
+                    // New colors or a new scale: the cached canvas goes.
                     inner.texts.clear();
+                    inner.bump();
                     inner.refresh_all();
                 }
             }
@@ -419,6 +437,17 @@ impl Inner {
             move |data| {
                 if let Some(inner) = me.upgrade() {
                     inner.on_preview(data);
+                }
+            }
+        }));
+        // A zoom or scroll still waiting for its `SetUi` goes out before
+        // the host closes (G§3.4.1), not when its timer fires after.
+        subs.push(self.ctx.store.subscribe_close({
+            let me = me.clone();
+            move |_| {
+                if let Some(inner) = me.upgrade() {
+                    inner.flush_source.stop();
+                    inner.flush();
                 }
             }
         }));
@@ -473,6 +502,15 @@ impl Inner {
                 }),
             );
         }
+        let me = self.me.clone();
+        self.ctx.actions.register(
+            "zoom.fit",
+            Rc::new(move || {
+                if let Some(inner) = me.upgrade() {
+                    inner.zoom_fit();
+                }
+            }),
+        );
         let me = self.me.clone();
         self.ctx.actions.register(
             "zoom.selection",
@@ -621,6 +659,13 @@ impl Inner {
                 inner.release(x0 + dx, y0 + dy);
             }
         }));
+        // GTK gave up the press (a grab, the widget unmapped): no release.
+        let me = self.me.clone();
+        drag.connect_cancel(guarded!("timeline: a press cancelled", move |_, _| {
+            if let Some(inner) = me.upgrade() {
+                inner.cancel_drag();
+            }
+        }));
         self.canvas.add_controller(drag);
 
         let motion = gtk::EventControllerMotion::new();
@@ -683,6 +728,15 @@ impl Inner {
                 inner.release(x0 + dx, y0 + dy);
             }
         }));
+        let me = self.me.clone();
+        drag.connect_cancel(guarded!(
+            "timeline: a ruler press cancelled",
+            move |_, _| {
+                if let Some(inner) = me.upgrade() {
+                    inner.cancel_drag();
+                }
+            }
+        ));
         self.ruler.add_controller(drag);
         let scroll = gtk::EventControllerScroll::new(
             gtk::EventControllerScrollFlags::BOTH_AXES | gtk::EventControllerScrollFlags::DISCRETE,
@@ -755,36 +809,30 @@ impl Inner {
         {
             let mut m = self.m.borrow_mut();
             // The record clock, for the ghost's growth.
-            match &state.runtime.record {
-                RecordPhase::Recording {
-                    take, elapsed_ns, ..
-                } => {
-                    if m.ghost.take.as_ref() != Some(take) || m.ghost.elapsed_ns != *elapsed_ns {
-                        m.ghost = GhostClock {
-                            take: Some(take.clone()),
-                            elapsed_ns: *elapsed_ns,
-                            at: now,
-                            running: true,
-                        };
-                    }
-                }
-                RecordPhase::Finalizing { take, .. } => {
-                    if m.ghost.take.as_ref() == Some(take) {
-                        m.ghost.running = false;
-                    } else {
-                        m.ghost = GhostClock::default();
-                    }
-                }
-                _ => m.ghost = GhostClock::default(),
+            let grows = m.ghost.follow(&state.runtime.record, now);
+            let mut total = tl::shown_total(state, m.ghost.elapsed_ns);
+            if grows {
+                // While a take records its ghost grows on the frame clock
+                // (`follow_ghost`, at once): a clock past it too, and one
+                // behind it never shrinks it.
+                m.vm.follow_ghost(total);
+                total = m.vm.total();
             }
-            let total = tl::shown_total(state, m.ghost.elapsed_ns);
             m.vm.on_state(state, total, now);
-            m.g.on_state(state, &mut pending);
+            let has_view = m.vm.target_view().is_some();
+            m.g.on_state(state, has_view, &mut pending);
+            // A move drag the snapshot ended takes its eases along.
+            if !matches!(m.g.drag(), Some(Drag::Move { .. })) {
+                m.gap.clear();
+            }
             m.lanes = tl::lanes(state);
             m.generation += 1;
         }
         self.apply(pending);
-        if change.timeline() || change.scene() || change.takes() || change.ui() {
+        // The hatches follow the files and the autocut settings (a CLI,
+        // IPC or undo change of the threshold or min silence too).
+        let autocut = change.prev.project.autocut != change.next.project.autocut;
+        if change.timeline() || change.scene() || change.takes() || change.ui() || autocut {
             self.refresh_silences(state);
         }
         self.refresh_all();
@@ -917,31 +965,25 @@ impl Inner {
         );
     }
 
-    /// Asks the preview cache for each file's cached analysis (once per
-    /// file version and settings).
+    /// Asks the preview cache for each file's cached analysis, once per
+    /// key its answer carries (the file's version, threshold and min
+    /// silence: `control::silence_requests`).
     fn ask_silences(&self, state: &State) {
         let Some(cache) = self.ctx.media.preview_cache() else {
             return;
         };
         let settings = &state.project.autocut;
-        let wanted: Vec<(String, i64, u64)> = {
+        let wanted = {
             let m = self.m.borrow();
-            m.files
-                .values()
-                .map(|f| (f.path.clone(), f.mtime_ns, settings.threshold_db.to_bits()))
-                .filter(|w| !m.silence_asked.contains(w))
-                .collect()
+            control::silence_requests(&m.files, settings, &m.silence_asked, &m.cached)
         };
-        for (file, mtime, threshold) in wanted {
+        for (file, key) in wanted {
             cache.request(PreviewRequest::CachedSilence {
-                file: file.clone(),
+                file,
                 threshold_db: settings.threshold_db,
                 min_silence_ms: settings.min_silence_ms,
             });
-            self.m
-                .borrow_mut()
-                .silence_asked
-                .push((file, mtime, threshold));
+            self.m.borrow_mut().silence_asked.insert(key);
         }
     }
 
@@ -967,7 +1009,7 @@ impl Inner {
         };
         let opened = self.ctx.store.local().is_open();
         let empty = state.project.timeline.clips.is_empty() && state.runtime.record.is_idle();
-        self.headers.update(&state, rows);
+        self.headers.update(&state, rows, self.scale());
         self.toolbar
             .update(&tl::toolbar(&state, view.as_ref(), total));
         let page = if empty && opened { "empty" } else { "canvas" };
@@ -986,8 +1028,11 @@ impl Inner {
             playhead,
             state.project.canvas.fps,
         ));
-        let keys = tl::empty_state(&self.ctx.store.keymap()).key;
-        self.empty_key.set_legend(&keys.join("+"));
+        show_empty_copy(
+            &tl::empty_state(&self.ctx.store.keymap()),
+            &self.empty_before,
+            &self.empty_key,
+        );
         if let Some((column, art)) = &self.empty_art {
             let (w, h) = empty_art_size(rows);
             column.set_width(w);
@@ -1030,13 +1075,15 @@ impl Inner {
                 self.rows_box.append(&row);
             }
         }
-        self.rows_box.set_spacing((rows.gap * s) as i32);
+        // The headers' whole px (`Rows::px_heights`): each row at its
+        // rounded top on the canvas, a lane's gap as its top margin.
+        let (video, lane_px) = rows.px_heights(lanes.len(), s);
         let mut c = self.rows_box.first_child();
-        let mut first = true;
+        let mut heights = std::iter::once((0, video)).chain(lane_px);
         while let Some(row) = c {
-            let h = if first { rows.video } else { rows.lane };
-            row.set_size_request(-1, (h * s).round() as i32);
-            first = false;
+            let (gap, h) = heights.next().unwrap_or((0, 0));
+            row.set_margin_top(gap);
+            row.set_size_request(-1, h);
             c = row.next_sibling();
         }
     }
@@ -1089,11 +1136,22 @@ impl Inner {
                 lanes: m.lanes.len(),
                 playhead,
                 now,
+                rows_top: self.rows_top(),
             };
             f(&cx, &mut m, &mut pending)
         };
         self.apply(pending);
         Some(result)
+    }
+
+    /// The rows' top in the lanes' scrolled window (100 % px) as the canvas
+    /// is laid out now: the transform GTK gave this event's coordinates.
+    fn rows_top(&self) -> f64 {
+        let origin = graphene::Point::new(0.0, 0.0);
+        self.canvas
+            .compute_point(&self.scroller, &origin)
+            .map_or(0.0, |p| f64::from(p.y()))
+            / self.scale()
     }
 
     fn press(&self, area: Area, button: u32, x: f64, y: f64, mods: Mods) -> bool {
@@ -1213,7 +1271,12 @@ impl Inner {
             return true;
         }
         if state.contains(gdk::ModifierType::CONTROL_MASK) {
-            let anchor = self.m.borrow().pointer.map_or(0.0, |(x, _)| x);
+            // At the pointer, from the event itself: over the ruler nothing
+            // records the pointer, and a stale x could be left from a scrub.
+            let anchor = event_x(c)
+                .map(|x| x / self.scale())
+                .or_else(|| self.m.borrow().pointer.map(|(x, _)| x))
+                .unwrap_or_else(|| self.m.borrow().vm.width() / 2.0);
             self.m.borrow_mut().vm.zoom_wheel(notches.1, anchor, now);
         } else {
             self.m
@@ -1242,6 +1305,20 @@ impl Inner {
         self.after_view_change();
     }
 
+    /// `\` and the toolbar's Fit: the view fits at once (a local zoom
+    /// still waiting is dropped); without a view, the core's own command.
+    fn zoom_fit(&self) {
+        let now = self.now();
+        if self.m.borrow_mut().vm.zoom_fit(now) {
+            self.after_view_change();
+            return;
+        }
+        let state = self.ctx.store.state();
+        if let Some(cmd) = qrec_core::keymap::command_for("zoom.fit", &state) {
+            self.ctx.store.dispatch(cmd);
+        }
+    }
+
     fn zoom_selection(&self) {
         let state = self.ctx.store.state();
         let now = self.now();
@@ -1262,17 +1339,13 @@ impl Inner {
         let at = self.m.borrow().vm.flush_at();
         if let Some(at) = at {
             let wait = at.saturating_sub(self.now());
-            if let Some(old) = self.flush_source.borrow_mut().take() {
-                old.remove();
-            }
             let me = self.me.clone();
-            let id = guard::timeout_local_once(wait, "timeline: SetUi", move || {
-                if let Some(inner) = me.upgrade() {
-                    inner.flush_source.borrow_mut().take();
-                    inner.flush();
-                }
-            });
-            *self.flush_source.borrow_mut() = Some(id);
+            self.flush_source
+                .timeout_once(wait, "timeline: SetUi", move || {
+                    if let Some(inner) = me.upgrade() {
+                        inner.flush();
+                    }
+                });
         }
         self.refresh_all();
     }
@@ -1320,9 +1393,7 @@ impl Inner {
     // ------------------------------------------------------- tooltips
 
     fn cancel_hover_tip(&self) {
-        if let Some(id) = self.hover_source.borrow_mut().take() {
-            id.remove();
-        }
+        self.hover_source.stop();
     }
 
     /// The clip tooltip after the pointer rests on a clip (C33 clip).
@@ -1350,13 +1421,12 @@ impl Inner {
             HOVER_DELAY
         };
         let me = self.me.clone();
-        let id = guard::timeout_local_once(delay, "timeline: the clip tooltip", move || {
-            if let Some(inner) = me.upgrade() {
-                inner.hover_source.borrow_mut().take();
-                inner.show_hover_tip();
-            }
-        });
-        *self.hover_source.borrow_mut() = Some(id);
+        self.hover_source
+            .timeout_once(delay, "timeline: the clip tooltip", move || {
+                if let Some(inner) = me.upgrade() {
+                    inner.show_hover_tip();
+                }
+            });
     }
 
     fn show_hover_tip(&self) {
@@ -1396,6 +1466,13 @@ impl Inner {
                 if let Some(p) = tl::move_preview(&state, &view, &block, x) {
                     self.tips
                         .show(&tips::move_lines(&p.tooltip), self.to_layer(pointer));
+                    // The other clips ease to their places (G§4.5), from
+                    // where they were before the drag the first time.
+                    let places = control::box_places(&p.boxes, &view);
+                    let rest = || control::box_places(&tl::clip_boxes(&state, &view, None), &view);
+                    let mut m = self.m.borrow_mut();
+                    let instant = m.vm.instant();
+                    m.gap.retarget(&places, rest, now, instant);
                 }
             }
             Some(Drag::Trim {
@@ -1559,22 +1636,21 @@ impl Inner {
         tl::shown_playhead(state, ghost_elapsed(&m.ghost, now), player)
     }
 
+    /// Starts the frame clock's callback when something moves and none
+    /// runs. It stops once nothing does, or after a caught panic: either
+    /// way its slot empties and the next change starts it again.
     fn ensure_tick(&self) {
-        if self.tick.borrow().is_some() || !self.needs_tick() {
+        if self.tick.is_running() || !self.needs_tick() {
             return;
         }
         let me = self.me.clone();
-        let id = guard::tick(&self.canvas, "timeline: a frame", move |_, _| {
-            match me.upgrade() {
-                Some(inner) if inner.on_tick() => glib::ControlFlow::Continue,
-                Some(inner) => {
-                    inner.tick.borrow_mut().take();
-                    glib::ControlFlow::Break
+        self.tick
+            .tick(&self.canvas, "timeline: a frame", move |_, _| {
+                match me.upgrade() {
+                    Some(inner) if inner.on_tick() => glib::ControlFlow::Continue,
+                    _ => glib::ControlFlow::Break,
                 }
-                None => glib::ControlFlow::Break,
-            }
-        });
-        *self.tick.borrow_mut() = Some(id);
+            });
     }
 
     /// What needs a frame each frame: easing, a growing or saving ghost, a
@@ -1602,8 +1678,18 @@ impl Inner {
                 .any(|(_, _, at)| now.saturating_sub(*at) < control::GAP_EASE)
     }
 
-    /// One frame; `false` once nothing moves any more.
+    /// One frame; `false` once nothing moves any more. The canvas renders
+    /// again only when it moves itself (`TickFacts::canvas_moves`), and once
+    /// more after (an easing's last frame); the playing playhead and the
+    /// snap flash are the overlay's, over its cached node (C16, C18).
     fn on_tick(&self) -> bool {
+        // Test mode's `panic-tick`: the first frame panics (caught; the
+        // frame clock must come back, G§3.12 R10).
+        if testctl::mode().panic_tick && !TICK_PANICKED.with(|p| p.replace(true)) {
+            panic!("panic-tick: the timeline's first frame panics (test mode)");
+        }
+        // Whether the canvas moves this frame, and renders.
+        let (canvas_moves, render);
         let now = self.now();
         let state = self.ctx.store.state();
         let playing = self.ctx.store.local().program_playing;
@@ -1614,7 +1700,27 @@ impl Inner {
             {
                 m.flash = None;
             }
-            m.generation += 1;
+            // Fit includes the ghost as it grows between record clocks.
+            let shown = m.vm.total();
+            if m.ghost.running {
+                let total = tl::shown_total(&state, ghost_elapsed(&m.ghost, now));
+                m.vm.follow_ghost(total);
+            }
+            let facts = control::TickFacts {
+                easing: m.vm.animating(now),
+                grew: m.vm.total() != shown,
+                gap_easing: m.gap.animating(now),
+                trimming: matches!(m.g.drag(), Some(Drag::Trim { started: true, .. })),
+                playing,
+                flash: m.flash.is_some(),
+                ..control::TickFacts::of(&state, testctl::mode().on)
+            };
+            canvas_moves = facts.canvas_moves();
+            render = canvas_moves || m.canvas_moved;
+            m.canvas_moved = canvas_moves;
+            if render {
+                m.generation += 1;
+            }
         }
         if playing {
             // Auto-page (G§4.5): the playing playhead pages the view.
@@ -1636,10 +1742,14 @@ impl Inner {
             self.corner
                 .set_text(&qrec_core::view::ruler::corner(playhead, fps));
         }
-        self.canvas.queue_draw();
+        if render {
+            self.canvas.queue_draw();
+        }
         self.ruler.queue_draw();
         self.overlay.queue_draw();
-        self.needs_tick()
+        // A frame that moved the canvas gets the next one, which renders it
+        // where the motion ended.
+        self.needs_tick() || canvas_moves
     }
 
     // ------------------------------------------------------- drawing
@@ -1662,7 +1772,7 @@ impl Inner {
 
     fn draw_canvas(&self, s: &gtk::Snapshot, w: f64, h: f64) {
         let scale = self.scale();
-        let size = (w as i32, h as i32);
+        let size = (w as i32, h as i32, self.thumb_px());
         let generation = self.m.borrow().generation;
         let cached = self
             .m
@@ -1675,6 +1785,7 @@ impl Inner {
             s.append_node(&node);
             return;
         }
+        CANVAS_PAINTS.with(|p| p.set(p.get() + 1));
         let started = self.probe.borrow().is_some().then(Instant::now);
         let snapshot = gtk::Snapshot::new();
         snapshot.scale(scale as f32, scale as f32);
@@ -1735,6 +1846,7 @@ impl Inner {
             Some(Drag::Move { block, x }) => {
                 if let Some(p) = tl::move_preview(&state, &view, block, *x) {
                     boxes = p.boxes.clone();
+                    m.gap.ease(&mut boxes, &view, now);
                     let lifted = lifted_boxes(&state, &view, block, *x);
                     moving = Some((p, lifted));
                 }
@@ -1744,8 +1856,7 @@ impl Inner {
         let ghost = tl::ghost(&state, &view, elapsed);
         let ghost_waves = ghost
             .as_ref()
-            .map(|g| self.ghost_waves(&state, &m.lanes, g, elapsed))
-            .unwrap_or_default();
+            .and_then(|g| self.ghost_waves(&state, &m.lanes, g, elapsed, view.width));
         let scene = Scene {
             widget: &widget,
             texts: &self.texts,
@@ -1756,7 +1867,7 @@ impl Inner {
             lanes: &m.lanes,
             thumbs: thumbs.as_deref(),
             peaks: peaks.as_deref(),
-            thumb_px: (72 * self.canvas.scale_factor().max(1)) as u32,
+            thumb_px: self.thumb_px(),
             now_ms: motion::now().as_millis() as u64,
             boxes,
             ghost,
@@ -1771,21 +1882,22 @@ impl Inner {
     }
 
     /// The live waveform under the ghost (G§4.5): the level ring's RMS per
-    /// 50 ms, newest at the ghost's right edge, one amplitude per px. An
-    /// RMS reads as the peak of a sine of that RMS (×√2), so a steady tone
-    /// keeps its height when the take lands and its peaks are drawn.
+    /// 50 ms, newest at the ghost's right edge, one amplitude per px, for
+    /// its columns in the time area `width` wide only (a long take zoomed
+    /// in is a view of columns, not its length: `tl::ghost_columns`).
     fn ghost_waves(
         &self,
         state: &State,
         lanes: &[Lane],
         ghost: &tl::Ghost,
         elapsed_ns: u64,
-    ) -> Vec<Vec<f32>> {
+        width: f64,
+    ) -> Option<draw::GhostWaves> {
+        let columns = tl::ghost_columns(ghost, width)?;
         let take = state.project.takes.get(&ghost.take);
-        let px = ghost.w.max(0.0).ceil() as usize;
         let ms = elapsed_ns as f64 / 1e6;
-        let per_px_ms = if ghost.w > 0.0 { ms / ghost.w } else { 50.0 };
-        lanes
+        let wanted = control::ghost_readings(ms, ghost.w, &columns.columns).min(media_history());
+        let lanes = lanes
             .iter()
             .map(|lane| {
                 let source = take
@@ -1795,31 +1907,20 @@ impl Inner {
                 let Some(source) = source else {
                     return Vec::new();
                 };
-                let samples = (ms / 50.0).ceil() as usize;
-                let history = self
-                    .ctx
-                    .media
-                    .level_history(&source, samples.min(media_history()));
-                (0..px)
-                    .map(|c| {
-                        // Column c counts from the right edge leftward.
-                        let t1 = c as f64 * per_px_ms;
-                        let t0 = t1 + per_px_ms;
-                        let a = history.len() as f64 - 1.0 - t1 / 50.0;
-                        let b = history.len() as f64 - 1.0 - t0 / 50.0;
-                        let (lo, hi) = (b.floor().max(0.0) as usize, a.ceil().max(0.0) as usize);
-                        history
-                            .get(lo..=hi.min(history.len().saturating_sub(1)))
-                            .unwrap_or(&[])
-                            .iter()
-                            .map(|l| {
-                                (10f32.powf(l.rms_db / 20.0) * std::f32::consts::SQRT_2).min(1.0)
-                            })
-                            .fold(0.0f32, f32::max)
-                    })
-                    .collect()
+                let history = self.ctx.media.level_history(&source, wanted);
+                control::ghost_amplitudes(
+                    &history,
+                    |l| l.rms_db,
+                    ms,
+                    ghost.w,
+                    columns.columns.clone(),
+                )
             })
-            .collect()
+            .collect();
+        Some(draw::GhostWaves {
+            x0: columns.x0,
+            lanes,
+        })
     }
 
     fn draw_ruler(&self, s: &gtk::Snapshot, _w: f64, h: f64) {
@@ -1935,10 +2036,10 @@ impl Inner {
         for notice in notices {
             self.ctx.store.notify(notice);
         }
-        if !pans.is_empty() {
-            let adj = self.scroller.vadjustment();
-            let total: f64 = pans.iter().sum();
-            adj.set_value(adj.value() + total * self.scale());
+        if let (Some(dy), Some(from)) = (pans.last(), self.pan_from.get()) {
+            self.scroller
+                .vadjustment()
+                .set_value(from - dy * self.scale());
         }
     }
 }
@@ -1982,11 +2083,7 @@ impl Sink for Pending {
 /// The ghost's length now: the last record clock, grown on the frame clock
 /// for at most 300 ms (not in test mode: screenshots show the clock).
 fn ghost_elapsed(ghost: &GhostClock, now: Duration) -> u64 {
-    if !ghost.running || testctl::mode().on {
-        return ghost.elapsed_ns;
-    }
-    let lead = now.saturating_sub(ghost.at).min(GHOST_LEAD);
-    ghost.elapsed_ns + lead.as_nanos() as u64
+    ghost.elapsed(now, testctl::mode().on)
 }
 
 /// How many level readings the media hub keeps per device.
@@ -2017,6 +2114,29 @@ fn lifted_boxes(state: &State, view: &Viewport, block: &[ClipId], pointer_x: f64
         .collect()
 }
 
+/// Where the pointer is for the event a controller handles, as an x in
+/// its widget's px: the event's surface position, or the seat pointer's on
+/// the surface, mapped into the widget. A scroll event has no position on
+/// GTK 4.22, and asking its own device ("Wayland Wheel Scrolling") for one
+/// stalled the window.
+fn event_x(c: &impl IsA<gtk::EventController>) -> Option<f64> {
+    let c = c.as_ref();
+    let widget = c.widget()?;
+    let native = widget.native()?;
+    let (sx, sy) = match c.current_event().and_then(|e| e.position()) {
+        Some(at) => at,
+        None => {
+            let pointer = widget.display().default_seat()?.pointer()?;
+            let (x, y, _) = native.surface()?.device_position(&pointer)?;
+            (x, y)
+        }
+    };
+    let (tx, ty) = native.surface_transform();
+    let point = graphene::Point::new((sx - tx) as f32, (sy - ty) as f32);
+    let at = native.compute_point(&widget, &point)?;
+    Some(f64::from(at.x()))
+}
+
 fn mods_of(state: gdk::ModifierType) -> Mods {
     Mods {
         shift: state.contains(gdk::ModifierType::SHIFT_MASK),
@@ -2036,8 +2156,9 @@ fn empty_art_size(rows: Rows) -> (i32, i32) {
 }
 
 /// The empty timeline (S01b, C31 Timeline): the quiet swamp, "This swamp
-/// is quiet.", "Press [R] and make some noise.".
-fn empty_state(ctx: &Ctx, key: &KeyCap) -> (gtk::Box, Option<(Column, gtk::Picture)>) {
+/// is quiet.", "Press [R] and make some noise." ("Click Record and make
+/// some noise." without a record key); the line's first label.
+fn empty_state(ctx: &Ctx, key: &KeyCap) -> (gtk::Box, gtk::Label, Option<(Column, gtk::Picture)>) {
     let copy = tl::empty_state(&ctx.store.keymap());
     let block = gtk::Box::new(gtk::Orientation::Vertical, 0);
     block.add_css_class("tl-empty");
@@ -2069,16 +2190,26 @@ fn empty_state(ctx: &Ctx, key: &KeyCap) -> (gtk::Box, Option<(Column, gtk::Pictu
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     line.add_css_class("tl-empty-line");
     line.set_halign(gtk::Align::Center);
-    let before = gtk::Label::new(Some(&copy.before));
+    let before = gtk::Label::new(None);
     before.add_css_class("t-body");
     before.add_css_class("muted");
     let after = gtk::Label::new(Some(&copy.after));
     after.add_css_class("t-body");
     after.add_css_class("muted");
-    key.set_legend(&copy.key.join("+"));
+    show_empty_copy(&copy, &before, key);
     line.append(&before);
     line.append(key);
     line.append(&after);
     block.append(&line);
-    (block, art)
+    (block, before, art)
+}
+
+/// The empty state's line for the keymap's `copy`: the record key's cap,
+/// or none (G§4.5).
+fn show_empty_copy(copy: &tl::EmptyState, before: &gtk::Label, key: &KeyCap) {
+    before.set_text(&copy.before);
+    if let Some(legends) = &copy.key {
+        key.set_legend(&legends.join("+"));
+    }
+    key.set_visible(copy.key.is_some());
 }

@@ -34,16 +34,16 @@ pub struct Scene<'a> {
     pub lanes: &'a [Lane],
     pub thumbs: Option<&'a ThumbCache>,
     pub peaks: Option<&'a PeakCache>,
-    /// The thumbnails' height in device px (72 × the scale factor).
+    /// The thumbnails' height in device px (72 × the UI scale × the scale
+    /// factor: `control::thumb_px`).
     pub thumb_px: u32,
     /// The animation clock (spinners, the saving ghost's stripes).
     pub now_ms: u64,
     /// The clips as drawn: the timeline, or a preview's layout.
     pub boxes: Vec<ClipBox>,
     pub ghost: Option<Ghost>,
-    /// Per lane, the live waveform under the ghost: amplitudes per px from
-    /// its right edge leftward.
-    pub ghost_waves: Vec<Vec<f32>>,
+    /// The live waveform under the ghost's columns in view.
+    pub ghost_waves: Option<GhostWaves>,
     pub silences: &'a [SilenceSpan],
     pub autocut: Option<Arc<AutocutPreview>>,
     pub trim: Option<TrimPreview>,
@@ -51,6 +51,14 @@ pub struct Scene<'a> {
     pub moving: Option<(MovePreview, Vec<ClipBox>)>,
     /// A bin drop's caret.
     pub drop_caret: Option<f64>,
+}
+
+/// The live waveform under the ghost's columns in view (G§4.5): per lane,
+/// an amplitude per px in screen order from `x0`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GhostWaves {
+    pub x0: f64,
+    pub lanes: Vec<Vec<f32>>,
 }
 
 impl Scene<'_> {
@@ -510,20 +518,18 @@ fn ghost_clip(s: &gtk::Snapshot, sc: &Scene<'_>, g: &Ghost) {
         let y = rows.lane_y(i);
         let lr = rect(g.x, y, g.w, rows.lane);
         s.append_color(&p.ghost_fill, &lr);
-        if let Some(amps) = sc.ghost_waves.get(i)
+        if let Some(waves) = &sc.ghost_waves
+            && let Some(amps) = waves.lanes.get(i)
             && !amps.is_empty()
         {
-            let right = (g.x + g.w).floor();
-            let n = amps.len().min(right.max(0.0) as usize);
-            let column: Vec<f32> = amps[..n].iter().rev().copied().collect();
             let ink = if lane.dimmed { &p.wave_dim } else { &p.wave };
             paint::waveform(
                 s,
-                right - n as f64,
-                (g.x, g.x + g.w),
+                waves.x0,
+                (g.x.max(0.0), (g.x + g.w).min(sc.width())),
                 y + rows.lane / 2.0,
                 WAVE_HALF_PX.min(rows.lane / 2.0 - 2.0),
-                &column,
+                amps,
                 ink,
             );
         }

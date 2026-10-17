@@ -29,7 +29,10 @@
 //! 9. `keymap::lookup`; nothing bound propagates.
 //! 10. GUI overrides: `export` opens the export panel, `autocut.preview`
 //!     the autocut page; a `layer.nudge-*` that can run goes to the stage's
-//!     nudge burst (D-33: one `LayerSet` per burst, not per press).
+//!     nudge burst (D-33: one `LayerSet` per burst, not per press);
+//!     `zoom.fit` goes to the timeline, which fits its own view (a local
+//!     zoom waiting for its `SetUi` would win over the core's `SetUi{zoom:
+//!     Clear}`, which changes nothing a snapshot shows from fit).
 //! 11. `keymap::action_for` on the state with the player's frame as the
 //!     playhead while the program plays: a command (after its pre-steps:
 //!     first a seek to the player's frame, R18), a GUI action, or why it
@@ -228,7 +231,7 @@ pub fn decide_binding(id: &str, rs: &RouterState<'_>) -> KeyDecision {
     let state = effective_state(rs);
     match action_for(id, &state) {
         // D-33: the stage's nudge burst sends one `LayerSet` for all of it.
-        Some(Action::Run(_)) if NUDGE_BINDINGS.contains(&id) => gui(id),
+        Some(Action::Run(_)) if NUDGE_BINDINGS.contains(&id) || id == "zoom.fit" => gui(id),
         Some(Action::Run(cmd)) => KeyDecision::Run {
             id: id.to_owned(),
             pre: pre_steps(id, &cmd, rs),
