@@ -1029,6 +1029,12 @@ fn a_bin_preview_parks_the_playing_program_where_it_showed() {
         .window(0)
         .ctl(json!({"op": "action", "id": "bin.preview"}));
     assert_eq!(reply["ok"], true, "{reply}");
+    // The program plays on until the takeover's sync step parks it, a few
+    // main-loop turns later: half a second at most, a second at a larger
+    // scale factor (on pixman the window draws 4× the pixels a frame; 16 to
+    // 18 frames at 1.5 and 2 in WP10's scale runs). Never behind the
+    // picture: the bug parked at the last once-a-second seek.
+    let ahead = 15 * u64::from(gui_support::scale_factor(nested.opts.scale));
     poll(Duration::from_secs(20), "the TAKE 4 badge", || {
         let gui = nested.window(0);
         gui.wait_idle();
@@ -1040,8 +1046,8 @@ fn a_bin_preview_parks_the_playing_program_where_it_showed() {
     let now = status(&nested, &project);
     let parked = now["ui"]["playhead"].as_u64().expect("a playhead");
     assert!(
-        (shown..=shown + 15).contains(&parked),
-        "parked at {parked}, the picture showed {shown}: {}",
+        (shown..=shown + ahead).contains(&parked),
+        "parked at {parked}, the picture showed {shown} (at most {ahead} frames on): {}",
         now["ui"]
     );
     assert_eq!(now["runtime"]["playing"], false, "the program paused");
