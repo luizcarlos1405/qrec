@@ -169,6 +169,32 @@
   color: var(--qrec-text);
 }
 
+/* Its scrollbar: the modal list's 4 px `border-strong` bar (chrome.css),
+   3 px in from the well's stroke, always shown (S17: libadwaita's own
+   8 px slider until WP10's shot review). */
+.qrec-export .export-stderr scrollbar {
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+.qrec-export .export-stderr scrollbar > range > trough {
+  min-width: 4px;
+  margin: 0 4px 0 0;
+  border-radius: 2px;
+  background: none;
+}
+
+.qrec-export .export-stderr scrollbar > range > trough > slider {
+  min-width: 4px;
+  min-height: 24px;
+  margin: 0;
+  border: none;
+  border-radius: 2px;
+  background-color: var(--qrec-border-strong);
+}
+
 .qrec-export .export-log {
   margin-top: 12px;
   border-spacing: 8px;

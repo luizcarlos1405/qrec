@@ -1317,6 +1317,16 @@ fn s18_purging_two_takes_from_the_bin() {
         Some("352:608:0:48"),
         "-bin",
     );
+    // WP10's shot review: the loss list's scrollbar is a 4 px
+    // `border-strong` bar ending 6 px in from the well's edge (x 1026–1029;
+    // it was 2 px, 1028–1029).
+    assert_scroll_bar(
+        &nested,
+        &shot,
+        1026.0,
+        [990.0, 400.0, 50.0, 260.0],
+        "the loss list",
+    );
     assert_clean(&mut nested);
     click(&mut nested, "modal-confirm");
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -2348,6 +2358,33 @@ fn s16b_the_done_toast_when_the_panel_is_closed() {
     close(&mut nested);
 }
 
+/// A scroll bar as S17 and S18 draw theirs: a 4 px `border-strong` bar
+/// from x `x` (window px), found in `rect` (WP10's shot review).
+fn assert_scroll_bar(nested: &Nested, shot: &Path, x: f64, rect: [f64; 4], what: &str) {
+    let strong = gui_support::token_rgb("swamp-night", "border-strong");
+    let s = nested.opts.scale;
+    let [rx, ry, rw, rh] = nested.opts.rect_px(rect);
+    let pixels = gui_support::rgb_pixels(shot, [rx, ry, rw, rh]);
+    let columns: std::collections::BTreeSet<u32> = pixels
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.iter().zip(strong).all(|(a, b)| a.abs_diff(b) <= 2))
+        .map(|(i, _)| rx + i as u32 % rw)
+        .collect();
+    let (Some(first), Some(last)) = (columns.first().copied(), columns.last().copied()) else {
+        panic!("{what}: no bar");
+    };
+    let want = ((x * s).round() as u32, ((x + 4.0) * s).round() as u32 - 1);
+    // At 1.5 the compositor spreads an edge over two device px.
+    let slack = if s.fract() == 0.0 { 0 } else { 1 };
+    assert!(
+        first.abs_diff(want.0) <= slack && last.abs_diff(want.1) <= slack,
+        "{what}'s bar at x {first}–{last}, for {}–{}: {columns:?}",
+        want.0,
+        want.1
+    );
+}
+
 /// S17: an ffmpeg that fails the third segment (c1b2) with a VA-API
 /// stderr: the failed panel names the clip, the hint, where it stopped,
 /// the tail and the log; Try again sends the export again.
@@ -2447,6 +2484,16 @@ fn s17_export_failed() {
         "S17-export-failed.png",
         Some("456:560:1144:40"),
         "-panel",
+    );
+    // WP10's shot review: the stderr well's scrollbar is the loss list's
+    // 4 px `border-strong` bar, 3 px in from the well's stroke (x 1568–1571;
+    // it was libadwaita's own 8 px slider at 1560–1567).
+    assert_scroll_bar(
+        &nested,
+        &shot,
+        1568.0,
+        [1530.0, 240.0, 50.0, 200.0],
+        "the stderr well",
     );
     assert_clean(&mut nested);
     // Try again sends the export again: it fails at unit 3 again (units 1

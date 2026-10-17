@@ -274,8 +274,10 @@ progressbar.mini-mud > trough > progress {
   min-height: 24px;
 }
 
-/* A 2 px `border-strong` bar 6 px in from the well's right edge, always
-   shown while the list scrolls (S18); the rows make room for it. */
+/* A 4 px `border-strong` bar 6 px in from the well's right edge, always
+   shown while the list scrolls (S18; it was 2 px until WP10's shot
+   review); the rows make room for it. The export panel's stderr well
+   draws the same bar (export.css). */
 .qrec-modal .modal-list scrollbar {
   background: none;
   border: none;
@@ -284,18 +286,18 @@ progressbar.mini-mud > trough > progress {
 }
 
 .qrec-modal .modal-list scrollbar > range > trough {
-  min-width: 2px;
+  min-width: 4px;
   margin: 8px 6px 8px 0;
-  border-radius: 1px;
+  border-radius: 2px;
   background: none;
 }
 
 .qrec-modal .modal-list scrollbar > range > trough > slider {
-  min-width: 2px;
+  min-width: 4px;
   min-height: 24px;
   margin: 0;
   border: none;
-  border-radius: 1px;
+  border-radius: 2px;
   background-color: var(--qrec-border-strong);
 }
 
