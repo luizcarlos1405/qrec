@@ -2216,7 +2216,10 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
   Commands: drag reorder → `LayerOrder{target, layer, to: n − 1 − row}`;
   eye → `LayerSet{visible}`; lock → `{locked}`; rename → `{name}` (Enter
   saves, Esc cancels); overflow: Rename, Move up, Move down, Remove
-  (`LayerRemove`).
+  (`LayerRemove`). A rename that sends nothing (blank, the same name) or
+  that the core refuses shows the name again (`panel::layer_rename_outcome`,
+  `track_rename_outcome`); edits stopping (D-43: a recording) end one
+  unsaved, as they drop a field's edit (review R46).
 - **Audio rows**: role icon, label, id chip, the "Autocut" tag on
   `autocut.track`, `M` → `AudioSet{muted}`; overflow: Rename (`label`),
   Change source (submenu of devices, project scene only), Use for autocut

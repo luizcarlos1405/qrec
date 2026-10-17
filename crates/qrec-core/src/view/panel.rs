@@ -475,6 +475,46 @@ pub fn audio_rename(state: &State, track: &TrackId, label: &str) -> Option<Comma
     )
 }
 
+/// What ending an inline rename does (R46).
+#[derive(Debug, Clone, PartialEq)]
+pub enum RenameOutcome {
+    /// Send the rename (`LayerSet{name}`, `AudioSet{label}`).
+    Send(Command),
+    /// Nothing to send (blank, the same name, nothing to edit): the row
+    /// shows this name again instead of what was typed.
+    Restore(String),
+}
+
+/// The name layer `layer`'s row shows (the scene the canvas shows).
+pub fn layer_name(state: &State, layer: &LayerId) -> Option<String> {
+    let scene = canvas_scene(&state.project, &state.ui);
+    scene.layer(layer).map(|l| l.name.clone())
+}
+
+/// The label track `track`'s row shows (the scene the canvas shows).
+pub fn track_label(state: &State, track: &TrackId) -> Option<String> {
+    let scene = canvas_scene(&state.project, &state.ui);
+    scene.track(track).map(|t| t.label.clone())
+}
+
+/// A layer rename that ended with `name`: [`layer_rename`]'s command, or
+/// the row's name back.
+pub fn layer_rename_outcome(state: &State, layer: &LayerId, name: &str) -> RenameOutcome {
+    match layer_rename(state, layer, name) {
+        Some(cmd) => RenameOutcome::Send(cmd),
+        None => RenameOutcome::Restore(layer_name(state, layer).unwrap_or_default()),
+    }
+}
+
+/// A track rename that ended with `label`: [`audio_rename`]'s command, or
+/// the row's label back.
+pub fn track_rename_outcome(state: &State, track: &TrackId, label: &str) -> RenameOutcome {
+    match audio_rename(state, track, label) {
+        Some(cmd) => RenameOutcome::Send(cmd),
+        None => RenameOutcome::Restore(track_label(state, track).unwrap_or_default()),
+    }
+}
+
 /// The overflow's "Use for autocut": `AutocutSettings{track}`.
 pub fn use_for_autocut(track: &TrackId) -> Command {
     Command::AutocutSettings {
@@ -1630,6 +1670,34 @@ mod tests {
         assert_eq!(layer_rename(&state, &l2, "   "), None, "blank");
         assert_eq!(audio_rename(&state, &a1, "Yeti Nano"), None);
         assert_eq!(layer_set(&s07(), &l2, LayerPatch::default()), None);
+    }
+
+    /// R46: a rename that sends nothing (blank, the same name trimmed,
+    /// nothing to edit) puts the row's name back; one that sends is its
+    /// command.
+    #[test]
+    fn a_rename_sends_or_puts_the_name_back() {
+        let state = s02();
+        let (l2, a1) = (LayerId::numbered(2), TrackId::numbered(1));
+        let restore = |name: &str| RenameOutcome::Restore(name.to_owned());
+        assert_eq!(layer_rename_outcome(&state, &l2, ""), restore("Face"));
+        assert_eq!(layer_rename_outcome(&state, &l2, " Face "), restore("Face"));
+        assert_eq!(
+            layer_rename_outcome(&state, &l2, "Webcam"),
+            RenameOutcome::Send(layer_rename(&state, &l2, "Webcam").unwrap())
+        );
+        assert_eq!(
+            track_rename_outcome(&state, &a1, "  "),
+            restore("Yeti Nano")
+        );
+        assert!(matches!(
+            track_rename_outcome(&state, &a1, "Desk mic"),
+            RenameOutcome::Send(Command::AudioSet { .. })
+        ));
+        // Program without a selection edits nothing: the shown name back.
+        assert_eq!(layer_rename_outcome(&s07(), &l2, "Webcam"), restore("Face"));
+        assert_eq!(layer_name(&state, &l2).as_deref(), Some("Face"));
+        assert_eq!(track_label(&state, &a1).as_deref(), Some("Yeti Nano"));
     }
 
     #[test]

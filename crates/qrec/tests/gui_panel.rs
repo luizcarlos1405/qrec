@@ -655,6 +655,147 @@ fn an_edit_stays_with_its_scene() {
     assert_clean(nested.window(0));
 }
 
+/// R46: a rename that sends nothing (cleared, then Enter) or that the
+/// core refuses (a recording started meanwhile: scene edits wait for
+/// Idle, D-43) shows the name again, not what was typed.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_rename_that_lands_nowhere_shows_the_name() {
+    let mut nested = Nested::start(AREA, "rename-back", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &ui(|_| {}));
+    open(&mut nested, &project, levels(DESIGN_LEVELS));
+    let before = history_cursor(&nested, &project);
+    // The overflow's Rename (its first item), the name cleared, Enter.
+    let rename_blank = |nested: &mut Nested, menu: &str| {
+        let (x, y) = center(region(nested.window(0), menu));
+        nested.pointer().click(x, y);
+        nested.window(0).wait_idle();
+        let held = nested.keys_held(
+            &[
+                "-k",
+                "Return",
+                "-s",
+                "300",
+                "-M",
+                "ctrl",
+                "-k",
+                "a",
+                "-m",
+                "ctrl",
+                "-k",
+                "BackSpace",
+                "-k",
+                "Return",
+            ],
+            300,
+        );
+        held.wait();
+        nested.window(0).wait_idle();
+    };
+    rename_blank(&mut nested, "layer-menu-L2");
+    assert_has(&nested.window(0).labels("layer-row-L2"), &["Face"]);
+    rename_blank(&mut nested, "audio-menu-A1");
+    assert_has(&nested.window(0).labels("audio-row-A1"), &["Yeti Nano"]);
+    assert_eq!(history_cursor(&nested, &project), before, "nothing sent");
+
+    // A recording starts while "Webcam" is typed: edits stop (D-43), so
+    // the rename ends unsaved at once instead of staying open in the
+    // disabled row, and the name shows.
+    let (x, y) = center(region(nested.window(0), "layer-menu-L2"));
+    nested.pointer().click(x, y);
+    nested.window(0).wait_idle();
+    let started = Instant::now();
+    let held = nested.keys_held(
+        &[
+            "-k", "Return", "-s", "300", "-M", "ctrl", "-k", "a", "-m", "ctrl", "Webcam", "-s",
+            "10000", "-k", "Return",
+        ],
+        1000,
+    );
+    poll(Duration::from_secs(10), "Webcam typed in L2's name", || {
+        let fields = nested.window(0).entries("layer-row-L2");
+        (fields.get("layer-row-L2").map(String::as_str) == Some("Webcam")).then_some(())
+    });
+    cli_ok(&nested, &project, &["record", "start", "--countdown", "0"]);
+    let phase = |nested: &Nested| {
+        nested.cli_json(&project, &["status"])["data"]["runtime"]["record"]["phase"].clone()
+    };
+    poll(Duration::from_secs(30), "recording", || {
+        (phase(&nested) == "recording").then_some(())
+    });
+    // Before the run's Enter (≈ 10.7 s in).
+    let before_enter =
+        (started + Duration::from_millis(10_000)).saturating_duration_since(Instant::now());
+    let name_back = |nested: &mut Nested| {
+        let gui = nested.window(0);
+        let labels = gui.labels("layer-row-L2");
+        let editing = gui.entries("layer-row-L2").contains_key("layer-row-L2");
+        (labels.iter().any(|l| l == "Face") && !editing).then_some(labels)
+    };
+    let labels = poll(before_enter, "the rename to end, the name back", || {
+        name_back(&mut nested)
+    });
+    assert!(!labels.iter().any(|l| l == "Webcam"), "{labels:#?}");
+    held.wait();
+    nested.window(0).wait_idle();
+    assert_eq!(layer(&nested, &project, None, "L2")["name"], "Face");
+    cli_ok(&nested, &project, &["record", "stop"]);
+    poll(Duration::from_secs(30), "idle again", || {
+        (phase(&nested) == "idle").then_some(())
+    });
+    nested.window(0).wait_idle();
+
+    // Refused by the core: a pasted name with a tab (no control
+    // characters in a name). The name shows again, and the refusal toasts.
+    // `wl-copy` on the nested display (`nested_tool`: its runtime dir, never
+    // the person's session) serves the clipboard from the background until
+    // that display goes; its output goes to the run's files.
+    let runtime = nested.env.xdg_runtime_dir();
+    assert!(
+        !runtime.starts_with("/run/user/"),
+        "the nested runtime dir, never the session's: {}",
+        runtime.display()
+    );
+    let copy = run_tool(
+        nested.nested_tool("wl-copy").arg("Web\tcam"),
+        gui_support::TOOL_TIMEOUT,
+    );
+    assert!(copy.status.success(), "wl-copy: {}", copy.stderr);
+    let (x, y) = center(region(nested.window(0), "layer-menu-L2"));
+    nested.pointer().click(x, y);
+    nested.window(0).wait_idle();
+    let held = nested.keys_held(
+        &[
+            "-k", "Return", "-s", "300", "-M", "ctrl", "-k", "a", "-k", "v", "-m", "ctrl", "-s",
+            "3000", "-k", "Return",
+        ],
+        1500,
+    );
+    poll(
+        Duration::from_secs(10),
+        "the pasted name in L2's field",
+        || {
+            let fields = nested.window(0).entries("layer-row-L2");
+            (fields.get("layer-row-L2").map(String::as_str) == Some("Web\tcam")).then_some(())
+        },
+    );
+    held.wait();
+    nested.window(0).wait_idle();
+    let labels = poll(
+        Duration::from_secs(10),
+        "the name back after the refusal",
+        || name_back(&mut nested),
+    );
+    assert!(!labels.iter().any(|l| l.contains("cam")), "{labels:#?}");
+    assert_eq!(layer(&nested, &project, None, "L2")["name"], "Face");
+    let toast = nested.window(0).labels("toast-host");
+    assert!(
+        toast.iter().any(|t| t.contains("control characters")),
+        "the refusal toasts: {toast:?}"
+    );
+    assert_clean(nested.window(0));
+}
+
 // ------------------------------------------------------------------ S13
 
 /// L2's box on the 1:2 Live preview at rest (BRIEF §3.1: (1500, 760, 384,

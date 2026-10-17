@@ -22,7 +22,7 @@ use std::rc::Rc;
 use gtk::prelude::*;
 use qrec_core::ctx::AudioDeviceInfo;
 use qrec_core::protocol::command::{AudioPatch, SceneTarget};
-use qrec_core::view::panel::{self, AddGroup, AudioRow, NO_TRACKS};
+use qrec_core::view::panel::{self, AddGroup, AudioRow, NO_TRACKS, RenameOutcome};
 use qrec_core::{AudioRole, State, TrackId};
 
 use super::menus::{self, Menu};
@@ -259,8 +259,25 @@ fn wire(ctx: &Ctx, view: &Rc<AudioRowView>) {
             if weak.upgrade().is_some_and(|view| view.dropping.get()) {
                 return;
             }
-            if let Some(cmd) = panel::audio_rename(&store.state(), &track, &label.text()) {
-                store.dispatch(cmd);
+            // A rename that sends nothing, or that the core refuses, puts
+            // the label back (R46).
+            match panel::track_rename_outcome(&store.state(), &track, &label.text()) {
+                RenameOutcome::Send(cmd) => {
+                    let (label, track) = (label.downgrade(), track.clone());
+                    super::send_rename(&store, cmd, move |state| {
+                        if let Some(label) = label.upgrade()
+                            && !label.is_editing()
+                            && let Some(name) = panel::track_label(state, &track)
+                        {
+                            label.set_text(&name);
+                        }
+                    });
+                }
+                RenameOutcome::Restore(name) => {
+                    if label.text() != name {
+                        label.set_text(&name);
+                    }
+                }
             }
         }),
     );
@@ -411,11 +428,13 @@ impl AudioRowView {
         state: &State,
         (mics, monitors): (&[AudioDeviceInfo], &[AudioDeviceInfo]),
     ) {
-        // Another scene: an edit in progress was for the one that went.
+        // Another scene: an edit in progress was for the one that went. Edits
+        // stopped (D-43: a recording): it can't land either, so it ends
+        // unsaved rather than be refused (R46).
         let target = qrec_core::ui_normalize::edit_target(&state.project, &state.ui);
         let scene_changed = self.edits.borrow().as_ref() != Some(&target);
         *self.edits.borrow_mut() = Some(target);
-        if scene_changed {
+        if scene_changed || !row.enabled {
             self.drop_rename();
             self.gain.reset(&numeric::tenths(row.gain_db));
             self.sync

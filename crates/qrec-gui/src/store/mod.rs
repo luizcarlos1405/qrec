@@ -642,7 +642,10 @@ impl Store {
         self.notify(Notice::from(toast));
     }
 
-    fn apply_default(&self, cmd: &Command, reply: Reply) {
+    /// The default reply policy (G§3.7) for `cmd`'s `reply`: what
+    /// [`Store::dispatch`] does, for a `dispatch_with` handler that adds its
+    /// own step first (a refused rename puts the name back, R46).
+    pub fn apply_default(&self, cmd: &Command, reply: Reply) {
         match default_action(cmd, &reply, &self.state()) {
             ReplyAction::Nothing => {}
             ReplyAction::Confirm { cmd, error } => {

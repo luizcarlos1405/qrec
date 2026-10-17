@@ -24,7 +24,7 @@ use gtk::graphene;
 use gtk::prelude::*;
 use qrec_core::protocol::command::{LayerPatch, SceneTarget};
 use qrec_core::view::DragKind;
-use qrec_core::view::panel::{self, LayerRow, NO_LAYERS};
+use qrec_core::view::panel::{self, LayerRow, NO_LAYERS, RenameOutcome};
 use qrec_core::{LayerId, State, VideoSource};
 
 use super::menus::{self, Menu};
@@ -279,8 +279,26 @@ impl LayerList {
                 if dropping.get() {
                     return;
                 }
-                if let Some(cmd) = panel::layer_rename(&store.state(), &id, &label.text()) {
-                    store.dispatch(cmd);
+                // What was typed shows only as long as it is the name: a
+                // rename that sends nothing, or that the core refuses, puts
+                // the name back (R46).
+                match panel::layer_rename_outcome(&store.state(), &id, &label.text()) {
+                    RenameOutcome::Send(cmd) => {
+                        let (label, id) = (label.downgrade(), id.clone());
+                        super::send_rename(&store, cmd, move |state| {
+                            if let Some(label) = label.upgrade()
+                                && !label.is_editing()
+                                && let Some(name) = panel::layer_name(state, &id)
+                            {
+                                label.set_text(&name);
+                            }
+                        });
+                    }
+                    RenameOutcome::Restore(name) => {
+                        if label.text() != name {
+                            label.set_text(&name);
+                        }
+                    }
                 }
             }),
         );
@@ -691,10 +709,12 @@ impl RowView {
 
     fn show(&self, row: &LayerRow, state: &State, rows: usize) {
         // Another scene: a rename in progress was for the one that went.
+        // Edits stopped (D-43: a recording): it can't land either, so it
+        // ends unsaved rather than stay open in a disabled row (R46).
         let target = qrec_core::ui_normalize::edit_target(&state.project, &state.ui);
         let scene_changed = self.edits.borrow().as_ref() != Some(&target);
         *self.edits.borrow_mut() = Some(target);
-        if scene_changed {
+        if scene_changed || !row.enabled {
             self.drop_rename();
         }
         if self.model.borrow().as_ref() == Some(row) {

@@ -463,13 +463,15 @@ impl InspectorView {
         };
         inner.empty.set_visible(false);
         inner.fields_box.set_visible(true);
-        // Another scene or layer: an edit in progress was for what went.
+        // Another scene or layer: an edit in progress was for what went. Edits
+        // stopped (D-43: a recording): it can't land, so it ends unsaved
+        // rather than be refused when the disabled field lets go (R46).
         let edits = (edit_target(&state.project, &state.ui), insp.layer.clone());
         let layer_changed = inner.edits.borrow().as_ref() != Some(&edits);
         *inner.edits.borrow_mut() = Some(edits);
         for field in InspectorField::ALL {
             let input = &inner.fields[&FieldKey::from(field)];
-            if layer_changed {
+            if layer_changed || !insp.enabled {
                 input.reset(&field.text(&insp));
             } else {
                 input.set_value(&field.text(&insp));

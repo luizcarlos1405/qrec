@@ -561,8 +561,10 @@ impl Nested {
     }
 
     /// A command for a tool on the nested display (never another: the
-    /// display variables are the nested ones, `WAYLAND_SOCKET` gone).
-    fn nested_tool(&self, program: &str) -> Command {
+    /// display variables are the nested ones, `WAYLAND_SOCKET` gone). A
+    /// case runs Wayland tools only through this (`wl-copy`): the test's
+    /// own `XDG_RUNTIME_DIR` is the person's session.
+    pub fn nested_tool(&self, program: &str) -> Command {
         let mut command = Command::new(program);
         command
             .env_remove("WAYLAND_SOCKET")
