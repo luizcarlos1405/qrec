@@ -2476,6 +2476,11 @@ Program (Tab) to play the timeline" (GUI D-01; an empty timeline or a
 refusing gate says so first; the `Play` command itself still switches,
 A§5.10), and the layer nudges move a layer of `edit_target`'s scene, or are
 `Unavailable` "Select a clip to edit its take layout" (GUI D-06, A§5.10).
+From Idle `record.toggle` and `record.over` are `Unavailable` while a take
+can't start: the capture engine is stuck ("The capture engine is stuck
+(GPU driver?); restart Qrec"), the scene is empty, an export runs (the
+GUI's Record button says the same); an invalid `qrec.json` isn't one, since
+a take moves the bad file aside first (A§7.7).
 `keys.toml`: `[bindings]` id → string or array. `qrec keys --json` prints
 `[{"id","group","label","keys":[..],"cli","contexts"}]`.
 

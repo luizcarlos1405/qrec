@@ -65,7 +65,7 @@ use crate::app::App;
 use crate::host::Port;
 use crate::host::opener::{GuiOpener, PREVIEW_MAX};
 use crate::host::queue::{Inbound, Queue};
-use crate::store::local::StartupPhase;
+use crate::store::local::{LocalUi, StartupPhase};
 use crate::{guard, testctl};
 
 /// How long before the stage says "Opening <name>…".
@@ -1023,9 +1023,7 @@ impl Startup {
 
     /// Shows a blocking page (it replaces the editor).
     fn block(&self, app: &Rc<App>, page: BlockKind) {
-        app.ctx
-            .store
-            .update_local(move |l| l.startup = StartupPhase::Blocked(page));
+        app.ctx.store.update_local(move |l| blocked(l, page));
     }
 
     /// A blocking page's button.
@@ -1041,6 +1039,16 @@ impl Startup {
             BlockingAction::Wait => self.choose(Choice::Wait),
         }
     }
+}
+
+/// A blocking page replaces the editor, and the overlays go with it in the
+/// same update (R36): Settings, a confirmation or the D-12 modal left open
+/// when startup blocked or the session crashed stayed over the page, its
+/// scrim taking the page's buttons, with no key to close it. Their views
+/// follow `LocalUi` and close their layers.
+fn blocked(local: &mut LocalUi, page: BlockKind) {
+    local.startup = StartupPhase::Blocked(page);
+    local.overlays.clear();
 }
 
 /// A failed open that X3 shows: `qrec.json` invalid or missing.
@@ -1059,6 +1067,25 @@ mod tests {
     use qrec_core::{JobId, TakeId, testkit};
 
     use super::*;
+
+    /// A blocking page takes the overlays with it (R36): nothing stays over
+    /// the page, its scrim taking the page's buttons.
+    #[test]
+    fn blocking_drops_the_overlays() {
+        use crate::store::local::{Overlay, SettingsPage};
+        let mut local = LocalUi {
+            startup: StartupPhase::Open,
+            overlays: vec![
+                Overlay::Settings(SettingsPage::Project),
+                Overlay::QuitWhileExporting { percent: 42 },
+                Overlay::Menu,
+            ],
+            ..LocalUi::default()
+        };
+        blocked(&mut local, BlockKind::GstStuck);
+        assert_eq!(local.startup, StartupPhase::Blocked(BlockKind::GstStuck));
+        assert!(local.overlays.is_empty(), "{:?}", local.overlays);
+    }
 
     #[test]
     fn recording_pages() {

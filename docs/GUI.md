@@ -305,6 +305,12 @@ queues in the GUI instead of spawning a headless recorder.
 - A signal before step 4 quits with 130 (the workers check `Interrupts`
   between steps). From step 4 on, the host handles signals (A§8.6), also
   before the Session is open.
+- Until the Session is open the header's buttons do what their keys do:
+  nothing but Quit (`router::decide_button`). A blocking page (startup's
+  or a session that crashed) clears `LocalUi.overlays` in the update that
+  shows it, so no dialog stays over the page (review fix R36: Settings
+  opened from the gear while the window waited, then covered X1 with its
+  scrim, and `Esc` couldn't close it).
 
 ### G§3.4 GUI host (shell)
 
@@ -513,6 +519,7 @@ impl Store {
     pub fn subscribe_local(&self, f: impl Fn(&LocalUi) + 'static) -> Subscription;
     pub fn dispatch(&self, cmd: Command);                          // default reply policy (G§3.7)
     pub fn dispatch_with(&self, cmd: Command, confirmed: bool, done: impl FnOnce(Reply) + 'static);
+    pub fn dispatch_then(&self, cmd: Command, after: impl FnOnce(&Reply) + 'static); // default policy, then `after` (a refused pick shows the project again)
     pub fn notify(&self, notice: Notice);                          // a toast made by the GUI
     pub fn keymap(&self) -> Rc<Keymap>;
     pub fn sent(&self) -> std::cell::Ref<'_, SentValues>;          // echo rule
@@ -590,7 +597,8 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
 ### G§3.7 Dispatch, gestures, confirmations, toasts
 
 - **One path.** A button or menu item with a binding calls
-  `ctx.keys.run_binding(id)`, so it gets the key's pre-steps (G§3.8).
+  `ctx.keys.run_binding(id)`, so it gets the key's pre-steps (G§3.8) and,
+  like the key, runs nothing but `app.quit` before the project opens.
   Others build a `Command` and call `ctx.store.dispatch`. Nothing else
   submits requests (R8).
 - **Default reply policy** (`store/replies.rs`):
@@ -669,7 +677,22 @@ each key press, first match:
    `None` → let it propagate.
 2. Focus in an editable (`gtk::Text`, `Entry`, `SearchEntry`,
    `EditableLabel` while editing, `NumericField`) → propagate. The field
-   handles `Enter`, `Esc` and `Tab`.
+   handles `Enter`, `Esc` and `Tab`, and a held key's repeats.
+
+   Auto-repeat (review fix R30): Wayland clients repeat a held key as
+   presses with no release between, and GTK has no repeat flag, so the
+   controller follows the releases too and keeps the hardware keycodes
+   held (`router::HeldKeys`, forgotten when the window stops being
+   active): a press of one already down is a repeat (`KeyInput.repeat`).
+   A repeat goes on with the steps below only when they run one of
+   `REPEATING_BINDINGS` (`seek.*`, `select.prev`/`next`, `clip.move-*`,
+   `clip.nudge-*`, `layer.nudge-*`, `zoom.in`/`out`,
+   `history.undo`/`redo`), or propagate a key that isn't `Enter` or
+   `Space` (a focused widget's, a list's or an overlay's navigation);
+   anything else is swallowed: toggles, `record.*`, `cancel` and step 5's
+   chain, a button's activation, a reason already said. (Holding `R` past
+   the repeat delay started a take and stopped it 600 ms later; held
+   `Space`, `Tab`, `b` and `n` flapped.)
 3. A drag in progress (`LocalUi.drag`) → D-42: `Esc` cancels it; `n`
    toggles snapping during a trim; modifiers go to the gesture; during a
    `LayerNudge` drag the `layer.nudge-*` keys go on with the burst (D-33,
@@ -678,7 +701,9 @@ each key press, first match:
    LayersSheet, or the export panel in Setup, Done or Failed): `Tab`,
    `Enter`, `Space` and the arrows propagate to the overlay's widgets;
    `keymap::lookup` in context `Overlay` (`cancel` closes the top overlay,
-   `app.quit`); nothing else.
+   except on the autocut page in the Narrow layers sheet, where it is the
+   page's Cancel, GUI action `autocut.page`, as step 5 docked; `app.quit`);
+   nothing else.
 5. `Esc`, before the lookup, first that applies: close the passive export
    panel (D-49) → close the autocut page (its Cancel) → end a bin preview
    → `action_for("cancel")` (`RecordCancel`, clear the clip selection,
@@ -1858,8 +1883,11 @@ conflicting chords drop out (`keymap::usable_keys`, made `pub`).
 
 `hint_state(&State, &GuiFacts) -> HintState`, first match:
 
-1. top overlay Modal → Modal; Palette → Palette; Settings → Settings.
-   (The cheat sheet covers the hint bar: keep the state below.)
+1. top overlay Modal → Modal; Palette → Palette; Settings → Settings;
+   LayersSheet (Narrow) → LayersSheet, `autocut` when the panel page is
+   Autocut: the sheet keeps the keyboard (G§3.8 step 4), so the editor's
+   keys under it don't run. (The cheat sheet covers the hint bar: keep the
+   state below.)
 2. drag TrimStart/TrimEnd → TrimDrag; Move → MoveDrag; BinInsert →
    BinDrag; Layer* → LayerEdit.
 3. record Countdown → Countdown; Starting or Recording → Recording;
@@ -1870,7 +1898,8 @@ conflicting chords drop out (`keymap::usable_keys`, made `pub`).
 5. panel page Autocut → AutocutPage.
 6. focus Bin → Bin.
 7. focus Stage with `edit_target` and a selected layer → LayerEdit.
-8. project scene empty → FirstRun.
+8. Live mode and the project scene empty → FirstRun (the stage shows S01a
+   only in Live, D-27; in Program an empty scene goes on to step 9).
 9. a screen refused and S24 approved → PortalDenied.
 10. timeline empty → Empty.
 11. px/frame ≥ 24 → FrameZoom.
@@ -1920,6 +1949,7 @@ decides, because some ids are handled by the GUI and not by
 | ExportSetup / ExportDone / ExportFailed | `[Enter]` "Export" / "Open file" / "Try again" · `[Tab]` "Move focus" · `[Esc]` "Close" |
 | Modal | `[Tab]` "Move focus" · `[Enter]` "Activate focused button" · `[Esc]` "Cancel" |
 | Settings (not drawn) | `[Tab]` "Move focus" · `[Esc]` "Close" |
+| LayersSheet (not drawn) | `[Tab]` "Move focus" · `[Esc]` "Close"; with the autocut page: `[Enter]` "Apply autocut" · `[Tab]` "Move focus" · `[Esc]` "Cancel" |
 | Palette (gated) | `[↑][↓]` "Choose" · `[Enter]` "Run" · `[Esc]` "Close" |
 | PortalDenied (gated) | `record.toggle` "Try again" · `canvas.mode` "Program" · `bin.toggle` "Bin" · `keys.help` "All keys" |
 | Blocking | S23: `[Enter]` "Check again" · `app.quit` "Quit"; other pages: `app.quit` "Quit" |
@@ -1945,7 +1975,9 @@ As built (WP6, round 3):
 - Title = `project.name`; subtitle = `format::clips_summary` or "No clips
   yet"; while `runtime.recovering` isn't empty: "Recovering take 7…" with
   a 12 px spinner (D-47).
-- Record button (C01 Record):
+- Record button (C01 Record). Idle, it says what its key does: disabled
+  with `keymap::action_for("record.toggle")`'s reason when that is
+  `Unavailable`, so the button, `R` and its hint agree:
 
   | State | Button | Tooltip |
   | --- | --- | --- |
@@ -1953,7 +1985,6 @@ As built (WP6, round 3):
   | Idle, scene empty | disabled | "Add a layer or audio track first" |
   | Idle, export running | disabled | "Wait for the export to finish" |
   | `runtime.engine_stuck` | disabled | "The capture engine is stuck (GPU driver?); restart Qrec" |
-  | `runtime.disk_invalid` | disabled | "qrec.json on disk is invalid" |
   | Countdown | outlined `Cancel [R]` | "Cancel the countdown" + key |
   | Starting, Recording | `■ Stop [R]`, 2 px `record` line under the header | "Stop recording" + key |
   | Finalizing | `Saving…` + spinner, disabled, line kept | "Take N is finalizing" |
@@ -1973,11 +2004,17 @@ As built (WP6, round 3):
   hint bar) has no layout, and `layers_button` = `narrow` (built by WP0a).
   (Changed in the WP0a review: `header` had no input that said the layout
   was narrow, so the button could never show.)
-- As built (WP6): idle record blockers in the order engine stuck, disk,
-  empty scene, export; the subtitle while recovering is "Recovering N
-  takes…"; the idle export tooltip is "Export"; disabled record tooltips
-  name no keys. The summary is two labels on one baseline ("10 clips · "
-  and "00:04:06:11"), so a reader of the labels joins them.
+- As built (WP6, review fix R34): the idle record blockers are
+  `keymap::start_blocker`'s, in the order engine stuck, empty scene,
+  export (the stuck engine was the header's only, so `R` and `o` sent a
+  take the core refused with a sticky error toast; now they say why in an
+  info toast). An invalid `qrec.json` blocks none of them: a take moves
+  the bad file aside first (A§7.7), as the key and niri's `qrec record
+  toggle` always did (the header showed Record disabled). The subtitle
+  while recovering is "Recovering N takes…"; the idle export tooltip is
+  "Export"; disabled record tooltips name no keys. The summary is two
+  labels on one baseline ("10 clips · " and "00:04:06:11"), so a reader of
+  the labels joins them.
 
 ### G§4.5 `view::timeline` and `view::ruler` (WP3)
 
@@ -2607,7 +2644,10 @@ otherwise an info toast titled with the reason.
   rate (segmented 24 / 25 / 30 / 50 / 60; none selected for another rate);
   Background (`#RRGGBB` field); the footer "Saved in this project's
   ~/videos/rust-traits-talk/qrec.json." The row captions are taken from
-  the pen frame `GPmrg` (the PNG cuts them off).
+  the pen frame `GPmrg` (the PNG cuts them off). `disabled`: why the rows
+  wait (D-43: `view::enabled` of their `ProjectSet`, so while a take
+  records or finalizes and while `qrec.json` on disk is invalid), or
+  `None`; one reason fits the three rows.
 - Commands: Size → `ProjectSet{canvas}` with the new size; Frame rate →
   `ProjectSet{canvas}` with the new fps (with takes →
   `confirmation_required` → the S18b modal over Settings); Background →
@@ -2616,10 +2656,21 @@ otherwise an info toast titled with the reason.
 - As built (WP6): `ProjectPage` has `caption` and `footer_path`; the
   captions are stand-ins in `view::settings` until the pen export
   (`GPmrg`). The tabs are `adw::ToggleGroup` + `gtk::Stack`, not
-  `adw::InlineViewSwitcher` (its pages can't be disabled, D-48). Controls
-  snap back to the project's value after a pick (the rate reads 30 under
-  S18b's modal, as drawn), the Size dropdown is tracked as a Menu overlay,
-  and the dialog is centered on the window (G§3.15).
+  `adw::InlineViewSwitcher` (its pages can't be disabled, D-48). The rate
+  snaps back to the project's value after a pick (it reads 30 under
+  S18b's modal, as drawn); Size and Background show the pick until its
+  snapshot, and a refused one shows the project's value again
+  (`Store::dispatch_then`). The Size dropdown is tracked as a Menu
+  overlay, and the dialog is centered on the window (G§3.15).
+- Review fix R27: the rows follow D-43. While `disabled` is set they are
+  insensitive with it as their tooltip, and an open Size list closes;
+  the page follows every snapshot, not only canvas changes. (They stayed
+  enabled while recording: a Size pick the core refused left the
+  dropdown on a size the project didn't have, across reopening.)
+- Review fix R35: the dialog opens on the project's values
+  (`ProjectPage::refresh` before the layer opens): text typed in
+  Background and left there, with its "Use #RRGGBB", no longer comes back
+  with it.
 
 ### G§4.11 Interim and draft view models (WP0a interim, WP8 and WP9 gated)
 

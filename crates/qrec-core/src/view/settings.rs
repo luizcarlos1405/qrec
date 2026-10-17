@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::model::{Color, Fps};
 use crate::protocol::command::{CanvasSpec, Command, Nullable};
 use crate::state::State;
-use crate::view::{GuiFacts, format};
+use crate::view::{GuiFacts, enabled, format};
 
 /// The dialog's pages, in tab order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -104,6 +104,11 @@ pub struct ProjectPage {
     /// The path in the footer ("~/videos/rust-traits-talk/qrec.json"), set
     /// in the mono face.
     pub footer_path: String,
+    /// Why the rows are disabled now, or `None` (D-43): they send
+    /// `ProjectSet`, which waits while a take records or finalizes and
+    /// while `qrec.json` on disk is invalid (`view::enabled`). One reason
+    /// fits all three rows.
+    pub disabled: Option<String>,
 }
 
 /// The Size dropdown: "1920×1080 (16:9)", …, plus the current size when it
@@ -232,6 +237,7 @@ pub fn project_page(state: &State, dir_display: &str) -> ProjectPage {
         },
         footer: format!("Saved in this project's {footer_path}."),
         footer_path,
+        disabled: enabled(state, &size_command(state, canvas.width, canvas.height)).err(),
     }
 }
 
@@ -355,6 +361,71 @@ mod tests {
         // 60 fps as 120/2 still selects 60.
         state.project.canvas.fps = Fps::new(120, 2);
         assert_eq!(project_page(&state, "x").rate.selected, Some(4));
+    }
+
+    /// D-43: the rows send `ProjectSet`, so they wait while a take records
+    /// or finalizes and while `qrec.json` on disk is invalid, with the
+    /// reason the core would give (R27: a refused Size pick kept showing a
+    /// size the project didn't have).
+    #[test]
+    fn the_rows_follow_d43() {
+        use crate::ids::{TakeId, TimerId};
+        use crate::state::{RecordMode, RecordPhase};
+        let idle = testkit::design_state();
+        assert_eq!(project_page(&idle, "x").disabled, None);
+        let take = TakeId::numbered(10);
+        let mode = RecordMode::Append;
+        for (phase, why) in [
+            (
+                RecordPhase::Countdown {
+                    remaining: 3,
+                    mode: mode.clone(),
+                    timer: TimerId(1),
+                    start_req: None,
+                    wait: false,
+                },
+                "Not during the countdown",
+            ),
+            (
+                RecordPhase::Starting {
+                    take: take.clone(),
+                    mode: mode.clone(),
+                    start_req: None,
+                    wait: false,
+                },
+                "Not while recording",
+            ),
+            (
+                RecordPhase::Recording {
+                    take: take.clone(),
+                    mode: mode.clone(),
+                    elapsed_ns: 0,
+                    waiters: vec![],
+                },
+                "Not while recording",
+            ),
+            (
+                RecordPhase::Finalizing {
+                    take: take.clone(),
+                    mode: mode.clone(),
+                    cancelled: false,
+                    stop_reqs: vec![],
+                    waiters: vec![],
+                    discard: None,
+                },
+                "Not while take 10 is finalizing",
+            ),
+        ] {
+            let mut state = idle.clone();
+            state.runtime.record = phase;
+            assert_eq!(project_page(&state, "x").disabled.as_deref(), Some(why));
+        }
+        let mut invalid = idle;
+        invalid.runtime.disk_invalid = Some("/timeline/clips/4/out: 1400 > 1377".into());
+        assert_eq!(
+            project_page(&invalid, "x").disabled.as_deref(),
+            Some("qrec.json on disk is invalid")
+        );
     }
 
     /// The commands are what `qrec project set` sends: a size applies at

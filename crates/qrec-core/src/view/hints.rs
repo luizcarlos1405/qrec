@@ -34,6 +34,12 @@ pub enum HintState {
     Modal,
     Palette,
     Settings,
+    /// The Narrow layout's layers sheet keeps the keyboard (G§3.8 step 4):
+    /// only its widgets' keys and `Esc`. `autocut`: the autocut page shows
+    /// in it.
+    LayersSheet {
+        autocut: bool,
+    },
     TrimDrag,
     MoveDrag,
     BinDrag,
@@ -68,11 +74,17 @@ pub const MAX_PX_PER_FRAME: f64 = 128.0;
 /// [`HintState::Blocking`] itself: the facts don't know the startup page.)
 pub fn hint_state(state: &State, facts: &GuiFacts) -> HintState {
     // 1. The overlay on top (the cheat sheet covers the bar: the state
-    //    below shows).
+    //    below shows). The Narrow layers sheet traps the keyboard like the
+    //    others: the editor's keys don't reach the window under it.
     match facts.top_overlay {
         Some(OverlayKind::Modal) => return HintState::Modal,
         Some(OverlayKind::Palette) => return HintState::Palette,
         Some(OverlayKind::Settings) => return HintState::Settings,
+        Some(OverlayKind::LayersSheet) => {
+            return HintState::LayersSheet {
+                autocut: facts.panel_page == PanelPageKind::Autocut,
+            };
+        }
         _ => {}
     }
     // 2. A drag (a scrub keeps the state below).
@@ -113,8 +125,10 @@ pub fn hint_state(state: &State, facts: &GuiFacts) -> HintState {
     {
         return HintState::LayerEdit;
     }
-    // 8.–13. What the project holds and how it is shown.
-    if state.project.scene.is_empty() {
+    // 8.–13. What the project holds and how it is shown. The first run is
+    //    Live mode's, as the stage shows it (D-27): in Program an empty
+    //    scene leaves the states below.
+    if state.ui.canvas_mode == CanvasMode::Live && state.project.scene.is_empty() {
         return HintState::FirstRun;
     }
     // S24 is approved (G§0.2): a refused screen is its own state.
@@ -238,23 +252,30 @@ impl Items<'_> {
     /// An item for bindings `ids`, enabled when any of them is (G§4.3:
     /// "a combined item when either is").
     fn bind(&mut self, ids: &[&str], label: &str) -> &mut Self {
+        self.bind_emphasized(ids, label, false)
+    }
+
+    /// `bind`, emphasized when `on` (S05b). The emphasis goes with the
+    /// item: one left out (no usable key) takes it along, it never passes
+    /// to the item before (R78).
+    fn bind_emphasized(&mut self, ids: &[&str], label: &str, on: bool) -> &mut Self {
         let enabled = ids
             .iter()
             .any(|id| hint_enabled(id, self.state, self.facts));
-        self.push_bound(ids, None, label, enabled)
+        self.push_bound(ids, None, label, enabled, on)
     }
 
     /// An item for bindings `ids` that is always enabled (`Esc` cancels a
     /// drag whatever `cancel` would do outside it, D-42).
     fn bind_on(&mut self, ids: &[&str], label: &str) -> &mut Self {
-        self.push_bound(ids, None, label, true)
+        self.push_bound(ids, None, label, true, false)
     }
 
     /// `bind` showing `prefer` when the binding still has it (`x` for
     /// remove).
     fn bind_prefer(&mut self, id: &str, prefer: &str, label: &str) -> &mut Self {
         let enabled = hint_enabled(id, self.state, self.facts);
-        self.push_bound(&[id], Some(prefer), label, enabled)
+        self.push_bound(&[id], Some(prefer), label, enabled, false)
     }
 
     fn push_bound(
@@ -263,6 +284,7 @@ impl Items<'_> {
         prefer: Option<&str>,
         label: &str,
         enabled: bool,
+        emphasized: bool,
     ) -> &mut Self {
         let keys: Vec<Vec<String>> = ids
             .iter()
@@ -274,7 +296,7 @@ impl Items<'_> {
                 keys,
                 label: label.to_owned(),
                 enabled,
-                emphasized: false,
+                emphasized,
             });
         }
         self
@@ -297,14 +319,6 @@ impl Items<'_> {
     /// A label-only item ("Release to trim").
     fn text(&mut self, label: &str) -> &mut Self {
         self.literal(&[], label, true)
-    }
-
-    /// The last item pushed is emphasized when `on`.
-    fn emphasize_last(&mut self, on: bool) -> &mut Self {
-        if let Some(last) = self.out.last_mut() {
-            last.emphasized = on;
-        }
-        self
     }
 
     /// `canvas.mode`'s label: the mode `Tab` switches to.
@@ -350,8 +364,7 @@ impl Items<'_> {
             H::LiveIdle => {
                 let landed = take_just_landed(self.state);
                 self.bind(&["record.toggle"], "Record")
-                    .bind(&["take.discard-last"], "Discard last take")
-                    .emphasize_last(landed)
+                    .bind_emphasized(&["take.discard-last"], "Discard last take", landed)
                     .bind(&["play.toggle"], "Play")
                     .bind(&["canvas.mode"], mode)
                     .bind(&["autocut.run"], "Autocut all")
@@ -481,6 +494,16 @@ impl Items<'_> {
             H::Settings => {
                 self.literal(&[&["Tab"]], "Move focus", true)
                     .literal(&[&["Esc"]], "Close", true);
+            }
+            H::LayersSheet { autocut } => {
+                // `Enter` reaches the page's default widget, Apply; `Esc`
+                // is the page's Cancel there (G§3.8 step 4).
+                if *autocut {
+                    self.literal(&[&["Enter"]], "Apply autocut", true);
+                }
+                let esc = if *autocut { "Cancel" } else { "Close" };
+                self.literal(&[&["Tab"]], "Move focus", true)
+                    .literal(&[&["Esc"]], esc, true);
             }
             H::Palette => {
                 self.literal(&[&["\u{2191}"], &["\u{2193}"]], "Choose", true)
@@ -1056,6 +1079,31 @@ mod tests {
             HintState::Palette,
             vec!["[\u{2191}] [\u{2193}] Choose", "[Enter] Run", "[Esc] Close"],
         ));
+        // The Narrow layers sheet (not drawn) keeps the keyboard: only its
+        // own keys, not S02's (R33); the autocut page in it (S12, Narrow).
+        out.push((
+            "S02 narrow, sheet open",
+            s02.clone(),
+            GuiFacts {
+                top_overlay: Some(OverlayKind::LayersSheet),
+                ..fit()
+            },
+            HintState::LayersSheet { autocut: false },
+            vec!["[Tab] Move focus", "[Esc] Close"],
+        ));
+        let mut s12_narrow = program(&["c3e9"]);
+        s12_narrow.ui.playhead = 4842;
+        out.push((
+            "S12 narrow",
+            s12_narrow,
+            GuiFacts {
+                top_overlay: Some(OverlayKind::LayersSheet),
+                panel_page: PanelPageKind::Autocut,
+                ..fit()
+            },
+            HintState::LayersSheet { autocut: true },
+            vec!["[Enter] Apply autocut", "[Tab] Move focus", "[Esc] Cancel"],
+        ));
         out.push((
             "S24",
             s02,
@@ -1146,6 +1194,77 @@ mod tests {
             line(&items).contains(&"[Del] Remove".to_owned()),
             "{items:?}"
         );
+    }
+
+    /// S05b's emphasis goes with `[D] Discard last take`: when that item is
+    /// left out (`take.discard-last` unbound, or its `d` taken by another
+    /// binding: Q5, neither runs), nothing is emphasized. It used to land
+    /// on the item before, `[R] Record`, which the export prefix makes a
+    /// muted item drawn in the text color (R78).
+    #[test]
+    fn the_emphasis_goes_with_its_item() {
+        let landed = screens()
+            .into_iter()
+            .find(|s| s.0 == "S05b")
+            .expect("S05b")
+            .1;
+        for toml in [
+            "[bindings]\n\"take.discard-last\" = []\n",
+            "[bindings]\n\"bin.toggle\" = \"d\"\n",
+        ] {
+            let keymap = keymap::resolve(toml);
+            let (items, _) = hint_bar(&HintState::LiveIdle, &landed, &fit(), &keymap);
+            assert!(items.iter().all(|i| !i.emphasized), "{toml}: {items:?}");
+            assert_eq!(line(&items)[0], "[R] Record", "{toml}");
+            let mut exporting = landed.clone();
+            export_job(&mut exporting);
+            let (items, _) = hint_bar(&HintState::LiveIdle, &exporting, &fit(), &keymap);
+            assert_eq!(
+                line(&items)[..2],
+                ["[Ctrl][E] Show export", "[R] Record (disabled)"],
+                "{toml}"
+            );
+        }
+        // With its key the item keeps its emphasis, after the prefix too.
+        let mut exporting = landed;
+        export_job(&mut exporting);
+        let (items, _) = hint_bar(
+            &HintState::LiveIdle,
+            &exporting,
+            &fit(),
+            &keymap::resolve(""),
+        );
+        assert_eq!(line(&items)[2], "[D] Discard last take (emphasized)");
+    }
+
+    /// The first run (S01a) is Live mode's, as the stage shows it (D-27):
+    /// in Program an empty project scene leaves the clip states and Empty,
+    /// without the first run's `[Enter]` item for a list that isn't on
+    /// screen (R80).
+    #[test]
+    fn the_first_run_is_lives_only() {
+        let keymap = keymap::resolve("");
+        let mut selected = program(&["c2d0"]);
+        selected.project.scene = Default::default();
+        assert_eq!(hint_state(&selected, &fit()), HintState::ClipSelected);
+        let mut idle = program(&[]);
+        idle.project.scene = Default::default();
+        assert_eq!(hint_state(&idle, &fit()), HintState::ProgramIdle);
+        idle.project.timeline.clips.clear();
+        let facts = GuiFacts::default();
+        assert_eq!(hint_state(&idle, &facts), HintState::Empty);
+        let (items, _) = hint_bar(&HintState::Empty, &idle, &facts, &keymap);
+        assert_eq!(
+            line(&items),
+            [
+                "[R] Record (disabled)",
+                "[Tab] Live",
+                "[Ctrl][K] Commands",
+                "[?] All keys",
+            ]
+        );
+        idle.ui.canvas_mode = CanvasMode::Live;
+        assert_eq!(hint_state(&idle, &facts), HintState::FirstRun);
     }
 
     #[test]

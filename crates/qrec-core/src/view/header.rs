@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::keymap::{KeyChord, Keymap, usable_keys};
+use crate::keymap::{Action, KeyChord, Keymap, action_for, usable_keys};
 use crate::on_event::output::export_readout;
 use crate::state::{JobKind, RecordPhase, State};
 use crate::view::{GuiFacts, format};
@@ -144,29 +144,17 @@ fn subtitle(state: &State) -> Subtitle {
     }
 }
 
-/// The record button for the phase (G§4.4's table). Idle, the first
-/// blocker that applies wins: the engine is stuck, `qrec.json` is invalid,
-/// the scene is empty, an export runs.
+/// The record button for the phase (G§4.4's table). Idle, it says what
+/// its key does: disabled with `keymap::action_for("record.toggle")`'s
+/// reason when that is unavailable (the engine is stuck, the scene is
+/// empty, an export runs), so the button, `R` and its hint agree (R34).
 fn record_button(state: &State, keys: Vec<Vec<String>>) -> RecordButton {
     let runtime = &state.runtime;
     let (kind, enabled, tooltip) = match &runtime.record {
-        RecordPhase::Idle => {
-            let blocker = if runtime.engine_stuck.is_some() {
-                Some("The capture engine is stuck (GPU driver?); restart Qrec")
-            } else if runtime.disk_invalid.is_some() {
-                Some("qrec.json on disk is invalid")
-            } else if state.project.scene.is_empty() {
-                Some("Add a layer or audio track first")
-            } else if exporting(state) {
-                Some("Wait for the export to finish")
-            } else {
-                None
-            };
-            match blocker {
-                Some(why) => (RecordButtonKind::Record, false, why.to_owned()),
-                None => (RecordButtonKind::Record, true, "Record".to_owned()),
-            }
-        }
+        RecordPhase::Idle => match action_for("record.toggle", state) {
+            Some(Action::Unavailable(why)) => (RecordButtonKind::Record, false, why),
+            _ => (RecordButtonKind::Record, true, "Record".to_owned()),
+        },
         RecordPhase::Countdown { .. } => (
             RecordButtonKind::Cancel,
             true,
@@ -187,15 +175,6 @@ fn record_button(state: &State, keys: Vec<Vec<String>>) -> RecordButton {
         keys,
         tooltip,
     }
-}
-
-/// An export job runs (whoever started it).
-fn exporting(state: &State) -> bool {
-    state
-        .runtime
-        .jobs
-        .values()
-        .any(|job| matches!(job.kind, JobKind::Export { .. }))
 }
 
 /// The export slot: a running export's percent (a click toggles its
@@ -240,10 +219,11 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::ids::{JobId, TakeId, TimerId};
-    use crate::keymap;
+    use crate::ids::{ClipId, JobId, TakeId, TimerId};
+    use crate::keymap::{self, Action, action_for};
     use crate::state::{Job, RecordMode};
     use crate::testkit;
+    use crate::view::hints::hint_enabled;
     use crate::view::{ExportPanelKind, OverlayKind};
 
     /// The layers button is the narrow layout's, open sheet or not: the
@@ -436,6 +416,62 @@ mod tests {
         let rebound = keymap::resolve("[bindings]\n\"record.toggle\" = \"F9\"\n");
         let view = header(&state, &facts, &rebound, false);
         assert_eq!(view.record.keys, vec![vec!["F9".to_owned()]]);
+    }
+
+    /// The record button, the `R` key and its hint give one answer to "can
+    /// I record now?" (R34): the button follows `keymap::action_for`, whose
+    /// start blockers include a stuck engine (R and O then say why in an
+    /// info toast, not a `capture_failed` error); an invalid `qrec.json`
+    /// blocks none of them (A§7.7: a take moves the bad file aside first).
+    #[test]
+    fn the_record_button_says_what_the_key_does() {
+        let keymap = keymap::resolve("");
+        let facts = GuiFacts::default();
+        let base = testkit::design_state();
+        let mut stuck = base.clone();
+        stuck.runtime.engine_stuck = Some("the capture engine wedged".into());
+        let mut invalid = base.clone();
+        invalid.runtime.disk_invalid = Some("/timeline/clips/4/out: 1400 > 1377".into());
+        let mut empty = base.clone();
+        empty.project.scene = Default::default();
+        let mut exporting = base.clone();
+        export_job(&mut exporting, 3449);
+        for (name, state) in [
+            ("plain", &base),
+            ("engine stuck", &stuck),
+            ("qrec.json invalid", &invalid),
+            ("empty scene", &empty),
+            ("exporting", &exporting),
+        ] {
+            let button = header(state, &facts, &keymap, false).record;
+            let key = action_for("record.toggle", state);
+            assert_eq!(
+                button.enabled,
+                matches!(key, Some(Action::Run(_))),
+                "{name}: {key:?}"
+            );
+            assert_eq!(
+                button.enabled,
+                hint_enabled("record.toggle", state, &facts),
+                "{name}"
+            );
+            match key {
+                Some(Action::Unavailable(why)) => assert_eq!(button.tooltip, why, "{name}"),
+                _ => assert_eq!(button.tooltip, "Record", "{name}"),
+            }
+        }
+        let why = "The capture engine is stuck (GPU driver?); restart Qrec";
+        assert_eq!(
+            action_for("record.toggle", &stuck),
+            Some(Action::Unavailable(why.into()))
+        );
+        let mut over = stuck;
+        over.ui.selection = vec![ClipId::from_raw("c2d0")];
+        assert_eq!(
+            action_for("record.over", &over),
+            Some(Action::Unavailable(why.into()))
+        );
+        assert!(header(&invalid, &facts, &keymap, false).record.enabled);
     }
 
     #[test]

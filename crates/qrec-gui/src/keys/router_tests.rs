@@ -234,6 +234,7 @@ fn keys_nothing_is_bound_to_propagate() {
         chord: None,
         editable: false,
         activatable: false,
+        repeat: false,
     };
     assert_eq!(scene.decide_input(&unbindable).0, KeyDecision::Propagate);
 }
@@ -303,6 +304,7 @@ fn editables_get_every_key() {
             chord: Some(KeyChord::parse(chord).unwrap()),
             editable: true,
             activatable: false,
+            repeat: false,
         };
         assert_eq!(
             scene.decide_input(&input).0,
@@ -343,6 +345,7 @@ fn keys_during_a_drag() {
         chord: Some(KeyChord::parse("Escape").unwrap()),
         editable: true,
         activatable: false,
+        repeat: false,
     };
     assert_eq!(scene.decide_input(&input).0, KeyDecision::Propagate);
 }
@@ -376,6 +379,7 @@ fn focused_buttons_keep_the_navigation_keys() {
             chord: Some(KeyChord::parse(chord).unwrap()),
             editable: false,
             activatable: true,
+            repeat: false,
         };
         assert_eq!(
             scene.decide_input(&input).0,
@@ -388,6 +392,7 @@ fn focused_buttons_keep_the_navigation_keys() {
         chord: Some(KeyChord::parse("s").unwrap()),
         editable: false,
         activatable: true,
+        repeat: false,
     };
     assert!(matches!(
         scene.decide_input(&input).0,
@@ -798,4 +803,253 @@ fn relative_seeks_and_shuttles_while_playing_start_at_the_player() {
     let state = fold(&started, "j");
     assert!(state.runtime.playing, "reverse from 15");
     assert_eq!(state.ui.playhead, 15);
+}
+
+/// The chord a hint item's first key caps stand for (the legends
+/// `KeyChord::cap_legends` gives the keys these hint states use).
+fn chord_of(caps: &[String]) -> KeyChord {
+    let mut parts: Vec<String> = Vec::new();
+    for cap in caps {
+        parts.push(match cap.as_str() {
+            "Ctrl" | "Alt" | "Shift" | "Super" => cap.to_lowercase(),
+            "Esc" => "Escape".into(),
+            "Enter" => "Return".into(),
+            "Space" => "space".into(),
+            "Tab" => "Tab".into(),
+            "?" => "question".into(),
+            "=" => "equal".into(),
+            "\u{2212}" => "minus".into(),
+            "\\" => "backslash".into(),
+            letter if letter.len() == 1 && letter.chars().all(|c| c.is_ascii_alphabetic()) => {
+                letter.to_lowercase()
+            }
+            other => panic!("no chord for the cap {other:?}"),
+        });
+    }
+    KeyChord::parse(&parts.join("+")).unwrap_or_else(|e| panic!("{parts:?}: {e}"))
+}
+
+/// The hint bar names only keys the router honors (R33): every enabled
+/// item's key does something under the overlays the window stacks; the
+/// Narrow layers sheet traps the keyboard (step 4), so its hints aren't
+/// the editor's (`[R] Record` there was swallowed), and on the autocut
+/// page in the sheet `Esc` is the page's Cancel, as docked.
+#[test]
+fn the_hint_bar_names_keys_the_router_honors() {
+    use qrec_core::view::hints::{hint_bar, hint_state};
+    let mut cases: Vec<(&str, Scene)> = Vec::new();
+    cases.push(("docked", Scene::new()));
+    let mut sheet = Scene::new();
+    sheet.local.overlays.push(Overlay::LayersSheet);
+    cases.push(("sheet", sheet));
+    let mut autocut = Scene::new();
+    autocut.local.overlays.push(Overlay::LayersSheet);
+    autocut.local.panel_page = PanelPageKind::Autocut;
+    cases.push(("autocut in the sheet", autocut));
+    let mut settings = Scene::new();
+    settings.local.overlays.push(Overlay::Settings(
+        qrec_core::view::settings::SettingsPage::Project,
+    ));
+    cases.push(("settings", settings));
+    for (name, scene) in &cases {
+        let facts = scene.local.facts();
+        let hint = hint_state(&scene.state, &facts);
+        let (items, _) = hint_bar(&hint, &scene.state, &facts, &scene.keymap);
+        assert!(!items.is_empty(), "{name}");
+        for item in items.iter().filter(|i| i.enabled && !i.keys.is_empty()) {
+            let chord = chord_of(&item.keys[0]);
+            let decision = scene.decide_input(&KeyInput::chord(chord.clone())).0;
+            assert_ne!(
+                decision,
+                KeyDecision::Swallow,
+                "{name}: {hint:?} names {chord} {:?}",
+                item.label
+            );
+            if *name == "autocut in the sheet" && chord.key == "Escape" {
+                assert_eq!(item.label, "Cancel", "{name}");
+                assert_eq!(
+                    decision,
+                    KeyDecision::Gui {
+                        id: "autocut.page".into()
+                    }
+                );
+            }
+        }
+    }
+    // The sheet alone: `Esc` closes it.
+    assert_eq!(cases[1].1.calls("Escape"), [Call::CloseOverlay]);
+}
+
+/// A button does what its key does before the project opens (R36): only
+/// `app.quit`. The header's gear opened Settings over the opening window,
+/// and it stayed over the blocking page that followed.
+#[test]
+fn buttons_wait_for_the_project_like_their_keys() {
+    let ids = [
+        "settings.open",
+        "record.toggle",
+        "export",
+        "palette.open",
+        "canvas.mode",
+        "bin.toggle",
+        "frame.save",
+    ];
+    for startup in [
+        StartupPhase::Opening { slow: false },
+        StartupPhase::Blocked(qrec_core::view::blocking::BlockKind::GstStuck),
+        StartupPhase::Closing,
+    ] {
+        let mut scene = Scene::program();
+        scene.local.startup = startup.clone();
+        for id in ids {
+            assert_eq!(
+                decide_button(id, &scene.rs()),
+                KeyDecision::Swallow,
+                "{id} {startup:?}"
+            );
+        }
+        assert_eq!(
+            decide_button("app.quit", &scene.rs()),
+            KeyDecision::Gui {
+                id: "app.quit".into()
+            }
+        );
+    }
+    // Open: what the key's steps 10 and 11 do.
+    let scene = Scene::program();
+    for id in ids.into_iter().chain(["app.quit"]) {
+        assert_eq!(
+            decide_button(id, &scene.rs()),
+            decide_binding(id, &scene.rs()),
+            "{id}"
+        );
+    }
+    assert_eq!(
+        decide_button("settings.open", &scene.rs()),
+        KeyDecision::Gui {
+            id: "settings.open".into()
+        }
+    );
+}
+
+/// The held keys tell a key's auto-repeat from a new press (R30), by its
+/// keycode, until its release or the window losing the keyboard.
+#[test]
+fn held_keys_tell_repeats_from_presses() {
+    let mut held = HeldKeys::default();
+    assert!(!held.press(27), "a new press");
+    assert!(held.press(27), "held: its repeat");
+    assert!(!held.press(28), "another key");
+    held.release(27);
+    assert!(!held.press(27), "pressed again");
+    held.clear();
+    assert!(!held.press(27), "the window lost the keyboard");
+    assert!(!held.press(28));
+}
+
+/// A held key repeats only what is meant to repeat (R30): holding `R`
+/// started a take and its repeats stopped it; held toggles flapped.
+#[test]
+fn a_held_key_repeats_only_what_is_meant_to() {
+    let held = |scene: &Scene, chord: &str| {
+        let mut input = KeyInput::chord(KeyChord::parse(chord).unwrap());
+        input.repeat = true;
+        scene.decide_input(&input)
+    };
+    let swallowed = (KeyDecision::Swallow, vec![]);
+    // Recording: `R` stops the take once.
+    let recording = Scene::recording();
+    assert_eq!(
+        recording.calls("r"),
+        [dispatch(Command::RecordToggle { wait: false })]
+    );
+    assert_eq!(held(&recording, "r"), swallowed);
+    assert_eq!(held(&recording, "Escape"), swallowed);
+    // Program: toggles and one-off actions happen once per press…
+    let program = Scene::program();
+    for chord in [
+        "space", "Tab", "b", "n", "s", "p", "c", "l", "Escape", "ctrl+e", "x",
+    ] {
+        assert!(!program.calls(chord).is_empty(), "{chord} does something");
+        assert_eq!(held(&program, chord), swallowed, "{chord}");
+    }
+    // … moving, selecting, nudging and zooming go on.
+    for chord in [
+        "Left",
+        "Right",
+        "shift+Left",
+        "Up",
+        "comma",
+        "period",
+        "less",
+        "greater",
+        "alt+bracketleft",
+        "equal",
+    ] {
+        let (decision, calls) = held(&program, chord);
+        assert!(
+            matches!(calls[..], [Call::Dispatch(_)] | [Call::Gui(_)]),
+            "{chord}: {decision:?}"
+        );
+        assert_eq!(calls, program.calls(chord), "{chord}");
+    }
+    // An unavailable binding said why on its press: Space in Live.
+    assert_eq!(
+        Scene::new().calls("space"),
+        [Call::Notice(keymap::PLAY_IN_LIVE.to_owned())]
+    );
+    assert_eq!(held(&Scene::new(), "space"), swallowed);
+    // The canvas: layer nudges repeat, in a nudge burst too (D-33).
+    assert_eq!(held(&Scene::canvas(), "Left").1, [gui("layer.nudge-left")]);
+    let mut burst = Scene::canvas();
+    burst.local.drag = Some(DragKind::LayerNudge);
+    assert_eq!(held(&burst, "shift+Up").1, [gui("layer.nudge-up-10")]);
+    assert_eq!(held(&burst, "Escape"), swallowed);
+    // Widgets keep their navigation keys, not `Enter` and `Space`.
+    let mut bin = Scene::program();
+    bin.local.focus = FocusRegion::Bin;
+    assert_eq!(held(&bin, "Down").0, KeyDecision::Propagate);
+    assert_eq!(held(&bin, "Return"), swallowed);
+    let overlay = Scene::overlay();
+    for chord in ["Tab", "Down", "Up"] {
+        assert_eq!(held(&overlay, chord).0, KeyDecision::Propagate, "{chord}");
+    }
+    for chord in ["Return", "space", "Escape"] {
+        assert_eq!(held(&overlay, chord), swallowed, "{chord}");
+    }
+    let focused = |chord: &str| KeyInput {
+        chord: Some(KeyChord::parse(chord).unwrap()),
+        editable: false,
+        activatable: true,
+        repeat: true,
+    };
+    assert_eq!(
+        program.decide_input(&focused("Right")).0,
+        KeyDecision::Propagate
+    );
+    assert_eq!(program.decide_input(&focused("space")), swallowed);
+    // A field gets every repeat (typing, Backspace).
+    for chord in ["BackSpace", "r", "space"] {
+        let typing = KeyInput {
+            chord: Some(KeyChord::parse(chord).unwrap()),
+            editable: true,
+            activatable: false,
+            repeat: true,
+        };
+        assert_eq!(
+            program.decide_input(&typing).0,
+            KeyDecision::Propagate,
+            "{chord}"
+        );
+    }
+    // Before the project opens: a page's button activates once.
+    let mut opening = Scene::program();
+    opening.local.startup = StartupPhase::Opening { slow: false };
+    assert_eq!(held(&opening, "Return"), swallowed);
+    assert_eq!(held(&opening, "Tab").0, KeyDecision::Propagate);
+    // Undo goes on (while there is something to undo).
+    let undo = program.calls("ctrl+z");
+    if matches!(undo[..], [Call::Dispatch(Command::Undo { .. })]) {
+        assert_eq!(held(&program, "ctrl+z").1, undo);
+    }
 }

@@ -1449,6 +1449,76 @@ expression: all
         "enabled": true,
         "keys": [
           [
+            "Tab"
+          ]
+        ],
+        "label": "Move focus"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Esc"
+          ]
+        ],
+        "label": "Close"
+      }
+    ],
+    "screen": "S02 narrow, sheet open",
+    "state": {
+      "autocut": false,
+      "state": "layersSheet"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Enter"
+          ]
+        ],
+        "label": "Apply autocut"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Move focus"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Esc"
+          ]
+        ],
+        "label": "Cancel"
+      }
+    ],
+    "screen": "S12 narrow",
+    "state": {
+      "autocut": true,
+      "state": "layersSheet"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
             "R"
           ]
         ],

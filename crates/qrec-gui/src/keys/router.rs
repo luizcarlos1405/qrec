@@ -7,14 +7,15 @@
 //!
 //! 1. A key Qrec can't bind (`KeyChord::from_gdk` gave `None`) propagates.
 //! 2. Focus in an editable propagates: the field handles `Enter`, `Esc`
-//!    and `Tab`.
+//!    and `Tab`, and a held key's repeats (typing, `Backspace`).
 //! 3. During a drag (D-42): `Esc` cancels it; `n` toggles snapping during a
 //!    trim; the nudge keys go on with a nudge burst (D-33); modifiers reach
 //!    the gesture (they make no chord); anything else is swallowed.
 //! 4. A top overlay that keeps the keyboard (all but the running export
 //!    panel, D-49): `Tab`, `Enter`, `Space` and the arrows go to its
-//!    widgets; in context `overlay`, `cancel` closes it and `app.quit`
-//!    quits; nothing else.
+//!    widgets; in context `overlay`, `cancel` closes it (on the autocut
+//!    page in the Narrow layers sheet: the page's Cancel, as step 5 does
+//!    docked) and `app.quit` quits; nothing else.
 //! 5. `Esc` (the `cancel` keys), first that applies: close the passive
 //!    export panel → close the autocut page → end a bin preview →
 //!    `cancel` (`RecordCancel`, clear the clip selection, the layer
@@ -38,8 +39,16 @@
 //!     first a seek to the player's frame, R18), a GUI action, or why it
 //!     can't run (D-34).
 //!
+//! A held key repeats as presses (`KeyInput::repeat`, from [`HeldKeys`]):
+//! outside an editable a repeat goes on only for what is meant to repeat,
+//! the seek, select, move, nudge, zoom and undo bindings
+//! ([`REPEATING_BINDINGS`]) and the navigation keys a focused widget, list
+//! or overlay uses (not `Enter` or `Space`). Anything else happens once per
+//! press (R30: holding `R` started a take and its repeats stopped it).
+//!
 //! Before the Session is open (startup, blocking pages) only `app.quit`
-//! runs; other keys go to the page's buttons.
+//! runs; other keys go to the page's buttons. Buttons with a binding
+//! follow the same rule ([`decide_button`]).
 
 use std::borrow::Cow;
 
@@ -66,6 +75,9 @@ pub struct KeyInput {
     /// The focus is visibly on an activatable widget or a list: a button,
     /// toggle, check, switch, scale, dropdown or list row.
     pub activatable: bool,
+    /// The key is held down: this press is its auto-repeat, not a new one
+    /// (GTK has no repeat flag: [`HeldKeys`] tells).
+    pub repeat: bool,
 }
 
 impl KeyInput {
@@ -75,9 +87,69 @@ impl KeyInput {
             chord: Some(chord),
             editable: false,
             activatable: false,
+            repeat: false,
         }
     }
 }
+
+/// The keys held down (hardware keycodes, whose keyval can change mid-hold
+/// with the modifiers): a press of one already down is its auto-repeat
+/// (Wayland clients make them, as presses without a release between).
+#[derive(Debug, Default)]
+pub struct HeldKeys {
+    down: std::collections::BTreeSet<u32>,
+}
+
+impl HeldKeys {
+    /// A press of `code`: whether it is a repeat.
+    pub fn press(&mut self, code: u32) -> bool {
+        !self.down.insert(code)
+    }
+
+    pub fn release(&mut self, code: u32) {
+        self.down.remove(&code);
+    }
+
+    /// The window lost the keyboard: its releases go elsewhere, so nothing
+    /// counts as held any more.
+    pub fn clear(&mut self) {
+        self.down.clear();
+    }
+}
+
+/// The bindings a held key repeats (R30): moving through the timeline, the
+/// clips and the layers, zooming, undo and redo. A repeat of any other
+/// binding is swallowed: toggles, record, cancel, export, frame save.
+pub const REPEATING_BINDINGS: [&str; 28] = [
+    "seek.prev-frame",
+    "seek.next-frame",
+    "seek.back",
+    "seek.forward",
+    "seek.prev-edit",
+    "seek.next-edit",
+    "seek.start",
+    "seek.end",
+    "select.prev",
+    "select.next",
+    "clip.move-left",
+    "clip.move-right",
+    "clip.nudge-start",
+    "clip.nudge-end",
+    "clip.nudge-start-10",
+    "clip.nudge-end-10",
+    "layer.nudge-left",
+    "layer.nudge-right",
+    "layer.nudge-up",
+    "layer.nudge-down",
+    "layer.nudge-left-10",
+    "layer.nudge-right-10",
+    "layer.nudge-up-10",
+    "layer.nudge-down-10",
+    "zoom.in",
+    "zoom.out",
+    "history.undo",
+    "history.redo",
+];
 
 /// What the router knows besides the key.
 #[derive(Debug, Clone, Copy)]
@@ -142,8 +214,46 @@ pub const NUDGE_BINDINGS: [&str; 8] = [
     "layer.nudge-down-10",
 ];
 
-/// The router's decision for one press (the steps in the module docs).
+/// The router's decision for one press (the steps in the module docs),
+/// and for a repeat whether it goes on.
 pub fn decide(input: &KeyInput, rs: &RouterState<'_>) -> KeyDecision {
+    let decision = decide_press(input, rs);
+    match &input.chord {
+        Some(chord) if input.repeat && !input.editable => on_repeat(decision, chord),
+        _ => decision,
+    }
+}
+
+/// A held key's repeat of `decision` (R30): it goes on for the repeating
+/// bindings and for the navigation keys widgets use; anything else is
+/// swallowed (an unavailable binding said why on its press, a drag's
+/// cancel and an overlay's close ran then).
+fn on_repeat(decision: KeyDecision, chord: &KeyChord) -> KeyDecision {
+    let goes_on = match &decision {
+        KeyDecision::Propagate => !is_activation_key(chord),
+        KeyDecision::Run { id, .. } | KeyDecision::Gui { id } => {
+            REPEATING_BINDINGS.contains(&id.as_str())
+        }
+        _ => false,
+    };
+    if goes_on {
+        decision
+    } else {
+        KeyDecision::Swallow
+    }
+}
+
+/// `Enter` and `Space`: a focused button, toggle or row activates on them
+/// (its repeats would toggle it again and again).
+fn is_activation_key(chord: &KeyChord) -> bool {
+    matches!(
+        chord.key.as_str(),
+        "space" | "KP_Space" | "Return" | "KP_Enter" | "ISO_Enter"
+    )
+}
+
+/// One press's decision, repeat or not (steps 1 to 11).
+fn decide_press(input: &KeyInput, rs: &RouterState<'_>) -> KeyDecision {
     // 1.
     let Some(chord) = &input.chord else {
         return KeyDecision::Propagate;
@@ -186,6 +296,14 @@ pub fn decide(input: &KeyInput, rs: &RouterState<'_>) -> KeyDecision {
         return match lookup(rs.keymap, chord, KeyContext::Overlay) {
             // A popover closes itself on Esc (and says so with `closed`).
             Some(b) if b.id == "cancel" && *top == Overlay::Menu => KeyDecision::Propagate,
+            // The autocut page in the Narrow sheet: its Cancel (R33).
+            Some(b)
+                if b.id == "cancel"
+                    && *top == Overlay::LayersSheet
+                    && local.panel_page == PanelPageKind::Autocut =>
+            {
+                gui("autocut.page")
+            }
             Some(b) if b.id == "cancel" => KeyDecision::CloseOverlay,
             Some(b) if b.id == "app.quit" => gui("app.quit"),
             _ => KeyDecision::Swallow,
@@ -247,6 +365,18 @@ pub fn decide_binding(id: &str, rs: &RouterState<'_>) -> KeyDecision {
             KeyDecision::Propagate
         }
     }
+}
+
+/// What a button or menu item with binding `id` does
+/// (`KeyRouter::run_binding`, G§3.7): what its key does, so before the
+/// Session is open nothing but `app.quit` (R36: the header's gear opened
+/// Settings over the opening window, where `Ctrl+,` did nothing, and it
+/// stayed over the blocking page that followed).
+pub fn decide_button(id: &str, rs: &RouterState<'_>) -> KeyDecision {
+    if !rs.local.is_open() && id != "app.quit" {
+        return KeyDecision::Swallow;
+    }
+    decide_binding(id, rs)
 }
 
 /// Step 8: the context the press is looked up in.

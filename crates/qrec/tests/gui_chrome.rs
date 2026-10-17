@@ -1065,6 +1065,188 @@ fn s18b_settings_and_the_fps_confirmation() {
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
 }
 
+/// The overlays `local` reports, as their debug names.
+fn overlays(nested: &mut Nested) -> Vec<String> {
+    let local = nested.window(0).local();
+    local["overlays"]
+        .as_array()
+        .unwrap_or_else(|| panic!("local: {local}"))
+        .iter()
+        .filter_map(|o| o.as_str().map(str::to_owned))
+        .collect()
+}
+
+/// D-43 in Settings › Project (R27): while a take records, the rows wait
+/// (the Size list doesn't open, a rate sends nothing), so no pick can show
+/// a size or rate the project doesn't have; once the take is done they
+/// work again. (A refused Size pick used to leave the dropdown on the
+/// refused size, across closing and reopening.)
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn settings_rows_wait_while_recording() {
+    let mut nested = Nested::start(AREA, "settings-recording", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(live_ui()),
+    );
+    open(&mut nested, &project, Launch::a11y());
+    nested.keys(&["-M", "ctrl", "-k", "comma", "-m", "ctrl"]);
+    nested.window(0).wait_idle();
+    let regions = nested
+        .window(0)
+        .regions(&["settings-size", "settings-rate"]);
+    let size_label = || "1920\u{d7}1080 (16:9)".to_owned();
+
+    // A take starts from outside the window (niri's `qrec record toggle`).
+    let start = nested.cli_json(&project, &["record", "start"]);
+    assert_eq!(start["ok"], true, "{start}");
+    wait_phase(&nested, &project, "recording", Duration::from_secs(20));
+    nested.window(0).wait_idle();
+    let [sx, sy, sw, sh] = regions["settings-size"];
+    nested.pointer().click(sx + sw / 2.0, sy + sh / 2.0);
+    nested.window(0).wait_idle();
+    thread::sleep(Duration::from_millis(300));
+    nested.window(0).wait_idle();
+    assert_eq!(overlays(&mut nested), ["Settings(Project)"], "no Size list");
+    // 25 fps: nothing is sent (no confirmation, no refusal toast).
+    let [rx, ry, _, rh] = regions["settings-rate"];
+    nested.pointer().click(rx + 2.0 + 44.0 * 1.5, ry + rh / 2.0);
+    nested.window(0).wait_idle();
+    thread::sleep(Duration::from_millis(300));
+    let gui = nested.window(0);
+    gui.wait_idle();
+    assert_eq!(gui.labels("settings-size"), [size_label()]);
+    assert!(
+        gui.labels("toast-host").is_empty(),
+        "{:?}",
+        gui.labels("toast-host")
+    );
+    nested.screenshot("recording");
+    assert_eq!(overlays(&mut nested), ["Settings(Project)"]);
+    let status = nested.cli_json(&project, &["status"]);
+    let canvas = &status["data"]["project"]["canvas"];
+    assert_eq!(canvas["width"], 1920, "{status}");
+    assert_eq!(canvas["fps"], json!({"num": 30, "den": 1}), "{status}");
+
+    // The take is done: the rows work again.
+    let stop = nested.cli_json(&project, &["record", "stop"]);
+    assert_eq!(stop["ok"], true, "{stop}");
+    wait_phase(&nested, &project, "idle", Duration::from_secs(30));
+    nested.window(0).wait_idle();
+    nested.pointer().click(sx + sw / 2.0, sy + sh / 2.0);
+    gui_support::poll(Duration::from_secs(10), "the Size list", || {
+        nested.window(0).wait_idle();
+        (overlays(&mut nested) == ["Settings(Project)", "Menu"]).then_some(())
+    });
+    nested.keys(&["-k", "Escape"]);
+    nested.window(0).wait_idle();
+    assert_eq!(overlays(&mut nested), ["Settings(Project)"]);
+    assert_eq!(nested.window(0).labels("settings-size"), [size_label()]);
+    assert_no_panics(&mut nested);
+    nested.window(0).assert_no_criticals();
+    nested.close_window();
+    assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
+}
+
+/// Settings reopens on the project's values (R35): a color typed in
+/// Background and left there (Close clicked: the blur's commit shows "Use
+/// #RRGGBB") doesn't come back with the dialog.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn settings_reopens_on_the_projects_values() {
+    let mut nested = Nested::start(AREA, "settings-reopen", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(live_ui()),
+    );
+    open(&mut nested, &project, Launch::a11y());
+    nested.keys(&["-M", "ctrl", "-k", "comma", "-m", "ctrl"]);
+    nested.window(0).wait_idle();
+    let regions = nested
+        .window(0)
+        .regions(&["settings-background", "settings-close"]);
+    let [bx, by, bw, bh] = regions["settings-background"];
+    nested.pointer().click(bx + bw / 2.0, by + bh / 2.0);
+    nested.window(0).wait_idle();
+    nested.keys(&["-M", "ctrl", "-k", "a", "-m", "ctrl", "-k", "BackSpace"]);
+    nested.keys(&["#12"]);
+    nested.window(0).wait_idle();
+    let typed = nested.window(0).entries("settings");
+    assert_eq!(typed["settings-background"], "#12", "{typed:?}");
+    // Close keeps the focus in the field (focus-on-click false) until the
+    // dialog goes.
+    let [cx, cy, cw, ch] = regions["settings-close"];
+    nested.pointer().click(cx + cw / 2.0, cy + ch / 2.0);
+    nested.window(0).wait_idle();
+    assert!(overlays(&mut nested).is_empty(), "Settings closed");
+    nested.keys(&["-M", "ctrl", "-k", "comma", "-m", "ctrl"]);
+    nested.window(0).wait_idle();
+    let status = nested.cli_json(&project, &["status"]);
+    let background = status["data"]["project"]["canvas"]["background"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{status}"))
+        .to_owned();
+    let gui = nested.window(0);
+    let shown = gui.entries("settings");
+    assert_eq!(shown["settings-background"], background, "{shown:?}");
+    let labels = gui.labels("settings");
+    assert!(!labels.contains(&"Use #RRGGBB".to_owned()), "{labels:?}");
+    nested.screenshot("reopened");
+    nested.keys(&["-k", "Escape"]);
+    nested.window(0).wait_idle();
+    assert_no_panics(&mut nested);
+    nested.window(0).assert_no_criticals();
+    nested.close_window();
+    assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
+}
+
+// --------------------------------------------------------------- keys
+
+/// R30: a held key repeats only what is meant to repeat. Holding `R` past
+/// the compositor's repeat delay (sway's 600 ms, 25 a second) starts one
+/// take and leaves it recording: each repeat used to toggle it again,
+/// stopping the take 600 ms in, then starting and stopping more.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn holding_r_records_one_take() {
+    let mut nested = Nested::start(AREA, "held-r", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(live_ui()),
+    );
+    open(&mut nested, &project, Launch::a11y());
+    let before = takes(&nested, &project).len();
+    nested.keys(&["-P", "r", "-s", "1500", "-p", "r"]);
+    nested.window(0).wait_idle();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        let status = nested.cli_json(&project, &["status"]);
+        if phase(&status) != "starting" {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "still starting: {status}");
+        thread::sleep(Duration::from_millis(100));
+    };
+    let record = &status["data"]["runtime"]["record"];
+    assert_eq!(phase(&status), "recording", "{record}");
+    assert_eq!(takes(&nested, &project).len(), before + 1, "one take");
+    let toasts = nested.window(0).labels("toast-host");
+    assert!(toasts.is_empty(), "{toasts:?}");
+    let stop = nested.cli_json(&project, &["record", "stop"]);
+    assert_eq!(stop["ok"], true, "{stop}");
+    wait_phase(&nested, &project, "idle", Duration::from_secs(30));
+    assert_eq!(takes(&nested, &project).len(), before + 1, "it landed");
+    assert_no_panics(&mut nested);
+    nested.close_window();
+    assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
+}
+
 // --------------------------------------------------------------- D-12
 
 /// D-12: closing the window while an export runs asks first ("Quit while

@@ -60,5 +60,6 @@ expression: page
     "value": "#000000"
   },
   "footer": "Saved in this project's ~/videos/rust-traits-talk/qrec.json.",
-  "footerPath": "~/videos/rust-traits-talk/qrec.json"
+  "footerPath": "~/videos/rust-traits-talk/qrec.json",
+  "disabled": null
 }
