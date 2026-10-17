@@ -23,6 +23,7 @@
 //! (D-10).
 
 pub mod adaptive;
+pub mod announce;
 pub mod layers;
 
 use std::cell::RefCell;

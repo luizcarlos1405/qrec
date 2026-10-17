@@ -52,6 +52,17 @@ pub const RECORD_PROGRESS_NS: u64 = 500_000_000;
 /// within 10 s." (D-18).
 pub const EOS_TIMEOUT_REASON: &str = "the recording didn't stop within 10 s";
 
+/// What a take placed on the timeline says (its stop's reply, and the
+/// GUI's screen-reader announcement of the take landing): "Recorded take 10
+/// (2 min 41.4 s)", with " over c2d0" for the clips a record-over replaced.
+/// `length` is `time::duration_label` of the take.
+pub fn recorded_message(take: u32, length: &str, replaced: &[ClipId]) -> String {
+    match replaced {
+        [] => format!("Recorded take {take} ({length})"),
+        ids => format!("Recorded take {take} ({length}) over {}", join_ids(ids)),
+    }
+}
+
 /// Starting ⇒ Recording; record the streams' start offsets (persist: a
 /// take recovered after a crash keeps them, SPEC §5.2); reply
 /// `RecordStartedView` to the start request (unless `wait`: then it waits
@@ -729,14 +740,11 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
                         timeline::replace_run(clips, start, len, vec![clip]);
                     // A§5.10: after a record-over the new clip is selected.
                     edit.ui.selection = vec![id.clone()];
-                    format!(
-                        "Recorded take {n} ({length}) over {}",
-                        join_ids(&replaced_ids)
-                    )
+                    recorded_message(n, &length, &replaced_ids)
                 }
                 Placement::Append => {
                     edit.project.timeline.clips = timeline::insert(clips, clips.len(), vec![clip]);
-                    format!("Recorded take {n} ({length})")
+                    recorded_message(n, &length, &[])
                 }
                 Placement::Fallback => {
                     edit.project.timeline.clips = timeline::insert(clips, clips.len(), vec![clip]);
@@ -1464,6 +1472,21 @@ mod tests {
         let ids: Vec<&str> = take.streams.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["L1", "A1"]);
         assert!(take.scene.layers[1].missing);
+    }
+
+    /// One copy of a placed take's message: the stop's reply and the GUI's
+    /// announcement of the take landing (WP10).
+    #[test]
+    fn a_placed_takes_message_names_what_it_replaced() {
+        assert_eq!(
+            recorded_message(10, "2 min 41.4 s", &[]),
+            "Recorded take 10 (2 min 41.4 s)"
+        );
+        let over = [ClipId::from_raw("c2d0"), ClipId::from_raw("c2d1")];
+        assert_eq!(
+            recorded_message(10, "31.0 s", &over),
+            "Recorded take 10 (31.0 s) over c2d0, c2d1"
+        );
     }
 
     #[test]

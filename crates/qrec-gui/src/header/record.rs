@@ -4,6 +4,10 @@
 //! starting or recording `■ Stop [R]` (D-04); finalizing `Saving…` with a
 //! spinner, disabled. A click runs `record.toggle` through the key router,
 //! with its pre-steps (D-05: from Program, Live first).
+//!
+//! It announces the record loop to screen readers (WP10,
+//! `window::announce`): a take starting to record and a take landing on
+//! the timeline, whoever started or stopped it (a key, a click, the CLI).
 
 use std::cell::RefCell;
 
@@ -14,6 +18,7 @@ use super::LiveTooltip;
 use crate::widgets::Spinner;
 use crate::widgets::button::accessible_name;
 use crate::widgets::keycap::{self, CapSize, CapVariant};
+use crate::window::announce;
 use crate::{Ctx, guarded};
 
 /// The record button.
@@ -58,6 +63,20 @@ impl RecordButton {
         button.connect_clicked(guarded!("header: record", move |_| {
             keys.run_binding("record.toggle")
         }));
+        let weak = button.downgrade();
+        ctx.store
+            .subscribe(move |change| {
+                if !change.record() {
+                    return;
+                }
+                if let (Some(button), Some(what)) = (
+                    weak.upgrade(),
+                    announce::record_change(&change.prev, &change.next),
+                ) {
+                    announce::announce(&button, &what);
+                }
+            })
+            .detach();
         Self {
             button,
             icon,

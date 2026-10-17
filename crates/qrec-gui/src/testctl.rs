@@ -35,7 +35,7 @@
 //! | `action` | runs binding or GUI action `id` as its key would |
 //! | `sources` | the source discovery's last answer (`LocalUi.sources`, `inventory`: `null` before one); with `inventory` (a `SourceInventory`), that answer instead, through the queue as discovery's own (the first run's rows follow it, R25) |
 //! | `hints` | the hint bar's items and status (`hintbar::current_items`), the labels of the items it draws whole (`shown`: a narrow window leaves the trailing ones out) and whether a drawn one runs past the bar (`cut`, never) |
-//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`; whether the player plays, the program or a take, `playing`, and the program, `programPlaying`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11) and the panel's (`layerRowsAlive`, `audioRowsAlive`), the bin drawer's last slide as asked (`binSlide`: `open`, `animate`; nothing animates on start), the bin preview (`takePreview`: `take`, `playing`; `null` without one), the theme's subscribers (`themeSubscribers`: a dropped bin thumbnail's goes with it), the mud bars ticking (`mudBarsTicking`: none under the frozen clock), the meter bars on their refresh timer (`metersTicking`) and whether the export panel's Running clock runs (`exportClockTicking`: both come back with the next change after a caught panic, R65), how many times the timeline's canvas re-rendered (`timelinePaints`: not while only the playhead moves), and how many columns of the ghost's waveform its last paint with one worked out (`timelineGhostColumns`: those in view, R01) |
+//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`; whether the player plays, the program or a take, `playing`, and the program, `programPlaying`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it), the caught panics, the focused widget's path and its bounds (`focusBounds`), whether the window shows focus (`focusVisible`), what it announced to screen readers (`announcements`: `message`, `priority`, and `sent`, false without a context that announces: WP10), the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11) and the panel's (`layerRowsAlive`, `audioRowsAlive`), the bin drawer's last slide as asked (`binSlide`: `open`, `animate`; nothing animates on start), the bin preview (`takePreview`: `take`, `playing`; `null` without one), the theme's subscribers (`themeSubscribers`: a dropped bin thumbnail's goes with it), the mud bars ticking (`mudBarsTicking`: none under the frozen clock), the meter bars on their refresh timer (`metersTicking`) and whether the export panel's Running clock runs (`exportClockTicking`: both come back with the next change after a caught panic, R65), how many times the timeline's canvas re-rendered (`timelinePaints`: not while only the playhead moves), and how many columns of the ghost's waveform its last paint with one worked out (`timelineGhostColumns`: those in view, R01) |
 //! | `a11y` | every visible icon-only button, focusable region or custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 //! | `fonts` | the family Pango loads for each bundled font |
 //! | `icons` | each custom symbolic icon drawn in a probe color: found, pixels, recolored |
@@ -604,9 +604,12 @@ fn local(app: &App) -> Value {
         "rev": app.ctx.store.rev(),
         "panics": guard::panics(),
         "focusPath": focus_path(app),
+        "focusBounds": focus_bounds(app),
+        "focusVisible": app.window.window.gets_focus_visible(),
         "focusInTopLayer": focus_in_top_layer(app),
         "pid": std::process::id(),
         "playerNs": app.ctx.media.position_ns(),
+        "announcements": crate::window::announce::announced(),
     })
 }
 
@@ -631,6 +634,15 @@ fn focus_in_top_layer(app: &App) -> Option<bool> {
     let top = app.ctx.window.top_widget()?;
     let focus = gtk::prelude::GtkWindowExt::focus(&app.window.window);
     Some(focus.is_some_and(|f| f == top || f.is_ancestor(&top)))
+}
+
+/// The focused widget's bounds in window coordinates (logical px; WP10's
+/// focus ring probes); `None` without a focus.
+fn focus_bounds(app: &App) -> Option<[f32; 4]> {
+    let window = &app.window.window;
+    let focus = gtk::prelude::GtkWindowExt::focus(window)?;
+    let b = focus.compute_bounds(window)?;
+    Some([b.x(), b.y(), b.width(), b.height()])
 }
 
 /// The names (or types) of the focused widget and its ancestors, the
