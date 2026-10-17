@@ -34,14 +34,15 @@
 //! in bursts: one `LayerSet` on the key release (watched on the window,
 //! where the router takes the presses), or, when none comes, 300 ms after
 //! the last repeat (a second after a lone press: a held key waits up to
-//! the repeat delay for its first repeat). In Live the preview follows a gesture through
-//! `LiveControl::transient_layout` (`None` once the newest `LayerSet`'s
-//! reply came, after its `SetLive`, or on `Esc`); in Program the box and
-//! the readout move and the picture changes on release. A gesture's
-//! `LayerSet` shows until its own reply ([`edit::InFlight`]), and a drag
-//! or nudge that starts meanwhile starts from it (R23). The box shows while the canvas has
-//! the focus or a gesture runs (S06 and S14 show none with the focus
-//! elsewhere). The edit preview is `LocalUi.layer_drag` (the inspector's).
+//! the repeat delay for its first repeat). In Live the preview follows a
+//! gesture through `LiveControl::transient_layout` (`None` once the newest
+//! `LayerSet`'s reply came, after its `SetLive`, or on `Esc`); in Program
+//! the box and the readout move and the picture changes on release. A
+//! gesture's `LayerSet` shows until its own reply ([`edit::InFlight`]),
+//! and a drag or nudge that starts meanwhile starts from it (R23). The box
+//! (the layer's rect, R20) shows while the canvas has the focus or a
+//! gesture runs (S06 and S14 show none with the focus elsewhere). The edit
+//! preview is `LocalUi.layer_drag` (the inspector's).
 
 pub mod canvas;
 pub mod countdown;
@@ -51,6 +52,7 @@ pub mod overlays;
 pub mod picture;
 pub mod transport;
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -155,11 +157,12 @@ impl Editing {
     }
 
     /// `scene` (of `target`) as the newest unanswered commit left it: what
-    /// the box shows, so a press hits and starts from that (R23).
-    fn newest_scene(&self, scene: &Scene, target: &SceneTarget) -> Scene {
+    /// the box shows, so a press hits and starts from that (R23). Borrowed
+    /// as it is without one (a hover asks on every motion).
+    fn newest_scene<'a>(&self, scene: &'a Scene, target: &SceneTarget) -> Cow<'a, Scene> {
         match self.pending.current().filter(|p| p.target == *target) {
-            Some(p) => with_layer(scene, &p.layer, p.rect, p.crop),
-            None => scene.clone(),
+            Some(p) => Cow::Owned(with_layer(scene, &p.layer, p.rect, p.crop)),
+            None => Cow::Borrowed(scene),
         }
     }
 }
@@ -865,7 +868,8 @@ impl Inner {
         let Some(scene) = scene_of(&state.project, &target) else {
             return;
         };
-        let scene = &self.edit.borrow().newest_scene(scene, &target);
+        let scene = self.edit.borrow().newest_scene(scene, &target);
+        let scene = scene.as_ref();
         let live_sources = live::live_sources(&local.live_status);
         let sizes = source_sizes(&state.project, &target, &live_sources);
         let (preview, _) = self.preview_scale(&state);
@@ -1168,7 +1172,8 @@ impl Inner {
             }
             let target = edit_target(&state)?;
             let scene = scene_of(&state.project, &target)?;
-            let scene = &self.edit.borrow().newest_scene(scene, &target);
+            let scene = self.edit.borrow().newest_scene(scene, &target);
+            let scene = scene.as_ref();
             let live_sources = live::live_sources(&local.live_status);
             let sizes = source_sizes(&state.project, &target, &live_sources);
             let (preview, _) = self.preview_scale(&state);
