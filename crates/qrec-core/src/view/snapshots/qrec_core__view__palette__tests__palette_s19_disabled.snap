@@ -1,0 +1,9 @@
+---
+source: crates/qrec-core/src/view/palette.rs
+expression: text(&view)
+---
+## (query)
+Record [over] the selection                  [O]              qrec record start --over <clip>…  (off: Needs a contiguous selection)
+Cancel recording, deselect, close [over]lay  [Esc]            qrec record cancel
+M[ove] selection [r]ight one slot            [>]              qrec clip move <clip>… --by 1
+Autocut the selection, [o]r e[ver]y clip     [C]              qrec autocut [--clips <clip>…]

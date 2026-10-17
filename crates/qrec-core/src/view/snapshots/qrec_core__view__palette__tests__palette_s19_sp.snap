@@ -1,0 +1,20 @@
+---
+source: crates/qrec-core/src/view/palette.rs
+expression: text(&view)
+---
+## (query)
+[Sp]lit clip at the playhead                 [S]              qrec clip split <clip> --at <t>
+[S]elect [p]revious clip                     [,]              —
+[S]ave the frame at the [p]layhead (PNG)     [P]              qrec frame save --at <t>
+[S]witch canvas Live / [P]rogram             [Tab]            —
+Trim [s]tart to the [p]layhead               [[]              qrec clip trim <clip> --start <t>
+Autocut [s]ettings and [p]review             [Shift][C]       qrec autocut --dry-run
+[S]tart / sto[p] recording                   [R]              qrec record toggle
+[S]huttle sto[p]                             [K]              —
+[S]elect next cli[p]                         [.]              —
+[S]elect all cli[p]s                         [Ctrl][A]        —
+Previou[s] edit [p]oint                      [↑]              qrec seek --edit prev
+Remove [s]elected cli[p]s (to the bin)       [Del] [X] [Backspace] qrec clip remove <clip>…
+Autocut the [s]election, or every cli[p]     [C]              qrec autocut [--clips <clip>…]
+Toggle [s]na[p]ping                          [N]              —
+Focu[s] the [p]revious region                [Shift][F6]      —
