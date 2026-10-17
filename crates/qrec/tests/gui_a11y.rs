@@ -30,10 +30,11 @@ use std::thread;
 use std::time::Duration;
 
 use gui_support::{
-    CLI_TIMEOUT, Gui, Launch, Nested, Options, poll, reap_within, wait_for_gui_host,
+    CLI_TIMEOUT, Gui, Launch, Nested, Options, poll, reap_within, rgb_pixels, token_rgb,
+    wait_for_gui_host,
 };
 use qrec_core::state::CanvasMode;
-use qrec_core::{ClipId, UiState};
+use qrec_core::{ClipId, LayerId, UiState};
 use qrec_shell::testkit::design::{DesignVariant, design_fixture, write_ui};
 use serde_json::{Value, json};
 
@@ -70,6 +71,18 @@ fn s02_ui() -> UiState {
     }
 }
 
+/// S06's preset: Program, c2d0 selected with the playhead in it, Face
+/// selected (the frames draw its inspector).
+fn s06_ui() -> UiState {
+    UiState {
+        canvas_mode: CanvasMode::Program,
+        playhead: 2437,
+        selection: vec![ClipId::from_raw("c2d0")],
+        selected_layer: Some(LayerId::numbered(2)),
+        ..UiState::default()
+    }
+}
+
 /// The Smoke fixture's: Program, its middle clip selected (gui_bin_export's
 /// S16 preset).
 fn smoke_ui() -> UiState {
@@ -79,6 +92,16 @@ fn smoke_ui() -> UiState {
         playhead: 45,
         ..UiState::default()
     }
+}
+
+/// BRIEF's meter readings, pinned (G§8.4 `QREC_GUI_TEST_LEVELS`): the
+/// focus walks compare shots, and the fake tone's ticking meters would
+/// differ between them.
+const DESIGN_LEVELS: &str = "alsa_input.fake=-22/-16,alsa_output.fake.monitor=-52/-48";
+
+/// The focus walks' launch: the a11y walk on, the meters pinned.
+fn still() -> Launch {
+    Launch::a11y().with_env("QREC_GUI_TEST_LEVELS", DESIGN_LEVELS)
 }
 
 /// The objective checks of a case: no panic caught, no GLib or GTK
@@ -510,4 +533,327 @@ fn announcements_reach_the_accessibility_bus() {
     assert_eq!(local["panics"], 0, "{local}");
     gui.assert_no_criticals();
     close(&mut nested);
+}
+
+// ------------------------------------------------------------ focus order
+
+/// The focus region a `focusPath` is in: the nearest region root or named
+/// part that takes focus (`router::region_for_name`), the hint bar's too.
+fn region_of(path: &[String]) -> &'static str {
+    for name in path {
+        let region = match name.as_str() {
+            "region-header" => "header",
+            "region-stage" => "stage",
+            "transport" => "transport",
+            "timeline-toolbar" => "timelineToolbar",
+            "region-timeline" => "timeline",
+            "region-panel" => "panel",
+            "region-bin" => "bin",
+            "region-hintbar" => "hintbar",
+            "toast-host" => "toast",
+            _ => continue,
+        };
+        // The stage's own part: `preview` holds the stage canvas.
+        return region;
+    }
+    "other"
+}
+
+/// BRIEF §6's order (D-10's cycle, with the stage canvas between the
+/// header and the transport).
+const ORDER: [&str; 6] = [
+    "header",
+    "stage",
+    "transport",
+    "timelineToolbar",
+    "timeline",
+    "panel",
+];
+
+fn rank(region: &str) -> usize {
+    ORDER
+        .iter()
+        .position(|r| *r == region)
+        .unwrap_or_else(|| panic!("{region} isn't in the main window's order"))
+}
+
+/// Where the focus is: its path (the focused widget first), its bounds,
+/// its widget type.
+#[derive(Debug, Clone, PartialEq)]
+struct Focus {
+    path: Vec<String>,
+    bounds: [f64; 4],
+    kind: String,
+}
+
+fn focus(gui: &Gui) -> Option<Focus> {
+    let local = gui.local();
+    let path: Vec<String> = local["focusPath"]
+        .as_array()?
+        .iter()
+        .filter_map(|p| p.as_str().map(str::to_owned))
+        .collect();
+    let b = local["focusBounds"].as_array()?;
+    let bounds = [0, 1, 2, 3].map(|i| b.get(i).and_then(Value::as_f64).unwrap_or(-1.0));
+    let kind = local["focusType"].as_str().unwrap_or_default().to_owned();
+    Some(Focus { path, bounds, kind })
+}
+
+/// One step of a keyboard walk: the focus it landed on and the shot taken
+/// while the key's keyboard held the window active (its ring drawn).
+struct Step {
+    focus: Focus,
+    shot: PathBuf,
+}
+
+/// Presses `keys` (one `wtype` run that holds its keyboard), waits for the
+/// focus to move, and shoots while the window is active; then ends the
+/// run (its keys were typed, only its hold is left).
+fn step(nested: &mut Nested, keys: &[&str], name: &str) -> Step {
+    let before = focus(nested.window(0));
+    let held = nested.keys_held(keys, 5000);
+    let focus = poll(
+        Duration::from_secs(10),
+        &format!("{keys:?} moving the focus"),
+        || focus(nested.window(0)).filter(|f| Some(f) != before.as_ref()),
+    );
+    nested.window(0).wait_idle();
+    let shot = nested.screenshot(name);
+    drop(held);
+    Step { focus, shot }
+}
+
+/// The focus-ring color pixels of `shot` in `rect` (window px at scale 1)
+/// that neither `others` shot has there: the ring drawn on the step's
+/// widget only.
+fn ring_pixels(shot: &Path, others: &[&Path], rect: [u32; 4], ring: [u8; 3]) -> usize {
+    let near = |p: &[u8; 3]| p.iter().zip(ring).all(|(a, b)| a.abs_diff(b) <= 20);
+    let mine = rgb_pixels(shot, rect);
+    let theirs: Vec<Vec<[u8; 3]>> = others.iter().map(|o| rgb_pixels(o, rect)).collect();
+    (0..mine.len())
+        .filter(|&i| near(&mine[i]) && theirs.iter().all(|t| !near(&t[i])))
+        .count()
+}
+
+/// `bounds` grown by 6 px (the ring is 2 px wide, 2 px outside; rows and
+/// the canvas draw it inside), clamped to the 1600×1000 window.
+fn ring_rect([x, y, w, h]: [f64; 4]) -> [u32; 4] {
+    let x0 = (x - 6.0).max(0.0).floor();
+    let y0 = (y - 6.0).max(0.0).floor();
+    let x1 = (x + w + 6.0).min(1600.0).ceil();
+    let y1 = (y + h + 6.0).min(1000.0).ceil();
+    [x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32]
+}
+
+/// How many ring pixels a focused widget of `kind` and `bounds` shows at
+/// least: half of a 2 px ring around its bounds (rows and the canvas draw
+/// it inside, a field around its box), but a scale rings only its knob
+/// (common.css): a small circle's worth there.
+fn ring_wanted(kind: &str, [_, _, w, h]: [f64; 4]) -> usize {
+    if kind == "GtkScale" {
+        return 40;
+    }
+    // 2 px × the perimeter, halved.
+    (2.0 * (w + h)).clamp(40.0, 2000.0) as usize
+}
+
+/// Each step's widget draws its focus ring: enough ring-colored pixels
+/// around it that the steps before and after don't have (the ring moved
+/// with the focus). `baseline` is a shot with no ring at all. Each step's
+/// measure goes to `<case>-rings.txt`.
+fn assert_rings(nested: &Nested, steps: &[Step], baseline: &Path) {
+    let ring = token_rgb("swamp-night", "focus-ring");
+    let mut missing = Vec::new();
+    let mut report = Vec::new();
+    for (i, step) in steps.iter().enumerate() {
+        let prev = if i == 0 { baseline } else { &steps[i - 1].shot };
+        let next = steps.get(i + 1).map_or(baseline, |s| &s.shot);
+        let want = ring_wanted(&step.focus.kind, step.focus.bounds);
+        let got = ring_pixels(
+            &step.shot,
+            &[prev, next],
+            ring_rect(step.focus.bounds),
+            ring,
+        );
+        let line = format!(
+            "{i:3} {got:5} ring px (want {want:4}) {} {} {:?}",
+            step.focus.kind,
+            step.focus.path.first().map_or("", String::as_str),
+            step.focus.bounds
+        );
+        if got < want {
+            missing.push(format!("{line} in {}", step.shot.display()));
+        }
+        report.push(line);
+    }
+    fs::write(
+        nested.shots.join(format!("{}-rings.txt", nested.case)),
+        report.join("\n") + "\n",
+    )
+    .expect("the rings' report");
+    assert!(missing.is_empty(), "no focus ring: {missing:#?}");
+}
+
+/// D-10's region keys from the window's start: `F6` header → transport →
+/// timeline toolbar → timeline → panel → header, `Shift+F6` back; each
+/// region's widget wears the ring, and the hint bar never has the focus.
+fn region_cycle(case: &str, ui: UiState) {
+    let mut nested = Nested::start(AREA, case, Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &ui);
+    open(&mut nested, &project, still());
+    let start = focus(nested.window(0)).expect("a focus at the start");
+    assert_eq!(region_of(&start.path), "header", "the start: {start:?}");
+    let baseline = nested.screenshot("baseline");
+    let mut steps = Vec::new();
+    let forward = [
+        "transport",
+        "timelineToolbar",
+        "timeline",
+        "panel",
+        "header",
+    ];
+    for (i, want) in forward.iter().enumerate() {
+        let step = step(&mut nested, &["-k", "F6"], &format!("f6-{i}"));
+        assert_eq!(
+            region_of(&step.focus.path),
+            *want,
+            "F6 {i}: {:?}",
+            step.focus
+        );
+        steps.push(step);
+    }
+    let backward = [
+        "panel",
+        "timeline",
+        "timelineToolbar",
+        "transport",
+        "header",
+    ];
+    for (i, want) in backward.iter().enumerate() {
+        let step = step(
+            &mut nested,
+            &["-M", "shift", "-k", "F6", "-m", "shift"],
+            &format!("shift-f6-{i}"),
+        );
+        assert_eq!(
+            region_of(&step.focus.path),
+            *want,
+            "Shift+F6 {i}: {:?}",
+            step.focus
+        );
+        steps.push(step);
+    }
+    // Shift+F6's walk lands where F6's did, region by region.
+    for (back, fwd) in [(5, 3), (6, 2), (7, 1), (8, 0)] {
+        assert_eq!(steps[back].focus, steps[fwd].focus, "the same widget");
+    }
+    assert_rings(&nested, &steps, &baseline);
+    let gui = nested.window(0);
+    gui.wait_idle();
+    assert_clean(gui);
+    close(&mut nested);
+}
+
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn f6_cycles_the_regions_of_s02() {
+    region_cycle("f6-s02", s02_ui());
+}
+
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn f6_cycles_the_regions_of_s06() {
+    region_cycle("f6-s06", s06_ui());
+}
+
+/// GTK's chain backwards from the window's start (`Shift+Tab`: the key
+/// sends `ISO_Left_Tab`, as a keyboard does) until it comes round: every
+/// focusable widget once, region by region in the reverse of BRIEF §6's
+/// order (panel → timeline → timeline toolbar → transport → stage →
+/// header), none in the hint bar, each with its ring; the window's start
+/// is in it. Returns the regions visited.
+fn tab_walk(case: &str, ui: UiState) -> Vec<String> {
+    let mut nested = Nested::start(AREA, case, Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &ui);
+    open(&mut nested, &project, still());
+    let start = focus(nested.window(0)).expect("a focus at the start");
+    let baseline = nested.screenshot("baseline");
+    let mut steps: Vec<Step> = Vec::new();
+    let mut again = None;
+    for i in 0..150 {
+        let step = step(
+            &mut nested,
+            &["-M", "shift", "-k", "ISO_Left_Tab", "-m", "shift"],
+            &format!("step-{i:03}"),
+        );
+        if let Some(seen) = steps.iter().position(|s| s.focus == step.focus) {
+            again = Some(seen);
+            break;
+        }
+        steps.push(step);
+    }
+    let report: Vec<String> = steps
+        .iter()
+        .map(|s| format!("{} {:?}", s.focus.path.join(" < "), s.focus.bounds))
+        .collect();
+    fs::write(
+        nested.shots.join(format!("{case}-walk.txt")),
+        report.join("\n") + "\n",
+    )
+    .expect("the walk's report");
+    assert_eq!(
+        again,
+        Some(0),
+        "the walk comes round to its first widget: {report:#?}"
+    );
+    assert!(
+        steps.iter().any(|s| s.focus == start),
+        "the window's start {start:?} is in the chain: {report:#?}"
+    );
+    let regions: Vec<String> = steps
+        .iter()
+        .map(|s| region_of(&s.focus.path).to_owned())
+        .collect();
+    assert!(
+        !regions.iter().any(|r| r == "hintbar" || r == "other"),
+        "outside the regions: {report:#?}"
+    );
+    // Backwards: the ranks never go up (the first step wraps from the
+    // header to the panel's last widget).
+    for (i, pair) in regions.windows(2).enumerate() {
+        assert!(
+            rank(&pair[1]) <= rank(&pair[0]),
+            "step {} goes from {} to {}: {report:#?}",
+            i + 1,
+            pair[0],
+            pair[1]
+        );
+    }
+    for region in ORDER {
+        assert!(
+            regions.iter().any(|r| r == region),
+            "the walk never reached {region}: {report:#?}"
+        );
+    }
+    assert_rings(&nested, &steps, &baseline);
+    let gui = nested.window(0);
+    gui.wait_idle();
+    assert_clean(gui);
+    close(&mut nested);
+    regions
+}
+
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn shift_tab_walks_every_focusable_widget_of_s02() {
+    tab_walk("tab-s02", s02_ui());
+}
+
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn shift_tab_walks_every_focusable_widget_of_s06() {
+    let regions = tab_walk("tab-s06", s06_ui());
+    // Program: the transport's every button takes the focus.
+    let transport = regions.iter().filter(|r| *r == "transport").count();
+    assert!(transport >= 5, "the transport's buttons: {regions:?}");
 }

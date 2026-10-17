@@ -605,6 +605,8 @@ fn local(app: &App) -> Value {
         "panics": guard::panics(),
         "focusPath": focus_path(app),
         "focusBounds": focus_bounds(app),
+        "focusType": gtk::prelude::GtkWindowExt::focus(&app.window.window)
+            .map(|f| f.type_().name().to_owned()),
         "focusVisible": app.window.window.gets_focus_visible(),
         "focusInTopLayer": focus_in_top_layer(app),
         "pid": std::process::id(),

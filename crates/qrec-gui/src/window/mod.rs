@@ -303,7 +303,7 @@ impl MainWindow {
                     let mut at = store.local().focus;
                     for _ in 0..7 {
                         at = router::next_region(at, forward, bin_open);
-                        let Some(target) = find_named(window.upcast_ref(), region_name(at)) else {
+                        let Some(target) = find_named(window.upcast_ref(), region_entry(at)) else {
                             continue;
                         };
                         if target.child_focus(gtk::DirectionType::TabForward) || target.grab_focus()
@@ -440,6 +440,23 @@ pub fn region_name(region: FocusRegion) -> &'static str {
     }
 }
 
+/// The timeline canvas's name: where `region.next` and `region.prev` enter
+/// the timeline region.
+pub const TIMELINE_CANVAS: &str = "timeline-canvas";
+
+/// Where `region.next` and `region.prev` (D-10) put the focus in `region`:
+/// the first widget of GTK's chain under the widget named this. That is the
+/// region's root, but for the timeline: its canvas, past the toolbar, which
+/// is a region of its own inside `region-timeline` (GTK's chain, `Tab` and
+/// `Shift+Tab`, still goes through the toolbar and the track headers: BRIEF
+/// §6's order, WP10's focus audit).
+pub fn region_entry(region: FocusRegion) -> &'static str {
+    match region {
+        FocusRegion::Timeline => TIMELINE_CANVAS,
+        other => region_name(other),
+    }
+}
+
 /// The focus region of the focused widget `w`.
 pub fn focus_region(w: &gtk::Widget) -> FocusRegion {
     if is_editable(w) {
@@ -500,5 +517,22 @@ mod tests {
             assert_eq!(router::region_for_name(region_name(region)), Some(region));
         }
         assert_eq!(region_name(FocusRegion::Other), "");
+    }
+
+    /// F6 enters every region at its root, the timeline at its canvas (past
+    /// the toolbar, a region of its own); none at a field or nowhere.
+    #[test]
+    fn regions_are_entered_at_their_root_but_the_timeline() {
+        assert_eq!(region_entry(FocusRegion::Timeline), TIMELINE_CANVAS);
+        for region in [
+            FocusRegion::Header,
+            FocusRegion::Transport,
+            FocusRegion::TimelineToolbar,
+            FocusRegion::Panel,
+            FocusRegion::Bin,
+        ] {
+            assert_eq!(region_entry(region), region_name(region), "{region:?}");
+        }
+        assert_eq!(region_entry(FocusRegion::Field), "");
     }
 }

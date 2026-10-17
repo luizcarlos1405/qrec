@@ -83,14 +83,36 @@ impl ModeSwitch {
         self.group.clone().upcast()
     }
 
-    /// Shows `mode` (the snapshot's).
+    /// Shows `mode` (the snapshot's). A segment that has the focus hands it
+    /// to the active one: only that one is in GTK's chain (a radio group's),
+    /// so a focus left on the other was one `Tab` never came back to (the
+    /// window's start focuses Live, then the project opens in Program;
+    /// WP10's focus audit).
     pub fn sync(&self, mode: CanvasMode) {
         let name = name_of(mode);
         if self.group.active_name().as_deref() == Some(name) {
             return;
         }
+        let focused = self.group.focus_child().is_some();
         self.syncing.set(true);
         self.group.set_active_name(Some(name));
         self.syncing.set(false);
+        if focused && let Some(active) = self.active_segment() {
+            active.grab_focus();
+        }
+    }
+
+    /// The active segment's widget: the group's toggle buttons are its
+    /// segments, in order, among its other children.
+    fn active_segment(&self) -> Option<gtk::Widget> {
+        let mut segments = Vec::new();
+        let mut child = self.group.first_child();
+        while let Some(c) = child {
+            if c.is::<gtk::ToggleButton>() {
+                segments.push(c.clone());
+            }
+            child = c.next_sibling();
+        }
+        segments.into_iter().nth(self.group.active() as usize)
     }
 }
