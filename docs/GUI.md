@@ -4393,14 +4393,15 @@ loaded and that the registry is still the seeded one.
   probes. Tests: `probe.rs`'s unit tests and
   `qrec-gui/tests/main_loop_probe.rs` (a 150 ms dispatch on the default
   main context is a stall named after it).
-  The smoke's numbers (WP10, pixman, 7 runs on a machine busy with other
-  builds): 930–1,000 ticks in 13–14 s; one stall of 55–80 ms at the first
-  frame; during the steps 1–6 stalls of 50–140 ms, all in steps 7 and 8
-  (the keyed take stopping and landing, the export starting). They name
-  the timeline's snapshot subscriber (`timeline/mod.rs:406`, up to 45 ms),
-  the timeline surface's snapshot (up to 35 ms), the stage's render (up to
-  72 ms), key caps disposed (62 ms) and GTK's own work. Under gles2 they
-  fail the smoke unless they stay under 50 ms there.
+  The smoke's numbers (WP10, pixman, 8 runs on a machine busy with other
+  builds): 930–1,000 ticks in 13–14 s; none or one stall of 55–80 ms at
+  the first frame; during the steps 1–6 stalls of 50–140 ms, all in steps
+  7 and 8 (the keyed take stopping and landing, the export starting).
+  They name the hint bar's subscriber (`hintbar.rs:111`, 106 ms, 44 of
+  them disposing key caps), the timeline's snapshot subscriber
+  (`timeline/mod.rs:406`, up to 45 ms), the timeline surface's snapshot
+  (up to 35 ms), the stage's render (up to 72 ms) and GTK's own work.
+  Under gles2 they fail the smoke unless they stay under 50 ms there.
 - **Frame time**: frame-clock intervals (p50, p99) while zooming and
   scrolling the 300-clip perf fixture. Target p99 < 16.7 ms, asserted only
   under `QREC_TEST_WLR=gles2` on the dev machine (WP3), recorded under
