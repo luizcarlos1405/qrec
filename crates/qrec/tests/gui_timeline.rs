@@ -916,25 +916,17 @@ fn s05_finalizing_ghost() {
     let start = nested.cli_json(&project, &["record", "start"]);
     assert_eq!(start["ok"], true, "{start}");
     wait_record_phase(&nested, &project, "recording");
-    let mut stop = nested
-        .env
-        .command(&gui_support::qrec_bin())
-        .arg("--project")
-        .arg(&project)
-        .args(["record", "stop", "--json"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("qrec record stop");
+    // The stop waits for the take: in the background, its reply in the
+    // case's cli.log, killed past its deadline.
+    let stop = nested.cli_background(&project, &["record", "stop", "--json"]);
     wait_record_phase(&nested, &project, "finalizing");
     nested.window(0).wait_idle();
     shoot(&nested, "finalizing", Some("S05-finalizing.png"));
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while stop.try_wait().ok().flatten().is_none() {
-        assert!(Instant::now() < deadline, "record stop never returned");
-        thread::sleep(Duration::from_millis(100));
-    }
+    let stopped = gui_support::reap_within(stop, gui_support::CLI_TIMEOUT, "qrec record stop");
+    assert!(
+        stopped.success(),
+        "qrec record stop: {stopped} (see its cli.log)"
+    );
     assert_clean(&mut nested);
 }
 
@@ -1206,4 +1198,26 @@ fn probe(nested: &mut Nested, n: usize) -> String {
         assert!(Instant::now() < deadline, "no probe result {n}");
         thread::sleep(Duration::from_millis(200));
     }
+}
+
+// ---------------------------------------------------- not in a compositor
+
+/// G§3.17, G§8.4: this suite's CLIs go through `gui_support` (`cli`,
+/// `cli_json`, and `cli_background` with `reap_within` for one that waits),
+/// so each has a deadline and its output in the case's logs. S05's
+/// background `record stop` was spawned here by hand: its output dropped,
+/// and past its 60 s wait the case failed with it still running and
+/// nothing said why (review R69).
+#[test]
+fn every_cli_goes_through_the_harness() {
+    let source = include_str!("gui_timeline.rs");
+    let by_hand: Vec<(usize, &str)> = source
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| {
+            l.contains(concat!("qrec", "_bin()")) || l.contains(concat!(".spawn", "("))
+        })
+        .map(|(i, l)| (i + 1, l.trim()))
+        .collect();
+    assert!(by_hand.is_empty(), "spawned by hand: {by_hand:?}");
 }
