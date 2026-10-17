@@ -621,6 +621,16 @@ fn assert_wrapper(package: &Path) {
         unfiltered.is_empty(),
         "the unfiltered gst-plugins-bad is on the wrapper's path: {unfiltered:?}"
     );
+    // The package's plugins only: the system path set, not prefixed to a
+    // session's, and the user's unset (WP10's code audit).
+    assert!(
+        !wrapper.contains("GST_PLUGIN_SYSTEM_PATH_1_0=${GST_PLUGIN_SYSTEM_PATH_1_0"),
+        "the wrapper prefixes the session's plugin path:\n{wrapper}"
+    );
+    assert!(
+        wrapper.contains("unset GST_PLUGIN_PATH_1_0"),
+        "the wrapper keeps the session's user plugin path:\n{wrapper}"
+    );
 }
 
 /// `<package>/bin/qrec <args> --json` as the CLI, in the env with none of
@@ -707,13 +717,27 @@ fn the_packaged_build_opens_the_smoke_fixture() {
     fs::copy(&dev_registry, &registry).expect("seed the registry");
     let seeded = fs::read(&registry).expect("the seeded registry");
 
+    // A session's own plugin paths (NixOS sets one for GNOME, with an
+    // unfiltered gst-plugins-bad) aren't the package's: the wrapper sets
+    // the system path and unsets the user's, so neither is scanned (WP10's
+    // code audit: the wrapper prefixed the inherited system path).
+    let session_plugins = nested.env.root().join("session/lib/gstreamer-1.0");
+    fs::create_dir_all(&session_plugins).expect("a session plugin dir");
+    let session_plugins = session_plugins.to_string_lossy().into_owned();
+    let inherited = ["GST_PLUGIN_SYSTEM_PATH_1_0", "GST_PLUGIN_PATH_1_0"];
     let launch = Launch {
         a11y: true,
         bin: Some(bin.clone()),
         path: Some(no_tools.clone().into()),
-        unset: DEV_SHELL_PATHS.iter().map(|k| (*k).to_owned()).collect(),
+        unset: DEV_SHELL_PATHS
+            .iter()
+            .filter(|k| !inherited.contains(k))
+            .map(|k| (*k).to_owned())
+            .collect(),
         ..Launch::default()
     }
+    .with_env("GST_PLUGIN_SYSTEM_PATH_1_0", &session_plugins)
+    .with_env("GST_PLUGIN_PATH_1_0", &session_plugins)
     .with_env("GST_REGISTRY_UPDATE", "no")
     .with_env("GST_DEBUG", "GST_PLUGIN_LOADING:4")
     .with_env("GST_DEBUG_NO_COLOR", "1");
@@ -757,7 +781,12 @@ fn the_packaged_build_opens_the_smoke_fixture() {
             && plugins
                 .split(':')
                 .all(|dir| dir.starts_with("/nix/store/") && dir.ends_with("/lib/gstreamer-1.0")),
-        "the wrapper's plugin path: {plugins}"
+        "the wrapper's plugin path, not the session's {session_plugins}: {plugins}"
+    );
+    assert_eq!(
+        var("GST_PLUGIN_PATH_1_0"),
+        None,
+        "the session's user plugin path is unset"
     );
     assert!(
         var("XDG_DATA_DIRS").is_some_and(|d| d.contains("gsettings-desktop-schemas")),

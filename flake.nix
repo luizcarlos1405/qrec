@@ -205,6 +205,25 @@
           preFixup = ''
             gappsWrapperArgs+=(--prefix PATH : ${pkgs.lib.makeBinPath (runtimeTools pkgs)})
             gappsWrapperArgs+=(--prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share:${pkgs.hicolor-icon-theme}/share)
+            # The package's GStreamer plugins only. wrapGAppsHook prefixes
+            # the plugin path, so a session's own GST_PLUGIN_SYSTEM_PATH_1_0
+            # (NixOS sets one for GNOME: an unfiltered gst-plugins-bad, whose
+            # nvcodec and qsv can wedge the registry scan on an NVIDIA GPU)
+            # and GST_PLUGIN_PATH_1_0 were scanned too: the wrapper sets the
+            # first and unsets the second (WP10's code audit).
+            wrapped=()
+            i=0
+            while [ "$i" -lt "''${#gappsWrapperArgs[@]}" ]; do
+              if [ "''${gappsWrapperArgs[$i]}" = --prefix ] \
+                && [ "''${gappsWrapperArgs[$((i + 1))]}" = GST_PLUGIN_SYSTEM_PATH_1_0 ]; then
+                wrapped+=(--set GST_PLUGIN_SYSTEM_PATH_1_0 "''${gappsWrapperArgs[$((i + 3))]}")
+                i=$((i + 4))
+              else
+                wrapped+=("''${gappsWrapperArgs[$i]}")
+                i=$((i + 1))
+              fi
+            done
+            gappsWrapperArgs=("''${wrapped[@]}" --unset GST_PLUGIN_PATH_1_0)
           '';
           meta = {
             description = "Quick Wayland screen and camera recorder with a built-in editor";
