@@ -1801,14 +1801,50 @@ fn s12_the_autocut_page() {
     gui.wait_idle();
     let status = nested.cli_json(&project, &["status"]);
     assert_eq!(status["data"]["ui"]["playhead"], 4842, "{status}");
+    // The pointer off the row (over the hint bar, which shows no hover): the
+    // frame draws the clicked row selected, not hovered too (WP10's shot
+    // review: `#374524` for its `#2E3E1B`).
+    nested.pointer().move_to(1500.0, 984.0);
     nested.window(0).wait_idle();
     assert_clean(nested.window(0));
     let shot = nested.screenshot("page");
     crop(&nested, &shot, PANEL, "panel");
     compare(&nested, &shot, "S12-autocut-preview.png", PANEL, PANEL);
-    // WP10's shot review: the footer's Esc cap is a medium one, its
-    // `keycap` fill 17 px tall (20 with the stroke; the small one's was
-    // 13).
+    // WP10's shot review: the clicked region row is selected, not hovered
+    // too (S12's `#2E3E1B`; with the pointer on it `#374524`), and the
+    // selected clip's stroke stays `accent` inside the regions (the
+    // autocut dim covered it: `#496422`).
+    let px = |x: f64, y: f64| {
+        let (dx, dy) = nested.opts.pixel_px(x, y);
+        gui_support::rgb_pixels(&shot, [dx, dy, 1, 1])[0]
+    };
+    let row = px(1300.0, 650.0);
+    assert!(
+        row.iter()
+            .zip([0x2E, 0x3E, 0x1B])
+            .all(|(a, b)| a.abs_diff(b) <= 2),
+        "the clicked region row, selected only: {row:02X?}"
+    );
+    assert_eq!(
+        px(610.0, 720.0),
+        gui_support::token_rgb("swamp-night", "accent"),
+        "c3e9's stroke inside a region"
+    );
+    // The summary's heading 8 px under the knobs' end labels: its ink from
+    // y 562 as S12's (it sat 2 px low), its rows' from 587. The footer's
+    // Esc cap is a medium one, its `keycap` fill 17 px tall (20 with the
+    // stroke; the small one's was 13). WP10's shot review.
+    let surface = px(1300.0, 552.0);
+    let heading = ink_top(&nested, &shot, [1228.0, 550.0, 154.0, 30.0], surface);
+    assert!(
+        (heading - 562.0).abs() <= 1.0,
+        "the summary's heading from y {heading}"
+    );
+    let rows = ink_top(&nested, &shot, [1300.0, 580.0, 190.0, 20.0], surface);
+    assert!(
+        (rows - 587.0).abs() <= 1.0,
+        "the summary's rows from y {rows}"
+    );
     let caps = gui_support::keycap_fills(&nested.opts, &shot, [1340.0, 915.0, 100.0, 40.0]);
     assert!(
         caps.len() == 1 && (caps[0][3] - 17.0).abs() <= 1.0,
@@ -1860,6 +1896,23 @@ fn s12_the_autocut_page() {
     );
     nested.screenshot("applied");
     assert_clean(nested.window(0));
+}
+
+/// The first row (logical y) of `rect` (logical px) of a shot with text on
+/// it: a pixel far from `ground` (its channels 100 apart, summed).
+fn ink_top(nested: &Nested, png: &Path, rect: [f64; 4], ground: [u8; 3]) -> f64 {
+    let [x, y, w, h] = nested.opts.rect_px(rect);
+    let pixels = gui_support::rgb_pixels(png, [x, y, w, h]);
+    let far = |p: &[u8; 3]| {
+        p.iter()
+            .zip(ground)
+            .map(|(a, b)| u32::from(a.abs_diff(b)))
+            .sum::<u32>()
+            > 100
+    };
+    (0..h)
+        .find(|&r| (0..w).any(|c| far(&pixels[(r * w + c) as usize])))
+        .map_or(f64::NAN, |r| rect[1] + f64::from(r) / nested.opts.scale)
 }
 
 /// The window's overlays, as `local` names them.

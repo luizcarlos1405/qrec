@@ -386,8 +386,14 @@ popover.qrec-value-tooltip > contents {
   margin-top: 3px;
 }
 
+/* The heading 8 px under the knobs' end labels, its rows 3 px under it
+   (S12: the heading sat a pixel or two low, WP10's shot review). */
 .qrec-panel .autocut-summary {
-  margin-top: 9px;
+  margin-top: 8px;
+}
+
+.qrec-panel .autocut-summary > .summary-rows {
+  margin-top: 1px;
 }
 
 .qrec-panel .summary-mono {

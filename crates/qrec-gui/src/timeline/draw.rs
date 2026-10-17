@@ -100,12 +100,19 @@ pub fn canvas(s: &gtk::Snapshot, sc: &Scene<'_>, height: f64) {
     }
     for b in &sc.boxes {
         if sc.visible(b.x, b.w) {
-            clip(s, sc, b, 0.0);
+            clip(s, sc, b, 0.0, false);
         }
     }
     silences(s, sc);
     if let Some(preview) = &sc.autocut {
         autocut(s, sc, preview);
+    }
+    // The selection over the silences and the autocut dim (S12: the stroke
+    // stays bright inside the regions, WP10's shot review).
+    for b in &sc.boxes {
+        if sc.visible(b.x, b.w) {
+            selection(s, sc, b, 0.0);
+        }
     }
     if let Some(trim) = &sc.trim {
         trim_preview(s, sc, trim);
@@ -126,8 +133,10 @@ pub fn canvas(s: &gtk::Snapshot, sc: &Scene<'_>, height: f64) {
     s.pop();
 }
 
-/// One clip on the video row, `dy` px down (the lifted copy is 4 px up).
-fn clip(s: &gtk::Snapshot, sc: &Scene<'_>, b: &ClipBox, dy: f64) {
+/// One clip on the video row, `dy` px down (the lifted copy is 4 px up),
+/// with its selection (`with_selection`) or without it (the canvas draws
+/// the selection after the silences and the autocut dim: [`selection`]).
+fn clip(s: &gtk::Snapshot, sc: &Scene<'_>, b: &ClipBox, dy: f64, with_selection: bool) {
     let p = sc.palette;
     let rows = sc.rows;
     let (x, w) = (b.x, b.w);
@@ -167,24 +176,59 @@ fn clip(s: &gtk::Snapshot, sc: &Scene<'_>, b: &ClipBox, dy: f64) {
     if b.hovered && !b.selected {
         paint::inner_stroke(s, &r, 1.0, &p.text_35);
     }
-    if b.selected {
-        paint::inner_stroke(s, &r, 2.0, &p.accent);
-        if w >= 12.0 {
-            let hy = dy + (rows.video - 28.0) / 2.0;
-            s.append_color(&p.accent, &rect(x, hy, 4.0, 28.0));
-            s.append_color(&p.accent, &rect(x + w - 4.0, hy, 4.0, 28.0));
-        }
+    if with_selection {
+        selection_marks(s, sc, b, dy);
     }
     label(s, sc, b, dy);
-    if let Some(edge) = b.trimming {
-        let bx = match edge {
-            TrimEdge::Start => x,
-            TrimEdge::End => x + w - 6.0,
-        };
-        s.append_color(&p.accent, &rect(bx, dy, 6.0, rows.video));
+    if with_selection {
+        trim_mark(s, sc, b, dy);
     }
     if b.opacity < 1.0 {
         s.pop();
+    }
+}
+
+/// A selected clip's 2 px `accent` stroke and edge handles, and the edge a
+/// trim drags, over whatever the canvas drew on the clip after it (the
+/// silences, the autocut dim).
+fn selection(s: &gtk::Snapshot, sc: &Scene<'_>, b: &ClipBox, dy: f64) {
+    if !(b.selected || b.trimming.is_some()) {
+        return;
+    }
+    if b.opacity < 1.0 {
+        s.push_opacity(b.opacity);
+    }
+    selection_marks(s, sc, b, dy);
+    trim_mark(s, sc, b, dy);
+    if b.opacity < 1.0 {
+        s.pop();
+    }
+}
+
+/// The selection's stroke and handles.
+fn selection_marks(s: &gtk::Snapshot, sc: &Scene<'_>, b: &ClipBox, dy: f64) {
+    if !b.selected {
+        return;
+    }
+    let p = sc.palette;
+    let rows = sc.rows;
+    let (x, w) = (b.x, b.w);
+    paint::inner_stroke(s, &rect(x, dy, w, rows.video), 2.0, &p.accent);
+    if w >= 12.0 {
+        let hy = dy + (rows.video - 28.0) / 2.0;
+        s.append_color(&p.accent, &rect(x, hy, 4.0, 28.0));
+        s.append_color(&p.accent, &rect(x + w - 4.0, hy, 4.0, 28.0));
+    }
+}
+
+/// The 6 px `accent` edge a trim drags (S10).
+fn trim_mark(s: &gtk::Snapshot, sc: &Scene<'_>, b: &ClipBox, dy: f64) {
+    if let Some(edge) = b.trimming {
+        let bx = match edge {
+            TrimEdge::Start => b.x,
+            TrimEdge::End => b.x + b.w - 6.0,
+        };
+        s.append_color(&sc.palette.accent, &rect(bx, dy, 6.0, sc.rows.video));
     }
 }
 
@@ -632,7 +676,7 @@ fn lifted_copy(s: &gtk::Snapshot, sc: &Scene<'_>, boxes: &[ClipBox]) {
         }
     }
     for b in boxes {
-        clip(s, sc, b, -4.0);
+        clip(s, sc, b, -4.0, true);
     }
     s.pop();
 }
