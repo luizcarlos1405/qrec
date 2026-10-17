@@ -75,6 +75,17 @@ const HOVER_DELAY: Duration = Duration::from_millis(500);
 /// The snap guide flashes this long (G§4.5).
 const FLASH: Duration = Duration::from_millis(300);
 
+thread_local! {
+    /// How many times the canvas made its render node again (a cache miss).
+    static CANVAS_PAINTS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// How many times the canvas re-rendered (testctl's `local`,
+/// `timelinePaints`): not while only the playhead moves (C16, C18).
+pub fn canvas_paints() -> u64 {
+    CANVAS_PAINTS.with(Cell::get)
+}
+
 /// The timeline region (`region-timeline`).
 pub struct Timeline {
     inner: Rc<Inner>,
@@ -128,6 +139,8 @@ struct Model {
     cache: Option<(u64, (i32, i32, u32), gtk::gsk::RenderNode)>,
     /// Bumps on every change of what the canvas shows.
     generation: u64,
+    /// The last frame moved the canvas: the next renders it once more.
+    canvas_moved: bool,
     /// The thumbnail and peak caches are followed.
     caches_hooked: bool,
     /// What `LocalUi.viewport` says.
@@ -341,6 +354,7 @@ impl Inner {
                     snapped: None,
                     cache: None,
                     generation: 0,
+                    canvas_moved: false,
                     caches_hooked: false,
                     local_view: None,
                     gap: BTreeMap::new(),
@@ -1650,8 +1664,13 @@ impl Inner {
                 .any(|(_, _, at)| now.saturating_sub(*at) < control::GAP_EASE)
     }
 
-    /// One frame; `false` once nothing moves any more.
+    /// One frame; `false` once nothing moves any more. The canvas renders
+    /// again only when it moves itself (`TickFacts::canvas_moves`), and once
+    /// more after (an easing's last frame); the playing playhead and the
+    /// snap flash are the overlay's, over its cached node (C16, C18).
     fn on_tick(&self) -> bool {
+        // Whether the canvas moves this frame, and renders.
+        let (canvas_moves, render);
         let now = self.now();
         let state = self.ctx.store.state();
         let playing = self.ctx.store.local().playing;
@@ -1663,11 +1682,29 @@ impl Inner {
                 m.flash = None;
             }
             // Fit includes the ghost as it grows between record clocks.
+            let shown = m.vm.total();
             if m.ghost.running {
                 let total = tl::shown_total(&state, ghost_elapsed(&m.ghost, now));
                 m.vm.follow_ghost(total);
             }
-            m.generation += 1;
+            let facts = control::TickFacts {
+                easing: m.vm.animating(now),
+                grew: m.vm.total() != shown,
+                gap_easing: m
+                    .gap
+                    .values()
+                    .any(|(_, _, at)| now.saturating_sub(*at) < control::GAP_EASE),
+                trimming: matches!(m.g.drag(), Some(Drag::Trim { started: true, .. })),
+                playing,
+                flash: m.flash.is_some(),
+                ..control::TickFacts::of(&state, testctl::mode().on)
+            };
+            canvas_moves = facts.canvas_moves();
+            render = canvas_moves || m.canvas_moved;
+            m.canvas_moved = canvas_moves;
+            if render {
+                m.generation += 1;
+            }
         }
         if playing {
             // Auto-page (G§4.5): the playing playhead pages the view.
@@ -1689,10 +1726,14 @@ impl Inner {
             self.corner
                 .set_text(&qrec_core::view::ruler::corner(playhead, fps));
         }
-        self.canvas.queue_draw();
+        if render {
+            self.canvas.queue_draw();
+        }
         self.ruler.queue_draw();
         self.overlay.queue_draw();
-        self.needs_tick()
+        // A frame that moved the canvas gets the next one, which renders it
+        // where the motion ended.
+        self.needs_tick() || canvas_moves
     }
 
     // ------------------------------------------------------- drawing
@@ -1728,6 +1769,7 @@ impl Inner {
             s.append_node(&node);
             return;
         }
+        CANVAS_PAINTS.with(|p| p.set(p.get() + 1));
         let started = self.probe.borrow().is_some().then(Instant::now);
         let snapshot = gtk::Snapshot::new();
         snapshot.scale(scale as f32, scale as f32);

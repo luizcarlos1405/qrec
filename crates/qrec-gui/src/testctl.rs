@@ -28,7 +28,7 @@
 //! | `dispatch` | `Store::dispatch` of `command` (`confirmed`: as confirmed), `{"ok":true}` at once |
 //! | `action` | runs binding or GUI action `id` as its key would |
 //! | `hints` | the hint bar's items and status (`hintbar::current_items`), the labels of the items it draws whole (`shown`: a narrow window leaves the trailing ones out) and whether a drawn one runs past the bar (`cut`, never) |
-//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11), the theme's subscribers (`themeSubscribers`: a dropped bin thumbnail's goes with it) and the mud bars ticking (`mudBarsTicking`: none under the frozen clock) |
+//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11), the theme's subscribers (`themeSubscribers`: a dropped bin thumbnail's goes with it) the mud bars ticking (`mudBarsTicking`: none under the frozen clock) and how many times the timeline's canvas re-rendered (`timelinePaints`: not while only the playhead moves) |
 //! | `a11y` | every visible icon-only button, focusable region or custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 //! | `fonts` | the family Pango loads for each bundled font |
 //! | `icons` | each custom symbolic icon drawn in a probe color: found, pixels, recolored |
@@ -502,6 +502,7 @@ fn local(app: &App) -> Value {
         "binRowsAlive": crate::bin_drawer::rows_alive(),
         "themeSubscribers": app.ctx.theme.subscribers(),
         "mudBarsTicking": crate::widgets::mud_bar::ticking(),
+        "timelinePaints": crate::timeline::canvas_paints(),
         "keymapProblems": local.keymap_problems,
         "theme": theme::css_name(app.ctx.theme.id()),
         "scale": app.ctx.theme.scale(),

@@ -1065,3 +1065,74 @@ fn a_new_min_silence_asks_for_its_cached_analysis() {
         .is_empty()
     );
 }
+
+/// C16, C18: the playing playhead and the snap flash move nothing the
+/// canvas draws (the overlay draws them over its cached node), so a frame
+/// of them alone doesn't re-render it; easing, a take recording, an
+/// analysis, the fit growing with the ghost, the gap closing and a trim
+/// snapping to the playing playhead do. The canvas re-rendered every frame
+/// of a playback (review R10).
+#[test]
+fn only_what_the_canvas_draws_moving_re_renders_it() {
+    let still = [
+        TickFacts {
+            playing: true,
+            ..TickFacts::default()
+        },
+        TickFacts {
+            flash: true,
+            playing: true,
+            ..TickFacts::default()
+        },
+        TickFacts {
+            trimming: true,
+            ..TickFacts::default()
+        },
+        TickFacts::default(),
+    ];
+    for facts in still {
+        assert!(!facts.canvas_moves(), "{facts:?}");
+    }
+    let moving = [
+        TickFacts {
+            easing: true,
+            playing: true,
+            ..TickFacts::default()
+        },
+        TickFacts {
+            recording: true,
+            ..TickFacts::default()
+        },
+        TickFacts {
+            analyzing: true,
+            ..TickFacts::default()
+        },
+        TickFacts {
+            grew: true,
+            ..TickFacts::default()
+        },
+        TickFacts {
+            gap_easing: true,
+            ..TickFacts::default()
+        },
+        TickFacts {
+            trimming: true,
+            playing: true,
+            ..TickFacts::default()
+        },
+    ];
+    for facts in moving {
+        assert!(facts.canvas_moves(), "{facts:?}");
+    }
+    // A take recording moves it, but not under test mode's frozen clock.
+    let mut state = testkit::design_state();
+    assert_eq!(TickFacts::of(&state, false), TickFacts::default());
+    state.runtime.record = RecordPhase::Recording {
+        take: TakeId::numbered(10),
+        mode: RecordMode::Append,
+        elapsed_ns: 1_000_000_000,
+        waiters: vec![],
+    };
+    assert!(TickFacts::of(&state, false).recording);
+    assert!(!TickFacts::of(&state, true).canvas_moves());
+}

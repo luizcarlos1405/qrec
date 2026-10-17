@@ -881,6 +881,52 @@ fn a_zoom_right_before_the_close_is_saved() {
     );
 }
 
+/// While the Program plays at fit nothing on the canvas moves: the overlay
+/// (the playhead), the ruler and the corner redraw each frame over the
+/// canvas's cached render node (C16, C18). The canvas re-rendered every
+/// frame of a playback, every clip, waveform and thumbnail (review R10).
+/// Over a second and a half of playing: a few renders (the play flip, the
+/// own seek each second), not one a frame.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_canvas_rests_while_the_program_plays() {
+    let mut nested = Nested::start(AREA, "playing", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &program(&[], 1200, None));
+    open(&mut nested, &project, Launch::default());
+    let gui = nested.window(0);
+    let at = |gui: &mut gui_support::Gui| {
+        let local = gui.local();
+        let paints = local["timelinePaints"].as_u64().expect("timelinePaints");
+        (paints, local["playerNs"].as_u64().unwrap_or(0))
+    };
+    let (before, from_ns) = at(gui);
+    let play = gui.ctl(json!({"op": "dispatch", "command": {"cmd": "play"}}));
+    assert_eq!(play["ok"], true, "{play}");
+    // Playing: the player's position runs.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while at(gui).1 < from_ns + 200_000_000 {
+        assert!(Instant::now() < deadline, "the Program never played");
+        thread::sleep(Duration::from_millis(50));
+    }
+    let (started, _) = at(gui);
+    thread::sleep(Duration::from_millis(1500));
+    let (after, to_ns) = at(gui);
+    let pause = gui.ctl(json!({"op": "dispatch", "command": {"cmd": "pause"}}));
+    assert_eq!(pause["ok"], true, "{pause}");
+    assert!(
+        to_ns >= from_ns + 1_200_000_000,
+        "it played {} ms",
+        (to_ns - from_ns) / 1_000_000
+    );
+    assert!(
+        after - started <= 6,
+        "the canvas re-rendered {} times in 1.5 s of playing ({} from the play)",
+        after - started,
+        after - before
+    );
+    assert_clean(&mut nested);
+}
+
 // ------------------------------------------------------------- ghosts
 
 /// S04: recording with the clock at 00:02:41:12: fit includes the ghost,

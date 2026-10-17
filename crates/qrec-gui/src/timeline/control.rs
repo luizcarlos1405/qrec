@@ -906,6 +906,61 @@ pub fn decide_drop(state: &State, view: &Viewport, take: &TakeId, x: f64) -> Opt
     Some(tl::drop_command(take, slot))
 }
 
+// ------------------------------------------------------- the frame clock
+
+/// What moves on the timeline at a frame of its frame clock. The canvas
+/// re-renders only for what it draws itself (C16); the playing playhead
+/// and the snap flash are the overlay's (and the ruler's cell), drawn over
+/// the canvas's cached render node (C18).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TickFacts {
+    /// A zoom or scroll eases.
+    pub easing: bool,
+    /// A take counts down, records or saves (the ghost grows, the saving
+    /// stripes move); never under test mode's frozen clock.
+    pub recording: bool,
+    /// An autocut analysis runs (its clips' spinners turn); not frozen.
+    pub analyzing: bool,
+    /// The fit grew with the ghost this frame.
+    pub grew: bool,
+    /// The move drag's neighbours ease to their places.
+    pub gap_easing: bool,
+    /// A trim drag started: it snaps to the playhead.
+    pub trimming: bool,
+    /// The Program plays: the playhead moves.
+    pub playing: bool,
+    /// The snap guide flashes.
+    pub flash: bool,
+}
+
+impl TickFacts {
+    /// What `state` moves: a take recording, an analysis running (nothing
+    /// under the `frozen` clock).
+    pub fn of(state: &State, frozen: bool) -> Self {
+        Self {
+            recording: !frozen && !state.runtime.record.is_idle(),
+            analyzing: !frozen
+                && state.runtime.jobs.values().any(|j| {
+                    matches!(
+                        j.kind,
+                        qrec_core::state::JobKind::Autocut { dry_run: false, .. }
+                    )
+                }),
+            ..Self::default()
+        }
+    }
+
+    /// The canvas draws something new this frame.
+    pub fn canvas_moves(&self) -> bool {
+        self.easing
+            || self.recording
+            || self.analyzing
+            || self.grew
+            || self.gap_easing
+            || (self.trimming && self.playing)
+    }
+}
+
 // ------------------------------------------------------------- the ghost
 
 /// The record clock as last seen, for the ghost's growth between clocks.
