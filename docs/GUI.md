@@ -179,7 +179,7 @@ requirement review's numbering; H-n are host and engine calls.
 | D-21 | Toast copy follows S25 once approved (WP9): "Recording didn't start"; "Camera disconnected" / "Screen disconnected" / "Mic disconnected" / "System audio disconnected" with "<label> stopped sending frames. Take N keeps recording without <id> <name>."; "qrec.json changed on disk but isn't valid". The core's current copy stays until then. | WP9 |
 | D-22 | The cheat sheet keeps the `Canvas` group (layer nudges) at the bottom of column 3 (gated). | WP9 |
 | D-23 | `N` during drags: G§1.3, D-42. | WP0b, WP6 |
-| D-24 | Export "Change…" opens `gtk::FileDialog::save` (portal) on `exports/` with the auto name. The GUI still dispatches `confirmed: false` and shows the "Replace file" modal on `confirmation_required` (SPEC §11 binds, so an existing file is confirmed twice). A forbidden path shows the core message under the Output field (C29 invalid state). | WP7 |
+| D-24 | Export "Change…" opens `gtk::FileDialog::save` (portal) on `exports/` with the auto name. The GUI still dispatches `confirmed: false` and shows the "Replace file" modal on `confirmation_required` (SPEC §11 binds, so an existing file is confirmed twice). A forbidden path shows the core message under the Output field (C29 invalid state). A picked file follows the Format switch: a name in the old format's extension gets the new one's (`talk.mp4` → `talk.webm`; review fix: WebM was written into talk.mp4), another name stays as picked. | WP7 |
 | D-25 | More lanes than fit: rows scroll vertically under the fixed toolbar and ruler (`Shift`+wheel or the scrollbar). The panel is a ScrolledWindow. | WP3, WP5 |
 | D-26 | Shuttle speed shows after the transport total: `· 2×`, `· −4×` (`mono` `muted`, true minus). | WP4 |
 | D-27 | Program canvas on an empty timeline: the canvas background and the PROGRAM badge only. S01a comes back whenever the project scene is empty (Live mode). | WP4 |
@@ -192,8 +192,8 @@ requirement review's numbering; H-n are host and engine calls.
 | D-34 | A key whose action is unavailable toasts the reason (info, 5 s), except `Esc` with nothing to cancel. `r` during an export gives "Can't record while exporting" / "Recording works again once the export finishes or you cancel it." / Show export. | WP0b |
 | D-35 | Empty folder: eager init. `GuiHostSpec.first = Init{canvas: None, name: None}`, queued ahead of every IPC request (SPEC §4.4), then S01a shows. | WP0a, WP0b |
 | D-36 | Clips get no right-click menu and double-click does nothing (not designed); keys cover every action. | WP3 |
-| D-37 | Selection gestures (SPEC §7.1). Timeline: press on an unselected clip → `Select{Set([c])}`; press on a selected clip → nothing, and a release without a drag → `Select{Set([c])}`; `Shift`+click → `Select{RangeTo(c)}`; `Ctrl`+click → `Select{Toggle(c)}` (no drag starts with a modifier held); click on an empty row → `Select{Clear}`. Bin (GUI-local `LocalUi.bin_selection`): click selects one, `Ctrl`+click toggles, `Shift`+click extends, `↑` `↓` move it, `Shift`+`↑` `↓` extend it. Two or more selected show the S18 footer and no row actions. | WP3, WP7 |
-| D-38 | Insert from the bin by drag (SPEC §7.1): bin rows of ok takes are `gtk::DragSource`s with the string `qrec-take:<id>`; the timeline canvas is a `gtk::DropTarget`. Over it the C18 caret shows at the nearest clip boundary (slot k of n + 1) with the tooltip "Insert take 4 · slot k of n + 1"; drop → `ClipAdd{take, at: Index(k − 1)}`; `Esc` cancels (GTK). Not while recording. While an accepted take hovers the canvas, the drop target sets `LocalUi.drag = BinInsert` (the hint bar's BinDrag, D-42's swallow) unless a drag is already set, and clears only the one it set (round 3; WP7's drag source may set its own from the bin). | WP3, WP7 |
+| D-37 | Selection gestures (SPEC §7.1). Timeline: press on an unselected clip → `Select{Set([c])}`; press on a selected clip → nothing, and a release without a drag → `Select{Set([c])}`; `Shift`+click → `Select{RangeTo(c)}`; `Ctrl`+click → `Select{Toggle(c)}` (no drag starts with a modifier held); click on an empty row → `Select{Clear}`. Bin (GUI-local `LocalUi.bin_selection`): click selects one, `Ctrl`+click toggles, `Shift`+click extends, `↑` `↓` move it, `Shift`+`↑` `↓` extend it. Two or more selected show the S18 footer and no row actions. A change of the bin's takes keeps the rows of the takes still listed (and their focus); when the row with the keyboard focus leaves (`Enter` inserted its take), the row now at its place takes the focus, and the selection when that take was the one selected (review fix: every row was made again, the focus left the bin and `↓` seeked the timeline). | WP3, WP7 |
+| D-38 | Insert from the bin by drag (SPEC §7.1): bin rows of ok takes are `gtk::DragSource`s with the string `qrec-take:<id>`; the timeline's time area (`time-area`: the canvas, or the empty timeline's S01b page that replaces it) is a `gtk::DropTarget`. Over the canvas the C18 caret shows at the nearest clip boundary (slot k of n + 1) with the tooltip "Insert take 4 · slot k of n + 1"; over the empty page, "slot 1 of 1" by the pointer (review fix: the target was on the canvas alone, and an empty timeline refused every drop); drop → `ClipAdd{take, at: Index(k − 1)}`; `Esc` cancels (GTK). Not while recording. While an accepted take hovers the canvas, the drop target sets `LocalUi.drag = BinInsert` (the hint bar's BinDrag, D-42's swallow) unless a drag is already set, and clears only the one it set (round 3; WP7's drag source may set its own from the bin). | WP3, WP7 |
 | D-39 | Wheel and pan (SPEC §7.2): plain wheel (`dy`, and touchpad `dx` and `dy`) scrolls horizontally, 64 px per notch; `Shift`+wheel scrolls the lanes vertically; `Ctrl`+wheel zooms ×1.25 per notch at the pointer; middle-drag pans both axes. The view follows at once; `SetUi{scroll_px}` goes out 300 ms after the last event (echo rule, G§3.6). | WP3 |
 | D-40 | Ruler (SPEC §7.2): press → `Seek{To(f)}`; dragging scrubs: the drawn playhead and the player's scrub follow every motion event, and `Seek{To(f)}` goes out at most every 100 ms (10 per second), plus one on release. The timeline scrubs through the stage's sync (`media::program::scrub`, G§3.10 step 9), which owns the player's commands. | WP3, WP4 |
 | D-41 | "One command per gesture" means one undoable command per gesture. The press may also dispatch `Select{Set}` (UI state, no history). | WP3, WP4, WP5 |
@@ -295,7 +295,11 @@ queues in the GUI instead of spawning a headless recorder.
 
 - Steps 3 and 4 start together: publishing never waits for GStreamer or
   doctor. The stage shows the caption "Opening <name>…" if step 7 hasn't
-  finished after 1 s. Nothing animates on start (DESIGN Motion).
+  finished after 1 s. Nothing animates on start (DESIGN Motion): a region
+  that follows the first snapshot out of the placeholder state jumps to it
+  while `LocalUi.startup` isn't `Open` yet (the first snapshot comes before
+  `Opened`); the bin drawer left open in ui.json slid in until the review
+  fix.
 - `GuiHost::fail` (GStreamer stuck, S23) and a failed open (X3) answer
   every queued and later request with that error, stop accepting and
   release the lock at once. The page stays up while the CLI works
@@ -649,11 +653,21 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
   and success 5 s (8 s with actions), warning 8 s, error until dismissed;
   at most two actions are shown (DESIGN). `Dispatch(Undo{..})` stays
   enabled only while `history.cursor` equals its value when the toast
-  arrived. A done-export toast is dropped while the export panel shows
+  arrived. A toast equal to the newest one (shown, or the last waiting) is
+  that toast again: it takes the newest arrival's cursor and the shown
+  one's time starts over (`ToastQueue::push`, `Pushed::Coalesced`; review
+  fix: a held key whose action is unavailable queued one toast per
+  auto-repeat, "+36" after 2 s); one between others still counts (A, B, A
+  is "+2"), and one arriving while the shown one fades out waits after it. A done-export toast is dropped while the export panel shows
   that export's Done state, and the export-failed one while it shows its
   Failed state (`toasts::shown_by_the_panel`; WP7 integration: S17 draws
   no toast over the panel). The panel answers first: the core sends the
-  reply before the toast, through the same queue.
+  reply before the toast, through the same queue. Only that export's: its
+  answer marks the next export toast as the one its page shows
+  (`ExportPanelState::toast_due`, which that toast takes back), so another
+  export's toast shows whatever the panel shows (review fix: a CLI export
+  the window never saw run, its snapshots coalesced in the queue, lost its
+  toast to the panel's own last Done page).
 - **`UiAction`** (`desktop.rs`, WP0b):
   - `OpenPath` → `gtk::FileLauncher::launch`;
   - `RevealPath` → `gtk::FileLauncher::open_containing_folder`;
@@ -754,7 +768,9 @@ Pre-steps:
 `ActionRouter` (`keys/actions.rs`, WP0b): `register(id, Rc<dyn Fn()>)`,
 `run(id)`; each region registers its ids in its own constructor.
 Registered by: `zoom.in`, `zoom.out`, `zoom.fit`, `zoom.selection` (WP3);
-`settings.open` (WP6); `export.panel`, `bin.preview` (WP7);
+`settings.open` (WP6); `export.panel`, `export.show`, `bin.preview` (WP7;
+`export.show`, a toast's Show export, only opens the panel: the toggle
+closed the passive panel the D-34 toast shows under);
 `autocut.page` (WP5); `region.next`, `region.prev`, `app.quit`, and
 `keys.help` and `palette.open` as the "Not built yet" toast (WP0b; WP9
 re-registers them). An id nobody registered logs at debug level.
@@ -1180,7 +1196,11 @@ time; A§8.7 rules for every child).
   `gst::init`, GES build, discovery, doctor or file I/O. Exceptions, all
   before the first window maps: `qrec_gui::run` reads `config.toml` and
   `keys.toml` (≤ 1 MiB each, G§3.3 step 1), and `startup` registers the
-  three bundled font files with Pango and loads the GResource.
+  three bundled font files with Pango and loads the GResource. The bin's
+  and the export panel's modules are held to it by a source scan
+  (`export::tests`, a worker-side line marked `// R1: qrec-gui-io`):
+  Change… stat'ed `exports/` on the GTK thread (review fix; the panel asks
+  `qrec-gui-io` when it opens, `export::flow::save_folder`).
 - **R2.** The session thread never waits on GTK: port calls push to a
   queue under a short mutex.
 - **R3.** One ordered queue; adjacent snapshots coalesce; one pending
@@ -1514,6 +1534,17 @@ adw::ApplicationWindow #qrec  (default 1600×1000, min 800×600)
     and adds a transparent click-catcher that closes it, like a popover;
   - `FloatingPassive` (the export panel while Running, D-49) adds nothing:
     no trap, no click-catcher.
+  - The layers' order is `LocalUi.overlays`' (top last): the export panel
+    changes its layer only while it is the top overlay
+    (`export::flow::layer`), so its export ending under Settings or a
+    modal opened over the passive panel keeps it passive (and inert) under
+    them; it takes the trap, Open file or Try again focused, once they
+    close (review fix: it took the trap over them, and the focus, while
+    `Esc` and the hints were theirs). A layer closing under a trap never
+    takes the focus out of the top trap, and a layer opened over it that
+    took the focus from inside it gives the focus back where it would
+    have (the Done page opened over Settings gives it back to the timeline
+    that had it before Settings).
 - The export panel and the toasts are in-window widgets, not GTK popovers:
   an exact 12×6 arrow and deterministic screenshots. Menus (Layout ▾, Add
   layer, Add audio track, row overflows, dropdowns) are
@@ -1775,7 +1806,7 @@ previews, the player, io, opening, the portal).
 | `{"op":"dispatch","command":{…},"confirmed":false}` | `Store::dispatch_with` with the default reply policy (confirmations open their modal); `{"ok":true}` at once |
 | `{"op":"action","id":"export.panel"}` | runs a binding or GUI action as its key would (pre-steps included) |
 | `{"op":"hints"}` | the rendered hint items (`keys`, `label`, `enabled`, `emphasized`) and the status text (`hintbar::current_items`); `shown`, the labels of the items the bar draws whole (a narrow window leaves the trailing ones out, `hintbar::fitting`), and `cut`, whether a drawn one runs past the bar (never; both WP7 integration audit) |
-| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and the panel's (`layerRowsAlive`, `audioRowsAlive`; review R43), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit); `themeSubscribers`, the theme's callbacks (a dropped bin thumbnail's goes with it, R11; WP7 integration's shot and code audits); `timelinePaints`, how many times the timeline's canvas made its render node again (not while only the playhead moves, C16; review R10) |
+| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `playing`, the player plays (the program or a bin preview's take), and `programPlaying`, the program plays in it (`LocalUi.program_playing`, G§3.10 step 3; review R00, R16); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and the panel's (`layerRowsAlive`, `audioRowsAlive`; review R43), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit); `themeSubscribers`, the theme's callbacks (a dropped bin thumbnail's goes with it, R11; WP7 integration's shot and code audits); `timelinePaints`, how many times the timeline's canvas made its render node again (not while only the playhead moves, C16; review R10); `binSlide`, the bin drawer's last slide as asked (`open`, `animate`: test mode animates nothing, so a case reads whether the open at start would have slid in; review fix, G§3.3); `takePreview`, the bin preview (`take`, `playing`: `Space` pauses it; null without one; review fix, D-17) |
 | `{"op":"a11y"}` | every visible icon-only button, focusable region or focusable custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 | `{"op":"fonts"}` | the family Pango loads for each bundled font; `ok` when each resolves to itself |
 | `{"op":"icons"}` | each custom symbolic icon drawn in a probe color: found, its pixels, recolored |
@@ -2516,8 +2547,18 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     the timeline `ClipAdd{take, at: Index(k)}` (D-38); Reveal
     `RevealPath(takes/<id>/)`; Open log `OpenPath(takes/<id>/recorder.log)`;
     Purge `TakePurge{takes}` (the modal comes from
-    `confirmation_required`).
+    `confirmation_required`; `BinAction::Purge.disabled` is
+    `view::enabled`'s reason, D-43: dimmed with it while recording or with
+    `qrec.json` invalid, the row's button and the S18 footer's; review fix:
+    both stayed live and the core's refusal toasted).
 - **Export**:
+  - `panel_enabled(&State) -> Result<(), String>`: the panel opens while
+    an export runs, else not while recording ("Not while recording") or
+    on an empty timeline ("The timeline is empty"); a refused `Ctrl+E`
+    toasts that reason (D-34, `unavailable_notice("export", …)`; review
+    fix: it opened nothing, silently). The header slot's enablement and
+    `hint_enabled("export.panel")` read the same rule (each still its own
+    copy: to switch to this one).
   - Captions, `caption(format, codec, &State, &UserConfig)` (built by
     WP0a; the GUI passes the user config it read at startup, the one it
     gives `Ctx::preview`): MP4 "H.264 + AAC 192 kbps · VA-API on
@@ -3993,7 +4034,7 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
 | S15c | as S15a | click WebM, capture; S15b again with `ui.reduced_motion = true` (plain bar) |
 | S16 | Smoke with its own S06 preset (its middle clip c1b2 selected, the playhead at 45 in it, Face selected; S06's c2d0 and 2437 aren't on its 90-frame timeline), panel open | the ruler's corner and the transport read one playhead (00:00:01:15); export; `waitIdle` after done; then `qrec export` over the Done page: the panel follows it and closes when it ends, with the core's toast (WP7 integration audit) |
 | S16b | as S16, `tests/support/fail_ffmpeg.rs`'s slow wrapper first on the GUI's PATH (each render unit starts 3 s late, so the panel closes while the export runs on any machine; WP7 integration audit) | export; wait for the Running page; `wtype -k Escape`; `waitIdle` after the toast |
-| S17 | Base, `tests/support/fail_ffmpeg.rs`'s wrapper first on the GUI's PATH (units 1 and 2 render, unit 3 fails after them and the case's go-ahead, the rest wait) | export; "Rendering clip 3/10" while unit 3 waits, then `fail_ffmpeg::go` (it waited a fixed 2 s until the WP7 integration audit); wait for Failed: "clip 3/10 (take 3, c1b2)", "Failed at 11%" |
+| S17 | Base, `tests/support/fail_ffmpeg.rs`'s wrapper first on the GUI's PATH (units 1 and 2 render, unit 3 fails after them and the case's go-ahead, the rest wait) | export; "Rendering clip 3/10" while unit 3 waits, then `fail_ffmpeg::go` (it waited a fixed 2 s until the WP7 integration audit); wait for Failed: "clip 3/10 (take 3, c1b2)", "Failed at 11%"; Try again sends it again, and the wrapper's second failure of unit 3 (`fail_ffmpeg::failures`) ends on Failed again (review fix: nothing pressed it) |
 | S18 | Base, bin open | click take 2, Ctrl+click take 4, click Purge from disk |
 | S18b | Base, Live | `wtype -M ctrl -k comma -m ctrl`; click Frame rate 25 |
 | S19–S25, X1–X3 | per WP8 and WP9 | — |

@@ -330,7 +330,10 @@ fn no_drags_while_recording() {
         }]
     );
     assert!(sink.drags.is_empty());
-    assert_eq!(decide_drop(&state, &view, &TakeId::numbered(4), 0.0), None);
+    assert_eq!(
+        decide_drop(&state, Some(&view), &TakeId::numbered(4), 0.0),
+        None
+    );
 }
 
 // ------------------------------------------------------------- trims
@@ -685,18 +688,48 @@ fn bin_drops_insert_at_the_nearest_boundary() {
     let (_, view, _) = setup(&state);
     let c2d0 = view.x_of_frame(2084);
     assert_eq!(
-        decide_drop(&state, &view, &TakeId::numbered(4), c2d0 + 2.0),
+        decide_drop(&state, Some(&view), &TakeId::numbered(4), c2d0 + 2.0),
         Some(Command::ClipAdd {
             take: TakeId::numbered(4),
             at: qrec_core::protocol::command::InsertAt::Index(7),
         })
     );
     // Broken and too-short takes don't go on the timeline.
-    assert_eq!(decide_drop(&state, &view, &TakeId::numbered(9), 0.0), None);
-    assert_eq!(decide_drop(&state, &view, &TakeId::numbered(6), 0.0), None);
+    assert_eq!(
+        decide_drop(&state, Some(&view), &TakeId::numbered(9), 0.0),
+        None
+    );
+    assert_eq!(
+        decide_drop(&state, Some(&view), &TakeId::numbered(6), 0.0),
+        None
+    );
     assert_eq!(parse_drop("qrec-take:take-0004"), Some(TakeId::numbered(4)));
     assert_eq!(parse_drop("take-0004"), None);
     assert_eq!(parse_drop("qrec-take:nope"), None);
+}
+
+/// SPEC §7.1, D-38: a take dragged onto an empty timeline (the S01b page,
+/// no canvas and no viewport: the fit zoom of 0 frames is none) goes in at
+/// its only slot, the first (the drop was refused).
+#[test]
+fn a_bin_drop_on_an_empty_timeline_is_the_first_clip() {
+    let mut state = testkit::design_state();
+    state.project.timeline.clips.clear();
+    assert!(
+        Viewport::from_state(&state, 1040.0).is_none(),
+        "no viewport"
+    );
+    assert_eq!(
+        decide_drop(&state, None, &TakeId::numbered(4), 300.0),
+        Some(Command::ClipAdd {
+            take: TakeId::numbered(4),
+            at: qrec_core::protocol::command::InsertAt::Index(0),
+        })
+    );
+    assert_eq!(decide_drop(&state, None, &TakeId::numbered(9), 300.0), None);
+    // With clips, the slot needs the viewport the canvas shows.
+    let state = testkit::design_state();
+    assert_eq!(decide_drop(&state, None, &TakeId::numbered(4), 300.0), None);
 }
 
 // ------------------------------------------------------------- the ghost

@@ -12,6 +12,18 @@ use gtk::{glib, graphene, gsk};
 
 use crate::theme::motion;
 
+thread_local! {
+    /// The last [`Slide::show`]'s `open` and `animate`, as asked (test mode
+    /// only, where nothing animates: `testctl`'s `local`, `binSlide`).
+    static LAST_SHOW: Cell<Option<(bool, bool)>> = const { Cell::new(None) };
+}
+
+/// The last show of the drawer's slide: whether it opened and whether it
+/// was asked to animate (test mode; `None` before any).
+pub fn last_show() -> Option<(bool, bool)> {
+    LAST_SHOW.with(Cell::get)
+}
+
 /// Open and close durations, ms (DESIGN Motion).
 pub const OPEN_MS: u32 = 240;
 pub const CLOSE_MS: u32 = 160;
@@ -122,6 +134,9 @@ impl Slide {
     /// Opens (`open`) or closes it; `animate` false (startup, test mode)
     /// jumps to the end. `reduced`: a crossfade instead of the slide.
     pub fn show(&self, open: bool, animate: bool, reduced: bool) {
+        if motion::one_shots_at_end() {
+            LAST_SHOW.with(|last| last.set(Some((open, animate))));
+        }
         if let Some(animation) = self.imp().animation.take() {
             animation.skip();
         }

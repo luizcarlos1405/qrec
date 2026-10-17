@@ -93,6 +93,29 @@ pub fn av1_unavailable(caps: &Capabilities) -> Option<String> {
     }
 }
 
+/// Whether the export panel can open now (`Ctrl+E`, the header slot):
+/// always while an export runs (it shows it, D-49); else not while
+/// recording ("Not while recording") or on an empty timeline ("The
+/// timeline is empty"). `Err` is the reason a refused `Ctrl+E` toasts
+/// (D-34), the header slot's tooltip (`view::header`'s export slot reads
+/// the same).
+pub fn panel_enabled(state: &State) -> Result<(), String> {
+    let exporting = state
+        .runtime
+        .jobs
+        .values()
+        .any(|job| matches!(job.kind, JobKind::Export { .. }));
+    if exporting {
+        Ok(())
+    } else if !state.runtime.record.is_idle() {
+        Err("Not while recording".to_owned())
+    } else if state.project.timeline.clips.is_empty() {
+        Err("The timeline is empty".to_owned())
+    } else {
+        Ok(())
+    }
+}
+
 /// The auto output name: `naming::export_file_name(name, local now)`.
 pub fn output_preview(
     state: &State,
@@ -445,6 +468,39 @@ mod tests {
             out: None,
         };
         apply(&state, &ctx, cmd).unwrap().state
+    }
+
+    /// D-34: a refused `Ctrl+E` says why (it opened nothing, silently): an
+    /// empty timeline, a take recording; a running export always opens it.
+    #[test]
+    fn the_panel_opens_unless_the_timeline_is_empty_or_recording() {
+        use crate::state::{RecordMode, RecordPhase};
+        let mut state = testkit::design_state();
+        assert_eq!(panel_enabled(&state), Ok(()));
+        let clips = std::mem::take(&mut state.project.timeline.clips);
+        assert_eq!(
+            panel_enabled(&state),
+            Err("The timeline is empty".to_owned())
+        );
+        state.project.timeline.clips = clips;
+        state.runtime.record = RecordPhase::Recording {
+            take: crate::ids::TakeId::numbered(10),
+            mode: RecordMode::Append,
+            elapsed_ns: 0,
+            waiters: vec![],
+        };
+        assert_eq!(panel_enabled(&state), Err("Not while recording".to_owned()));
+        let mut running = exporting();
+        assert_eq!(panel_enabled(&running), Ok(()));
+        running.project.timeline.clips.clear();
+        assert_eq!(panel_enabled(&running), Ok(()), "it shows the export");
+        let notice = crate::view::notices::unavailable_notice(
+            "export",
+            "The timeline is empty",
+            &testkit::design_state(),
+        )
+        .expect("a toast");
+        assert_eq!(notice.title, "The timeline is empty");
     }
 
     /// The caption names the encoder the export will use: VA-API only where

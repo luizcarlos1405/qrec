@@ -1079,8 +1079,13 @@ Auto names: `exports/<stem>-YYYYMMDD-HHMMSS.<ext>` and
 `frames/<stem>-<take>-<HHMMSSFF>.png` (timeline timecode) with local time
 from `utc_offset_secs` and `stem = naming::file_stem(project.name)`.
 Timeline empty ⇒ `Invalid` "nothing to export". Done toast for export:
-"Layers! Like an onion. Your video is ready." with Open file / Open folder /
-Copy path; frame toast: path with Copy image / Open folder.
+"Layers! Like an onion. Your video is ready." with the body "<path> · <size>"
+and Open file / Open folder (S16b; Copy path is in the GUI export panel's
+Done page); its path is project-relative for an auto name, as the job named
+it (`on_event::output::shown_output`), while the reply's `path` stays
+absolute; frame toast: path with Copy image / Open folder. Toast actions'
+paths are absolute or project-relative (`UiAction`): a front end opens the
+relative ones under the project folder.
 
 ### A§5.10 UI normalization (`ui_normalize.rs`)
 

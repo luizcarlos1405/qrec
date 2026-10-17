@@ -35,11 +35,24 @@ pub fn resolve(project_dir: &Path, path: &str) -> PathBuf {
     }
 }
 
+/// The file a path action names, for the desktop ([`resolve`]d under
+/// `project_dir`): Open file, Open folder, Copy image; `None` for the
+/// others.
+pub fn action_path(project_dir: &Path, action: &UiAction) -> Option<PathBuf> {
+    match action {
+        UiAction::OpenPath(path) | UiAction::RevealPath(path) | UiAction::CopyImage(path) => {
+            Some(resolve(project_dir, path))
+        }
+        UiAction::CopyText(_) | UiAction::Dispatch(_) => None,
+    }
+}
+
 /// Carries out a toast button's `action` for the window `parent`.
 pub fn run(ctx: &Ctx, parent: Option<&gtk::Window>, project_dir: &Path, action: &UiAction) {
+    let file_of = || action_path(project_dir, action).unwrap_or_default();
     match action {
         UiAction::OpenPath(path) => {
-            let file = gio::File::for_path(resolve(project_dir, path));
+            let file = gio::File::for_path(file_of());
             let launcher = gtk::FileLauncher::new(Some(&file));
             let store = ctx.store.clone();
             let shown = path.clone();
@@ -54,7 +67,7 @@ pub fn run(ctx: &Ctx, parent: Option<&gtk::Window>, project_dir: &Path, action: 
             );
         }
         UiAction::RevealPath(path) => {
-            let file = gio::File::for_path(resolve(project_dir, path));
+            let file = gio::File::for_path(file_of());
             let launcher = gtk::FileLauncher::new(Some(&file));
             let store = ctx.store.clone();
             let shown = path.clone();
@@ -75,9 +88,9 @@ pub fn run(ctx: &Ctx, parent: Option<&gtk::Window>, project_dir: &Path, action: 
                 "Couldn't copy: no display",
             )),
         },
-        UiAction::CopyImage(path) => {
+        UiAction::CopyImage(_) => {
             let store = ctx.store.clone();
-            let file = PathBuf::from(path);
+            let file = file_of();
             let paths = ProjectPaths::new(project_dir);
             ctx.media.run_io_then(
                 move || copy_image(&paths, &file),
@@ -176,6 +189,33 @@ mod tests {
             resolve(dir, "/home/me/Videos/x.mp4"),
             Path::new("/home/me/Videos/x.mp4")
         );
+    }
+
+    /// Every path action opens under the project folder, whatever the
+    /// window's working directory: a project-relative PNG (`frames/…`,
+    /// A§1.3) is copied from the project, as Open file opens an export.
+    #[test]
+    fn path_actions_resolve_under_the_project() {
+        let dir = Path::new("/home/me/talk");
+        let shot = "frames/talk-take-0004-00012345.png";
+        for action in [
+            UiAction::OpenPath(shot.into()),
+            UiAction::RevealPath(shot.into()),
+            UiAction::CopyImage(shot.into()),
+        ] {
+            assert_eq!(
+                action_path(dir, &action).as_deref(),
+                Some(Path::new(
+                    "/home/me/talk/frames/talk-take-0004-00012345.png"
+                )),
+                "{action:?}"
+            );
+        }
+        assert_eq!(
+            action_path(dir, &UiAction::CopyImage("/tmp/x.png".into())).as_deref(),
+            Some(Path::new("/tmp/x.png"))
+        );
+        assert_eq!(action_path(dir, &UiAction::CopyText(shot.into())), None);
     }
 
     #[test]

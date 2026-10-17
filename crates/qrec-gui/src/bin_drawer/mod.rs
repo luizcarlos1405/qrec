@@ -14,7 +14,9 @@
 //!   holds `MediaHub::hold_io_busy`, so `waitIdle` waits for it).
 //! - Keys while the bin has the focus (D-11, the router's step 6): `↑` `↓`
 //!   select (± `Shift` extends), `Enter` inserts at the end, `Space`
-//!   toggles the preview.
+//!   toggles the preview. A change of the takes keeps the rows of the
+//!   takes still listed; when the focused row leaves (`Enter` inserted it),
+//!   the row now at its place takes the focus (and the selection, D-37).
 //! - The bin preview (D-17, GUI-local): `LocalUi.take_preview` after
 //!   `SetCanvasMode{Program}` when Live (the Program picture shows it, with
 //!   the TAKE badge; WP4's sync plays it and clears `playing` at its end);
@@ -51,7 +53,7 @@ use crate::store::{Change, Subscription};
 use crate::widgets::button;
 use crate::{Ctx, desktop, guard, guarded};
 use row::{RowEvent, RowView, Sink};
-use select::Selection;
+use select::{Selection, SpaceStep};
 use slide::Slide;
 
 /// The drawer's width, logical px (BRIEF §2.8).
@@ -85,6 +87,9 @@ struct Drawer {
     ctx: Ctx,
     slide: Slide,
     count: gtk::Label,
+    /// Its close button (`bin-close`): the focus goes there when the row
+    /// that had it was the last.
+    close: gtk::Button,
     list: gtk::Box,
     footer: gtk::Box,
     footer_selected: gtk::Label,
@@ -127,6 +132,13 @@ pub fn rows_alive() -> usize {
         rows.retain(|row| row.upgrade().is_some());
         rows.len()
     })
+}
+
+/// The drawer slide's last show, as asked (test mode, where nothing
+/// animates; `testctl`'s `local`, `binSlide`): whether it opened, and
+/// whether it was to animate.
+pub fn slide_shown() -> Option<(bool, bool)> {
+    slide::last_show()
 }
 
 /// The UTC offset of the local zone at `at`.
@@ -227,6 +239,7 @@ impl Drawer {
             ctx: ctx.clone(),
             slide,
             count,
+            close,
             list,
             footer,
             footer_selected,
@@ -249,8 +262,9 @@ impl Drawer {
         });
         *drawer.sink.borrow_mut() = Some(sink);
         drawer.connect(&content);
-        // Open at startup without animating ("nothing animates on app
-        // start").
+        // As the store's state has it (the placeholder before the Session
+        // opens: closed), at once; the first snapshot opens it, still
+        // without sliding ("nothing animates on app start", `on_change`).
         let open = ctx.store.state().ui.bin_open;
         drawer.slide.show(open, false, ctx.theme.motion().reduced);
         drawer.refresh(&ctx.store.state());
@@ -357,8 +371,13 @@ impl Drawer {
     fn on_change(self: &Rc<Self>, change: &Change) {
         let (prev, next) = (&change.prev, &change.next);
         if prev.ui.bin_open != next.ui.bin_open {
+            // Nothing animates on start (G§3.3): the first snapshot, out of
+            // the placeholder state (`bin_open` false), comes before the
+            // Session says it is open, and a bin left open in ui.json jumps
+            // open; every toggle after that slides.
+            let animate = self.ctx.store.local().is_open();
             self.slide
-                .show(next.ui.bin_open, true, self.ctx.theme.motion().reduced);
+                .show(next.ui.bin_open, animate, self.ctx.theme.motion().reduced);
             if next.ui.bin_open {
                 self.want_sizes(false);
             }
@@ -393,42 +412,46 @@ impl Drawer {
             .collect();
         let rows = view::bin_rows(state, &sizes, &offsets, offset_at(Utc::now()));
         self.count.set_text(&view::header(state, &sizes));
-        let same = {
-            let shown = self.rows.borrow();
-            shown.len() == rows.len() && shown.iter().zip(&rows).all(|(v, r)| v.take == r.take)
-        };
-        if same {
-            for (view, row) in self.rows.borrow().iter().zip(&rows) {
-                view.show(row);
-            }
-        } else {
-            while let Some(child) = self.list.first_child() {
-                self.list.remove(&child);
-            }
-            let sink = self.sink.borrow().clone();
-            let Some(sink) = sink else { return };
-            let views: Vec<RowView> = rows
-                .iter()
-                .map(|row| {
-                    let v = RowView::new(&self.ctx, row, &sink);
-                    track_row(&v.main);
-                    self.list.append(&v.root);
-                    v
-                })
-                .collect();
-            *self.rows.borrow_mut() = views;
-        }
+        let before = self.row_takes();
+        let focused = self.focused_row();
+        self.place_rows(&rows);
         let takes: Vec<TakeId> = rows.iter().map(|r| r.take.clone()).collect();
-        let before = self.selection.borrow().clone();
-        self.selection.borrow_mut().retain(&takes);
-        if *self.selection.borrow() != before {
+        // The row with the keyboard focus left the bin (Enter inserted its
+        // take): the keyboard goes on from the row now at its place.
+        let left = focused.filter(|take| !takes.contains(take));
+        let selection = self.selection.borrow().clone();
+        self.selection
+            .borrow_mut()
+            .retain(&before, &takes, left.is_some());
+        if *self.selection.borrow() != selection {
             self.publish_selection();
+        }
+        if let Some(left) = left {
+            // At once, before GTK moves the focus out of the bin (the stage,
+            // a broken take's Open log): the bin keys need it (D-11).
+            let main = select::place(&before, &takes, &left).and_then(|take| {
+                self.rows
+                    .borrow()
+                    .iter()
+                    .find(|r| r.take == take)
+                    .map(|r| r.main.clone())
+            });
+            match main {
+                Some(main) => main.grab_focus(),
+                None => self.close.grab_focus(),
+            };
         }
         let idle = state.runtime.record.is_idle();
         for (view, row) in self.rows.borrow().iter().zip(&rows) {
             let insert = enabled(state, &view::insert_at(&row.take, InsertAt::End));
             view.set_enabled(insert, idle);
         }
+        // The footer's Purge from disk follows the same gate as the rows'
+        // (D-43: it depends on the state, not on which takes).
+        let selected = self.selection.borrow().selected.clone();
+        let purge = enabled(state, &Command::TakePurge { takes: selected }).err();
+        self.footer_purge.set_sensitive(purge.is_none());
+        self.footer_purge.set_tooltip_text(purge.as_deref());
         // The texture cache comes with the open Session: the thumbnails
         // drawn before it ask again (a draw asks for its images).
         if !self.thumbs_ready.get() && self.ctx.media.thumbs().is_some() {
@@ -438,6 +461,64 @@ impl Drawer {
             }
         }
         self.show_selection();
+    }
+
+    /// Shows `rows`: the rows of takes still listed stay (moved into the new
+    /// order, their focus and state kept), new takes get rows, the others
+    /// go. (Every change of the takes made every row again: the focused one
+    /// went with them.)
+    fn place_rows(self: &Rc<Self>, rows: &[view::BinRow]) {
+        let sink = self.sink.borrow().clone();
+        let Some(sink) = sink else { return };
+        let mut old: BTreeMap<TakeId, RowView> = self
+            .rows
+            .take()
+            .into_iter()
+            .map(|v| (v.take.clone(), v))
+            .collect();
+        // A row whose take became draggable (or stopped) is made again: its
+        // drag source comes with it.
+        old.retain(|take, v| {
+            let keep = rows.iter().any(|r| {
+                r.take == *take
+                    && v.row()
+                        .is_some_and(|shown| shown.insertable == r.insertable)
+            });
+            if !keep {
+                self.list.remove(&v.root);
+            }
+            keep
+        });
+        let mut views = Vec::with_capacity(rows.len());
+        let mut prev: Option<gtk::Widget> = None;
+        for row in rows {
+            let view = match old.remove(&row.take) {
+                Some(view) => {
+                    view.show(row);
+                    self.list.reorder_child_after(&view.root, prev.as_ref());
+                    view
+                }
+                None => {
+                    let view = RowView::new(&self.ctx, row, &sink);
+                    track_row(&view.main);
+                    self.list.insert_child_after(&view.root, prev.as_ref());
+                    view
+                }
+            };
+            prev = Some(view.root.clone().upcast());
+            views.push(view);
+        }
+        *self.rows.borrow_mut() = views;
+    }
+
+    /// The take whose row has the keyboard focus, if one does.
+    fn focused_row(&self) -> Option<TakeId> {
+        let focus = self.list.root().and_then(|root| root.focus())?;
+        self.rows
+            .borrow()
+            .iter()
+            .find(|r| focus.is_ancestor(&r.root))
+            .map(|r| r.take.clone())
     }
 
     /// The selection's look: R1 rows, the single row's actions, the footer.
@@ -682,21 +763,21 @@ impl Drawer {
     }
 
     /// `Space` in the bin (D-17): pauses or plays the selected take's
-    /// preview again, else previews the selected take.
+    /// preview again, else previews the selected take ([`select::space`]).
     fn toggle_preview(self: &Rc<Self>) {
         let preview = self.ctx.store.local().take_preview.clone();
         let single = self.selection.borrow().single().cloned();
-        match (preview, single) {
-            (Some(p), Some(take)) if p.take == take => {
+        match select::space(preview.as_ref().map(|p| &p.take), single.as_ref()) {
+            SpaceStep::Toggle => {
                 self.ctx.store.update_local(|l| {
                     if let Some(p) = &mut l.take_preview {
                         p.playing = !p.playing;
                     }
                 });
             }
-            (_, Some(take)) => self.start_preview(&take),
-            (Some(_), None) => self.end_preview(),
-            (None, None) => {}
+            SpaceStep::Start(take) => self.start_preview(&take),
+            SpaceStep::End => self.end_preview(),
+            SpaceStep::Nothing => {}
         }
     }
 

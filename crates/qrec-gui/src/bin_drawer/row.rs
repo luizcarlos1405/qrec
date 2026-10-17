@@ -298,6 +298,11 @@ impl RowView {
         let has = |f: fn(&BinAction) -> bool| row.actions.iter().any(f);
         self.first
             .set_visible(has(|a| matches!(a, BinAction::Preview)));
+        // D-43: refused while recording or with qrec.json invalid; it says
+        // why (the core's refusal toasted it).
+        let purge = row.purge_disabled();
+        self.purge.set_sensitive(purge.is_none());
+        self.purge.set_tooltip_text(purge);
         let name = format!(
             "{}, {}, {}, {}",
             row.title,

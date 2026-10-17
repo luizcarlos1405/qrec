@@ -56,7 +56,10 @@ pub struct ToastAction {
     pub action: UiAction,
 }
 
-/// What a toast button does. Paths are absolute.
+/// What a toast button does. Paths are absolute (a hand-picked export or
+/// frame), or project-relative (`exports/…`, `frames/…`, `takes/…`,
+/// A§1.3): a front end opens those under the project folder (the GUI's
+/// `desktop::resolve`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum UiAction {

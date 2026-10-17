@@ -4,12 +4,15 @@
 //! most two actions. Owner: WP6.
 //!
 //! [`ToastQueue`] is the GTK-free part (timings, the queue, the actions
-//! shown, the Undo guard): an Undo (`Dispatch(Undo{..})`) stays enabled
+//! shown, the Undo guard): a toast equal to the newest one is that one
+//! again (a held key's auto-repeat toasts once, its time starting over), an
+//! Undo (`Dispatch(Undo{..})`) stays enabled
 //! only while `history.cursor` is what it was when the toast arrived, and
 //! the core's export-done and export-failed toasts are dropped while the
 //! export panel shows that export's Done or Failed state
 //! ([`shown_by_the_panel`]; the failed one since the WP7 integration: S17
-//! draws no toast).
+//! draws no toast): only the toast the panel's own answer said is next
+//! (`ExportPanelState::toast_due`), never another export's.
 //!
 //! A toast is `raised`, `lg` radius, e2 with a 1 px `border`: a 20 px level
 //! icon, the `body-strong` title over a `body-sm` `muted` body (a path in
@@ -76,15 +79,36 @@ pub fn is_export_failed(notice: &Notice) -> bool {
     notice.title == EXPORT_FAILED_TITLE && notice.level == ToastLevel::Error
 }
 
-/// Whether the export panel open in `panel` shows what `notice` says (its
-/// own export's Done or Failed page: it answers before the core's toast
-/// comes), so the toast is dropped. A closed panel, or one showing
-/// Running or Setup, lets it through (S16b, a CLI export).
-pub fn shown_by_the_panel(notice: &Notice, panel: Option<ExportPanelMode>) -> bool {
-    match panel {
+/// The core's toast of an export's end: done or failed.
+pub fn is_export_end(notice: &Notice) -> bool {
+    is_export_done(notice) || is_export_failed(notice)
+}
+
+/// Whether the export panel open in `panel` shows what `notice` says, so
+/// the toast is dropped (G§3.7): its own export's Done or Failed page
+/// shows that export's end, and `notice` is that export's toast (`due`:
+/// the panel's answer came, and its toast is the next export toast; the
+/// core sends the reply first, through the same queue). Another export's
+/// toast shows whatever the panel shows (a CLI export the window never saw
+/// run, while the panel still shows its own last Done page), and so does
+/// any with the panel closed or on Running or Setup (S16b, a CLI export).
+pub fn shown_by_the_panel(notice: &Notice, panel: Option<ExportPanelMode>, due: bool) -> bool {
+    due && match panel {
         Some(ExportPanelMode::Done) => is_export_done(notice),
         Some(ExportPanelMode::Failed) => is_export_failed(notice),
         _ => false,
+    }
+}
+
+/// The GUI action (G§3.8) a toast button runs, for the buttons that open
+/// a region: Show export the export panel (`export.show`: it opens it and
+/// leaves an open one as it is; `export.panel`, a toggle, closed the
+/// passive panel the toast shows under), Open settings Settings.
+pub fn gui_action(action: &NoticeAction) -> Option<&'static str> {
+    match action {
+        NoticeAction::ShowExport => Some(crate::export::SHOW),
+        NoticeAction::OpenSettings(_) => Some("settings.open"),
+        _ => None,
     }
 }
 
@@ -125,16 +149,45 @@ pub struct ToastQueue {
     waiting: VecDeque<Queued>,
 }
 
+/// Where a pushed toast went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pushed {
+    /// It shows now (nothing was showing).
+    Shown,
+    /// It waits behind the one shown (the "+N" chip).
+    Queued,
+    /// The newest toast says the same: it is that one again (its history
+    /// cursor the new one's), shown or waiting.
+    Coalesced { shown: bool },
+}
+
 impl ToastQueue {
-    /// Adds a toast; `true` when it shows at once (nothing was showing).
-    pub fn push(&mut self, notice: Notice, cursor: u64) -> bool {
+    /// Adds a toast at history cursor `cursor`. One that says what the
+    /// newest toast says (a held key's auto-repeat: "Nothing to undo" 25
+    /// times a second) is that toast again; `coalesce_shown` false (the
+    /// shown toast is fading out) queues it after the shown one instead.
+    pub fn push(&mut self, notice: Notice, cursor: u64, coalesce_shown: bool) -> Pushed {
+        if let Some(newest) = self.waiting.back_mut()
+            && newest.notice == notice
+        {
+            newest.cursor = cursor;
+            return Pushed::Coalesced { shown: false };
+        }
+        if let Some(shown) = &mut self.showing
+            && self.waiting.is_empty()
+            && coalesce_shown
+            && shown.notice == notice
+        {
+            shown.cursor = cursor;
+            return Pushed::Coalesced { shown: true };
+        }
         let queued = Queued { notice, cursor };
         if self.showing.is_none() {
             self.showing = Some(queued);
-            true
+            Pushed::Shown
         } else {
             self.waiting.push_back(queued);
-            false
+            Pushed::Queued
         }
     }
 
@@ -226,18 +279,59 @@ impl Host {
             notice.title,
             notice.body.as_deref().unwrap_or_default()
         );
-        // The export panel shows this result already (its Done or Failed
-        // state).
-        if shown_by_the_panel(&notice, self.ctx.store.local().export_panel()) {
-            tracing::debug!("toast: the export panel shows it; dropped");
-            return;
+        // The export panel shows this result already (its own export's
+        // Done or Failed page): the export toast its answer said is next.
+        if is_export_end(&notice) {
+            let (panel, due) = {
+                let local = self.ctx.store.local();
+                (local.export_panel(), local.export_view.toast_due)
+            };
+            if due {
+                self.ctx
+                    .store
+                    .update_local(|l| l.export_view.toast_due = false);
+            }
+            if shown_by_the_panel(&notice, panel, due) {
+                tracing::debug!("toast: the export panel shows it; dropped");
+                return;
+            }
         }
         let cursor = self.ctx.store.state().history.cursor;
-        let now = self.inner.borrow_mut().queue.push(notice, cursor);
-        if now {
-            self.show_current();
-        } else {
-            self.refresh_chip();
+        let leaving = self.inner.borrow().leaving;
+        let pushed = self.inner.borrow_mut().queue.push(notice, cursor, !leaving);
+        match pushed {
+            Pushed::Shown => self.show_current(),
+            Pushed::Queued => self.refresh_chip(),
+            // The toast on screen again: its time starts over (a held key
+            // keeps one up, gone its time after the last repeat), its Undo
+            // follows the newest arrival.
+            Pushed::Coalesced { shown: true } => {
+                self.start_timer();
+                self.refresh_actions();
+            }
+            Pushed::Coalesced { shown: false } => {}
+        }
+    }
+
+    /// The shown toast's timer, from now (none for an error, dismissed by
+    /// hand).
+    fn start_timer(self: &Rc<Self>) {
+        if let Some(timer) = self.inner.borrow_mut().timer.take() {
+            timer.remove();
+        }
+        let after = self
+            .inner
+            .borrow()
+            .queue
+            .current()
+            .and_then(|q| duration(&q.notice));
+        if let Some(after) = after {
+            let host = Rc::clone(self);
+            let id = guard::timeout_local_once(after, "toast: timer", move || {
+                host.inner.borrow_mut().timer = None;
+                host.dismiss();
+            });
+            self.inner.borrow_mut().timer = Some(id);
         }
     }
 
@@ -262,14 +356,7 @@ impl Host {
         self.root.set_visible(true);
         self.refresh_actions();
         self.animate_in(&toast);
-        if let Some(after) = duration(&queued.notice) {
-            let host = Rc::clone(self);
-            let id = guard::timeout_local_once(after, "toast: timer", move || {
-                host.inner.borrow_mut().timer = None;
-                host.dismiss();
-            });
-            self.inner.borrow_mut().timer = Some(id);
-        }
+        self.start_timer();
     }
 
     fn build(
@@ -498,8 +585,10 @@ impl Host {
                     &toast_action.action,
                 );
             }
-            NoticeAction::ShowExport => {
-                ctx.actions.run("export.panel");
+            NoticeAction::ShowExport | NoticeAction::OpenSettings(_) => {
+                if let Some(id) = gui_action(action) {
+                    ctx.actions.run(id);
+                }
             }
             NoticeAction::OpenBin => ctx.store.dispatch(Command::SetUi {
                 patch: UiPatch {
@@ -507,9 +596,6 @@ impl Host {
                     ..UiPatch::default()
                 },
             }),
-            NoticeAction::OpenSettings(_) => {
-                ctx.actions.run("settings.open");
-            }
             NoticeAction::RetrySource(_) => ctx.store.retry_live(),
         }
     }
@@ -582,9 +668,21 @@ mod tests {
     fn one_toast_at_a_time_and_the_queue_chip() {
         let mut queue = ToastQueue::default();
         assert!(queue.current().is_none());
-        assert!(queue.push(Notice::new(ToastLevel::Info, "first"), 3));
-        assert!(!queue.push(Notice::new(ToastLevel::Warning, "second"), 3));
-        assert!(!queue.push(Notice::new(ToastLevel::Error, "third"), 4));
+        let push = |queue: &mut ToastQueue, level, title: &str, cursor| {
+            queue.push(Notice::new(level, title), cursor, true)
+        };
+        assert_eq!(
+            push(&mut queue, ToastLevel::Info, "first", 3),
+            Pushed::Shown
+        );
+        assert_eq!(
+            push(&mut queue, ToastLevel::Warning, "second", 3),
+            Pushed::Queued
+        );
+        assert_eq!(
+            push(&mut queue, ToastLevel::Error, "third", 4),
+            Pushed::Queued
+        );
         assert_eq!(queue.current().unwrap().notice.title, "first");
         assert_eq!(queue.waiting(), 2);
         assert_eq!(chip_text(queue.waiting()).as_deref(), Some("+2"));
@@ -596,7 +694,53 @@ mod tests {
         assert!(queue.done().is_none());
         assert!(queue.current().is_none());
         // Empty again: the next toast shows at once.
-        assert!(queue.push(Notice::new(ToastLevel::Info, "again"), 5));
+        assert_eq!(
+            push(&mut queue, ToastLevel::Info, "again", 5),
+            Pushed::Shown
+        );
+    }
+
+    /// A held key whose action is unavailable (`Ctrl+Z` past the oldest
+    /// entry: GTK delivers each auto-repeat as a press) toasts one
+    /// "Nothing to undo", not one per repeat queued minutes ahead of real
+    /// toasts; the same toast between others still counts (S25's "+2").
+    #[test]
+    fn a_repeated_toast_is_the_same_toast() {
+        let mut queue = ToastQueue::default();
+        let nothing = Notice::new(ToastLevel::Info, "Nothing to undo");
+        assert_eq!(queue.push(nothing.clone(), 7, true), Pushed::Shown);
+        for _ in 0..34 {
+            assert_eq!(
+                queue.push(nothing.clone(), 7, true),
+                Pushed::Coalesced { shown: true }
+            );
+        }
+        assert_eq!(queue.waiting(), 0);
+        assert_eq!(queue.current().map(|q| &q.notice), Some(&nothing));
+        // Behind another, it is the newest waiting one again.
+        let error = Notice::new(ToastLevel::Error, "Recording didn't start");
+        assert_eq!(queue.push(error.clone(), 7, true), Pushed::Queued);
+        assert_eq!(
+            queue.push(error.clone(), 7, true),
+            Pushed::Coalesced { shown: false }
+        );
+        assert_eq!(queue.waiting(), 1);
+        // A, B, A: three toasts.
+        assert_eq!(queue.push(nothing.clone(), 7, true), Pushed::Queued);
+        assert_eq!(queue.waiting(), 2);
+        // Fading out, the shown one takes no more: the next shows after it.
+        let mut leaving = ToastQueue::default();
+        leaving.push(nothing.clone(), 7, true);
+        assert_eq!(leaving.push(nothing.clone(), 7, false), Pushed::Queued);
+        // The newest arrival's history cursor: its Undo is the one enabled.
+        let mut undos = ToastQueue::default();
+        let removed = Notice::new(ToastLevel::Success, "Removed a clip").with_action(undo());
+        undos.push(removed.clone(), 5, true);
+        assert_eq!(
+            undos.push(removed, 6, true),
+            Pushed::Coalesced { shown: true }
+        );
+        assert_eq!(undos.current().map(|q| q.cursor), Some(6));
     }
 
     #[test]
@@ -618,29 +762,73 @@ mod tests {
         assert!(shown_actions(&Notice::new(ToastLevel::Info, "x")).is_empty());
     }
 
-    /// S16 and S17: the panel's Done or Failed page shows the export's end,
-    /// so the core's toast for it is dropped; with the panel closed, or
-    /// still on Running (a CLI export), it shows (S16b).
+    /// S16 and S17: the panel's Done or Failed page shows its export's end,
+    /// so the core's toast for it (due: the panel's answer came, and its
+    /// toast is next) is dropped; with the panel closed, or still on
+    /// Running (a CLI export), it shows (S16b).
     #[test]
     fn the_panels_own_ending_drops_its_toast() {
+        use ExportPanelMode::{Done, Failed, Running, Setup};
         let done = Notice::new(ToastLevel::Success, EXPORT_DONE_TITLE);
         let failed = Notice::new(ToastLevel::Error, EXPORT_FAILED_TITLE);
         let other = Notice::new(ToastLevel::Error, "Couldn't open exports/a.mp4");
-        assert!(shown_by_the_panel(&done, Some(ExportPanelMode::Done)));
-        assert!(shown_by_the_panel(&failed, Some(ExportPanelMode::Failed)));
-        assert!(!shown_by_the_panel(&failed, Some(ExportPanelMode::Done)));
-        assert!(!shown_by_the_panel(&done, Some(ExportPanelMode::Failed)));
-        for panel in [
-            None,
-            Some(ExportPanelMode::Running),
-            Some(ExportPanelMode::Setup),
-        ] {
-            assert!(!shown_by_the_panel(&done, panel), "{panel:?}");
-            assert!(!shown_by_the_panel(&failed, panel), "{panel:?}");
+        let own = |notice: &Notice, panel| shown_by_the_panel(notice, panel, true);
+        assert!(own(&done, Some(Done)));
+        assert!(own(&failed, Some(Failed)));
+        assert!(!own(&failed, Some(Done)));
+        assert!(!own(&done, Some(Failed)));
+        for panel in [None, Some(Running), Some(Setup)] {
+            assert!(!own(&done, panel), "{panel:?}");
+            assert!(!own(&failed, panel), "{panel:?}");
         }
-        assert!(!shown_by_the_panel(&other, Some(ExportPanelMode::Failed)));
+        assert!(!own(&other, Some(Failed)));
+        assert!(is_export_end(&done) && is_export_end(&failed));
+        assert!(!is_export_end(&other));
         let warning = Notice::new(ToastLevel::Warning, EXPORT_FAILED_TITLE);
         assert!(!is_export_failed(&warning), "only the core's error toast");
+    }
+
+    /// G§3.7: only the panel's own export's toast goes. Another export's (a
+    /// CLI export the window never saw run: its start and end snapshots
+    /// coalesced in the queue, so its job never cleared the panel's last
+    /// outcome) shows even while the panel still shows its own last Done
+    /// or Failed page: it was dropped, and that export's end showed
+    /// nowhere.
+    #[test]
+    fn another_exports_toast_shows_over_the_panels_own_page() {
+        use ExportPanelMode::{Done, Failed};
+        let done = Notice::new(ToastLevel::Success, EXPORT_DONE_TITLE);
+        let failed = Notice::new(ToastLevel::Error, EXPORT_FAILED_TITLE);
+        assert!(!shown_by_the_panel(&done, Some(Done), false));
+        assert!(!shown_by_the_panel(&failed, Some(Failed), false));
+    }
+
+    /// D-34's Show export opens the export panel and leaves an open one as
+    /// it is: the toast shows under the passive Running panel, whose toggle
+    /// closed the very panel the button names.
+    #[test]
+    fn show_export_opens_the_panel_and_never_closes_it() {
+        use crate::export::{ACTIONS, PanelStep, panel_step};
+        let id = gui_action(&NoticeAction::ShowExport).expect("a GUI action");
+        let (_, request) = ACTIONS
+            .iter()
+            .find(|(i, _)| *i == id)
+            .unwrap_or_else(|| panic!("{id} isn't the panel's"));
+        assert_eq!(panel_step(None, *request), PanelStep::Open);
+        for mode in [ExportPanelMode::Running, ExportPanelMode::Done] {
+            assert_eq!(
+                panel_step(Some(mode), *request),
+                PanelStep::Stay,
+                "{mode:?}"
+            );
+        }
+        assert_eq!(
+            gui_action(&NoticeAction::OpenSettings(
+                crate::store::local::SettingsPage::Project
+            )),
+            Some("settings.open")
+        );
+        assert_eq!(gui_action(&NoticeAction::OpenBin), None);
     }
 
     #[test]

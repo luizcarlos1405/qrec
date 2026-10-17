@@ -1,12 +1,16 @@
 //! The export panel (S15a, S15b, S15c, S16, S17, C25, C29, C30): setup,
 //! running (passive, D-49), done, failed; in-window, under the header's
 //! Export slot. Owner: WP7. Registers `export.panel` (it toggles the
-//! panel; the `Esc` chain runs it to close the passive one).
+//! panel; the `Esc` chain runs it to close the passive one) and
+//! `export.show` (it only opens it: a toast's Show export, D-34).
 //!
 //! - Setup, Done and Failed trap the focus (`Layer::FloatingTrap`: the
 //!   overlay keys, an outside click closes them); Running is passive
 //!   (`Layer::FloatingPassive`: keys and clicks reach the window, S15b's
 //!   hints stay live) and `Esc`, `Ctrl+E` or the header slot close it.
+//!   It changes its layer only while it is the top overlay
+//!   (`flow::layer`): its export ending under Settings or a modal opened
+//!   over the passive panel, it takes the trap once they close.
 //! - What it shows follows [`flow::mode`]: any running export (the CLI's
 //!   too) shows Running; its own export's outcome shows Done or Failed
 //!   until it closes; else Setup. A foreign export that ends closes it
@@ -44,8 +48,12 @@ use qrec_core::protocol::command::{ExportFormat, Quality};
 use qrec_core::state::{Job, JobKind, State};
 use qrec_core::view::export::{self as view, FailedExport};
 use qrec_core::view::format;
+use qrec_core::view::notices::unavailable_notice;
 
-pub use flow::{Answer, Draft, ExportPanelState, Outcome};
+pub use flow::{
+    ACTIONS, Answer, Draft, ExportPanelState, Outcome, PanelRequest, PanelStep, SHOW, TOGGLE,
+    panel_step,
+};
 
 use crate::store::local::{ExportPanelMode, Overlay};
 use crate::store::replies::{ReplyAction, default_action};
@@ -108,6 +116,9 @@ struct Panel {
     syncing: Cell<bool>,
     /// `QREC_GUI_TEST_SAVE_AS`'s paths still to hand out (test mode).
     test_paths: RefCell<VecDeque<String>>,
+    /// Whether `exports/` exists, as `qrec-gui-io` found when the panel
+    /// opened (Change…'s folder; no stat on the GTK thread, R1).
+    exports: Cell<Option<bool>>,
 }
 
 /// Scrolls `scroller` to its end once its new content is laid out (S17: the
@@ -203,18 +214,21 @@ impl Panel {
             ticker: RefCell::new(None),
             syncing: Cell::new(false),
             test_paths: RefCell::new(test_paths),
+            exports: Cell::new(None),
         });
         panel.connect();
         panel.read_config();
-        let weak = Rc::downgrade(&panel);
-        ctx.actions.register(
-            "export.panel",
-            Rc::new(move || {
-                if let Some(panel) = weak.upgrade() {
-                    panel.toggle();
-                }
-            }),
-        );
+        for (id, request) in ACTIONS {
+            let weak = Rc::downgrade(&panel);
+            ctx.actions.register(
+                id,
+                Rc::new(move || {
+                    if let Some(panel) = weak.upgrade() {
+                        panel.request(request);
+                    }
+                }),
+            );
+        }
         let weak = Rc::downgrade(&panel);
         ctx.store
             .subscribe(move |change| {
@@ -280,7 +294,7 @@ impl Panel {
                     Some("webm") => ExportFormat::Webm,
                     _ => ExportFormat::Mp4,
                 };
-                e(Box::new(move |d| d.format = format));
+                e(Box::new(move |d| d.set_format(format)));
             }));
         let e = Rc::clone(&edit);
         self.setup
@@ -387,22 +401,31 @@ impl Panel {
 
     // ------------------------------------------------------- opening
 
-    /// `export.panel`: opens the panel (Running while an export runs, else
-    /// Setup), or closes it.
-    fn toggle(self: &Rc<Self>) {
-        if self.ctx.store.local().export_panel().is_some() {
-            self.close();
-            return;
+    /// `export.panel` (`PanelRequest::Toggle`): opens the panel or closes
+    /// it; `export.show` (`Show`, a toast's Show export): opens it, and
+    /// leaves an open one as it is.
+    fn request(self: &Rc<Self>, request: PanelRequest) {
+        let open = self.ctx.store.local().export_panel();
+        match panel_step(open, request) {
+            PanelStep::Open => self.open(),
+            PanelStep::Close => self.close(),
+            PanelStep::Stay => {}
         }
+    }
+
+    /// Opens the panel: Running while an export runs, else Setup.
+    fn open(self: &Rc<Self>) {
         let state = self.ctx.store.state();
         let exporting = export_job(&state).is_some();
-        if !exporting
-            && (state.project.timeline.clips.is_empty() || !state.runtime.record.is_idle())
-        {
-            tracing::debug!("export panel: nothing to export now");
+        // D-34: a refused Ctrl+E says why (an empty timeline, a take).
+        if let Err(why) = view::panel_enabled(&state) {
+            if let Some(notice) = unavailable_notice("export", &why, &state) {
+                self.ctx.store.notify(notice);
+            }
             return;
         }
         self.refresh_preview();
+        self.find_exports();
         let mode = flow::mode(exporting, self.waiting(&state), None);
         self.ctx.store.update_local(move |l| {
             l.export_view.draft.error = None;
@@ -433,6 +456,22 @@ impl Panel {
         *self.preview.borrow_mut() = (
             view::output_preview(&state, ExportFormat::Mp4, now, offset),
             view::output_preview(&state, ExportFormat::Webm, now, offset),
+        );
+    }
+
+    /// Whether `exports/` exists, for Change…'s dialog: asked of
+    /// `qrec-gui-io` (R1: a stat on the GTK thread froze the window on a
+    /// stalled mount).
+    fn find_exports(self: &Rc<Self>) {
+        let dir = self.ctx.store.project_dir().join("exports");
+        let weak = Rc::downgrade(self);
+        self.ctx.media.run_io_then(
+            move || dir.is_dir(), // R1: qrec-gui-io
+            move |found| {
+                if let Some(panel) = weak.upgrade() {
+                    panel.exports.set(Some(found));
+                }
+            },
         );
     }
 
@@ -518,11 +557,13 @@ impl Panel {
     }
 
     fn show(self: &Rc<Self>, mode: ExportPanelMode, state: &State) {
-        let layer = if mode == ExportPanelMode::Running {
-            Layer::FloatingPassive
-        } else {
-            Layer::FloatingTrap
-        };
+        // Under Settings or a modal opened over the passive panel, it waits
+        // for them to close before it takes the trap (G§3.15).
+        let on_top = matches!(
+            self.ctx.store.local().top_overlay(),
+            Some(Overlay::ExportPanel(_))
+        );
+        let layer = flow::layer(mode, on_top, self.layer.get());
         let page_changed = self.shown.replace(Some(mode)) != Some(mode);
         let name = match mode {
             ExportPanelMode::Setup => "setup",
@@ -537,6 +578,7 @@ impl Panel {
             ExportPanelMode::Done => self.fill_done(),
             ExportPanelMode::Failed => self.fill_failed(),
         }
+        let trapped = self.layer.get() != Some(layer) && layer == Layer::FloatingTrap;
         if self.layer.get() != Some(layer) {
             if let Some(old) = self.layer.take() {
                 self.ctx.window.close(old);
@@ -554,7 +596,9 @@ impl Panel {
             }
             self.layer.set(Some(layer));
         }
-        if page_changed && layer == Layer::FloatingTrap {
+        // A page shown in the trap, or the trap taken (the Done page once
+        // Settings over it closed): its primary has the focus.
+        if (page_changed || trapped) && layer == Layer::FloatingTrap && on_top {
             // Enter activates the page's primary (it has the focus).
             let primary = match mode {
                 ExportPanelMode::Setup => &self.setup.export,
@@ -766,6 +810,7 @@ impl Panel {
             draft.starting = true;
             draft.error = None;
             l.export_view.outcome = None;
+            l.export_view.toast_due = false;
         });
         let weak = Rc::downgrade(self);
         let sent = cmd.clone();
@@ -871,6 +916,9 @@ impl Panel {
         self.ctx.store.update_local(move |l| {
             l.export_view.draft.starting = false;
             if l.export_panel().is_some() {
+                // Its page shows this end: the core's toast of it, right
+                // behind this reply, is dropped (G§3.7), and no other.
+                l.export_view.toast_due = outcome.is_some();
                 l.export_view.outcome = outcome;
             }
         });
@@ -912,7 +960,6 @@ impl Panel {
             }
             return;
         }
-        let dir = self.ctx.store.project_dir().join("exports");
         let draft = self.ctx.store.local().export_view.draft.clone();
         let name = {
             let preview = self.preview.borrow();
@@ -930,11 +977,7 @@ impl Panel {
             .modal(true)
             .initial_name(name)
             .build();
-        let folder = if dir.is_dir() {
-            dir
-        } else {
-            self.ctx.store.project_dir().to_path_buf()
-        };
+        let folder = flow::save_folder(self.ctx.store.project_dir(), self.exports.get());
         dialog.set_initial_folder(Some(&gtk::gio::File::for_path(folder)));
         let window = self.root.root().and_downcast::<gtk::Window>();
         let weak = Rc::downgrade(self);
@@ -985,5 +1028,61 @@ impl Panel {
         }
         let full: PathBuf = self.ctx.store.project_dir().join(path);
         full.to_string_lossy().into_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    /// G§3.12 R1: the bin's and the export panel's GTK-thread code does no
+    /// file I/O (a stat on a stalled network mount freezes the window):
+    /// what it needs from the disk comes from `qrec-gui-io` (`run_io_then`,
+    /// the line marked `// R1: qrec-gui-io`). Change… stat'ed `exports/`
+    /// on the GTK thread.
+    #[test]
+    fn the_bin_and_the_export_panel_do_no_file_io_on_the_gtk_thread() {
+        const CALLS: [&str; 10] = [
+            ".is_dir()",
+            ".is_file()",
+            ".exists()",
+            "try_exists(",
+            "std::fs::",
+            "fs::read",
+            "fs::metadata",
+            "symlink_metadata",
+            "File::open",
+            "canonicalize(",
+        ];
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let files = [
+            "export/mod.rs",
+            "export/flow.rs",
+            "export/pages.rs",
+            "bin_drawer/mod.rs",
+            "bin_drawer/row.rs",
+            "bin_drawer/select.rs",
+            "bin_drawer/slide.rs",
+            "bin_drawer/thumb.rs",
+            "toasts.rs",
+            "desktop.rs",
+            "widgets/mud_bar.rs",
+        ];
+        let mut offenders = Vec::new();
+        for file in files {
+            let text = std::fs::read_to_string(src.join(file)).expect(file);
+            // Production code: up to the tests at the file's end.
+            let production = text.split("\n#[cfg(test)]").next().unwrap_or_default();
+            for (n, line) in production.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or_default();
+                if CALLS.iter().any(|c| code.contains(c)) && !line.contains("// R1: qrec-gui-io") {
+                    offenders.push(format!("{file}:{}: {}", n + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "file I/O on the GTK thread: {offenders:#?}"
+        );
     }
 }

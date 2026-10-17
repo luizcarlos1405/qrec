@@ -900,14 +900,26 @@ impl Gestures {
 }
 
 /// A bin drop of `take` at `x` (D-38): `ClipAdd{at: Index(slot)}`, unless
-/// edits are off (recording) or the take can't go on the timeline.
-pub fn decide_drop(state: &State, view: &Viewport, take: &TakeId, x: f64) -> Option<Command> {
+/// edits are off (recording) or the take can't go on the timeline. An
+/// empty timeline (the S01b page: no canvas, no `view`) has one slot, the
+/// first; with clips the slot needs the canvas's `view`.
+pub fn decide_drop(
+    state: &State,
+    view: Option<&Viewport>,
+    take: &TakeId,
+    x: f64,
+) -> Option<Command> {
     edits_enabled(state).ok()?;
     let t = state.project.takes.get(take)?;
     if t.status != TakeStatus::Ok {
         return None;
     }
-    let slot = tl::drop_slot(view, &state.project.timeline.clips, x);
+    let clips = &state.project.timeline.clips;
+    let slot = if clips.is_empty() {
+        0
+    } else {
+        tl::drop_slot(view?, clips, x)
+    };
     Some(tl::drop_command(take, slot))
 }
 

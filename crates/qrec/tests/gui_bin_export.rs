@@ -603,6 +603,39 @@ fn s14_the_bin_drawer() {
     close(&mut nested);
 }
 
+/// G§3.3 ("nothing animates on start"): a bin left open in ui.json opens
+/// with the window without sliding in (the first snapshot, out of the
+/// placeholder state, slid it in over 240 ms); `B` then closes it with
+/// the slide. Test mode animates nothing: `binSlide` is the show as asked.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_bin_opens_at_start_without_sliding() {
+    let mut nested = Nested::start(AREA, "bin-start", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(bin_ui()),
+    );
+    open(&mut nested, &project, launch());
+    let local = nested.window(0).local();
+    assert_eq!(
+        local["binSlide"],
+        json!({"open": true, "animate": false}),
+        "{local}"
+    );
+    nested.keys(&["-k", "b"]);
+    nested.window(0).wait_idle();
+    let local = nested.window(0).local();
+    assert_eq!(
+        local["binSlide"],
+        json!({"open": false, "animate": true}),
+        "{local}"
+    );
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
 /// S14 at `QREC_TEST_SCALE=2` (G§8.4 scale runs).
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
@@ -669,8 +702,9 @@ fn bin_at_scale(case: &str, scale: f64) {
 
 /// D-37's keys and D-17's preview: `↓` moves the selection, `Shift+↓`
 /// extends it (the S18 footer, no row actions); `Space` previews the
-/// selected take in the Program picture with its TAKE badge and pauses
-/// it; `Esc` ends it; `Enter` inserts the take at the end.
+/// selected take in the Program picture with its TAKE badge (it plays),
+/// and `Space` again pauses it (still previewing; the timeline doesn't
+/// play); `Esc` ends it; `Enter` inserts the take at the end.
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn the_bin_keys_select_preview_and_insert() {
@@ -730,6 +764,47 @@ fn the_bin_keys_select_preview_and_insert() {
     );
     let shot = nested.screenshot("preview");
     compare(&shot, "S14-bin-drawer.png", None, "");
+    assert_eq!(
+        nested.window(0).local()["takePreview"],
+        json!({"take": "take-0004", "playing": true})
+    );
+    // It plays: the player's position moves (take 4 lasts 51 s).
+    let playing_at = nested.window(0).local()["playerNs"].clone();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while nested.window(0).local()["playerNs"] == playing_at {
+        assert!(
+            Instant::now() < deadline,
+            "the preview doesn't play: the player stays at {playing_at}"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    // Space again pauses it: the preview stays (its badge) and the player
+    // holds still; the timeline doesn't play (Space stayed the bin's).
+    nested.keys(&["-k", "space"]);
+    let gui = nested.window(0);
+    gui.wait_idle();
+    let local = gui.local();
+    assert_eq!(
+        local["takePreview"],
+        json!({"take": "take-0004", "playing": false}),
+        "{local}"
+    );
+    assert!(
+        gui.labels("region-stage").iter().any(|l| l == "TAKE 4"),
+        "paused, still previewing"
+    );
+    let paused_at = local["playerNs"].clone();
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        nested.window(0).local()["playerNs"],
+        paused_at,
+        "the player holds still"
+    );
+    assert_eq!(
+        status(&nested, &project)["runtime"]["playing"],
+        false,
+        "the timeline doesn't play"
+    );
     // Esc ends it (the Esc chain, G§3.8).
     nested.keys(&["-k", "Escape"]);
     let gui = nested.window(0);
@@ -757,9 +832,30 @@ fn the_bin_keys_select_preview_and_insert() {
         assert!(Instant::now() < deadline, "no clip added: {}", clips.len());
         thread::sleep(Duration::from_millis(200));
     }
-    // Take 4 left the bin, so its rows were made again: the 5 it dropped
-    // are gone (nothing a row's callbacks hold keeps it alive), the 4 it
-    // shows are all that live (G§3.12).
+    // The keyboard goes on from the row now at take 4's place, take 2: it
+    // has the focus and the selection, and `↓` stays the bin's (every row
+    // was made again and the focus left the bin with take 4's: take 9's
+    // Open log had it, nothing was selected).
+    let gui = nested.window(0);
+    gui.wait_idle();
+    let local = gui.local();
+    assert_eq!(local["focus"], "bin", "{local}");
+    assert_eq!(local["focusPath"][0], "bin-take-2", "{local}");
+    assert_eq!(local["binSelection"], json!(["take-0002"]), "{local}");
+    let playhead = status(&nested, &project)["ui"]["playhead"].clone();
+    nested.keys(&["-k", "Down"]);
+    nested.window(0).wait_idle();
+    assert_eq!(
+        nested.window(0).local()["binSelection"],
+        json!(["take-0002"])
+    );
+    assert_eq!(
+        status(&nested, &project)["ui"]["playhead"],
+        playhead,
+        "↓ moved the bin's selection, not the playhead"
+    );
+    // Take 4 left the bin: its row went, the 4 it shows are all that live
+    // (nothing a row's callbacks hold keeps a row alive, G§3.12).
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let gui = nested.window(0);
@@ -975,6 +1071,69 @@ fn a_bin_row_drags_onto_the_timeline() {
     close(&mut nested);
 }
 
+/// SPEC §7.1, D-38: a bin row dragged onto an empty timeline (S01b: its
+/// page replaces the canvas) inserts its take, slot 1 of 1 (the drop
+/// target was on the canvas alone, and refused every drop there).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_bin_row_drags_onto_an_empty_timeline() {
+    let mut nested = Nested::start(AREA, "bin-drag-empty", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(bin_ui()),
+    );
+    for clip in [
+        "c7f3", "c8a1", "c1b2", "c1b3", "c1b4", "c1b5", "c1b6", "c2d0", "c2d1", "c3e9",
+    ] {
+        let removed = nested.cli_json(&project, &["clip", "remove", clip]);
+        assert_eq!(removed["ok"], true, "{removed}");
+    }
+    open(&mut nested, &project, launch());
+    let (x, y) = center(&mut nested, "bin-take-4");
+    let regions = nested.window(0).regions(&[]);
+    let [ax, ay, aw, ah] = regions["time-area"];
+    let (cx, cy) = (ax + aw / 2.0, ay + ah / 2.0);
+    let pointer = nested.pointer();
+    pointer.move_to(x, y);
+    pointer.button(gui_support::pointer::BUTTON_LEFT, true);
+    pointer.drag_to(x + 40.0, y + 40.0, 6);
+    pointer.drag_to(cx, cy, 12);
+    thread::sleep(Duration::from_millis(400));
+    pointer.drag_to(cx + 1.0, cy, 2);
+    let drag = nested.window(0).local()["drag"].clone();
+    let over = nested.window(0).labels("region-timeline");
+    nested.screenshot("over-empty-timeline");
+    nested
+        .pointer()
+        .button(gui_support::pointer::BUTTON_LEFT, false);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let clips = nested.cli_json(&project, &["clip", "list"])["data"].clone();
+        let clips = clips.as_array().cloned().unwrap_or_default();
+        if !clips.is_empty() {
+            assert_eq!(clips.len(), 1, "{clips:?}");
+            assert_eq!(clips[0]["take"], "take-0004", "{clips:?}");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no clip added (drag was {drag}, the timeline read {over:?})"
+        );
+        thread::sleep(Duration::from_millis(200));
+    }
+    assert_eq!(drag, "binInsert", "the drag's kind over the empty timeline");
+    assert!(
+        over.iter().any(|l| l == "Insert take 4 \u{b7} slot 1 of 1"),
+        "the hover's tooltip: {over:?}"
+    );
+    nested.window(0).wait_idle();
+    assert_eq!(nested.window(0).local()["drag"], Value::Null);
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
 /// S18's base: takes 2 and 4 selected in the bin (a click, `Ctrl`+click),
 /// "Purge from disk" in the footer asks first (the modal over the bin);
 /// confirming purges them (`TakePurge`, confirmed).
@@ -1053,6 +1212,58 @@ fn s18_purging_two_takes_from_the_bin() {
         "{labels:?}"
     );
     nested.screenshot("purged");
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
+/// Waits until `qrec status`'s record phase is `phase`.
+fn wait_record_phase(nested: &Nested, project: &Path, phase: &str) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let record = status(nested, project)["runtime"]["record"].clone();
+        if record["phase"] == phase {
+            return;
+        }
+        assert!(Instant::now() < deadline, "never {phase}: {record}");
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// D-43: the bin's Purge from disk waits while a take records (the core
+/// refuses `TakePurge` then): dimmed with the reason, a click sends
+/// nothing (it sent the purge, and the core's refusal toasted "Recording
+/// take 10").
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn purging_from_the_bin_waits_for_the_recording() {
+    let mut nested = Nested::start(AREA, "purge-recording", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(bin_ui()),
+    );
+    open(&mut nested, &project, launch());
+    click(&mut nested, "bin-take-4");
+    let start = nested.cli_json(&project, &["record", "start"]);
+    assert_eq!(start["ok"], true, "qrec record start: {start}");
+    wait_record_phase(&nested, &project, "recording");
+    nested.window(0).wait_idle();
+    click(&mut nested, "bin-purge");
+    let toasts = nested.window(0).labels("toast-host");
+    assert!(
+        !toasts.iter().any(|l| l.starts_with("Recording take")),
+        "the purge was sent: {toasts:?}"
+    );
+    assert!(overlays(&mut nested).is_empty(), "nothing to confirm");
+    assert!(
+        takes(&nested, &project).contains(&"take-0004".to_owned()),
+        "take 4 stays"
+    );
+    let stop = nested.cli_json(&project, &["record", "stop"]);
+    assert_eq!(stop["ok"], true, "qrec record stop: {stop}");
+    wait_record_phase(&nested, &project, "idle");
+    nested.window(0).wait_idle();
     assert_clean(&mut nested);
     close(&mut nested);
 }
@@ -1138,6 +1349,57 @@ fn s15a_export_setup() {
     close(&mut nested);
 }
 
+/// G§3.7: a held key whose action is unavailable (`x` with no clip
+/// selected: GTK delivers each auto-repeat as a press) shows one toast,
+/// not one per repeat queued behind it (a "+34" chip, minutes of them).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_held_unavailable_key_toasts_once() {
+    let mut nested = Nested::start(AREA, "held-key", Options::default());
+    let ui = UiState {
+        canvas_mode: CanvasMode::Program,
+        ..UiState::default()
+    };
+    let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base, Some(ui));
+    open(&mut nested, &project, launch());
+    nested.keys(&["-P", "x", "-s", "2000", "-p", "x"]);
+    nested.window(0).wait_idle();
+    let labels = nested.window(0).labels("toast-host");
+    assert_shows(&labels, &["Select the clips to remove"]);
+    assert!(
+        !labels.iter().any(|l| l.starts_with('+')),
+        "one toast, no queue: {labels:?}"
+    );
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
+/// D-34: `Ctrl+E` on an empty timeline says why ("The timeline is empty",
+/// an info toast) and opens nothing (it opened nothing, silently).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn ctrl_e_on_an_empty_timeline_says_why() {
+    let mut nested = Nested::start(AREA, "empty-export", Options::default());
+    let ui = UiState {
+        canvas_mode: CanvasMode::Program,
+        ..UiState::default()
+    };
+    let project = fixture(&nested, "smoke", DesignVariant::Smoke, Some(ui));
+    for clip in ["c7f3", "c1b2", "c3e9"] {
+        let removed = nested.cli_json(&project, &["clip", "remove", clip]);
+        assert_eq!(removed["ok"], true, "{removed}");
+    }
+    open(&mut nested, &project, launch());
+    ctrl_e(&mut nested);
+    assert!(overlays(&mut nested).is_empty(), "no panel");
+    assert_shows(
+        &nested.window(0).labels("toast-host"),
+        &["The timeline is empty"],
+    );
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
 /// S15b, then a cancel: Export starts the export (Draft, to be quick); the
 /// panel follows it passively (no trap: the S06 hints with the export
 /// prefix), and once `qrec status` has it at 42 % or more it is shot.
@@ -1172,10 +1434,10 @@ fn s15b_export_running_then_cancelled() {
     close(&mut nested);
 }
 
-/// Opens the panel, picks Draft, exports, waits for 42 %, checks the
-/// running panel and shoots it as `name` (`waitIdle` while it runs: the
-/// window's own export settles once its job runs, G§3.18).
-fn export_running(nested: &mut Nested, project: &Path, name: &str) {
+/// Opens the panel, picks Draft and exports: the panel shows Running
+/// (`waitIdle` while it runs: the window's own export settles once its job
+/// runs, G§3.18).
+fn start_draft_export(nested: &mut Nested) {
     ctrl_e(nested);
     let regions = nested.window(0).regions(&["export-quality"]);
     let [qx, qy, qw, qh] = regions["export-quality"];
@@ -1188,6 +1450,12 @@ fn export_running(nested: &mut Nested, project: &Path, name: &str) {
         ["ExportPanel(Running)"],
         "waitIdle returned with the export running"
     );
+}
+
+/// Opens the panel, picks Draft, exports, waits for 42 %, checks the
+/// running panel and shoots it as `name`.
+fn export_running(nested: &mut Nested, project: &Path, name: &str) {
+    start_draft_export(nested);
     wait_export_at(nested, project, 42, Duration::from_secs(300));
     let labels = wait_label(
         nested,
@@ -1258,6 +1526,66 @@ fn export_running(nested: &mut Nested, project: &Path, name: &str) {
         Some("456:340:1144:0"),
         "-panel",
     );
+}
+
+/// `r` while exporting toasts D-34's "Can't record while exporting" with
+/// Show export (the toast host stays live under the passive panel).
+fn show_export_toast(nested: &mut Nested) {
+    nested.keys(&["-k", "r"]);
+    let labels = wait_label(
+        nested,
+        "toast-host",
+        "D-34's toast",
+        Duration::from_secs(20),
+        |l| l == "Can't record while exporting",
+    );
+    assert_shows(&labels, &["Show export"]);
+}
+
+/// D-34's Show export opens the export panel and leaves an open one as it
+/// is: with the passive Running panel open, the toast's button closed it
+/// (it ran the panel's toggle); with the panel closed, it opens it.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_show_export_toast_opens_the_panel_and_never_closes_it() {
+    let mut nested = Nested::start(AREA, "show-export", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(program_ui()),
+    );
+    // Each render unit starts 4 s late: the export outlasts the case's
+    // presses on a loaded machine too.
+    let launch = Launch {
+        path: Some(fail_ffmpeg::slow_path(nested.env.root(), 4)),
+        ..launch()
+    };
+    open(&mut nested, &project, launch);
+    start_draft_export(&mut nested);
+    show_export_toast(&mut nested);
+    click(&mut nested, "toast-action-0");
+    assert_eq!(
+        overlays(&mut nested),
+        ["ExportPanel(Running)"],
+        "Show export left the panel open"
+    );
+    // Closed (`Esc`, D-49): the toast's Show export opens it again.
+    nested.keys(&["-k", "Escape"]);
+    wait_overlays(&mut nested, &[], Duration::from_secs(10));
+    show_export_toast(&mut nested);
+    click(&mut nested, "toast-action-0");
+    assert_eq!(overlays(&mut nested), ["ExportPanel(Running)"]);
+    assert!(
+        export_percent(&nested, &project).is_some(),
+        "still exporting"
+    );
+    click(&mut nested, "export-cancel");
+    wait_export_gone(&nested, &project, Duration::from_secs(30));
+    wait_overlays(&mut nested, &[], Duration::from_secs(10));
+    nested.window(0).wait_idle();
+    assert_clean(&mut nested);
+    close(&mut nested);
 }
 
 /// S15c: the WebM setup (the AV1 switch and its caption), then a running
@@ -1470,6 +1798,144 @@ fn s16_export_done() {
     close(&mut nested);
 }
 
+/// The names of the focused widget and its ancestors (`local`'s
+/// `focusPath`), the focused one first.
+fn focus_path(nested: &mut Nested) -> Vec<String> {
+    let local = nested.window(0).local();
+    local["focusPath"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.as_str().map(str::to_owned))
+        .collect()
+}
+
+/// D-49 and G§3.15: Settings opened over the passive panel stays on top
+/// when the panel's export ends under it: Settings keeps the focus and the
+/// keys (its hints; `Esc` closes it), and only then does the Done page take
+/// the trap, Open file focused. (The Done page took the trap over Settings
+/// and the focus with it, while `Esc` closed Settings behind it.) Closed,
+/// the Done page gives the focus back to the timeline, where it was before
+/// the panel and Settings opened (it had taken it from inside Settings).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn an_export_ending_under_settings_leaves_settings_on_top() {
+    let mut nested = Nested::start(AREA, "under-settings", Options::default());
+    let project = fixture(&nested, "smoke", DesignVariant::Smoke, Some(smoke_ui()));
+    // Each render unit starts 5 s late: Settings opens while it runs.
+    let launch = Launch {
+        path: Some(fail_ffmpeg::slow_path(nested.env.root(), 5)),
+        ..launch()
+    };
+    open(&mut nested, &project, launch);
+    // The timeline has the focus (a click on c1b2).
+    let [vx, vy, vw, vh] = nested.window(0).regions(&[])["video-row"];
+    let x = vx + clip_middle(&nested, &project, "c1b2", vw);
+    nested.pointer().click(x, vy + vh / 2.0);
+    nested.window(0).wait_idle();
+    assert_eq!(nested.window(0).local()["focus"], "timeline");
+    ctrl_e(&mut nested);
+    press(&mut nested, "export-start");
+    wait_overlays(
+        &mut nested,
+        &["ExportPanel(Running)"],
+        Duration::from_secs(10),
+    );
+    nested.keys(&["-M", "ctrl", "-k", "comma", "-m", "ctrl"]);
+    wait_overlays(
+        &mut nested,
+        &["ExportPanel(Running)", "Settings(Project)"],
+        Duration::from_secs(10),
+    );
+    assert!(
+        export_percent(&nested, &project).is_some(),
+        "Settings opened while it exports"
+    );
+    wait_overlays(
+        &mut nested,
+        &["ExportPanel(Done)", "Settings(Project)"],
+        Duration::from_secs(120),
+    );
+    nested.window(0).wait_idle();
+    let path = focus_path(&mut nested);
+    assert!(
+        path.iter().any(|p| p == "settings") && !path.iter().any(|p| p == "export-panel"),
+        "Settings keeps the focus: {path:?}"
+    );
+    assert_eq!(hints(&mut nested), ["[Tab] Move focus", "[Esc] Close"]);
+    nested.screenshot("done-under-settings");
+    // Esc closes Settings, the top overlay: the Done page is on top now.
+    nested.keys(&["-k", "Escape"]);
+    wait_overlays(&mut nested, &["ExportPanel(Done)"], Duration::from_secs(10));
+    nested.window(0).wait_idle();
+    let path = focus_path(&mut nested);
+    assert_eq!(
+        path.first().map(String::as_str),
+        Some("export-open-file"),
+        "{path:?}"
+    );
+    assert_eq!(
+        hints(&mut nested),
+        ["[Enter] Open file", "[Tab] Move focus", "[Esc] Close"]
+    );
+    nested.keys(&["-k", "Escape"]);
+    wait_overlays(&mut nested, &[], Duration::from_secs(10));
+    nested.window(0).wait_idle();
+    let local = nested.window(0).local();
+    assert_eq!(local["focus"], "timeline", "the focus came back: {local}");
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
+/// G§3.15: the passive panel closing under Settings (its CLI export ended:
+/// a foreign export's end closes it) leaves the focus in Settings, the top
+/// trap (the layer gave it back to what had it before the panel opened,
+/// under Settings' scrim).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_cli_export_ending_under_settings_leaves_settings_the_focus() {
+    let mut nested = Nested::start(AREA, "cli-under-settings", Options::default());
+    let project = fixture(&nested, "smoke", DesignVariant::Smoke, Some(smoke_ui()));
+    // The window's host runs the CLI's export: each render unit starts 5 s
+    // late, so Settings opens while it runs.
+    let launch = Launch {
+        path: Some(fail_ffmpeg::slow_path(nested.env.root(), 5)),
+        ..launch()
+    };
+    open(&mut nested, &project, launch);
+    let export = nested.cli_background(&project, &["export", "--quality", "draft"]);
+    wait_export_at(&nested, &project, 0, Duration::from_secs(60));
+    let reply = nested
+        .window(0)
+        .ctl(json!({"op": "action", "id": "export.panel"}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    wait_overlays(
+        &mut nested,
+        &["ExportPanel(Running)"],
+        Duration::from_secs(10),
+    );
+    nested.keys(&["-M", "ctrl", "-k", "comma", "-m", "ctrl"]);
+    wait_overlays(
+        &mut nested,
+        &["ExportPanel(Running)", "Settings(Project)"],
+        Duration::from_secs(10),
+    );
+    let done = reap_within(export, CLI_TIMEOUT, "qrec export");
+    assert!(done.success(), "qrec export: {done}");
+    wait_overlays(&mut nested, &["Settings(Project)"], Duration::from_secs(30));
+    nested.window(0).wait_idle();
+    let path = focus_path(&mut nested);
+    assert!(
+        path.iter().any(|p| p == "settings"),
+        "Settings keeps the focus: {path:?}"
+    );
+    nested.keys(&["-k", "Escape"]);
+    wait_overlays(&mut nested, &[], Duration::from_secs(10));
+    nested.window(0).wait_idle();
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
 /// S16b: the export from the panel, which is closed (`Esc`) before it ends:
 /// the core's success toast, "<path> · <size>" with Open file and Open
 /// folder (the copy WP7 changed).
@@ -1654,9 +2120,33 @@ fn s17_export_failed() {
         "-panel",
     );
     assert_clean(&mut nested);
+    // Try again sends the export again: it fails at unit 3 again (units 1
+    // and 2 come from the segment cache), and the panel shows that failure.
+    press(&mut nested, "export-retry");
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while fail_ffmpeg::failures(nested.env.root()) < 2 {
+        assert!(Instant::now() < deadline, "Try again sent no export");
+        thread::sleep(Duration::from_millis(100));
+    }
+    wait_overlays(
+        &mut nested,
+        &["ExportPanel(Failed)"],
+        Duration::from_secs(60),
+    );
+    nested.window(0).wait_idle();
+    assert_shows(
+        &nested.window(0).labels("export-panel"),
+        &["Export failed", "Try again"],
+    );
+    assert_eq!(
+        hints(&mut nested),
+        ["[Enter] Try again", "[Tab] Move focus", "[Esc] Close"]
+    );
+    assert!(exports(&project).is_empty(), "nothing written");
     // Close: the panel goes.
     click(&mut nested, "export-close");
     assert!(overlays(&mut nested).is_empty());
+    assert_clean(&mut nested);
     close(&mut nested);
 }
 
@@ -1702,6 +2192,48 @@ fn a_cli_export_shows_running_then_the_core_toast() {
         thread::sleep(Duration::from_millis(200));
     }
     nested.screenshot("cli-toast");
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
+/// A file picked with "Change…" follows the Format switch: `talk.mp4`
+/// reads `talk.webm` once WebM is picked, and `talk.mp4` again with MP4
+/// (the export wrote WebM into talk.mp4).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_picked_file_follows_the_format() {
+    let mut nested = Nested::start(AREA, "picked-format", Options::default());
+    let project = fixture(&nested, "smoke", DesignVariant::Smoke, Some(smoke_ui()));
+    let videos = nested.env.empty_dir("videos");
+    let picked = videos.join("talk.mp4");
+    let launch = launch().with_env("QREC_GUI_TEST_SAVE_AS", &picked.display().to_string());
+    open(&mut nested, &project, launch);
+    ctrl_e(&mut nested);
+    click(&mut nested, "export-change");
+    let output = |nested: &mut Nested| nested.window(0).labels("export-output");
+    let shown = output(&mut nested);
+    assert!(
+        shown.iter().any(|l| l.ends_with("/talk.mp4")),
+        "the pick: {shown:?}"
+    );
+    let regions = nested.window(0).regions(&["export-format"]);
+    let [fx, fy, fw, fh] = regions["export-format"];
+    nested.pointer().click(fx + fw * 0.75, fy + fh / 2.0);
+    nested.window(0).wait_idle();
+    let shown = output(&mut nested);
+    assert!(
+        shown.iter().any(|l| l.ends_with("/talk.webm")),
+        "WebM: {shown:?}"
+    );
+    nested.pointer().click(fx + fw * 0.25, fy + fh / 2.0);
+    nested.window(0).wait_idle();
+    let shown = output(&mut nested);
+    assert!(
+        shown.iter().any(|l| l.ends_with("/talk.mp4")),
+        "MP4 again: {shown:?}"
+    );
+    nested.keys(&["-k", "Escape"]);
+    nested.window(0).wait_idle();
     assert_clean(&mut nested);
     close(&mut nested);
 }

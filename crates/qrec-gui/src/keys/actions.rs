@@ -6,14 +6,15 @@
 //! | --- | --- |
 //! | `zoom.in`, `zoom.out`, `zoom.fit`, `zoom.selection` | WP3 (timeline) |
 //! | `settings.open` | WP6 (Settings) |
-//! | `export.panel`, `bin.preview` | WP7 (export panel, bin) |
+//! | `export.panel`, `export.show`, `bin.preview` | WP7 (export panel, bin) |
 //! | `autocut.page` | WP5 (panel) |
 //! | `region.next`, `region.prev`, `app.quit` | WP0b (window, app) |
 //! | `keys.help`, `palette.open` | WP0b: the "Not built yet" toast; WP9 re-registers them |
 //!
 //! `export.panel`, `autocut.page` and `bin.preview` toggle what they open:
 //! the `Esc` chain runs them to close the passive export panel, the
-//! autocut page (its Cancel) and a bin preview. A later registration of an
+//! autocut page (its Cancel) and a bin preview; `export.show` (a toast's
+//! Show export) only opens the export panel. A later registration of an
 //! id replaces the earlier one. An id nobody registered logs at debug
 //! level.
 

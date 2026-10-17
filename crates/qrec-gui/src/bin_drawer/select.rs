@@ -3,11 +3,15 @@
 //! - Click selects one take, `Ctrl`+click toggles one, `Shift`+click
 //!   extends from the anchor (the last plain or `Ctrl` click) in row order;
 //!   `↑` `↓` move it (one take), `Shift`+`↑` `↓` extend it. Rows that leave
-//!   the bin leave the selection.
+//!   the bin leave the selection; the cursor goes to the row now at its
+//!   place, selected when the row that left had the keyboard and was the one
+//!   selected (`Enter` inserted it: the keyboard goes on from the next).
 //! - A bin preview (GUI-local, no command) ends with `Esc`, when the bin
 //!   closes, and on any timeline action: the timeline, the clip selection
 //!   or the playhead changes, playback starts, the canvas goes Live, a take
-//!   starts recording, or its take leaves the bin.
+//!   starts recording, or its take leaves the bin. `Space` pauses the
+//!   selected take's preview or plays it again, and previews the selected
+//!   take otherwise ([`space`]).
 
 use qrec_core::TakeId;
 use qrec_core::state::{CanvasMode, State};
@@ -81,14 +85,28 @@ impl Selection {
         self.cursor = Some(take);
     }
 
-    /// Keeps only the takes still in `rows`.
-    pub fn retain(&mut self, rows: &[TakeId]) {
+    /// Keeps only the takes still in `rows` (`before`: the rows as they
+    /// were). A cursor whose take left goes to the row now at its place
+    /// ([`place`]); `keyboard` (the bin's keyboard focus was on that row,
+    /// `Enter` inserted its take): when it was the one take selected, that
+    /// row is selected instead, so the keyboard goes on from there.
+    pub fn retain(&mut self, before: &[TakeId], rows: &[TakeId], keyboard: bool) {
+        let single = self.single() == self.cursor.as_ref() && self.cursor.is_some();
         self.selected.retain(|t| rows.contains(t));
         if self.anchor.as_ref().is_some_and(|a| !rows.contains(a)) {
             self.anchor = None;
         }
-        if self.cursor.as_ref().is_some_and(|c| !rows.contains(c)) {
-            self.cursor = self.selected.last().cloned();
+        let Some(left) = self.cursor.clone().filter(|c| !rows.contains(c)) else {
+            return;
+        };
+        self.cursor = place(before, rows, &left);
+        if keyboard
+            && single
+            && self.selected.is_empty()
+            && let Some(next) = self.cursor.clone()
+        {
+            self.selected = vec![next.clone()];
+            self.anchor = Some(next);
         }
     }
 
@@ -99,6 +117,17 @@ impl Selection {
             _ => None,
         }
     }
+}
+
+/// The row now at the place of `take`, which left the rows (`before` them,
+/// `rows` now): the first row after it that stays, else the last row.
+pub fn place(before: &[TakeId], rows: &[TakeId], take: &TakeId) -> Option<TakeId> {
+    before
+        .iter()
+        .skip_while(|t| *t != take)
+        .find(|t| rows.contains(t))
+        .or_else(|| rows.last())
+        .cloned()
 }
 
 /// The rows from `a` to `b`, both included, in row order.
@@ -115,6 +144,32 @@ fn range(rows: &[TakeId], a: &TakeId, b: &TakeId) -> Vec<TakeId> {
 
 fn in_order(rows: &[TakeId], takes: &[TakeId]) -> Vec<TakeId> {
     rows.iter().filter(|t| takes.contains(t)).cloned().collect()
+}
+
+/// What `Space` in the bin does to its preview (D-17).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpaceStep {
+    /// The selected take's preview pauses, or plays again.
+    Toggle,
+    /// The selected take is previewed (instead of another take's preview).
+    Start(TakeId),
+    /// The preview ends: no one take is selected.
+    End,
+    Nothing,
+}
+
+/// `Space` in the bin, `preview` the take previewed now and `single` the
+/// one selected take (D-17): the selected take's preview pauses or plays
+/// again (it doesn't start over, and Space stays the bin's: it never plays
+/// the timeline), another take's gives way to it; with no one take
+/// selected a preview ends.
+pub fn space(preview: Option<&TakeId>, single: Option<&TakeId>) -> SpaceStep {
+    match (preview, single) {
+        (Some(previewed), Some(take)) if previewed == take => SpaceStep::Toggle,
+        (_, Some(take)) => SpaceStep::Start(take.clone()),
+        (Some(_), None) => SpaceStep::End,
+        (None, None) => SpaceStep::Nothing,
+    }
 }
 
 /// Whether a bin preview of `take` ends with the snapshot `next` after
@@ -199,9 +254,85 @@ mod tests {
         let mut s = Selection::default();
         s.click(&rows(), &t(2), false, false);
         s.click(&rows(), &t(4), true, false);
-        s.retain(&[9, 7, 6].map(t));
+        s.retain(&rows(), &[9, 7, 6].map(t), false);
         assert!(s.selected.is_empty());
-        assert_eq!((s.anchor.clone(), s.cursor.clone()), (None, None));
+        assert_eq!(s.anchor, None);
+        // The cursor goes where the purged rows were: the last row now.
+        assert_eq!(s.cursor, Some(t(6)));
+        let mut none = Selection::default();
+        none.click(&rows(), &t(4), false, false);
+        none.retain(&rows(), &[], true);
+        assert_eq!(none, Selection::default(), "an empty bin");
+    }
+
+    /// `Enter` inserted take 4 (S14: it leaves the bin): the keyboard goes on
+    /// from the row now at its place, take 2, selected (`↓` stays there, `↑`
+    /// goes to take 6), so `Enter`, `↓`, `Enter` inserts the next takes. The
+    /// cursor and the selection went (`↓` then jumped to take 9).
+    #[test]
+    fn the_keyboard_goes_on_from_the_row_that_left() {
+        let before = rows();
+        let after = [9, 7, 6, 2].map(t);
+        let mut s = Selection::default();
+        s.click(&before, &t(4), false, false);
+        s.retain(&before, &after, true);
+        assert_eq!(s.selected, [t(2)]);
+        assert_eq!(s.cursor, Some(t(2)));
+        let mut down = s.clone();
+        down.step(&after, true, false);
+        assert_eq!(down.selected, [t(2)], "the last row stays");
+        let mut up = s.clone();
+        up.step(&after, false, false);
+        assert_eq!(up.selected, [t(6)]);
+        // The last row left: the row before it.
+        let mut last = Selection::default();
+        last.click(&before, &t(2), false, false);
+        last.retain(&before, &[9, 7, 6, 4].map(t), true);
+        assert_eq!(
+            (last.selected.clone(), last.cursor),
+            (vec![t(4)], Some(t(4)))
+        );
+        // A take landed at the top meanwhile: still the row after it.
+        let mut landed = Selection::default();
+        landed.click(&before, &t(6), false, false);
+        landed.retain(&before, &[10, 9, 7, 4, 2].map(t), true);
+        assert_eq!(landed.selected, [t(4)]);
+        // Without the keyboard there (a CLI edit, a drop with the focus on
+        // the timeline) the take only leaves the selection.
+        let mut away = Selection::default();
+        away.click(&before, &t(4), false, false);
+        away.retain(&before, &after, false);
+        assert!(away.selected.is_empty());
+        assert_eq!(away.cursor, Some(t(2)));
+        // Two selected: they leave it, nothing else is selected (S18).
+        let mut two = Selection::default();
+        two.click(&before, &t(2), false, false);
+        two.click(&before, &t(4), true, false);
+        two.retain(&before, &[9, 7, 6, 2].map(t), true);
+        assert_eq!(two.selected, [t(2)]);
+        // A row that stays keeps everything as it was.
+        let mut kept = Selection::default();
+        kept.click(&before, &t(7), false, false);
+        let was = kept.clone();
+        kept.retain(&before, &after, true);
+        assert_eq!(kept, was);
+    }
+
+    /// D-17's `Space`: the selected take's preview pauses (and plays again),
+    /// it doesn't start over; another take's preview, or none, gives way to
+    /// the selected take's; with no one take selected a preview ends.
+    #[test]
+    fn space_pauses_the_selected_takes_preview() {
+        let (four, two) = (t(4), t(2));
+        assert_eq!(space(Some(&four), Some(&four)), SpaceStep::Toggle);
+        assert_eq!(space(None, Some(&four)), SpaceStep::Start(four.clone()));
+        assert_eq!(
+            space(Some(&two), Some(&four)),
+            SpaceStep::Start(four.clone()),
+            "another take's preview"
+        );
+        assert_eq!(space(Some(&four), None), SpaceStep::End);
+        assert_eq!(space(None, None), SpaceStep::Nothing);
     }
 
     /// D-17: a timeline action, the bin closing, a recording or the take
