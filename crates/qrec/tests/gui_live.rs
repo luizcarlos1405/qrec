@@ -464,6 +464,61 @@ fn a_burst_of_writes_is_one_change_that_wait_idle_waits_for() {
     assert_clean(gui);
 }
 
+/// "config.toml is invalid" (G§3.14): a `config.toml` that can't be used
+/// toasts once at startup, never twice (the Session's toast at the open
+/// and the watcher's first read share the `ConfigFile`: whoever reads a
+/// change of the file first reports it), and once per live edit that
+/// leaves it unusable; the defaults apply meanwhile, as at startup, and a
+/// valid edit applies and toasts nothing. WP10's code audit: checked by
+/// hand only.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn an_invalid_config_toml_toasts_once_per_change() {
+    let mut nested = Nested::start(AREA, "invalid", Options::default());
+    let config = config_dir(&nested).join("config.toml");
+    fs::write(&config, "[ui]\nscale = \"big\"\n").expect("config.toml");
+    let project = fixture(&nested, "rust-traits-talk", &s02());
+    open(&mut nested, 0, &project, Launch::a11y());
+    const INVALID: &str = "config.toml is invalid";
+    // The watcher's first pair, as soon as the watch is up.
+    let local = applied(nested.window(0), 0);
+    assert_eq!(local["theme"], "swamp-night", "the defaults: {local}");
+    assert_eq!(local["scale"], 1.0, "{local}");
+    let gui = nested.window(0);
+    let told = toasts(gui, INVALID);
+    assert_eq!(told.len(), 1, "once at startup: {told:#?}");
+    assert!(told[0].contains("\"big\""), "it says why: {told:?}");
+    let labels = gui.labels("toast-host");
+    assert!(labels.iter().any(|l| l == INVALID), "{labels:?}");
+
+    // Another unusable edit, by hand: one more toast.
+    let before = applied_count(gui);
+    fs::write(&config, "theme = \"swamp-mud\"\n").expect("config.toml");
+    let local = applied(nested.window(0), before);
+    assert_eq!(local["theme"], "swamp-night", "the defaults: {local}");
+    let told = toasts(nested.window(0), INVALID);
+    assert_eq!(told.len(), 2, "one more for the edit: {told:#?}");
+    assert!(told[1].contains("swamp-mud"), "it says why: {told:?}");
+
+    // A valid edit applies and toasts nothing.
+    let gui = nested.window(0);
+    let before = applied_count(gui);
+    config_set(&nested, &project, "theme", "swamp-day");
+    let local = applied(nested.window(0), before);
+    assert_eq!(local["theme"], "swamp-day", "{local}");
+    assert_eq!(toasts(nested.window(0), INVALID).len(), 2, "no new toast");
+
+    // Unusable again: its toast, and the defaults instead of Swamp Day.
+    let gui = nested.window(0);
+    let before = applied_count(gui);
+    fs::write(&config, "theme = \"swamp-day\"\n[ui]\nscale = 7\n").expect("config.toml");
+    let local = applied(nested.window(0), before);
+    assert_eq!(local["theme"], "swamp-night", "the defaults: {local}");
+    assert_eq!(toasts(nested.window(0), INVALID).len(), 3, "once more");
+    nested.screenshot("invalid-toast");
+    assert_clean(nested.window(0));
+}
+
 // ---------------------------------------------------------------- keymap
 
 /// The key caps the window shows for `bin.toggle` (the toolbar's Bin),

@@ -371,9 +371,8 @@ mod tests {
             Announcement::polite("That was shorter than Lord Farquaad. Take moved to the bin.")
         );
         // The copy's CLI-style backticks aren't said.
-        let unknown = Notice::new(ToastLevel::Warning, "keys.toml has a problem").with_body(
-            "keys.toml: unknown binding `nope.nothing` (`qrec keys` lists the ids)",
-        );
+        let unknown = Notice::new(ToastLevel::Warning, "keys.toml has a problem")
+            .with_body("keys.toml: unknown binding `nope.nothing` (`qrec keys` lists the ids)");
         assert_eq!(
             toast(&unknown),
             Announcement::polite(
