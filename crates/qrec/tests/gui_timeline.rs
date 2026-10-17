@@ -1379,22 +1379,54 @@ fn probe(nested: &mut Nested, n: usize) -> String {
 
 // ---------------------------------------------------- not in a compositor
 
-/// G§3.17, G§8.4: this suite's CLIs go through `gui_support` (`cli`,
-/// `cli_json`, and `cli_background` with `reap_within` for one that waits),
-/// so each has a deadline and its output in the case's logs. S05's
-/// background `record stop` was spawned here by hand: its output dropped,
+/// G§3.17, G§8.4: every nested suite's CLIs go through `gui_support`
+/// (`cli`, `cli_json`, and `cli_background` with `reap_within` for one that
+/// waits), so each has a deadline and its output in the case's logs. S05's
+/// background `record stop` was spawned here by hand (its output dropped,
 /// and past its 60 s wait the case failed with it still running and
-/// nothing said why (review R69).
+/// nothing said why), and gui_stage's background `record start` too
+/// (review R69). The scan reads every `gui_*.rs` (its audit: it read this
+/// file only, so gui_stage's could come back unnoticed); a CLI outside a
+/// compositor may go through `run_tool`, which has a deadline too
+/// (gui_panel's dry run of the fixture).
 #[test]
 fn every_cli_goes_through_the_harness() {
-    let source = include_str!("gui_timeline.rs");
-    let by_hand: Vec<(usize, &str)> = source
-        .lines()
-        .enumerate()
-        .filter(|(_, l)| {
-            l.contains(concat!("qrec", "_bin()")) || l.contains(concat!(".spawn", "("))
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let mut suites: Vec<PathBuf> = fs::read_dir(&dir)
+        .expect("the tests folder")
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("gui_") && name.ends_with(".rs"))
         })
-        .map(|(i, l)| (i + 1, l.trim()))
         .collect();
-    assert!(by_hand.is_empty(), "spawned by hand: {by_hand:?}");
+    suites.sort();
+    let names: Vec<String> = suites
+        .iter()
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    for suite in [
+        "gui_stage.rs",
+        "gui_timeline.rs",
+        "gui_panel.rs",
+        "gui_bin_export.rs",
+    ] {
+        assert!(names.iter().any(|n| n == suite), "{suite} in {names:?}");
+    }
+    let mut by_hand = Vec::new();
+    for (path, name) in suites.iter().zip(&names) {
+        let source = fs::read_to_string(path).expect("a suite's source");
+        let lines: Vec<&str> = source.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let spawned =
+                line.contains(concat!("qrec", "_bin()")) || line.contains(concat!(".spawn", "("));
+            let with_deadline =
+                i > 0 && lines[i - 1].trim_end().ends_with(concat!("run_tool", "("));
+            if spawned && !with_deadline {
+                by_hand.push(format!("{name}:{}: {}", i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(by_hand.is_empty(), "spawned by hand: {by_hand:#?}");
 }
