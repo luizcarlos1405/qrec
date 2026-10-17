@@ -1017,6 +1017,96 @@ impl GapEase {
     }
 }
 
+/// What the canvas draws for its clips at `now` (`Inner::paint_canvas`
+/// draws exactly these): the timeline's boxes; a started trim's preview;
+/// or a move drag's, the other clips where their ease has them (R11: they
+/// jumped to their places, and the paint calling the ease was untested),
+/// with the lifted copy centered on the pointer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaintedClips {
+    pub boxes: Vec<ClipBox>,
+    pub trim: Option<tl::TrimPreview>,
+    /// The move's preview and the lifted copy's boxes.
+    pub moving: Option<(tl::MovePreview, Vec<ClipBox>)>,
+}
+
+/// The clips of `state` as the canvas paints them in `view` at `now`
+/// ([`PaintedClips`]): `drag` the gesture, `gap` its neighbours' eases,
+/// `hovered` the clip under the pointer, `ghost_elapsed` the recording
+/// take's length (ns), `playhead` where a trim snaps.
+#[allow(clippy::too_many_arguments)]
+pub fn painted_clips(
+    state: &State,
+    view: &Viewport,
+    drag: Option<&Drag>,
+    gap: &GapEase,
+    hovered: Option<&ClipId>,
+    ghost_elapsed: u64,
+    playhead: Frame,
+    now: Duration,
+) -> PaintedClips {
+    let mut painted = PaintedClips {
+        boxes: tl::clip_layout(state, view, hovered, ghost_elapsed),
+        trim: None,
+        moving: None,
+    };
+    match drag {
+        Some(Drag::Trim {
+            clip,
+            edge,
+            x0,
+            x,
+            started: true,
+        }) => {
+            if let Some(p) = tl::trim_preview(
+                state,
+                view,
+                clip,
+                *edge,
+                x - x0,
+                state.ui.snapping,
+                playhead,
+            ) {
+                painted.boxes = p.boxes.clone();
+                painted.trim = Some(p);
+            }
+        }
+        Some(Drag::Move { block, x }) => {
+            if let Some(p) = tl::move_preview(state, view, block, *x) {
+                painted.boxes = p.boxes.clone();
+                gap.ease(&mut painted.boxes, view, now);
+                let lifted = lifted_boxes(state, view, block, *x);
+                painted.moving = Some((p, lifted));
+            }
+        }
+        _ => {}
+    }
+    painted
+}
+
+/// The moved block's boxes as the lifted copy draws them: in a row,
+/// centered on the pointer.
+fn lifted_boxes(state: &State, view: &Viewport, block: &[ClipId], pointer_x: f64) -> Vec<ClipBox> {
+    let all = tl::clip_boxes(state, view, None);
+    let moved: Vec<ClipBox> = all
+        .into_iter()
+        .filter(|b| block.contains(&b.clip))
+        .collect();
+    let width: f64 = moved.iter().map(|b| b.w).sum();
+    let mut x = pointer_x - width / 2.0;
+    moved
+        .into_iter()
+        .map(|mut b| {
+            b.x = x;
+            x += b.w;
+            b.selected = false;
+            b.hovered = false;
+            b.trimming = None;
+            b
+        })
+        .collect()
+}
+
 /// Each box's clip and its start (frames) in `view`.
 pub fn box_places(boxes: &[ClipBox], view: &Viewport) -> Vec<(ClipId, f64)> {
     boxes
@@ -1081,6 +1171,37 @@ impl TickFacts {
 }
 
 // ------------------------------------------------------------- the ghost
+
+/// A snapshot's step for the view (`Inner::on_change` runs it): the record
+/// clock for the ghost's growth, then the view's total. While a take
+/// records, its ghost grows on the frame clock ([`follow_frame`]): a clock
+/// past that grows the fit too, and one behind it never shrinks it.
+pub fn follow_snapshot(vm: &mut ViewModel, ghost: &mut GhostClock, state: &State, now: Duration) {
+    let grows = ghost.follow(&state.runtime.record, now);
+    let mut total = tl::shown_total(state, ghost.elapsed_ns);
+    if grows {
+        vm.follow_ghost(total);
+        total = vm.total();
+    }
+    vm.on_state(state, total, now);
+}
+
+/// A frame's step for the view (`Inner::on_tick` runs it): the fit follows
+/// the ghost as it grows between record clocks (R05; not under the
+/// `frozen` test clock). `true` when the fit grew.
+pub fn follow_frame(
+    vm: &mut ViewModel,
+    ghost: &GhostClock,
+    state: &State,
+    now: Duration,
+    frozen: bool,
+) -> bool {
+    let shown = vm.total();
+    if ghost.running {
+        vm.follow_ghost(tl::shown_total(state, ghost.elapsed(now, frozen)));
+    }
+    vm.total() != shown
+}
 
 /// The record clock as last seen, for the ghost's growth between clocks.
 #[derive(Debug, Clone, Default, PartialEq)]

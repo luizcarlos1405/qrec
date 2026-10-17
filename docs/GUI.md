@@ -2095,7 +2095,10 @@ As built (WP6, round 3):
     8 px inset and the clips glide. The fit eases (200 ms, instant under
     reduced motion) when the ghost starts or ends. (Review: refitted only
     at each `RecordClock`, 4 Hz, with a 200 ms ease, they ran up to 25 %
-    past the time area between clocks early in a take.)
+    past the time area between clocks early in a take.) The timeline runs
+    `control::follow_snapshot` per snapshot and `control::follow_frame`
+    per frame, the steps its test drives (R05's audit: the test copied
+    them, and the frame's step could go from the timeline unnoticed).
 - **Wheel, pan, scrub**: D-39, D-40. `scroll_for_wheel`, `zoom_at(ppf,
   factor, anchor_x)` and `scrub_frame(x)` are pure. The middle-drag pan's
   vertical part follows the pointer in the lanes' scrolled window (the
@@ -2200,7 +2203,10 @@ As built (WP6, round 3):
     drawn, in timeline frames, so a slot change in the middle of an ease
     never jumps and a zoom during the drag moves the boxes, not the eases;
     at once under reduced motion and in test mode; review R11: they
-    jumped, nothing filled the easing's map);
+    jumped, nothing filled the easing's map). The canvas paints
+    `control::painted_clips`, the boxes, trim preview and move preview
+    with the eases applied, which a unit test checks mid-ease (R11's
+    audit);
   - the caret goes to the boundary nearest the pointer (slot k of n, n =
     clip count);
   - the lifted copy: 85 %, e1, 4 px up, over the video row and lanes;

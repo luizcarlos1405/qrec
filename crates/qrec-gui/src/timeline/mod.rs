@@ -52,7 +52,7 @@ use qrec_core::protocol::event::Interval;
 use qrec_core::state::SilenceKey;
 use qrec_core::view::DragKind;
 use qrec_core::view::notices::unavailable_notice;
-use qrec_core::view::timeline::{self as tl, ClipBox, HEADER_WIDTH, Lane, Rows, Viewport};
+use qrec_core::view::timeline::{self as tl, HEADER_WIDTH, Lane, Rows, Viewport};
 use qrec_core::{ClipId, Command, Frame, State, TakeId};
 use qrec_shell::media::preview::{PreviewData, PreviewRequest};
 
@@ -827,17 +827,9 @@ impl Inner {
         let mut pending = Pending::default();
         {
             let mut m = self.m.borrow_mut();
-            // The record clock, for the ghost's growth.
-            let grows = m.ghost.follow(&state.runtime.record, now);
-            let mut total = tl::shown_total(state, m.ghost.elapsed_ns);
-            if grows {
-                // While a take records its ghost grows on the frame clock
-                // (`follow_ghost`, at once): a clock past it too, and one
-                // behind it never shrinks it.
-                m.vm.follow_ghost(total);
-                total = m.vm.total();
-            }
-            m.vm.on_state(state, total, now);
+            // The record clock, for the ghost's growth, and the view.
+            let Model { vm, ghost, .. } = &mut *m;
+            control::follow_snapshot(vm, ghost, state, now);
             let has_view = m.vm.target_view().is_some();
             m.g.on_state(state, has_view, &mut pending);
             // A move drag the snapshot ended takes its eases along.
@@ -1728,14 +1720,11 @@ impl Inner {
                 m.flash = None;
             }
             // Fit includes the ghost as it grows between record clocks.
-            let shown = m.vm.total();
-            if m.ghost.running {
-                let total = tl::shown_total(&state, ghost_elapsed(&m.ghost, now));
-                m.vm.follow_ghost(total);
-            }
+            let Model { vm, ghost, .. } = &mut *m;
+            let grew = control::follow_frame(vm, ghost, &state, now, testctl::mode().on);
             let facts = control::TickFacts {
                 easing: m.vm.animating(now),
-                grew: m.vm.total() != shown,
+                grew,
                 gap_easing: m.gap.animating(now),
                 trimming: matches!(m.g.drag(), Some(Drag::Trim { started: true, .. })),
                 playing,
@@ -1846,40 +1835,20 @@ impl Inner {
         let elapsed = ghost_elapsed(&m.ghost, now);
         let playhead = self.shown_playhead_with(&state, &m, now);
         let hovered = local.hover_clip.as_ref();
-        let mut boxes = tl::clip_layout(&state, &view, hovered, elapsed);
-        let mut trim = None;
-        let mut moving = None;
-        match m.g.drag() {
-            Some(Drag::Trim {
-                clip,
-                edge,
-                x0,
-                x,
-                started: true,
-            }) => {
-                if let Some(p) = tl::trim_preview(
-                    &state,
-                    &view,
-                    clip,
-                    *edge,
-                    x - x0,
-                    state.ui.snapping,
-                    playhead,
-                ) {
-                    boxes = p.boxes.clone();
-                    trim = Some(p);
-                }
-            }
-            Some(Drag::Move { block, x }) => {
-                if let Some(p) = tl::move_preview(&state, &view, block, *x) {
-                    boxes = p.boxes.clone();
-                    m.gap.ease(&mut boxes, &view, now);
-                    let lifted = lifted_boxes(&state, &view, block, *x);
-                    moving = Some((p, lifted));
-                }
-            }
-            _ => {}
-        }
+        let control::PaintedClips {
+            boxes,
+            trim,
+            moving,
+        } = control::painted_clips(
+            &state,
+            &view,
+            m.g.drag(),
+            &m.gap,
+            hovered,
+            elapsed,
+            playhead,
+            now,
+        );
         let ghost = tl::ghost(&state, &view, elapsed);
         let ghost_waves = ghost
             .as_ref()
@@ -2116,29 +2085,6 @@ fn ghost_elapsed(ghost: &GhostClock, now: Duration) -> u64 {
 /// How many level readings the media hub keeps per device.
 fn media_history() -> usize {
     crate::media::LEVEL_HISTORY
-}
-
-/// The moved block's boxes as the lifted copy draws them: in a row,
-/// centered on the pointer.
-fn lifted_boxes(state: &State, view: &Viewport, block: &[ClipId], pointer_x: f64) -> Vec<ClipBox> {
-    let all = tl::clip_boxes(state, view, None);
-    let moved: Vec<ClipBox> = all
-        .into_iter()
-        .filter(|b| block.contains(&b.clip))
-        .collect();
-    let width: f64 = moved.iter().map(|b| b.w).sum();
-    let mut x = pointer_x - width / 2.0;
-    moved
-        .into_iter()
-        .map(|mut b| {
-            b.x = x;
-            x += b.w;
-            b.selected = false;
-            b.hovered = false;
-            b.trimming = None;
-            b
-        })
-        .collect()
 }
 
 /// Where the pointer is for the event a controller handles, as an x in

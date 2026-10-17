@@ -789,7 +789,9 @@ fn columns_older_than_the_readings_are_silent() {
 /// end and the playhead parked there never pass the fit's 8 px inset, also
 /// between clocks (the ghost grows on the frame clock by up to 300 ms; at
 /// 1 s it ran 25 % past the time area when the fit followed the clocks
-/// only).
+/// only). Through the steps the timeline runs itself, `follow_snapshot`
+/// per snapshot and `follow_frame` per frame (its audit: a copy of them
+/// here passed with the frame's step gone from the timeline).
 #[test]
 fn fit_follows_the_ghost_between_record_clocks() {
     use qrec_core::view::timeline::{FIT_INSET_PX, ghost, shown_playhead};
@@ -806,18 +808,9 @@ fn fit_follows_the_ghost_between_record_clocks() {
     let mut clock = GhostClock::default();
     let mut elapsed = 1_000_000_000u64;
     let mut last_clock = ms(0);
-    // A snapshot: what `Inner::on_change` does.
-    let snapshot = |state: &State, vm: &mut ViewModel, clock: &mut GhostClock, now| {
-        let grows = clock.follow(&state.runtime.record, now);
-        let mut total = shown_total(state, clock.elapsed_ns);
-        if grows {
-            vm.follow_ghost(total);
-            total = vm.total();
-        }
-        vm.on_state(state, total, now);
-    };
+    let mut grew = 0;
     state.runtime.record = recording(elapsed);
-    snapshot(&state, &mut vm, &mut clock, ms(0));
+    follow_snapshot(&mut vm, &mut clock, &state, ms(0));
     for step in 0..=300u64 {
         let now = ms(step * 10);
         // A clock 250 ms after the last (one late by 60 ms, past the lead).
@@ -826,11 +819,11 @@ fn fit_follows_the_ghost_between_record_clocks() {
             elapsed += (now - last_clock).as_nanos() as u64;
             last_clock = now;
             state.runtime.record = recording(elapsed);
-            snapshot(&state, &mut vm, &mut clock, now);
+            follow_snapshot(&mut vm, &mut clock, &state, now);
         }
-        // A frame: what `Inner::on_tick` does.
+        // A frame.
+        grew += usize::from(follow_frame(&mut vm, &clock, &state, now, false));
         let e = clock.elapsed(now, false);
-        vm.follow_ghost(shown_total(&state, e));
         let view = vm.shown(now).unwrap();
         let bound = view.width - FIT_INSET_PX + 1e-6;
         let parked = view.x_of_frame(shown_playhead(&state, e, None));
@@ -842,6 +835,12 @@ fn fit_follows_the_ghost_between_record_clocks() {
             g.x + g.w
         );
     }
+    // About a frame of total every 33 ms of the 3 s (89 of the 301 frames
+    // grew it): between clocks too.
+    assert!(grew > 60, "the fit grew on {grew} frames of 301");
+    // Test mode's frozen clock: the frames grow nothing.
+    let mut frozen = vm.clone();
+    assert!(!follow_frame(&mut frozen, &clock, &state, ms(3005), true));
     // Stopped: the ghost keeps the last clock's length, and the fit too.
     state.runtime.record = RecordPhase::Finalizing {
         take: TakeId::numbered(10),
@@ -851,8 +850,9 @@ fn fit_follows_the_ghost_between_record_clocks() {
         waiters: vec![],
         discard: None,
     };
-    snapshot(&state, &mut vm, &mut clock, ms(3010));
+    follow_snapshot(&mut vm, &mut clock, &state, ms(3010));
     assert_eq!(vm.total(), shown_total(&state, elapsed));
+    assert!(!follow_frame(&mut vm, &clock, &state, ms(3020), false));
 }
 
 /// R14: the filmstrip is drawn 72 px × the UI scale × the window's scale
@@ -1230,6 +1230,42 @@ fn a_move_drags_neighbours_ease_to_their_places() {
     instant.retarget(&box_places(&p.boxes, &view), rest, ms(0), true);
     assert!((drawn(&instant, ms(0), "c1b2") - target_x).abs() < 1e-6);
     assert!(!instant.animating(ms(0)));
+    // As the canvas paints them (`painted_clips`, its audit: the paint's
+    // own call to the ease was untested, and taking it out passed): the
+    // drag's boxes mid-ease, the lifted copy centered on the pointer.
+    let drag = Drag::Move {
+        block: vec![id("c8a1")],
+        x: 229.0,
+    };
+    let painted = |gap: &GapEase, now: Duration| {
+        painted_clips(&state, &view, Some(&drag), gap, None, 0, 0, now)
+    };
+    for (at, want) in [
+        (0, rest_x),
+        (60, drawn(&gap, ms(60), "c1b2")),
+        (120, target_x),
+    ] {
+        let paint = painted(&gap, ms(at));
+        assert!(
+            (x_of(&paint.boxes, "c1b2") - want).abs() < 1e-6,
+            "{at} ms: c1b2 painted at {}, want {want}",
+            x_of(&paint.boxes, "c1b2")
+        );
+        let (preview, lifted) = paint.moving.expect("a move drag's preview");
+        assert_eq!(preview.tooltip, p.tooltip);
+        assert_eq!(lifted.len(), 1);
+        assert!(
+            (lifted[0].x + lifted[0].w / 2.0 - 229.0).abs() < 1e-6,
+            "the lifted copy centered on the pointer"
+        );
+        assert!(paint.trim.is_none());
+    }
+    let mid = x_of(&painted(&gap, ms(60)).boxes, "c1b2");
+    assert!(target_x < mid && mid < rest_x, "{mid}");
+    // No drag: the timeline's boxes as they rest.
+    let still = painted_clips(&state, &view, None, &gap, None, 0, 0, ms(60));
+    assert_eq!(still.boxes, tl::clip_layout(&state, &view, None, 0));
+    assert!(still.moving.is_none() && still.trim.is_none());
 }
 
 /// A slot change in the middle of an ease starts the next from where the
