@@ -4870,7 +4870,8 @@ loaded and that the registry is still the seeded one.
   them disposing key caps), the timeline's snapshot subscriber
   (`timeline/mod.rs:406`, up to 45 ms), the timeline surface's snapshot
   (up to 35 ms), the stage's render (up to 72 ms) and GTK's own work.
-  Under gles2 they fail the smoke unless they stay under 50 ms there.
+  Under gles2 a stall fails the smoke only over 400 ms (a hang,
+  `GLES2_HANG_MS`, below); the others are reported.
   The integration's gles2 runs (WP10: six of the smoke on the merged tree,
   one on the package's window, the machine otherwise idle): the project
   opening 1–3 stalls (the first frame, 650–760 ms), then 7–9 during the

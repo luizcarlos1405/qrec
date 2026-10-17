@@ -10,8 +10,10 @@
 //! It starts once the window is built (the end of `activate`), counts its
 //! ticks, keeps the newest [`KEPT`] stalls, logs a summary when the app
 //! quits ([`finish`]), and the test channel's `probe` op reports it
-//! ([`report`]): the smoke run (G§8.5) fails on a stall only under gles2
-//! (with pixman the compositor, llvmpipe and ffmpeg share the CPU).
+//! ([`report`]): the smoke run (G§8.5) reports every stall and fails on one
+//! only under gles2 (with pixman the compositor, llvmpipe and ffmpeg share
+//! the CPU), and there only on one over 400 ms, a hang (`gui_smoke.rs`'
+//! `GLES2_HANG_MS`): G§8.5's 50 ms isn't met on gles2 yet (G§8.6).
 //!
 //! Off (the default) it costs a thread-local read per guarded callback.
 
