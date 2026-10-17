@@ -614,7 +614,11 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
   - On release: one undoable Command (D-41). `Esc` cancels (Q3); other
     keys follow D-42.
   - A snapshot that arrives mid-drag recomputes the preview against it. If
-    the dragged clip or layer is gone, the drag is cancelled.
+    the dragged clip or layer is gone, the drag is cancelled; the
+    timeline's ruler scrub and middle-drag pan are cancelled once it has no
+    view (it went empty: the ruler and the canvas go, and their release
+    never comes; review: the scrub kept `LocalUi.drag`, so the router
+    swallowed every key but `Esc`), and so is a press GTK cancels.
   - A release Command that fails snaps back and toasts.
 - **Toasts.** Core toasts come through the port; GUI toasts through
   `store.notify(Notice)`:

@@ -858,13 +858,17 @@ impl Gestures {
         }
     }
 
-    /// A snapshot mid-drag: a drag whose clip is gone is cancelled.
-    pub fn on_state(&mut self, state: &State, sink: &mut dyn Sink) {
+    /// A snapshot mid-drag: a drag whose clip is gone is cancelled, and a
+    /// scrub or a pan once the timeline has no view (`has_view`: it went
+    /// empty, the ruler and the canvas with it, so their release never
+    /// comes).
+    pub fn on_state(&mut self, state: &State, has_view: bool, sink: &mut dyn Sink) {
         let gone = |id: &ClipId| state.project.clip(id).is_none();
         let cancel = match &self.drag {
             Some(Drag::Move { block, .. }) => block.iter().all(gone),
             Some(Drag::Trim { clip, .. }) | Some(Drag::Pending { clip, .. }) => gone(clip),
-            _ => false,
+            Some(Drag::Scrub { .. } | Drag::Pan { .. }) => !has_view,
+            None => false,
         };
         if cancel {
             self.decide_cancel(sink);

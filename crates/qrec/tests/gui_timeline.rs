@@ -582,6 +582,39 @@ fn ctrl_wheel_zooms_at_the_pointer() {
     assert_clean(&mut nested);
 }
 
+/// A ruler scrub whose timeline goes empty mid-drag (every clip removed
+/// while the button is down) ends with it: the ruler is gone, so its
+/// release never comes, and `LocalUi.drag` stayed `scrub` (the router then
+/// swallowed every key but `Esc`).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_scrub_ends_when_the_timeline_empties() {
+    let mut nested = Nested::start(AREA, "scrub-emptied", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
+    open(&mut nested, &project, Launch::default());
+    let ruler_y = center_of(&mut nested, "ruler").1;
+    let pointer = nested.pointer();
+    pointer.move_to(500.0, ruler_y);
+    pointer.button(gui_support::pointer::BUTTON_LEFT, true);
+    pointer.move_to(540.0, ruler_y);
+    wait_drag(&mut nested, json!("scrub"));
+    let clips: Vec<String> = clip_rows(&nested, &project)
+        .into_iter()
+        .map(|c| c.0)
+        .collect();
+    let reply = nested.window(0).ctl(json!({
+        "op": "dispatch",
+        "command": {"cmd": "clipRemove", "clips": clips},
+    }));
+    assert_eq!(reply["ok"], true, "{reply}");
+    nested.window(0).wait_idle();
+    wait_drag(&mut nested, Value::Null);
+    release(&mut nested);
+    nested.window(0).wait_idle();
+    assert_eq!(local(&mut nested)["drag"], Value::Null);
+    assert_clean(&mut nested);
+}
+
 // ------------------------------------------------------------- S12
 
 /// The center of widget `name` (it must show).

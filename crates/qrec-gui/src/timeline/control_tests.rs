@@ -658,7 +658,7 @@ fn snapshots_cancel_drags_whose_clip_is_gone() {
     g.decide_motion(&c, &mut sink, &mut vm, Area::Rows, (229.0, 30.0));
     let mut gone = state.clone();
     gone.project.timeline.clips.remove(1);
-    g.on_state(&gone, &mut sink);
+    g.on_state(&gone, true, &mut sink);
     assert_eq!(g.drag(), None);
     assert_eq!(sink.drags, [Some(DragKind::Move), None]);
 }
@@ -960,4 +960,63 @@ fn a_middle_drag_pans_the_lanes_with_the_pointer() {
         "the lanes follow the pointer: {steps:?}"
     );
     assert!((lanes - from - 60.0).abs() < 1e-9, "{lanes}");
+}
+
+/// R07: a ruler scrub or a middle-drag pan whose timeline goes empty
+/// (another client's `clip remove` or `undo`) ends with it: the ruler and
+/// the canvas are gone, so their release never comes, and the scrub kept
+/// `LocalUi.drag` (the router swallowed every key but `Esc`) and the pan the
+/// next press.
+#[test]
+fn drags_end_when_the_timeline_has_no_view() {
+    let state = testkit::design_state();
+    let mut empty = state.clone();
+    empty.project.timeline.clips.clear();
+    for button in [Button::Left, Button::Middle] {
+        let (mut vm, view, total) = setup(&state);
+        let c = cx(&state, view, total, ms(0));
+        let mut g = Gestures::new();
+        let mut sink = Recorder::default();
+        let at = Press {
+            button,
+            ..press(Area::Ruler, 10.0, 0.0, Mods::default())
+        };
+        assert!(g.decide_press(&c, &mut sink, &mut vm, at));
+        assert!(g.drag().is_some(), "{button:?}");
+        vm.on_state(&empty, 0, ms(10));
+        g.on_state(&empty, vm.target_view().is_some(), &mut sink);
+        assert_eq!(g.drag(), None, "{button:?}");
+        if button == Button::Left {
+            assert_eq!(sink.drags, [Some(DragKind::Scrub), None]);
+        }
+        // The clips come back: a press is a press again.
+        let (mut vm, view, total) = setup(&state);
+        let c = cx(&state, view, total, ms(20));
+        let mut sink = Recorder::default();
+        g.decide_press(&c, &mut sink, &mut vm, rows(350.0));
+        assert!(matches!(g.drag(), Some(Drag::Pending { .. })), "{button:?}");
+    }
+    // A pan over a recording's ghost on an empty timeline goes on: it has a
+    // view.
+    let mut recording = empty.clone();
+    recording.runtime.record = RecordPhase::Recording {
+        take: TakeId::numbered(10),
+        mode: RecordMode::Append,
+        elapsed_ns: 10_000_000_000,
+        waiters: vec![],
+    };
+    let mut vm = ViewModel::new(true);
+    vm.set_width(W);
+    vm.on_state(&recording, shown_total(&recording, 10_000_000_000), ms(0));
+    let view = vm.shown(ms(0)).unwrap();
+    let c = cx(&recording, view, vm.total(), ms(0));
+    let mut g = Gestures::new();
+    let mut sink = Recorder::default();
+    let middle = Press {
+        button: Button::Middle,
+        ..rows(300.0)
+    };
+    g.decide_press(&c, &mut sink, &mut vm, middle);
+    g.on_state(&recording, vm.target_view().is_some(), &mut sink);
+    assert!(matches!(g.drag(), Some(Drag::Pan { .. })));
 }

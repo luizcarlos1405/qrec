@@ -629,6 +629,13 @@ impl Inner {
                 inner.release(x0 + dx, y0 + dy);
             }
         }));
+        // GTK gave up the press (a grab, the widget unmapped): no release.
+        let me = self.me.clone();
+        drag.connect_cancel(guarded!("timeline: a press cancelled", move |_, _| {
+            if let Some(inner) = me.upgrade() {
+                inner.cancel_drag();
+            }
+        }));
         self.canvas.add_controller(drag);
 
         let motion = gtk::EventControllerMotion::new();
@@ -691,6 +698,15 @@ impl Inner {
                 inner.release(x0 + dx, y0 + dy);
             }
         }));
+        let me = self.me.clone();
+        drag.connect_cancel(guarded!(
+            "timeline: a ruler press cancelled",
+            move |_, _| {
+                if let Some(inner) = me.upgrade() {
+                    inner.cancel_drag();
+                }
+            }
+        ));
         self.ruler.add_controller(drag);
         let scroll = gtk::EventControllerScroll::new(
             gtk::EventControllerScrollFlags::BOTH_AXES | gtk::EventControllerScrollFlags::DISCRETE,
@@ -773,7 +789,8 @@ impl Inner {
                 total = m.vm.total();
             }
             m.vm.on_state(state, total, now);
-            m.g.on_state(state, &mut pending);
+            let has_view = m.vm.target_view().is_some();
+            m.g.on_state(state, has_view, &mut pending);
             m.lanes = tl::lanes(state);
             m.generation += 1;
         }
