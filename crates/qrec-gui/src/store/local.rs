@@ -64,8 +64,14 @@ pub struct LocalUi {
     pub live_status: Arc<Vec<LiveSourceStatus>>,
     /// What the last discovery found (WP0b; S01a, the Add menus).
     pub sources: Option<Arc<SourceInventory>>,
-    /// The player plays (WP4 player sync; `GuiFacts::playing`).
+    /// The player plays, the program or a take (WP4 player sync).
     pub playing: bool,
+    /// The program plays in the player (WP4 player sync, G§3.10 step 3):
+    /// not a take, and only once the program's load after one landed, so
+    /// the player's position is the program's. What the timeline's
+    /// playhead, the transport, the key router's effective playhead and
+    /// `GuiFacts::playing` follow.
+    pub program_playing: bool,
     /// The shuttle rate (WP4 player sync, D-44; the key router's pre-step).
     pub playing_rate: f64,
     /// The export panel's own state (WP7).
@@ -97,6 +103,7 @@ impl Default for LocalUi {
             live_status: Arc::default(),
             sources: None,
             playing: false,
+            program_playing: false,
             playing_rate: 1.0,
             export_view: ExportPanelState::default(),
             layout: LayoutClass::default(),
@@ -121,7 +128,7 @@ impl LocalUi {
                 matches!(s.source, LiveSource::Screen { .. })
                     && matches!(s.state, LiveSourceState::Refused { .. })
             }),
-            playing: self.playing,
+            playing: self.program_playing,
             bin_selection: self.bin_selection.len(),
             built: Built {
                 palette: crate::palette::BUILT,
@@ -346,6 +353,19 @@ mod tests {
         assert_eq!(facts.bin_selection, 2);
         assert!(facts.portal_denied);
         assert_eq!(facts.built, Built::default(), "nothing of WP9 yet");
+    }
+
+    /// R16: the hint bar's Play/Pause follows the program, not a take the
+    /// player plays (a bin preview).
+    #[test]
+    fn the_playing_fact_is_the_programs() {
+        let mut local = LocalUi {
+            playing: true,
+            ..LocalUi::default()
+        };
+        assert!(!local.facts().playing, "a take plays");
+        local.program_playing = true;
+        assert!(local.facts().playing);
     }
 
     #[test]

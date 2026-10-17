@@ -5,6 +5,12 @@ expression: "json!({\"live\": boxes, \"moved\": moved})"
 {
   "live": [
     {
+      "frame": {
+        "h": 540.0,
+        "w": 960.0,
+        "x": 0.0,
+        "y": 0.0
+      },
       "layer": "L1",
       "locked": false,
       "rect": {
@@ -17,6 +23,12 @@ expression: "json!({\"live\": boxes, \"moved\": moved})"
       "z": 0
     },
     {
+      "frame": {
+        "h": 144.0,
+        "w": 192.0,
+        "x": 750.0,
+        "y": 380.0
+      },
       "layer": "L2",
       "locked": false,
       "rect": {
@@ -31,6 +43,12 @@ expression: "json!({\"live\": boxes, \"moved\": moved})"
   ],
   "moved": [
     {
+      "frame": {
+        "h": 540.0,
+        "w": 960.0,
+        "x": 0.0,
+        "y": 0.0
+      },
       "layer": "L1",
       "locked": false,
       "rect": {
@@ -43,6 +61,12 @@ expression: "json!({\"live\": boxes, \"moved\": moved})"
       "z": 0
     },
     {
+      "frame": {
+        "h": 144.0,
+        "w": 192.0,
+        "x": 640.0,
+        "y": 380.0
+      },
       "layer": "L2",
       "locked": false,
       "rect": {

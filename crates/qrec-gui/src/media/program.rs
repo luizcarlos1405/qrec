@@ -17,19 +17,26 @@
 //!    rate being `LocalUi.playing_rate` when the GUI's own shuttle just set
 //!    it and 1 otherwise (D-44: Space and CLI `qrec play` reset it). true →
 //!    false: `pause()`, then `Seek{To(player frame)}`; the rate goes back
-//!    to 1.
+//!    to 1. Leaving Program while playing is that stop too (R21).
 //! 3. While playing, `Seek{To(player frame)}` goes out once a second (an
-//!    own seek); a playhead the GUI didn't set that way moves the player.
+//!    own seek); a playhead the GUI didn't set that way (nor by a key's
+//!    pre-step seek to the player's frame, R22) moves the player.
+//!    `LocalUi.program_playing` says the program plays in the player (not
+//!    a take; and only once the program's load after a take landed, the
+//!    player idle, since until then its position is the take's): what the
+//!    timeline, the transport and the key router follow (R00, R16).
 //! 4. Paused, a snapshot playhead the player isn't on moves it (`seek`),
 //!    except the GUI's own seek during a ruler scrub, which `scrub` drives
 //!    (D-40).
 //! 5. `Ended` → `Pause`, then `Seek{End}` (`Seek{Start}` in reverse).
-//! 6. `Error` → the error toast "Playback stopped"; the player stays paused.
+//! 6. `Error` → the error toast "Playback stopped"; the player stays paused
+//!    (a bin preview's `playing` too: the next play starts it from 0).
 //! 7. Shuttle rates come from the key router (D-44, `KeyRouter` pre-steps).
 //! 8. The trim scrub (`LocalUi.trim_frame`, S10) and the bin preview
 //!    (`LocalUi.take_preview`, D-17) load `plan_ges_take` (at the trimmed
 //!    frame, or from 0); when they end the program plan loads again at
-//!    `ui.playhead`.
+//!    `ui.playhead`. A bin preview that takes over a playing program
+//!    pauses it (`Pause`; no seek, which would end the preview).
 //! 9. A ruler drag (D-40) scrubs through the sync ([`scrub`], the
 //!    timeline's): the paused program player scrubs to every frame; the
 //!    drag's own throttled seeks never move it, and after the drag the
@@ -70,12 +77,17 @@ pub const SEEK_EVERY_MS: u64 = 1000;
 /// How long a rate set by the GUI's shuttle waits for playback to start.
 pub const RATE_ARMED_MS: u64 = 1000;
 /// A playhead this close to the player's frame doesn't move a playing
-/// player (a pre-step's `Seek{To(player frame)}`).
+/// player (a frame step while playing, say); a key's pre-step seek to the
+/// player's frame is own whatever the distance
+/// ([`SyncMachine::note_own_seek`]).
 const NEAR_FRAMES: Frame = 2;
 /// How long after a ruler drag the sync waits for the snapshots to reach
 /// its last scrubbed frame (the echo of the drag's last seek) before it
 /// follows the playhead again (a refused seek never echoes).
 pub const SCRUB_ECHO_MS: u64 = 1000;
+/// How often the sync looks whether the program's load after a take
+/// landed (the player is idle): until then its position is the take's.
+pub const SETTLE_POLL_MS: u64 = 50;
 
 /// What the player is asked to do.
 #[derive(Debug, Clone, PartialEq)]
@@ -111,6 +123,9 @@ pub struct Inputs<'a> {
     pub position_ns: u64,
     /// There is a player.
     pub has_player: bool,
+    /// The player has nothing to load or seek, queued or in flight
+    /// (`ProgramPlayer::idle`): its position is the last load's or seek's.
+    pub player_idle: bool,
     pub now_ms: u64,
 }
 
@@ -145,12 +160,18 @@ impl Inputs<'_> {
 pub struct Out {
     pub player: Vec<PlayerCmd>,
     pub dispatch: Vec<Command>,
-    /// `LocalUi.playing`, when it changes.
+    /// `LocalUi.playing` (the player plays, the program or a take), when it
+    /// changes.
     pub playing: Option<bool>,
+    /// `LocalUi.program_playing`, when it changes: the program plays in the
+    /// player and the player's position is the program's (not a take's,
+    /// nor while the program's load after one is on its way).
+    pub program_playing: Option<bool>,
     /// `LocalUi.playing_rate`, when it changes.
     pub rate: Option<f64>,
     pub notice: Option<Notice>,
-    /// The bin preview played to its end (`take_preview.playing` = false).
+    /// The bin preview played to its end or failed
+    /// (`take_preview.playing` = false).
     pub take_preview_ended: bool,
 }
 
@@ -191,6 +212,18 @@ pub struct SyncMachine {
     scrubbed: Option<Frame>,
     /// When the drag that scrubbed ended (the echo wait's start).
     scrub_ended_at: Option<u64>,
+    /// The program's load after a take (or nothing) hasn't landed: the
+    /// player's position isn't the program's yet (it is the take's).
+    settling: bool,
+    /// When the sync looks again whether that load landed.
+    settle_check: Option<u64>,
+    /// `LocalUi.program_playing` as last told.
+    program_playing: bool,
+    /// The bin preview paused the program's playback (once per preview).
+    preview_paused: bool,
+    /// The frames the key router took from the player lately (its
+    /// pre-step seeks): (when, frame).
+    key_seeks: Vec<(u64, Frame)>,
 }
 
 impl Default for SyncMachine {
@@ -215,6 +248,11 @@ impl SyncMachine {
             take_ended: false,
             scrubbed: None,
             scrub_ended_at: None,
+            settling: false,
+            settle_check: None,
+            program_playing: false,
+            preview_paused: false,
+            key_seeks: Vec::new(),
         }
     }
 
@@ -224,21 +262,58 @@ impl SyncMachine {
         self.rate_armed_at = Some(now_ms);
     }
 
+    /// The key router took the player's `frame` for the playhead (its
+    /// pre-step `Seek{To(frame)}`, G§3.8): a playhead at that frame within
+    /// [`SEEK_EVERY_MS`] is the GUI's own and doesn't move a playing
+    /// player (R22: at 4×, or stepping in reverse, the player is past it
+    /// by the time the snapshot comes).
+    pub fn note_own_seek(&mut self, now_ms: u64, frame: Frame) {
+        self.key_seeks
+            .retain(|(at, _)| now_ms.saturating_sub(*at) < SEEK_EVERY_MS);
+        self.key_seeks.push((now_ms, frame));
+    }
+
     /// A reload is due (the test channel's `waitIdle`).
     pub fn busy(&self) -> bool {
         self.reload_due.is_some()
     }
 
     /// When [`sync`](Self::sync) must run again on its own: a due reload,
-    /// the next once-a-second seek, the end of a scrub's echo wait.
+    /// the next once-a-second seek, the end of a scrub's echo wait, the
+    /// next look whether the program's load after a take landed.
     pub fn deadline(&self) -> Option<u64> {
-        let seek = (self.told_playing && matches!(self.content, Content::Program(_)))
-            .then(|| self.auto_seek.map_or(0, |(at, _)| at + SEEK_EVERY_MS));
+        let seek =
+            (self.told_playing && matches!(self.content, Content::Program(_)) && !self.settling)
+                .then(|| self.auto_seek.map_or(0, |(at, _)| at + SEEK_EVERY_MS));
         let echo = self
             .scrubbed
             .and(self.scrub_ended_at)
             .map(|at| at + SCRUB_ECHO_MS);
-        [self.reload_due, seek, echo].into_iter().flatten().min()
+        [self.reload_due, seek, echo, self.settle_check]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
+    /// The program's load after a take landed once the player is idle
+    /// (its position is the load's, or where it played on from). Checked
+    /// before a step's own commands: a load this step sends isn't there yet.
+    fn check_settled(&mut self, inp: &Inputs<'_>) {
+        if self.settling && inp.player_idle {
+            self.settling = false;
+        }
+    }
+
+    /// `LocalUi.program_playing` (G§3.10 step 3): the program plays in the
+    /// player, and the player's position is the program's.
+    fn report(&mut self, inp: &Inputs<'_>, out: &mut Out) {
+        let program =
+            self.told_playing && matches!(self.content, Content::Program(_)) && !self.settling;
+        if program != self.program_playing {
+            self.program_playing = program;
+            out.program_playing = Some(program);
+        }
+        self.settle_check = self.settling.then_some(inp.now_ms + SETTLE_POLL_MS);
     }
 
     /// A ruler drag's motion (D-40, the timeline's): the paused program
@@ -288,6 +363,13 @@ impl SyncMachine {
 
     /// One step: whatever the inputs ask of the player now.
     pub fn sync(&mut self, inp: &Inputs<'_>) -> Out {
+        self.check_settled(inp);
+        let mut out = self.step(inp);
+        self.report(inp, &mut out);
+        out
+    }
+
+    fn step(&mut self, inp: &Inputs<'_>) -> Out {
         let mut out = Out::default();
         let now_playing = inp.state.runtime.playing;
         if !inp.has_player {
@@ -301,15 +383,29 @@ impl SyncMachine {
             return out;
         }
         if let Some((take, play)) = &inp.take_preview {
+            // The preview takes the player: the program doesn't play under
+            // it (R16). No seek: the playhead moving ends the preview.
+            if now_playing && !self.preview_paused {
+                out.dispatch.push(Command::Pause);
+                self.preview_paused = true;
+                self.auto_seek = None;
+                if inp.rate != 1.0 {
+                    out.rate = Some(1.0);
+                }
+            }
             self.show_take(inp, take, None, *play, &mut out);
             self.playing = now_playing;
             return out;
         }
+        self.preview_paused = false;
         if inp.state.ui.canvas_mode != CanvasMode::Program {
             // Live: the plan only goes stale; it loads when Program comes
-            // back. A player still going (a bin preview that ended in
-            // Live) stops.
-            if self.told_playing {
+            // back. A program that played stops as a pause does (step 2:
+            // the playhead parks at the player's frame, R21); a player
+            // still going (a bin preview that ended in Live) stops.
+            if self.playing && !now_playing && matches!(self.content, Content::Program(_)) {
+                self.stop(inp, &mut out);
+            } else if self.told_playing {
                 out.player.push(PlayerCmd::Pause);
                 self.told_playing = false;
                 out.playing = Some(false);
@@ -345,30 +441,20 @@ impl SyncMachine {
             self.auto_seek = Some((inp.now_ms, playhead));
             self.shown_frame = None;
         } else if stopped {
-            if self.told_playing {
-                out.player.push(PlayerCmd::Pause);
-                self.told_playing = false;
-                out.playing = Some(false);
-            }
-            if self.ended {
-                // `Seek{End}` (or `Start`) went out with the `Pause`.
-                self.shown_frame = None;
-            } else {
-                let frame = inp.player_frame();
-                out.dispatch.push(seek_to(frame));
-                self.shown_frame = Some(frame);
-                self.seen_playhead = Some(frame);
-            }
-            if inp.rate != 1.0 {
-                out.rate = Some(1.0);
-            }
-            self.ended = false;
-            self.auto_seek = None;
+            self.stop(inp, &mut out);
+        } else if now_playing && self.told_playing && self.settling {
+            // The program's load after a take is on its way: the player's
+            // position is still the take's, so no own seek yet, and a
+            // playhead that moves meanwhile moves the player once it landed.
         } else if now_playing && self.told_playing {
             // Playing: a playhead the GUI didn't set by its once-a-second
-            // seek moves the player.
+            // seek or a key's pre-step seek moves the player.
             let moved = self.seen_playhead != Some(playhead);
-            let own = self.auto_seek.is_some_and(|(_, f)| f == playhead);
+            let now = inp.now_ms;
+            self.key_seeks
+                .retain(|(at, _)| now.saturating_sub(*at) < SEEK_EVERY_MS);
+            let own = self.auto_seek.is_some_and(|(_, f)| f == playhead)
+                || self.key_seeks.iter().any(|(_, f)| *f == playhead);
             if moved && !own && playhead.abs_diff(inp.player_frame()) > NEAR_FRAMES {
                 out.player.push(PlayerCmd::Seek(inp.ns(playhead)));
                 self.auto_seek = Some((inp.now_ms, playhead));
@@ -393,8 +479,39 @@ impl SyncMachine {
             self.scrubbed = None;
             self.scrub_ended_at = None;
         }
-        self.seen_playhead = Some(playhead);
+        if fresh || !self.settling {
+            self.seen_playhead = Some(playhead);
+        }
         out
+    }
+
+    /// The program stopped playing (step 2): pause, the playhead parked at
+    /// the player's frame, the rate back to 1.
+    fn stop(&mut self, inp: &Inputs<'_>, out: &mut Out) {
+        if self.told_playing {
+            out.player.push(PlayerCmd::Pause);
+            self.told_playing = false;
+            out.playing = Some(false);
+        }
+        if self.ended {
+            // `Seek{End}` (or `Start`) went out with the `Pause`.
+            self.shown_frame = None;
+        } else if self.settling {
+            // The program's load after a take hasn't landed: the player's
+            // position is still the take's. The playhead stays, and the
+            // paused player goes back to it.
+            self.shown_frame = None;
+        } else {
+            let frame = inp.player_frame();
+            out.dispatch.push(seek_to(frame));
+            self.shown_frame = Some(frame);
+            self.seen_playhead = Some(frame);
+        }
+        if inp.rate != 1.0 {
+            out.rate = Some(1.0);
+        }
+        self.ended = false;
+        self.auto_seek = None;
     }
 
     /// The program plan in the player: loaded at once when the player held
@@ -438,6 +555,7 @@ impl SyncMachine {
                     at_ns: inp.ns(playhead),
                 });
                 self.content = Content::Program(inp.plan.clone());
+                self.settling = true;
                 self.reload_due = None;
                 self.scrubbed = None;
                 self.scrub_ended_at = None;
@@ -513,6 +631,13 @@ impl SyncMachine {
 
     /// One of the player's events.
     pub fn on_event(&mut self, event: &PlayerEvent, inp: &Inputs<'_>) -> Out {
+        self.check_settled(inp);
+        let mut out = self.event_step(event, inp);
+        self.report(inp, &mut out);
+        out
+    }
+
+    fn event_step(&mut self, event: &PlayerEvent, inp: &Inputs<'_>) -> Out {
         let mut out = Out::default();
         match event {
             PlayerEvent::Ended { reverse } => match self.content {
@@ -545,6 +670,14 @@ impl SyncMachine {
                 if self.told_playing {
                     self.told_playing = false;
                     out.playing = Some(false);
+                }
+                if matches!(self.content, Content::Take(_)) {
+                    // A bin preview stays paused (step 6): its `playing`
+                    // would play it again at once, into the same failure,
+                    // a toast each round (R17). The next play starts it
+                    // from 0, not at the failing spot.
+                    self.take_ended = true;
+                    out.take_preview_ended = true;
                 }
                 if inp.state.runtime.playing {
                     self.ended = true;
@@ -648,7 +781,9 @@ impl ProgramSync {
                 let was_open = seen.0;
                 if local.playing_rate != seen.1 {
                     let own = sync.own_rate.take() == Some(local.playing_rate);
-                    if !own && !local.playing {
+                    // Not while the program plays: the router told the
+                    // player itself (D-44). A take playing doesn't count.
+                    if !own && !local.program_playing {
                         let now = sync.now_ms();
                         sync.machine.borrow_mut().arm_rate(now);
                     }
@@ -727,6 +862,7 @@ impl ProgramSync {
             own_seek: own_seek_frame(self.ctx.store.sent().seek.as_ref(), fps),
             position_ns: player.as_ref().map_or(0, |p| p.position_ns()),
             has_player: player.is_some() && local.is_open(),
+            player_idle: player.as_ref().is_none_or(|p| p.idle()),
             now_ms: self.now_ms(),
         }
     }
@@ -804,15 +940,23 @@ impl ProgramSync {
             self.ctx.store.notify(notice);
         }
         let playing = out.playing;
+        let program_playing = out.program_playing;
         let rate = out.rate;
         if let Some(rate) = rate {
             self.own_rate.set(Some(rate));
         }
-        if playing.is_some() || rate.is_some() || out.take_preview_ended {
+        if playing.is_some()
+            || program_playing.is_some()
+            || rate.is_some()
+            || out.take_preview_ended
+        {
             let ended = out.take_preview_ended;
             self.ctx.store.update_local(move |l| {
                 if let Some(playing) = playing {
                     l.playing = playing;
+                }
+                if let Some(program) = program_playing {
+                    l.program_playing = program;
                 }
                 if let Some(rate) = rate {
                     l.playing_rate = rate;
@@ -849,6 +993,17 @@ impl ProgramSync {
             },
         );
         *self.timer.borrow_mut() = Some(id);
+    }
+}
+
+/// The key router took the player's `frame` for the playhead (G§3.8: a
+/// press while the program plays): its pre-step seek is the GUI's own
+/// ([`SyncMachine::note_own_seek`]).
+pub fn key_took_player_frame(frame: Frame) {
+    let sync = SYNC.with(|s| s.borrow().clone());
+    if let Some(sync) = sync {
+        let now = sync.now_ms();
+        sync.machine.borrow_mut().note_own_seek(now, frame);
     }
 }
 
@@ -905,6 +1060,7 @@ mod tests {
         scrubbing: bool,
         own_seek: Option<Frame>,
         position: Frame,
+        player_idle: bool,
         now: u64,
     }
 
@@ -921,6 +1077,7 @@ mod tests {
                 scrubbing: false,
                 own_seek: None,
                 position: 0,
+                player_idle: true,
                 now: 1000,
             }
         }
@@ -937,6 +1094,7 @@ mod tests {
                 own_seek: self.own_seek,
                 position_ns: frame_ns(self.position as i64, fps) as u64,
                 has_player: true,
+                player_idle: self.player_idle,
                 now_ms: self.now,
             }
         }
@@ -1312,6 +1470,216 @@ mod tests {
             ]
         );
         assert_eq!(out.playing, Some(false));
+    }
+
+    /// R00, R16: a bin preview plays a take, not the program. The player
+    /// plays (`LocalUi.playing`), but the program-playing fact the timeline,
+    /// the transport and the key router follow stays false, so they keep
+    /// the program's playhead; a preview that takes over a playing program
+    /// pauses it (the core doesn't play under the preview).
+    #[test]
+    fn a_bin_preview_is_never_the_program_playing() {
+        let mut rig = Rig::new(program()).loaded();
+        let take4 = TakeId::numbered(4);
+        // Paused: the take plays, the program doesn't.
+        rig.take_preview = Some((take4.clone(), true));
+        let out = rig.sync();
+        assert_eq!(out.playing, Some(true), "the player plays the take");
+        assert_eq!(out.program_playing, None, "the program doesn't: {out:?}");
+        assert_eq!(out.dispatch, []);
+        rig.take_preview = None;
+        assert_eq!(rig.sync().program_playing, None);
+        // Playing: the program plays; a preview pauses it.
+        let out = rig.play();
+        assert_eq!(out.program_playing, Some(true));
+        rig.position = 2460;
+        rig.take_preview = Some((take4.clone(), true));
+        let out = rig.sync();
+        assert_eq!(out.program_playing, Some(false), "{out:?}");
+        assert_eq!(out.dispatch, [Command::Pause], "the program pauses");
+        // The pause's snapshot: nothing more (no second pause, and no seek:
+        // the playhead moving would end the preview).
+        rig.state.runtime.playing = false;
+        let out = rig.sync();
+        assert_eq!(out.dispatch, []);
+        assert_eq!(out.program_playing, None);
+        assert_eq!(out.player, []);
+    }
+
+    /// R00: after a preview the program counts as playing only once its
+    /// load landed: until the player is idle its position is the take's,
+    /// which must reach neither the readers nor the once-a-second seek.
+    #[test]
+    fn after_a_preview_the_program_plays_once_its_load_landed() {
+        let mut rig = Rig::new(program()).loaded();
+        rig.take_preview = Some((TakeId::numbered(4), true));
+        rig.sync();
+        rig.position = 45;
+        // Space with the timeline focused: `Play` ends the preview.
+        rig.take_preview = None;
+        rig.state.runtime.playing = true;
+        let out = rig.sync();
+        assert!(
+            matches!(
+                &out.player[..],
+                [PlayerCmd::Load { at_ns, .. }, PlayerCmd::Play(_)] if *at_ns == rig.ns(2437)
+            ),
+            "{out:?}"
+        );
+        assert_eq!(out.program_playing, None, "not before the load landed");
+        // The load is on its way: no own seek to the take's frame 45.
+        rig.player_idle = false;
+        rig.now += SEEK_EVERY_MS;
+        let out = rig.sync();
+        assert_eq!(out.dispatch, [], "no seek to the take's frame");
+        assert_eq!(out.program_playing, None);
+        let poll = rig.machine.deadline().expect("a poll");
+        assert!(poll <= rig.now + SETTLE_POLL_MS, "{poll}");
+        // It landed: the program plays, from its playhead.
+        rig.player_idle = true;
+        rig.position = 2450;
+        let out = rig.sync();
+        assert_eq!(out.program_playing, Some(true), "{out:?}");
+        assert_eq!(
+            out.dispatch,
+            [seek_cmd(2450)],
+            "the own seek, the program's"
+        );
+    }
+
+    /// R00: stopped before the program's load after a preview landed, the
+    /// playhead stays (the position is still the take's) and the paused
+    /// player goes back to it.
+    #[test]
+    fn a_stop_before_the_programs_load_landed_keeps_the_playhead() {
+        let mut rig = Rig::new(program()).loaded();
+        rig.take_preview = Some((TakeId::numbered(4), true));
+        rig.sync();
+        rig.position = 45;
+        rig.take_preview = None;
+        rig.state.runtime.playing = true;
+        rig.sync();
+        rig.player_idle = false;
+        let out = rig.pause();
+        assert_eq!(out.player, [PlayerCmd::Pause]);
+        assert_eq!(out.dispatch, [], "no seek to the take's frame");
+        rig.player_idle = true;
+        rig.position = 2437;
+        assert_eq!(rig.sync().player, [PlayerCmd::Seek(rig.ns(2437))]);
+    }
+
+    /// R17: a bin preview whose take fails stops there (G§3.10 step 6:
+    /// "stays paused"), instead of `Play` → `Error` → `Play` with a toast
+    /// each round; the person's next `Space` tries again, from the start.
+    #[test]
+    fn a_failing_preview_stops_until_played_again() {
+        let mut rig = Rig::new(program()).loaded();
+        let take4 = TakeId::numbered(4);
+        rig.take_preview = Some((take4.clone(), true));
+        rig.sync();
+        let out = rig.event(PlayerEvent::Error {
+            message: "Internal data stream error.".into(),
+        });
+        assert!(out.notice.is_some(), "a toast");
+        assert!(out.take_preview_ended, "{out:?}");
+        assert_eq!(out.dispatch, [], "the program's playhead stays");
+        // The window's `apply`: the preview is paused now.
+        rig.take_preview = Some((take4.clone(), !out.take_preview_ended));
+        assert_eq!(rig.sync().player, [], "no Play after the error");
+        assert_eq!(rig.sync().player, []);
+        // Space: once, from the start.
+        rig.take_preview = Some((take4, true));
+        assert_eq!(
+            rig.sync().player,
+            [PlayerCmd::Seek(0), PlayerCmd::Play(1.0)]
+        );
+    }
+
+    /// R21: Tab to Live (or a record start from Program, D-05) while
+    /// playing stops playback as a pause does (step 2): the playhead parks
+    /// at the player's frame, not at the last once-a-second seek, and the
+    /// rate goes back to 1.
+    #[test]
+    fn leaving_program_while_playing_parks_the_playhead() {
+        let mut rig = Rig::new(program()).loaded();
+        rig.rate = 4.0;
+        rig.machine.arm_rate(rig.now);
+        assert_eq!(rig.play().player, [PlayerCmd::Play(4.0)]);
+        rig.position = 2457;
+        rig.now += 600;
+        assert_eq!(rig.sync(), Out::default(), "before the once-a-second seek");
+        // `SetCanvasMode{Live}`'s snapshot: Live, and not playing.
+        rig.state.ui.canvas_mode = CanvasMode::Live;
+        rig.state.runtime.playing = false;
+        let out = rig.sync();
+        assert_eq!(out.player, [PlayerCmd::Pause]);
+        assert_eq!(
+            out.dispatch,
+            [seek_cmd(2457)],
+            "parked at the player's frame"
+        );
+        assert_eq!(out.playing, Some(false));
+        assert_eq!(out.rate, Some(1.0));
+        // The seek's snapshot, then back to Program: the player stays.
+        rig.rate = 1.0;
+        rig.state.ui.playhead = 2457;
+        assert_eq!(rig.sync(), Out::default());
+        rig.state.ui.canvas_mode = CanvasMode::Program;
+        assert_eq!(rig.sync().player, [], "no seek back to 2437");
+    }
+
+    /// R21's guard: a bin preview's take that played on into Live stops
+    /// without its frame reaching the program's playhead.
+    #[test]
+    fn a_preview_stopped_by_live_never_moves_the_playhead() {
+        let mut rig = Rig::new(program()).loaded();
+        rig.take_preview = Some((TakeId::numbered(4), true));
+        rig.sync();
+        rig.position = 45;
+        rig.take_preview = None;
+        rig.state.ui.canvas_mode = CanvasMode::Live;
+        let out = rig.sync();
+        assert_eq!(out.player, [PlayerCmd::Pause]);
+        assert_eq!(out.dispatch, [], "no take frame in the playhead");
+    }
+
+    /// R22: the key router's pre-step `Seek{To(player frame)}` is the
+    /// GUI's own: at 4× (or stepping in reverse) the player is past that
+    /// frame by the time its snapshot comes, and seeking it back made
+    /// playback stutter. An auto seek still unechoed when a key comes
+    /// stays own too.
+    #[test]
+    fn a_keys_seek_to_the_players_frame_never_pulls_it_back() {
+        let mut rig = Rig::new(program()).loaded();
+        rig.rate = 4.0;
+        rig.machine.arm_rate(rig.now);
+        assert_eq!(rig.play().player, [PlayerCmd::Play(4.0)]);
+        rig.now += 300;
+        rig.position = 2500;
+        // `s` while playing: the router reads the player's frame and
+        // seeks the playhead there first.
+        rig.machine.note_own_seek(rig.now, 2500);
+        rig.own_seek = Some(2500);
+        rig.now += 30;
+        rig.position = 2504;
+        rig.state.ui.playhead = 2500;
+        assert_eq!(rig.sync().player, [], "no pull back to 2500");
+        // Reverse at −2: the player steps 4 frames back meanwhile.
+        rig.now += 1000;
+        rig.position = 2600;
+        let auto = rig.sync();
+        assert_eq!(auto.dispatch, [seek_cmd(2600)], "an auto seek");
+        rig.machine.note_own_seek(rig.now, 2596);
+        rig.position = 2592;
+        // The auto seek's snapshot, then the key's: neither moves it.
+        rig.state.ui.playhead = 2600;
+        assert_eq!(rig.sync().player, []);
+        rig.state.ui.playhead = 2596;
+        assert_eq!(rig.sync().player, []);
+        // A seek the GUI didn't take from the player (the ruler, the CLI)
+        // still moves it.
+        rig.state.ui.playhead = 100;
+        assert_eq!(rig.sync().player, [PlayerCmd::Seek(rig.ns(100))]);
     }
 
     #[test]

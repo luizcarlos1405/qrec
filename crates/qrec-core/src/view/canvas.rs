@@ -9,14 +9,17 @@
 //! - **Layer boxes** ([`layer_boxes`]): `layout::place`'s destination of
 //!   each layer × preview / canvas, preview-local, from the sources' sizes
 //!   ([`source_sizes`]: the live status in Live, the take's streams in
-//!   Program, the rect while unknown).
+//!   Program, the rect while unknown): what a press hits. The selection
+//!   box and its handles are the layer's rect (its `frame`), what the
+//!   edits change (R20).
 //! - **Edits** (D-09, D-32, D-33): [`hit`] (the selected box's handles, then
 //!   the topmost visible box), [`drag`] (move, resize, crop, snapped to the
 //!   canvas' edges, thirds and center), [`nudge`] for nudge bursts, and the
 //!   position [`readout`].
 //! - **Overlays**: [`countdown`], [`rec`], [`transport`], [`badges`], the
 //!   S10 [`trim_plate`].
-//! - **First run** (S01a, D-16): [`first_run_rows`], [`first_run_commands`],
+//! - **First run** (S01a, D-16): [`first_run_rows`], [`with_choices`] (the
+//!   person's picks across a refreshed inventory), [`first_run_commands`],
 //!   [`add_sources_label`].
 //!
 //! Geometry is in logical px at 100 % UI scale (D-46); canvas edits are in
@@ -96,8 +99,15 @@ pub fn stage_geometry(stage_w: f64, stage_h: f64, canvas: &Canvas) -> StageGeome
 #[serde(rename_all = "camelCase")]
 pub struct LayerBox {
     pub layer: LayerId,
-    /// Preview-local.
+    /// The picture, preview-local (`layout::place`'s dst): what a press on
+    /// the body hits.
     pub rect: Rect,
+    /// The layer's rect, preview-local: the selection box and its handles
+    /// (what a resize, a move's snapping and the readout act on). It is
+    /// the picture's box but for a Contain layer whose source has another
+    /// aspect (R20: the handles sat on the fitted picture while the edits
+    /// moved the rect's edges, so a grabbed handle drifted off the pointer).
+    pub frame: Rect,
     pub visible: bool,
     pub locked: bool,
     /// Array order: the last is on top.
@@ -118,17 +128,21 @@ pub fn layer_boxes(
         .layers
         .iter()
         .enumerate()
-        .map(|(z, layer)| LayerBox {
-            layer: layer.id.clone(),
-            rect: scale.rect(placed(
+        .map(|(z, layer)| {
+            let rect = scale.rect(placed(
                 layer.rect,
                 layer.crop,
                 layer.fit,
                 sizes.get(&layer.id).copied(),
-            )),
-            visible: layer.visible,
-            locked: layer.locked,
-            z,
+            ));
+            LayerBox {
+                layer: layer.id.clone(),
+                rect,
+                frame: scale.rect(layer.rect),
+                visible: layer.visible,
+                locked: layer.locked,
+                z,
+            }
         })
         .collect()
 }
@@ -338,12 +352,13 @@ pub enum Hit {
     Handle { layer: LayerId, handle: Handle },
 }
 
-/// The selected box's handles first (each grabs a 12 px square), then the
-/// topmost visible box under the point (preview-local).
+/// The selected box's handles first (each grabs a 12 px square on its
+/// frame, the rect), then the topmost visible picture under the point
+/// (preview-local).
 pub fn hit(boxes: &[LayerBox], selected: Option<&LayerId>, x: f64, y: f64) -> Hit {
     if let Some(sel) = selected.and_then(|id| boxes.iter().find(|b| &b.layer == id && b.visible)) {
         for handle in Handle::ALL {
-            if handle.square(sel.rect, HANDLE_HIT).contains(x, y) {
+            if handle.square(sel.frame, HANDLE_HIT).contains(x, y) {
                 return Hit::Handle {
                     layer: sel.layer.clone(),
                     handle,
@@ -1024,7 +1039,7 @@ pub fn live_video(state: &State, live: &LiveSources) -> bool {
 // ------------------------------------------------------------- first run
 
 /// What a first-run row adds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SourceKind {
     Screen,
@@ -1130,6 +1145,26 @@ pub fn first_run_rows(
         &mut rows,
     );
     rows
+}
+
+/// What the person checked or unchecked on the first-run list, by row
+/// (kind, source).
+pub type FirstRunChoices = BTreeMap<(SourceKind, String), bool>;
+
+/// `rows` (from [`first_run_rows`]) with the person's `choices` applied: a
+/// refreshed inventory (a device plugged in, an Add menu's discovery)
+/// rebuilds the list, and the rows they toggled keep their state while the
+/// others follow the defaults (R25: the rebuild reset every check, so
+/// `Enter` added a camera they had unchecked).
+pub fn with_choices(rows: Vec<SourceRow>, choices: &FirstRunChoices) -> Vec<SourceRow> {
+    rows.into_iter()
+        .map(|mut row| {
+            if let Some(&checked) = choices.get(&(row.kind, row.source.clone())) {
+                row.checked = checked;
+            }
+            row
+        })
+        .collect()
 }
 
 /// The commands "Add N sources" sends, in one FIFO: screens, cameras, the
@@ -1287,6 +1322,58 @@ mod tests {
         assert_eq!(take_sizes.get(&"L2".parse().unwrap()), Some(&(1280, 720)));
         assert_eq!(take_sizes.get(&"L1".parse().unwrap()), Some(&(2560, 1440)));
         insta::assert_json_snapshot!("design_layer_boxes", json!({"live": boxes, "moved": moved}));
+    }
+
+    /// R20: a Contain layer whose rect's aspect isn't its source's (a
+    /// 16:10 screen on the 16:9 canvas: screens' default fit) is
+    /// pillarboxed. The handles sit on the rect, which a resize edits, so
+    /// a grabbed handle follows the pointer; the body is the picture.
+    #[test]
+    fn contain_handles_sit_on_the_rect_they_edit() {
+        let mut state = testkit::design_state();
+        state.project.scene.layers.truncate(1);
+        let canvas = state.project.canvas.clone();
+        let preview = Rect::new(0.0, 0.0, 960.0, 540.0);
+        let l1: LayerId = "L1".parse().unwrap();
+        let sizes: BTreeMap<LayerId, (u32, u32)> = [(l1.clone(), (2560, 1600))].into();
+        let boxes = layer_boxes(&state.project.scene, &canvas, &sizes, preview);
+        assert_eq!(
+            rounded(boxes[0].rect),
+            [48.0, 0.0, 864.0, 540.0],
+            "the picture"
+        );
+        assert_eq!(
+            rounded(boxes[0].frame),
+            [0.0, 0.0, 960.0, 540.0],
+            "the rect"
+        );
+        // The left handle is on the rect's left edge; the pillarbox isn't
+        // the body.
+        assert_eq!(
+            hit(&boxes, Some(&l1), 2.0, 270.0),
+            Hit::Handle {
+                layer: l1.clone(),
+                handle: Handle::Left
+            }
+        );
+        assert_eq!(hit(&boxes, None, 20.0, 270.0), Hit::None);
+        // Dragged 50 preview px (100 canvas px) left, the handle is 50 px
+        // further left too: under the pointer.
+        let layer = state.project.scene.layers[0].clone();
+        let frame = drag(
+            &DragStart::of(&layer, Some((2560, 1600))),
+            DragOp::Resize {
+                handle: Handle::Left,
+            },
+            -100.0,
+            0.0,
+            false,
+            None,
+        );
+        let mut scene = state.project.scene.clone();
+        scene.layers[0].rect = frame.rect;
+        let moved = layer_boxes(&scene, &canvas, &sizes, preview);
+        assert_eq!(Handle::Left.center(moved[0].frame).0.round(), -50.0);
     }
 
     #[test]
@@ -1821,6 +1908,73 @@ mod tests {
             ]
         );
         insta::assert_json_snapshot!("first_run", json!({"rows": rows, "commands": cmds}));
+    }
+
+    /// R25: an inventory refresh (a mic plugged in, an Add menu's
+    /// discovery) rebuilds the rows: the person's own picks stay, rows they
+    /// never touched follow the defaults (a new default mic would replace
+    /// the old one).
+    #[test]
+    fn first_run_rows_keep_the_persons_choices() {
+        let Inventory {
+            screens,
+            cameras,
+            mut mics,
+            monitors,
+        } = design_inventory();
+        let yeti = "alsa_input.usb-Blue_Microphones_Yeti_Nano";
+        let monitor = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor";
+        // The person unchecks the camera ("Add 3 sources").
+        let mut choices = FirstRunChoices::new();
+        choices.insert((SourceKind::Camera, "/dev/video0".to_owned()), false);
+        // A USB mic comes, not the default.
+        mics.push(AudioDeviceInfo {
+            name: "alsa_input.usb-Samson_Q2U".into(),
+            description: "Samson Q2U".into(),
+            is_monitor: false,
+        });
+        let rows = with_choices(
+            first_run_rows(
+                &screens,
+                &cameras,
+                &mics,
+                &monitors,
+                Some(yeti),
+                Some(monitor),
+            ),
+            &choices,
+        );
+        let checked: Vec<(SourceKind, &str)> = rows
+            .iter()
+            .filter(|r| r.checked)
+            .map(|r| (r.kind, r.source.as_str()))
+            .collect();
+        assert_eq!(
+            checked,
+            [
+                (SourceKind::Screen, "DP-4"),
+                (SourceKind::Mic, yeti),
+                (SourceKind::SystemAudio, monitor)
+            ]
+        );
+        assert_eq!(first_run_commands(&rows).len(), 3, "no camera");
+        // Ticking the new mic too.
+        choices.insert(
+            (SourceKind::Mic, "alsa_input.usb-Samson_Q2U".to_owned()),
+            true,
+        );
+        let rows = with_choices(
+            first_run_rows(
+                &screens,
+                &cameras,
+                &mics,
+                &monitors,
+                Some(yeti),
+                Some(monitor),
+            ),
+            &choices,
+        );
+        assert_eq!(rows.iter().filter(|r| r.checked).count(), 4);
     }
 
     #[test]

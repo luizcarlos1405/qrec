@@ -14,12 +14,12 @@ mod gui_support;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use gui_support::pointer::BUTTON_LEFT;
-use gui_support::{Launch, Nested, Options, assert_regions, qrec_bin, wait_for_gui_host};
+use gui_support::{Launch, Nested, Options, assert_regions, reap_within, wait_for_gui_host};
 use qrec_core::state::CanvasMode;
 use qrec_core::{ClipId, UiState};
 use qrec_shell::testkit::design::{DesignVariant, design_fixture, write_ui};
@@ -612,49 +612,20 @@ fn s05b_take_lands() {
 
 // ------------------------------------------------------------- recording
 
-/// `qrec record start` in the background: it answers when the take
-/// starts (after the countdown) or the countdown is cancelled. Its output
-/// goes to `logs/<case>-record-start-<n>.log`.
-fn record_start_in_background(nested: &Nested, project: &Path, n: u32) -> Child {
-    let log = nested
-        .shots
-        .join("logs")
-        .join(format!("{}-record-start-{n}.log", nested.case));
-    let out = fs::File::create(&log).expect("the record start log");
-    let err = out.try_clone().expect("the record start log");
-    nested
-        .env
-        .command(&qrec_bin())
-        .arg("--project")
-        .arg(project)
-        .args(["record", "start", "--json"])
-        .stdin(Stdio::null())
-        .stdout(out)
-        .stderr(err)
-        .spawn()
-        .expect("run qrec record start")
+/// `qrec record start` in the background (`Nested::cli_background`, G§3.17:
+/// its output in `logs/<case>-cli.log`, and it dies with the test's thread,
+/// so a failed assert never leaves it running, R69): it answers when the
+/// take starts (after the countdown) or the countdown is cancelled.
+fn record_start_in_background(nested: &Nested, project: &Path) -> Child {
+    nested.cli_background(project, &["record", "start", "--json"])
 }
 
-/// Waits up to 20 s for the background `record start` to answer, then
-/// kills it.
-fn reap(mut child: Child) {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < deadline {
-        if let Ok(Some(_)) = child.try_wait() {
-            return;
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    panic!("qrec record start never answered the cancel");
-}
-
-/// Cancels the countdown (or the take) and waits for idle.
+/// Cancels the countdown (or the take), waits up to 20 s for the
+/// background `record start` to answer, then for idle.
 fn cancel_record(nested: &Nested, project: &Path, start: Child) {
     let cancel = nested.cli_json(project, &["record", "cancel"]);
     assert_eq!(cancel["ok"], true, "{cancel}");
-    reap(start);
+    reap_within(start, Duration::from_secs(20), "qrec record start");
     wait_phase(nested, project, "idle", Duration::from_secs(20));
 }
 
@@ -678,7 +649,7 @@ fn countdown_case(case: &str, reduced: bool) {
     let mut attempt = 0;
     let (shot, start) = loop {
         attempt += 1;
-        let start = record_start_in_background(&nested, &project, attempt);
+        let start = record_start_in_background(&nested, &project);
         wait_phase(&nested, &project, "countdown", Duration::from_secs(20));
         nested.window(0).wait_idle();
         let shot = nested.screenshot("countdown");
@@ -983,13 +954,58 @@ fn s13_layer_editing() {
     assert_hides(&labels, &["Right third"]);
     assert_eq!(nested.window(0).local()["drag"], Value::Null);
     assert_clean(&mut nested);
+    // `undo` takes that one entry back: L2 where it was (R26).
     let undo = nested.cli_json(&project, &["undo"]);
     assert_eq!(undo["ok"], true, "{undo}");
+    let data = status(&nested, &project);
+    assert_eq!(
+        data["project"]["scene"]["layers"][1]["rect"],
+        json!({"x": 1500, "y": 760, "w": 384, "h": 288}),
+        "undone"
+    );
+    assert_eq!(
+        data["history"]["cursor"], history_before,
+        "{}",
+        data["history"]
+    );
+}
+
+/// The history cursor of `project`.
+fn cursor(nested: &Nested, project: &Path) -> u64 {
+    status(nested, project)["history"]["cursor"]
+        .as_u64()
+        .unwrap_or(0)
+}
+
+/// Waits (10 s) until L2 sits at `(x, y)` with the history at `cursor` and
+/// no burst runs, then checks nothing more came: a burst is one entry.
+fn wait_nudged(nested: &mut Nested, project: &Path, cursor_at: u64, (x, y): (i64, i64)) {
+    let want = json!({"x": x, "y": y, "w": 384, "h": 288});
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let data = status(nested, project);
+        let rect = data["project"]["scene"]["layers"][1]["rect"].clone();
+        let at = data["history"]["cursor"].as_u64().unwrap_or(0);
+        let idle = nested.window(0).local()["drag"] == Value::Null;
+        if rect == want && at == cursor_at && idle {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the nudges: {rect} at cursor {at} (want {want} at {cursor_at}), burst over: {idle}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    nested.window(0).wait_idle();
+    assert_eq!(cursor(nested, project), cursor_at, "one entry per burst");
 }
 
 /// D-33: an arrow key pressed three times with the canvas focused is three
 /// bursts of one press (`wtype` releases each key): three `LayerSet`s, each
-/// 1 px; Shift+arrow nudges 10 px.
+/// 1 px; Shift+arrow nudges 10 px. A key held past the repeat delay (sway's
+/// 600 ms, then 25 a second) is one burst: one `LayerSet`, which one `undo`
+/// takes back (R19, R26: the releases never reached the stage, so the taps
+/// merged into one entry and a hold split into two).
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn arrow_keys_nudge_the_selected_layer() {
@@ -1009,28 +1025,49 @@ fn arrow_keys_nudge_the_selected_layer() {
         thread::sleep(Duration::from_millis(50));
     }
     assert_eq!(nested.window(0).local()["focus"], "stage");
+    let c0 = cursor(&nested, &project);
     nested.keys(&["-k", "Left", "-k", "Left", "-k", "Up"]);
+    wait_nudged(&mut nested, &project, c0 + 3, (1498, 759));
     nested.keys(&["-M", "shift", "-k", "Right", "-m", "shift"]);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let rect = status(&nested, &project)["project"]["scene"]["layers"][1]["rect"].clone();
-        if rect == json!({"x": 1508, "y": 759, "w": 384, "h": 288}) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "the nudges: {rect}");
-        thread::sleep(Duration::from_millis(50));
-    }
-    let gui = nested.window(0);
-    gui.wait_idle();
-    assert_eq!(gui.local()["drag"], Value::Null);
+    wait_nudged(&mut nested, &project, c0 + 4, (1508, 759));
     nested.screenshot("nudged");
+    // Held for 1.5 s: the press, the repeats from 600 ms, the release.
+    nested.keys(&["-P", "Left", "-s", "1500", "-p", "Left"]);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let held = loop {
+        let data = status(&nested, &project);
+        let x = data["project"]["scene"]["layers"][1]["rect"]["x"]
+            .as_i64()
+            .unwrap_or(0);
+        let at = data["history"]["cursor"].as_u64().unwrap_or(0);
+        if at > c0 + 4 && nested.window(0).local()["drag"] == Value::Null {
+            break x;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the held key: x {x} at cursor {at}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    };
+    nested.window(0).wait_idle();
+    assert!(held < 1507, "the repeats moved it: x {held}");
+    assert_eq!(cursor(&nested, &project), c0 + 5, "a held key is one entry");
+    let undo = nested.cli_json(&project, &["undo"]);
+    assert_eq!(undo["ok"], true, "{undo}");
+    let rect = status(&nested, &project)["project"]["scene"]["layers"][1]["rect"].clone();
+    assert_eq!(
+        rect,
+        json!({"x": 1508, "y": 759, "w": 384, "h": 288}),
+        "one undo takes the hold back"
+    );
     assert_clean(&mut nested);
 }
 
 /// S10's canvas: a trim of c2d0's start edge (S08's seconds zoom, +29
 /// frames) shows take 5 frame 41 with the 2 px accent stroke and "Trim
-/// start · take 5 · frame 41". The trim drag is WP3's timeline: until it
-/// merges this case has nothing to press and stops there.
+/// start · take 5 · frame 41". The trim drag is WP3's timeline: its rows
+/// are required where BRIEF puts them (R70: without `video-row` the case
+/// stopped, passing, before WP3 merged and on any regression since).
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s10_trim_scrub_on_the_stage() {
@@ -1041,10 +1078,13 @@ fn s10_trim_scrub_on_the_stage() {
     let project = fixture(&nested, DesignVariant::Base, Some(preset));
     open(&mut nested, &project, Launch::a11y());
     let regions = nested.window(0).regions(&[]);
-    let Some(row) = regions.get("video-row").copied() else {
-        eprintln!("S10: no WP3 timeline yet (no `video-row`): stub-based, nothing to trim");
-        return;
-    };
+    assert_regions(
+        &regions,
+        &gui_support::BRIEF_REGIONS,
+        &gui_support::MERGED_REGIONS,
+        nested.opts.scale,
+    );
+    let row = regions["video-row"];
     // c2d0's start (frame 2084) at 1.6 px/frame from 00:01:05:00.
     let edge = row[0] + (2084.0 - 1950.0) * 1.6;
     let y = row[1] + row[3] / 2.0;
@@ -1055,6 +1095,10 @@ fn s10_trim_scrub_on_the_stage() {
         pointer.move_to(edge + 1.0 + 46.4 * f64::from(i) / 10.0, y);
         thread::sleep(Duration::from_millis(16));
     }
+    // The press started the trim (a missed press says so here).
+    gui_support::poll(Duration::from_secs(10), "the trim drag", || {
+        (nested.window(0).local()["drag"] == "trimStart").then_some(())
+    });
     nested.window(0).wait_idle();
     let shot = nested.screenshot("trimming");
     let labels = stage_labels(&mut nested);

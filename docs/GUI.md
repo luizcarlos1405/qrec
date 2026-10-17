@@ -188,7 +188,7 @@ requirement review's numbering; H-n are host and engine calls.
 | D-30 | **PO** Reduced motion = config `ui.reduced_motion` OR the system (`gtk-interface-reduced-motion = reduce`, or `gtk-enable-animations = false`). Under `QREC_GUI_TEST` only the config counts (G§8.4). S21's caption (gated) becomes "Also on when your system asks for less motion." | WP0b, WP9 |
 | D-31 | Palette labels and CLI forms follow S19/S20/S22 only after G§0.2. Until then the core keymap labels stay, so `qrec keys` and the agent guide don't change. | WP9 |
 | D-32 | Layer drags in Program mode move the selection box and the readout; the video updates on release (one `LayerSet`). Live drags move the video too, through `LiveControl::transient_layout` (G§3.9). | WP4 |
-| D-33 | An arrow-key nudge burst is one gesture: the first press starts a transient preview (box, readout, inspector; in Live the video through `transient_layout`), repeats add to it, and one `LayerSet` goes out on key release, or 300 ms after the last repeat when no release arrives. | WP4 |
+| D-33 | An arrow-key nudge burst is one gesture: the first press starts a transient preview (box, readout, inspector; in Live the video through `transient_layout`), repeats add to it, and one `LayerSet` goes out on key release, or 300 ms after the last repeat when no release arrives (1 s after a lone press: a held key waits out the compositor's repeat delay, 500–600 ms, before its first repeat). The stage watches the releases on the window in the capture phase: the key router takes the presses there, so GTK gives it their releases too (R19). | WP4 |
 | D-34 | A key whose action is unavailable toasts the reason (info, 5 s), except `Esc` with nothing to cancel. `r` during an export gives "Can't record while exporting" / "Recording works again once the export finishes or you cancel it." / Show export. | WP0b |
 | D-35 | Empty folder: eager init. `GuiHostSpec.first = Init{canvas: None, name: None}`, queued ahead of every IPC request (SPEC §4.4), then S01a shows. | WP0a, WP0b |
 | D-36 | Clips get no right-click menu and double-click does nothing (not designed); keys cover every action. | WP3 |
@@ -291,7 +291,7 @@ queues in the GUI instead of spawning a headless recorder.
 | 5 | GTK, after 3 | create the live and the program `gtk4paintablesink`, read each `paintable` (main thread only: a sink created on a worker deadlocks *(spike)*); `MediaHub` keeps both elements until exit | — |
 | 6 | `qrec-doctor`, after 3 | `doctor::run(DoctorOptions { fake_backend, project/config VA device, probe_vaapi: false })` | a required check failed → `GuiHost::fail(missing_dependency)` and interim S23 (exit 5) |
 | 7 | `qrec-startup`, once 4, 5 and 6 succeeded | `GuiHost::open(GuiOpener)`: `qrec-session` opens the Session, attaches it (the `first` request runs, then the queued ones), posts the first snapshot and `HostEvent::Opened` | `Invalid` with the restore hint → interim X3 (exit 1) |
-| 8 | GTK, on `Opened` | spawn `ProgramPlayer`, `PreviewCache`; `MediaHub` starts toggling `MeterMonitor`; later `SharedSources` refreshes when an Add menu opens and on hotplug | — |
+| 8 | GTK, on `Opened` | spawn `ProgramPlayer`, `PreviewCache`; `MediaHub` starts toggling `MeterMonitor`; later `SharedSources` refreshes when an Add menu opens (no hotplug watcher feeds it yet: a device plugged in shows at the next Add menu; the first run's rows keep the person's picks across a refresh, R25) | — |
 
 - Steps 3 and 4 start together: publishing never waits for GStreamer or
   doctor. The stage shows the caption "Opening <name>…" if step 7 hasn't
@@ -541,6 +541,8 @@ pub struct LocalUi {
     pub first_run_checked: Option<usize>,        // WP4 → WP6 hint "Add N sources"
     pub live_status: Arc<Vec<LiveSourceStatus>>, // WP0b side pump
     pub sources: Option<Arc<SourceInventory>>,   // WP0b refresh (S01a, Add menus)
+    pub playing: bool,                           // WP4 player sync: the player plays, the program or a take
+    pub program_playing: bool,                   // WP4 player sync: the program plays (G§3.10 step 3)
     pub playing_rate: f64,                       // WP4 player sync (D-44)
     pub export_view: ExportPanelState,           // WP7
     pub layout: LayoutClass,                     // WP0b: Wide | Medium | Narrow, and compact (G§3.15)
@@ -683,7 +685,8 @@ each key press, first match:
     → GUI action `autocut.page`; a runnable `layer.nudge-*` → the stage's
     GUI action of that id (D-33's burst, the stage registers them; WP4).
 11. `keymap::action_for(id, &effective_state)`, where `effective_state`
-    is the snapshot with `ui.playhead` = the player's frame while playing:
+    is the snapshot with `ui.playhead` = the player's frame while the
+    program plays (`LocalUi.program_playing`, G§3.10 step 3):
     - `Run(cmd)` → pre-steps, then dispatch;
     - `Gui` → `ActionRouter::run(id)`;
     - `Unavailable(reason)` → D-34.
@@ -691,9 +694,14 @@ each key press, first match:
     Stop propagation.
 
 Pre-steps:
-- Playhead-dependent commands (`clip.split`, `clip.trim-*`,
-  `clip.nudge-*`, `frame.save`) while playing → `Seek{To(player_frame)}`
-  first.
+- While the program plays, every command but an absolute seek
+  (`Seek{To(f)}`, `Start`, `End`), when the player's frame isn't the
+  core's playhead → `Seek{To(player_frame)}` first. The core resolves
+  splits, trims, nudges, `frame.save`, frame steps, ±1 s, edit jumps, a
+  shuttle's start (the forward reset at the end, the reverse stop at 0)
+  and a selection by the playhead from `ui.playhead`, which lags the
+  player by up to a second while playing (R18; it was only the first
+  four).
 - `record.toggle` and `record.over` from Idle in Program mode →
   `SetCanvasMode{Live}` first (D-05).
 - `shuttle.*` → set `LocalUi.playing_rate` first; while already playing,
@@ -892,24 +900,40 @@ pub const STUCK: &str = "the Program picture is stuck; restart Qrec";
   2. `runtime.playing` false → true: `play(LocalUi.playing_rate)` from
      `ui.playhead` (the rate is 1 unless the GUI sent the Shuttle, D-44).
      true → false: `pause()`, then `Seek{To(player_frame)}`; the rate
-     resets to 1.
+     resets to 1. Leaving Program while playing (`Tab`, D-05's record
+     start, CLI `SetCanvasMode`) is the same stop: the core turns
+     `playing` false in the snapshot that switches to Live (R21).
   3. While playing, the drawn playhead is `position_ns`;
      `Seek{To(player_frame)}` goes out every second (an own seek); the
-     timeline auto-pages.
+     timeline auto-pages. "Playing" is `LocalUi.program_playing`: the
+     program plays in the player, not a bin preview's take (R00, R16), and
+     only once the program's load after a take landed (the player idle),
+     since until then `position_ns` is the take's. The timeline's playhead,
+     auto-page and corner, the transport, the key router's effective
+     playhead and `GuiFacts::playing` (the hint bar's Play/Pause) follow
+     it; `LocalUi.playing` says the player plays anything.
   4. Paused: a snapshot playhead the player isn't on → `seek()`, except
      while a ruler scrub holds it (step 9). While playing, a playhead more
-     than 2 frames off the player's (one the GUI didn't set by its
-     once-a-second seek) moves it (WP4).
+     than 2 frames off the player's moves it (WP4), unless the GUI set it
+     itself: by its once-a-second seek, or by a key's pre-step seek to the
+     player's frame (G§3.8; the key router tells the sync the frame it
+     took, `media::program::key_took_player_frame`, and a playhead at it
+     within a second is own: at 2×/4× or stepping in reverse the player is
+     past it by the time its snapshot comes, R22).
   5. `Ended` → `Pause`, then `Seek{End}` (reverse: `Seek{Start}`).
   6. `Error` → error toast "Playback stopped" with the message; stays
-     paused.
+     paused. A bin preview's take that fails gets `take_preview.playing =
+     false` too, so the preview doesn't play straight into the failure
+     again (a toast each round, R17); the next `Space` plays it from 0.
   7. Shuttle: `L` → rate 1 → 2 → 4; `J` → −1 → −2 → −4; `K` stops. Reverse
      at 0 stops (core).
   8. Trim scrub (`LocalUi.trim_frame`) and bin preview
      (`LocalUi.take_preview`): `load(plan_ges_take(..), frame)`; when they
      end, `load(program plan, ui.playhead)`. When a bin preview plays to
-     its end the sync sets `take_preview.playing = false` (WP7 owns the
-     field).
+     its end (or fails, step 6) the sync sets `take_preview.playing =
+     false` (WP7 owns the field). A bin preview that takes over a playing program pauses it
+     (`Pause`, no seek: a playhead change ends the preview), so the core
+     doesn't play under the take (R16).
   9. Ruler scrub (D-40, round 3): the timeline calls
      `media::program::scrub(frame)` on each motion of a ruler drag and
      dispatches the throttled `Seek`s itself. The sync scrubs a paused
@@ -1742,7 +1766,7 @@ pub struct GuiFacts {
     pub fit_px_per_frame: f64,
     pub first_run_checked: Option<usize>,
     pub portal_denied: bool,                   // a screen is Refused in LiveStatus (used once S24 is approved)
-    pub playing: bool,                         // the player, not runtime.playing
+    pub playing: bool,                         // the program in the player (LocalUi.program_playing), not runtime.playing
     pub bin_selection: usize,
     pub built: Built,                          // { palette, cheat_sheet, settings_pages }: false until WP9
 }
@@ -2126,7 +2150,12 @@ anchor's frame under the anchor; a move preview's command, applied with
   (750, 380, 192, 144); dragged to x 1280 (S13) at (640, 380, 192, 144).
 - **Hit**: the topmost visible box under the point. Handles: 8×8 on the
   corners and edge midpoints, 12 px hit area; with `Alt`, edge handles
-  become crop brackets. Locked layers can be selected, never dragged
+  become crop brackets. The selection box and its handles are the layer's
+  rect (`LayerBox.frame`), which resizes, crops and snapping change; a
+  press on a body hits the picture (`LayerBox.rect`, place's dst). The two
+  differ only for a Contain layer whose source has another aspect (a
+  16:10 screen on a 16:9 canvas: pillarboxed inside its box); the handles
+  sat on the picture, so a grabbed one drifted off the pointer (R20). Locked layers can be selected, never dragged
   ("Layer L2 is locked").
 - **Snapping** (D-09): lines x ∈ {0, W/3, W/2, 2W/3, W} and y ∈ {0, H/3,
   H/2, 2H/3, H}; layer features left, center, right and top, middle,
@@ -2167,7 +2196,10 @@ anchor's frame under the anchor; a move preview's command, applied with
   default_monitor) -> Vec<SourceRow { kind, label, meta, checked }>`
   (labels "Screen · DP-4 · GIGA-BYTE GS27QA" with meta "2560×1440";
   "Camera · Logitech C920 · /dev/video0"; "Mic · Yeti Nano"; "System audio
-  · Built-in Audio Analog Stereo"); `first_run_commands(&rows) ->
+  · Built-in Audio Analog Stereo"); `with_choices(rows, &FirstRunChoices)`:
+  the rows the person toggled (by kind and source) keep their state when a
+  refreshed inventory rebuilds the list, the others follow the defaults
+  (R25); `first_run_commands(&rows) ->
   Vec<Command>` (D-16); button "Add 4 sources" / "Add 1 source"
   (`add_sources_label`; "Add sources", insensitive, with none checked, no
   frame), the hint bar's label too (G§4.3). As built (WP4): rows 40 px

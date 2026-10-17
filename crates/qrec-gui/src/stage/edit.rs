@@ -17,9 +17,14 @@ use crate::store::local::LayerDragPreview;
 /// click only selects.
 pub const DRAG_THRESHOLD: f64 = 3.0;
 
-/// A nudge burst ends this long after its last press when no key release
+/// A nudge burst ends this long after its last repeat when no key release
 /// came (D-33).
 pub const NUDGE_IDLE_MS: u64 = 300;
+/// ... and this long after its first press while no repeat came yet:
+/// longer than the compositors' repeat delays (sway 600 ms, GNOME 500 ms),
+/// so a held key's wait for its first repeat doesn't end the burst (R19).
+/// The key's release ends it at once.
+pub const NUDGE_FIRST_IDLE_MS: u64 = 1000;
 
 /// The command that puts `layer` of `target` at `rect` and `crop`, if
 /// either changed from `from`.
@@ -66,6 +71,9 @@ pub struct DragSession {
     pub frame: DragFrame,
     /// Past [`DRAG_THRESHOLD`]: a drag, not a click.
     pub moved: bool,
+    /// The last update, in canvas px, with its aspect and snapping: a
+    /// rebase applies it to the new start.
+    last: Option<(f64, f64, bool, Option<Snap>)>,
 }
 
 impl DragSession {
@@ -83,6 +91,7 @@ impl DragSession {
             },
             start,
             moved: false,
+            last: None,
         }
     }
 
@@ -101,14 +110,9 @@ impl DragSession {
             self.moved = true;
         }
         if self.moved {
-            self.frame = drag(
-                &self.start,
-                self.op,
-                dx / scale.x.max(1e-9),
-                dy / scale.y.max(1e-9),
-                free_aspect,
-                snap,
-            );
+            let (cx, cy) = (dx / scale.x.max(1e-9), dy / scale.y.max(1e-9));
+            self.frame = drag(&self.start, self.op, cx, cy, free_aspect, snap);
+            self.last = Some((cx, cy, free_aspect, snap.copied()));
         }
         became
     }
@@ -152,7 +156,9 @@ impl DragSession {
     }
 
     /// The layer changed under the drag (a snapshot mid-drag): carry on from
-    /// its new layout. `false` when it is gone (the drag is cancelled).
+    /// its new layout, the drag's offset applied to it at once (a release
+    /// without another motion sends that, R23). `false` when it is gone
+    /// (the drag is cancelled).
     pub fn rebase(&mut self, scene: Option<&Scene>) -> bool {
         let Some(layer) = scene.and_then(|s| s.layer(&self.layer)) else {
             return false;
@@ -160,9 +166,66 @@ impl DragSession {
         if layer.rect != self.start.rect || layer.crop != self.start.crop {
             let source = self.start.source;
             self.start = DragStart::of(layer, source);
+            self.frame = match (self.moved, self.last) {
+                (true, Some((cx, cy, free, snap))) => {
+                    drag(&self.start, self.op, cx, cy, free, snap.as_ref())
+                }
+                _ => DragFrame {
+                    rect: self.start.rect,
+                    crop: self.start.crop,
+                    guides: Vec::new(),
+                },
+            };
         }
         true
     }
+}
+
+/// The gestures' `LayerSet`s waiting for their replies (D-41): the
+/// newest one's layout shows until its own reply. An older reply ends
+/// nothing (R23: it cleared a newer commit's preview, and the next gesture
+/// started from the snapshot's older layout).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InFlight {
+    next: u64,
+    newest: Option<(u64, LayerDragPreview)>,
+}
+
+impl InFlight {
+    /// A gesture's `LayerSet` goes out with `preview`: its ticket.
+    pub fn issue(&mut self, preview: LayerDragPreview) -> u64 {
+        self.next += 1;
+        self.newest = Some((self.next, preview));
+        self.next
+    }
+
+    /// The reply of `ticket` came: `true` when it was the newest commit's
+    /// (its preview goes).
+    pub fn answered(&mut self, ticket: u64) -> bool {
+        if self.newest.as_ref().is_some_and(|(t, _)| *t == ticket) {
+            self.newest = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The newest unanswered commit's layout.
+    pub fn current(&self) -> Option<&LayerDragPreview> {
+        self.newest.as_ref().map(|(_, p)| p)
+    }
+}
+
+/// `layer` of `target` as the newest gesture left it: an unanswered
+/// commit's layout (what the box shows) when it is that layer's, else as
+/// the snapshot has it. A drag or a nudge starts from it (R23).
+pub fn newest(layer: &Layer, target: &SceneTarget, pending: Option<&LayerDragPreview>) -> Layer {
+    let mut layer = layer.clone();
+    if let Some(p) = pending.filter(|p| p.layer == layer.id && p.target == *target) {
+        layer.rect = p.rect;
+        layer.crop = p.crop;
+    }
+    layer
 }
 
 /// A nudge burst in progress (D-33).
@@ -175,6 +238,8 @@ pub struct NudgeBurst {
     pub rect: Rect,
     pub crop: Crop,
     last_ms: u64,
+    /// The presses so far: the first, then the repeats.
+    presses: u32,
 }
 
 impl NudgeBurst {
@@ -195,11 +260,22 @@ impl NudgeBurst {
             (self.rect, self.crop),
         )
     }
+
+    /// When it ends without a release.
+    fn deadline(&self) -> u64 {
+        let idle = if self.presses > 1 {
+            NUDGE_IDLE_MS
+        } else {
+            NUDGE_FIRST_IDLE_MS
+        };
+        self.last_ms + idle
+    }
 }
 
 /// Arrow-key nudges, coalesced into one `LayerSet` per burst (D-33): the
-/// first press starts it, repeats add to it, a key release (or
-/// [`NUDGE_IDLE_MS`] after the last press) ends it.
+/// first press starts it, repeats add to it, a key release (or, when none
+/// comes, [`NUDGE_IDLE_MS`] after the last repeat, [`NUDGE_FIRST_IDLE_MS`]
+/// after a first press) ends it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NudgeCoalescer {
     burst: Option<NudgeBurst>,
@@ -228,10 +304,12 @@ impl NudgeCoalescer {
             rect: layer.rect,
             crop: layer.crop,
             last_ms: now_ms,
+            presses: 0,
         });
         let (dx, dy, ten) = step;
         burst.rect = nudge(burst.rect, dx, dy, ten);
         burst.last_ms = now_ms;
+        burst.presses += 1;
         (burst, flushed)
     }
 
@@ -240,19 +318,17 @@ impl NudgeCoalescer {
         self.end()
     }
 
-    /// The burst's command once [`NUDGE_IDLE_MS`] passed since its last
-    /// press without a release.
+    /// The burst's command once its idle time passed without a release
+    /// ([`NUDGE_IDLE_MS`] after a repeat, [`NUDGE_FIRST_IDLE_MS`] after the
+    /// first press).
     pub fn due(&mut self, now_ms: u64) -> Option<Command> {
-        let due = self
-            .burst
-            .as_ref()
-            .is_some_and(|b| now_ms.saturating_sub(b.last_ms) >= NUDGE_IDLE_MS);
+        let due = self.burst.as_ref().is_some_and(|b| now_ms >= b.deadline());
         if due { self.end() } else { None }
     }
 
     /// When [`due`](Self::due) ends the burst.
     pub fn deadline(&self) -> Option<u64> {
-        self.burst.as_ref().map(|b| b.last_ms + NUDGE_IDLE_MS)
+        self.burst.as_ref().map(NudgeBurst::deadline)
     }
 
     /// `Esc`: the burst is dropped, nothing goes out. `true` when there
@@ -320,18 +396,47 @@ mod tests {
         assert_eq!(nudges.active(), None);
     }
 
+    /// R19: a held key as the compositor sends it: the press, the first
+    /// repeat after the repeat delay (600 ms on sway's defaults, 500 on
+    /// GNOME's), repeats every 40 ms, the release. One burst, one
+    /// `LayerSet`: the wait before the first repeat doesn't end it.
+    #[test]
+    fn a_key_held_past_the_repeat_delay_is_one_burst() {
+        let (target, layer) = face();
+        let mut nudges = NudgeCoalescer::default();
+        nudges.press(&target, &layer, (-1, 0, false), 0);
+        assert_eq!(nudges.due(300), None, "before the first repeat");
+        assert_eq!(nudges.due(599), None);
+        for at in [600, 640, 680] {
+            let (_, flushed) = nudges.press(&target, &layer, (-1, 0, false), at);
+            assert_eq!(flushed, None);
+        }
+        assert_eq!(nudges.due(700), None);
+        let cmd = nudges.release().expect("one command");
+        assert_eq!(rect_of(&cmd), Some(Rect::new(1496, 760, 384, 288)));
+        assert_eq!(nudges.release(), None);
+    }
+
+    /// Without a release (the focus left mid-hold): 300 ms after the last
+    /// repeat, or a second after a lone press.
     #[test]
     fn without_a_release_the_burst_ends_after_300_ms() {
         let (target, layer) = face();
         let mut nudges = NudgeCoalescer::default();
         nudges.press(&target, &layer, (0, -1, false), 5000);
-        assert_eq!(nudges.deadline(), Some(5000 + NUDGE_IDLE_MS));
-        assert_eq!(nudges.due(5299), None);
-        let cmd = nudges.due(5300).expect("ended by the timeout");
-        assert_eq!(rect_of(&cmd), Some(Rect::new(1500, 759, 384, 288)));
+        assert_eq!(nudges.deadline(), Some(5000 + NUDGE_FIRST_IDLE_MS));
+        nudges.press(&target, &layer, (0, -1, false), 5600);
+        assert_eq!(nudges.deadline(), Some(5600 + NUDGE_IDLE_MS));
+        assert_eq!(nudges.due(5899), None);
+        let cmd = nudges.due(5900).expect("ended by the timeout");
+        assert_eq!(rect_of(&cmd), Some(Rect::new(1500, 758, 384, 288)));
         assert_eq!(nudges.due(9999), None);
         // A release after the timeout sends nothing more.
         assert_eq!(nudges.release(), None);
+        // A lone press: a second.
+        nudges.press(&target, &layer, (1, 0, false), 10_000);
+        assert_eq!(nudges.due(10_999), None);
+        assert!(nudges.due(11_000).is_some());
     }
 
     #[test]
@@ -418,6 +523,65 @@ mod tests {
             None,
         );
         assert_eq!(resize.kind(), DragKind::LayerResize);
+    }
+
+    fn preview_at(x: i32) -> LayerDragPreview {
+        let (target, layer) = face();
+        LayerDragPreview {
+            target,
+            layer: layer.id,
+            rect: Rect::new(x, 760, 384, 288),
+            crop: Crop::default(),
+        }
+    }
+
+    /// R23: an older reply leaves a newer commit's preview alone; the
+    /// newest one's reply ends it.
+    #[test]
+    fn only_the_newest_commits_reply_ends_its_preview() {
+        let mut flight = InFlight::default();
+        let a = flight.issue(preview_at(1499));
+        let b = flight.issue(preview_at(1498));
+        assert!(!flight.answered(a), "A's reply isn't the newest");
+        assert_eq!(flight.current().map(|p| p.rect.x), Some(1498));
+        assert!(flight.answered(b));
+        assert_eq!(flight.current(), None);
+        assert!(!flight.answered(b), "once");
+    }
+
+    /// R23: a gesture that starts while a commit is unanswered starts from
+    /// its layout (the box drawn), not from the snapshot's older one; a
+    /// commit of another layer or scene doesn't count.
+    #[test]
+    fn a_gesture_starts_from_the_unanswered_layout() {
+        let (target, layer) = face();
+        let pending = preview_at(1400);
+        assert_eq!(newest(&layer, &target, Some(&pending)).rect.x, 1400);
+        assert_eq!(newest(&layer, &target, None).rect.x, 1500);
+        let other = SceneTarget::Take(qrec_core::TakeId::numbered(5));
+        assert_eq!(newest(&layer, &other, Some(&pending)).rect.x, 1500);
+        let mut screen = layer.clone();
+        screen.id = LayerId::numbered(1);
+        assert_eq!(newest(&screen, &target, Some(&pending)).rect, screen.rect);
+    }
+
+    /// R23: a snapshot that moves the layer mid-drag carries the drag on
+    /// at once: the release sends the start plus the offset, not the frame
+    /// of the last motion.
+    #[test]
+    fn a_rebase_mid_drag_moves_the_frame_too() {
+        let (target, layer) = face();
+        let mut scene = testkit::design_project().scene;
+        let mut drag = DragSession::new(target, &layer, DragOp::Move, None);
+        drag.update(20.0, 0.0, half(), false, None);
+        assert_eq!(drag.frame.rect, Rect::new(1540, 760, 384, 288));
+        scene.layers[1].rect.y = 700;
+        assert!(drag.rebase(Some(&scene)));
+        assert_eq!(drag.frame.rect, Rect::new(1540, 700, 384, 288));
+        assert_eq!(
+            drag.command().as_ref().and_then(rect_of),
+            Some(Rect::new(1540, 700, 384, 288))
+        );
     }
 
     #[test]

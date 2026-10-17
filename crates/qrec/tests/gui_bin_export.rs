@@ -789,6 +789,81 @@ fn the_bin_keys_select_preview_and_insert() {
     close(&mut nested);
 }
 
+/// R00, R16 (D-17): a playing bin preview plays take 4, not the program:
+/// the timeline keeps the program's playhead and its view (zoomed in at
+/// 00:01:05:00, no auto-page to the take's frames and no scroll saved),
+/// the transport reads the program, and `s` during the preview splits at
+/// the program's playhead (2437), not at the take's frame.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_playing_bin_preview_leaves_the_program_playhead() {
+    let mut nested = Nested::start(AREA, "bin-preview-playhead", Options::default());
+    let ui = UiState {
+        zoom: Some(1.6),
+        scroll_px: 1950.0 * 1.6,
+        ..bin_ui()
+    };
+    let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base, Some(ui));
+    open(&mut nested, &project, launch());
+    click(&mut nested, "bin-take-4");
+    nested.keys(&["-k", "space"]);
+    // The take plays: the player's position is take 4's, from 0 (the
+    // program sat at 00:01:21:07), and moves.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let gui = nested.window(0);
+        let ns = gui.local()["playerNs"].as_u64().unwrap_or(0);
+        let stage = gui.labels("region-stage");
+        if stage.iter().any(|l| l == "TAKE 4") && (300_000_000..60_000_000_000).contains(&ns) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the preview never played: at {ns} ns, {stage:?}"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    // Long enough for an auto-page and its saved scroll (300 ms).
+    thread::sleep(Duration::from_millis(1500));
+    nested.window(0).wait_idle();
+    assert_one_playhead(&mut nested, "00:01:21:07", "00:04:06:11");
+    let ui = status(&nested, &project)["ui"].clone();
+    assert_eq!(
+        ui["scrollPx"].as_f64(),
+        Some(3120.0),
+        "the view stays: {ui}"
+    );
+    assert_eq!(ui["playhead"], 2437, "{ui}");
+    let local = nested.window(0).local();
+    assert_eq!(local["playing"], true, "the take still plays: {local}");
+    assert_eq!(local["programPlaying"], false, "{local}");
+    // An edit key acts at the program's playhead, and ends the preview.
+    nested.keys(&["-k", "s"]);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let clips = nested.cli_json(&project, &["clip", "list"])["data"].clone();
+        let clips = clips.as_array().cloned().unwrap_or_default();
+        if clips.len() == 11 {
+            assert!(
+                clips.iter().any(|c| c["start"] == 2437),
+                "the split is at 2437: {clips:?}"
+            );
+            break;
+        }
+        assert!(Instant::now() < deadline, "no split: {clips:?}");
+        thread::sleep(Duration::from_millis(200));
+    }
+    assert_eq!(status(&nested, &project)["ui"]["playhead"], 2437);
+    let gui = nested.window(0);
+    gui.wait_idle();
+    assert!(
+        !gui.labels("region-stage").iter().any(|l| l == "TAKE 4"),
+        "the split ended the preview"
+    );
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
 /// D-38: a bin row dragged onto the timeline inserts its take at the slot
 /// it was dropped on (`ClipAdd{at: Index(k)}`): take 4 at the very start
 /// (slot 1 of 11), then take 2 mid-timeline (slot 7 of 12, the insert

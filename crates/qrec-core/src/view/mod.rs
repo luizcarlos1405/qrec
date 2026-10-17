@@ -71,7 +71,9 @@ pub struct GuiFacts {
     pub first_run_checked: Option<usize>,
     /// A screen is `Refused` in the live status (used once S24 is approved).
     pub portal_denied: bool,
-    /// The player plays (not `runtime.playing`).
+    /// The program plays in the player (the GUI's
+    /// `LocalUi.program_playing`: not a bin preview's take, not
+    /// `runtime.playing`).
     pub playing: bool,
     /// Takes selected in the bin.
     pub bin_selection: usize,

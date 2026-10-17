@@ -173,7 +173,7 @@ impl Sources for SystemSources {
 /// waits for `pactl`, Wayland or the camera monitor once one has run.
 ///
 /// Clones share the cache. The GUI keeps one to [`SharedSources::refresh`]
-/// on a worker (at startup, when an Add menu opens, on hotplug) and gives
+/// on a worker (at startup, when an Add menu opens; no hotplug watcher yet) and gives
 /// another to the Session (`SessionConfig::sources`). Until a discovery
 /// finished, the first caller discovers once, on its own thread; one that
 /// comes while a refresh runs waits for that refresh instead of starting

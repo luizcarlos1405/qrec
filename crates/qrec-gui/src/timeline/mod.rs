@@ -1535,7 +1535,8 @@ impl Inner {
     // ------------------------------------------------------- ticking
 
     /// The playhead as drawn: a scrub's frame, the ghost's end while
-    /// recording, the player's frame while it plays, else `ui.playhead`.
+    /// recording, the player's frame while the program plays (not a bin
+    /// preview's take: `LocalUi.program_playing`), else `ui.playhead`.
     fn shown_playhead(&self, state: &State, now: Duration) -> Frame {
         let m = self.m.borrow();
         self.shown_playhead_with(state, &m, now)
@@ -1545,7 +1546,7 @@ impl Inner {
         if let Some(frame) = m.g.scrub_frame() {
             return frame;
         }
-        let player = (self.ctx.store.local().playing)
+        let player = (self.ctx.store.local().program_playing)
             .then(|| self.ctx.media.position_ns())
             .flatten()
             .map(|ns| {
@@ -1594,7 +1595,7 @@ impl Inner {
         m.vm.animating(now)
             || recording
             || analyzing
-            || self.ctx.store.local().playing
+            || self.ctx.store.local().program_playing
             || m.flash.is_some()
             || m.gap
                 .values()
@@ -1605,7 +1606,7 @@ impl Inner {
     fn on_tick(&self) -> bool {
         let now = self.now();
         let state = self.ctx.store.state();
-        let playing = self.ctx.store.local().playing;
+        let playing = self.ctx.store.local().program_playing;
         {
             let mut m = self.m.borrow_mut();
             if m.flash

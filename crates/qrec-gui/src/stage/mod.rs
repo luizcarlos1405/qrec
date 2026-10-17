@@ -31,13 +31,18 @@
 //! moves, resizes or (`Alt` + an edge) crops it, snapped to the canvas'
 //! edges, thirds and center while `ui.snapping`; the release sends one
 //! `LayerSet`. Arrow keys (the router's `layer.nudge-*` GUI actions) nudge
-//! in bursts: one `LayerSet` on the key release, or 300 ms after the last
-//! press. In Live the preview follows a gesture through
-//! `LiveControl::transient_layout` (until the `LayerSet`'s `SetLive`; `None`
-//! on `Esc` or a failed release); in Program the box and the readout move
-//! and the picture changes on release. The box shows while the canvas has
-//! the focus or a gesture runs (S06 and S14 show none with the focus
-//! elsewhere). The edit preview is `LocalUi.layer_drag` (the inspector's).
+//! in bursts: one `LayerSet` on the key release (watched on the window,
+//! where the router takes the presses), or, when none comes, 300 ms after
+//! the last repeat (a second after a lone press: a held key waits up to
+//! the repeat delay for its first repeat). In Live the preview follows a
+//! gesture through `LiveControl::transient_layout` (`None` once the newest
+//! `LayerSet`'s reply came, after its `SetLive`, or on `Esc`); in Program
+//! the box and the readout move and the picture changes on release. A
+//! gesture's `LayerSet` shows until its own reply ([`edit::InFlight`]),
+//! and a drag or nudge that starts meanwhile starts from it (R23). The box
+//! (the layer's rect, R20) shows while the canvas has the focus or a
+//! gesture runs (S06 and S14 show none with the focus elsewhere). The edit
+//! preview is `LocalUi.layer_drag` (the inspector's).
 
 pub mod canvas;
 pub mod countdown;
@@ -47,18 +52,21 @@ pub mod overlays;
 pub mod picture;
 pub mod transport;
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
 use gtk::{gdk, glib};
+use qrec_core::keymap::{KeyChord, usable_keys};
+use qrec_core::model::Scene;
 use qrec_core::protocol::ToastLevel;
 use qrec_core::protocol::command::{LayerPatch, Nullable, SceneTarget, UiPatch};
 use qrec_core::state::{CanvasMode, RecordPhase};
 use qrec_core::view::canvas::{
     DragOp, Guide, Hit, LIVE_AFTER_TAKE, Scale, Snap, badges, countdown, countdown_plate,
-    edit_target, hit, layer_boxes, nudge_step, placed, readout, readout_origin, rec, scene_of,
+    edit_target, hit, layer_boxes, nudge_step, readout, readout_origin, rec, scene_of,
     source_sizes, stage_geometry, transport, trim_plate,
 };
 use qrec_core::view::notices::{Notice, error_notice};
@@ -75,7 +83,7 @@ use crate::theme::motion;
 use crate::widgets::button::binding_caps;
 use canvas::{CanvasDraw, StageCanvas};
 use countdown::{Countdown, CountdownState};
-use edit::{DRAG_THRESHOLD, DragSession, NudgeCoalescer, with_layer};
+use edit::{DRAG_THRESHOLD, DragSession, InFlight, NudgeCoalescer, newest, with_layer};
 use first_run::FirstRun;
 use overlays::{ModeBadges, RecCluster, TrimPlateView, center_plate};
 use picture::{Frame as PictureFrame, StagePicture};
@@ -123,8 +131,9 @@ struct Editing {
     /// The drag's last offset (widget px): a modifier change re-applies it.
     last_offset: (f64, f64),
     nudges: NudgeCoalescer,
-    /// A gesture's `LayerSet` waits for its reply: its preview stays.
-    pending: Option<LayerDragPreview>,
+    /// Gestures' `LayerSet`s wait for their replies: the newest one's
+    /// preview stays until its own reply (R23).
+    pending: InFlight,
 }
 
 impl Editing {
@@ -133,7 +142,7 @@ impl Editing {
     fn active(&self) -> bool {
         self.drag.as_ref().is_some_and(|d| d.moved)
             || self.nudges.active().is_some()
-            || self.pending.is_some()
+            || self.pending.current().is_some()
     }
 
     /// The layout the gesture has for a layer now.
@@ -144,7 +153,17 @@ impl Editing {
         if let Some(burst) = self.nudges.active() {
             return Some(burst.preview());
         }
-        self.pending.clone()
+        self.pending.current().cloned()
+    }
+
+    /// `scene` (of `target`) as the newest unanswered commit left it: what
+    /// the box shows, so a press hits and starts from that (R23). Borrowed
+    /// as it is without one (a hover asks on every motion).
+    fn newest_scene<'a>(&self, scene: &'a Scene, target: &SceneTarget) -> Cow<'a, Scene> {
+        match self.pending.current().filter(|p| p.target == *target) {
+            Some(p) => Cow::Owned(with_layer(scene, &p.layer, p.rect, p.crop)),
+            None => Cow::Borrowed(scene),
+        }
     }
 }
 
@@ -188,6 +207,8 @@ struct Inner {
     rendering: Cell<bool>,
     dirty: Cell<bool>,
     nudge_timer: RefCell<Option<glib::SourceId>>,
+    /// The window's release watch is on ([`Inner::watch_releases`]).
+    release_watch: Cell<bool>,
     epoch: Instant,
 }
 
@@ -308,6 +329,7 @@ impl Inner {
             rendering: Cell::new(false),
             dirty: Cell::new(false),
             nudge_timer: RefCell::new(None),
+            release_watch: Cell::new(false),
             epoch: Instant::now(),
         });
         inner.position_children();
@@ -580,14 +602,17 @@ impl Inner {
             )
             .max(0) as Frame
         });
-        let t = transport(&state, player_frame, local.playing, local.playing_rate);
-        self.transport.update(&t, &state, local.playing);
+        // The program's transport: a bin preview's take playing isn't the
+        // program playing (R16).
+        let playing = local.program_playing;
+        let t = transport(&state, player_frame, playing, local.playing_rate);
+        self.transport.update(&t, &state, playing);
 
         // The canvas.
         let editable =
             open && !first_run && take_preview.is_none() && trim.is_none() && !live_after_take;
         self.canvas.set_visible(!first_run);
-        self.render_canvas(&state, &local, editable, &live_sources);
+        self.render_canvas(&state, &local, editable);
 
         // Last: what other regions read.
         let checked = first_run.then(|| self.first_run.checked());
@@ -639,13 +664,7 @@ impl Inner {
 
     /// The selection box, the guides and the readout of the scene being
     /// edited.
-    fn render_canvas(
-        &self,
-        state: &State,
-        local: &LocalUi,
-        editable: bool,
-        live_sources: &view::LiveSources,
-    ) {
+    fn render_canvas(&self, state: &State, local: &LocalUi, editable: bool) {
         let canvas_size = (
             f64::from(state.project.canvas.width),
             f64::from(state.project.canvas.height),
@@ -679,23 +698,24 @@ impl Inner {
             .or_else(|| preview.as_ref().map(|p| p.layer.clone()));
         let active = edit.active();
         let show = selected.is_some() && (local.focus == FocusRegion::Stage || active);
-        let sizes = source_sizes(&state.project, &target, live_sources);
         let selection = selected.as_ref().and_then(|id| {
             let layer = scene.layer(id)?;
             if !layer.visible {
                 return None;
             }
-            let (rect, crop) = match &preview {
-                Some(p) if &p.layer == id => (p.rect, p.crop),
-                _ => (layer.rect, layer.crop),
+            let rect = match &preview {
+                Some(p) if &p.layer == id => p.rect,
+                _ => layer.rect,
             };
-            let dst = placed(rect, crop, layer.fit, sizes.get(id).copied());
+            // The box is the rect, which the handles and the edits act on
+            // (for a Contain layer of another aspect the picture is inside
+            // it, R20).
             Some((
                 Rect::new(
-                    f64::from(dst.x),
-                    f64::from(dst.y),
-                    f64::from(dst.w),
-                    f64::from(dst.h),
+                    f64::from(rect.x),
+                    f64::from(rect.y),
+                    f64::from(rect.w),
+                    f64::from(rect.h),
                 ),
                 rect,
             ))
@@ -798,16 +818,9 @@ impl Inner {
         }));
         self.canvas.add_controller(motion);
 
+        // The nudge keys' releases come through the window's watch
+        // (`watch_releases`): this controller never sees them.
         let keys = gtk::EventControllerKey::new();
-        let weak = Rc::downgrade(self);
-        keys.connect_key_released(crate::guarded!(
-            "stage: a key release",
-            move |_, keyval, _, _| {
-                if let Some(this) = weak.upgrade() {
-                    this.key_released(keyval);
-                }
-            }
-        ));
         let weak = Rc::downgrade(self);
         keys.connect_modifiers(crate::guarded!("stage: modifiers", move |_, modifiers| {
             if let Some(this) = weak.upgrade() {
@@ -855,6 +868,8 @@ impl Inner {
         let Some(scene) = scene_of(&state.project, &target) else {
             return;
         };
+        let scene = self.edit.borrow().newest_scene(scene, &target);
+        let scene = scene.as_ref();
         let live_sources = live::live_sources(&local.live_status);
         let sizes = source_sizes(&state.project, &target, &live_sources);
         let (preview, _) = self.preview_scale(&state);
@@ -1023,28 +1038,33 @@ impl Inner {
         let state = self.ctx.store.state();
         let Some(cmd) = cmd else {
             // Back where it began: the live preview's own layout again.
-            self.end_preview(&state, true);
+            self.end_preview(&state);
             return;
         };
-        self.edit.borrow_mut().pending = Some(preview);
+        let ticket = self.edit.borrow_mut().pending.issue(preview);
         let weak = Rc::downgrade(self);
         let sent = cmd.clone();
         self.ctx.store.dispatch_with(cmd, false, move |reply| {
             if let Some(this) = weak.upgrade() {
-                this.committed(&sent, reply);
+                this.committed(ticket, &sent, reply);
             }
         });
         self.render();
     }
 
-    fn committed(self: &Rc<Self>, cmd: &Command, reply: Reply) {
-        self.edit.borrow_mut().pending = None;
+    /// The reply of commit `ticket`: the newest one's ends its preview (an
+    /// older one's leaves a newer commit's alone, R23); an error toasts.
+    fn committed(self: &Rc<Self>, ticket: u64, cmd: &Command, reply: Reply) {
+        let newest = self.edit.borrow_mut().pending.answered(ticket);
         let state = self.ctx.store.state();
         match &reply.result {
-            Ok(_) => self.end_preview(&state, false),
+            Ok(_) if newest => self.end_preview(&state),
+            Ok(_) => {}
             Err(err) => {
                 // Back where it was, and why (the snapshot didn't move it).
-                self.end_preview(&state, true);
+                if newest {
+                    self.end_preview(&state);
+                }
                 if !reply.late
                     && let Some(notice) = error_notice(err, cmd, &state)
                 {
@@ -1054,19 +1074,22 @@ impl Inner {
         }
     }
 
-    /// The preview goes (unless another gesture runs); `restore`: the live
-    /// preview goes back to the scene's own layout too.
-    fn end_preview(self: &Rc<Self>, state: &State, restore: bool) {
+    /// The preview goes (unless another gesture runs), and in Live the
+    /// live preview shows the scene's own layout again. A reply comes after
+    /// its `LayerSet`'s `SetLive`; but a no-op `LayerSet` sends none, and a
+    /// gesture started once that `SetLive` was in set a transient again,
+    /// which stayed (R23).
+    fn end_preview(self: &Rc<Self>, state: &State) {
         let busy = {
             let edit = self.edit.borrow();
             edit.drag.as_ref().is_some_and(|d| d.moved)
                 || edit.nudges.active().is_some()
-                || edit.pending.is_some()
+                || edit.pending.current().is_some()
         };
         if busy {
             return;
         }
-        if restore && state.ui.canvas_mode == CanvasMode::Live {
+        if state.ui.canvas_mode == CanvasMode::Live {
             live::transient(&self.ctx, None);
         }
         self.ctx.store.update_local(|l| l.layer_drag = None);
@@ -1088,8 +1111,20 @@ impl Inner {
         self.ctx.keys.set_drag_cancel(None);
         self.hover_cursor_reset();
         let state = self.ctx.store.state();
-        if state.ui.canvas_mode == CanvasMode::Live && self.edit.borrow().pending.is_none() {
-            live::transient(&self.ctx, None);
+        if state.ui.canvas_mode == CanvasMode::Live {
+            // With a commit unanswered the live preview shows its layout
+            // (its `SetLive` may be in already), not the cancelled one (R23).
+            let pending = self
+                .edit
+                .borrow()
+                .pending
+                .current()
+                .filter(|p| p.target == SceneTarget::Project)
+                .cloned();
+            live::transient(
+                &self.ctx,
+                pending.map(|p| with_layer(&state.project.scene, &p.layer, p.rect, p.crop)),
+            );
         }
         self.ctx.store.update_local(|l| {
             l.drag = None;
@@ -1101,16 +1136,23 @@ impl Inner {
     /// A snapshot mid-gesture: carry on from the layer's new layout, or
     /// cancel when it (or the scene being edited) went.
     fn check_drag(self: &Rc<Self>, state: &State) {
-        let gone = {
+        let (gone, rebased) = {
             let mut edit = self.edit.borrow_mut();
             let Some(session) = edit.drag.as_mut() else {
                 return;
             };
+            let before = session.frame.clone();
             let target_kept = edit_target(state).as_ref() == Some(&session.target);
-            !(target_kept && session.rebase(scene_of(&state.project, &session.target)))
+            let kept = target_kept && session.rebase(scene_of(&state.project, &session.target));
+            let rebased = (kept && session.moved && session.frame != before)
+                .then(|| (session.kind(), session.preview()));
+            (!kept, rebased)
         };
         if gone {
             self.cancel();
+        } else if let Some((kind, preview)) = rebased {
+            // The drag goes on from the layer's new layout at once (R23).
+            self.show_gesture(state, Some(kind), preview);
         }
     }
 
@@ -1130,6 +1172,8 @@ impl Inner {
             }
             let target = edit_target(&state)?;
             let scene = scene_of(&state.project, &target)?;
+            let scene = self.edit.borrow().newest_scene(scene, &target);
+            let scene = scene.as_ref();
             let live_sources = live::live_sources(&local.live_status);
             let sizes = source_sizes(&state.project, &target, &live_sources);
             let (preview, _) = self.preview_scale(&state);
@@ -1177,6 +1221,7 @@ impl Inner {
         let Some(step) = nudge_step(id) else {
             return;
         };
+        self.watch_releases();
         let state = self.ctx.store.state();
         let Some(target) = edit_target(&state) else {
             return;
@@ -1196,15 +1241,9 @@ impl Inner {
         let now = self.now_ms();
         let (preview, flushed, deadline) = {
             let mut edit = self.edit.borrow_mut();
-            // A burst's `LayerSet` still unanswered: go on from where it
-            // put the layer.
-            if let Some(p) = &edit.pending
-                && p.layer == layer_id
-                && p.target == target
-            {
-                layer.rect = p.rect;
-                layer.crop = p.crop;
-            }
+            // A `LayerSet` still unanswered: go on from where it put the
+            // layer (the newest one's, R23).
+            layer = newest(&layer, &target, edit.pending.current());
             let (burst, flushed) = edit.nudges.press(&target, &layer, step, now);
             let preview = burst.preview();
             (preview, flushed, edit.nudges.deadline())
@@ -1265,14 +1304,64 @@ impl Inner {
         *self.nudge_timer.borrow_mut() = Some(id);
     }
 
+    /// The window's key releases, in the capture phase (D-33: a burst ends
+    /// on its key's release). The key router handles the nudge presses on
+    /// the window in the capture phase, so GTK hands it their releases too
+    /// and they never reached a controller on the stage: every burst ended
+    /// by its timeout, so a held key split into two `LayerSet`s and quick
+    /// taps merged into one (R19). Added at the first nudge (the stage is
+    /// in the window by then); it only listens. It sees the release because
+    /// it comes after the router's controller: GTK runs a widget's
+    /// controllers newest first, and stops at a key controller that handled
+    /// the event (the router's claims the release of a press it took).
+    fn watch_releases(self: &Rc<Self>) {
+        if self.release_watch.get() {
+            return;
+        }
+        let Some(window) = self.root.root() else {
+            return;
+        };
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(self);
+        keys.connect_key_released(crate::guarded!(
+            "stage: a key release",
+            move |_, keyval, _, _| {
+                if let Some(this) = weak.upgrade() {
+                    this.key_released(keyval);
+                }
+            }
+        ));
+        window.add_controller(keys);
+        self.release_watch.set(true);
+    }
+
+    /// A key went up: the release of a nudge key (an arrow, or what
+    /// `keys.toml` binds a `layer.nudge-*` to) ends the burst.
     fn key_released(self: &Rc<Self>, keyval: gdk::Key) {
-        let arrow = keyval.name().is_some_and(|name| {
-            matches!(
-                name.as_str(),
-                "Left" | "Right" | "Up" | "Down" | "KP_Left" | "KP_Right" | "KP_Up" | "KP_Down"
-            )
-        });
-        if arrow {
+        if self.edit.borrow().nudges.active().is_none() {
+            return;
+        }
+        let Some(name) = keyval.name() else {
+            return;
+        };
+        let arrow = matches!(
+            name.as_str(),
+            "Left" | "Right" | "Up" | "Down" | "KP_Left" | "KP_Right" | "KP_Up" | "KP_Down"
+        );
+        let bound =
+            KeyChord::from_gdk(name.as_str(), false, false, false, false).is_some_and(|released| {
+                let keymap = self.ctx.store.keymap();
+                NUDGE_BINDINGS
+                    .iter()
+                    .filter_map(|id| keymap.binding(id))
+                    .any(|b| {
+                        usable_keys(&keymap, b)
+                            .iter()
+                            .any(|k| k.key == released.key)
+                    })
+            });
+        if arrow || bound {
             self.end_burst(NudgeCoalescer::release);
         }
     }
@@ -1317,7 +1406,7 @@ mod tests {
     fn a_gesture_is_active_while_it_shows() {
         let mut edit = Editing::default();
         assert!(!edit.active());
-        edit.pending = Some(LayerDragPreview {
+        edit.pending.issue(LayerDragPreview {
             target: SceneTarget::Project,
             layer: LayerId::numbered(2),
             rect: qrec_core::model::Rect::new(0, 0, 16, 16),
