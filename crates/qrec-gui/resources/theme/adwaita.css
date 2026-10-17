@@ -38,6 +38,24 @@
   --error-color: var(--qrec-record-text);
   --border-color: var(--qrec-border);
   --disabled-opacity: 45%;
+  /* Shades (WP10). libadwaita's own are a neutral rgb(0 0 6) at 7 % in
+     light and 25 % in dark, no token: the narrow layout's sheet dimmed the
+     content and cast its edge shadow with them (Swamp Day's grey on its
+     parchment), and scrolled windows draw their undershoots with them.
+     Qrec's lightest shadow instead, tinted with `text` in Swamp Day (DESIGN
+     Elevation). */
+  --shade-color: var(--qrec-shadow-e2-contact);
+  --sidebar-shade-color: var(--qrec-shadow-e2-contact);
+  --popover-shade-color: var(--qrec-shadow-e2-contact);
+  /* The panel is the split view's sidebar: libadwaita's own rules for it
+     (its backdrop ground, its edge line) read these. */
+  --sidebar-backdrop-color: var(--qrec-surface);
+  --sidebar-border-color: var(--qrec-border);
+  /* C28's checked segment: libadwaita reads these for a disabled one. */
+  --active-toggle-bg-color: var(--qrec-raised);
+  --active-toggle-fg-color: var(--qrec-text);
+  /* The outline that keeps an overlay scrollbar apart from the content. */
+  --scrollbar-outline-color: var(--qrec-bg);
 }
 
 /*

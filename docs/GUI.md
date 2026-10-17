@@ -1528,6 +1528,19 @@ time; A§8.7 rules for every child).
   var(--qrec-success)`, `--warning-color: var(--qrec-warning-text)`,
   `--error-color: var(--qrec-record-text)`, `--border-color:
   var(--qrec-border)`, `--disabled-opacity: 45%`.
+  WP10 (themes) maps the rest libadwaita 1.9 reads for Qrec's widgets:
+  `--shade-color`, `--sidebar-shade-color` and `--popover-shade-color:
+  var(--qrec-shadow-e2-contact)` (libadwaita's own, a neutral rgb(0 0 6)
+  at 7 % light and 25 % dark, dimmed the content under the narrow
+  layout's sheet and shaded its edge: grey on Swamp Day's parchment),
+  `--sidebar-backdrop-color: var(--qrec-surface)`,
+  `--sidebar-border-color: var(--qrec-border)`, `--active-toggle-bg-color:
+  var(--qrec-raised)` and `--active-toggle-fg-color: var(--qrec-text)`
+  (C28's checked segment, which libadwaita reads for a disabled one),
+  `--scrollbar-outline-color: var(--qrec-bg)`. The GTK-free
+  `crates/qrec-gui/tests/bridge.rs` holds every one of them to a token;
+  `gui_themes`' `the_narrow_sheet_shades_in_the_themes_tokens` probes the
+  sheet's dimming.
 - **Theme, scale and motion before the first frame.** G§3.3 step 1 reads
   `config.toml`; `startup` loads that theme's tokens, scales the CSS and
   sets the motion policy before the window maps.
@@ -4151,6 +4164,26 @@ icons), `README.md`, `docs/ARCHITECTURE.md` (final pass),
   `keys.toml` changes, with its problem toasts.
 - Theme proofs (BRIEF §7): S02 and S06 in all four themes; S18 and S25 in
   Swamp Day.
+  - As built (themes lane): `crates/qrec/tests/gui_themes.rs`, each
+    window started with its theme in `config.toml`; S18 and S25 shot in
+    Swamp Night too, for their boards. Each shot probes the grounds and
+    marks against the generated tokens (the scrims, `field`, the shadows
+    under the toasts, `text-on-record` on the destructive fill, the
+    selection, the playhead), and Swamp Night's and Swamp Day's shots of a
+    case share no color outside video (`assert_follows_the_theme`: the
+    two share no color token). S25 shoots one toast of each core level,
+    each for real: info, an external `qrec.json` edit merged; warning, a
+    hand edit of a fact, ignored; success, `p`'s Frame saved; error,
+    `qrec.json` invalid on disk. Shots and one board per case (the
+    themes side by side) in `tmp/gui-shots/themes/`.
+  - The contrast audit: `crates/qrec-gui/tests/contrast.rs` (GTK-free,
+    from the generated token CSS) holds every pair of DESIGN's Contrast
+    audit and the pairs its Components draw (the M and S toggles, the
+    meter's field track, the success check, the scrub flag, the caret) to
+    WCAG 2.2 AA with the PO's 0.05 margin, alpha tokens composited 8-bit
+    as the screen shows them (which reads DESIGN's table to its two
+    decimals). The one waiver is P4 (Swamp Day `text-on-record` on
+    `record`, 4.53).
 - Accessibility: `gtk::Accessible::announce` for record start and stop
   and export done; the focus-order audit (BRIEF §6).
 - Audits: reduced motion; every case at scale 1.5 and 2; widths 1300 and
@@ -4536,10 +4569,11 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   `ui.scale` live against a window started at it; `ui.reduced_motion` and
   the window's class; a burst of writes as one change `waitIdle` waits for;
   a rebound key and the caps that follow it; a conflict's toasts),
-  `gui_a11y` (announcements and focus order, G§3.7, G§3.8) and
+  `gui_a11y` (announcements and focus order, G§3.7, G§3.8),
   `gui_audits` (the GPU device opens, G§8.6, and the Narrow sheet under
-  reduced motion). Since WP10
-  every case of every suite runs the a11y walk on the states it shows
+  reduced motion) and `gui_themes` (the theme proofs; its composited
+  probes allow 2 levels a channel on pixman and 4 on gles2, the GL slack
+  not measured by its lane). Since WP10 every case of every suite runs the a11y walk on the states it shows
   (launched with `Launch::a11y()`), but a window that never shows
   (`a_panic_in_activate_quits_with_1`), the frame-time probe (G§8.6:
   `GTK_A11Y=none`, as measured) and
