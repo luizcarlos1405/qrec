@@ -584,7 +584,20 @@ impl Nested {
             .shots
             .join("logs")
             .join(format!("{}-client{suffix}.log", self.case));
-        let mut command = self.env.command(&qrec_bin());
+        let mut command = match &launch.strace {
+            // Every open of the window and of what it starts (G§8.6's GPU
+            // probe: `scripts/gpu-opens.sh` reads the trace).
+            Some(trace) => {
+                let mut command = self.env.command(Path::new("strace"));
+                command
+                    .args(["-f", "-qq", "-e", "trace=open,openat,openat2", "-o"])
+                    .arg(trace)
+                    .arg("--")
+                    .arg(qrec_bin());
+                command
+            }
+            None => self.env.command(&qrec_bin()),
+        };
         command.envs(self.display_env());
         command.env("GTK_A11Y", if launch.a11y { "test" } else { "none" });
         for (key, value) in &launch.env {
@@ -595,8 +608,16 @@ impl Nested {
         }
         command.arg("--project").arg(project).arg("-v");
         let group = Group::spawn("qrec", command, &log);
+        // Traced, the window is strace's child.
+        let pid = match launch.strace {
+            Some(_) => poll(Duration::from_secs(10), "the traced window's pid", || {
+                first_child(group.pid())
+            }),
+            None => group.pid(),
+        };
         let gui = Gui {
             group,
+            pid,
             runtime: self.env.xdg_runtime_dir(),
             log,
             state_home: self.env.state_home(),
@@ -863,6 +884,9 @@ pub struct Launch {
     pub env: Vec<(String, String)>,
     /// A `PATH` of its own (a missing ffmpeg).
     pub path: Option<OsString>,
+    /// The window runs under `strace -f`, its opens written here (G§8.6's
+    /// GPU probe, [`Launch::traced`]).
+    pub strace: Option<PathBuf>,
 }
 
 impl Launch {
@@ -877,21 +901,39 @@ impl Launch {
         self.env.push((key.to_owned(), value.to_owned()));
         self
     }
+
+    /// Under `strace -f -e trace=open,openat,openat2`, into `trace`.
+    pub fn traced(mut self, trace: &Path) -> Self {
+        self.strace = Some(trace.to_path_buf());
+        self
+    }
 }
 
 /// A launched window.
 pub struct Gui {
     group: Group,
+    /// The window's own pid (its group's, but under strace: strace's child).
+    pid: u32,
     runtime: PathBuf,
     /// Its stdout and stderr.
     pub log: PathBuf,
     state_home: PathBuf,
 }
 
+/// The first child of process `pid` (`/proc/<pid>/task/<pid>/children`).
+fn first_child(pid: u32) -> Option<u32> {
+    fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
 impl Gui {
     /// The window's process id.
     pub fn pid(&self) -> u32 {
-        self.group.pid()
+        self.pid
     }
 
     /// One request on its window's test control channel (G§3.18,
