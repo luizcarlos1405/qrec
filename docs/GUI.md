@@ -1256,6 +1256,7 @@ time; A§8.7 rules for every child).
 | `qrec-preview-trim` | the preview caches' disk-cap trim when a cache starts (G§3.11) |
 | `qrec-gui-io` | bin sizes, silence keys, wl-copy, source discovery |
 | `qrec-testctl` | the test control socket (G§3.18), test mode only |
+| `qrec-settings` | the settings watcher: inotify on the config dir, `config.toml` and `keys.toml` read after each change (G§3.14, WP10) |
 
 - **R1.** The GTK thread never blocks: no `recv`, `join`, Session call,
   `gst::init`, GES build, discovery, doctor or file I/O. Exceptions, all
@@ -1296,7 +1297,8 @@ time; A§8.7 rules for every child).
   | GUI close until quiet | 60 s | player, meters to NULL | 5 s |
   | preview ffmpeg | 20 s + 30 s/GiB | wl-copy | 5 s |
   | signal grace | 15 s | X1 stop reply | 60 s |
-  | test control request | its `timeoutMs` (≤ 60 s) | | |
+  | test control request | its `timeoutMs` (≤ 60 s) | settings change pending | 5 s |
+  | settings watcher stop | 2 s | | |
 
 - **R7.** Transient state never enters State and the GUI never mutates
   State optimistically: drag and nudge previews are GUI-local (A§4.1).
@@ -1498,6 +1500,51 @@ time; A§8.7 rules for every child).
   (`ForceLight` for Swamp Day, `ForceDark` otherwise); `queue_draw` every
   custom widget through `Theme::subscribe` (gtk4-rs doesn't expose
   `css_changed`).
+
+  As built (WP10, live lane): `Theme::apply(theme, scale, motion)` does a
+  whole `config.toml` at once (the palette, one reload of both providers
+  when the theme or the scale changed, one notice to the subscribers);
+  `set_theme`, `set_scale` and `set_motion` go through it. The settings
+  follower (`src/follow.rs`) applies what the shell's settings watcher
+  (`qrec_shell::watcher::watch_settings`, A§8.9) reports on the config
+  dir, so `qrec config set theme <t>`, `ui.scale` and `ui.reduced_motion`
+  apply to the open window and `keys.toml` reloads:
+  - the watcher runs on its own thread (`qrec-settings`: inotify set up
+    there, both files read there, R1), from the nearest existing folder
+    while `$XDG_CONFIG_HOME/qrec` doesn't exist (before any `qrec config
+    set`; the watch moves into it once it is made, and back up if it goes);
+    reads (`IN_OPEN`, `IN_CLOSE_NOWRITE`) are never changes, so its own
+    reads and the Session's don't report themselves;
+  - a burst of events is one change: `Pending` at its first event, then
+    `Settled` with both files once it was quiet 200 ms (at most 1 s), and
+    one pair as soon as the watch is up (a change between step 1's read and
+    the watch isn't lost); both reach the main thread through the queue
+    (`Inbound::Settings`). From `Pending` to the change applied the follower
+    holds `MediaHub::hold_io_busy`, so `waitIdle` waits for it, at most
+    `follow::PENDING_LIMIT` (5 s; every wait has a deadline, R6);
+  - `follow::plan` (GTK-free) decides what changes: the look (`Theme::apply`
+    with `MotionPolicy::from_settings`, so the window's `.reduced-motion`
+    follows through `Theme::follow_motion`); the keymap when it or its
+    problems changed (`Store::set_keymap`: the key router, the hint bar,
+    the header and the transport read it per render, and every control
+    built from a binding shows its new keys through
+    `widgets::button::follow_keymap`: the labeled and icon buttons' caps,
+    tooltips and accessible names, the toolbar's toggles, the header's mode
+    key, Save frame, the autocut page's Cancel); and the toasts: "config.toml
+    is invalid" for a file that can't be used (taken from the `ConfigFile`
+    the Session shares, so it comes once per change of the file between
+    them, and the defaults apply, as at startup), and "keys.toml has a
+    problem" for each problem the window didn't have (conflicts, unknown
+    ids, bad keys, as `keys_file::load` and the core word them; an edit
+    that keeps a conflict toasts nothing new);
+  - the system's reduced-motion setting and GTK's animations are followed
+    too (D-30; test mode: the config's only);
+  - a live scale re-scales what was sized once: the timeline's corner
+    cell and track-header column (`HEADER_WIDTH` × scale on every refresh;
+    they kept 176 px), and the empty timeline's art takes the new palette.
+  - Known limits: a `config.toml` or `keys.toml` that is a symlink into
+    another folder (a dotfiles manager) is re-read only when the link
+    itself changes; key caps drawn per render follow at their next render.
 - **UI scale** (100/125/150 %, `ui.scale`): every `<n>px` in the CSS text
   is multiplied by the scale before loading, and so is Fraunces' optical
   size (`"opsz" <n>`, which follows the font size, within 9–144); custom
@@ -1693,6 +1740,7 @@ a module list.
 | `src/desktop.rs` | `UiAction` handling | WP0b |
 | `src/guard.rs` | the callback guard: `guarded!`, guarded sources, the panic report (G§3.12 R10) | WP0b |
 | `src/testctl.rs` | test control channel (G§3.18) | WP0b |
+| `src/follow.rs` | the settings follower: `config.toml` and `keys.toml` live (G§3.14) | WP10 |
 | `src/theme/{mod,fonts,motion,css,art}.rs` | providers, fonts, MotionPolicy, scale preprocessing, art templates through `gtk::Svg` | WP0b |
 | `src/media/mod.rs` | MediaHub: sinks, side pump, preview frames, meter toggle, player and cache handles | WP0b |
 | `src/media/io.rs` | `IoWorker` (`qrec-gui-io`: jobs under `catch_unwind`, results through the queue, `hold_io_busy`; rounds 1–2 review) | WP0b |
@@ -1770,7 +1818,8 @@ with `fn widget(&self) -> gtk::Widget`) and
 | shell | `gpu.rs` | H-3 | WP0a |
 | shell | `paths.rs`, `host/cli_host.rs` | `UserDirs::gui_log(dir)`; `host_log` names it | WP0a |
 | shell | `config_file.rs`, `keys_file.rs` (new) | readers (WP0a); atomic writers over `config::set` and the keymap edits (WP9) | WP0a, WP9 |
-| shell | `watcher.rs` | watch `$XDG_CONFIG_HOME/qrec/` | WP10 |
+| shell | `watcher.rs` | watch `$XDG_CONFIG_HOME/qrec/` (as built: `watch_settings`, `Settings`, `SettingsEvent`, G§3.14) | WP10 |
+| shell | `keys_file.rs`, `facts.rs` | `keys_file::load` (the keymap and its problems, startup's and the reload's); `ConfigFile` reads `config.toml` again for a new inode or change time (a temp file renamed over it with the old size and mtime was taken for the old file) | WP10 |
 | shell | `testkit/design.rs` (new) | `design_fixture(dir, DesignVariant)`, `perf_fixture(dir, clips)`, `playback_fixture(dir)` (G§8.4) | WP0a |
 | shell | `lib.rs` | module list | WP0a |
 | cli | `backend.rs`, `exec.rs`, `lib.rs` | `Backend::gui`, `Plan::Gui`, `--json` usage | WP0a |
@@ -1898,7 +1947,7 @@ previews, the player, io, opening, the portal).
 | `{"op":"action","id":"export.panel"}` | runs a binding or GUI action as its key would (pre-steps included) |
 | `{"op":"sources"}` | `{"ok":true,"inventory":…}`: discovery's last answer (`LocalUi.sources`, null before one); with `"inventory": <SourceInventory>`, that answer instead, pushed through the queue as discovery's own (`Inbound::Sources`; the first run's rows follow it; R25's audit) |
 | `{"op":"hints"}` | the rendered hint items (`keys`, `label`, `enabled`, `emphasized`) and the status text (`hintbar::current_items`); `shown`, the labels of the items the bar draws whole (a narrow window leaves the trailing ones out, `hintbar::fitting`), and `cut`, whether a drawn one runs past the bar (never; both WP7 integration audit) |
-| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `playing`, the player plays (the program or a bin preview's take), and `programPlaying`, the program plays in it (`LocalUi.program_playing`, G§3.10 step 3; review R00, R16); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and the panel's (`layerRowsAlive`, `audioRowsAlive`; review R43), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit); `metersTicking`, the meter bars on their refresh timer, and `exportClockTicking`, the export panel's Running clock (null without a panel): each comes back with the next change after a caught panic (G§3.12; R65's audit); `themeSubscribers`, the theme's callbacks (a dropped bin thumbnail's goes with it, R11; WP7 integration's shot and code audits); `timelinePaints`, how many times the timeline's canvas made its render node again (not while only the playhead moves, C16; review R10); `timelineGhostColumns`, how many columns of the ghost's waveform the last paint with a ghost worked out a lane (those in the time area, G§4.5; R01's audit); `binSlide`, the bin drawer's last slide as asked (`open`, `animate`: test mode animates nothing, so a case reads whether the open at start would have slid in; review fix, G§3.3); `takePreview`, the bin preview (`take`, `playing`: `Space` pauses it; null without one; review fix, D-17) |
+| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class; `colorScheme`, libadwaita's `scheme` as set and whether it draws `dark`; `settingsApplied`, the settings changes the follower applied, and `settingsPending`, one is being debounced: WP10, G§3.14); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `playing`, the player plays (the program or a bin preview's take), and `programPlaying`, the program plays in it (`LocalUi.program_playing`, G§3.10 step 3; review R00, R16); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and the panel's (`layerRowsAlive`, `audioRowsAlive`; review R43), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit); `metersTicking`, the meter bars on their refresh timer, and `exportClockTicking`, the export panel's Running clock (null without a panel): each comes back with the next change after a caught panic (G§3.12; R65's audit); `themeSubscribers`, the theme's callbacks (a dropped bin thumbnail's goes with it, R11; WP7 integration's shot and code audits); `timelinePaints`, how many times the timeline's canvas made its render node again (not while only the playhead moves, C16; review R10); `timelineGhostColumns`, how many columns of the ghost's waveform the last paint with a ghost worked out a lane (those in the time area, G§4.5; R01's audit); `binSlide`, the bin drawer's last slide as asked (`open`, `animate`: test mode animates nothing, so a case reads whether the open at start would have slid in; review fix, G§3.3); `takePreview`, the bin preview (`take`, `playing`: `Space` pauses it; null without one; review fix, D-17) |
 | `{"op":"a11y"}` | every visible icon-only button, focusable region or focusable custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 | `{"op":"fonts"}` | the family Pango loads for each bundled font; `ok` when each resolves to itself |
 | `{"op":"icons"}` | each custom symbolic icon drawn in a probe color: found, its pixels, recolored |
@@ -3987,6 +4036,14 @@ icons), `README.md`, `docs/ARCHITECTURE.md` (final pass),
   in nested sway.
 - The complete smoke (G§8.5) and the PO checklist (G§8.7).
 
+**As built (live lane).** The config watcher and the theme switch
+(G§3.14: `qrec_shell::watcher::watch_settings`, `src/follow.rs`,
+`Theme::apply`), the keymap reload with its toasts and the key caps that
+follow it (`widgets::button::follow_keymap`), the timeline's header column
+and art following a live scale and theme; tested by `gui_live` (G§8.4)
+and the unit tests of the watcher's debounce, event filter and reads
+(`watcher::tests`) and of the follower's plan (`follow::tests`).
+
 ---
 
 ## G§8 Verification
@@ -4288,7 +4345,13 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   GUI log's "program sync:" lines and `local`'s `playerNs`), `gui_smoke`,
   `gui_chrome` (WP6), `gui_timeline` (WP3), `gui_stage` (WP4), `gui_panel`
   (WP5), `gui_bin_export` (WP7), each run with `-- --ignored
-  --test-threads=1` on pixman and on gles2.
+  --test-threads=1` on pixman and on gles2. WP10 adds `gui_live` (the
+  live settings, G§3.14: each theme by `qrec config set` with a
+  token-colored pixel of the CSS and of the custom-drawn timeline and none
+  of the theme before, libadwaita's color scheme, the empty timeline's art;
+  `ui.scale` live against a window started at it; `ui.reduced_motion` and
+  the window's class; a burst of writes as one change `waitIdle` waits for;
+  a rebound key and the caps that follow it; a conflict's toasts).
 
 ### G§8.5 End-to-end smoke (SPEC §17)
 
