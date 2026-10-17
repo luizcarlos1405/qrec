@@ -660,11 +660,12 @@ fn an_edit_stays_with_its_scene() {
 /// (one undo step) ahead of what the press does. Chrome buttons never take
 /// the focus (D-11): the field kept it, and the mode switch's change
 /// dropped the edit (R38's reset), the transport's Play left it unsent. X
-/// typed for the project scene, then a click on Program; A1's gain typed
-/// for take 5, then Live; L2's rename in Live, then Program; X typed for
-/// take 5, then Play. Each edit is one held `wtype` run (the window is
-/// active only while one runs, and a window going inactive commits its
-/// field): the checks run while it holds, so only the press committed.
+/// typed for the project scene, then a click on its own unit (inside the
+/// edit: nothing sent) and one on Program; A1's gain typed for take 5,
+/// then Live; L2's rename in Live, then Program; X typed for take 5, then
+/// Play. Each edit is one held `wtype` run (the window is active only
+/// while one runs, and a window going inactive commits its field): the
+/// checks run while it holds, so only the press committed.
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn a_press_outside_an_edit_commits_it_first() {
@@ -709,6 +710,22 @@ fn a_press_outside_an_edit_commits_it_first() {
     poll(Duration::from_secs(10), "200 typed in X", || {
         (entry(&mut nested, "inspector", "inspector-x").as_deref() == Some("200")).then_some(())
     });
+    // A press inside the edit (the field's own unit, at its right end)
+    // leaves it alone: nothing sent, the text still the person's, typing.
+    let [fx, fy, fw, fh] = region(nested.window(0), "inspector-x");
+    nested.pointer().click(fx + fw - 6.0, fy + fh / 2.0);
+    nested.window(0).wait_idle();
+    assert_eq!(
+        history_cursor(&nested, &project),
+        before,
+        "nothing sent yet"
+    );
+    assert_eq!(x_of(&nested, None), 1500, "not committed by its own press");
+    assert_eq!(
+        entry(&mut nested, "inspector", "inspector-x").as_deref(),
+        Some("200")
+    );
+    assert_eq!(nested.window(0).local()["focus"], "field", "still typing");
     nested.pointer().click(program.0, program.1);
     mode_is(&nested, "program");
     // The commit went first (one FIFO): the mode reads Program, so it ran.
