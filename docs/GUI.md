@@ -2294,7 +2294,12 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
   open list is `Overlay::Menu` (`panel::menus::track_dropdown`, the
   helper for any `gtk::DropDown`; review R32, R41): measured on GTK 4.22,
   an open list's keys go to its popover and never reach the window's key
-  router, so `Esc` closes the list, not the page. A missing
+  router, so `Esc` closes the list, not the page. In the Narrow layout the
+  page shows in the layers sheet and goes with it (review R39): the sheet
+  closing (`Esc`, a click beside it, the header's layers button) closes
+  the page, a window narrowing under the open page shows the sheet, and
+  Apply or Cancel take away a sheet the page opened, not one opened before
+  it (`panel::autocut::sheet_step`). A missing
   device's line replaces its meter; Change source lists the devices of
   the track's role; a layer problem's icon is `qrec-monitor-x-symbolic`
   (a screen), `dialog-error-symbolic` (another source) or

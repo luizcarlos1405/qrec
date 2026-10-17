@@ -23,7 +23,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use gui_support::pointer::BUTTON_LEFT;
-use gui_support::{Gui, Launch, Nested, Options, assert_regions, poll, wait_for_gui_host};
+use gui_support::{Gui, Launch, Nested, OUTPUT, Options, assert_regions, poll, wait_for_gui_host};
 use qrec_core::state::{CanvasMode, UiState};
 use qrec_core::view::autocut;
 use qrec_core::view::panel::{ACCESS_DENIED, INSPECTOR_EMPTY, MISSING_IN_TAKE};
@@ -1533,6 +1533,122 @@ fn the_track_list_keeps_its_keys() {
     // The list closed, Esc is the page's Cancel.
     nested.keys(&["-k", "Escape"]);
     wait_for_label(nested.window(0), "Onion layers");
+    assert_clean(nested.window(0));
+}
+
+/// R39: in a Narrow window the autocut page shows in the layers sheet and
+/// goes with it. `Esc` (the sheet's close) and the header's layers button
+/// close the page too, its preview with it, and `Shift+C` opens it again;
+/// its Cancel takes away the sheet it opened, not one opened before it.
+/// (`Esc` used to hide the sheet and leave the page open, its hatches
+/// drawn, and the next `Shift+C` closed the hidden page.)
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_autocut_page_goes_with_the_narrow_sheet() {
+    let mut nested = Nested::start(AREA, "narrow-autocut", Options::size(1000, 1000));
+    let preset = ui(|u| {
+        u.canvas_mode = CanvasMode::Program;
+        u.selection = vec![clip("c3e9")];
+        u.playhead = 4842;
+    });
+    let project = fixture(&nested, DesignVariant::Base, &preset);
+    open(&mut nested, &project, levels(DESIGN_LEVELS));
+    assert_eq!(nested.window(0).local()["layout"]["width"], "Narrow");
+    // (the page, the overlays, whether the timeline draws a preview)
+    let page = |nested: &mut Nested| {
+        let local = nested.window(0).local();
+        (
+            local["panelPage"].as_str().unwrap_or_default().to_owned(),
+            local["overlays"].clone(),
+            !local["autocutPreview"].is_null(),
+        )
+    };
+    let shown = ("autocut".to_owned(), json!(["LayersSheet"]), true);
+    let gone = ("layers".to_owned(), json!([]), false);
+    let settle = |nested: &mut Nested, want: &(String, Value, bool), what: &str| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            nested.window(0).wait_idle();
+            let now = page(nested);
+            if now == *want {
+                return;
+            }
+            assert!(Instant::now() < deadline, "{what}: {now:?}, not {want:?}");
+            thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let shift_c = |nested: &mut Nested| {
+        nested.keys(&["-M", "shift", "-k", "c", "-m", "shift"]);
+        wait_for_label(nested.window(0), "Removes 4 silences");
+    };
+    shift_c(&mut nested);
+    settle(&mut nested, &shown, "Shift+C: the page in the sheet");
+    // Esc closes the sheet, and the page with it.
+    nested.keys(&["-k", "Escape"]);
+    settle(&mut nested, &gone, "Esc: the sheet and the page go");
+    // Shift+C opens it again (it used to close the hidden page).
+    shift_c(&mut nested);
+    settle(&mut nested, &shown, "Shift+C again");
+    // The header's layers button closes the sheet: the page goes too.
+    let layers = center(region(nested.window(0), "layers-button"));
+    nested.pointer().click(layers.0, layers.1);
+    settle(
+        &mut nested,
+        &gone,
+        "the layers button: the sheet and the page go",
+    );
+    // The page's Cancel takes away the sheet it opened.
+    shift_c(&mut nested);
+    settle(&mut nested, &shown, "Shift+C a third time");
+    let (x, y) = center(region(nested.window(0), "autocut-cancel"));
+    nested.pointer().click(x, y);
+    settle(&mut nested, &gone, "Cancel: the sheet it opened goes");
+    // A sheet opened before the page stays after its Cancel, on the layers.
+    nested.pointer().click(layers.0, layers.1);
+    let layers_page = ("layers".to_owned(), json!(["LayersSheet"]), false);
+    settle(
+        &mut nested,
+        &layers_page,
+        "the layers button opens the sheet",
+    );
+    let reply = nested
+        .window(0)
+        .ctl(json!({"op": "action", "id": "autocut.page"}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    wait_for_label(nested.window(0), "Removes 4 silences");
+    settle(&mut nested, &shown, "the page in the open sheet");
+    let (x, y) = center(region(nested.window(0), "autocut-cancel"));
+    nested.pointer().click(x, y);
+    settle(
+        &mut nested,
+        &layers_page,
+        "Cancel: the sheet opened before stays",
+    );
+    wait_for_label(nested.window(0), "Onion layers");
+    // The window widens under the open page (it docks), then narrows
+    // again: the sheet shows it (it used to stay open behind the hidden
+    // panel). Keys only from here: the pointer knows the first output.
+    nested.keys(&["-k", "Escape"]);
+    settle(&mut nested, &gone, "Esc: the sheet goes");
+    shift_c(&mut nested);
+    settle(&mut nested, &shown, "Shift+C a fourth time");
+    let mode = |nested: &mut Nested, width: f64| {
+        let s = nested.opts.scale;
+        let mode = format!("{}x{}@60Hz", (width * s).round(), (1000.0 * s).round());
+        nested.swaymsg(&["output", OUTPUT, "mode", &mode]);
+        poll(Duration::from_secs(10), "the window resized", || {
+            let rect = nested.window_rect()?;
+            (rect[2] == width).then_some(())
+        });
+    };
+    mode(&mut nested, 1600.0);
+    let docked = ("autocut".to_owned(), json!([]), true);
+    settle(&mut nested, &docked, "Wide: the page docked");
+    assert_eq!(nested.window(0).local()["layout"]["width"], "Wide");
+    mode(&mut nested, 1000.0);
+    settle(&mut nested, &shown, "Narrow again: the page in the sheet");
+    nested.keys(&["-k", "Escape"]);
+    settle(&mut nested, &gone, "Esc: the sheet and the page go");
     assert_clean(nested.window(0));
 }
 

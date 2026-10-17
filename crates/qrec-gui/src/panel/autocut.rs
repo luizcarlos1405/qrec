@@ -16,6 +16,11 @@
 //! - The switch "Run autocut after every take" is saved at once.
 //! - `Enter` applies (the page's Apply is the window's default widget
 //!   while it shows).
+//! - The page open always shows (R39): in the Narrow layout it shows in
+//!   the layers sheet (opening it pushes one), and goes with it. The sheet
+//!   closing (`Esc`, a click beside it, the header's layers button) closes
+//!   the page, a window narrowing under the open page shows the sheet, and
+//!   the page's own close takes away a sheet it pushed ([`sheet_step`]).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -37,7 +42,7 @@ use qrec_core::{CmdResult, Command, State, TimeArg, TrackId};
 use super::dry_run::{DryRuns, Step};
 use crate::media::io::BusyToken;
 use crate::store::Reply;
-use crate::store::local::Overlay;
+use crate::store::local::{LayoutWidth, LocalUi, Overlay};
 use crate::widgets::Spinner;
 use crate::widgets::button::{self, Kind};
 use crate::widgets::numeric::{self, NumericField};
@@ -88,6 +93,40 @@ struct Inner {
     open: Cell<bool>,
     setting: Cell<bool>,
     clock: Instant,
+    /// The page pushed the Narrow layout's sheet it shows in (its close
+    /// takes it away; one opened before the page stays).
+    pushed_sheet: Cell<bool>,
+    /// The layout was Narrow at the last `LocalUi` change.
+    narrow: Cell<bool>,
+    /// The window narrowed under the open page: the sheet shows it at the
+    /// next idle.
+    sheet_due: Cell<bool>,
+}
+
+/// What the open page does when `LocalUi` changes (R39).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SheetStep {
+    /// Nothing: the page shows (docked, or in the sheet), or is closed.
+    Stay,
+    /// The Narrow layout's sheet went (`Esc`, a click beside it, the
+    /// header's layers button): the page goes with it, as its Cancel.
+    Close,
+    /// The window narrowed under the open page: the sheet shows it.
+    ShowSheet,
+}
+
+/// [`SheetStep`] for a page that is `open` (and shows: `panel_page`),
+/// given whether the layout was Narrow at the change before `local`.
+pub fn sheet_step(open: bool, was_narrow: bool, local: &LocalUi) -> SheetStep {
+    let hidden = local.layout.width == LayoutWidth::Narrow
+        && !local.overlays.contains(&Overlay::LayersSheet);
+    if !open || local.panel_page != PanelPageKind::Autocut || !hidden {
+        SheetStep::Stay
+    } else if was_narrow {
+        SheetStep::Close
+    } else {
+        SheetStep::ShowSheet
+    }
 }
 
 impl std::fmt::Debug for AutocutPage {
@@ -303,6 +342,9 @@ impl AutocutPage {
                 open: Cell::new(false),
                 setting: Cell::new(false),
                 clock: Instant::now(),
+                pushed_sheet: Cell::new(false),
+                narrow: Cell::new(ctx.store.local().layout.width == LayoutWidth::Narrow),
+                sheet_due: Cell::new(false),
             }),
         };
         page.wire(&back, &cancel);
@@ -398,6 +440,66 @@ impl AutocutPage {
                     AutocutPage { inner }.region_clicked(row);
                 }
             }));
+        // The page shows in the Narrow layout's sheet, and goes with it.
+        let weak = Rc::downgrade(inner);
+        inner
+            .ctx
+            .store
+            .subscribe_local(move |local| {
+                if let Some(inner) = weak.upgrade() {
+                    AutocutPage { inner }.follow_sheet(local);
+                }
+            })
+            .detach();
+    }
+
+    /// `LocalUi` changed: the open page goes with the Narrow layout's
+    /// sheet, or shows it when the window narrows under it (R39). Edits
+    /// made here are queued until the subscribers have run.
+    fn follow_sheet(&self, local: &LocalUi) {
+        let inner = &self.inner;
+        let was_narrow = inner
+            .narrow
+            .replace(local.layout.width == LayoutWidth::Narrow);
+        if inner.sheet_due.get() {
+            // The sheet is about to show the page (below).
+            return;
+        }
+        match sheet_step(inner.open.get(), was_narrow, local) {
+            SheetStep::Stay => {}
+            SheetStep::Close => self.close(),
+            SheetStep::ShowSheet => {
+                // Once this change's queued edits are done: narrowing hides
+                // the window's sidebar, and its follower drops a sheet then.
+                inner.sheet_due.set(true);
+                let weak = Rc::downgrade(inner);
+                guard::idle_local_once("autocut: the sheet shows the page", move || {
+                    if let Some(inner) = weak.upgrade() {
+                        inner.sheet_due.set(false);
+                        AutocutPage { inner }.show_in_sheet();
+                    }
+                });
+            }
+        }
+    }
+
+    /// The window narrowed under the open page: the sheet shows it (unless
+    /// the page closed, or the window widened, meanwhile).
+    fn show_in_sheet(&self) {
+        let inner = &self.inner;
+        let due = {
+            let local = inner.ctx.store.local();
+            sheet_step(inner.open.get(), false, &local) == SheetStep::ShowSheet
+        };
+        if !due {
+            return;
+        }
+        inner.pushed_sheet.set(true);
+        inner.ctx.store.update_local(|l| {
+            if !l.overlays.contains(&Overlay::LayersSheet) {
+                l.overlays.push(Overlay::LayersSheet);
+            }
+        });
     }
 
     /// Opens the page on the project's settings and sends its first dry
@@ -415,11 +517,17 @@ impl AutocutPage {
         let cmd = autocut::dry_run(&state, &inner.draft.borrow());
         *inner.wanted.borrow_mut() = Some(cmd.clone());
         let step = inner.runs.borrow_mut().open(cmd, self.now_ms());
-        inner.ctx.store.update_local(|l| {
+        // Narrow: the page shows in the sheet (one already open stays the
+        // person's when the page closes).
+        let push = {
+            let local = inner.ctx.store.local();
+            local.layout.width == LayoutWidth::Narrow
+                && !local.overlays.contains(&Overlay::LayersSheet)
+        };
+        inner.pushed_sheet.set(push);
+        inner.ctx.store.update_local(move |l| {
             l.panel_page = PanelPageKind::Autocut;
-            if l.layout.width == crate::store::local::LayoutWidth::Narrow
-                && !l.overlays.contains(&Overlay::LayersSheet)
-            {
+            if push && !l.overlays.contains(&Overlay::LayersSheet) {
                 l.overlays.push(Overlay::LayersSheet);
             }
         });
@@ -432,7 +540,8 @@ impl AutocutPage {
     }
 
     /// Closes the page (Cancel, back, `Esc`, or after Apply): nothing more
-    /// is sent, the preview goes.
+    /// is sent, the preview goes, and so does a Narrow sheet the page
+    /// pushed.
     pub fn close(&self) {
         let inner = &self.inner;
         if !inner.open.replace(false) {
@@ -444,9 +553,13 @@ impl AutocutPage {
         }
         inner.debounce_busy.borrow_mut().take();
         *inner.wanted.borrow_mut() = None;
-        inner.ctx.store.update_local(|l| {
+        let pushed = inner.pushed_sheet.replace(false);
+        inner.ctx.store.update_local(move |l| {
             l.panel_page = PanelPageKind::Layers;
             l.autocut_preview = None;
+            if pushed && l.layout.width == LayoutWidth::Narrow {
+                l.close_overlays(|o| *o == Overlay::LayersSheet);
+            }
         });
         if let Some(window) = inner.root.root().and_downcast::<gtk::Window>()
             && window
@@ -911,5 +1024,68 @@ fn cut_done(store: &crate::store::Store, cmd: &Command, reply: Reply) {
             }
         }
         Err(e) => tracing::info!("autocut failed: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::local::LayoutClass;
+
+    fn local(width: LayoutWidth, page: PanelPageKind, sheet: bool) -> LocalUi {
+        let mut local = LocalUi {
+            layout: LayoutClass {
+                width,
+                compact: false,
+            },
+            panel_page: page,
+            ..LocalUi::default()
+        };
+        if sheet {
+            local.overlays.push(Overlay::LayersSheet);
+        }
+        local
+    }
+
+    /// R39: the open page always shows. In Narrow it is in the sheet: the
+    /// sheet going closes it, a window narrowing under it shows the sheet;
+    /// docked (Wide, Medium), or closed, nothing happens.
+    #[test]
+    fn the_page_goes_with_the_narrow_sheet() {
+        use LayoutWidth::{Medium, Narrow, Wide};
+        use PanelPageKind::{Autocut, Layers};
+        // Narrow, the sheet showing the page: it stays.
+        assert_eq!(
+            sheet_step(true, true, &local(Narrow, Autocut, true)),
+            SheetStep::Stay
+        );
+        // The sheet went (Esc, a click beside it, the layers button).
+        assert_eq!(
+            sheet_step(true, true, &local(Narrow, Autocut, false)),
+            SheetStep::Close
+        );
+        // The window narrowed under the open page.
+        assert_eq!(
+            sheet_step(true, false, &local(Narrow, Autocut, false)),
+            SheetStep::ShowSheet
+        );
+        // Docked, the page shows; a wider window drops the sheet itself.
+        for width in [Wide, Medium] {
+            for was_narrow in [false, true] {
+                assert_eq!(
+                    sheet_step(true, was_narrow, &local(width, Autocut, false)),
+                    SheetStep::Stay
+                );
+            }
+        }
+        // Closed, or still opening (its page not written yet): nothing.
+        assert_eq!(
+            sheet_step(false, true, &local(Narrow, Layers, false)),
+            SheetStep::Stay
+        );
+        assert_eq!(
+            sheet_step(true, true, &local(Narrow, Layers, false)),
+            SheetStep::Stay
+        );
     }
 }
