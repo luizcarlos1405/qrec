@@ -11,15 +11,24 @@
 //!   whether they did; the autocut page's sliders tune a draft as they
 //!   move. [`ValueTooltip::connect_end`] follows every change's end, sent or
 //!   not, and [`ValueTooltip::changing`] says a change is under way: a
-//!   snapshot then leaves the slider where the person has it (R44).
+//!   snapshot then leaves the slider where the person has it (R44);
+//! - the wheel as a `NumericField` takes it (R42): over a slider the
+//!   keyboard isn't on, it scrolls what holds the slider (the panel's
+//!   column, the autocut page's) and changes no value; on a focused slider
+//!   GTK's own wheel moves it, and a burst of notches is one change, ended
+//!   [`WHEEL_END_MS`] after its last notch (one command for the burst).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Duration;
 
 use gtk::prelude::*;
 use gtk::{gdk, glib};
 
-use crate::guarded;
+use crate::{guard, guarded};
+
+/// How long after its last notch a wheel change on a focused slider ends.
+pub const WHEEL_END_MS: u64 = 300;
 
 /// Called with the value a change ended at; whether it sent a command.
 pub type ReleaseFn = Rc<dyn Fn(f64) -> bool>;
@@ -46,6 +55,11 @@ struct Inner {
     cancelled: Cell<bool>,
     on_release: RefCell<Option<ReleaseFn>>,
     on_end: RefCell<Option<EndFn>>,
+    /// The range's own wheel controllers and their phases: on only while
+    /// the keyboard is on the slider (R42).
+    range_wheel: Vec<(gtk::EventController, gtk::PropagationPhase)>,
+    /// Ends a wheel change after its last notch.
+    wheel_end: RefCell<Option<glib::SourceId>>,
 }
 
 impl std::fmt::Debug for ValueTooltip {
@@ -74,6 +88,9 @@ pub fn attach(
     popover.set_can_target(false);
     popover.set_can_focus(false);
     popover.set_parent(scale);
+    // Before ours are added: the scroll controllers the scale has are the
+    // range's own.
+    let range_wheel = scroll_controllers(scale);
     let tooltip = ValueTooltip {
         inner: Rc::new(Inner {
             scale: scale.clone(),
@@ -85,6 +102,8 @@ pub fn attach(
             cancelled: Cell::new(false),
             on_release: RefCell::new(Some(Rc::new(on_release))),
             on_end: RefCell::new(None),
+            range_wheel,
+            wheel_end: RefCell::new(None),
         }),
     };
     tooltip.wire();
@@ -177,6 +196,35 @@ impl ValueTooltip {
             }
         ));
         inner.scale.add_controller(keys);
+        // The wheel (R42): the range takes it only while the keyboard is on
+        // the slider; otherwise it goes on to what holds the slider, which
+        // scrolls. A focused slider's notches are one change.
+        let weak = Rc::downgrade(inner);
+        inner
+            .scale
+            .connect_has_focus_notify(guarded!("slider: focus", move |scale| {
+                if let Some(inner) = weak.upgrade() {
+                    inner.wheel_moves_value(scale.has_focus());
+                }
+            }));
+        inner.wheel_moves_value(inner.scale.has_focus());
+        let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
+        wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(inner);
+        wheel.connect_scroll(guarded!(
+            "slider: wheel",
+            after_panic = glib::Propagation::Proceed,
+            move |_, _dx, _dy| {
+                if let Some(inner) = weak.upgrade()
+                    && inner.scale.has_focus()
+                    && !inner.dragging.get()
+                {
+                    ValueTooltip { inner }.wheeled();
+                }
+                glib::Propagation::Proceed
+            }
+        ));
+        inner.scale.add_controller(wheel);
         let weak = Rc::downgrade(inner);
         inner
             .scale
@@ -202,6 +250,35 @@ impl ValueTooltip {
         inner.start.set(Some(inner.scale.value()));
         // The value under the pointer comes with the next change.
         self.show();
+    }
+
+    /// A wheel notch on the focused slider (before the range moves it): a
+    /// change starts, or goes on, and ends [`WHEEL_END_MS`] after the last
+    /// notch.
+    fn wheeled(&self) {
+        let inner = &self.inner;
+        if inner.start.get().is_none() {
+            inner.cancelled.set(false);
+            inner.start.set(Some(inner.scale.value()));
+        }
+        if let Some(timer) = inner.wheel_end.borrow_mut().take() {
+            timer.remove();
+        }
+        let weak = Rc::downgrade(inner);
+        let id = guard::timeout_local_once(
+            Duration::from_millis(WHEEL_END_MS),
+            "slider: wheel end",
+            move || {
+                if let Some(inner) = weak.upgrade() {
+                    inner.wheel_end.borrow_mut().take();
+                    // A drag begun meanwhile ends the change itself.
+                    if !inner.dragging.get() {
+                        ValueTooltip { inner }.release();
+                    }
+                }
+            },
+        );
+        *inner.wheel_end.borrow_mut() = Some(id);
     }
 
     fn end(&self) {
@@ -254,6 +331,37 @@ impl ValueTooltip {
             inner.popover.popup();
         }
     }
+}
+
+impl Inner {
+    /// The range's own wheel moves the value (the keyboard is on the
+    /// slider), or is off and the wheel goes on to the slider's ancestors.
+    fn wheel_moves_value(&self, focused: bool) {
+        for (controller, phase) in &self.range_wheel {
+            let now = if focused {
+                *phase
+            } else {
+                gtk::PropagationPhase::None
+            };
+            if controller.propagation_phase() != now {
+                controller.set_propagation_phase(now);
+            }
+        }
+    }
+}
+
+/// The scroll controllers on `scale` (the range's own, before any of ours)
+/// with their phases.
+fn scroll_controllers(scale: &gtk::Scale) -> Vec<(gtk::EventController, gtk::PropagationPhase)> {
+    let controllers = scale.observe_controllers();
+    (0..controllers.n_items())
+        .filter_map(|i| controllers.item(i))
+        .filter_map(|c| c.downcast::<gtk::EventControllerScroll>().ok())
+        .map(|c| {
+            let phase = c.propagation_phase();
+            (c.upcast(), phase)
+        })
+        .collect()
 }
 
 /// A key a focused `gtk::Range` moves by: the arrows, Home, End, Page Up and

@@ -923,6 +923,135 @@ fn a_snapshot_mid_drag_keeps_the_slider() {
     assert_clean(nested.window(0));
 }
 
+/// R42: the wheel over a slider the keyboard isn't on scrolls what holds
+/// it and changes no value, as over a field: the panel's column over the
+/// inspector's opacity, the autocut page over its threshold (both used to
+/// move by ten, the opacity shown but never sent). With the keyboard on the
+/// slider (Shift+Tab from its field, held) the wheel moves it, and a burst
+/// of notches is one `LayerSet`.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_wheel_over_a_slider_scrolls_the_panel() {
+    // 800 high: the panel's column (y 48 to 768, take 8's banner on top)
+    // ends under the inspector.
+    let mut nested = Nested::start(AREA, "slider-wheel", Options::size(1600, 800));
+    let preset = ui(|u| {
+        u.canvas_mode = CanvasMode::Program;
+        u.selection = vec![clip("c3e9")];
+        u.selected_layer = Some(LayerId::numbered(2));
+        u.playhead = 4842;
+    });
+    let project = fixture(&nested, DesignVariant::Base, &preset);
+    open(&mut nested, &project, levels(DESIGN_LEVELS));
+    let take = Some("take-0008");
+    // L2 at 50 %: a notch up a slider that takes the wheel shows 60.
+    cli_ok(
+        &nested,
+        &project,
+        &[
+            "scene",
+            "layer",
+            "set",
+            "L2",
+            "--take",
+            "take-0008",
+            "--opacity",
+            "0.5",
+        ],
+    );
+    nested.window(0).wait_idle();
+    let opacity = |nested: &mut Nested| {
+        let fields = nested.window(0).entries("inspector");
+        fields.get("inspector-opacity").cloned()
+    };
+    assert_eq!(opacity(&mut nested).as_deref(), Some("50"));
+    let below = region(nested.window(0), "inspector-opacity-slider");
+    assert!(below[1] > 768.0, "the slider starts under the column's end");
+    // The wheel over the column's top (the rows: no slider) scrolls it to
+    // its end, where the slider shows.
+    let to_the_end = |nested: &mut Nested| {
+        nested.pointer().move_to(PANEL[0] + PANEL[2] / 2.0, 200.0);
+        nested.pointer().wheel(12);
+        nested.window(0).wait_idle();
+        let slider = region(nested.window(0), "inspector-opacity-slider");
+        assert!(
+            slider[1] + slider[3] <= 768.0,
+            "the slider shows: {slider:?}"
+        );
+        slider
+    };
+    let [x, y, w, h] = to_the_end(&mut nested);
+    // Two notches up over it (GTK's column takes back up to 100 px it ran
+    // past its end first): the column scrolls back, nothing moves or goes.
+    nested.pointer().move_to(x + w / 2.0, y + h / 2.0);
+    nested.pointer().wheel(-2);
+    nested.window(0).wait_idle();
+    assert_eq!(
+        opacity(&mut nested).as_deref(),
+        Some("50"),
+        "the wheel moved no value"
+    );
+    let moved = region(nested.window(0), "inspector-opacity-slider");
+    assert!(
+        moved[1] > y,
+        "the column scrolled: the slider went from y {y} to {}",
+        moved[1]
+    );
+    assert_eq!(layer(&nested, &project, take, "L2")["opacity"], 0.5);
+    // The keyboard on the slider: three notches up are one change, sent
+    // once when the burst ends.
+    let [x, y, w, h] = to_the_end(&mut nested);
+    let before = history_cursor(&nested, &project);
+    let (fx, fy) = center(region(nested.window(0), "inspector-opacity"));
+    nested.pointer().click(fx, fy);
+    nested.window(0).wait_idle();
+    // (GTK moves back on Shift with ISO_Left_Tab: wtype's own keymap has no
+    // shifted level for Tab.)
+    let held = nested.keys_held(&["-M", "shift", "-k", "ISO_Left_Tab", "-m", "shift"], 6000);
+    poll(Duration::from_secs(5), "the keyboard on the slider", || {
+        let local = nested.window(0).local();
+        (local["focusPath"][0] == "inspector-opacity-slider").then_some(())
+    });
+    nested.pointer().move_to(x + w / 2.0, y + h / 2.0);
+    nested.pointer().wheel(-3);
+    let saved = poll(Duration::from_secs(5), "the burst's LayerSet", || {
+        let saved = layer(&nested, &project, take, "L2")["opacity"].as_f64()?;
+        (saved > 0.5).then_some(saved)
+    });
+    held.wait();
+    nested.window(0).wait_idle();
+    let shown = opacity(&mut nested).expect("the opacity field");
+    assert_eq!(
+        format!("{}", (saved * 100.0).round()),
+        shown,
+        "sent as shown"
+    );
+    assert_eq!(
+        history_cursor(&nested, &project),
+        before + 1,
+        "one LayerSet for the burst"
+    );
+    // The autocut page: the wheel over its threshold scrolls the page.
+    nested.keys(&["-M", "shift", "-k", "c", "-m", "shift"]);
+    wait_for_label(nested.window(0), "Removes 4 silences");
+    let threshold = |nested: &mut Nested| {
+        let fields = nested.window(0).entries("autocut-page");
+        fields.get("knob-field-0").cloned()
+    };
+    assert_eq!(threshold(&mut nested).as_deref(), Some("\u{2212}35"));
+    let (x, y) = center(region(nested.window(0), "knob-scale-0"));
+    nested.pointer().move_to(x, y);
+    nested.pointer().wheel(1);
+    nested.window(0).wait_idle();
+    assert_eq!(
+        threshold(&mut nested).as_deref(),
+        Some("\u{2212}35"),
+        "the threshold is the project's"
+    );
+    assert_has(&panel_labels(nested.window(0)), &["Removes 4 silences"]);
+    assert_clean(nested.window(0));
+}
+
 // ------------------------------------------------------------------ S13
 
 /// L2's box on the 1:2 Live preview at rest (BRIEF §3.1: (1500, 760, 384,

@@ -253,6 +253,31 @@ impl VirtualPointer {
         self.roundtrip();
     }
 
+    /// `notches` clicks of a mouse wheel where the pointer is (positive:
+    /// down), as a real wheel sends them: a `wheel` axis source and one
+    /// discrete step per notch (`axis_source`, `axis_discrete`, `frame`).
+    pub fn wheel(&mut self, notches: i32) {
+        const AXIS_VERTICAL: u32 = 0;
+        const SOURCE_WHEEL: u32 = 0;
+        let step = notches.signum();
+        for _ in 0..notches.unsigned_abs() {
+            let time = self.time();
+            // wl_fixed: 24.8 fixed point; 15 is a notch's usual distance.
+            let value = (15 * step * 256) as u32;
+            self.send(&Message::new(POINTER, 5).uint(SOURCE_WHEEL));
+            self.send(
+                &Message::new(POINTER, 7)
+                    .uint(time)
+                    .uint(AXIS_VERTICAL)
+                    .uint(value)
+                    .uint(step as u32),
+            );
+            self.send(&Message::new(POINTER, 4));
+            self.roundtrip();
+            std::thread::sleep(Duration::from_millis(30));
+        }
+    }
+
     /// A left click at (`x`, `y`).
     pub fn click(&mut self, x: f64, y: f64) {
         self.move_to(x, y);

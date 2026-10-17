@@ -11,7 +11,9 @@
 //! - The slider commits on release, the Fit segment at once. While it is
 //!   being changed (dragged, or a key moved it), a snapshot leaves it and
 //!   its field where the person has them; a change that ends unsent shows
-//!   the model's value again (R44).
+//!   the model's value again (R44). The wheel moves it only while the
+//!   keyboard is on it (a burst of notches is one commit); otherwise the
+//!   wheel scrolls the panel (R42, `widgets::scale_tooltip`).
 //! - During a canvas drag or nudge burst the fields show
 //!   `LocalUi.layer_drag` (WP4's transient geometry).
 //! - An edit belongs to the scene and the layer it was typed for: when
