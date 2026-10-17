@@ -134,6 +134,13 @@ pub fn rows_alive() -> usize {
     })
 }
 
+/// The drawer slide's last show, as asked (test mode, where nothing
+/// animates; `testctl`'s `local`, `binSlide`): whether it opened, and
+/// whether it was to animate.
+pub fn slide_shown() -> Option<(bool, bool)> {
+    slide::last_show()
+}
+
 /// The UTC offset of the local zone at `at`.
 fn offset_at(at: DateTime<Utc>) -> i32 {
     Local
@@ -255,8 +262,9 @@ impl Drawer {
         });
         *drawer.sink.borrow_mut() = Some(sink);
         drawer.connect(&content);
-        // Open at startup without animating ("nothing animates on app
-        // start").
+        // As the store's state has it (the placeholder before the Session
+        // opens: closed), at once; the first snapshot opens it, still
+        // without sliding ("nothing animates on app start", `on_change`).
         let open = ctx.store.state().ui.bin_open;
         drawer.slide.show(open, false, ctx.theme.motion().reduced);
         drawer.refresh(&ctx.store.state());
@@ -363,8 +371,13 @@ impl Drawer {
     fn on_change(self: &Rc<Self>, change: &Change) {
         let (prev, next) = (&change.prev, &change.next);
         if prev.ui.bin_open != next.ui.bin_open {
+            // Nothing animates on start (G§3.3): the first snapshot, out of
+            // the placeholder state (`bin_open` false), comes before the
+            // Session says it is open, and a bin left open in ui.json jumps
+            // open; every toggle after that slides.
+            let animate = self.ctx.store.local().is_open();
             self.slide
-                .show(next.ui.bin_open, true, self.ctx.theme.motion().reduced);
+                .show(next.ui.bin_open, animate, self.ctx.theme.motion().reduced);
             if next.ui.bin_open {
                 self.want_sizes(false);
             }

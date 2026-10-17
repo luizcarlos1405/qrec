@@ -603,6 +603,39 @@ fn s14_the_bin_drawer() {
     close(&mut nested);
 }
 
+/// G§3.3 ("nothing animates on start"): a bin left open in ui.json opens
+/// with the window without sliding in (the first snapshot, out of the
+/// placeholder state, slid it in over 240 ms); `B` then closes it with
+/// the slide. Test mode animates nothing: `binSlide` is the show as asked.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_bin_opens_at_start_without_sliding() {
+    let mut nested = Nested::start(AREA, "bin-start", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(bin_ui()),
+    );
+    open(&mut nested, &project, launch());
+    let local = nested.window(0).local();
+    assert_eq!(
+        local["binSlide"],
+        json!({"open": true, "animate": false}),
+        "{local}"
+    );
+    nested.keys(&["-k", "b"]);
+    nested.window(0).wait_idle();
+    let local = nested.window(0).local();
+    assert_eq!(
+        local["binSlide"],
+        json!({"open": false, "animate": true}),
+        "{local}"
+    );
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
 /// S14 at `QREC_TEST_SCALE=2` (G§8.4 scale runs).
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
