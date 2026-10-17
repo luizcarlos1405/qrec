@@ -344,6 +344,25 @@ fn layer_count(n: usize) -> String {
     if n == 0 { String::new() } else { n.to_string() }
 }
 
+/// Sends an inline rename's command (R46): when the core refuses it at
+/// once, `refused` puts the row's name back (given the state then) before
+/// the default reply policy toasts why.
+pub(crate) fn send_rename(
+    store: &crate::store::Store,
+    cmd: qrec_core::Command,
+    refused: impl FnOnce(&State) + 'static,
+) {
+    let weak = store.downgrade();
+    let sent = cmd.clone();
+    store.dispatch_with(cmd, false, move |reply| {
+        let Some(store) = weak.upgrade() else { return };
+        if reply.result.is_err() && !reply.late {
+            refused(&store.state());
+        }
+        store.apply_default(&sent, reply);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

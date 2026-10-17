@@ -3,17 +3,25 @@
 //! the value; no ± buttons. Owner: WP5.
 //!
 //! - The model's value comes in with [`NumericField::set_value`]; while
-//!   the person edits (the field has the focus and its text differs from
-//!   the model's), a new model value doesn't overwrite what they type.
+//!   the person edits (the field has the focus and they typed or stepped
+//!   since the text was last handed over or put back), a new model value
+//!   doesn't overwrite what they type.
 //! - Enter and leaving the field commit: the commit callback gets the text
-//!   (once per commit, and only when it differs from the model's). `Esc`
-//!   puts the model's value back.
+//!   (once per edit, and only when it differs from the model's). The edit
+//!   ends there: what the owner answers shows at once, the field still
+//!   focused (the autocut draft's clamped or rounded value), and a later
+//!   blur commits nothing again. A value the owner sent as a command stays
+//!   until the model moves (its snapshot). `Esc` puts the model's value
+//!   back. The rules are [`FieldState`]'s, GTK-free.
 //! - `↑` `↓` step by the step (`Shift`: ×10), `PgUp` `PgDn` by ten steps;
 //!   the wheel steps only while the field has the focus, so scrolling the
 //!   panel never changes a value. A step changes the text; Enter or leaving
 //!   commits it (one command per commit).
-//! - [`NumericField::set_invalid`] draws the C29 invalid state; the caller
-//!   shows the helper text.
+//! - [`NumericField::set_error`] draws the C29 invalid state with its
+//!   message (the text stays the person's to fix); the owner shows the
+//!   message where it goes ([`NumericField::on_error`]: a helper text, a
+//!   tooltip). The stroke and the message go together: typing, `Esc` and a
+//!   model value that replaces the text clear both.
 //!
 //! Keys reach the field: the window's router lets everything through while
 //! an editable has the focus (G§3.8 step 2).
@@ -27,11 +35,154 @@ use qrec_core::view::panel::parse_number;
 
 use crate::guarded;
 
+/// A field's text and whose it is, GTK-free: the rules of
+/// [`NumericField`] (its text widget only shows [`FieldState::text`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FieldState {
+    /// The model's text.
+    model: String,
+    /// The text shown.
+    text: String,
+    /// The person typed or stepped since the text was last handed over,
+    /// put back or replaced by the model's: the text is theirs.
+    edited: bool,
+    /// A commit is being handed to the owner now.
+    committing: bool,
+    /// The owner answered the commit being handed over (a model value, a
+    /// revert, the invalid state).
+    answered: bool,
+    /// Handed over and not answered at once (the owner sent a command):
+    /// the model it was handed over against. The text stays until the
+    /// model moves from it.
+    awaiting: Option<String>,
+    /// Why the text is invalid (C29), until it is typed over, put back or
+    /// replaced.
+    error: Option<String>,
+}
+
+impl FieldState {
+    /// The text shown.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// The text differs from the model's.
+    pub fn is_dirty(&self) -> bool {
+        self.text != self.model
+    }
+
+    /// Why the text is invalid, if it is.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    /// The model's value came in (`focused`: the field has the focus): the
+    /// text to show now, when it changes. The person's own text stays
+    /// while they edit it, and a value handed over stays until the model
+    /// moves; what the owner answers a commit with always shows.
+    pub fn set_value(&mut self, model: &str, focused: bool) -> Option<String> {
+        self.model = model.to_owned();
+        if self.committing {
+            self.answered = true;
+        } else if (focused && self.edited) || self.awaiting.as_deref() == Some(model) {
+            return None;
+        }
+        self.edited = false;
+        self.awaiting = None;
+        self.error = None;
+        if self.text == self.model {
+            return None;
+        }
+        self.text = self.model.clone();
+        Some(self.text.clone())
+    }
+
+    /// The person changed the text (typing, a step): an error goes.
+    pub fn typed(&mut self, text: &str) {
+        self.text = text.to_owned();
+        self.edited = true;
+        self.error = None;
+    }
+
+    /// Enter or leaving: the text to hand to the owner, once per edit and
+    /// only when it differs from the model's. [`FieldState::end_commit`]
+    /// follows the owner's callback.
+    pub fn begin_commit(&mut self) -> Option<String> {
+        let edited = std::mem::take(&mut self.edited);
+        if !edited || !self.is_dirty() {
+            return None;
+        }
+        self.committing = true;
+        self.answered = false;
+        Some(self.text.clone())
+    }
+
+    /// The owner's callback returned: unanswered, the handed text waits
+    /// for the model to move.
+    pub fn end_commit(&mut self) {
+        if self.committing && !self.answered {
+            self.awaiting = Some(self.model.clone());
+        }
+        self.committing = false;
+        self.answered = false;
+    }
+
+    /// `Esc`, or the owner refused the text: the model's text back, and
+    /// no error.
+    pub fn revert(&mut self) -> String {
+        self.answer();
+        self.edited = false;
+        self.awaiting = None;
+        self.error = None;
+        self.text = self.model.clone();
+        self.text.clone()
+    }
+
+    /// What the field edits changed under it (another scene, another
+    /// layer): `model`'s text, even while the person edits (their edit was
+    /// for what went), and no error. The text to show, when it changes.
+    pub fn reset(&mut self, model: &str) -> Option<String> {
+        self.answer();
+        self.model = model.to_owned();
+        self.edited = false;
+        self.awaiting = None;
+        self.error = None;
+        if self.text == self.model {
+            return None;
+        }
+        self.text = self.model.clone();
+        Some(self.text.clone())
+    }
+
+    /// The owner found the text invalid (`Some`, why): it stays the
+    /// person's to fix (a new model value doesn't replace it while they are
+    /// in the field). `None`: the text is fine.
+    pub fn set_error(&mut self, error: Option<&str>) {
+        if let Some(why) = error {
+            self.answer();
+            self.awaiting = None;
+            self.edited = true;
+            self.error = Some(why.to_owned());
+        } else {
+            self.error = None;
+        }
+    }
+
+    fn answer(&mut self) {
+        if self.committing {
+            self.answered = true;
+        }
+    }
+}
+
 /// How a field writes a stepped value ("1280", "−6.5").
 pub type Format = Rc<dyn Fn(f64) -> String>;
 
 /// Called with a committed text.
 pub type CommitFn = Rc<dyn Fn(&str)>;
+
+/// Called when the field's error changes (`None`: it went).
+pub type ErrorFn = Rc<dyn Fn(Option<&str>)>;
 
 /// A C29 numeric field. Cheap to clone; main thread only.
 #[derive(Clone)]
@@ -44,11 +195,14 @@ struct Inner {
     text: gtk::Text,
     unit: gtk::Label,
     units: RefCell<Vec<String>>,
-    /// The model's text.
-    model: RefCell<String>,
+    /// The model's text and whose the shown text is.
+    state: RefCell<FieldState>,
     step: Cell<f64>,
     format: RefCell<Format>,
     on_commit: RefCell<Option<CommitFn>>,
+    on_error: RefCell<Option<ErrorFn>>,
+    /// The error the field draws (and told its owner about).
+    shown_error: RefCell<Option<String>>,
     /// Text set by the code, not typed.
     setting: Cell<bool>,
 }
@@ -57,7 +211,7 @@ impl std::fmt::Debug for NumericField {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NumericField")
             .field("text", &self.text())
-            .field("model", &*self.inner.model.borrow())
+            .field("state", &*self.inner.state.borrow())
             .finish()
     }
 }
@@ -91,10 +245,12 @@ impl NumericField {
                 text,
                 unit: unit_label,
                 units: RefCell::new(vec![unit.to_owned()]),
-                model: RefCell::new(String::new()),
+                state: RefCell::new(FieldState::default()),
                 step: Cell::new(1.0),
                 format: RefCell::new(Rc::new(|v: f64| whole(v))),
                 on_commit: RefCell::new(None),
+                on_error: RefCell::new(None),
+                shown_error: RefCell::new(None),
                 setting: Cell::new(false),
             }),
         };
@@ -117,18 +273,32 @@ impl NumericField {
     }
 
     /// The model's value as text. Shown at once unless the person is
-    /// editing; `Esc` and a cancelled edit come back to it.
+    /// editing ([`FieldState::set_value`]); `Esc` and a cancelled edit come
+    /// back to it.
     pub fn set_value(&self, text: &str) {
-        let editing = self.inner.text.has_focus() && self.is_dirty();
-        *self.inner.model.borrow_mut() = text.to_owned();
-        if !editing && self.inner.text.text() != text {
-            self.set_text(text);
+        let focused = self.inner.text.has_focus();
+        let shown = self.inner.state.borrow_mut().set_value(text, focused);
+        if let Some(shown) = shown {
+            self.set_text(&shown);
         }
+        self.sync_error();
+    }
+
+    /// What the field edits changed under it (another scene, another
+    /// layer): `text` shows at once, even while the person edits (their
+    /// edit was for what went, so it is dropped, never committed to what
+    /// came), and no error.
+    pub fn reset(&self, text: &str) {
+        let shown = self.inner.state.borrow_mut().reset(text);
+        if let Some(shown) = shown {
+            self.set_text(&shown);
+        }
+        self.sync_error();
     }
 
     /// The text differs from the model's.
     pub fn is_dirty(&self) -> bool {
-        self.inner.text.text() != *self.inner.model.borrow()
+        self.inner.state.borrow().is_dirty()
     }
 
     /// The arrow keys' step.
@@ -154,12 +324,40 @@ impl NumericField {
         *self.inner.on_commit.borrow_mut() = Some(Rc::new(f));
     }
 
-    /// The C29 invalid state (a `record-text` stroke).
-    pub fn set_invalid(&self, invalid: bool) {
-        if invalid {
+    /// Called with the error each time it changes (`None`: it went), to
+    /// show its message: the inspector's helper text, a tooltip.
+    pub fn on_error(&self, f: impl Fn(Option<&str>) + 'static) {
+        *self.inner.on_error.borrow_mut() = Some(Rc::new(f));
+    }
+
+    /// The C29 invalid state (a `record-text` stroke) with why (`Some`), or
+    /// none. Invalid text stays the person's to fix: a new model value
+    /// doesn't replace it while they are in the field.
+    pub fn set_error(&self, error: Option<&str>) {
+        self.inner.state.borrow_mut().set_error(error);
+        self.sync_error();
+    }
+
+    /// Why the text is invalid, if it is.
+    pub fn error(&self) -> Option<String> {
+        self.inner.state.borrow().error().map(str::to_owned)
+    }
+
+    /// Draws the state's error and tells the owner when it changed.
+    fn sync_error(&self) {
+        let error = self.error();
+        if *self.inner.shown_error.borrow() == error {
+            return;
+        }
+        *self.inner.shown_error.borrow_mut() = error.clone();
+        if error.is_some() {
             self.inner.root.add_css_class("invalid");
         } else {
             self.inner.root.remove_css_class("invalid");
+        }
+        let hook = self.inner.on_error.borrow().clone();
+        if let Some(f) = hook {
+            f(error.as_deref());
         }
     }
 
@@ -172,22 +370,26 @@ impl NumericField {
         self.inner.unit.clone()
     }
 
-    /// Puts the model's value back.
+    /// Puts the model's value back (and no error).
     pub fn revert(&self) {
-        let model = self.inner.model.borrow().clone();
+        let model = self.inner.state.borrow_mut().revert();
         self.set_text(&model);
-        self.set_invalid(false);
+        self.sync_error();
     }
 
-    /// Commits the text if it changed.
+    /// Hands the person's text to the owner, once per edit, if it changed
+    /// ([`FieldState::begin_commit`]).
     pub fn commit(&self) {
-        if !self.is_dirty() {
+        let Some(text) = self.inner.state.borrow_mut().begin_commit() else {
             return;
-        }
+        };
         let callback = self.inner.on_commit.borrow().clone();
         if let Some(f) = callback {
-            f(&self.text());
+            // A panic in the owner is reported here, and the commit still
+            // ends (else every later value would count as its answer).
+            crate::guard::catch("numeric field: commit", || f(&text));
         }
+        self.inner.state.borrow_mut().end_commit();
     }
 
     fn set_text(&self, text: &str) {
@@ -200,13 +402,17 @@ impl NumericField {
     pub fn step_by(&self, steps: f64) {
         let units = self.inner.units.borrow().clone();
         let units: Vec<&str> = units.iter().map(String::as_str).collect();
+        let model = self.inner.state.borrow().model.clone();
         let current = parse_number(&self.text(), &units)
-            .or_else(|| parse_number(&self.inner.model.borrow(), &units))
+            .or_else(|| parse_number(&model, &units))
             .unwrap_or(0.0);
         let next = current + steps * self.inner.step.get();
         let format = self.inner.format.borrow().clone();
-        self.set_text(&format(next));
+        let next = format(next);
+        self.inner.state.borrow_mut().typed(&next);
+        self.set_text(&next);
         self.inner.text.set_position(-1);
+        self.sync_error();
     }
 
     fn wire(&self) {
@@ -283,15 +489,17 @@ impl NumericField {
             }
         }));
         inner.root.add_controller(click);
-        // Typing clears the invalid state.
+        // Typing makes the text the person's and clears the invalid state
+        // (the stroke and its message).
         let weak = Rc::downgrade(inner);
         inner
             .text
-            .connect_changed(guarded!("numeric field: changed", move |_| {
+            .connect_changed(guarded!("numeric field: changed", move |text| {
                 if let Some(inner) = weak.upgrade()
                     && !inner.setting.get()
                 {
-                    inner.root.remove_css_class("invalid");
+                    inner.state.borrow_mut().typed(&text.text());
+                    NumericField { inner }.sync_error();
                 }
             }));
     }
@@ -330,6 +538,117 @@ pub fn signed(v: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R47: what the owner answers a commit with shows at once, the field
+    /// still focused: the autocut draft clamps 5000 to 500 and rounds
+    /// −35.4 to −35 (the draft unchanged), and a blur after Enter commits
+    /// nothing again.
+    #[test]
+    fn a_commit_shows_the_owners_answer() {
+        let mut f = FieldState::default();
+        assert_eq!(f.set_value("120", false).as_deref(), Some("120"));
+        f.typed("5000");
+        assert_eq!(f.set_value("120", true), None, "the person's text stays");
+        assert_eq!(f.begin_commit().as_deref(), Some("5000"));
+        assert_eq!(f.set_value("500", true).as_deref(), Some("500"));
+        f.end_commit();
+        assert_eq!(f.text(), "500");
+        assert_eq!(f.begin_commit(), None, "a blur after Enter");
+        // Rounded back to the same value: its text replaces the typed one.
+        f.set_value("\u{2212}35", true);
+        f.typed("\u{2212}35.4");
+        assert_eq!(f.begin_commit().as_deref(), Some("\u{2212}35.4"));
+        assert_eq!(
+            f.set_value("\u{2212}35", true).as_deref(),
+            Some("\u{2212}35")
+        );
+        f.end_commit();
+        assert!(!f.is_dirty());
+        // A slider moved after Enter: the field follows it, and leaving
+        // doesn't send the typed value back.
+        f.typed("-40");
+        assert_eq!(f.begin_commit().as_deref(), Some("-40"));
+        f.set_value("\u{2212}40", true);
+        f.end_commit();
+        assert_eq!(
+            f.set_value("\u{2212}50", true).as_deref(),
+            Some("\u{2212}50")
+        );
+        assert_eq!(f.begin_commit(), None, "the blur after the drag");
+    }
+
+    /// A value the owner sent as a command stays until its snapshot moves
+    /// the model; a refresh before it doesn't flash the old value.
+    #[test]
+    fn a_sent_value_waits_for_the_model() {
+        let mut f = FieldState::default();
+        f.set_value("1500", false);
+        f.typed("1280");
+        assert_eq!(f.begin_commit().as_deref(), Some("1280"));
+        f.end_commit();
+        assert_eq!(f.set_value("1500", true), None, "an unrelated refresh");
+        assert_eq!(f.text(), "1280");
+        assert_eq!(f.set_value("1280", true), None, "its snapshot");
+        assert!(!f.is_dirty());
+        assert_eq!(f.begin_commit(), None);
+        // A later change from elsewhere shows, the field still focused.
+        assert_eq!(f.set_value("1300", true).as_deref(), Some("1300"));
+    }
+
+    /// Esc puts the model's text back; invalid text stays the person's
+    /// while they are in the field, and goes with the next value once
+    /// they left it.
+    #[test]
+    fn esc_and_invalid_text() {
+        let mut f = FieldState::default();
+        f.set_value("384", false);
+        f.typed("0");
+        assert_eq!(f.begin_commit().as_deref(), Some("0"));
+        f.set_error(Some("Width must be at least 1"));
+        f.end_commit();
+        assert_eq!(f.set_value("384", true), None, "the person fixes it");
+        assert_eq!(f.text(), "0");
+        assert_eq!(f.error(), Some("Width must be at least 1"));
+        assert_eq!(f.revert(), "384");
+        assert_eq!(f.error(), None, "Esc clears the error too");
+        assert_eq!(f.begin_commit(), None);
+        f.typed("0");
+        assert_eq!(f.begin_commit().as_deref(), Some("0"));
+        f.set_error(Some("Width must be at least 1"));
+        f.end_commit();
+        assert_eq!(f.set_value("384", false).as_deref(), Some("384"), "left");
+        assert_eq!(f.error(), None, "a value that replaces the text clears it");
+        // Typing clears it as it clears the stroke.
+        f.typed("0");
+        f.begin_commit();
+        f.set_error(Some("Width must be at least 1"));
+        f.end_commit();
+        f.typed("1");
+        assert_eq!(f.error(), None);
+        // Typed back to the model's text: nothing to commit.
+        f.typed("38");
+        f.typed("384");
+        assert_eq!(f.begin_commit(), None);
+    }
+
+    /// R38: what the field edits changed under the edit (another scene, an
+    /// other layer): the new value shows though the person edits, and the
+    /// edit is gone (nothing left to commit, no error).
+    #[test]
+    fn a_new_scene_drops_the_edit() {
+        let mut f = FieldState::default();
+        f.set_value("1500", false);
+        f.typed("200");
+        assert_eq!(f.set_value("1500", true), None, "the person edits");
+        assert_eq!(f.reset("1500").as_deref(), Some("1500"));
+        assert_eq!(f.begin_commit(), None, "nothing to commit");
+        f.typed("0");
+        f.begin_commit();
+        f.set_error(Some("Width must be at least 1"));
+        f.end_commit();
+        assert_eq!(f.reset("384").as_deref(), Some("384"));
+        assert_eq!(f.error(), None);
+    }
 
     #[test]
     fn formats_use_the_true_minus() {

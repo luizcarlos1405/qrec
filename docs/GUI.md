@@ -1260,7 +1260,9 @@ time; A§8.7 rules for every child).
   takes its widget from the controller (`g.widget()`) or holds a
   `downgrade()`. Widgets made again on a rebuild must go: the bin's rows
   are counted (`local`'s `binRowsAlive`; WP7 integration audit: a row's
-  click gesture held its row, so every rebuild kept the rows it dropped).
+  click gesture held its row, so every rebuild kept the rows it dropped),
+  and so are the panel's (`layerRowsAlive`, `audioRowsAlive`; review R43:
+  a layer row's drag gesture and its name's rename handler held the row).
   Their subscriptions go with them: a widget made per row keeps its
   `Subscription` (the meters' and the bin thumbnails' theme ones) and
   drops it on `dispose`, never `detach()`es it (`local`'s
@@ -1748,7 +1750,7 @@ previews, the player, io, opening, the portal).
 | `{"op":"dispatch","command":{…},"confirmed":false}` | `Store::dispatch_with` with the default reply policy (confirmations open their modal); `{"ok":true}` at once |
 | `{"op":"action","id":"export.panel"}` | runs a binding or GUI action as its key would (pre-steps included) |
 | `{"op":"hints"}` | the rendered hint items (`keys`, `label`, `enabled`, `emphasized`) and the status text (`hintbar::current_items`); `shown`, the labels of the items the bar draws whole (a narrow window leaves the trailing ones out, `hintbar::fitting`), and `cut`, whether a drawn one runs past the bar (never; both WP7 integration audit) |
-| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit); `themeSubscribers`, the theme's callbacks (a dropped bin thumbnail's goes with it, R11; WP7 integration's shot and code audits); `timelinePaints`, how many times the timeline's canvas made its render node again (not while only the playhead moves, C16; review R10) |
+| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and the panel's (`layerRowsAlive`, `audioRowsAlive`; review R43), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit); `themeSubscribers`, the theme's callbacks (a dropped bin thumbnail's goes with it, R11; WP7 integration's shot and code audits); `timelinePaints`, how many times the timeline's canvas made its render node again (not while only the playhead moves, C16; review R10) |
 | `{"op":"a11y"}` | every visible icon-only button, focusable region or focusable custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 | `{"op":"fonts"}` | the family Pango loads for each bundled font; `ok` when each resolves to itself |
 | `{"op":"icons"}` | each custom symbolic icon drawn in a probe color: found, its pixels, recolored |
@@ -2327,7 +2329,10 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
   Commands: drag reorder → `LayerOrder{target, layer, to: n − 1 − row}`;
   eye → `LayerSet{visible}`; lock → `{locked}`; rename → `{name}` (Enter
   saves, Esc cancels); overflow: Rename, Move up, Move down, Remove
-  (`LayerRemove`).
+  (`LayerRemove`). A rename that sends nothing (blank, the same name) or
+  that the core refuses shows the name again (`panel::layer_rename_outcome`,
+  `track_rename_outcome`); edits stopping (D-43: a recording) end one
+  unsaved, as they drop a field's edit (review R46).
 - **Audio rows**: role icon, label, id chip, the "Autocut" tag on
   `autocut.track`, `M` → `AudioSet{muted}`; overflow: Rename (`label`),
   Change source (submenu of devices, project scene only), Use for autocut
@@ -2350,7 +2355,21 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
   - Invalid → helper text: "Width must be at least 1", "X must be between
     −8192 and 8192", "Crop leaves nothing to show".
   - Enter or blur commits one `LayerSet{target: edit_target, layer,
-    patch}`; the slider commits on release.
+    patch}`; the slider commits on release. While the slider is being
+    changed (dragged, or a key moved it) a snapshot leaves it and its field
+    where the person has them; a change that ends unsent shows the model's
+    value again (`ValueTooltip::changing`, `on_end`; review R44). The
+    wheel moves a slider (this one, the autocut page's) only while the
+    keyboard is on it, a burst of notches being one change that ends
+    300 ms after its last notch; over another slider it scrolls the panel,
+    as over a field (review R42).
+  - An edit belongs to the scene and the layer (or track) it was typed
+    for: when either changes under it (the mode, the selection, an agent's
+    command), the field shows the new values at once, focused or not, and
+    a rename ends unsaved; nothing goes to the new scene (review R38). A
+    chrome button's change (the mode switch, Play) drops it the same way;
+    committing it first instead is open (`KeyRouter::run_binding` would
+    end the edit before it decides).
   - During a canvas drag or nudge burst the fields show
     `LocalUi.layer_drag`.
   - Empty: "Select a layer on the canvas or in the list to edit its
@@ -2362,7 +2381,14 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     0…1000 ms step 10. "Detect silence on": the project scene's tracks,
     "A1 · Yeti Nano (mic)".
   - `dry_run(&State, &draft) -> Command`: scope = the selection, or All;
-    overrides = the draft.
+    overrides = the draft. `dry_run_key(&State, &draft) -> DryRunKey`: the
+    command and what it doesn't carry but its answer is worked out on (the
+    timeline's clips; the setting's track while the draft names none). The
+    page asks again when the key changes, not only the command: a trim, a
+    move, an undo or another client's edit under the same selection; and
+    when the clips changed under the shown plan (`DryRunKey::stale_for`)
+    its hatches, summary and regions go until the new answer (review R40,
+    R76).
   - `apply(&State, &draft) -> Vec<Command>` (D-15).
   - `summary(&AutocutPlanView, &State) -> AutocutSummary { title, rows:
     Vec<(String, String)>, regions: Vec<RegionRow> }`, matching the S12
@@ -2379,8 +2405,19 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
 - **As built** (WP5, 99197b5): Apply's answer is a GUI-owned success toast
   (S25 #6's copy from the reply, with Undo); a dry run's or Apply's error
   reads in the summary ("Nothing to cut" and the core's reason); the
-  summary adds a "Skipped" row when the plan skipped clips; the dropdown
-  shows the scene's first mic while `autocut.track` is null. A missing
+  summary adds a "Skipped" row when the plan skipped clips; while
+  `autocut.track` is null the dropdown, the "Autocut" tag and the hatches
+  name the track the dry run analyzes (`autocut::default_track`: the
+  scene's first mic, else its first track; review R77). The dropdown's
+  open list is `Overlay::Menu` (`panel::menus::track_dropdown`, the
+  helper for any `gtk::DropDown`; review R32, R41): measured on GTK 4.22,
+  an open list's keys go to its popover and never reach the window's key
+  router, so `Esc` closes the list, not the page. In the Narrow layout the
+  page shows in the layers sheet and goes with it (review R39): the sheet
+  closing (`Esc`, a click beside it, the header's layers button) closes
+  the page, a window narrowing under the open page shows the sheet, and
+  Apply or Cancel take away a sheet the page opened, not one opened before
+  it (`panel::autocut::sheet_step`). A missing
   device's line replaces its meter; Change source lists the devices of
   the track's role; a layer problem's icon is `qrec-monitor-x-symbolic`
   (a screen), `dialog-error-symbolic` (another source) or
@@ -2654,7 +2691,7 @@ below; read them with `Get` while `design/qrec.pen` is active).
 | C23 Toast | `R7g4Dq` + levels, `PaHF5` | `ToastHost` / `ToastView` in `content_layer`; a body that starts with an action's path is `mono-sm` (S16b), others `body-sm`; a "+N" queue chip (not drawn) follows the title; Undo is guarded by the history cursor | WP6 |
 | C24 Modal | `x5RrCQ`, `VDIBZ`, `NdrWq`, scrim `Y83G19` | `ModalView` in `content_layer` (scrim to y 968, stacked over Settings); Cancel focused | WP6 (text stub: WP0b) |
 | C25 Popover, menu | `b2lnKh`, `S0EgQ`, `KTUMs` | the export panel is in-window (trap or passive layer, D-49); menus are `gtk::PopoverMenu` styled R2 (common.css); every menu's button is `widgets::button::menu_button` (its inner button styled as C01 and, like the MenuButton, named for screen readers; a test greps for others) | WP0b, WP7 |
-| C26 Slider | `Bn6sz` + states | `gtk::Scale` styled; ticks with `add_mark`; the value tooltip while dragging (`widgets::scale_tooltip`); S12's end labels are their own row flush with the track's ends (GTK centers mark labels) and the ticks sit at the trough's ends (S12 insets them by the thumb's radius, ~2 px) | WP0b (CSS), WP5 |
+| C26 Slider | `Bn6sz` + states | `gtk::Scale` styled; ticks with `add_mark`; the value tooltip while dragging (`widgets::scale_tooltip`, which also gives the range's own wheel only to a focused slider: R42); S12's end labels are their own row flush with the track's ends (GTK centers mark labels) and the ticks sit at the trough's ends (S12 insets them by the thumb's radius, ~2 px) | WP0b (CSS), WP5 |
 | C27 Switch | `z9laF`, `p3tmIy` | `gtk::Switch` styled | WP0b |
 | C28 Segmented | `NZKuJ`, `L46uU`, `jmq6y` | `adw::ToggleGroup` styled; the Settings switcher too (`adw::ToggleGroup` + `gtk::Stack`: `adw::InlineViewSwitcher`'s pages can't be disabled, D-48; WP6) | WP0b, WP6 |
 | C29 Fields | `j1hIDi`, `oc5uM`, `vpmJy`, `EfoCl`, `oE7jW` | `gtk::Entry`; `NumericField` (Box `.field` + `gtk::Text` right-aligned + unit label; arrows and scroll step; no ± buttons); `gtk::DropDown`; `gtk::SearchEntry` | WP0b (CSS), WP5 |

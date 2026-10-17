@@ -17,14 +17,14 @@
 //! - Errors (Live: the portal refused the screen, a source died) and a
 //!   take's missing source replace the source line and the icon.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use gtk::graphene;
 use gtk::prelude::*;
-use qrec_core::protocol::command::LayerPatch;
+use gtk::{glib, graphene};
+use qrec_core::protocol::command::{LayerPatch, SceneTarget};
 use qrec_core::view::DragKind;
-use qrec_core::view::panel::{self, LayerRow, NO_LAYERS};
+use qrec_core::view::panel::{self, LayerRow, NO_LAYERS, RenameOutcome};
 use qrec_core::{LayerId, State, VideoSource};
 
 use super::menus::{self, Menu};
@@ -33,6 +33,24 @@ use crate::guarded;
 
 /// How far a press moves before it is a reorder drag.
 const DRAG_THRESHOLD: f64 = 4.0;
+
+thread_local! {
+    /// Each layer row made so far, weakly; test mode only: what
+    /// [`rows_alive`] counts.
+    static ROWS: RefCell<Vec<glib::WeakRef<gtk::ListBoxRow>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// How many layer rows are alive (test mode; `testctl`'s `local`,
+/// `layerRowsAlive`): the rows shown, once those a rebuild dropped are
+/// gone. A row a callback of its own holds strongly would outlive its
+/// rebuild (G§3.12 R11).
+pub fn rows_alive() -> usize {
+    ROWS.with(|rows| {
+        let mut rows = rows.borrow_mut();
+        rows.retain(|row| row.upgrade().is_some());
+        rows.len()
+    })
+}
 
 /// The layer rows. Cheap to clone; main thread only.
 #[derive(Clone)]
@@ -72,6 +90,10 @@ struct RowView {
     menu_button: gtk::MenuButton,
     menu: Menu,
     model: RefCell<Option<LayerRow>>,
+    /// The scene the row's rename edits (`edit_target`).
+    edits: RefCell<Option<Option<SceneTarget>>>,
+    /// A rename is being ended unsaved.
+    dropping: Rc<Cell<bool>>,
 }
 
 /// A row being dragged.
@@ -196,7 +218,10 @@ impl LayerList {
 
     fn rebuild(&self, rows: &[LayerRow]) {
         let inner = &self.inner;
-        for view in inner.rows.borrow_mut().drain(..) {
+        let old: Vec<RowView> = inner.rows.borrow_mut().drain(..).collect();
+        for view in old {
+            // A rename on a row that goes saves nothing.
+            view.drop_rename();
             inner.list.remove(&view.row);
         }
         let mut views = Vec::with_capacity(rows.len());
@@ -248,27 +273,56 @@ impl LayerList {
                     store.dispatch(cmd);
                 }
             }));
-        // A rename ends: save it (Esc already put the old name back).
+        // A rename ends: save it (Esc already put the old name back; one
+        // dropped because its scene went saves nothing).
         let store = ctx.store.clone();
         let id = layer.clone();
-        let source = view.source.clone();
-        let row = view.row.clone();
+        // The row and its source line weakly: the name is inside the row, so
+        // a strong hold would keep the row alive past its rebuild (R11).
+        let source = view.source.downgrade();
+        let row = view.row.downgrade();
+        let dropping = Rc::clone(&view.dropping);
         view.name.connect_notify_local(
             Some("editing"),
             guarded!("panel: rename", move |label, _| {
                 if label.is_editing() {
                     return;
                 }
-                source.set_visible(true);
+                if let Some(source) = source.upgrade() {
+                    source.set_visible(true);
+                }
                 // The keyboard comes back to the row (the name takes no
                 // focus outside an edit).
-                if label.has_focus() || label.focus_child().is_some() {
+                if (label.has_focus() || label.focus_child().is_some())
+                    && let Some(row) = row.upgrade()
+                {
                     row.grab_focus();
                 }
                 label.set_can_target(false);
                 label.set_focusable(false);
-                if let Some(cmd) = panel::layer_rename(&store.state(), &id, &label.text()) {
-                    store.dispatch(cmd);
+                if dropping.get() {
+                    return;
+                }
+                // What was typed shows only as long as it is the name: a
+                // rename that sends nothing, or that the core refuses, puts
+                // the name back (R46).
+                match panel::layer_rename_outcome(&store.state(), &id, &label.text()) {
+                    RenameOutcome::Send(cmd) => {
+                        let (label, id) = (label.downgrade(), id.clone());
+                        super::send_rename(&store, cmd, move |state| {
+                            if let Some(label) = label.upgrade()
+                                && !label.is_editing()
+                                && let Some(name) = panel::layer_name(state, &id)
+                            {
+                                label.set_text(&name);
+                            }
+                        });
+                    }
+                    RenameOutcome::Restore(name) => {
+                        if label.text() != name {
+                            label.set_text(&name);
+                        }
+                    }
                 }
             }),
         );
@@ -277,8 +331,12 @@ impl LayerList {
         drag.set_button(1);
         let weak = Rc::downgrade(&self.inner);
         let id = layer.clone();
-        let row = view.row.clone();
-        drag.connect_drag_begin(guarded!("panel: row drag", move |_, _x, y| {
+        // The row from the gesture: holding it would be a cycle (the row
+        // owns the gesture, R11).
+        drag.connect_drag_begin(guarded!("panel: row drag", move |gesture, _x, y| {
+            let Some(row) = gesture.widget().and_downcast::<gtk::ListBoxRow>() else {
+                return;
+            };
             if let Some(inner) = weak.upgrade() {
                 LayerList { inner }.press(&id, &row, y);
             }
@@ -606,6 +664,9 @@ fn row_button(icon: &str) -> (gtk::Button, gtk::Image) {
 impl RowView {
     fn new(ctx: &Ctx, layer: &LayerId) -> Self {
         let row = gtk::ListBoxRow::new();
+        if crate::testctl::mode().on {
+            ROWS.with(|rows| rows.borrow_mut().push(row.downgrade()));
+        }
         row.add_css_class("layer-row");
         row.add_css_class("r1");
         row.add_css_class("row-44");
@@ -662,10 +723,31 @@ impl RowView {
             menu_button,
             menu,
             model: RefCell::new(None),
+            edits: RefCell::new(None),
+            dropping: Rc::new(Cell::new(false)),
         }
     }
 
+    /// Ends a rename in progress without saving it (the old name back).
+    fn drop_rename(&self) {
+        if !self.name.is_editing() {
+            return;
+        }
+        self.dropping.set(true);
+        self.name.stop_editing(false);
+        self.dropping.set(false);
+    }
+
     fn show(&self, row: &LayerRow, state: &State, rows: usize) {
+        // Another scene: a rename in progress was for the one that went.
+        // Edits stopped (D-43: a recording): it can't land either, so it
+        // ends unsaved rather than stay open in a disabled row (R46).
+        let target = qrec_core::ui_normalize::edit_target(&state.project, &state.ui);
+        let scene_changed = self.edits.borrow().as_ref() != Some(&target);
+        *self.edits.borrow_mut() = Some(target);
+        if scene_changed || !row.enabled {
+            self.drop_rename();
+        }
         if self.model.borrow().as_ref() == Some(row) {
             self.update_menu(row, state, rows);
             return;

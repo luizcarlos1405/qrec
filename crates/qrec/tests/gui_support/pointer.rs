@@ -253,21 +253,30 @@ impl VirtualPointer {
         self.roundtrip();
     }
 
-    /// `notches` notches of a mouse wheel on the vertical axis (positive
-    /// scrolls down): `axis_source(wheel)`, `axis_discrete` (15 per notch,
-    /// as a wheel's `wl_fixed` value), `frame`.
+    /// `notches` clicks of a mouse wheel where the pointer is (positive:
+    /// down), as a real wheel sends them: a `wheel` axis source and one
+    /// discrete step per notch (`axis_source`, `axis_discrete` with 15 px,
+    /// a notch's usual `wl_fixed` distance, `frame`), 30 ms apart.
     pub fn wheel(&mut self, notches: i32) {
-        let time = self.time();
-        self.send(&Message::new(POINTER, 5).uint(0));
-        self.send(
-            &Message::new(POINTER, 7)
-                .uint(time)
-                .uint(0)
-                .uint((15 * 256 * notches) as u32)
-                .uint(notches as u32),
-        );
-        self.send(&Message::new(POINTER, 4));
-        self.roundtrip();
+        const AXIS_VERTICAL: u32 = 0;
+        const SOURCE_WHEEL: u32 = 0;
+        let step = notches.signum();
+        for _ in 0..notches.unsigned_abs() {
+            let time = self.time();
+            // wl_fixed: 24.8 fixed point; 15 is a notch's usual distance.
+            let value = (15 * step * 256) as u32;
+            self.send(&Message::new(POINTER, 5).uint(SOURCE_WHEEL));
+            self.send(
+                &Message::new(POINTER, 7)
+                    .uint(time)
+                    .uint(AXIS_VERTICAL)
+                    .uint(value)
+                    .uint(step as u32),
+            );
+            self.send(&Message::new(POINTER, 4));
+            self.roundtrip();
+            std::thread::sleep(Duration::from_millis(30));
+        }
     }
 
     /// A left click at (`x`, `y`).

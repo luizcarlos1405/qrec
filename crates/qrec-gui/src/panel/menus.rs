@@ -10,7 +10,9 @@
 //! target): they start the inline edit.
 //!
 //! An open menu is `Overlay::Menu` in `LocalUi` (the key router lets its
-//! keys through, G§3.8 step 4).
+//! keys through, G§3.8 step 4): a `MenuButton`'s ([`track_menu`]) and a
+//! `DropDown`'s list ([`track_dropdown`]: the autocut page's "Detect
+//! silence on", R32).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -166,6 +168,34 @@ pub fn track_menu(ctx: &Ctx, button: &gtk::MenuButton, on_open: Option<Rc<dyn Fn
             });
         }
     }));
+}
+
+/// While `dropdown`'s list is open the window's overlays say `Menu`, as
+/// they do for a `MenuButton`'s menu (G§3.6; R32, R41): the key router's
+/// step 4 leaves a menu its keys (GTK 4.22 hands an open list's keys to
+/// its popover, and the window's router doesn't see them; the overlay
+/// keeps `LocalUi` saying what is open). It follows the list's popover being
+/// mapped, so the entry also goes when the dropdown hides under an open
+/// list (its page closes).
+pub fn track_dropdown(ctx: &Ctx, dropdown: &gtk::DropDown) {
+    let mut child = dropdown.first_child();
+    while let Some(c) = child {
+        if let Ok(popover) = c.clone().downcast::<gtk::Popover>() {
+            let store = ctx.store.clone();
+            popover.connect_map(guarded!("panel: a list opens", move |_| {
+                store.update_local(|l| l.overlays.push(Overlay::Menu));
+            }));
+            let store = ctx.store.clone();
+            popover.connect_unmap(guarded!("panel: a list closes", move |_| {
+                store.update_local(|l| {
+                    if let Some(at) = l.overlays.iter().rposition(|o| *o == Overlay::Menu) {
+                        l.overlays.remove(at);
+                    }
+                });
+            }));
+        }
+        child = c.next_sibling();
+    }
 }
 
 /// Discovers the sources again on `qrec-gui-io` and hands them to

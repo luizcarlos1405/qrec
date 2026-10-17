@@ -12,14 +12,18 @@
 //!   the meter stays live.
 //! - Live, a track whose device isn't live reads "Device not found. Plug
 //!   it in, or pick another source." in place of its meter.
+//! - An edit belongs to the scene it was typed for: when the scene the
+//!   panel edits changes under it, the fields show the new scene's values
+//!   and a rename ends unsaved (R38).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use gtk::glib;
 use gtk::prelude::*;
 use qrec_core::ctx::AudioDeviceInfo;
-use qrec_core::protocol::command::AudioPatch;
-use qrec_core::view::panel::{self, AddGroup, AudioRow, NO_TRACKS};
+use qrec_core::protocol::command::{AudioPatch, SceneTarget};
+use qrec_core::view::panel::{self, AddGroup, AudioRow, NO_TRACKS, RenameOutcome};
 use qrec_core::{AudioRole, State, TrackId};
 
 use super::menus::{self, Menu};
@@ -28,6 +32,23 @@ use crate::Ctx;
 use crate::guarded;
 use crate::widgets::meter::Meter;
 use crate::widgets::numeric::{self, NumericField};
+
+thread_local! {
+    /// Each audio row made so far, weakly; test mode only: what
+    /// [`rows_alive`] counts.
+    static ROWS: RefCell<Vec<glib::WeakRef<gtk::Box>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// How many audio rows are alive (test mode; `testctl`'s `local`,
+/// `audioRowsAlive`): the rows shown, once those a rebuild dropped are
+/// gone (G§3.12 R11).
+pub fn rows_alive() -> usize {
+    ROWS.with(|rows| {
+        let mut rows = rows.borrow_mut();
+        rows.retain(|row| row.upgrade().is_some());
+        rows.len()
+    })
+}
 
 /// The audio rows. Cheap to clone; main thread only.
 #[derive(Clone)]
@@ -61,6 +82,10 @@ struct AudioRowView {
     sync_label: gtk::Label,
     sync: NumericField,
     model: RefCell<Option<AudioRow>>,
+    /// The scene the row's fields and rename edit (`edit_target`).
+    edits: RefCell<Option<Option<SceneTarget>>>,
+    /// A rename is being ended unsaved.
+    dropping: Cell<bool>,
     /// The toggle is being set from the model, not clicked.
     setting: Cell<bool>,
 }
@@ -111,7 +136,10 @@ impl AudioList {
             views.len() == rows.len() && views.iter().zip(rows).all(|(v, r)| v.track == r.track)
         };
         if !same {
-            for view in inner.rows.borrow_mut().drain(..) {
+            let old: Vec<Rc<AudioRowView>> = inner.rows.borrow_mut().drain(..).collect();
+            for view in old {
+                // A rename on a row that goes saves nothing.
+                view.drop_rename();
                 inner.list.remove(&view.root);
             }
             let mut views = Vec::with_capacity(rows.len());
@@ -166,14 +194,23 @@ fn wire(ctx: &Ctx, view: &Rc<AudioRowView>) {
                 store.dispatch(cmd);
             }
         }));
+    // An invalid value's message is the field's tooltip, as long as its
+    // stroke shows.
+    for field in [&view.gain, &view.sync] {
+        let widget = field.widget().downgrade();
+        field.on_error(move |error| {
+            if let Some(widget) = widget.upgrade() {
+                widget.set_tooltip_text(error);
+            }
+        });
+    }
     let store = ctx.store.clone();
     let weak = Rc::downgrade(view);
     view.gain.on_commit(move |text| {
         let Some(view) = weak.upgrade() else { return };
         match panel::parse_gain(text) {
             Ok(db) => {
-                view.gain.set_invalid(false);
-                view.gain.widget().set_tooltip_text(None);
+                view.gain.set_error(None);
                 let unchanged = view
                     .model
                     .borrow()
@@ -191,10 +228,7 @@ fn wire(ctx: &Ctx, view: &Rc<AudioRowView>) {
                     store.dispatch(cmd);
                 }
             }
-            Err(why) => {
-                view.gain.set_invalid(true);
-                view.gain.widget().set_tooltip_text(Some(&why));
-            }
+            Err(why) => view.gain.set_error(Some(&why)),
         }
     });
     let store = ctx.store.clone();
@@ -203,8 +237,7 @@ fn wire(ctx: &Ctx, view: &Rc<AudioRowView>) {
         let Some(view) = weak.upgrade() else { return };
         match panel::parse_sync(text) {
             Ok(ms) => {
-                view.sync.set_invalid(false);
-                view.sync.widget().set_tooltip_text(None);
+                view.sync.set_error(None);
                 let unchanged = view
                     .model
                     .borrow()
@@ -222,15 +255,13 @@ fn wire(ctx: &Ctx, view: &Rc<AudioRowView>) {
                     store.dispatch(cmd);
                 }
             }
-            Err(why) => {
-                view.sync.set_invalid(true);
-                view.sync.widget().set_tooltip_text(Some(&why));
-            }
+            Err(why) => view.sync.set_error(Some(&why)),
         }
     });
     let store = ctx.store.clone();
     let track = view.track.clone();
     let menu = view.menu_button.clone();
+    let weak = Rc::downgrade(view);
     view.name.connect_notify_local(
         Some("editing"),
         guarded!("panel: rename a track", move |label, _| {
@@ -243,8 +274,28 @@ fn wire(ctx: &Ctx, view: &Rc<AudioRowView>) {
             }
             label.set_can_target(false);
             label.set_focusable(false);
-            if let Some(cmd) = panel::audio_rename(&store.state(), &track, &label.text()) {
-                store.dispatch(cmd);
+            if weak.upgrade().is_some_and(|view| view.dropping.get()) {
+                return;
+            }
+            // A rename that sends nothing, or that the core refuses, puts
+            // the label back (R46).
+            match panel::track_rename_outcome(&store.state(), &track, &label.text()) {
+                RenameOutcome::Send(cmd) => {
+                    let (label, track) = (label.downgrade(), track.clone());
+                    super::send_rename(&store, cmd, move |state| {
+                        if let Some(label) = label.upgrade()
+                            && !label.is_editing()
+                            && let Some(name) = panel::track_label(state, &track)
+                        {
+                            label.set_text(&name);
+                        }
+                    });
+                }
+                RenameOutcome::Restore(name) => {
+                    if label.text() != name {
+                        label.set_text(&name);
+                    }
+                }
             }
         }),
     );
@@ -253,6 +304,9 @@ fn wire(ctx: &Ctx, view: &Rc<AudioRowView>) {
 impl AudioRowView {
     fn new(ctx: &Ctx, track: &TrackId) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        if crate::testctl::mode().on {
+            ROWS.with(|rows| rows.borrow_mut().push(root.downgrade()));
+        }
         root.add_css_class("audio-row");
         root.set_widget_name(&format!("audio-row-{track}"));
         // Line 1.
@@ -332,6 +386,8 @@ impl AudioRowView {
         gain.set_format(numeric::tenths);
         gain.set_unit_aliases(&["db"]);
         gain.widget().add_css_class("audio-field");
+        gain.widget()
+            .set_widget_name(&format!("audio-gain-{track}"));
         let fill = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         fill.set_hexpand(true);
         let sync_label = gtk::Label::new(Some("Sync"));
@@ -342,6 +398,8 @@ impl AudioRowView {
         sync.set_step(10.0);
         sync.set_format(numeric::signed);
         sync.widget().add_css_class("audio-field");
+        sync.widget()
+            .set_widget_name(&format!("audio-sync-{track}"));
         line3.append(&gain_label);
         line3.append(&gain.widget());
         line3.append(&fill);
@@ -369,8 +427,20 @@ impl AudioRowView {
             sync_label,
             sync,
             model: RefCell::new(None),
+            edits: RefCell::new(None),
+            dropping: Cell::new(false),
             setting: Cell::new(false),
         }
+    }
+
+    /// Ends a rename in progress without saving it (the old name back).
+    fn drop_rename(&self) {
+        if !self.name.is_editing() {
+            return;
+        }
+        self.dropping.set(true);
+        self.name.stop_editing(false);
+        self.dropping.set(false);
     }
 
     fn show(
@@ -379,6 +449,18 @@ impl AudioRowView {
         state: &State,
         (mics, monitors): (&[AudioDeviceInfo], &[AudioDeviceInfo]),
     ) {
+        // Another scene: an edit in progress was for the one that went. Edits
+        // stopped (D-43: a recording): it can't land either, so it ends
+        // unsaved rather than be refused (R46).
+        let target = qrec_core::ui_normalize::edit_target(&state.project, &state.ui);
+        let scene_changed = self.edits.borrow().as_ref() != Some(&target);
+        *self.edits.borrow_mut() = Some(target);
+        if scene_changed || !row.enabled {
+            self.drop_rename();
+            self.gain.reset(&numeric::tenths(row.gain_db));
+            self.sync
+                .reset(&numeric::signed(f64::from(row.sync_offset_ms)));
+        }
         let scene = qrec_core::ui_normalize::canvas_scene(&state.project, &state.ui);
         let device = scene
             .track(&row.track)
