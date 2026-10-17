@@ -47,11 +47,14 @@ fn open(nested: &mut Nested, n: usize, project: &Path, launch: Launch) {
     gui.wait_idle();
 }
 
-/// No caught panic, no GLib or GTK critical.
+/// No caught panic, no GLib or GTK critical, and the a11y walk empty (the
+/// cases launch with `Launch::a11y()`, G§8.4).
 fn assert_clean(nested: &mut Nested, n: usize) {
     let gui = nested.window(n);
     let local = gui.local();
     assert_eq!(local["panics"], 0, "{local}");
+    let a11y = gui.ctl(json!({"op": "a11y"}));
+    assert_eq!(a11y["ok"], true, "{a11y}");
     gui.assert_no_criticals();
 }
 
@@ -129,7 +132,7 @@ fn a_window_opens_only_the_chosen_render_node() {
     let (first, second) = (trace("first"), trace("second"));
     for (n, path) in [(0, &first), (1, &second)] {
         let _ = fs::remove_file(path);
-        open(&mut nested, n, &project, Launch::default().traced(path));
+        open(&mut nested, n, &project, Launch::a11y().traced(path));
         if n == 1 {
             // The Program plays a moment (the player decodes).
             let gui = nested.window(1);
@@ -298,7 +301,7 @@ fn the_sheet(reduced: bool) -> Sheet {
         &mut nested,
         0,
         &project,
-        Launch::default().with_env("QREC_GUI_TEST", "1,animations"),
+        Launch::a11y().with_env("QREC_GUI_TEST", "1,animations"),
     );
     let local = nested.window(0).local();
     assert_eq!(local["layout"]["width"], "Narrow", "{local}");

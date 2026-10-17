@@ -64,7 +64,7 @@ fn fonts(case: &str, spec: &str) -> Value {
     let mut nested = Nested::start(AREA, case, Options::default());
     let project = nested.env.empty_dir("rust-traits-talk");
     design_fixture(&project, DesignVariant::Base);
-    nested.launch(&project, Launch::default().with_env(FONT_RENDERING, spec));
+    nested.launch(&project, Launch::a11y().with_env(FONT_RENDERING, spec));
     wait_for_gui_host(&nested, &project, OPEN);
     let gui = nested.window(0);
     gui.wait_phase("open", OPEN);
@@ -78,10 +78,13 @@ fn fonts(case: &str, spec: &str) -> Value {
     reply
 }
 
-/// No panic caught and no GLib or GTK critical (the nested suites' rule).
+/// No panic caught, no GLib or GTK critical (the nested suites' rule), and
+/// the a11y walk empty (launched with `Launch::a11y()`, G§8.4).
 fn assert_clean(gui: &gui_support::Gui) {
     let local = gui.local();
     assert_eq!(local["panics"], 0, "{local}");
+    let a11y = gui.ctl(json!({"op": "a11y"}));
+    assert_eq!(a11y["ok"], true, "{a11y}");
     gui.assert_no_criticals();
 }
 
@@ -137,6 +140,9 @@ fn the_text_setup_is_manual_with_whole_pixel_advances() {
 /// the differing pixels of the title's crop, the shots and each window's
 /// `fonts` reply.
 fn title_trace(case: &str, spec: &str) -> (usize, Vec<PathBuf>, Vec<Value>) {
+    // The title's 480×48 at (560, 0), in the shots' device px (a suite-wide
+    // scale run, G§8.4).
+    let [cx, cy, cw, ch] = Options::default().rect_px([560.0, 0.0, 480.0, 48.0]);
     let crop = |shot: &Path| -> Vec<u8> {
         let out = run_tool(
             Command::new("ffmpeg")
@@ -144,7 +150,7 @@ fn title_trace(case: &str, spec: &str) -> (usize, Vec<PathBuf>, Vec<Value>) {
                 .arg(shot)
                 .args([
                     "-vf",
-                    "crop=480:48:560:0,format=rgb24",
+                    &format!("crop={cw}:{ch}:{cx}:{cy},format=rgb24"),
                     "-f",
                     "rawvideo",
                     "-",
@@ -159,7 +165,7 @@ fn title_trace(case: &str, spec: &str) -> (usize, Vec<PathBuf>, Vec<Value>) {
         let mut nested = Nested::start(AREA, &format!("{case}-{n}"), Options::default());
         let project = nested.env.empty_dir(TALL_TITLE);
         design_fixture(&project, DesignVariant::Base);
-        let mut launch = Launch::default().with_env(FONT_RENDERING, spec);
+        let mut launch = Launch::a11y().with_env(FONT_RENDERING, spec);
         for (key, value) in SOFTWARE_GL {
             launch = launch.with_env(key, value);
         }
@@ -179,7 +185,7 @@ fn title_trace(case: &str, spec: &str) -> (usize, Vec<PathBuf>, Vec<Value>) {
         assert_clean(nested.window(0));
     }
     let (partial, full) = (crop(&shots[0]), crop(&shots[1]));
-    assert_eq!(partial.len(), 480 * 48 * 3);
+    assert_eq!(partial.len(), (cw * ch * 3) as usize);
     let differing = partial
         .chunks_exact(3)
         .zip(full.chunks_exact(3))

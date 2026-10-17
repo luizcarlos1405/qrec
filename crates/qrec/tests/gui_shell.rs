@@ -266,10 +266,13 @@ fn the_skeleton_on_the_design_fixture() {
 /// placeholder title (the folder's name) leaves no trace above the
 /// project's name. Before GTK's manual font rendering
 /// (`theme::fonts::configure_rendering`) the old title's ascender tops
-/// stayed above the new one (the stray mark). The folder is named so that
-/// its title is all ascenders. The mark came with the GL renderer: run it
-/// with `QREC_TEST_WLR=gles2` (without the fix it fails there by 8 px; the
-/// pixman runs draw with Cairo, which never showed it).
+/// stayed above the new one (the stray mark). The folder is named in
+/// accented capitals, the tallest ink a title draws (WP10's text lane: in
+/// today's header layout an all-ascender title, this case's name until
+/// then, showed no mark on GL even in GTK's automatic mode; the accented
+/// one shows 12 px there, `gui_text`). The mark came with the GL renderer:
+/// run it with `QREC_TEST_WLR=gles2` (the pixman runs draw with Cairo,
+/// which never showed it; `gui_text` runs software GL on either).
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn the_header_title_leaves_no_trace_of_the_old_one() {
@@ -294,7 +297,7 @@ fn the_header_title_leaves_no_trace_of_the_old_one() {
     let mut shots = Vec::new();
     for (n, debug) in [(1, None), (2, Some("full-redraw"))] {
         let mut nested = Nested::start("wp0b", &format!("title-{n}"), Options::default());
-        let project = fixture(&nested, "hhhhhhhhhhhhhhhh", DesignVariant::Base);
+        let project = fixture(&nested, "ÅÉÂÊÔÛÅÉÂÊÔÛ", DesignVariant::Base);
         let mut launch = Launch::a11y();
         if let Some(debug) = debug {
             launch = launch.with_env("GSK_DEBUG", debug);

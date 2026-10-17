@@ -758,7 +758,7 @@ fn step(nested: &mut Nested, keys: &[&str], name: &str) -> Step {
     Step { focus, shot }
 }
 
-/// The focus-ring color pixels of `shot` in `rect` (window px at scale 1)
+/// The focus-ring color pixels of `shot` in `rect` (the shot's device px)
 /// that neither `others` shot has there: the ring drawn on the step's
 /// widget only.
 fn ring_pixels(shot: &Path, others: &[&Path], rect: [u32; 4], ring: [u8; 3]) -> usize {
@@ -770,13 +770,16 @@ fn ring_pixels(shot: &Path, others: &[&Path], rect: [u32; 4], ring: [u8; 3]) -> 
         .count()
 }
 
-/// `bounds` grown by 6 px (the ring is 2 px wide, 2 px outside; rows and
-/// the canvas draw it inside), clamped to the 1600×1000 window.
-fn ring_rect([x, y, w, h]: [f64; 4]) -> [u32; 4] {
-    let x0 = (x - 6.0).max(0.0).floor();
-    let y0 = (y - 6.0).max(0.0).floor();
-    let x1 = (x + w + 6.0).min(1600.0).ceil();
-    let y1 = (y + h + 6.0).min(1000.0).ceil();
+/// `bounds` (logical px) grown by 6 px (the ring is 2 px wide, 2 px
+/// outside; rows and the canvas draw it inside), clamped to the window, in
+/// the shot's device px (× the output scale: WP10's scale runs).
+fn ring_rect(opts: &Options, [x, y, w, h]: [f64; 4]) -> [u32; 4] {
+    let (width, height) = opts.logical();
+    let s = opts.scale;
+    let x0 = ((x - 6.0).max(0.0) * s).floor();
+    let y0 = ((y - 6.0).max(0.0) * s).floor();
+    let x1 = ((x + w + 6.0).min(width) * s).ceil();
+    let y1 = ((y + h + 6.0).min(height) * s).ceil();
     [x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32]
 }
 
@@ -786,13 +789,17 @@ fn ring_rect([x, y, w, h]: [f64; 4]) -> [u32; 4] {
 /// (common.css): a small circle's worth there. A `stroked` widget (a
 /// selected row) draws a 1 px accent stroke, the ring's color, in every
 /// shot: under the ring's inner pixel, where the steps around it have it
-/// too; half of the other pixel's worth there.
-fn ring_wanted(kind: &str, [_, _, w, h]: [f64; 4], stroked: bool) -> usize {
+/// too; half of the other pixel's worth there. At an output scale the ring
+/// is `scale` times as wide and as long; the count wanted grows by the
+/// scale once (at 1.5 the compositor blends a ring's edges, which then
+/// read as neither color: the ring's area is the scale squared, its edges
+/// a pixel less).
+fn ring_wanted(kind: &str, [_, _, w, h]: [f64; 4], stroked: bool, scale: f64) -> usize {
     if kind == "GtkScale" {
-        return 40;
+        return (40.0 * scale) as usize;
     }
     // 2 px × the perimeter, halved.
-    let half = (2.0 * (w + h)).clamp(40.0, 2000.0);
+    let half = (2.0 * (w + h)).clamp(40.0, 2000.0) * scale;
     if stroked {
         (half / 2.0) as usize
     } else {
@@ -826,11 +833,16 @@ fn assert_rings(nested: &Nested, steps: &[Step], baseline: &Path, stroked: &[Str
             .path
             .first()
             .is_some_and(|name| stroked.contains(name));
-        let want = ring_wanted(&step.focus.kind, step.focus.bounds, on_stroke);
+        let want = ring_wanted(
+            &step.focus.kind,
+            step.focus.bounds,
+            on_stroke,
+            nested.opts.scale,
+        );
         let got = ring_pixels(
             &step.shot,
             &[prev, next],
-            ring_rect(step.focus.bounds),
+            ring_rect(&nested.opts, step.focus.bounds),
             ring,
         );
         let line = format!(

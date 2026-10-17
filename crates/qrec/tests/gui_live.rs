@@ -130,10 +130,12 @@ fn device(rect: [f64; 4], scale: f64) -> [u32; 4] {
 }
 
 /// A window with no caught panic, no critical, no ERROR line and no CSS
-/// error.
+/// error, and its a11y walk empty after the changes (every case launches
+/// with `Launch::a11y()`, G§8.4).
 fn assert_clean(gui: &Gui) {
     let local = gui.local();
     assert_eq!(local["panics"], 0, "{local}");
+    assert_a11y(gui);
     gui.assert_no_criticals();
     let log = gui.gui_log();
     let errors: Vec<&str> = log.lines().filter(|l| l.contains(" ERROR ")).collect();
@@ -246,7 +248,7 @@ fn the_empty_timelines_art_takes_the_new_theme() {
     let mut nested = Nested::start(AREA, "art", Options::default());
     let s = nested.opts.scale;
     let project = nested.env.empty_dir("rust-traits-talk");
-    open(&mut nested, 0, &project, Launch::default());
+    open(&mut nested, 0, &project, Launch::a11y());
     let art = |nested: &mut Nested| {
         let regions = nested.window(0).regions(&["tl-empty-art"]);
         *regions
@@ -286,7 +288,7 @@ fn the_bins_thumbnails_and_the_export_arrow_take_the_new_theme() {
     let mut preset = s06();
     preset.bin_open = true;
     let project = fixture(&nested, "rust-traits-talk", &preset);
-    open(&mut nested, 0, &project, Launch::default());
+    open(&mut nested, 0, &project, Launch::a11y());
     // The export panel's Setup page: its arrow points at Export.
     let gui = nested.window(0);
     let opened = gui.ctl(json!({"op": "action", "id": "export"}));
@@ -347,7 +349,7 @@ fn ui_scale_follows_qrec_config_set() {
     let started = fixture(&nested, "started-at-1.5", &s06());
     let config = config_dir(&nested);
     fs::write(config.join("config.toml"), "[ui]\nscale = 1.5\n").expect("config.toml");
-    open(&mut nested, 0, &started, Launch::default());
+    open(&mut nested, 0, &started, Launch::a11y());
     let reference = regions(nested.window(0));
     assert_eq!(nested.window(0).local()["scale"], 1.5);
     nested.screenshot("started-at-1.5");
@@ -357,7 +359,7 @@ fn ui_scale_follows_qrec_config_set() {
     // A window at 1, re-scaled live.
     fs::remove_file(config.join("config.toml")).expect("config.toml");
     let project = fixture(&nested, "rust-traits-talk", &s06());
-    open(&mut nested, 1, &project, Launch::default());
+    open(&mut nested, 1, &project, Launch::a11y());
     let gui = nested.window(1);
     assert_eq!(gui.local()["scale"], 1.0);
     assert_regions(
@@ -408,7 +410,7 @@ fn ui_scale_follows_qrec_config_set() {
 fn reduced_motion_follows_qrec_config_set() {
     let mut nested = Nested::start(AREA, "motion", Options::default());
     let project = fixture(&nested, "rust-traits-talk", &s06());
-    open(&mut nested, 0, &project, Launch::default());
+    open(&mut nested, 0, &project, Launch::a11y());
     let local = nested.window(0).local();
     assert_eq!(local["reducedMotion"], false, "{local}");
     assert_eq!(local["reducedMotionClass"], false, "{local}");
@@ -437,7 +439,7 @@ fn reduced_motion_follows_qrec_config_set() {
 fn a_burst_of_writes_is_one_change_that_wait_idle_waits_for() {
     let mut nested = Nested::start(AREA, "burst", Options::default());
     let project = fixture(&nested, "rust-traits-talk", &s02());
-    open(&mut nested, 0, &project, Launch::default());
+    open(&mut nested, 0, &project, Launch::a11y());
     let config = config_dir(&nested);
     let gui = nested.window(0);
     let before = applied_count(gui);
