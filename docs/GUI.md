@@ -670,7 +670,10 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
   (`ExportPanelState::toast_due`, which that toast takes back), so another
   export's toast shows whatever the panel shows (review fix: a CLI export
   the window never saw run, its snapshots coalesced in the queue, lost its
-  toast to the panel's own last Done page).
+  toast to the panel's own last Done page). `toasts::panel_shows` makes
+  that decision and the take-back in one step, on the Store, and a unit
+  test drives the sequence (R37's audit: the host's own take-back could go
+  unnoticed).
 - **`UiAction`** (`desktop.rs`, WP0b):
   - `OpenPath` → `gtk::FileLauncher::launch`;
   - `RevealPath` → `gtk::FileLauncher::open_containing_folder`;

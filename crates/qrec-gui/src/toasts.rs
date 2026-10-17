@@ -12,7 +12,8 @@
 //! export panel shows that export's Done or Failed state
 //! ([`shown_by_the_panel`]; the failed one since the WP7 integration: S17
 //! draws no toast): only the toast the panel's own answer said is next
-//! (`ExportPanelState::toast_due`), never another export's.
+//! (`ExportPanelState::toast_due`, taken back by the next export toast
+//! whatever happens to it: [`panel_shows`]), never another export's.
 //!
 //! A toast is `raised`, `lg` radius, e2 with a 1 px `border`: a 20 px level
 //! icon, the `body-strong` title over a `body-sm` `muted` body (a path in
@@ -32,6 +33,7 @@ use qrec_core::protocol::{ToastLevel, UiAction};
 use qrec_core::view::notices::{Notice, NoticeAction};
 use qrec_core::{Command, protocol::command::UiPatch};
 
+use crate::store::Store;
 use crate::store::local::ExportPanelMode;
 use crate::theme::motion::{self, EASE_IN, EASE_OUT_EXPO};
 use crate::widgets::button;
@@ -97,6 +99,28 @@ pub fn shown_by_the_panel(notice: &Notice, panel: Option<ExportPanelMode>, due: 
         Some(ExportPanelMode::Failed) => is_export_failed(notice),
         _ => false,
     }
+}
+
+/// The toast host's decision for `notice` (G§3.7): whether the export
+/// panel shows what it says already, so it is dropped. An export toast
+/// that comes while the panel's own answer marked its toast due
+/// (`ExportPanelState::toast_due`: the reply comes first, through the same
+/// queue) is that export's, so it takes the mark back whatever is dropped;
+/// a later one (a CLI export the window never saw run) shows over the
+/// panel's old Done or Failed page. Kept, the mark dropped that toast
+/// too (R37; its audit: nothing pinned the take-back).
+pub fn panel_shows(store: &Store, notice: &Notice) -> bool {
+    if !is_export_end(notice) {
+        return false;
+    }
+    let (panel, due) = {
+        let local = store.local();
+        (local.export_panel(), local.export_view.toast_due)
+    };
+    if due {
+        store.update_local(|l| l.export_view.toast_due = false);
+    }
+    shown_by_the_panel(notice, panel, due)
 }
 
 /// The GUI action (G§3.8) a toast button runs, for the buttons that open
@@ -283,20 +307,9 @@ impl Host {
         );
         // The export panel shows this result already (its own export's
         // Done or Failed page): the export toast its answer said is next.
-        if is_export_end(&notice) {
-            let (panel, due) = {
-                let local = self.ctx.store.local();
-                (local.export_panel(), local.export_view.toast_due)
-            };
-            if due {
-                self.ctx
-                    .store
-                    .update_local(|l| l.export_view.toast_due = false);
-            }
-            if shown_by_the_panel(&notice, panel, due) {
-                tracing::debug!("toast: the export panel shows it; dropped");
-                return;
-            }
+        if panel_shows(&self.ctx.store, &notice) {
+            tracing::debug!("toast: the export panel shows it; dropped");
+            return;
         }
         let cursor = self.ctx.store.state().history.cursor;
         let leaving = self.inner.borrow().leaving;
@@ -794,6 +807,54 @@ mod tests {
         let failed = Notice::new(ToastLevel::Error, EXPORT_FAILED_TITLE);
         assert!(!shown_by_the_panel(&done, Some(Done), false));
         assert!(!shown_by_the_panel(&failed, Some(Failed), false));
+    }
+
+    /// R37's audit: the panel's own export's toast is dropped under its
+    /// Done page and takes the mark back, so a second export's (a CLI
+    /// export the window never saw run) shows over the same page; a toast
+    /// of no export's never takes the mark; with the panel closed the
+    /// export's toast shows and the mark goes. The host kept the mark when
+    /// nothing pinned its take-back, and the CLI export's end showed
+    /// nowhere.
+    #[test]
+    fn the_panels_own_toast_takes_its_mark_back() {
+        use crate::host::queue::Queue;
+        use crate::store::local::{LocalUi, Overlay};
+        let store = Store::new(
+            Queue::new(|| {}),
+            std::path::PathBuf::from("/projects/rust-traits-talk"),
+            std::sync::Arc::new(qrec_core::testkit::design_state()),
+            qrec_core::keymap::resolve(""),
+            LocalUi::default(),
+        );
+        let due = |store: &Store| store.local().export_view.toast_due;
+        store.update_local(|l| {
+            l.overlays.push(Overlay::ExportPanel(ExportPanelMode::Done));
+            l.export_view.toast_due = true;
+        });
+        let done = Notice::new(ToastLevel::Success, EXPORT_DONE_TITLE);
+        assert!(panel_shows(&store, &done), "the panel's own: dropped");
+        assert!(!due(&store), "the mark taken back");
+        assert!(
+            !panel_shows(&store, &done),
+            "another export's: shown over the old Done page"
+        );
+        // A toast of no export's leaves the mark to the export's own.
+        store.update_local(|l| l.export_view.toast_due = true);
+        let other = Notice::new(ToastLevel::Info, "Frame saved");
+        assert!(!panel_shows(&store, &other));
+        assert!(due(&store), "kept for the export's own");
+        // The failed export's under a Done page: shown, the mark taken.
+        let failed = Notice::new(ToastLevel::Error, EXPORT_FAILED_TITLE);
+        assert!(!panel_shows(&store, &failed));
+        assert!(!due(&store));
+        // The panel closed: shown, and the mark goes with it.
+        store.update_local(|l| {
+            l.overlays.clear();
+            l.export_view.toast_due = true;
+        });
+        assert!(!panel_shows(&store, &done));
+        assert!(!due(&store));
     }
 
     /// D-34's Show export opens the export panel and leaves an open one as
