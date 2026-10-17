@@ -28,7 +28,7 @@
 
 mod row;
 pub mod select;
-mod slide;
+pub(crate) mod slide;
 mod thumb;
 
 use std::cell::RefCell;

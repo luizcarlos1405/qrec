@@ -276,6 +276,17 @@ impl ToastHost {
 
 /// How far a toast rises as it comes in, and its gap above the hint bar.
 const RISE: i32 = 12;
+
+/// The toast's lift above its rest (px) at `eased` ∈ [0, 1] of its way in:
+/// it rises 12 px, or not at all under reduced motion (DESIGN Motion: a
+/// fade only, already where it rests).
+pub(crate) fn lift(eased: f64, reduced: bool) -> i32 {
+    if reduced {
+        RISE
+    } else {
+        (f64::from(RISE) * eased).round() as i32
+    }
+}
 /// Toast in and out (DESIGN Motion).
 const IN_MS: u32 = 200;
 const OUT_MS: u32 = 140;
@@ -566,12 +577,7 @@ impl Host {
             guard::run("toast: in", || {
                 let eased = EASE_OUT_EXPO.at(v);
                 target_toast.set_opacity(eased);
-                let lift = if reduced {
-                    RISE
-                } else {
-                    (f64::from(RISE) * eased).round() as i32
-                };
-                root.set_margin_bottom(lift);
+                root.set_margin_bottom(lift(eased, reduced));
             });
         });
         toast.set_opacity(0.0);

@@ -24,6 +24,33 @@ pub const RING_STROKE: f64 = 6.0;
 /// The digit's settle (DESIGN Motion).
 const SETTLE: Duration = Duration::from_millis(160);
 
+/// The ring's sweep `elapsed` into a second (1 full … 0 empty): it
+/// empties over the second, linear; a static full ring under reduced
+/// motion (DESIGN Motion).
+pub fn sweep(reduced: bool, elapsed: Duration) -> f64 {
+    if reduced {
+        1.0
+    } else {
+        1.0 - (elapsed.as_millis().min(1000) as f64 / 1000.0)
+    }
+}
+
+/// How far the digit settled `elapsed` after it came (0 … 1, before the
+/// easing): over 160 ms; at once under reduced motion (a plain swap) and
+/// when one-shot animations are at their end (test mode).
+pub fn settle(reduced: bool, at_end: bool, elapsed: Duration) -> f64 {
+    if reduced || at_end {
+        1.0
+    } else {
+        (elapsed.as_secs_f64() / SETTLE.as_secs_f64()).min(1.0)
+    }
+}
+
+/// The digit's zoom at `settled` (`settle`'s): 1.12× in, 1 settled.
+pub fn digit_zoom(settled: f64) -> f64 {
+    1.12 - 0.12 * motion::EASE_OUT_EXPO.at(settled)
+}
+
 /// What the overlay shows.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CountdownState {
@@ -102,11 +129,7 @@ mod imp {
             let stroke = gsk::Stroke::new(stroke_w as f32);
             snapshot.append_stroke(&track.to_path(), &stroke, &palette.video_text_20);
             // The sweep empties over the second (full at the tick).
-            let sweep = if state.reduced {
-                1.0
-            } else {
-                1.0 - (elapsed.as_millis().min(1000) as f64 / 1000.0)
-            };
+            let sweep = sweep(state.reduced, elapsed);
             if sweep >= 0.999 {
                 let ring = gsk::PathBuilder::new();
                 ring.add_circle(&graphene::Point::new(cx as f32, cy as f32), radius as f32);
@@ -130,13 +153,9 @@ mod imp {
             }
 
             // The digit, settling from 1.12× with a fade.
-            let progress = if state.reduced || motion::one_shots_at_end() {
-                1.0
-            } else {
-                (elapsed.as_secs_f64() / SETTLE.as_secs_f64()).min(1.0)
-            };
+            let progress = settle(state.reduced, motion::one_shots_at_end(), elapsed);
             let eased = motion::EASE_OUT_EXPO.at(progress);
-            let zoom = 1.12 - 0.12 * eased;
+            let zoom = digit_zoom(progress);
             let layout = obj.create_pango_layout(Some(&state.digit.to_string()));
             let mut desc = pango::FontDescription::new();
             desc.set_family(crate::theme::fonts::FAMILIES[1]);

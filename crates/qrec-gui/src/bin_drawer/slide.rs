@@ -30,6 +30,47 @@ pub const CLOSE_MS: u32 = 160;
 /// The reduced-motion crossfade.
 pub const FADE_MS: u32 = 120;
 
+/// How an animated show runs: a slide of the drawer's width (`fade`
+/// false: `from` and `to` are its progress) or, under reduced motion, a
+/// crossfade in place (`from` and `to` are its opacity), over `ms` with
+/// `easing`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SlidePlan {
+    pub fade: bool,
+    pub from: f64,
+    pub to: f64,
+    pub ms: u32,
+    pub easing: adw::Easing,
+}
+
+/// The plan of an animated show to `open`, from `progress` (0 closed … 1
+/// open) and `opacity` now: DESIGN Motion's 240 ms expo-out open and
+/// 160 ms ease-in close, a 120 ms linear crossfade under reduced motion.
+pub fn plan(open: bool, reduced: bool, progress: f64, opacity: f64) -> SlidePlan {
+    let to = if open { 1.0 } else { 0.0 };
+    if reduced {
+        SlidePlan {
+            fade: true,
+            from: if open { 0.0 } else { opacity },
+            to,
+            ms: FADE_MS,
+            easing: adw::Easing::Linear,
+        }
+    } else {
+        SlidePlan {
+            fade: false,
+            from: progress,
+            to,
+            ms: if open { OPEN_MS } else { CLOSE_MS },
+            easing: if open {
+                adw::Easing::EaseOutExpo
+            } else {
+                adw::Easing::EaseInCubic
+            },
+        }
+    }
+}
+
 mod imp {
     use std::cell::RefCell;
 
@@ -151,32 +192,18 @@ impl Slide {
             return;
         }
         let weak = self.downgrade();
-        let (from, to, ms, easing) = if reduced {
+        let SlidePlan {
+            from,
+            to,
+            ms,
+            easing,
+            ..
+        } = plan(open, reduced, self.imp().progress.get(), self.opacity());
+        if reduced {
             self.set_progress(1.0);
-            let from = if open { 0.0 } else { self.opacity() };
-            (
-                from,
-                if open { 1.0 } else { 0.0 },
-                FADE_MS,
-                adw::Easing::Linear,
-            )
-        } else if open {
-            self.set_opacity(1.0);
-            (
-                self.imp().progress.get(),
-                1.0,
-                OPEN_MS,
-                adw::Easing::EaseOutExpo,
-            )
         } else {
             self.set_opacity(1.0);
-            (
-                self.imp().progress.get(),
-                0.0,
-                CLOSE_MS,
-                adw::Easing::EaseInCubic,
-            )
-        };
+        }
         let target = adw::CallbackAnimationTarget::new(move |v| {
             crate::guard::run("bin slide: a frame", || {
                 if let Some(slide) = weak.upgrade() {
