@@ -3368,6 +3368,7 @@ Two lanes, one compiling worktree each:
 | S14, S15a, S15b, S15c, S16, S17, S18 | WP7 | WP1–WP7 |
 | S16b | WP6 | WP1–WP7 (WP7 changes its copy) |
 | widths 1300 and 1000, height 800, scale 1.5 and 2, reduced motion | each region's WP | WP1–WP7 |
+| theme proofs: S02, S06 in every theme; S18, S25 in Swamp Day and Night; the narrow sheet (BRIEF §7; boards, no frames) | WP10 (themes lane) | WP1–WP7, WP10 |
 
 For each case whose final set just completed, the integrator runs `cargo
 test -p qrec --test gui_<area> -- --ignored --test-threads=1`, lists the
@@ -3388,74 +3389,8 @@ frame-time p99 16.51–16.61 ms in 6 runs). Each shot (pixman) is next
 to its frame in `tmp/gui-shots/final/<case>-compare.png` (S13b: the row
 crops stacked next to the state board). Still to come with WP7: S14, S15a,
 S15b, S15c, S16, S16b, S17, S18, and the widths, heights, scales and
-reduced motion (WP1–WP7). Visible departures of the final shots:
-
-- Everywhere, by design (G§8.4's known differences): the fake sources'
-  names and test patterns, the fake tone's levels and block waveforms in
-  the cases that don't pin the meters (`QREC_GUI_TEST_LEVELS` pins only the
-  panel's), real elapsed times, the test project's paths, no pointer in the
-  shots; the icons are Adwaita stand-ins (G§5.2) and the empty-state art a
-  placeholder until the pen export (G§0.6).
-- Everywhere: mono text is the bundled JetBrains Mono, but each glyph
-  advances a whole pixel (7 px at 11 and 12 px, 8 px at 13 px, where the
-  frames advance 6.6, 7.2 and 7.8 px), so a mono string drifts 0.2–0.4 px
-  per character: the ruler's labels are 4 px wider than the frames', the
-  transport's "00:02:41:12 / 00:04:06:11" 4–5 px wider, S12's summary
-  lines ("00:01:43:15 → 00:01:37:09") 6 px narrower, S06's clip tooltip
-  12 px narrower; only a short field like "1500 px" (7 characters, the
-  one the integration compared) is within a pixel (measured on S02, S06
-  and S12 in the WP5 integration audit). With the stand-in icons' widths,
-  the timeline toolbar's right group (the clip count, the zoom slider,
-  Fit) sits up to 13 px left of the frames'. Kept by WP10's text-rendering
-  experiment (G§3.14: unhinted metrics would bring every mono text within
-  a pixel of the frames, 21 of 21 measured where Qrec's setup has 4, and
-  bring back the header title's stray mark on GL); measured again there:
-  the ruler's labels +4, the ruler corner's "00:04:06:11" +2, S06's
-  transport +4.8, its tooltip's second line −9.5, S12's summary
-  timecodes −2 each, S14's take lines −2, S16's file path −8.8 and S17's
-  stderr lines −5…−10 (51 characters: −10).
-- S01a: (the inspector showed in the empty scene: fixed, hidden as BRIEF
-  says). S01b: the first run names its layers and tracks after their
-  sources ("Camera", "Screen FAKE-1", "Built-in Audio Analog Stereo", A2 at
-  0.0 dB) where the frame reuses the fixture's (Face, Main screen, System
-  audio at −6 dB).
-- S02, S03, S04b, S06, S07, S11, S13, S18b (every fit shot of the 10-clip
-  timeline): take 1's second clip reads "1" where the frame reads "Take 1"
-  (G§1.3's fit inset: c8a1 is 63.8 px wide, the frames' 64.3, G§4.5; the
-  integration listed S02 and S11 only).
-- S04, S04b, S05: the timers read the real elapsed time
-  (`00:02:41:27` for `00:02:41:12`).
-- S04, S04b, S05: the ghost's lanes are silent but for their newest
-  columns, where the frames draw the take's waveform: the fake clock
-  starts the take at 2:41 (0:31 in S04b) while the level ring holds only
-  the readings since it started, and a column older than the readings is
-  silent (review: it drew a flat band at the oldest reading's level, which
-  passed for a waveform).
-- S04, S05, S05b and S12: the ruler drew a 10 px tick every 30 s (the
-  recording fit) and every 5 s with 1 s ticks between (S12's 10 px/s),
-  where the frames tick only at their labels with 5 px ticks every 10 s
-  (5 s in S12): fixed in the WP5 integration audit (`ruler::tick_steps`,
-  G§4.5's table), and these shots re-taken.
-- S06, S09, S10, S11: "+ Add layer", "+ Add audio track" and the header's
-  `+` are disabled in a take layout (D-07); the frames draw them enabled.
-- S07, S08: Program with no clip selected is read-only (D-06): the panel's
-  rows, audio controls and adds are disabled where the frames draw them
-  enabled.
-- S12: the toolbar's settings icon is `preferences-other-symbolic` (the
-  frame's sliders); a knob's center travels to within 2–3 px of its
-  trough's ends where the frame's stops 7–8 px short of them, so Min
-  silence, Padding and Min keep sit 3.5–5 px left of the frame's
-  (Threshold, at the middle, matches); the summary heading is 11 px wider
-  (the gap before "(6.2 s)" 4 px, its mono 5 px). The preview is as drawn:
-  each region's hatch, edges and tag, and the dimmed rows, within 1–2 px.
-- S13: the frame shows the drag and L1's hover at once; the drag shot has
-  no hover (L1's hover is its own shot, `s13-layer-editing`).
-- S13b: a dragged row's copy follows the pointer over the rows, with the
-  drop line at the slot (the frame lifts the row above the line and moves
-  the rows under it), and the row left behind keeps its hover reveal at
-  0.4; the rename field opens with the name selected; the focus ring is
-  shot on L1 ("Main screen"), the board's on a "Face" row.
-- S18b: the Settings pages not built yet read disabled (D-48).
+reduced motion (WP1–WP7). Their departures are in the list after WP10's
+status below, re-measured on its re-shoot.
 
 Status after the WP7 merge (e3b30a0) and its integration: **final: S14
 S15a S15b S15c S16 S16b S17 S18**, the scale runs (S02, S06, S09 and S14
@@ -3474,131 +3409,15 @@ runs at their device size with the frame scaled up, `<case>-scale2`,
 `-scale1.5`; S15c's two panels next to its 1040×769 board; S03 and S04's
 reduced-motion shots next to the animated frames); the adaptive shots are
 there alone (`S02-1300`, `S02-1000-closed`, `S02-1000-sheet`, `S06-800`:
-no frames, G§0.3); the gles2 run's in `final/gles2/`. Visible departures of
-these shots (on top of the "everywhere" items above), measured against the
-frames at full size in the final audit:
-
-- Everywhere: the fixture's files are small, so every size is the
-  fixture's ("5 takes · 31.4 MB", "10 files (17.0 MB)", "1.6 MB").
-- Everywhere (the mono item above, for the UI font too): Atkinson's glyphs
-  advance whole pixels as well, so a UI line runs a few px off the frame's
-  width, wider or narrower with its size and letters (S16's "Layers! Like
-  an onion. Your video is ready." 264 px for 254, S17's first lead line 405
-  for 395, S14's "Recovered after Qrec closed mid-take." 195 for 200), and
-  the mono text renders a little lighter than the frames' (the UI text
-  doesn't: WP10's measure below; this item read "12–13 px text" until
-  then). Text-sized controls follow it: S15a's Draft and High
-  segments are 2 and 1 px narrower (55 and 54 for 57 and 55), the header
-  slot's mini bar 2 px left of the frame's (its "42%" 20 px of ink for
-  22), S16b's toast narrower (below). Kept by WP10's text-rendering
-  experiment (G§3.14), which measured 48 UI texts of S02, S06, S12, S14,
-  S16 and S17: 30 within a pixel of the frames (unhinted metrics: 46,
-  the other two style), the rest −5.2…+9.8 (S16's body +9.8, S17's lead
-  +9.3, the header title "rust-traits-talk" +3.5, S12's "Removes 4
-  silences" +2.3, take 7's line −4.8, S12's subtitle −2.7); the ink's
-  weight is the frames' for the UI font (100 % on average, every setup)
-  and lighter for the mono one (93 %). Its crops (8×, and the scale-2
-  shots at 4×) and numbers are in `tmp/text-rendering/` for the PO.
-- Every timeline shot: the toolbar's left group sits right of the frames':
-  the Snap toggle is 102 px for 100 and its contents 2–4 px right, the
-  divider at x 224 for 217 (8 px each side of it where the frames leave 4
-  and 5), Autocut's icon at 241 for 231 and its label at 265 for 252, the
-  settings icon at 360 for 345 (WP3's toolbar spacing; with the stand-in
-  icons' widths, the right group sits up to 13 px left, as above).
-- S02, S03, S04b, S06, S07, S11, S13, S14, S15a, S15b, S17, S18, S18b
-  (every fit shot of the 10-clip timeline): take 1's second clip reads
-  "1" where the frame reads "Take 1" (G§1.3's fit inset: c8a1 is 63.8 px
-  wide, the frames' 64.3, G§4.5).
-- S14: the thumbnails are the fake test pattern's (take 6's from its
-  first frame: 7 frames have no strip image); take 9's broken thumbnail
-  carries `dialog-error-symbolic` and the bin's close Adwaita's smaller
-  `window-close-symbolic` (8×8 where the frame's x is 12×12; G§5.2's
-  stand-ins for circle-x and x); take 2 reads "Removed from the
-  timeline." where the frame reads "Discarded with D." (the fixture writes
-  no history, G§8.4).
-- S15a: "software encode (x264)" where the frame names VA-API on
-  renderD129 (the fake backend probes no VA device, G§8.4).
-- S15b and S15c's running page: the file and "as it was at" carry the
-  export's real start (the setup's preview is the test-mode now, 15:30:12;
-  the job is named when it starts); elapsed and left are real; the shot is
-  taken once `qrec status` has the job at 42 % or more, and it lands at
-  42–43 % (43–44 % on gles2), where several units render at once, so the
-  label is further on ("Rendering clip 8/10", the frame's 6/10 at 42 %).
-- S16, S16b: the Smoke fixture's export (3 clips of 30 frames: 1.6 MB,
-  00:00:03:00, took 00:00:01, its own name), in the Smoke project: the
-  header's "3 clips · 00:00:03:00", its 3-clip timeline with its middle clip
-  c1b2 (take 3) selected and the playhead in it at 00:00:01:15 (the frame
-  selects take 5's c2d0 at 00:01:21:07), so the panel shows take 3's layout,
-  and the bin chip reads 6 (the takes its timeline doesn't use; the frame's
-  5). S16b shows that whole window, and its toast is 467 px wide where the
-  frame's is 500: it sizes to its text (DESIGN's 360–560), 12 px from the
-  body's end to the close button where the frame leaves 28.
-- S17: it fails at 11 % (units 1 and 2 rendered, 867 of 7,391 frames;
-  the frame's 37 %); the status icon is `dialog-error-symbolic` (G§5.2's
-  stand-in for circle-x); Open full log names the failed segment's log
-  (`.qrec/logs/<stamp>-<pid>-j1-seg2.log`, ellipsized at its start) where
-  the frame names `export-20261014-153012.log`; the frame's first stderr
-  line looks faded (not built: a pen-file need). The box shows BRIEF's
-  last ten lines as drawn (the wrapper's render-node line comes first).
-- S18: the modal has no history clause (the frame's "…, and the 6
-  history entries that mention these takes are removed too.": the fixture
-  has no history), so it is 20 px shorter (y 287–713 where the frame's is
-  277–723).
-- Fixed on the way (WP7 integration): the core's "Export failed" toast
-  showed over S17's panel, which already shows the failure (dropped now,
-  like the done toast under S16's Done page, G§3.7); S18's loss list read
-  in path order (A1, A2, L1, L2, recorder.log per take) where BRIEF and
-  the frame list the layers, then the tracks, then the log (G§4.9).
-- Fixed in the final shot audit, measured (each with a check, WP7's "As
-  merged"): every hatch is 6 px apart across its stripes (8.49 along x, as
-  drawn; it was 6 along x: S04b, S05, S08, S12, S14); S16 and S16b read one
-  playhead; the hint bar leaves out the items that don't fit whole; the S06
-  scale runs have c2d1's tooltip; the export panel's content starts 16 px
-  in and its pages are the frames' heights (S15a 355, S15c's WebM 405, S15b
-  269, S16 216, S17 472), every text block within 1 px of the frames' (its
-  segments 26 px, "42%" on the frames line, the AV1 row, "Output", S17's
-  hint and stderr); the header slot's "42%" is `mono-sm`; the mud bar's
-  frame A is the frames' bubbles, its sediment 2 px; the links' underlines
-  sit under the descenders and the bin's link is 12 px; the bin's actions
-  block is 78 px and S18's footer label 13/600; S16b's toast actions start
-  at its text's x and its body sits 2 px under the title.
-- S04, S04b, S05 (and S04's reduced-motion run): the ghost's lanes carry
-  the live waveform only where the level ring has readings, the seconds
-  since the window opened, at the ghost's right edge, and are silent to
-  their left (the fake hook's record offset starts take 10 before any
-  reading: 2:41 back, S04b's 31 s), where the frames' takes have levels
-  all along (review R01: a column older than the readings drew the oldest
-  one, so the fake tone's block waveform ran across the whole ghost).
-- Scale runs: the departures of their cases at 1, nothing more at the
-  device size (at 1.5 the window draws at its whole factor, 2, and sway
-  scales the buffer down, so every 1 px rule is 1.5 px smeared over two
-  device px: fractional-scale rendering is WP10's audit).
-- Reduced motion: S04's REC badge has no torch glow (DESIGN's reduced
-  motion; the frames are the animated look at frame A); S15c's bar is flat
-  with no bubbles, as the board's. S03 shows nothing of it: test mode holds
-  the countdown at its end (the digit at scale 1, a full ring) with motion
-  reduced or not, so S03-reduced is S03's picture but for its live pixels
-  (pixel for pixel on pixman; on gles2 the fake camera's moving dot and
-  the unpinned A2 meter, 144 px; it was offered as the static ring's
-  evidence until the final audit).
-- Adaptive (DESIGN Layout, G§3.15; no frames, so checked against the
-  rules): S02 at 1300×1000 is Medium: the panel docked at 320 (its source
-  lines ellipsize, "GIGA-BYT…"; with no layer selected the inspector shows
-  its empty line, so its 2-up fields aren't in the shot), the stage 980
-  wide with the preview fitted at 948×534 and the transport under it, the
-  timeline 980 wide (the ruler's last label cut at its edge); the header
-  and hint bar keep every item. At 1000×1000 it is Narrow: no docked panel,
-  the stage and the timeline full width (the preview at 960×540), the
-  header's layers button left of Record, and the hint bar leaves out its
-  last item ("? All keys") whole; the button opens the sheet over the
-  right 384 px from the header to the hint bar, the content under it
-  dimmed and the button pressed, the hint bar naming the sheet's keys
-  only, `[Tab] Move focus · [Esc] Close` (review R33: it named the
-  editor's, which the sheet's keyboard trap swallowed), and `Esc` closes
-  it. S06 at 1600×800 is compact: the timeline 232 px (toolbar 36, ruler
-  28, video 72, lanes 48), the stage 488 with the preview fitted at
-  746×420 and the transport under it, the panel 720 high; nothing else
-  moves.
+no frames, G§0.3); the gles2 run's in `final/gles2/`. Their departures, measured against the
+frames at full size in the final audit, are in the list after WP10's
+status below, re-measured on its re-shoot; the ones fixed on the way are
+in WP7's "As merged" (the core's "Export failed" toast over S17's panel,
+S18's loss list in path order; the final shot audit's hatch spacing, one
+playhead in S16 and S16b, the hint bar's whole items, the S06 scale
+runs' tooltip, the export pages' insets, heights and text blocks, the
+header slot's "42%", the mud bar's frame A, the links' underlines, the
+bin's actions and S18's footer label, S16b's toast actions).
 
 Review of round 3, WP5 and WP7 (on 2101517): 84 confirmed findings (2
 high, 33 medium, 49 low) in 70 groups, fixed in five lanes, merged in
@@ -3696,6 +3515,208 @@ row by row (`theme::motion`'s table test) and the Narrow sheet in
 `gui_audits`; fixed, the saving ghost's moving stripes (a344fdb) and the
 sheet's libadwaita slide (7a5f96f). The workspace 1787 passed, 0 failed,
 159 ignored.
+
+Status after WP10 (the six lanes on 56e2629, merged in this order: live
+d62e5a7, a11y 6a9bcb7, pack 8ebb132, audits 8e2ae13, themes 1d5905c, text
+dc3d01d; the integration 287be0e, f6e04f5, c1c0f17 and this paragraph's
+commit): **final: every case and run of the table, re-shot after the last
+merge**, and the theme proofs (BRIEF §7: S02 and S06 in all four themes,
+S18 and S25 in Swamp Day and Swamp Night, the narrow sheet; no frames,
+G§0.3, so one board per case in `final/themes/`). The merges' conflicts
+and the two probes the pack and audits lanes each wrote are in the merge
+commits; the integration made the new suites run at any scale and walk the
+a11y tree like the others, pointed `gui_shell`'s title case at the
+accented title the text lane found, and let the gles2 smoke fail only on a
+hang (G§8.5, G§8.6: its 60–215 ms stalls at steps 4–8 stay open). On the
+head: the workspace 1846 passed, 0 failed, 185 ignored; nested, on pixman
+and on gles2 alike, gui_shell 22, gui_smoke 2 (the packaged build's case
+on `nix build`'s `/nix/store/1x40rif93n8i59pvk0zcc0s69d36vcmp-qrec-0.1.0`,
+7 min 12 s with `--cores 4`), gui_chrome 14, gui_timeline 30, gui_stage
+31, gui_panel 21, gui_bin_export 28, gui_live 8, gui_themes 5, gui_a11y
+10, gui_audits 3, gui_text 2: 176 cases each, no GLib or GTK critical;
+every suite again at `QREC_TEST_SCALE` 1.5 and 2 on pixman (176 cases at
+each, the two runs side by side on one machine: every one passes but
+gui_text's GL case, whose control showed no mark at either scale, as it
+shows only on a 1× output; it checks Qrec's setup alone there now,
+c1c0f17, and passes at 1, 1.5 and 2; 398 shots under
+`tmp/gui-shots/scale/` at each scale; pixman's warm frame time, recorded,
+p50 / p99 16.23 / 31.81 ms at 1, 33.95 / 50.00 at 1.5, 29.20 / 33.68 at
+2); gles2's warm frame-time p99 16.51, 16.61 and 16.59 ms in 3 runs alone
+(max 16.67; 16.58 in the full run). The re-shoot against the final shots
+before the merges (every final shot diffed pixel by pixel,
+`tmp/wp10i/diffs-*`): unchanged but for live pixels (the fake camera's
+moving dot, the unpinned meters, the ghost's waveform, real times, dates
+and paths: S01b, S02, S02-1300, S02-scale1.5, S02-scale2, S03-reduced,
+S04, S04-reduced, S04b, S05, S05b, S09, S09-scale1.5, S09-scale2,
+S10-scale2, S11, S13, S15b, S15c-reduced, S16, S16b, S17, S18b on one
+renderer or both, and a glyph of the hint bar's `S` cap drawn a subpixel
+over in gles2's S09-scale1.5) and for S02-1000-sheet, whose dimmed content
+is the theme's shadow now (the themes lane's bridge, below). Each shot is
+next to its frame in `tmp/gui-shots/final/<case>-compare.png` as before,
+the gles2 run's in `final/gles2/`, the theme boards in `final/themes/` and
+`final/gles2/themes/`. Visible departures of the final shots after WP10,
+re-measured on this re-shoot (the items of the lists after the WP5 and WP7
+merges carried over where their shots didn't change, the ones fixed since
+dropped):
+
+- Everywhere, by design (G§8.4's known differences): the fake sources'
+  names and test patterns, the fake tone's levels and block waveforms in
+  the cases that don't pin the meters (`QREC_GUI_TEST_LEVELS` pins only the
+  panel's: the re-shoot caught S09's and S11's A2 meter in a silent block
+  where the shots before caught it in the tone), real elapsed times and
+  dates (the exports' and logs' names), the test project's paths, no
+  pointer in the shots; the icons are Adwaita stand-ins (G§5.2) and the
+  empty-state art a placeholder until the pen export (G§0.6).
+- Everywhere: the fixture's files are small, so every size is the
+  fixture's ("5 takes · 31.4 MB", "10 files (17.0 MB)", "1.6 MB").
+- Everywhere: mono text is the bundled JetBrains Mono, but each glyph
+  advances a whole pixel (7 px at 11 and 12 px, 8 px at 13 px, where the
+  frames advance 6.6, 7.2 and 7.8 px), so a mono string drifts 0.2–0.4 px
+  per character, as WP10's text-rendering experiment measured it (G§3.14):
+  the ruler's labels +4, the ruler corner's "00:04:06:11" +2, S06's
+  transport +4.8, its clip tooltip's second line −9.5, S12's summary
+  timecodes −2 each, S14's take lines −2, S16's file path −8.8 and S17's
+  stderr lines −5…−10 (51 characters: −10); 4 of the 21 mono texts it
+  measured are within a pixel of the frames (a short field like "1500 px"
+  is). Kept: the setups that bring every text within a pixel (unhinted
+  metrics, 21 of 21) bring back the header title's stray mark on GL (PO's
+  call, G§8.7 #9). With the stand-in icons' widths, the timeline toolbar's
+  right group (the clip count, the zoom slider, Fit) sits up to 13 px
+  left of the frames'.
+- Everywhere: Atkinson's glyphs advance whole pixels as well, so a UI line
+  runs a few px off the frame's width, wider or narrower with its size and
+  letters: of 48 UI texts the experiment measured, 30 are within a pixel
+  (unhinted metrics: 46, the other two style), the rest −5.2…+9.8 (S16's
+  body "Layers! Like an onion. Your video is ready." +9.8, S17's lead
+  +9.3, the header title "rust-traits-talk" +3.5, S12's "Removes 4
+  silences" +2.3, take 7's line in S14 −4.8, S12's subtitle −2.7). The
+  UI text's ink weighs the frames' (100 % on average), the mono text's a
+  little lighter (93 %), in every setup. Text-sized controls follow the
+  widths: S15a's Draft and High segments are 2 and 1 px narrower (55 and
+  54 for 57 and 55), the header slot's mini bar 2 px left of the frame's
+  (its "42%" 20 px of ink for 22), S16b's toast narrower (below). The
+  experiment's crops (8×, and the scale-2 shots at 4×) and numbers are in
+  `tmp/text-rendering/` for the PO.
+- Every timeline shot: the toolbar's left group sits right of the frames':
+  the Snap toggle is 102 px for 100 and its contents 2–4 px right, the
+  divider at x 224 for 217 (8 px each side of it where the frames leave 4
+  and 5), Autocut's icon at 241 for 231 and its label at 265 for 252, the
+  settings icon at 360 for 345 (WP3's toolbar spacing; with the stand-in
+  icons' widths, the right group sits up to 13 px left, as above).
+- Every fit shot of the 10-clip timeline (S02, S03, S04b, S06, S07, S11,
+  S13, S14, S15a, S15b, S17, S18, S18b): take 1's second clip reads "1"
+  where the frame reads "Take 1" (G§1.3's fit inset: c8a1 is 63.8 px
+  wide, the frames' 64.3, G§4.5).
+- S01b: the first run names its layers and tracks after their sources
+  ("Camera", "Screen FAKE-1", "Built-in Audio Analog Stereo", A2 at
+  0.0 dB) where the frame reuses the fixture's (Face, Main screen, System
+  audio at −6 dB).
+- S04, S04b, S05: the timers read the real elapsed time
+  (`00:02:41:27` for `00:02:41:12`).
+- S04, S04b, S05 (and S04's reduced-motion run): the ghost's lanes carry
+  the live waveform only where the level ring has readings, the seconds
+  since the window opened, at the ghost's right edge, and are silent to
+  their left (the fake hook's record offset starts take 10 before any
+  reading: 2:41 back, S04b's 31 s), where the frames' takes have levels
+  all along.
+- S06, S09, S10, S11: "+ Add layer", "+ Add audio track" and the header's
+  `+` are disabled in a take layout (D-07); the frames draw them enabled.
+- S07, S08: Program with no clip selected is read-only (D-06): the panel's
+  rows, audio controls and adds are disabled where the frames draw them
+  enabled.
+- S12: the toolbar's settings icon is `preferences-other-symbolic` (the
+  frame's sliders); a knob's center travels to within 2–3 px of its
+  trough's ends where the frame's stops 7–8 px short of them, so Min
+  silence, Padding and Min keep sit 3.5–5 px left of the frame's
+  (Threshold, at the middle, matches); the summary heading is 11 px wider
+  (the gap before "(6.2 s)" 4 px, its mono 5 px). The preview is as drawn:
+  each region's hatch, edges and tag, and the dimmed rows, within 1–2 px.
+- S13: the frame shows the drag and L1's hover at once; the drag shot has
+  no hover (L1's hover is its own shot, `s13-layer-editing`).
+- S13b: a dragged row's copy follows the pointer over the rows, with the
+  drop line at the slot (the frame lifts the row above the line and moves
+  the rows under it), and the row left behind keeps its hover reveal at
+  0.4; the rename field opens with the name selected; the focus ring is
+  shot on L1 ("Main screen"), the board's on a "Face" row.
+- S14: the thumbnails are the fake test pattern's (take 6's from its
+  first frame: 7 frames have no strip image); take 9's broken thumbnail
+  carries `dialog-error-symbolic` and the bin's close Adwaita's smaller
+  `window-close-symbolic` (8×8 where the frame's x is 12×12; G§5.2's
+  stand-ins for circle-x and x); take 2 reads "Removed from the
+  timeline." where the frame reads "Discarded with D." (the fixture writes
+  no history, G§8.4).
+- S15a: "software encode (x264)" where the frame names VA-API on
+  renderD129 (the fake backend probes no VA device, G§8.4).
+- S15b and S15c's running page: the file and "as it was at" carry the
+  export's real start (the setup's preview is the test-mode now, 15:30:12;
+  the job is named when it starts); elapsed and left are real; the shot is
+  taken once `qrec status` has the job at 42 % or more, and it lands at
+  42–44 % on either renderer (44 % on pixman, 43 % on gles2 in WP10's
+  re-shoot), where several units render at once, so the label is further
+  on ("Rendering clip 8/10", the frame's 6/10 at 42 %).
+- S16, S16b: the Smoke fixture's export (3 clips of 30 frames: 1.6 MB,
+  00:00:03:00, took 00:00:01 or 02, its own name), in the Smoke project: the
+  header's "3 clips · 00:00:03:00", its 3-clip timeline with its middle clip
+  c1b2 (take 3) selected and the playhead in it at 00:00:01:15 (the frame
+  selects take 5's c2d0 at 00:01:21:07), so the panel shows take 3's layout,
+  and the bin chip reads 6 (the takes its timeline doesn't use; the frame's
+  5). S16b shows that whole window, and its toast is 467 px wide where the
+  frame's is 500: it sizes to its text (DESIGN's 360–560), 12 px from the
+  body's end to the close button where the frame leaves 28.
+- S17: it fails at 11 % (units 1 and 2 rendered, 867 of 7,391 frames;
+  the frame's 37 %); the status icon is `dialog-error-symbolic` (G§5.2's
+  stand-in for circle-x); Open full log names the failed segment's log
+  (`.qrec/logs/<stamp>-<pid>-j1-seg2.log`, ellipsized at its start) where
+  the frame names `export-20261014-153012.log`; the frame's first stderr
+  line looks faded (not built: a pen-file need). The box shows BRIEF's
+  last ten lines as drawn (the wrapper's render-node line comes first).
+- S18: the modal has no history clause (the frame's "…, and the 6
+  history entries that mention these takes are removed too.": the fixture
+  has no history), so it is 20 px shorter (y 287–713 where the frame's is
+  277–723).
+- S18b: the Settings pages not built yet read disabled (D-48).
+- Scale runs: the departures of their cases at 1, nothing more at the
+  device size. At 1.5 on pixman the window draws at its whole factor, 2,
+  and sway scales the buffer down, so every 1 px rule is 1.5 px smeared
+  over two device px (WP10's audit: Cairo renders no fractional scale);
+  gles2's shots read the same rows (the header's hairline at 1.5: one
+  device row of `border`, #3A4A2C, under one halfway to `surface`,
+  #2B3721, on either renderer).
+- Reduced motion: S04's REC badge has no torch glow (DESIGN's reduced
+  motion; the frames are the animated look at frame A); S15c's bar is flat
+  with no bubbles, as the board's. S03 shows nothing of it: test mode holds
+  the countdown at its end (the digit at scale 1, a full ring) with motion
+  reduced or not, so S03-reduced is S03's picture but for its live pixels
+  (the fake camera's moving dot; on gles2 also the unpinned A2 meter).
+  Not in a shot: the Narrow sheet shows and goes at once under reduced
+  motion, where DESIGN asks a 120 ms fade (WP10's audit, G§3.14).
+- Adaptive (DESIGN Layout, G§3.15; no frames, so checked against the
+  rules): S02 at 1300×1000 is Medium: the panel docked at 320 (its source
+  lines ellipsize, "GIGA-BYT…"; with no layer selected the inspector shows
+  its empty line, so its 2-up fields aren't in the shot), the stage 980
+  wide with the preview fitted at 948×534 and the transport under it, the
+  timeline 980 wide (the ruler's last label cut at its edge); the header
+  and hint bar keep every item. At 1000×1000 it is Narrow: no docked panel,
+  the stage and the timeline full width (the preview at 960×540), the
+  header's layers button left of Record, and the hint bar leaves out its
+  last item ("? All keys") whole; the button opens the sheet over the
+  right 384 px from the header to the hint bar, the content under it
+  dimmed by the theme's `shadow-e2-contact` (35 % black in Swamp Night:
+  the timeline's `surface` #1C2416 reads #12170E; WP10's bridge, where
+  libadwaita's own 25 % neutral read #151B11) and the button pressed, the
+  hint bar naming the sheet's keys only, `[Tab] Move focus · [Esc] Close`,
+  and `Esc` closes it. S06 at 1600×800 is compact: the timeline 232 px
+  (toolbar 36, ruler 28, video 72, lanes 48), the stage 488 with the
+  preview fitted at 746×420 and the transport under it, the panel 720
+  high; nothing else moves.
+- Theme proofs (BRIEF §7, `final/themes/`; no frames, G§0.3): S25 is one
+  toast per core level in the core's copy (info, warning, success, error),
+  not the draft's eleven variants (WP9 writes the copy); the error toast
+  is 607 px wide where DESIGN's toasts are 360–560, its body 3 lines for
+  at most 2 (its label limits count characters, and the body has a line
+  break: WP6's `toasts.rs`); the Frame saved toast names the absolute
+  `/tmp/…/frames/…png` where BRIEF's S25 #4 shows `frames/…` (the shell's
+  FrameSaved carries the absolute path).
 
 ### WP0a — Interfaces, GTK-free (alone, first)
 
@@ -4324,6 +4345,32 @@ case guards the mark now: in today's header layout `gui_shell`'s title
 case, all ascenders, shows it in no setup but unhinted fractional
 metrics).
 
+**Status (WP10 integration, 2026-10-17): done, but for what waits for the
+pen export.** The six lanes are merged (G§7.2's "Status after WP10": the
+merges, the runs and the re-shoot). Every item of **Builds** is in: the
+config watcher and the keymap reload (live lane, G§3.14); the theme proofs
+(themes lane; S18 and S25 also in Swamp Night, and the narrow sheet), with
+the contrast audit and the bridge's additions; the announcements and the
+focus-order audit (a11y lane); reduced motion, every case at 1.5 and 2,
+the widths and heights (final since WP7) and the G§8.6 probes (audits
+lane); the desktop file and icons, `nix build` and the result in nested
+sway (pack lane); the complete smoke (G§8.5) and the checklist (G§8.7, its
+item 9 the text lane's). Waiting for the pen export (G§0.6,
+`tmp/pen-needs.md`): the app icon and its symbolic form, which
+`data/install.sh` installs as placeholders; the art and the ten custom
+icons (placeholders); frames for the theme proofs (no PNG of them in
+`design/screens/`: the boards stand alone) and S25's eleven toast variants (WP9 writes the copy);
+and WP8/WP9's screens. Open after the integration: G§8.5's 50 ms on gles2
+(the smoke's stalls of 60–215 ms at steps 4–8, G§8.6), the PO's calls on
+the text setup (G§8.7 #9), on the gtk dev-dependency of `qrec`'s tests
+(A§1.2, the AT-SPI case) and on the contrast of the pressed states and of
+the countdown digit over a white screen (the themes lane's questions,
+below), and ARCHITECTURE.md's final pass (with WP8/WP9). The themes lane's
+questions for the PO, not held by any test: `accent-text` and
+`record-text` under `pressed` on `raised` read 3.7–4.8 (DESIGN's audit
+covers hover only); the countdown's 160 px digit over a white screen is
+2.53:1.
+
 ---
 
 ## G§8 Verification
@@ -4678,7 +4725,9 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   `the_text_setup_is_manual_with_whole_pixel_advances`, and
   `the_header_title_leaves_no_trace_on_gl`, whose windows run GSK's GL
   renderer in software under either compositor renderer, with GTK's
-  automatic mode as its control: 12 px of mark there). Since WP10 every
+  automatic mode as its control: 12 px of mark there, on a 1× output only:
+  at 1.5 and 2 no setup marks, so a scale run checks Qrec's setup alone).
+  Since WP10 every
   case of every suite runs the a11y walk on the states it shows
   (launched with `Launch::a11y()`), but a window that never shows
   (`a_panic_in_activate_quits_with_1`), the frame-time probe (G§8.6:
@@ -4789,9 +4838,10 @@ loaded and that the registry is still the seeded one.
   (`timeline/mod.rs:406`, up to 45 ms), the timeline surface's snapshot
   (up to 35 ms), the stage's render (up to 72 ms) and GTK's own work.
   Under gles2 they fail the smoke unless they stay under 50 ms there.
-  The integration's gles2 runs (WP10, 6 runs, the machine otherwise idle):
-  the project opening 1 or 2 stalls (the first frame, 650–760 ms), then
-  7–9 during the steps, 60–215 ms: GTK's own frames (the stage's first
+  The integration's gles2 runs (WP10: six of the smoke on the merged tree,
+  one on the package's window, the machine otherwise idle): the project
+  opening 1–3 stalls (the first frame, 650–760 ms), then 7–9 during the
+  steps, 60–215 ms: GTK's own frames (the stage's first
   plates and picture size, the timeline surface's first snapshots after a
   change, 60–125 ms) and, at steps 7 and 8 (the keyed take landing, the
   export starting), the queue's drain through the timeline's
@@ -4883,9 +4933,27 @@ At the M4 review:
    frame: 8× at scale 1, 4× at scale 2, and the mark itself,
    `gl-stray-mark-automatic.png`), `out-scale1/` and `out-scale2/` (each
    measured text, and `widths.md`), `gl/` (the GL runs).
+10. The theme proofs (WP10, `tmp/gui-shots/final/themes/`, no frames):
+    S02 and S06 in all four themes, S18 and S25 in Swamp Day and Swamp
+    Night, the narrow sheet; then in the real session, with the window
+    open, `qrec config set theme swamp-day`, `ui.scale 1.25` and
+    `ui.reduced_motion true`, and a `keys.toml` edit: each applies at once
+    (G§3.14).
+11. A screen reader (Orca) in the real session: a take's start and landing,
+    the toasts and the export's end are spoken (an error assertively);
+    `F6` and `Shift+Tab` walk BRIEF §6's order (G§3.7, G§3.8).
+12. The package (G§6.4): `nix profile install .` puts Qrec in the launcher
+    with the placeholder icon (started from it in `$HOME`: "Not my
+    swamp"); `nix run . -- --project <dir>` opens the window.
+13. WP10's calls for the PO: the gtk dev-dependency of `qrec`'s tests (the
+    AT-SPI case, A§1.2); `accent-text` and `record-text` under `pressed`
+    on `raised` (3.7–4.8) and the countdown's digit over a white screen
+    (2.53:1), outside DESIGN's audit; G§8.5's 50 ms main-loop target, not
+    met on gles2 at the take's landing (G§8.6: the smoke fails there only
+    on a hang, 400 ms).
 
-At M5: the drafted screens as built; the Swamp Day, Dragon's Keep and Ogre
-Mode proofs; reduced motion; 125 % and 150 %.
+At M5: the drafted screens as built (WP8, WP9; the themes, reduced motion
+and the scales are at the M4 review now, items 1, 10).
 
 ---
 

@@ -22,7 +22,7 @@ _Ogres have layers. So do your recordings._
 | M0 Spikes | Export ↔ GES parity verified (per-layer SSIM ≥ 0.986, exact frames). Portal restore tokens, screen/system-audio sync and a 10-minute take verified on real hardware; the camera clap test needs a person (below) |
 | M3 Design | Swamp Night vertical slice in `design/qrec.pen`, **approved** 2026-10-15 (contrast decisions in DESIGN.md) |
 | M4 GUI | Built, in review: the approved slice (S01–S18b) in GTK4/libadwaita: header, stage and canvas, timeline, onion layers panel, bin, export, toasts, modals and Settings › Project, with the adaptive layouts and the end-to-end smoke. The drafted screens (the blocking pages, the command palette, the cheat sheet, the other Settings pages) wait for the design's export and show interim pages meanwhile (docs/GUI.md G§1.1) |
-| M5 Polish | Keymap, cheat-sheet data and themes as tokens are in. Packaging is done: `nix build` installs a desktop entry and icons, and the app icon is a placeholder until the design's is exported. The live theme switch, the theme proofs, accessibility and the audits are in progress (WP10) |
+| M5 Polish | Keymap, cheat-sheet data and themes as tokens are in. Packaging is done: `nix build` installs a desktop entry and icons, and the app icon is a placeholder until the design's is exported. `qrec config set theme`, `ui.scale` and `ui.reduced_motion` and `keys.toml` apply to an open window; every theme is proved on the main screens and holds AA contrast; screen readers hear the record loop, the toasts and the export's end, and the keyboard reaches every control in BRIEF's order; every screen is checked at 1.5× and 2× and with reduced motion (WP10). The screens drawn later wait for the design's export (WP8, WP9) |
 
 ## Build and run
 
@@ -124,7 +124,7 @@ my-video/
 ## Development
 
 ```sh
-cargo test --workspace                               # ~1,750 tests; CLI tests spawn ffmpeg
+cargo test --workspace                               # ~1,850 tests; CLI tests spawn ffmpeg
 cargo clippy --workspace --all-targets -- -D warnings
 cargo check -p qrec-core                             # the pure core on its own
 QREC_CAPTURE_BACKEND=fake qrec record start          # record test patterns, no devices
