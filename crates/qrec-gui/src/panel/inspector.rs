@@ -358,7 +358,7 @@ impl InspectorView {
         // A change that ended unsent: the model's value again (no snapshot
         // may come to put it back).
         let weak = Rc::downgrade(inner);
-        inner.opacity_tooltip.connect_end(move |sent| {
+        inner.opacity_tooltip.on_end(move |sent| {
             if let Some(inner) = weak.upgrade()
                 && !sent
             {

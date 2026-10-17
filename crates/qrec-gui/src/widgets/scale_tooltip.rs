@@ -9,7 +9,7 @@
 //!   that moved the slider is released. Controls that commit on release
 //!   (the inspector's opacity, G§4.7) send their one command there and say
 //!   whether they did; the autocut page's sliders tune a draft as they
-//!   move. [`ValueTooltip::connect_end`] follows every change's end, sent or
+//!   move. [`ValueTooltip::on_end`] follows every change's end, sent or
 //!   not, and [`ValueTooltip::changing`] says a change is under way: a
 //!   snapshot then leaves the slider where the person has it (R44);
 //! - the wheel as a `NumericField` takes it (R42): over a slider the
@@ -138,7 +138,7 @@ impl ValueTooltip {
 
     /// Calls `f` when a change ends, with whether its release sent a
     /// command (unsent, the owner shows its model's value again).
-    pub fn connect_end(&self, f: impl Fn(bool) + 'static) {
+    pub fn on_end(&self, f: impl Fn(bool) + 'static) {
         *self.inner.on_end.borrow_mut() = Some(Rc::new(f));
     }
 
