@@ -182,6 +182,9 @@ struct Inner {
     /// The quiet swamp and its fixed-width column (smaller in the compact
     /// rows).
     empty_art: Option<(Column, gtk::Picture)>,
+    /// The ruler's corner cell and the track headers' column:
+    /// `HEADER_WIDTH` × the UI scale, also after a live change (WP10).
+    header_columns: [Column; 2],
     texts: Texts,
     started: Instant,
     m: RefCell<Model>,
@@ -342,6 +345,7 @@ impl Inner {
                 empty_key,
                 empty_before,
                 empty_art,
+                header_columns: [corner_col, headers_col],
                 texts: Texts::default(),
                 started: Instant::now(),
                 m: RefCell::new(Model {
@@ -421,11 +425,16 @@ impl Inner {
         }));
         subs.push(self.ctx.theme.subscribe({
             let me = me.clone();
-            move |_| {
+            move |theme| {
                 if let Some(inner) = me.upgrade() {
-                    // New colors or a new scale: the cached canvas goes.
+                    // New colors or a new scale: the cached canvas goes,
+                    // and the quiet swamp takes the new colors (WP10).
                     inner.texts.clear();
                     inner.bump();
+                    if let Some((_, art)) = &inner.empty_art {
+                        let svg = theme.art(crate::theme::art::Art::QuietSwamp);
+                        art.set_paintable(svg.as_ref());
+                    }
                     inner.refresh_all();
                 }
             }
@@ -1041,6 +1050,10 @@ impl Inner {
         self.overlay.set_visible(!empty);
         self.ruler_row
             .set_size_request(-1, (rows.ruler * self.scale()) as i32);
+        let header_px = (HEADER_WIDTH * self.scale()).round() as i32;
+        for column in &self.header_columns {
+            column.set_width(header_px);
+        }
         self.update_rows(rows);
         let content = rows.content_height(lanes) * self.scale();
         self.canvas.set_natural_size(0, content.ceil() as i32);
@@ -2165,6 +2178,8 @@ fn empty_state(ctx: &Ctx, key: &KeyCap) -> (gtk::Box, gtk::Label, Option<(Column
             let (w, h) = empty_art_size(tl::ROWS);
             art.set_size_request(w, h);
             art.add_css_class("tl-empty-art");
+            // For the nested cases (G§8.4): its colors follow the theme.
+            art.set_widget_name("tl-empty-art");
             let column = Column::new(&art, w);
             column.set_halign(gtk::Align::Center);
             block.append(&column);
