@@ -314,6 +314,9 @@ struct Inner {
     /// Who sends what they debounced before the host closes
     /// ([`Store::subscribe_close`]).
     closing: Subscribers<()>,
+    /// Test mode's `QREC_GUI_TEST_SEND_DELAY_MS`: the commands on their
+    /// way to the host, oldest first.
+    delayed: RefCell<VecDeque<(Arc<GuiHost>, Request, GuiResponder)>>,
 }
 
 struct Pending {
@@ -368,6 +371,7 @@ impl Store {
                 notices: Subscribers::default(),
                 unshown: RefCell::new(Vec::new()),
                 closing: Subscribers::default(),
+                delayed: RefCell::new(VecDeque::new()),
             }),
         }
     }
@@ -556,11 +560,43 @@ impl Store {
         let host = self.inner.host.borrow().clone();
         match host {
             Some(host) => {
-                // `false`: the host stopped and answered the responder.
-                host.submit(Request::command(cmd, confirmed), Box::new(responder));
+                let request = Request::command(cmd, confirmed);
+                match crate::testctl::mode().send_delay {
+                    Some(delay) => self.send_later(host, request, responder, delay),
+                    // `false`: the host stopped and answered the responder.
+                    None => {
+                        host.submit(request, Box::new(responder));
+                    }
+                }
             }
             None => responder.reply(Err(CoreError::busy("the project isn't open yet"))),
         }
+    }
+
+    /// Test mode's `QREC_GUI_TEST_SEND_DELAY_MS` (G§8.4): `request` goes to
+    /// `host` `delay` from now, after each one sent before it, as a slow
+    /// Session would answer it (a reply then comes after the next gesture:
+    /// the stage's commits, R23; a key's seek while playing, R22).
+    fn send_later(
+        &self,
+        host: Arc<GuiHost>,
+        request: Request,
+        responder: GuiResponder,
+        delay: std::time::Duration,
+    ) {
+        self.inner
+            .delayed
+            .borrow_mut()
+            .push_back((host, request, responder));
+        let weak = Rc::downgrade(&self.inner);
+        crate::guard::timeout_local_once(delay, "store: a delayed send (test mode)", move || {
+            let next = weak
+                .upgrade()
+                .and_then(|i| i.delayed.borrow_mut().pop_front());
+            if let Some((host, request, responder)) = next {
+                host.submit(request, Box::new(responder));
+            }
+        });
     }
 
     /// Shows a toast made by the GUI.

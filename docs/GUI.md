@@ -3984,6 +3984,11 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
     refresh`, `export: the running clock`) panic, caught like any other,
     so a case sees that what each drives comes back (G§3.12 R10; review
     R09, R65; it replaced the timeline-only flag `panic-tick`);
+  - `QREC_GUI_TEST_SEND_DELAY_MS=<ms>` holds every command that long on
+    its way to the host (`Store::dispatch_with`, in order): a slow
+    Session, so a reply comes after the next gesture (the stage's
+    in-flight commits, R23's audit; a key's pre-step seek while playing,
+    R22's audit);
   - the control channel (G§3.18).
 - **Driving.** `qrec --project <dir> … --json` with the `TestEnv`
   (`Nested::cli`, `cli_json`); the pointer: `Nested::pointer()`, one

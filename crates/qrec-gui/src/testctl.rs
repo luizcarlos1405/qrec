@@ -12,7 +12,9 @@
 //! `QREC_GUI_TEST_PANIC_ONCE` (`|`-separated) names guarded callbacks
 //! (their `what`: `timeline: a frame`, `meter: refresh`) whose first run
 //! panics, caught as any other (G§3.12: what a slot drives comes back),
-//! and the control channel listens. Flags,
+//! `QREC_GUI_TEST_SEND_DELAY_MS` holds every command that long before it
+//! goes to the host, in order (a slow Session: a reply comes after the
+//! next gesture, R22, R23), and the control channel listens. Flags,
 //! comma-separated: `stuck-gst` makes startup report GStreamer stuck
 //! without initializing it (the stuck page, exit 5); `panic-activate`
 //! panics in `activate` (the app quits with 1).
@@ -76,6 +78,9 @@ pub struct TestMode {
     /// whose first run panics (caught: what they drive must come back,
     /// G§3.12 R10).
     pub panic_once: Vec<String>,
+    /// `QREC_GUI_TEST_SEND_DELAY_MS`: how long each command waits before
+    /// it goes to the host (in order; `Store::dispatch_with`).
+    pub send_delay: Option<Duration>,
     /// The frozen animation clock (`QREC_GUI_TEST_T_MS`).
     pub t_ms: u64,
     /// The local time of the export's auto name (`QREC_GUI_TEST_NOW`: RFC
@@ -89,6 +94,7 @@ pub struct TestVars<'a> {
     pub t_ms: Option<&'a str>,
     pub now: Option<&'a str>,
     pub panic_once: Option<&'a str>,
+    pub send_delay_ms: Option<&'a str>,
 }
 
 impl TestMode {
@@ -110,6 +116,7 @@ impl TestMode {
             t_ms,
             now,
             panic_once,
+            send_delay_ms,
         } = vars;
         let flags: Vec<&str> = test
             .unwrap_or_default()
@@ -133,6 +140,11 @@ impl TestMode {
                         .collect()
                 })
                 .unwrap_or_default(),
+            send_delay: send_delay_ms
+                .filter(|_| on)
+                .and_then(|ms| ms.trim().parse().ok())
+                .filter(|ms| *ms > 0)
+                .map(Duration::from_millis),
             t_ms: t_ms.and_then(|t| t.trim().parse().ok()).unwrap_or(0),
             now: now.and_then(|n| {
                 let n = n.trim();
@@ -148,12 +160,14 @@ impl TestMode {
         let var = |k: &str| std::env::var(k).ok();
         let (t_ms, now) = (var("QREC_GUI_TEST_T_MS"), var("QREC_GUI_TEST_NOW"));
         let panic_once = var("QREC_GUI_TEST_PANIC_ONCE");
+        let delay = var("QREC_GUI_TEST_SEND_DELAY_MS");
         Self::parse_all(
             var("QREC_GUI_TEST").as_deref(),
             TestVars {
                 t_ms: t_ms.as_deref(),
                 now: now.as_deref(),
                 panic_once: panic_once.as_deref(),
+                send_delay_ms: delay.as_deref(),
             },
         )
     }
@@ -887,13 +901,21 @@ mod tests {
         assert!(TestMode::parse(Some("1,stuck-gst"), None, None).stuck_gst);
         let vars = TestVars {
             panic_once: Some("timeline: a frame| meter: refresh |"),
+            send_delay_ms: Some("225"),
             ..TestVars::default()
         };
         let faults = TestMode::parse_all(Some("1"), vars);
         assert_eq!(faults.panic_once, ["timeline: a frame", "meter: refresh"]);
+        assert_eq!(faults.send_delay, Some(Duration::from_millis(225)));
         assert!(!faults.panic_activate && on.panic_once.is_empty());
         // Outside test mode, none of it.
-        assert!(TestMode::parse_all(None, vars).panic_once.is_empty());
+        let off = TestMode::parse_all(None, vars);
+        assert!(off.panic_once.is_empty() && off.send_delay.is_none());
+        let zero = TestVars {
+            send_delay_ms: Some("0"),
+            ..TestVars::default()
+        };
+        assert_eq!(TestMode::parse_all(Some("1"), zero).send_delay, None);
     }
 
     /// The socket thread's half: a request line reaches the queue with a

@@ -1063,6 +1063,100 @@ fn arrow_keys_nudge_the_selected_layer() {
     assert_clean(&mut nested);
 }
 
+/// Selects L2 on the 1:2 Live preview (a click; it focuses the canvas) and
+/// waits for the `SetUi` (up to 20 s: a send delay holds it).
+fn select_l2(nested: &mut Nested, project: &Path) {
+    let [x, y, w, h] = L2_BOX;
+    nested.pointer().click(x + w / 2.0, y + h / 2.0);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while status(nested, project)["ui"]["selectedLayer"] != "L2" {
+        assert!(Instant::now() < deadline, "L2 never selected");
+        thread::sleep(Duration::from_millis(50));
+    }
+    nested.window(0).wait_idle();
+    assert_eq!(nested.window(0).local()["focus"], "stage");
+}
+
+/// R23 at the stage (its audit): a commit's reply that comes after a newer
+/// commit leaves the newer one's layout. Three Left taps 150 ms apart with
+/// every command held 225 ms on its way (`QREC_GUI_TEST_SEND_DELAY_MS`, a
+/// slow Session): the first reply comes between the second and the third
+/// tap, before the second's snapshot. The third goes on from the second's
+/// layout: x 1497, three entries. With any reply clearing the newest
+/// commit's layout, the third went on from the first's snapshot (1498).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_late_reply_leaves_the_newer_commit() {
+    let mut nested = Nested::start(AREA, "late-reply", Options::default());
+    let project = fixture(
+        &nested,
+        DesignVariant::Base,
+        Some(ui(CanvasMode::Live, 7391)),
+    );
+    open(
+        &mut nested,
+        &project,
+        Launch::a11y().with_env("QREC_GUI_TEST_SEND_DELAY_MS", "225"),
+    );
+    select_l2(&mut nested, &project);
+    let c0 = cursor(&nested, &project);
+    nested.keys(&[
+        "-k", "Left", "-s", "150", "-k", "Left", "-s", "150", "-k", "Left",
+    ]);
+    wait_nudged(&mut nested, &project, c0 + 3, (1497, 760));
+    assert_clean(&mut nested);
+}
+
+/// R23 at the stage, the press (its audit): a drag that starts while a
+/// commit waits for its reply starts from that commit's layout (the box
+/// the canvas shows: `newest_scene`). A Left tap, then a 10 px drag of L2
+/// (20 canvas px, snapping off) within the 2 s every command is held on
+/// its way: x 1519, two entries. Pressed on the snapshot's layout, it
+/// moved L2 from 1500 and dropped the tap (1520).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_drag_during_a_commit_starts_from_it() {
+    let mut nested = Nested::start(AREA, "drag-during-commit", Options::default());
+    let mut preset = ui(CanvasMode::Live, 7391);
+    preset.snapping = false;
+    let project = fixture(&nested, DesignVariant::Base, Some(preset));
+    open(
+        &mut nested,
+        &project,
+        Launch::a11y().with_env("QREC_GUI_TEST_SEND_DELAY_MS", "2000"),
+    );
+    select_l2(&mut nested, &project);
+    let c0 = cursor(&nested, &project);
+    let before = gui_log(&mut nested).lines().count();
+    nested.keys(&["-k", "Left"]);
+    // The tap's `LayerSet` went out (to be held 2 s): its layout shows.
+    gui_support::poll(Duration::from_secs(5), "the tap's LayerSet", || {
+        let log = gui_log(&mut nested);
+        log.lines()
+            .skip(before)
+            .any(|l| l.contains("dispatch") && l.contains("layerSet"))
+            .then_some(())
+    });
+    assert_eq!(cursor(&nested, &project), c0, "the tap's commit waits");
+    let [x, y, w, h] = L2_BOX;
+    let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+    let pointer = nested.pointer();
+    pointer.move_to(cx, cy);
+    pointer.button(BUTTON_LEFT, true);
+    for i in 1..=5 {
+        pointer.move_to(cx + 2.0 * f64::from(i), cy);
+        thread::sleep(Duration::from_millis(16));
+    }
+    pointer.button(BUTTON_LEFT, false);
+    assert_eq!(
+        cursor(&nested, &project),
+        c0,
+        "the drag came before the tap's reply"
+    );
+    wait_nudged(&mut nested, &project, c0 + 2, (1519, 760));
+    assert_clean(&mut nested);
+}
+
 /// S10's canvas: a trim of c2d0's start edge (S08's seconds zoom, +29
 /// frames) shows take 5 frame 41 with the 2 px accent stroke and "Trim
 /// start · take 5 · frame 41". The trim drag is WP3's timeline: its rows
