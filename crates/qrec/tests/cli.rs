@@ -309,6 +309,57 @@ fn config_lives_in_the_isolated_config_home() {
     assert_eq!(unknown.code, Some(2));
 }
 
+/// `qrec config set` writes through the shell's writer, the Settings
+/// pages' (WP9): only the line of the setting changes (a dotted key out of
+/// its section's order stays where it was), the file keeps its permissions,
+/// and a symlink to it (a dotfiles manager's) stays a symlink.
+#[test]
+fn config_set_changes_one_line_through_the_shells_writer() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    let dir = env.empty_dir("any");
+    let dotfiles = env.empty_dir("dotfiles");
+    let real = dotfiles.join("qrec-config.toml");
+    let text =
+        "# my settings\nui.scale = 1.25\ncanvas.fps = \"30\"  # PAL later\nui.sounds = true\n";
+    fs::write(&real, text).unwrap();
+    fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
+    let config_dir = env.config_home().join("qrec");
+    fs::create_dir_all(&config_dir).unwrap();
+    let link = config_dir.join("config.toml");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let set = qrec(&env, &dir, &["config", "set", "ui.scale", "1.5", "--json"]);
+    set.ok();
+    assert_eq!(set.only_reply()["data"]["value"], 1.5);
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "still a symlink"
+    );
+    assert_eq!(
+        fs::read_to_string(&real).unwrap(),
+        text.replace("ui.scale = 1.25", "ui.scale = 1.5")
+    );
+    assert_eq!(
+        fs::metadata(&real).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    qrec(&env, &dir, &["config", "set", "theme", "swamp-day", "-q"]).ok();
+    assert_eq!(
+        fs::read_to_string(&real).unwrap(),
+        format!(
+            "{}theme = \"swamp-day\"\n",
+            text.replace("ui.scale = 1.25", "ui.scale = 1.5")
+        ),
+        "a new root line after the root's last one"
+    );
+    let get = qrec(&env, &dir, &["config", "get", "ui.sounds"]);
+    assert_eq!(get.stdout, "true\n");
+}
+
 /// Everything the headless hosts of the project in `dir` logged.
 fn host_logs(dir: &Path) -> String {
     let mut text = String::new();
