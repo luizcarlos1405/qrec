@@ -1687,6 +1687,9 @@ fn the_export_clock_comes_back_after_a_caught_panic() {
         export_percent(&nested, &project).is_some(),
         "the export still runs"
     );
+    // The Running page with its clock back.
+    let a11y = nested.window(0).ctl(json!({"op": "a11y"}));
+    assert_eq!(a11y["ok"], true, "a11y: {a11y}");
     click(&mut nested, "export-cancel");
     wait_export_gone(&nested, &project, Duration::from_secs(30));
     wait_overlays(&mut nested, &[], Duration::from_secs(10));

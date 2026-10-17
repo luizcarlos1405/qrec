@@ -37,6 +37,13 @@ fn ctrl_q(nested: &Nested) {
     nested.keys(&["-M", "ctrl", "-k", "q", "-m", "ctrl"]);
 }
 
+/// The a11y walk is empty (launched with `Launch::a11y()`): WP10 walks
+/// each page and layout a case shows.
+fn assert_a11y(gui: &gui_support::Gui) {
+    let reply = gui.ctl(json!({"op": "a11y"}));
+    assert_eq!(reply["ok"], true, "a11y: {reply}");
+}
+
 /// The headless hosts running in the env (`qrec host --headless …`).
 fn headless_hosts(nested: &Nested) -> Vec<String> {
     let marker = format!("QREC_RUNTIME_DIR={}", nested.env.runtime_dir().display());
@@ -277,7 +284,7 @@ fn the_header_title_leaves_no_trace_of_the_old_one() {
     for (n, debug) in [(1, None), (2, Some("full-redraw"))] {
         let mut nested = Nested::start("wp0b", &format!("title-{n}"), Options::default());
         let project = fixture(&nested, "hhhhhhhhhhhhhhhh", DesignVariant::Base);
-        let mut launch = Launch::default();
+        let mut launch = Launch::a11y();
         if let Some(debug) = debug {
             launch = launch.with_env("GSK_DEBUG", debug);
         }
@@ -289,6 +296,7 @@ fn the_header_title_leaves_no_trace_of_the_old_one() {
         let split = nested.cli_json(&project, &["clip", "split", "--timeline", "--at", "2437f"]);
         assert_eq!(split["ok"], true, "{split}");
         nested.window(0).wait_idle();
+        assert_a11y(nested.window(0));
         shots.push(nested.screenshot("header"));
     }
     let (partial, full) = (crop(&shots[0]), crop(&shots[1]));
@@ -315,7 +323,7 @@ fn the_header_title_leaves_no_trace_of_the_old_one() {
 fn the_control_channel_ops_work() {
     let mut nested = Nested::start("wp0b", "control", Options::default());
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
-    nested.launch(&project, Launch::default());
+    nested.launch(&project, Launch::a11y());
     wait_for_gui_host(&nested, &project, OPEN);
     let gui = nested.window(0);
     gui.wait_phase("open", OPEN);
@@ -340,6 +348,7 @@ fn the_control_channel_ops_work() {
     );
     let status = nested.cli_json(&project, &["status"]);
     assert_eq!(status["data"]["ui"]["binOpen"], true, "{status}");
+    assert_a11y(nested.window(0));
     nested.screenshot("bin");
 
     // action: a binding (b toggles the bin) and a GUI action (the palette's
@@ -375,6 +384,7 @@ fn the_control_channel_ops_work() {
             .is_some_and(|o| o.starts_with("Confirm")),
         "{local}"
     );
+    assert_a11y(gui);
     nested.screenshot("modal");
     nested.keys(&["-k", "Escape"]);
     let gui = nested.window(0);
@@ -401,7 +411,7 @@ fn the_control_channel_ops_work() {
 fn a_modal_keeps_the_focus_from_the_toasts() {
     let mut nested = Nested::start("wp0b", "modal-focus", Options::default());
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
-    nested.launch(&project, Launch::default());
+    nested.launch(&project, Launch::a11y());
     wait_for_gui_host(&nested, &project, OPEN);
     let gui = nested.window(0);
     gui.wait_phase("open", OPEN);
@@ -431,6 +441,7 @@ fn a_modal_keeps_the_focus_from_the_toasts() {
         let local = gui.local();
         assert!(in_modal(&local), "Tab {press} left the modal: {local}");
     }
+    assert_a11y(nested.window(0));
     nested.screenshot("modal");
     nested.keys(&["-k", "Escape"]);
     nested.window(0).wait_idle();
@@ -444,10 +455,12 @@ fn a_modal_keeps_the_focus_from_the_toasts() {
 fn sigterm_exits_130() {
     let mut nested = Nested::start("wp0b", "sigterm", Options::default());
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
-    nested.launch(&project, Launch::default());
+    nested.launch(&project, Launch::a11y());
     wait_for_gui_host(&nested, &project, OPEN);
     let gui = nested.window(0);
     gui.wait_phase("open", OPEN);
+    gui.wait_idle();
+    assert_a11y(gui);
     gui.signal("TERM");
     assert_eq!(gui.wait_exit(Duration::from_secs(15)), Some(130));
     assert_lock_free(&nested, &project);
@@ -463,7 +476,7 @@ fn sigterm_exits_130() {
 fn a_record_toggle_50_ms_after_launch_is_the_windows() {
     let mut nested = Nested::start("wp0b", "startup-order", Options::default());
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
-    nested.launch(&project, Launch::default());
+    nested.launch(&project, Launch::a11y());
     thread::sleep(Duration::from_millis(50));
     let toggle = nested.cli_json(&project, &["record", "toggle"]);
     assert_eq!(toggle["ok"], true, "{toggle}");
@@ -479,10 +492,14 @@ fn a_record_toggle_50_ms_after_launch_is_the_windows() {
         headless_hosts(&nested)
     );
     nested.window(0).wait_phase("open", OPEN);
+    nested.window(0).wait_idle();
+    assert_a11y(nested.window(0));
     nested.screenshot("recording");
     let stop = nested.cli_json(&project, &["record", "toggle"]);
     assert_eq!(stop["ok"], true, "{stop}");
     wait_phase(&nested, &project, "idle", Duration::from_secs(30));
+    nested.window(0).wait_idle();
+    assert_a11y(nested.window(0));
     nested.close_window();
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
 }
@@ -545,7 +562,7 @@ fn a_missing_ffmpeg_shows_s23_until_check_again_finds_it() {
     let (path, bin, ffmpeg_dir) = path_without_ffmpeg(&nested);
     let launch = Launch {
         path: Some(path),
-        ..Launch::default()
+        ..Launch::a11y()
     };
     nested.launch(&project, launch);
     let gui = nested.window(0);
@@ -554,6 +571,7 @@ fn a_missing_ffmpeg_shows_s23_until_check_again_finds_it() {
     let text = gui.labels("region-blocking").join("\n");
     assert!(text.contains("ffmpeg"), "{text}");
     gui.wait_idle();
+    assert_a11y(gui);
     nested.screenshot("page");
     assert_lock_free(&nested, &project);
     let list = nested.cli_json(&project, &["clip", "list"]);
@@ -566,6 +584,8 @@ fn a_missing_ffmpeg_shows_s23_until_check_again_finds_it() {
     let gui = nested.window(0);
     gui.wait_phase("open", OPEN);
     wait_for_gui_host(&nested, &project, OPEN);
+    nested.window(0).wait_idle();
+    assert_a11y(nested.window(0));
     nested.close_window();
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
 }
@@ -588,7 +608,7 @@ fn s23_stays_over_a_cli_recordings_page() {
         &project,
         Launch {
             path: Some(path),
-            ..Launch::default()
+            ..Launch::a11y()
         },
     );
     let gui = nested.window(0);
@@ -612,6 +632,7 @@ fn s23_stays_over_a_cli_recordings_page() {
         focus.as_array().is_some_and(|path| path.len() > 1),
         "the focus is in the window: {focus}"
     );
+    assert_a11y(gui);
     nested.screenshot("page");
     ctrl_q(&nested);
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(5));
@@ -654,7 +675,7 @@ fn a_corrupt_project_shows_x3_and_can_be_restored_meanwhile() {
     let split = nested.cli_json(&project, &["clip", "split", "--timeline", "--at", "2437f"]);
     let seq = split["data"]["seq"].as_u64().expect("a seq");
     fs::write(project.join("qrec.json"), "{ \"version\": 1, broken").expect("corrupt it");
-    nested.launch(&project, Launch::default());
+    nested.launch(&project, Launch::a11y());
     let gui = nested.window(0);
     let local = gui.wait_phase("blocked", OPEN);
     assert_eq!(page_of(&local), "unreadable", "{local}");
@@ -662,6 +683,7 @@ fn a_corrupt_project_shows_x3_and_can_be_restored_meanwhile() {
     let restore = format!("qrec history restore {seq} --yes");
     assert!(text.contains(&restore), "{text}");
     gui.wait_idle();
+    assert_a11y(gui);
     nested.screenshot("page");
     let restored = nested.cli_json(&project, &["history", "restore", &seq.to_string(), "--yes"]);
     assert_eq!(restored["ok"], true, "{restored}");
@@ -680,7 +702,7 @@ fn a_corrupt_project_shows_x3_and_can_be_restored_meanwhile() {
 fn an_empty_folder_is_initialized_before_any_request() {
     let mut nested = Nested::start("wp0b", "empty-folder", Options::default());
     let project = nested.env.empty_dir("fresh-swamp");
-    nested.launch(&project, Launch::default());
+    nested.launch(&project, Launch::a11y());
     let status = wait_for_gui_host(&nested, &project, OPEN);
     assert_eq!(status["data"]["initialized"], true, "{status}");
     assert_eq!(status["data"]["project"]["name"], "fresh-swamp", "{status}");
@@ -691,6 +713,7 @@ fn an_empty_folder_is_initialized_before_any_request() {
     let gui = nested.window(0);
     gui.wait_phase("open", OPEN);
     gui.wait_idle();
+    assert_a11y(gui);
     nested.screenshot("open");
     nested.close_window();
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
@@ -704,7 +727,7 @@ fn not_my_swamp_and_inside_a_project() {
     let mut nested = Nested::start("wp0b", "x2", Options::default());
     let downloads = nested.env.empty_dir("Downloads");
     fs::write(downloads.join("notes.txt"), "x").expect("a file");
-    nested.launch(&downloads, Launch::default());
+    nested.launch(&downloads, Launch::a11y());
     let gui = nested.window(0);
     let local = gui.wait_phase("blocked", OPEN);
     assert_eq!(page_of(&local), "notMySwamp", "{local}");
@@ -715,6 +738,7 @@ fn not_my_swamp_and_inside_a_project() {
     );
     assert!(!text.contains("It's inside the project"), "{text}");
     gui.wait_idle();
+    assert_a11y(gui);
     nested.screenshot("page");
     ctrl_q(&nested);
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(3));
@@ -730,7 +754,7 @@ fn not_my_swamp_and_inside_a_project() {
     let inside = project.join("exports");
     fs::create_dir_all(&inside).expect("exports");
     fs::write(inside.join("talk.mp4"), "x").expect("a file");
-    nested.launch(&inside, Launch::default());
+    nested.launch(&inside, Launch::a11y());
     let gui = nested.window(1);
     let local = gui.wait_phase("blocked", OPEN);
     assert_eq!(page_of(&local), "notMySwamp", "{local}");
@@ -738,6 +762,7 @@ fn not_my_swamp_and_inside_a_project() {
     assert!(text.contains("It's inside the project"), "{text}");
     assert!(text.contains("run qrec there"), "{text}");
     gui.wait_idle();
+    assert_a11y(gui);
     nested.screenshot("inside");
     ctrl_q(&nested);
     assert_eq!(nested.window(1).wait_exit(EXIT), Some(3));
@@ -750,15 +775,16 @@ fn not_my_swamp_and_inside_a_project() {
 fn a_second_window_gets_the_held_page_and_exits_6() {
     let mut nested = Nested::start("wp0b", "second-window", Options::default());
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
-    nested.launch(&project, Launch::default());
+    nested.launch(&project, Launch::a11y());
     wait_for_gui_host(&nested, &project, OPEN);
     nested.window(0).wait_phase("open", OPEN);
-    let second = nested.launch(&project, Launch::default()).pid();
+    let second = nested.launch(&project, Launch::a11y()).pid();
     // Each window has its own test channel.
     let gui = nested.window(1);
     let local = gui.wait_phase("blocked", OPEN);
     assert_eq!(page_of(&local), "heldByWindow", "{local}");
     gui.wait_idle();
+    assert_a11y(gui);
     assert_eq!(
         nested.window(0).local()["startup"]["phase"],
         "open",
@@ -770,6 +796,8 @@ fn a_second_window_gets_the_held_page_and_exits_6() {
     assert!(nested.window(0).running(), "the first window stays");
     let status = nested.cli_json(&project, &["status"]);
     assert_eq!(status["data"]["host"], "gui", "{status}");
+    nested.window(0).wait_idle();
+    assert_a11y(nested.window(0));
     nested.close_window();
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
 }
@@ -786,11 +814,12 @@ fn a_cli_recording_shows_x1_stop_and_open_or_quit() {
     let start = nested.cli_json(&project, &["record", "start"]);
     assert_eq!(start["ok"], true, "{start}");
     wait_phase(&nested, &project, "recording", Duration::from_secs(30));
-    nested.launch(&project, Launch::default());
+    nested.launch(&project, Launch::a11y());
     let gui = nested.window(0);
     let local = gui.wait_phase("blocked", OPEN);
     assert_eq!(page_of(&local), "cliRecording", "{local}");
     gui.wait_idle();
+    assert_a11y(gui);
     nested.screenshot("page");
     ctrl_q(&nested);
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(6));
@@ -802,7 +831,7 @@ fn a_cli_recording_shows_x1_stop_and_open_or_quit() {
     let clips = nested.cli_json(&project, &["clip", "list"])["data"]
         .as_array()
         .map_or(0, Vec::len);
-    nested.launch(&project, Launch::default());
+    nested.launch(&project, Launch::a11y());
     let gui = nested.window(1);
     let local = gui.wait_phase("blocked", OPEN);
     assert_eq!(page_of(&local), "cliRecording", "{local}");
@@ -818,6 +847,7 @@ fn a_cli_recording_shows_x1_stop_and_open_or_quit() {
     assert_eq!(after, clips + 1, "the take landed");
     assert!(headless_hosts(&nested).is_empty(), "the headless host went");
     nested.window(1).wait_idle();
+    assert_a11y(nested.window(1));
     nested.screenshot("opened");
     nested.close_window();
     assert_eq!(nested.window(1).wait_exit(EXIT), Some(0));
@@ -838,7 +868,7 @@ fn nothing_opens_over_the_opening_window() {
     // remaining time plus 3 s later (G§3.4.3), and shows X1.
     let start = nested.cli_background(&project, &["record", "start", "--countdown", "6"]);
     wait_phase(&nested, &project, "countdown", Duration::from_secs(30));
-    nested.launch(&project, Launch::default());
+    nested.launch(&project, Launch::a11y());
     let gui = nested.window(0);
     gui.wait_phase("opening", OPEN);
     // The header's gear (`run_binding`, as the test channel's action).
@@ -855,6 +885,7 @@ fn nothing_opens_over_the_opening_window() {
     gui.wait_idle();
     let local = gui.local();
     assert_eq!(local["overlays"], json!([]), "{local}");
+    assert_a11y(gui);
     nested.screenshot("x1");
     nested.keys(&["-k", "Return"]);
     let gui = nested.window(0);
@@ -862,6 +893,8 @@ fn nothing_opens_over_the_opening_window() {
     gui.wait_idle();
     let _ = gui_support::reap_within(start, gui_support::CLI_TIMEOUT, "qrec record start");
     assert_eq!(nested.window(0).local()["panics"], 0);
+    nested.window(0).wait_idle();
+    assert_a11y(nested.window(0));
     nested.close_window();
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
 }
@@ -884,7 +917,7 @@ fn the_theme_and_keys_come_from_the_users_config() {
         "[bindings]\n\"record.toggle\" = \"F9\"\n\"autocut.run\" = \"x\"\n",
     )
     .expect("keys.toml");
-    nested.launch(&project, Launch::default());
+    nested.launch(&project, Launch::a11y());
     wait_for_gui_host(&nested, &project, OPEN);
     let gui = nested.window(0);
     gui.wait_phase("open", OPEN);
@@ -913,6 +946,8 @@ fn the_theme_and_keys_come_from_the_users_config() {
     let shot = nested.screenshot("swamp-day");
     assert_eq!(pixel(&shot, 8, 600), token("swamp-day", "bg"));
     assert_eq!(pixel(&shot, 1596, 976), token("swamp-day", "surface"));
+    // With the keymap problems' toasts up.
+    assert_a11y(nested.window(0));
     nested.close_window();
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
 }
@@ -922,11 +957,12 @@ fn the_theme_and_keys_come_from_the_users_config() {
 fn adaptive(case: &str, width: u32, height: u32) -> (Nested, PathBuf) {
     let mut nested = Nested::start("wp0b", case, Options::size(width, height));
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
-    nested.launch(&project, Launch::default());
+    nested.launch(&project, Launch::a11y());
     wait_for_gui_host(&nested, &project, OPEN);
     let gui = nested.window(0);
     gui.wait_phase("open", OPEN);
     gui.wait_idle();
+    assert_a11y(gui);
     (nested, project)
 }
 
@@ -984,6 +1020,7 @@ fn narrow_windows_show_the_panel_as_a_sheet() {
         "{open:?}"
     );
     nested.window(0).wait_idle();
+    assert_a11y(nested.window(0));
     nested.screenshot("sheet");
     // The sheet keeps the keyboard: the bar names its keys, not the
     // editor's under it (R33: `[R] Record` there did nothing).
@@ -1057,7 +1094,7 @@ fn a_ruler_scrub_leaves_the_player_on_the_playhead() {
     const FRAME_NS: f64 = 1e9 / 30.0;
     let mut nested = Nested::start("integ", "ruler-scrub", Options::default());
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
-    nested.launch(&project, Launch::default());
+    nested.launch(&project, Launch::a11y());
     wait_for_gui_host(&nested, &project, OPEN);
     let gui = nested.window(0);
     gui.wait_phase("open", OPEN);
@@ -1117,6 +1154,7 @@ fn a_ruler_scrub_leaves_the_player_on_the_playhead() {
         seeks.is_empty(),
         "the scrub's seeks moved the player: {seeks:#?}"
     );
+    assert_a11y(nested.window(0));
     nested.screenshot("after");
 }
 
@@ -1162,7 +1200,7 @@ fn wait_for_hint(nested: &mut Nested, done: impl Fn(&(String, bool)) -> bool) ->
 fn the_first_runs_count_reaches_the_hint_bar() {
     let mut nested = Nested::start("integ", "first-run-hint", Options::default());
     let project = nested.env.empty_dir("rust-traits-talk");
-    nested.launch(&project, Launch::default());
+    nested.launch(&project, Launch::a11y());
     wait_for_gui_host(&nested, &project, OPEN);
     nested.window(0).wait_phase("open", OPEN);
     // The rows, once discovery answered (named widgets: `names`).
@@ -1206,5 +1244,6 @@ fn the_first_runs_count_reaches_the_hint_bar() {
     assert_eq!(hint, ("[Enter] Add sources".to_owned(), false));
     let stage = nested.window(0).labels("region-stage");
     assert!(stage.contains(&"Add sources".to_owned()), "{stage:?}");
+    assert_a11y(nested.window(0));
     nested.screenshot("none");
 }
