@@ -9,7 +9,9 @@
 //! - A bin preview (GUI-local, no command) ends with `Esc`, when the bin
 //!   closes, and on any timeline action: the timeline, the clip selection
 //!   or the playhead changes, playback starts, the canvas goes Live, a take
-//!   starts recording, or its take leaves the bin.
+//!   starts recording, or its take leaves the bin. `Space` pauses the
+//!   selected take's preview or plays it again, and previews the selected
+//!   take otherwise ([`space`]).
 
 use qrec_core::TakeId;
 use qrec_core::state::{CanvasMode, State};
@@ -142,6 +144,32 @@ fn range(rows: &[TakeId], a: &TakeId, b: &TakeId) -> Vec<TakeId> {
 
 fn in_order(rows: &[TakeId], takes: &[TakeId]) -> Vec<TakeId> {
     rows.iter().filter(|t| takes.contains(t)).cloned().collect()
+}
+
+/// What `Space` in the bin does to its preview (D-17).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpaceStep {
+    /// The selected take's preview pauses, or plays again.
+    Toggle,
+    /// The selected take is previewed (instead of another take's preview).
+    Start(TakeId),
+    /// The preview ends: no one take is selected.
+    End,
+    Nothing,
+}
+
+/// `Space` in the bin, `preview` the take previewed now and `single` the
+/// one selected take (D-17): the selected take's preview pauses or plays
+/// again (it doesn't start over, and Space stays the bin's: it never plays
+/// the timeline), another take's gives way to it; with no one take
+/// selected a preview ends.
+pub fn space(preview: Option<&TakeId>, single: Option<&TakeId>) -> SpaceStep {
+    match (preview, single) {
+        (Some(previewed), Some(take)) if previewed == take => SpaceStep::Toggle,
+        (_, Some(take)) => SpaceStep::Start(take.clone()),
+        (Some(_), None) => SpaceStep::End,
+        (None, None) => SpaceStep::Nothing,
+    }
 }
 
 /// Whether a bin preview of `take` ends with the snapshot `next` after
@@ -288,6 +316,23 @@ mod tests {
         let was = kept.clone();
         kept.retain(&before, &after, true);
         assert_eq!(kept, was);
+    }
+
+    /// D-17's `Space`: the selected take's preview pauses (and plays again),
+    /// it doesn't start over; another take's preview, or none, gives way to
+    /// the selected take's; with no one take selected a preview ends.
+    #[test]
+    fn space_pauses_the_selected_takes_preview() {
+        let (four, two) = (t(4), t(2));
+        assert_eq!(space(Some(&four), Some(&four)), SpaceStep::Toggle);
+        assert_eq!(space(None, Some(&four)), SpaceStep::Start(four.clone()));
+        assert_eq!(
+            space(Some(&two), Some(&four)),
+            SpaceStep::Start(four.clone()),
+            "another take's preview"
+        );
+        assert_eq!(space(Some(&four), None), SpaceStep::End);
+        assert_eq!(space(None, None), SpaceStep::Nothing);
     }
 
     /// D-17: a timeline action, the bin closing, a recording or the take

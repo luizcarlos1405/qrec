@@ -11,7 +11,8 @@
 //!   run in the project folder), then until the case has seen the panel
 //!   read "Rendering clip 3/10" ([`go`]: it used to wait a fixed 2 s, which
 //!   a loaded machine could miss), then writes the tail (the render node it
-//!   tried first, which the hint reads), marks `failed` and exits 1.
+//!   tried first, which the hint reads), marks `failed`, notes the failure
+//!   ([`failures`]: Try again's export fails it again) and exits 1.
 //! - Every other unit waits for that mark, then sleeps until the export
 //!   stops it (the shell stops the others when one fails), so no frame of
 //!   theirs counts: the export fails at units 1 and 2's 867 of 7,391
@@ -94,6 +95,18 @@ fn go_file(root: &Path) -> PathBuf {
     root.join("fail-ffmpeg").join("go")
 }
 
+/// Where the wrapper notes each failure of unit 3 (a line each).
+fn failures_file(root: &Path) -> PathBuf {
+    root.join("fail-ffmpeg").join("failures")
+}
+
+/// How many times unit 3 failed so far (S17's Try again fails it again).
+pub fn failures(root: &Path) -> usize {
+    fs::read_to_string(failures_file(root))
+        .map(|text| text.lines().count())
+        .unwrap_or(0)
+}
+
 /// Lets unit 3 fail now: the case saw the panel read "Rendering clip 3/10"
 /// while it waited.
 pub fn go(root: &Path) {
@@ -109,6 +122,8 @@ pub fn failing_path(root: &Path) -> OsString {
     let _ = fs::remove_file(&mark);
     let go = go_file(root);
     let _ = fs::remove_file(&go);
+    let failures = failures_file(root);
+    let _ = fs::remove_file(&failures);
     let wrapper = bin.join("ffmpeg");
     let real = real_ffmpeg();
     let script = format!(
@@ -118,6 +133,7 @@ pub fn failing_path(root: &Path) -> OsString {
          # failed.\n\
          mark='{mark}'\n\
          go='{go}'\n\
+         failures='{failures}'\n\
          case \" $* \" in\n  \
            *' -progress pipe:1 '*'-i file:takes/take-0001/'*)\n    \
              exec '{real}' \"$@\" ;;\n  \
@@ -132,6 +148,7 @@ pub fn failing_path(root: &Path) -> OsString {
              done\n    \
              cat >&2 <<'TAIL'\n{TAIL}\nTAIL\n    \
              : > \"$mark\"\n    \
+             echo failed >> \"$failures\"\n    \
              exit 1 ;;\n  \
            *' -progress pipe:1 '*)\n    \
              i=0\n    \
@@ -144,6 +161,7 @@ pub fn failing_path(root: &Path) -> OsString {
          exec '{real}' \"$@\"\n",
         mark = mark.display(),
         go = go.display(),
+        failures = failures.display(),
         real = real.display(),
     );
     fs::write(&wrapper, script).expect("the wrapper");

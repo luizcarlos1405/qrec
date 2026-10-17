@@ -702,8 +702,9 @@ fn bin_at_scale(case: &str, scale: f64) {
 
 /// D-37's keys and D-17's preview: `↓` moves the selection, `Shift+↓`
 /// extends it (the S18 footer, no row actions); `Space` previews the
-/// selected take in the Program picture with its TAKE badge and pauses
-/// it; `Esc` ends it; `Enter` inserts the take at the end.
+/// selected take in the Program picture with its TAKE badge (it plays),
+/// and `Space` again pauses it (still previewing; the timeline doesn't
+/// play); `Esc` ends it; `Enter` inserts the take at the end.
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn the_bin_keys_select_preview_and_insert() {
@@ -763,6 +764,47 @@ fn the_bin_keys_select_preview_and_insert() {
     );
     let shot = nested.screenshot("preview");
     compare(&shot, "S14-bin-drawer.png", None, "");
+    assert_eq!(
+        nested.window(0).local()["takePreview"],
+        json!({"take": "take-0004", "playing": true})
+    );
+    // It plays: the player's position moves (take 4 lasts 51 s).
+    let playing_at = nested.window(0).local()["playerNs"].clone();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while nested.window(0).local()["playerNs"] == playing_at {
+        assert!(
+            Instant::now() < deadline,
+            "the preview doesn't play: the player stays at {playing_at}"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    // Space again pauses it: the preview stays (its badge) and the player
+    // holds still; the timeline doesn't play (Space stayed the bin's).
+    nested.keys(&["-k", "space"]);
+    let gui = nested.window(0);
+    gui.wait_idle();
+    let local = gui.local();
+    assert_eq!(
+        local["takePreview"],
+        json!({"take": "take-0004", "playing": false}),
+        "{local}"
+    );
+    assert!(
+        gui.labels("region-stage").iter().any(|l| l == "TAKE 4"),
+        "paused, still previewing"
+    );
+    let paused_at = local["playerNs"].clone();
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        nested.window(0).local()["playerNs"],
+        paused_at,
+        "the player holds still"
+    );
+    assert_eq!(
+        status(&nested, &project)["runtime"]["playing"],
+        false,
+        "the timeline doesn't play"
+    );
     // Esc ends it (the Esc chain, G§3.8).
     nested.keys(&["-k", "Escape"]);
     let gui = nested.window(0);
@@ -2003,9 +2045,33 @@ fn s17_export_failed() {
         "-panel",
     );
     assert_clean(&mut nested);
+    // Try again sends the export again: it fails at unit 3 again (units 1
+    // and 2 come from the segment cache), and the panel shows that failure.
+    press(&mut nested, "export-retry");
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while fail_ffmpeg::failures(nested.env.root()) < 2 {
+        assert!(Instant::now() < deadline, "Try again sent no export");
+        thread::sleep(Duration::from_millis(100));
+    }
+    wait_overlays(
+        &mut nested,
+        &["ExportPanel(Failed)"],
+        Duration::from_secs(60),
+    );
+    nested.window(0).wait_idle();
+    assert_shows(
+        &nested.window(0).labels("export-panel"),
+        &["Export failed", "Try again"],
+    );
+    assert_eq!(
+        hints(&mut nested),
+        ["[Enter] Try again", "[Tab] Move focus", "[Esc] Close"]
+    );
+    assert!(exports(&project).is_empty(), "nothing written");
     // Close: the panel goes.
     click(&mut nested, "export-close");
     assert!(overlays(&mut nested).is_empty());
+    assert_clean(&mut nested);
     close(&mut nested);
 }
 

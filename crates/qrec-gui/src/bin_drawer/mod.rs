@@ -53,7 +53,7 @@ use crate::store::{Change, Subscription};
 use crate::widgets::button;
 use crate::{Ctx, desktop, guard, guarded};
 use row::{RowEvent, RowView, Sink};
-use select::Selection;
+use select::{Selection, SpaceStep};
 use slide::Slide;
 
 /// The drawer's width, logical px (BRIEF §2.8).
@@ -763,21 +763,21 @@ impl Drawer {
     }
 
     /// `Space` in the bin (D-17): pauses or plays the selected take's
-    /// preview again, else previews the selected take.
+    /// preview again, else previews the selected take ([`select::space`]).
     fn toggle_preview(self: &Rc<Self>) {
         let preview = self.ctx.store.local().take_preview.clone();
         let single = self.selection.borrow().single().cloned();
-        match (preview, single) {
-            (Some(p), Some(take)) if p.take == take => {
+        match select::space(preview.as_ref().map(|p| &p.take), single.as_ref()) {
+            SpaceStep::Toggle => {
                 self.ctx.store.update_local(|l| {
                     if let Some(p) = &mut l.take_preview {
                         p.playing = !p.playing;
                     }
                 });
             }
-            (_, Some(take)) => self.start_preview(&take),
-            (Some(_), None) => self.end_preview(),
-            (None, None) => {}
+            SpaceStep::Start(take) => self.start_preview(&take),
+            SpaceStep::End => self.end_preview(),
+            SpaceStep::Nothing => {}
         }
     }
 

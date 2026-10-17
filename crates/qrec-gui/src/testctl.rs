@@ -28,7 +28,7 @@
 //! | `dispatch` | `Store::dispatch` of `command` (`confirmed`: as confirmed), `{"ok":true}` at once |
 //! | `action` | runs binding or GUI action `id` as its key would |
 //! | `hints` | the hint bar's items and status (`hintbar::current_items`), the labels of the items it draws whole (`shown`: a narrow window leaves the trailing ones out) and whether a drawn one runs past the bar (`cut`, never) |
-//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11), the bin drawer's last slide as asked (`binSlide`: `open`, `animate`; nothing animates on start), the theme's subscribers (`themeSubscribers`: a dropped bin thumbnail's goes with it) and the mud bars ticking (`mudBarsTicking`: none under the frozen clock) |
+//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11), the bin drawer's last slide as asked (`binSlide`: `open`, `animate`; nothing animates on start), the bin preview (`takePreview`: `take`, `playing`; `null` without one), the theme's subscribers (`themeSubscribers`: a dropped bin thumbnail's goes with it) and the mud bars ticking (`mudBarsTicking`: none under the frozen clock) |
 //! | `a11y` | every visible icon-only button, focusable region or custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 //! | `fonts` | the family Pango loads for each bundled font |
 //! | `icons` | each custom symbolic icon drawn in a probe color: found, pixels, recolored |
@@ -499,6 +499,7 @@ fn local(app: &App) -> Value {
         "panelPage": local.panel_page,
         "autocutPreview": local.autocut_preview.as_deref(),
         "binSelection": local.bin_selection.iter().map(|t| t.as_str().to_owned()).collect::<Vec<_>>(),
+        "takePreview": local.take_preview.as_ref().map(|p| json!({"take": p.take.as_str(), "playing": p.playing})),
         "binRowsAlive": crate::bin_drawer::rows_alive(),
         "binSlide": crate::bin_drawer::slide_shown()
             .map(|(open, animate)| json!({"open": open, "animate": animate})),
