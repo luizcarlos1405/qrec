@@ -141,8 +141,11 @@ impl AutocutPage {
         detect.append(&label(DETECT_ON, &["t-caption", "muted", "field-caption"]));
         let dropdown = gtk::DropDown::from_strings(&[]);
         dropdown.add_css_class("autocut-track");
+        dropdown.set_widget_name("autocut-track");
         dropdown.set_hexpand(true);
         dropdown.update_property(&[gtk::accessible::Property::Label(DETECT_ON)]);
+        // Its open list is a menu: Esc closes the list, not the page (R32).
+        super::menus::track_dropdown(ctx, &dropdown);
         detect.append(&dropdown);
         content.append(&detect);
         let mut knobs = Vec::new();

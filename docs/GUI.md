@@ -2290,7 +2290,11 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
   summary adds a "Skipped" row when the plan skipped clips; while
   `autocut.track` is null the dropdown, the "Autocut" tag and the hatches
   name the track the dry run analyzes (`autocut::default_track`: the
-  scene's first mic, else its first track; review R77). A missing
+  scene's first mic, else its first track; review R77). The dropdown's
+  open list is `Overlay::Menu` (`panel::menus::track_dropdown`, the
+  helper for any `gtk::DropDown`; review R32, R41): measured on GTK 4.22,
+  an open list's keys go to its popover and never reach the window's key
+  router, so `Esc` closes the list, not the page. A missing
   device's line replaces its meter; Change source lists the devices of
   the track's role; a layer problem's icon is `qrec-monitor-x-symbolic`
   (a screen), `dialog-error-symbolic` (another source) or

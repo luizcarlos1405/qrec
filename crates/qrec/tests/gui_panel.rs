@@ -1458,6 +1458,84 @@ fn s12_the_autocut_page() {
     assert_clean(nested.window(0));
 }
 
+/// The window's overlays, as `local` names them.
+fn overlays(gui: &Gui) -> Value {
+    gui.local()["overlays"].clone()
+}
+
+/// R32, R41: the page's "Detect silence on" list is a menu while it is
+/// open (`Overlay::Menu`, G§3.6; it said nothing open). Its keys are the
+/// list's: `Esc` closes the list and leaves the page and its tuning, and
+/// the arrows move in a list the pointer opened, never seeking the
+/// timeline (GTK hands them to the list's popover; the window's key
+/// router never sees them, so these held before the overlay too).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_track_list_keeps_its_keys() {
+    let mut nested = Nested::start(AREA, "track-list", Options::default());
+    let preset = ui(|u| {
+        u.canvas_mode = CanvasMode::Program;
+        u.selection = vec![clip("c3e9")];
+        u.playhead = 4842;
+    });
+    let project = fixture(&nested, DesignVariant::Base, &preset);
+    open(&mut nested, &project, levels(DESIGN_LEVELS));
+    nested.keys(&["-M", "shift", "-k", "c", "-m", "shift"]);
+    wait_for_label(nested.window(0), "Removes 4 silences");
+    // A tuning: Padding 500 (Enter, then out of the field).
+    let (x, y) = center(region(nested.window(0), "knob-field-2"));
+    nested.pointer().click(x, y);
+    nested.keys(&[
+        "-M", "ctrl", "-k", "a", "-m", "ctrl", "500", "-k", "Return", "-k", "Tab",
+    ]);
+    nested.window(0).wait_idle();
+    let padding = |nested: &mut Nested| {
+        let fields = nested.window(0).entries("autocut-page");
+        fields.get("knob-field-2").cloned()
+    };
+    assert_eq!(padding(&mut nested).as_deref(), Some("500"));
+    let list = center(region(nested.window(0), "autocut-track"));
+    let open_list = |nested: &mut Nested| {
+        nested.pointer().click(list.0, list.1);
+        poll(Duration::from_secs(5), "the list open as a menu", || {
+            (overlays(nested.window(0)) == json!(["Menu"])).then_some(())
+        });
+    };
+    let closed = |nested: &mut Nested, what: &str| {
+        poll(Duration::from_secs(5), what, || {
+            (overlays(nested.window(0)) == json!([])).then_some(())
+        });
+        nested.window(0).wait_idle();
+    };
+    // Esc closes the list only.
+    open_list(&mut nested);
+    nested.keys(&["-k", "Escape"]);
+    closed(&mut nested, "the list closed by Esc");
+    let local = nested.window(0).local();
+    assert_eq!(local["panelPage"], "autocut", "the page stays: {local}");
+    assert_has(&panel_labels(nested.window(0)), &["Apply autocut"]);
+    assert_eq!(
+        padding(&mut nested).as_deref(),
+        Some("500"),
+        "the tuning stays"
+    );
+    // Down and Enter pick A2 in the list; the playhead stays.
+    open_list(&mut nested);
+    nested.keys(&["-k", "Down", "-k", "Return"]);
+    closed(&mut nested, "the list closed by its pick");
+    let status = nested.cli_json(&project, &["status"]);
+    assert_eq!(status["data"]["ui"]["playhead"], 4842, "no seek: {status}");
+    let labels = panel_labels(nested.window(0));
+    assert!(
+        labels.iter().any(|l| l.starts_with("A2 \u{b7} ")),
+        "A2 picked: {labels:#?}"
+    );
+    // The list closed, Esc is the page's Cancel.
+    nested.keys(&["-k", "Escape"]);
+    wait_for_label(nested.window(0), "Onion layers");
+    assert_clean(nested.window(0));
+}
+
 // ------------------------------------------------------- 1300 wide (Medium)
 
 /// The panel docked at 320 (G§3.15 Medium): the inspector's crop fields
