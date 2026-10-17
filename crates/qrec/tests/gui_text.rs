@@ -219,6 +219,17 @@ fn the_header_title_leaves_no_trace_on_gl() {
     for reply in &fonts {
         assert_eq!(reply["renderer"], "GskGLRenderer", "{reply}");
     }
+    // The mark is the 1× output's (a hinted glyph on a whole-pixel baseline
+    // a row above the unhinted bounds): at 1.5 and 2 GL places the glyphs
+    // inside the bounds in every setup, the control too (WP10's scale
+    // runs), so there the case checks Qrec's setup alone.
+    if gui_support::suite_scale().is_some() {
+        eprintln!(
+            "the control at scale {}: {control} px (the mark shows at 1 only)",
+            Options::default().scale
+        );
+        return;
+    }
     assert!(
         control > 0,
         "GTK's automatic mode left no mark, so the case can't see one: {} vs {}",
