@@ -4153,8 +4153,9 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   `GDK_DISABLE=vulkan`, `GSK_RENDERER=gl`, `LIBGL_ALWAYS_SOFTWARE=1`,
   `GALLIUM_DRIVER=llvmpipe` and `LP_NUM_THREADS=2`: GSK's GL renderer on
   Mesa's llvmpipe, which opens no GPU node either (WP10 traced every open
-  of its runs: none under `/dev/dri` but Qrec's own listing of the
-  folder).
+  of 15 such runs: no device node under `/dev/dri` or `/dev/nvidia`, only
+  listings of the `/dev/dri` folder, one a window by Qrec's own GPU facts,
+  as in any pixman run, and one by Mesa's).
 - **Test mode** (`QREC_GUI_TEST=1`):
   - `gtk-enable-animations = false`, so GTK and libadwaita transitions are
     instant. Reduced motion comes from `config.toml` only (D-30): cases

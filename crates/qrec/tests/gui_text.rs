@@ -10,8 +10,8 @@
 //! The GL case runs its windows on GSK's GL renderer in software (Mesa's
 //! llvmpipe, [`SOFTWARE_GL`]) under any compositor renderer, pixman too: the
 //! mark only ever showed on GL, and llvmpipe opens no GPU node (the WP10
-//! experiment traced every open of its runs: none under `/dev/dri` but
-//! Qrec's own listing of the folder).
+//! experiment traced every open of its runs: no device node, only listings
+//! of the `/dev/dri` folder).
 
 mod gui_support;
 
