@@ -1127,6 +1127,65 @@ fn a_refused_seek_goes_again() {
     assert_quiet_since(quiet);
 }
 
+/// Holds the player's thread back after each frame a seek waited for
+/// showed, while it lives (`STALL_AFTER_SHOWN_MS`).
+struct Stall;
+
+impl Stall {
+    fn after_shown(by: Duration) -> Self {
+        let ms = u64::try_from(by.as_millis()).unwrap_or(u64::MAX);
+        STALL_AFTER_SHOWN_MS.store(ms, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for Stall {
+    fn drop(&mut self) {
+        STALL_AFTER_SHOWN_MS.store(0, Ordering::SeqCst);
+    }
+}
+
+/// D-51: a pause and a seek that come together while playing (a step while
+/// the program plays) end paused on the seek's frame, however late the
+/// player's thread gets back to it after that frame showed. The seek went
+/// while the pipeline played, and it played on until the pause that
+/// followed the frame: on a loaded machine the picture and the position
+/// stopped a frame or more past the seek's, within the sync's tolerance of
+/// the playhead, for good (WP10's scale runs: gui_stage's step while
+/// playing, 3 runs of 6 at 1.5). The test holds the thread back
+/// (`STALL_AFTER_SHOWN_MS`).
+#[test]
+fn a_pause_with_a_seek_lands_paused_on_the_seeks_frame() {
+    let _serial = serial();
+    let quiet = problems();
+    ges_render::init().unwrap();
+    let env = TestEnv::new();
+    let dir = env.empty_dir("pause-seek");
+    let plan = frame_id_plan(&dir, 120);
+    let tap = Tap::new(Some(ID_RECT));
+    let events = Events::default();
+    let player = spawn(&tap, &dir, None, &events);
+    player.load(plan, 0);
+    events.loaded(1);
+    player.play(1.0);
+    wait_until("playing", SETTLE, || player.position_ns() >= ns(10));
+    let stall = Stall::after_shown(Duration::from_millis(300));
+    player.pause();
+    player.seek(ns(60));
+    settle(&player);
+    assert_eq!(player.position_ns(), ns(60));
+    assert_eq!(tap.showing(ns(60)).id, Some(60));
+    // Still paused there.
+    thread::sleep(Duration::from_millis(200));
+    assert_eq!(player.position_ns(), ns(60));
+    let last = tap.last().expect("a frame");
+    assert_eq!((last.pts, last.id), (ns(60), Some(60)), "{:?}", tap.all());
+    drop(stall);
+    assert!(events.errors().is_empty(), "{:?}", events.errors());
+    stop(player, &events);
+    assert_quiet_since(quiet);
+}
+
 /// Shutdown while playing reaches NULL and says `Stopped` within 5 s;
 /// calls afterwards do nothing.
 #[test]

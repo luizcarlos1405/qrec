@@ -22,7 +22,9 @@
 //!   goes again [`SEEK_RETRY`] later, a newer one in its place, at most
 //!   [`SEEK_RETRIES`] times (WP10's audit: a refused last scrub left the
 //!   picture on an older frame than the playhead, and nothing sent it
-//!   again).
+//!   again). A seek that comes with a pause goes with the pipeline paused,
+//!   so it ends on its frame (sent while playing, the picture played on
+//!   past it until the pause).
 //! - **Rates**: forward rates are seeks with that rate where playback is;
 //!   reverse is stepping (GUI G§3.10, R4): an accurate seek at most 15
 //!   times a second, to where `|rate|` times the time since playing started
@@ -92,6 +94,23 @@ fn refused_by_test() -> bool {
     #[cfg(not(test))]
     {
         false
+    }
+}
+
+/// How long the thread stalls after each frame a seek waited for showed,
+/// in ms (the player's tests: a thread the scheduler holds back on a loaded
+/// machine, while the pipeline goes on).
+#[cfg(test)]
+static STALL_AFTER_SHOWN_MS: AtomicU64 = AtomicU64::new(0);
+
+/// The stall a test asked for ([`STALL_AFTER_SHOWN_MS`]).
+fn stall_by_test() {
+    #[cfg(test)]
+    {
+        let ms = STALL_AFTER_SHOWN_MS.load(Ordering::SeqCst);
+        if ms > 0 {
+            thread::sleep(Duration::from_millis(ms));
+        }
     }
 }
 
@@ -557,6 +576,7 @@ impl Worker {
             }
             Input::Shown(id) => {
                 self.on_shown(id);
+                stall_by_test();
                 0
             }
         }
@@ -643,6 +663,14 @@ impl Worker {
             } else if self.retry_at.is_none_or(|at| now >= at)
                 && let Some((at, kind)) = self.seek.take()
             {
+                // A pause that came with the seek (a step while playing,
+                // D-51) holds the pipeline first: sent while it plays, the
+                // seek's frame shows and it plays on until the pause, a
+                // frame or more past that one when this thread gets back
+                // late (a loaded machine).
+                if !self.playing {
+                    self.pause_pipeline();
+                }
                 self.do_seek(at, kind, After::Nothing, "seeking");
             }
         }
