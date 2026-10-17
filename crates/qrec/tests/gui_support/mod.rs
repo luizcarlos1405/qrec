@@ -70,6 +70,9 @@ pub const MESA_EGL: &str = "/run/opengl-driver/share/glvnd/egl_vendor.d/50_mesa.
 pub const TOOL_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long one CLI run may take (`record stop` finalizes a take).
 pub const CLI_TIMEOUT: Duration = Duration::from_secs(120);
+/// The window's text setup in test mode (`theme::fonts::Rendering`): passed
+/// on to every window when the test run has it (G§3.14).
+pub const FONT_RENDERING: &str = "QREC_GUI_TEST_FONT_RENDERING";
 /// Variables a window can't be given ([`Launch::with_env`]): they would
 /// point it at another display than the nested one (G§8.4).
 pub const DISPLAY_VARS: [&str; 5] = [
@@ -442,6 +445,11 @@ impl Nested {
         // The bundled fonts (the dev shell's; `TestEnv` drops `QREC_*`).
         if let Some(fonts) = std::env::var_os("QREC_FONT_DIR") {
             vars.push(("QREC_FONT_DIR", fonts));
+        }
+        // Another text setup for every window of the run, if the run names
+        // one (G§3.14's text-rendering experiment; a case's own wins).
+        if let Some(spec) = std::env::var_os(FONT_RENDERING) {
+            vars.push((FONT_RENDERING, spec));
         }
         vars
     }

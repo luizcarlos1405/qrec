@@ -37,7 +37,7 @@
 //! | `hints` | the hint bar's items and status (`hintbar::current_items`), the labels of the items it draws whole (`shown`: a narrow window leaves the trailing ones out) and whether a drawn one runs past the bar (`cut`, never) |
 //! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`; whether the player plays, the program or a take, `playing`, and the program, `programPlaying`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11) and the panel's (`layerRowsAlive`, `audioRowsAlive`), the bin drawer's last slide as asked (`binSlide`: `open`, `animate`; nothing animates on start), the bin preview (`takePreview`: `take`, `playing`; `null` without one), the theme's subscribers (`themeSubscribers`: a dropped bin thumbnail's goes with it), the mud bars ticking (`mudBarsTicking`: none under the frozen clock), the meter bars on their refresh timer (`metersTicking`) and whether the export panel's Running clock runs (`exportClockTicking`: both come back with the next change after a caught panic, R65), how many times the timeline's canvas re-rendered (`timelinePaints`: not while only the playhead moves), and how many columns of the ghost's waveform its last paint with one worked out (`timelineGhostColumns`: those in view, R01) |
 //! | `a11y` | every visible icon-only button, focusable region or custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
-//! | `fonts` | the family Pango loads for each bundled font |
+//! | `fonts` | the family Pango loads for each bundled font; GTK's text settings as they are (`rendering`: `mode`, `hintMetrics`, `hinting`, `hintStyle`, `antialias`; `QREC_GUI_TEST_FONT_RENDERING` names another setup, `theme::fonts::Rendering`) and the window's GSK renderer (`renderer`, `GskGLRenderer`, …); with `measure` (`[{"family", "sizePx", "weight", "text"}]`), each text's `logical` and `ink` widths in px laid out in the window's Pango context (`widths`) |
 //! | `icons` | each custom symbolic icon drawn in a probe color: found, pixels, recolored |
 //! | `art` | each illustration through `gtk::Svg`: its size, drawn pixels and SVG errors (none for `ok`), and a known-bad probe whose errors must be counted |
 //!
@@ -334,9 +334,18 @@ pub fn handle(app: &Rc<App>, request: TestRequest) {
         "a11y" => a11y(app),
         "fonts" => {
             let resolved = theme::fonts::resolve();
+            let rendering = gtk::Settings::default().map(|s| theme::fonts::settings_now(&s));
+            let renderer = app
+                .window
+                .window
+                .renderer()
+                .map(|r| r.type_().name().to_string());
             json!({
                 "ok": theme::fonts::all_resolved(&resolved),
                 "fonts": resolved.into_iter().collect::<BTreeMap<_, _>>(),
+                "rendering": rendering,
+                "renderer": renderer,
+                "widths": measure_texts(app, &request),
             })
         }
         "icons" => icons(app),
@@ -898,6 +907,42 @@ fn art(app: &App) -> Value {
 /// An SVG with an element GtkSvg doesn't support (`<foreignObject>`).
 const PROBE_SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\">\
     <foreignObject width=\"8\" height=\"8\"/><rect width=\"8\" height=\"8\" fill=\"black\"/></svg>";
+
+/// `fonts`' `measure`: each text laid out in the window's Pango context
+/// (GTK's font rendering as set up), in the family, absolute size (px) and
+/// weight asked (JetBrains Mono, 12, 400 by default): its logical and ink
+/// widths in px.
+fn measure_texts(app: &App, request: &Value) -> Vec<Value> {
+    let Some(items) = request["measure"].as_array() else {
+        return Vec::new();
+    };
+    let px = |units: i32| f64::from(units) / f64::from(gtk::pango::SCALE);
+    items
+        .iter()
+        .map(|item| {
+            let text = item["text"].as_str().unwrap_or_default();
+            let layout = app.window.window.create_pango_layout(Some(text));
+            let mut desc = gtk::pango::FontDescription::new();
+            desc.set_family(item["family"].as_str().unwrap_or(theme::fonts::FAMILIES[2]));
+            let size = item["sizePx"].as_f64().unwrap_or(12.0);
+            desc.set_absolute_size(size * f64::from(gtk::pango::SCALE));
+            desc.set_weight(match item["weight"].as_u64().unwrap_or(400) {
+                500 => gtk::pango::Weight::Medium,
+                600 => gtk::pango::Weight::Semibold,
+                700 => gtk::pango::Weight::Bold,
+                _ => gtk::pango::Weight::Normal,
+            });
+            layout.set_font_description(Some(&desc));
+            let (ink, logical) = layout.extents();
+            json!({
+                "text": text,
+                "sizePx": size,
+                "logical": px(logical.width()),
+                "ink": px(ink.width()),
+            })
+        })
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {
