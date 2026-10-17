@@ -1172,8 +1172,17 @@ fn s18_purging_two_takes_from_the_bin() {
         "the footer's label is {} px wide",
         footer[2]
     );
-    click(&mut nested, "bin-purge-selected");
+    // The modal opens under the pointer that clicked Purge from disk: a 1 px
+    // move has GTK pick what is on top now (the modal's scrim), so the
+    // footer's button leaves its hover before the shot (in some runs GTK
+    // hadn't picked again yet, and the shot caught the hover under the
+    // scrim).
+    let (x, y) = center(&mut nested, "bin-purge-selected");
+    nested.pointer().click(x, y);
+    nested.window(0).wait_idle();
+    nested.pointer().move_to(x + 1.0, y);
     let gui = nested.window(0);
+    gui.wait_idle();
     let labels = gui.labels("modal");
     assert_shows(
         &labels,
