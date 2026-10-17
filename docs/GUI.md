@@ -1644,6 +1644,15 @@ time; A§8.7 rules for every child).
     animations go at once meanwhile. The zoom is the timeline's own
     easing on its frame clock and the sheet libadwaita's spring, not
     `adw::TimedAnimation` (which the bin drawer and the toasts use).
+    With the live follower (WP10 integration): the window's own
+    `gtk-enable-animations` off reads, outside test mode, as the system
+    asking for less motion (`MotionPolicy::from_settings`), so while the
+    sheet is held still a live `ui.reduced_motion = false` keeps the window
+    reduced until the sheet goes; turning the setting back on then notifies
+    the follower (`settings: GTK's animations`), which works the policy out
+    again from the config. A system change of that setting while the sheet
+    is open is lost when it goes (it turns them on again). Test mode
+    ignores the system's settings, so no nested case shows either.
 - **Fonts** (SPEC §15.3, Q11):
   - bundled files `Fraunces[SOFT,WONK,opsz,wght].ttf`,
     `AtkinsonHyperlegibleNext[wght].ttf`, `JetBrainsMono[wght].ttf` from
@@ -4702,7 +4711,10 @@ completes it). Nested sway, the GUI host on `design_fixture(Smoke)`,
 Throughout: no `Crashed`, no `ERROR` line in the GUI log, and the a11y walk
 is empty. The main-loop probe (G§8.6) records stalls; a stall over 50 ms
 fails the run only under `QREC_TEST_WLR=gles2` (with pixman, the
-compositor, llvmpipe and ffmpeg share the CPU).
+compositor, llvmpipe and ffmpeg share the CPU). As integrated (WP10): not
+met yet on gles2, so the smoke fails there on a stall over 400 ms (a
+hang, `GLES2_HANG_MS`) and reports the others with what held the loop
+(G§8.6's numbers; open).
 
 As built (WP10): `smoke_steps_1_to_10`, one window for all ten steps, with
 `QREC_GUI_PROBE=1`. Step 4 also checks that no headless host spawned and
@@ -4714,9 +4726,12 @@ checks that the playhead is past 10 and within a frame of
 progress event and that ffprobe's packet count is the reply's frames. No
 GLib or GTK critical either. The stalls before the window first settles
 (the project opening: on pixman one of 55–80 ms at the first frame) are
-reported, not failed; under gles2 any stall after that fails. The
-probe's report, the paused playhead and player position, and each step's
-time go to `tmp/gui-shots/smoke/smoke-measurements.json`.
+reported, not failed; under gles2 any stall after that failed it, until
+the integration (G§8.6: one over 400 ms now). The probe's report, the
+paused playhead and player position, and each step's time go to
+`tmp/gui-shots/smoke/smoke-measurements.json`; `QREC_SMOKE_BIN=<path>`
+runs the steps' window from another binary (the package's optimized
+`result/bin/qrec`, WP10 integration).
 
 Seen in step 6's shot, not fixed here (`media/program.rs`, G§3.10, D-51):
 the paused picture is the frame after the parked playhead. Take 8's frame
@@ -4774,6 +4789,25 @@ loaded and that the registry is still the seeded one.
   (`timeline/mod.rs:406`, up to 45 ms), the timeline surface's snapshot
   (up to 35 ms), the stage's render (up to 72 ms) and GTK's own work.
   Under gles2 they fail the smoke unless they stay under 50 ms there.
+  The integration's gles2 runs (WP10, 6 runs, the machine otherwise idle):
+  the project opening 1 or 2 stalls (the first frame, 650–760 ms), then
+  7–9 during the steps, 60–215 ms: GTK's own frames (the stage's first
+  plates and picture size, the timeline surface's first snapshots after a
+  change, 60–125 ms) and, at steps 7 and 8 (the keyed take landing, the
+  export starting), the queue's drain through the timeline's
+  (`timeline/mod.rs:412`, 80–140 ms), the panel's (`panel/mod.rs:266`,
+  94–140 ms), the header's (`header/mod.rs:186`, up to 214 ms), the
+  stage's (`stage/mod.rs:433`'s render, 132 ms) or the hint bar's
+  subscriber (`hintbar.rs:111`, up to 160 ms). The package's optimized
+  window (`QREC_SMOKE_BIN=result/bin/qrec`) shows the same (94–164 ms), so
+  it isn't the unoptimized test build's: the hint bar's own rebuild takes
+  under 5 ms (timed apart), and single GObject constructions and
+  disposals inside those subscribers take 37–41 ms (a key cap's), which
+  points at the main thread waiting rather than working (GLib's type lock
+  while GStreamer's threads load plugins for the new pipelines is a guess,
+  not measured). Open: G§8.5's 50 ms. The smoke fails under gles2 only on
+  a stall over 400 ms (`gui_smoke.rs`' `GLES2_HANG_MS`) and keeps the rest
+  in its report.
   The audits lane's run of WP0b's steps 1–3 and 10 alone (pixman): 0
   stalls in 2 s at scale 1, 1.5 and 2, the worst tick 23–35 ms late at 1,
   43–49 at 1.5 and 37–47 at 2 (several runs).
