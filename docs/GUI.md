@@ -1008,7 +1008,10 @@ pub const STUCK: &str = "the Program picture is stuck; restart Qrec";
      (it would come after the step's and undo it), only pauses, then holds
      the paused player until the snapshots reach `f` (at most a second;
      shown at once when the stop's snapshot has it) instead of showing the
-     lagging playhead between.
+     lagging playhead between. The player sends a seek that comes with a
+     pause with the pipeline paused (WP10: sent while it played, the
+     picture went on past `f` until the pause, a frame or more on a loaded
+     machine, within the sync's tolerance, so nothing sought again).
   3. While playing, the drawn playhead is `position_ns`;
      `Seek{To(player_frame)}` goes out every second (an own seek); the
      timeline auto-pages. The own seek waits (polling every 20 ms) while a
@@ -3459,31 +3462,43 @@ WP10's audits (the audits lane, on 56e2629). **Every final case at
 scale 1.5 and 2**, suite-wide (G§8.4's scale runs: `QREC_TEST_SCALE`, the
 shots under `tmp/gui-shots/scale/<s>/`), on pixman. Before, at 2, the
 cases' probes read logical px: gui_shell failed 2 of 22, gui_chrome 6 of
-14 (113ee2e gave every probe device px). Then at 2: gui_shell 22,
-gui_chrome 14, gui_stage 31, gui_timeline 30, gui_panel 21,
-gui_bin_export 28, gui_smoke 1, gui_audits 3; at 1.5 the same but four
-cases, each run down: gui_shell's ruler scrub (GStreamer refused the
-drag's last seek and the player dropped it: the picture stayed on an
-older frame than the playhead; the player now sends a refused seek again,
-ec8c200), gui_chrome's take (the window never opened: GStreamer's and
-GTK's fundamental types took one ID, a startup race; 119448d),
+14 (113ee2e gave every probe device px). Then five more cases failed
+at 1.5 (one of them at 2 too), each run down: gui_shell's ruler scrub
+(GStreamer refused the drag's last seek and the player dropped it: the
+picture stayed on an older frame than the playhead; the player now sends
+a refused seek again, ec8c200), gui_chrome's take (the window never
+opened: GStreamer's and GTK's fundamental types took one ID, a startup
+race; 119448d), gui_stage's step while playing (3 runs of 6: the player
+sent the step's seek with the pipeline still playing, and the pause that
+followed stopped it past the step's frame, within the sync's tolerance;
+a seek that comes with a pause now goes paused, 047569d),
 gui_bin_export's bin preview park (the takeover parks a few main-loop
 turns after the action, 16–18 frames at a scale factor of 2 on pixman:
 its bound follows the factor, e03a632), and gui_chrome's d12 (`waitIdle`
 past 30 s with an export running at a load of 45: it passed on its
-re-run). Visible at 1.5 (on pixman GTK draws at the whole factor, 2, as
-Cairo renders no fractional scale, and sway scales the buffer down): a
-1 px rule spreads over two device px; the GL renderer's fractional
-scaling (`wp_fractional_scale_v1`) is the gles2 run's to look at.
+re-run). On the final head every suite passes whole at 1, 1.5 and 2, on
+pixman: gui_shell 22, gui_smoke 1, gui_chrome 14, gui_timeline 30,
+gui_stage 31, gui_panel 21, gui_bin_export 28, gui_audits 3 (150 cases
+at each scale; 462 shots under `tmp/gui-shots/scale/`). One more failed
+once at 2 on the head before: gui_panel's
+`a_meter_comes_back_after_a_caught_panic` ("one meter of two stopped":
+2), the meter's first refresh panicking 4 ms before the project's open,
+whose refresh started it again before the case looked: a race of the
+case's own (5 of 5 on its re-runs). Visible at 1.5 (on pixman GTK draws
+at the whole factor, 2, as Cairo renders no fractional scale, and sway
+scales the buffer down): a 1 px rule spreads over two device px; the GL
+renderer's fractional scaling (`wp_fractional_scale_v1`) is the gles2
+run's to look at.
 **The G§8.6 probes**: the main loop's on the smoke run (0 stalls over
-50 ms at scale 1, the worst timer run 23 ms late), the GPU device opens
-(`gui_audits`: no render node opened on pixman; `gpu-opens.sh` counted
-Qrec's own vendor reads in /sys as NVIDIA touches until then), the cache
+50 ms at 1, 1.5 and 2; the worst timer run 30, 43 and 47 ms late), the
+GPU device opens (`gui_audits`: no render node opened on pixman;
+`gpu-opens.sh` counted Qrec's own vendor reads in /sys as NVIDIA touches
+until then), the cache
 bounds (`scripts/cache-bounds.sh`: as WP2 measured them); the frame-time
 probe stays gles2's assertion. **Reduced motion**: DESIGN's motion table
 row by row (`theme::motion`'s table test) and the Narrow sheet in
 `gui_audits`; fixed, the saving ghost's moving stripes (a344fdb) and the
-sheet's libadwaita slide (7a5f96f). The workspace 1786 passed, 0 failed,
+sheet's libadwaita slide (7a5f96f). The workspace 1787 passed, 0 failed,
 159 ignored.
 
 ### WP0a — Interfaces, GTK-free (alone, first)
@@ -4407,8 +4422,8 @@ compositor, llvmpipe and ffmpeg share the CPU).
   `timeline` for the frame-time probe. The smoke run turns it on and ends
   with `Nested::check_main_loop`: the lines kept as
   `<case>-main-loop-<renderer>.txt`, a stall failing the run under gles2
-  only (G§8.5). Pixman, the smoke at scale 1: 0 stalls in 2 s, the worst
-  run 23 ms late.
+  only (G§8.5). Pixman, the smoke: 0 stalls in 2 s at 1, 1.5 and 2, the
+  worst run 23–35 ms late at 1, 43–49 at 1.5, 37–47 at 2 (several runs).
 - **Frame time**: frame-clock intervals (p50, p99) while zooming and
   scrolling the 300-clip perf fixture. Target p99 < 16.7 ms, asserted only
   under `QREC_TEST_WLR=gles2` on the dev machine (WP3), recorded under
@@ -4416,7 +4431,10 @@ compositor, llvmpipe and ffmpeg share the CPU).
   the warm p99 went bimodal (16.1x or 16.7x ms, about half the runs over
   16.7, also with their levels pinned and nothing redrawn; 16.53–16.55
   without the callbacks). On a 30 Hz timer: 16.55–16.60 ms in 6 of 6 runs
-  (WP5 integration).
+  (WP5 integration). Recorded under pixman in WP10's scale runs (the warm
+  pass, p50 / p99): 16.39 / 19.41 ms at 1, 19.81 / 33.33 at 2, 35.82 /
+  50.09 at 1.5 (GTK draws at 2 and sway scales the buffer down, on the
+  CPU).
 - **Program playback**: WP1's measurement (G§3.10).
 - **Live preview CPU**: manual, against *(spike)*: 29 % for one 1080p30
   BGRx stream into the sink with GSK GL, 46–65 % for a two-source 1080p30
