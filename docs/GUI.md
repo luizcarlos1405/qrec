@@ -1839,7 +1839,7 @@ previews, the player, io, opening, the portal).
 | `{"op":"action","id":"export.panel"}` | runs a binding or GUI action as its key would (pre-steps included) |
 | `{"op":"sources"}` | `{"ok":true,"inventory":…}`: discovery's last answer (`LocalUi.sources`, null before one); with `"inventory": <SourceInventory>`, that answer instead, pushed through the queue as discovery's own (`Inbound::Sources`; the first run's rows follow it; R25's audit) |
 | `{"op":"hints"}` | the rendered hint items (`keys`, `label`, `enabled`, `emphasized`) and the status text (`hintbar::current_items`); `shown`, the labels of the items the bar draws whole (a narrow window leaves the trailing ones out, `hintbar::fitting`), and `cut`, whether a drawn one runs past the bar (never; both WP7 integration audit) |
-| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `playing`, the player plays (the program or a bin preview's take), and `programPlaying`, the program plays in it (`LocalUi.program_playing`, G§3.10 step 3; review R00, R16); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and the panel's (`layerRowsAlive`, `audioRowsAlive`; review R43), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit); `metersTicking`, the meter bars on their refresh timer, and `exportClockTicking`, the export panel's Running clock (null without a panel): each comes back with the next change after a caught panic (G§3.12; R65's audit); `themeSubscribers`, the theme's callbacks (a dropped bin thumbnail's goes with it, R11; WP7 integration's shot and code audits); `timelinePaints`, how many times the timeline's canvas made its render node again (not while only the playhead moves, C16; review R10); `binSlide`, the bin drawer's last slide as asked (`open`, `animate`: test mode animates nothing, so a case reads whether the open at start would have slid in; review fix, G§3.3); `takePreview`, the bin preview (`take`, `playing`: `Space` pauses it; null without one; review fix, D-17) |
+| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `playing`, the player plays (the program or a bin preview's take), and `programPlaying`, the program plays in it (`LocalUi.program_playing`, G§3.10 step 3; review R00, R16); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and the panel's (`layerRowsAlive`, `audioRowsAlive`; review R43), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit); `metersTicking`, the meter bars on their refresh timer, and `exportClockTicking`, the export panel's Running clock (null without a panel): each comes back with the next change after a caught panic (G§3.12; R65's audit); `themeSubscribers`, the theme's callbacks (a dropped bin thumbnail's goes with it, R11; WP7 integration's shot and code audits); `timelinePaints`, how many times the timeline's canvas made its render node again (not while only the playhead moves, C16; review R10); `timelineGhostColumns`, how many columns of the ghost's waveform the last paint with a ghost worked out a lane (those in the time area, G§4.5; R01's audit); `binSlide`, the bin drawer's last slide as asked (`open`, `animate`: test mode animates nothing, so a case reads whether the open at start would have slid in; review fix, G§3.3); `takePreview`, the bin preview (`take`, `playing`: `Space` pauses it; null without one; review fix, D-17) |
 | `{"op":"a11y"}` | every visible icon-only button, focusable region or focusable custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 | `{"op":"fonts"}` | the family Pango loads for each bundled font; `ok` when each resolves to itself |
 | `{"op":"icons"}` | each custom symbolic icon drawn in a probe color: found, its pixels, recolored |
@@ -3330,18 +3330,46 @@ R51+R62+R71, R54, R60+R72, R61+R81, R64, by f2bbc25, 05b8c31, c156e44,
 e3b30a0, 86f63e8 and 88fbfe8). **Not a defect: none** (in part: R10's
 corner label, which GTK doesn't set again unchanged; R32+R41's symptoms,
 which GTK 4.22 doesn't show, though the open list wasn't a Menu overlay:
-fixed). **Left: none** (in part, R65: the sources and ticks outside the
-timeline still keep raw ids, to move to `guard::Slot`). Re-run on the
-integration: the workspace 1735 passed, 0 failed, 138 ignored; nested, on
-pixman and on gles2 alike, gui_shell 22, gui_smoke 1, gui_chrome 14,
-gui_timeline 28, gui_stage 23, gui_panel 17, gui_bin_export 24 (no GLib
-or GTK critical); gles2's warm frame-time p99 16.54–16.58 ms in 3 runs
-(max 16.67). Re-shot, with their compares, on both renderers: S04, its
-reduced-motion run, S04b and S05 (R01, the ghost's waveform, above) and
-S02-1000-sheet (R33, its hint bar, above); and gles2's S18 (its shot had
-caught the footer button's hover under the scrim: the case moves the
-pointer off it first now). Every other final shot is the picture it was
-but for its live pixels.
+fixed). **Left: none** (R65's sources and ticks outside the timeline
+moved to `guard::Slot` in the audit's follow-ups).
+
+Audit of the fixes (on 02c31c7): three auditors reverted every fix and
+ran its tests. 55 of the 70 groups held (every "already fixed" and "not
+a defect" claim confirmed). **Incomplete: 2**: R65 (raw ids kept in
+14 owners: a meter or the export clock stayed dead after a caught panic,
+and their next stop panicked again) and R42 (GTK 4.22 focuses a pressed
+slider, so after a drag the wheel moved it and saved it). **A test that
+passed without its fix: 12**: R01, R05, R11 (the timeline's own call into
+the helper could go), R69 (gui_stage's half), R22 (the router's wiring),
+R23 (the stage's), R24 (the probe's), R25 (the GTK half), R44 (the
+focused slider), R29 (R30 hid the coalescing), R37+R48 (the take-back),
+R57 (S18's footer). **A residual: 1**: R77 (a take recorded with a track
+the project scene lost: the dropdown named the project's). **A wrong
+claim: 1**: G§3.6 (only the timeline's debounce went out before the
+close: the playing program's playhead and a nudge burst were lost).
+Followed up in 8a7f817…a4023af (17 commits: one per fix, R05 and R11
+together): every one fixed, and each test checked to fail with its fix
+reverted. Two follow-ups found more
+and fixed it: R25's focus restore missed a window in the background
+(`has_focus`), and R44's keys come within 3 s of the last arrow (GTK hides
+the focus ring then, and the router gives the arrows to the timeline).
+Minor gaps closed too: R79 (no cap without a record key), R53 (Copy
+image, end to end; its relative path stays a unit test's: every producer
+names an absolute one). Left, minor: R27's refused-pick resync (tested
+through `Store::dispatch_then` only), R00+R16's `player_idle` input (the
+glue's), R20 and R45 (visual), R31+R49's other modal variants, and R38's
+commit before a chrome button (open, G§4.7). New test-mode hooks:
+`QREC_GUI_TEST_PANIC_ONCE` (it replaced `panic-tick`) and
+`QREC_GUI_TEST_SEND_DELAY_MS` (G§8.4), the test channel's `sources` op and
+`local`'s `metersTicking`, `exportClockTicking` and
+`timelineGhostColumns` (G§3.18). Re-run at the follow-ups' head: the
+workspace 1740 passed, 0 failed, 152 ignored; nested, on pixman and on
+gles2 alike, gui_shell 22, gui_smoke 1, gui_chrome 14, gui_timeline 30,
+gui_stage 29, gui_panel 20, gui_bin_export 27 (no GLib or GTK critical:
+the cases that inject a panic count exactly that one); gles2's warm
+frame-time p99 16.58–16.60 ms in 3 runs (max 16.67). No final shot
+changed (nothing the follow-ups touched draws differently), so none was
+re-shot.
 
 ### WP0a — Interfaces, GTK-free (alone, first)
 
