@@ -1207,10 +1207,16 @@ time; A§8.7 rules for every child).
   `false`, `Propagation::Proceed`, `ControlFlow::Break`: a repeating
   source stops) and the window carries on. A test greps the crate's
   production code (each `#[cfg(test)]` item taken out, wherever it is): GLib's source functions only in `guard.rs`, and every
-  `.connect_…(`, `.launch(` and `.open_containing_folder(` call whose last
-  argument is a `guarded!(…)` (a fn path, a variable or a closure of its
-  own is found). Virtual methods aren't grepped: each work package wraps its
-  own (`snapshot`, `measure`, `dispose`, …) in `guard::run`.
+  `.connect_…(`, `.launch(` and `.open_containing_folder(` call, every
+  call that takes a `Cancellable` before its last argument (GIO's async
+  calls: `FileDialog::save`, `AlertDialog::choose`, any `*_async`; a sync
+  one takes it last) and every `adw::CallbackAnimationTarget::new(` whose
+  last argument is a `guarded!(…)` (a fn path, a variable or a closure of
+  its own is found; an animation target's closure may instead be one
+  `guard::run(…)` call; review R73: WP7's save dialog and the toasts' and
+  the bin slide's targets were guarded by hand, unchecked). Virtual methods
+  aren't grepped: each work package wraps its own (`snapshot`, `measure`,
+  `dispose`, …) in `guard::run`.
   `qrec-gui-io` (`media::io`) runs each job under `catch_unwind`: a panic
   ends that job, and is told on the main thread like the others; a
   `run_io_then` continuation stays on the main thread, and the work's
