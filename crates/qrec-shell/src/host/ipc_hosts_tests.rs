@@ -919,6 +919,55 @@ fn the_backend_entry_reports_where_each_request_ran() {
     assert!(events.routed.is_empty());
 }
 
+/// A lock a host just dropped can still be held for a moment by a copy of
+/// its descriptor in a child another test forked: between `fork` and
+/// `exec` a child holds every descriptor of this process, the lock's
+/// `O_CLOEXEC` one too (`lock::acquire_eventually`). A host started then
+/// takes the lock once and gives up ("another Qrec host holds …": the
+/// flake of `the_backend_entry_reports_where_each_request_ran`, whose
+/// headless host starts right after its in-process one, once in a full
+/// workspace run), so [`headless`] waits for the copy to go. Here the
+/// child takes 500 ms from its fork to its exec, on purpose.
+#[test]
+fn a_host_started_on_a_lock_just_dropped_waits_for_forked_copies() {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    let f = fixture();
+    let lock = hold_lock(&f.dir);
+    let (mut forked, tell) = std::io::pipe().unwrap();
+    let child = thread::spawn(move || {
+        let fd = tell.as_raw_fd();
+        let mut command = std::process::Command::new("true");
+        // SAFETY: runs in the forked child before its exec, and calls only
+        // async-signal-safe functions (write, nanosleep).
+        unsafe {
+            command.pre_exec(move || {
+                libc::write(fd, b"f".as_ptr().cast(), 1);
+                let pause = libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 500_000_000,
+                };
+                libc::nanosleep(&pause, std::ptr::null_mut());
+                Ok(())
+            });
+        }
+        let status = command.status().expect("run true");
+        drop(tell);
+        status
+    });
+    let mut byte = [0u8; 1];
+    forked.read_exact(&mut byte).unwrap();
+    drop(lock);
+    assert!(f.lock_held(), "the child's copy holds it until its exec");
+    let host = headless(&f, FakeOpener::default(), quick_rules(), None);
+    wait_ready(&f);
+    let out = send(&f.socket, Request::command(set_ui(), false));
+    assert_eq!(out.accepted, 1);
+    assert!(child.join().unwrap().success());
+    assert_eq!(host.join().unwrap(), 0);
+}
+
 /// A project with one 300-frame take placed as clip `c001`.
 fn one_clip_project() -> qrec_core::Project {
     serde_json::from_value(json!({
@@ -1023,6 +1072,15 @@ fn headless(
     rules: ExitRules,
     interrupts: Option<Interrupts>,
 ) -> thread::JoinHandle<u8> {
+    // The host takes the lock once. One this test's last host dropped can
+    // still be held for a moment by a child another test forked meanwhile
+    // (between `fork` and `exec` it has a copy of every descriptor, the
+    // lock's `O_CLOEXEC` one too): wait for that copy to go first.
+    assert!(
+        wait_for(Duration::from_secs(5), || !f.lock_held()),
+        "{} stays locked",
+        f.dir.display()
+    );
     let env = f.paths_env.clone();
     let args = HeadlessArgs {
         project: f.dir.clone(),
