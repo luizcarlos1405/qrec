@@ -1443,6 +1443,74 @@ fn the_same_toast_thirty_times_is_one() {
     close(&mut nested);
 }
 
+/// R53 (its audit's minor gap: nothing clicked a toast's Copy image): `p`
+/// saves the frame at the playhead, and its toast's Copy image puts that
+/// PNG on the clipboard: `wl-copy` reads the file under the project folder
+/// (the core names it relative, `frames/….png`; `desktop::action_path`),
+/// read back here with `wl-paste` on the nested display. From the bare
+/// relative path it read nothing (the window's working folder isn't the
+/// project's).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_toasts_copy_image_copies_the_frame() {
+    let mut nested = Nested::start(AREA, "copy-image", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(program_ui()),
+    );
+    open(&mut nested, &project, launch());
+    nested.keys(&["-k", "p"]);
+    wait_label(
+        &mut nested,
+        "toast-host",
+        "the frame's toast",
+        Duration::from_secs(30),
+        |l| l == "Copy image",
+    );
+    let frames: Vec<PathBuf> = fs::read_dir(project.join("frames"))
+        .expect("frames/")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "png"))
+        .collect();
+    assert_eq!(frames.len(), 1, "{frames:?}");
+    let button = (0..2)
+        .map(|n| format!("toast-action-{n}"))
+        .find(|name| {
+            nested
+                .window(0)
+                .labels(name)
+                .iter()
+                .any(|l| l == "Copy image")
+        })
+        .expect("the Copy image button");
+    click(&mut nested, &button);
+    let png = gui_support::poll(Duration::from_secs(15), "the clipboard's PNG", || {
+        let out = run_tool(
+            nested
+                .nested_tool("wl-paste")
+                .args(["--no-newline", "--type", "image/png"]),
+            gui_support::TOOL_TIMEOUT,
+        );
+        (out.status.success() && out.stdout.starts_with(b"\x89PNG")).then_some(out.stdout)
+    });
+    let saved = fs::read(&frames[0]).expect("the frame");
+    assert!(
+        png == saved,
+        "the clipboard isn't the saved frame ({} bytes for {})",
+        png.len(),
+        saved.len()
+    );
+    let toasts = nested.window(0).labels("toast-host");
+    assert!(
+        !toasts.iter().any(|l| l == "Couldn't copy the image"),
+        "{toasts:?}"
+    );
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
 /// D-34: `Ctrl+E` on an empty timeline says why ("The timeline is empty",
 /// an info toast) and opens nothing (it opened nothing, silently).
 #[test]
