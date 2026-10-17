@@ -3731,6 +3731,9 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   - `QREC_GUI_TEST_SAVE_AS=<path>|<path>…` stands in for the export
     panel's save dialog (WP7): each press of Change… takes the next path
     (the file dialog needs a portal, G§9 R7; D-24's cases);
+  - the flag `panic-tick` (`QREC_GUI_TEST=1,panic-tick`) panics in the
+    timeline's first frame-clock callback: caught, and the next change
+    starts the frame clock again (G§3.12 R10; review R09);
   - the control channel (G§3.18).
 - **Driving.** `qrec --project <dir> … --json` with the `TestEnv`
   (`Nested::cli`, `cli_json`); the pointer: `Nested::pointer()`, one

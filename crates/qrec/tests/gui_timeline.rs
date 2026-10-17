@@ -927,6 +927,61 @@ fn the_canvas_rests_while_the_program_plays() {
     assert_clean(&mut nested);
 }
 
+/// A caught panic in the timeline's frame clock doesn't stop it for good
+/// (G§3.12 R10): test mode's `panic-tick` panics in its first frame, and
+/// the next change starts it again, so the playing playhead still pages
+/// the view at frame level. The slot kept the dead callback's id and never
+/// started another: no auto-page for the rest of the session, the
+/// playhead moving once a second (review R09, R65).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_frame_clock_comes_back_after_a_caught_panic() {
+    let mut nested = Nested::start(AREA, "tick-panic", Options::default());
+    // 32 px/frame from frame 3160, the playhead at x 896 of 1040: playing,
+    // it passes the right edge within five frames.
+    let project = fixture(
+        &nested,
+        DesignVariant::Base,
+        &program(&[], 3188, Some((32.0, 3160))),
+    );
+    open(
+        &mut nested,
+        &project,
+        Launch::default().with_env("QREC_GUI_TEST", "1,panic-tick"),
+    );
+    let scroll = |nested: &Nested| {
+        nested.cli_json(&project, &["status"])["data"]["ui"]["scrollPx"]
+            .as_f64()
+            .expect("ui.scrollPx")
+    };
+    let before = scroll(&nested);
+    assert_eq!(before, 32.0 * 3160.0);
+    let gui = nested.window(0);
+    let play = gui.ctl(json!({"op": "dispatch", "command": {"cmd": "play"}}));
+    assert_eq!(play["ok"], true, "{play}");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while nested.window(0).local()["panics"] != 1 {
+        assert!(Instant::now() < deadline, "the frame never panicked");
+        thread::sleep(Duration::from_millis(50));
+    }
+    // Paged: the view follows the playhead once the frame clock is back.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while scroll(&nested) == before {
+        assert!(
+            Instant::now() < deadline,
+            "never paged: the frame clock didn't come back"
+        );
+        thread::sleep(Duration::from_millis(200));
+    }
+    let pause = nested
+        .window(0)
+        .ctl(json!({"op": "dispatch", "command": {"cmd": "pause"}}));
+    assert_eq!(pause["ok"], true, "{pause}");
+    let gui = nested.window(0);
+    assert_eq!(gui.local()["panics"], 1, "the one panic");
+    gui.assert_no_criticals();
+}
+
 // ------------------------------------------------------------- ghosts
 
 /// S04: recording with the clock at 00:02:41:12: fit includes the ghost,

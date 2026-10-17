@@ -78,6 +78,8 @@ const FLASH: Duration = Duration::from_millis(300);
 thread_local! {
     /// How many times the canvas made its render node again (a cache miss).
     static CANVAS_PAINTS: Cell<u64> = const { Cell::new(0) };
+    /// Test mode's `panic-tick` panicked already.
+    static TICK_PANICKED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// How many times the canvas re-rendered (testctl's `local`,
@@ -1680,6 +1682,11 @@ impl Inner {
     /// more after (an easing's last frame); the playing playhead and the
     /// snap flash are the overlay's, over its cached node (C16, C18).
     fn on_tick(&self) -> bool {
+        // Test mode's `panic-tick`: the first frame panics (caught; the
+        // frame clock must come back, G§3.12 R10).
+        if testctl::mode().panic_tick && !TICK_PANICKED.with(|p| p.replace(true)) {
+            panic!("panic-tick: the timeline's first frame panics (test mode)");
+        }
         // Whether the canvas moves this frame, and renders.
         let (canvas_moves, render);
         let now = self.now();
