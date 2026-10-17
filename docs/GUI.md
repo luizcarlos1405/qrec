@@ -1189,6 +1189,13 @@ time; A§8.7 rules for every child).
     panic);
   - sources go through `guard::{idle, idle_local_once, timeout_local,
     timeout_local_once, invoke, tick}`, the only callers of GLib's own;
+    a `guard::Slot` holds one its owner stops or starts again (the
+    timeline's frame clock, `SetUi` and tooltip timers): it empties itself
+    however the callback ends (`Break`, fired, a caught panic, removed, its
+    widget gone), so a check of it never waits on a dead id and its `stop`
+    never removes a source GLib destroyed (`SourceId::remove` panics on
+    one; review R09, R65: the timeline's tick never came back after a
+    caught panic);
   - subclass virtual methods and other entry points use `guard::run` or
     `guard::catch`;
   - the queue's drain, `Subscribers::emit` and `ActionRouter::run` contain

@@ -9,7 +9,10 @@
 //!
 //! - Sources: [`idle`] (from any thread), [`idle_local_once`],
 //!   [`timeout_local`], [`timeout_local_once`], [`invoke`], [`tick`]. Only
-//!   this file calls GLib's own (a test greps the crate).
+//!   this file calls GLib's own (a test greps the crate). A [`Slot`] holds
+//!   one its owner stops or starts again: it empties itself however the
+//!   callback ends (an id kept past a caught panic is dead: a check of it
+//!   waits forever, and `SourceId::remove` panics on it).
 //! - Signal handlers and async callbacks: [`guarded!`](crate::guarded),
 //!   `button.connect_clicked(guarded!("what", move |_| …))` (a test greps
 //!   every `.connect_…(`).
@@ -232,6 +235,143 @@ pub fn tick<W: IsA<gtk::Widget>>(
     f: impl Fn(&W, &gtk::gdk::FrameClock) -> glib::ControlFlow + 'static,
 ) -> gtk::TickCallbackId {
     widget.add_tick_callback(move |w, clock| run(what, || f(w, clock)))
+}
+
+// ------------------------------------------------------------- slots
+
+/// Where an owner keeps a repeating source, a one-shot timer or a tick
+/// callback it starts through it ([`Slot::tick`], [`Slot::timeout`],
+/// [`Slot::timeout_once`]; each guarded like [`tick`] and the others):
+/// whatever ends the callback (it returned `Break` or fired, it panicked,
+/// it was removed, its widget went) empties the slot, so the owner sees
+/// whether one runs and starts it again when it needs one (a panic doesn't
+/// leave it holding a dead id, waiting forever), and [`Slot::stop`] never
+/// removes a source GLib already destroyed (`SourceId::remove` panics on
+/// one). Main thread only.
+#[derive(Default)]
+pub struct Slot {
+    inner: std::rc::Rc<SlotInner>,
+}
+
+#[derive(Default)]
+struct SlotInner {
+    /// The running callback's number; 0: none.
+    running: Cell<u64>,
+    /// The last number handed out.
+    started: Cell<u64>,
+    /// What stops the running one.
+    id: Cell<Option<SlotId>>,
+}
+
+enum SlotId {
+    Source(glib::SourceId),
+    Tick(gtk::TickCallbackId),
+}
+
+/// Moved into a slot's callback: dropped with it (GLib's or GTK's destroy
+/// notify, at the callback's end whatever ends it), it empties the slot
+/// unless the slot started another one meanwhile. It touches `Cell`s only:
+/// a destroy notify can run inside [`Slot::stop`].
+struct Ended {
+    slot: std::rc::Weak<SlotInner>,
+    number: u64,
+}
+
+impl Ended {
+    /// Keeps it in a closure that has nothing else to do with it.
+    fn keep(&self) {}
+}
+
+impl Drop for Ended {
+    fn drop(&mut self) {
+        if let Some(slot) = self.slot.upgrade()
+            && slot.running.get() == self.number
+        {
+            slot.running.set(0);
+            drop(slot.id.take());
+        }
+    }
+}
+
+impl Slot {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether its callback runs (is still to fire, for a one-shot).
+    pub fn is_running(&self) -> bool {
+        self.inner.running.get() != 0
+    }
+
+    /// Stops the running one, if any (never one already gone).
+    pub fn stop(&self) {
+        self.inner.running.set(0);
+        match self.inner.id.take() {
+            Some(SlotId::Source(id)) => id.remove(),
+            Some(SlotId::Tick(id)) => id.remove(),
+            None => {}
+        }
+    }
+
+    /// The sentinel of a new callback, which is now the running one.
+    fn start(&self) -> Ended {
+        self.stop();
+        let number = self.inner.started.get() + 1;
+        self.inner.started.set(number);
+        self.inner.running.set(number);
+        Ended {
+            slot: std::rc::Rc::downgrade(&self.inner),
+            number,
+        }
+    }
+
+    /// [`tick`] in place of the running one.
+    pub fn tick<W: IsA<gtk::Widget>>(
+        &self,
+        widget: &W,
+        what: &'static str,
+        f: impl Fn(&W, &gtk::gdk::FrameClock) -> glib::ControlFlow + 'static,
+    ) {
+        let ended = self.start();
+        let id = widget.add_tick_callback(move |w, clock| {
+            ended.keep();
+            run(what, || f(w, clock))
+        });
+        self.inner.id.set(Some(SlotId::Tick(id)));
+    }
+
+    /// [`timeout_local`] in place of the running one.
+    pub fn timeout(
+        &self,
+        interval: Duration,
+        what: &'static str,
+        mut f: impl FnMut() -> glib::ControlFlow + 'static,
+    ) {
+        let ended = self.start();
+        let id = glib::timeout_add_local(interval, move || {
+            ended.keep();
+            run(what, &mut f)
+        });
+        self.inner.id.set(Some(SlotId::Source(id)));
+    }
+
+    /// [`timeout_local_once`] in place of the running one; the slot is
+    /// empty while `f` runs (it may start the next one).
+    pub fn timeout_once(&self, interval: Duration, what: &'static str, f: impl FnOnce() + 'static) {
+        let ended = self.start();
+        let id = glib::timeout_add_local_once(interval, move || {
+            drop(ended);
+            run(what, f)
+        });
+        self.inner.id.set(Some(SlotId::Source(id)));
+    }
+}
+
+impl Drop for Slot {
+    /// Its owner went: so does its callback.
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 #[cfg(test)]

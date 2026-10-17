@@ -162,9 +162,12 @@ struct Inner {
     texts: Texts,
     started: Instant,
     m: RefCell<Model>,
-    tick: RefCell<Option<gtk::TickCallbackId>>,
-    flush_source: RefCell<Option<glib::SourceId>>,
-    hover_source: RefCell<Option<glib::SourceId>>,
+    /// The frame clock's callback, the `SetUi` timer and the tooltip's:
+    /// each slot empties however its callback ends (a caught panic too), so
+    /// the next change starts it again (G§3.12 R10).
+    tick: guard::Slot,
+    flush_source: guard::Slot,
+    hover_source: guard::Slot,
     subs: RefCell<Vec<Subscription>>,
     /// The project folder (the silence files' facts).
     project: PathBuf,
@@ -343,9 +346,9 @@ impl Inner {
                     gap: BTreeMap::new(),
                     opened: false,
                 }),
-                tick: RefCell::new(None),
-                flush_source: RefCell::new(None),
-                hover_source: RefCell::new(None),
+                tick: guard::Slot::new(),
+                flush_source: guard::Slot::new(),
+                hover_source: guard::Slot::new(),
                 subs: RefCell::new(Vec::new()),
                 project: ctx.store.project_dir().to_path_buf(),
                 pan_from: Cell::new(None),
@@ -1305,17 +1308,13 @@ impl Inner {
         let at = self.m.borrow().vm.flush_at();
         if let Some(at) = at {
             let wait = at.saturating_sub(self.now());
-            if let Some(old) = self.flush_source.borrow_mut().take() {
-                old.remove();
-            }
             let me = self.me.clone();
-            let id = guard::timeout_local_once(wait, "timeline: SetUi", move || {
-                if let Some(inner) = me.upgrade() {
-                    inner.flush_source.borrow_mut().take();
-                    inner.flush();
-                }
-            });
-            *self.flush_source.borrow_mut() = Some(id);
+            self.flush_source
+                .timeout_once(wait, "timeline: SetUi", move || {
+                    if let Some(inner) = me.upgrade() {
+                        inner.flush();
+                    }
+                });
         }
         self.refresh_all();
     }
@@ -1363,9 +1362,7 @@ impl Inner {
     // ------------------------------------------------------- tooltips
 
     fn cancel_hover_tip(&self) {
-        if let Some(id) = self.hover_source.borrow_mut().take() {
-            id.remove();
-        }
+        self.hover_source.stop();
     }
 
     /// The clip tooltip after the pointer rests on a clip (C33 clip).
@@ -1393,13 +1390,12 @@ impl Inner {
             HOVER_DELAY
         };
         let me = self.me.clone();
-        let id = guard::timeout_local_once(delay, "timeline: the clip tooltip", move || {
-            if let Some(inner) = me.upgrade() {
-                inner.hover_source.borrow_mut().take();
-                inner.show_hover_tip();
-            }
-        });
-        *self.hover_source.borrow_mut() = Some(id);
+        self.hover_source
+            .timeout_once(delay, "timeline: the clip tooltip", move || {
+                if let Some(inner) = me.upgrade() {
+                    inner.show_hover_tip();
+                }
+            });
     }
 
     fn show_hover_tip(&self) {
@@ -1601,22 +1597,21 @@ impl Inner {
         tl::shown_playhead(state, ghost_elapsed(&m.ghost, now), player)
     }
 
+    /// Starts the frame clock's callback when something moves and none
+    /// runs. It stops once nothing does, or after a caught panic: either
+    /// way its slot empties and the next change starts it again.
     fn ensure_tick(&self) {
-        if self.tick.borrow().is_some() || !self.needs_tick() {
+        if self.tick.is_running() || !self.needs_tick() {
             return;
         }
         let me = self.me.clone();
-        let id = guard::tick(&self.canvas, "timeline: a frame", move |_, _| {
-            match me.upgrade() {
-                Some(inner) if inner.on_tick() => glib::ControlFlow::Continue,
-                Some(inner) => {
-                    inner.tick.borrow_mut().take();
-                    glib::ControlFlow::Break
+        self.tick
+            .tick(&self.canvas, "timeline: a frame", move |_, _| {
+                match me.upgrade() {
+                    Some(inner) if inner.on_tick() => glib::ControlFlow::Continue,
+                    _ => glib::ControlFlow::Break,
                 }
-                None => glib::ControlFlow::Break,
-            }
-        });
-        *self.tick.borrow_mut() = Some(id);
+            });
     }
 
     /// What needs a frame each frame: easing, a growing or saving ghost, a
