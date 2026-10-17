@@ -1152,6 +1152,84 @@ fn the_wheel_after_a_drag_scrolls_past_the_slider() {
     assert_clean(nested.window(0));
 }
 
+/// R44's audit: a focused slider follows the model (the half the drag
+/// case can't see: a press focuses the slider and GTK puts it back under
+/// the pointer on the next frame). With the keyboard on the slider (Shift+
+/// Tab from its field, held): Left saves 0.99, Ctrl+Z puts 1.0 back and
+/// the slider follows it, so the next Left saves 0.99 again. A focused
+/// slider was never refreshed: it stayed at 99 and the next Left saved
+/// 0.98.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_focused_slider_follows_an_undo() {
+    let mut nested = Nested::start(AREA, "slider-undo", Options::default());
+    let preset = ui(|u| u.selected_layer = Some(LayerId::numbered(2)));
+    let project = fixture(&nested, DesignVariant::Base, &preset);
+    open(&mut nested, &project, levels(DESIGN_LEVELS));
+    let opacity = |nested: &mut Nested| {
+        let fields = nested.window(0).entries("inspector");
+        fields.get("inspector-opacity").cloned()
+    };
+    assert_eq!(opacity(&mut nested).as_deref(), Some("100"));
+    let saved = |nested: &Nested| layer(nested, &project, None, "L2")["opacity"].as_f64();
+    assert_eq!(saved(&nested), Some(1.0));
+    let (fx, fy) = center(region(nested.window(0), "inspector-opacity"));
+    nested.pointer().click(fx, fy);
+    nested.window(0).wait_idle();
+    // One keyboard for it all (the slider keeps the focus): Shift+Tab to
+    // the slider, Left, Ctrl+Z, Left. Within 3 s of the last arrow: GTK
+    // hides the focus ring then (`gets_focus_visible`), and the router
+    // gives the arrows to the timeline once it is hidden (G§3.8 step 7).
+    let held = nested.keys_held(
+        &[
+            "-M",
+            "shift",
+            "-k",
+            "ISO_Left_Tab",
+            "-m",
+            "shift",
+            "-s",
+            "300",
+            "-k",
+            "Left",
+            "-s",
+            "800",
+            "-M",
+            "ctrl",
+            "-k",
+            "z",
+            "-m",
+            "ctrl",
+            "-s",
+            "1000",
+            "-k",
+            "Left",
+        ],
+        1500,
+    );
+    poll(Duration::from_secs(5), "Left's LayerSet", || {
+        (saved(&nested)? < 1.0).then_some(())
+    });
+    assert_eq!(saved(&nested), Some(0.99), "the first Left");
+    let local = nested.window(0).local();
+    assert_eq!(local["focusPath"][0], "inspector-opacity-slider", "{local}");
+    poll(Duration::from_secs(5), "Ctrl+Z", || {
+        (saved(&nested)? == 1.0).then_some(())
+    });
+    poll(Duration::from_secs(5), "the second Left's LayerSet", || {
+        (saved(&nested)? < 1.0).then_some(())
+    });
+    held.wait();
+    nested.window(0).wait_idle();
+    assert_eq!(
+        saved(&nested),
+        Some(0.99),
+        "the second Left went on from 100, not from a stale 99"
+    );
+    assert_eq!(opacity(&mut nested).as_deref(), Some("99"));
+    assert_clean(nested.window(0));
+}
+
 // ------------------------------------------------------------------ S13
 
 /// L2's box on the 1:2 Live preview at rest (BRIEF §3.1: (1500, 760, 384,

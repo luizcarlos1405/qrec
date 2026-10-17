@@ -2460,8 +2460,10 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     patch}`; the slider commits on release. While the slider is being
     changed (dragged, or a key moved it) a snapshot leaves it and its field
     where the person has them; a change that ends unsent shows the model's
-    value again (`ValueTooltip::changing`, `on_end`; review R44). The
-    wheel moves a slider (this one, the autocut page's) only while the
+    value again (`ValueTooltip::changing`, `on_end`; review R44); a
+    focused slider follows the model like the field (an undo while the
+    keyboard is on it; `a_focused_slider_follows_an_undo`, R44's audit).
+    The wheel moves a slider (this one, the autocut page's) only while the
     keyboard is on it, a burst of notches being one change that ends
     300 ms after its last notch; over another slider it scrolls the panel,
     as over a field (review R42). The keyboard is on a slider it moved the
