@@ -40,6 +40,17 @@ pub const TORCH_LOOP: Duration = Duration::from_millis(1600);
 /// The timer never runs ahead of the last `RecordClock` by more than this.
 const TIMER_LEAD: Duration = Duration::from_millis(300);
 
+/// The REC badge's look `t` into the torch loop: its opacity and whether
+/// it wears its `record-glow`. Reduced motion: a static badge (opacity 1)
+/// without the glow (DESIGN Motion).
+pub fn torch_look(reduced: bool, t: Duration) -> (f64, bool) {
+    if reduced {
+        (1.0, false)
+    } else {
+        (torch_opacity(t), true)
+    }
+}
+
 /// The torch's opacity at `t` into its loop (linear between keyframes).
 pub fn torch_opacity(t: Duration) -> f64 {
     let loop_ms = TORCH_LOOP.as_millis() as f64;
@@ -222,10 +233,10 @@ impl RecCluster {
         if let RecBadge::Recording { take, .. } = rec {
             self.take.set_text(&format!("Take {}", take.number()));
         }
-        if reduced {
-            self.badge.remove_css_class("glow");
-        } else {
+        if torch_look(reduced, motion::now()).1 {
             self.badge.add_css_class("glow");
+        } else {
+            self.badge.remove_css_class("glow");
         }
         self.show_timer();
         self.follow_clock(recording);
@@ -237,11 +248,7 @@ impl RecCluster {
     fn follow_clock(self: &Rc<Self>, recording: bool) {
         self.tick.stop();
         let reduced = self.reduced.get();
-        self.badge.set_opacity(if reduced {
-            1.0
-        } else {
-            torch_opacity(motion::now())
-        });
+        self.badge.set_opacity(torch_look(reduced, motion::now()).0);
         if !recording || motion::one_shots_at_end() {
             return;
         }
@@ -251,9 +258,8 @@ impl RecCluster {
                 let Some(this) = weak.upgrade() else {
                     return glib::ControlFlow::Break;
                 };
-                if !this.reduced.get() {
-                    this.badge.set_opacity(torch_opacity(motion::now()));
-                }
+                this.badge
+                    .set_opacity(torch_look(this.reduced.get(), motion::now()).0);
                 this.show_timer();
                 glib::ControlFlow::Continue
             });

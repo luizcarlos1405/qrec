@@ -30,7 +30,7 @@
 //!   CachedSilence`) keyed with the files' facts, stat'ed on `qrec-gui-io`.
 
 pub mod control;
-mod draw;
+pub(crate) mod draw;
 mod headers;
 mod paint;
 mod root;
@@ -1894,6 +1894,7 @@ impl Inner {
             peaks: peaks.as_deref(),
             thumb_px: self.thumb_px(),
             now_ms: motion::now().as_millis() as u64,
+            still: self.ctx.theme.motion().reduced,
             boxes,
             ghost,
             ghost_waves,

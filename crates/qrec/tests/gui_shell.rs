@@ -112,8 +112,10 @@ fn assert_lock_free(nested: &Nested, project: &Path) {
     );
 }
 
-/// The pixel at (`x`, `y`) of a PNG, as `#RRGGBB`.
-fn pixel(png: &Path, x: u32, y: u32) -> String {
+/// The pixel at logical (`x`, `y`) of a shot, as `#RRGGBB` (the device
+/// pixel under its center, at any output scale).
+fn pixel(nested: &Nested, png: &Path, x: f64, y: f64) -> String {
+    let (x, y) = nested.opts.pixel_px(x, y);
     let out = run_tool(
         Command::new("ffmpeg")
             .args(["-v", "error", "-i"])
@@ -165,12 +167,13 @@ fn the_skeleton_on_the_design_fixture() {
     gui.wait_idle();
     assert_eq!(nested.window_rect(), Some([0.0, 0.0, 1600.0, 1000.0]));
 
+    let scale = nested.opts.scale;
     let gui = nested.window(0);
     let regions = gui.regions(&[]);
     // Every region of BRIEF §2.1 is there since round 3: the stage's
     // preview and transport (WP4), the timeline's toolbar, ruler, headers
     // and rows (WP3), at their rects.
-    assert_regions(&regions, &BRIEF_REGIONS, &MERGED_REGIONS, 1.0);
+    assert_regions(&regions, &BRIEF_REGIONS, &MERGED_REGIONS, scale);
     let header = gui.labels("region-header");
     assert!(
         header.contains(&"rust-traits-talk".to_owned()),
@@ -233,9 +236,15 @@ fn the_skeleton_on_the_design_fixture() {
 
     // The stage's ground is the theme's `bg`, the hint bar's `surface`.
     let shot = nested.screenshot("final");
-    assert_eq!(pixel(&shot, 8, 600), token("swamp-night", "bg"));
+    assert_eq!(
+        pixel(&nested, &shot, 8.0, 600.0),
+        token("swamp-night", "bg")
+    );
     // The hint bar's right padding (x 1588–1600), under its top hairline.
-    assert_eq!(pixel(&shot, 1596, 976), token("swamp-night", "surface"));
+    assert_eq!(
+        pixel(&nested, &shot, 1596.0, 976.0),
+        token("swamp-night", "surface")
+    );
 
     // Closing the window: exit 0, the lock free.
     nested.close_window();
@@ -264,6 +273,8 @@ fn the_skeleton_on_the_design_fixture() {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn the_header_title_leaves_no_trace_of_the_old_one() {
+    // The title's 480×48 at (560, 0), in the shots' device px.
+    let [cx, cy, cw, ch] = Options::default().rect_px([560.0, 0.0, 480.0, 48.0]);
     let crop = |shot: &Path| -> Vec<u8> {
         let out = run_tool(
             Command::new("ffmpeg")
@@ -271,7 +282,7 @@ fn the_header_title_leaves_no_trace_of_the_old_one() {
                 .arg(shot)
                 .args([
                     "-vf",
-                    "crop=480:48:560:0,format=rgb24",
+                    &format!("crop={cw}:{ch}:{cx}:{cy},format=rgb24"),
                     "-f",
                     "rawvideo",
                     "-",
@@ -300,7 +311,7 @@ fn the_header_title_leaves_no_trace_of_the_old_one() {
         shots.push(nested.screenshot("header"));
     }
     let (partial, full) = (crop(&shots[0]), crop(&shots[1]));
-    assert_eq!(partial.len(), 480 * 48 * 3);
+    assert_eq!(partial.len(), (cw * ch * 3) as usize);
     let differing = partial
         .chunks_exact(3)
         .zip(full.chunks_exact(3))
@@ -325,6 +336,7 @@ fn the_control_channel_ops_work() {
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
     nested.launch(&project, Launch::a11y());
     wait_for_gui_host(&nested, &project, OPEN);
+    let scale = nested.opts.scale;
     let gui = nested.window(0);
     gui.wait_phase("open", OPEN);
     gui.wait_idle();
@@ -344,7 +356,7 @@ fn the_control_channel_ops_work() {
             ("region-stage", [352.0, 48.0, 864.0, 608.0]),
         ],
         &["region-bin", "region-stage"],
-        1.0,
+        scale,
     );
     let status = nested.cli_json(&project, &["status"]);
     assert_eq!(status["data"]["ui"]["binOpen"], true, "{status}");
@@ -944,8 +956,11 @@ fn the_theme_and_keys_come_from_the_users_config() {
         .expect("the present line");
     assert!(loaded < presented);
     let shot = nested.screenshot("swamp-day");
-    assert_eq!(pixel(&shot, 8, 600), token("swamp-day", "bg"));
-    assert_eq!(pixel(&shot, 1596, 976), token("swamp-day", "surface"));
+    assert_eq!(pixel(&nested, &shot, 8.0, 600.0), token("swamp-day", "bg"));
+    assert_eq!(
+        pixel(&nested, &shot, 1596.0, 976.0),
+        token("swamp-day", "surface")
+    );
     // With the keymap problems' toasts up.
     assert_a11y(nested.window(0));
     nested.close_window();
@@ -971,6 +986,7 @@ fn adaptive(case: &str, width: u32, height: u32) -> (Nested, PathBuf) {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn medium_windows_dock_the_panel_at_320() {
     let (mut nested, _) = adaptive("adaptive-1300", 1300, 1000);
+    let scale = nested.opts.scale;
     let gui = nested.window(0);
     let regions = gui.regions(&[]);
     assert_regions(
@@ -983,7 +999,7 @@ fn medium_windows_dock_the_panel_at_320() {
             ("region-hintbar", [0.0, 968.0, 1300.0, 32.0]),
         ],
         &WP0B_REGIONS,
-        1.0,
+        scale,
     );
     assert_eq!(gui.local()["layout"]["width"], "Medium");
     nested.screenshot("open");
@@ -995,6 +1011,7 @@ fn medium_windows_dock_the_panel_at_320() {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn narrow_windows_show_the_panel_as_a_sheet() {
     let (mut nested, _) = adaptive("adaptive-1000", 1000, 1000);
+    let scale = nested.opts.scale;
     let gui = nested.window(0);
     let regions = gui.regions(&["layers-button"]);
     assert!(!regions.contains_key("region-panel"), "{regions:?}");
@@ -1005,7 +1022,7 @@ fn narrow_windows_show_the_panel_as_a_sheet() {
             ("region-timeline", [0.0, 656.0, 1000.0, 312.0]),
         ],
         &["region-stage", "region-timeline"],
-        1.0,
+        scale,
     );
     assert_eq!(gui.local()["layout"]["width"], "Narrow");
     nested.screenshot("closed");
@@ -1063,6 +1080,7 @@ fn wait_for_region(
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn short_windows_keep_a_232_px_timeline() {
     let (mut nested, _) = adaptive("adaptive-800", 1600, 800);
+    let scale = nested.opts.scale;
     let gui = nested.window(0);
     let regions = gui.regions(&[]);
     assert_regions(
@@ -1075,7 +1093,7 @@ fn short_windows_keep_a_232_px_timeline() {
             ("region-hintbar", [0.0, 768.0, 1600.0, 32.0]),
         ],
         &WP0B_REGIONS,
-        1.0,
+        scale,
     );
     assert_eq!(gui.local()["layout"]["compact"], true);
     nested.screenshot("open");

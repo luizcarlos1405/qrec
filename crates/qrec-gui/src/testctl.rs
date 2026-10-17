@@ -17,7 +17,10 @@
 //! next gesture, R22, R23), and the control channel listens. Flags,
 //! comma-separated: `stuck-gst` makes startup report GStreamer stuck
 //! without initializing it (the stuck page, exit 5); `panic-activate`
-//! panics in `activate` (the app quits with 1).
+//! panics in `activate` (the app quits with 1); `animations` leaves GTK's
+//! own animations on (libadwaita's, the stacks', CSS transitions; Qrec's
+//! own still jump to their end): WP10's reduced-motion audit sees
+//! libadwaita's sheet slide, or not.
 //!
 //! **The control channel**: a socket `$XDG_RUNTIME_DIR/qrec-gui-test-<pid>.sock`
 //! (0600, the test's private runtime dir; one per window, so a test can
@@ -35,7 +38,7 @@
 //! | `action` | runs binding or GUI action `id` as its key would |
 //! | `sources` | the source discovery's last answer (`LocalUi.sources`, `inventory`: `null` before one); with `inventory` (a `SourceInventory`), that answer instead, through the queue as discovery's own (the first run's rows follow it, R25) |
 //! | `hints` | the hint bar's items and status (`hintbar::current_items`), the labels of the items it draws whole (`shown`: a narrow window leaves the trailing ones out) and whether a drawn one runs past the bar (`cut`, never) |
-//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`; whether the player plays, the program or a take, `playing`, and the program, `programPlaying`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it; libadwaita's color scheme, `colorScheme`: `scheme`, `dark`), the settings changes the follower applied and whether one is pending (`settingsApplied`, `settingsPending`, WP10), the live controls that show a binding's keys (`keyedControls`: a keymap reload makes none), the caught panics, the focused widget's path and its bounds (`focusBounds`), whether the window shows focus (`focusVisible`), what it announced to screen readers (`announcements`: `message`, `priority`, and `sent`, false without a context that announces: WP10), the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11) and the panel's (`layerRowsAlive`, `audioRowsAlive`), the bin drawer's last slide as asked (`binSlide`: `open`, `animate`; nothing animates on start), the bin preview (`takePreview`: `take`, `playing`; `null` without one), the theme's subscribers (`themeSubscribers`: a dropped bin thumbnail's goes with it), the mud bars ticking (`mudBarsTicking`: none under the frozen clock), the meter bars on their refresh timer (`metersTicking`) and whether the export panel's Running clock runs (`exportClockTicking`: both come back with the next change after a caught panic, R65), how many times the timeline's canvas re-rendered (`timelinePaints`: not while only the playhead moves), and how many columns of the ghost's waveform its last paint with one worked out (`timelineGhostColumns`: those in view, R01) |
+//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`; whether the player plays, the program or a take, `playing`, and the program, `programPlaying`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it, and GTK's own animation setting, `gtkAnimations`: off in test mode but with its `animations` flag, and while the Narrow sheet is open under reduced motion; libadwaita's color scheme, `colorScheme`: `scheme`, `dark`), the settings changes the follower applied and whether one is pending (`settingsApplied`, `settingsPending`, WP10), the live controls that show a binding's keys (`keyedControls`: a keymap reload makes none), the caught panics, the focused widget's path and its bounds (`focusBounds`), whether the window shows focus (`focusVisible`), what it announced to screen readers (`announcements`: `message`, `priority`, and `sent`, false without a context that announces: WP10), the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11) and the panel's (`layerRowsAlive`, `audioRowsAlive`), the bin drawer's last slide as asked (`binSlide`: `open`, `animate`; nothing animates on start), the bin preview (`takePreview`: `take`, `playing`; `null` without one), the theme's subscribers (`themeSubscribers`: a dropped bin thumbnail's goes with it), the mud bars ticking (`mudBarsTicking`: none under the frozen clock), the meter bars on their refresh timer (`metersTicking`) and whether the export panel's Running clock runs (`exportClockTicking`: both come back with the next change after a caught panic, R65), how many times the timeline's canvas re-rendered (`timelinePaints`: not while only the playhead moves), and how many columns of the ghost's waveform its last paint with one worked out (`timelineGhostColumns`: those in view, R01) |
 //! | `a11y` | every visible icon-only button, focusable region or custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 //! | `fonts` | the family Pango loads for each bundled font |
 //! | `icons` | each custom symbolic icon drawn in a probe color: found, pixels, recolored |
@@ -77,6 +80,9 @@ pub struct TestMode {
     pub stuck_gst: bool,
     /// `panic-activate`: panic in `activate`, after the app is up.
     pub panic_activate: bool,
+    /// `animations`: GTK's own animations stay on (test mode turns them
+    /// off otherwise, G§8.4).
+    pub animations: bool,
     /// `QREC_GUI_TEST_PANIC_ONCE`: the guarded callbacks (by their `what`)
     /// whose first run panics (caught: what they drive must come back,
     /// G§3.12 R10).
@@ -132,6 +138,7 @@ impl TestMode {
             on,
             stuck_gst: on && flags.contains(&"stuck-gst"),
             panic_activate: on && flags.contains(&"panic-activate"),
+            animations: on && flags.contains(&"animations"),
             panic_once: panic_once
                 .filter(|_| on)
                 .map(|names| {
@@ -610,6 +617,7 @@ fn local(app: &App) -> Value {
         "settingsApplied": app.follower.applied(),
         "settingsPending": app.follower.pending(),
         "keyedControls": crate::widgets::button::keyed(),
+        "gtkAnimations": gtk::Settings::default().is_some_and(|s| s.is_gtk_enable_animations()),
         "panelTransition": panel_transition(app),
         "rev": app.ctx.store.rev(),
         "panics": guard::panics(),
@@ -1057,6 +1065,10 @@ mod tests {
         assert!(stuck.on && stuck.stuck_gst);
         assert_eq!((stuck.t_ms, stuck.now), (0, None));
         assert!(TestMode::parse(Some("1,stuck-gst"), None, None).stuck_gst);
+        // GTK's own animations stay on only when asked.
+        assert!(!on.animations);
+        let animated = TestMode::parse(Some("1,animations"), None, None);
+        assert!(animated.on && animated.animations && !animated.stuck_gst);
         let vars = TestVars {
             panic_once: Some("timeline: a frame| meter: refresh |"),
             send_delay_ms: Some("225"),

@@ -1157,6 +1157,7 @@ fn s05b_take_lands() {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s01b_empty_timeline() {
     let mut nested = Nested::start(AREA, "s01b", Options::default());
+    let scale = nested.opts.scale;
     let project = nested.env.empty_dir("rust-traits-talk");
     open(&mut nested, &project, Launch::a11y());
     for (i, command) in [
@@ -1197,7 +1198,7 @@ fn s01b_empty_timeline() {
             "track-headers",
             "time-area",
         ],
-        1.0,
+        scale,
     );
     let labels = gui.labels("region-timeline");
     for want in [
@@ -1339,6 +1340,7 @@ fn at_ui_scale(case: &str, scale: f64, opts: Options) {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn compact_timeline_at_1600x800() {
     let mut nested = Nested::start(AREA, "compact", Options::size(1600, 800));
+    let scale = nested.opts.scale;
     let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
     open(&mut nested, &project, Launch::a11y());
     let regions = nested.window(0).regions(&[]);
@@ -1353,7 +1355,7 @@ fn compact_timeline_at_1600x800() {
         ("lane-A2", [176.0, 720.0, 1040.0, 48.0]),
     ];
     let names: Vec<&str> = parts.iter().map(|(n, _)| *n).collect();
-    assert_regions(&regions, &parts, &names, 1.0);
+    assert_regions(&regions, &parts, &names, scale);
     shoot(&nested, "compact", None);
     assert_a11y(&mut nested);
     assert_clean(&mut nested);

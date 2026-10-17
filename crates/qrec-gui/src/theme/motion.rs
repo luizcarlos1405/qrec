@@ -102,6 +102,11 @@ pub fn frozen() -> bool {
     testctl::mode().on
 }
 
+/// DESIGN's motion table under reduced motion, row by row (WP10's audit).
+#[cfg(test)]
+#[path = "motion_table.rs"]
+mod table;
+
 #[cfg(test)]
 mod tests {
     use super::*;

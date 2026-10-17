@@ -151,6 +151,31 @@ fn env_scale() -> f64 {
         .unwrap_or(1.0)
 }
 
+/// The suite-wide scale of a scale run (G§8.4): `QREC_TEST_SCALE` when it
+/// is set to something other than 1. Every case's `Options::default()` and
+/// `Options::size` take it.
+pub fn suite_scale() -> Option<f64> {
+    let scale = env_scale();
+    (scale != 1.0).then_some(scale)
+}
+
+/// Where a case of `area` writes its shots and logs:
+/// `<repo>/tmp/gui-shots/<area>/`, or `<repo>/tmp/gui-shots/scale/<s>/<area>/`
+/// in a suite-wide scale run (WP10's audit), so the scale-1 shots of the
+/// same names stay as they are.
+pub fn shots_dir(area: &str) -> PathBuf {
+    shots_dir_at(&repo(), area, suite_scale())
+}
+
+/// [`shots_dir`] under `repo` for a run at `scale` (`None`: scale 1).
+fn shots_dir_at(repo: &Path, area: &str, scale: Option<f64>) -> PathBuf {
+    let root = repo.join("tmp/gui-shots");
+    match scale {
+        Some(scale) => root.join("scale").join(format!("{scale}")).join(area),
+        None => root.join(area),
+    }
+}
+
 impl Default for Options {
     /// BRIEF's 1600×1000 logical px at `QREC_TEST_SCALE`: at 2 the mode is
     /// 3200×2000 device px, the window still 1600×1000 (a 1600×1000 mode
@@ -182,6 +207,31 @@ impl Options {
             f64::from(self.width) / self.scale,
             f64::from(self.height) / self.scale,
         )
+    }
+
+    /// `v` logical px in a shot's device px (× the output scale), rounded:
+    /// a probe's crop at any scale (G§8.4: the cases probe in device px).
+    pub fn px(&self, v: f64) -> u32 {
+        (v * self.scale).round().max(0.0) as u32
+    }
+
+    /// A logical rect (x, y, w, h) in a shot's device px ([`Options::px`]).
+    pub fn rect_px(&self, rect: [f64; 4]) -> [u32; 4] {
+        rect.map(|v| self.px(v))
+    }
+
+    /// A logical rect (x, y, w, h) in a shot's device px, unrounded.
+    pub fn device(&self, rect: [f64; 4]) -> [f64; 4] {
+        rect.map(|v| v * self.scale)
+    }
+
+    /// The device pixel of a shot under the center of logical pixel (`x`,
+    /// `y`): it reads that pixel's color at any scale, a 1 px rule's too
+    /// (at 1.5 the compositor spreads a rule's 1.5 device px over two, the
+    /// pixel under its center its own color).
+    pub fn pixel_px(&self, x: f64, y: f64) -> (u32, u32) {
+        let at = |v: f64| ((v + 0.5) * self.scale).floor().max(0.0) as u32;
+        (at(x), at(y))
     }
 }
 
@@ -296,7 +346,7 @@ impl Nested {
                 "the nested compositor must not share the user's runtime dir"
             );
         }
-        let shots = repo().join("tmp/gui-shots").join(area);
+        let shots = shots_dir(area);
         fs::create_dir_all(shots.join("logs")).expect("create the shots folder");
         let log = |what: &str| shots.join("logs").join(format!("{case}-{what}.log"));
 
@@ -541,7 +591,20 @@ impl Nested {
             .join("logs")
             .join(format!("{}-client{suffix}.log", self.case));
         let bin = launch.bin.clone().unwrap_or_else(qrec_bin);
-        let mut command = self.env.command(&bin);
+        let mut command = match &launch.strace {
+            // Every open of the window and of what it starts (G§8.6's GPU
+            // probe: `scripts/gpu-opens.sh` reads the trace).
+            Some(trace) => {
+                let mut command = self.env.command(Path::new("strace"));
+                command
+                    .args(["-f", "-qq", "-e", "trace=open,openat,openat2", "-o"])
+                    .arg(trace)
+                    .arg("--")
+                    .arg(&bin);
+                command
+            }
+            None => self.env.command(&bin),
+        };
         command.envs(self.display_env());
         command.env("GTK_A11Y", if launch.a11y { "test" } else { "none" });
         for (key, value) in &launch.env {
@@ -555,8 +618,16 @@ impl Nested {
         }
         command.arg("--project").arg(project).arg("-v");
         let group = Group::spawn("qrec", command, &log);
+        // Traced, the window is strace's child.
+        let pid = match launch.strace {
+            Some(_) => poll(Duration::from_secs(10), "the traced window's pid", || {
+                first_child(group.pid())
+            }),
+            None => group.pid(),
+        };
         let gui = Gui {
             group,
+            pid,
             runtime: self.env.xdg_runtime_dir(),
             log,
             state_home: self.env.state_home(),
@@ -688,6 +759,38 @@ impl Nested {
     pub fn close_window(&self) {
         self.swaymsg(&["kill"]);
     }
+
+    /// The main-loop probe's lines (G§8.6: the window launched with
+    /// `QREC_GUI_PROBE=1`) in window `n`'s GUI log, kept as
+    /// `<shots>/<case>-main-loop-<renderer>.txt`, and its stalls (a tick of
+    /// its 10 ms timeout over 50 ms late, `probe::Stall`'s lines). It
+    /// checks that the probe ran; which stalls fail a run is the case's
+    /// call (the smoke's, from the test channel's `probe` op: those after
+    /// the window first settled, under `QREC_TEST_WLR=gles2` only, G§8.5).
+    pub fn check_main_loop(&self, n: usize) -> Vec<String> {
+        let log = self.windows[n].gui_log();
+        let lines: Vec<&str> = log
+            .lines()
+            .filter(|l| l.contains("main-loop probe:"))
+            .collect();
+        assert!(
+            lines.iter().any(|l| l.contains("main-loop probe: on")),
+            "the main-loop probe didn't run (QREC_GUI_PROBE=1): {lines:#?}"
+        );
+        let renderer = match self.opts.renderer {
+            Renderer::Pixman => "pixman",
+            Renderer::Gles2 => "gles2",
+        };
+        let record = self
+            .shots
+            .join(format!("{}-main-loop-{renderer}.txt", self.case));
+        fs::write(&record, lines.join("\n") + "\n").expect("the main-loop record");
+        lines
+            .iter()
+            .filter(|l| l.contains("main-loop probe: a stall of "))
+            .map(|l| (*l).to_owned())
+            .collect()
+    }
 }
 
 impl Drop for Nested {
@@ -792,6 +895,9 @@ pub struct Launch {
     /// dev shell's plugin, schema and font paths, which the package's
     /// wrapper sets itself); never [`DISPLAY_VARS`].
     pub unset: Vec<String>,
+    /// The window runs under `strace -f`, its opens written here (G§8.6's
+    /// GPU probe, [`Launch::traced`]).
+    pub strace: Option<PathBuf>,
 }
 
 impl Launch {
@@ -806,21 +912,39 @@ impl Launch {
         self.env.push((key.to_owned(), value.to_owned()));
         self
     }
+
+    /// Under `strace -f -e trace=open,openat,openat2`, into `trace`.
+    pub fn traced(mut self, trace: &Path) -> Self {
+        self.strace = Some(trace.to_path_buf());
+        self
+    }
 }
 
 /// A launched window.
 pub struct Gui {
     group: Group,
+    /// The window's own pid (its group's, but under strace: strace's child).
+    pid: u32,
     runtime: PathBuf,
     /// Its stdout and stderr.
     pub log: PathBuf,
     state_home: PathBuf,
 }
 
+/// The first child of process `pid` (`/proc/<pid>/task/<pid>/children`).
+fn first_child(pid: u32) -> Option<u32> {
+    fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
 impl Gui {
     /// The window's process id.
     pub fn pid(&self) -> u32 {
-        self.group.pid()
+        self.pid
     }
 
     /// One request on its window's test control channel (G§3.18,
@@ -1153,15 +1277,33 @@ pub fn token_rgb(theme: &str, name: &str) -> [u8; 3] {
     [byte(1), byte(3), byte(5)]
 }
 
-/// The live picture at BRIEF's 1:2 preview (128, 64, 960, 540) of a
-/// 1600×1000 shot isn't black: the fake sources' bars show (a pipeline the
-/// engine just rebuilt draws black until its sources deliver, G§3.18).
-pub fn assert_live_picture_drawn(png: &Path) {
-    assert_live_picture_drawn_at(png, [128.0, 64.0, 960.0, 540.0]);
+/// A PNG's size in px (its `IHDR`).
+pub fn png_size(png: &Path) -> (u32, u32) {
+    let mut head = [0u8; 24];
+    fs::File::open(png)
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut head))
+        .unwrap_or_else(|e| panic!("{}: {e}", png.display()));
+    assert!(
+        head.starts_with(b"\x89PNG") && &head[12..16] == b"IHDR",
+        "{} isn't a PNG",
+        png.display()
+    );
+    let be = |at: usize| u32::from_be_bytes([head[at], head[at + 1], head[at + 2], head[at + 3]]);
+    (be(16), be(20))
 }
 
-/// The live picture at `rect` (a preview's window rect, in the shot's px)
-/// isn't black: the adaptive layouts' preview (G§3.15).
+/// The live picture at BRIEF's 1:2 preview (128, 64, 960, 540) of a
+/// 1600×1000 shot isn't black: the fake sources' bars show (a pipeline the
+/// engine just rebuilt draws black until its sources deliver, G§3.18). At
+/// any output scale: the shot's width says it (1600 logical px).
+pub fn assert_live_picture_drawn(png: &Path) {
+    let scale = f64::from(png_size(png).0) / 1600.0;
+    assert_live_picture_drawn_at(png, [128.0, 64.0, 960.0, 540.0].map(|v| v * scale));
+}
+
+/// The live picture at `rect` (a preview's window rect in the shot's device
+/// px: `Options::device`) isn't black: the adaptive layouts' preview
+/// (G§3.15).
 pub fn assert_live_picture_drawn_at(png: &Path, [x, y, w, h]: [f64; 4]) {
     let px = |v: f64| v.round().max(0.0) as u32;
     let grey = mean_grey(png, [px(x), px(y), px(w), px(h)]);
@@ -1256,6 +1398,54 @@ mod tests {
         let default = Options::default();
         assert_eq!(default.logical(), (1600.0, 1000.0));
         assert_eq!(Options::size(1300, 1000).logical(), (1300.0, 1000.0));
+    }
+
+    /// A suite-wide scale run writes its shots apart (WP10): the scale-1
+    /// shots of the same names stay.
+    #[test]
+    fn scale_runs_shoot_into_their_own_folder() {
+        let repo = Path::new("/r");
+        assert_eq!(
+            shots_dir_at(repo, "wp4", None),
+            Path::new("/r/tmp/gui-shots/wp4")
+        );
+        assert_eq!(
+            shots_dir_at(repo, "wp4", Some(2.0)),
+            Path::new("/r/tmp/gui-shots/scale/2/wp4")
+        );
+        assert_eq!(
+            shots_dir_at(repo, "wp7", Some(1.5)),
+            Path::new("/r/tmp/gui-shots/scale/1.5/wp7")
+        );
+    }
+
+    /// A case's probes take logical px to a shot's device px: rects scale,
+    /// and a pixel probe reads the device pixel under the logical pixel's
+    /// center (at 1.5 a 1 px rule at y 47 covers device rows 70.5–72: row
+    /// 71 is all rule, row 70 half the ground above it).
+    #[test]
+    fn probes_take_logical_px_to_device_px() {
+        let one = Options::at_scale(1600, 1000, 1.0);
+        let half = Options::at_scale(1600, 1000, 1.5);
+        let two = Options::at_scale(1600, 1000, 2.0);
+        let preview = [128.0, 64.0, 960.0, 540.0];
+        assert_eq!(one.rect_px(preview), [128, 64, 960, 540]);
+        assert_eq!(half.rect_px(preview), [192, 96, 1440, 810]);
+        assert_eq!(two.rect_px(preview), [256, 128, 1920, 1080]);
+        assert_eq!(half.device([1.0, 2.0, 3.0, 4.0]), [1.5, 3.0, 4.5, 6.0]);
+        assert_eq!(one.pixel_px(1000.0, 47.0), (1000, 47));
+        assert_eq!(half.pixel_px(1000.0, 47.0), (1500, 71));
+        assert_eq!(two.pixel_px(1000.0, 47.0), (2001, 95));
+        assert_eq!(half.px(46.4), 70);
+    }
+
+    /// `png_size` reads a PNG's header: the frames are 1600×1000.
+    #[test]
+    fn png_size_reads_the_header() {
+        let frame = repo().join("design/screens/S02-live-idle.png");
+        if frame.exists() {
+            assert_eq!(png_size(&frame), (1600, 1000));
+        }
     }
 
     /// A background child that exits is reaped with its status.

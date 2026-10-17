@@ -39,6 +39,9 @@ pub struct Scene<'a> {
     pub thumb_px: u32,
     /// The animation clock (spinners, the saving ghost's stripes).
     pub now_ms: u64,
+    /// Reduced motion (D-30): the saving ghost's stripes hold still
+    /// (DESIGN Progress: static stripes; spinners keep turning).
+    pub still: bool,
     /// The clips as drawn: the timeline, or a preview's layout.
     pub boxes: Vec<ClipBox>,
     pub ghost: Option<Ghost>,
@@ -498,6 +501,17 @@ fn ripple(s: &gtk::Snapshot, sc: &Scene<'_>, tag: &tl::RippleTag) {
     );
 }
 
+/// The saving ghost's stripes' phase at `now_ms` (px along x): one stripe
+/// step every 1.2 s, like the indeterminate bar; still (0) under reduced
+/// motion (DESIGN Progress: static stripes).
+pub fn saving_phase(now_ms: u64, still: bool) -> f32 {
+    if still {
+        0.0
+    } else {
+        (now_ms % 1200) as f32 / 1200.0 * paint::hatch_step()
+    }
+}
+
 /// The ghost of the take being recorded (S04, S04b, S05).
 fn ghost_clip(s: &gtk::Snapshot, sc: &Scene<'_>, g: &Ghost) {
     let p = sc.palette;
@@ -509,9 +523,7 @@ fn ghost_clip(s: &gtk::Snapshot, sc: &Scene<'_>, g: &Ghost) {
     s.append_color(&p.ghost_fill, &r);
     s.append_color(&p.take[g.color % 8], &rect(g.x, 0.0, g.w, STRIPE_PX));
     if g.saving {
-        // One stripe step every 1.2 s, like the indeterminate bar.
-        let phase = (sc.now_ms % 1200) as f32 / 1200.0 * paint::hatch_step();
-        paint::hatch(s, &r, &p.record_25, phase);
+        paint::hatch(s, &r, &p.record_25, saving_phase(sc.now_ms, sc.still));
     }
     paint::dashed(s, &r, 1.5, &[6.0, 4.0], &p.record);
     for (i, lane) in sc.lanes.iter().enumerate() {

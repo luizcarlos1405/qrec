@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 
 use gui_support::{
     BRIEF_REGIONS, Launch, MERGED_REGIONS, Nested, Options, Renderer, assert_live_picture_drawn_at,
-    assert_regions, count_near, repo, token_rgb, wait_for_gui_host,
+    assert_regions, count_near, png_size, repo, token_rgb, wait_for_gui_host,
 };
 use qrec_shell::testkit::design::{DesignVariant, design_fixture};
 use qrec_shell::testkit::{ffprobe, run_tool};
@@ -459,6 +459,10 @@ fn smoke_steps_1_to_10() {
         gui.log.display()
     );
     gui.assert_no_criticals();
+    // The probe's lines kept with the shots (`smoke-main-loop-<renderer>.txt`;
+    // the report above fails the run).
+    let stalls = nested.check_main_loop(0);
+    eprintln!("main-loop stall lines in the log: {}", stalls.len());
 }
 
 // ------------------------------------------------------------- the package
@@ -508,19 +512,6 @@ const DEV_SHELL_PATHS: [&str; 14] = [
     "GDK_PIXBUF_MODULE_FILE",
     "LD_LIBRARY_PATH",
 ];
-
-/// A PNG's width and height (its IHDR).
-fn png_size(file: &Path) -> (u32, u32) {
-    let bytes = fs::read(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
-    assert!(
-        bytes.len() > 24 && bytes.starts_with(b"\x89PNG\r\n\x1a\n") && &bytes[12..16] == b"IHDR",
-        "{} isn't a PNG",
-        file.display()
-    );
-    let be =
-        |at: usize| u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
-    (be(16), be(20))
-}
 
 /// The files the package installs besides the binary: the desktop entry
 /// (the source's, so a stale `result` fails here), the hicolor icons, the

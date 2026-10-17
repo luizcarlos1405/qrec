@@ -34,14 +34,15 @@ pub const KEPT: usize = 64;
 /// The probe's own callback, which it doesn't time.
 const TICK: &str = "main-loop probe: a tick";
 
-/// Whether a `QREC_GUI_PROBE` value asks for this probe: `1` or `main-loop`
-/// among its comma-separated names (`timeline` is the timeline's
-/// frame-time probe, G§4.5).
+/// Whether a `QREC_GUI_PROBE` value asks for this probe: `1`, `main` or
+/// `main-loop` among its comma-separated names (`timeline` is the
+/// timeline's frame-time probe, G§4.5; WP10's pack and audits lanes each
+/// named this one).
 pub fn wanted(value: Option<&str>) -> bool {
     value.is_some_and(|v| {
         v.split(',')
             .map(str::trim)
-            .any(|p| p == "1" || p == "main-loop")
+            .any(|p| matches!(p, "1" | "main" | "main-loop"))
     })
 }
 
@@ -340,10 +341,12 @@ mod tests {
     const MS: Duration = Duration::from_millis(1);
 
     #[test]
-    fn only_1_or_main_loop_starts_it() {
+    fn only_1_main_or_main_loop_starts_it() {
         assert!(wanted(Some("1")));
+        assert!(wanted(Some("main")));
         assert!(wanted(Some("main-loop")));
         assert!(wanted(Some("timeline, 1")));
+        assert!(wanted(Some(" main , timeline")));
         assert!(!wanted(Some("timeline")));
         assert!(!wanted(Some("0")));
         assert!(!wanted(Some("")));

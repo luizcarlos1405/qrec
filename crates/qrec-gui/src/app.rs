@@ -93,6 +93,21 @@ pub struct App {
     channel: RefCell<Option<testctl::Channel>>,
 }
 
+/// Registers GTK's fundamental types (`GdkEvent`, `GskRenderNode`,
+/// `GtkExpression`) on the main thread before any other thread can register
+/// one. GLib hands out a fundamental type's ID (`g_type_fundamental_next`)
+/// and registers it in a second step, so two threads registering at once
+/// can take the same ID: GStreamer's init does on `qrec-gst` (`GstFlagSet`,
+/// `GstFraction`, … for its values) while `gtk::init` runs here, and once
+/// (WP10's scale runs, under load) "cannot register existing fundamental
+/// type 'GstFlagSet' (as 'GdkEvent')": GTK had no event type, and the
+/// window never opened. Registering a type needs no display.
+pub fn register_fundamentals() {
+    let _ = gtk::gdk::Event::static_type();
+    let _ = gtk::gsk::RenderNode::static_type();
+    let _ = gtk::Expression::static_type();
+}
+
 /// `qrec_gui::run`.
 pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
     log_panics();
@@ -118,6 +133,9 @@ pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
     QUEUE.with(|q| *q.borrow_mut() = Some(queue.clone()));
     let startup = Startup::new(prepared, queue);
     let wanted = startup.prepared().folder.is_ok();
+    // Before any worker: step 3's `gst::init()` registers GStreamer's
+    // fundamental types on its thread while GTK registers its own here.
+    register_fundamentals();
     // Steps 3 and 4 now, while GTK starts: the lock and the socket come
     // first. Not without a Wayland display: nothing is touched then.
     let gdk_backend = std::env::var_os("GDK_BACKEND");
@@ -164,16 +182,20 @@ pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
 }
 
 /// GTK `startup`: GTK's settings. Font rendering is GTK's manual mode
-/// (`theme::fonts::configure_rendering`); test mode turns animations and
-/// the cursor blink off (G§8.4). The fonts, the theme providers and the
-/// icon theme come with the window (`activate`).
+/// (`theme::fonts::configure_rendering`); test mode turns animations (but
+/// with its `animations` flag) and the cursor blink off (G§8.4). The fonts,
+/// the theme providers and the icon theme come with the window
+/// (`activate`).
 fn on_startup() {
     let Some(settings) = gtk::Settings::default() else {
         return;
     };
     crate::theme::fonts::configure_rendering(&settings);
-    if testctl::mode().on {
-        settings.set_gtk_enable_animations(false);
+    let mode = testctl::mode();
+    if mode.on {
+        if !mode.animations {
+            settings.set_gtk_enable_animations(false);
+        }
         settings.set_gtk_cursor_blink(false);
     }
 }
@@ -347,7 +369,8 @@ fn activate(app: &adw::Application, startup: Startup) {
     the_app.startup.watch_signals(&the_app);
     // What the workers reported while the window was being built.
     queue.kick();
-    // The main-loop probe (`QREC_GUI_PROBE=1`, G§8.6), now the window is built.
+    // The main-loop probe (`QREC_GUI_PROBE=1`, G§8.6), now the window is
+    // built and presented: from its first frame to the quit.
     crate::probe::start_if_wanted();
     if blocked {
         tracing::info!(

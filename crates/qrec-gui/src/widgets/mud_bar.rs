@@ -156,6 +156,38 @@ pub fn animates(state: MudState, reduced: bool, frozen: bool) -> bool {
     matches!(state, MudState::Running(_)) && !reduced && !frozen
 }
 
+/// What a bar showing `state` draws at `t` (ms) at the UI scale `s`: its
+/// level, its bubbles and its leading edge's wobble (px). Bubbles show
+/// unless motion is reduced or it failed; they move only while it animates
+/// (or to the frozen test time), so a done bar keeps the bubbles it had.
+/// Reduced motion: a flat fill at the state's level, no bubbles, no wobble
+/// (DESIGN Motion).
+pub(crate) fn frame_look(
+    sim: &mut MudSim,
+    state: MudState,
+    reduced: bool,
+    frozen: bool,
+    t: f64,
+    s: f64,
+) -> (f64, Vec<Bubble>, f64) {
+    let live = !reduced && state.alive();
+    if live && (animates(state, reduced, frozen) || frozen) {
+        sim.advance(t);
+    }
+    let level = if reduced || !state.alive() {
+        state.level()
+    } else {
+        sim.level_at(t)
+    };
+    let bubbles = if live { sim.bubbles() } else { Vec::new() };
+    let wobble = if live && level < 1.0 {
+        MudSim::wobble(t) * s
+    } else {
+        0.0
+    };
+    (level, bubbles, wobble)
+}
+
 /// One bubble on screen: where (`x` as a fraction of the fill's width, `y`
 /// px up from its start above the sediment), how big and how opaque.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -474,30 +506,14 @@ mod imp {
             }
             let t = motion::now().as_secs_f64() * 1000.0;
             let state = self.state.get();
-            let reduced = self.reduced.get();
-            let frozen = motion::frozen();
-            let (level, bubbles, wobble) = {
-                let mut sim = self.sim.borrow_mut();
-                // Bubbles show unless motion is reduced or it failed; they
-                // move only while it animates (or to the frozen test time),
-                // so a done bar keeps the bubbles it had.
-                let live = !reduced && state.alive();
-                if live && (animates(state, reduced, frozen) || frozen) {
-                    sim.advance(t);
-                }
-                let level = if reduced || !state.alive() {
-                    state.level()
-                } else {
-                    sim.level_at(t)
-                };
-                let bubbles = if live { sim.bubbles() } else { Vec::new() };
-                let wobble = if live && level < 1.0 {
-                    MudSim::wobble(t) * s
-                } else {
-                    0.0
-                };
-                (level, bubbles, wobble)
-            };
+            let (level, bubbles, wobble) = frame_look(
+                &mut self.sim.borrow_mut(),
+                state,
+                self.reduced.get(),
+                motion::frozen(),
+                t,
+                s,
+            );
             let colors = self.colors.borrow();
             let bar_h = (HEIGHT * s).min(h);
             let top = ((h - bar_h) / 2.0).round();

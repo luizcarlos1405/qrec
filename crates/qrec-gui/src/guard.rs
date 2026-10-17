@@ -109,7 +109,8 @@ pub fn run<R: AfterPanic>(what: &str, f: impl FnOnce() -> R) -> R {
     catch(what, f).unwrap_or_else(R::after_panic)
 }
 
-/// Runs `f`; `None` when it panicked (the panic is reported).
+/// Runs `f`; `None` when it panicked (the panic is reported). The
+/// main-loop probe times it when it runs (G§8.6, [`crate::probe`]).
 pub fn catch<R>(what: &str, f: impl FnOnce() -> R) -> Option<R> {
     // The main-loop probe times every guarded callback by its name (G§8.6;
     // nothing while it is off).

@@ -17,7 +17,14 @@
 //! - **Seeks** are `FLUSH | ACCURATE`, one in flight: a seek is done when
 //!   the first frame after its flush, at its time, reaches the video sink (a
 //!   pad probe), or the sink gets EOS. A seek past the last frame shows the
-//!   last frame (the position still says where the playhead is).
+//!   last frame (the position still says where the playhead is). One the
+//!   pipeline refuses (it does, now and then, during a fast ruler scrub)
+//!   goes again [`SEEK_RETRY`] later, a newer one in its place, at most
+//!   [`SEEK_RETRIES`] times (WP10's audit: a refused last scrub left the
+//!   picture on an older frame than the playhead, and nothing sent it
+//!   again). A seek that comes with a pause goes with the pipeline paused,
+//!   so it ends on its frame (sent while playing, the picture played on
+//!   past it until the pause).
 //! - **Rates**: forward rates are seeks with that rate where playback is;
 //!   reverse is stepping (GUI G§3.10, R4): an accurate seek at most 15
 //!   times a second, to where `|rate|` times the time since playing started
@@ -45,6 +52,8 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
+#[cfg(test)]
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread;
@@ -63,6 +72,47 @@ use crate::ges_render::{self, Retired, Tracks};
 /// How long a load (its commit or preroll) or a seek may take before the
 /// player reports an error.
 pub const SEEK_TIMEOUT: Duration = Duration::from_secs(10);
+/// A refused seek goes again this much later.
+pub const SEEK_RETRY: Duration = Duration::from_millis(30);
+/// How many times a refused seek goes again before the player gives it up
+/// (about a second).
+pub const SEEK_RETRIES: u32 = 30;
+
+/// The seeks the next `send_event`s pretend the pipeline refused (the
+/// player's tests: a refusal can't be had on cue from GStreamer).
+#[cfg(test)]
+static REFUSE_SEEKS: AtomicU32 = AtomicU32::new(0);
+
+/// Whether a test asked for this seek to be refused ([`REFUSE_SEEKS`]).
+fn refused_by_test() -> bool {
+    #[cfg(test)]
+    {
+        REFUSE_SEEKS
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+/// How long the thread stalls after each frame a seek waited for showed,
+/// in ms (the player's tests: a thread the scheduler holds back on a loaded
+/// machine, while the pipeline goes on).
+#[cfg(test)]
+static STALL_AFTER_SHOWN_MS: AtomicU64 = AtomicU64::new(0);
+
+/// The stall a test asked for ([`STALL_AFTER_SHOWN_MS`]).
+fn stall_by_test() {
+    #[cfg(test)]
+    {
+        let ms = STALL_AFTER_SHOWN_MS.load(Ordering::SeqCst);
+        if ms > 0 {
+            thread::sleep(Duration::from_millis(ms));
+        }
+    }
+}
 
 /// How long the pipeline may take to stop (READY after an error or for an
 /// empty plan, NULL at [`ProgramPlayer::shutdown`]) before the player
@@ -379,6 +429,10 @@ struct Worker {
     /// Waiting for the current flight (newest wins).
     load: Option<GesTimeline>,
     seek: Option<(u64, SeekKind)>,
+    /// The pending seek goes no sooner (the last one was refused).
+    retry_at: Option<Instant>,
+    /// The refusals in a row.
+    refusals: u32,
     flight: Option<Flight>,
     stepping: Option<Stepping>,
     /// An error was reported and nothing worked since: later bus errors of
@@ -415,6 +469,8 @@ impl Worker {
             rate: 1.0,
             load: None,
             seek: None,
+            retry_at: None,
+            refusals: 0,
             flight: None,
             stepping: None,
             failed: false,
@@ -483,8 +539,10 @@ impl Worker {
             Some(Flight::Seek { deadline, .. }) => sooner(deadline),
             Some(Flight::ScrubSound { until, .. }) => sooner(until),
             None => {
-                if self.load.is_some() || self.seek.is_some() {
+                if self.load.is_some() {
                     sooner(now);
+                } else if self.seek.is_some() {
+                    sooner(self.retry_at.map_or(now, |at| at.max(now)));
                 }
             }
         }
@@ -518,6 +576,7 @@ impl Worker {
             }
             Input::Shown(id) => {
                 self.on_shown(id);
+                stall_by_test();
                 0
             }
         }
@@ -601,7 +660,17 @@ impl Worker {
         if self.flight.is_none() {
             if let Some(plan) = self.load.take() {
                 self.do_load(plan);
-            } else if let Some((at, kind)) = self.seek.take() {
+            } else if self.retry_at.is_none_or(|at| now >= at)
+                && let Some((at, kind)) = self.seek.take()
+            {
+                // A pause that came with the seek (a step while playing,
+                // D-51) holds the pipeline first: sent while it plays, the
+                // seek's frame shows and it plays on until the pause, a
+                // frame or more past that one when this thread gets back
+                // late (a loaded machine).
+                if !self.playing {
+                    self.pause_pipeline();
+                }
                 self.do_seek(at, kind, After::Nothing, "seeking");
             }
         }
@@ -950,16 +1019,18 @@ impl Worker {
             gst::SeekType::Set,
             stop,
         );
-        if !p.pipeline.send_event(event) {
+        if refused_by_test() || !p.pipeline.send_event(event) {
             *lock(&p.awaited) = None;
-            tracing::warn!("player: {what}: the pipeline refused the seek to {target} ns");
             if after == After::Loaded {
                 self.emit(PlayerEvent::Loaded {
                     duration_ns: self.duration_ns,
                 });
             }
+            self.refused(at, kind, target, what);
             return;
         }
+        self.refusals = 0;
+        self.retry_at = None;
         p.rate = rate;
         p.at_eos = false;
         self.position = at;
@@ -980,6 +1051,31 @@ impl Worker {
         if !confirmed {
             self.on_shown(id);
         }
+    }
+
+    /// The pipeline refused the seek to `at` (`target`, frame-aligned): it
+    /// goes again [`SEEK_RETRY`] later, unless a newer one waits (that one
+    /// goes then), until [`SEEK_RETRIES`] refusals in a row. A load's seek
+    /// said `Loaded` already: it goes again as a plain one.
+    fn refused(&mut self, at: u64, kind: SeekKind, target: u64, what: &'static str) {
+        self.refusals += 1;
+        if self.refusals > SEEK_RETRIES {
+            tracing::warn!(
+                "player: {what}: the pipeline refused the seek to {target} ns {SEEK_RETRIES} \
+                 times in a row; given up"
+            );
+            self.refusals = 0;
+            self.retry_at = None;
+            return;
+        }
+        tracing::debug!(
+            "player: {what}: the pipeline refused the seek to {target} ns; again in {} ms",
+            SEEK_RETRY.as_millis()
+        );
+        if self.seek.is_none() {
+            self.seek = Some((at, kind));
+        }
+        self.retry_at = Some(Instant::now() + SEEK_RETRY);
     }
 
     fn on_shown(&mut self, id: u64) {

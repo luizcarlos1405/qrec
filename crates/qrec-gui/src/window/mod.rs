@@ -26,7 +26,7 @@ pub mod adaptive;
 pub mod announce;
 pub mod layers;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -87,6 +87,9 @@ struct Parts {
     panel: gtk::Widget,
     page_slot: gtk::Box,
     page: RefCell<Option<BlockingPage>>,
+    /// The Narrow sheet is open under reduced motion with GTK's animations
+    /// turned off for it ([`still_sheet`]).
+    stilled: Cell<bool>,
     _regions: Regions,
 }
 
@@ -224,6 +227,7 @@ impl MainWindow {
             panel: panel_widget,
             page_slot,
             page: RefCell::new(None),
+            stilled: Cell::new(false),
             _regions: Regions {
                 _header: header,
                 _stage: stage,
@@ -256,10 +260,15 @@ impl MainWindow {
             .subscribe_local(move |local| apply_local(&ctx2, &parts2, local))
             .detach();
         let store = ctx.store.clone();
+        let stilled = Rc::downgrade(parts);
         parts
             .split
             .connect_show_sidebar_notify(guarded!("window: the sheet", move |split| {
                 if split.is_collapsed() && !split.shows_sidebar() {
+                    // Gone (its own close too): GTK's animations back on.
+                    if let Some(parts) = stilled.upgrade() {
+                        unstill_sheet(&parts);
+                    }
                     store.update_local(|l| {
                         l.close_overlays(|o| *o == Overlay::LayersSheet);
                     });
@@ -363,7 +372,13 @@ fn apply_local(ctx: &Ctx, parts: &Rc<Parts>, local: &LocalUi) {
     }
     let sheet = local.overlays.contains(&Overlay::LayersSheet);
     let show = !narrow || sheet;
+    if !narrow {
+        unstill_sheet(parts);
+    }
     if parts.split.shows_sidebar() != show {
+        if narrow && show {
+            still_sheet(parts, ctx.theme.motion().reduced);
+        }
         parts.split.set_show_sidebar(show);
     }
     if !narrow && sheet {
@@ -412,6 +427,28 @@ fn apply_local(ctx: &Ctx, parts: &Rc<Parts>, local: &LocalUi) {
                 parts.stack.set_visible_child_name("editor");
             }
         }
+    }
+}
+
+/// Under reduced motion the Narrow sheet neither slides in nor out (D-30,
+/// DESIGN Motion's panel overlay: no motion). `adw::OverlaySplitView`
+/// slides it with a spring that follows only GTK's `gtk-enable-animations`
+/// (`adw_get_enable_animations`; libadwaita reads no reduced motion), so
+/// that is off from the sheet's opening until it goes: its own close (a
+/// click on the content it dims) is libadwaita's too. [`unstill_sheet`]
+/// turns it on again. The other animations meanwhile go at once, also
+/// still under reduced motion.
+fn still_sheet(parts: &Parts, reduced: bool) {
+    let settings = parts.split.settings();
+    if reduced && settings.is_gtk_enable_animations() && !parts.stilled.replace(true) {
+        settings.set_gtk_enable_animations(false);
+    }
+}
+
+/// GTK's animations on again once the sheet went (or docked).
+fn unstill_sheet(parts: &Parts) {
+    if parts.stilled.replace(false) {
+        parts.split.settings().set_gtk_enable_animations(true);
     }
 }
 
