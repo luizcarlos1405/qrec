@@ -210,7 +210,21 @@ fn s07_fit() {
             "{name}: y {y}, h {h} (centered 16 px tall in {bar:?})"
         );
     }
-    shoot(&nested, "fit", Some("S07-timeline-fit.png"));
+    let shot = shoot(&nested, "fit", Some("S07-timeline-fit.png"));
+    // WP10's shot review: the ruler's bottom hairline across the time area
+    // and the corner (S07: `border` at y 719), the corner's right hairline
+    // its whole height (it stopped 5 px short).
+    let border = gui_support::token_rgb("swamp-night", "border");
+    let px = |x: f64, y: f64| {
+        let (dx, dy) = nested.opts.pixel_px(x, y);
+        gui_support::rgb_pixels(&shot, [dx, dy, 1, 1])[0]
+    };
+    for x in [100.0, 180.0, 600.0, 1200.0] {
+        assert_eq!(px(x, 719.0), border, "the ruler's bottom hairline at x {x}");
+    }
+    for y in [694.0, 708.0, 716.0, 718.0] {
+        assert_eq!(px(175.0, y), border, "the corner's right hairline at y {y}");
+    }
     assert_clean(&mut nested);
 }
 

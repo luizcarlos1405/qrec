@@ -252,7 +252,11 @@ impl Inner {
             corner.add_css_class("tl-corner");
             corner.add_css_class("t-mono");
             corner.set_xalign(0.0);
-            corner.set_valign(gtk::Align::Start);
+            // The whole 28 px row (its right and bottom hairlines run down
+            // to the time area: at the label's own 23 px they stopped 5 px
+            // short, WP10's shot review), the text at its top.
+            corner.set_valign(gtk::Align::Fill);
+            corner.set_yalign(0.0);
             corner.set_ellipsize(gtk::pango::EllipsizeMode::End);
             let header_px = (HEADER_WIDTH * ctx.theme.scale()).round() as i32;
             let corner_col = Column::new(&corner, header_px);

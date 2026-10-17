@@ -689,6 +689,9 @@ pub fn ruler(
             texts.draw(s, widget, Role::MonoXs, label, (tick.x + 4.0, y), ink);
         }
     }
+    // The ruler's bottom hairline, over the ticks' last row (S02: `border`
+    // at y 719 across the time area; WP10's shot review).
+    s.append_color(&p.border, &rect(0.0, height - 1.0, w, 1.0));
     s.pop();
 }
 

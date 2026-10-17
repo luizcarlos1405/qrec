@@ -85,8 +85,10 @@ scale.tl-zoom {
 
 /* ------------------------------------------------------ C15 ruler */
 
-/* 28 px `surface`; the corner cell shows the playhead's timecode at
-   (12, 5), with the header column's right border. */
+/* 28 px `surface` with a bottom hairline (the time part draws its own,
+   timeline/draw.rs); the corner cell shows the playhead's timecode at
+   (12, 5), with the header column's right border, both hairlines its whole
+   height and width (S02). */
 .tl-ruler-row {
   min-height: 28px;
   background-color: var(--qrec-surface);
@@ -96,7 +98,7 @@ scale.tl-zoom {
   padding: 5px 0 0 12px;
   color: var(--qrec-text);
   background-color: var(--qrec-surface);
-  box-shadow: inset -1px 0 var(--qrec-border);
+  box-shadow: inset -1px 0 var(--qrec-border), inset 0 -1px var(--qrec-border);
 }
 
 /* ------------------------------------------------------ C17 headers */
