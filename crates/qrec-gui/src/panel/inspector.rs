@@ -19,7 +19,9 @@
 //! - An edit belongs to the scene and the layer it was typed for: when
 //!   either changes under it (the mode, the selection, an agent's command)
 //!   the fields show the new layer's values at once, even the focused one,
-//!   and the edit is dropped, never committed to the new scene (R38).
+//!   and the edit is dropped, never committed to the new scene (R38). A
+//!   change the person starts with a press commits the edit first (the
+//!   window's press handler ends it, G§3.12 R12).
 //! - The Medium layout (320 px) lays the crop fields 2-up.
 
 use std::cell::{Cell, RefCell};

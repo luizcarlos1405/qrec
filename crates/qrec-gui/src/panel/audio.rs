@@ -14,7 +14,8 @@
 //!   it in, or pick another source." in place of its meter.
 //! - An edit belongs to the scene it was typed for: when the scene the
 //!   panel edits changes under it, the fields show the new scene's values
-//!   and a rename ends unsaved (R38).
+//!   and a rename ends unsaved (R38); a change the person starts with a
+//!   press commits the edit first (G§3.12 R12).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

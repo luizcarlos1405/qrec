@@ -14,6 +14,16 @@
 //! the timeline canvas and bin rows take focus on click (each region's
 //! business); `LocalUi.focus` follows the window's focus widget
 //! (`window/mod.rs`).
+//!
+//! An edit in progress ends before a press anywhere outside it acts
+//! (G§3.12 R12): a chrome button keeps the focus where it was, so a field
+//! being typed in stayed focused through the button's action, and its edit
+//! was dropped when that changed what the panel edits (the mode switch,
+//! R38) or stayed unsent (Play). The window's capture-phase press handler
+//! takes the focus out of the field first (a rename is saved as its Enter
+//! saves it): its commit runs against the scene it was typed for, and its
+//! command enters the FIFO ahead of whatever the press does. Keys need no
+//! such step: while an editable has the focus they all go to it (step 2).
 
 pub mod actions;
 pub mod router;
@@ -91,6 +101,7 @@ impl KeyRouter {
             router.inner.held.borrow_mut().release(code);
         }));
         window.as_ref().add_controller(controller);
+        end_edits_on_press(window.as_ref());
         // A window that loses the keyboard mid-hold never hears the release.
         let router = self.clone();
         window.as_ref().connect_is_active_notify(guarded!(
@@ -274,6 +285,87 @@ pub fn is_editable(widget: &gtk::Widget) -> bool {
         at = w.parent();
     }
     false
+}
+
+/// The widget an edit in progress fills, when the focus `focus` is in
+/// one: C29's `.field` box (a numeric field: its text and unit), an
+/// `EditableLabel` being edited (a rename), an entry; else the text widget
+/// itself. `None` when nothing is being edited.
+fn edit_root(focus: &gtk::Widget) -> Option<gtk::Widget> {
+    if !is_editable(focus) {
+        return None;
+    }
+    let mut at = Some(focus.clone());
+    while let Some(w) = at {
+        if w.is::<gtk::Native>() {
+            break;
+        }
+        if w.is::<gtk::EditableLabel>()
+            || w.is::<gtk::Entry>()
+            || w.is::<gtk::SpinButton>()
+            || w.is::<gtk::SearchEntry>()
+            || w.is::<gtk::PasswordEntry>()
+            || w.has_css_class("field")
+        {
+            return Some(w);
+        }
+        at = w.parent();
+    }
+    Some(focus.clone())
+}
+
+/// The widget under a press `event`, in whichever surface it came (the
+/// window's, a popover's).
+fn press_target(event: &gdk::Event) -> Option<gtk::Widget> {
+    let surface = event.surface()?;
+    let native = gtk::Native::for_surface(&surface)?;
+    let (x, y) = event.position()?;
+    let (dx, dy) = native.surface_transform();
+    native
+        .upcast_ref::<gtk::Widget>()
+        .pick(x - dx, y - dy, gtk::PickFlags::DEFAULT)
+}
+
+/// Ends the edit in progress before a press anywhere outside it acts
+/// (G§3.12 R12): the focus leaves the field, so its own leave-commit runs
+/// now, against the scene it was typed for, and its command goes out ahead
+/// of the press's; a rename is saved as its Enter saves it. A press inside
+/// the edit (its text, its unit, a menu of its own) leaves it alone. The
+/// press itself is never claimed: it goes on to what is under it.
+fn end_edits_on_press(window: &gtk::Window) {
+    let press = gtk::GestureClick::new();
+    press.set_button(0);
+    press.set_propagation_phase(gtk::PropagationPhase::Capture);
+    press.connect_pressed(guarded!(
+        "keys: a press ends the edit",
+        move |gesture, _, _, _| {
+            gesture.set_state(gtk::EventSequenceState::Denied);
+            let Some(window) = gesture.widget().and_downcast::<gtk::Window>() else {
+                return;
+            };
+            let Some(edit) = gtk::prelude::RootExt::focus(&window).and_then(|f| edit_root(&f))
+            else {
+                return;
+            };
+            let target = gesture.current_event().as_ref().and_then(press_target);
+            if target.is_some_and(|t| t == edit || t.is_ancestor(&edit)) {
+                return;
+            }
+            tracing::debug!(
+                "keys: a press outside the edit ends it ({} {:?})",
+                edit.type_().name(),
+                edit.widget_name()
+            );
+            match edit.downcast_ref::<gtk::EditableLabel>() {
+                // A rename ends as Enter ends it, saved (its owner puts the
+                // keyboard back on its row): losing the focus doesn't end
+                // an `EditableLabel`'s edit.
+                Some(label) => label.stop_editing(true),
+                None => gtk::prelude::RootExt::set_focus(&window, None::<&gtk::Widget>),
+            }
+        }
+    ));
+    window.add_controller(press);
 }
 
 /// A widget that uses `Space`, `Enter` or the arrows itself: a button,

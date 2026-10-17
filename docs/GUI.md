@@ -799,7 +799,10 @@ re-registers them). An id nobody registered logs at debug level.
 Focus: chrome buttons are `focus-on-click = false`; the stage canvas, the
 timeline canvas and bin rows are focusable and take focus on click;
 `LocalUi.focus` follows `window.focus-widget` (each region's root widget is
-named `region-<name>`; the focused widget's nearest such ancestor).
+named `region-<name>`; the focused widget's nearest such ancestor). A
+press outside an edit in progress ends it before the press acts (G§3.12
+R12), so a click on a chrome button never leaves a field focused under
+its action.
 
 ### G§3.9 Live preview, meters and live status (shell WP1, GTK WP4)
 
@@ -1345,6 +1348,23 @@ time; A§8.7 rules for every child).
   drops it on `dispose`, never `detach()`es it (`local`'s
   `themeSubscribers`; WP7 integration audit: each rebuild left its
   thumbnails' callbacks in the theme's list).
+- **R12.** Leaving an edit commits it, whatever leaves it. Enter, Tab and
+  a blur commit a field (G§4.7), Enter saves a rename; and a press anywhere
+  outside the field or rename being edited ends the edit before the press
+  acts: the window's capture-phase press handler (`keys/mod.rs`,
+  `end_edits_on_press`) takes the focus out of the field, whose
+  leave-commit runs then, or saves the rename as its Enter does (an
+  `EditableLabel` that loses the focus stays in its edit). The edit's
+  command is built against the scene it was typed for and enters the FIFO
+  ahead of whatever the press starts, so a button, a toggle, a menu or a
+  click on the canvas sees the committed value. A press inside the edit
+  (its text, its unit, its own menu) leaves it alone; keys need no such
+  step, since an editable takes them all (G§3.8 step 2). Review R38: chrome
+  buttons are `focus-on-click = false` (D-11), so a field kept the focus
+  through a button's action, and the mode switch's change dropped the edit
+  (R38's reset) and Play left it unsent
+  (`gui_panel::a_press_outside_an_edit_commits_it_first`). A change from
+  outside the window still drops it (G§4.7).
 
 ### G§3.13 GPU environment (A§8.10)
 
@@ -2490,10 +2510,15 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
   - An edit belongs to the scene and the layer (or track) it was typed
     for: when either changes under it (the mode, the selection, an agent's
     command), the field shows the new values at once, focused or not, and
-    a rename ends unsaved; nothing goes to the new scene (review R38). A
-    chrome button's change (the mode switch, Play) drops it the same way;
-    committing it first instead is open (`KeyRouter::run_binding` would
-    end the edit before it decides).
+    a rename ends unsaved; nothing goes to the new scene (review R38).
+    That is for a change from outside the window (an agent's, the CLI's).
+    One the person starts commits the edit first: a press anywhere outside
+    the field or rename ends it before the press acts (G§3.12 R12), so a
+    click on the mode switch, Play or any other chrome button sends the
+    edit to the scene it was typed for, one undo step, ahead of what the
+    button does (R38's remainder: chrome buttons never take the focus, so
+    the field kept it, and the mode switch dropped the edit, Play left it
+    unsent).
   - During a canvas drag or nudge burst the fields show
     `LocalUi.layer_drag`.
   - Empty: "Select a layer on the canvas or in the list to edit its

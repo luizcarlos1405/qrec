@@ -655,6 +655,158 @@ fn an_edit_stays_with_its_scene() {
     assert_clean(nested.window(0));
 }
 
+/// R38's remainder (G§3.12 R12): a press anywhere outside an edit in
+/// progress ends it first, so the edit goes to the scene it was typed for
+/// (one undo step) ahead of what the press does. Chrome buttons never take
+/// the focus (D-11): the field kept it, and the mode switch's change
+/// dropped the edit (R38's reset), the transport's Play left it unsent. X
+/// typed for the project scene, then a click on Program; A1's gain typed
+/// for take 5, then Live; L2's rename in Live, then Program; X typed for
+/// take 5, then Play. Each edit is one held `wtype` run (the window is
+/// active only while one runs, and a window going inactive commits its
+/// field): the checks run while it holds, so only the press committed.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_press_outside_an_edit_commits_it_first() {
+    let mut nested = Nested::start(AREA, "edit-press", Options::default());
+    let preset = ui(|u| {
+        u.selection = vec![clip("c2d0")];
+        u.selected_layer = Some(LayerId::numbered(2));
+        u.playhead = 2437;
+    });
+    let project = fixture(&nested, DesignVariant::Base, &preset);
+    open(&mut nested, &project, levels(DESIGN_LEVELS));
+    let before = history_cursor(&nested, &project);
+    // C05 (BRIEF §2.3): Live 72 wide, then Program 100.
+    let [sx, sy, sw, sh] = region(nested.window(0), "mode-switch");
+    let live = (sx + 36.0, sy + sh / 2.0);
+    let program = (sx + sw - 50.0, sy + sh / 2.0);
+    let ui_now = |nested: &Nested| nested.cli_json(&project, &["status"])["data"].clone();
+    let mode_is = |nested: &Nested, mode: &str| {
+        poll(Duration::from_secs(10), &format!("{mode} mode"), || {
+            (ui_now(nested)["ui"]["canvasMode"] == mode).then_some(())
+        });
+    };
+    let entry = |nested: &mut Nested, under: &str, name: &str| {
+        nested.window(0).entries(under).get(name).cloned()
+    };
+    let x_of = |nested: &Nested, take| layer(nested, &project, take, "L2")["rect"]["x"].clone();
+    let not_typing = |nested: &mut Nested| {
+        let local = nested.window(0).local();
+        assert_ne!(
+            local["focus"], "field",
+            "the keys are the window's: {local}"
+        );
+    };
+
+    // X, typed for the project scene (Live); a click on Program.
+    let (x, y) = center(region(nested.window(0), "inspector-x"));
+    nested.pointer().click(x, y);
+    let held = nested.keys_held(
+        &["-M", "ctrl", "-k", "a", "-m", "ctrl", "200", "-s", "8000"],
+        500,
+    );
+    poll(Duration::from_secs(10), "200 typed in X", || {
+        (entry(&mut nested, "inspector", "inspector-x").as_deref() == Some("200")).then_some(())
+    });
+    nested.pointer().click(program.0, program.1);
+    mode_is(&nested, "program");
+    // The commit went first (one FIFO): the mode reads Program, so it ran.
+    assert_eq!(x_of(&nested, None), 200, "the project scene's X");
+    assert_eq!(x_of(&nested, Some("take-0005")), 1500, "take 5 untouched");
+    assert_eq!(history_cursor(&nested, &project), before + 1, "one step");
+    wait_for_label(nested.window(0), "Take 5 layout · edits this take only");
+    assert_eq!(
+        entry(&mut nested, "inspector", "inspector-x").as_deref(),
+        Some("1500"),
+        "take 5's X shows"
+    );
+    not_typing(&mut nested);
+    held.wait();
+
+    // A1's gain, typed for take 5 (Program); a click on Live.
+    let (x, y) = center(region(nested.window(0), "audio-gain-A1"));
+    nested.pointer().click(x, y);
+    let held = nested.keys_held(
+        &[
+            "-M",
+            "ctrl",
+            "-k",
+            "a",
+            "-m",
+            "ctrl",
+            "\u{2212}6",
+            "-s",
+            "8000",
+        ],
+        500,
+    );
+    poll(Duration::from_secs(10), "−6 typed in A1's gain", || {
+        (entry(&mut nested, "audio-row-A1", "audio-gain-A1").as_deref() == Some("\u{2212}6"))
+            .then_some(())
+    });
+    nested.pointer().click(live.0, live.1);
+    mode_is(&nested, "live");
+    let gain_of = |nested: &Nested, take| track(nested, &project, take, "A1")["gainDb"].clone();
+    assert_eq!(gain_of(&nested, Some("take-0005")), -6.0, "take 5's gain");
+    assert_eq!(gain_of(&nested, None), 0.0, "the project scene untouched");
+    assert_eq!(history_cursor(&nested, &project), before + 2, "one step");
+    not_typing(&mut nested);
+    held.wait();
+
+    // L2's rename (the overflow's Rename), in Live; a click on Program.
+    let (x, y) = center(region(nested.window(0), "layer-menu-L2"));
+    nested.pointer().click(x, y);
+    nested.window(0).wait_idle();
+    let held = nested.keys_held(
+        &[
+            "-k", "Return", "-s", "300", "-M", "ctrl", "-k", "a", "-m", "ctrl", "Webcam", "-s",
+            "8000",
+        ],
+        500,
+    );
+    poll(Duration::from_secs(10), "Webcam typed in L2's name", || {
+        (entry(&mut nested, "layer-row-L2", "layer-row-L2").as_deref() == Some("Webcam"))
+            .then_some(())
+    });
+    nested.pointer().click(program.0, program.1);
+    mode_is(&nested, "program");
+    let name_of = |nested: &Nested, take| layer(nested, &project, take, "L2")["name"].clone();
+    assert_eq!(name_of(&nested, None), "Webcam", "the project scene's L2");
+    assert_eq!(name_of(&nested, Some("take-0005")), "Face", "take 5's name");
+    assert_eq!(history_cursor(&nested, &project), before + 3, "one step");
+    not_typing(&mut nested);
+    held.wait();
+
+    // X, typed for take 5 (Program); a click on the transport's Play (the
+    // middle of its five buttons, at the row's center, BRIEF §2.4).
+    let (x, y) = center(region(nested.window(0), "inspector-x"));
+    nested.pointer().click(x, y);
+    let held = nested.keys_held(
+        &["-M", "ctrl", "-k", "a", "-m", "ctrl", "300", "-s", "8000"],
+        500,
+    );
+    poll(Duration::from_secs(10), "300 typed in X", || {
+        (entry(&mut nested, "inspector", "inspector-x").as_deref() == Some("300")).then_some(())
+    });
+    let (x, y) = center(region(nested.window(0), "transport"));
+    nested.pointer().click(x, y);
+    poll(Duration::from_secs(10), "playing", || {
+        (ui_now(&nested)["runtime"]["playing"] == true).then_some(())
+    });
+    assert_eq!(x_of(&nested, Some("take-0005")), 300, "take 5's X");
+    assert_eq!(x_of(&nested, None), 200, "the project scene's stays");
+    assert_eq!(history_cursor(&nested, &project), before + 4, "one step");
+    not_typing(&mut nested);
+    held.wait();
+    let reply = nested
+        .window(0)
+        .ctl(json!({"op": "dispatch", "command": {"cmd": "pause"}}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    nested.window(0).wait_idle();
+    assert_clean(nested.window(0));
+}
+
 /// R46: a rename that sends nothing (cleared, then Enter) or that the
 /// core refuses (a recording started meanwhile: scene edits wait for
 /// Idle, D-43) shows the name again, not what was typed.
