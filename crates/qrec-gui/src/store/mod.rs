@@ -194,10 +194,12 @@ pub struct Subscribers<T: ?Sized> {
     inner: Rc<SubscriberList<T>>,
 }
 
+/// A subscriber's id, callback and guard name ([`subscriber_name`]).
+type Entry<T> = (u64, Callback<T>, Rc<str>);
+
 struct SubscriberList<T: ?Sized> {
     next: Cell<u64>,
-    /// Each one's id, callback and guard name ([`subscriber_name`]).
-    list: RefCell<Vec<(u64, Callback<T>, Rc<str>)>>,
+    list: RefCell<Vec<Entry<T>>>,
 }
 
 /// A subscriber's guard name (G§3.12): where it subscribed, so a panic and
