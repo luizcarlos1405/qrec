@@ -783,27 +783,50 @@ fn ring_rect([x, y, w, h]: [f64; 4]) -> [u32; 4] {
 /// How many ring pixels a focused widget of `kind` and `bounds` shows at
 /// least: half of a 2 px ring around its bounds (rows and the canvas draw
 /// it inside, a field around its box), but a scale rings only its knob
-/// (common.css): a small circle's worth there.
-fn ring_wanted(kind: &str, [_, _, w, h]: [f64; 4]) -> usize {
+/// (common.css): a small circle's worth there. A `stroked` widget (a
+/// selected row) draws a 1 px accent stroke, the ring's color, in every
+/// shot: under the ring's inner pixel, where the steps around it have it
+/// too; half of the other pixel's worth there.
+fn ring_wanted(kind: &str, [_, _, w, h]: [f64; 4], stroked: bool) -> usize {
     if kind == "GtkScale" {
         return 40;
     }
     // 2 px × the perimeter, halved.
-    (2.0 * (w + h)).clamp(40.0, 2000.0) as usize
+    let half = (2.0 * (w + h)).clamp(40.0, 2000.0);
+    if stroked {
+        (half / 2.0) as usize
+    } else {
+        half as usize
+    }
+}
+
+/// The rows a case's `ui` selects, which wear the accent stroke (C09's
+/// selected state): the selected layer's.
+fn stroked_rows(ui: &UiState) -> Vec<String> {
+    ui.selected_layer
+        .iter()
+        .map(|layer| format!("layer-row-{layer}"))
+        .collect()
 }
 
 /// Each step's widget draws its focus ring: enough ring-colored pixels
 /// around it that the steps before and after don't have (the ring moved
 /// with the focus). `baseline` is a shot with no ring at all. Each step's
-/// measure goes to `<case>-rings.txt`.
-fn assert_rings(nested: &Nested, steps: &[Step], baseline: &Path) {
+/// measure goes to `<case>-rings.txt`; `stroked`, the widgets named so
+/// draw the ring over a stroke of its color ([`ring_wanted`]).
+fn assert_rings(nested: &Nested, steps: &[Step], baseline: &Path, stroked: &[String]) {
     let ring = token_rgb("swamp-night", "focus-ring");
     let mut missing = Vec::new();
     let mut report = Vec::new();
     for (i, step) in steps.iter().enumerate() {
         let prev = if i == 0 { baseline } else { &steps[i - 1].shot };
         let next = steps.get(i + 1).map_or(baseline, |s| &s.shot);
-        let want = ring_wanted(&step.focus.kind, step.focus.bounds);
+        let on_stroke = step
+            .focus
+            .path
+            .first()
+            .is_some_and(|name| stroked.contains(name));
+        let want = ring_wanted(&step.focus.kind, step.focus.bounds, on_stroke);
         let got = ring_pixels(
             &step.shot,
             &[prev, next],
@@ -882,7 +905,7 @@ fn region_cycle(case: &str, ui: UiState) {
     for (back, fwd) in [(5, 3), (6, 2), (7, 1), (8, 0)] {
         assert_eq!(steps[back].focus, steps[fwd].focus, "the same widget");
     }
-    assert_rings(&nested, &steps, &baseline);
+    assert_rings(&nested, &steps, &baseline, &stroked_rows(&ui));
     let gui = nested.window(0);
     gui.wait_idle();
     assert_clean(gui);
@@ -970,7 +993,7 @@ fn tab_walk(case: &str, ui: UiState) -> Vec<String> {
             "the walk never reached {region}: {report:#?}"
         );
     }
-    assert_rings(&nested, &steps, &baseline);
+    assert_rings(&nested, &steps, &baseline, &stroked_rows(&ui));
     let gui = nested.window(0);
     gui.wait_idle();
     assert_clean(gui);
