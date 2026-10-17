@@ -113,10 +113,25 @@ pub fn select(state: &State, _ctx: &Ctx, op: SelectOp) -> Result<Outcome, CoreEr
 /// previous/next clip boundary. The playhead stays within `[0, total]`.
 pub fn seek(state: &State, _ctx: &Ctx, to: SeekTarget) -> Result<Outcome, CoreError> {
     let fps = state.project.canvas.fps;
+    let target = seek_frame(state, &to)?;
+    let mut next = state.clone();
+    next.ui.playhead = target;
+    Ok(finish(state, next, |s| {
+        let at = timecode(s.ui.playhead, fps);
+        CmdResult::new(format!("Playhead at {at}"))
+            .with_result(&json!({ "playhead": s.ui.playhead, "timecode": at }))
+    }))
+}
+
+/// The frame `Seek{to}` puts `state`'s playhead on (see [`seek`]): the
+/// GUI's step while the program plays goes there as one absolute seek from
+/// the frame the player shows (G§2 D-51).
+pub fn seek_frame(state: &State, to: &SeekTarget) -> Result<Frame, CoreError> {
+    let fps = state.project.canvas.fps;
     let clips = &state.project.timeline.clips;
     let total = timeline::total_frames(clips);
     let here = state.ui.playhead.min(total);
-    let target: Frame = match &to {
+    Ok(match to {
         SeekTarget::To(arg) => timeline::absolute_frame(arg, fps, "seek --to")?.min(total),
         SeekTarget::By(arg) => {
             let delta = timeline::delta_frames(arg, fps)?;
@@ -133,14 +148,7 @@ pub fn seek(state: &State, _ctx: &Ctx, to: SeekTarget) -> Result<Outcome, CoreEr
             .unwrap_or(total),
         SeekTarget::Start => 0,
         SeekTarget::End => total,
-    };
-    let mut next = state.clone();
-    next.ui.playhead = target;
-    Ok(finish(state, next, |s| {
-        let at = timecode(s.ui.playhead, fps);
-        CmdResult::new(format!("Playhead at {at}"))
-            .with_result(&json!({ "playhead": s.ui.playhead, "timecode": at }))
-    }))
+    })
 }
 
 /// `qrec play` (G): plays the timeline on the Program canvas (switching to
@@ -621,6 +629,36 @@ mod tests {
         let empty = testkit::state(ProjectBuilder::new().build());
         assert_eq!(seek(&empty, SeekTarget::End).unwrap(), 0);
         assert_eq!(seek(&empty, SeekTarget::EditNext).unwrap(), 0);
+    }
+
+    /// `seek_frame` is where `Seek` puts the playhead, whatever the target
+    /// (the GUI's step while the program plays seeks there, D-51).
+    #[test]
+    fn seek_frame_is_where_a_seek_lands() {
+        let mut at = state();
+        at.ui.playhead = 120;
+        for to in [
+            SeekTarget::To(t("00:00:04:00")),
+            SeekTarget::To(t("1000f")),
+            SeekTarget::By(t("-1s")),
+            SeekTarget::By(t("+1f")),
+            SeekTarget::By(t("+1000f")),
+            SeekTarget::EditPrev,
+            SeekTarget::EditNext,
+            SeekTarget::Start,
+            SeekTarget::End,
+        ] {
+            let landed = run(&at, Command::Seek { to: to.clone() })
+                .unwrap()
+                .state
+                .ui
+                .playhead;
+            assert_eq!(seek_frame(&at, &to).unwrap(), landed, "{to:?}");
+        }
+        assert_eq!(
+            seek_frame(&at, &SeekTarget::To(t("-1f"))).unwrap_err().code,
+            ErrorCode::Usage
+        );
     }
 
     #[test]

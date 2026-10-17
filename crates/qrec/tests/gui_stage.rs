@@ -1293,6 +1293,113 @@ fn a_keys_seek_while_playing_never_pulls_the_player_back() {
     assert_clean(&mut nested);
 }
 
+/// D-51 (R18's follow-up): a step while the program plays pauses it and
+/// goes from the frame the picture showed. `→` by its key lands one frame
+/// on; `Shift+→` and `↓`, run as their transport buttons run them
+/// (`KeyRouter::run_binding`), a second on and on the next edit point.
+/// Each ends paused, the picture on the playhead. Before, the step's seek
+/// landed within the sync's 2-frame tolerance of the playing player, which
+/// played on: a frame step barely moved, and the playhead went on with the
+/// next once-a-second seek.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_step_while_playing_pauses_and_goes_from_the_frame_shown() {
+    let mut nested = Nested::start(AREA, "step-playing", Options::default());
+    let project = fixture(
+        &nested,
+        DesignVariant::Base,
+        Some(ui(CanvasMode::Program, 1200)),
+    );
+    open(&mut nested, &project, Launch::a11y());
+    // The frame a player position shows at the fixture's 30 fps (as
+    // `ns_to_frame_floor`).
+    let frame_of = |ns: u64| ((ns + 1) * 30 - 1) / 1_000_000_000;
+    let shown = |nested: &mut Nested| {
+        let local = nested.window(0).local();
+        frame_of(
+            local["playerNs"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("{local}")),
+        )
+    };
+    let play = |nested: &mut Nested| {
+        let reply = nested
+            .window(0)
+            .ctl(json!({"op": "dispatch", "command": {"cmd": "play"}}));
+        assert_eq!(reply["ok"], true, "{reply}");
+        gui_support::poll(Duration::from_secs(20), "the program playing", || {
+            (nested.window(0).local()["programPlaying"] == true).then_some(())
+        });
+        thread::sleep(Duration::from_millis(600));
+    };
+    // Where the step ended: paused, and the picture on the playhead.
+    let landed = |nested: &mut Nested| {
+        gui_support::poll(Duration::from_secs(10), "the step's pause", || {
+            (status(nested, &project)["runtime"]["playing"] == false).then_some(())
+        });
+        gui_support::poll(
+            Duration::from_secs(10),
+            "the picture on the playhead",
+            || {
+                nested.window(0).wait_idle();
+                let at = status(nested, &project)["ui"]["playhead"].as_u64()?;
+                let ns = nested.window(0).local()["playerNs"].as_u64()?;
+                (frame_of(ns) == at).then_some(at)
+            },
+        )
+    };
+    let run = |nested: &mut Nested, id: &str| {
+        let reply = nested.window(0).ctl(json!({"op": "action", "id": id}));
+        assert_eq!(reply["ok"], true, "{id}: {reply}");
+    };
+
+    // →, its key (wtype pauses 400 ms for its keymap first: the picture
+    // plays on meanwhile, so the bound is loose).
+    play(&mut nested);
+    let before = shown(&mut nested);
+    nested.keys(&["-k", "Right"]);
+    let at = landed(&mut nested);
+    assert!(
+        (before + 1..=before + 45).contains(&at),
+        "→ landed at {at}; the picture showed {before} before the key"
+    );
+
+    // Shift+→ (`seek.forward`), at once: a second on from the frame shown.
+    play(&mut nested);
+    let before = shown(&mut nested);
+    run(&mut nested, "seek.forward");
+    let at = landed(&mut nested);
+    assert!(
+        (before + 30..=before + 36).contains(&at),
+        "Shift+→ landed at {at}; the picture showed {before}"
+    );
+
+    // ↓ (`seek.next-edit`, the transport's Next edit): the next clip
+    // boundary after the frame shown.
+    play(&mut nested);
+    let clips = nested.cli_json(&project, &["clip", "list"])["data"].clone();
+    let mut edits: Vec<u64> = clips
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|c| {
+            let start = c["start"].as_u64().unwrap_or(0);
+            [start, start + c["duration"].as_u64().unwrap_or(0)]
+        })
+        .collect();
+    edits.sort_unstable();
+    let before = shown(&mut nested);
+    run(&mut nested, "seek.next-edit");
+    let at = landed(&mut nested);
+    let next_after = |f: u64| edits.iter().copied().find(|&e| e > f);
+    let candidates: Vec<u64> = (before..=before + 6).filter_map(next_after).collect();
+    assert!(
+        candidates.contains(&at),
+        "↓ landed at {at}; the picture showed {before}, the next edits {candidates:?}"
+    );
+    assert_clean(&mut nested);
+}
+
 /// Closes the window through `app.quit` and waits for its exit (0): what
 /// it debounced went out before its host closed, or never.
 fn quit_and_wait(nested: &mut Nested) {

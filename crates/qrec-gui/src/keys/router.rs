@@ -37,7 +37,9 @@
 //! 11. `keymap::action_for` on the state with the player's frame as the
 //!     playhead while the program plays: a command (after its pre-steps:
 //!     first a seek to the player's frame, R18), a GUI action, or why it
-//!     can't run (D-34).
+//!     can't run (D-34). A step (frame, ±1 s, edit) while the program
+//!     plays pauses it first and goes from the frame the player shows: a
+//!     `Pause`, then one absolute seek to where the step lands (D-51).
 //!
 //! A held key repeats as presses (`KeyInput::repeat`, from [`HeldKeys`]):
 //! outside an editable a repeat goes on only for what is meant to repeat,
@@ -52,6 +54,7 @@
 
 use std::borrow::Cow;
 
+use qrec_core::apply::ui::seek_frame;
 use qrec_core::keymap::{Action, KeyChord, KeyContext, Keymap, action_for, lookup, usable_keys};
 use qrec_core::protocol::command::{SeekTarget, ShuttleDir};
 use qrec_core::state::CanvasMode;
@@ -192,6 +195,11 @@ pub enum PreStep {
     /// Seek to the player's frame: the program plays and the core's
     /// playhead lags it (R18).
     Seek(Frame),
+    /// Pause the playing program: a step goes from the frame the player
+    /// shows (D-51). `park` is the frame the step's seek puts the playhead
+    /// on: the sync leaves the playhead to it instead of parking it at the
+    /// player's frame, and holds the paused player until it lands.
+    Pause { park: Frame },
     /// Switch the canvas to Live (a recording started in Program, D-05).
     SetLive,
     /// Set `LocalUi.playing_rate` (a shuttle, D-44).
@@ -212,6 +220,19 @@ pub const NUDGE_BINDINGS: [&str; 8] = [
     "layer.nudge-right-10",
     "layer.nudge-up-10",
     "layer.nudge-down-10",
+];
+
+/// The steps (D-51): while the program plays, each pauses it first and
+/// goes from the frame the player shows (`Pause`, then one absolute seek
+/// to where it lands), as an editor's frame step does. Home and End, a
+/// click on the ruler and the CLI's seeks move a playing program on.
+pub const STEP_BINDINGS: [&str; 6] = [
+    "seek.prev-frame",
+    "seek.next-frame",
+    "seek.back",
+    "seek.forward",
+    "seek.prev-edit",
+    "seek.next-edit",
 ];
 
 /// The router's decision for one press (the steps in the module docs),
@@ -350,10 +371,13 @@ pub fn decide_binding(id: &str, rs: &RouterState<'_>) -> KeyDecision {
     match action_for(id, &state) {
         // D-33: the stage's nudge burst sends one `LayerSet` for all of it.
         Some(Action::Run(_)) if NUDGE_BINDINGS.contains(&id) || id == "zoom.fit" => gui(id),
-        Some(Action::Run(cmd)) => KeyDecision::Run {
-            id: id.to_owned(),
-            pre: pre_steps(id, &cmd, rs),
-            cmd,
+        Some(Action::Run(cmd)) => match step_while_playing(id, &cmd, rs, &state) {
+            Some(step) => step,
+            None => KeyDecision::Run {
+                id: id.to_owned(),
+                pre: pre_steps(id, &cmd, rs),
+                cmd,
+            },
         },
         Some(Action::Gui) => gui(id),
         Some(Action::Unavailable(reason)) => KeyDecision::Unavailable {
@@ -406,6 +430,33 @@ pub fn effective_state<'a>(rs: &RouterState<'a>) -> Cow<'a, State> {
         }
         _ => Cow::Borrowed(rs.state),
     }
+}
+
+/// D-51: a step (`cmd`, binding `id`) while the program plays pauses it,
+/// then seeks to where the step lands from the frame the player shows
+/// (`effective`'s playhead): one absolute seek, so what the picture ends
+/// on is that frame's neighbour, not the core's lagging playhead's.
+/// `None` for anything else, or with the program not playing.
+fn step_while_playing(
+    id: &str,
+    cmd: &Command,
+    rs: &RouterState<'_>,
+    effective: &State,
+) -> Option<KeyDecision> {
+    if !STEP_BINDINGS.contains(&id) || !rs.state.runtime.playing || rs.player_frame.is_none() {
+        return None;
+    }
+    let Command::Seek { to } = cmd else {
+        return None;
+    };
+    let park = seek_frame(effective, to).ok()?;
+    Some(KeyDecision::Run {
+        id: id.to_owned(),
+        pre: vec![PreStep::Pause { park }],
+        cmd: Command::Seek {
+            to: SeekTarget::To(TimeArg::frames(park)),
+        },
+    })
 }
 
 /// The pre-steps of binding `id`, whose command is `cmd` (G§3.8).
@@ -524,6 +575,9 @@ pub trait KeySink {
     fn set_playing_rate(&mut self, rate: f64);
     /// `ProgramPlayer::play(rate)`.
     fn player_rate(&mut self, rate: f64);
+    /// A step pauses the playing program and parks its playhead at `frame`
+    /// itself (D-51): the sync's stop leaves the playhead to it.
+    fn key_parks(&mut self, frame: Frame);
     /// The drag owner's cancel.
     fn cancel_drag(&mut self);
     /// Pops the top overlay.
@@ -550,6 +604,10 @@ pub fn apply(decision: &KeyDecision, state: &State, sink: &mut dyn KeySink) -> b
                     PreStep::Seek(frame) => sink.dispatch(Command::Seek {
                         to: SeekTarget::To(TimeArg::frames(*frame)),
                     }),
+                    PreStep::Pause { park } => {
+                        sink.key_parks(*park);
+                        sink.dispatch(Command::Pause);
+                    }
                     PreStep::SetLive => sink.dispatch(Command::SetCanvasMode {
                         mode: CanvasMode::Live,
                     }),

@@ -206,6 +206,7 @@ requirement review's numbering; H-n are host and engine calls.
 | D-48 | **PO** Settings in M4: the dialog with its five tabs as drawn (S18b); only Project is enabled; the others are disabled with the tooltip "Not built yet" until WP9. | WP6 |
 | D-49 | Export panel: Setup, Done and Failed trap focus (Overlay keys; an outside click closes them). Running is passive: no focus trap and no click-catcher, keys and clicks reach the window (S15b: the S06 hints stay live), and `Esc`, `Ctrl+E` or the header slot close it. | WP0b, WP7 |
 | D-50 | Retrying the live preview (S24 "Try again", gated) goes through the Session: `GuiHost::retry_live()` posts `Msg::RetryLive`, which the session thread turns into `CaptureEngine::retry_live`, ordered with `SetLive` and `StartCapture` and logged. | WP0a, WP1 |
+| D-51 | **PO** A step while the program plays (`←` `→` a frame, `Shift+←` `Shift+→` 1 s, `↑` `↓` an edit point; a key or the transport's button) pauses it first and steps from the frame the picture shows, as an editor's frame step does (Resolve, Premiere): `Pause`, then one `Seek{To(f)}` to where the step lands from the player's frame (`apply::ui::seek_frame`). SPEC §10.2, DESIGN and BRIEF don't say what a step does while playing; before, a frame step barely moved (its seek landed within the sync's 2-frame tolerance of the playing player, which played on; R18's audit), and ±1 s and the edit jumps played on from where they landed (keeping that for them is the alternative). `Home`, `End`, a ruler click and the CLI's `qrec seek` still move a playing program on. The sync leaves the playhead to the step's seek and holds the paused picture until it lands (G§3.10 step 2). | WP4 |
 | H-1 | Live preview: a `gtk4paintablesink` created on the GTK thread and handed to the engine (SPEC §5.2), composited at the preview size (≤ 960×540 × the device scale), BGRx. The RGBA appsink path stays for tests and as the picture before WP1 merges. | WP1 |
 | H-2 | Program playback: one GES timeline and pipeline per session, edited in place and committed; a second `gtk4paintablesink`. | WP1 |
 | H-3 | The GUI renders with GSK GL: `GDK_DISABLE=vulkan` is set unless the user set `GDK_DISABLE` or `GSK_RENDERER`, in which case both are left alone and doctor notes it (G§3.13). | WP0a |
@@ -770,7 +771,8 @@ each key press, first match:
 11. `keymap::action_for(id, &effective_state)`, where `effective_state`
     is the snapshot with `ui.playhead` = the player's frame while the
     program plays (`LocalUi.program_playing`, G§3.10 step 3):
-    - `Run(cmd)` → pre-steps, then dispatch;
+    - `Run(cmd)` → pre-steps, then dispatch; a step while the program
+      plays → `Pause`, then `Seek{To(where it lands)}` (D-51);
     - `Gui` → `ActionRouter::run(id)`;
     - `Unavailable(reason)` → D-34.
 
@@ -785,6 +787,15 @@ Pre-steps:
   and a selection by the playhead from `ui.playhead`, which lags the
   player by up to a second while playing (R18; it was only the first
   four).
+- A step (`seek.prev-frame`, `seek.next-frame`, `seek.back`,
+  `seek.forward`, `seek.prev-edit`, `seek.next-edit`; `STEP_BINDINGS`)
+  while the program plays → `PreStep::Pause{park}` instead: the sync is
+  told the step parks the playhead itself (`media::program::key_parks`),
+  then `Pause` goes out, and the command is the absolute
+  `Seek{To(park)}`, `park` being where the step lands from the player's
+  frame (D-51; R18's audit: the pre-step seek plus the relative step
+  landed within the sync's tolerance of the playing player, which
+  played on).
 - `record.toggle` and `record.over` from Idle in Program mode →
   `SetCanvasMode{Live}` first (D-05).
 - `shuttle.*` → set `LocalUi.playing_rate` first; while already playing,
@@ -990,7 +1001,14 @@ pub const STUCK: &str = "the Program picture is stuck; restart Qrec";
      true → false: `pause()`, then `Seek{To(player_frame)}`; the rate
      resets to 1. Leaving Program while playing (`Tab`, D-05's record
      start, CLI `SetCanvasMode`) is the same stop: the core turns
-     `playing` false in the snapshot that switches to Live (R21).
+     `playing` false in the snapshot that switches to Live (R21). A
+     step's stop (D-51) parks nothing: the step's own `Seek{To(f)}` comes
+     after its `Pause` and puts the playhead on `f`, so the sync
+     (`SyncMachine::note_key_park`) sends no once-a-second seek meanwhile
+     (it would come after the step's and undo it), only pauses, then holds
+     the paused player until the snapshots reach `f` (at most a second;
+     shown at once when the stop's snapshot has it) instead of showing the
+     lagging playhead between.
   3. While playing, the drawn playhead is `position_ns`;
      `Seek{To(player_frame)}` goes out every second (an own seek); the
      timeline auto-pages. "Playing" is `LocalUi.program_playing`: the
@@ -4329,8 +4347,9 @@ At the M4 review:
    fallback with its numbers (G§0.4); frame-accurate stepping; J/K/L.
 4. Export done and failed; the purge modal; the fps-change modal from
    Settings › Project.
-5. The departures marked PO in G§2: D-04, D-07, D-08, D-17, D-30, D-48;
-   and D-03 (meters in Program, as drawn).
+5. The departures marked PO in G§2: D-04, D-07, D-08, D-17, D-30, D-48,
+   D-51 (a step while playing pauses first); and D-03 (meters in Program,
+   as drawn).
 6. Fraunces axes: DESIGN's SOFT/WONK against the PNGs' defaults.
 7. The interim pages of G§1.1 #2, while G§0.2 is open.
 8. Closing while recording and while exporting (D-12).

@@ -17,7 +17,10 @@
 //!    rate being `LocalUi.playing_rate` when the GUI's own shuttle just set
 //!    it and 1 otherwise (D-44: Space and CLI `qrec play` reset it). true →
 //!    false: `pause()`, then `Seek{To(player frame)}`; the rate goes back
-//!    to 1. Leaving Program while playing is that stop too (R21).
+//!    to 1. Leaving Program while playing is that stop too (R21). A step's
+//!    pause (D-51) parks nothing: the step's own seek, right behind it,
+//!    puts the playhead where the step lands, and the paused player waits
+//!    for the snapshots to get there ([`SyncMachine::note_key_park`]).
 //! 3. While playing, `Seek{To(player frame)}` goes out once a second (an
 //!    own seek); a playhead the GUI didn't set that way (nor by a key's
 //!    pre-step seek to the player's frame, R22) moves the player.
@@ -231,6 +234,10 @@ pub struct SyncMachine {
     /// The frames the key router took from the player lately (its
     /// pre-step seeks): (when, frame).
     key_seeks: Vec<(u64, Frame)>,
+    /// A step's pause (D-51): (when, the frame its seek parks the
+    /// playhead on). The stop leaves the playhead to that seek, and the
+    /// paused player holds until the snapshots reach it.
+    key_park: Option<(u64, Frame)>,
 }
 
 impl Default for SyncMachine {
@@ -260,6 +267,7 @@ impl SyncMachine {
             program_playing: false,
             preview_paused: false,
             key_seeks: Vec::new(),
+            key_park: None,
         }
     }
 
@@ -278,6 +286,32 @@ impl SyncMachine {
         self.key_seeks
             .retain(|(at, _)| now_ms.saturating_sub(*at) < SEEK_EVERY_MS);
         self.key_seeks.push((now_ms, frame));
+    }
+
+    /// A step pauses the playing program and parks its playhead at
+    /// `frame` itself (D-51: the key router's `Pause`, then its seek to
+    /// `frame`): no once-a-second seek goes out until the stop, and the
+    /// stop parks nothing at the player's frame (either would come after
+    /// the step's seek and undo it); the paused player waits for the
+    /// snapshots to reach `frame` (at most [`SEEK_EVERY_MS`]) instead of
+    /// showing the lagging playhead between.
+    pub fn note_key_park(&mut self, now_ms: u64, frame: Frame) {
+        self.key_park = Some((now_ms, frame));
+    }
+
+    /// A step's park still on its way holds the paused player
+    /// ([`note_key_park`](Self::note_key_park)); it goes once the
+    /// snapshots reach its frame, or after [`SEEK_EVERY_MS`] (a seek that
+    /// never echoed).
+    fn key_park_holds(&mut self, inp: &Inputs<'_>, playhead: Frame) -> bool {
+        let Some((at, frame)) = self.key_park else {
+            return false;
+        };
+        if playhead == frame || inp.now_ms.saturating_sub(at) >= SEEK_EVERY_MS {
+            self.key_park = None;
+            return false;
+        }
+        true
     }
 
     /// The window closes its host next (`Store::before_close`, G§3.6): a
@@ -307,7 +341,8 @@ impl SyncMachine {
 
     /// When [`sync`](Self::sync) must run again on its own: a due reload,
     /// the next once-a-second seek, the end of a scrub's echo wait, the
-    /// next look whether the program's load after a take landed.
+    /// next look whether the program's load after a take landed, the end
+    /// of a step's park wait.
     pub fn deadline(&self) -> Option<u64> {
         let seek =
             (self.told_playing && matches!(self.content, Content::Program(_)) && !self.settling)
@@ -316,7 +351,8 @@ impl SyncMachine {
             .scrubbed
             .and(self.scrub_ended_at)
             .map(|at| at + SCRUB_ECHO_MS);
-        [self.reload_due, seek, echo, self.settle_check]
+        let park = self.key_park.map(|(at, _)| at + SEEK_EVERY_MS);
+        [self.reload_due, seek, echo, self.settle_check, park]
             .into_iter()
             .flatten()
             .min()
@@ -460,6 +496,7 @@ impl SyncMachine {
             self.ended = false;
             self.scrubbed = None;
             self.scrub_ended_at = None;
+            self.key_park = None;
             let armed = self
                 .rate_armed_at
                 .is_some_and(|at| inp.now_ms.saturating_sub(at) <= RATE_ARMED_MS);
@@ -494,18 +531,22 @@ impl SyncMachine {
             if moved && !own && playhead.abs_diff(inp.player_frame()) > NEAR_FRAMES {
                 out.player.push(PlayerCmd::Seek(inp.ns(playhead)));
                 self.auto_seek = Some((inp.now_ms, playhead));
-            } else if self
-                .auto_seek
-                .is_none_or(|(at, _)| inp.now_ms.saturating_sub(at) >= SEEK_EVERY_MS)
+            } else if self.key_park.is_none()
+                && self
+                    .auto_seek
+                    .is_none_or(|(at, _)| inp.now_ms.saturating_sub(at) >= SEEK_EVERY_MS)
             {
+                // (Not while a step's pause is on its way: an own seek now
+                // would come after the step's and undo it, D-51.)
                 let frame = inp.player_frame();
                 out.dispatch.push(seek_to(frame));
                 self.auto_seek = Some((inp.now_ms, frame));
             }
         } else if !now_playing && self.shown_frame != Some(playhead) {
             // Paused: the player follows the playhead, but a ruler scrub
-            // drives it itself (D-40, step 9).
-            if !self.scrub_holds(inp, playhead) {
+            // drives it itself (D-40, step 9), and a step's park on its way
+            // holds it (D-51).
+            if !self.scrub_holds(inp, playhead) && !self.key_park_holds(inp, playhead) {
                 out.player.push(PlayerCmd::Seek(inp.ns(playhead)));
                 self.shown_frame = Some(playhead);
             }
@@ -522,7 +563,8 @@ impl SyncMachine {
     }
 
     /// The program stopped playing (step 2): pause, the playhead parked at
-    /// the player's frame, the rate back to 1.
+    /// the player's frame (a step's pause parks it itself, D-51), the rate
+    /// back to 1.
     fn stop(&mut self, inp: &Inputs<'_>, out: &mut Out) {
         if self.told_playing {
             out.player.push(PlayerCmd::Pause);
@@ -537,6 +579,17 @@ impl SyncMachine {
             // position is still the take's. The playhead stays, and the
             // paused player goes back to it.
             self.shown_frame = None;
+        } else if let Some((_, frame)) = self.key_park {
+            // A step's pause (D-51): its own seek parks the playhead. The
+            // player shows that frame once the snapshots have it (now, when
+            // this one does), and holds until then.
+            if inp.playhead() == frame {
+                out.player.push(PlayerCmd::Seek(inp.ns(frame)));
+                self.shown_frame = Some(frame);
+                self.key_park = None;
+            } else {
+                self.shown_frame = None;
+            }
         } else {
             let frame = inp.player_frame();
             out.dispatch.push(seek_to(frame));
@@ -1089,6 +1142,17 @@ pub fn key_took_player_frame(frame: Frame) {
     if let Some(sync) = sync {
         let now = sync.now_ms();
         sync.machine.borrow_mut().note_own_seek(now, frame);
+    }
+}
+
+/// A step pauses the playing program and parks its playhead at `frame`
+/// itself (D-51, the key router's `PreStep::Pause`): the sync's stop
+/// leaves the playhead to the step ([`SyncMachine::note_key_park`]).
+pub fn key_parks(frame: Frame) {
+    let sync = SYNC.with(|s| s.borrow().clone());
+    if let Some(sync) = sync {
+        let now = sync.now_ms();
+        sync.machine.borrow_mut().note_key_park(now, frame);
     }
 }
 
@@ -1811,6 +1875,135 @@ mod tests {
         // still moves it.
         rig.state.ui.playhead = 100;
         assert_eq!(rig.sync().player, [PlayerCmd::Seek(rig.ns(100))]);
+    }
+
+    /// R18's follow-up (D-51), through the key router, the core and the
+    /// sync: `→` while the program plays ends on the frame after the one
+    /// the picture showed, paused there. Before, the step's seek landed
+    /// within the sync's 2-frame tolerance of the playing player, which
+    /// played on: the step barely moved (and the next once-a-second seek
+    /// took the playhead along).
+    #[test]
+    fn a_frame_step_while_playing_ends_paused_on_the_next_frame() {
+        use crate::keys::router::{self, KeyInput, KeySink, RouterState};
+        use crate::store::local::{LocalUi, StartupPhase};
+        use qrec_core::keymap::KeyChord;
+        use qrec_core::view::FocusRegion;
+
+        /// What the key does, kept to run through the core and the sync.
+        #[derive(Default)]
+        struct Keys {
+            sent: Vec<Command>,
+            parks: Vec<Frame>,
+        }
+        impl KeySink for Keys {
+            fn dispatch(&mut self, cmd: Command) {
+                self.sent.push(cmd);
+            }
+            fn gui(&mut self, _: &str) {}
+            fn notice(&mut self, _: Notice) {}
+            fn set_playing_rate(&mut self, _: f64) {}
+            fn player_rate(&mut self, _: f64) {}
+            fn key_parks(&mut self, frame: Frame) {
+                self.parks.push(frame);
+            }
+            fn cancel_drag(&mut self) {}
+            fn close_overlay(&mut self) {}
+        }
+
+        let mut rig = Rig::new(program()).loaded();
+        assert_eq!(rig.play().player, [PlayerCmd::Play(1.0)]);
+        rig.now += 600;
+        rig.position = 2500;
+        assert_eq!(rig.sync(), Out::default(), "before the once-a-second seek");
+        let local = LocalUi {
+            startup: StartupPhase::Open,
+            focus: FocusRegion::Timeline,
+            playing: true,
+            program_playing: true,
+            ..LocalUi::default()
+        };
+        let keymap = qrec_core::keymap::resolve("");
+        let rs = RouterState {
+            state: &rig.state,
+            local: &local,
+            keymap: &keymap,
+            player_frame: Some(2500),
+        };
+        let right = KeyInput::chord(KeyChord::parse("Right").unwrap());
+        let decision = router::decide(&right, &rs);
+        let mut keys = Keys::default();
+        assert!(router::apply(&decision, &rig.state, &mut keys));
+        for frame in &keys.parks {
+            rig.machine.note_key_park(rig.now, *frame);
+        }
+        let ctx = testkit::ctx("2026-10-14T15:00:00Z", 7);
+        for cmd in keys.sent {
+            rig.state = qrec_core::apply::apply(&rig.state, &ctx, cmd)
+                .expect("the core runs it")
+                .state;
+        }
+        // Their snapshots come with the player a frame and more on.
+        rig.now += 40;
+        rig.position = 2502;
+        let out = rig.sync();
+        assert!(!rig.state.runtime.playing, "the step paused the program");
+        assert_eq!(rig.state.ui.playhead, 2501, "the frame after the shown one");
+        assert_eq!(
+            out.player,
+            [PlayerCmd::Pause, PlayerCmd::Seek(rig.ns(2501))],
+            "the picture on it"
+        );
+        assert_eq!(out.dispatch, [], "no park at the player's frame");
+    }
+
+    /// D-51: a step's pause parks nothing at the player's frame (that seek,
+    /// after the step's own, undid it): the stop only pauses, the paused
+    /// player holds through a snapshot that still has the lagging playhead,
+    /// and shows the step's frame once the snapshots have it. A step's seek
+    /// that never echoes lets the player follow again after a second.
+    #[test]
+    fn a_steps_pause_leaves_the_playhead_to_the_step() {
+        let mut rig = Rig::new(program()).loaded();
+        assert_eq!(rig.play().player, [PlayerCmd::Play(1.0)]);
+        rig.now += 600;
+        rig.position = 2500;
+        rig.sync();
+        // `→`: the router noted its park, then `Pause` and `Seek{To(2501)}`.
+        // The once-a-second seek falls due before their snapshots: it stays
+        // out (it would come after the step's seek and undo it).
+        rig.machine.note_key_park(rig.now, 2501);
+        rig.now += 400;
+        assert_eq!(rig.sync().dispatch, [], "no own seek over the step's");
+        rig.position = 2501;
+        rig.state.runtime.playing = false;
+        let out = rig.sync();
+        assert_eq!(out.player, [PlayerCmd::Pause], "{out:?}");
+        assert_eq!(out.dispatch, [], "no park at the player's frame");
+        // A step of its own before the seek's snapshot: still held.
+        rig.now += 20;
+        assert_eq!(rig.sync().player, [], "not back to the lagging 2437");
+        rig.state.ui.playhead = 2501;
+        assert_eq!(rig.sync().player, [PlayerCmd::Seek(rig.ns(2501))]);
+        assert_eq!(rig.sync(), Out::default());
+        // A step whose seek never echoes: the player follows after a second.
+        assert_eq!(rig.play().player, [PlayerCmd::Play(1.0)]);
+        rig.now += 300;
+        rig.position = 2520;
+        rig.machine.note_key_park(rig.now, 2551);
+        let out = rig.pause();
+        assert_eq!(
+            (&out.player[..], &out.dispatch[..]),
+            (&[PlayerCmd::Pause][..], &[][..])
+        );
+        assert!(
+            rig.machine
+                .deadline()
+                .is_some_and(|at| at <= rig.now + SEEK_EVERY_MS),
+            "a step to look again"
+        );
+        rig.now += SEEK_EVERY_MS;
+        assert_eq!(rig.sync().player, [PlayerCmd::Seek(rig.ns(2501))]);
     }
 
     /// G§3.6 (A1's audit): at the close a playing program parks the

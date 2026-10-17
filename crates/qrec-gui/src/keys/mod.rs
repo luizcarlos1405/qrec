@@ -228,6 +228,10 @@ impl KeySink for GtkSink<'_> {
         }
     }
 
+    fn key_parks(&mut self, frame: Frame) {
+        crate::media::program::key_parks(frame);
+    }
+
     fn cancel_drag(&mut self) {
         let cancel = self.router.inner.drag_cancel.borrow().clone();
         match cancel {

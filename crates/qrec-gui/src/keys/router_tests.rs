@@ -20,6 +20,7 @@ enum Call {
     Notice(String),
     Rate(f64),
     PlayerRate(f64),
+    KeyParks(Frame),
     CancelDrag,
     CloseOverlay,
 }
@@ -42,6 +43,9 @@ impl KeySink for Recorder {
     }
     fn player_rate(&mut self, rate: f64) {
         self.0.push(Call::PlayerRate(rate));
+    }
+    fn key_parks(&mut self, frame: Frame) {
+        self.0.push(Call::KeyParks(frame));
     }
     fn cancel_drag(&mut self) {
         self.0.push(Call::CancelDrag);
@@ -750,40 +754,58 @@ fn fold(scene: &Scene, chord: &str) -> State {
 
 /// R18: while the program plays the core's playhead lags the player (it
 /// moves with the sync's once-a-second seek), and frame steps, ±1 s, edit
-/// jumps and shuttles are resolved from it: each press first seeks it to
-/// the player's frame, so the person lands where the player was, not up
-/// to a second back (and a shuttle doesn't restart at 0 or stop at 0 on a
-/// stale playhead).
+/// jumps and shuttles are resolved from it. A step pauses first and goes
+/// from the player's frame (D-51: `Pause`, then one absolute seek to where
+/// it lands, the frame the sync leaves the playhead on); a shuttle first
+/// seeks to the player's frame, so it doesn't restart at 0 or stop at 0
+/// on a stale playhead.
 #[test]
 fn relative_seeks_and_shuttles_while_playing_start_at_the_player() {
     use qrec_core::protocol::command::SeekTarget;
     let mut playing = Scene::program();
     playing.state.runtime.playing = true;
     playing.player_frame = Some(2500);
-    let seek_2500 = dispatch(Command::Seek {
-        to: SeekTarget::To(TimeArg::frames(2500)),
-    });
-    for chord in ["Right", "Left", "shift+Right", "shift+Left", "Up", "Down"] {
-        let calls = playing.calls(chord);
-        assert_eq!(calls.len(), 2, "{chord}: {calls:?}");
-        assert_eq!(calls[0], seek_2500, "{chord}");
-    }
-    assert_eq!(fold(&playing, "Right").ui.playhead, 2501);
-    assert_eq!(fold(&playing, "Left").ui.playhead, 2499);
-    assert_eq!(fold(&playing, "shift+Right").ui.playhead, 2530);
     // The edit points around 2500: c2d0's start (2084) and end (3176).
-    assert_eq!(fold(&playing, "Up").ui.playhead, 2084);
-    assert_eq!(fold(&playing, "Down").ui.playhead, 3176);
-    // An absolute seek doesn't read the playhead; the player on the core's
-    // playhead needs no seek.
+    for (chord, lands) in [
+        ("Right", 2501),
+        ("Left", 2499),
+        ("shift+Right", 2530),
+        ("shift+Left", 2470),
+        ("Up", 2084),
+        ("Down", 3176),
+    ] {
+        assert_eq!(
+            playing.calls(chord),
+            [
+                Call::KeyParks(lands),
+                dispatch(Command::Pause),
+                dispatch(Command::Seek {
+                    to: SeekTarget::To(TimeArg::frames(lands))
+                })
+            ],
+            "{chord}"
+        );
+        let state = fold(&playing, chord);
+        assert_eq!(state.ui.playhead, lands, "{chord}");
+        assert!(!state.runtime.playing, "{chord} paused");
+    }
+    // An absolute seek doesn't read the playhead, and moves a playing
+    // program on; the player on the core's playhead needs no seek first.
     assert_eq!(
         playing.calls("Home"),
         [dispatch(Command::Seek {
             to: SeekTarget::Start
         })]
     );
+    assert!(fold(&playing, "Home").runtime.playing);
     playing.player_frame = Some(2437);
-    assert_eq!(playing.calls("Right").len(), 1);
+    assert_eq!(playing.calls("s").len(), 1);
+    // Paused, a step is the keymap's relative seek, as ever.
+    let paused = Scene::program();
+    let Some(Action::Run(step)) = action_for("seek.next-frame", &paused.state) else {
+        panic!("seek.next-frame runs");
+    };
+    assert_eq!(paused.calls("Right"), [dispatch(step)]);
 
     // L after the end (the core's playhead still at the total while the
     // player reversed 10 frames): on from the player, not from 0.
