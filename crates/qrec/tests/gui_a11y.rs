@@ -447,53 +447,48 @@ fn a_failed_export_is_announced_assertively() {
 /// registry (`org.a11y.atspi.Socket.Embed`; with no registry it prints a
 /// critical) and asks which events are listened to; `announce` emits
 /// `org.a11y.atspi.Event.Object.Announcement` (the message, and the
-/// politeness: 1 polite, 2 assertive), which a screen reader hears.
+/// politeness: 1 polite, 2 assertive), which a screen reader hears. GIO's
+/// D-Bus (the workspace's gtk), on a thread and main context of its own.
 mod atspi {
-    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
 
-    use futures_lite::StreamExt;
-    use zbus::zvariant::{OwnedObjectPath, OwnedValue, Type};
-    use zbus::{MatchRule, MessageStream, interface};
+    use gtk::glib::variant::{ObjectPath, ToVariant};
+    use gtk::{gio, glib};
 
     const REGISTRY: &str = "org.a11y.atspi.Registry";
     const ROOT: &str = "/org/a11y/atspi/accessible/root";
-
-    /// An object reference, `(so)`.
-    #[derive(serde::Serialize, Type)]
-    struct Reference(String, OwnedObjectPath);
-
-    struct Socket;
-
-    #[interface(name = "org.a11y.atspi.Socket")]
-    impl Socket {
-        /// The application's root is embedded in the desktop: here. One
-        /// out argument, the reference (`((so))`; a bare struct would be
-        /// its two fields).
-        fn embed(&self, _plug: (String, OwnedObjectPath)) -> (Reference,) {
-            (Reference(
-                REGISTRY.to_owned(),
-                OwnedObjectPath::try_from(ROOT).expect("a path"),
-            ),)
-        }
-    }
-
-    struct Registry;
-
-    #[interface(name = "org.a11y.atspi.Registry")]
-    impl Registry {
-        /// No screen reader listens to events (announcements go out
-        /// anyway).
-        fn get_registered_events(&self) -> Vec<(String, String)> {
-            Vec::new()
-        }
-    }
+    const REGISTRY_PATH: &str = "/org/a11y/atspi/registry";
+    /// What the stand-in serves: `Embed` at the root, the registry's event
+    /// list at the registry.
+    const NODE: &str = r#"<node>
+  <interface name="org.a11y.atspi.Socket">
+    <method name="Embed">
+      <arg name="plug" type="(so)" direction="in"/>
+      <arg name="socket" type="(so)" direction="out"/>
+    </method>
+  </interface>
+  <interface name="org.a11y.atspi.Registry">
+    <method name="GetRegisteredEvents">
+      <arg name="events" type="a(ss)" direction="out"/>
+    </method>
+  </interface>
+</node>"#;
+    /// How long a call to the bus may take.
+    const CALL_MS: i32 = 5000;
 
     /// What was announced on the bus: the politeness and the message.
     pub type Heard = Arc<Mutex<Vec<(i32, String)>>>;
+
+    /// The stand-in, up: its connection, its ear, and whether the bus went.
+    type Up = (
+        gio::DBusConnection,
+        gio::SignalSubscription,
+        Arc<AtomicBool>,
+    );
 
     /// Serves the registry on the bus at `address` and records the
     /// announcements until the bus goes (the case's end).
@@ -502,27 +497,14 @@ mod atspi {
         let (ready_tx, ready) = mpsc::channel();
         let (address, log) = (address.to_owned(), Arc::clone(&heard));
         thread::spawn(move || {
-            zbus::block_on(async move {
-                let built = async {
-                    let conn = zbus::connection::Builder::address(address.as_str())?
-                        .name(REGISTRY)?
-                        .serve_at(ROOT, Socket)?
-                        .serve_at("/org/a11y/atspi/registry", Registry)?
-                        .build()
-                        .await?;
-                    let rule = MatchRule::builder()
-                        .msg_type(zbus::message::Type::Signal)
-                        .interface("org.a11y.atspi.Event.Object")?
-                        .member("Announcement")?
-                        .build();
-                    let stream = MessageStream::for_match_rule(rule, &conn, None).await?;
-                    Ok::<_, zbus::Error>((conn, stream))
-                }
-                .await;
-                let (_conn, mut stream) = match built {
-                    Ok(both) => {
+            // The calls and the signals come on the main context the
+            // objects were registered under: this thread's own.
+            let context = glib::MainContext::new();
+            let ran = context.with_thread_default(|| {
+                let (_conn, _ear, gone) = match start(&address, log) {
+                    Ok(up) => {
                         let _ = ready_tx.send(Ok(()));
-                        both
+                        up
                     }
                     Err(e) => {
                         let _ = ready_tx.send(Err(e.to_string()));
@@ -530,23 +512,96 @@ mod atspi {
                     }
                 };
                 // Until the bus goes with the case.
-                while let Some(Ok(msg)) = stream.next().await {
-                    type Body = (String, i32, i32, OwnedValue, HashMap<String, OwnedValue>);
-                    match msg.body().deserialize::<Body>() {
-                        Ok((_, live, _, value, _)) => {
-                            let text = String::try_from(value).unwrap_or_default();
-                            log.lock().expect("the log").push((live, text));
-                        }
-                        Err(e) => eprintln!("atspi: an announcement that isn't one: {e}"),
-                    }
+                while !gone.load(Ordering::SeqCst) {
+                    context.iteration(true);
                 }
             });
+            if let Err(e) = ran {
+                eprintln!("atspi: no main context: {e}");
+            }
         });
         match ready.recv_timeout(Duration::from_secs(10)) {
             Ok(Ok(())) => heard,
             Ok(Err(e)) => panic!("the stand-in AT-SPI registry: {e}"),
             Err(e) => panic!("the stand-in AT-SPI registry never started: {e}"),
         }
+    }
+
+    /// Connects, serves the two objects, listens to the announcements and
+    /// takes the registry's name, last: GTK finds everything served.
+    fn start(address: &str, log: Heard) -> Result<Up, glib::Error> {
+        let conn = gio::DBusConnection::for_address_sync(
+            address,
+            gio::DBusConnectionFlags::AUTHENTICATION_CLIENT
+                | gio::DBusConnectionFlags::MESSAGE_BUS_CONNECTION,
+            None,
+            gio::Cancellable::NONE,
+        )?;
+        let gone = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&gone);
+        conn.connect_closed(move |_, _, _| flag.store(true, Ordering::SeqCst));
+        let node = gio::DBusNodeInfo::for_xml(NODE)?;
+        for (path, name) in [(ROOT, "org.a11y.atspi.Socket"), (REGISTRY_PATH, REGISTRY)] {
+            let info = node.lookup_interface(name).expect("the interface in NODE");
+            conn.register_object(path, &info)
+                .method_call(|_, _, _, _, method, _, invocation| match method {
+                    // The application's root is embedded in the desktop:
+                    // here (one out argument, the reference: `((so))`).
+                    "Embed" => {
+                        let root = ObjectPath::try_from(ROOT).expect("a path");
+                        let socket = ((REGISTRY.to_owned(), root),).to_variant();
+                        invocation.return_value(Some(&socket));
+                    }
+                    // No screen reader listens to events (announcements
+                    // go out anyway).
+                    "GetRegisteredEvents" => invocation
+                        .return_value(Some(&(Vec::<(String, String)>::new(),).to_variant())),
+                    other => invocation.return_dbus_error(
+                        "org.freedesktop.DBus.Error.UnknownMethod",
+                        &format!("the stand-in has no {other}"),
+                    ),
+                })
+                .build()?;
+        }
+        let ear = conn.subscribe_to_signal(
+            None,
+            Some("org.a11y.atspi.Event.Object"),
+            Some("Announcement"),
+            None,
+            None,
+            gio::DBusSignalFlags::NONE,
+            move |signal| {
+                // `(siiva{sv})`: the event's kind, the politeness, 0, the
+                // message, no properties.
+                let body = signal.parameters;
+                let live = body.try_child_value(1).and_then(|v| v.get::<i32>());
+                let text = body
+                    .try_child_value(3)
+                    .and_then(|v| v.as_variant())
+                    .and_then(|v| v.str().map(str::to_owned));
+                match (live, text) {
+                    (Some(live), Some(text)) => log.lock().expect("the log").push((live, text)),
+                    _ => eprintln!("atspi: an announcement that isn't one: {body}"),
+                }
+            },
+        );
+        let reply = conn.call_sync(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "RequestName",
+            Some(&(REGISTRY, 0u32).to_variant()),
+            Some(glib::VariantTy::new("(u)").expect("a type")),
+            gio::DBusCallFlags::NONE,
+            CALL_MS,
+            gio::Cancellable::NONE,
+        )?;
+        // 1: the name's primary owner.
+        if reply.child_value(0).get::<u32>() != Some(1) {
+            let why = format!("the registry's name isn't ours: {reply}");
+            return Err(glib::Error::new(gio::IOErrorEnum::Failed, &why));
+        }
+        Ok((conn, ear, gone))
     }
 }
 

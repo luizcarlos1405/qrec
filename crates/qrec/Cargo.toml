@@ -29,11 +29,9 @@ assert_cmd.workspace = true
 predicates.workspace = true
 tempfile.workspace = true
 serde_json.workspace = true
-# gui_a11y's stand-in AT-SPI registry on the nested bus (WP10): the
-# features ashpd already builds zbus with, so nothing else rebuilds.
-serde.workspace = true
-futures-lite.workspace = true
-zbus = { version = "5.13", default-features = false, features = ["async-io"] }
+# gui_a11y's stand-in AT-SPI registry on the nested bus (WP10): GIO's
+# D-Bus, through the workspace's gtk (qrec-gui's; nothing new to build).
+gtk.workspace = true
 
 [lints]
 workspace = true

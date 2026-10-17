@@ -1905,18 +1905,16 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "chrono",
- "futures-lite",
+ "gtk4",
  "predicates",
  "qrec-cli",
  "qrec-core",
  "qrec-gui",
  "qrec-shell",
- "serde",
  "serde_json",
  "tempfile",
  "tracing",
  "tracing-subscriber",
- "zbus",
 ]
 
 [[package]]
