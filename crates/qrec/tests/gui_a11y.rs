@@ -7,7 +7,8 @@
 //!   in the toasts' words, polite, assertive for a failure. The window
 //!   keeps what it announced for the test channel (`local`'s
 //!   `announcements`: message, priority, and whether GTK had a context
-//!   that announces) and logs it (`announce (polite): …`).
+//!   that announces) and logs it (`announce (polite): …`). A toast pushed
+//!   again (the toast host makes it one) is one announcement.
 //! - **Focus order** (BRIEF §6 by D-10): from the window's start, `F6`
 //!   goes header → transport → timeline toolbar → timeline → panel and
 //!   around, `Shift+F6` back; GTK's own chain, walked with `Shift+Tab`
@@ -302,6 +303,37 @@ fn the_exports_end_is_announced() {
     gui.wait_idle();
     assert_clean(gui);
     nested.keys(&["-k", "Escape"]);
+    close(&mut nested);
+}
+
+/// The same toast thirty times (the toast host makes it one toast) is one
+/// announcement: a screen reader isn't flooded by a held key or a button
+/// pressed again; a new toast after it is announced.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_repeated_toast_is_announced_once() {
+    let mut nested = Nested::start(AREA, "repeated-toast", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &s02_ui());
+    open(&mut nested, &project, Launch::a11y());
+    let gui = nested.window(0);
+    for _ in 0..30 {
+        let reply = gui.ctl(json!({"op": "action", "id": "keys.help"}));
+        assert_eq!(reply["ok"], true, "{reply}");
+    }
+    gui.wait_idle();
+    let reply = gui.ctl(json!({"op": "dispatch", "command": {"cmd": "undo"}}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let after = wait_announced(gui, "the undo's toast", 1, |m| {
+        m.starts_with("Nothing to undo")
+    });
+    assert_eq!(after[0].priority, "polite", "a warning: {after:?}");
+    let spoken = announcements(gui);
+    let repeated = spoken
+        .iter()
+        .filter(|s| s.message.starts_with("Not built yet"))
+        .count();
+    assert_eq!(repeated, 1, "announced once: {spoken:#?}");
+    assert_clean(gui);
     close(&mut nested);
 }
 
