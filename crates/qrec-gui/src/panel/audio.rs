@@ -495,6 +495,11 @@ impl AudioRowView {
             .update_property(&[gtk::accessible::Property::Label(&mute_label)]);
         self.mute.set_tooltip_text(Some(&mute_label));
         menus::set_menu_label(&self.menu_button, &format!("More for track {}", row.label));
+        self.name
+            .update_property(&[gtk::accessible::Property::Label(&format!(
+                "Name of track {}",
+                row.label
+            ))]);
         self.gain.set_value(&numeric::tenths(row.gain_db));
         self.sync
             .set_value(&numeric::signed(f64::from(row.sync_offset_ms)));

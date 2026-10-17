@@ -259,7 +259,8 @@ impl Inner {
             ruler_row.append(&corner_col);
             ruler_row.append(&ruler);
 
-            let canvas = Surface::new();
+            // A group of the clips, as the stage canvas is of the layers.
+            let canvas = Surface::with_role(gtk::AccessibleRole::Group);
             canvas.add_css_class("tl-canvas");
             canvas.set_hexpand(true);
             canvas.set_vexpand(true);

@@ -622,9 +622,14 @@ fn is_screen(state: &State, layer: &LayerId) -> bool {
 }
 
 /// An inline-renamable name (C09, C10): as wide as its text, ellipsized
-/// when the row is narrower (GTK's text field would ask for 150 px).
+/// when the row is narrower (GTK's text field would ask for 150 px). A text
+/// box to screen readers (GTK gives `EditableLabel` no role, and its text
+/// is left out of the tree while it is edited; its owner names it).
 pub fn editable_name(class: &str) -> gtk::EditableLabel {
-    let name = gtk::EditableLabel::new("");
+    let name = gtk::EditableLabel::builder()
+        .text("")
+        .accessible_role(gtk::AccessibleRole::TextBox)
+        .build();
     name.add_css_class(class);
     name.add_css_class("row-name");
     name.set_width_chars(1);
@@ -832,6 +837,11 @@ impl RowView {
             .update_property(&[gtk::accessible::Property::Label(&lock_label)]);
         self.lock.set_tooltip_text(Some(&lock_label));
         menus::set_menu_label(&self.menu_button, &format!("More for layer {}", row.name));
+        self.name
+            .update_property(&[gtk::accessible::Property::Label(&format!(
+                "Name of layer {}",
+                row.name
+            ))]);
         self.row
             .update_property(&[gtk::accessible::Property::Label(&format!(
                 "{}, {}",

@@ -17,7 +17,8 @@
 //!   of that order, the stage canvas between the header and the transport,
 //!   and never the hint bar. Each widget it lands on draws the 2 px focus
 //!   ring (a shot while the key's keyboard holds the window active: G§8.4).
-//! - The a11y walk stays empty in each of these states.
+//! - The a11y walk stays empty in each of these states, and while a
+//!   layer's and a track's names are renamed (the field a named text box).
 //!
 //! `cargo test -p qrec --test gui_a11y -- --ignored --test-threads=1`
 //! (inside the dev shell). Shots and logs go to `tmp/gui-shots/a11y/`.
@@ -334,6 +335,53 @@ fn a_repeated_toast_is_announced_once() {
         .count();
     assert_eq!(repeated, 1, "announced once: {spoken:#?}");
     assert_clean(gui);
+    close(&mut nested);
+}
+
+/// A rename's field (a layer's, a track's: the overflow's Rename) reaches
+/// a screen reader while it is edited as a text box named for what it
+/// renames ("Name of layer Face"): GTK gives an editable label no role and
+/// leaves its text out of the tree, and a text box's text is its value.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_rename_field_is_a_named_text_box() {
+    let mut nested = Nested::start(AREA, "rename-field", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &s02_ui());
+    open(&mut nested, &project, still());
+    // The overflow, the row, the field's key in `entries` (its nearest
+    // named widget).
+    for (menu, row, field) in [
+        ("layer-menu-L2", "layer-row-L2", "layer-row-L2"),
+        ("audio-menu-A1", "audio-row-A1", "audio-name-A1"),
+    ] {
+        let found = nested.window(0).regions(&[menu]);
+        let [x, y, w, h] = *found
+            .get(menu)
+            .unwrap_or_else(|| panic!("no {menu}: {found:?}"));
+        nested.pointer().click(x + w / 2.0, y + h / 2.0);
+        nested.window(0).wait_idle();
+        // One `wtype` run from Rename (the menu's first item) to Esc: the
+        // window deactivates between runs, which ends an edit.
+        let held = nested.keys_held(&["-k", "Return", "-s", "2500", "-k", "Escape"], 500);
+        poll(Duration::from_secs(10), "the name as a field", || {
+            nested
+                .window(0)
+                .entries(row)
+                .contains_key(field)
+                .then_some(())
+        });
+        nested.window(0).wait_idle();
+        nested.screenshot(&format!("{row}-renaming"));
+        let a11y = nested.window(0).ctl(json!({"op": "a11y"}));
+        assert_eq!(a11y["ok"], true, "a11y while renaming {row}: {a11y}");
+        held.wait();
+        nested.window(0).wait_idle();
+        assert!(
+            !nested.window(0).entries(row).contains_key(field),
+            "Esc ends {row}'s rename"
+        );
+    }
+    assert_clean(nested.window(0));
     close(&mut nested);
 }
 
