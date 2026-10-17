@@ -8,12 +8,14 @@
 //! auto name, `QREC_GUI_TEST_LEVELS` (`<device>=<rms>/<peak>,…`, dBFS) pins
 //! the meters' readings (`widgets::meter`), `QREC_GUI_TEST_SAVE_AS`
 //! (`|`-separated paths, one per press) stands in for the export panel's
-//! save dialog (no portal in the tests, G§9 R7), and the control channel
-//! listens. Flags, comma-separated: `stuck-gst` makes startup report
-//! GStreamer stuck without initializing it (the stuck page, exit 5);
-//! `panic-activate` panics in `activate` (the app quits with 1);
-//! `panic-tick` panics in the timeline's first frame-clock callback (caught;
-//! the next change starts the frame clock again).
+//! save dialog (no portal in the tests, G§9 R7),
+//! `QREC_GUI_TEST_PANIC_ONCE` (`|`-separated) names guarded callbacks
+//! (their `what`: `timeline: a frame`, `meter: refresh`) whose first run
+//! panics, caught as any other (G§3.12: what a slot drives comes back),
+//! and the control channel listens. Flags,
+//! comma-separated: `stuck-gst` makes startup report GStreamer stuck
+//! without initializing it (the stuck page, exit 5); `panic-activate`
+//! panics in `activate` (the app quits with 1).
 //!
 //! **The control channel**: a socket `$XDG_RUNTIME_DIR/qrec-gui-test-<pid>.sock`
 //! (0600, the test's private runtime dir; one per window, so a test can
@@ -30,7 +32,7 @@
 //! | `dispatch` | `Store::dispatch` of `command` (`confirmed`: as confirmed), `{"ok":true}` at once |
 //! | `action` | runs binding or GUI action `id` as its key would |
 //! | `hints` | the hint bar's items and status (`hintbar::current_items`), the labels of the items it draws whole (`shown`: a narrow window leaves the trailing ones out) and whether a drawn one runs past the bar (`cut`, never) |
-//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`; whether the player plays, the program or a take, `playing`, and the program, `programPlaying`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11) and the panel's (`layerRowsAlive`, `audioRowsAlive`), the bin drawer's last slide as asked (`binSlide`: `open`, `animate`; nothing animates on start), the bin preview (`takePreview`: `take`, `playing`; `null` without one), the theme's subscribers (`themeSubscribers`: a dropped bin thumbnail's goes with it), the mud bars ticking (`mudBarsTicking`: none under the frozen clock) and how many times the timeline's canvas re-rendered (`timelinePaints`: not while only the playhead moves) |
+//! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`; whether the player plays, the program or a take, `playing`, and the program, `programPlaying`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it), the caught panics, the focused widget's path, the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11) and the panel's (`layerRowsAlive`, `audioRowsAlive`), the bin drawer's last slide as asked (`binSlide`: `open`, `animate`; nothing animates on start), the bin preview (`takePreview`: `take`, `playing`; `null` without one), the theme's subscribers (`themeSubscribers`: a dropped bin thumbnail's goes with it), the mud bars ticking (`mudBarsTicking`: none under the frozen clock), the meter bars on their refresh timer (`metersTicking`) and whether the export panel's Running clock runs (`exportClockTicking`: both come back with the next change after a caught panic, R65), and how many times the timeline's canvas re-rendered (`timelinePaints`: not while only the playhead moves) |
 //! | `a11y` | every visible icon-only button, focusable region or custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 //! | `fonts` | the family Pango loads for each bundled font |
 //! | `icons` | each custom symbolic icon drawn in a probe color: found, pixels, recolored |
@@ -70,9 +72,10 @@ pub struct TestMode {
     pub stuck_gst: bool,
     /// `panic-activate`: panic in `activate`, after the app is up.
     pub panic_activate: bool,
-    /// `panic-tick`: the timeline's first frame-clock callback panics
-    /// (caught: the frame clock must come back, G§3.12 R10).
-    pub panic_tick: bool,
+    /// `QREC_GUI_TEST_PANIC_ONCE`: the guarded callbacks (by their `what`)
+    /// whose first run panics (caught: what they drive must come back,
+    /// G§3.12 R10).
+    pub panic_once: Vec<String>,
     /// The frozen animation clock (`QREC_GUI_TEST_T_MS`).
     pub t_ms: u64,
     /// The local time of the export's auto name (`QREC_GUI_TEST_NOW`: RFC
@@ -80,9 +83,34 @@ pub struct TestMode {
     pub now: Option<NaiveDateTime>,
 }
 
+/// The test variables besides `QREC_GUI_TEST` itself.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TestVars<'a> {
+    pub t_ms: Option<&'a str>,
+    pub now: Option<&'a str>,
+    pub panic_once: Option<&'a str>,
+}
+
 impl TestMode {
     /// From the variables' values.
     pub fn parse(test: Option<&str>, t_ms: Option<&str>, now: Option<&str>) -> Self {
+        Self::parse_all(
+            test,
+            TestVars {
+                t_ms,
+                now,
+                ..TestVars::default()
+            },
+        )
+    }
+
+    /// From every variable's value.
+    pub fn parse_all(test: Option<&str>, vars: TestVars<'_>) -> Self {
+        let TestVars {
+            t_ms,
+            now,
+            panic_once,
+        } = vars;
         let flags: Vec<&str> = test
             .unwrap_or_default()
             .split(',')
@@ -94,7 +122,17 @@ impl TestMode {
             on,
             stuck_gst: on && flags.contains(&"stuck-gst"),
             panic_activate: on && flags.contains(&"panic-activate"),
-            panic_tick: on && flags.contains(&"panic-tick"),
+            panic_once: panic_once
+                .filter(|_| on)
+                .map(|names| {
+                    names
+                        .split('|')
+                        .map(str::trim)
+                        .filter(|n| !n.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
             t_ms: t_ms.and_then(|t| t.trim().parse().ok()).unwrap_or(0),
             now: now.and_then(|n| {
                 let n = n.trim();
@@ -108,10 +146,15 @@ impl TestMode {
 
     fn from_env() -> Self {
         let var = |k: &str| std::env::var(k).ok();
-        Self::parse(
+        let (t_ms, now) = (var("QREC_GUI_TEST_T_MS"), var("QREC_GUI_TEST_NOW"));
+        let panic_once = var("QREC_GUI_TEST_PANIC_ONCE");
+        Self::parse_all(
             var("QREC_GUI_TEST").as_deref(),
-            var("QREC_GUI_TEST_T_MS").as_deref(),
-            var("QREC_GUI_TEST_NOW").as_deref(),
+            TestVars {
+                t_ms: t_ms.as_deref(),
+                now: now.as_deref(),
+                panic_once: panic_once.as_deref(),
+            },
         )
     }
 }
@@ -515,6 +558,8 @@ fn local(app: &App) -> Value {
             .map(|(open, animate)| json!({"open": open, "animate": animate})),
         "themeSubscribers": app.ctx.theme.subscribers(),
         "mudBarsTicking": crate::widgets::mud_bar::ticking(),
+        "metersTicking": crate::widgets::meter::ticking(),
+        "exportClockTicking": crate::export::clock_ticking(),
         "timelinePaints": crate::timeline::canvas_paints(),
         "keymapProblems": local.keymap_problems,
         "theme": theme::css_name(app.ctx.theme.id()),
@@ -839,8 +884,15 @@ mod tests {
         assert!(stuck.on && stuck.stuck_gst);
         assert_eq!((stuck.t_ms, stuck.now), (0, None));
         assert!(TestMode::parse(Some("1,stuck-gst"), None, None).stuck_gst);
-        let tick = TestMode::parse(Some("1,panic-tick"), None, None);
-        assert!(tick.panic_tick && !tick.panic_activate && !on.panic_tick);
+        let vars = TestVars {
+            panic_once: Some("timeline: a frame| meter: refresh |"),
+            ..TestVars::default()
+        };
+        let faults = TestMode::parse_all(Some("1"), vars);
+        assert_eq!(faults.panic_once, ["timeline: a frame", "meter: refresh"]);
+        assert!(!faults.panic_activate && on.panic_once.is_empty());
+        // Outside test mode, none of it.
+        assert!(TestMode::parse_all(None, vars).panic_once.is_empty());
     }
 
     /// The socket thread's half: a request line reaches the queue with a

@@ -928,8 +928,8 @@ fn the_canvas_rests_while_the_program_plays() {
 }
 
 /// A caught panic in the timeline's frame clock doesn't stop it for good
-/// (G§3.12 R10): test mode's `panic-tick` panics in its first frame, and
-/// the next change starts it again, so the playing playhead still pages
+/// (G§3.12 R10): `QREC_GUI_TEST_PANIC_ONCE` makes its first frame panic,
+/// and the next change starts it again, so the playing playhead still pages
 /// the view at frame level. The slot kept the dead callback's id and never
 /// started another: no auto-page for the rest of the session, the
 /// playhead moving once a second (review R09, R65).
@@ -947,7 +947,7 @@ fn the_frame_clock_comes_back_after_a_caught_panic() {
     open(
         &mut nested,
         &project,
-        Launch::default().with_env("QREC_GUI_TEST", "1,panic-tick"),
+        Launch::default().with_env("QREC_GUI_TEST_PANIC_ONCE", "timeline: a frame"),
     );
     let scroll = |nested: &Nested| {
         nested.cli_json(&project, &["status"])["data"]["ui"]["scrollPx"]

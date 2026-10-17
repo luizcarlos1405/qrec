@@ -27,7 +27,6 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use adw::prelude::*;
-use gtk::glib;
 use qrec_core::on_event::output::{EXPORT_DONE_TITLE, EXPORT_FAILED_TITLE};
 use qrec_core::protocol::{ToastLevel, UiAction};
 use qrec_core::view::notices::{Notice, NoticeAction};
@@ -226,6 +225,7 @@ impl ToastHost {
             ctx: ctx.clone(),
             root: root.clone(),
             inner: RefCell::new(Inner::default()),
+            timer: guard::Slot::new(),
         });
         let receiver = Rc::clone(&host);
         ctx.store
@@ -257,7 +257,6 @@ const OUT_MS: u32 = 140;
 #[derive(Default)]
 struct Inner {
     queue: ToastQueue,
-    timer: Option<glib::SourceId>,
     /// The toast's action buttons and the actions they run.
     actions: Vec<(gtk::Button, NoticeAction)>,
     /// The running in or out animation (kept alive while it plays).
@@ -270,6 +269,9 @@ struct Host {
     ctx: Ctx,
     root: gtk::Box,
     inner: RefCell<Inner>,
+    /// The shown toast's timer (a slot: empty again after a caught panic,
+    /// R65).
+    timer: guard::Slot,
 }
 
 impl Host {
@@ -316,9 +318,7 @@ impl Host {
     /// The shown toast's timer, from now (none for an error, dismissed by
     /// hand).
     fn start_timer(self: &Rc<Self>) {
-        if let Some(timer) = self.inner.borrow_mut().timer.take() {
-            timer.remove();
-        }
+        self.timer.stop();
         let after = self
             .inner
             .borrow()
@@ -327,11 +327,8 @@ impl Host {
             .and_then(|q| duration(&q.notice));
         if let Some(after) = after {
             let host = Rc::clone(self);
-            let id = guard::timeout_local_once(after, "toast: timer", move || {
-                host.inner.borrow_mut().timer = None;
-                host.dismiss();
-            });
-            self.inner.borrow_mut().timer = Some(id);
+            self.timer
+                .timeout_once(after, "toast: timer", move || host.dismiss());
         }
     }
 
@@ -340,9 +337,7 @@ impl Host {
         while let Some(child) = self.root.first_child() {
             self.root.remove(&child);
         }
-        if let Some(timer) = self.inner.borrow_mut().timer.take() {
-            timer.remove();
-        }
+        self.timer.stop();
         let current = self.inner.borrow().queue.current().cloned();
         let Some(queued) = current else {
             self.inner.borrow_mut().actions.clear();
@@ -499,9 +494,7 @@ impl Host {
         if self.inner.borrow().leaving {
             return;
         }
-        if let Some(timer) = self.inner.borrow_mut().timer.take() {
-            timer.remove();
-        }
+        self.timer.stop();
         let Some(toast) = self.root.first_child() else {
             self.advance();
             return;

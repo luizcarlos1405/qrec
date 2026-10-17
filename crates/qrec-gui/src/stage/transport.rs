@@ -76,7 +76,9 @@ pub struct TransportRow {
     save: gtk::Button,
     /// Playing: the timecode follows the player on the frame clock.
     playing: Cell<bool>,
-    tick: RefCell<Option<gtk::TickCallbackId>>,
+    /// The timecode on the frame clock while playing (a slot: empty again
+    /// after a caught panic, and the next update starts it, R65).
+    tick: crate::guard::Slot,
     total_frames: Cell<Frame>,
     ctx: Ctx,
 }
@@ -197,7 +199,7 @@ impl TransportRow {
             buttons,
             save,
             playing: Cell::new(false),
-            tick: RefCell::new(None),
+            tick: crate::guard::Slot::new(),
             total_frames: Cell::new(0),
             ctx: ctx.clone(),
         })
@@ -280,32 +282,31 @@ impl TransportRow {
 
     /// While playing, the timecode is the player's frame on each frame.
     fn follow_player(self: &Rc<Self>, playing: bool) {
-        if self.playing.replace(playing) == playing {
+        self.playing.set(playing);
+        if !playing {
+            self.tick.stop();
             return;
         }
-        if let Some(tick) = self.tick.borrow_mut().take() {
-            tick.remove();
-        }
-        if !playing {
+        if self.tick.is_running() {
             return;
         }
         let weak = Rc::downgrade(self);
-        let tick = crate::guard::tick(&self.root, "transport: the timecode", move |_, _| {
-            let Some(this) = weak.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            if let Some(ns) = this.ctx.media.position_ns() {
-                let fps = this.ctx.store.state().project.canvas.fps;
-                let frame = (ns_to_frame_floor(i64::try_from(ns).unwrap_or(i64::MAX), fps).max(0)
-                    as Frame)
-                    .min(this.total_frames.get());
-                let text = format::timecode(frame, fps);
-                if this.now.text() != text {
-                    this.now.set_text(&text);
+        self.tick
+            .tick(&self.root, "transport: the timecode", move |_, _| {
+                let Some(this) = weak.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                if let Some(ns) = this.ctx.media.position_ns() {
+                    let fps = this.ctx.store.state().project.canvas.fps;
+                    let frame = (ns_to_frame_floor(i64::try_from(ns).unwrap_or(i64::MAX), fps)
+                        .max(0) as Frame)
+                        .min(this.total_frames.get());
+                    let text = format::timecode(frame, fps);
+                    if this.now.text() != text {
+                        this.now.set_text(&text);
+                    }
                 }
-            }
-            glib::ControlFlow::Continue
-        });
-        *self.tick.borrow_mut() = Some(tick);
+                glib::ControlFlow::Continue
+            });
     }
 }

@@ -10,9 +10,11 @@
 //! - Sources: [`idle`] (from any thread), [`idle_local_once`],
 //!   [`timeout_local`], [`timeout_local_once`], [`invoke`], [`tick`]. Only
 //!   this file calls GLib's own (a test greps the crate). A [`Slot`] holds
-//!   one its owner stops or starts again: it empties itself however the
-//!   callback ends (an id kept past a caught panic is dead: a check of it
-//!   waits forever, and `SourceId::remove` panics on it).
+//!   every one an owner keeps, to stop it or start it again: it empties
+//!   itself however the callback ends (an id kept past a caught panic is
+//!   dead: a check of it waits forever, and `SourceId::remove` panics on
+//!   it). No other file names a `SourceId` or a `TickCallbackId` (a test
+//!   greps that too, R65).
 //! - Signal handlers and async callbacks: [`guarded!`](crate::guarded),
 //!   `button.connect_clicked(guarded!("what", move |_| …))` (a test greps
 //!   every `.connect_…(`).
@@ -20,7 +22,9 @@
 //!
 //! After a panic the closure returns [`AfterPanic::after_panic`]: nothing,
 //! `false`, `Propagation::Proceed`, `ControlFlow::Break` (a repeating source
-//! stops rather than panic again on every turn).
+//! stops rather than panic again on every turn). In test mode
+//! `QREC_GUI_TEST_PANIC_ONCE` makes the first run of the callbacks it names
+//! panic, so the nested cases see what they drive come back.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -107,7 +111,10 @@ pub fn run<R: AfterPanic>(what: &str, f: impl FnOnce() -> R) -> R {
 
 /// Runs `f`; `None` when it panicked (the panic is reported).
 pub fn catch<R>(what: &str, f: impl FnOnce() -> R) -> Option<R> {
-    match catch_unwind(AssertUnwindSafe(f)) {
+    match catch_unwind(AssertUnwindSafe(|| {
+        panic_once(what);
+        f()
+    })) {
         Ok(value) => Some(value),
         Err(payload) => {
             report(what, payload.as_ref());
@@ -131,7 +138,31 @@ pub fn message(payload: &(dyn Any + Send)) -> String {
 /// panic's message).
 type Reporter = Box<dyn Fn(&str, &str)>;
 
+/// Test mode's fault injection (`QREC_GUI_TEST_PANIC_ONCE`, G§8.4): the
+/// first run of a guarded callback named there panics, caught like any
+/// other, so a nested case sees that what it drives comes back (the
+/// timeline's frame clock, a meter's refresh, the export panel's clock).
+fn panic_once(what: &str) {
+    let names = &crate::testctl::mode().panic_once;
+    if names.is_empty() || !names.iter().any(|n| n == what) {
+        return;
+    }
+    let first = INJECTED.with(|done| {
+        let mut done = done.borrow_mut();
+        let first = !done.iter().any(|n| n == what);
+        if first {
+            done.push(what.to_owned());
+        }
+        first
+    });
+    if first {
+        panic!("panic-once: {what}'s first run panics (test mode)");
+    }
+}
+
 thread_local! {
+    /// The callbacks [`panic_once`] made panic already.
+    static INJECTED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static PANICS: Cell<u64> = const { Cell::new(0) };
     static LAST_TOLD: Cell<Option<Instant>> = const { Cell::new(None) };
     static REPORTER: RefCell<Option<Reporter>> = const { RefCell::new(None) };
@@ -454,6 +485,62 @@ mod tests {
             }
         }
         assert!(offenders.is_empty(), "unguarded callbacks: {offenders:#?}");
+    }
+
+    /// R65: a source or tick callback an owner keeps (to stop it, or to see
+    /// whether it runs) is a [`Slot`]: a raw `glib::SourceId` or
+    /// `gtk::TickCallbackId` kept past a caught panic is dead, so its owner
+    /// never started another (the meter stopped refreshing, the export
+    /// clock froze) and its next stop panicked on it ("Failed to remove
+    /// source", after GLib's critical). Only this file names them.
+    #[test]
+    fn every_kept_source_is_a_slot() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        let mut dirs = vec![src.clone()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs") {
+                    continue;
+                }
+                let relative = path.strip_prefix(&src).unwrap().display().to_string();
+                if relative == "guard.rs" {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                offenders.extend(raw_ids(&relative, &production(&text)));
+            }
+        }
+        assert!(offenders.is_empty(), "kept outside a Slot: {offenders:#?}");
+        assert_eq!(
+            raw_ids(
+                "x.rs",
+                "timer: RefCell<Option<glib::SourceId>>,\n// a SourceId\n"
+            )
+            .len(),
+            1
+        );
+        assert_eq!(
+            raw_ids("x.rs", "tick: Cell<Option<gtk::TickCallbackId>>,").len(),
+            1
+        );
+        assert!(raw_ids("x.rs", "timer: guard::Slot,").is_empty());
+    }
+
+    /// The lines of `code` (comments stripped) that name a raw source or
+    /// tick callback id.
+    fn raw_ids(file: &str, code: &str) -> Vec<String> {
+        code.lines()
+            .enumerate()
+            .map(|(i, l)| (i + 1, l.split("//").next().unwrap_or_default()))
+            .filter(|(_, l)| l.contains("SourceId") || l.contains("TickCallbackId"))
+            .map(|(n, l)| format!("{file}:{n}: {}", l.trim()))
+            .collect()
     }
 
     /// `text` without its `#[cfg(test)]` items: each attribute and the item

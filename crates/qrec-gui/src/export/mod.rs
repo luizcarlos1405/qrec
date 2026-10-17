@@ -86,6 +86,18 @@ impl ExportPanel {
     }
 }
 
+thread_local! {
+    /// The window's panel, for [`clock_ticking`].
+    static PANEL: RefCell<std::rc::Weak<Panel>> = const { RefCell::new(std::rc::Weak::new()) };
+}
+
+/// Whether the Running page's clock runs (`testctl`'s `local`,
+/// `exportClockTicking`): while the page shows, and again from the next
+/// snapshot after a caught panic in it (R65); `None` without a panel.
+pub fn clock_ticking() -> Option<bool> {
+    PANEL.with(|p| p.borrow().upgrade().map(|panel| panel.ticker.is_running()))
+}
+
 /// The panel's own export on its way.
 #[derive(Debug, Clone)]
 struct Own {
@@ -111,7 +123,9 @@ struct Panel {
     config: RefCell<UserConfig>,
     /// The auto name shown in Setup, made when the panel opens.
     preview: RefCell<(String, String)>,
-    ticker: RefCell<Option<glib::SourceId>>,
+    /// The Running page's clock (a slot: empty again after a caught panic,
+    /// and the next snapshot starts it, R65).
+    ticker: guard::Slot,
     /// Set while the setup controls follow the draft (no edits then).
     syncing: Cell<bool>,
     /// `QREC_GUI_TEST_SAVE_AS`'s paths still to hand out (test mode).
@@ -211,13 +225,14 @@ impl Panel {
             own: RefCell::new(None),
             config: RefCell::new(UserConfig::default()),
             preview: RefCell::new((String::new(), String::new())),
-            ticker: RefCell::new(None),
+            ticker: guard::Slot::new(),
             syncing: Cell::new(false),
             test_paths: RefCell::new(test_paths),
             exports: Cell::new(None),
         });
         panel.connect();
         panel.read_config();
+        PANEL.with(|p| *p.borrow_mut() = Rc::downgrade(&panel));
         for (id, request) in ACTIONS {
             let weak = Rc::downgrade(&panel);
             ctx.actions.register(
@@ -628,11 +643,10 @@ impl Panel {
 
     /// The running page's clock (elapsed, about … left), once a second.
     fn tick(self: &Rc<Self>, on: bool) {
-        let mut ticker = self.ticker.borrow_mut();
-        match (on, ticker.is_some()) {
+        match (on, self.ticker.is_running()) {
             (true, false) => {
                 let weak = Rc::downgrade(self);
-                *ticker = Some(guard::timeout_local(
+                self.ticker.timeout(
                     Duration::from_secs(1),
                     "export: the running clock",
                     move || {
@@ -645,13 +659,9 @@ impl Panel {
                         }
                         glib::ControlFlow::Continue
                     },
-                ));
+                );
             }
-            (false, true) => {
-                if let Some(id) = ticker.take() {
-                    id.remove();
-                }
-            }
+            (false, true) => self.ticker.stop(),
             _ => {}
         }
     }

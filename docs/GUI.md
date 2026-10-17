@@ -1268,13 +1268,22 @@ time; A§8.7 rules for every child).
     panic);
   - sources go through `guard::{idle, idle_local_once, timeout_local,
     timeout_local_once, invoke, tick}`, the only callers of GLib's own;
-    a `guard::Slot` holds one its owner stops or starts again (the
-    timeline's frame clock, `SetUi` and tooltip timers): it empties itself
-    however the callback ends (`Break`, fired, a caught panic, removed, its
-    widget gone), so a check of it never waits on a dead id and its `stop`
-    never removes a source GLib destroyed (`SourceId::remove` panics on
-    one; review R09, R65: the timeline's tick never came back after a
-    caught panic);
+    a `guard::Slot` holds every one an owner keeps to stop it or to see
+    whether it runs (the timeline's frame clock, `SetUi` and tooltip
+    timers, the meters' refresh, the export panel's clock, the toasts'
+    timer, the program sync's, the stage's ticks and nudge timer, the
+    autocut debounce, the bin's sizes debounce, the spinner's, the mud
+    bar's and the countdown's ticks, the startup signal watch): it empties
+    itself however the callback ends (`Break`, fired, a caught panic,
+    removed, its widget gone), so a check of it never waits on a dead id,
+    its `stop` never removes a source GLib destroyed (`SourceId::remove`
+    panics on one), and its owner starts it again with the next change
+    (a meter on the panel's next refresh, the export clock on the next
+    snapshot; review R09, R65: the timeline's tick never came back after a
+    caught panic, and the meters' and the export clock's raw ids stayed
+    dead, then panicked when removed). A test finds any
+    `glib::SourceId` or `gtk::TickCallbackId` named outside `guard.rs`
+    (`every_kept_source_is_a_slot`; R65's audit);
   - subclass virtual methods and other entry points use `guard::run` or
     `guard::catch`;
   - the queue's drain, `Subscribers::emit` and `ActionRouter::run` contain
@@ -1809,7 +1818,7 @@ previews, the player, io, opening, the portal).
 | `{"op":"dispatch","command":{…},"confirmed":false}` | `Store::dispatch_with` with the default reply policy (confirmations open their modal); `{"ok":true}` at once |
 | `{"op":"action","id":"export.panel"}` | runs a binding or GUI action as its key would (pre-steps included) |
 | `{"op":"hints"}` | the rendered hint items (`keys`, `label`, `enabled`, `emphasized`) and the status text (`hintbar::current_items`); `shown`, the labels of the items the bar draws whole (a narrow window leaves the trailing ones out, `hintbar::fitting`), and `cut`, whether a drawn one runs past the bar (never; both WP7 integration audit) |
-| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `playing`, the player plays (the program or a bin preview's take), and `programPlaying`, the program plays in it (`LocalUi.program_playing`, G§3.10 step 3; review R00, R16); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and the panel's (`layerRowsAlive`, `audioRowsAlive`; review R43), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit); `themeSubscribers`, the theme's callbacks (a dropped bin thumbnail's goes with it, R11; WP7 integration's shot and code audits); `timelinePaints`, how many times the timeline's canvas made its render node again (not while only the playhead moves, C16; review R10); `binSlide`, the bin drawer's last slide as asked (`open`, `animate`: test mode animates nothing, so a case reads whether the open at start would have slid in; review fix, G§3.3); `takePreview`, the bin preview (`take`, `playing`: `Space` pauses it; null without one; review fix, D-17) |
+| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `playing`, the player plays (the program or a bin preview's take), and `programPlaying`, the program plays in it (`LocalUi.program_playing`, G§3.10 step 3; review R00, R16); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and the panel's (`layerRowsAlive`, `audioRowsAlive`; review R43), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit); `metersTicking`, the meter bars on their refresh timer, and `exportClockTicking`, the export panel's Running clock (null without a panel): each comes back with the next change after a caught panic (G§3.12; R65's audit); `themeSubscribers`, the theme's callbacks (a dropped bin thumbnail's goes with it, R11; WP7 integration's shot and code audits); `timelinePaints`, how many times the timeline's canvas made its render node again (not while only the playhead moves, C16; review R10); `binSlide`, the bin drawer's last slide as asked (`open`, `animate`: test mode animates nothing, so a case reads whether the open at start would have slid in; review fix, G§3.3); `takePreview`, the bin preview (`take`, `playing`: `Space` pauses it; null without one; review fix, D-17) |
 | `{"op":"a11y"}` | every visible icon-only button, focusable region or focusable custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 | `{"op":"fonts"}` | the family Pango loads for each bundled font; `ok` when each resolves to itself |
 | `{"op":"icons"}` | each custom symbolic icon drawn in a probe color: found, its pixels, recolored |
@@ -3946,9 +3955,11 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   - `QREC_GUI_TEST_SAVE_AS=<path>|<path>…` stands in for the export
     panel's save dialog (WP7): each press of Change… takes the next path
     (the file dialog needs a portal, G§9 R7; D-24's cases);
-  - the flag `panic-tick` (`QREC_GUI_TEST=1,panic-tick`) panics in the
-    timeline's first frame-clock callback: caught, and the next change
-    starts the frame clock again (G§3.12 R10; review R09);
+  - `QREC_GUI_TEST_PANIC_ONCE=<what>|<what>…` makes the first run of the
+    guarded callbacks named (their `what`: `timeline: a frame`, `meter:
+    refresh`, `export: the running clock`) panic, caught like any other,
+    so a case sees that what each drives comes back (G§3.12 R10; review
+    R09, R65; it replaced the timeline-only flag `panic-tick`);
   - the control channel (G§3.18).
 - **Driving.** `qrec --project <dir> … --json` with the `TestEnv`
   (`Nested::cli`, `cli_json`); the pointer: `Nested::pointer()`, one

@@ -206,7 +206,8 @@ struct Inner {
     alt: Cell<bool>,
     rendering: Cell<bool>,
     dirty: Cell<bool>,
-    nudge_timer: RefCell<Option<glib::SourceId>>,
+    /// A nudge burst's end when no release comes (a slot, R65).
+    nudge_timer: crate::guard::Slot,
     /// The window's release watch is on ([`Inner::watch_releases`]).
     release_watch: Cell<bool>,
     epoch: Instant,
@@ -328,7 +329,7 @@ impl Inner {
             alt: Cell::new(false),
             rendering: Cell::new(false),
             dirty: Cell::new(false),
-            nudge_timer: RefCell::new(None),
+            nudge_timer: crate::guard::Slot::new(),
             release_watch: Cell::new(false),
             epoch: Instant::now(),
         });
@@ -1104,9 +1105,7 @@ impl Inner {
             edit.locked = None;
             edit.nudges.cancel();
         }
-        if let Some(timer) = self.nudge_timer.borrow_mut().take() {
-            timer.remove();
-        }
+        self.nudge_timer.stop();
         self.ctx.keys.set_drag_cancel(None);
         self.hover_cursor_reset();
         let state = self.ctx.store.state();
@@ -1276,31 +1275,27 @@ impl Inner {
     }
 
     fn arm_nudge_timer(self: &Rc<Self>, deadline: Option<u64>) {
-        if let Some(timer) = self.nudge_timer.borrow_mut().take() {
-            timer.remove();
-        }
+        self.nudge_timer.stop();
         let Some(at) = deadline else {
             return;
         };
         let wait = at.saturating_sub(self.now_ms()).max(1);
         let weak = Rc::downgrade(self);
-        let id = crate::guard::timeout_local_once(
+        self.nudge_timer.timeout_once(
             Duration::from_millis(wait),
             "stage: a nudge burst's end",
             move || {
                 if let Some(this) = weak.upgrade() {
-                    this.nudge_timer.borrow_mut().take();
                     let now = this.now_ms();
                     this.end_burst(|nudges| nudges.due(now));
                     // Not due yet (a timer a millisecond early): the rest.
                     let deadline = this.edit.borrow().nudges.deadline();
-                    if deadline.is_some() && this.nudge_timer.borrow().is_none() {
+                    if deadline.is_some() && !this.nudge_timer.is_running() {
                         this.arm_nudge_timer(deadline);
                     }
                 }
             },
         );
-        *self.nudge_timer.borrow_mut() = Some(id);
     }
 
     /// The window's key releases, in the capture phase (D-33: a burst ends
@@ -1380,9 +1375,7 @@ impl Inner {
             }
             (preview, cmd)
         };
-        if let Some(timer) = self.nudge_timer.borrow_mut().take() {
-            timer.remove();
-        }
+        self.nudge_timer.stop();
         self.ctx.keys.set_drag_cancel(None);
         self.ctx.store.update_local(|l| l.drag = None);
         self.commit(cmd, ended);

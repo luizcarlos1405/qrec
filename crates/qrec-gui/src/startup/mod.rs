@@ -666,7 +666,10 @@ pub struct Startup {
     /// Re-run steps 4 and 7 once the failed host stopped ("Check again").
     restart_when_stopped: Cell<bool>,
     choices: RefCell<Option<Sender<Choice>>>,
-    signal_watch: RefCell<Option<glib::SourceId>>,
+    /// The signal watch while no host handles signals (a slot: a caught
+    /// panic stops it, and the next page or stopped host starts it again,
+    /// R65).
+    signal_watch: guard::Slot,
 }
 
 impl Startup {
@@ -688,7 +691,7 @@ impl Startup {
             open_sent: Cell::new(false),
             restart_when_stopped: Cell::new(false),
             choices: RefCell::new(None),
-            signal_watch: RefCell::new(None),
+            signal_watch: guard::Slot::new(),
         }
     }
 
@@ -756,21 +759,25 @@ impl Startup {
     }
 
     /// Watches for a signal while no host handles them (before step 4, on
-    /// pages after the host stopped): quit with 130.
+    /// pages after the host stopped): quit with 130. Starts the watch
+    /// unless it runs.
     pub fn watch_signals(&self, app: &Rc<App>) {
+        if self.signal_watch.is_running() {
+            return;
+        }
         let weak = Rc::downgrade(app);
-        let id = guard::timeout_local(Duration::from_millis(100), "startup: signals", move || {
-            let Some(app) = weak.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            if app.startup.prepared.interrupts.count() > 0 && !app.startup.host_alive() {
-                tracing::info!("a signal while no host runs: quitting");
-                app.quit(130);
-                return glib::ControlFlow::Break;
-            }
-            glib::ControlFlow::Continue
-        });
-        *self.signal_watch.borrow_mut() = Some(id);
+        self.signal_watch
+            .timeout(Duration::from_millis(100), "startup: signals", move || {
+                let Some(app) = weak.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                if app.startup.prepared.interrupts.count() > 0 && !app.startup.host_alive() {
+                    tracing::info!("a signal while no host runs: quitting");
+                    app.quit(130);
+                    return glib::ControlFlow::Break;
+                }
+                glib::ControlFlow::Continue
+            });
     }
 
     fn spawn_takeover(&self) {
@@ -1017,6 +1024,9 @@ impl Startup {
                 }
                 self.open_sent.set(false);
                 app.on_host_stopped(end);
+                // No host handles signals now (a page stays): the watch,
+                // also when a caught panic stopped it.
+                self.watch_signals(app);
             }
         }
     }
@@ -1024,6 +1034,7 @@ impl Startup {
     /// Shows a blocking page (it replaces the editor).
     fn block(&self, app: &Rc<App>, page: BlockKind) {
         app.ctx.store.update_local(move |l| blocked(l, page));
+        self.watch_signals(app);
     }
 
     /// A blocking page's button.

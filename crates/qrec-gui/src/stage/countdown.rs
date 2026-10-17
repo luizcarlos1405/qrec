@@ -43,7 +43,9 @@ mod imp {
     pub struct Countdown {
         pub state: Cell<Option<CountdownState>>,
         pub palette: RefCell<Option<Rc<Palette>>>,
-        pub tick: Cell<Option<gtk::TickCallbackId>>,
+        /// The sweep on the frame clock (a slot: empty again after a
+        /// caught panic, and the next state starts it, R65).
+        pub tick: crate::guard::Slot,
     }
 
     #[glib::object_subclass]
@@ -59,11 +61,7 @@ mod imp {
 
     impl ObjectImpl for Countdown {
         fn dispose(&self) {
-            crate::guard::run("countdown: dispose", || {
-                if let Some(tick) = self.tick.take() {
-                    tick.remove();
-                }
-            });
+            crate::guard::run("countdown: dispose", || self.tick.stop());
         }
     }
 
@@ -73,11 +71,7 @@ mod imp {
         }
 
         fn unmap(&self) {
-            crate::guard::run("countdown: unmap", || {
-                if let Some(tick) = self.tick.take() {
-                    tick.remove();
-                }
-            });
+            crate::guard::run("countdown: unmap", || self.tick.stop());
             self.parent_unmap();
         }
     }
@@ -201,17 +195,13 @@ impl Countdown {
         imp.state.set(state);
         self.set_visible(state.is_some());
         let animate = state.is_some_and(|s| !s.reduced) && !motion::one_shots_at_end();
-        match (animate, imp.tick.take()) {
-            (true, Some(tick)) => imp.tick.set(Some(tick)),
-            (true, None) => {
-                let tick = crate::guard::tick(self, "countdown: tick", |widget, _| {
-                    widget.queue_draw();
-                    glib::ControlFlow::Continue
-                });
-                imp.tick.set(Some(tick));
-            }
-            (false, Some(tick)) => tick.remove(),
-            (false, None) => {}
+        match (animate, imp.tick.is_running()) {
+            (true, false) => imp.tick.tick(self, "countdown: tick", |widget, _| {
+                widget.queue_draw();
+                glib::ControlFlow::Continue
+            }),
+            (false, true) => imp.tick.stop(),
+            _ => {}
         }
         self.queue_draw();
     }

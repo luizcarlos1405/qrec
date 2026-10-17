@@ -101,8 +101,10 @@ struct Drawer {
     /// again).
     asked: RefCell<BTreeSet<TakeId>>,
     selection: RefCell<Selection>,
-    /// The sizes' debounce, and the token that makes `waitIdle` wait.
-    debounce: RefCell<Option<(glib::SourceId, BusyToken)>>,
+    /// The sizes' debounce (a slot, R65), and the token that makes
+    /// `waitIdle` wait while it runs.
+    debounce: guard::Slot,
+    debounce_busy: RefCell<Option<BusyToken>>,
     thumbs: RefCell<Option<Subscription>>,
     /// The texture cache exists (the Session is open).
     thumbs_ready: std::cell::Cell<bool>,
@@ -249,7 +251,8 @@ impl Drawer {
             sizes: RefCell::new(BTreeMap::new()),
             asked: RefCell::new(BTreeSet::new()),
             selection: RefCell::new(Selection::default()),
-            debounce: RefCell::new(None),
+            debounce: guard::Slot::new(),
+            debounce_busy: RefCell::new(None),
             thumbs: RefCell::new(None),
             thumbs_ready: std::cell::Cell::new(false),
             sink: RefCell::new(None),
@@ -560,26 +563,26 @@ impl Drawer {
     /// from now (holding an io token, so `waitIdle` waits for them).
     fn want_sizes(self: &Rc<Self>, debounce: bool) {
         if !debounce {
-            if let Some((id, _token)) = self.debounce.borrow_mut().take() {
-                id.remove();
-            }
+            self.debounce.stop();
+            self.debounce_busy.borrow_mut().take();
             self.fetch_sizes();
             return;
         }
-        if self.debounce.borrow().is_some() {
+        if self.debounce.is_running() {
             return;
         }
-        let token = self.ctx.media.hold_io_busy();
+        *self.debounce_busy.borrow_mut() = Some(self.ctx.media.hold_io_busy());
         let weak = Rc::downgrade(self);
-        let id = guard::timeout_local_once(SIZES_DEBOUNCE, "bin: the sizes' debounce", move || {
-            if let Some(drawer) = weak.upgrade() {
-                // The job counts as pending io before the token goes.
-                let held = drawer.debounce.borrow_mut().take();
-                drawer.fetch_sizes();
-                drop(held);
-            }
-        });
-        *self.debounce.borrow_mut() = Some((id, token));
+        self.debounce
+            .timeout_once(SIZES_DEBOUNCE, "bin: the sizes' debounce", move || {
+                if let Some(drawer) = weak.upgrade() {
+                    // The job counts as pending io before the token goes
+                    // (and the token goes with a panic too).
+                    let held = drawer.debounce_busy.borrow_mut().take();
+                    drawer.fetch_sizes();
+                    drop(held);
+                }
+            });
     }
 
     fn fetch_sizes(self: &Rc<Self>) {

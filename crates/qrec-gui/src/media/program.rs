@@ -54,7 +54,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gtk::glib;
 use qrec_core::ges_plan::{plan_ges, plan_ges_take, without_tracks};
 use qrec_core::plans::GesTimeline;
 use qrec_core::protocol::ToastLevel;
@@ -739,7 +738,9 @@ pub struct ProgramSync {
     plan: RefCell<Option<(PlanKey, Arc<GesTimeline>)>>,
     /// Bumped when `project.takes` changes (the plan reads the take scenes).
     takes_rev: Cell<u64>,
-    timer: RefCell<Option<glib::SourceId>>,
+    /// One timeout to the machine's next deadline (a slot: empty again
+    /// after a caught panic, R65).
+    timer: guard::Slot,
     timer_at: Cell<Option<u64>>,
     /// The rate the sync wrote itself (its subscription ignores it).
     own_rate: Cell<Option<f64>>,
@@ -755,7 +756,7 @@ impl ProgramSync {
             machine: RefCell::new(SyncMachine::new()),
             plan: RefCell::new(None),
             takes_rev: Cell::new(0),
-            timer: RefCell::new(None),
+            timer: guard::Slot::new(),
             timer_at: Cell::new(None),
             own_rate: Cell::new(None),
             started: Instant::now(),
@@ -971,28 +972,24 @@ impl ProgramSync {
     /// One timeout to the machine's next deadline.
     fn arm_timer(self: &Rc<Self>) {
         let deadline = self.machine.borrow().deadline();
-        if deadline == self.timer_at.get() && self.timer.borrow().is_some() {
+        if deadline == self.timer_at.get() && self.timer.is_running() {
             return;
         }
-        if let Some(old) = self.timer.borrow_mut().take() {
-            old.remove();
-        }
+        self.timer.stop();
         self.timer_at.set(deadline);
         let Some(at) = deadline else { return };
         let wait = at.saturating_sub(self.now_ms()).max(1);
         let weak = Rc::downgrade(self);
-        let id = guard::timeout_local_once(
+        self.timer.timeout_once(
             Duration::from_millis(wait),
             "program sync: the timer",
             move || {
                 if let Some(sync) = weak.upgrade() {
-                    sync.timer.borrow_mut().take();
                     sync.timer_at.set(None);
                     sync.run();
                 }
             },
         );
-        *self.timer.borrow_mut() = Some(id);
     }
 }
 

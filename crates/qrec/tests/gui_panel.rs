@@ -1813,6 +1813,54 @@ fn the_pages_slide_unless_motion_is_reduced() {
     }
 }
 
+/// R65: a caught panic in a meter's refresh timer (test mode's
+/// `QREC_GUI_TEST_PANIC_ONCE`) stops that meter until the next change: the
+/// panel's next refresh (a CLI seek's snapshot) starts it again. Unmapped
+/// (the autocut page over the layers page) and mapped again, every meter
+/// stops and starts with no dead source touched. The meter kept the dead
+/// timer's id: it stood still until mapped again, and its unmap removed
+/// the dead id (GLib's critical, then a second caught panic, "Failed to
+/// remove source").
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_meter_comes_back_after_a_caught_panic() {
+    let mut nested = Nested::start(AREA, "meter-panic", Options::default());
+    let preset = ui(|u| {
+        u.canvas_mode = CanvasMode::Program;
+        u.selection = vec![clip("c3e9")];
+    });
+    let project = fixture(&nested, DesignVariant::Base, &preset);
+    let launch = levels(DESIGN_LEVELS).with_env("QREC_GUI_TEST_PANIC_ONCE", "meter: refresh");
+    open(&mut nested, &project, launch);
+    let ticking = |nested: &mut Nested| {
+        let local = nested.window(0).local();
+        let n = local["metersTicking"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("no metersTicking: {local}"));
+        (n, local["panics"].as_u64().unwrap_or(0))
+    };
+    let after = poll(Duration::from_secs(10), "the meter's panic", || {
+        let (n, panics) = ticking(&mut nested);
+        (panics == 1).then_some(n)
+    });
+    // A1's and A2's rows: one stopped.
+    assert_eq!(after, 1, "one meter of two stopped");
+    cli_ok(&nested, &project, &["seek", "--to", "30f"]);
+    nested.window(0).wait_idle();
+    assert_eq!(ticking(&mut nested), (2, 1), "the next change started it");
+    let gui = nested.window(0);
+    let reply = gui.ctl(json!({"op": "action", "id": "autocut.page"}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    wait_for_label(gui, "Removes 4 silences");
+    assert_eq!(ticking(&mut nested), (0, 1), "unmapped, none runs");
+    let gui = nested.window(0);
+    let reply = gui.ctl(json!({"op": "action", "id": "autocut.page"}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    gui.wait_idle();
+    assert_eq!(ticking(&mut nested), (2, 1), "mapped again");
+    nested.window(0).assert_no_criticals();
+}
+
 // ---------------------------------------------------- not in a compositor
 
 /// The fixture's dry run (BRIEF §3.6), as the CLI returns it, reads like

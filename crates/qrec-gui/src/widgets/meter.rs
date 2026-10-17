@@ -46,6 +46,26 @@ pub const STALE_MS: u64 = 1500;
 /// 20 Hz, and a falling peak moves in steps under a dB).
 pub const REFRESH_MS: u64 = 33;
 
+thread_local! {
+    /// Every bar made, weakly (test mode only): what [`ticking`] counts.
+    static BARS: RefCell<Vec<glib::WeakRef<MeterBar>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// How many meter bars look at their slot on their timer now (test mode;
+/// `testctl`'s `local`, `metersTicking`): the mapped ones, but one whose
+/// timer stopped (a caught panic) until the next change starts it again
+/// (R65).
+pub fn ticking() -> usize {
+    BARS.with(|bars| {
+        let mut bars = bars.borrow_mut();
+        bars.retain(|bar| bar.upgrade().is_some());
+        bars.iter()
+            .filter_map(glib::WeakRef::upgrade)
+            .filter(|bar| bar.imp().timer.is_running())
+            .count()
+    })
+}
+
 /// The loudest channel of a reading: (RMS, peak) in dBFS.
 pub fn loudest(reading: &LevelReading) -> (f64, f64) {
     let max = |v: &[f64]| {
@@ -133,7 +153,10 @@ mod imp {
         pub palette: RefCell<Rc<Palette>>,
         pub device: RefCell<String>,
         pub media: RefCell<Option<MediaHub>>,
-        pub timer: RefCell<Option<glib::SourceId>>,
+        /// The look at the slot every [`REFRESH_MS`] while mapped (a slot:
+        /// a caught panic empties it, and the next change starts it
+        /// again, R65).
+        pub timer: crate::guard::Slot,
         pub on_change: RefCell<Option<ReadoutFn>>,
         pub shown: RefCell<(String, bool)>,
         pub theme: RefCell<Option<crate::store::Subscription>>,
@@ -155,7 +178,7 @@ mod imp {
                 ))),
                 device: RefCell::new(String::new()),
                 media: RefCell::new(None),
-                timer: RefCell::new(None),
+                timer: crate::guard::Slot::new(),
                 on_change: RefCell::new(None),
                 shown: RefCell::new((String::new(), false)),
                 theme: RefCell::new(None),
@@ -179,9 +202,7 @@ mod imp {
     impl ObjectImpl for MeterBar {
         fn dispose(&self) {
             crate::guard::run("meter: dispose", || {
-                if let Some(timer) = self.timer.borrow_mut().take() {
-                    timer.remove();
-                }
+                self.timer.stop();
                 self.theme.borrow_mut().take();
                 self.on_change.borrow_mut().take();
             });
@@ -205,32 +226,14 @@ mod imp {
         fn map(&self) {
             self.parent_map();
             crate::guard::run("meter: map", || {
-                let weak = self.obj().downgrade();
-                let timer = crate::guard::timeout_local(
-                    std::time::Duration::from_millis(REFRESH_MS),
-                    "meter: refresh",
-                    move || match weak.upgrade() {
-                        Some(bar) => {
-                            bar.on_frame();
-                            glib::ControlFlow::Continue
-                        }
-                        None => glib::ControlFlow::Break,
-                    },
-                );
-                if let Some(old) = self.timer.borrow_mut().replace(timer) {
-                    old.remove();
-                }
+                self.obj().start_refresh();
                 // Current at once, not a refresh later.
                 self.obj().on_frame();
             });
         }
 
         fn unmap(&self) {
-            crate::guard::run("meter: unmap", || {
-                if let Some(timer) = self.timer.borrow_mut().take() {
-                    timer.remove();
-                }
-            });
+            crate::guard::run("meter: unmap", || self.timer.stop());
             self.parent_unmap();
         }
 
@@ -310,6 +313,30 @@ glib::wrapper! {
 }
 
 impl MeterBar {
+    /// Looks at the slot every [`REFRESH_MS`] from now on.
+    fn start_refresh(&self) {
+        let weak = self.downgrade();
+        self.imp().timer.timeout(
+            std::time::Duration::from_millis(REFRESH_MS),
+            "meter: refresh",
+            move || match weak.upgrade() {
+                Some(bar) => {
+                    bar.on_frame();
+                    glib::ControlFlow::Continue
+                }
+                None => glib::ControlFlow::Break,
+            },
+        );
+    }
+
+    /// A change came (the panel's refresh): a mapped meter whose timer a
+    /// caught panic stopped looks at its slot again (R65).
+    fn keep_refreshing(&self) {
+        if self.is_mapped() && !self.imp().timer.is_running() {
+            self.start_refresh();
+        }
+    }
+
     fn on_frame(&self) {
         let imp = self.imp();
         let now = motion::now().as_millis() as u64;
@@ -388,6 +415,9 @@ impl Meter {
         *imp.palette.borrow_mut() = theme.palette();
         imp.scale.set(theme.scale());
         let meter = Self { root, bar, readout };
+        if testctl::mode().on {
+            BARS.with(|bars| bars.borrow_mut().push(meter.bar.downgrade()));
+        }
         meter.set_device(device);
         let label = meter.readout.clone();
         *meter.bar.imp().on_change.borrow_mut() = Some(Rc::new(move |text: &str, latched| {
@@ -439,6 +469,7 @@ impl Meter {
 
     /// Follows another device (a changed source).
     pub fn set_device(&self, device: &str) {
+        self.bar.keep_refreshing();
         let imp = self.bar.imp();
         if *imp.device.borrow() != device {
             *imp.device.borrow_mut() = device.to_owned();

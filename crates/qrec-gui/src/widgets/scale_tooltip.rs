@@ -58,8 +58,8 @@ struct Inner {
     /// The range's own wheel controllers and their phases: on only while
     /// the keyboard is on the slider (R42).
     range_wheel: Vec<(gtk::EventController, gtk::PropagationPhase)>,
-    /// Ends a wheel change after its last notch.
-    wheel_end: RefCell<Option<glib::SourceId>>,
+    /// Ends a wheel change after its last notch (a slot, R65).
+    wheel_end: guard::Slot,
 }
 
 impl std::fmt::Debug for ValueTooltip {
@@ -103,7 +103,7 @@ pub fn attach(
             on_release: RefCell::new(Some(Rc::new(on_release))),
             on_end: RefCell::new(None),
             range_wheel,
-            wheel_end: RefCell::new(None),
+            wheel_end: guard::Slot::new(),
         }),
     };
     tooltip.wire();
@@ -261,16 +261,12 @@ impl ValueTooltip {
             inner.cancelled.set(false);
             inner.start.set(Some(inner.scale.value()));
         }
-        if let Some(timer) = inner.wheel_end.borrow_mut().take() {
-            timer.remove();
-        }
         let weak = Rc::downgrade(inner);
-        let id = guard::timeout_local_once(
+        inner.wheel_end.timeout_once(
             Duration::from_millis(WHEEL_END_MS),
             "slider: wheel end",
             move || {
                 if let Some(inner) = weak.upgrade() {
-                    inner.wheel_end.borrow_mut().take();
                     // A drag begun meanwhile ends the change itself.
                     if !inner.dragging.get() {
                         ValueTooltip { inner }.release();
@@ -278,7 +274,6 @@ impl ValueTooltip {
                 }
             },
         );
-        *inner.wheel_end.borrow_mut() = Some(id);
     }
 
     fn end(&self) {

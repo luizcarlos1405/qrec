@@ -20,14 +20,15 @@ mod imp {
 
     pub struct Spinner {
         pub size: Cell<i32>,
-        pub tick: Cell<Option<gtk::TickCallbackId>>,
+        /// The turn on the frame clock while mapped (a slot, R65).
+        pub tick: crate::guard::Slot,
     }
 
     impl Default for Spinner {
         fn default() -> Self {
             Self {
                 size: Cell::new(16),
-                tick: Cell::new(None),
+                tick: crate::guard::Slot::new(),
             }
         }
     }
@@ -46,11 +47,7 @@ mod imp {
 
     impl ObjectImpl for Spinner {
         fn dispose(&self) {
-            crate::guard::run("spinner: dispose", || {
-                if let Some(tick) = self.tick.take() {
-                    tick.remove();
-                }
-            });
+            crate::guard::run("spinner: dispose", || self.tick.stop());
         }
     }
 
@@ -71,22 +68,16 @@ mod imp {
         fn map(&self) {
             self.parent_map();
             crate::guard::run("spinner: map", || {
-                let tick = crate::guard::tick(&*self.obj(), "spinner: tick", |widget, _clock| {
-                    widget.queue_draw();
-                    glib::ControlFlow::Continue
-                });
-                if let Some(old) = self.tick.replace(Some(tick)) {
-                    old.remove();
-                }
+                self.tick
+                    .tick(&*self.obj(), "spinner: tick", |widget, _clock| {
+                        widget.queue_draw();
+                        glib::ControlFlow::Continue
+                    });
             });
         }
 
         fn unmap(&self) {
-            crate::guard::run("spinner: unmap", || {
-                if let Some(tick) = self.tick.take() {
-                    tick.remove();
-                }
-            });
+            crate::guard::run("spinner: unmap", || self.tick.stop());
             self.parent_unmap();
         }
 

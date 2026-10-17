@@ -139,7 +139,9 @@ pub struct RecCluster {
     clock: Cell<Option<(u64, Duration)>>,
     canvas: RefCell<Canvas>,
     reduced: Cell<bool>,
-    tick: RefCell<Option<gtk::TickCallbackId>>,
+    /// The torch and the timer on the frame clock (a slot: empty again
+    /// after a caught panic, and the next update starts it, R65).
+    tick: crate::guard::Slot,
 }
 
 impl RecCluster {
@@ -182,7 +184,7 @@ impl RecCluster {
             clock: Cell::new(None),
             canvas: RefCell::new(Canvas::default()),
             reduced: Cell::new(false),
-            tick: RefCell::new(None),
+            tick: crate::guard::Slot::new(),
         })
     }
 
@@ -200,6 +202,11 @@ impl RecCluster {
         }
         if *self.shown.borrow() == *rec && !reduced_changed {
             self.show_timer();
+            // A frame clock stopped by a caught panic starts again.
+            let recording = matches!(rec, RecBadge::Recording { .. });
+            if recording && !self.tick.is_running() {
+                self.follow_clock(true);
+            }
             return;
         }
         *self.shown.borrow_mut() = rec.clone();
@@ -228,9 +235,7 @@ impl RecCluster {
     /// torch not under reduced motion; neither in test mode, whose clock is
     /// frozen).
     fn follow_clock(self: &Rc<Self>, recording: bool) {
-        if let Some(tick) = self.tick.borrow_mut().take() {
-            tick.remove();
-        }
+        self.tick.stop();
         let reduced = self.reduced.get();
         self.badge.set_opacity(if reduced {
             1.0
@@ -241,17 +246,17 @@ impl RecCluster {
             return;
         }
         let weak = Rc::downgrade(self);
-        let tick = crate::guard::tick(&self.root, "stage: the REC cluster", move |_, _| {
-            let Some(this) = weak.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            if !this.reduced.get() {
-                this.badge.set_opacity(torch_opacity(motion::now()));
-            }
-            this.show_timer();
-            glib::ControlFlow::Continue
-        });
-        *self.tick.borrow_mut() = Some(tick);
+        self.tick
+            .tick(&self.root, "stage: the REC cluster", move |_, _| {
+                let Some(this) = weak.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                if !this.reduced.get() {
+                    this.badge.set_opacity(torch_opacity(motion::now()));
+                }
+                this.show_timer();
+                glib::ControlFlow::Continue
+            });
     }
 
     /// The timer: the last `RecordClock` plus the time since, at most 300 ms

@@ -143,12 +143,7 @@ pub fn ticking() -> usize {
         bars.retain(|bar| bar.upgrade().is_some());
         bars.iter()
             .filter_map(glib::WeakRef::upgrade)
-            .filter(|bar| {
-                let tick = bar.imp().tick.take();
-                let on = tick.is_some();
-                bar.imp().tick.set(tick);
-                on
-            })
+            .filter(|bar| bar.imp().tick.is_running())
             .count()
     })
 }
@@ -390,7 +385,9 @@ mod imp {
         pub scale: Cell<f64>,
         pub(crate) colors: RefCell<Colors>,
         pub shown: Cell<bool>,
-        pub tick: Cell<Option<gtk::TickCallbackId>>,
+        /// The redraw on the frame clock while it animates (a slot: empty
+        /// again after a caught panic, and the next change starts it, R65).
+        pub tick: crate::guard::Slot,
     }
 
     impl Default for MudBar {
@@ -402,7 +399,7 @@ mod imp {
                 scale: Cell::new(1.0),
                 colors: RefCell::new(Colors::of(&Palette::default())),
                 shown: Cell::new(false),
-                tick: Cell::new(None),
+                tick: crate::guard::Slot::new(),
             }
         }
     }
@@ -421,11 +418,7 @@ mod imp {
 
     impl ObjectImpl for MudBar {
         fn dispose(&self) {
-            crate::guard::run("mud bar: dispose", || {
-                if let Some(tick) = self.tick.take() {
-                    tick.remove();
-                }
-            });
+            crate::guard::run("mud bar: dispose", || self.tick.stop());
         }
     }
 
@@ -446,11 +439,7 @@ mod imp {
         }
 
         fn unmap(&self) {
-            crate::guard::run("mud bar: unmap", || {
-                if let Some(tick) = self.tick.take() {
-                    tick.remove();
-                }
-            });
+            crate::guard::run("mud bar: unmap", || self.tick.stop());
             self.parent_unmap();
         }
 
@@ -466,18 +455,13 @@ mod imp {
             let obj = self.obj();
             let wanted =
                 obj.is_mapped() && animates(self.state.get(), self.reduced.get(), motion::frozen());
-            let running = self.tick.take();
-            match (wanted, running) {
-                (true, Some(tick)) => self.tick.set(Some(tick)),
-                (true, None) => {
-                    let tick = crate::guard::tick(&*obj, "mud bar: tick", |bar, _clock| {
-                        bar.queue_draw();
-                        glib::ControlFlow::Continue
-                    });
-                    self.tick.set(Some(tick));
-                }
-                (false, Some(tick)) => tick.remove(),
-                (false, None) => {}
+            match (wanted, self.tick.is_running()) {
+                (true, false) => self.tick.tick(&*obj, "mud bar: tick", |bar, _clock| {
+                    bar.queue_draw();
+                    glib::ControlFlow::Continue
+                }),
+                (false, true) => self.tick.stop(),
+                _ => {}
             }
         }
 

@@ -1443,6 +1443,53 @@ fn s15b_export_running_then_cancelled() {
     close(&mut nested);
 }
 
+/// R65: a caught panic in the Running page's clock (test mode's
+/// `QREC_GUI_TEST_PANIC_ONCE`, at its first second) stops it until the
+/// next snapshot starts it again, and the cancel's close stops it with no
+/// dead source touched. The panel kept the dead timer's id: the clock
+/// never ran again (`tick(true)` saw one), and the close removed the dead
+/// id (GLib's critical, then a second caught panic, "Failed to remove
+/// source").
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_export_clock_comes_back_after_a_caught_panic() {
+    let mut nested = Nested::start(AREA, "export-clock-panic", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(program_ui()),
+    );
+    let launch = launch().with_env("QREC_GUI_TEST_PANIC_ONCE", "export: the running clock");
+    open(&mut nested, &project, launch);
+    start_draft_export(&mut nested);
+    let clock = |nested: &mut Nested| {
+        let local = nested.window(0).local();
+        (
+            local["exportClockTicking"].as_bool(),
+            local["panics"].as_u64().unwrap_or(0),
+        )
+    };
+    gui_support::poll(Duration::from_secs(20), "the clock's panic", || {
+        (clock(&mut nested).1 == 1).then_some(())
+    });
+    // The export's next progress snapshot starts it again.
+    gui_support::poll(Duration::from_secs(20), "the clock again", || {
+        (clock(&mut nested) == (Some(true), 1)).then_some(())
+    });
+    assert!(
+        export_percent(&nested, &project).is_some(),
+        "the export still runs"
+    );
+    click(&mut nested, "export-cancel");
+    wait_export_gone(&nested, &project, Duration::from_secs(30));
+    wait_overlays(&mut nested, &[], Duration::from_secs(10));
+    nested.window(0).wait_idle();
+    assert_eq!(clock(&mut nested), (Some(false), 1), "stopped, one panic");
+    nested.window(0).assert_no_criticals();
+    close(&mut nested);
+}
+
 /// Opens the panel, picks Draft and exports: the panel shows Running
 /// (`waitIdle` while it runs: the window's own export settles once its job
 /// runs, G§3.18).

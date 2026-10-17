@@ -27,7 +27,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gtk::glib;
 use gtk::prelude::*;
 use qrec_core::protocol::command::SeekTarget;
 use qrec_core::protocol::reply::AutocutPlanView;
@@ -81,7 +80,8 @@ struct Inner {
     switch: gtk::Switch,
     apply: gtk::Button,
     runs: RefCell<DryRuns>,
-    timer: RefCell<Option<glib::SourceId>>,
+    /// The dry run's debounce (a slot, R65).
+    timer: guard::Slot,
     /// Held while the debounce runs: the dry run it leads to is work
     /// `waitIdle` waits for (G§3.18), from the change to its reply (the
     /// request counts once sent).
@@ -335,7 +335,7 @@ impl AutocutPage {
                 switch,
                 apply,
                 runs: RefCell::new(DryRuns::new()),
-                timer: RefCell::new(None),
+                timer: guard::Slot::new(),
                 debounce_busy: RefCell::new(None),
                 draft: RefCell::new(AutocutDraft::default()),
                 wanted: RefCell::new(None),
@@ -551,9 +551,7 @@ impl AutocutPage {
             return;
         }
         inner.runs.borrow_mut().close();
-        if let Some(timer) = inner.timer.borrow_mut().take() {
-            timer.remove();
-        }
+        inner.timer.stop();
         inner.debounce_busy.borrow_mut().take();
         *inner.wanted.borrow_mut() = None;
         let pushed = inner.pushed_sheet.replace(false);
@@ -656,29 +654,28 @@ impl AutocutPage {
         match step {
             Step::Idle => {}
             Step::WaitUntil { at_ms } => {
-                if let Some(timer) = inner.timer.borrow_mut().take() {
-                    timer.remove();
-                }
+                inner.timer.stop();
                 inner
                     .debounce_busy
                     .borrow_mut()
                     .get_or_insert_with(|| inner.ctx.media.hold_io_busy());
                 let wait = Duration::from_millis(at_ms.saturating_sub(self.now_ms()));
                 let weak = Rc::downgrade(inner);
-                let id = guard::timeout_local_once(wait, "autocut: debounce", move || {
-                    if let Some(inner) = weak.upgrade() {
-                        inner.timer.borrow_mut().take();
-                        // Held until the step is carried out: a dry run sent
-                        // now is a pending request before the token goes.
-                        let busy = inner.debounce_busy.borrow_mut().take();
-                        let page = AutocutPage { inner };
-                        let step = page.inner.runs.borrow_mut().poll(page.now_ms());
-                        page.carry_out(step);
-                        page.publish();
-                        drop(busy);
-                    }
-                });
-                *inner.timer.borrow_mut() = Some(id);
+                inner
+                    .timer
+                    .timeout_once(wait, "autocut: debounce", move || {
+                        if let Some(inner) = weak.upgrade() {
+                            // Held until the step is carried out: a dry run
+                            // sent now is a pending request before the token
+                            // goes (and goes with a panic too).
+                            let busy = inner.debounce_busy.borrow_mut().take();
+                            let page = AutocutPage { inner };
+                            let step = page.inner.runs.borrow_mut().poll(page.now_ms());
+                            page.carry_out(step);
+                            page.publish();
+                            drop(busy);
+                        }
+                    });
             }
             Step::Send { id, cmd } => {
                 let weak = Rc::downgrade(inner);
