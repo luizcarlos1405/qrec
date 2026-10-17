@@ -16,8 +16,11 @@
 //! 2. `runtime.playing` false → true: `play(rate)` from `ui.playhead`, the
 //!    rate being `LocalUi.playing_rate` when the GUI's own shuttle just set
 //!    it and 1 otherwise (D-44: Space and CLI `qrec play` reset it). true →
-//!    false: `pause()`, then `Seek{To(player frame)}`; the rate goes back
-//!    to 1. Leaving Program while playing is that stop too (R21). A step's
+//!    false: `pause()` and `seek()` to the player's frame, then
+//!    `Seek{To(that frame)}`; the rate goes back to 1. The player's seek
+//!    puts the paused picture on the parked frame (a sink that pauses
+//!    shows the next one, its preroll buffer). Leaving Program while
+//!    playing is that stop too (R21). A step's
 //!    pause (D-51) parks nothing: the step's own seek, right behind it,
 //!    puts the playhead where the step lands, and the paused player waits
 //!    for the snapshots to get there ([`SyncMachine::note_key_park`]).
@@ -618,7 +621,13 @@ impl SyncMachine {
                 self.shown_frame = None;
             }
         } else {
+            // The playhead parks at the player's frame, and the paused
+            // player shows that frame: a sink that pauses shows its preroll
+            // buffer, the frame after the one on screen (G§8.5's step 6
+            // shot), so a step "from the frame shown" (D-51) went from one
+            // frame behind the picture.
             let frame = inp.player_frame();
+            out.player.push(PlayerCmd::Seek(inp.ns(frame)));
             out.dispatch.push(seek_to(frame));
             self.shown_frame = Some(frame);
             self.seen_playhead = Some(frame);
@@ -1416,9 +1425,10 @@ mod tests {
         let out = rig.sync();
         assert_eq!(out.player, [PlayerCmd::Seek(rig.ns(100))]);
         rig.position = 130;
-        // Stop: pause, then the playhead at the player's frame.
+        // Stop: pause, the playhead at the player's frame, and the paused
+        // player on it (a paused sink shows the next frame otherwise).
         let out = rig.pause();
-        assert_eq!(out.player, [PlayerCmd::Pause]);
+        assert_eq!(out.player, [PlayerCmd::Pause, PlayerCmd::Seek(rig.ns(130))]);
         assert_eq!(out.dispatch, [seek_cmd(130)]);
         assert_eq!(out.playing, Some(false));
         // That seek's snapshot doesn't seek again.
@@ -1885,7 +1895,11 @@ mod tests {
         rig.state.ui.canvas_mode = CanvasMode::Live;
         rig.state.runtime.playing = false;
         let out = rig.sync();
-        assert_eq!(out.player, [PlayerCmd::Pause]);
+        assert_eq!(
+            out.player,
+            [PlayerCmd::Pause, PlayerCmd::Seek(rig.ns(2457))],
+            "Program shows the parked frame when it comes back"
+        );
         assert_eq!(
             out.dispatch,
             [seek_cmd(2457)],

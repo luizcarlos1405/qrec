@@ -1034,8 +1034,14 @@ pub const STUCK: &str = "the Program picture is stuck; restart Qrec";
      While the stage shows Live, only mark it dirty.
   2. `runtime.playing` false → true: `play(LocalUi.playing_rate)` from
      `ui.playhead` (the rate is 1 unless the GUI sent the Shuttle, D-44).
-     true → false: `pause()`, then `Seek{To(player_frame)}`; the rate
-     resets to 1. Leaving Program while playing (`Tab`, D-05's record
+     true → false: `pause()` and `seek(f)`, then `Seek{To(f)}`, `f` the
+     player's frame; the rate resets to 1. The player's seek puts the
+     paused picture on `f`: a sink that pauses shows its preroll buffer,
+     the frame after the one on screen, so the picture was one frame past
+     the parked playhead and D-51's step went from one frame behind it
+     (G§8.5's step 6 shot; `gui_stage::a_pause_shows_the_frame_it_parks_at`
+     reads the frame from the fixture's pixels: testsrc2's counter against
+     ffmpeg's decode of the take's file). Leaving Program while playing (`Tab`, D-05's record
      start, CLI `SetCanvasMode`) is the same stop: the core turns
      `playing` false in the snapshot that switches to Live (R21). A
      step's stop (D-51) parks nothing: the step's own `Seek{To(f)}` comes
@@ -4907,12 +4913,12 @@ paused playhead and player position, and each step's time go to
 runs the steps' window from another binary (the package's optimized
 `result/bin/qrec`, WP10 integration).
 
-Seen in step 6's shot, not fixed here (`media/program.rs`, G§3.10, D-51):
-the paused picture is the frame after the parked playhead. Take 8's frame
-1 showed at playhead 60, and take 1's frame 29 at playhead 28 with the
-player at 28.97 frames: on a pause the sink renders its preroll frame,
-the next one. A step from "the frame shown" (D-51) then starts one frame
-behind the picture.
+Seen in step 6's shot (fixed since, G§3.10 step 2): the paused picture
+was the frame after the parked playhead. Take 8's frame 1 showed at
+playhead 60, and take 1's frame 29 at playhead 28 with the player at
+28.97 frames: on a pause the sink renders its preroll frame, the next
+one. A step from "the frame shown" (D-51) then started one frame behind
+the picture. The stop now seeks the paused player to the parked frame.
 `the_packaged_build_opens_the_smoke_fixture` runs `nix build`'s
 `result/bin/qrec` (or `$QREC_PACKAGE/bin/qrec`; without one it says so
 and passes). It first checks the package's files (the desktop entry equal

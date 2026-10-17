@@ -1628,6 +1628,273 @@ fn a_seek_while_playing_lands_and_plays_on() {
     assert_clean(&mut nested);
 }
 
+// ------------------------------------------------- what a pause shows
+
+/// The frame a player position shows at the fixture's 30 fps (as
+/// `ns_to_frame_floor`).
+fn frame_of(ns: u64) -> u64 {
+    ((ns + 1) * 30 - 1) / 1_000_000_000
+}
+
+/// The Program player's position (`local.playerNs`).
+fn player_ns(nested: &mut Nested) -> u64 {
+    let local = nested.window(0).local();
+    local["playerNs"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("no player: {local}"))
+}
+
+/// The core's playhead (`qrec status`).
+fn playhead(nested: &Nested, project: &Path) -> u64 {
+    status(nested, project)["ui"]["playhead"]
+        .as_u64()
+        .expect("a playhead")
+}
+
+/// Where timeline frame `at` is in the media: the take file of L1 (the
+/// full-canvas screen) and the take frame (the fixture's streams start at
+/// the take's start: file frame = take frame).
+fn l1_frame_at(nested: &Nested, project: &Path, at: u64) -> (PathBuf, u64) {
+    let clips = nested.cli_json(project, &["clip", "list"])["data"].clone();
+    let clip = clips
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|c| {
+            let start = c["start"].as_u64().unwrap_or(u64::MAX);
+            (start..start + c["duration"].as_u64().unwrap_or(0)).contains(&at)
+        })
+        .unwrap_or_else(|| panic!("no clip at {at}: {clips}"))
+        .clone();
+    let take = clip["take"].as_str().expect("a take").to_owned();
+    let frame = clip["in"].as_u64().expect("an in point") + at - clip["start"].as_u64().unwrap();
+    let saved = saved_project(project);
+    let file = saved["takes"][&take]["streams"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|s| s["id"] == "L1")
+        .and_then(|s| s["file"].as_str())
+        .unwrap_or_else(|| panic!("{take} has no L1: {saved}"))
+        .to_owned();
+    (project.join(file), frame)
+}
+
+/// The fixture's screens (`design::SCREEN_SIZE`) and the top-left corner
+/// of them that [`shown_take_frame`] reads: testsrc2's clock and frame
+/// counter, orange in a dark box (`TEXT_BOX`: x, y, w, h), over the first
+/// color bar.
+const SCREEN: (u32, u32) = (640, 360);
+const CORNER: (u32, u32) = (128, 40);
+const TEXT_BOX: [u32; 4] = [2, 2, 100, 36];
+/// The text's luma (about 146 of 255) against its box's (under 70).
+const TEXT_LUMA: f64 = 90.0;
+
+/// RGB bytes of `filter`'s output for `input` (raw rgb24 on stdout).
+fn ffmpeg_rgb(input: &Path, filter: &str) -> Vec<u8> {
+    let out = run_tool(
+        Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(input)
+            .args(["-vf", filter, "-fps_mode", "passthrough"])
+            .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"]),
+        Duration::from_secs(60),
+    );
+    assert!(
+        out.status.success(),
+        "ffmpeg -vf {filter} on {}: {}",
+        input.display(),
+        out.stderr
+    );
+    out.stdout
+}
+
+/// The pixels of an RGB corner ([`CORNER`]) inside [`TEXT_BOX`] that are
+/// testsrc2's text (luma over [`TEXT_LUMA`]).
+fn text_mask(rgb: &[u8]) -> Vec<bool> {
+    let [x0, y0, w, h] = TEXT_BOX;
+    let mut mask = Vec::with_capacity((w * h) as usize);
+    for y in y0..y0 + h {
+        for x in x0..x0 + w {
+            let i = ((y * CORNER.0 + x) * 3) as usize;
+            let luma = 0.2126 * f64::from(rgb[i])
+                + 0.7152 * f64::from(rgb[i + 1])
+                + 0.0722 * f64::from(rgb[i + 2]);
+            mask.push(luma > TEXT_LUMA);
+        }
+    }
+    mask
+}
+
+/// The take frame the Program picture of `shot` shows, read from the
+/// fixture's pixels: the corner of L1 (full canvas in the preview at
+/// `preview`, device px) scaled back to the file's size, its text (the
+/// clock and the frame counter, which change every frame) against the
+/// text of `file`'s own frames `around - 3 ..= around + 3` as ffmpeg
+/// decodes them. The one whose text differs in the fewest pixels, by far
+/// (the others differ in 60 and more; a picture none matches fails), with
+/// every candidate's count for the messages.
+fn shown_take_frame(shot: &Path, preview: [f64; 4], file: &Path, around: u64) -> (u64, String) {
+    let (cw, ch) = CORNER;
+    let [x, y, w, h] = preview;
+    let crop = [
+        x.round(),
+        y.round(),
+        (w * f64::from(cw) / f64::from(SCREEN.0)).round(),
+        (h * f64::from(ch) / f64::from(SCREEN.1)).round(),
+    ];
+    let shown = ffmpeg_rgb(
+        shot,
+        &format!(
+            "crop={}:{}:{}:{},scale={cw}:{ch}:flags=area",
+            crop[2], crop[3], crop[0], crop[1]
+        ),
+    );
+    let size = (cw * ch * 3) as usize;
+    assert_eq!(shown.len(), size, "the shot's corner");
+    let first = around.saturating_sub(3);
+    let frames = ffmpeg_rgb(
+        file,
+        &format!(
+            "select=between(n\\,{first}\\,{}),crop={cw}:{ch}:0:0,\
+             scale=in_color_matrix=bt709:in_range=tv,format=rgb24",
+            around + 3
+        ),
+    );
+    assert!(
+        frames.len() >= size && frames.len() % size == 0,
+        "{} bytes of frames {first}…{} of {}",
+        frames.len(),
+        around + 3,
+        file.display()
+    );
+    let shown = text_mask(&shown);
+    let mut scores: Vec<(usize, u64)> = frames
+        .chunks_exact(size)
+        .enumerate()
+        .map(|(i, frame)| {
+            let differ = text_mask(frame)
+                .iter()
+                .zip(&shown)
+                .filter(|(a, b)| a != b)
+                .count();
+            (differ, first + i as u64)
+        })
+        .collect();
+    let text = scores
+        .iter()
+        .map(|(n, f)| format!("{f}: {n} px"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    scores.sort_unstable();
+    let [(best, frame), (second, _), ..] = scores[..] else {
+        panic!("fewer than two candidates: {text}");
+    };
+    assert!(
+        best * 3 < second && best < 40,
+        "the picture's text matches no frame of {} around {around} ({text}): {}",
+        file.display(),
+        shot.display()
+    );
+    (frame, text)
+}
+
+/// Pauses the playing program (the window's own `Pause`) and waits until it
+/// settled: the core paused, the window idle, the playhead parked (the
+/// same twice, within a frame of the player's). Returns the playhead and
+/// the player's position.
+fn pause_and_settle(nested: &mut Nested, project: &Path) -> (u64, u64) {
+    let reply = nested
+        .window(0)
+        .ctl(json!({"op": "dispatch", "command": {"cmd": "pause"}}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    gui_support::poll(Duration::from_secs(10), "the pause", || {
+        (status(nested, project)["runtime"]["playing"] == false).then_some(())
+    });
+    let mut last = None;
+    gui_support::poll(Duration::from_secs(10), "the parked playhead", || {
+        nested.window(0).wait_idle();
+        let at = playhead(nested, project);
+        let ns = player_ns(nested);
+        let parked = frame_of(ns).abs_diff(at) <= 1 && last == Some(at);
+        last = Some(at);
+        parked.then_some((at, ns))
+    })
+}
+
+/// G§3.10 step 2 (G§8.5's step 6 shot): a pause shows the frame it parks
+/// the playhead at, the one the player's position is in. A sink that
+/// pauses shows its preroll buffer, the frame after the one on screen (the
+/// shot showed take 1's frame 29 at playhead 28, the player at 28.97
+/// frames), so D-51's step "from the frame shown" started one frame behind
+/// the picture. Each round plays from 1200 (c1b3: take 3 from its frame
+/// 304) for a while, pauses, and reads the take frame the picture shows
+/// from the fixture's pixels; then `→` moves the picture one frame on.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_pause_shows_the_frame_it_parks_at() {
+    let mut nested = Nested::start(AREA, "pause-frame", Options::default());
+    let project = fixture(
+        &nested,
+        DesignVariant::Base,
+        Some(ui(CanvasMode::Program, 1200)),
+    );
+    open(&mut nested, &project, Launch::a11y());
+    let preview = nested.window(0).regions(&["preview"])["preview"];
+    let preview = nested.opts.device(preview);
+    let ctl_ok = |nested: &mut Nested, request: Value| {
+        let reply = nested.window(0).ctl(request.clone());
+        assert_eq!(reply["ok"], true, "{request}: {reply}");
+    };
+    let mut wrong = Vec::new();
+    let mut last_shown = 0;
+    for (round, ms) in [500u64, 730, 990].into_iter().enumerate() {
+        nested.cli_json(&project, &["seek", "--to", "1200f"]);
+        nested.window(0).wait_idle();
+        ctl_ok(
+            &mut nested,
+            json!({"op": "dispatch", "command": {"cmd": "play"}}),
+        );
+        gui_support::poll(Duration::from_secs(20), "the program playing", || {
+            (nested.window(0).local()["programPlaying"] == true).then_some(())
+        });
+        thread::sleep(Duration::from_millis(ms));
+        let (at, ns) = pause_and_settle(&mut nested, &project);
+        let shot = nested.screenshot(&format!("paused-{round}"));
+        let (file, frame) = l1_frame_at(&nested, &project, at);
+        let (shown, scores) = shown_take_frame(&shot, preview, &file, frame);
+        if (shown, frame_of(ns)) != (frame, at) {
+            wrong.push(format!(
+                "round {round}: paused at {at} (take frame {frame}), the player at {ns} ns \
+                 (frame {}), the picture shows take frame {shown} ({scores})",
+                frame_of(ns)
+            ));
+        }
+        last_shown = shown;
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    // → (D-51 from the frame shown): the picture one frame on, the playhead
+    // on it.
+    let before = playhead(&nested, &project);
+    nested.keys(&["-k", "Right"]);
+    let at = gui_support::poll(Duration::from_secs(10), "the step", || {
+        nested.window(0).wait_idle();
+        let at = playhead(&nested, &project);
+        (at != before && frame_of(player_ns(&mut nested)) == at).then_some(at)
+    });
+    assert_eq!(at, before + 1, "→ from {before}");
+    let shot = nested.screenshot("stepped");
+    let (file, frame) = l1_frame_at(&nested, &project, at);
+    let (shown, scores) = shown_take_frame(&shot, preview, &file, frame);
+    assert_eq!(
+        (shown, shown),
+        (frame, last_shown + 1),
+        "→ to {at} (take frame {frame}) from a picture of take frame {last_shown}: it shows \
+         take frame {shown} ({scores})"
+    );
+    assert_clean(&mut nested);
+}
+
 /// Closes the window through `app.quit` and waits for its exit (0): what
 /// it debounced went out before its host closed, or never.
 fn quit_and_wait(nested: &mut Nested) {
