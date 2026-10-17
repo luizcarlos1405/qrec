@@ -694,6 +694,24 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
   sets the mark with it, and the page going (`clear_end`) takes the mark
   along, so no path to the page can forget it (only `Panel::answered` set
   it, by hand; `a_done_or_failed_page_comes_with_its_toasts_mark`).
+- **Announcements** (WP10, PRODUCT Accessibility; `window/announce.rs`):
+  `gtk::Accessible::announce` on the window, `Medium` (AT-SPI's polite),
+  `High` (assertive) for an error. The toast host announces each toast as
+  it comes, its title and the first line of a body that isn't a path
+  (`Pushed::Shown` or `Queued`, not a coalesced one), also the export end
+  the panel's own page drops ("Layers! Like an onion. Your video is
+  ready.", "Export failed. <why>"); the record button announces what no
+  toast says, from the snapshots: a take that starts recording, in the
+  ghost's words ("Recording take 10 over c2d0 (take 5)"), and one that
+  lands on the timeline, in its stop reply's (`on_event::record::
+  recorded_message`: "Recorded take 10 (2.1 s) over c2d0"); a
+  take's other ends come with their toasts (too short, cancelled, broken).
+  GTK 4.22's test context (`GTK_A11Y=test`, and GTK's fallback without an
+  accessibility bus) has no `announce`: the call jumps to a null pointer
+  (the window crashed on the first announcement under the a11y walk), so
+  the window calls GTK only with another context; it logs every
+  announcement (`announce (polite): …`) and test mode keeps them for
+  `local`'s `announcements`.
 - **`UiAction`** (`desktop.rs`, WP0b):
   - `OpenPath` → `gtk::FileLauncher::launch`;
   - `RevealPath` → `gtk::FileLauncher::open_containing_folder`;
@@ -818,6 +836,21 @@ named `region-<name>`; the focused widget's nearest such ancestor). A
 press outside an edit in progress ends it before the press acts (G§3.12
 R12), so a click on a chrome button never leaves a field focused under
 its action.
+
+The focus order (WP10's audit, BRIEF §6 by D-10, `gui_a11y`): `F6` from
+the window's start goes header → transport → timeline toolbar → timeline
+→ panel (→ bin when open) and around, `Shift+F6` back to the same widgets
+(`window::region_entry`: a region's first widget in GTK's chain, the
+timeline's canvas `timeline-canvas` past its toolbar). GTK's own chain is
+in the same order, the stage canvas between the header and the transport,
+the toolbar's controls and the track headers' before the timeline canvas
+(the timeline's root used to hand any focus entering it to the canvas, so
+the chain skipped both), and the hint bar never in it; `Shift+Tab` walks it
+backwards in the main window (`Tab` is `canvas.mode`; `Ctrl+Tab` leaves a
+scrolled window, GTK's). The mode switch is a toggle group whose chain
+holds only its active segment: a segment that has the focus hands it to the
+active one when the switch follows a snapshot (the window's start focused
+Live, then the project opened in Program).
 
 ### G§3.9 Live preview, meters and live status (shell WP1, GTK WP4)
 
@@ -1704,6 +1737,7 @@ a module list.
 | `src/widgets/mud_bar.rs` | C30 | WP7 |
 | `src/widgets/theme_card.rs` | C32 | WP9 |
 | `src/window/{mod,layers,adaptive}.rs` | window tree, overlay layers, focus trap, regions, breakpoints | WP0b |
+| `src/window/announce.rs` | screen-reader announcements (G§3.7) | WP10 |
 | `src/header/**` | C04, C05, record button, export slot, narrow-mode layers button | WP6 |
 | `src/{hintbar,toasts,modal}.rs` | C03, C23, C24 | WP6 |
 | `src/settings/{mod,project}.rs` | Settings shell (S18b), Project page | WP6 |
@@ -1898,8 +1932,8 @@ previews, the player, io, opening, the portal).
 | `{"op":"action","id":"export.panel"}` | runs a binding or GUI action as its key would (pre-steps included) |
 | `{"op":"sources"}` | `{"ok":true,"inventory":…}`: discovery's last answer (`LocalUi.sources`, null before one); with `"inventory": <SourceInventory>`, that answer instead, pushed through the queue as discovery's own (`Inbound::Sources`; the first run's rows follow it; R25's audit) |
 | `{"op":"hints"}` | the rendered hint items (`keys`, `label`, `enabled`, `emphasized`) and the status text (`hintbar::current_items`); `shown`, the labels of the items the bar draws whole (a narrow window leaves the trailing ones out, `hintbar::fitting`), and `cut`, whether a drawn one runs past the bar (never; both WP7 integration audit) |
-| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `playing`, the player plays (the program or a bin preview's take), and `programPlaying`, the program plays in it (`LocalUi.program_playing`, G§3.10 step 3; review R00, R16); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and the panel's (`layerRowsAlive`, `audioRowsAlive`; review R43), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit); `metersTicking`, the meter bars on their refresh timer, and `exportClockTicking`, the export panel's Running clock (null without a panel): each comes back with the next change after a caught panic (G§3.12; R65's audit); `themeSubscribers`, the theme's callbacks (a dropped bin thumbnail's goes with it, R11; WP7 integration's shot and code audits); `timelinePaints`, how many times the timeline's canvas made its render node again (not while only the playhead moves, C16; review R10); `timelineGhostColumns`, how many columns of the ghost's waveform the last paint with a ghost worked out a lane (those in the time area, G§4.5; R01's audit); `binSlide`, the bin drawer's last slide as asked (`open`, `animate`: test mode animates nothing, so a case reads whether the open at start would have slid in; review fix, G§3.3); `takePreview`, the bin preview (`take`, `playing`: `Space` pauses it; null without one; review fix, D-17) |
-| `{"op":"a11y"}` | every visible icon-only button, focusable region or focusable custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
+| `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); `focusBounds` and `focusType`, the focused widget's window bounds and GType, and `focusVisible`, the window's (WP10's focus walks); `announcements`, what the window announced to screen readers (`message`, `priority`, `sent`: false without a context that announces; WP10, G§3.7); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `playing`, the player plays (the program or a bin preview's take), and `programPlaying`, the program plays in it (`LocalUi.program_playing`, G§3.10 step 3; review R00, R16); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and the panel's (`layerRowsAlive`, `audioRowsAlive`; review R43), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit); `metersTicking`, the meter bars on their refresh timer, and `exportClockTicking`, the export panel's Running clock (null without a panel): each comes back with the next change after a caught panic (G§3.12; R65's audit); `themeSubscribers`, the theme's callbacks (a dropped bin thumbnail's goes with it, R11; WP7 integration's shot and code audits); `timelinePaints`, how many times the timeline's canvas made its render node again (not while only the playhead moves, C16; review R10); `timelineGhostColumns`, how many columns of the ghost's waveform the last paint with a ghost worked out a lane (those in the time area, G§4.5; R01's audit); `binSlide`, the bin drawer's last slide as asked (`open`, `animate`: test mode animates nothing, so a case reads whether the open at start would have slid in; review fix, G§3.3); `takePreview`, the bin preview (`take`, `playing`: `Space` pauses it; null without one; review fix, D-17) |
+| `{"op":"a11y"}` | every visible icon-only button, focusable region or focusable custom widget without an accessible label; since WP10 also every focusable, sensitive widget the keyboard lands on (not the scrolled windows and lists that pass the focus to their rows) that a screen reader isn't told of (a `gtk::Text` GTK leaves out of the tree, role `None`, counts as the entry, spin button or editable label it belongs to; one of none lacks a `role`), can't name (a label, a labelled-by relation or text of its own; a text box by a label or relation alone: its text is its value) or can't say what it is (an editable label's generic role), and every focusable custom widget whose role says nothing (`Generic`, `Widget`, `None`, `Presentation`: the timeline canvas is a `Group` now). Each item says what it `lacks` (`label`, `name`, `role`). Expected empty; needs `GTK_A11Y=test` |
 | `{"op":"fonts"}` | the family Pango loads for each bundled font; `ok` when each resolves to itself |
 | `{"op":"icons"}` | each custom symbolic icon drawn in a probe color: found, its pixels, recolored |
 | `{"op":"art"}` | each illustration through `gtk::Svg` (`theme::art`): loaded, its size, drawn pixels and `errors` (GtkSvg's, none for `ok`), and `probeErrors` of a known-bad SVG (`<foreignObject>`; at least one for `ok`: the count works) |
@@ -2897,8 +2931,8 @@ below; read them with `Get` while `design/qrec.pen` is active).
 | C06 Badges, REC cluster, Saving | `D4pSZ`, `DlEnG`, `oHR8h`, `KwxRc`, `h5PLfO`, `hyWmc` | boxes in the stage overlay; the torch from `motion::now()` (G§3.14); timer label on the frame clock | WP4 |
 | C07 Countdown | `sTIwH`, `HPxd8`, `Q6JiWV` | `CountdownOverlay` (snapshot: `gsk::PathBuilder` arc, `gsk::Stroke` 6 px; Pango digit) | WP4 |
 | C08 Selection box, guides, readout | `QW4cD`, `RzfIE`, `qcdxC`, `HxSV4`, `j2VytN`, `Q72wi` | `CanvasOverlay` (snapshot; dashes with `gsk::Stroke::set_dash(&[4.0, 4.0])`) | WP4 |
-| C09 Layer row | `zuB2D` + states | `gtk::ListBox` row; `gtk::EditableLabel` that takes no pointer or focus until Rename (a click selects the row; the source line hides while renaming); reorder is a `GestureDrag` inside the list (a lifted ghost row, a 2 px drop line, `Esc` through D-42's drag cancel), not `DragSource`/`DropTarget`; grip, eye and lock revealed by opacity on hover, or when the keyboard reaches them; a focused row wears only its ring | WP5 |
-| C10 Audio row | `b5Kxv` + states | composite; M/S `gtk::ToggleButton.track-toggle` | WP5 |
+| C09 Layer row | `zuB2D` + states | `gtk::ListBox` row; `gtk::EditableLabel` that takes no pointer or focus until Rename (a click selects the row; the source line hides while renaming; a `TextBox` to screen readers, named "Name of layer Face": WP10); reorder is a `GestureDrag` inside the list (a lifted ghost row, a 2 px drop line, `Esc` through D-42's drag cancel), not `DragSource`/`DropTarget`; grip, eye and lock revealed by opacity on hover, or when the keyboard reaches them; a focused row wears only its ring | WP5 |
+| C10 Audio row | `b5Kxv` + states | composite; M/S `gtk::ToggleButton.track-toggle`; the name C09's rename field ("Name of track Yeti Nano": WP10) | WP5 |
 | C11 Meter | `iZb1x` | `widgets::Meter` (snapshot; while shown it looks at its level slot 30 times a second from a timer, not a tick callback, G§8.6, and redraws only when what it shows changed; click resets the latch) | WP5 |
 | C12 Inspector | `NZZoN` | grid of `NumericField`; lock `gtk::ToggleButton`; `gtk::Scale`; `adw::ToggleGroup`; 2-up in the Medium layout | WP5 |
 | C13 Panel header, take banner, section header | `Osce5`, `KcYOV`, `XwpjR`, `trHYd` | boxes; `widgets::button::menu_button` + `gio::Menu`; panel/autocut page switch = `gtk::Stack` (`panel-pages`): a 200 ms slide, instant under reduced motion (`panel::page_transition` through `Theme::follow_motion`, D-30; WP5 integration audit) | WP5 |
@@ -2917,7 +2951,7 @@ below; read them with `Get` while `design/qrec.pen` is active).
 | C26 Slider | `Bn6sz` + states | `gtk::Scale` styled; ticks with `add_mark`; the value tooltip while dragging (`widgets::scale_tooltip`, which also gives the range's own wheel only to a slider the keyboard is on, not one a press focused: R42 and its audit); S12's end labels are their own row flush with the track's ends (GTK centers mark labels) and the ticks sit at the trough's ends (S12 insets them by the thumb's radius, ~2 px) | WP0b (CSS), WP5 |
 | C27 Switch | `z9laF`, `p3tmIy` | `gtk::Switch` styled | WP0b |
 | C28 Segmented | `NZKuJ`, `L46uU`, `jmq6y` | `adw::ToggleGroup` styled; the Settings switcher too (`adw::ToggleGroup` + `gtk::Stack`: `adw::InlineViewSwitcher`'s pages can't be disabled, D-48; WP6) | WP0b, WP6 |
-| C29 Fields | `j1hIDi`, `oc5uM`, `vpmJy`, `EfoCl`, `oE7jW` | `gtk::Entry`; `NumericField` (Box `.field` + `gtk::Text` right-aligned + unit label; arrows and scroll step; no ± buttons); `gtk::DropDown`; `gtk::SearchEntry` | WP0b (CSS), WP5 |
+| C29 Fields | `j1hIDi`, `oc5uM`, `vpmJy`, `EfoCl`, `oE7jW` | `gtk::Entry`; `NumericField` (Box `.field` + `gtk::Text` right-aligned + unit label; arrows and scroll step; no ± buttons; the text a `TextBox` named for the field, "Position X": a bare `gtk::Text` is left out of the accessibility tree, WP10); `gtk::DropDown`; `gtk::SearchEntry` | WP0b (CSS), WP5 |
 | C30 Mud bar, export progress | `S5YPm4`, `T2C2U5`, `J6HyOH`, `TKIqZ`, `c0pJo3`, `cUfiU` | `widgets::MudBar` (snapshot from `motion::now()` over the GTK-free `MudSim`, seeded PRNG; frame A, the clock's 0, holds the frames' own bubbles: `RUNNING_FRAME_A`, S15b's and the S15c board's three, and the done page's `DONE_FRAME_A`, S16's two; the 3 px sediment band counted from the bar's outer bottom, 2 px of it above the border under 16 px of mud; a tick callback only while it animates: running, motion allowed, the clock moving) | WP7 |
 | C31 Empty states | `HVO2S`, `p3Dpn`, `uBSb8` | timeline (WP3), panel (WP5), blocking: interim pages (WP0b), drawn pages (WP8) | WP3, WP5, WP0b, WP8 |
 | C32 Theme card | `qqnCi` + themes | `ThemeCard` drawn from that theme's `Palette` | WP9 |
@@ -3987,6 +4021,42 @@ icons), `README.md`, `docs/ARCHITECTURE.md` (final pass),
   in nested sway.
 - The complete smoke (G§8.5) and the PO checklist (G§8.7).
 
+**Status, accessibility lane** (`crates/qrec/tests/gui_a11y.rs`):
+
+- Announcements (G§3.7): the record loop (`the_record_loop_is_announced`:
+  `O`, `R`, then the CLI's take cancelled), the export's end with and
+  without the panel's Done page, a failed export (assertive), a toast
+  pushed thirty times announced once (`a_repeated_toast_is_announced_once`),
+  and `announcements_reach_the_accessibility_bus`: GTK's AT-SPI backend on
+  the nested bus (`GTK_A11Y=atspi`, `AT_SPI_BUS_ADDRESS`) with a stand-in
+  registry in the case (GIO's D-Bus: the workspace's gtk, a dev-dependency
+  of `qrec` for it) that answers `Socket.Embed` and `GetRegisteredEvents`
+  and hears each `Event.Object.Announcement`, its politeness (1 polite, 2
+  assertive) and text, in order. The window that never calls GTK's
+  `announce` fails it (nothing on the bus).
+- Focus order (G§3.8): `f6_cycles_the_regions_of_s02`/`_s06` and
+  `shift_tab_walks_every_focusable_widget_of_s02`/`_s06` (39 and 54
+  widgets, each landed on once). Every landing wears the focus ring: a shot
+  while the key's `wtype` holds the keyboard (G§8.4: the window is active
+  only then), the ring-colored pixels around the widget that the steps
+  before and after don't have, at least its perimeter's worth (a scale
+  rings only its knob: 40; a selected row half that, its accent stroke
+  under the ring in every shot). Lowest margins on pixman: 162 for 112
+  (S02, a 28 px button), 178 for 132 (S06, a numeric field), 64 for 40 (the
+  opacity scale's knob), F6's landings 228 and up. The measures are in `<case>-rings.txt`, the
+  chain in `<case>-walk.txt` (`tmp/gui-shots/a11y/`). Found and fixed: the
+  chain skipped the timeline toolbar and the track headers; the window's
+  start focused the mode switch's inactive segment, which `Tab` never
+  came back to.
+- The a11y walk names what the keyboard lands on and the roles of custom
+  focusable widgets (G§3.18). It found the timeline canvas's generic role
+  (a `Group` now), the 13 numeric fields' text left out of the tree with
+  its name (`gtk::Text`'s role is `None`: a `TextBox` now, C29) and the
+  renames' fields, an `EditableLabel` with no role whose text leaves the
+  tree while it is edited (a `TextBox` named "Name of layer Face", "Name of
+  track Yeti Nano": C09, C10; `a_rename_field_is_a_named_text_box`). Every
+  suite's cases walk (G§8.4 suites).
+
 ---
 
 ## G§8 Verification
@@ -4287,8 +4357,13 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   WP3's scrub through WP4's sync with no seek after it, read from the
   GUI log's "program sync:" lines and `local`'s `playerNs`), `gui_smoke`,
   `gui_chrome` (WP6), `gui_timeline` (WP3), `gui_stage` (WP4), `gui_panel`
-  (WP5), `gui_bin_export` (WP7), each run with `-- --ignored
-  --test-threads=1` on pixman and on gles2.
+  (WP5), `gui_bin_export` (WP7), `gui_a11y` (WP10), each run with `-- --ignored
+  --test-threads=1` on pixman and on gles2. Since WP10 every case of every
+  suite runs the a11y walk on the states it shows (launched with
+  `Launch::a11y()`), but a window that never shows (`a_panic_in_activate_quits_with_1`),
+  the frame-time probe (G§8.6: `GTK_A11Y=none`, as measured) and
+  `announcements_reach_the_accessibility_bus` (GTK's AT-SPI backend, not
+  the walk's test context).
 
 ### G§8.5 End-to-end smoke (SPEC §17)
 
