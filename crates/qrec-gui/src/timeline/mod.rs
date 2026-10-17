@@ -146,7 +146,7 @@ struct Model {
     /// What `LocalUi.viewport` says.
     local_view: Option<(Viewport, f64)>,
     /// The move drag's neighbours easing to their places (G§4.5).
-    gap: BTreeMap<ClipId, (f64, f64, Duration)>,
+    gap: control::GapEase,
     /// The scrolled-to lane offset (D-25) before a pan.
     opened: bool,
 }
@@ -357,7 +357,7 @@ impl Inner {
                     canvas_moved: false,
                     caches_hooked: false,
                     local_view: None,
-                    gap: BTreeMap::new(),
+                    gap: control::GapEase::default(),
                     opened: false,
                 }),
                 tick: guard::Slot::new(),
@@ -819,6 +819,10 @@ impl Inner {
             m.vm.on_state(state, total, now);
             let has_view = m.vm.target_view().is_some();
             m.g.on_state(state, has_view, &mut pending);
+            // A move drag the snapshot ended takes its eases along.
+            if !matches!(m.g.drag(), Some(Drag::Move { .. })) {
+                m.gap.clear();
+            }
             m.lanes = tl::lanes(state);
             m.generation += 1;
         }
@@ -1460,6 +1464,13 @@ impl Inner {
                 if let Some(p) = tl::move_preview(&state, &view, &block, x) {
                     self.tips
                         .show(&tips::move_lines(&p.tooltip), self.to_layer(pointer));
+                    // The other clips ease to their places (G§4.5), from
+                    // where they were before the drag the first time.
+                    let places = control::box_places(&p.boxes, &view);
+                    let rest = || control::box_places(&tl::clip_boxes(&state, &view, None), &view);
+                    let mut m = self.m.borrow_mut();
+                    let instant = m.vm.instant();
+                    m.gap.retarget(&places, rest, now, instant);
                 }
             }
             Some(Drag::Trim {
@@ -1690,10 +1701,7 @@ impl Inner {
             let facts = control::TickFacts {
                 easing: m.vm.animating(now),
                 grew: m.vm.total() != shown,
-                gap_easing: m
-                    .gap
-                    .values()
-                    .any(|(_, _, at)| now.saturating_sub(*at) < control::GAP_EASE),
+                gap_easing: m.gap.animating(now),
                 trimming: matches!(m.g.drag(), Some(Drag::Trim { started: true, .. })),
                 playing,
                 flash: m.flash.is_some(),
@@ -1830,6 +1838,7 @@ impl Inner {
             Some(Drag::Move { block, x }) => {
                 if let Some(p) = tl::move_preview(&state, &view, block, *x) {
                     boxes = p.boxes.clone();
+                    m.gap.ease(&mut boxes, &view, now);
                     let lifted = lifted_boxes(&state, &view, block, *x);
                     moving = Some((p, lifted));
                 }

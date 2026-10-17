@@ -168,6 +168,11 @@ impl ViewModel {
         }
     }
 
+    /// Nothing eases (reduced motion, test mode).
+    pub fn instant(&self) -> bool {
+        self.instant
+    }
+
     /// Reduced motion changed.
     pub fn set_instant(&mut self, instant: bool) {
         self.instant = instant;
@@ -904,6 +909,108 @@ pub fn decide_drop(state: &State, view: &Viewport, take: &TakeId, x: f64) -> Opt
     }
     let slot = tl::drop_slot(view, &state.project.timeline.clips, x);
     Some(tl::drop_command(take, slot))
+}
+
+// ------------------------------------------------- the move drag's gap
+
+/// A move drag's other clips easing to their places (G§4.5: they close the
+/// gap in 120 ms `EASE_OUT_EXPO`; at once under reduced motion and in test
+/// mode). A clip's place is its start in timeline frames, so a zoom or a
+/// scroll during the drag moves the boxes, not the eases. An ease starts
+/// where the clip is drawn when its place moves, so a slot change in the
+/// middle of one never jumps.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GapEase {
+    /// Each clip's place the last preview gave (frames).
+    places: BTreeMap<ClipId, f64>,
+    /// The eases in flight: from where the clip was drawn, to its place
+    /// (frames), and when.
+    eases: BTreeMap<ClipId, (f64, f64, Duration)>,
+}
+
+impl GapEase {
+    /// A preview's `places` at `now` (each clip's start, frames). The
+    /// drag's first starts from `rest` (where they were before it). A clip
+    /// whose place moved eases from where it is drawn to there; `instant`:
+    /// it is there at once.
+    pub fn retarget(
+        &mut self,
+        places: &[(ClipId, f64)],
+        rest: impl FnOnce() -> Vec<(ClipId, f64)>,
+        now: Duration,
+        instant: bool,
+    ) {
+        if self.places.is_empty() {
+            self.places = rest().into_iter().collect();
+        }
+        for (clip, place) in places {
+            match self.places.get(clip) {
+                Some(old) if (old - place).abs() > 1e-9 => {
+                    let drawn = old + self.offset(clip, now);
+                    if instant {
+                        self.eases.remove(clip);
+                    } else {
+                        self.eases.insert(clip.clone(), (drawn, *place, now));
+                    }
+                }
+                // The same place: its ease, if any, goes on.
+                Some(_) => {}
+                None => {
+                    self.eases.remove(clip);
+                }
+            }
+        }
+        self.places = places.iter().cloned().collect();
+        let places = &self.places;
+        self.eases.retain(|clip, (_, _, at)| {
+            places.contains_key(clip) && now.saturating_sub(*at) < GAP_EASE
+        });
+    }
+
+    /// How far from its place `clip` is drawn at `now` (frames).
+    pub fn offset(&self, clip: &ClipId, now: Duration) -> f64 {
+        let Some(&(from, to, at)) = self.eases.get(clip) else {
+            return 0.0;
+        };
+        let t = now.saturating_sub(at).as_secs_f64() / GAP_EASE.as_secs_f64();
+        if t >= 1.0 {
+            0.0
+        } else {
+            (from - to) * (1.0 - EASE_OUT_EXPO.at(t))
+        }
+    }
+
+    /// `boxes` (in `view`) as drawn at `now`: each moved by what is left of
+    /// its ease.
+    pub fn ease(&self, boxes: &mut [ClipBox], view: &Viewport, now: Duration) {
+        for b in boxes {
+            b.x += self.offset(&b.clip, now) * view.px_per_frame;
+        }
+    }
+
+    /// An ease runs at `now`.
+    pub fn animating(&self, now: Duration) -> bool {
+        self.values()
+            .any(|(_, _, at)| now.saturating_sub(*at) < GAP_EASE)
+    }
+
+    /// The eases in flight: (from, to, when).
+    pub fn values(&self) -> impl Iterator<Item = &(f64, f64, Duration)> {
+        self.eases.values()
+    }
+
+    /// The drag ended (released or cancelled).
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Each box's clip and its start (frames) in `view`.
+pub fn box_places(boxes: &[ClipBox], view: &Viewport) -> Vec<(ClipId, f64)> {
+    boxes
+        .iter()
+        .map(|b| (b.clip.clone(), (b.x + view.scroll_px) / view.px_per_frame))
+        .collect()
 }
 
 // ------------------------------------------------------- the frame clock

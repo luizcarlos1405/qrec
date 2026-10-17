@@ -2087,7 +2087,12 @@ As built (WP6, round 3):
   - starts after 4 px without a modifier; the block is the selection if
     the pressed clip is selected, else that clip (the press selected it,
     D-37);
-  - the other clips close the gap (120 ms `EASE_OUT_EXPO`);
+  - the other clips close the gap (120 ms `EASE_OUT_EXPO`; `control::
+    GapEase`: when a clip's place moves it eases there from where it is
+    drawn, in timeline frames, so a slot change in the middle of an ease
+    never jumps and a zoom during the drag moves the boxes, not the eases;
+    at once under reduced motion and in test mode; review R11: they
+    jumped, nothing filled the easing's map);
   - the caret goes to the boundary nearest the pointer (slot k of n, n =
     clip count);
   - the lifted copy: 85 %, e1, 4 px up, over the video row and lanes;

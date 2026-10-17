@@ -1136,3 +1136,118 @@ fn only_what_the_canvas_draws_moving_re_renders_it() {
     assert!(TickFacts::of(&state, false).recording);
     assert!(!TickFacts::of(&state, true).canvas_moves());
 }
+
+// ------------------------------------------------------------- the gap
+
+/// G§4.5, DESIGN Motion: a move drag's other clips close the gap in 120 ms
+/// `EASE_OUT_EXPO` (S11: c8a1 after c1b6, c1b2–c1b6 one c8a1 to the left),
+/// starting where they are drawn; at once under reduced motion. They
+/// jumped there in one frame: nothing eased (review R11).
+#[test]
+fn a_move_drags_neighbours_ease_to_their_places() {
+    let state = testkit::design_state();
+    let (_, view, _) = setup(&state);
+    let resting = tl::clip_boxes(&state, &view, None);
+    let rest = || box_places(&resting, &view);
+    let x_of = |boxes: &[ClipBox], clip: &str| {
+        boxes
+            .iter()
+            .find(|b| b.clip == id(clip))
+            .map(|b| b.x)
+            .unwrap()
+    };
+    // x 405 in the window (S11).
+    let p = tl::move_preview(&state, &view, &[id("c8a1")], 229.0).expect("a preview");
+    assert_eq!(p.tooltip[0], "Move after c1b6 \u{b7} slot 7 of 10");
+    let (rest_x, target_x) = (x_of(&resting, "c1b2"), x_of(&p.boxes, "c1b2"));
+    let c8a1 = resting.iter().find(|b| b.clip == id("c8a1")).unwrap().w;
+    assert!(
+        (rest_x - target_x - c8a1).abs() < 1e-6,
+        "{rest_x} → {target_x}"
+    );
+    let mut gap = GapEase::default();
+    gap.retarget(&box_places(&p.boxes, &view), rest, ms(0), false);
+    let drawn = |gap: &GapEase, now: Duration, clip: &str| {
+        let mut boxes = p.boxes.clone();
+        gap.ease(&mut boxes, &view, now);
+        x_of(&boxes, clip)
+    };
+    assert!(
+        (drawn(&gap, ms(0), "c1b2") - rest_x).abs() < 1e-6,
+        "where it was"
+    );
+    let mid = drawn(&gap, ms(60), "c1b2");
+    assert!(target_x < mid && mid < rest_x, "{mid}");
+    assert!(
+        (rest_x - mid) / (rest_x - target_x) > 0.9,
+        "expo-out: most of the way at 60 ms ({mid})"
+    );
+    assert!((drawn(&gap, ms(120), "c1b2") - target_x).abs() < 1e-6);
+    assert!(gap.animating(ms(60)) && !gap.animating(ms(120)));
+    for clip in ["c1b3", "c1b6"] {
+        assert!((drawn(&gap, ms(0), clip) - x_of(&resting, clip)).abs() < 1e-6);
+    }
+    // c7f3 (before the block) and c2d0 (after its slot) don't move.
+    for clip in ["c7f3", "c2d0"] {
+        assert_eq!(gap.offset(&id(clip), ms(0)), 0.0, "{clip}");
+        assert!((drawn(&gap, ms(0), clip) - x_of(&resting, clip)).abs() < 1e-6);
+    }
+    // Reduced motion (and test mode): there at once.
+    let mut instant = GapEase::default();
+    instant.retarget(&box_places(&p.boxes, &view), rest, ms(0), true);
+    assert!((drawn(&instant, ms(0), "c1b2") - target_x).abs() < 1e-6);
+    assert!(!instant.animating(ms(0)));
+}
+
+/// A slot change in the middle of an ease starts the next from where the
+/// clip is drawn (no jump of a block's width); a clip whose place didn't
+/// change goes on easing; a zoom moves the boxes, not the eases (frames);
+/// the release drops them.
+#[test]
+fn a_slot_change_in_the_middle_of_an_ease_never_jumps() {
+    let (a, b) = (id("c1b2"), id("c1b3"));
+    let rest = || vec![(id("c1b2"), 100.0), (id("c1b3"), 200.0)];
+    let mut gap = GapEase::default();
+    // The block went past them: both 50 frames to the left.
+    gap.retarget(&[(a.clone(), 50.0), (b.clone(), 150.0)], rest, ms(0), false);
+    let at = |gap: &GapEase, clip: &ClipId, place: f64, now| place + gap.offset(clip, now);
+    let (a_before, b_before) = (at(&gap, &a, 50.0, ms(30)), at(&gap, &b, 150.0, ms(30)));
+    assert!(50.0 < a_before && a_before < 100.0, "{a_before}");
+    // Back across one boundary 30 ms in: `a` heads back to 100.
+    gap.retarget(
+        &[(a.clone(), 100.0), (b.clone(), 150.0)],
+        rest,
+        ms(30),
+        false,
+    );
+    let a_after = at(&gap, &a, 100.0, ms(30));
+    assert!((a_after - a_before).abs() < 1e-9, "{a_before} → {a_after}");
+    assert!((at(&gap, &b, 150.0, ms(30)) - b_before).abs() < 1e-9);
+    assert!((at(&gap, &b, 150.0, ms(120)) - 150.0).abs() < 1e-9);
+    assert!((at(&gap, &a, 100.0, ms(150)) - 100.0).abs() < 1e-9);
+    assert!(gap.animating(ms(149)) && !gap.animating(ms(150)));
+    // The same ease in a view zoomed ×2: twice the px, the same frames.
+    let view = Viewport {
+        width: W,
+        px_per_frame: 1.0,
+        scroll_px: 0.0,
+        lanes_scroll_px: 0.0,
+    };
+    let zoomed = Viewport {
+        px_per_frame: 2.0,
+        ..view
+    };
+    let state = testkit::design_state();
+    let mut one = tl::clip_boxes(&state, &view, None);
+    let mut two = tl::clip_boxes(&state, &zoomed, None);
+    let x_of = |boxes: &[ClipBox]| boxes.iter().find(|c| c.clip == a).unwrap().x;
+    let (x1, x2) = (x_of(&one), x_of(&two));
+    gap.ease(&mut one, &view, ms(60));
+    gap.ease(&mut two, &zoomed, ms(60));
+    assert!(x_of(&one) != x1, "still easing at 60 ms");
+    assert!(((x_of(&two) - x2) - 2.0 * (x_of(&one) - x1)).abs() < 1e-9);
+    // Released (or `Esc`): none left.
+    gap.clear();
+    assert_eq!(gap.offset(&a, ms(31)), 0.0);
+    assert!(!gap.animating(ms(31)));
+}
