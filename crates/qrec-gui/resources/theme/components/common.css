@@ -372,10 +372,13 @@ scale > trough > highlight {
   background-color: var(--qrec-accent);
 }
 
+/* Over the 4 px track, the thumb stays inside it: its center travels 8 px
+   in from the track's ends (S06's Opacity, S12's knobs). With its side
+   margins negative too, GTK let it travel to 2 px from them. */
 scale > trough > slider {
   min-width: 12px;
   min-height: 12px;
-  margin: -6px;
+  margin: -6px 0;
   border: 2px solid var(--qrec-bg);
   border-radius: 999px;
   background-color: var(--qrec-text);

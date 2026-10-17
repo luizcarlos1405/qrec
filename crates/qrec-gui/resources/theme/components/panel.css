@@ -277,6 +277,18 @@
   min-height: 16px;
 }
 
+/* Fit (S06): the export panel's segmented look, 26 px segments 3 px inside
+   the 32 px well and 2 at its ends (the generic C28's 30 and 1 made the
+   selected segment 28 px tall; WP10's shot review). */
+.qrec-panel toggle-group.fit-toggle {
+  min-height: 26px;
+  padding: 3px 2px;
+}
+
+.qrec-panel toggle-group.fit-toggle > toggle {
+  min-height: 26px;
+}
+
 .qrec-panel .aspect-lock-slot {
   margin: 0 8px;
 }

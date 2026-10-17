@@ -400,6 +400,36 @@ fn s06_the_take_layout_and_the_inspector() {
         PANEL,
         PANEL,
     );
+    // WP10's shot review, as S06 draws them: Fit's selected segment 26 px
+    // tall 3 px inside its 32 px well (`field` at y 861–862 and 889–890,
+    // the segment's `border` at 863 and 888; it was 28 px, 1 px inside),
+    // and Opacity's knob 8 px in from the track's end (the `accent` fill
+    // ends at x 1491: its thumb travelled to 2 px from the ends, 1497).
+    let token = |name: &str| gui_support::token_rgb("swamp-night", name);
+    let px = |x: f64, y: f64| {
+        let (dx, dy) = nested.opts.pixel_px(x, y);
+        gui_support::rgb_pixels(&shot, [dx, dy, 1, 1])[0]
+    };
+    for (y, name) in [
+        (861.0, "field"),
+        (862.0, "field"),
+        (863.0, "border"),
+        (888.0, "border"),
+        (889.0, "field"),
+        (890.0, "field"),
+    ] {
+        assert_eq!(px(1340.0, y), token(name), "Fit at y {y}: {name}");
+    }
+    assert_eq!(
+        px(1490.0, 819.0),
+        token("accent"),
+        "Opacity's fill to x 1491"
+    );
+    assert_ne!(
+        px(1493.0, 819.0),
+        token("accent"),
+        "Opacity's fill ends at x 1491"
+    );
 
     // X: type 1280, Enter: one LayerSet on take 5's layout. One held
     // `wtype` run from the typing to past Enter: the window is active only
