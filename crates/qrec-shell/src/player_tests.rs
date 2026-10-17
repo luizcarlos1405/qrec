@@ -1090,11 +1090,41 @@ fn scrubs_end_on_the_scrubbed_frame() {
     assert_quiet_since(quiet);
 }
 
+/// The seeks the pipeline refuses next ([`REFUSE_SEEKS`]), for one test:
+/// dropped, it refuses none again, also when its test panics (the static
+/// outlives the test, and the next player test's seeks were refused, so it
+/// failed too: WP10's code audit).
+struct Refusals;
+
+impl Refusals {
+    /// The next `n` seeks are refused.
+    fn next(n: u32) -> Self {
+        REFUSE_SEEKS.store(n, Ordering::SeqCst);
+        Self
+    }
+
+    /// The next `n` seeks are refused, from now on.
+    fn again(&self, n: u32) {
+        REFUSE_SEEKS.store(n, Ordering::SeqCst);
+    }
+
+    /// The refusals not used yet.
+    fn left(&self) -> u32 {
+        REFUSE_SEEKS.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for Refusals {
+    fn drop(&mut self) {
+        REFUSE_SEEKS.store(0, Ordering::SeqCst);
+    }
+}
+
 /// A seek the pipeline refuses goes again a moment later, newest wins
 /// (WP10's audit: the last scrub of a fast ruler drag, refused, left the
 /// picture on an older frame than the playhead for good). GStreamer refuses
 /// one only now and then, so the test has the next ones refused
-/// (`REFUSE_SEEKS`): a scrub and a plain seek still land on their frames.
+/// ([`Refusals`]): a scrub and a plain seek still land on their frames.
 #[test]
 fn a_refused_seek_goes_again() {
     let _serial = serial();
@@ -1108,18 +1138,18 @@ fn a_refused_seek_goes_again() {
     let player = spawn(&tap, &dir, None, &events);
     player.load(plan, 0);
     events.loaded(1);
-    REFUSE_SEEKS.store(3, Ordering::SeqCst);
+    let refusals = Refusals::next(3);
     player.scrub(ns(40));
     settle(&player);
-    assert_eq!(REFUSE_SEEKS.load(Ordering::SeqCst), 0, "three refusals");
+    assert_eq!(refusals.left(), 0, "three refusals");
     assert_eq!(player.position_ns(), ns(40));
     assert_eq!(tap.showing(ns(40)).id, Some(40));
     // Refused twice, a newer seek waiting meanwhile: the newer one lands.
-    REFUSE_SEEKS.store(2, Ordering::SeqCst);
+    refusals.again(2);
     player.seek(ns(60));
     player.seek(ns(70));
     settle(&player);
-    assert_eq!(REFUSE_SEEKS.load(Ordering::SeqCst), 0);
+    assert_eq!(refusals.left(), 0);
     assert_eq!(player.position_ns(), ns(70));
     assert_eq!(tap.showing(ns(70)).id, Some(70));
     assert!(events.errors().is_empty(), "{:?}", events.errors());
