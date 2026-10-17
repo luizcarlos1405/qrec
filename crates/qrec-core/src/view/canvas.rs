@@ -18,7 +18,8 @@
 //!   position [`readout`].
 //! - **Overlays**: [`countdown`], [`rec`], [`transport`], [`badges`], the
 //!   S10 [`trim_plate`].
-//! - **First run** (S01a, D-16): [`first_run_rows`], [`first_run_commands`],
+//! - **First run** (S01a, D-16): [`first_run_rows`], [`with_choices`] (the
+//!   person's picks across a refreshed inventory), [`first_run_commands`],
 //!   [`add_sources_label`].
 //!
 //! Geometry is in logical px at 100 % UI scale (D-46); canvas edits are in
@@ -1038,7 +1039,7 @@ pub fn live_video(state: &State, live: &LiveSources) -> bool {
 // ------------------------------------------------------------- first run
 
 /// What a first-run row adds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SourceKind {
     Screen,
@@ -1144,6 +1145,26 @@ pub fn first_run_rows(
         &mut rows,
     );
     rows
+}
+
+/// What the person checked or unchecked on the first-run list, by row
+/// (kind, source).
+pub type FirstRunChoices = BTreeMap<(SourceKind, String), bool>;
+
+/// `rows` (from [`first_run_rows`]) with the person's `choices` applied: a
+/// refreshed inventory (a device plugged in, an Add menu's discovery)
+/// rebuilds the list, and the rows they toggled keep their state while the
+/// others follow the defaults (R25: the rebuild reset every check, so
+/// `Enter` added a camera they had unchecked).
+pub fn with_choices(rows: Vec<SourceRow>, choices: &FirstRunChoices) -> Vec<SourceRow> {
+    rows.into_iter()
+        .map(|mut row| {
+            if let Some(&checked) = choices.get(&(row.kind, row.source.clone())) {
+                row.checked = checked;
+            }
+            row
+        })
+        .collect()
 }
 
 /// The commands "Add N sources" sends, in one FIFO: screens, cameras, the
@@ -1887,6 +1908,73 @@ mod tests {
             ]
         );
         insta::assert_json_snapshot!("first_run", json!({"rows": rows, "commands": cmds}));
+    }
+
+    /// R25: an inventory refresh (a mic plugged in, an Add menu's
+    /// discovery) rebuilds the rows: the person's own picks stay, rows they
+    /// never touched follow the defaults (a new default mic would replace
+    /// the old one).
+    #[test]
+    fn first_run_rows_keep_the_persons_choices() {
+        let Inventory {
+            screens,
+            cameras,
+            mut mics,
+            monitors,
+        } = design_inventory();
+        let yeti = "alsa_input.usb-Blue_Microphones_Yeti_Nano";
+        let monitor = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor";
+        // The person unchecks the camera ("Add 3 sources").
+        let mut choices = FirstRunChoices::new();
+        choices.insert((SourceKind::Camera, "/dev/video0".to_owned()), false);
+        // A USB mic comes, not the default.
+        mics.push(AudioDeviceInfo {
+            name: "alsa_input.usb-Samson_Q2U".into(),
+            description: "Samson Q2U".into(),
+            is_monitor: false,
+        });
+        let rows = with_choices(
+            first_run_rows(
+                &screens,
+                &cameras,
+                &mics,
+                &monitors,
+                Some(yeti),
+                Some(monitor),
+            ),
+            &choices,
+        );
+        let checked: Vec<(SourceKind, &str)> = rows
+            .iter()
+            .filter(|r| r.checked)
+            .map(|r| (r.kind, r.source.as_str()))
+            .collect();
+        assert_eq!(
+            checked,
+            [
+                (SourceKind::Screen, "DP-4"),
+                (SourceKind::Mic, yeti),
+                (SourceKind::SystemAudio, monitor)
+            ]
+        );
+        assert_eq!(first_run_commands(&rows).len(), 3, "no camera");
+        // Ticking the new mic too.
+        choices.insert(
+            (SourceKind::Mic, "alsa_input.usb-Samson_Q2U".to_owned()),
+            true,
+        );
+        let rows = with_choices(
+            first_run_rows(
+                &screens,
+                &cameras,
+                &mics,
+                &monitors,
+                Some(yeti),
+                Some(monitor),
+            ),
+            &choices,
+        );
+        assert_eq!(rows.iter().filter(|r| r.checked).count(), 4);
     }
 
     #[test]

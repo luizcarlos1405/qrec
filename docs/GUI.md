@@ -291,7 +291,7 @@ queues in the GUI instead of spawning a headless recorder.
 | 5 | GTK, after 3 | create the live and the program `gtk4paintablesink`, read each `paintable` (main thread only: a sink created on a worker deadlocks *(spike)*); `MediaHub` keeps both elements until exit | — |
 | 6 | `qrec-doctor`, after 3 | `doctor::run(DoctorOptions { fake_backend, project/config VA device, probe_vaapi: false })` | a required check failed → `GuiHost::fail(missing_dependency)` and interim S23 (exit 5) |
 | 7 | `qrec-startup`, once 4, 5 and 6 succeeded | `GuiHost::open(GuiOpener)`: `qrec-session` opens the Session, attaches it (the `first` request runs, then the queued ones), posts the first snapshot and `HostEvent::Opened` | `Invalid` with the restore hint → interim X3 (exit 1) |
-| 8 | GTK, on `Opened` | spawn `ProgramPlayer`, `PreviewCache`; `MediaHub` starts toggling `MeterMonitor`; later `SharedSources` refreshes when an Add menu opens and on hotplug | — |
+| 8 | GTK, on `Opened` | spawn `ProgramPlayer`, `PreviewCache`; `MediaHub` starts toggling `MeterMonitor`; later `SharedSources` refreshes when an Add menu opens (no hotplug watcher feeds it yet: a device plugged in shows at the next Add menu; the first run's rows keep the person's picks across a refresh, R25) | — |
 
 - Steps 3 and 4 start together: publishing never waits for GStreamer or
   doctor. The stage shows the caption "Opening <name>…" if step 7 hasn't
@@ -2196,7 +2196,10 @@ anchor's frame under the anchor; a move preview's command, applied with
   default_monitor) -> Vec<SourceRow { kind, label, meta, checked }>`
   (labels "Screen · DP-4 · GIGA-BYTE GS27QA" with meta "2560×1440";
   "Camera · Logitech C920 · /dev/video0"; "Mic · Yeti Nano"; "System audio
-  · Built-in Audio Analog Stereo"); `first_run_commands(&rows) ->
+  · Built-in Audio Analog Stereo"); `with_choices(rows, &FirstRunChoices)`:
+  the rows the person toggled (by kind and source) keep their state when a
+  refreshed inventory rebuilds the list, the others follow the defaults
+  (R25); `first_run_commands(&rows) ->
   Vec<Command>` (D-16); button "Add 4 sources" / "Add 1 source"
   (`add_sources_label`; "Add sources", insensitive, with none checked, no
   frame), the hint bar's label too (G§4.3). As built (WP4): rows 40 px

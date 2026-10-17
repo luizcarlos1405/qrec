@@ -14,8 +14,8 @@ use std::sync::Arc;
 use gtk::prelude::*;
 use qrec_core::view::FocusRegion;
 use qrec_core::view::canvas::{
-    FIRST_RUN_CAPTION, FIRST_RUN_HEADING, SourceKind, SourceRow, add_sources_label,
-    first_run_commands, first_run_rows,
+    FIRST_RUN_CAPTION, FIRST_RUN_HEADING, FirstRunChoices, SourceKind, SourceRow,
+    add_sources_label, first_run_commands, first_run_rows, with_choices,
 };
 use qrec_shell::sources::SourceInventory;
 
@@ -31,6 +31,8 @@ pub struct FirstRun {
     button: gtk::Button,
     button_label: gtk::Label,
     rows: RefCell<Vec<(SourceRow, gtk::CheckButton)>>,
+    /// The rows the person toggled: kept across a refreshed inventory (R25).
+    choices: RefCell<FirstRunChoices>,
     inventory: RefCell<Option<Arc<SourceInventory>>>,
     /// Armed when the block shows: the button takes the focus once it can
     /// be pressed ([`FirstRun::take_focus`]).
@@ -105,6 +107,7 @@ impl FirstRun {
             button,
             button_label,
             rows: RefCell::new(Vec::new()),
+            choices: RefCell::new(FirstRunChoices::new()),
             inventory: RefCell::new(None),
             wants_focus: Cell::new(false),
             ctx: ctx.clone(),
@@ -120,7 +123,8 @@ impl FirstRun {
         this
     }
 
-    /// Rebuilds the rows when the discovery found something else.
+    /// Rebuilds the rows when the discovery found something else, keeping
+    /// what the person picked (R25) and the focus on its row.
     pub fn set_inventory(self: &Rc<Self>, inventory: Option<&Arc<SourceInventory>>) {
         let same = match (&*self.inventory.borrow(), inventory) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b) || **a == **b,
@@ -131,6 +135,12 @@ impl FirstRun {
             return;
         }
         *self.inventory.borrow_mut() = inventory.cloned();
+        let focused = self
+            .rows
+            .borrow()
+            .iter()
+            .find(|(_, check)| check.has_focus())
+            .map(|(row, _)| (row.kind, row.source.clone()));
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }
@@ -144,6 +154,11 @@ impl FirstRun {
                 inv.default_mic.as_deref(),
                 inv.default_monitor.as_deref(),
             );
+            // Picks of sources that went are forgotten.
+            self.choices.borrow_mut().retain(|(kind, source), _| {
+                found.iter().any(|r| r.kind == *kind && r.source == *source)
+            });
+            let found = with_choices(found, &self.choices.borrow());
             for (i, row) in found.into_iter().enumerate() {
                 let check = self.row(&row);
                 // Named for the nested cases (G§8.4): `first-run-row-0` ….
@@ -154,6 +169,17 @@ impl FirstRun {
         }
         self.list.set_visible(!rows.is_empty());
         self.looking.set_visible(inventory.is_none());
+        if let Some(key) = focused {
+            // The row that had the focus went with the rebuild: its new
+            // one takes it (the button if the source is gone).
+            match rows
+                .iter()
+                .find(|(row, _)| row.kind == key.0 && row.source == key.1)
+            {
+                Some((_, check)) => check.grab_focus(),
+                None => self.button.grab_focus(),
+            };
+        }
         *self.rows.borrow_mut() = rows;
         self.update_button();
     }
@@ -186,8 +212,12 @@ impl FirstRun {
         check.set_child(Some(&content));
         check.update_property(&[gtk::accessible::Property::Label(&row.label)]);
         let weak = Rc::downgrade(self);
-        check.connect_toggled(guarded!("first run: a source", move |_| {
+        let key = (row.kind, row.source.clone());
+        check.connect_toggled(guarded!("first run: a source", move |check| {
             if let Some(this) = weak.upgrade() {
+                this.choices
+                    .borrow_mut()
+                    .insert(key.clone(), check.is_active());
                 this.update_button();
                 this.ctx.store.update_local({
                     let checked = this.checked();
