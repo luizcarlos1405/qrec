@@ -161,16 +161,20 @@ pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
 }
 
 /// GTK `startup`: GTK's settings. Font rendering is GTK's manual mode
-/// (`theme::fonts::configure_rendering`); test mode turns animations and
-/// the cursor blink off (G§8.4). The fonts, the theme providers and the
-/// icon theme come with the window (`activate`).
+/// (`theme::fonts::configure_rendering`); test mode turns animations (but
+/// with its `animations` flag) and the cursor blink off (G§8.4). The fonts,
+/// the theme providers and the icon theme come with the window
+/// (`activate`).
 fn on_startup() {
     let Some(settings) = gtk::Settings::default() else {
         return;
     };
     crate::theme::fonts::configure_rendering(&settings);
-    if testctl::mode().on {
-        settings.set_gtk_enable_animations(false);
+    let mode = testctl::mode();
+    if mode.on {
+        if !mode.animations {
+            settings.set_gtk_enable_animations(false);
+        }
         settings.set_gtk_cursor_blink(false);
     }
 }

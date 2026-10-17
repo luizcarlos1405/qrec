@@ -1,7 +1,10 @@
-//! WP10's audits (docs/GUI.md G§8.6) in a nested headless sway: the GPU
-//! device nodes a window's start opens (`strace -f`, read by
-//! `gui_support/scripts/gpu-opens.sh`). The scale runs are every suite's
-//! own cases at `QREC_TEST_SCALE` 1.5 and 2.
+//! WP10's audits (docs/GUI.md G§8.6, DESIGN Motion) in a nested headless
+//! sway: the GPU device nodes a window's start opens (`strace -f`, read by
+//! `gui_support/scripts/gpu-opens.sh`), and reduced motion where GTK's own
+//! animations are at stake (the Narrow sheet, libadwaita's), with test
+//! mode's `animations` flag keeping them on. The rest of DESIGN's motion
+//! table is GTK-free (`theme::motion`'s table test); the scale runs are
+//! every suite's own cases at `QREC_TEST_SCALE` 1.5 and 2.
 //!
 //! `cargo test -p qrec --test gui_audits -- --ignored --test-threads=1`
 //! (inside the dev shell: sway, grim, wtype, dbus-daemon; strace).
@@ -13,7 +16,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gui_support::{Launch, Nested, Options, TOOL_TIMEOUT, wait_for_gui_host};
 use qrec_core::ClipId;
@@ -215,4 +218,213 @@ fn gpu_opens_counts_devices_and_drivers_not_vendor_reads() {
         let (report, status) = gpu_opens(&trace);
         assert_eq!(status, Some(1), "an NVIDIA touch: {touch}\n{report}");
     }
+}
+
+// --------------------------------------------------------- reduced motion
+
+/// `ui.reduced_motion = true` in the user's `config.toml`.
+fn reduced_motion(nested: &Nested) {
+    let config = nested.env.config_home().join("qrec");
+    fs::create_dir_all(&config).expect("the config folder");
+    fs::write(config.join("config.toml"), "[ui]\nreduced_motion = true\n").expect("config.toml");
+}
+
+/// The Narrow sheet's x (window px) at each `regions` for `ms` (`None`:
+/// not showing).
+fn sample_sheet(nested: &mut Nested, ms: u64) -> Vec<Option<f64>> {
+    let deadline = Instant::now() + Duration::from_millis(ms);
+    let mut samples = Vec::new();
+    while Instant::now() < deadline {
+        let regions = nested.window(0).regions(&[]);
+        samples.push(regions.get("region-panel").map(|r| r[0]));
+    }
+    samples
+}
+
+/// `samples` as runs of equal samples, each once with its count.
+fn runs(samples: &[Option<f64>]) -> String {
+    let mut runs: Vec<(Option<f64>, usize)> = Vec::new();
+    for &s in samples {
+        match runs.last_mut() {
+            Some((last, n)) if *last == s => *n += 1,
+            _ => runs.push((s, 1)),
+        }
+    }
+    runs.iter()
+        .map(|(s, n)| match s {
+            Some(x) => format!("{x}×{n}"),
+            None => format!("gone×{n}"),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Whether `samples` caught the sheet between the window's edge (1000)
+/// and its place (616): mid-slide.
+fn slid(samples: &[Option<f64>]) -> bool {
+    samples.iter().flatten().any(|&x| x > 617.0 && x < 999.0)
+}
+
+/// What [`the_sheet`] saw: the sheet's x through its opening, its close by
+/// `Esc` and its own close (a click on the content it dims), and GTK's
+/// animation setting while it was open and after each close.
+struct Sheet {
+    opening: Vec<Option<f64>>,
+    closing: Vec<Option<f64>>,
+    dismissed: Vec<Option<f64>>,
+    animations: [bool; 3],
+}
+
+/// The Narrow sheet opened by the header's layers button, closed by `Esc`,
+/// opened again and closed by a click on the content it dims (libadwaita's
+/// own close), its x sampled through each; GTK's own animations on
+/// (`QREC_GUI_TEST=1,animations`).
+fn the_sheet(reduced: bool) -> Sheet {
+    let case = if reduced {
+        "sheet-reduced"
+    } else {
+        "sheet-animated"
+    };
+    let mut nested = Nested::start(AREA, case, Options::size(1000, 1000));
+    if reduced {
+        reduced_motion(&nested);
+    }
+    let ui = UiState {
+        playhead: 7391,
+        ..UiState::default()
+    };
+    let project = fixture(&nested, &ui);
+    open(
+        &mut nested,
+        0,
+        &project,
+        Launch::default().with_env("QREC_GUI_TEST", "1,animations"),
+    );
+    let local = nested.window(0).local();
+    assert_eq!(local["layout"]["width"], "Narrow", "{local}");
+    assert_eq!(local["reducedMotion"], reduced, "{local}");
+    assert_eq!(
+        local["gtkAnimations"], true,
+        "test mode left them on: {local}"
+    );
+    let button = nested.window(0).regions(&["layers-button"])["layers-button"];
+    let press = |nested: &mut Nested| {
+        let [x, y, w, h] = button;
+        nested.pointer().click(x + w / 2.0, y + h / 2.0);
+    };
+    press(&mut nested);
+    let opening = sample_sheet(&mut nested, 800);
+    let local = nested.window(0).local();
+    assert_eq!(local["overlays"], json!(["LayersSheet"]), "{local}");
+    let animations = |nested: &mut Nested| nested.window(0).local()["gtkAnimations"] == true;
+    let while_open = animations(&mut nested);
+    nested.keys(&["-k", "Escape"]);
+    let closing = sample_sheet(&mut nested, 800);
+    let after_esc = animations(&mut nested);
+    press(&mut nested);
+    gui_support::poll(Duration::from_secs(10), "the sheet again", || {
+        let regions = nested.window(0).regions(&[]);
+        regions
+            .get("region-panel")
+            .is_some_and(|r| (r[0] - 616.0).abs() <= 1.0)
+            .then_some(())
+    });
+    // The stage under the sheet's dim: libadwaita's own close.
+    nested.pointer().click(300.0, 400.0);
+    let dismissed = sample_sheet(&mut nested, 800);
+    let local = nested.window(0).local();
+    assert_eq!(local["overlays"], json!([]), "{local}");
+    let after_dismissal = animations(&mut nested);
+    assert_clean(&mut nested, 0);
+    let record = nested.shots.join(format!("{case}-samples.txt"));
+    let lines: Vec<String> = [
+        ("opening", &opening),
+        ("closing", &closing),
+        ("dismissed", &dismissed),
+    ]
+    .iter()
+    .map(|(what, s)| format!("{what}: {}", runs(s)))
+    .collect();
+    fs::write(record, lines.join("\n") + "\n").expect("the samples");
+    Sheet {
+        opening,
+        closing,
+        dismissed,
+        animations: [while_open, after_esc, after_dismissal],
+    }
+}
+
+/// DESIGN Motion's panel overlay (D-30): under reduced motion the Narrow
+/// sheet neither slides in nor out, its own close included: from its first
+/// sample it is at its place (x 616), and it goes at once. libadwaita
+/// slides it otherwise (the same samples catch it mid-slide: the twin
+/// case below), and reads no reduced motion itself: the window turns GTK's
+/// animations off while the sheet is open, and on again once it goes.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn under_reduced_motion_the_narrow_sheet_neither_slides_in_nor_out() {
+    let Sheet {
+        opening,
+        closing,
+        dismissed,
+        animations,
+    } = the_sheet(true);
+    for (what, samples) in [
+        ("opening", &opening),
+        ("closing", &closing),
+        ("dismissed", &dismissed),
+    ] {
+        assert!(!slid(samples), "{what}: the sheet slid: {}", runs(samples));
+        // At its place, or still off the window's edge before its first
+        // allocation (a sample taken between the show and the layout).
+        for x in samples.iter().flatten() {
+            assert!(
+                (x - 616.0).abs() <= 1.0 || *x >= 999.0,
+                "{what}: the sheet at x {x}: {}",
+                runs(samples)
+            );
+        }
+    }
+    assert!(
+        opening.iter().any(Option::is_some),
+        "it opened: {}",
+        runs(&opening)
+    );
+    assert!(
+        closing.last() == Some(&None),
+        "it closed: {}",
+        runs(&closing)
+    );
+    assert!(
+        dismissed.last() == Some(&None),
+        "it closed: {}",
+        runs(&dismissed)
+    );
+    // Off while the sheet was open (libadwaita reads no reduced motion of
+    // its own), on again after either close.
+    assert_eq!(animations, [false, true, true], "GTK's animations");
+}
+
+/// The twin: with motion allowed libadwaita slides the sheet in and out,
+/// and the samples catch it (so the reduced case's would).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn with_motion_allowed_the_narrow_sheet_slides() {
+    let Sheet {
+        opening,
+        closing,
+        animations,
+        ..
+    } = the_sheet(false);
+    assert_eq!(animations, [true; 3], "GTK's animations, never touched");
+    assert!(
+        slid(&opening),
+        "no slide caught opening: {}",
+        runs(&opening)
+    );
+    assert!(
+        slid(&closing),
+        "no slide caught closing: {}",
+        runs(&closing)
+    );
 }
