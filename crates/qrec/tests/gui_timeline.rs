@@ -304,6 +304,72 @@ fn s08_seconds() {
     assert_clean(&mut nested);
 }
 
+/// A new min silence (`qrec autocut settings --min-silence-ms 600`)
+/// hatches its cached analysis at once: c2d0's file was analyzed at 400 and
+/// 600 ms before the window opened at 400. The requests were deduplicated
+/// without the min silence, and a settings change asked for nothing: the
+/// hatch went.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_new_min_silence_shows_its_cached_silences() {
+    let mut nested = Nested::start(AREA, "min-silence", Options::default());
+    let project = fixture(
+        &nested,
+        DesignVariant::Base,
+        &program(&[], 2437, Some((1.6, 1950))),
+    );
+    for args in [
+        &["autocut", "--clips", "c2d0", "--dry-run"][..],
+        &[
+            "autocut",
+            "--clips",
+            "c2d0",
+            "--dry-run",
+            "--min-silence-ms",
+            "600",
+        ],
+    ] {
+        let dry = nested.cli_json(&project, args);
+        assert_eq!(dry["ok"], true, "{dry}");
+    }
+    open(&mut nested, &project, Launch::default());
+    let s = nested.opts.scale;
+    let px = |v: f64| (v * s).round().max(1.0) as u32;
+    let warning = gui_support::token_rgb("swamp-night", "warning");
+    // A1's hatches' warning edges over c2d0 (from window x 390), left of
+    // the playhead (at 955, near `warning`).
+    let edges = |nested: &Nested, name: &str| {
+        let shot = nested.screenshot(name);
+        gui_support::count_near(
+            &shot,
+            [px(390.0), px(800.0), px(550.0), px(56.0)],
+            warning,
+            40,
+        )
+    };
+    let at_400 = edges(&nested, "at-400");
+    assert!(at_400 > 0, "no hatch at 400 ms");
+    let set = nested.cli_json(
+        &project,
+        &["autocut", "settings", "--min-silence-ms", "600"],
+    );
+    assert_eq!(set["ok"], true, "{set}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        nested.window(0).wait_idle();
+        let at_600 = edges(&nested, "at-600");
+        if at_600 > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no hatch at 600 ms ({at_400} px at 400)"
+        );
+        thread::sleep(Duration::from_millis(200));
+    }
+    assert_clean(&mut nested);
+}
+
 /// S09: 32 px/frame from frame 3160, c2d1 selected, the playhead at the
 /// c2d0 | c2d1 cut (x 688).
 #[test]

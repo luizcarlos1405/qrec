@@ -1020,3 +1020,48 @@ fn drags_end_when_the_timeline_has_no_view() {
     g.on_state(&recording, vm.target_view().is_some(), &mut sink);
     assert!(matches!(g.drag(), Some(Drag::Pan { .. })));
 }
+
+// ------------------------------------------------------------- silences
+
+/// R08: the cached analyses are asked for by the key their answer carries,
+/// the minimum silence in it: with c2d0's file asked at −35 dB and 400 ms,
+/// a change to 600 ms asks again (the dedupe left the minimum out, so the
+/// 600 ms analysis on disk was never fetched and the hatch went).
+#[test]
+fn a_new_min_silence_asks_for_its_cached_analysis() {
+    use qrec_core::model::AutocutSettings;
+    let file = "takes/take-0005/A1-mic.mka";
+    let files = std::collections::BTreeMap::from([(
+        file.to_owned(),
+        qrec_core::ctx::FileFact {
+            path: file.to_owned(),
+            bytes: 4_000_000,
+            mtime_ns: 1_760_000_000_000_000_000,
+        },
+    )]);
+    let at = |min_silence_ms| AutocutSettings {
+        threshold_db: -35.0,
+        min_silence_ms,
+        ..AutocutSettings::default()
+    };
+    let none = std::collections::BTreeMap::new();
+    let mut asked = std::collections::BTreeSet::new();
+    let first = silence_requests(&files, &at(400), &asked, &none);
+    assert_eq!(first.len(), 1);
+    asked.extend(first.into_iter().map(|(_, k)| k));
+    assert!(silence_requests(&files, &at(400), &asked, &none).is_empty());
+    let six = silence_requests(&files, &at(600), &asked, &none);
+    let key = SilenceKey::compute(file, 4_000_000, 1_760_000_000_000_000_000, -35.0, 600);
+    assert_eq!(six, [(file.to_owned(), key.clone())]);
+    // Answered already (this session analyzed it): nothing to ask.
+    let cached = std::collections::BTreeMap::from([(key, Vec::new())]);
+    assert!(
+        silence_requests(
+            &files,
+            &at(600),
+            &std::collections::BTreeSet::new(),
+            &cached
+        )
+        .is_empty()
+    );
+}

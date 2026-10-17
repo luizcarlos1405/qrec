@@ -1097,7 +1097,12 @@ time; A§8.7 rules for every child).
   Vec<Interval>>)` → hatches on the autocut track's lane, at the
   project's current threshold and min silence, from `runtime.silence` plus
   the `CachedSilence` answers. The file facts (`facts::file_fact`) are
-  stat'ed on a worker.
+  stat'ed on a worker. The timeline asks for each cached analysis once per
+  `SilenceKey` its answer carries (`timeline::control::silence_requests`:
+  the file's version, the threshold and the min silence), again whenever
+  the autocut settings change, from the CLI, IPC or an undo too (review:
+  the dedupe left the min silence out, so a new min silence never fetched
+  its analysis, and a settings change waited for another one).
 
 ### G§3.12 Threads and rules
 

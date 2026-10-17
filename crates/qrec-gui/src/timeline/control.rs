@@ -15,8 +15,13 @@
 
 use std::time::Duration;
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use qrec_core::ctx::FileFact;
+use qrec_core::model::AutocutSettings;
 use qrec_core::protocol::command::{Nullable, SeekTarget, SelectOp, UiPatch};
-use qrec_core::state::RecordPhase;
+use qrec_core::protocol::event::Interval;
+use qrec_core::state::{RecordPhase, SilenceKey};
 use qrec_core::view::DragKind;
 use qrec_core::view::notices::Notice;
 use qrec_core::view::timeline::{
@@ -1015,6 +1020,32 @@ pub fn ghost_readings(elapsed_ms: f64, ghost_w: f64, columns: &std::ops::Range<u
     let all = (elapsed_ms / READING_MS).ceil().max(0.0);
     let oldest = (columns.end as f64 * per_px_ms / READING_MS).ceil() + 2.0;
     all.min(oldest) as usize
+}
+
+/// The cached analyses to ask the preview cache for (G§3.11): each silence
+/// file's at the project's threshold and minimum silence, as (file, the
+/// `SilenceKey` its answer carries), unless that key was asked for or
+/// answered already.
+pub fn silence_requests(
+    files: &BTreeMap<String, FileFact>,
+    settings: &AutocutSettings,
+    asked: &BTreeSet<SilenceKey>,
+    cached: &BTreeMap<SilenceKey, Vec<Interval>>,
+) -> Vec<(String, SilenceKey)> {
+    let key = |f: &FileFact| {
+        SilenceKey::compute(
+            &f.path,
+            f.bytes,
+            f.mtime_ns,
+            settings.threshold_db,
+            settings.min_silence_ms,
+        )
+    };
+    files
+        .values()
+        .map(|f| (f.path.clone(), key(f)))
+        .filter(|(_, k)| !asked.contains(k) && !cached.contains_key(k))
+        .collect()
 }
 
 /// The height thumbnails are made at, in device px (G§3.11): the

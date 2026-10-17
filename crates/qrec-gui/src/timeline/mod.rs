@@ -39,7 +39,7 @@ mod tips;
 mod toolbar;
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -108,8 +108,8 @@ struct Model {
     silences: Option<(Arc<State>, u64, Rc<Vec<tl::SilenceSpan>>)>,
     /// What the facts were asked for (files, threshold, min silence).
     silence_key: Option<(Vec<String>, u64, u32)>,
-    /// The CachedSilence requests sent, per file version.
-    silence_asked: Vec<(String, i64, u64)>,
+    /// The CachedSilence requests sent: the keys their answers carry.
+    silence_asked: BTreeSet<SilenceKey>,
     /// A bin drag over the canvas: its take and x.
     drop: Option<(TakeId, f64)>,
     /// The drop target set `LocalUi.drag = BinInsert` (and clears it):
@@ -329,7 +329,7 @@ impl Inner {
                     silence_version: 0,
                     silences: None,
                     silence_key: None,
-                    silence_asked: Vec::new(),
+                    silence_asked: BTreeSet::new(),
                     drop: None,
                     drop_drag: false,
                     flash: None,
@@ -795,7 +795,10 @@ impl Inner {
             m.generation += 1;
         }
         self.apply(pending);
-        if change.timeline() || change.scene() || change.takes() || change.ui() {
+        // The hatches follow the files and the autocut settings (a CLI,
+        // IPC or undo change of the threshold or min silence too).
+        let autocut = change.prev.project.autocut != change.next.project.autocut;
+        if change.timeline() || change.scene() || change.takes() || change.ui() || autocut {
             self.refresh_silences(state);
         }
         self.refresh_all();
@@ -928,31 +931,25 @@ impl Inner {
         );
     }
 
-    /// Asks the preview cache for each file's cached analysis (once per
-    /// file version and settings).
+    /// Asks the preview cache for each file's cached analysis, once per
+    /// key its answer carries (the file's version, threshold and min
+    /// silence: `control::silence_requests`).
     fn ask_silences(&self, state: &State) {
         let Some(cache) = self.ctx.media.preview_cache() else {
             return;
         };
         let settings = &state.project.autocut;
-        let wanted: Vec<(String, i64, u64)> = {
+        let wanted = {
             let m = self.m.borrow();
-            m.files
-                .values()
-                .map(|f| (f.path.clone(), f.mtime_ns, settings.threshold_db.to_bits()))
-                .filter(|w| !m.silence_asked.contains(w))
-                .collect()
+            control::silence_requests(&m.files, settings, &m.silence_asked, &m.cached)
         };
-        for (file, mtime, threshold) in wanted {
+        for (file, key) in wanted {
             cache.request(PreviewRequest::CachedSilence {
-                file: file.clone(),
+                file,
                 threshold_db: settings.threshold_db,
                 min_silence_ms: settings.min_silence_ms,
             });
-            self.m
-                .borrow_mut()
-                .silence_asked
-                .push((file, mtime, threshold));
+            self.m.borrow_mut().silence_asked.insert(key);
         }
     }
 
