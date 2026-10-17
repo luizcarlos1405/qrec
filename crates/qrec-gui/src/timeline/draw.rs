@@ -121,11 +121,13 @@ pub fn canvas(s: &gtk::Snapshot, sc: &Scene<'_>, height: f64) {
         ghost_clip(s, sc, ghost);
     }
     if let Some((preview, lifted)) = &sc.moving {
-        caret(s, sc, preview.caret_x);
         if let Some(tag) = &preview.ripple {
             ripple(s, sc, tag);
         }
         lifted_copy(s, sc, lifted);
+        // The caret over the lifted copy, as S11 draws it (under it, the
+        // copy hid it across the rows it spans; WP10's fixes).
+        caret(s, sc, preview.caret_x);
     }
     if let Some(x) = sc.drop_caret {
         caret(s, sc, x);

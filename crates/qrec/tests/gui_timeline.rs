@@ -590,7 +590,18 @@ fn s11_drag_move() {
     // WP10's shot review: at (413, 774), 46 px tall, as S11 draws it (it
     // was 52 px, at the pointer).
     assert_tooltip(&mut nested, (413.0, 774.0), 46.0);
-    shoot(&nested, "drag-move", Some("S11-drag-move.png"));
+    let shot = shoot(&nested, "drag-move", Some("S11-drag-move.png"));
+    // The caret over the lifted copy, as S11 draws it (BRIEF's x 404.9;
+    // 403 with the fit inset): `caret` across the video row, where the
+    // copy hid it under its 85 % until WP10's fixes.
+    let caret = gui_support::token_rgb("swamp-night", "caret");
+    for y in [730.0, 750.0, 770.0, 785.0] {
+        let row = gui_support::rgb_pixels(&shot, nested.opts.rect_px([396.0, y, 16.0, 1.0]));
+        assert!(
+            row.contains(&caret),
+            "the caret over the lifted copy at y {y}: {row:02X?}"
+        );
+    }
     nested.keys(&["-k", "Escape"]);
     wait_drag(&mut nested, Value::Null);
     release(&mut nested);
