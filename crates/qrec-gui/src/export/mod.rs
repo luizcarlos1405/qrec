@@ -115,6 +115,9 @@ struct Panel {
     syncing: Cell<bool>,
     /// `QREC_GUI_TEST_SAVE_AS`'s paths still to hand out (test mode).
     test_paths: RefCell<VecDeque<String>>,
+    /// Whether `exports/` exists, as `qrec-gui-io` found when the panel
+    /// opened (Change…'s folder; no stat on the GTK thread, R1).
+    exports: Cell<Option<bool>>,
 }
 
 /// Scrolls `scroller` to its end once its new content is laid out (S17: the
@@ -210,6 +213,7 @@ impl Panel {
             ticker: RefCell::new(None),
             syncing: Cell::new(false),
             test_paths: RefCell::new(test_paths),
+            exports: Cell::new(None),
         });
         panel.connect();
         panel.read_config();
@@ -419,6 +423,7 @@ impl Panel {
             return;
         }
         self.refresh_preview();
+        self.find_exports();
         let mode = flow::mode(exporting, self.waiting(&state), None);
         self.ctx.store.update_local(move |l| {
             l.export_view.draft.error = None;
@@ -449,6 +454,22 @@ impl Panel {
         *self.preview.borrow_mut() = (
             view::output_preview(&state, ExportFormat::Mp4, now, offset),
             view::output_preview(&state, ExportFormat::Webm, now, offset),
+        );
+    }
+
+    /// Whether `exports/` exists, for Change…'s dialog: asked of
+    /// `qrec-gui-io` (R1: a stat on the GTK thread froze the window on a
+    /// stalled mount).
+    fn find_exports(self: &Rc<Self>) {
+        let dir = self.ctx.store.project_dir().join("exports");
+        let weak = Rc::downgrade(self);
+        self.ctx.media.run_io_then(
+            move || dir.is_dir(), // R1: qrec-gui-io
+            move |found| {
+                if let Some(panel) = weak.upgrade() {
+                    panel.exports.set(Some(found));
+                }
+            },
         );
     }
 
@@ -933,7 +954,6 @@ impl Panel {
             }
             return;
         }
-        let dir = self.ctx.store.project_dir().join("exports");
         let draft = self.ctx.store.local().export_view.draft.clone();
         let name = {
             let preview = self.preview.borrow();
@@ -951,11 +971,7 @@ impl Panel {
             .modal(true)
             .initial_name(name)
             .build();
-        let folder = if dir.is_dir() {
-            dir
-        } else {
-            self.ctx.store.project_dir().to_path_buf()
-        };
+        let folder = flow::save_folder(self.ctx.store.project_dir(), self.exports.get());
         dialog.set_initial_folder(Some(&gtk::gio::File::for_path(folder)));
         let window = self.root.root().and_downcast::<gtk::Window>();
         let weak = Rc::downgrade(self);
@@ -1006,5 +1022,61 @@ impl Panel {
         }
         let full: PathBuf = self.ctx.store.project_dir().join(path);
         full.to_string_lossy().into_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    /// G§3.12 R1: the bin's and the export panel's GTK-thread code does no
+    /// file I/O (a stat on a stalled network mount freezes the window):
+    /// what it needs from the disk comes from `qrec-gui-io` (`run_io_then`,
+    /// the line marked `// R1: qrec-gui-io`). Change… stat'ed `exports/`
+    /// on the GTK thread.
+    #[test]
+    fn the_bin_and_the_export_panel_do_no_file_io_on_the_gtk_thread() {
+        const CALLS: [&str; 10] = [
+            ".is_dir()",
+            ".is_file()",
+            ".exists()",
+            "try_exists(",
+            "std::fs::",
+            "fs::read",
+            "fs::metadata",
+            "symlink_metadata",
+            "File::open",
+            "canonicalize(",
+        ];
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let files = [
+            "export/mod.rs",
+            "export/flow.rs",
+            "export/pages.rs",
+            "bin_drawer/mod.rs",
+            "bin_drawer/row.rs",
+            "bin_drawer/select.rs",
+            "bin_drawer/slide.rs",
+            "bin_drawer/thumb.rs",
+            "toasts.rs",
+            "desktop.rs",
+            "widgets/mud_bar.rs",
+        ];
+        let mut offenders = Vec::new();
+        for file in files {
+            let text = std::fs::read_to_string(src.join(file)).expect(file);
+            // Production code: up to the tests at the file's end.
+            let production = text.split("\n#[cfg(test)]").next().unwrap_or_default();
+            for (n, line) in production.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or_default();
+                if CALLS.iter().any(|c| code.contains(c)) && !line.contains("// R1: qrec-gui-io") {
+                    offenders.push(format!("{file}:{}: {}", n + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "file I/O on the GTK thread: {offenders:#?}"
+        );
     }
 }

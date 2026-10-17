@@ -15,6 +15,8 @@
 //!   answer is `Done` or `Failed`, and a cancel or anything else closes the
 //!   panel (the core toasted it, H-7).
 
+use std::path::{Path, PathBuf};
+
 use qrec_core::protocol::command::{ExportFormat, Quality, VideoCodec};
 use qrec_core::view::export::{Done, Failed};
 use qrec_core::view::format;
@@ -272,6 +274,18 @@ pub fn folder_shown(out: Option<&str>, project_dir: &str, home: Option<&str>) ->
     }
 }
 
+/// The folder Change…'s save dialog opens on (D-24): `exports/`, or the
+/// project folder once `exports/` is known not to exist yet (`exports`:
+/// what `qrec-gui-io` found when the panel opened, R1; `None`, no answer
+/// yet: `exports/`, which a GTK chooser walks up from to a folder that
+/// exists).
+pub fn save_folder(project: &Path, exports: Option<bool>) -> PathBuf {
+    match exports {
+        Some(false) => project.to_path_buf(),
+        _ => project.join("exports"),
+    }
+}
+
 /// What Copy error copies: the message, then the stderr tail.
 pub fn error_text(message: &str, tail: &[String]) -> String {
     if tail.is_empty() {
@@ -477,6 +491,23 @@ mod tests {
                 &reply(Err(CoreError::invalid("export cancelled")), true)
             ),
             Answer::Close
+        );
+    }
+
+    /// Change…'s dialog opens on `exports/`, on the project folder once the
+    /// io worker said `exports/` isn't there (no stat on the GTK thread).
+    #[test]
+    fn the_save_dialog_opens_on_exports() {
+        let project = Path::new("/home/me/talk");
+        assert_eq!(
+            save_folder(project, Some(true)),
+            Path::new("/home/me/talk/exports")
+        );
+        assert_eq!(save_folder(project, Some(false)), project);
+        assert_eq!(
+            save_folder(project, None),
+            Path::new("/home/me/talk/exports"),
+            "not known yet"
         );
     }
 

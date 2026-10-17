@@ -1103,7 +1103,11 @@ time; A§8.7 rules for every child).
   `gst::init`, GES build, discovery, doctor or file I/O. Exceptions, all
   before the first window maps: `qrec_gui::run` reads `config.toml` and
   `keys.toml` (≤ 1 MiB each, G§3.3 step 1), and `startup` registers the
-  three bundled font files with Pango and loads the GResource.
+  three bundled font files with Pango and loads the GResource. The bin's
+  and the export panel's modules are held to it by a source scan
+  (`export::tests`, a worker-side line marked `// R1: qrec-gui-io`):
+  Change… stat'ed `exports/` on the GTK thread (review fix; the panel asks
+  `qrec-gui-io` when it opens, `export::flow::save_folder`).
 - **R2.** The session thread never waits on GTK: port calls push to a
   queue under a short mutex.
 - **R3.** One ordered queue; adjacent snapshots coalesce; one pending
