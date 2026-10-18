@@ -1832,11 +1832,11 @@ from 3 up is made
 close-on-exec (`proc::close_on_exec_from`: `close_range(…,
 CLOSE_RANGE_CLOEXEC)`, else an `fcntl` sweep below `RLIMIT_NOFILE`; never
 closed outright, so std's exec-error pipe still reports a failed `exec`
-where the sweep runs in a `pre_exec`, below; `spawn.rs` uses no pipe: its
-child leaves the errno of a failed step or `exec` in `Plan.error`, an
-atomic in the memory it shares with the spawning thread, `CLONE_VM`, which
-reads it once `clone` returns, `CLONE_VFORK`: after the child exec'd or
-exited). Rust opens everything
+in the children that run the sweep in a `pre_exec`, below). `spawn.rs`
+needs no such pipe: its child leaves the errno of a failed step or `exec`
+in `Plan.error`, an atomic in the memory it shares with its parent
+(`CLONE_VM`), and the spawning thread reads it when `clone` returns
+(`CLONE_VFORK`: once the child exec'd or exited). Rust opens everything
 close-on-exec already; this also keeps out what Qrec itself inherited from
 whoever started it. It gets SIGKILL when the thread that started it dies
 (`PR_SET_PDEATHSIG`; it doesn't start when that process is already gone),

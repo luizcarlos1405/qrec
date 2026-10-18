@@ -4036,6 +4036,36 @@ runs weren't repeated (no change of this
 run draws at a scale but the toast, whose bounds follow `ui.scale`:
 `a_toast_keeps_to_designs_width` measures it at 1.5).
 
+Status after the audit of run `wf_083221c5-8eb` (2026-10-18, on
+e6db23f): it found three defects, two weak tests and six wrong
+statements, all fixed here, each defect with a test that failed first and
+each weak test checked to fail without its fix. Q5 holds in every context
+(b27c691): a key in a conflict runs neither binding wherever it is pressed
+(Esc rebound to Split clip had still cancelled a take and closed an
+overlay, S rebound to Previous frame had still split on the canvas and
+stepped while recording). gui_text's GL case renames the project once the
+window is idle (2f9f0f4): the title changing as the project opened raced
+the GPU warm-up's frames, and the control found no mark in 7 of 9 gles2
+runs at the audit (5 of 6 again here), where now a copy of the case showed
+it in 16 of 16 gles2 runs and 6 of 6 pixman runs and the suite passed 5 of
+5 on gles2. The settings writers keep a CRLF file's line endings
+(cace243). The writer's whole-file replace is tested (2af7b17: an in-place
+write fails three tests), and so is the stderr well's live scale (27423d7:
+the theme subscription alone sizes the well, and the case fails without
+it). The docs (c8ba6fe, and this paragraph's commit): A§8.7's spawn.rs
+errno, S25's caps on four toast buttons, the packaged case's flake on a
+warm package too, G§4.11's palette rows, gles2's gui_text above. On the
+head: the workspace 1923 passed, 0 failed, 193 ignored (fmt and clippy
+`-D warnings` clean); nested, every suite once on pixman and once on
+gles2, gui_shell 22, gui_smoke 2, gui_chrome 15, gui_timeline 30,
+gui_stage 34, gui_panel 21, gui_bin_export 29, gui_live 9, gui_themes 5,
+gui_a11y 10, gui_audits 5, gui_text 2: 184 cases each, no GLib or GTK
+critical; gles2's smoke with no stall over 50 ms during the steps (18
+while opening, reported) and the frame-time probe's p99 16.59 ms warm and
+16.60 cold (max 16.67). The final shots weren't re-shot: no change of this
+round draws differently (the stderr well gets the same height at a given
+scale, set when the panel is built rather than at each fill).
+
 ### WP0a — Interfaces, GTK-free (alone, first)
 
 **Goal.** Every GTK-free interface of G§3 and G§4 exists, the GUI host
