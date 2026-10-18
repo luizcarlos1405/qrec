@@ -54,7 +54,8 @@ pub(crate) enum Stdio {
     /// `/dev/null`.
     Null,
     /// A pipe whose other end the parent gets ([`Child::stdout`],
-    /// [`Child::stderr`]).
+    /// [`Child::stderr`]). For stdin there is no such end (the runners
+    /// give stdin a file or `/dev/null`): the child reads its end of file.
     Piped,
     /// This descriptor (a file, a log): the child gets a copy of it.
     Fd(OwnedFd),
