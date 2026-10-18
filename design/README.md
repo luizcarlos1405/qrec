@@ -86,11 +86,15 @@ Both files were generated from the pen.dev variables on 2026-10-14, and every co
 ## Later, not in this review
 
 - **The other three themes.** Their values are already in the variables and in `qrec-tokens.json`, but no themed frames exist yet. BRIEF §7 lists the frames that get a theme proof.
-- **Draft screens,** left as they are:
+- **Draft screens,** left as they are (approved as drawn later on 2026-10-15; exported to [`screens/`](screens/) on 2026-10-17):
   - S19 Command palette `vXZe6` · S19b Command palette, empty query `GRSEE` · S20 Cheat sheet `QHCJG` · S20b Cheat sheet, search `W5kkMx`
   - S21 Settings, Appearance `C6zGK` · S22 Settings, Keyboard `GoRnZ`
   - S23 Missing dependency `eIdTG` · S24 Portal-denied error `g2i1Br` · S25 Toasts `PK7Ru`
   - X1 CLI recording at GUI start `wsZqr` · X2 Not my swamp `h0SuZd` · X3 Project can't be read `cUduQ`
+
+## Exports for tools (2026-10-17)
+
+`qrec.pen` is encrypted, so tools read the design through [`export/`](export/INDEX.md): every frame as pen.dev's HTML export (exact positions, sizes, fonts, colors and the icons as SVG), one SVG per icon and size, the art as PNG, and the component sheets in [`components/`](components/). [`export/INDEX.md`](export/INDEX.md) lists what is where and how the exports were checked (the slice PNGs and the tokens still match the document).
 
 ## Decisions (product owner, 2026-10-15)
 

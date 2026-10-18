@@ -1,0 +1,1655 @@
+<div
+  data-pencil-name="Components · Overlays"
+  style="align-items: flex-start; background-color: #12170F; box-sizing: border-box; display: flex; flex-direction: column; gap: 48px; height: fit-content; justify-content: flex-start; padding: 48px; width: fit-content"
+>
+  <div
+    data-pencil-name="Sheet header"
+    style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 4px; height: fit-content; justify-content: flex-start; width: fit-content"
+  >
+    <div
+      data-pencil-name="Sheet title"
+      style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 20px; font-style: normal; font-weight: 600; letter-spacing: -0.1px; line-height: 26px; text-align: left; white-space: nowrap'
+    >
+      Overlays
+    </div>
+    <div
+      data-pencil-name="Sheet note"
+      style='box-sizing: border-box; color: #9BA582; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+    >
+      C23 Toast · C24 Modal shell · C25 Popover shell · C33 Tooltip · floating layers get a 1 px
+      border and an elevation shadow (e1 tooltips, e2 popovers and toasts, e3 modals)
+    </div>
+  </div>
+  <div
+    data-pencil-name="Block C23 Toast"
+    style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 16px; height: fit-content; justify-content: flex-start; width: fit-content"
+  >
+    <div
+      data-pencil-name="Block header C23 Toast"
+      style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 4px; height: fit-content; justify-content: flex-start; width: fit-content"
+    >
+      <div
+        data-pencil-name="Block title C23 Toast"
+        style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 16px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 22px; text-align: left; white-space: nowrap'
+      >
+        C23 Toast
+      </div>
+      <div
+        data-pencil-name="Block note C23 Toast"
+        style='box-sizing: border-box; color: #9BA582; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+      >
+        bottom center, 12 px above the hint bar, 360–560 wide · raised, lg radius, e2 · 20 px icon ·
+        title body-strong, body body-sm muted · flat actions in accent-text · 24 px close
+      </div>
+    </div>
+    <div
+      data-pencil-name="Row toasts"
+      style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 32px; height: fit-content; justify-content: flex-start; width: fit-content"
+    >
+      <div
+        data-pencil-name="Cell info"
+        style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: fit-content"
+      >
+        <div
+          data-pencil-name="Ground"
+          style="align-items: flex-start; background-color: #12170F; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; padding: 24px; width: fit-content"
+        >
+          <div
+            data-pencil-name="C23 Toast/Info"
+            style="align-items: flex-start; background-color: #27321F; border-radius: 12px; border: 1px solid #3A4A2C; box-shadow: 0px 8px 24px #0000008C, 0px 1px 2px #00000059; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: fit-content; justify-content: flex-start; padding: 12px 12px 12px 16px; width: 440px"
+          >
+            <svg
+              data-pencil-name="Level icon"
+              data-icon-name="info"
+              data-icon-set="lucide"
+              viewBox="0 0 13.99993896484375 14"
+              preserveAspectRatio="xMidYMid meet"
+              xmlns="http://www.w3.org/2000/svg"
+              style="box-sizing: border-box; flex-shrink: 0; height: 20px; width: 20px"
+            >
+              <path
+                d="M6.69238 0.60156q-1.16211 0.04102-2.22851 0.50586-1.06299 0.46143-1.90381 1.26807-0.8374 0.80322-1.34326 1.85254-0.48877 1.0083-0.60157 2.15674-0.02734 0.19482-0.02734 0.61523 0 0.42041 0.02734 0.61523 0.11279 1.14844 0.60157 2.15674 0.65967 1.40137 1.89697 2.33789 1.24072 0.93652 2.75146 1.20313 0.5332 0.09912 1.13477 0.09912 0.75537 0 1.43213-0.15381 0.68018-0.15381 1.35351-0.4751 1.26123-0.61865 2.16358-1.70215 0.90234-1.0835 1.25439-2.44384 0.29395-1.11768 0.18116-2.25244-0.11279-1.13477-0.60157-2.17041-0.58789-1.20313-1.62011-2.08497-1.02881-0.88184-2.31397-1.2749-1.0083-0.30762-2.15674-0.25293z m0.96729 1.18946q1.07666 0.14014 1.99267 0.68017 0.91602 0.54004 1.56201 1.4082 0.82715 1.104 1.00831 2.54639 0.01367 0.16748 0.01367 0.57422 0 0.40674-0.01367 0.57422-0.14014 1.16211-0.7212 2.12939-0.58105 0.96387-1.53466 1.62354-0.4751 0.33496-1.04932 0.56055-0.57422 0.22217-1.18945 0.30761-0.25293 0.04102-0.72803 0.04102-0.4751 0-0.72803-0.04102-1.07666-0.15381-1.95849-0.68701-0.88184-0.5332-1.52784-1.3877-0.82715-1.104-1.0083-2.54638-0.01367-0.16748-0.01367-0.57422 0-0.40674 0.01367-0.57422 0.14014-1.12109 0.66993-2.05078 0.5332-0.92969 1.43212-1.58936 0.54346-0.40674 1.20655-0.66992 0.6665-0.2666 1.32617-0.3247l0.25293-0.02735q0.0957-0.01367 0.4751 0 0.37939 0.01367 0.51953 0.02735z m-0.75879 2.31054q-0.18115 0.02734-0.32129 0.16748-0.2085 0.21191-0.15381 0.50586 0.05469 0.29395 0.32129 0.42041 0.09912 0.04102 0.25293 0.04102 0.25293 0 0.42041-0.16748 0.12646-0.12646 0.15381-0.30762 0.05469-0.29395-0.15723-0.50244-0.2085-0.21191-0.51611-0.15723z m-0.05469 2.33789q-0.25293 0.08545-0.37939 0.30762l-0.04102 0.08545 0 2.46436q0 0.18115 0.03418 0.2666 0.0376 0.08203 0.11963 0.16748 0.08545 0.08203 0.18799 0.1333 0.10596 0.04785 0.23242 0.04785 0.12646 0 0.229-0.04785 0.10596-0.05127 0.18799-0.1333 0.08545-0.08545 0.11963-0.16748 0.0376-0.08545 0.0376-0.2666l0-2.46436-0.04102-0.08545q-0.09912-0.18115-0.28027-0.2666-0.08545-0.04102-0.22559-0.04785-0.14014-0.00684-0.18115 0.00683z"
+                fill="#E8E6C8"
+              ></path>
+            </svg>
+            <div
+              data-pencil-name="Content"
+              style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex: 1 1 0; gap: 2px; height: fit-content; justify-content: flex-start"
+            >
+              <div
+                data-pencil-name="Title"
+                style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; width: 100%'
+              >
+                Recovered take 7 from the bog.
+              </div>
+              <div
+                data-pencil-name="Body"
+                style='box-sizing: border-box; color: #9BA582; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 13px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 18px; text-align: left; width: 100%'
+              >
+                Qrec closed while it was recording. The take is in the bin.
+              </div>
+              <div
+                data-pencil-name="Actions"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 4px; height: fit-content; justify-content: flex-start; padding: 6px 0px 0px 0px; width: fit-content"
+              >
+                <div
+                  data-pencil-name="Action Open bin"
+                  style="align-items: center; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 28px; justify-content: center; padding: 0px 8px; width: fit-content"
+                >
+                  <div
+                    data-pencil-name="Label"
+                    style='box-sizing: border-box; color: #8FC43A; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; white-space: nowrap'
+                  >
+                    Open bin
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              data-pencil-name="Close"
+              style="align-items: center; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 24px; justify-content: center; width: 24px"
+            >
+              <svg
+                data-pencil-name="Icon"
+                data-icon-name="x"
+                data-icon-set="lucide"
+                viewBox="0 0 13.99993896484375 14"
+                preserveAspectRatio="xMidYMid meet"
+                xmlns="http://www.w3.org/2000/svg"
+                style="box-sizing: border-box; flex-shrink: 0; height: 16px; width: 16px"
+              >
+                <path
+                  d="M3.34619 2.93945q-0.25293 0.08545-0.37939 0.30762-0.04102 0.08545-0.04102 0.25293 0 0.16748 0.04102 0.25293 0.04443 0.08203 1.62353 1.66455l1.58252 1.58252-1.58252 1.58252q-1.5791 1.58252-1.62353 1.66797-0.04102 0.08203-0.04102 0.23584 0 0.15381 0.03418 0.23926 0.0376 0.08203 0.1333 0.18115 0.09912 0.0957 0.18115 0.1333 0.08545 0.03418 0.23926 0.03418 0.15381 0 0.23584-0.04102 0.08545-0.04443 1.66797-1.62353l1.58252-1.58252 1.58252 1.58252q1.58252 1.5791 1.66455 1.62353 0.08545 0.04102 0.23926 0.04102 0.15381 0 0.23584-0.03418 0.08545-0.0376 0.18115-0.1333 0.09912-0.09912 0.1333-0.18115 0.0376-0.08545 0.0376-0.23926 0-0.15381-0.04443-0.23584-0.04101-0.08545-1.62012-1.66797l-1.58252-1.58252 1.58252-1.58252q1.5791-1.58252 1.62012-1.66455 0.04443-0.08545 0.04443-0.25293 0-0.16748-0.04102-0.25293-0.09912-0.16748-0.28027-0.2666-0.05811-0.02734-0.09912-0.04102-0.04102-0.01367-0.15381-0.01367-0.11279 0-0.15381 0.01367-0.04101 0.01367-0.11279 0.04102-0.09912 0.05811-1.66455 1.62695l-1.56885 1.56543-2.82666-2.81299q-0.31104-0.29395-0.42041-0.37939-0.08545-0.05469-0.19824-0.05469l-0.02735 0q-0.14014 0-0.18115 0.01367z"
+                  fill="#E8E6C8"
+                ></path>
+              </svg>
+            </div>
+          </div>
+        </div>
+        <div
+          data-pencil-name="Cell label"
+          style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+        >
+          info · title + body + 1 action
+        </div>
+      </div>
+      <div
+        data-pencil-name="Cell success · 2 actions"
+        style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: fit-content"
+      >
+        <div
+          data-pencil-name="Ground"
+          style="align-items: flex-start; background-color: #12170F; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; padding: 24px; width: fit-content"
+        >
+          <div
+            data-pencil-name="C23 Toast/Success"
+            style="align-items: flex-start; background-color: #27321F; border-radius: 12px; border: 1px solid #3A4A2C; box-shadow: 0px 8px 24px #0000008C, 0px 1px 2px #00000059; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: fit-content; justify-content: flex-start; padding: 12px 12px 12px 16px; width: 440px"
+          >
+            <svg
+              data-pencil-name="Level icon"
+              data-icon-name="circle-check"
+              data-icon-set="lucide"
+              viewBox="0 0 13.99993896484375 14"
+              preserveAspectRatio="xMidYMid meet"
+              xmlns="http://www.w3.org/2000/svg"
+              style="box-sizing: border-box; flex-shrink: 0; height: 20px; width: 20px"
+            >
+              <path
+                d="M6.69238 0.60156q-1.16211 0.04102-2.22851 0.50586-1.06299 0.46143-1.90381 1.26807-0.8374 0.80322-1.34326 1.85254-0.48877 1.0083-0.60157 2.15674-0.02734 0.19482-0.02734 0.61523 0 0.42041 0.02734 0.61523 0.11279 1.14844 0.60157 2.15674 0.65967 1.40137 1.89697 2.33789 1.24072 0.93652 2.75146 1.20313 0.5332 0.09912 1.13477 0.09912 0.75537 0 1.43213-0.15381 0.68018-0.15381 1.35351-0.4751 1.26123-0.61865 2.16358-1.70215 0.90234-1.0835 1.25439-2.44384 0.29395-1.11768 0.18116-2.25244-0.11279-1.13477-0.60157-2.17041-0.58789-1.20313-1.62011-2.08497-1.02881-0.88184-2.31397-1.2749-1.0083-0.30762-2.15674-0.25293z m0.96729 1.18946q1.07666 0.14014 1.99267 0.68017 0.91602 0.54004 1.56201 1.4082 0.82715 1.104 1.00831 2.54639 0.01367 0.16748 0.01367 0.57422 0 0.40674-0.01367 0.57422-0.14014 1.16211-0.7212 2.12939-0.58105 0.96387-1.53466 1.62354-0.4751 0.33496-1.04932 0.56055-0.57422 0.22217-1.18945 0.30761-0.25293 0.04102-0.72803 0.04102-0.4751 0-0.72803-0.04102-1.07666-0.15381-1.95849-0.68701-0.88184-0.5332-1.52784-1.3877-0.82715-1.104-1.0083-2.54638-0.01367-0.16748-0.01367-0.57422 0-0.40674 0.01367-0.57422 0.14014-1.12109 0.66993-2.05078 0.5332-0.92969 1.43212-1.58936 0.54346-0.40674 1.20655-0.66992 0.6665-0.2666 1.32617-0.3247l0.25293-0.02735q0.0957-0.01367 0.4751 0 0.37939 0.01367 0.51953 0.02735z m0.95019 3.47265q-0.06836 0.02734-0.12646 0.05127-0.05469 0.02051-1.06299 1.02539l-0.99463 0.99463-0.40674-0.40332q-0.2666-0.2666-0.3623-0.33838-0.12646-0.11279-0.19824-0.14013-0.06836-0.02734-0.19483-0.02735-0.12646 0-0.16748 0.01367-0.04102 0.01367-0.09912 0.04102-0.18115 0.09912-0.28027 0.2666-0.04102 0.08545-0.04102 0.25293l0 0.01367q0 0.14014 0.03418 0.21192 0.0376 0.06836 0.17774 0.22216 0.0957 0.11279 0.48876 0.50586l0.04102 0.04102q0.42041 0.42041 0.55371 0.54687 0.1333 0.12305 0.20166 0.15381 0.14014 0.06836 0.29395 0.05469 0.15381-0.01367 0.28027-0.09912 0.07178-0.05469 1.28857-1.27149 0.86816-0.86816 1.04932-1.06298 0.18457-0.19824 0.21192-0.27002 0.0957-0.27686-0.05811-0.52295-0.15381-0.24609-0.44775-0.25977-0.12646-0.01367-0.18116 0z"
+                fill="#8FC43A"
+              ></path>
+            </svg>
+            <div
+              data-pencil-name="Content"
+              style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex: 1 1 0; gap: 2px; height: fit-content; justify-content: flex-start"
+            >
+              <div
+                data-pencil-name="Title"
+                style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; width: 100%'
+              >
+                Layers! Like an onion. Your video is ready.
+              </div>
+              <div
+                data-pencil-name="Body"
+                style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; width: 100%'
+              >
+                exports/rust-traits-talk-20261014-153012.mp4 · 88.4 MB
+              </div>
+              <div
+                data-pencil-name="Actions"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 4px; height: fit-content; justify-content: flex-start; padding: 6px 0px 0px 0px; width: fit-content"
+              >
+                <div
+                  data-pencil-name="Action Open bin"
+                  style="align-items: center; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 28px; justify-content: center; padding: 0px 8px; width: fit-content"
+                >
+                  <div
+                    data-pencil-name="Label"
+                    style='box-sizing: border-box; color: #8FC43A; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; white-space: nowrap'
+                  >
+                    Open file
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="Action Undo"
+                  style="align-items: center; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 28px; justify-content: center; padding: 0px 8px; width: fit-content"
+                >
+                  <div
+                    data-pencil-name="Label"
+                    style='box-sizing: border-box; color: #8FC43A; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; white-space: nowrap'
+                  >
+                    Open folder
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              data-pencil-name="Close"
+              style="align-items: center; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 24px; justify-content: center; width: 24px"
+            >
+              <svg
+                data-pencil-name="Icon"
+                data-icon-name="x"
+                data-icon-set="lucide"
+                viewBox="0 0 13.99993896484375 14"
+                preserveAspectRatio="xMidYMid meet"
+                xmlns="http://www.w3.org/2000/svg"
+                style="box-sizing: border-box; flex-shrink: 0; height: 16px; width: 16px"
+              >
+                <path
+                  d="M3.34619 2.93945q-0.25293 0.08545-0.37939 0.30762-0.04102 0.08545-0.04102 0.25293 0 0.16748 0.04102 0.25293 0.04443 0.08203 1.62353 1.66455l1.58252 1.58252-1.58252 1.58252q-1.5791 1.58252-1.62353 1.66797-0.04102 0.08203-0.04102 0.23584 0 0.15381 0.03418 0.23926 0.0376 0.08203 0.1333 0.18115 0.09912 0.0957 0.18115 0.1333 0.08545 0.03418 0.23926 0.03418 0.15381 0 0.23584-0.04102 0.08545-0.04443 1.66797-1.62353l1.58252-1.58252 1.58252 1.58252q1.58252 1.5791 1.66455 1.62353 0.08545 0.04102 0.23926 0.04102 0.15381 0 0.23584-0.03418 0.08545-0.0376 0.18115-0.1333 0.09912-0.09912 0.1333-0.18115 0.0376-0.08545 0.0376-0.23926 0-0.15381-0.04443-0.23584-0.04101-0.08545-1.62012-1.66797l-1.58252-1.58252 1.58252-1.58252q1.5791-1.58252 1.62012-1.66455 0.04443-0.08545 0.04443-0.25293 0-0.16748-0.04102-0.25293-0.09912-0.16748-0.28027-0.2666-0.05811-0.02734-0.09912-0.04102-0.04102-0.01367-0.15381-0.01367-0.11279 0-0.15381 0.01367-0.04101 0.01367-0.11279 0.04102-0.09912 0.05811-1.66455 1.62695l-1.56885 1.56543-2.82666-2.81299q-0.31104-0.29395-0.42041-0.37939-0.08545-0.05469-0.19824-0.05469l-0.02735 0q-0.14014 0-0.18115 0.01367z"
+                  fill="#E8E6C8"
+                ></path>
+              </svg>
+            </div>
+          </div>
+        </div>
+        <div
+          data-pencil-name="Cell label"
+          style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+        >
+          success · 2 actions
+        </div>
+      </div>
+    </div>
+    <div
+      data-pencil-name="Row toasts 2"
+      style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 32px; height: fit-content; justify-content: flex-start; width: fit-content"
+    >
+      <div
+        data-pencil-name="Cell warning"
+        style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: fit-content"
+      >
+        <div
+          data-pencil-name="Ground"
+          style="align-items: flex-start; background-color: #12170F; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; padding: 24px; width: fit-content"
+        >
+          <div
+            data-pencil-name="C23 Toast/Warning"
+            style="align-items: flex-start; background-color: #27321F; border-radius: 12px; border: 1px solid #3A4A2C; box-shadow: 0px 8px 24px #0000008C, 0px 1px 2px #00000059; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: fit-content; justify-content: flex-start; padding: 12px 12px 12px 16px; width: 440px"
+          >
+            <svg
+              data-pencil-name="Level icon"
+              data-icon-name="triangle-alert"
+              data-icon-set="lucide"
+              viewBox="0 0 13.99993896484375 14"
+              preserveAspectRatio="xMidYMid meet"
+              xmlns="http://www.w3.org/2000/svg"
+              style="box-sizing: border-box; flex-shrink: 0; height: 20px; width: 20px"
+            >
+              <path
+                d="M6.87354 1.16211q-0.46143 0.02734-0.88184 0.30762-0.11279 0.08545-0.24609 0.22558-0.1333 0.14014-0.20166 0.23584-0.11279 0.16748-2.45069 4.26563-2.33789 4.09473-2.3789 4.19043-0.12646 0.29395-0.12647 0.64599-0.01367 0.19482 0.00684 0.32813 0.02051 0.1333 0.07861 0.30078 0.15381 0.43408 0.50244 0.73486 0.34863 0.30078 0.81348 0.39991 0.08203 0.02734 0.89551 0.02734l4.11523 0 4.22803 0q0.68701 0 0.79638-0.02734 0.50586-0.11279 0.86817-0.47852 0.51953-0.51611 0.51953-1.23047 0-0.42041-0.18115-0.78271-0.0581-0.09912-2.36866-4.14258-2.30713-4.04688-2.39257-4.18701-0.18115-0.29395-0.49561-0.50245-0.31445-0.21191-0.65283-0.28369-0.23584-0.04102-0.44775-0.02734z m0.37939 1.2168q0.0957 0.05811 0.15723 0.13671 0.06494 0.0752 2.42334 4.20411 2.36182 4.12891 2.38916 4.21435 0.06836 0.22559-0.05127 0.43408-0.11621 0.2085-0.35547 0.28028-0.06836 0.01367-0.85449 0.01367l-8.76368 0-0.11279-0.05469q-0.19482-0.08545-0.29394-0.29394-0.04102-0.09912-0.04102-0.23243 0-0.1333 0.04785-0.229 0.05127-0.09912 2.3584-4.15283 2.31055-4.05371 2.36865-4.13574 0.11279-0.15381 0.32813-0.2085 0.21533-0.05811 0.3999 0.0376l0-0.01367z m-0.40674 2.31054q-0.25293 0.08545-0.37939 0.30762l-0.04102 0.08545 0 2.46435q0 0.18115 0.03418 0.26661 0.0376 0.08203 0.11963 0.16748 0.08545 0.08203 0.18799 0.1333 0.10596 0.04785 0.23242 0.04785 0.12646 0 0.229-0.04785 0.10596-0.05127 0.18799-0.1333 0.08545-0.08545 0.11963-0.16748 0.0376-0.08545 0.0376-0.26661l0-2.46435-0.04102-0.08545q-0.09912-0.18115-0.28027-0.2666-0.08545-0.04102-0.22559-0.04785-0.14014-0.00684-0.18115 0.00683z m0.05469 4.66211q-0.18115 0.02734-0.32129 0.16748-0.2085 0.21191-0.15381 0.50586 0.05469 0.29395 0.32129 0.42041 0.09912 0.04102 0.25293 0.04102 0.25293 0 0.42041-0.16748 0.12646-0.12646 0.15381-0.30762 0.05469-0.29394-0.15723-0.50244-0.2085-0.21191-0.51611-0.15723z"
+                fill="#D98A2B"
+              ></path>
+            </svg>
+            <div
+              data-pencil-name="Content"
+              style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex: 1 1 0; gap: 2px; height: fit-content; justify-content: flex-start"
+            >
+              <div
+                data-pencil-name="Title"
+                style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; width: 100%'
+              >
+                That was shorter than Lord Farquaad. Take moved to the bin.
+              </div>
+              <div
+                data-pencil-name="Body"
+                style='box-sizing: border-box; color: #9BA582; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 13px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 18px; text-align: left; width: 100%'
+              >
+                Take 6 lasted 7 frames. Takes need at least 10.
+              </div>
+              <div
+                data-pencil-name="Actions"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 4px; height: fit-content; justify-content: flex-start; padding: 6px 0px 0px 0px; width: fit-content"
+              >
+                <div
+                  data-pencil-name="Action Open bin"
+                  style="align-items: center; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 28px; justify-content: center; padding: 0px 8px; width: fit-content"
+                >
+                  <div
+                    data-pencil-name="Label"
+                    style='box-sizing: border-box; color: #8FC43A; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; white-space: nowrap'
+                  >
+                    Open bin
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              data-pencil-name="Close"
+              style="align-items: center; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 24px; justify-content: center; width: 24px"
+            >
+              <svg
+                data-pencil-name="Icon"
+                data-icon-name="x"
+                data-icon-set="lucide"
+                viewBox="0 0 13.99993896484375 14"
+                preserveAspectRatio="xMidYMid meet"
+                xmlns="http://www.w3.org/2000/svg"
+                style="box-sizing: border-box; flex-shrink: 0; height: 16px; width: 16px"
+              >
+                <path
+                  d="M3.34619 2.93945q-0.25293 0.08545-0.37939 0.30762-0.04102 0.08545-0.04102 0.25293 0 0.16748 0.04102 0.25293 0.04443 0.08203 1.62353 1.66455l1.58252 1.58252-1.58252 1.58252q-1.5791 1.58252-1.62353 1.66797-0.04102 0.08203-0.04102 0.23584 0 0.15381 0.03418 0.23926 0.0376 0.08203 0.1333 0.18115 0.09912 0.0957 0.18115 0.1333 0.08545 0.03418 0.23926 0.03418 0.15381 0 0.23584-0.04102 0.08545-0.04443 1.66797-1.62353l1.58252-1.58252 1.58252 1.58252q1.58252 1.5791 1.66455 1.62353 0.08545 0.04102 0.23926 0.04102 0.15381 0 0.23584-0.03418 0.08545-0.0376 0.18115-0.1333 0.09912-0.09912 0.1333-0.18115 0.0376-0.08545 0.0376-0.23926 0-0.15381-0.04443-0.23584-0.04101-0.08545-1.62012-1.66797l-1.58252-1.58252 1.58252-1.58252q1.5791-1.58252 1.62012-1.66455 0.04443-0.08545 0.04443-0.25293 0-0.16748-0.04102-0.25293-0.09912-0.16748-0.28027-0.2666-0.05811-0.02734-0.09912-0.04102-0.04102-0.01367-0.15381-0.01367-0.11279 0-0.15381 0.01367-0.04101 0.01367-0.11279 0.04102-0.09912 0.05811-1.66455 1.62695l-1.56885 1.56543-2.82666-2.81299q-0.31104-0.29395-0.42041-0.37939-0.08545-0.05469-0.19824-0.05469l-0.02735 0q-0.14014 0-0.18115 0.01367z"
+                  fill="#E8E6C8"
+                ></path>
+              </svg>
+            </div>
+          </div>
+        </div>
+        <div
+          data-pencil-name="Cell label"
+          style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+        >
+          warning
+        </div>
+      </div>
+      <div
+        data-pencil-name="Cell error · stays until dismissed"
+        style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: fit-content"
+      >
+        <div
+          data-pencil-name="Ground"
+          style="align-items: flex-start; background-color: #12170F; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; padding: 24px; width: fit-content"
+        >
+          <div
+            data-pencil-name="C23 Toast/Error"
+            style="align-items: flex-start; background-color: #27321F; border-radius: 12px; border: 1px solid #3A4A2C; box-shadow: 0px 8px 24px #0000008C, 0px 1px 2px #00000059; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: fit-content; justify-content: flex-start; padding: 12px 12px 12px 16px; width: 440px"
+          >
+            <svg
+              data-pencil-name="Level icon"
+              data-icon-name="circle-x"
+              data-icon-set="lucide"
+              viewBox="0 0 13.99993896484375 14"
+              preserveAspectRatio="xMidYMid meet"
+              xmlns="http://www.w3.org/2000/svg"
+              style="box-sizing: border-box; flex-shrink: 0; height: 20px; width: 20px"
+            >
+              <path
+                d="M6.69238 0.60156q-1.16211 0.04102-2.22851 0.50586-1.06299 0.46143-1.90381 1.26807-0.8374 0.80322-1.34326 1.85254-0.48877 1.0083-0.60157 2.15674-0.02734 0.19482-0.02734 0.61523 0 0.42041 0.02734 0.61523 0.11279 1.14844 0.60157 2.15674 0.65967 1.40137 1.89697 2.33789 1.24072 0.93652 2.75146 1.20313 0.5332 0.09912 1.13477 0.09912 0.75537 0 1.43213-0.15381 0.68018-0.15381 1.35351-0.4751 1.26123-0.61865 2.16358-1.70215 0.90234-1.0835 1.25439-2.44384 0.29395-1.11768 0.18116-2.25244-0.11279-1.13477-0.60157-2.17041-0.58789-1.20313-1.62011-2.08497-1.02881-0.88184-2.31397-1.2749-1.0083-0.30762-2.15674-0.25293z m0.96729 1.18946q1.07666 0.14014 1.99267 0.68017 0.91602 0.54004 1.56201 1.4082 0.82715 1.104 1.00831 2.54639 0.01367 0.16748 0.01367 0.57422 0 0.40674-0.01367 0.57422-0.14014 1.16211-0.7212 2.12939-0.58105 0.96387-1.53466 1.62354-0.4751 0.33496-1.04932 0.56055-0.57422 0.22217-1.18945 0.30761-0.25293 0.04102-0.72803 0.04102-0.4751 0-0.72803-0.04102-1.07666-0.15381-1.95849-0.68701-0.88184-0.5332-1.52784-1.3877-0.82715-1.104-1.0083-2.54638-0.01367-0.16748-0.01367-0.57422 0-0.40674 0.01367-0.57422 0.14014-1.12109 0.66993-2.05078 0.5332-0.92969 1.43212-1.58936 0.54346-0.40674 1.20655-0.66992 0.6665-0.2666 1.32617-0.3247l0.25293-0.02735q0.0957-0.01367 0.4751 0 0.37939 0.01367 0.51953 0.02735z m-2.56348 2.89843q-0.25293 0.08545-0.37939 0.30762-0.04102 0.08545-0.04102 0.25293 0 0.16748 0.04785 0.25293 0.05127 0.08203 0.75196 0.79639l0.69726 0.70068-0.69726 0.70068q-0.70068 0.71436-0.75196 0.79981-0.04785 0.08203-0.04785 0.23584 0 0.15381 0.03418 0.23926 0.0376 0.08203 0.1333 0.18115 0.09912 0.0957 0.18115 0.1333 0.08545 0.03418 0.23926 0.03418 0.15381 0 0.23584-0.04785 0.08545-0.05127 0.79981-0.75196l0.70068-0.69726 0.70068 0.69726q0.71436 0.70068 0.79639 0.75196 0.08545 0.04785 0.23926 0.04785 0.15381 0 0.23584-0.03418 0.08545-0.0376 0.18115-0.1333 0.09912-0.09912 0.1333-0.18115 0.0376-0.08545 0.0376-0.23926 0-0.15381-0.05127-0.23584-0.04785-0.08545-0.74854-0.79981l-0.68359-0.70068 0.68359-0.70068q0.70068-0.71436 0.74854-0.79639 0.05127-0.08545 0.05127-0.25293 0-0.16748-0.04102-0.25293-0.09912-0.16748-0.28027-0.2666-0.05811-0.02734-0.09912-0.04102-0.04102-0.01367-0.15381-0.01367l-0.01367 0q-0.14014 0-0.21875 0.0376-0.0752 0.03418-0.24268 0.18799-0.12646 0.10938-0.54687 0.52978l-0.72803 0.7417-0.70068-0.69726q-0.43408-0.43408-0.56055-0.54688-0.18115-0.16748-0.25977-0.20166-0.0752-0.0376-0.20849-0.04443-0.1333-0.00684-0.17432 0.00683z"
+                fill="#FF7868"
+              ></path>
+            </svg>
+            <div
+              data-pencil-name="Content"
+              style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex: 1 1 0; gap: 2px; height: fit-content; justify-content: flex-start"
+            >
+              <div
+                data-pencil-name="Title"
+                style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; width: 100%'
+              >
+                Recording didn't start
+              </div>
+              <div
+                data-pencil-name="Body"
+                style='box-sizing: border-box; color: #9BA582; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 13px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 18px; text-align: left; width: 100%'
+              >
+                Screen access to DP-4 was denied, so take 10 stopped before any frames. It's marked
+                broken in the bin.
+              </div>
+              <div
+                data-pencil-name="Actions"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 4px; height: fit-content; justify-content: flex-start; padding: 6px 0px 0px 0px; width: fit-content"
+              >
+                <div
+                  data-pencil-name="Action Open bin"
+                  style="align-items: center; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 28px; justify-content: center; padding: 0px 8px; width: fit-content"
+                >
+                  <div
+                    data-pencil-name="Label"
+                    style='box-sizing: border-box; color: #8FC43A; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; white-space: nowrap'
+                  >
+                    Try again
+                  </div>
+                </div>
+                <div
+                  data-pencil-name="Action Undo"
+                  style="align-items: center; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 28px; justify-content: center; padding: 0px 8px; width: fit-content"
+                >
+                  <div
+                    data-pencil-name="Label"
+                    style='box-sizing: border-box; color: #8FC43A; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; white-space: nowrap'
+                  >
+                    Open bin
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              data-pencil-name="Close"
+              style="align-items: center; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 24px; justify-content: center; width: 24px"
+            >
+              <svg
+                data-pencil-name="Icon"
+                data-icon-name="x"
+                data-icon-set="lucide"
+                viewBox="0 0 13.99993896484375 14"
+                preserveAspectRatio="xMidYMid meet"
+                xmlns="http://www.w3.org/2000/svg"
+                style="box-sizing: border-box; flex-shrink: 0; height: 16px; width: 16px"
+              >
+                <path
+                  d="M3.34619 2.93945q-0.25293 0.08545-0.37939 0.30762-0.04102 0.08545-0.04102 0.25293 0 0.16748 0.04102 0.25293 0.04443 0.08203 1.62353 1.66455l1.58252 1.58252-1.58252 1.58252q-1.5791 1.58252-1.62353 1.66797-0.04102 0.08203-0.04102 0.23584 0 0.15381 0.03418 0.23926 0.0376 0.08203 0.1333 0.18115 0.09912 0.0957 0.18115 0.1333 0.08545 0.03418 0.23926 0.03418 0.15381 0 0.23584-0.04102 0.08545-0.04443 1.66797-1.62353l1.58252-1.58252 1.58252 1.58252q1.58252 1.5791 1.66455 1.62353 0.08545 0.04102 0.23926 0.04102 0.15381 0 0.23584-0.03418 0.08545-0.0376 0.18115-0.1333 0.09912-0.09912 0.1333-0.18115 0.0376-0.08545 0.0376-0.23926 0-0.15381-0.04443-0.23584-0.04101-0.08545-1.62012-1.66797l-1.58252-1.58252 1.58252-1.58252q1.5791-1.58252 1.62012-1.66455 0.04443-0.08545 0.04443-0.25293 0-0.16748-0.04102-0.25293-0.09912-0.16748-0.28027-0.2666-0.05811-0.02734-0.09912-0.04102-0.04102-0.01367-0.15381-0.01367-0.11279 0-0.15381 0.01367-0.04101 0.01367-0.11279 0.04102-0.09912 0.05811-1.66455 1.62695l-1.56885 1.56543-2.82666-2.81299q-0.31104-0.29395-0.42041-0.37939-0.08545-0.05469-0.19824-0.05469l-0.02735 0q-0.14014 0-0.18115 0.01367z"
+                  fill="#E8E6C8"
+                ></path>
+              </svg>
+            </div>
+          </div>
+        </div>
+        <div
+          data-pencil-name="Cell label"
+          style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+        >
+          error · stays until dismissed
+        </div>
+      </div>
+    </div>
+    <div
+      data-pencil-name="Row toasts 3"
+      style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 32px; height: fit-content; justify-content: flex-start; width: fit-content"
+    >
+      <div
+        data-pencil-name="Cell title only · no actions"
+        style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: fit-content"
+      >
+        <div
+          data-pencil-name="Ground"
+          style="align-items: flex-start; background-color: #12170F; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; padding: 24px; width: fit-content"
+        >
+          <div
+            data-pencil-name="C23 Toast/Title only"
+            style="align-items: flex-start; background-color: #27321F; border-radius: 12px; border: 1px solid #3A4A2C; box-shadow: 0px 8px 24px #0000008C, 0px 1px 2px #00000059; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: fit-content; justify-content: flex-start; padding: 12px 12px 12px 16px; width: 440px"
+          >
+            <svg
+              data-pencil-name="Level icon"
+              data-icon-name="circle-check"
+              data-icon-set="lucide"
+              viewBox="0 0 13.99993896484375 14"
+              preserveAspectRatio="xMidYMid meet"
+              xmlns="http://www.w3.org/2000/svg"
+              style="box-sizing: border-box; flex-shrink: 0; height: 20px; width: 20px"
+            >
+              <path
+                d="M6.69238 0.60156q-1.16211 0.04102-2.22851 0.50586-1.06299 0.46143-1.90381 1.26807-0.8374 0.80322-1.34326 1.85254-0.48877 1.0083-0.60157 2.15674-0.02734 0.19482-0.02734 0.61523 0 0.42041 0.02734 0.61523 0.11279 1.14844 0.60157 2.15674 0.65967 1.40137 1.89697 2.33789 1.24072 0.93652 2.75146 1.20313 0.5332 0.09912 1.13477 0.09912 0.75537 0 1.43213-0.15381 0.68018-0.15381 1.35351-0.4751 1.26123-0.61865 2.16358-1.70215 0.90234-1.0835 1.25439-2.44384 0.29395-1.11768 0.18116-2.25244-0.11279-1.13477-0.60157-2.17041-0.58789-1.20313-1.62011-2.08497-1.02881-0.88184-2.31397-1.2749-1.0083-0.30762-2.15674-0.25293z m0.96729 1.18946q1.07666 0.14014 1.99267 0.68017 0.91602 0.54004 1.56201 1.4082 0.82715 1.104 1.00831 2.54639 0.01367 0.16748 0.01367 0.57422 0 0.40674-0.01367 0.57422-0.14014 1.16211-0.7212 2.12939-0.58105 0.96387-1.53466 1.62354-0.4751 0.33496-1.04932 0.56055-0.57422 0.22217-1.18945 0.30761-0.25293 0.04102-0.72803 0.04102-0.4751 0-0.72803-0.04102-1.07666-0.15381-1.95849-0.68701-0.88184-0.5332-1.52784-1.3877-0.82715-1.104-1.0083-2.54638-0.01367-0.16748-0.01367-0.57422 0-0.40674 0.01367-0.57422 0.14014-1.12109 0.66993-2.05078 0.5332-0.92969 1.43212-1.58936 0.54346-0.40674 1.20655-0.66992 0.6665-0.2666 1.32617-0.3247l0.25293-0.02735q0.0957-0.01367 0.4751 0 0.37939 0.01367 0.51953 0.02735z m0.95019 3.47265q-0.06836 0.02734-0.12646 0.05127-0.05469 0.02051-1.06299 1.02539l-0.99463 0.99463-0.40674-0.40332q-0.2666-0.2666-0.3623-0.33838-0.12646-0.11279-0.19824-0.14013-0.06836-0.02734-0.19483-0.02735-0.12646 0-0.16748 0.01367-0.04102 0.01367-0.09912 0.04102-0.18115 0.09912-0.28027 0.2666-0.04102 0.08545-0.04102 0.25293l0 0.01367q0 0.14014 0.03418 0.21192 0.0376 0.06836 0.17774 0.22216 0.0957 0.11279 0.48876 0.50586l0.04102 0.04102q0.42041 0.42041 0.55371 0.54687 0.1333 0.12305 0.20166 0.15381 0.14014 0.06836 0.29395 0.05469 0.15381-0.01367 0.28027-0.09912 0.07178-0.05469 1.28857-1.27149 0.86816-0.86816 1.04932-1.06298 0.18457-0.19824 0.21192-0.27002 0.0957-0.27686-0.05811-0.52295-0.15381-0.24609-0.44775-0.25977-0.12646-0.01367-0.18116 0z"
+                fill="#8FC43A"
+              ></path>
+            </svg>
+            <div
+              data-pencil-name="Content"
+              style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex: 1 1 0; gap: 2px; height: fit-content; justify-content: flex-start"
+            >
+              <div
+                data-pencil-name="Title"
+                style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; width: 100%'
+              >
+                Autocut take 8: removed 4 silences (6.2 s)
+              </div>
+            </div>
+            <div
+              data-pencil-name="Close"
+              style="align-items: center; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 24px; justify-content: center; width: 24px"
+            >
+              <svg
+                data-pencil-name="Icon"
+                data-icon-name="x"
+                data-icon-set="lucide"
+                viewBox="0 0 13.99993896484375 14"
+                preserveAspectRatio="xMidYMid meet"
+                xmlns="http://www.w3.org/2000/svg"
+                style="box-sizing: border-box; flex-shrink: 0; height: 16px; width: 16px"
+              >
+                <path
+                  d="M3.34619 2.93945q-0.25293 0.08545-0.37939 0.30762-0.04102 0.08545-0.04102 0.25293 0 0.16748 0.04102 0.25293 0.04443 0.08203 1.62353 1.66455l1.58252 1.58252-1.58252 1.58252q-1.5791 1.58252-1.62353 1.66797-0.04102 0.08203-0.04102 0.23584 0 0.15381 0.03418 0.23926 0.0376 0.08203 0.1333 0.18115 0.09912 0.0957 0.18115 0.1333 0.08545 0.03418 0.23926 0.03418 0.15381 0 0.23584-0.04102 0.08545-0.04443 1.66797-1.62353l1.58252-1.58252 1.58252 1.58252q1.58252 1.5791 1.66455 1.62353 0.08545 0.04102 0.23926 0.04102 0.15381 0 0.23584-0.03418 0.08545-0.0376 0.18115-0.1333 0.09912-0.09912 0.1333-0.18115 0.0376-0.08545 0.0376-0.23926 0-0.15381-0.04443-0.23584-0.04101-0.08545-1.62012-1.66797l-1.58252-1.58252 1.58252-1.58252q1.5791-1.58252 1.62012-1.66455 0.04443-0.08545 0.04443-0.25293 0-0.16748-0.04102-0.25293-0.09912-0.16748-0.28027-0.2666-0.05811-0.02734-0.09912-0.04102-0.04102-0.01367-0.15381-0.01367-0.11279 0-0.15381 0.01367-0.04101 0.01367-0.11279 0.04102-0.09912 0.05811-1.66455 1.62695l-1.56885 1.56543-2.82666-2.81299q-0.31104-0.29395-0.42041-0.37939-0.08545-0.05469-0.19824-0.05469l-0.02735 0q-0.14014 0-0.18115 0.01367z"
+                  fill="#E8E6C8"
+                ></path>
+              </svg>
+            </div>
+          </div>
+        </div>
+        <div
+          data-pencil-name="Cell label"
+          style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+        >
+          title only · no actions
+        </div>
+      </div>
+      <div
+        data-pencil-name="Cell queued +2 (optional)"
+        style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: fit-content"
+      >
+        <div
+          data-pencil-name="Ground"
+          style="align-items: flex-start; background-color: #12170F; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; padding: 24px; width: fit-content"
+        >
+          <div
+            data-pencil-name="C23 Toast/Queued"
+            style="align-items: flex-start; background-color: #27321F; border-radius: 12px; border: 1px solid #3A4A2C; box-shadow: 0px 8px 24px #0000008C, 0px 1px 2px #00000059; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: fit-content; justify-content: flex-start; padding: 12px 12px 12px 16px; width: 440px"
+          >
+            <svg
+              data-pencil-name="Level icon"
+              data-icon-name="info"
+              data-icon-set="lucide"
+              viewBox="0 0 13.99993896484375 14"
+              preserveAspectRatio="xMidYMid meet"
+              xmlns="http://www.w3.org/2000/svg"
+              style="box-sizing: border-box; flex-shrink: 0; height: 20px; width: 20px"
+            >
+              <path
+                d="M6.69238 0.60156q-1.16211 0.04102-2.22851 0.50586-1.06299 0.46143-1.90381 1.26807-0.8374 0.80322-1.34326 1.85254-0.48877 1.0083-0.60157 2.15674-0.02734 0.19482-0.02734 0.61523 0 0.42041 0.02734 0.61523 0.11279 1.14844 0.60157 2.15674 0.65967 1.40137 1.89697 2.33789 1.24072 0.93652 2.75146 1.20313 0.5332 0.09912 1.13477 0.09912 0.75537 0 1.43213-0.15381 0.68018-0.15381 1.35351-0.4751 1.26123-0.61865 2.16358-1.70215 0.90234-1.0835 1.25439-2.44384 0.29395-1.11768 0.18116-2.25244-0.11279-1.13477-0.60157-2.17041-0.58789-1.20313-1.62011-2.08497-1.02881-0.88184-2.31397-1.2749-1.0083-0.30762-2.15674-0.25293z m0.96729 1.18946q1.07666 0.14014 1.99267 0.68017 0.91602 0.54004 1.56201 1.4082 0.82715 1.104 1.00831 2.54639 0.01367 0.16748 0.01367 0.57422 0 0.40674-0.01367 0.57422-0.14014 1.16211-0.7212 2.12939-0.58105 0.96387-1.53466 1.62354-0.4751 0.33496-1.04932 0.56055-0.57422 0.22217-1.18945 0.30761-0.25293 0.04102-0.72803 0.04102-0.4751 0-0.72803-0.04102-1.07666-0.15381-1.95849-0.68701-0.88184-0.5332-1.52784-1.3877-0.82715-1.104-1.0083-2.54638-0.01367-0.16748-0.01367-0.57422 0-0.40674 0.01367-0.57422 0.14014-1.12109 0.66993-2.05078 0.5332-0.92969 1.43212-1.58936 0.54346-0.40674 1.20655-0.66992 0.6665-0.2666 1.32617-0.3247l0.25293-0.02735q0.0957-0.01367 0.4751 0 0.37939 0.01367 0.51953 0.02735z m-0.75879 2.31054q-0.18115 0.02734-0.32129 0.16748-0.2085 0.21191-0.15381 0.50586 0.05469 0.29395 0.32129 0.42041 0.09912 0.04102 0.25293 0.04102 0.25293 0 0.42041-0.16748 0.12646-0.12646 0.15381-0.30762 0.05469-0.29395-0.15723-0.50244-0.2085-0.21191-0.51611-0.15723z m-0.05469 2.33789q-0.25293 0.08545-0.37939 0.30762l-0.04102 0.08545 0 2.46436q0 0.18115 0.03418 0.2666 0.0376 0.08203 0.11963 0.16748 0.08545 0.08203 0.18799 0.1333 0.10596 0.04785 0.23242 0.04785 0.12646 0 0.229-0.04785 0.10596-0.05127 0.18799-0.1333 0.08545-0.08545 0.11963-0.16748 0.0376-0.08545 0.0376-0.2666l0-2.46436-0.04102-0.08545q-0.09912-0.18115-0.28027-0.2666-0.08545-0.04102-0.22559-0.04785-0.14014-0.00684-0.18115 0.00683z"
+                fill="#E8E6C8"
+              ></path>
+            </svg>
+            <div
+              data-pencil-name="Content"
+              style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex: 1 1 0; gap: 2px; height: fit-content; justify-content: flex-start"
+            >
+              <div
+                data-pencil-name="Title"
+                style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; width: 100%'
+              >
+                Recovered take 7 from the bog.
+              </div>
+              <div
+                data-pencil-name="Body"
+                style='box-sizing: border-box; color: #9BA582; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 13px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 18px; text-align: left; width: 100%'
+              >
+                Qrec closed while it was recording. The take is in the bin.
+              </div>
+              <div
+                data-pencil-name="Actions"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 4px; height: fit-content; justify-content: flex-start; padding: 6px 0px 0px 0px; width: fit-content"
+              >
+                <div
+                  data-pencil-name="Action Open bin"
+                  style="align-items: center; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 28px; justify-content: center; padding: 0px 8px; width: fit-content"
+                >
+                  <div
+                    data-pencil-name="Label"
+                    style='box-sizing: border-box; color: #8FC43A; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; white-space: nowrap'
+                  >
+                    Open bin
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              data-pencil-name="Queue count"
+              style="align-items: center; background-color: #E8E6C81F; border-radius: 999px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: 20px; justify-content: flex-start; padding: 0px 6px; width: fit-content"
+            >
+              <div
+                data-pencil-name="Count"
+                style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+              >
+                +2
+              </div>
+            </div>
+            <div
+              data-pencil-name="Close"
+              style="align-items: center; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 24px; justify-content: center; width: 24px"
+            >
+              <svg
+                data-pencil-name="Icon"
+                data-icon-name="x"
+                data-icon-set="lucide"
+                viewBox="0 0 13.99993896484375 14"
+                preserveAspectRatio="xMidYMid meet"
+                xmlns="http://www.w3.org/2000/svg"
+                style="box-sizing: border-box; flex-shrink: 0; height: 16px; width: 16px"
+              >
+                <path
+                  d="M3.34619 2.93945q-0.25293 0.08545-0.37939 0.30762-0.04102 0.08545-0.04102 0.25293 0 0.16748 0.04102 0.25293 0.04443 0.08203 1.62353 1.66455l1.58252 1.58252-1.58252 1.58252q-1.5791 1.58252-1.62353 1.66797-0.04102 0.08203-0.04102 0.23584 0 0.15381 0.03418 0.23926 0.0376 0.08203 0.1333 0.18115 0.09912 0.0957 0.18115 0.1333 0.08545 0.03418 0.23926 0.03418 0.15381 0 0.23584-0.04102 0.08545-0.04443 1.66797-1.62353l1.58252-1.58252 1.58252 1.58252q1.58252 1.5791 1.66455 1.62353 0.08545 0.04102 0.23926 0.04102 0.15381 0 0.23584-0.03418 0.08545-0.0376 0.18115-0.1333 0.09912-0.09912 0.1333-0.18115 0.0376-0.08545 0.0376-0.23926 0-0.15381-0.04443-0.23584-0.04101-0.08545-1.62012-1.66797l-1.58252-1.58252 1.58252-1.58252q1.5791-1.58252 1.62012-1.66455 0.04443-0.08545 0.04443-0.25293 0-0.16748-0.04102-0.25293-0.09912-0.16748-0.28027-0.2666-0.05811-0.02734-0.09912-0.04102-0.04102-0.01367-0.15381-0.01367-0.11279 0-0.15381 0.01367-0.04101 0.01367-0.11279 0.04102-0.09912 0.05811-1.66455 1.62695l-1.56885 1.56543-2.82666-2.81299q-0.31104-0.29395-0.42041-0.37939-0.08545-0.05469-0.19824-0.05469l-0.02735 0q-0.14014 0-0.18115 0.01367z"
+                  fill="#E8E6C8"
+                ></path>
+              </svg>
+            </div>
+          </div>
+        </div>
+        <div
+          data-pencil-name="Cell label"
+          style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+        >
+          queued +2 (optional)
+        </div>
+      </div>
+      <div
+        data-pencil-name="Cell focus on action"
+        style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: fit-content"
+      >
+        <div
+          data-pencil-name="Ground"
+          style="align-items: flex-start; background-color: #12170F; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; padding: 24px; width: fit-content"
+        >
+          <div
+            data-pencil-name="C23 Toast · focus"
+            style="align-items: flex-start; background-color: #27321F; border-radius: 12px; border: 1px solid #3A4A2C; box-shadow: 0px 8px 24px #0000008C, 0px 1px 2px #00000059; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: fit-content; justify-content: flex-start; padding: 12px 12px 12px 16px; width: 440px"
+          >
+            <svg
+              data-pencil-name="Level icon"
+              data-icon-name="info"
+              data-icon-set="lucide"
+              viewBox="0 0 13.99993896484375 14"
+              preserveAspectRatio="xMidYMid meet"
+              xmlns="http://www.w3.org/2000/svg"
+              style="box-sizing: border-box; flex-shrink: 0; height: 20px; width: 20px"
+            >
+              <path
+                d="M6.69238 0.60156q-1.16211 0.04102-2.22851 0.50586-1.06299 0.46143-1.90381 1.26807-0.8374 0.80322-1.34326 1.85254-0.48877 1.0083-0.60157 2.15674-0.02734 0.19482-0.02734 0.61523 0 0.42041 0.02734 0.61523 0.11279 1.14844 0.60157 2.15674 0.65967 1.40137 1.89697 2.33789 1.24072 0.93652 2.75146 1.20313 0.5332 0.09912 1.13477 0.09912 0.75537 0 1.43213-0.15381 0.68018-0.15381 1.35351-0.4751 1.26123-0.61865 2.16358-1.70215 0.90234-1.0835 1.25439-2.44384 0.29395-1.11768 0.18116-2.25244-0.11279-1.13477-0.60157-2.17041-0.58789-1.20313-1.62011-2.08497-1.02881-0.88184-2.31397-1.2749-1.0083-0.30762-2.15674-0.25293z m0.96729 1.18946q1.07666 0.14014 1.99267 0.68017 0.91602 0.54004 1.56201 1.4082 0.82715 1.104 1.00831 2.54639 0.01367 0.16748 0.01367 0.57422 0 0.40674-0.01367 0.57422-0.14014 1.16211-0.7212 2.12939-0.58105 0.96387-1.53466 1.62354-0.4751 0.33496-1.04932 0.56055-0.57422 0.22217-1.18945 0.30761-0.25293 0.04102-0.72803 0.04102-0.4751 0-0.72803-0.04102-1.07666-0.15381-1.95849-0.68701-0.88184-0.5332-1.52784-1.3877-0.82715-1.104-1.0083-2.54638-0.01367-0.16748-0.01367-0.57422 0-0.40674 0.01367-0.57422 0.14014-1.12109 0.66993-2.05078 0.5332-0.92969 1.43212-1.58936 0.54346-0.40674 1.20655-0.66992 0.6665-0.2666 1.32617-0.3247l0.25293-0.02735q0.0957-0.01367 0.4751 0 0.37939 0.01367 0.51953 0.02735z m-0.75879 2.31054q-0.18115 0.02734-0.32129 0.16748-0.2085 0.21191-0.15381 0.50586 0.05469 0.29395 0.32129 0.42041 0.09912 0.04102 0.25293 0.04102 0.25293 0 0.42041-0.16748 0.12646-0.12646 0.15381-0.30762 0.05469-0.29395-0.15723-0.50244-0.2085-0.21191-0.51611-0.15723z m-0.05469 2.33789q-0.25293 0.08545-0.37939 0.30762l-0.04102 0.08545 0 2.46436q0 0.18115 0.03418 0.2666 0.0376 0.08203 0.11963 0.16748 0.08545 0.08203 0.18799 0.1333 0.10596 0.04785 0.23242 0.04785 0.12646 0 0.229-0.04785 0.10596-0.05127 0.18799-0.1333 0.08545-0.08545 0.11963-0.16748 0.0376-0.08545 0.0376-0.2666l0-2.46436-0.04102-0.08545q-0.09912-0.18115-0.28027-0.2666-0.08545-0.04102-0.22559-0.04785-0.14014-0.00684-0.18115 0.00683z"
+                fill="#E8E6C8"
+              ></path>
+            </svg>
+            <div
+              data-pencil-name="Content"
+              style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex: 1 1 0; gap: 2px; height: fit-content; justify-content: flex-start"
+            >
+              <div
+                data-pencil-name="Title"
+                style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; width: 100%'
+              >
+                Recovered take 7 from the bog.
+              </div>
+              <div
+                data-pencil-name="Body"
+                style='box-sizing: border-box; color: #9BA582; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 13px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 18px; text-align: left; width: 100%'
+              >
+                Qrec closed while it was recording. The take is in the bin.
+              </div>
+              <div
+                data-pencil-name="Actions"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 4px; height: fit-content; justify-content: flex-start; padding: 6px 0px 0px 0px; width: fit-content"
+              >
+                <div
+                  data-pencil-name="Action Open bin"
+                  style="align-items: center; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 28px; justify-content: center; padding: 0px 8px; position: relative; width: fit-content"
+                >
+                  <div
+                    data-pencil-name="Label"
+                    style='box-sizing: border-box; color: #8FC43A; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; position: relative; text-align: left; white-space: nowrap; z-index: 0'
+                  >
+                    Open bin
+                  </div>
+                  <div
+                    data-pencil-name="Focus ring"
+                    style="align-items: flex-start; border-radius: 10px; border: 2px solid #8FC43A; box-sizing: border-box; display: flex; flex-direction: row; gap: 0px; height: 36px; justify-content: flex-start; left: -4px; position: absolute; top: -4px; width: 84px; z-index: 1"
+                  ></div>
+                </div>
+              </div>
+            </div>
+            <div
+              data-pencil-name="Close"
+              style="align-items: center; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 24px; justify-content: center; width: 24px"
+            >
+              <svg
+                data-pencil-name="Icon"
+                data-icon-name="x"
+                data-icon-set="lucide"
+                viewBox="0 0 13.99993896484375 14"
+                preserveAspectRatio="xMidYMid meet"
+                xmlns="http://www.w3.org/2000/svg"
+                style="box-sizing: border-box; flex-shrink: 0; height: 16px; width: 16px"
+              >
+                <path
+                  d="M3.34619 2.93945q-0.25293 0.08545-0.37939 0.30762-0.04102 0.08545-0.04102 0.25293 0 0.16748 0.04102 0.25293 0.04443 0.08203 1.62353 1.66455l1.58252 1.58252-1.58252 1.58252q-1.5791 1.58252-1.62353 1.66797-0.04102 0.08203-0.04102 0.23584 0 0.15381 0.03418 0.23926 0.0376 0.08203 0.1333 0.18115 0.09912 0.0957 0.18115 0.1333 0.08545 0.03418 0.23926 0.03418 0.15381 0 0.23584-0.04102 0.08545-0.04443 1.66797-1.62353l1.58252-1.58252 1.58252 1.58252q1.58252 1.5791 1.66455 1.62353 0.08545 0.04102 0.23926 0.04102 0.15381 0 0.23584-0.03418 0.08545-0.0376 0.18115-0.1333 0.09912-0.09912 0.1333-0.18115 0.0376-0.08545 0.0376-0.23926 0-0.15381-0.04443-0.23584-0.04101-0.08545-1.62012-1.66797l-1.58252-1.58252 1.58252-1.58252q1.5791-1.58252 1.62012-1.66455 0.04443-0.08545 0.04443-0.25293 0-0.16748-0.04102-0.25293-0.09912-0.16748-0.28027-0.2666-0.05811-0.02734-0.09912-0.04102-0.04102-0.01367-0.15381-0.01367-0.11279 0-0.15381 0.01367-0.04101 0.01367-0.11279 0.04102-0.09912 0.05811-1.66455 1.62695l-1.56885 1.56543-2.82666-2.81299q-0.31104-0.29395-0.42041-0.37939-0.08545-0.05469-0.19824-0.05469l-0.02735 0q-0.14014 0-0.18115 0.01367z"
+                  fill="#E8E6C8"
+                ></path>
+              </svg>
+            </div>
+          </div>
+        </div>
+        <div
+          data-pencil-name="Cell label"
+          style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+        >
+          focus on action
+        </div>
+      </div>
+    </div>
+  </div>
+  <div
+    data-pencil-name="Block C24 Modal shell"
+    style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 16px; height: fit-content; justify-content: flex-start; width: fit-content"
+  >
+    <div
+      data-pencil-name="Block header C24 Modal shell"
+      style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 4px; height: fit-content; justify-content: flex-start; width: fit-content"
+    >
+      <div
+        data-pencil-name="Block title C24 Modal shell"
+        style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 16px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 22px; text-align: left; white-space: nowrap'
+      >
+        C24 Modal shell
+      </div>
+      <div
+        data-pencil-name="Block note C24 Modal shell"
+        style='box-sizing: border-box; color: #9BA582; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+      >
+        520 wide, raised, xl radius, e3, 24 padding, over scrim · display-sm title · lead
+        body-strong · body · loss list · footer: Cancel (focused) then the destructive verb
+      </div>
+    </div>
+    <div
+      data-pencil-name="Row modals"
+      style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 32px; height: fit-content; justify-content: flex-start; width: fit-content"
+    >
+      <div
+        data-pencil-name="Cell default"
+        style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: fit-content"
+      >
+        <div
+          data-pencil-name="Ground"
+          style="align-items: flex-start; background-color: #12170FCC; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; padding: 48px; width: fit-content"
+        >
+          <div
+            data-pencil-name="C24 Modal/Default"
+            style="align-items: flex-start; background-color: #27321F; border-radius: 16px; border: 1px solid #3A4A2C; box-shadow: 0px 20px 48px #000000A6; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 16px; height: fit-content; justify-content: flex-start; padding: 24px; width: 520px"
+          >
+            <div
+              data-pencil-name="Heading"
+              style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: 100%"
+            >
+              <div
+                data-pencil-name="Title"
+                style="box-sizing: border-box; color: #E8E6C8; font-family: Fraunces, system-ui, sans-serif; font-size: 24px; font-style: normal; font-weight: 600; letter-spacing: -0.12px; line-height: 30px; text-align: left; width: 100%"
+              >
+                Get out of my swamp?
+              </div>
+              <div
+                data-pencil-name="Lead"
+                style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; width: 100%'
+              >
+                Clear undo history?
+              </div>
+            </div>
+            <div
+              data-pencil-name="Body"
+              style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 20px; text-align: left; width: 100%'
+            >
+              This removes 128 undo steps from .qrec/history.jsonl. The timeline stays as it is, but
+              you can't undo anything done before now.
+            </div>
+            <div
+              data-pencil-name="Footer"
+              style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: fit-content; justify-content: flex-end; padding: 8px 0px 0px 0px; width: 100%"
+            >
+              <div
+                data-pencil-name="Cancel"
+                style="align-items: center; background-color: #27321F; border-radius: 6px; border: 1px solid #3A4A2C; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 40px; justify-content: center; padding: 0px 16px; position: relative; width: fit-content"
+              >
+                <div
+                  data-pencil-name="Label"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; position: relative; text-align: left; white-space: nowrap; z-index: 0'
+                >
+                  Cancel
+                </div>
+                <div
+                  data-pencil-name="Focus ring"
+                  style="align-items: flex-start; border-radius: 10px; border: 2px solid #8FC43A; box-sizing: border-box; display: flex; flex-direction: row; gap: 0px; height: 48px; justify-content: flex-start; left: -4px; position: absolute; top: -4px; width: 84px; z-index: 1"
+                ></div>
+              </div>
+              <div
+                data-pencil-name="Confirm"
+                style="align-items: center; background-color: #E5483B; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 40px; justify-content: center; padding: 0px 16px; width: fit-content"
+              >
+                <div
+                  data-pencil-name="Label"
+                  style='box-sizing: border-box; color: #12170F; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; white-space: nowrap'
+                >
+                  Clear history
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div
+          data-pencil-name="Cell label"
+          style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+        >
+          default · Cancel focused · destructive verb last
+        </div>
+      </div>
+      <div
+        data-pencil-name="Cell loss list"
+        style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: fit-content"
+      >
+        <div
+          data-pencil-name="Ground"
+          style="align-items: flex-start; background-color: #12170FCC; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; padding: 48px; width: fit-content"
+        >
+          <div
+            data-pencil-name="C24 Modal/Loss list"
+            style="align-items: flex-start; background-color: #27321F; border-radius: 16px; border: 1px solid #3A4A2C; box-shadow: 0px 20px 48px #000000A6; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 16px; height: fit-content; justify-content: flex-start; padding: 24px; width: 520px"
+          >
+            <div
+              data-pencil-name="Heading"
+              style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: 100%"
+            >
+              <div
+                data-pencil-name="Title"
+                style="box-sizing: border-box; color: #E8E6C8; font-family: Fraunces, system-ui, sans-serif; font-size: 24px; font-style: normal; font-weight: 600; letter-spacing: -0.12px; line-height: 30px; text-align: left; width: 100%"
+              >
+                Get out of my swamp?
+              </div>
+              <div
+                data-pencil-name="Lead"
+                style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; width: 100%'
+              >
+                Purge take 2 and take 4 from disk?
+              </div>
+            </div>
+            <div
+              data-pencil-name="Body"
+              style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 20px; text-align: left; width: 100%'
+            >
+              This permanently deletes 10 files (184.1 MB). It can't be undone, and the 6 history
+              entries that mention these takes are removed too.
+            </div>
+            <div
+              data-pencil-name="Loss list"
+              style="align-items: flex-start; background-color: #12170F; border-radius: 6px; border: 1px solid #3A4A2C; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; overflow: hidden; padding: 6px 0px; position: relative; width: 100%"
+            >
+              <div
+                data-pencil-name="Row 1"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 24px; justify-content: space-between; padding: 0px 12px; position: relative; width: 100%; z-index: 0"
+              >
+                <div
+                  data-pencil-name="Item"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  takes/take-0002/L1-screen-DP-4.mkv
+                </div>
+                <div
+                  data-pencil-name="Size"
+                  style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  33.0 MB
+                </div>
+              </div>
+              <div
+                data-pencil-name="Row 2"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 24px; justify-content: space-between; padding: 0px 12px; position: relative; width: 100%; z-index: 1"
+              >
+                <div
+                  data-pencil-name="Item"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  takes/take-0002/L2-camera-0.mkv
+                </div>
+                <div
+                  data-pencil-name="Size"
+                  style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  16.6 MB
+                </div>
+              </div>
+              <div
+                data-pencil-name="Row 3"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 24px; justify-content: space-between; padding: 0px 12px; position: relative; width: 100%; z-index: 2"
+              >
+                <div
+                  data-pencil-name="Item"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  takes/take-0002/A1-mic.mka
+                </div>
+                <div
+                  data-pencil-name="Size"
+                  style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  2.0 MB
+                </div>
+              </div>
+              <div
+                data-pencil-name="Row 4"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 24px; justify-content: space-between; padding: 0px 12px; position: relative; width: 100%; z-index: 3"
+              >
+                <div
+                  data-pencil-name="Item"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  takes/take-0002/A2-system.mka
+                </div>
+                <div
+                  data-pencil-name="Size"
+                  style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  3.5 MB
+                </div>
+              </div>
+              <div
+                data-pencil-name="Row 5"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 24px; justify-content: space-between; padding: 0px 12px; position: relative; width: 100%; z-index: 4"
+              >
+                <div
+                  data-pencil-name="Item"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  takes/take-0002/recorder.log
+                </div>
+                <div
+                  data-pencil-name="Size"
+                  style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  12 KB
+                </div>
+              </div>
+              <div
+                data-pencil-name="Row 6"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 24px; justify-content: space-between; padding: 0px 12px; position: relative; width: 100%; z-index: 5"
+              >
+                <div
+                  data-pencil-name="Item"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  takes/take-0004/L1-screen-DP-4.mkv
+                </div>
+                <div
+                  data-pencil-name="Size"
+                  style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  77.3 MB
+                </div>
+              </div>
+              <div
+                data-pencil-name="Row 7"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 24px; justify-content: space-between; padding: 0px 12px; position: relative; width: 100%; z-index: 6"
+              >
+                <div
+                  data-pencil-name="Item"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  takes/take-0004/L2-camera-0.mkv
+                </div>
+                <div
+                  data-pencil-name="Size"
+                  style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  38.8 MB
+                </div>
+              </div>
+              <div
+                data-pencil-name="Row 8"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 24px; justify-content: space-between; padding: 0px 12px; position: relative; width: 100%; z-index: 7"
+              >
+                <div
+                  data-pencil-name="Item"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  takes/take-0004/A1-mic.mka
+                </div>
+                <div
+                  data-pencil-name="Size"
+                  style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  4.6 MB
+                </div>
+              </div>
+              <div
+                data-pencil-name="Scrollbar"
+                style="background-color: #6C7E5E; border-radius: 2px; box-sizing: border-box; height: 150px; left: 462px; position: absolute; top: 8px; width: 4px; z-index: 8"
+              ></div>
+            </div>
+            <div
+              data-pencil-name="Footer"
+              style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: fit-content; justify-content: flex-end; padding: 8px 0px 0px 0px; width: 100%"
+            >
+              <div
+                data-pencil-name="Cancel"
+                style="align-items: center; background-color: #27321F; border-radius: 6px; border: 1px solid #3A4A2C; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 40px; justify-content: center; padding: 0px 16px; position: relative; width: fit-content"
+              >
+                <div
+                  data-pencil-name="Label"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; position: relative; text-align: left; white-space: nowrap; z-index: 0'
+                >
+                  Cancel
+                </div>
+                <div
+                  data-pencil-name="Focus ring"
+                  style="align-items: flex-start; border-radius: 10px; border: 2px solid #8FC43A; box-sizing: border-box; display: flex; flex-direction: row; gap: 0px; height: 48px; justify-content: flex-start; left: -4px; position: absolute; top: -4px; width: 84px; z-index: 1"
+                ></div>
+              </div>
+              <div
+                data-pencil-name="Confirm"
+                style="align-items: center; background-color: #E5483B; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 40px; justify-content: center; padding: 0px 16px; width: fit-content"
+              >
+                <div
+                  data-pencil-name="Label"
+                  style='box-sizing: border-box; color: #12170F; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; white-space: nowrap'
+                >
+                  Purge 2 takes
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div
+          data-pencil-name="Cell label"
+          style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+        >
+          with loss list · 8 rows visible, then scroll
+        </div>
+      </div>
+    </div>
+    <div
+      data-pencil-name="Row modals 2"
+      style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 32px; height: fit-content; justify-content: flex-start; width: fit-content"
+    >
+      <div
+        data-pencil-name="Cell clip list"
+        style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: fit-content"
+      >
+        <div
+          data-pencil-name="Ground"
+          style="align-items: flex-start; background-color: #12170FCC; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; padding: 48px; width: fit-content"
+        >
+          <div
+            data-pencil-name="C24 Modal/Clip list"
+            style="align-items: flex-start; background-color: #27321F; border-radius: 16px; border: 1px solid #3A4A2C; box-shadow: 0px 20px 48px #000000A6; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 16px; height: fit-content; justify-content: flex-start; padding: 24px; width: 520px"
+          >
+            <div
+              data-pencil-name="Heading"
+              style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: 100%"
+            >
+              <div
+                data-pencil-name="Title"
+                style="box-sizing: border-box; color: #E8E6C8; font-family: Fraunces, system-ui, sans-serif; font-size: 24px; font-style: normal; font-weight: 600; letter-spacing: -0.12px; line-height: 30px; text-align: left; width: 100%"
+              >
+                Get out of my swamp?
+              </div>
+              <div
+                data-pencil-name="Lead"
+                style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; width: 100%'
+              >
+                Change the canvas to 25 fps?
+              </div>
+            </div>
+            <div
+              data-pencil-name="Body"
+              style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 20px; text-align: left; width: 100%'
+            >
+              Clip bounds are re-quantized to the new frame rate. These 10 clips move by up to 1
+              frame:
+            </div>
+            <div
+              data-pencil-name="Loss list"
+              style="align-items: flex-start; background-color: #12170F; border-radius: 6px; border: 1px solid #3A4A2C; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; overflow: hidden; padding: 6px 0px; position: relative; width: 100%"
+            >
+              <div
+                data-pencil-name="Row 1"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 24px; justify-content: space-between; padding: 0px 12px; position: relative; width: 100%; z-index: 0"
+              >
+                <div
+                  data-pencil-name="Item"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  c7f3 · take 1 · [0, 410) → [0, 342)
+                </div>
+              </div>
+              <div
+                data-pencil-name="Row 2"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 24px; justify-content: space-between; padding: 0px 12px; position: relative; width: 100%; z-index: 1"
+              >
+                <div
+                  data-pencil-name="Item"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  c8a1 · take 1 · [455, 912) → [379, 760)
+                </div>
+              </div>
+              <div
+                data-pencil-name="Row 3"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 24px; justify-content: space-between; padding: 0px 12px; position: relative; width: 100%; z-index: 2"
+              >
+                <div
+                  data-pencil-name="Item"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  c1b2 · take 3 · [0, 268) → [0, 224)
+                </div>
+              </div>
+              <div
+                data-pencil-name="Row 4"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 24px; justify-content: space-between; padding: 0px 12px; position: relative; width: 100%; z-index: 3"
+              >
+                <div
+                  data-pencil-name="Item"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  c1b3 · take 3 · [304, 611) → [253, 510)
+                </div>
+              </div>
+              <div
+                data-pencil-name="Row 5"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 24px; justify-content: space-between; padding: 0px 12px; position: relative; width: 100%; z-index: 4"
+              >
+                <div
+                  data-pencil-name="Item"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  c1b4 · take 3 · [652, 890) → [543, 742)
+                </div>
+              </div>
+              <div
+                data-pencil-name="Row 6"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 24px; justify-content: space-between; padding: 0px 12px; position: relative; width: 100%; z-index: 5"
+              >
+                <div
+                  data-pencil-name="Item"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  c1b5 · take 3 · [931, 1180) → [775, 984)
+                </div>
+              </div>
+              <div
+                data-pencil-name="Row 7"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 24px; justify-content: space-between; padding: 0px 12px; position: relative; width: 100%; z-index: 6"
+              >
+                <div
+                  data-pencil-name="Item"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  c1b6 · take 3 · [1222, 1377) → [1018, 1148)
+                </div>
+              </div>
+              <div
+                data-pencil-name="Row 8"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 24px; justify-content: space-between; padding: 0px 12px; position: relative; width: 100%; z-index: 7"
+              >
+                <div
+                  data-pencil-name="Item"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  c2d0 · take 5 · [12, 1104) → [10, 920)
+                </div>
+              </div>
+              <div
+                data-pencil-name="Scrollbar"
+                style="background-color: #6C7E5E; border-radius: 2px; box-sizing: border-box; height: 150px; left: 462px; position: absolute; top: 8px; width: 4px; z-index: 8"
+              ></div>
+            </div>
+            <div
+              data-pencil-name="Footer"
+              style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: fit-content; justify-content: flex-end; padding: 8px 0px 0px 0px; width: 100%"
+            >
+              <div
+                data-pencil-name="Cancel"
+                style="align-items: center; background-color: #27321F; border-radius: 6px; border: 1px solid #3A4A2C; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 40px; justify-content: center; padding: 0px 16px; position: relative; width: fit-content"
+              >
+                <div
+                  data-pencil-name="Label"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; position: relative; text-align: left; white-space: nowrap; z-index: 0'
+                >
+                  Cancel
+                </div>
+                <div
+                  data-pencil-name="Focus ring"
+                  style="align-items: flex-start; border-radius: 10px; border: 2px solid #8FC43A; box-sizing: border-box; display: flex; flex-direction: row; gap: 0px; height: 48px; justify-content: flex-start; left: -4px; position: absolute; top: -4px; width: 84px; z-index: 1"
+                ></div>
+              </div>
+              <div
+                data-pencil-name="Confirm"
+                style="align-items: center; background-color: #E5483B; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: 40px; justify-content: center; padding: 0px 16px; width: fit-content"
+              >
+                <div
+                  data-pencil-name="Label"
+                  style='box-sizing: border-box; color: #12170F; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; white-space: nowrap'
+                >
+                  Change fps
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div
+          data-pencil-name="Cell label"
+          style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+        >
+          with clip list · fps change (S18b)
+        </div>
+      </div>
+      <div
+        data-pencil-name="Cell scrims"
+        style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: fit-content"
+      >
+        <div
+          data-pencil-name="Scrim samples"
+          style="align-items: flex-start; background-image: url('../DESIGN-assets/generated-1.png'); background-position: center; background-repeat: no-repeat; background-size: cover; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 24px; height: fit-content; justify-content: flex-start; padding: 24px; width: fit-content"
+        >
+          <div
+            data-pencil-name="C24 Scrim"
+            style="align-items: flex-start; background-color: #12170FCC; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: 150px; justify-content: flex-start; width: 240px"
+          ></div>
+          <div
+            data-pencil-name="C24 Scrim strong"
+            style="align-items: flex-start; background-color: #12170FF0; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: 150px; justify-content: flex-start; width: 240px"
+          ></div>
+        </div>
+        <div
+          data-pencil-name="Cell label"
+          style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+        >
+          scrim (modals, palette, settings) · scrim-strong (cheat sheet) · resize to 1600×1000
+        </div>
+      </div>
+    </div>
+  </div>
+  <div
+    data-pencil-name="Block C25 Popover shell"
+    style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 16px; height: fit-content; justify-content: flex-start; width: fit-content"
+  >
+    <div
+      data-pencil-name="Block header C25 Popover shell"
+      style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 4px; height: fit-content; justify-content: flex-start; width: fit-content"
+    >
+      <div
+        data-pencil-name="Block title C25 Popover shell"
+        style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 16px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 22px; text-align: left; white-space: nowrap'
+      >
+        C25 Popover shell
+      </div>
+      <div
+        data-pencil-name="Block note C25 Popover shell"
+        style='box-sizing: border-box; color: #9BA582; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+      >
+        raised, lg radius, e2, 1 px border, 16 padding, optional 12×6 arrow · export panel, menus,
+        Add layer
+      </div>
+    </div>
+    <div
+      data-pencil-name="Row popovers"
+      style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 32px; height: fit-content; justify-content: flex-start; width: fit-content"
+    >
+      <div
+        data-pencil-name="Cell arrow"
+        style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: fit-content"
+      >
+        <div
+          data-pencil-name="Ground"
+          style="align-items: flex-start; background-color: #12170F; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; padding: 40px 32px 32px 32px; width: fit-content"
+        >
+          <div
+            data-pencil-name="C25 Popover/Arrow"
+            style="align-items: flex-start; background-color: #27321F; border-radius: 12px; border: 1px solid #3A4A2C; box-sizing: border-box; display: flex; filter: drop-shadow(0px 8px 12px #0000008C) drop-shadow(0px 1px 1px #00000059); flex-direction: column; flex-shrink: 0; gap: 12px; height: fit-content; justify-content: flex-start; padding: 16px; position: relative; width: 440px"
+          >
+            <svg
+              data-pencil-name="Arrow"
+              viewBox="0 0 12 6"
+              preserveAspectRatio="none"
+              xmlns="http://www.w3.org/2000/svg"
+              style="box-sizing: border-box; height: 6px; left: 262px; overflow: visible; position: absolute; top: -5px; width: 12px; z-index: 0"
+            >
+              <path d="M0 6l6-6 6 6" fill="#27321F"></path>
+              <path
+                d="M0 6l6-6 6 6"
+                fill="none"
+                stroke="#3A4A2C"
+                stroke-width="1"
+                vector-effect="non-scaling-stroke"
+              ></path>
+            </svg>
+            <div
+              data-pencil-name="Title"
+              style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 16px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 22px; position: relative; text-align: left; white-space: nowrap; z-index: 1'
+            >
+              Export
+            </div>
+            <div
+              data-pencil-name="Content"
+              style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; position: relative; width: 100%; z-index: 2"
+            >
+              <div
+                data-pencil-name="Placeholder"
+                style='box-sizing: border-box; color: #9BA582; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 20px; text-align: left; width: 100%'
+              >
+                Popover content goes here: fields, segmented controls, progress, buttons.
+              </div>
+            </div>
+          </div>
+        </div>
+        <div
+          data-pencil-name="Cell label"
+          style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+        >
+          with 12×6 arrow · 440 wide (export panel, arrow at Export x 1420)
+        </div>
+      </div>
+      <div
+        data-pencil-name="Cell no arrow"
+        style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: fit-content"
+      >
+        <div
+          data-pencil-name="Ground"
+          style="align-items: flex-start; background-color: #12170F; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; padding: 40px 32px 32px 32px; width: fit-content"
+        >
+          <div
+            data-pencil-name="C25 Popover/No arrow"
+            style="align-items: flex-start; background-color: #27321F; border-radius: 12px; border: 1px solid #3A4A2C; box-shadow: 0px 8px 24px #0000008C, 0px 1px 2px #00000059; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 12px; height: fit-content; justify-content: flex-start; padding: 16px; width: 440px"
+          >
+            <div
+              data-pencil-name="Title"
+              style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 16px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 22px; text-align: left; white-space: nowrap'
+            >
+              Export
+            </div>
+            <div
+              data-pencil-name="Content"
+              style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: 100%"
+            >
+              <div
+                data-pencil-name="Placeholder"
+                style='box-sizing: border-box; color: #9BA582; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 20px; text-align: left; width: 100%'
+              >
+                Popover content goes here: fields, segmented controls, progress, buttons.
+              </div>
+            </div>
+          </div>
+        </div>
+        <div
+          data-pencil-name="Cell label"
+          style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+        >
+          without arrow
+        </div>
+      </div>
+    </div>
+    <div
+      data-pencil-name="Row menu"
+      style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 32px; height: fit-content; justify-content: flex-start; width: fit-content"
+    >
+      <div
+        data-pencil-name="Cell menu"
+        style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: fit-content"
+      >
+        <div
+          data-pencil-name="Ground"
+          style="align-items: flex-start; background-color: #12170F; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; padding: 32px; width: fit-content"
+        >
+          <div
+            data-pencil-name="C25 Popover/Menu"
+            style="align-items: flex-start; background-color: #27321F; border-radius: 12px; border: 1px solid #3A4A2C; box-shadow: 0px 8px 24px #0000008C, 0px 1px 2px #00000059; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; padding: 6px; width: 300px"
+          >
+            <div
+              data-pencil-name="Item 1"
+              style="align-items: center; background-color: #8FC43A29; border-radius: 6px; border: 1px solid #8FC43A; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 32px; justify-content: flex-start; padding: 0px 12px; width: 100%"
+            >
+              <div
+                data-pencil-name="Text"
+                style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex: 1 1 0; gap: 0px; height: fit-content; justify-content: flex-start"
+              >
+                <div
+                  data-pencil-name="Label"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 20px; text-align: left; width: 100%'
+                >
+                  Apply this layout to all takes
+                </div>
+              </div>
+            </div>
+            <div
+              data-pencil-name="Item 2"
+              style="align-items: center; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 32px; justify-content: flex-start; padding: 0px 12px; width: 100%"
+            >
+              <div
+                data-pencil-name="Text"
+                style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex: 1 1 0; gap: 0px; height: fit-content; justify-content: flex-start"
+              >
+                <div
+                  data-pencil-name="Label"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 20px; text-align: left; width: 100%'
+                >
+                  Use this layout for new takes
+                </div>
+              </div>
+            </div>
+            <div
+              data-pencil-name="Item 3"
+              style="align-items: center; border-radius: 6px; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 12px; height: 32px; justify-content: flex-start; padding: 0px 12px; width: 100%"
+            >
+              <div
+                data-pencil-name="Text"
+                style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex: 1 1 0; gap: 0px; height: fit-content; justify-content: flex-start"
+              >
+                <div
+                  data-pencil-name="Label"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 20px; text-align: left; width: 100%'
+                >
+                  Reset take to project scene
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div
+          data-pencil-name="Cell label"
+          style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+        >
+          menu · Layout ▾ (first item highlighted, R2)
+        </div>
+      </div>
+    </div>
+  </div>
+  <div
+    data-pencil-name="Block C33 Tooltip"
+    style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 16px; height: fit-content; justify-content: flex-start; width: fit-content"
+  >
+    <div
+      data-pencil-name="Block header C33 Tooltip"
+      style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 4px; height: fit-content; justify-content: flex-start; width: fit-content"
+    >
+      <div
+        data-pencil-name="Block title C33 Tooltip"
+        style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 16px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 22px; text-align: left; white-space: nowrap'
+      >
+        C33 Tooltip
+      </div>
+      <div
+        data-pencil-name="Block note C33 Tooltip"
+        style='box-sizing: border-box; color: #9BA582; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+      >
+        8 px below the pointer or anchor · raised, md radius, e1 · body-sm · keys as sm key caps ·
+        clip hover tooltip
+      </div>
+    </div>
+    <div
+      data-pencil-name="Row tooltips"
+      style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 32px; height: fit-content; justify-content: flex-start; width: fit-content"
+    >
+      <div
+        data-pencil-name="Cell text"
+        style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: fit-content"
+      >
+        <div
+          data-pencil-name="Ground"
+          style="align-items: flex-start; background-color: #12170F; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; padding: 24px; width: fit-content"
+        >
+          <div
+            data-pencil-name="C33 Tooltip/Text"
+            style="align-items: center; background-color: #27321F; border-radius: 6px; border: 1px solid #3A4A2C; box-shadow: 0px 2px 6px #00000066; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; padding: 4px 8px; width: fit-content"
+          >
+            <div
+              data-pencil-name="Text"
+              style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 13px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 18px; text-align: left; white-space: nowrap'
+            >
+              Switch to Program (Tab) to play the timeline
+            </div>
+          </div>
+        </div>
+        <div
+          data-pencil-name="Cell label"
+          style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+        >
+          text only
+        </div>
+      </div>
+      <div
+        data-pencil-name="Cell keys"
+        style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: fit-content"
+      >
+        <div
+          data-pencil-name="Ground"
+          style="align-items: flex-start; background-color: #12170F; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; padding: 24px; width: fit-content"
+        >
+          <div
+            data-pencil-name="C33 Tooltip/Keys"
+            style="align-items: center; background-color: #27321F; border-radius: 6px; border: 1px solid #3A4A2C; box-shadow: 0px 2px 6px #00000066; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; padding: 4px 6px 4px 8px; width: fit-content"
+          >
+            <div
+              data-pencil-name="Text"
+              style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 13px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 18px; text-align: left; white-space: nowrap'
+            >
+              Commands
+            </div>
+            <div
+              data-pencil-name="Keys"
+              style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 2px; height: fit-content; justify-content: flex-start; width: fit-content"
+            >
+              <div
+                data-pencil-name="Key 1"
+                style="align-items: center; background-color: #3A4430; border-color: #3A4A2C; border-radius: 4px; border-style: solid; border-width: 1px 1px 2px 1px; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 0px; height: 16px; justify-content: center; padding: 0px 4px; width: fit-content"
+              >
+                <div
+                  data-pencil-name="Legend"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+                >
+                  Ctrl
+                </div>
+                <div
+                  data-pencil-name="Min width"
+                  style="box-sizing: border-box; flex-shrink: 0; height: 1px; width: 8px"
+                ></div>
+              </div>
+              <div
+                data-pencil-name="Key 2"
+                style="align-items: center; background-color: #3A4430; border-color: #3A4A2C; border-radius: 4px; border-style: solid; border-width: 1px 1px 2px 1px; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 0px; height: 16px; justify-content: center; padding: 0px 4px; width: fit-content"
+              >
+                <div
+                  data-pencil-name="Legend"
+                  style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+                >
+                  K
+                </div>
+                <div
+                  data-pencil-name="Min width"
+                  style="box-sizing: border-box; flex-shrink: 0; height: 1px; width: 8px"
+                ></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div
+          data-pencil-name="Cell label"
+          style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+        >
+          text + key caps (sm)
+        </div>
+      </div>
+      <div
+        data-pencil-name="Cell clip"
+        style="align-items: flex-start; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 8px; height: fit-content; justify-content: flex-start; width: fit-content"
+      >
+        <div
+          data-pencil-name="Ground"
+          style="align-items: flex-start; background-color: #12170F; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 0px; height: fit-content; justify-content: flex-start; padding: 24px; width: fit-content"
+        >
+          <div
+            data-pencil-name="C33 Tooltip/Clip"
+            style="align-items: flex-start; background-color: #27321F; border-radius: 6px; border: 1px solid #3A4A2C; box-shadow: 0px 2px 6px #00000066; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 6px; height: fit-content; justify-content: flex-start; padding: 8px 10px; width: fit-content"
+          >
+            <div
+              data-pencil-name="Title"
+              style='box-sizing: border-box; color: #E8E6C8; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 14px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 20px; text-align: left; white-space: nowrap'
+            >
+              Take 5 · c2d1
+            </div>
+            <div
+              data-pencil-name="Times"
+              style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+            >
+              In 00:00:36:24 · Out 00:01:13:24 · 00:00:37:00
+            </div>
+            <div
+              data-pencil-name="Keys"
+              style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 10px; height: fit-content; justify-content: flex-start; width: fit-content"
+            >
+              <div
+                data-pencil-name="Key Split"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 4px; height: fit-content; justify-content: flex-start; width: fit-content"
+              >
+                <div
+                  data-pencil-name="Cap 1"
+                  style="align-items: center; background-color: #3A4430; border-color: #3A4A2C; border-radius: 4px; border-style: solid; border-width: 1px 1px 2px 1px; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 0px; height: 16px; justify-content: center; padding: 0px 4px; width: fit-content"
+                >
+                  <div
+                    data-pencil-name="Legend"
+                    style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+                  >
+                    S
+                  </div>
+                  <div
+                    data-pencil-name="Min width"
+                    style="box-sizing: border-box; flex-shrink: 0; height: 1px; width: 8px"
+                  ></div>
+                </div>
+                <div
+                  data-pencil-name="Label"
+                  style='box-sizing: border-box; color: #9BA582; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  Split
+                </div>
+              </div>
+              <div
+                data-pencil-name="Key Trim"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 4px; height: fit-content; justify-content: flex-start; width: fit-content"
+              >
+                <div
+                  data-pencil-name="Cap 1"
+                  style="align-items: center; background-color: #3A4430; border-color: #3A4A2C; border-radius: 4px; border-style: solid; border-width: 1px 1px 2px 1px; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 0px; height: 16px; justify-content: center; padding: 0px 4px; width: fit-content"
+                >
+                  <div
+                    data-pencil-name="Legend"
+                    style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+                  >
+                    [
+                  </div>
+                  <div
+                    data-pencil-name="Min width"
+                    style="box-sizing: border-box; flex-shrink: 0; height: 1px; width: 8px"
+                  ></div>
+                </div>
+                <div
+                  data-pencil-name="Cap 2"
+                  style="align-items: center; background-color: #3A4430; border-color: #3A4A2C; border-radius: 4px; border-style: solid; border-width: 1px 1px 2px 1px; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 0px; height: 16px; justify-content: center; padding: 0px 4px; width: fit-content"
+                >
+                  <div
+                    data-pencil-name="Legend"
+                    style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+                  >
+                    ]
+                  </div>
+                  <div
+                    data-pencil-name="Min width"
+                    style="box-sizing: border-box; flex-shrink: 0; height: 1px; width: 8px"
+                  ></div>
+                </div>
+                <div
+                  data-pencil-name="Label"
+                  style='box-sizing: border-box; color: #9BA582; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  Trim
+                </div>
+              </div>
+              <div
+                data-pencil-name="Key Remove"
+                style="align-items: center; box-sizing: border-box; display: flex; flex-direction: row; flex-shrink: 0; gap: 4px; height: fit-content; justify-content: flex-start; width: fit-content"
+              >
+                <div
+                  data-pencil-name="Cap 1"
+                  style="align-items: center; background-color: #3A4430; border-color: #3A4A2C; border-radius: 4px; border-style: solid; border-width: 1px 1px 2px 1px; box-sizing: border-box; display: flex; flex-direction: column; flex-shrink: 0; gap: 0px; height: 16px; justify-content: center; padding: 0px 4px; width: fit-content"
+                >
+                  <div
+                    data-pencil-name="Legend"
+                    style='box-sizing: border-box; color: #E8E6C8; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 600; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+                  >
+                    X
+                  </div>
+                  <div
+                    data-pencil-name="Min width"
+                    style="box-sizing: border-box; flex-shrink: 0; height: 1px; width: 8px"
+                  ></div>
+                </div>
+                <div
+                  data-pencil-name="Label"
+                  style='box-sizing: border-box; color: #9BA582; font-family: "Atkinson Hyperlegible Next", system-ui, sans-serif; font-size: 12px; font-style: normal; font-weight: 400; letter-spacing: 0px; line-height: 16px; text-align: left; white-space: nowrap'
+                >
+                  Remove
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div
+          data-pencil-name="Cell label"
+          style='box-sizing: border-box; color: #9BA582; font-family: "JetBrains Mono", system-ui, sans-serif; font-size: 11px; font-style: normal; font-weight: 500; letter-spacing: 0px; line-height: 14px; text-align: left; white-space: nowrap'
+        >
+          clip hover · take, in/out, duration, keys
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
