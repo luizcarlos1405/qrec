@@ -1867,7 +1867,7 @@ fn shown_take_frame(shot: &Path, preview: [f64; 4], file: &Path, around: u64) ->
         ),
     );
     assert!(
-        frames.len() >= size && frames.len() % size == 0,
+        frames.len() >= size && frames.len().is_multiple_of(size),
         "{} bytes of frames {first}…{} of {}",
         frames.len(),
         around + 3,
