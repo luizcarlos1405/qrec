@@ -18,7 +18,14 @@ cargo test --workspace           # everything (CLI tests spawn ffmpeg)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 cargo insta review               # accept/reject snapshot changes
+scripts/check-quick [suite...]   # inner loop: fmt, clippy, changed crates' tests, changed areas' GUI suites
+scripts/check-full               # milestone gate: all suites, both renderers, scales, probes, nix build
 ```
+
+The shell links with mold and caches dependency builds with sccache. GUI
+cases run several at once (`cargo nextest run -p qrec --run-ignored only
+--test gui_<area>`); a timing-sensitive case says `Options::exclusive` and
+runs alone (docs/GUI.md G§8.4).
 
 ## Rules
 

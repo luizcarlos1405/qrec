@@ -5325,8 +5325,11 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   that package's integration tests and sets `CARGO_BIN_EXE_qrec`, so a
   case never runs a stale binary. `gui_support` panics when
   `CARGO_BIN_EXE_qrec` is unset; it never falls back to
-  `target/debug/qrec`. Run: `cargo test -p qrec --test gui_<area> --
-  --ignored --test-threads=1`.
+  `target/debug/qrec`. Run: `scripts/check-quick gui_<area>` (below), or
+  `cargo nextest run -p qrec --run-ignored only --test gui_<area>`
+  (several cases at once, below; `cargo test -p qrec --test gui_<area> --
+  --ignored` runs them on libtest's threads, `--test-threads=1` one at a
+  time).
 - **Compositor.** sway headless at 1600×1000@60:
   - a private `XDG_RUNTIME_DIR` from `TestEnv`; `WLR_BACKENDS=headless`,
     `WLR_LIBINPUT_NO_DEVICES=1`;
@@ -5658,8 +5661,9 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   WP3's scrub through WP4's sync with no seek after it, read from the
   GUI log's "program sync:" lines and `local`'s `playerNs`), `gui_smoke`,
   `gui_chrome` (WP6), `gui_timeline` (WP3), `gui_stage` (WP4), `gui_panel`
-  (WP5), `gui_bin_export` (WP7), each run with `-- --ignored
-  --test-threads=1` on pixman and on gles2. WP10 adds `gui_live` (the
+  (WP5), `gui_bin_export` (WP7), each run on pixman and on gles2 (one
+  case at a time until 2026-10-18; now `scripts/check-full`, below).
+  WP10 adds `gui_live` (the
   live settings, G§3.14: each theme by `qrec config set` with a
   token-colored pixel of the CSS and of the custom-drawn timeline and none
   of the theme before, libadwaita's color scheme, the empty timeline's art;
@@ -5685,6 +5689,92 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   `GTK_A11Y=none`, as measured) and
   `announcements_reach_the_accessibility_bus` (GTK's AT-SPI backend, not
   the walk's test context).
+- **Parallel runs** (2026-10-18, the dev loop's speed-ups). Cases run
+  side by side: `cargo nextest run -p qrec --run-ignored only --test
+  gui_<area>` (a process per case, every suite of the run in one pool,
+  `--test-threads N`), or on libtest's threads (`cargo test -p qrec --test
+  gui_<area> -- --ignored --test-threads=N`, a suite at a time). No case
+  has anything of another's: its own `TestEnv` (a fresh `XDG_RUNTIME_DIR`
+  under `/tmp`, so its display, sway's IPC socket, the bus, the hosts'
+  sockets and the test channel's `qrec-gui-test-<pid>.sock`), projects and
+  compositor (its virtual pointer and `wtype` keyboards; no uinput
+  device), no TCP port, and its shots and logs (`<shots>/<case>-…`; a
+  second running case of the same area and name fails at its start,
+  `gui_support::slot::Claim`). The fixtures' media cache is shared,
+  written by rename. The machine is what they share:
+  `gui_support::slot::Slot`, a `flock(2)` on
+  `<target>/tmp/gui-nested.lock` (`CARGO_TARGET_TMPDIR`) held from before
+  the compositor starts until the env is gone, shared by default. A
+  timing-sensitive case says `Options::exclusive(why)`: it takes a gate
+  (no case starts meanwhile), waits for the running ones and runs alone.
+  Every slot given back logs a line to `<target>/tmp/gui-slots.log` (the
+  case, how long it waited and ran), and the cases that ran alone are
+  listed in `<target>/tmp/gui-exclusive/`, so the scripts run them after
+  the others, one at a time, instead of draining the pool for each (the
+  lock keeps them alone either way). The exclusive cases:
+
+  | Cases | Why alone |
+  | --- | --- |
+  | `gui_timeline`'s `frame_times_on_300_clips` | the frame-time probe (G§8.6): its p99 is the window's frame clock |
+  | `gui_smoke`'s `smoke_steps_1_to_10` | the main-loop probe: a stall over 50 ms fails it under gles2 |
+  | `gui_smoke`'s packaged case | the package's window plays and pauses the Program while the case reads it |
+  | `gui_audits`' `a_window_opens_only_the_chosen_render_node` | the GPU-opens probe: the window under `strace -f`, the Program playing |
+  | `gui_audits`' four Narrow-sheet cases | they sample the sheet's x through its 200 ms slide |
+  | `gui_stage`'s `s24_portal_denied`, `s24_screen_picker_closed` | the take aborts within 500 ms of its key |
+  | `gui_shell`'s `a_record_toggle_50_ms_after_launch_is_the_windows` | the window's lock and socket must come before a toggle 50 ms after launch |
+  | `gui_stage`'s `a_keys_seek_while_playing_never_pulls_the_player_back`, `a_step_while_playing_pauses_and_goes_from_the_frame_shown`, `a_playing_programs_playhead_is_saved_at_the_close`; `gui_bin_export`'s `a_bin_preview_parks_the_playing_program_where_it_showed` | the Program plays in real time while the case reads where it is: 2-, 6- and 15-frame bounds |
+  | `gui_bin_export`'s `s18_purging_two_takes_from_the_bin`, `purging_from_the_bin_waits_for_the_recording`; `gui_themes`' `s18_the_purge_modal_in_swamp_day`; `gui_timeline`'s `ctrl_wheel_zooms_at_the_pointer` | Ctrl held by a `wtype` for a fixed time (400–1600 ms of its run; 2.5 s), the click or notch timed into it |
+  | `gui_stage`'s `s05_the_saving_ghost_holds_still_under_reduced_motion` | three takes' ghosts compared pixel for pixel: a take's length, and so the view's fit, is its real recording time |
+
+  What the parallel runs found: `gui_blocking`'s
+  `d13_held_by_another_window` lost the reply to its `blocking.quit` once
+  (the window exits before the channel's thread writes it): an action that
+  ends the window goes through `Gui::quit_action`, which takes `ok` or no
+  reply, and the case checks the exit. The saving ghost's case failed
+  once under a heavier load (6 at once, GStreamer's debug log on) and
+  joined the table. And a product race, seen before in a serial run
+  (2026-10-17, `s14_stage_with_the_bin`) and more often under a parallel
+  run's load: the Program player's load stalls ("not idle: the player"
+  past `waitIdle`'s 30 s; no `player: Loaded` and no error in the GUI
+  log). The player thread builds the GES timeline with
+  `UriClipAsset::request_sync` (`ges_render::Assets::get`), and GES's
+  discoverer runs its bus on the default main context, which the GTK main
+  thread iterates: with `GST_DEBUG=discoverer:6` a stalled window shows
+  the player thread starting the next file's discovery ("Pipeline going
+  to PAUSED : SUCCESS", not ASYNC) while the main thread was still in the
+  previous one's `discoverer_cleanup`, and nothing more until GES's 60 s
+  discovery timeout. To fix in the player (discover on a context of its
+  own thread, or ask the assets from one thread), not in the tests; until
+  then the scripts run a failed nested case once more and list it as
+  FLAKY (`QREC_NESTED_RETRIES=0`: no retry). Measured on the dev machine
+  (16 cores, the desktop in use): the pixman matrix, 210 cases, took
+  1,749 s one case at a time (`cargo test`, suite after suite); with
+  nextest and the exclusive cases last, 586–613 s with 4 at once and
+  531–546 s with 6 (the 190 others in 330–380 s at 6, then the 20 alone
+  in some 200 s). Three runs at each count were green, the retry used
+  once (the player's race, at 4); before the fixes above, d13's reply
+  failed one run and the player's race two. The scripts run 6 at once
+  (`QREC_NESTED_THREADS`). `scripts/check-quick` on a one-line change in
+  `timeline/`: 75 s (fmt, clippy, qrec-gui's tests, `gui_timeline`'s 30
+  cases in 57 s), against 216 s for the same checks one case at a time.
+- **The loop's scripts** (`scripts/`, CLAUDE.md's commands), each in
+  `tmp/dev` when the checkout has one, else `nix develop`, never on the
+  user's display:
+  - `scripts/check-quick [suite...]`, the inner loop: `cargo fmt
+    --check`, clippy with `-D warnings`, the tests of the crates changed
+    since main (nextest, then their doc-tests; a CLI change also runs
+    `qrec`'s `cli` tests), and the nested suites named, else those of the
+    areas changed (G§3.16's owners: a file under `timeline/` is
+    `gui_timeline`'s, the harness every suite's), on pixman, 6 at once;
+    `--plan` prints what it would run.
+  - `scripts/check-full`, the milestone gate: fmt, clippy, the workspace
+    tests (nextest: 65 s, against 242 s for `cargo test --workspace`; then
+    the doc-tests), `nix build` (4 cores, meanwhile), every suite on gles2
+    and then on pixman (the packaged case on the fresh build), at scale
+    1.5 and 2, G§8.6's probes three times each alone on gles2 (the
+    frame-time probe and the smoke's stalls) and the cache bounds, into
+    `tmp/check-full/<date>/summary.txt` (the gles2 shots copied to
+    `shots-gles2/` there before the pixman run writes the same names).
 
 ### G§8.5 End-to-end smoke (SPEC §17)
 

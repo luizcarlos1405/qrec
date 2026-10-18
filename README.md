@@ -136,14 +136,17 @@ with the fake capture backend. Screenshots and logs go to
 `tmp/gui-shots/<area>/` (docs/GUI.md G§8.4):
 
 ```sh
-cargo test -p qrec --test gui_smoke -- --ignored --test-threads=1   # the end-to-end smoke (G§8.5)
-for suite in crates/qrec/tests/gui_*.rs; do                         # every suite, one window at a time
-  cargo test -p qrec --test "$(basename "$suite" .rs)" -- --ignored --test-threads=1
-done
-QREC_TEST_WLR=gles2 cargo test -p qrec --test gui_smoke -- --ignored --test-threads=1
-QREC_TEST_SCALE=2 cargo test -p qrec --test gui_stage -- --ignored --test-threads=1
+scripts/check-quick                  # fmt, clippy, the changed crates' tests and areas' suites
+scripts/check-quick gui_stage gui_panel   # named suites (`all`: every one)
+scripts/check-full                   # the milestone gate; summary in tmp/check-full/<date>/
+cargo nextest run -p qrec --run-ignored only --test gui_smoke   # the end-to-end smoke (G§8.5)
+QREC_TEST_WLR=gles2 cargo nextest run -p qrec --run-ignored only --test gui_smoke
+QREC_TEST_SCALE=2 cargo test -p qrec --test gui_stage -- --ignored  # libtest works too
 nix build && cargo test -p qrec --test gui_smoke packaged -- --ignored   # the package in nested sway
 ```
+
+Several cases run at once, each with its own compositor; the
+timing-sensitive ones run alone (`Options::exclusive`, G§8.4).
 
 The compositor renders with pixman by default (software: nothing opens a
 GPU node). `QREC_TEST_WLR=gles2` uses GL on the first Intel or AMD render
