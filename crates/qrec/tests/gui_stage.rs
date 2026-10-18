@@ -1476,7 +1476,12 @@ fn a_drag_during_a_commit_starts_from_it() {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn a_keys_seek_while_playing_never_pulls_the_player_back() {
-    let mut nested = Nested::start(AREA, "key-seek-playing", Options::default());
+    let mut nested = Nested::start(
+        AREA,
+        "key-seek-playing",
+        Options::default()
+            .exclusive("the Program plays in real time while the case reads where it is"),
+    );
     let project = fixture(
         &nested,
         DesignVariant::Base,
@@ -1533,7 +1538,12 @@ fn a_keys_seek_while_playing_never_pulls_the_player_back() {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn a_step_while_playing_pauses_and_goes_from_the_frame_shown() {
-    let mut nested = Nested::start(AREA, "step-playing", Options::default());
+    let mut nested = Nested::start(
+        AREA,
+        "step-playing",
+        Options::default()
+            .exclusive("the Program plays in real time while the case reads where it is"),
+    );
     let project = fixture(
         &nested,
         DesignVariant::Base,
@@ -2132,7 +2142,12 @@ fn saved_project(project: &Path) -> Value {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn a_playing_programs_playhead_is_saved_at_the_close() {
-    let mut nested = Nested::start(AREA, "close-playing", Options::default());
+    let mut nested = Nested::start(
+        AREA,
+        "close-playing",
+        Options::default()
+            .exclusive("the Program plays in real time while the case reads where it is"),
+    );
     let project = fixture(
         &nested,
         DesignVariant::Base,
@@ -2472,7 +2487,12 @@ fn hint_line(nested: &mut Nested) -> Vec<String> {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s24_portal_denied() {
-    let mut nested = Nested::start(S24, "S24", Options::default());
+    let mut nested = Nested::start(
+        S24,
+        "S24",
+        Options::default()
+            .exclusive("S24's take aborts within 500 ms of its key (the window's log)"),
+    );
     let project = refused_take(&mut nested, "deny");
     assert_denied_block(
         &mut nested,
@@ -2566,7 +2586,12 @@ fn s24_portal_denied() {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s24_screen_picker_closed() {
-    let mut nested = Nested::start(S24, "S24-picker-closed", Options::default());
+    let mut nested = Nested::start(
+        S24,
+        "S24-picker-closed",
+        Options::default()
+            .exclusive("S24's take aborts within 500 ms of its key (the window's log)"),
+    );
     refused_take(&mut nested, "cancel");
     assert_denied_block(
         &mut nested,

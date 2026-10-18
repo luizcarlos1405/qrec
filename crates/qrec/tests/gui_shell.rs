@@ -514,7 +514,12 @@ fn sigterm_exits_130() {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn a_record_toggle_50_ms_after_launch_is_the_windows() {
-    let mut nested = Nested::start("wp0b", "startup-order", Options::default());
+    let mut nested = Nested::start(
+        "wp0b",
+        "startup-order",
+        Options::default()
+            .exclusive("a record toggle 50 ms after launch: the window's lock and socket first"),
+    );
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
     nested.launch(&project, Launch::a11y());
     thread::sleep(Duration::from_millis(50));

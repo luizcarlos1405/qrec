@@ -688,7 +688,12 @@ fn a_middle_drag_pans_the_lanes() {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn ctrl_wheel_zooms_at_the_pointer() {
-    let mut nested = Nested::start(AREA, "ctrl-wheel", Options::default());
+    let mut nested = Nested::start(
+        AREA,
+        "ctrl-wheel",
+        Options::default()
+            .exclusive("Ctrl held by a wtype for a fixed window, the click timed into it"),
+    );
     let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
     open(&mut nested, &project, Launch::a11y());
     let ruler_y = center_of(&mut nested, "ruler").1;
@@ -1467,7 +1472,12 @@ fn compact_timeline_at_1600x800() {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn frame_times_on_300_clips() {
-    let mut nested = Nested::start(AREA, "perf-300", Options::default());
+    let mut nested = Nested::start(
+        AREA,
+        "perf-300",
+        Options::default()
+            .exclusive("the frame-time probe (G§8.6): its p99 is the window's own frame clock"),
+    );
     let project = nested.env.empty_dir("perf");
     perf_fixture(&project, 300);
     write_ui(&project, &program(&[], 0, None));

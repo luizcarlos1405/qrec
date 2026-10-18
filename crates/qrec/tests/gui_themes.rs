@@ -613,7 +613,8 @@ fn s06_program_with_selection_in_every_theme() {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s18_the_purge_modal_in_swamp_day() {
-    let opts = Options::default();
+    let opts = Options::default()
+        .exclusive("Ctrl held by a wtype for a fixed window, the click timed into it");
     let mut shots = Vec::new();
     for theme in NIGHT_AND_DAY {
         let mut nested = Nested::start(AREA, &format!("S18-{theme}"), opts.clone());

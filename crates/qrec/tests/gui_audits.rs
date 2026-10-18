@@ -119,7 +119,13 @@ fn gpu_opens(trace: &Path) -> (String, Option<i32>) {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn a_window_opens_only_the_chosen_render_node() {
-    let mut nested = Nested::start(AREA, "gpu-opens", Options::default());
+    let mut nested = Nested::start(
+        AREA,
+        "gpu-opens",
+        Options::default().exclusive(
+            "the GPU-opens probe (G§8.6): the window under strace -f, the Program playing",
+        ),
+    );
     let ui = UiState {
         canvas_mode: CanvasMode::Program,
         selection: vec![ClipId::from_raw("c2d0")],
@@ -288,7 +294,11 @@ fn the_sheet(reduced: bool) -> Sheet {
     } else {
         "sheet-animated"
     };
-    let mut nested = Nested::start(AREA, case, Options::size(1000, 1000));
+    let mut nested = Nested::start(
+        AREA,
+        case,
+        Options::size(1000, 1000).exclusive("samples the sheet's x through its 200 ms slide"),
+    );
     if reduced {
         reduced_motion(&nested);
     }
@@ -439,7 +449,11 @@ fn gtk_animations(nested: &mut Nested) -> bool {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn reduced_motion_set_while_the_sheet_is_open_holds_it_still() {
-    let mut nested = Nested::start(AREA, "sheet-live", Options::size(1000, 1000));
+    let mut nested = Nested::start(
+        AREA,
+        "sheet-live",
+        Options::size(1000, 1000).exclusive("samples the sheet's x through its 200 ms slide"),
+    );
     let ui = UiState {
         playhead: 7391,
         ..UiState::default()
@@ -511,7 +525,11 @@ fn reduced_motion_set_while_the_sheet_is_open_holds_it_still() {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn the_desktops_animations_reach_the_window_after_the_sheet() {
-    let mut nested = Nested::start(AREA, "sheet-desktop", Options::size(1000, 1000));
+    let mut nested = Nested::start(
+        AREA,
+        "sheet-desktop",
+        Options::size(1000, 1000).exclusive("samples the sheet's x through its 200 ms slide"),
+    );
     let ui = UiState {
         playhead: 7391,
         ..UiState::default()

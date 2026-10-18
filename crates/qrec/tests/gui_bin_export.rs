@@ -999,7 +999,12 @@ fn a_playing_bin_preview_leaves_the_program_playhead() {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn a_bin_preview_parks_the_playing_program_where_it_showed() {
-    let mut nested = Nested::start(AREA, "bin-preview-park", Options::default());
+    let mut nested = Nested::start(
+        AREA,
+        "bin-preview-park",
+        Options::default()
+            .exclusive("the Program plays in real time while the case reads where it is"),
+    );
     let project = fixture(
         &nested,
         "rust-traits-talk",
@@ -1255,7 +1260,12 @@ fn a_bin_row_drags_onto_an_empty_timeline() {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s18_purging_two_takes_from_the_bin() {
-    let mut nested = Nested::start(AREA, "s18", Options::default());
+    let mut nested = Nested::start(
+        AREA,
+        "s18",
+        Options::default()
+            .exclusive("Ctrl held by a wtype for a fixed window, the click timed into it"),
+    );
     let project = fixture(
         &nested,
         "rust-traits-talk",
@@ -1371,7 +1381,12 @@ fn wait_record_phase(nested: &Nested, project: &Path, phase: &str) {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn purging_from_the_bin_waits_for_the_recording() {
-    let mut nested = Nested::start(AREA, "purge-recording", Options::default());
+    let mut nested = Nested::start(
+        AREA,
+        "purge-recording",
+        Options::default()
+            .exclusive("Ctrl held by a wtype for a fixed window, the click timed into it"),
+    );
     let project = fixture(
         &nested,
         "rust-traits-talk",

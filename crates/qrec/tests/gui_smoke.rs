@@ -233,7 +233,12 @@ impl Steps {
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn smoke_steps_1_to_10() {
-    let mut nested = Nested::start(AREA, "smoke", Options::default());
+    let mut nested = Nested::start(
+        AREA,
+        "smoke",
+        Options::default()
+            .exclusive("the main-loop probe (G§8.6): a stall over 50 ms fails it under gles2"),
+    );
     let project = nested.env.empty_dir("smoke");
     design_fixture(&project, DesignVariant::Smoke);
     let mut steps = Steps::new();
@@ -761,7 +766,12 @@ fn the_packaged_build_opens_the_smoke_fixture() {
     assert_wrapper(&package);
     let bin = package.join("bin/qrec");
 
-    let mut nested = Nested::start(AREA, "packaged", Options::default());
+    let mut nested = Nested::start(
+        AREA,
+        "packaged",
+        Options::default()
+            .exclusive("the packaged window plays and pauses the Program while the case reads it"),
+    );
     let project = nested.env.empty_dir("smoke");
     design_fixture(&project, DesignVariant::Smoke);
     let no_tools = nested.env.root().join("no-tools");
