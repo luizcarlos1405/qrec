@@ -94,6 +94,37 @@
   color: var(--qrec-video-text);
 }
 
+/* ------------------------------------- S24: a refused screen */
+
+/* The block centered on a refused screen's area (S24's "Message" plate):
+   `video-scrim`, `lg` radius, 24/32 padding; the 32 px monitor-x, the
+   `title` 16 px under it, the source 4 px under that at 80 %, the
+   secondary Try again 20 px under that (190 tall in all). The hatch under
+   it is the picture's (stage/picture.rs). */
+.stage-denied {
+  padding: 24px 32px;
+  border-radius: 12px;
+  background-color: var(--qrec-video-scrim);
+  color: var(--qrec-video-text);
+}
+
+.stage-denied > image {
+  -gtk-icon-size: 32px;
+}
+
+.stage-denied-title {
+  margin-top: 16px;
+}
+
+.stage-denied-caption {
+  margin-top: 4px;
+  opacity: 0.8;
+}
+
+.stage-denied > button {
+  margin-top: 20px;
+}
+
 /* ------------------------------------------ layer editing (C08) */
 
 /* A snap guide's tag ("Right third"). */

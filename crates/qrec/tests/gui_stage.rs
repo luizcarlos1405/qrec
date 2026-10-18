@@ -8,7 +8,8 @@
 //! `cargo test -p qrec --test gui_stage -- --ignored --test-threads=1`
 //! (inside the dev shell: sway, grim, wtype, dbus-daemon; pixman, or GL
 //! with `QREC_TEST_WLR=gles2`). Screenshots and logs go to
-//! `tmp/gui-shots/wp4/`.
+//! `tmp/gui-shots/wp4/`, S24's (the portal-denied state) to
+//! `tmp/gui-shots/s24/`.
 
 mod gui_support;
 
@@ -1806,5 +1807,374 @@ fn s10_trim_scrub_on_the_stage() {
     nested.keys(&["-k", "Escape"]);
     nested.pointer().button(BUTTON_LEFT, false);
     nested.window(0).wait_idle();
+    assert_clean(&mut nested);
+}
+
+// ------------------------------------------------------------------ S24
+
+/// S24's shots and logs: `tmp/gui-shots/s24/`.
+const S24: &str = "s24";
+/// S24's block over L1 and its Try again (`stage/denied.rs` names them
+/// after the layer).
+const DENIED_L1: &str = "denied-L1";
+const RETRY_L1: &str = "denied-try-again-L1";
+/// L1's area on the 1:2 preview: the whole preview (BRIEF §3.1).
+const L1_AREA: [f64; 4] = [128.0, 64.0, 960.0, 540.0];
+/// L2's box on it (BRIEF §3.1), inside its edge.
+const L2_INSIDE: [f64; 4] = [882.0, 448.0, 184.0, 136.0];
+/// `muted` at 20 % over the canvas's black: the hatch's stripe (S24's
+/// "Hatch · muted 20", `#9BA58233`).
+const STRIPE: [u8; 3] = [31, 33, 26];
+/// S24's meters (as S06's: −16.0 and −48.0 peaks).
+const S24_LEVELS: &str = "alsa_input.fake=-22/-16,alsa_output.fake.monitor=-52/-48";
+
+/// S24's window: the fake portal answering `portal`, the frame's meters.
+fn s24_launch(portal: &str) -> Launch {
+    Launch::a11y()
+        .with_env("QREC_FAKE_PORTAL", portal)
+        .with_env("QREC_GUI_TEST_LEVELS", S24_LEVELS)
+}
+
+/// `take`'s row of `qrec take list`.
+fn take_row(nested: &Nested, project: &Path, take: &str) -> Option<Value> {
+    let list = nested.cli_json(project, &["take", "list"]);
+    list["data"]
+        .as_array()?
+        .iter()
+        .find(|t| t["id"] == take)
+        .cloned()
+}
+
+/// Waits (20 s) until `take` is broken and the phase idle again, then for
+/// the window.
+fn wait_broken(nested: &mut Nested, project: &Path, take: &str) {
+    gui_support::poll(Duration::from_secs(20), &format!("{take} broken"), || {
+        take_row(nested, project, take).filter(|t| t["status"] == "broken")
+    });
+    wait_phase(nested, project, "idle", Duration::from_secs(20));
+    nested.window(0).wait_idle();
+}
+
+/// Closes the toasts shown (their close buttons), within 10 s.
+fn dismiss_toasts(nested: &mut Nested) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        nested.window(0).wait_idle();
+        if nested.window(0).labels("toast-host").is_empty() {
+            return;
+        }
+        assert!(Instant::now() < deadline, "the toasts never closed");
+        let close = nested.window(0).regions(&["toast-dismiss"]);
+        if let Some([x, y, w, h]) = close.get("toast-dismiss").copied() {
+            nested.pointer().click(x + w / 2.0, y + h / 2.0);
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// S24's start: the design fixture in Live with the fake portal answering
+/// `portal` (`deny`; `cancel`: the picker closed), so the live preview's
+/// screen is refused as the window opens (its "Live preview problem"
+/// warning closed, as its 8 s would have before S24's `R`); then `R`: take
+/// 10 asks the portal for its screen again, is refused and aborts (broken,
+/// into the bin) before any frame, within S24's 500 ms of the key (the
+/// window's log: its `recordToggle` and the Session's "take-0010 is
+/// broken"). Returns the project with the window settled.
+fn refused_take(nested: &mut Nested, portal: &str) -> PathBuf {
+    let project = fixture(
+        nested,
+        DesignVariant::Base,
+        Some(ui(CanvasMode::Live, 7391)),
+    );
+    open(nested, &project, s24_launch(portal));
+    // Queued before the window settled (the refusal comes with the live
+    // statuses `waitIdle` waits for); gone by itself on a loaded machine.
+    dismiss_toasts(nested);
+    nested.keys(&["-k", "r"]);
+    wait_broken(nested, &project, "take-0010");
+    let log = gui_log(nested);
+    let at = |what: &str| {
+        let line = log
+            .lines()
+            .find(|l| l.contains(what))
+            .unwrap_or_else(|| panic!("no {what:?} in the window's log"));
+        log_ms(line).unwrap_or_else(|| panic!("no time in {line:?}"))
+    };
+    let took = at("take-0010 is broken") - at("recordToggle");
+    assert!(
+        (0..500).contains(&took),
+        "take 10 aborted {took} ms after its recordToggle"
+    );
+    project
+}
+
+/// The time of a GUI log line ("2026-10-18 03:24:35.242 …") in ms of its
+/// day.
+fn log_ms(line: &str) -> Option<i64> {
+    let time = line.split_whitespace().nth(1)?;
+    let (hms, ms) = time.split_once('.')?;
+    let mut parts = hms.split(':').map(|p| p.parse::<i64>().ok());
+    let (h, m, s) = (parts.next()??, parts.next()??, parts.next()??);
+    Some(((h * 60 + m) * 60 + s) * 1000 + ms.parse::<i64>().ok()?)
+}
+
+/// The block over L1's area: the title, the caption and Try again with its
+/// key (`R`, `record.toggle`'s), on the LIVE preview without REC. Returns
+/// the plate's rect.
+fn assert_denied_block(nested: &mut Nested, title: &str, caption: &str) -> [f64; 4] {
+    let labels = stage_labels(nested);
+    assert_shows(&labels, &[title, caption, "Try again", "R", "LIVE"]);
+    assert_hides(&labels, &["REC"]);
+    let regions = nested.window(0).regions(&[DENIED_L1, RETRY_L1]);
+    let part = |name: &str| {
+        *regions
+            .get(name)
+            .unwrap_or_else(|| panic!("no {name}: {regions:#?}"))
+    };
+    let (plate, retry) = (part(DENIED_L1), part(RETRY_L1));
+    let slack = nested.opts.scale.max(1.0);
+    let near = |got: f64, want: f64, what: &str| {
+        assert!(
+            (got - want).abs() <= slack,
+            "{what}: {got}, want {want} (the plate {plate:?}, Try again {retry:?})"
+        );
+    };
+    // S24's plate, centered on L1's area: 190 tall (24, the 32 px icon, 16,
+    // the title's 22, 4, the caption's 16, 20, the 32 px button, 24).
+    let [x, y, w, h] = L1_AREA;
+    near(plate[3], 190.0, "the plate's height");
+    near(
+        plate[0] + plate[2] / 2.0,
+        x + w / 2.0,
+        "the plate's center x",
+    );
+    near(
+        plate[1] + plate[3] / 2.0,
+        y + h / 2.0,
+        "the plate's center y",
+    );
+    // Try again: 32 tall, centered, 24 above the plate's bottom.
+    near(retry[3], 32.0, "Try again's height");
+    near(
+        retry[0] + retry[2] / 2.0,
+        x + w / 2.0,
+        "Try again's center x",
+    );
+    near(
+        retry[1] + retry[3],
+        plate[1] + plate[3] - 24.0,
+        "Try again's bottom",
+    );
+    plate
+}
+
+/// The share of `rect`'s pixels (logical px) that are the hatch's stripe
+/// over black (within 6 levels).
+fn stripe_share(nested: &Nested, shot: &Path, rect: [f64; 4]) -> f64 {
+    let pixels = gui_support::rgb_pixels(shot, nested.opts.rect_px(rect));
+    let near = pixels
+        .iter()
+        .filter(|p| p.iter().zip(STRIPE).all(|(a, b)| a.abs_diff(b) <= 6))
+        .count();
+    near as f64 / pixels.len().max(1) as f64
+}
+
+/// S24's hatch: over L1's area, away from the plate and L2, the canvas's
+/// black shows 45° stripes of `muted` at 20 % (none brighter); L2 Face
+/// stays on top, unhatched (the fake camera's ball on black).
+fn assert_hatch(nested: &Nested, shot: &Path) {
+    let open = [150.0, 90.0, 320.0, 140.0];
+    let share = stripe_share(nested, shot, open);
+    assert!(
+        share >= 0.1,
+        "the hatch over L1: {share:.3} of the pixels are stripes ({})",
+        shot.display()
+    );
+    let brightest = gui_support::rgb_pixels(shot, nested.opts.rect_px(open))
+        .into_iter()
+        .flatten()
+        .max()
+        .unwrap_or(0);
+    assert!(
+        brightest <= 40,
+        "the hatch over black: a channel at {brightest}"
+    );
+    let share = stripe_share(nested, shot, L2_INSIDE);
+    assert!(share < 0.02, "L2 Face is hatched: {share:.3} stripe pixels");
+}
+
+/// The hint bar's items as "<keys> <label>".
+fn hint_line(nested: &mut Nested) -> Vec<String> {
+    let hints = nested.window(0).ctl(json!({"op": "hints"}));
+    hints["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|item| format!("{} {}", item["keys"], item["label"].as_str().unwrap_or("?")))
+        .collect()
+}
+
+/// S24: the portal refused the screen, so take 10 aborted when `R` asked
+/// for it (`QREC_FAKE_PORTAL=deny`): over L1's area the `muted-20` hatch
+/// with the block ("Screen access denied", "FAKE-1 · GIGA-BYTE GS27QA" from
+/// L1's source, Try again with R), L2 Face live on top, LIVE and no REC;
+/// the panel's L1 row in its error state; the header idle; take 10 in the
+/// bin (6); the core's error toast about take 10; the hint bar's
+/// PortalDenied items. Try again runs `record.toggle` as `R` does (one
+/// `recordToggle` through the Session): take 11 asks the portal again and
+/// aborts too (7 in the bin). Program shows no block.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s24_portal_denied() {
+    let mut nested = Nested::start(S24, "S24", Options::default());
+    let project = refused_take(&mut nested, "deny");
+    assert_denied_block(
+        &mut nested,
+        "Screen access denied",
+        "FAKE-1 \u{b7} GIGA-BYTE GS27QA",
+    );
+    // The panel's L1 row in its error state (S13b's, as S24 draws it).
+    let row = nested.window(0).labels("layer-row-L1");
+    assert_shows(
+        &row,
+        &["Main screen", "Access denied by the desktop portal"],
+    );
+    // The header idle; take 10 in the bin.
+    assert_shows(&nested.window(0).labels("record-button"), &["Record"]);
+    assert_eq!(
+        nested.window(0).labels("tl-bin-count"),
+        ["6"],
+        "take 10 in the bin"
+    );
+    // The core's error toast (on_event's copy), about take 10.
+    let toast = nested.window(0).labels("toast-host");
+    assert!(
+        toast.iter().any(|l| l.to_lowercase().contains("take 10")),
+        "the toast: {toast:?}"
+    );
+    assert_eq!(
+        hint_line(&mut nested),
+        [
+            r#"[["R"]] Try again"#,
+            r#"[["Tab"]] Program"#,
+            r#"[["B"]] Bin"#,
+            r#"[["?"]] All keys"#
+        ]
+    );
+    assert_stage_regions(&mut nested, &STAGE);
+    assert_clean(&mut nested);
+    let shot = nested.screenshot("denied");
+    assert_hatch(&nested, &shot);
+    compare(&nested, &shot, "S24-portal-denied-error.png");
+
+    // Try again: `record.toggle`, as R: take 11 asks the portal for the
+    // screen again (one `recordToggle` through the Session) and aborts too.
+    let before = gui_log(&mut nested).lines().count();
+    let retry = nested.window(0).regions(&[RETRY_L1])[RETRY_L1];
+    nested
+        .pointer()
+        .click(retry[0] + retry[2] / 2.0, retry[1] + retry[3] / 2.0);
+    wait_broken(&mut nested, &project, "take-0011");
+    let log = gui_log(&mut nested);
+    let sent: Vec<&str> = log
+        .lines()
+        .skip(before)
+        .filter(|l| l.contains("dispatch") && l.contains("recordToggle"))
+        .collect();
+    assert_eq!(sent.len(), 1, "one recordToggle: {sent:#?}");
+    assert_eq!(
+        nested.window(0).labels("tl-bin-count"),
+        ["7"],
+        "take 11 in the bin"
+    );
+    assert_denied_block(
+        &mut nested,
+        "Screen access denied",
+        "FAKE-1 \u{b7} GIGA-BYTE GS27QA",
+    );
+
+    // Program shows its own picture: no block.
+    nested.keys(&["-k", "Tab"]);
+    gui_support::poll(Duration::from_secs(10), "Program", || {
+        (status(&nested, &project)["ui"]["canvasMode"] == "program").then_some(())
+    });
+    nested.window(0).wait_idle();
+    assert_hides(
+        &stage_labels(&mut nested),
+        &["Screen access denied", "Try again"],
+    );
+    assert_clean(&mut nested);
+}
+
+/// S24's variant: the person closed the picker (`QREC_FAKE_PORTAL=cancel`):
+/// the block reads "Screen picker closed" and "Choose FAKE-1 in your
+/// desktop's dialog to record it." (BRIEF S24's variant note), the panel's
+/// row "Screen picker closed".
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s24_screen_picker_closed() {
+    let mut nested = Nested::start(S24, "S24-picker-closed", Options::default());
+    refused_take(&mut nested, "cancel");
+    assert_denied_block(
+        &mut nested,
+        "Screen picker closed",
+        "Choose FAKE-1 in your desktop's dialog to record it.",
+    );
+    let row = nested.window(0).labels("layer-row-L1");
+    assert_shows(&row, &["Main screen", "Screen picker closed"]);
+    assert_clean(&mut nested);
+    let shot = nested.screenshot("picker-closed");
+    assert_hatch(&nested, &shot);
+    compare(&nested, &shot, "S24-portal-denied-error.png");
+}
+
+/// Not drawn (a departure, G§4.6): the block shows as soon as the live
+/// preview's screen is refused, before any take; a countdown over it hides
+/// the block (its Try again is `R`, which cancels the countdown then; the
+/// ring and its plate take the preview's middle), and the block is back
+/// once the take aborted.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s24_the_block_steps_aside_for_a_countdown() {
+    let mut nested = Nested::start(S24, "S24-countdown", Options::default());
+    let project = fixture(
+        &nested,
+        DesignVariant::Base,
+        Some(ui(CanvasMode::Live, 7391)),
+    );
+    // The longest countdown (10 s): the stage is read while it runs, on a
+    // loaded machine too.
+    let set = nested.cli_json(&project, &["project", "set", "--countdown", "10"]);
+    assert_eq!(set["ok"], true, "{set}");
+    open(&mut nested, &project, s24_launch("deny"));
+    assert_denied_block(
+        &mut nested,
+        "Screen access denied",
+        "FAKE-1 \u{b7} GIGA-BYTE GS27QA",
+    );
+    assert_eq!(
+        nested.window(0).labels("tl-bin-count"),
+        ["5"],
+        "no take yet"
+    );
+    // From the CLI, as S03: a start request of the window's own stays
+    // unanswered through the countdown, and `waitIdle` waits for it.
+    let start = record_start_in_background(&nested, &project);
+    wait_phase(&nested, &project, "countdown", Duration::from_secs(20));
+    nested.window(0).wait_idle();
+    nested.screenshot("countdown");
+    let labels = stage_labels(&mut nested);
+    assert_eq!(phase(&nested, &project), "countdown", "the shot is late");
+    assert_shows(&labels, &["Take 10", "Esc or R cancels"]);
+    assert_hides(&labels, &["Screen access denied", "Try again"]);
+    // The take asks the portal once the countdown ends, and aborts.
+    let started = reap_within(start, Duration::from_secs(30), "qrec record start");
+    assert!(!started.success(), "the refused take started: {started}");
+    wait_broken(&mut nested, &project, "take-0010");
+    assert_denied_block(
+        &mut nested,
+        "Screen access denied",
+        "FAKE-1 \u{b7} GIGA-BYTE GS27QA",
+    );
     assert_clean(&mut nested);
 }

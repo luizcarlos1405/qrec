@@ -6,9 +6,11 @@
 //! region-stage: gtk::Overlay ("Stage"; the window's `bg` around)
 //! ├ preview: gtk::Overlay at stage_geometry().preview
 //! │ ├ StagePicture: canvas background, the live or program paintable,
-//! │ │   the 1 px border outside (S10: 2 px accent)
+//! │ │   S24's hatch over refused screens, the 1 px border outside (S10:
+//! │ │   2 px accent)
 //! │ ├ Countdown (C07) and its plate
 //! │ ├ StageCanvas (C08): selection box, handles, snap guides; the input
+//! │ ├ S24's blocks, one per refused screen layer (`denied`)
 //! │ ├ guide tags, the position readout
 //! │ ├ badges top-right, the REC cluster top-left, the trim plate
 //! │ │   bottom-left, D-05's plate centered
@@ -19,10 +21,11 @@
 //!
 //! What the picture shows: the program sink's in Program, during a trim
 //! scrub (S10) and a bin preview (D-17), but only the canvas background on
-//! an empty timeline (D-27); the live sink's in Live; the first run when the
-//! project scene is empty in Live; the canvas background with "Live preview
-//! starts after this take" in Live during a take started in Program (D-05:
-//! the engine adds no preview branch mid-take).
+//! an empty timeline (D-27); the live sink's in Live, with S24's hatch and
+//! block over each screen the portal refused (`denied`); the first run when
+//! the project scene is empty in Live; the canvas background with "Live
+//! preview starts after this take" in Live during a take started in
+//! Program (D-05: the engine adds no preview branch mid-take).
 //!
 //! Layer editing (D-09, D-32, D-33, D-41, D-43): in the scene
 //! `canvas::edit_target` names (Live: the project scene; Program: the
@@ -46,6 +49,7 @@
 
 pub mod canvas;
 pub mod countdown;
+pub mod denied;
 pub mod edit;
 pub mod first_run;
 pub mod overlays;
@@ -83,10 +87,11 @@ use crate::theme::motion;
 use crate::widgets::button::binding_caps;
 use canvas::{CanvasDraw, StageCanvas};
 use countdown::{Countdown, CountdownState};
+use denied::{Denied, DeniedBlocks};
 use edit::{DRAG_THRESHOLD, DragSession, InFlight, NudgeCoalescer, newest, with_layer};
 use first_run::FirstRun;
 use overlays::{ModeBadges, RecCluster, TrimPlateView, center_plate};
-use picture::{Frame as PictureFrame, StagePicture};
+use picture::{Frame as PictureFrame, Hatch, StagePicture};
 use transport::TransportRow;
 
 /// The countdown plate's gap under the ring (logical px at 100 %).
@@ -185,6 +190,8 @@ struct Inner {
     countdown_take: gtk::Label,
     countdown_hint: gtk::Label,
     canvas: StageCanvas,
+    /// S24's blocks over the refused screens.
+    denied: Rc<DeniedBlocks>,
     readout: gtk::Label,
     guide_tags: [gtk::Label; 2],
     badges: ModeBadges,
@@ -261,6 +268,8 @@ impl Inner {
         preview.add_overlay(&countdown);
         let canvas = StageCanvas::new(Rc::clone(&palette));
         preview.add_overlay(&canvas);
+        // Their place in the preview's children: right after the canvas.
+        let denied = DeniedBlocks::new(ctx, &preview, &canvas);
         let guide_tags = [
             label(&["guide-tag", "t-caption"]),
             label(&["guide-tag", "t-caption"]),
@@ -311,6 +320,7 @@ impl Inner {
             countdown_take,
             countdown_hint,
             canvas,
+            denied,
             readout,
             guide_tags,
             badges,
@@ -402,6 +412,9 @@ impl Inner {
         let (cw, ch) = placed.canvas;
         if cw <= 0.0 || ch <= 0.0 {
             return None;
+        }
+        if self.denied.is_block(child) {
+            return self.denied.place(child, (w, h), (cw, ch));
         }
         let (sx, sy) = (w / cw, h / ch);
         if child == self.readout.upcast_ref::<gtk::Widget>() {
@@ -581,6 +594,7 @@ impl Inner {
         });
         self.live_watch
             .update(shows_live, &state.project.scene, &live_sources);
+        self.render_denied(&state, shows_live, &live_sources);
 
         // The overlays.
         self.badges.root.set_visible(open && !first_run);
@@ -631,6 +645,42 @@ impl Inner {
             self.ctx
                 .store
                 .update_local(move |l| l.first_run_checked = checked);
+        }
+    }
+
+    /// S24: over each screen the portal refused, in the live picture, the
+    /// hatch (the picture draws it) and the block, which steps aside while
+    /// a take counts down, starts or runs; its Try again is enabled when
+    /// `record.toggle` can run (the header's Record says why not too).
+    fn render_denied(&self, state: &State, shows_live: bool, live: &view::LiveSources) {
+        let denied = if shows_live {
+            denied::denied(&state.project.scene, &state.project.canvas, live)
+        } else {
+            Denied::default()
+        };
+        self.picture.set_hatch(if denied.hatch.is_empty() {
+            Hatch::default()
+        } else {
+            Hatch {
+                canvas: (
+                    f64::from(state.project.canvas.width),
+                    f64::from(state.project.canvas.height),
+                ),
+                rects: denied.hatch,
+                scale: self.scale(),
+            }
+        });
+        let blocks = if state.runtime.record.is_idle() {
+            denied.blocks.as_slice()
+        } else {
+            &[]
+        };
+        let retry = match qrec_core::keymap::action_for(denied::RETRY_BINDING, state) {
+            Some(qrec_core::keymap::Action::Unavailable(why)) => Err(why),
+            _ => Ok(()),
+        };
+        if self.denied.show(blocks, retry) {
+            self.preview.queue_allocate();
         }
     }
 
