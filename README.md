@@ -21,8 +21,8 @@ _Ogres have layers. So do your recordings._
 | M2 Capture engine + hosts | Done: GStreamer engine (screens through the portal, cameras, mics, system audio), fake backend, headless host, IPC, locking, crash recovery, `doctor` |
 | M0 Spikes | Export ↔ GES parity verified (per-layer SSIM ≥ 0.986, exact frames). Portal restore tokens, screen/system-audio sync and a 10-minute take verified on real hardware; the camera clap test needs a person (below) |
 | M3 Design | Swamp Night vertical slice in `design/qrec.pen`, **approved** 2026-10-15 (contrast decisions in DESIGN.md) |
-| M4 GUI | Built, in review: the approved slice (S01–S18b) in GTK4/libadwaita: header, stage and canvas, timeline, onion layers panel, bin, export, toasts, modals and Settings › Project, with the adaptive layouts and the end-to-end smoke. The drafted screens (the blocking pages, the command palette, the cheat sheet, the other Settings pages) wait for the design's export and show interim pages meanwhile (docs/GUI.md G§1.1) |
-| M5 Polish | Keymap, cheat-sheet data and themes as tokens are in. Packaging is done: `nix build` installs a desktop entry and icons, and the app icon is a placeholder until the design's is exported. `qrec config set theme`, `ui.scale` and `ui.reduced_motion` and `keys.toml` apply to an open window; every theme is proved on the main screens and holds AA contrast; screen readers hear the record loop, the toasts and the export's end, and the keyboard reaches every control in BRIEF's order; every screen is checked at 1.5× and 2× and with reduced motion (WP10). The screens drawn later wait for the design's export (WP8, WP9) |
+| M4 GUI | Done: the approved slice (S01–S18b) in GTK4/libadwaita: header, stage and canvas, timeline, onion layers panel, bin, export, toasts, modals and Settings › Project, with the adaptive layouts and the end-to-end smoke; the product owner left the review's calls to engineering (docs/GUI.md G§0). A pause shows the frame it parks at, and a CLI or agent seek lands while the window plays. The drafted screens (the blocking pages, the command palette, the cheat sheet, the other Settings pages) show interim pages until M5 builds them (G§1.1) |
+| M5 Polish | WP10 done: themes as tokens, proved on the main screens and holding AA contrast; `qrec config set theme`, `ui.scale` and `ui.reduced_motion` and `keys.toml` apply to an open window; screen readers hear the record loop, the toasts and the export's end, and the keyboard reaches every control in BRIEF's order; every screen is checked at 1.5× and 2× and with reduced motion; packaging (`nix build` installs a desktop entry and icons; the app icon is a placeholder); the window's main loop holds 50 ms on GL. WP9's logic is in: `keys.toml` and `config.toml` edits that keep the files, the palette, cheat-sheet and Settings view models, and the toast copy from BRIEF's S25. WP8's and WP9's drawn parts (the blocking pages, the palette, the cheat sheet, the other Settings pages, S25's variants) wait for the design file's frames: exported on 2026-10-17 (`design/export/`), their lanes build them next |
 
 ## Build and run
 
@@ -124,7 +124,7 @@ my-video/
 ## Development
 
 ```sh
-cargo test --workspace                               # ~1,850 tests; CLI tests spawn ffmpeg
+cargo test --workspace                               # ~1,900 tests; CLI tests spawn ffmpeg
 cargo clippy --workspace --all-targets -- -D warnings
 cargo check -p qrec-core                             # the pure core on its own
 QREC_CAPTURE_BACKEND=fake qrec record start          # record test patterns, no devices
