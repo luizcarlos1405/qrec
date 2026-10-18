@@ -16,7 +16,7 @@ use qrec_core::protocol::effect::{Effect, LogLevel, ProbePurpose};
 use qrec_core::protocol::event::{Event, MediaInfo, ProbeError, ProbeResult, RecordedStream};
 use qrec_core::protocol::progress::ProgressPhase;
 use qrec_core::protocol::reply::{CmdResult, RecordStartedView, TakeFinalizedView};
-use qrec_core::protocol::toast::{Toast, ToastLevel};
+use qrec_core::protocol::toast::{Toast, ToastLevel, UiAction};
 use qrec_core::state::{
     CanvasMode, ClipRef, DiscardRequest, HostKind, Job, JobKind, RecordMode, RecordPhase, State,
 };
@@ -1003,7 +1003,27 @@ fn starting_capture_failed_breaks_the_take() {
     );
     assert!(err.hint.unwrap().contains("L1 (Monitor DP-4)"));
     assert!(out.effects.contains(&Effect::WriteProject));
-    assert_eq!(toasts(&out)[0].level, ToastLevel::Error);
+    // S25 #11 (GUI D-21): it never recorded a frame; try again, or see it.
+    let toast = toasts(&out)[0];
+    assert_eq!(toast.level, ToastLevel::Error);
+    assert_eq!(toast.title, "Recording didn't start");
+    assert_eq!(
+        toast.body.as_deref(),
+        Some(
+            "L1 (Monitor DP-4): portal request denied, so take 2 stopped before any frames. \
+             It's marked broken in the bin."
+        )
+    );
+    let labels: Vec<&str> = toast.actions.iter().map(|a| a.label.as_str()).collect();
+    assert_eq!(labels, ["Try again", "Open bin"]);
+    assert_eq!(
+        toast.actions[0].action,
+        UiAction::Dispatch(Box::new(Command::RecordStart {
+            mode: RecordModeArg::Append,
+            countdown: None,
+            wait: false,
+        }))
+    );
     assert!(out.state.history.entries.is_empty());
     assert!(
         !out.effects.iter().any(|e| matches!(e, Effect::SetLive(_))),
@@ -1319,7 +1339,12 @@ fn stream_lost_marks_missing_and_the_last_one_stops() {
     assert!(take.scene.audio[0].missing);
     assert!(!take.scene.layers[0].missing);
     assert!(out.effects.contains(&Effect::WriteProject));
-    assert_eq!(toasts(&out)[0].title, "Lost A1 (Mic)");
+    // S25 #8 (GUI D-21): the kind, the device, the take and what it lost.
+    assert_eq!(toasts(&out)[0].title, "Mic disconnected");
+    assert_eq!(
+        toasts(&out)[0].body.as_deref(),
+        Some("Mic stopped sending frames. Take 2 keeps recording without A1 Mic.")
+    );
     assert!(matches!(
         out.state.runtime.record,
         RecordPhase::Recording { .. }
@@ -1645,9 +1670,25 @@ fn finalize_too_short_cancelled_and_broken() {
         "the bin, no clip"
     );
     assert!(short.state.history.entries.is_empty());
+    // S25 #3 (GUI D-21).
+    let toast = toasts(&short)[0];
     assert_eq!(
-        toasts(&short)[0].title,
+        toast.title,
         "That was shorter than Lord Farquaad. Take moved to the bin."
+    );
+    assert_eq!(
+        toast.body.as_deref(),
+        Some("Take 2 lasted 9 frames. Takes need at least 10.")
+    );
+    assert_eq!(toast.actions[0].label, "Open bin");
+    assert_eq!(
+        toast.actions[0].action,
+        UiAction::Dispatch(Box::new(Command::SetUi {
+            patch: qrec_core::protocol::command::UiPatch {
+                bin_open: Some(true),
+                ..Default::default()
+            }
+        }))
     );
     let view = finalized_view(&reply_to(&short, "t1").unwrap());
     assert_eq!(
@@ -1848,6 +1889,21 @@ fn discard_after_record_over_puts_the_clips_back() {
     };
     assert_eq!(out.state.project.timeline, idle().project.timeline);
     assert_eq!(result.created, ["c001", "c002"]);
+    // S25 #5 (GUI D-21), with the clips it recorded over back.
+    let toast = toasts(&out)[0];
+    assert_eq!(
+        (toast.level, toast.title.as_str(), toast.body.as_deref()),
+        (
+            ToastLevel::Info,
+            "Take 2 moved to the bin",
+            Some("Its clip left the timeline; c001, c002 are back. Files are kept.")
+        )
+    );
+    assert_eq!(toast.actions[0].label, "Undo");
+    assert_eq!(
+        toast.actions[0].action,
+        UiAction::Dispatch(Box::new(Command::Undo { steps: 1 }))
+    );
     assert_eq!(result.seq, Some(2));
     // `d` again: take 2 is the newest placed take and already in the bin.
     let err = fail(&out.state, None, Command::TakeDiscardLast);
@@ -2038,7 +2094,17 @@ fn recovery_probes_leftover_takes() {
         "the bin"
     );
     assert!(out.state.history.entries.is_empty());
-    assert_eq!(toasts(&out)[0].title, "Recovered take 3 from the bog.");
+    // S25 #2 (GUI D-21).
+    let toast = toasts(&out)[0];
+    assert_eq!(
+        (toast.level, toast.title.as_str(), toast.body.as_deref()),
+        (
+            ToastLevel::Info,
+            "Recovered take 3 from the bog.",
+            Some("Qrec closed while it was recording. The take is in the bin.")
+        )
+    );
+    assert_eq!(toast.actions[0].label, "Open bin");
     assert!(out.effects.contains(&Effect::WriteProject));
     // Once recovered, a second answer is stale.
     assert_ignored(

@@ -139,6 +139,12 @@ pub fn unavailable_notice(binding_id: &str, reason: &str, state: &State) -> Opti
                 .with_body("Recording works again once the export finishes or you cancel it.")
                 .with_action(NoticeAction::ShowExport)
         }
+        // S25 #7 (D-21): `d` when the newest take's clips are gone.
+        "take.discard-last" if state.runtime.record.is_idle() => match gone_take(state) {
+            Some(n) => Notice::new(ToastLevel::Info, "Nothing to discard")
+                .with_body(format!("Take {n} has no clips on the timeline.")),
+            None => Notice::new(ToastLevel::Info, reason),
+        },
         "palette.open" => Notice::new(ToastLevel::Info, NOT_BUILT)
             .with_body("The command palette comes with milestone M5."),
         "keys.help" => Notice::new(ToastLevel::Info, NOT_BUILT)
@@ -146,6 +152,18 @@ pub fn unavailable_notice(binding_id: &str, reason: &str, state: &State) -> Opti
         _ => Notice::new(ToastLevel::Info, reason),
     };
     Some(notice)
+}
+
+/// The newest placed take (the one `d` discards, A§5.5) when none of its
+/// clips is on the timeline.
+fn gone_take(state: &State) -> Option<u32> {
+    let (id, _) = state
+        .project
+        .takes
+        .iter()
+        .filter(|(_, t)| t.placed)
+        .max_by_key(|(id, _)| id.number())?;
+    (!state.project.timeline.clips.iter().any(|c| &c.take == id)).then(|| id.number())
 }
 
 #[cfg(test)]
@@ -329,6 +347,35 @@ mod tests {
         assert_eq!(n.title, "Can't record while exporting");
         assert_eq!(n.actions, [NoticeAction::ShowExport]);
         assert_eq!(n.actions[0].label(), "Show export");
+    }
+
+    /// S25 #7 (GUI D-21): `d` once the newest take's clips are gone says
+    /// which take; other refusals of `d` keep `action_for`'s words.
+    #[test]
+    fn nothing_to_discard_names_the_take() {
+        let mut state = testkit::design_state();
+        // Take 8 is the newest placed take; c3e9 is its only clip.
+        state
+            .project
+            .timeline
+            .clips
+            .retain(|c| c.id.as_str() != "c3e9");
+        let why = reason("take.discard-last", &state);
+        assert_eq!(why, "Take 8 is already in the bin");
+        let n = unavailable_notice("take.discard-last", &why, &state).unwrap();
+        assert_eq!(
+            (n.level, n.title.as_str(), n.body.as_deref()),
+            (
+                ToastLevel::Info,
+                "Nothing to discard",
+                Some("Take 8 has no clips on the timeline.")
+            )
+        );
+        assert!(n.actions.is_empty());
+        let empty = testkit::state(testkit::ProjectBuilder::new().build());
+        let why = reason("take.discard-last", &empty);
+        let n = unavailable_notice("take.discard-last", &why, &empty).unwrap();
+        assert_eq!((n.title.as_str(), n.body), ("No take to discard yet", None));
     }
 
     #[test]

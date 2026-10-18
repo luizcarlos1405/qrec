@@ -18,6 +18,7 @@ use qrec_core::apply::project::is_initialized;
 use qrec_core::history::ops::unchecked;
 use qrec_core::model::StreamKind;
 use qrec_core::model::TakeStatus;
+use qrec_core::on_event::disk::INVALID_ON_DISK_TITLE;
 use qrec_core::plans::{CapturePlan, ExportPlan, FramePlan, LiveScene};
 use qrec_core::protocol::{
     Command, Effect, HelloInfo, HistoryOp, InsertAt, MediaInfo, MoveTo, ProbeJob, ProbePurpose,
@@ -1136,7 +1137,7 @@ fn a_finalization_saved_to_qrec_json_but_not_committed_is_finished() {
     assert!(s.recovering().is_empty(), "nothing to recover");
     let titles = h.toast_titles();
     assert!(
-        !titles.contains(&"qrec.json on disk is invalid".to_owned()),
+        !titles.contains(&INVALID_ON_DISK_TITLE.to_owned()),
         "{titles:?}"
     );
 }
@@ -1291,7 +1292,7 @@ fn a_hand_edit_that_fails_to_merge_is_never_written_over() {
         "{titles:?}"
     );
     assert!(
-        titles.contains(&"qrec.json on disk is invalid".to_owned()),
+        titles.contains(&INVALID_ON_DISK_TITLE.to_owned()),
         "{titles:?}"
     );
 
@@ -3075,10 +3076,7 @@ fn an_invalid_file_is_moved_aside_before_facts_are_saved() {
     fs::write(h.dir.join("qrec.json"), "{ broken").unwrap();
     s.handle(Msg::DiskChanged);
     assert!(s.state().runtime.disk_invalid.is_some());
-    assert!(
-        h.toast_titles()
-            .contains(&"qrec.json on disk is invalid".to_owned())
-    );
+    assert!(h.toast_titles().contains(&INVALID_ON_DISK_TITLE.to_owned()));
     // The user's edits wait until it is fixed…
     let err = send(
         &mut s,

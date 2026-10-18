@@ -117,6 +117,10 @@ pub fn changed_on_disk(
 
 /// A§7.7: remember why the file is bad; user edits are refused until it is
 /// fixed or restored. Nothing is written (a bad file is never overwritten).
+/// People hear it once per reason (S25 #10): "qrec.json changed on disk but
+/// isn't valid" / "<why>. Keeping the last good state." / Copy details (the
+/// reason and how to restore the last good state from the history, as X3
+/// says it).
 fn invalid_on_disk(state: &State, msg: String) -> Outcome {
     let mut next = state.clone();
     let new = state.runtime.disk_invalid.as_deref() != Some(msg.as_str());
@@ -126,16 +130,24 @@ fn invalid_on_disk(state: &State, msg: String) -> Outcome {
         format!("qrec.json on disk is invalid: {msg}"),
     )];
     if new {
+        let why = crate::view::format::capitalized(msg.trim_end().trim_end_matches('.'));
+        let details = format!(
+            "qrec.json changed on disk but isn't valid: {why}.\nRestore the last good state \
+             from history: qrec history restore {} --yes",
+            state.history.cursor
+        );
         effects.push(Effect::Notify(
-            Toast::new(ToastLevel::Error, "qrec.json on disk is invalid").with_body(format!(
-                "{msg}\nQrec keeps the last good state. Fix the file, or run \
-                 `qrec history restore {} --yes` to rewrite it from the history.",
-                state.history.cursor
-            )),
+            Toast::new(ToastLevel::Error, INVALID_ON_DISK_TITLE)
+                .with_body(format!("{why}. Keeping the last good state."))
+                .with_action("Copy details", UiAction::CopyText(details)),
         ));
     }
     Outcome::new(next, effects, None)
 }
+
+/// The toast of a `qrec.json` that changed on disk and can't be read
+/// (S25 #10).
+pub const INVALID_ON_DISK_TITLE: &str = "qrec.json changed on disk but isn't valid";
 
 /// The purge job finished: drop the job, reply to its requester.
 pub fn take_dirs_deleted(
@@ -386,14 +398,23 @@ mod tests {
         );
         assert_eq!(out.state.project, state.project);
         assert!(!out.effects.contains(&Effect::WriteProject));
+        // S25 #10: the reason, the last good state kept, the details to copy.
         let toast = toasts(&out)[0];
         assert_eq!(toast.level, ToastLevel::Error);
-        assert!(
-            toast
-                .body
-                .as_deref()
-                .unwrap()
-                .contains("qrec history restore 0 --yes")
+        assert_eq!(toast.title, "qrec.json changed on disk but isn't valid");
+        assert_eq!(
+            toast.body.as_deref(),
+            Some("Expected value at line 3. Keeping the last good state.")
+        );
+        assert_eq!(toast.actions.len(), 1);
+        assert_eq!(toast.actions[0].label, "Copy details");
+        assert_eq!(
+            toast.actions[0].action,
+            UiAction::CopyText(
+                "qrec.json changed on disk but isn't valid: Expected value at line 3.\n\
+                 Restore the last good state from history: qrec history restore 0 --yes"
+                    .into()
+            )
         );
         // The same message again doesn't toast twice.
         let again =

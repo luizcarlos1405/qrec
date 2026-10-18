@@ -408,9 +408,13 @@ pub(crate) fn finish(state: &State, ctx: &Ctx, job: Snapshot) -> Finished {
     let label = run_label(&takes, silences, removed_ns);
     let committed = commit(state, ctx, label.clone(), job.cmd, next);
     let message = with_note(label.clone(), &note);
+    // S25 #6: "Autocut take 8: removed 4 silences (6.2 s)" / Undo.
     let mut toast = Toast::new(ToastLevel::Success, label);
     if let Some(note) = &note {
         toast = toast.with_body(capitalized(note));
+    }
+    if committed.seq.is_some() {
+        toast = toast.with_action("Undo", super::toasts::undo());
     }
     let reply = CmdResult::new(message)
         .with_seq(committed.seq)
@@ -984,6 +988,13 @@ mod tests {
         };
         assert_eq!(toast.level, ToastLevel::Success);
         assert_eq!(toast.title, "Autocut 2 takes: removed 4 silences (4.3 s)");
+        // S25 #6 (GUI D-21): the cut undoes from the toast.
+        assert_eq!(toast.actions.len(), 1);
+        assert_eq!(toast.actions[0].label, "Undo");
+        assert_eq!(
+            toast.actions[0].action,
+            crate::protocol::toast::UiAction::Dispatch(Box::new(Command::Undo { steps: 1 }))
+        );
 
         let failing = failed(
             &failed(&state, &ctx, MIC1, "boom").state,

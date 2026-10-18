@@ -12,6 +12,10 @@
 //! | `disk.rs` | history | `ProjectChangedOnDisk`, `TakeDirsDeleted`, `PurgeFailed` |
 //!
 //! `Capabilities` is handled here.
+//!
+//! Toast copy follows BRIEF S25's table (GUI D-21; S25's frame isn't
+//! drawn into the build yet, so its words are BRIEF's): [`toasts`] holds
+//! the variants more than one handler makes.
 
 pub mod autocut;
 pub mod disk;
@@ -23,6 +27,52 @@ use crate::ctx::{Ctx, FactsNeeded};
 use crate::protocol::effect::ProbePurpose;
 use crate::protocol::event::Event;
 use crate::state::{Capabilities, RecordPhase, State};
+
+/// S25's toasts that more than one path makes (D-21), and their actions.
+pub mod toasts {
+    use crate::ids::ClipId;
+    use crate::protocol::command::{Command, UiPatch};
+    use crate::protocol::toast::{Toast, ToastLevel, UiAction};
+
+    /// "Open bin": the bin drawer opens (S25 #2, #3, #11).
+    pub fn open_bin() -> UiAction {
+        UiAction::Dispatch(Box::new(Command::SetUi {
+            patch: UiPatch {
+                bin_open: Some(true),
+                ..UiPatch::default()
+            },
+        }))
+    }
+
+    /// "Undo": one step back (S25 #5, #6).
+    pub fn undo() -> UiAction {
+        UiAction::Dispatch(Box::new(Command::Undo { steps: 1 }))
+    }
+
+    /// S25 #5: "Take 10 moved to the bin" / "Its clip left the timeline.
+    /// Files are kept." / Undo; with the clips it recorded over put back
+    /// ("c4a7 is back").
+    pub fn discarded(take: u32, removed: usize, restored: &[ClipId]) -> Toast {
+        let left = match removed {
+            1 => "Its clip left the timeline".to_owned(),
+            n => format!("Its {n} clips left the timeline"),
+        };
+        let back = match restored {
+            [] => String::new(),
+            [one] => format!("; {one} is back"),
+            many => format!(
+                "; {} are back",
+                many.iter()
+                    .map(ClipId::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        };
+        Toast::new(ToastLevel::Info, format!("Take {take} moved to the bin"))
+            .with_body(format!("{left}{back}. Files are kept."))
+            .with_action("Undo", undo())
+    }
+}
 
 /// Feeds one event to the core (pure).
 pub fn on_event(state: &State, ctx: &Ctx, ev: Event) -> Outcome {

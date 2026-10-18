@@ -125,7 +125,9 @@ pub fn take_discard_last(state: &State, ctx: &Ctx) -> Result<Outcome, CoreError>
     match &state.runtime.record {
         RecordPhase::Idle => {
             let discarded = discard_last(state, ctx)?;
-            Ok(Outcome::done(discarded.committed, discarded.result))
+            let mut out = Outcome::done(discarded.committed, discarded.result);
+            out.effects.push(Effect::Notify(discarded.toast));
+            Ok(out)
         }
         RecordPhase::Finalizing { take, discard, .. } => {
             if discard.is_some() {
@@ -483,11 +485,12 @@ fn join_stop(state: &State, ctx: &Ctx) -> Outcome {
 
 // ------------------------------------------------------------- discard
 
-/// A committed discard and its reply.
+/// A committed discard, its reply and its toast (S25 #5, GUI D-21).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Discarded {
     pub committed: Committed,
     pub result: CmdResult,
+    pub toast: crate::protocol::toast::Toast,
 }
 
 /// Discard last (A§5.5): the highest-numbered take with `placed`; its clips
@@ -546,10 +549,15 @@ pub(crate) fn discard_last(state: &State, ctx: &Ctx) -> Result<Discarded, CoreEr
     if !restored.is_empty() {
         message.push_str(&format!("; put back {}", join_ids(&restored)));
     }
+    let toast = crate::on_event::toasts::discarded(n, removed.len(), &restored);
     let result = CmdResult::new(message)
         .with_removed(&removed)
         .with_created(&restored);
-    Ok(Discarded { committed, result })
+    Ok(Discarded {
+        committed,
+        result,
+        toast,
+    })
 }
 
 /// A replaced clip as it can go back: its take still exists and is `ok`, and
