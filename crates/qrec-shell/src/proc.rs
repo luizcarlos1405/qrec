@@ -37,9 +37,9 @@ use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::RawFd;
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{ChildStdout, Command, ExitStatus, Stdio};
+use std::process::ExitStatus;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -52,6 +52,7 @@ use rustix::process::{Pid, Signal};
 
 use crate::media::{is_stamped_log_name, is_temp_name};
 use crate::paths::ProjectPaths;
+use crate::spawn::{Command, Stdio};
 
 /// `ffprobe` runs (A§8.7).
 pub const FFPROBE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -315,6 +316,9 @@ impl Spec {
             // The watchdog needs stdout activity; drain it so it can see some.
             self.stdout = StdoutMode::Capture(0);
         }
+        // Started without forking Qrec (`crate::spawn`): its own process
+        // group, only its stdio crossing (nothing Qrec inherited), and
+        // SIGKILL when its owner thread dies.
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.args);
         for (key, value) in &self.env {
@@ -327,7 +331,7 @@ impl Spec {
             cmd.current_dir(dir);
         }
         let stdin = match &self.stdin {
-            None => Stdio::null(),
+            None => Stdio::Null,
             Some(path) => match File::open(path) {
                 Ok(file) => Stdio::from(file),
                 Err(source) => {
@@ -343,8 +347,8 @@ impl Spec {
         };
         cmd.stdin(stdin);
         cmd.stdout(match self.stdout {
-            StdoutMode::Null => Stdio::null(),
-            _ => Stdio::piped(),
+            StdoutMode::Null => Stdio::Null,
+            _ => Stdio::Piped,
         });
         let mut log = self.stderr.take();
         match &log {
@@ -360,30 +364,10 @@ impl Spec {
                 }
             },
             None => {
-                cmd.stderr(Stdio::null());
+                cmd.stderr(Stdio::Null);
             }
         }
-        cmd.process_group(0);
-        let parent = self.die_with_parent.then(std::process::id);
-        // SAFETY: the closure runs in the forked child before exec and only
-        // makes async-signal-safe system calls (close_range or fcntl,
-        // prctl, getppid).
-        unsafe {
-            cmd.pre_exec(move || {
-                // Only its stdio crosses: nothing Qrec inherited.
-                close_on_exec_from(3);
-                if let Some(parent) = parent {
-                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong) == -1 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    // The parent died between fork and prctl: don't run orphaned.
-                    if libc::getppid() as u32 != parent {
-                        return Err(io::Error::from_raw_os_error(libc::ESRCH));
-                    }
-                }
-                Ok(())
-            });
-        }
+        cmd.die_with_parent(self.die_with_parent);
 
         if let Some(file) = log.as_mut() {
             let _ = writeln!(
@@ -394,7 +378,7 @@ impl Spec {
             );
         }
 
-        let (spawn_tx, spawn_rx) = bounded::<io::Result<(u32, Option<ChildStdout>)>>(1);
+        let (spawn_tx, spawn_rx) = bounded::<io::Result<(u32, Option<File>)>>(1);
         let (exit_tx, exit_rx) = bounded::<io::Result<ExitStatus>>(1);
         let (cancel_tx, cancel_rx) = bounded(1);
         let control = Arc::new(Control {
@@ -493,7 +477,7 @@ struct StdoutDone {
 }
 
 fn spawn_reader(
-    pipe: ChildStdout,
+    pipe: File,
     mode: StdoutMode,
     marker: Option<String>,
     started: Instant,
@@ -824,8 +808,9 @@ fn secs(d: Duration) -> String {
 /// kernel can't do it at once and the descriptor limit is unlimited.
 const FD_SWEEP_MAX: libc::rlim_t = 1 << 20;
 
-/// Marks every descriptor from `first` up close-on-exec. For `pre_exec`
-/// (between fork and exec): the program then starts with its stdio and
+/// Marks every descriptor from `first` up close-on-exec. For a child
+/// between its start and exec (`crate::spawn`'s, and a `pre_exec`'s after
+/// a fork: the headless host's): the program then starts with its stdio and
 /// what the caller placed below `first` (a headless host's lock and ready
 /// pipe, A§8.3 step 5), never with a descriptor Qrec itself inherited from
 /// whoever started it. Rust opens everything close-on-exec, but a key-bind

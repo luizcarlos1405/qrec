@@ -8,7 +8,7 @@
 //!
 //! Module owners (A§1.4): `msg`, `deps`, `error`, `wire` are foundation;
 //! `store`, `lock`, `host::{lockfile,publish}`, `watcher` → store;
-//! `session`, `facts`, `caps`, `timers`, `proc` → session; `ipc`,
+//! `session`, `facts`, `caps`, `timers`, `proc`, `spawn` → session; `ipc`,
 //! `host::{headless,cli_host,signals,spawn}` → ipc; `media`, `sources`,
 //! `doctor` → media; `capture`, `gpu`, `gst_init`, `ges_render`, `player`
 //! → capture; `config_file`, `keys_file` → meta.
@@ -37,6 +37,7 @@ pub mod player;
 pub mod proc;
 pub mod session;
 pub mod sources;
+pub(crate) mod spawn;
 pub mod store;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;

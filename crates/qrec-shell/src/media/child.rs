@@ -1,8 +1,10 @@
 //! A child-process runner that follows A§8.7, used by the media runner,
 //! `sources` and `doctor` while `crate::proc` (owner: session) is a stub.
 //!
-//! - stdin is null; the child leads its own process group (`process_group(0)`)
-//!   and gets SIGKILL if the thread that spawned it dies (`PR_SET_PDEATHSIG`);
+//! - it starts without forking Qrec (`crate::spawn`: a fork of the window
+//!   held up its main thread, G§8.6);
+//! - stdin is null; the child leads its own process group and gets SIGKILL
+//!   if the thread that spawned it dies (`PR_SET_PDEATHSIG`);
 //! - it gets nothing but its stdio (`proc::close_on_exec_from`): not even a
 //!   descriptor Qrec inherited from whoever started it. The one exception is
 //!   an output's temp file ([`Spec::output`]), which an ffmpeg keeps under
@@ -25,17 +27,19 @@
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
-use std::os::fd::{AsRawFd, RawFd};
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::os::fd::AsRawFd;
+use std::os::unix::process::ExitStatusExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
+use std::process::ExitStatus;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use qrec_core::parse::progress::{ProgressBlock, ProgressParser};
+
+use crate::spawn::{Child, Command, Stdio};
 
 /// How often a running child is polled.
 const POLL: Duration = Duration::from_millis(20);
@@ -54,8 +58,8 @@ const LINE_LIMIT: usize = 4096;
 
 /// How a child names its [`Spec::output`]: `/proc/self/fd/<n>`, `n` being
 /// the file's descriptor here, which the child keeps under the same number
-/// (a fork copies the table; nothing is moved, so nothing of the child's
-/// own, such as std's exec-error pipe, is clobbered). Opening it (again, as
+/// (its start copies the table; nothing is moved, so nothing of the
+/// child's own is clobbered). Opening it (again, as
 /// the mp4 muxer does for `+faststart`) reaches that very file, never what a
 /// path leads to.
 pub(crate) fn output_path(file: &File) -> PathBuf {
@@ -338,49 +342,38 @@ pub(crate) fn start(spec: Spec<'_>) -> Result<Finished, StartError> {
     // For messages and thread names.
     let program_name = program_os.to_string_lossy();
     let program: &str = &program_name;
+    // Its own process group, only its stdio crossing (nothing Qrec
+    // inherited, A§8.7), SIGKILL when this thread dies (a SIGKILLed host
+    // leaves no orphaned ffmpeg behind): `crate::spawn`, without a fork.
     let mut cmd = Command::new(program_os);
-    cmd.args(args).stdin(Stdio::null()).process_group(0);
+    cmd.args(args).stdin(Stdio::Null);
     if let Some(dir) = spec.cwd {
         cmd.current_dir(dir);
     }
     for (key, value) in &spec.env {
         cmd.env(key, value);
     }
-    let output = match spec.output.map(AsRawFd::as_raw_fd) {
-        // The child's stdio is set up before `pre_exec` runs: a stdio number
-        // would name something else by then (std keeps 0–2 open, so this
-        // doesn't happen).
+    match spec.output.map(AsRawFd::as_raw_fd) {
+        // The child's stdio is set up before it keeps the output: a stdio
+        // number would name something else by then (std keeps 0–2 open, so
+        // this doesn't happen).
         Some(fd) if fd < 3 => {
             return Err(
                 format!("internal error: the output of {program} is descriptor {fd}").into(),
             );
         }
-        other => other,
-    };
-    // SAFETY: the closure runs in the forked child before exec and only
-    // makes async-signal-safe system calls (close_range or fcntl, prctl).
-    unsafe {
-        cmd.pre_exec(move || {
-            // Only its stdio crosses: nothing Qrec inherited (A§8.7)…
-            crate::proc::close_on_exec_from(3);
-            // …and the output, when it has one (A§8.8).
-            if let Some(fd) = output {
-                keep_open(fd)?;
-            }
-            // The child dies with the thread that spawned it; a SIGKILLed
-            // host leaves no orphaned ffmpeg behind.
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
+        // …and the output, when it has one (A§8.8).
+        Some(fd) => {
+            cmd.keep_open(fd);
+        }
+        None => {}
     }
     let (captured_stderr, stderr_lines) = match spec.stderr {
         Stderr::Log(file) => {
             let handle = file
                 .try_clone()
                 .map_err(|e| format!("can't share the log file with {program}: {e}"))?;
-            cmd.stderr(handle);
+            cmd.stderr(Stdio::from(handle));
             (None, None)
         }
         Stderr::Capture => {
@@ -389,17 +382,17 @@ pub(crate) fn start(spec: Spec<'_>) -> Result<Finished, StartError> {
             let handle = file
                 .try_clone()
                 .map_err(|e| format!("can't share a temp file with {program}: {e}"))?;
-            cmd.stderr(handle);
+            cmd.stderr(Stdio::from(handle));
             (Some(file), None)
         }
         Stderr::Lines(callback) => {
-            cmd.stderr(Stdio::piped());
+            cmd.stderr(Stdio::Piped);
             (None, Some(callback))
         }
     };
     match spec.stdout {
-        Stdout::Null => cmd.stdout(Stdio::null()),
-        _ => cmd.stdout(Stdio::piped()),
+        Stdout::Null => cmd.stdout(Stdio::Null),
+        _ => cmd.stdout(Stdio::Piped),
     };
     // Its stdout is the run's data (not progress, not nothing): read to the
     // end, or the run failed.
@@ -478,18 +471,6 @@ pub(crate) fn start(spec: Spec<'_>) -> Result<Finished, StartError> {
         stdout_complete,
         elapsed: shared.started.elapsed(),
     })
-}
-
-/// In the forked child: keeps `fd` open across `exec` (clears its
-/// close-on-exec flag, nothing else). Async-signal-safe.
-fn keep_open(fd: RawFd) -> io::Result<()> {
-    // SAFETY: fcntl(2) on a descriptor number.
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-    // SAFETY: as above.
-    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
 }
 
 /// The deadlines of one run.
@@ -586,7 +567,7 @@ fn reap_later(program: &str, mut child: Child) {
 
 fn spawn_drain(
     program: &str,
-    out: ChildStdout,
+    out: File,
     mode: Stdout,
     shared: Arc<Shared>,
 ) -> crossbeam_channel::Receiver<Drained> {
@@ -620,7 +601,7 @@ fn spawn_drain(
 
 /// Hands every read to `callback`; once it panics, keeps draining unread.
 /// Returns the panic, if there was one.
-fn drain_stream(mut out: ChildStdout, mut callback: StreamFn) -> Option<String> {
+fn drain_stream(mut out: File, mut callback: StreamFn) -> Option<String> {
     let mut failed: Option<String> = None;
     let mut chunk = vec![0u8; 64 * 1024];
     loop {
@@ -647,7 +628,7 @@ fn drain_stream(mut out: ChildStdout, mut callback: StreamFn) -> Option<String> 
 /// A callback that panics is dropped; the pipe is still drained.
 fn spawn_line_drain(
     program: &str,
-    err: ChildStderr,
+    err: File,
     pid: u32,
     mut callback: LineFn,
 ) -> crossbeam_channel::Receiver<()> {
@@ -690,7 +671,7 @@ fn spawn_line_drain(
     rx
 }
 
-fn drain_bytes(mut out: ChildStdout, limit: usize) -> Vec<u8> {
+fn drain_bytes(mut out: File, limit: usize) -> Vec<u8> {
     let mut kept = Vec::new();
     let mut chunk = [0u8; 16 * 1024];
     loop {
@@ -708,7 +689,7 @@ fn drain_bytes(mut out: ChildStdout, limit: usize) -> Vec<u8> {
 }
 
 fn drain_progress(
-    out: ChildStdout,
+    out: File,
     mut callback: Box<dyn FnMut(&ProgressBlock) + Send>,
     shared: &Shared,
 ) -> Drained {
@@ -863,6 +844,21 @@ mod tests {
         let missing = argv(&["qrec-no-such-tool-here"]);
         let err = start(Spec::new(&missing, Stderr::Capture).output(&file)).unwrap_err();
         assert!(err.not_found, "{err:?}");
+    }
+
+    /// G§8.6: the media runner starts its children (every ffprobe of a
+    /// landed take, every ffmpeg of an export or a thumbnail) without
+    /// `fork`: in the window a fork took 25–48 ms, and the main thread waited
+    /// out each one on glibc's malloc locks.
+    #[test]
+    fn children_start_without_fork() {
+        let forked = crate::spawn::fork_counter::forks_of("media_runner_without_fork", || {
+            let cmd = argv(&["sh", "-c", "exit 0"]);
+            let done =
+                run(Spec::new(&cmd, Stderr::Capture).timeout(Duration::from_secs(10))).unwrap();
+            assert!(done.exited_ok(), "{}", done.describe("sh"));
+        });
+        assert_eq!(forked, 0, "the media runner forked");
     }
 
     #[test]

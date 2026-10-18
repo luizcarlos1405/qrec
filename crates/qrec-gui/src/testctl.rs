@@ -46,7 +46,7 @@
 //! | `fonts` | the family Pango loads for each bundled font; GTK's text settings as they are (`rendering`: `mode`, `hintMetrics`, `hinting`, `hintStyle`, `antialias`; `QREC_GUI_TEST_FONT_RENDERING` names another setup, `theme::fonts::Rendering`) and the window's GSK renderer (`renderer`, `GskGLRenderer`, …); with `measure` (`[{"family", "sizePx", "weight", "text"}]`), each text's `logical` and `ink` widths in px laid out in the window's Pango context (`widths`) |
 //! | `icons` | each custom symbolic icon drawn in a probe color: found, pixels, recolored |
 //! | `art` | each illustration through `gtk::Svg`: its size, drawn pixels and SVG errors (none for `ok`), and a known-bad probe whose errors must be counted |
-//! | `probe` | the main-loop probe's report (`probe::report`, G§8.6): `on`, its `ticks`, `stalls` (over 50 ms), `longestMs` and the newest stalls `kept` (`atMs`, `driftMs`, `ran`: the dispatch that held the loop); `on: false` without `QREC_GUI_PROBE=1` |
+//! | `probe` | the main-loop probe's report (`probe::report`, G§8.6): `on`, its `ticks`, `stalls` (over 50 ms), `longestMs` and the newest stalls `kept` (`atMs`, `driftMs`, `ran`: the dispatch that held the loop; `cpuMs`, `runnableMs`, `asleepMs`: where the main thread's time went, from its schedstat); `on: false` without `QREC_GUI_PROBE=1` |
 //!
 //! Dispatches go through the Store (R8), a pushed inventory through the
 //! queue as discovery's answer; the other ops only read.
@@ -410,6 +410,10 @@ fn busy(app: &App) -> Vec<String> {
     // The stage's own (WP4): the live picture's first frames in Live, a
     // program reload still due.
     why.extend(crate::stage::busy());
+    // The renderer's programs still to compile (G§8.6).
+    if crate::gpu_warmup::pending() {
+        why.push("the gpu warm-up".to_owned());
+    }
     why
 }
 

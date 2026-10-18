@@ -7,13 +7,21 @@
 //! that no guarded callback explains was GTK's own work: layout, styles,
 //! drawing.
 //!
+//! Each stall also says where the main thread's time since the tick before
+//! went ([`Split`], from its `/proc/thread-self/schedstat` read at every
+//! tick): on a CPU (it worked: the dispatch's code, GTK's, a shader
+//! compile), waiting for one (the CPUs were busy), or asleep (it waited in
+//! a call: a lock another thread held, I/O, the GPU). A slow subscriber
+//! that was asleep wasn't slow code: in WP10's smoke the 37–41 ms key-cap
+//! constructions were the main thread waiting for malloc's locks, held by a
+//! thread that forked an ffmpeg (G§8.6).
+//!
 //! It starts once the window is built (the end of `activate`), counts its
 //! ticks, keeps the newest [`KEPT`] stalls, logs a summary when the app
 //! quits ([`finish`]), and the test channel's `probe` op reports it
 //! ([`report`]): the smoke run (G§8.5) reports every stall and fails on one
 //! only under gles2 (with pixman the compositor, llvmpipe and ffmpeg share
-//! the CPU), and there only on one over 400 ms, a hang (`gui_smoke.rs`'
-//! `GLES2_HANG_MS`): G§8.5's 50 ms isn't met on gles2 yet (G§8.6).
+//! the CPU), on any while its steps run (`gui_smoke.rs`' `GLES2_STALL_MS`).
 //!
 //! Off (the default) it costs a thread-local read per guarded callback.
 
@@ -74,6 +82,65 @@ impl fmt::Display for Ran {
     }
 }
 
+/// The main thread's scheduler times so far (`/proc/thread-self/schedstat`,
+/// read at each tick): how long it ran on a CPU, and how long it was ready
+/// to run but waited for one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Sched {
+    pub on_cpu: Duration,
+    pub runnable: Duration,
+}
+
+impl Sched {
+    /// schedstat's line: the ns on a CPU, the ns waiting for one, the
+    /// timeslices.
+    pub fn parse(line: &str) -> Option<Sched> {
+        let mut fields = line.split_ascii_whitespace().map(str::parse::<u64>);
+        let on_cpu = fields.next()?.ok()?;
+        let runnable = fields.next()?.ok()?;
+        Some(Sched {
+            on_cpu: Duration::from_nanos(on_cpu),
+            runnable: Duration::from_nanos(runnable),
+        })
+    }
+}
+
+/// Where a stall's time went on the main thread (from [`Sched`]): it worked
+/// (on a CPU), it was ready but the CPUs were busy (runnable), or it slept
+/// in a call that waited (a lock, I/O, the GPU) or, for the period's
+/// ordinary part, in the loop's poll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Split {
+    pub on_cpu: Duration,
+    pub runnable: Duration,
+    pub asleep: Duration,
+}
+
+impl Split {
+    /// The split of `interval` between the samples `before` and `after`.
+    fn between(before: Sched, after: Sched, interval: Duration) -> Split {
+        let on_cpu = after.on_cpu.saturating_sub(before.on_cpu);
+        let runnable = after.runnable.saturating_sub(before.runnable);
+        Split {
+            on_cpu,
+            runnable,
+            asleep: interval.saturating_sub(on_cpu + runnable),
+        }
+    }
+}
+
+impl fmt::Display for Split {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "on a CPU {} ms, waiting for one {} ms, asleep {} ms",
+            self.on_cpu.as_millis(),
+            self.runnable.as_millis(),
+            self.asleep.as_millis()
+        )
+    }
+}
+
 /// A tick that came late.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stall {
@@ -84,16 +151,23 @@ pub struct Stall {
     /// The slowest dispatch since the tick before (`None`: no guarded
     /// callback ran, GTK's own work held the loop).
     pub ran: Option<Ran>,
+    /// Where the main thread's time since the tick before went (`None`
+    /// without schedstat).
+    pub split: Option<Split>,
 }
 
 impl fmt::Display for Stall {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "a stall of {} ms, {:.1} s in; the slowest dispatch since the last tick: ",
+            "a stall of {} ms, {:.1} s in",
             self.drift.as_millis(),
             self.at.as_secs_f64()
         )?;
+        if let Some(split) = &self.split {
+            write!(f, " ({split})")?;
+        }
+        f.write_str("; the slowest dispatch since the last tick: ")?;
         match &self.ran {
             Some(ran) => write!(f, "{ran}"),
             None => f.write_str("none guarded (GTK's own work: layout, styles, drawing)"),
@@ -122,6 +196,8 @@ pub struct Probe {
     stack: Vec<Frame>,
     /// The slowest outermost callback that ended since the last tick.
     slowest: Option<Ran>,
+    /// The main thread's scheduler times at the last tick.
+    sched: Option<Sched>,
 }
 
 impl Probe {
@@ -136,6 +212,7 @@ impl Probe {
             kept: VecDeque::new(),
             stack: Vec::new(),
             slowest: None,
+            sched: None,
         }
     }
 
@@ -165,13 +242,18 @@ impl Probe {
         }
     }
 
-    /// The tick at `now`: a stall when it came more than [`STALL`] after
-    /// its period.
-    pub fn tick(&mut self, now: Instant) -> Option<Stall> {
+    /// The tick at `now`, with the main thread's scheduler times then: a
+    /// stall when it came more than [`STALL`] after its period.
+    pub fn tick(&mut self, now: Instant, sched: Option<Sched>) -> Option<Stall> {
         let interval = now.saturating_duration_since(self.last);
         self.last = now;
         self.ticks += 1;
         let ran = self.slowest.take();
+        let split = match (self.sched, sched) {
+            (Some(before), Some(after)) => Some(Split::between(before, after, interval)),
+            _ => None,
+        };
+        self.sched = sched;
         let drift = interval.saturating_sub(PERIOD);
         if drift <= STALL {
             return None;
@@ -182,6 +264,7 @@ impl Probe {
             at: now.saturating_duration_since(self.started),
             drift,
             ran,
+            split,
         };
         if self.kept.len() == KEPT {
             self.kept.pop_front();
@@ -202,11 +285,19 @@ impl Probe {
             "ticks": self.ticks,
             "stalls": self.stalls,
             "longestMs": ms(self.longest),
-            "kept": self.kept.iter().map(|s| json!({
-                "atMs": ms(s.at),
-                "driftMs": ms(s.drift),
-                "ran": s.ran.as_ref().map(ToString::to_string),
-            })).collect::<Vec<_>>(),
+            "kept": self.kept.iter().map(|s| {
+                let mut stall = json!({
+                    "atMs": ms(s.at),
+                    "driftMs": ms(s.drift),
+                    "ran": s.ran.as_ref().map(ToString::to_string),
+                });
+                if let Some(split) = &s.split {
+                    stall["cpuMs"] = json!(ms(split.on_cpu));
+                    stall["runnableMs"] = json!(ms(split.runnable));
+                    stall["asleepMs"] = json!(ms(split.asleep));
+                }
+                stall
+            }).collect::<Vec<_>>(),
         })
     }
 
@@ -228,6 +319,20 @@ thread_local! {
     static ON: Cell<bool> = const { Cell::new(false) };
     static PROBE: RefCell<Option<Probe>> = const { RefCell::new(None) };
     static SLOT: guard::Slot = guard::Slot::new();
+    /// The main thread's `/proc/thread-self/schedstat`, opened as the probe
+    /// starts (`None` without it).
+    static SCHEDSTAT: RefCell<Option<std::fs::File>> = const { RefCell::new(None) };
+}
+
+/// The main thread's scheduler times now ([`SCHEDSTAT`]; `None` without
+/// it).
+fn sched_now() -> Option<Sched> {
+    SCHEDSTAT.with(|file| {
+        let file = file.borrow();
+        let mut line = [0u8; 128];
+        let n = std::os::unix::fs::FileExt::read_at(file.as_ref()?, &mut line, 0).ok()?;
+        Sched::parse(std::str::from_utf8(&line[..n]).ok()?)
+    })
 }
 
 /// Times one guarded callback while the probe runs: it ends when this is
@@ -282,7 +387,9 @@ pub fn start() {
     );
     SLOT.with(|slot| {
         slot.timeout(PERIOD, TICK, || {
-            let stall = PROBE.with(|p| p.borrow_mut().as_mut()?.tick(Instant::now()));
+            let now = Instant::now();
+            let sched = sched_now();
+            let stall = PROBE.with(|p| p.borrow_mut().as_mut()?.tick(now, sched));
             if let Some(stall) = stall {
                 tracing::warn!("main-loop probe: {stall}");
             }
@@ -304,6 +411,9 @@ fn begin(now: Instant) -> bool {
     });
     if fresh {
         ON.with(|on| on.set(true));
+        // This thread's own times (`thread-self`: the main thread's).
+        let file = std::fs::File::open("/proc/thread-self/schedstat").ok();
+        SCHEDSTAT.with(|f| *f.borrow_mut() = file);
     }
     fresh
 }
@@ -361,8 +471,12 @@ mod tests {
     fn a_late_tick_is_a_stall_with_the_dispatch_that_held_the_loop() {
         let t0 = Instant::now();
         let mut probe = Probe::new(t0);
-        assert_eq!(probe.tick(t0 + 10 * MS), None);
-        assert_eq!(probe.tick(t0 + 70 * MS), None, "50 ms late is no stall");
+        assert_eq!(probe.tick(t0 + 10 * MS, None), None);
+        assert_eq!(
+            probe.tick(t0 + 70 * MS, None),
+            None,
+            "50 ms late is no stall"
+        );
         let at = t0 + 70 * MS;
         probe.enter(at);
         probe.enter(at + MS);
@@ -370,7 +484,7 @@ mod tests {
         probe.leave("an inbound item", at + 80 * MS);
         probe.enter(at + 80 * MS);
         probe.leave("a faster one", at + 81 * MS);
-        let stall = probe.tick(at + 90 * MS).expect("80 ms late");
+        let stall = probe.tick(at + 90 * MS, None).expect("80 ms late");
         assert_eq!(stall.drift, 80 * MS);
         assert_eq!(stall.at, 160 * MS);
         let ran = stall.ran.expect("what ran");
@@ -382,14 +496,15 @@ mod tests {
             Stall {
                 at: 2500 * MS,
                 drift: 61 * MS,
-                ran: None
+                ran: None,
+                split: None,
             }
             .to_string(),
             "a stall of 61 ms, 2.5 s in; the slowest dispatch since the last tick: none \
              guarded (GTK's own work: layout, styles, drawing)"
         );
         // The next stall doesn't blame the callbacks of the one before.
-        let stall = probe.tick(at + 200 * MS).expect("100 ms late");
+        let stall = probe.tick(at + 200 * MS, None).expect("100 ms late");
         assert_eq!(stall.ran, None);
         assert_eq!(probe.stalls, 2);
         assert_eq!(probe.longest, 100 * MS);
@@ -407,11 +522,95 @@ mod tests {
         let mut now = t0;
         for _ in 0..KEPT + 5 {
             now += 100 * MS;
-            assert!(probe.tick(now).is_some());
+            assert!(probe.tick(now, None).is_some());
         }
         assert_eq!(probe.kept.len(), KEPT);
         assert_eq!(probe.stalls, (KEPT + 5) as u64);
         assert_eq!(probe.kept.back().map(|s| s.at), Some(now - t0));
+    }
+
+    /// schedstat's line: the ns on a CPU, then waiting for one.
+    #[test]
+    fn schedstat_reads_as_on_a_cpu_and_waiting_for_one() {
+        assert_eq!(
+            Sched::parse("9468248 37344 3\n"),
+            Some(Sched {
+                on_cpu: Duration::from_nanos(9_468_248),
+                runnable: Duration::from_nanos(37_344),
+            })
+        );
+        assert_eq!(Sched::parse(""), None);
+        assert_eq!(Sched::parse("12"), None);
+        assert_eq!(Sched::parse("x 1 2"), None);
+    }
+
+    /// A stall says where the main thread's time since the tick before
+    /// went: on a CPU (it worked), waiting for one (the CPUs were busy), or
+    /// asleep (it waited in a call: a lock, I/O, the GPU).
+    #[test]
+    fn a_stall_splits_its_time_between_work_waiting_and_sleep() {
+        let t0 = Instant::now();
+        let mut probe = Probe::new(t0);
+        let sched = |cpu: u32, runnable: u32| {
+            Some(Sched {
+                on_cpu: cpu * MS,
+                runnable: runnable * MS,
+            })
+        };
+        assert_eq!(probe.tick(t0 + 10 * MS, sched(100, 20)), None);
+        // 120 ms: 70 on a CPU, 30 waiting for one, the other 20 asleep.
+        let stall = probe
+            .tick(t0 + 130 * MS, sched(170, 50))
+            .expect("110 ms late");
+        let split = stall.split.expect("the split");
+        assert_eq!(
+            (split.on_cpu, split.runnable, split.asleep),
+            (70 * MS, 30 * MS, 20 * MS)
+        );
+        assert_eq!(
+            stall.to_string(),
+            "a stall of 110 ms, 0.1 s in (on a CPU 70 ms, waiting for one 30 ms, asleep 20 \
+             ms); the slowest dispatch since the last tick: none guarded (GTK's own work: \
+             layout, styles, drawing)"
+        );
+        let report = probe.report(t0 + 130 * MS);
+        let kept = &report["kept"][0];
+        assert_eq!(
+            (&kept["cpuMs"], &kept["runnableMs"], &kept["asleepMs"]),
+            (&json!(70.0), &json!(30.0), &json!(20.0))
+        );
+        // Without a sample now, or at the tick before, there is no split.
+        let stall = probe.tick(t0 + 250 * MS, None).expect("110 ms late");
+        assert_eq!(stall.split, None);
+        let stall = probe
+            .tick(t0 + 370 * MS, sched(300, 60))
+            .expect("110 ms late");
+        assert_eq!(stall.split, None, "no sample at the tick before");
+        assert!(
+            probe.report(t0 + 370 * MS)["kept"][2]
+                .get("cpuMs")
+                .is_none()
+        );
+    }
+
+    /// The probe reads its own thread's schedstat (Linux): the time on a
+    /// CPU grows as the thread works.
+    #[test]
+    fn the_probe_reads_its_threads_schedstat() {
+        let file = std::fs::File::open("/proc/thread-self/schedstat").expect("schedstat");
+        SCHEDSTAT.with(|f| *f.borrow_mut() = Some(file));
+        let before = sched_now().expect("a sample");
+        let started = Instant::now();
+        let mut spin = 0u64;
+        while started.elapsed() < 20 * MS {
+            spin = std::hint::black_box(spin.wrapping_add(1));
+        }
+        let after = sched_now().expect("a sample");
+        assert!(
+            after.on_cpu >= before.on_cpu + 10 * MS,
+            "{before:?} then {after:?}"
+        );
+        SCHEDSTAT.with(|f| f.borrow_mut().take());
     }
 
     /// `guard::catch` times every guarded callback while the probe runs:

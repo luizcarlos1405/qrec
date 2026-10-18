@@ -1799,18 +1799,28 @@ nothing of anyone else's may be tied to it for long:
 
 Two runners apply these rules: `proc.rs` (the session's: capability
 checks, `pactl` facts) and `media/child.rs` (the media runner, `sources`,
-`doctor`). Every child: stdin null, `process_group(0)`, stdout piped only
+`doctor`). Both start their children without forking Qrec (`spawn.rs`:
+`clone(CLONE_VM | CLONE_VFORK)`, the way `posix_spawn` does, with the
+steps below in the child before `execve`; it allocates nothing there and
+only makes system calls). A fork copies the whole process's page tables
+while glibc holds every malloc arena's lock: in the GUI's process under GL
+one took 25–48 ms, and its main thread waited out each one (G§8.6).
+Every child: stdin null, its own process group, stdout piped only
 when parsed (drained on its own thread), stderr appended to a log file
 (an anonymous temp file for project-less runs: `sources list`, `doctor`), and
 nothing else (but an output's temp file, which the ffmpeg writing it keeps
-under the same descriptor number, A§8.8): in `pre_exec`, every descriptor
+under the same descriptor number, A§8.8): in the child, every descriptor
 from 3 up is made
 close-on-exec (`proc::close_on_exec_from`: `close_range(…,
 CLOSE_RANGE_CLOEXEC)`, else an `fcntl` sweep below `RLIMIT_NOFILE`; never
-closed outright, so std still hears a failed `exec`). Rust opens everything
+closed outright, so std still hears a failed `exec` where a `pre_exec` does
+it). Rust opens everything
 close-on-exec already; this also keeps out what Qrec itself inherited from
-whoever started it. The headless host spawn (A§8.3 step 5) and the GPU
-probe child do the same.
+whoever started it. It gets SIGKILL when the thread that started it dies
+(`PR_SET_PDEATHSIG`; it doesn't start when that process is already gone),
+and default signal handling with nothing blocked. The headless host spawn
+(A§8.3 step 5, from the small CLI process) and the GPU probe child (at
+startup) do the same in a `pre_exec`, after a fork.
 Arguments are passed byte for byte (`OsString`): the media runner replaces a
 plan's last element with `file:<temp path>` (a segment's; and the segment
 check's input) or `file:/proc/self/fd/<n>` (an export's or frame's, A§8.8)

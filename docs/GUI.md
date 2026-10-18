@@ -1959,6 +1959,8 @@ a module list.
 | `src/guard.rs` | the callback guard: `guarded!`, guarded sources, the panic report (G§3.12 R10) | WP0b |
 | `src/testctl.rs` | test control channel (G§3.18) | WP0b |
 | `src/follow.rs` | the settings follower: `config.toml` and `keys.toml` live (G§3.14) | WP10 |
+| `src/probe.rs` | the main-loop probe (G§8.6): stalls, the dispatch that held the loop, where the main thread's time went | WP10, perf lane |
+| `src/gpu_warmup.rs` | the GL renderer's programs compiled after the first frame, offscreen (G§8.6) | perf lane |
 | `src/theme/{mod,fonts,motion,css,art}.rs` | providers, fonts, MotionPolicy, scale preprocessing, art templates through `gtk::Svg` | WP0b |
 | `src/media/mod.rs` | MediaHub: sinks, side pump, preview frames, meter toggle, player and cache handles | WP0b |
 | `src/media/io.rs` | `IoWorker` (`qrec-gui-io`: jobs under `catch_unwind`, results through the queue, `hold_io_busy`; rounds 1–2 review) | WP0b |
@@ -2034,6 +2036,7 @@ with `fn widget(&self) -> gtk::Widget`) and
 | shell | `ges_render.rs` | `rebuild_into` | WP1 |
 | shell | `media/preview.rs`, `media/sizes.rs` (new) | stubs (WP0a), implementation (WP2) | WP0a, WP2 |
 | shell | `media/{child,logs,mod}.rs`, `proc.rs` | `child::Stdout::Stream`, `Stderr::Lines`, `Finished::pid`; both log prunes count only timestamp-named logs (`media::is_stamped_log_name`) | WP2 |
+| shell | `spawn.rs` (new), `media/child.rs`, `proc.rs`, `lib.rs` | both runners start children with `clone(CLONE_VM \| CLONE_VFORK)`, their steps in the child (no fork of the window: A§8.7, G§8.6) | perf lane |
 | shell | `gpu.rs` | H-3 | WP0a |
 | shell | `paths.rs`, `host/cli_host.rs` | `UserDirs::gui_log(dir)`; `host_log` names it | WP0a |
 | shell | `config_file.rs`, `keys_file.rs` (new) | readers (WP0a); atomic writers over `config::set` and the keymap edits (WP9) | WP0a, WP9 |
@@ -2159,7 +2162,7 @@ previews, the player, io, opening, the portal).
 
 | Request | Reply |
 | --- | --- |
-| `{"op":"waitIdle"}` | `{"ok":true,"rev":R}` once: `PreviewCache::in_flight()` is 0, the player isn't loading or seeking, and every `qrec-gui-io` job finished with no `MediaHub::hold_io_busy` token held (all checked before the queue: what they send is in the queue before they say they are idle; a debounce that leads to io work holds a token, as the autocut page's 250 ms dry-run debounce does until its dry run is sent, WP5); the inbound queue is empty; the GUI's own requests are answered, but for an export of its own once its job runs (`Store::unsettled_requests`: it reported progress and an export is in the job table; WP7 integration); no source is `AwaitingPortal`; the window isn't opening; the stage is idle (`stage::busy`, WP4: no program reload is due, and in Live the engine settled its live scenes, `LiveControl::progress`, and the picture drew 10 frames since its visible live sources had sizes, again for each new pipeline, `media::live::LiveWatch`); and a frame was drawn after all that and it still holds (frame clock `after-paint`) |
+| `{"op":"waitIdle"}` | `{"ok":true,"rev":R}` once: `PreviewCache::in_flight()` is 0, the player isn't loading or seeking, and every `qrec-gui-io` job finished with no `MediaHub::hold_io_busy` token held (all checked before the queue: what they send is in the queue before they say they are idle; a debounce that leads to io work holds a token, as the autocut page's 250 ms dry-run debounce does until its dry run is sent, WP5); the inbound queue is empty; the GUI's own requests are answered, but for an export of its own once its job runs (`Store::unsettled_requests`: it reported progress and an export is in the job table; WP7 integration); no source is `AwaitingPortal`; the window isn't opening; the stage is idle (`stage::busy`, WP4: no program reload is due, and in Live the engine settled its live scenes, `LiveControl::progress`, and the picture drew 10 frames since its visible live sources had sizes, again for each new pipeline, `media::live::LiveWatch`); the GPU warm-up drew its last cell (`gpu_warmup::pending`, perf lane); and a frame was drawn after all that and it still holds (frame clock `after-paint`) |
 | `{"op":"regions","names":[…]}` | `{"regions":{"<name>":[x,y,w,h],…}}`: window-logical bounds of every widget named `region-*` and of the named parts in G§8.4, plus the visible widgets named in `names` (a button a case clicks) |
 | `{"op":"labels","name":"region-header"}` | `{"ok":true,"labels":[…],"entries":{…}}`: the text of every visible label under the widget `name` (default: the window), in tree order, and each visible text field's value by its nearest given name (`"inspector-x": "1280"`, `Gui::entries`; WP5 integration) |
 | `{"op":"dispatch","command":{…},"confirmed":false}` | `Store::dispatch_with` with the default reply policy (confirmations open their modal); `{"ok":true}` at once |
@@ -2171,7 +2174,7 @@ previews, the player, io, opening, the portal).
 | `{"op":"fonts"}` | the family Pango loads for each bundled font; `ok` when each resolves to itself; `rendering`, GTK's text settings as they are (`mode`, `hintMetrics`, `hinting`, `hintStyle`, `antialias`: G§3.14's experiment), and `renderer`, the window's GSK renderer (`GskGLRenderer`, `GskCairoRenderer`); with `"measure": [{"family", "sizePx", "weight", "text"}]`, `widths`: each text laid out in the window's Pango context, its `logical` and `ink` widths in px (WP10) |
 | `{"op":"icons"}` | each custom symbolic icon drawn in a probe color: found, its pixels, recolored |
 | `{"op":"art"}` | each illustration through `gtk::Svg` (`theme::art`): loaded, its size, drawn pixels and `errors` (GtkSvg's, none for `ok`), and `probeErrors` of a known-bad SVG (`<foreignObject>`; at least one for `ok`: the count works) |
-| `{"op":"probe"}` | the main-loop probe's report (G§8.6, WP10): `on`, `ticks`, `stalls` (over 50 ms), `longestMs`, `runningMs` and the newest 64 stalls `kept` (`atMs` since it started, `driftMs`, `ran`: the dispatch that held the loop, or null); `{"ok":true,"on":false}` without `QREC_GUI_PROBE=1` |
+| `{"op":"probe"}` | the main-loop probe's report (G§8.6, WP10): `on`, `ticks`, `stalls` (over 50 ms), `longestMs`, `runningMs` and the newest 64 stalls `kept` (`atMs` since it started, `driftMs`, `ran`: the dispatch that held the loop, or null; `cpuMs`, `runnableMs`, `asleepMs`: where the main thread's time since the tick before went, from its schedstat, perf lane); `{"ok":true,"on":false}` without `QREC_GUI_PROBE=1` |
 
 Dispatches go through the Store (R8); the other ops only read.
 
@@ -4520,7 +4523,8 @@ item 9 the text lane's). Waiting for the pen export (G§0.6,
 icons (placeholders); frames for the theme proofs (no PNG of them in
 `design/screens/`: the boards stand alone) and S25's eleven toast variants (WP9 writes the copy);
 and WP8/WP9's screens. Open after the integration: G§8.5's 50 ms on gles2
-(the smoke's stalls of 60–215 ms at steps 4–8, G§8.6), the PO's calls on
+(the smoke's stalls of 60–215 ms at steps 4–8, G§8.6; met since the perf
+lane: forks of the window and first-use shader compiles), the PO's calls on
 the text setup (G§8.7 #9), on the gtk dev-dependency of `qrec`'s tests
 (A§1.2, the AT-SPI case), on the contrast of the pressed states and of
 the countdown digit over a white screen (the themes lane's questions,
@@ -4942,9 +4946,13 @@ Throughout: no `Crashed`, no `ERROR` line in the GUI log, and the a11y walk
 is empty. The main-loop probe (G§8.6) records stalls; a stall over 50 ms
 fails the run only under `QREC_TEST_WLR=gles2` (with pixman, the
 compositor, llvmpipe and ffmpeg share the CPU). As integrated (WP10): not
-met yet on gles2, so the smoke fails there on a stall over 400 ms (a
-hang, `GLES2_HANG_MS`) and reports the others with what held the loop
-(G§8.6's numbers; open).
+met yet on gles2, so the smoke failed there on a stall over 400 ms (a
+hang) and reported the others with what held the loop. Met since the perf
+lane (G§8.6: children start without a fork, GL programs compile while the
+window opens): under gles2 any stall over 50 ms during the steps fails the
+smoke again (`GLES2_STALL_MS`), and so does a GL program compiled once the
+window settled (the window runs with `GSK_DEBUG=shaders`, which names each
+program GSK compiles).
 
 As built (WP10): `smoke_steps_1_to_10`, one window for all ten steps, with
 `QREC_GUI_PROBE=1`. Step 4 also checks that no headless host spawned and
@@ -4957,8 +4965,8 @@ checks that the playhead is past 10 and within a frame of
 progress event and that ffprobe's packet count is the reply's frames. No
 GLib or GTK critical either. The stalls before the window first settles
 (the project opening: on pixman one of 55–80 ms at the first frame) are
-reported, not failed; under gles2 any stall after that failed it, until
-the integration (G§8.6: one over 400 ms now). The probe's report, the
+reported, not failed; under gles2 any stall after that fails it (from the
+integration to the perf lane, only one over 400 ms did). The probe's report, the
 paused playhead and player position, and each step's time go to
 `tmp/gui-shots/smoke/smoke-measurements.json`; `QREC_SMOKE_BIN=<path>`
 runs the steps' window from another binary (the package's optimized
@@ -5019,8 +5027,8 @@ loaded and that the registry is still the seeded one.
   them disposing key caps), the timeline's snapshot subscriber
   (`timeline/mod.rs:406`, up to 45 ms), the timeline surface's snapshot
   (up to 35 ms), the stage's render (up to 72 ms) and GTK's own work.
-  Under gles2 a stall fails the smoke only over 400 ms (a hang,
-  `GLES2_HANG_MS`, below); the others are reported.
+  Under gles2 a stall failed the smoke only over 400 ms (a hang) from the
+  WP10 integration to the perf lane, below; the others were reported.
   The integration's gles2 runs (WP10: six of the smoke on the merged tree,
   one on the package's window, the machine otherwise idle): the project
   opening 1–3 stalls (the first frame, 650–760 ms), then 7–9 during the
@@ -5037,10 +5045,49 @@ loaded and that the registry is still the seeded one.
   under 5 ms (timed apart), and single GObject constructions and
   disposals inside those subscribers take 37–41 ms (a key cap's), which
   points at the main thread waiting rather than working (GLib's type lock
-  while GStreamer's threads load plugins for the new pipelines is a guess,
-  not measured). Open: G§8.5's 50 ms. The smoke fails under gles2 only on
-  a stall over 400 ms (`gui_smoke.rs`' `GLES2_HANG_MS`) and keeps the rest
-  in its report.
+  while GStreamer's threads load plugins for the new pipelines was a
+  guess, not measured: wrong, below). The smoke failed under gles2 only on
+  a stall over 400 ms and kept the rest in its report.
+  **The perf lane** found two causes and fixed both at the source:
+  - *Each stall says where its time went* (`probe::Split`, from the main
+    thread's `/proc/thread-self/schedstat` read at every tick: on a CPU,
+    waiting for one, asleep; `cpuMs`, `runnableMs`, `asleepMs` in the
+    report). The subscribers' stalls were asleep (5–15 ms on a CPU of
+    80–160), GTK's first frames on a CPU.
+  - *Forks.* Under `strace -f -T` the main thread's only long waits were on
+    one futex, glibc's main malloc arena lock, each exactly as long as a
+    `clone()` without `CLONE_VM` by another thread: `qrec-probe-take` (an
+    ffprobe per track of a landed take), `qrec-preview-N` (thumbnails,
+    peaks), `qrec-export-j1-wN` (a segment's ffmpeg), `qrec-frame-j2`. A
+    fork copies the whole process's page tables while glibc holds every
+    arena's lock, so every thread that allocates waits; the window's forks
+    took 2–7 ms at startup and 25–48 ms by step 7 (its GPU mappings and
+    heaps), 11 waits and 360 ms in one run. Both process runners forked
+    because Rust's `Command` does as soon as there is a `pre_exec`; they
+    now start children with `clone(CLONE_VM | CLONE_VFORK)`, their own
+    steps in the child (A§8.7, `qrec-shell/src/spawn.rs`). With the
+    shader cache warm, that alone left no stall during the steps.
+  - *Shader compiles.* With the test's cold Mesa cache (`XDG_CACHE_HOME`
+    is new each run; `MESA_SHADER_CACHE_DIR` on a reused dir showed it)
+    each stall at steps 4–8 came right after a program GSK compiled on
+    first use (`GSK_DEBUG=shaders`): `convert` under a rect clip (the
+    stage's plates as a take starts), `colorize` under a rect clip (a
+    clip's label), `convertcicp` (the Program's first frame),
+    `roundedcolor` under a rounded clip; 50–90 ms each. `src/gpu_warmup.rs`
+    draws every kind the window draws under each clip mode offscreen with
+    the window's renderer after its first frame, one cell an idle callback
+    (39 cells; cold, ~2 s while the project opens, no dispatch over
+    ~170 ms; warm, 137 ms in all); `waitIdle` waits for it.
+  Measured on the head (debug build, the machine loaded by two other lanes
+  at about 8): gles2, cold cache, 3 of 3 smoke runs with no stall during
+  the steps (before: 6 of 54–192 ms, and 7 of 50–146 ms in a second run);
+  gles2 with a warm cache, none (before: 2–3 of 77–163 ms, asleep);
+  pixman, 2 of 2 with none (before: 5 and 3 of 50–164 ms, all asleep, at
+  steps 7 and 8). The opening under gles2 now has the warm-up's
+  stalls (16–17 of 50–175 ms cold; none warm), reported, not failed.
+  `gui_smoke.rs` fails on a stall over 50 ms during the steps under gles2
+  again (`GLES2_STALL_MS`) and on a GL program compiled after the window
+  settled.
   The audits lane's run of WP0b's steps 1–3 and 10 alone (pixman): 0
   stalls in 2 s at scale 1, 1.5 and 2, the worst tick 23–35 ms late at 1,
   43–49 at 1.5 and 37–47 at 2 (several runs).
@@ -5132,8 +5179,10 @@ At the M4 review:
     AT-SPI case, A§1.2); `accent-text` and `record-text` under `pressed`
     on `raised` (3.7–4.8) and the countdown's digit over a white screen
     (2.53:1), outside DESIGN's audit; G§8.5's 50 ms main-loop target, not
-    met on gles2 at the take's landing (G§8.6: the smoke fails there only
-    on a hang, 400 ms).
+    met on gles2 at the take's landing (G§8.6: the smoke failed there only
+    on a hang, 400 ms; met since the perf lane, which also leaves a cold
+    first launch's GL programs to compile while the window opens, about
+    2 s on the dev machine).
 
 At M5: the drafted screens as built (WP8, WP9; the themes, reduced motion
 and the scales are at the M4 review now, items 1, 10).
