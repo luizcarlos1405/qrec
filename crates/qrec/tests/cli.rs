@@ -1300,6 +1300,20 @@ fn frame_save_writes_a_png() {
     );
     let bad = qrec(&env, &dir, &["frame", "save", "--at", "+1f"]);
     assert_eq!(bad.code, Some(2), "a relative time is no frame");
+    // S25 #4 (GUI D-21): the toast names the frame project-relative, as
+    // the export's does; the reply keeps the full path.
+    let human = qrec(&env, &dir, &["frame", "save", "--at", "10f"]);
+    human.ok();
+    assert!(
+        human.stderr.contains("qrec: Frame saved\n  frames/frames-"),
+        "{}",
+        human.stderr
+    );
+    assert!(
+        !human.stderr.contains(&format!("  {}", dir.display())),
+        "{}",
+        human.stderr
+    );
 }
 
 #[test]
@@ -1419,6 +1433,18 @@ fn record_start_and_stop_with_the_fake_backend() {
 
     // The headless host exits once idle (A§8.6): its socket goes away.
     wait_until_no_host(&env);
+
+    // S25 #5 (GUI D-21): `d`'s toast says where the take went.
+    let discard = qrec(&env, &dir, &["take", "discard-last"]);
+    discard.ok();
+    assert!(
+        discard.stderr.contains(
+            "qrec: Take 1 moved to the bin\n  Its clip left the timeline. Files are kept.\n"
+        ),
+        "{}",
+        discard.stderr
+    );
+    assert!(clip_ids(&env, &dir).is_empty());
 }
 
 /// A take finalization whose commit record couldn't be written (A§7.6:
