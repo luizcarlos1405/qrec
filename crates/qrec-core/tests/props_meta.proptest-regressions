@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c443b802ad65b70f912a4113ee63f6168a566012bf6c57e59fbfa97ad68aa1b5 # shrinks to picks = [(Index(658812288346769701), [KeyChord { key: "bracketleft", ctrl: false, alt: false, shift: false, super_: false }])]

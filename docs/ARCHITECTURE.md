@@ -2569,7 +2569,9 @@ the SPEC §12 canvas arrow nudges, and the window's `region.next` (`F6`),
 which are `Gui` actions (GUI D-10). `Alt+[`/`Alt+]` trim the start/end
 inward by one frame; with Shift they arrive as `alt+braceleft`/
 `alt+braceright` and trim 10. A chord two bindings share in one context is
-a `Conflict`: `lookup` runs neither. In Live mode `play.toggle`,
+a `Conflict`: `lookup` runs neither of them, there or in any other context
+(Q5: the key `usable_keys` leaves out of their hints, caps and palette
+rows does nothing for them anywhere). In Live mode `play.toggle`,
 `shuttle.reverse` and `shuttle.forward` are `Unavailable` "Switch to
 Program (Tab) to play the timeline" (GUI D-01; an empty timeline or a
 refusing gate says so first; the `Play` command itself still switches,

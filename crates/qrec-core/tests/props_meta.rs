@@ -339,17 +339,39 @@ proptest! {
             let want = expected.get(b.id).cloned().unwrap_or_else(|| defaults.binding(b.id).unwrap().keys.clone());
             prop_assert_eq!(&b.keys, &want, "{}", b.id);
         }
-        // A chord is a conflict in a context exactly when lookup refuses it there.
+        // A key runs a binding in a context exactly when that binding is
+        // the only one active there with it and shows it (`usable_keys`:
+        // its caps, hints and palette row): a key in one of a binding's
+        // conflicts runs it in no context at all (Q5), and two bindings
+        // active together on one key are a reported conflict.
         let chords: BTreeSet<&KeyChord> = map.bindings.iter().flat_map(|b| &b.keys).collect();
         for ctx in KeyContext::ALL {
             for chord in &chords {
-                let users = map.bindings.iter().filter(|b| b.active_in(ctx) && b.keys.contains(chord)).count();
-                let found = keymap::lookup(&map, chord, ctx);
-                prop_assert_eq!(found.is_some(), users == 1, "{} in {:?}", chord, ctx);
-                if users >= 2 {
+                let users: Vec<&keymap::Binding> = map.bindings.iter().filter(|b| b.active_in(ctx) && b.keys.contains(chord)).collect();
+                let runs = match users.as_slice() {
+                    [only] if keymap::usable_keys(&map, only).contains(chord) => Some(only.id),
+                    _ => None,
+                };
+                prop_assert_eq!(keymap::lookup(&map, chord, ctx).map(|b| b.id), runs, "{} in {:?}", chord, ctx);
+                if users.len() >= 2 {
                     let reported = map.conflicts.iter().any(|c| &&c.chord == chord && (c.context == ctx
                         || (matches!(ctx, KeyContext::Timeline | KeyContext::Canvas) && c.context == KeyContext::Global)));
                     prop_assert!(reported, "{} in {:?} is not reported", chord, ctx);
+                }
+            }
+        }
+        // What a binding's caps and hints show runs it wherever it is
+        // active; a key they leave out runs it nowhere.
+        for b in &map.bindings {
+            let usable = keymap::usable_keys(&map, b);
+            for chord in &b.keys {
+                for ctx in KeyContext::ALL {
+                    let runs_it = keymap::lookup(&map, chord, ctx).is_some_and(|f| f.id == b.id);
+                    if usable.contains(&chord) {
+                        prop_assert_eq!(runs_it, b.active_in(ctx), "{} {} in {:?}", b.id, chord, ctx);
+                    } else {
+                        prop_assert!(!runs_it, "{} runs on its hidden {} in {:?}", b.id, chord, ctx);
+                    }
                 }
             }
         }

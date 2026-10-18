@@ -33,7 +33,11 @@
 //! countdown, recording or finalization runs only `recording` bindings are
 //! active; an open overlay (cheat sheet, palette, modal) sees only `overlay`
 //! bindings. A chord used by two bindings that are active together is a
-//! [`Conflict`], and neither of them runs ([`lookup`]).
+//! [`Conflict`], and then it runs neither of them in any context
+//! ([`lookup`]): Esc rebound to Split clip cancels no take and closes no
+//! overlay either, as the hints and caps, which leave it out
+//! ([`usable_keys`]), and S22's banner ("Neither runs until one is
+//! changed") say.
 //!
 //! **`keys.toml`** (`~/.config/qrec/keys.toml`):
 //! ```toml
@@ -775,18 +779,21 @@ fn find_conflicts(bindings: &[Binding]) -> Vec<Conflict> {
 }
 
 /// The binding a key press runs with `ctx` focused (`timeline`, `canvas`,
-/// `recording` or `overlay`); `None` when nothing or more than one binding
-/// uses the chord there (conflicting bindings never run).
+/// `recording` or `overlay`): the one binding active there with the chord,
+/// unless the chord is in one of its conflicts, in this context or another
+/// (Q5: a conflicting key runs neither binding anywhere, as its hints, caps
+/// and palette rows leave it out, [`usable_keys`], and S22's banner says);
+/// `None` when nothing runs.
 pub fn lookup<'a>(map: &'a Keymap, chord: &KeyChord, ctx: KeyContext) -> Option<&'a Binding> {
     let mut found = map
         .bindings
         .iter()
         .filter(|b| b.active_in(ctx) && b.keys.contains(chord));
     let first = found.next()?;
-    match found.next() {
-        Some(_) => None,
-        None => Some(first),
+    if found.next().is_some() || conflicting_keys(map, first.id).contains(&chord) {
+        return None;
     }
+    Some(first)
 }
 
 /// The chords of `binding` that aren't part of a conflict: what hints,
@@ -2319,7 +2326,8 @@ mod tests {
         );
         assert_eq!(lookup(&map, &chord("r"), KeyContext::Overlay), None);
 
-        // A global key reused for a timeline-only binding clashes on the timeline only.
+        // A global key reused for a timeline-only binding clashes on the
+        // timeline only, and then runs neither binding anywhere (Q5).
         let map = resolve("[bindings]\nseek.prev-frame = \"s\"\n");
         assert_eq!(
             map.conflicts,
@@ -2329,10 +2337,8 @@ mod tests {
                 context: KeyContext::Timeline,
             }]
         );
-        assert_eq!(
-            lookup(&map, &chord("s"), KeyContext::Canvas).unwrap().id,
-            "clip.split"
-        );
+        assert_eq!(lookup(&map, &chord("s"), KeyContext::Canvas), None);
+        assert_eq!(lookup(&map, &chord("s"), KeyContext::Recording), None);
         // Two globals clash once, under global.
         let map = resolve("[bindings]\nzoom.selection = \"r\"\n");
         let contexts: Vec<KeyContext> = map.conflicts.iter().map(|c| c.context).collect();
@@ -3224,6 +3230,72 @@ mod tests {
         assert_eq!(key_name(&chord("ctrl+shift+z")), "Ctrl+Shift+Z");
         assert_eq!(key_name(&chord("alt+bracketleft")), "Alt+[");
         assert!(conflict_notes(&resolve("")).is_empty());
+    }
+
+    /// Q5 in every context: a conflict is found where both bindings are
+    /// active, and its key then runs neither of them anywhere, as the
+    /// hints, the caps and S22's banner say ("Neither runs until one is
+    /// changed"). `clip.split = "Escape"` clashes with `cancel` in
+    /// `global`: Esc went on cancelling a take (`recording`) and closing
+    /// an overlay (`overlay`), where `cancel` alone has it. `seek.prev-frame
+    /// = "s"` clashes with `clip.split` on the timeline: S went on splitting
+    /// with the canvas focused and stepping back while recording.
+    #[test]
+    fn a_conflicting_key_runs_neither_binding_in_any_context() {
+        for (toml, key, ids) in [
+            (
+                "[bindings]\nclip.split = \"Escape\"\n",
+                "Escape",
+                ["clip.split", "cancel"],
+            ),
+            (
+                "[bindings]\nseek.prev-frame = \"s\"\n",
+                "s",
+                ["seek.prev-frame", "clip.split"],
+            ),
+        ] {
+            let map = resolve(toml);
+            assert_eq!(map.conflicts.len(), 1, "{toml}: {:?}", map.conflicts);
+            assert_eq!(conflict_notes(&map)[0].ids, ids, "{toml}");
+            for ctx in KeyContext::ALL {
+                assert_eq!(
+                    lookup(&map, &chord(key), ctx).map(|b| b.id),
+                    None,
+                    "{key} in {ctx:?} ({toml})"
+                );
+            }
+            for id in ids {
+                let b = map.binding(id).unwrap();
+                assert!(!usable_keys(&map, b).contains(&&chord(key)), "{id}");
+            }
+        }
+        // What isn't in a conflict still runs where it is active: with S
+        // taken from the timeline's Left, Left is the canvas nudge's alone.
+        let map = resolve("[bindings]\nseek.prev-frame = \"s\"\n");
+        assert_eq!(
+            lookup(&map, &chord("Left"), KeyContext::Canvas).unwrap().id,
+            "layer.nudge-left"
+        );
+        assert_eq!(lookup(&map, &chord("Left"), KeyContext::Timeline), None);
+        assert_eq!(
+            lookup(&map, &chord("Right"), KeyContext::Recording)
+                .unwrap()
+                .id,
+            "seek.next-frame"
+        );
+        // And the hint bar, which leaves Esc out, says what runs.
+        let map = resolve("[bindings]\nclip.split = \"Escape\"\n");
+        for ctx in [
+            HintContext::Countdown,
+            HintContext::Recording,
+            HintContext::Dragging,
+        ] {
+            assert!(
+                hints(ctx, &map).iter().all(|h| h.keys != "Esc"),
+                "{ctx:?}: {}",
+                format_hints(&hints(ctx, &map))
+            );
+        }
     }
 
     /// A `keys.toml` people wrote: comments everywhere, dotted keys out of

@@ -800,7 +800,9 @@ each key press, first match:
    with `edit_target` and `ui.selected_layer` set → `Canvas`; otherwise
    `Timeline` (bindings active in `Global` are active there too,
    `Binding::active_in`).
-9. `keymap::lookup(keymap, chord, ctx)`; none → propagate.
+9. `keymap::lookup(keymap, chord, ctx)`; none → propagate (a key in a
+   conflict is none for its bindings in every context, Q5; steps 3–5 test
+   `cancel`'s keys the same way, `usable_keys`).
 10. GUI overrides: `export` → GUI action `export.panel`; `autocut.preview`
     → GUI action `autocut.page`; a runnable `layer.nudge-*` → the stage's
     GUI action of that id (D-33's burst, the stage registers them; WP4);
@@ -4562,8 +4564,17 @@ D-22, the D-30 caption, D-31. Re-registers `keys.help` and `palette.open`.
   `conflict_notes` (one per key and set of bindings: a clash in `global`
   and `recording`, or of two of three bindings in `recording`, is one; the
   rebound binding first), `conflicting_keys`, `default_keys`,
-  `is_rebound`, `key_name` ("X", "Ctrl+Shift+Z"). Inert both ways as
-  before (`lookup`, `usable_keys`; `gui_live`'s conflict case).
+  `is_rebound`, `key_name` ("X", "Ctrl+Shift+Z"). Inert both ways, in
+  every context: a conflict is found where both bindings are active, and
+  `lookup` then refuses its key to either binding wherever it is pressed,
+  the key the hints, caps and palette rows leave out (`usable_keys`; the
+  audit of this round found it inert only in the conflicting context:
+  Esc rebound to Split clip still cancelled a take and closed an overlay,
+  S rebound to Previous frame still split on the canvas and stepped while
+  recording). Held by `keymap`'s
+  `a_conflicting_key_runs_neither_binding_in_any_context`, the router's
+  test of the same name, `props_meta`'s lookup property and `gui_live`'s
+  conflict case.
 - `config::set_text` (`config::set` on the text, same validation, the same
   text-preserving edits); `qrec_shell::config_file::{set, write_text}`
   (bounded read, the edit, an atomic write that keeps the file's

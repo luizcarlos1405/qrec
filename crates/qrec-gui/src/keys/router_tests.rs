@@ -737,6 +737,64 @@ fn rebound_and_conflicting_keys_follow_the_users_keymap() {
     );
 }
 
+/// Q5 in every context: a key two bindings share where both are active
+/// runs neither of them anywhere, as the hint bar, the caps and S22's
+/// banner say ("Neither runs until one is changed"). Esc rebound to Split
+/// clip cancelled a take and closed an overlay (where `cancel` alone has
+/// it); S rebound to Previous frame split a clip with the canvas focused
+/// and stepped back while recording. The press reaches GTK now (an
+/// overlay swallows it); a button still runs its binding.
+#[test]
+fn a_conflicting_key_runs_neither_binding_in_any_context() {
+    let esc = keymap::resolve("[bindings]\n\"clip.split\" = \"Escape\"\n");
+    for mut scene in [
+        Scene::new(),
+        Scene::program(),
+        Scene::canvas(),
+        Scene::recording(),
+    ] {
+        scene.keymap = esc.clone();
+        assert_eq!(
+            scene.press("Escape").0,
+            KeyDecision::Propagate,
+            "Esc in {:?}",
+            context(&scene.rs())
+        );
+    }
+    let mut overlay = Scene::overlay();
+    overlay.keymap = esc.clone();
+    assert_eq!(
+        overlay.press("Escape").0,
+        KeyDecision::Swallow,
+        "the palette stays open"
+    );
+    let mut trimming = Scene::program();
+    trimming.local.drag = Some(DragKind::TrimEnd);
+    trimming.keymap = esc;
+    assert_eq!(trimming.press("Escape").0, KeyDecision::Swallow);
+
+    let s = keymap::resolve("[bindings]\n\"seek.prev-frame\" = \"s\"\n");
+    for mut scene in [Scene::program(), Scene::canvas(), Scene::recording()] {
+        scene.keymap = s.clone();
+        assert_eq!(
+            scene.press("s").0,
+            KeyDecision::Propagate,
+            "S in {:?}",
+            context(&scene.rs())
+        );
+    }
+    let mut canvas = Scene::canvas();
+    canvas.keymap = s;
+    assert_eq!(
+        decide_button("clip.split", &canvas.rs()),
+        decide_binding("clip.split", &canvas.rs())
+    );
+    assert_ne!(
+        decide_button("clip.split", &canvas.rs()),
+        KeyDecision::Propagate
+    );
+}
+
 /// The state the press leaves: its dispatched commands run through the
 /// core in order (what the person ends on).
 fn fold(scene: &Scene, chord: &str) -> State {
