@@ -97,7 +97,8 @@ The draft frames, the icons and the art were exported the same day
      pages; the folder and the host failing keep their interim page.
    - Until S24 is approved, a refused screen shows the approved S13b row
      error ("Access denied by the desktop portal"), the core toast, and
-     the Live picture without that layer.
+     the Live picture without that layer. (S24 is approved and built: the
+     S24 lane's canvas over that, G§4.6.)
    - Until S19 and S20 are approved, `Ctrl+K`, `:` and `?` (and the header
      Commands button) show the info toast "Not built yet" with "The command
      palette comes with milestone M5." or "The cheat sheet comes with
@@ -226,7 +227,7 @@ requirement review's numbering; H-n are host and engine calls.
 | D-47 | Recovery hold (A§5.3): UI-state commands (new `Command::ui_only()`: `Select`, `Seek`, `SetUi`, `SetCanvasMode`, `Play`, `Pause`, `Shuttle`) are never parked. Parked commands keep their order among themselves and resolve the selection and playhead when they run. The header shows "Recovering take 7…" meanwhile. | WP0a |
 | D-48 | **PO** Settings in M4: the dialog with its five tabs as drawn (S18b); only Project is enabled; the others are disabled with the tooltip "Not built yet" until WP9. | WP6 |
 | D-49 | Export panel: Setup, Done and Failed trap focus (Overlay keys; an outside click closes them). Running is passive: no focus trap and no click-catcher, keys and clicks reach the window (S15b: the S06 hints stay live), and `Esc`, `Ctrl+E` or the header slot close it. | WP0b, WP7 |
-| D-50 | Retrying the live preview (S24 "Try again", gated) goes through the Session: `GuiHost::retry_live()` posts `Msg::RetryLive`, which the session thread turns into `CaptureEngine::retry_live`, ordered with `SetLive` and `StartCapture` and logged. | WP0a, WP1 |
+| D-50 | Retrying the live preview (S24 "Try again", gated) goes through the Session: `GuiHost::retry_live()` posts `Msg::RetryLive`, which the session thread turns into `CaptureEngine::retry_live`, ordered with `SetLive` and `StartCapture` and logged. As built (the S24 lane): S24's canvas Try again runs `record.toggle` instead, as its drawn `R` cap says, like the hint bar's `[R] Try again` and S25 #11's toast (`KeyRouter::run_binding`, so `Session::dispatch`): a take asks the portal for its screens again. `retry_live` stays for a toast's `NoticeAction::RetrySource`. | WP0a, WP1 |
 | D-51 | **PO** A step while the program plays (`←` `→` a frame, `Shift+←` `Shift+→` 1 s, `↑` `↓` an edit point; a key or the transport's button) pauses it first and steps from the frame the picture shows, as an editor's frame step does (Resolve, Premiere): `Pause`, then one `Seek{To(f)}` to where the step lands from the player's frame (`apply::ui::seek_frame`). SPEC §10.2, DESIGN and BRIEF don't say what a step does while playing; before, a frame step barely moved (its seek landed within the sync's 2-frame tolerance of the playing player, which played on; R18's audit), and ±1 s and the edit jumps played on from where they landed (keeping that for them is the alternative). `Home`, `End`, a ruler click and the CLI's `qrec seek` still move a playing program on (the sync's once-a-second seek waits for the window's and loses to any seek that landed after the snapshot it read, G§3.10 step 3; the CLI's `--by` and `--edit` go from the player's frame). The sync leaves the playhead to the step's seek and holds the paused picture until it lands (G§3.10 step 2). | WP4 |
 | H-1 | Live preview: a `gtk4paintablesink` created on the GTK thread and handed to the engine (SPEC §5.2), composited at the preview size (≤ 960×540 × the device scale), BGRx. The RGBA appsink path stays for tests and as the picture before WP1 merges. | WP1 |
 | H-2 | Program playback: one GES timeline and pipeline per session, edited in place and committed; a second `gtk4paintablesink`. | WP1 |
@@ -2045,7 +2046,7 @@ a module list.
 | `src/{hintbar,toasts,modal}.rs` | C03, C23, C24 | WP6 |
 | `src/settings/{mod,project}.rs` | Settings shell (S18b), Project page | WP6 |
 | `src/settings/{appearance,recording,autocut,keyboard}.rs` | the other pages (stub: disabled tab, D-48) | WP9 |
-| `src/stage/**` | preview, overlays, countdown, transport, first run, portal denied (gated) | WP4 |
+| `src/stage/**` | preview, overlays, countdown, transport, first run, portal denied (S24, `denied.rs`) | WP4 |
 | `src/timeline/**` | toolbar, headers, canvas, overlay, gestures, drop target, tooltip, zoom | WP3 |
 | `src/panel/**` | header, banner, layer rows, audio rows, inspector, menus, autocut page | WP5 |
 | `src/bin_drawer/**` | bin drawer, rows, drag source (`src/bin/` would be a Cargo binary target) | WP7 |
@@ -2816,6 +2817,44 @@ anchor's frame under the anchor; a move preview's command, applied with
   "Screen access denied" or "Screen picker closed", "<output> · <label>",
   Try again (D-50). Not built (G§0.2): a refused screen has the core's
   toast, WP5's row error and a Live picture without it.
+  - As built (the S24 lane, `stage/denied.rs`; GTK-free, so not in
+    `view::canvas`, which the lane doesn't own): while the stage shows the
+    live picture, each visible screen layer whose live status is
+    `Refused` gets a block and its area (its rect within the canvas) the
+    hatch; the hatch is the painter's region, bottom to top: a refused
+    screen adds its area, a layer whose source is `Live` takes its
+    picture (`LayerBox.rect`) out, so L2 Face stays unhatched on top
+    (S24) and overlapping refused screens hatch once (disjoint rects).
+    The picture draws it (`stage/picture.rs`, under the canvas overlay
+    and the selection box): C19's 2 px stripes every 6 px across them,
+    45°, × the UI scale, one family of lines `x + y = n · 8.49` from the
+    picture's origin, so the bands around a layer on top continue each
+    other's stripes (on S24's row 150 they sit on the frame's columns).
+  - The block (`stage-denied`, stage.css): `video-scrim`, `lg` radius,
+    24/32 padding; the icon in `video-text`, the `title` 16 px under it,
+    the `caption` (80 %) 4 px under that: "<output> · <label>" (the
+    output alone without a label), or for a closed picker BRIEF's
+    variant line "Choose <output> in your desktop's dialog to record
+    it."; the secondary Try again with `record.toggle`'s cap 20 px under
+    that: 190 tall, its widest line + 64 wide, centered on the layer's
+    area and kept inside the preview. Named `denied-<layer>` and
+    `denied-try-again-<layer>` (G§8.4). Its z-order: over the canvas
+    overlay (its button takes clicks), under the readout, the guide
+    tags, the plates and the badges.
+  - Try again runs `record.toggle` as `R` does (`KeyRouter::run_binding`,
+    through `Session::dispatch`): the take asks the portal for its
+    screens again; disabled with the binding's reason as its tooltip when
+    `keymap::action_for` says it can't run (the header's Record says the
+    same). D-50's `retry_live` isn't used by it (the frame draws `R` on
+    the button; S25 #11's Try again starts the take again too).
+  - Not drawn, decided by the lane: the block shows whenever the live
+    preview's screen is refused, before any take too (the panel's row
+    says so then too); it steps aside while a take counts down, starts
+    or runs (`R` cancels or stops then, and the countdown's ring takes
+    the preview's middle; the hatch stays); a layer above that overlaps
+    the block draws under it (the composite is one picture; the plate
+    stays readable and its button reachable); Program, a bin preview
+    and a trim scrub show their own picture, with neither.
 
 Proptests: snapping never moves a feature more than the threshold; an
 aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
@@ -3574,6 +3613,7 @@ Two lanes, one compiling worktree each:
 | S12, S13b | WP5 | WP1–WP6 |
 | S18b | WP6 | WP1–WP6 |
 | S14, S15a, S15b, S15c, S16, S17, S18 | WP7 | WP1–WP7 |
+| S24 and its picker-closed variant | the S24 lane | WP1–WP7, WP9 (S25 #11's toast copy) |
 | S16b | WP6 | WP1–WP7 (WP7 changes its copy) |
 | widths 1300 and 1000, height 800, scale 1.5 and 2, reduced motion | each region's WP | WP1–WP7 |
 | theme proofs: S02, S06 in every theme; S18, S25 in Swamp Day and Night; the narrow sheet (BRIEF §7; boards, no frames) | WP10 (themes lane) | WP1–WP7, WP10 |
@@ -4009,6 +4049,26 @@ lane, measured on their re-shoots against the frames at full size
   frame's is 277–722) and its list 10 px higher, its scroll bar too (x
   1026–1029 as the frame's, y 430–579 for 440–587).
 - S18b: the Settings pages not built yet read disabled (D-48).
+- S24 (the S24 lane: `gui_stage`'s `s24_portal_denied` and
+  `s24_screen_picker_closed`, shots and compares in the lane's
+  `tmp/gui-shots/s24/`, measured on pixman at 1 with its
+  `tmp/measure_s24.py`; the variant has no frame: its plate is 337×190
+  on the same center, for its longer line): the block's plate
+  is the frame's 190 rows (y 239–428) and center (608.5, 334.0 for
+  608.0, 334.0), 225 px wide for 223: its title is 160 px of ink for 158
+  (whole-pixel advances, G§0). Inside it the icon's ink is the frame's
+  (x 593–622, y 266–291), the title's and the source's rows the frame's
+  within a row (316–326 for 315–326; 341–348), Try again's fill 552–663
+  × 373–404 for 553–662 × 373–404. The hatch's stripes sit on the
+  frame's columns (row 182: 144, 153, 161, …) and run on unbroken where
+  the frame's 120 px tiles restart theirs (pen's stripes jump 1–2 px at
+  y 184, 304, 424 and 544). By design: the source names `FAKE-1` (152 px
+  of ink for DP-4's 144), the fake camera's ball on black in L2, and the
+  toast is the core's until WP9's S25 #11 copy merges ("Take 10 is
+  broken" with the engine's reason, no actions; the frame's "Recording
+  didn't start", Try again, Open bin). The departures not drawn are in
+  G§4.6 (the block before any take, gone during a take's countdown,
+  start and recording; a layer above under it).
 - Scale runs: the departures of their cases at 1, nothing more at the
   device size. At 1.5 on pixman the window draws at its whole factor, 2,
   and sway scales the buffer down, so every 1 px rule is 1.5 px smeared
@@ -4606,7 +4666,8 @@ the stage; the player sync (G§3.10); D-04, the stage side of D-05 and
 D-17, D-09, D-16, D-26, D-27, D-32, D-33, the player side of D-40, the
 canvas side of D-43, D-44, the H-9 badge (its `proxy` input is
 `fit_size(canvas, out_size) != canvas`, G§3.10); the S24 overlay only after
-G§0.2. Writes `LocalUi.{layer_drag, first_run_checked, playing_rate}`.
+G§0.2 (built by the S24 lane: `stage/denied.rs`, G§4.6). Writes
+`LocalUi.{layer_drag, first_run_checked, playing_rate}`.
 
 **Acceptance.**
 - Canvas snapshots: the `stage_geometry` checks (G§4.6), the design
@@ -5393,7 +5454,8 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
 | X3 (`x3_project_cant_be_read`) | Base after a `clip split` (a history entry), c1b4's `out` set to 1400 (take 3 has 1377 frames); then `qrec.json` removed | launch; Return copies the restore command; `qrec history restore` works meanwhile; Ctrl+Q exits 1; the missing file: Ctrl+Q exits 1 |
 | D-13 (`d13_held_by_another_window`) | Base open in a first window (moved to workspace 2, so the second takes the output) | launch a second; Quit (the test channel's `blocking.quit`) exits 6, the first stays |
 | not responding (`a_holder_that_doesnt_respond`) | Base; the test holds the project's lock with a record (its own pid, `headless`, a socket that isn't there) | launch: the page after the 3 s a starting holder gets; Ctrl+Q exits 6 |
-| S19–S22, S24, S25 | per WP9 and WP4 | — |
+| S24 | Base, Live, `QREC_FAKE_PORTAL=deny` (the live preview's screen refused at once), S06's meter levels; `cancel` for the variant (`gui_stage`'s `s24_*`, shots in `tmp/gui-shots/s24/`) | close the live preview's "Live preview problem" toast (its 8 s would have passed); `wtype -k r`; wait for take 10 broken (within 500 ms of its `recordToggle`, by the window's log) and idle; capture; click Try again: take 11 aborts too; `Tab`: no block in Program. A third case: `recording.countdownSecs` 10 and `qrec record start` in the background (a start of the window's own stays unanswered through the countdown, so `waitIdle` would wait it out): the block before any take, gone while it counts down, back once the take aborted |
+| S19–S22, S25 | per WP9 | — |
 
 - **Scale runs**: S02, S06, S09 and S14 at `QREC_TEST_SCALE=2` and 1.5:
   regions scale; the live sink's caps are 1920×1080 at 2; strip textures

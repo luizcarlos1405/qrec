@@ -1,8 +1,9 @@
 //! The preview picture (S02, S06, D-27): the project's canvas background,
 //! the live or the program paintable fitted into it (a sink's picture is at
-//! most the canvas size: it is letterboxed, never cropped), and the
-//! preview's frame: a 1 px `border` stroke outside it, or S10's 2 px
-//! `accent` stroke during a trim scrub.
+//! most the canvas size: it is letterboxed, never cropped), S24's hatch
+//! over the refused screens' areas, and the preview's frame: a 1 px
+//! `border` stroke outside it, or S10's 2 px `accent` stroke during a trim
+//! scrub.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -10,8 +11,79 @@ use std::rc::Rc;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{gdk, glib, graphene, gsk};
+use qrec_core::view::Rect;
 
 use crate::theme::Palette;
+use crate::widgets::draw::HatchMetrics;
+
+/// S24's hatch (`stage::denied`): disjoint rects of the canvas (canvas px,
+/// scaled to the picture's size when it draws, so an allocation never
+/// lags) in `muted-20`, C19's stripes at the UI scale (`scale`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Hatch {
+    pub canvas: (f64, f64),
+    pub rects: Vec<Rect>,
+    pub scale: f64,
+}
+
+/// The 45° stripes (rising to the right) of a hatch at `metrics` that
+/// cross `rect` (widget px), each as the `c` of its center line `x + y =
+/// c`. They are one family for the whole widget, `c = n · step` from its
+/// origin, so the rects of one hatch line up wherever their edges are
+/// (C19's `widgets::draw::hatch` anchors each area at its own bottom,
+/// which would offset the stripes of the bands around a layer on top).
+pub fn stripe_lines(rect: &graphene::Rect, metrics: HatchMetrics) -> Vec<f32> {
+    let step = metrics.step();
+    if step <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return Vec::new();
+    }
+    // A line meets the rect from its top-left corner (the least x + y) to
+    // its bottom-right one; a stroke reaches a stripe's width further.
+    let reach = metrics.stripe;
+    let first = ((rect.x() + rect.y() - reach) / step).floor();
+    let last = ((rect.x() + rect.width() + rect.y() + rect.height() + reach) / step).ceil();
+    let mut lines = Vec::new();
+    let mut n = first;
+    while n <= last {
+        lines.push(n * step);
+        n += 1.0;
+    }
+    lines
+}
+
+/// Draws `hatch` on a picture of `w`×`h` px in `color`: each rect clipped,
+/// its stripes run past it by a stripe's width (so no stroke's end shows
+/// at an edge between two rects).
+fn draw_hatch(snapshot: &gtk::Snapshot, hatch: &Hatch, w: f32, h: f32, color: &gdk::RGBA) {
+    let (cw, ch) = hatch.canvas;
+    if hatch.rects.is_empty() || cw <= 0.0 || ch <= 0.0 {
+        return;
+    }
+    let (sx, sy) = (f64::from(w) / cw, f64::from(h) / ch);
+    let metrics = HatchMetrics::at(hatch.scale as f32);
+    for r in &hatch.rects {
+        let rect = graphene::Rect::new(
+            (r.x * sx) as f32,
+            (r.y * sy) as f32,
+            (r.w * sx) as f32,
+            (r.h * sy) as f32,
+        );
+        let lines = stripe_lines(&rect, metrics);
+        if lines.is_empty() {
+            continue;
+        }
+        let reach = metrics.stripe;
+        let (low, high) = (rect.y() + rect.height() + reach, rect.y() - reach);
+        let builder = gsk::PathBuilder::new();
+        for c in lines {
+            builder.move_to(c - low, low);
+            builder.line_to(c - high, high);
+        }
+        snapshot.push_clip(&rect);
+        snapshot.append_stroke(&builder.to_path(), &gsk::Stroke::new(metrics.stripe), color);
+        snapshot.pop();
+    }
+}
 
 /// What surrounds the preview.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -32,6 +104,7 @@ mod imp {
     pub struct StagePicture {
         pub paintable: RefCell<Option<(gdk::Paintable, Vec<glib::SignalHandlerId>)>>,
         pub background: RefCell<Option<gdk::RGBA>>,
+        pub hatch: RefCell<Hatch>,
         pub frame: Cell<Frame>,
         pub palette: RefCell<Option<Rc<Palette>>>,
     }
@@ -101,6 +174,7 @@ mod imp {
             let Some(palette) = palette.as_ref() else {
                 return;
             };
+            draw_hatch(snapshot, &self.hatch.borrow(), w, h, &palette.muted_20);
             let (width, color) = match self.frame.get() {
                 Frame::None => return,
                 Frame::Border => (1.0, palette.border),
@@ -188,5 +262,48 @@ impl StagePicture {
         if self.imp().frame.replace(frame) != frame {
             self.queue_draw();
         }
+    }
+
+    /// S24's hatch over the picture (none: no rects).
+    pub fn set_hatch(&self, hatch: Hatch) {
+        if *self.imp().hatch.borrow() != hatch {
+            *self.imp().hatch.borrow_mut() = hatch;
+            self.queue_draw();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// S24's hatch is one family of 45° lines for the whole picture (`x +
+    /// y = n · 8.49` at 100 %): the bands around a layer on top continue
+    /// each other's stripes, and every stripe that touches a rect is drawn.
+    #[test]
+    fn the_hatch_is_one_family_of_stripes() {
+        let metrics = HatchMetrics::at(1.0);
+        let step = metrics.step();
+        let top = graphene::Rect::new(0.0, 0.0, 960.0, 380.0);
+        let left = graphene::Rect::new(0.0, 380.0, 750.0, 144.0);
+        for rect in [top, left] {
+            let lines = stripe_lines(&rect, metrics);
+            for c in &lines {
+                let n = c / step;
+                assert!((n - n.round()).abs() < 1e-3, "{c} is off the family");
+            }
+            // From the top-left corner's x + y to the bottom-right one's,
+            // a stripe's width beyond each.
+            let lo = rect.x() + rect.y() - metrics.stripe;
+            let hi = rect.x() + rect.width() + rect.y() + rect.height() + metrics.stripe;
+            assert!(lines.first().is_some_and(|c| *c <= lo), "{rect:?}");
+            assert!(lines.last().is_some_and(|c| *c >= hi), "{rect:?}");
+            assert!(lines.windows(2).all(|p| (p[1] - p[0] - step).abs() < 1e-3));
+        }
+        // At 150 % the stripes are 9 px apart across them.
+        let wide = HatchMetrics::at(1.5);
+        let lines = stripe_lines(&top, wide);
+        assert!((lines[1] - lines[0] - 9.0 * std::f32::consts::SQRT_2).abs() < 1e-3);
+        assert!(stripe_lines(&graphene::Rect::new(0.0, 0.0, 0.0, 10.0), metrics).is_empty());
     }
 }
