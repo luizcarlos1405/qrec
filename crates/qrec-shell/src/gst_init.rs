@@ -119,9 +119,23 @@ pub(crate) mod testing {
     static PROBLEMS: AtomicU64 = AtomicU64::new(0);
     static HANDLER: Once = Once::new();
 
+    /// The cargo-nextest test group that keeps these tests one at a time
+    /// across processes (`.config/nextest.toml`).
+    const NEXTEST_GROUP: &str = "gst-pipelines";
+
     /// One pipeline test at a time: they're CPU-bound, their timing
     /// assertions shouldn't fight, and [`problems`] stays attributable.
+    /// Under cargo-nextest, a process per test, this lock keeps nothing
+    /// apart: the [`NEXTEST_GROUP`] test group does, and a test that takes
+    /// the lock outside it fails here.
     pub(crate) fn serial() -> MutexGuard<'static, ()> {
+        if let Ok(group) = std::env::var("NEXTEST_TEST_GROUP") {
+            assert_eq!(
+                group, NEXTEST_GROUP,
+                "a pipeline test outside nextest's {NEXTEST_GROUP} group: \
+                 add its module to the group's filter in .config/nextest.toml"
+            );
+        }
         install();
         LOCK.lock().unwrap_or_else(PoisonError::into_inner)
     }

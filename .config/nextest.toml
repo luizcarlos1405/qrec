@@ -1,0 +1,16 @@
+# cargo-nextest's settings for this workspace (scripts/check-quick and
+# scripts/check-full run the tests with it; docs/GUI.md G§8.4).
+
+# nextest runs each test in a process of its own, so the lock qrec-shell's
+# GStreamer pipeline tests take (gst_init::testing::serial: one at a time,
+# they're CPU-bound and their timing assertions shouldn't fight) holds
+# nothing back there. This group runs them one at a time instead, and
+# first, so the workspace's other tests fill the other slots meanwhile;
+# serial() fails a test that takes the lock outside the group.
+[test-groups]
+gst-pipelines = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(qrec-shell) & kind(lib) & test(/^(player::tests|ges_render::parity_tests|capture::(tests|fake_tests|meters::tests|record::tests))::/)'
+test-group = 'gst-pipelines'
+priority = 100
