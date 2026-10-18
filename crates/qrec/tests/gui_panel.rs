@@ -2344,10 +2344,17 @@ fn the_pages_slide_unless_motion_is_reduced() {
 /// timer's id: it stood still until mapped again, and its unmap removed
 /// the dead id (GLib's critical, then a second caught panic, "Failed to
 /// remove source").
+///
+/// Narrow (1000 wide), so the meters map only when the case opens the
+/// layers sheet, once the window settled. Docked, they mapped as the
+/// window opened, and when their first refresh (the one that panics) ran
+/// before the project's open, the open's panel refresh started the meter
+/// again before the case could see it stopped (M5: 3 of 10 runs alone at
+/// scale 2 and 2 of 10 at 1 read two meters ticking).
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn a_meter_comes_back_after_a_caught_panic() {
-    let mut nested = Nested::start(AREA, "meter-panic", Options::default());
+    let mut nested = Nested::start(AREA, "meter-panic", Options::size(1000, 1000));
     let preset = ui(|u| {
         u.canvas_mode = CanvasMode::Program;
         u.selection = vec![clip("c3e9")];
@@ -2362,6 +2369,10 @@ fn a_meter_comes_back_after_a_caught_panic() {
             .unwrap_or_else(|| panic!("no metersTicking: {local}"));
         (n, local["panics"].as_u64().unwrap_or(0))
     };
+    // The sheet is closed: no meter shows, none has refreshed.
+    assert_eq!(ticking(&mut nested), (0, 0), "the sheet closed");
+    let [x, y, w, h] = nested.window(0).regions(&["layers-button"])["layers-button"];
+    nested.pointer().click(x + w / 2.0, y + h / 2.0);
     let after = poll(Duration::from_secs(10), "the meter's panic", || {
         let (n, panics) = ticking(&mut nested);
         (panics == 1).then_some(n)
