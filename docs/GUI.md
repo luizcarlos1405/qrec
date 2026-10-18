@@ -17,9 +17,11 @@ feasibility spike in
 the scripts the harness needs into the repo, G§8.4).
 
 **Status.** M1 (core + CLI) and M2 (capture engine, hosts, IPC) are done.
-The Swamp Night slice (S01a–S18b, 26 frames) was approved on 2026-10-15.
-S19–S25 and X1–X3 are drafts (README "Later, not in this review").
-Nothing in `qrec-gui` exists yet.
+The Swamp Night slice (S01a–S18b, 26 frames) was approved on 2026-10-15
+and is built (M4, G§7.2). S19–S25 and X1–X3, drafts then, were approved as
+drawn (G§0.2), exported on 2026-10-17 and are built (M5: WP8, WP9 and the
+S24 lane, with the frames' icons and art; G§7.2's "Status after WP8 and
+WP9 (M5)").
 
 ---
 
@@ -524,7 +526,11 @@ capture side channel ─► qrec-side pump ─► latest-wins slots ─► GTK m
     in `Arc<Mutex<SideSlots>>`, one wake per batch.
   - `SideEvent::Preview` (before WP1, G§3.4.2): the latest frame.
   - `SideEvent::LiveStatus`: a slot. `SideEvent::LiveError`: a warning
-    toast "Live preview problem" with the message.
+    toast "Live preview problem" with the message. A portal refusal
+    (denied, or the picker closed: `on_event::record::portal_refusal`'s
+    rule) sends none since M5: the source's `Refused` live status carries
+    it, and the S24 block and the layer's row say it (it toasted at every
+    launch on top of them).
   - The player position: an `AtomicU64` read on the frame clock.
 
 ### G§3.6 GTK-side model
@@ -643,7 +649,14 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
   Others build a `Command` and call `ctx.store.dispatch`. Nothing else
   submits requests (R8).
 - **Default reply policy** (`store/replies.rs`):
-  - `Ok` → nothing (the snapshot shows the change).
+  - `Ok` → nothing (the snapshot shows the change), but an autocut run's
+    (not a dry run's): S25 #6, the run's label ("Autocut take 8: removed
+    4 silences (6.2 s)") as a success with Undo, or an info without it
+    when it cut nothing (`replies::autocut_done`). The core toasts a run
+    only when nobody waits for its reply, and the window always waits, so
+    `c` (`autocut.run`), the toolbar's Autocut, the palette's row and the
+    autocut page's Apply all toast this way (M5: only the page's Apply
+    did, with its own handler).
   - Immediate `Err` with `confirmation_required` → push
     `Overlay::Confirm { cmd, error }`. WP6 renders it from `view::confirm`;
     confirming re-dispatches with `confirmed: true`. A confirmation isn't
@@ -653,9 +666,10 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
   - Late `Err` → log only: the core's `Notify` already toasted it (H-7;
     `crates/qrec-core/tests/props_late_errors.rs` holds every `on_event`
     path to that).
-  - Widgets that own a flow (export panel, autocut page, purge) pass their
-    own `done`. One whose command comes back `confirmation_required` opens
-    the modal with `store.ask_confirmation(cmd, error, confirmed)`:
+  - Widgets that own a flow (export panel, the autocut page's dry runs,
+    purge) pass their own `done`. One whose command comes back
+    `confirmation_required` opens the modal with
+    `store.ask_confirmation(cmd, error, confirmed)`:
     confirming it hands `cmd` to `confirmed` (`Store::dispatch_confirmed`
     finds the hook), which sends it again with `confirmed: true` and its
     own `done`, instead of the default policy; the hook goes when the
@@ -2369,7 +2383,10 @@ conflicting chords drop out (`keymap::usable_keys`, made `pub`).
 8. Live mode and the project scene empty → FirstRun (the stage shows S01a
    only in Live, D-27; in Program an empty scene goes on to step 9; one
    rule for both, `view::canvas::first_run`).
-9. a screen refused and S24 approved → PortalDenied.
+9. Live mode and a screen refused (S24 approved) → PortalDenied: the
+   stage shows the block and Try again in Live only, so Program goes on
+   to its own states (M5; the window's live statuses empty in Program
+   anyway, the capture pipeline being down there).
 10. timeline empty → Empty.
 11. px/frame ≥ 24 → FrameZoom.
 12. selection not empty → ClipSelected.
@@ -2419,9 +2436,9 @@ decides, because some ids are handled by the GUI and not by
 | Modal | `[Tab]` "Move focus" · `[Enter]` "Activate focused button" · `[Esc]` "Cancel" |
 | Settings (not drawn) | `[Tab]` "Move focus" · `[Esc]` "Close" |
 | LayersSheet (not drawn) | `[Tab]` "Move focus" · `[Esc]` "Close"; with the autocut page: `[Enter]` "Apply autocut" · `[Tab]` "Move focus" · `[Esc]` "Cancel" |
-| Palette (gated) | `[↑][↓]` "Choose" · `[Enter]` "Run" · `[Esc]` "Close" |
-| PortalDenied (gated) | `record.toggle` "Try again" · `canvas.mode` "Program" · `bin.toggle` "Bin" · `keys.help` "All keys" |
-| Blocking | S23: `[Enter]` "Check again" · `app.quit` "Quit"; other pages: `app.quit` "Quit" |
+| Palette (S19) | `[↑][↓]` "Choose" · `[Enter]` "Run" · `[Esc]` "Close" |
+| PortalDenied (S24, Live only) | `record.toggle` "Try again" · `canvas.mode` "Program" · `bin.toggle` "Bin" · `keys.help` "All keys" |
+| Blocking { page } (WP8, `view::blocking::hints`) | S23: `[Enter]` "Check again" · `app.quit` "Quit"; X3: `[Enter]` "Copy command" · `app.quit` "Quit"; X1's and D-29's modal: `[Tab]` "Move focus" · `[Enter]` "Activate focused button" · `[Esc]` "Quit"; the other pages: `app.quit` "Quit" |
 
 Status string (right side): "Snapping on" / "Snapping off", then
 `format::canvas`: "Snapping on · 1920×1080 · 30 fps".
@@ -2844,6 +2861,8 @@ anchor's frame under the anchor; a move preview's command, applied with
     `denied-try-again-<layer>` (G§8.4). Its z-order: over the canvas
     overlay (its button takes clicks), under the readout, the guide
     tags, the plates and the badges.
+  - No "Live preview problem" toast repeats the refusal (M5, G§3.5); the
+    take a refusal stops still toasts S25 #11 ("Recording didn't start").
   - Try again runs `record.toggle` as `R` does (`KeyRouter::run_binding`,
     through `Session::dispatch`): the take asks the portal for its
     screens again; disabled with the binding's reason as its tooltip when
@@ -3179,15 +3198,17 @@ without "confirmation required: " and without the CLI hint.
 
 `notices::error_notice(&CoreError, &Command, &State) -> Option<Notice>`:
 level Error for `io`, `internal`, `capture_failed`, `missing_dependency`;
-Warning for the rest; title = the message with its first letter
-uppercased; body = the hint. `notices::unavailable_notice(binding_id,
+Warning for the rest; title = the message with its first letter uppercased
+(`format::capitalized`, the rule every view uses for a core message: a
+file name it starts with keeps its case, "qrec.json is not valid JSON: …",
+since M5); body = the hint. `notices::unavailable_notice(binding_id,
 reason, &State) -> Option<Notice>` (D-34): `None` for "Nothing to cancel";
 `record.*` during an export → "Can't record while exporting" / "Recording
 works again once the export finishes or you cancel it." / Show export;
 `take.discard-last` with the newest take's clips gone → "Nothing to
 discard" / "Take N has no clips on the timeline." (S25 #7); otherwise an
-info toast titled with the reason. (`palette.open` and `keys.help`
-toasted "Not built yet" until WP9 built them.)
+info toast titled with the reason. (`palette.open` and `keys.help` toasted
+"Not built yet" until WP9 built them.)
 
 ### G§4.10 `view::settings` (WP6): the Settings shell and the Project page (S18b)
 
@@ -3312,7 +3333,7 @@ below; read them with `Get` while `design/qrec.pen` is active).
 | C04 Header | `cnIdP` + variants, `Xba2H` minimal | `adw::HeaderBar` + custom title; Export slot is a `gtk::Stack` (button / progress); `headerbar.recording { box-shadow: inset 0 -2px var(--qrec-record), inset 0 -1px var(--qrec-border) }` (the hairline over the line's last row); the minimal one (`minimal-header`, the blocking pages'): the 24 px app icon at x 12, the wordmark at x 44, close at x 1560, no title (WP8) | WP6 (minimal: WP0b, WP8) |
 | C05 Mode switch | `UUcbL` | `adw::ToggleGroup` (icons + labels) + the Tab key cap | WP6 |
 | C06 Badges, REC cluster, Saving | `D4pSZ`, `DlEnG`, `oHR8h`, `KwxRc`, `h5PLfO`, `hyWmc` | boxes in the stage overlay; the torch from `motion::now()` (G§3.14); timer label on the frame clock | WP4 |
-| C07 Countdown | `sTIwH`, `HPxd8`, `Q6JiWV` | `CountdownOverlay` (snapshot: `gsk::PathBuilder` arc, `gsk::Stroke` 6 px; Pango digit) | WP4 |
+| C07 Countdown | `sTIwH`, `HPxd8`, `Q6JiWV` | `CountdownOverlay` (snapshot: `gsk::PathBuilder` arc, `gsk::Stroke` 6 px; Pango digit; "10", not drawn, shrinks to stay inside the ring: `countdown::digit_fit`, M5) | WP4 |
 | C08 Selection box, guides, readout | `QW4cD`, `RzfIE`, `qcdxC`, `HxSV4`, `j2VytN`, `Q72wi` | `CanvasOverlay` (snapshot; dashes with `gsk::Stroke::set_dash(&[4.0, 4.0])`) | WP4 |
 | C09 Layer row | `zuB2D` + states | `gtk::ListBox` row; `gtk::EditableLabel` that takes no pointer or focus until Rename (a click selects the row; the source line hides while renaming; a `TextBox` to screen readers, named "Name of layer Face": WP10); reorder is a `GestureDrag` inside the list (a lifted ghost row, a 2 px drop line, `Esc` through D-42's drag cancel), not `DragSource`/`DropTarget`; grip, eye and lock revealed by opacity on hover, or when the keyboard reaches them; a focused row wears only its ring | WP5 |
 | C10 Audio row | `b5Kxv` + states | composite; M/S `gtk::ToggleButton.track-toggle`; the name C09's rename field ("Name of track Yeti Nano": WP10) | WP5 |
@@ -3386,7 +3407,8 @@ a 32 px icon button's icon is 20 px.
 | The cheat sheet: Close, Copy niri snippet (WP9) | `x`, `copy` | 16 |
 | Settings › Keyboard: the banner's warning, Open keys.toml, Change shortcut, Reset to default, a conflicting key's flag (WP9) | `triangle-alert` (`warning-text`), `external-link`, `pencil`, `rotate-ccw`, `triangle-alert` (`warning-text`) | 20, 16, 16, 16, 12 |
 | Settings › Appearance: the selected theme card's check, drawn by the card (WP9) | `circle-check` (`accent`) | 16 |
-| Not built yet (WP8 drafts) | `copy`, `folder`, `chevron-right` (S23's disclosure), `circle-check` (S23) | — |
+| Blocking pages (WP8): S23's passed checks and their disclosure, Copy report and a row's Copy; X2's folder (the open folder for D-13's and the not-responding page); X3's Copy command | `circle-check` (`success-text`), `chevron-right`, `copy`; `folder` / `folder-open`; `copy` | 16 |
+| S24's block over a refused screen (the S24 lane) | `monitor-x` (`video-text`) | 32 |
 
 GTK's and libadwaita's own widgets still look up two names for images
 Qrec never shows: the switches' `switch-on`/`switch-off-symbolic` (made
@@ -3623,11 +3645,13 @@ Two lanes, one compiling worktree each:
 | S12, S13b | WP5 | WP1–WP6 |
 | S18b | WP6 | WP1–WP6 |
 | S14, S15a, S15b, S15c, S16, S17, S18 | WP7 | WP1–WP7 |
-| S24 and its picker-closed variant | the S24 lane | WP1–WP7, WP9 (S25 #11's toast copy) |
+| S24 and its picker-closed variant | the S24 lane | WP1–WP7, WP9 (S25 #11's toast copy), the integration's fixes (M5) |
 | S16b | WP6 | WP1–WP7 (WP7 changes its copy) |
 | widths 1300 and 1000, height 800, scale 1.5 and 2, reduced motion | each region's WP | WP1–WP7 |
 | theme proofs: S02, S06 in every theme; S18, S25 in Swamp Day and Night; the narrow sheet (BRIEF §7; boards, no frames) | WP10 (themes lane) | WP1–WP7, WP10 |
-| S23, S23 stuck, X1, D-29 export wait and idle host, X2, X3, D-13, not responding (`gui_blocking`) | WP8 | WP8 and the icons and art lane (their icons, the signpost and the app icon) |
+| S23, S23 stuck, X1, D-29 export wait and idle host, X2, X3, D-13, not responding (`gui_blocking`) | WP8 | WP8 and the icons and art lane (their icons, the signpost and the app icon), M5's minimal header fix |
+| S19, S19b, S20, S20b, S21, S22, the Recording and Autocut pages, S25's eleven toasts (`gui_overlays`) | WP9 (the wp9-ui lane) | WP9, the icons and art lane, the integration's S25 #6 from `c` and #8 for real (M5) |
+| a two-digit countdown (`gui_stage`; no frame) | the integration (M5) | M5 |
 
 For each case whose final set just completed, the integrator runs `cargo
 test -p qrec --test gui_<area> -- --ignored --test-threads=1`, lists the
@@ -3876,329 +3900,7 @@ the license) are the integrator's; `nix build --dry-run` evaluates, and
 `data/install.sh` into a scratch prefix with `desktop-file-validate` on
 its entry passes. The gles2 and the scale runs are the integrator's too
 (the lane runs pixman at 1 only); every final shot is re-shot, with its
-compare in `tmp/gui-shots/final/`. Visible
-departures of the final shots after WP10's fixes and the icons and art
-lane, measured on their re-shoots against the frames at full size
-(pixman's numbers; gles2's the same where not named;
-`tmp/fix12/notes/`, the icons' `tmp/icons-art/measure/`):
-
-- Everywhere, by design (G§8.4's known differences): the fake sources'
-  names and test patterns, the fake tone's levels and block waveforms in
-  the cases that don't pin the meters (`QREC_GUI_TEST_LEVELS` pins only
-  the panel's), real elapsed times and dates (the exports' and logs'
-  names), the test project's paths, no pointer in the shots (S11's frame
-  draws the hand).
-- Everywhere: the fixture's files are small, so every size is the
-  fixture's ("5 takes · 31.4 MB", "10 files (17.0 MB)", "1.6 MB").
-- Everywhere: the icons are the frames' (G§5.2) and the art the pen's
-  (G§3.14), measured on the icons and art lane's re-shoot. Each icon's
-  ink box in the frame and in the shot (57 places in S01a, S02, S06,
-  S07, S10, S12, S14, S16, S16b and S17; `tmp/icons-art/measure/`): 43
-  are the frame's box at its place within a pixel, with 92–116 % of its
-  ink (116: the 12 px check's 12 ink units for 10); S17's error icon is
-  in the frame's place with its ink, its box a row shorter at each end
-  (the frame's edge is softer there); the others move with their group
-  or line: the toolbar's (below), the A1 and A2 rows' and headers' mic
-  and speaker 1–2 px high with their lines (S02's track names are
-  1.0–1.7 px high), the Autocut tag's scissors 4 px right after the
-  name's and the A1 cap's widths, S10's ripple arrow 2 px right with its
-  tag's mono, S16b's toast icons 16–17 px in (its width, below), the
-  LIVE badge's video icon 12 px of ink for 14 over the fake's blue (its
-  edge pixels), and the take banner's `Layout ▾` chevron (S06 and every
-  shot with the banner) 4 px left of the frame's, its label 8 px: the
-  menu button's 8 px insets and gap and the banner's 6 px end padding
-  where C13's are 6, 4 and 4. The art,
-  drawn by `gtk::Svg` and compared with the pen's PNGs at 1× and 2×
-  (gui_shell's `art` op, over Swamp Night's `bg` and over white): the
-  app icon, the quiet swamp, the signpost and the REC glyph within
-  antialiasing (no pixel more than 24 levels past the range of the pen's
-  3×3 around it, at most 0.52 % of the pixels more than 8).
-- Everywhere: mono text is the bundled JetBrains Mono, but each glyph
-  advances a whole pixel (7 px at 11 and 12 px, 8 px at 13 px, where the
-  frames advance 6.6, 7.2 and 7.8 px), so a mono string drifts 0.2–0.4
-  px per character, as WP10's text-rendering experiment measured it
-  (G§3.14): the ruler's labels +4, the ruler corner's "00:04:06:11" +2,
-  S06's transport +4.8, its clip tooltip's second line −9.9, S12's
-  summary timecodes −2 each, S14's take lines −2, S16's file path −8.8
-  and S17's stderr lines −5…−10 (51 characters: −10; re-wrapped, below);
-  4 of the 21 mono texts it measured are within a pixel of the frames (a
-  short field like "1500 px" is). Kept: the setups that bring every text
-  within a pixel (unhinted metrics, 21 of 21) bring back the header
-  title's stray mark on GL (PO's call, G§8.7 #9). Key caps follow their
-  legends: the medium caps' fills are the frames' but for a pixel or two
-  in a multi-letter legend (the mode switch's Tab 29 px for 28, so the
-  switch is 177 px for 176; Ctrl 43 for 41, Esc 29 for 28).
-- Everywhere: Atkinson's glyphs advance whole pixels as well, so a UI
-  line runs a few px off the frame's width, wider or narrower with its
-  size and letters: of 48 UI texts the experiment measured, 30 are
-  within a pixel (unhinted metrics: 46, the other two style), the rest
-  −5.2…+9.8 (S16's body "Layers! Like an onion. Your video is ready."
-  +9.8, S17's lead +9.3, the header title "rust-traits-talk" +3.5, S12's
-  "Removes 4 silences" +2.3, take 7's line in S14 −4.8, S12's subtitle
-  −2.7). The UI text's ink weighs the frames' (100 % on average), the
-  mono text's a little lighter (93 %), in every setup. Some lines sit a
-  pixel or so off the frames' baselines: S02's track names 1.0–1.7 px
-  high, S14's take lines about 1 px high; S12's summary heading is on
-  the frame's baseline, its title's glyphs a pixel shorter and its
-  mono's a pixel taller; on gles2 some rows sit half a pixel to a pixel
-  lower than on pixman (S12's summary rows from y 588 for 587).
-  Text-sized controls follow the widths: S15a's Draft and High segments
-  are 2 and 1 px narrower (55 and 54 for 57 and 55), S04's REC badge 70
-  px wide for 68 (72 with gles2's softer edge), the header slot's mini
-  bar 2 px left of the frame's (its percentage 20 px of ink for 22),
-  S16b's toast narrower (below), the hint bar's items (below). The
-  experiment's crops (8×, and the scale-2 shots at 4×) and numbers are
-  in `tmp/text-rendering/` for the PO; WP10's fixes re-measured its 69
-  items on their re-shoot (`tmp/fix12/notes/`): the same widths, but
-  where a fix moved or re-wrapped a text.
-- Every shot's hint bar: its items follow their caps' and texts' widths,
-  within 3 px of the frames' (S12's and S17's last items 2–3 px right,
-  S06's and S14's 1–3 px left).
-- Every timeline shot: the toolbar's items are the frames' within 1–2 px
-  (the key caps' fills from x 90, 189, 311 and 1098 for 89, 188, 309 and
-  1099; the Snap toggle 95 px as the frames', 1 px right; the divider at
-  218 for 217), its icons the frames' boxes (the left group's 0–2 px
-  right with their labels, the right group's 2 px left); in the right
-  group the clip count is 3.7 px narrower (its mono) and the zoom
-  slider's track ends at x 1003 for 1007. At the fit zoom (every fit
-  shot) zoom out is unavailable (G§4.3: px/frame > fit) and drawn dimmed
-  (85 % of the frame's ink), where the frames draw it enabled.
-- Every fit shot (G§1.3's fit inset: the timeline fits into 8 px less
-  than the frames' 1040): clip edges, the playhead and S11's caret sit
-  up to 8 px left of the frames' (S11's caret at 403 for 404.9), the end
-  playhead whole at x 1207–1208 where the frames' is cut at 1215 (S02,
-  S03, S04, S05, S05b), and in the 10-clip timeline (S02, S03, S04b,
-  S06, S07, S11, S13, S14, S15a, S15b, S17, S18, S18b) take 1's second
-  clip reads "1" where the frame reads "Take 1" (c8a1 is 63.8 px wide,
-  the frames' 64.3, G§4.5).
-- S01a: the frame's "Add a layer or audio track first" tooltip is not in
-  its compare: gui_chrome's `s01a-header-tooltip` shoots it.
-- S01b: the first run names its layers and tracks after their sources
-  ("Camera", "Screen FAKE-1", "Built-in Audio Analog Stereo", A2 at 0.0
-  dB) where the frame reuses the fixture's (Face, Main screen, System
-  audio at −6 dB); "Press [R]"'s large cap sits 2 px left and 1 px up of
-  the frame's (its 26×25 fill as theirs).
-- S03 (and its reduced-motion run): the digit sits on a `video-scrim`
-  disc the ring's size (C07; G§0's M4 decision: over the dim alone it
-  read 2.53:1 over a white screen, on the disc 10.10:1), where the frame
-  draws it over the dim alone, so the preview inside the ring is darker
-  than the frame's (gui_stage's S03 probe: no channel past 62 under the
-  digit).
-- S04, S04b, S05: the timers read the real elapsed time (`00:02:41:27`
-  for `00:02:41:12`).
-- S04, S04b, S05 (and S04's reduced-motion run): the ghost's lanes carry
-  the live waveform only where the level ring has readings, the seconds
-  since the window opened, at the ghost's right edge, and are silent to
-  their left (the fake hook's record offset starts take 10 before any
-  reading: 2:41 back, S04b's 31 s), where the frames' takes have levels
-  all along.
-- S04b: the record-over hatch over c2d0's lanes is fainter than the
-  frame's: its stripes #4E4133 at their middle for #625542 (#504233 on
-  gles2), the lane's ground #322820 for #342920 (gles2's the frame's).
-- S06, S09, S10, S11: "+ Add layer", "+ Add audio track" and the
-  header's `+` are disabled in a take layout (D-07); the frames draw
-  them enabled.
-- S06, S07, S10, S11: the timeline tooltips sit as the frames' and are
-  as tall (S06's and S07's clip tooltip 78 px, its caps' 14×13 fills
-  theirs; S10's and S11's 44 px), their widths their text's: the clip
-  tooltip 341 px of fill for 350, S10's 214 for 222 (S11's 179 is the
-  frame's).
-- S07, S08: Program with no clip selected is read-only (D-06): the
-  panel's rows, audio controls and adds are disabled where the frames
-  draw them enabled.
-- S11: the lifted copy's top 4 px (its take stripe, which the frame
-  draws over the ruler's bottom edge) are cut at the canvas's top.
-- S12: the summary heading is 11 px wider (its title +2.3,
-  the gap before "(6.2 s)" and the mono the rest). The knobs, the
-  regions' rows and the preview are as drawn: each region's hatch, edges
-  and tag, and the dimmed rows, within 1–2 px.
-- S13: the frame shows the drag and L1's hover at once; the drag shot
-  has no hover (L1's hover is its own shot, `s13-layer-editing`).
-- S13b: a dragged row's copy follows the pointer over the rows, with the
-  drop line at the slot (the frame lifts the row above the line and
-  moves the rows under it), and the row left behind keeps its hover
-  reveal at 0.4; the rename field opens with the name selected; the
-  focus ring is shot on L1 ("Main screen"), the board's on a "Face" row.
-- S14: the thumbnails are the fake test pattern's (take 6's from its
-  first frame: 7 frames have no strip image); take 2 reads "Removed from
-  the timeline." where the frame reads "Discarded with D." (the fixture
-  writes no history, G§8.4).
-- S15a: "software encode (x264)" where the frame names VA-API on
-  renderD129 (the fake backend probes no VA device, G§8.4).
-- S15b and S15c's running page: the file and "as it was at" carry the
-  export's real start (the setup's preview is the test-mode now,
-  15:30:12; the job is named when it starts); elapsed and left are real;
-  the shot is taken once `qrec status` has the job at 42 % or more, and
-  it lands at 42–44 % on either renderer (43 % on both in WP10's fixes'
-  re-shoot), where several units render at once, so the label is further
-  on ("Rendering clip 8/10", the frame's 6/10 at 42 %).
-- S16, S16b: the Smoke fixture's export (3 clips of 30 frames: 1.6 MB,
-  00:00:03:00, took 00:00:01 or 02, its own name), in the Smoke project:
-  the header's "3 clips · 00:00:03:00", its 3-clip timeline with its
-  middle clip c1b2 (take 3) selected and the playhead in it at
-  00:00:01:15 (the frame selects take 5's c2d0 at 00:01:21:07), so the
-  panel shows take 3's layout, and the bin chip reads 6 (the takes its
-  timeline doesn't use; the frame's 5). S16b shows that whole window,
-  and its toast is 467 px wide where the frame's is 500: it sizes to its
-  text (DESIGN's 360–560), 12 px from the body's end to the close button
-  where the frame leaves 28.
-- S17: it fails at 11 % (units 1 and 2 rendered, 867 of 7,391 frames;
-  the frame's 37 %); Open full log names the failed segment's log
-  (`.qrec/logs/<stamp>-<pid>-j1-seg2.log`, ellipsized at its start)
-  where the frame names `export-20261014-153012.log`; the frame's first
-  stderr line looks faded (not built: a pen-file need). The box shows
-  BRIEF's last lines, wrapped on its narrower mono where the frame's
-  break: its "initialise VAAPI connection: -1 (unknown libva error)."
-  fits one row (the frame puts "error)." on the next), so its ten rows
-  start a row earlier, at the end of ffmpeg's `Stream #1:0` line (the
-  wrapper's render-node line comes first). Its scroll bar is the
-  frame's.
-- S18: the modal has no history clause (the frame's "…, and the 6
-  history entries that mention these takes are removed too.": the
-  fixture has no history), so it is 20 px shorter (y 287–712 where the
-  frame's is 277–722) and its list 10 px higher, its scroll bar too (x
-  1026–1029 as the frame's, y 430–579 for 440–587).
-- S18b: none since WP9 (the other tabs open, as the frame draws them).
-- S24 (the S24 lane: `gui_stage`'s `s24_portal_denied` and
-  `s24_screen_picker_closed`, shots and compares in the lane's
-  `tmp/gui-shots/s24/`, measured on pixman at 1 with its
-  `tmp/measure_s24.py`; the variant has no frame: its plate is 337×190
-  on the same center, for its longer line): the block's plate
-  is the frame's 190 rows (y 239–428) and center (608.5, 334.0 for
-  608.0, 334.0), 225 px wide for 223: its title is 160 px of ink for 158
-  (whole-pixel advances, G§0). Inside it the icon's ink is the frame's
-  (x 593–622, y 266–291), the title's and the source's rows the frame's
-  within a row (316–326 for 315–326; 341–348), Try again's fill 552–663
-  × 373–404 for 553–662 × 373–404. The hatch's stripes sit on the
-  frame's columns (row 182: 144, 153, 161, …) and run on unbroken where
-  the frame's 120 px tiles restart theirs (pen's stripes jump 1–2 px at
-  y 184, 304, 424 and 544). By design: the source names `FAKE-1` (152 px
-  of ink for DP-4's 144), the fake camera's ball on black in L2, and the
-  toast is the core's until WP9's S25 #11 copy merges ("Take 10 is
-  broken" with the engine's reason, no actions; the frame's "Recording
-  didn't start", Try again, Open bin). The departures not drawn are in
-  G§4.6 (the block before any take, gone during a take's countdown,
-  start and recording; a layer above under it).
-- Scale runs: the departures of their cases at 1, nothing more at the
-  device size. At 1.5 on pixman the window draws at its whole factor, 2,
-  and sway scales the buffer down, so every 1 px rule is 1.5 px smeared
-  over two device px (WP10's audit: Cairo renders no fractional scale);
-  gles2's shots read the same rows (the header's hairline at 1.5: one
-  device row of `border`, #3A4A2C, under one halfway to `surface`,
-  #2B3721, on either renderer).
-- Reduced motion: S04's REC badge has no torch glow (DESIGN's reduced
-  motion; the frames are the animated look at frame A); S15c's bar is
-  flat with no bubbles, as the board's. S03 shows nothing of it: test
-  mode holds the countdown at its end (the digit at scale 1, a full
-  ring) with motion reduced or not, so S03-reduced is S03's picture but
-  for the fake camera's moving dot (146 px on pixman; on gles2 152, and
-  32 px of the unpinned A2 meter). Not in a shot: the Narrow sheet shows
-  and goes at once under reduced motion, where DESIGN asks a 120 ms fade
-  (WP10's audit, G§3.14).
-- Adaptive (DESIGN Layout, G§3.15; no frames, so checked against the
-  rules): S02 at 1300×1000 is Medium: the panel docked at 320 (its source
-  lines ellipsize, "GIGA-BYT…"; with no layer selected the inspector shows
-  its empty line, so its 2-up fields aren't in the shot), the stage 980
-  wide with the preview fitted at 948×534 and the transport under it, the
-  timeline 980 wide (the ruler's last label cut at its edge); the header
-  and hint bar keep every item. At 1000×1000 it is Narrow: no docked panel,
-  the stage and the timeline full width (the preview at 960×540), the
-  header's layers button left of Record, and the hint bar leaves out its
-  last item ("? All keys") whole; the button opens the sheet over the
-  right 384 px from the header to the hint bar, the content under it
-  dimmed by the theme's `shadow-e2-contact` (35 % black in Swamp Night:
-  the timeline's `surface` #1C2416 reads #12170E; WP10's bridge, where
-  libadwaita's own 25 % neutral read #151B11) and the button pressed, the
-  hint bar naming the sheet's keys only, `[Tab] Move focus · [Esc] Close`,
-  and `Esc` closes it. S06 at 1600×800 is compact: the timeline 232 px
-  (toolbar 36, ruler 28, video 72, lanes 48), the stage 488 with the
-  preview fitted at 746×420 and the transport under it, the panel 720
-  high; nothing else moves.
-- Theme proofs (BRIEF §7, `final/themes/`; no frames, G§0.3): S25 is one
-  toast per core level (info, warning, success, error), not the draft's
-  eleven variants (their frame is exported now; WP9's drawn part shoots
-  them). Re-shot after the WP9 lane (its copy and DESIGN's width, below;
-  the play, perf and wp9 lanes' integration, both themes, both
-  renderers): the error toast is "qrec.json changed on disk but isn't
-  valid" with Copy details, 560 px wide and its body in 2 lines (it was
-  607 px, "qrec.json on disk is invalid", its body in 3: WP6's `toasts.rs`
-  sized it by characters and kept the body's line break); the success
-  toast's Frame saved names `frames/rust-traits-talk-v2-take-0005-00012107.png`
-  on one line, 439 px wide (516 with the absolute `/tmp/…/frames/…png` on
-  two, where BRIEF's S25 #4 shows `frames/…`); info and warning are as
-  they were (360 and 371 px).
-
-WP9 lane (2026-10-17, on 65ee67d; WP9's parts that need no drawing,
-WP9's "As built"): no shot of S19–S22 or S25's variants yet, their
-frames aren't in the build (G§0.6), so these departures are of copy and
-measured layout only.
-
-- Copy from BRIEF, not from a frame (the frames will be compared when
-  they come):
-  - S25 (D-21), from its table: #2 "Recovered take 7 from the bog." /
-    "Qrec closed while it was recording. The take is in the bin." / Open
-    bin; #3 "Take 6 lasted 7 frames. Takes need at least 10." / Open bin;
-    #4 the project-relative `frames/…` path; #5 "Take 10 moved to the
-    bin" / "Its clip left the timeline. Files are kept." / Undo; #6 the
-    cut's Undo; #7 "Nothing to discard" / "Take 10 has no clips on the
-    timeline."; #8 "Camera / Screen / Mic / System audio disconnected" /
-    "<device> stopped sending frames. Take N keeps recording without <id>
-    <name>."; #10 "qrec.json changed on disk but isn't valid" / "<why>.
-    Keeping the last good state." / Copy details; #11 "Recording didn't
-    start" / "<why>, so take N stopped before any frames. It's marked
-    broken in the bin." / Try again · Open bin (Open bin alone when the
-    capture engine is stuck: it refuses every start until a restart). #1
-    and #9 were in already.
-  - The lane's own words where BRIEF draws nothing: #2's body for a
-    recovered take too short to place too (its bin row says why, D-18);
-    #5 for several clips ("Its 3 clips left the timeline") and for the
-    clips a record-over discard puts back ("; c4a7 is back"); #8 for the
-    take's last source ("It was take N's last source, so the take
-    stops.") and while finalizing (its first sentence alone); #10's Copy
-    details ("qrec.json changed on disk but isn't valid: <why>.", then
-    "Restore the last good state from history: qrec history restore N
-    --yes", X3's line); #11's <why> is the engine's ("L1 (GIGA-BYTE
-    GS27QA): screen sharing for DP-4 failed: …"), BRIEF's "Screen access
-    to DP-4 was denied" needs the shell to report a portal refusal as
-    such (S24, the shell's); #7's other refusals keep `action_for`'s
-    reason. S25 draws key caps on four toast buttons: #5's and #6's Undo
-    `[Ctrl][Z]`, #9's Show export `[Ctrl][E]` and #11's Try again `[R]`
-    (`design/export/html/S25-toasts.html`); the built toasts' buttons show
-    none, a departure until S25 is built from its frame (WP9's drawn part).
-  - S19: the "Recent" group, then Record, Playback, Edit, Output, View
-    and Canvas (G§4.11 adds Canvas, the layer nudges); "Clear undo
-    history" after Redo (D-19). Labels and CLI forms are the core
-    keymap's (D-31): S19's "Split clip · qrec clip split" reads "Split
-    clip at the playhead · qrec clip split <clip> --at <t>". Reasons are
-    `action_for`'s ("Needs a contiguous selection" is BRIEF's too), plus
-    the lane's "Select the clips to zoom to" (Zoom to the selection with
-    nothing selected) and "The undo history is empty".
-  - S20: "Keyboard shortcuts", "Search shortcuts", the footer "Keys come
-    from ~/.config/qrec/keys.toml. Change them in Settings › Keyboard.",
-    Global (niri)'s rows "Record toggle", "Record over", "Discard last
-    take" with `Mod+Shift+R/O/D`, "Copy niri snippet"; G§4.11's "3
-    shortcuts match “trim”" (with the core labels "trim" matches 6), and
-    the lane's "1 shortcut matches …", "No shortcuts match …".
-  - S21: "Theme", "Swamp Night" (captioned "Default"), "Swamp Day",
-    "Dragon's Keep", "Ogre Mode", "Interface size", "100%" · "125%" ·
-    "150%", "Reduce motion" (captioned D-30's "Also on when your system
-    asks for less motion.", not BRIEF's), "Sounds", "Squelch on record
-    start and stop".
-  - S22: "1 conflict in ~/.config/qrec/keys.toml", "X is bound to both
-    <A> and <B>. Neither runs until one is changed.", "Open keys.toml",
-    "Also bound to <A>", "default C", "Press a key · Esc cancels ·
-    Backspace clears", "Changes are saved to ~/.config/qrec/keys.toml.";
-    the lane's: a key on three bindings ("X is bound to A, B and C. None
-    of them runs until only one has it.") and the search's placeholder
-    "Search shortcuts" (S22 names none). D-31's labels (the wp9-ui lane)
-    make the banner read as S22 draws it.
-- Measured (nested, pixman, `gui_chrome`'s
-  `a_toast_keeps_to_designs_width`): a long error toast is 560 wide (615
-  without the clamp), its title in 2 lines (40 px), its body in 2 (36 px,
-  464 wide); 840 wide at `ui.scale` 1.5 set live (its body 54 px, 2
-  lines); a short toast 360. The Failed page's stderr well is 176 px high
-  at 1, 193.6 at 1.1 and 264 at 1.5, set live (`gui_bin_export`'s
-  `the_failed_pages_stderr_well_follows_a_live_scale`).
+compare in `tmp/gui-shots/final/`. Its departures are in M5's list below.
 
 Status after the play, perf and wp9 lanes (run `wf_083221c5-8eb`, merged
 on 5a16849 in this order: play d12e941, perf a583946, wp9 19fbd43; no
@@ -4280,170 +3982,442 @@ while opening, reported) and the frame-time probe's p99 16.59 ms warm and
 round draws differently (the stderr well gets the same height at a given
 scale, set when the panel is built rather than at each fill).
 
-WP8's pages (the WP8 lane on 5a16849, before the icons and art lane's
-merge; `gui_blocking`, 9 cases on pixman, each shot next to its frame in
-`tmp/gui-shots/wp8/`, the undrawn pages next to the frame of their
-shape). Every region the cases check is the frame's within a pixel: S23's
-signpost (720, 120, 160, 160), title (480, 296, 640, 38), checks box (480,
-432, 640, 260: three 72 px rows and the 44 px disclosure) and actions
-(656, 716, 287, 40); X1's modal (540, 351, 520, 266), scrim (0, 0, 1600,
-968), well (564, 485, 472, 44) and REC badge (572, 493, 68, 28), the
-minimal header under the scrim #141910 as the frame's; X2's two-line
-title (480, 296, 640, 76, broken where the frame's breaks), folder row
-(480, 432, 640, 56), note (480, 496) and Quit (770, 536, 59, 40 for 60);
-X3's title (480, 296, 640, 30), validation box (480, 386, 640, 87 for
-86: its lines a pixel lower, the explanation's ink from y 448 for 447),
-so the restore (480, 497, 640, 92), its command well (480, 525, 477, 40),
-Copy command (965, 525, 155, 40) and Quit (770, 613, 59, 40) a pixel
-lower than the frame's. Visible departures, measured on those shots
-against the frames at full size:
+Status after WP8 and WP9 (M5) (2026-10-18, on 59be317: the icons and art
+lane 6061abf, wp8 c95477f, s24 e810d1a and wp9-ui 2719296 merged in that
+order; the integration 521bf43…969df02 and this paragraph's commit):
+**final: every case and run of the table, the drafted screens with them**
+(S19, S19b, S20, S20b, S21, S22, S23, S24, S25, X1, X2, X3, and the
+undrawn pages each shot next to the frame of its shape), all re-shot on
+the head's code: the frames' icons changed every shot. The merges'
+conflicts were in GUI.md and in `testctl.rs`'s op table only, each side
+kept (the merge commits name them); the wp9-ui lane was built on the WP9
+logic lane's branch, and the head's later changes to that logic (Q5 in
+every context, the CRLF-keeping writers, the stderr well's subscription)
+merged clean under it. The integration closed the lanes' notes, each with
+a test that fails with its fix undone (`tmp/m5/revert/`): S25 #8 is shot
+for real (the fake engine's `QREC_FAKE_CAMERA_STALL_MS` hangs the camera
+mid-take: "Camera disconnected" in S25's words, 521bf43); `c`, the
+toolbar's Autocut and the palette's row show S25 #6's toast as the autocut
+page's Apply does (the window's default reply policy, c4d020c); the
+countdown's default is SPEC §5.5's 0 at every layer, pinned (63b7ba9: the
+lane's "3" was its snapshot's fixture); a refused screen no longer also
+toasts "Live preview problem" at launch, and S24's hints are Live's
+(a13b19b); a two-digit countdown fits inside its ring (b6d06a5, 43b65d6);
+C13's `Layout ▾` sits on S06's pixels (88e8281: the icons and art lane's
+chevron 4 px and label 8 px left are gone); the package installs Lucide's
+license again (0581285: the merged head's `nix build` stopped in
+`postInstall`). Found by this round's own checks: the blocking pages'
+minimal header draws the frames' 20 px close (e0a50f1: it drew 16 px,
+measured on the re-shoot); gui_blocking looks for a page's focus ring as
+the page shows (e37f4ab: GTK shows it for 3 s, and a gles2 run beside a
+`nix build` looked after that once); S01a's check measure holds at 1.5 and
+2 (1ca7e46: the lane measured it at 1 only, and the scale runs' edge
+pixels read 9.3 and 9.5 px for its bound of 9; the 16 px draw it catches
+reads 11–12 at every scale); a core message that starts with a file name
+keeps its case (39cf04b: the theme proofs' error toast, S25 #10 for a
+qrec.json that isn't JSON, read "Qrec.json is not valid JSON"); and
+gui_panel's meter panic case (R65) maps its meters once the window settled
+(969df02: the race WP10's integration saw once at 2, the meters' first
+refresh, the one that panics, running before the project's open restarted
+them, failed it once in this round's scale-2 run, then 3 of 10 runs alone
+at 2 and 2 of 10 at 1; 25 of 25 since, and it still fails with the restart
+undone). Not done (G§9 R30–R32): X1's timer frames (`hello` carries no
+frame rate), X3's entry label (the load error names the entry by its
+number), the folder-can't-be-read and host-failed pages in X2's or X3's
+shape (not drawn, rare: they keep the interim layout under the drawn
+header). The lanes' lists of departures (WP8's, the WP9 UI lane's, the S24
+lane's, and the WP9 lane's copy-only list from before the frames) are
+folded into the list below, measured again on this re-shoot. On the head:
+the workspace 2000 passed, 0 failed, 219 ignored (fmt and clippy
+`-D warnings` clean); nested, every suite on pixman and then on gles2
+(gui_panel again on both after 969df02), gui_shell 22, gui_smoke 2,
+gui_chrome 15, gui_timeline 30, gui_stage 38, gui_panel 21, gui_bin_export
+29, gui_live 9, gui_themes 5, gui_a11y 10, gui_audits 5, gui_text 2,
+gui_blocking 9, gui_overlays 13: 210 cases each, no GLib or GTK critical;
+every suite again at `QREC_TEST_SCALE` 1.5 and 2 on pixman, the two runs
+side by side (210 cases at 1.5; at 2 all but the meter panic case above,
+and gui_panel 21 of 21 at both after 969df02); gles2's frame-time probe's
+warm p99 16.56–16.61 ms in 3 runs alone (max 16.67) and its smoke with no
+stall over 50 ms during the steps in 3 of 3 runs alone (18, 18 and 19
+stalls while opening, reported, the longest 603–638 ms); `nix build`
+(`--cores 4 --max-jobs 1`, 9 min 3 s) of 39cf04b (the tests and docs since
+aren't in its source):
+`/nix/store/fcfv9bh42v0xz68l7dwiq3b30w6pi9nm-qrec-0.1.0`, gui_smoke's
+packaged case on it on pixman and on gles2 (both pass; the packaged window
+logs that out path). Each shot is next to its frame in
+`tmp/gui-shots/final/<case>-compare.png`: the drafted screens' whole
+window next to the frame (S19…S24, X1…X3; the cases' own crops are in
+`tmp/gui-shots/wp8/`, `wp9/`, `s24/`), S25's twelve toasts (#6 twice: the
+page's Apply, then `c`) each next to its card, stacked; gles2's in
+`final/gles2/`, the theme boards in `final/themes/` and
+`final/gles2/themes/`.
 
-- Everywhere (WP8): until the icons lane merges, the Lucide icons the
-  pages name (`qrec-circle-x`, `-triangle-alert`, `-circle-check`,
-  `-chevron-right`, `-chevron-down`, `-copy`, `-folder`, `-folder-open`,
-  `-download`) show GTK's missing-image placeholder, and until the art
-  lane merges the signpost and the header's app icon are the art
-  loader's placeholders; the minimal header's close is the shared
-  `close_window` (Adwaita's `window-close-symbolic`, 8 px of ink where
-  the frames' x has 12). The test env's folders are under `/tmp`
-  (`/tmp/qrec-test-…/projects/…`) where the frames show `~/…` (their
-  `HOME` isn't an ancestor; the pages write `~` when it is).
-- Everywhere: the texts' widths follow G§3.14's whole-pixel advances
-  (kept): the Fraunces titles run 6–13 px narrower (S23's 490 px of ink
-  for 503, X2's lines 623 and 238 for 636 and 244, X3's 249 for 255,
-  X1's 428 for 434), the Atkinson body lines 4–14 px wider (S23's 254 for
-  245 and its "Run … report." 333 for 329, X2's and X3's bodies +14, X1's
-  +13, X3's "Restore the last good state from history:" +6); buttons,
-  chips and mono labels sit at the frames' x within a pixel; X1's Quit is
-  59 px for 60 and Stop & open 111 for 112, so Quit's label sits 2 px
-  right; X3's Quit 59 for 60.
-- S23: the rows are the test machine's failures, not the frame's (no test
-  env can lose gtk4paintablesink without a new GStreamer registry scan):
-  `ffmpeg.libx264` (✕, the id and the doctor's words: "ffmpeg has no
-  libx264 encoder (MP4 exports)", the hint as the note, no command box),
-  `libsvtav1 in ffmpeg` and the ScreenCast portal (⚠ with the Optional
-  chip: the fake backend makes the portal optional), in the doctor's
-  order; "25 other checks passed" for 14. BRIEF's copy for
-  gtk4paintablesink and the portal is the view model's snapshot
-  (`drafted_pages`). A row whose description fits one line centers its
-  item 4–8 px lower than the frame's two-line rows. The disclosure opens
-  (not drawn): a 28 px row per passed check (its id in mono, the
-  doctor's detail). Copy report and a row's Copy toast "Report copied",
-  "Command copied" (not drawn).
-- S23's GStreamer-stuck variant (not drawn, S23's shape): "GStreamer
-  didn't start", "Qrec can't record or draw the preview without it.",
-  "Run [qrec doctor] in a terminal, then start Qrec again."; one row,
-  GStreamer, "It didn't finish starting within 30 s: a GPU driver probably
-  hung its plugin scan." with no fix; no disclosure; Quit alone
-  (secondary, focused): no report to copy, and GStreamer starts once per
-  process.
-- X1: the well's time is HH:MM:SS ("00:00:04"), the frame's
-  HH:MM:SS:FF ("00:01:12:08"): the page knows no frame rate (`hello`
-  carries none, and the window doesn't read a held project's files); it
-  and the lead follow `hello`, every second. "Take 10" (the fixture's next
-  take; the frame's 11). Stop & open pressed: C01's loading state,
-  "Stopping…" with the spinner, insensitive at 0.45, the keyboard on Quit
-  (not drawn).
-- D-29's export wait (not drawn, X1's modal): "An export from the CLI is
-  running.", "It's 0% done." ("It's starting." before a percent), "Wait
-  to open the project here once it's done. Quit leaves it running."; the
-  well with the download icon (`muted`), the output (`mono-sm` `muted`),
-  the percent ("43%" as S15b writes it, D-29 "43 %") and the header slot's
-  40×4 mini mud bar, its trough in `border` (`field` vanished in the
-  `field` well); Quit (focused) and Wait ("Waiting…", loading).
-- D-29's idle host: no page; the editor's placeholder with the stage's
-  "Opening rust-traits-talk…" (G§3.3) where D-29 says "Opening…".
-- X2 inside a project (not drawn): D-14's line under the folder row in
-  `body` `text`, centered, above the hidden-files note.
-- X3: the mono line is the first error's JSON Pointer,
-  "/timeline/clips/4/out", where the frame adds ": 1400 > 1377" (no error
-  carries that short form); the explanation is the validation's message
-  as a sentence, "Clip c1b4 ends at frame 1400, past the end of take 3
-  (1377 frames)." (the frame's "1,377"), with "1 more problem." when
-  there are more; the entry note is "Entry 212 is the last good state."
-  with no label (the frame's ": Split clip c2d0 at 00:01:45:26": the
-  error names only the seq).
-- X3's missing file (not drawn): "qrec.json is missing", "Qrec won't
-  open this project without it.", no validation box, "Rebuild it from the
-  history:" and its command; without a history, advice ("There's no
-  history to rebuild it from: restore it from a backup.") and Quit
-  focused.
-- D-13's page and the not-responding one (not drawn, X2's shape): "This
-  project is open in another Qrec window" / "A project opens in one Qrec
-  window at a time.", the project in the row with `folder-open` and "Open
-  in process 4242"; "The Qrec process holding this project isn't
-  responding" (two lines) / "Qrec can't open the project while that
-  process holds it.", "Process 4242 · headless host · since 15:02" in the
-  row, "If it stays stuck, end process 4242 and start Qrec again."; Quit
-  focused.
-- The minimal header has no title now (the frames'), over the interim
-  pages too (the folder and the host failing).
-- A page's focused button shows its ring when the page shows; GTK hides
-  it 3 s later unless a key moves the focus (G§8.4's `VISIBLE_FOCUS_DURATION`).
+Visible departures of the final shots after M5, measured on its
+re-shoot against the frames at full size (pixman's numbers; gles2's the
+same where not named; `tmp/fix12/notes/`, `tmp/icons-art/measure/`,
+`tmp/m5/`):
 
-WP9 UI lane (wp9-ui, 2026-10-18, on f7be060: S19–S22 and S25 from the
-2026-10-17 export; `gui_overlays`, nested, pixman, scale 1; shots and
-compares in `tmp/gui-shots/wp9/`).
-
-- Measured against the frames:
-  - S19: the palette at (480, 96, 640), its field (497, 113, 606×40),
-    Split clip's row (489, 178, 622×40), the scrim 1600×968: as drawn.
-    S19b: 560 high, Recent first, Record over selection off with "Needs
-    a contiguous selection".
-  - S20: the sheet (40, 40, 1520×920) over `scrim-strong` (1600×1000) as
-    drawn; its search 320×32 at y 60, x 1083–1087 for the frame's 1086
-    (Close's `Esc` cap is up to 2 px wider: whole-pixel advances, G§0).
-  - S21: the dialog (380, 180, 840×640); the cards 180×132 at y 310 and x
-    412, 611, 810, 1008, on the frame's pixels within 1 px (a row through
-    them: the cards' grounds start at 612, 811 and 1009 in both; the
-    dialog's stroke is drawn inside, WP6's, so its content box is 2 px
-    wider and the gaps 18–19 px for 18); C27's switch 40×22; the groups'
-    and rows' y within 1 px of the frame.
-  - S22: the banner (412, 248, 776×56) for the frame's 248–303 (56 high:
-    pen draws its stroke inside the 8 px padding, so the CSS pads 7/7/7/11
-    inside a real 1 px border), the search (412, 312, 776×32) at the
-    frame's 312; 40 px rows, the capture row's `selected` tint in its 1 px
-    `accent` stroke.
-  - S25: each toast at the bottom 956, centered on 800, 360–560 wide (the
-    frame draws them in 440 px cells). Word for word but the fixture's
-    facts: #1's path and size (this export's), #2's take 10 (the frame's
-    7), #3's "Take 10 lasted 8 frames" (6, 7), #11's FAKE-1 (the fake
-    screens keep their output names; the frame's DP-4); #4, #5, #6, #7,
-    #9 and #10 as drawn (#10 now in S25's words, `disk::invalid_why`).
-- Departures (not drawn, or drawn otherwise):
-  - The Settings scrim and hints stay S18b's (1600×968, "[Tab] Move
-    focus · [Esc] Close"); S21 and S22 draw the scrim over the hint bar.
-  - S22 draws a sample of four groups starting with Edit; the page lists
-    every binding in the keymap's groups (Record, Playback, Edit, Output,
-    View, Canvas). The capture row in the shot is searched up
-    ("snapping").
-  - Recording and Autocut (not drawn) follow S21's patterns: the group
-    header, 60 px rows with a caption, 104 px C29 fields, C28's segmented
-    encoder, a 260 px device dropdown, the footer. Recording: "New
-    projects" / Countdown "Seconds before each take starts; 0 starts at
-    once."; "Encoder" "How takes and exports encode H.264 when a project
-    says auto." / "H.264 encoder" "VA-API encodes on the GPU, x264 on the
-    CPU." (Auto · VA-API · x264) / "VA-API device" "Auto picks the first
-    Intel or AMD render node, never NVIDIA." (Auto, then sysfs's Intel
-    and AMD nodes; a configured NVIDIA node shows as it is). Autocut:
-    "New projects" "A project's own autocut settings are on its autocut
-    page (Shift C)." / "Run autocut after every take" "Cuts the silences
-    of each take as it lands." / S12's four knobs with captions.
-  - A refused value says why under its field (C29's helper text, the row
-    grows); a write that fails says why in the footer.
-  - `Esc`: a numeric field with nothing to put back lets it go on, so the
-    dialog closes from an untouched field (`FieldState::takes_escape`,
-    WP5's widget); the keys search clears its text first; a tab clicked
-    keeps the focus (the page's first control takes it when the dialog
-    opens on that page).
-  - The capture ends when the focus leaves it, and so when the window
-    loses the keyboard.
-  - Theme cards draw their hover (a `border-strong` stroke); the frames
-    draw none.
-  - S25 #6 is the autocut page's Apply (WP5's toast); `c` (`autocut.run`)
-    cuts with no toast. #8 (a camera that stops sending frames mid-take)
-    isn't triggered for real: the fake engine's stall
-    (`inject_fake_failure`) has no hook outside its own tests.
+- Everywhere, by design (G§8.4's known differences): the fake sources'
+  names and test patterns (`FAKE-1` for DP-4, the fake camera's ball for
+  the webcam's picture), the fake tone's levels and block waveforms in the
+  cases that don't pin the meters (`QREC_GUI_TEST_LEVELS` pins only the
+  panel's), real elapsed times and dates (the exports' and logs' names),
+  the test project's paths (under `/tmp/qrec-test-…/projects/`, where the
+  frames write `~/videos/…`: the pages write `~` only when `HOME` is an
+  ancestor), no pointer in the shots (S11's frame draws the hand).
+- Everywhere: the fixture's files are small, so every size is the
+  fixture's ("5 takes · 31.4 MB", "10 files (17.0 MB)", "1.6 MB", S25 #1's
+  "777 KB").
+- Everywhere: the icons are the frames' (G§5.2) and the art the pen's
+  (G§3.14), measured again on this re-shoot (each icon's ink box in the
+  frame and in the shot, 84 places: the icons and art lane's 57 in S01a,
+  S02, S06, S07, S10, S12, S14, S16, S16b and S17, and 27 in S19–S24 and
+  X1–X3; `tmp/m5/icons-px-all.txt`): 64 are the frame's box at its place
+  within a pixel, with 92–116 % of its ink (116: the 12 px check's 12 ink
+  units for 10), S06's banner chevron among them since C13's insets
+  (88e8281). S17's and S23's error icons are in the frames' place with
+  their ink, their boxes a row shorter at each end (the frames' edge is
+  softer there). The others move with their group or line: the
+  toolbar's (below); the A1 and A2 rows' and headers' mic and speaker
+  1–2 px high with their lines (S02's track names are 1.0–1.7 px high);
+  the Autocut tag's scissors 4 px right after the name's and the A1 cap's
+  widths; S10's ripple arrow 2 px right with its tag's mono; S16b's toast
+  icons 16–17 px in (its width, below); the LIVE badge's video icon 12 px
+  of ink for 14 over the fake's blue (its edge pixels); S20's search and
+  Close icons 2 px left and S21's Close 5 px left and a pixel high, each
+  with its label's and cap's whole-pixel widths; S21's chosen card's check
+  2 px left and a pixel low; S22's banner warning a pixel taller (18×18
+  for 18×16, 113 % of its ink). The art, drawn by `gtk::Svg` and compared
+  with the pen's PNGs at 1× and 2× (gui_shell's `art` op, over Swamp
+  Night's `bg` and over white): the app icon, the quiet swamp, the
+  signpost and the REC glyph within antialiasing (no pixel more than 24
+  levels past the range of the pen's 3×3 around it, at most 0.52 % of the
+  pixels more than 8); in the shots the minimal header's app icon (22×22
+  of ink), S23's, X2's and X3's signpost (86×145) and X1's REC glyph
+  (16×14) are the frames' boxes at their places, at 96–102 % of their ink.
+- Everywhere: mono text is the bundled JetBrains Mono, but each glyph
+  advances a whole pixel (7 px at 11 and 12 px, 8 px at 13 px, where the
+  frames advance 6.6, 7.2 and 7.8 px), so a mono string drifts 0.2–0.4
+  px per character, as WP10's text-rendering experiment measured it
+  (G§3.14): the ruler's labels +4, the ruler corner's "00:04:06:11" +2,
+  S06's transport +4.8, its clip tooltip's second line −9.9, S12's
+  summary timecodes −2 each, S14's take lines −2, S16's file path −8.8
+  and S17's stderr lines −5…−10 (51 characters: −10; re-wrapped, below);
+  4 of the 21 mono texts it measured are within a pixel of the frames (a
+  short field like "1500 px" is). Kept: the setups that bring every text
+  within a pixel (unhinted metrics, 21 of 21) bring back the header
+  title's stray mark on GL (PO's call, G§8.7 #9). Key caps follow their
+  legends: the medium caps' fills are the frames' but for a pixel or two
+  in a multi-letter legend (the mode switch's Tab 29 px for 28, so the
+  switch is 177 px for 176; Ctrl 43 for 41, Esc 29 for 28).
+- Everywhere: Atkinson's glyphs advance whole pixels as well, so a UI
+  line runs a few px off the frame's width, wider or narrower with its
+  size and letters: of 48 UI texts the experiment measured, 30 are
+  within a pixel (unhinted metrics: 46, the other two style), the rest
+  −5.2…+9.8 (S16's body "Layers! Like an onion. Your video is ready."
+  +9.8, S17's lead +9.3, the header title "rust-traits-talk" +3.5, S12's
+  "Removes 4 silences" +2.3, take 7's line in S14 −4.8, S12's subtitle
+  −2.7). The UI text's ink weighs the frames' (100 % on average), the
+  mono text's a little lighter (93 %), in every setup. Some lines sit a
+  pixel or so off the frames' baselines: S02's track names 1.0–1.7 px
+  high, S14's take lines about 1 px high; S12's summary heading is on
+  the frame's baseline, its title's glyphs a pixel shorter and its
+  mono's a pixel taller; on gles2 some rows sit half a pixel to a pixel
+  lower than on pixman (S12's summary rows from y 588 for 587).
+  Text-sized controls follow the widths: S15a's Draft and High segments
+  are 2 and 1 px narrower (55 and 54 for 57 and 55), S04's REC badge 70
+  px wide for 68 (72 with gles2's softer edge), the header slot's mini
+  bar 2 px left of the frame's (its percentage 20 px of ink for 22),
+  S16b's toast narrower (below), the hint bar's items (below). The
+  experiment's crops (8×, and the scale-2 shots at 4×) and numbers are
+  in `tmp/text-rendering/` for the PO; WP10's fixes re-measured its 69
+  items on their re-shoot (`tmp/fix12/notes/`): the same widths, but
+  where a fix moved or re-wrapped a text. The drafted screens' texts
+  follow the same advances (WP8's measures on its pages, held by this
+  re-shoot): the Fraunces titles run 6–13 px narrower (S23's 490 px of
+  ink for 503, X2's lines 623 and 238 for 636 and 244, X3's 249 for 255,
+  X1's 428 for 434), the Atkinson body lines 4–14 px wider (S23's 254
+  for 245, X2's and X3's bodies +14, X1's +13), and buttons, chips and
+  mono labels sit at the frames' x within a pixel; S24's title is 160 px
+  of ink for 158.
+- Every shot's hint bar: its items follow their caps' and texts' widths,
+  within 3 px of the frames' (S12's and S17's last items 2–3 px right,
+  S06's and S14's 1–3 px left).
+- Every timeline shot: the toolbar's items are the frames' within 1–2 px
+  (the key caps' fills from x 90, 189, 311 and 1098 for 89, 188, 309 and
+  1099; the Snap toggle 95 px as the frames', 1 px right; the divider at
+  218 for 217), its icons the frames' boxes (the left group's 0–2 px
+  right with their labels, the right group's 2 px left); in the right
+  group the clip count is 3.7 px narrower (its mono) and the zoom
+  slider's track ends at x 1003 for 1007. At the fit zoom (every fit
+  shot) zoom out is unavailable (G§4.3: px/frame > fit) and drawn dimmed
+  (85 % of the frame's ink), where the frames draw it enabled.
+- Every fit shot (G§1.3's fit inset: the timeline fits into 8 px less
+  than the frames' 1040): clip edges, the playhead and S11's caret sit
+  up to 8 px left of the frames' (S11's caret at 403 for 404.9), the end
+  playhead whole at x 1207–1208 where the frames' is cut at 1215 (S02,
+  S03, S04, S05, S05b), and in the 10-clip timeline (S02, S03, S04b,
+  S06, S07, S11, S13, S14, S15a, S15b, S17, S18, S18b) take 1's second
+  clip reads "1" where the frame reads "Take 1" (c8a1 is 63.8 px wide,
+  the frames' 64.3, G§4.5).
+- S01a: the frame's "Add a layer or audio track first" tooltip is not in
+  its compare: gui_chrome's `s01a-header-tooltip` shoots it.
+- S01b: the first run names its layers and tracks after their sources
+  ("Camera", "Screen FAKE-1", "Built-in Audio Analog Stereo", A2 at 0.0
+  dB) where the frame reuses the fixture's (Face, Main screen, System
+  audio at −6 dB); "Press [R]"'s large cap sits 2 px left and 1 px up of
+  the frame's (its 26×25 fill as theirs).
+- S03 (and its reduced-motion run): the digit sits on a `video-scrim`
+  disc the ring's size (C07; G§0's M4 decision: over the dim alone it
+  read 2.53:1 over a white screen, on the disc 10.10:1), where the frame
+  draws it over the dim alone, so the preview inside the ring is darker
+  than the frame's (gui_stage's S03 probe: no channel past 62 under the
+  digit). A two-digit countdown (not drawn: S03
+  draws "3"; `recording.countdownSecs` goes to 10) shrinks its "10" to
+  stay inside the ring (`countdown::digit_fit`, M5; gui_stage's
+  `a_two_digit_countdown_fits_its_ring`).
+- S04, S04b, S05: the timers read the real elapsed time (`00:02:41:27`
+  for `00:02:41:12`).
+- S04, S04b, S05 (and S04's reduced-motion run): the ghost's lanes carry
+  the live waveform only where the level ring has readings, the seconds
+  since the window opened, at the ghost's right edge, and are silent to
+  their left (the fake hook's record offset starts take 10 before any
+  reading: 2:41 back, S04b's 31 s), where the frames' takes have levels
+  all along.
+- S04b: the record-over hatch over c2d0's lanes is fainter than the
+  frame's: its stripes #4E4133 at their middle for #625542 (#504233 on
+  gles2), the lane's ground #322820 for #342920 (gles2's the frame's).
+- S06, S09, S10, S11: "+ Add layer", "+ Add audio track" and the
+  header's `+` are disabled in a take layout (D-07); the frames draw
+  them enabled.
+- S06, S07, S10, S11: the timeline tooltips sit as the frames' and are
+  as tall (S06's and S07's clip tooltip 78 px, its caps' 14×13 fills
+  theirs; S10's and S11's 44 px), their widths their text's: the clip
+  tooltip 341 px of fill for 350, S10's 214 for 222 (S11's 179 is the
+  frame's).
+- S07, S08: Program with no clip selected is read-only (D-06): the
+  panel's rows, audio controls and adds are disabled where the frames
+  draw them enabled.
+- S11: the lifted copy's top 4 px (its take stripe, which the frame
+  draws over the ruler's bottom edge) are cut at the canvas's top.
+- S12: the summary heading is 11 px wider (its title +2.3,
+  the gap before "(6.2 s)" and the mono the rest). The knobs, the
+  regions' rows and the preview are as drawn: each region's hatch, edges
+  and tag, and the dimmed rows, within 1–2 px.
+- S13: the frame shows the drag and L1's hover at once; the drag shot
+  has no hover (L1's hover is its own shot, `s13-layer-editing`).
+- S13b: a dragged row's copy follows the pointer over the rows, with the
+  drop line at the slot (the frame lifts the row above the line and
+  moves the rows under it), and the row left behind keeps its hover
+  reveal at 0.4; the rename field opens with the name selected; the
+  focus ring is shot on L1 ("Main screen"), the board's on a "Face" row.
+- S14: the thumbnails are the fake test pattern's (take 6's from its
+  first frame: 7 frames have no strip image); take 2 reads "Removed from
+  the timeline." where the frame reads "Discarded with D." (the fixture
+  writes no history, G§8.4).
+- S15a: "software encode (x264)" where the frame names VA-API on
+  renderD129 (the fake backend probes no VA device, G§8.4).
+- S15b and S15c's running page: the file and "as it was at" carry the
+  export's real start (the setup's preview is the test-mode now,
+  15:30:12; the job is named when it starts); elapsed and left are real;
+  the shot is taken once `qrec status` has the job at 42 % or more, and
+  it lands at 42–44 % on either renderer (43 % on both in WP10's fixes'
+  re-shoot), where several units render at once, so the label is further
+  on ("Rendering clip 8/10", the frame's 6/10 at 42 %).
+- S16, S16b: the Smoke fixture's export (3 clips of 30 frames: 1.6 MB,
+  00:00:03:00, took 00:00:01 or 02, its own name), in the Smoke project:
+  the header's "3 clips · 00:00:03:00", its 3-clip timeline with its
+  middle clip c1b2 (take 3) selected and the playhead in it at
+  00:00:01:15 (the frame selects take 5's c2d0 at 00:01:21:07), so the
+  panel shows take 3's layout, and the bin chip reads 6 (the takes its
+  timeline doesn't use; the frame's 5). S16b shows that whole window,
+  and its toast is 467 px wide where the frame's is 500: it sizes to its
+  text (DESIGN's 360–560), 12 px from the body's end to the close button
+  where the frame leaves 28.
+- S17: it fails at 11 % (units 1 and 2 rendered, 867 of 7,391 frames;
+  the frame's 37 %); Open full log names the failed segment's log
+  (`.qrec/logs/<stamp>-<pid>-j1-seg2.log`, ellipsized at its start)
+  where the frame names `export-20261014-153012.log`; the frame's first
+  stderr line looks faded (not built: a pen-file need). The box shows
+  BRIEF's last lines, wrapped on its narrower mono where the frame's
+  break: its "initialise VAAPI connection: -1 (unknown libva error)."
+  fits one row (the frame puts "error)." on the next), so its ten rows
+  start a row earlier, at the end of ffmpeg's `Stream #1:0` line (the
+  wrapper's render-node line comes first). Its scroll bar is the
+  frame's.
+- S18: the modal has no history clause (the frame's "…, and the 6
+  history entries that mention these takes are removed too.": the
+  fixture has no history), so it is 20 px shorter (y 287–712 where the
+  frame's is 277–722) and its list 10 px higher, its scroll bar too (x
+  1026–1029 as the frame's, y 430–579 for 440–587).
+- S18b: none since WP9 (the other tabs open, as the frame draws them).
+- S19 (the palette at (480, 96, 640), its field (497, 113, 606×40),
+  Split clip's row (489, 178, 622×40) and the scrim, 1600×968: as drawn):
+  "sp" matches every binding the fuzzy match finds, twelve rows (Split
+  clip, Seek to previous frame, Seek to previous and next edit point,
+  Select previous clip, Save frame as PNG, Switch Live / Program, Trim
+  start to playhead, Autocut settings and preview, Shuttle stop, Select
+  next clip, Toggle snapping) where the frame shows a sample of six in
+  another order (Split clip, Save frame as PNG, Autocut settings and
+  preview, Toggle snapping, Select previous clip, Seek to previous edit
+  point), so the list runs six rows longer; D-31's labels and CLI forms
+  are the core keymap's, as the frame's.
+- S19b (560 high, Recent first, Record over selection off with "Needs a
+  contiguous selection"): Playback's rows follow the keymap's order (Play
+  / pause, Shuttle reverse, Shuttle stop, …) where the frame's sample goes
+  on with Seek to previous and next frame; GTK's overlay scroll bar shows
+  only while the list scrolls, where the frame draws its thumb.
+- S20 (the sheet (40, 40, 1520×920) over `scrim-strong` as drawn; its
+  search 320×32 at y 60, x 1083–1087 for the frame's 1086): it lists
+  every binding, so it has two groups the frame doesn't draw, Window
+  (Focus next / previous region `F6` / `Shift F6`, Quit `Ctrl Q`) under
+  Global (niri) and Canvas (Nudge layer 1 px, the arrows) under Edit, and
+  Remove selected clips shows its third key ("Del or X or Backspace").
+  Close's `Esc` cap is up to 2 px wider (whole-pixel advances).
+- S20b ("trim": 3 shortcuts in Edit, the bold matches, the palette tip):
+  as drawn.
+- S21 (the dialog (380, 180, 840×640); the cards 180×132 at y 310 and x
+  412, 611, 810, 1008, on the frame's pixels within 1 px; C27's switch
+  40×22; the groups' and rows' y within 1 px): Reduce motion's caption is
+  D-30's "Also on when your system asks for less motion." where the frame
+  draws "Follows your system setting until you change it here."; the
+  dialog's stroke is drawn inside (WP6's), so its content box is 2 px
+  wider and the cards' gaps 18–19 px for 18; theme cards draw their hover
+  (a `border-strong` stroke), which the frames don't.
+- S22 (the banner (412, 248, 776×56) for the frame's 248–303, the search
+  (412, 312, 776×32), 40 px rows; x 1 px left and 2 px wider: WP6's inset
+  stroke): the page lists every binding in the keymap's groups (Record
+  first), where the frame draws a sample of four groups from Edit with
+  the capture row in View; the case searches "snapping" for the capture
+  row's shot. The Keyboard tab keeps its focus ring after the case's
+  click (the tab keeps the focus; the frame draws the chosen tab
+  without it).
+- Settings › Recording and › Autocut (not drawn) follow S21's patterns:
+  the group header, 60 px rows with a caption, 104 px C29 fields, C28's
+  segmented encoder, a 260 px device dropdown (Auto, then sysfs's Intel
+  and AMD render nodes), the footer; a refused value says why under its
+  field (C29's helper text, the row grows), a failed write in the footer.
+  `Esc` from a numeric field with nothing to put back closes the dialog;
+  in the keys search it clears the text first. Every Settings page keeps
+  S18b's scrim (1600×968) and hint bar, where S21 and S22 draw the scrim
+  over the hint bar.
+- S23 (its checks box (480, 432, 640, 260) and buttons (656, 716, 287,
+  40) as drawn): the rows are the test machine's failures, not the
+  frame's (no test env can lose gtk4paintablesink without a new
+  GStreamer registry scan): `ffmpeg.libx264` (✕, the id and the doctor's
+  words, the hint as the note, no command box), `libsvtav1 in ffmpeg` and
+  the ScreenCast portal (⚠ with the Optional chip: the fake backend makes
+  the portal optional), in the doctor's order, and "25 other checks
+  passed" for 14; BRIEF's copy for gtk4paintablesink and the portal is
+  the view model's snapshot (`drafted_pages`). A row whose description
+  fits one line centers its item 4–8 px lower than the frame's two-line
+  rows. Not drawn: the disclosure opens to a 28 px row per passed check;
+  Copy report and a row's Copy toast "Report copied", "Command copied".
+  The GStreamer-stuck variant (S23's shape): "GStreamer didn't start",
+  one row with no fix, no disclosure, Quit alone and focused.
+- S24 (the block's plate the frame's 190 rows, y 239–428, and center,
+  225 px wide for 223; its icon's ink the frame's, x 593–622, y 265–292;
+  Try again's fill 552–663 × 373–404 for 553–662): the hatch's stripes
+  sit on the frame's columns and run on unbroken where pen's 120 px tiles
+  restart theirs (1–2 px jumps at y 184, 304, 424 and 544); the toast is
+  S25 #11 as drawn but for `FAKE-1` (Try again [R], Open bin), 560 px
+  wide in two lines where the frame's cell wraps it at 440. Not drawn
+  (G§4.6): the block shows before any take too and steps aside during a
+  take's countdown, start and recording; a layer above is drawn under
+  it; the picker-closed variant's plate is 337×190 on the same center.
+- S25 (`S25-compare.png`: each toast next to its card): every toast
+  bottom at 956, centered on 800 and 360–560 wide, sized to its text,
+  where the frame draws each in a 440 px cell, so ours break their lines
+  elsewhere (#1's and #8's and #9's bodies and #3's title on one line).
+  Word for word but the fixture's facts: #1's path and size (this
+  export's name, 777 KB), #2's take 10 (the frame's 7), #3's "Take 10
+  lasted 8 frames" (6, 7: the case records at 12 fps, R33), #11's FAKE-1;
+  #4, #5, #6 (from the page's Apply and from `c`), #7, #8 (for real:
+  `QREC_FAKE_CAMERA_STALL_MS`), #9 and #10 as drawn.
+- X1 (the modal (540, 351, 520, 266), its well (564, 485, 472, 44) and
+  REC badge (572, 493, 68, 28) as drawn, the minimal header under the
+  scrim #141910 as the frame's): the well's time is HH:MM:SS
+  ("00:00:00") where the frame's is HH:MM:SS:FF ("00:01:12:08"): `hello`
+  carries no frame rate (R30); "Take 10" (the fixture's next take; the
+  frame's 11). Quit is 59 px for 60 and Stop & open 111 for 112, so
+  Quit's label sits 2 px right. Not drawn: Stop & open pressed is C01's
+  loading state ("Stopping…" with the spinner), the keyboard on Quit.
+  D-29's export wait (X1's modal): "An export from the CLI is running.",
+  "It's 0% done.", the well with `download`, the output, the percent and
+  the header slot's mini mud bar; Quit (focused) and Wait. D-29's idle
+  host: no page, the stage's "Opening rust-traits-talk…".
+- X2 (its two-line title (480, 296, 640, 76) broken where the frame's
+  breaks, the folder row (480, 432, 640, 56), note (480, 496), Quit (770,
+  536, 59×40 for 60)): the folder's path is the test env's. Inside a
+  project (not drawn): D-14's line under the row. D-13's page and the
+  not-responding one (not drawn, X2's shape): "This project is open in
+  another Qrec window" (Open in process N) and "The Qrec process holding
+  this project isn't responding" (Process N · headless host · since
+  15:02), each with `folder-open` in the row and Quit focused.
+- X3 (its title (480, 296, 640, 30); the validation box 87 px tall for
+  86, so its lines and everything under it a pixel lower): the mono line
+  is the first error's JSON Pointer, "/timeline/clips/4/out", where the
+  frame adds ": 1400 > 1377"; the explanation is the validation's message
+  as a sentence ("Clip c1b4 ends at frame 1400, past the end of take 3
+  (1377 frames).": the frame's "1,377"); the restore note is "Entry 1 is
+  the last good state." with no label (R31; the frame's "Entry 212 … :
+  Split clip c2d0 at 00:01:45:26"). The missing file (not drawn): "qrec.json
+  is missing", no box, "Rebuild it from the history:" and its command, or
+  advice and Quit without a history.
+- The minimal header (C04 `Xba2H`): no title, as the frames; the folder's
+  name is the window's title. A page's focused button shows its ring when
+  the page shows (GTK hides it 3 s later unless a key moves the focus).
+  The folder-can't-be-read and host-failed pages (no frame, R32) keep the
+  interim C31 block under it.
+- Scale runs: the departures of their cases at 1, nothing more at the
+  device size. At 1.5 on pixman the window draws at its whole factor, 2,
+  and sway scales the buffer down, so every 1 px rule is 1.5 px smeared
+  over two device px (WP10's audit: Cairo renders no fractional scale);
+  gles2's shots read the same rows (the header's hairline at 1.5: one
+  device row of `border`, #3A4A2C, under one halfway to `surface`,
+  #2B3721, on either renderer).
+- Reduced motion: S04's REC badge has no torch glow (DESIGN's reduced
+  motion; the frames are the animated look at frame A); S15c's bar is
+  flat with no bubbles, as the board's. S03 shows nothing of it: test
+  mode holds the countdown at its end (the digit at scale 1, a full
+  ring) with motion reduced or not, so S03-reduced is S03's picture but
+  for the fake camera's moving dot (146 px on pixman; on gles2 152, and
+  32 px of the unpinned A2 meter). Not in a shot: the Narrow sheet shows
+  and goes at once under reduced motion, where DESIGN asks a 120 ms fade
+  (WP10's audit, G§3.14).
+- Adaptive (DESIGN Layout, G§3.15; no frames, so checked against the
+  rules): S02 at 1300×1000 is Medium: the panel docked at 320 (its source
+  lines ellipsize, "GIGA-BYT…"; with no layer selected the inspector shows
+  its empty line, so its 2-up fields aren't in the shot), the stage 980
+  wide with the preview fitted at 948×534 and the transport under it, the
+  timeline 980 wide (the ruler's last label cut at its edge); the header
+  and hint bar keep every item. At 1000×1000 it is Narrow: no docked panel,
+  the stage and the timeline full width (the preview at 960×540), the
+  header's layers button left of Record, and the hint bar leaves out its
+  last item ("? All keys") whole; the button opens the sheet over the
+  right 384 px from the header to the hint bar, the content under it
+  dimmed by the theme's `shadow-e2-contact` (35 % black in Swamp Night:
+  the timeline's `surface` #1C2416 reads #12170E; WP10's bridge, where
+  libadwaita's own 25 % neutral read #151B11) and the button pressed, the
+  hint bar naming the sheet's keys only, `[Tab] Move focus · [Esc] Close`,
+  and `Esc` closes it. S06 at 1600×800 is compact: the timeline 232 px
+  (toolbar 36, ruler 28, video 72, lanes 48), the stage 488 with the
+  preview fitted at 746×420 and the transport under it, the panel 720
+  high; nothing else moves.
+- Theme proofs (BRIEF §7, `final/themes/`; no frames, G§0.3): S25 is one
+  toast per core level (info, warning, success, error); its eleven
+  variants are gui_overlays' (S25 above). Since the WP9 lane's copy and
+  DESIGN's width (both themes, both renderers): the error toast is
+  "qrec.json changed on disk but isn't valid" / "qrec.json is not valid
+  JSON: EOF while parsing a value at line 1 column 24. Keeping the last
+  good state." / Copy details, 560 px wide and its body in 2 lines (it
+  was 607 px, "qrec.json on disk is invalid", its body in 3: WP6's
+  `toasts.rs` sized it by characters and kept the body's line break; the
+  body's file name read "Qrec.json" until 39cf04b); the success toast's
+  Frame saved names `frames/rust-traits-talk-v2-take-0005-00012107.png`
+  on one line, 439 px wide (516 with the absolute `/tmp/…/frames/…png` on
+  two, where BRIEF's S25 #4 shows `frames/…`); info and warning are as
+  they were (360 and 371 px).
 
 ### WP0a — Interfaces, GTK-free (alone, first)
 
@@ -4983,7 +4957,20 @@ codes of G§3.2; WP0b's takeover tests still pass.
   pixel of its frame, hints, focus and its ring, the a11y walk, no
   panic or critical, the exit code. Each shot is next to its frame in
   `tmp/gui-shots/wp8/<case>-<page>-compare.png` (the undrawn pages next
-  to the frame of their shape). The departures are in G§7.2's WP8 list.
+  to the frame of their shape). The departures are in G§7.2's list.
+
+**Status (M5 integration, 2026-10-18): done.** Merged on `qrec-v1`
+(`gui: merge wp8`, c95477f) after the icons and art lane, so the pages
+show the frames' icons, the pen's signpost and the app icon (the lane's
+placeholders are gone; G§7.2's list has the pages as shot now). Every
+item of **Builds** is in; `gui_blocking`'s nine cases pass on pixman and
+on gles2, and at `QREC_TEST_SCALE` 1.5 and 2; every page is final (G§7.2).
+Not built, by the integration's call: X1's timer frames (`hello` carries
+no frame rate, so the page reads HH:MM:SS; adding one is a wire change),
+X3's entry label (the load error names only the entry's number), and the
+folder-can't-be-read and host-failed pages, which aren't in WP8's list
+and have no frame: they keep the interim C31 block under the drawn
+minimal header (G§9).
 
 ### WP9 — Palette, cheat sheet, Settings pages, toast copy (lane B, after WP5 and G§0.2)
 
@@ -5120,7 +5107,9 @@ D-22, the D-30 caption, D-31. Re-registers `keys.help` and `palette.open`.
   `device_items`, `typed_value`, `takes_escape`, the card's parts and
   colors); `gui_overlays.rs`'s eleven nested cases (S19, S19b, the
   palette's rows and D-19, S20/S20b, S21, S22 with Q5, the Recording and
-  Autocut pages, S25's toasts in four cases).
+  Autocut pages, S25's toasts in four cases), thirteen since the M5
+  integration's S25 #8 (`s25_a_camera_lost_mid_take`) and #6 from `c`
+  (`s25_autocut_from_the_key`).
 
 **Status (integration of run `wf_083221c5-8eb`, 2026-10-17).** Merged on
 `qrec-v1` (`gui: merge wp9`, 19fbd43) after the play and perf lanes; no
@@ -5144,6 +5133,20 @@ the subscription alone sizes it once the panel is built, so the case
 fails without it (177.6 px at 1.1 for 193.6) and passes with it. Known
 gap: re-scrolling the well to its end after a live scale isn't built or
 tested.
+
+**Status (M5 integration, 2026-10-18): done.** Merged on `qrec-v1`
+(`gui: merge wp9-ui`, 2719296) on top of the WP9 logic and the icons and
+art lane. Every item of **Builds** and **Acceptance** is in: S19, S19b,
+S20, S20b, S21 and S22 as drawn, the Recording and Autocut pages in S21's
+patterns, C32, C34, D-19, D-21, D-22, D-30's caption, D-31, and S25's
+eleven toasts each triggered for real: the integration added #8 (the fake
+engine's `QREC_FAKE_CAMERA_STALL_MS`, `s25_a_camera_lost_mid_take`) and
+#6 from `c`, the toolbar and the palette (the default reply policy,
+`s25_autocut_from_the_key`), and pinned the countdown's default to SPEC's
+0 (`view::preferences`' `the_countdown_defaults_to_specs_0`).
+`gui_overlays`' thirteen cases pass on pixman and on gles2, and at
+`QREC_TEST_SCALE` 1.5 and 2; every screen is final (G§7.2). The known gap
+above (re-scrolling the stderr well after a live scale) stays.
 
 ### WP10 — Themes, packaging, audits (after WP1–WP7; WP8 and WP9 once approved)
 
@@ -5513,7 +5516,10 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   S04b's 00:00:31:02); `QREC_FAKE_INVENTORY=design` (the fake sources carry
   BRIEF's labels and sizes: "GIGA-BYTE GS27QA" 2560×1440, "Dell U2720Q"
   3840×2160, "Logitech C920", "Yeti Nano", "Built-in Audio Analog
-  Stereo").
+  Stereo"); `QREC_FAKE_CAMERA_STALL_MS=<ms>` (M5: that long into each
+  take's recording the fake cameras it records stop sending frames, no
+  error and no EOS, so `STALL_LIMIT` later the take loses them and
+  records on: S25 #8's "Camera disconnected").
 - **Known differences** (by design; regions, hints and view-model
   snapshots cover them): `FAKE-1`, `FAKE-2` and `/dev/fake0` instead of
   `DP-4`, `HDMI-A-1` and `/dev/video0`; test patterns instead of the
@@ -5565,7 +5571,10 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
 | D-13 (`d13_held_by_another_window`) | Base open in a first window (moved to workspace 2, so the second takes the output) | launch a second; Quit (the test channel's `blocking.quit`) exits 6, the first stays |
 | not responding (`a_holder_that_doesnt_respond`) | Base; the test holds the project's lock with a record (its own pid, `headless`, a socket that isn't there) | launch: the page after the 3 s a starting holder gets; Ctrl+Q exits 6 |
 | S24 | Base, Live, `QREC_FAKE_PORTAL=deny` (the live preview's screen refused at once), S06's meter levels; `cancel` for the variant (`gui_stage`'s `s24_*`, shots in `tmp/gui-shots/s24/`) | close the live preview's "Live preview problem" toast (its 8 s would have passed); `wtype -k r`; wait for take 10 broken (within 500 ms of its `recordToggle`, by the window's log) and idle; capture; click Try again: take 11 aborts too; `Tab`: no block in Program. A third case: `recording.countdownSecs` 10 and `qrec record start` in the background (a start of the window's own stays unanswered through the countdown, so `waitIdle` would wait it out): the block before any take, gone while it counts down, back once the take aborted |
-| S19–S22, S25 | per WP9 | — |
+| S19–S22, S25 | per WP9 (`gui_overlays`) | — |
+| S25 #8 (`gui_overlays::s25_a_camera_lost_mid_take`) | Base, Live, `QREC_FAKE_CAMERA_STALL_MS=1000` | `qrec record start --countdown 0`; wait for "Camera disconnected" (take 10 still recording); capture next to S25's card; `qrec record stop`: take 10 lands with L2 missing |
+| S25 #6 from `c` (`s25_autocut_from_the_key`) | Take10Landed, S06's c3e9 selected | `wtype -k c`; wait for "Autocut take 8: removed …" with Undo [Ctrl][Z]; capture next to S25's card; the toast's Undo puts the clips back |
+| A two-digit countdown (`gui_stage::a_two_digit_countdown_fits_its_ring`; no frame) | Base, Live, `recording.countdownSecs` 10 | `qrec record start` in the background; capture on 10: the digits inside the ring's inner edge; `qrec record cancel` |
 
 - **Scale runs**: S02, S06, S09 and S14 at `QREC_TEST_SCALE=2` and 1.5:
   regions scale; the live sink's caps are 1920×1080 at 2; strip textures
@@ -5957,8 +5966,19 @@ At the M4 review:
     launch's GL programs to compile while the window opens, about 2 s on
     the dev machine).
 
-At M5: the drafted screens as built (WP8, WP9; the themes, reduced motion
-and the scales are at the M4 review now, items 1, 10).
+14. M5's drafted screens next to their frames
+    (`tmp/gui-shots/final/S19-compare.png` … `S25-compare.png`,
+    `X1-compare.png` … `X3-compare.png`), and in the real session: `Ctrl+K`
+    runs a row (Clear undo history through its modal, D-19); `?` and Copy
+    niri snippet; Settings' Appearance (a theme applies at once), Keyboard
+    (rebind a key; a conflict's banner, both keys inert), Recording and
+    Autocut (each change writes `config.toml` and keeps its comments).
+15. The blocking pages for real: Qrec started in a non-empty folder (X2,
+    exit 3), on a broken `qrec.json` (X3: Copy command, then `qrec history
+    restore`), while `qrec record start` records (X1: Quit has the focus,
+    Stop & open), and with an encoder missing from ffmpeg (S23, Check
+    again); S24 with the real portal: deny the picker (the block, Try
+    again asks again) and close it ("Screen picker closed").
 
 ---
 
@@ -5978,7 +5998,7 @@ otherwise.
 | R7 | No portal or GSettings in the tests: FileDialog and FileLauncher fail there | the cases avoid them; failures toast |
 | R8 | Symbolic SVGs with strokes may not recolor | fills only, the markup GTK 4.22 loads as render nodes (`tests/icons.rs`); the test channel's `icons` checks every icon recolors in full |
 | R9 | pen.dev has no SVG export, only reads are allowed, and the MCP reads the active document | art from `Get(includePathGeometry)` written to SVG by script while `design/qrec.pen` is active (G§0.6) |
-| R10 | The drafts aren't approved (SPEC §15.1, CLAUDE.md) | gated on G§0.2; interim pages carry the SPEC-required behavior |
+| R10 | The drafts aren't approved (SPEC §15.1, CLAUDE.md) | closed: approved as drawn (G§0.2), exported on 2026-10-17 and built (M5: WP8, WP9, the S24 lane) |
 | R11 | `adw::Dialog` dims the whole window; the frames leave the hint bar live | custom overlay layers (G§3.15) |
 | R12 | `gtk-interface-reduced-motion` might be missing at runtime | then `gtk-enable-animations` only |
 | R13 | `hello` waits while the session thread gathers slow facts | `SharedSources` (H-5); an `AudioAdd` with an unknown source may still run `pactl` (≤ 3 s) |
@@ -5998,3 +6018,7 @@ otherwise.
 | R27 | M4's approved hint bars show `Ctrl+K` and `?`, but the palette and cheat sheet are M5 and gated | closed: both came with the 2026-10-17 export and are built (WP9) |
 | R28 | D-47 lets UI commands overtake parked edits | parked commands resolve the selection and playhead when they run, as every command does at its turn |
 | R29 | Test mode turns animations off, which D-30 reads as reduced motion | test mode takes reduced motion from the config only (G§8.4) |
+| R30 | X1's timer reads HH:MM:SS where the frame draws HH:MM:SS:FF: `hello` carries no frame rate, and the window doesn't read a held project's files (M5) | as built; a frame rate in `hello.record` is a wire change (A§5) |
+| R31 | X3's restore note names the entry by its number ("Entry 212 is the last good state.") where the frame adds its label: the load error carries the seq only (M5) | as built; the label would come with the error |
+| R32 | The folder-can't-be-read and host-failed pages have no frame and weren't in WP8's list (M5) | they keep the interim C31 block (SPEC's copy and buttons) under the drawn minimal header; X2's or X3's shape on request |
+| R33 | A take under 10 frames (SPEC's `tooShort`) is hard to make at 30 fps: a stop while starting waits out the 500 ms health window, about 18 frames (the WP9 UI lane's S25 #3 case records at 12 fps to get one) | as built; check the real engine, and ask whether a stop while starting should end the take sooner |

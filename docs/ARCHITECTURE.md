@@ -2009,8 +2009,14 @@ its size, mtime, inode or change time changed (`ConfigFile`), and
   `GST_PLUGIN_PATH_1_0` unset), so a session's plugin paths (NixOS sets one
   for GNOME, with an unfiltered gst-plugins-bad) are never scanned. It
   installs the bundled fonts next to the binary (`share/qrec/fonts`) and
-  the desktop entry and icons (`data/install.sh`); the build sandbox runs
-  `qrec-core`'s tests only.
+  the desktop entry and icons (`data/install.sh`): the pen's app icon
+  (`data/icons/hicolor/`: its scalable SVG and its own PNGs at 16–512 px,
+  the REC glyph as the symbolic icon) and Lucide's license
+  (`share/licenses/qrec/LICENSE-lucide.txt`); the build sandbox runs
+  `qrec-core`'s tests only. Every icon the window shows is the app's own,
+  a GResource symbolic SVG (the frames' Lucide icons, docs/GUI.md G§5.2);
+  Adwaita's and hicolor's themes are there for GTK's and libadwaita's own
+  widgets and the app icon.
 
 ### A§8.11 Capture engine
 
@@ -2042,8 +2048,12 @@ pipeline first. Paths in the plan are joined with the project dir.
   layout's rects × output / canvas, edge by edge. The sink is one element
   for the engine's life: a torn-down pipeline lets go of it at NULL, the
   next one takes it. Its errors are preview problems (`LiveError`), never a
-  source's. Without one: `compositor ! <canvas size> ! videoconvert ! RGBA !
-  appsink` → `SideEvent::Preview` (tests). A new canvas (size, rate,
+  source's. A screen the portal refused (denied, or the picker closed:
+  `on_event::record::portal_refusal`'s rule) is no `LiveError`: its
+  `LiveSourceStatus` is `Refused`, which the GUI draws (S24, docs/GUI.md
+  G§3.9); a missing ScreenCast portal still is one. Without a sink:
+  `compositor ! <canvas size> ! videoconvert ! RGBA ! appsink` →
+  `SideEvent::Preview` (tests). A new canvas (size, rate,
   background) or new preview layers rebuild; a layout only moves pads and
   sets crops. A rebuilt pipeline is laid out (crops and pads) before it
   starts, at the size each source will deliver: a camera mode's own size,
@@ -2588,8 +2598,7 @@ GUI's Record button says the same); an invalid `qrec.json` isn't one, since
 a take moves the bad file aside first (A§7.7).
 `keys.toml`: `[bindings]` id → string or array. `qrec keys --json` prints
 `[{"id","group","label","keys":[..],"cli","contexts"}]`. Its editor is
-Settings › Keyboard (WP9: the edits and the writer are built, the GTK
-page waits for its frames, docs/GUI.md WP9): `set_binding` /
+Settings › Keyboard (WP9, docs/GUI.md WP9): `set_binding` /
 `reset_binding` change one line of the text at `toml_edit`'s spans and
 leave every other byte (comments, order, spacing; a line they add ends
 like the file's, CRLF or LF), refuse a file that
@@ -2597,8 +2606,8 @@ isn't TOML, and fall back to a document edit for an inline `bindings`
 table; the shell writes the result atomically (`keys_file::{set_binding,
 reset_binding}`). `history.clear` is an id `action_for` knows without
 being a binding (no key, not in `keys.toml`): the palette's "Clear undo
-history" (its row and dispatch are built; the palette's GTK view waits
-like Settings'). An open window
+history" (its row, through the confirmation modal, since WP9's
+palette). An open window
 reloads it when the file changes (A§8.9's settings watcher): the new keys
 work and show at once, and each problem it didn't have is a toast (GUI
 G§3.14).
@@ -2630,9 +2639,9 @@ removed (an added line, or a new section's, ends like the file's lines:
 CRLF in a CRLF file, `toml_text::newline`); and the write goes through
 `Backend::write_settings`, which the
 `qrec` binary implements with `qrec_shell::config_file::write_text`, the
-writer behind `config_file::set`, which WP9's Settings pages are to use (their
-GTK pages wait for their frames): a temp file renamed over the file, its
-permissions kept, a symlink written through. Hosts read it as
+writer behind `config_file::set`, which WP9's Settings pages use (one
+setting per change, as `qrec config set` writes it): a temp file renamed
+over the file, its permissions kept, a symlink written through. Hosts read it as
 `Facts.config`: a file `parse` refuses gives all the defaults, and people
 get a "config.toml is invalid" warning once per change of the file
 (A§4.2), so a typo never drops the settings silently. An open window
@@ -2769,6 +2778,10 @@ developer exported for manual shots.
   ("GIGA-BYTE GS27QA" 2560×1440, "Dell U2720Q" 3840×2160, "Logitech C920",
   "Yeti Nano", "Built-in Audio Analog Stereo"); names, paths, modes and
   the test patterns stay.
+- `QREC_FAKE_CAMERA_STALL_MS=<ms>`: that long into each take's recording,
+  the fake cameras the take records stop sending frames (no error, no
+  EOS: a hung camera), so `STALL_LIMIT` later the take loses them
+  (`StreamLost`, "Camera disconnected") and records on without them.
 
 ---
 
