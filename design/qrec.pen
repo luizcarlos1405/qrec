@@ -102752,7 +102752,7 @@
           }
         },
         {
-          "value": "#CFC69B",
+          "value": "#D0C79C",
           "theme": {
             "theme": "ogre-mode"
           }
@@ -102798,7 +102798,7 @@
           }
         },
         {
-          "value": "#A87811",
+          "value": "#A77710",
           "theme": {
             "theme": "swamp-day"
           }
@@ -102972,19 +102972,19 @@
           }
         },
         {
-          "value": "#446E04",
+          "value": "#416904",
           "theme": {
             "theme": "swamp-day"
           }
         },
         {
-          "value": "#F3578B",
+          "value": "#FF6797",
           "theme": {
             "theme": "dragons-keep"
           }
         },
         {
-          "value": "#B5D334",
+          "value": "#BFDE42",
           "theme": {
             "theme": "ogre-mode"
           }
@@ -102995,25 +102995,25 @@
       "type": "color",
       "value": [
         {
-          "value": "#FC6555",
+          "value": "#FF7868",
           "theme": {
             "theme": "swamp-night"
           }
         },
         {
-          "value": "#BF2A2F",
+          "value": "#B72028",
           "theme": {
             "theme": "swamp-day"
           }
         },
         {
-          "value": "#FD5648",
+          "value": "#FE6E5F",
           "theme": {
             "theme": "dragons-keep"
           }
         },
         {
-          "value": "#FEB3A5",
+          "value": "#FEC3B7",
           "theme": {
             "theme": "ogre-mode"
           }
@@ -103030,7 +103030,7 @@
           }
         },
         {
-          "value": "#9A5103",
+          "value": "#914C04",
           "theme": {
             "theme": "swamp-day"
           }
@@ -103042,7 +103042,7 @@
           }
         },
         {
-          "value": "#FFB66B",
+          "value": "#FFB76D",
           "theme": {
             "theme": "ogre-mode"
           }
@@ -103053,25 +103053,25 @@
       "type": "color",
       "value": [
         {
-          "value": "#6B7D5D",
+          "value": "#6C7E5E",
           "theme": {
             "theme": "swamp-night"
           }
         },
         {
-          "value": "#88815B",
+          "value": "#87805A",
           "theme": {
             "theme": "swamp-day"
           }
         },
         {
-          "value": "#77707C",
+          "value": "#78717D",
           "theme": {
             "theme": "dragons-keep"
           }
         },
         {
-          "value": "#88AC58",
+          "value": "#8AAE5A",
           "theme": {
             "theme": "ogre-mode"
           }
@@ -103378,7 +103378,7 @@
           }
         },
         {
-          "value": "#A87811",
+          "value": "#A77710",
           "theme": {
             "theme": "swamp-day"
           }
@@ -103407,7 +103407,7 @@
           }
         },
         {
-          "value": "#A87811",
+          "value": "#A77710",
           "theme": {
             "theme": "swamp-day"
           }
@@ -103535,7 +103535,7 @@
           }
         },
         {
-          "value": "#CFC69B",
+          "value": "#D0C79C",
           "theme": {
             "theme": "ogre-mode"
           }
@@ -103564,7 +103564,7 @@
           }
         },
         {
-          "value": "#CFC69B59",
+          "value": "#D0C79C59",
           "theme": {
             "theme": "ogre-mode"
           }
@@ -103610,7 +103610,7 @@
           }
         },
         {
-          "value": "#A87811",
+          "value": "#A77710",
           "theme": {
             "theme": "swamp-day"
           }
@@ -103691,7 +103691,7 @@
       "type": "color",
       "value": [
         {
-          "value": "#7E5C3D",
+          "value": "#7F5D3E",
           "theme": {
             "theme": "swamp-night"
           }
@@ -103703,13 +103703,13 @@
           }
         },
         {
-          "value": "#735E4D",
+          "value": "#745F4E",
           "theme": {
             "theme": "dragons-keep"
           }
         },
         {
-          "value": "#936541",
+          "value": "#956642",
           "theme": {
             "theme": "ogre-mode"
           }
@@ -104581,7 +104581,7 @@
           }
         },
         {
-          "value": "#A8781133",
+          "value": "#A7771033",
           "theme": {
             "theme": "swamp-day"
           }
@@ -104738,7 +104738,7 @@
           }
         },
         {
-          "value": "#CFC69B66",
+          "value": "#D0C79C66",
           "theme": {
             "theme": "ogre-mode"
           }
@@ -104767,7 +104767,7 @@
           }
         },
         {
-          "value": "#CFC69B33",
+          "value": "#D0C79C33",
           "theme": {
             "theme": "ogre-mode"
           }
