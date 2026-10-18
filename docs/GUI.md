@@ -1807,12 +1807,17 @@ time; A§8.7 rules for every child).
     "The title" is `gui_text`'s GL case: on GSK's GL renderer in software
     (Mesa's llvmpipe; no GPU node opened: every open of the experiment's
     GL runs traced), the header title after a partial redraw against a
-    full one's, the folder named in accented capitals (`ÅÉÂ…`, the tallest
-    ink a title draws). GL draws a hinted font's glyphs on a whole-pixel
-    baseline while the bounds that limit a partial redraw are the unhinted
-    ink at the exact one; with unhinted metrics the baselines are
-    fractional and the accents' tops land a row above the bounds (the mark,
-    GL only: Cairo draws inside them, so the pixman runs never show it).
+    full one's, the title in accented capitals (`ÅÉÂ…`, the tallest ink a
+    title draws: the folder's name; since this round's audit the project's
+    too, renamed to `rust-traits-talk` once the window is idle, because
+    the change as the project opened left its mark only when the opening's
+    other frames allowed, which under gles2 with the GPU warm-up they
+    seldom did, `gui_text`'s `title_trace`). GL draws a hinted font's
+    glyphs on a whole-pixel baseline while the bounds that limit a partial
+    redraw are the unhinted ink at the exact one; with unhinted metrics the
+    baselines are fractional and the accents' tops land a row above the
+    bounds (the mark, GL only: Cairo draws inside them, so the pixman runs
+    never show it).
     Unhinted glyphs (`hintstyle=none`) GL puts on quarter pixels instead,
     which leaves a fainter mark (4 px on the all-ascender title). So Qrec
     keeps its setup: every setup that matches the frames' widths brings the

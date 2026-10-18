@@ -43,15 +43,19 @@ const SOFTWARE_GL: [(&str, &str); 5] = [
     ("LP_NUM_THREADS", "2"),
 ];
 
-/// A folder whose name, the header's title while the project opens, has
-/// accented capitals: the tallest ink the title draws. GL draws a hinted
-/// font's glyphs on a whole-pixel baseline, while the bounds that limit a
-/// partial redraw are the unhinted ink at the exact baseline; with
+/// A title of accented capitals, the tallest ink the header's title draws:
+/// the folder's name and the project's while the window opens. GL draws a
+/// hinted font's glyphs on a whole-pixel baseline, while the bounds that
+/// limit a partial redraw are the unhinted ink at the exact baseline; with
 /// fractional metrics the accents' tops fall a row above them (12 px in
 /// GTK's automatic mode). gui_shell's all-ascender `hhhh…` shows nothing
 /// since the header's WP6 layout, in any setup but unhinted fractional
 /// metrics (4 px).
 const TALL_TITLE: &str = "ÅÉÂÊÔÛÅÉÂÊÔÛ";
+
+/// The name the project takes once the window is idle: the title's
+/// partial redraw (the design fixture's own name).
+const PLAIN_TITLE: &str = "rust-traits-talk";
 
 /// `JetBrains Mono` 500 digits at `size` px: ten advances.
 fn digits(size: f64) -> Value {
@@ -134,11 +138,21 @@ fn the_text_setup_is_manual_with_whole_pixel_advances() {
     assert_advances(&advances(&automatic), [6.6, 7.2, 7.8], "automatic");
 }
 
-/// The header title after a partial redraw (the folder's name while the
-/// project opens, then the project's) against a full redraw's
-/// (`GSK_DEBUG=full-redraw`), on software GL with the text setup `spec`:
-/// the differing pixels of the title's crop, the shots and each window's
-/// `fonts` reply.
+/// The header title after a partial redraw (the project renamed from
+/// [`TALL_TITLE`] to [`PLAIN_TITLE`] once the window is idle, then a split)
+/// against a full redraw's (`GSK_DEBUG=full-redraw`), on software GL with
+/// the text setup `spec`: the differing pixels of the title's crop, the
+/// shots and each window's `fonts` reply.
+///
+/// The title changes in an idle window, not as the project opens (the
+/// folder's name, then the project's, as it did until this round's audit):
+/// whether that change left its mark hung on how the opening's other
+/// frames repainted the header around it, and under gles2 with the GPU
+/// warm-up drawing between them it seldom did (the control found no mark
+/// in 7 of 9 runs at the audit and 5 of 6 after it, none missing in 6
+/// runs with the warm-up off). In an idle window the rename repaints the
+/// title alone, and the control's mark was there in 16 of 16 runs on
+/// gles2 and 6 of 6 on pixman (`tmp/fix13/`).
 fn title_trace(case: &str, spec: &str) -> (usize, Vec<PathBuf>, Vec<Value>) {
     // The title's 480×48 at (560, 0), in the shots' device px (a suite-wide
     // scale run, G§8.4).
@@ -165,6 +179,10 @@ fn title_trace(case: &str, spec: &str) -> (usize, Vec<PathBuf>, Vec<Value>) {
         let mut nested = Nested::start(AREA, &format!("{case}-{n}"), Options::default());
         let project = nested.env.empty_dir(TALL_TITLE);
         design_fixture(&project, DesignVariant::Base);
+        // Named like its folder: the title is the tall one from the
+        // window's first frame to the rename.
+        let named = nested.cli_json(&project, &["project", "set", "--name", TALL_TITLE]);
+        assert_eq!(named["ok"], true, "{named}");
         let mut launch = Launch::a11y().with_env(FONT_RENDERING, spec);
         for (key, value) in SOFTWARE_GL {
             launch = launch.with_env(key, value);
@@ -178,6 +196,9 @@ fn title_trace(case: &str, spec: &str) -> (usize, Vec<PathBuf>, Vec<Value>) {
         gui.wait_phase("open", OPEN);
         gui.wait_idle();
         fonts.push(gui.ctl(json!({"op": "fonts"})));
+        let renamed = nested.cli_json(&project, &["project", "set", "--name", PLAIN_TITLE]);
+        assert_eq!(renamed["ok"], true, "{renamed}");
+        nested.window(0).wait_idle();
         let split = nested.cli_json(&project, &["clip", "split", "--timeline", "--at", "2437f"]);
         assert_eq!(split["ok"], true, "{split}");
         nested.window(0).wait_idle();
