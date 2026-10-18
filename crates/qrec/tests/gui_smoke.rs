@@ -6,14 +6,15 @@
 //! Throughout: no `Crashed`, no `ERROR` line in the GUI log, no GLib or GTK
 //! critical, no panic caught, and the a11y walk is empty. The main-loop
 //! probe (`QREC_GUI_PROBE=1`, G§8.6) runs the whole time and every stall
-//! over 50 ms is reported; under `QREC_TEST_WLR=gles2` one over
-//! [`GLES2_HANG_MS`] while the steps run fails the case (with pixman the
-//! compositor, llvmpipe and ffmpeg share the CPU): G§8.5's 50 ms isn't met
-//! yet (WP10 integration: the take landing's and the export's start's
-//! stalls run 60–215 ms on gles2, also in the package's optimized build,
-//! G§8.6). The stalls before the window first settles (the project
-//! opening) are reported, never failed. The probe's report and the steps'
-//! times go to `tmp/gui-shots/smoke/smoke-measurements.json`.
+//! over 50 ms is reported, with where the main thread's time went (on a
+//! CPU, waiting for one, asleep); under `QREC_TEST_WLR=gles2` one while the
+//! steps run fails the case ([`GLES2_STALL_MS`]; with pixman the
+//! compositor, llvmpipe and ffmpeg share the CPU), and so does a GL program
+//! compiled once the window settled (`GSK_DEBUG=shaders`: the GPU warm-up
+//! compiles them while the project opens). The stalls before the window
+//! first settles (the project opening) are reported, never failed. The
+//! probe's report and the steps' times go to
+//! `tmp/gui-shots/smoke/smoke-measurements.json`.
 //! `QREC_SMOKE_BIN=<path>` runs the steps' window from another binary (the
 //! package's, `result/bin/qrec`: the probe's numbers are the build's).
 //!
@@ -45,12 +46,28 @@ use serde_json::{Value, json};
 const AREA: &str = "smoke";
 
 /// Under gles2, a main-loop stall longer than this while the steps run
-/// fails the smoke: a hang. G§8.5 asks 50 ms, which the take landing
-/// (steps 7 and 8: the timeline's, the panel's and the hint bar's
-/// subscribers, the timeline's first snapshot after it) and GTK's own first
-/// frames of the Program don't meet yet (60–215 ms measured, open: G§8.6);
-/// those are reported, with what held the loop.
-const GLES2_HANG_MS: f64 = 400.0;
+/// fails the smoke (G§8.5). Until the perf lane it was 400 ms: forks of
+/// the window for each ffprobe and ffmpeg held its main thread on malloc's
+/// locks (60–215 ms at a take's landing and an export's start), and GL
+/// programs compiled on first use (50–90 ms each, the test's shader cache
+/// cold); children now start without a fork and the programs compile while
+/// the window opens (G§8.6).
+const GLES2_STALL_MS: f64 = 50.0;
+
+/// The GL programs GSK compiled so far, in order, from the window's output
+/// under `GSK_DEBUG=shaders` (`Gsk-Message: 23:36:15.429: vertex 1,
+/// gskgpuborder:`, then the source): `vertex 1, gskgpuborder` each.
+fn compiled_programs(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix("Gsk-Message: ")?;
+            let (_, what) = rest.split_once(": ")?;
+            let what = what.strip_suffix(':')?;
+            (what.starts_with("vertex ") && what.contains(", ")).then(|| what.to_owned())
+        })
+        .collect()
+}
 
 /// The design fixture's canvas: 1920×1080 at 30 fps (BRIEF §3).
 const CANVAS: (u64, u64) = (1920, 1080);
@@ -203,6 +220,12 @@ fn smoke_steps_1_to_10() {
     if let Some(bin) = std::env::var_os("QREC_SMOKE_BIN") {
         launch.bin = Some(PathBuf::from(bin));
     }
+    let gles2 = nested.opts.renderer == Renderer::Gles2;
+    if gles2 {
+        // GSK names each GL program it compiles (with its source): none may
+        // compile once the window settled (`gpu_warmup`, G§8.6).
+        launch = launch.with_env("GSK_DEBUG", "shaders");
+    }
     let pid = nested.launch(&project, launch).pid();
 
     // 1. The GUI host answers, with the window's pid.
@@ -216,8 +239,10 @@ fn smoke_steps_1_to_10() {
     let gui = nested.window(0);
     gui.wait_phase("open", Duration::from_secs(30));
     gui.wait_idle();
-    // The window settled: the stalls so far were the project opening.
+    // The window settled: the stalls so far were the project opening, and so
+    // were the GL programs compiled so far.
     let opened = probe(&mut nested);
+    let compiled_opening = compiled_programs(&nested.window(0).output());
     steps.done("1 status");
 
     // 2. A split through the GUI host: a seq, one more clip, a screenshot.
@@ -449,14 +474,28 @@ fn smoke_steps_1_to_10() {
     for stall in &stalls {
         eprintln!("  stall: {stall}");
     }
-    if nested.opts.renderer == Renderer::Gles2 {
-        let hangs: Vec<&&Value> = stalls
+    if gles2 {
+        // No GL program compiled while the steps ran: each was a 30–70 ms
+        // stall with the test's cold shader cache (the warm-up's job).
+        let compiled = compiled_programs(&nested.window(0).output());
+        assert!(
+            !compiled_opening.is_empty(),
+            "GSK_DEBUG=shaders named no program while the window opened: is its \
+             output still `Gsk-Message: <time>: vertex <n>, <program>:`?"
+        );
+        let late = &compiled[compiled_opening.len().min(compiled.len())..];
+        assert!(
+            late.is_empty(),
+            "GL programs compiled after the window settled (the GPU warm-up misses them, \
+             G§8.6): {late:#?}"
+        );
+        let over: Vec<&&Value> = stalls
             .iter()
-            .filter(|s| s["driftMs"].as_f64().unwrap_or_default() > GLES2_HANG_MS)
+            .filter(|s| s["driftMs"].as_f64().unwrap_or_default() > GLES2_STALL_MS)
             .collect();
         assert!(
-            hangs.is_empty(),
-            "main-loop stalls over {GLES2_HANG_MS} ms under gles2 (G§8.5, G§8.6): {hangs:#?}"
+            over.is_empty(),
+            "main-loop stalls over {GLES2_STALL_MS} ms under gles2 (G§8.5, G§8.6): {over:#?}"
         );
     }
 
