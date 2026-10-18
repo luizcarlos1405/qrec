@@ -176,6 +176,23 @@ fn compare(shot: &Path, frame: &str) {
     );
 }
 
+/// The width in device px of `rect`'s (logical px) bright ink in `png`:
+/// every channel at 150 or more (`text` over the header's `surface`).
+fn ink_width(nested: &Nested, png: &Path, rect: [f64; 4]) -> f64 {
+    let px = nested.opts.rect_px(rect);
+    let w = px[2] as usize;
+    let xs: Vec<usize> = gui_support::rgb_pixels(png, px)
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.iter().all(|&c| c >= 150))
+        .map(|(i, _)| i % w)
+        .collect();
+    match (xs.iter().min(), xs.iter().max()) {
+        (Some(a), Some(b)) => (b - a + 1) as f64,
+        _ => 0.0,
+    }
+}
+
 /// The pixel at logical (`x`, `y`) of a shot, as `#RRGGBB`.
 fn pixel(nested: &Nested, png: &Path, x: f64, y: f64) -> String {
     let (x, y) = nested.opts.pixel_px(x, y);
@@ -500,6 +517,14 @@ fn x2_not_my_swamp() {
     // The minimal header: the icon, the wordmark, close; no title.
     let header = gui.labels("minimal-header");
     assert_eq!(header, ["Qrec"], "the minimal header's labels");
+    // Its close is the frames' 20 px `x`: 10 px of bright ink, as the
+    // frame's and the main header's (it drew GTK's default 16 px: 8).
+    let s = nested.opts.scale;
+    let ink = ink_width(&nested, &shot, [1564.0, 10.0, 28.0, 28.0]);
+    assert!(
+        (ink - 10.0 * s).abs() <= s,
+        "the close x's bright ink: {ink} px wide, the frame's 10"
+    );
     nested.keys(&["-k", "Return"]);
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(3));
     let names: Vec<String> = fs::read_dir(&downloads)

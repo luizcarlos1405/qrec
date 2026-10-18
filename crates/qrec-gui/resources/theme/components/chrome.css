@@ -49,8 +49,10 @@ headerbar.qrec-header .header-title {
   color: var(--qrec-text);
 }
 
-/* Header icon buttons draw 20 px icons (DESIGN Icons). */
-headerbar.qrec-header button.qrec-btn.icon-32 image {
+/* Header icon buttons draw 20 px icons (DESIGN Icons), the blocking
+   pages' minimal header's close too (C04 `Xba2H`: S23, X1–X3). */
+headerbar.qrec-header button.qrec-btn.icon-32 image,
+headerbar.qrec-minimal-header button.qrec-btn.icon-32 image {
   -gtk-icon-size: 20px;
 }
 
