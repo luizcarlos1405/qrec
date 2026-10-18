@@ -16,21 +16,29 @@
 //! 2. `runtime.playing` false → true: `play(rate)` from `ui.playhead`, the
 //!    rate being `LocalUi.playing_rate` when the GUI's own shuttle just set
 //!    it and 1 otherwise (D-44: Space and CLI `qrec play` reset it). true →
-//!    false: `pause()` and `seek()` to the player's frame, then
-//!    `Seek{To(that frame)}`; the rate goes back to 1. The player's seek
+//!    false: `pause()` and `seek()` to the player's frame, then the park
+//!    `Seek{Player{that frame, rev}}` (step 3); the rate goes back to 1.
+//!    The player's seek
 //!    puts the paused picture on the parked frame (a sink that pauses
 //!    shows the next one, its preroll buffer). Leaving Program while
 //!    playing is that stop too (R21). A step's
 //!    pause (D-51) parks nothing: the step's own seek, right behind it,
 //!    puts the playhead where the step lands, and the paused player waits
 //!    for the snapshots to get there ([`SyncMachine::note_key_park`]).
-//! 3. While playing, `Seek{To(player frame)}` goes out once a second (an
-//!    own seek); a playhead the GUI didn't set that way (nor by a key's
-//!    pre-step seek to the player's frame, R22) moves the player. The own
-//!    seek waits while a `Seek` the window sent is unanswered
+//! 3. While playing, `Seek{Player{player frame, rev}}` goes out once a
+//!    second (an own seek); a playhead the GUI didn't set that way (nor by
+//!    a key's pre-step seek to the player's frame, R22) moves the player.
+//!    The own seek waits while a `Seek` the window sent is unanswered
 //!    (`Inputs::seek_unanswered`: Home, End, a click on the ruler): sent
 //!    from a snapshot without it, it came after it and undid it, and the
-//!    player went back with the playhead.
+//!    player went back with the playhead. `rev` is the snapshot's
+//!    `runtime.playhead_rev`, which every other seek that lands bumps: the
+//!    core drops an own seek read against an older one, so a seek from
+//!    outside (the CLI's, an agent's) is never undone either, and a new
+//!    revision is a seek that landed, which moves the player even to the
+//!    frame the playhead already had. While the program plays the sync
+//!    points [`ProgramPosition`] at the player: the Session's relative
+//!    seeks go from its frame (`Facts::player_ns`).
 //!    `LocalUi.program_playing` says the program plays in the player (not
 //!    a take; and only once the program's load after a take landed, the
 //!    player idle, since until then its position is the take's): what the
@@ -64,7 +72,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use qrec_core::ges_plan::{plan_ges, plan_ges_take, without_tracks};
@@ -76,8 +84,9 @@ use qrec_core::time::{frame_ns, ns_to_frame_floor};
 use qrec_core::timeline::total_frames;
 use qrec_core::view::DragKind;
 use qrec_core::view::notices::Notice;
-use qrec_core::{Command, Fps, Frame, State, TakeId, TimeArg};
-use qrec_shell::player::PlayerEvent;
+use qrec_core::{Command, Fps, Frame, State, TakeId};
+use qrec_shell::facts::PlayerPosition;
+use qrec_shell::player::{PlayerEvent, PositionReader};
 
 use crate::Ctx;
 use crate::guard;
@@ -223,6 +232,9 @@ pub struct SyncMachine {
     shown_frame: Option<Frame>,
     /// The playhead as last seen.
     seen_playhead: Option<Frame>,
+    /// `runtime.playhead_rev` as last seen: a newer one is a seek that
+    /// landed, not the sync's own.
+    seen_rev: Option<u64>,
     /// The take frame the trim scrub last showed.
     take_frame: Option<Frame>,
     /// The last once-a-second seek: (when, frame).
@@ -274,6 +286,7 @@ impl SyncMachine {
             told_playing: false,
             shown_frame: None,
             seen_playhead: None,
+            seen_rev: None,
             take_frame: None,
             auto_seek: None,
             rate_armed_at: None,
@@ -351,7 +364,7 @@ impl SyncMachine {
         }
         let frame = inp.player_frame();
         self.auto_seek = Some((inp.now_ms, frame));
-        Some(seek_to(frame))
+        Some(player_seek(frame, inp.state.runtime.playhead_rev))
     }
 
     /// A reload is due (the test channel's `waitIdle`).
@@ -515,6 +528,7 @@ impl SyncMachine {
         let stopped = !now_playing && self.playing;
         self.playing = now_playing;
         let playhead = inp.playhead();
+        let rev = inp.state.runtime.playhead_rev;
         if started || (fresh && now_playing && !self.told_playing) {
             self.ended = false;
             self.scrubbed = None;
@@ -545,12 +559,16 @@ impl SyncMachine {
             // playhead that moves meanwhile moves the player once it landed.
         } else if now_playing && self.told_playing {
             // Playing: a playhead the GUI didn't set by its once-a-second
-            // seek or a key's pre-step seek moves the player.
-            let moved = self.seen_playhead != Some(playhead);
+            // seek or a key's pre-step seek moves the player. A seek that
+            // landed shows as a new playhead revision too, also one to the
+            // frame the playhead already had (the CLI's, an agent's): the
+            // sync's own seeks leave the revision as it is.
+            let landed = self.seen_rev != Some(rev);
+            let moved = landed || self.seen_playhead != Some(playhead);
             let now = inp.now_ms;
             self.key_seeks
                 .retain(|(at, _)| now.saturating_sub(*at) < SEEK_EVERY_MS);
-            let own = self.auto_seek.is_some_and(|(_, f)| f == playhead)
+            let own = (!landed && self.auto_seek.is_some_and(|(_, f)| f == playhead))
                 || self.key_seeks.iter().any(|(_, f)| *f == playhead);
             if moved && !own && playhead.abs_diff(inp.player_frame()) > NEAR_FRAMES {
                 out.player.push(PlayerCmd::Seek(inp.ns(playhead)));
@@ -566,8 +584,10 @@ impl SyncMachine {
                     // snapshot without it, would come after it and undo it.
                     self.seek_wait = Some(inp.now_ms + SEEK_WAIT_POLL_MS);
                 } else {
+                    // Read against this snapshot's playhead revision: a
+                    // seek that lands before it (the CLI's, an agent's) wins.
                     let frame = inp.player_frame();
-                    out.dispatch.push(seek_to(frame));
+                    out.dispatch.push(player_seek(frame, rev));
                     self.auto_seek = Some((inp.now_ms, frame));
                     self.seek_wait = None;
                 }
@@ -588,6 +608,7 @@ impl SyncMachine {
         }
         if fresh || !self.settling {
             self.seen_playhead = Some(playhead);
+            self.seen_rev = Some(rev);
         }
         out
     }
@@ -625,10 +646,12 @@ impl SyncMachine {
             // player shows that frame: a sink that pauses shows its preroll
             // buffer, the frame after the one on screen (G§8.5's step 6
             // shot), so a step "from the frame shown" (D-51) went from one
-            // frame behind the picture.
+            // frame behind the picture. A seek that lands before the park
+            // (the CLI's right after its pause) wins over it.
             let frame = inp.player_frame();
+            let rev = inp.state.runtime.playhead_rev;
             out.player.push(PlayerCmd::Seek(inp.ns(frame)));
-            out.dispatch.push(seek_to(frame));
+            out.dispatch.push(player_seek(frame, rev));
             self.shown_frame = Some(frame);
             self.seen_playhead = Some(frame);
         }
@@ -819,17 +842,55 @@ impl SyncMachine {
     }
 }
 
-fn seek_to(frame: Frame) -> Command {
+/// The sync's own seek to the player's `frame`, read while the playhead
+/// revision was `rev` (step 3): the core drops it when a seek landed since
+/// (`SeekTarget::Player`).
+fn player_seek(frame: Frame, rev: u64) -> Command {
     Command::Seek {
-        to: SeekTarget::To(TimeArg::frames(frame)),
+        to: SeekTarget::Player { frame, rev },
     }
 }
 
-/// The frame of an own `Seek{To(f)}` (a plain frame count).
+/// The frame of an own `Seek{To(f)}` (a plain frame count) or of the
+/// sync's own (`Player`).
 pub fn own_seek_frame(seek: Option<&SeekTarget>, fps: Fps) -> Option<Frame> {
     match seek? {
         SeekTarget::To(arg) => qrec_core::timeline::absolute_frame(arg, fps, "seek").ok(),
+        SeekTarget::Player { frame, .. } => Some(*frame),
         _ => None,
+    }
+}
+
+/// Where the program is for the Session's facts (G§3.10 step 3): the
+/// player's position while the program plays in it
+/// (`LocalUi.program_playing`), `None` otherwise (paused, a take in the
+/// player, the program's load after one still on its way). The sync sets
+/// it on the GTK thread; the session thread reads it for a relative seek
+/// (`Facts::player_ns`) through [`source`](Self::source): a lock held for
+/// an atomic load, never across anything that waits.
+#[derive(Debug, Clone, Default)]
+pub struct ProgramPosition(Arc<Mutex<Option<PositionReader>>>);
+
+impl ProgramPosition {
+    /// The program plays in the player that `reader` reads (`Some`), or
+    /// not (`None`).
+    pub fn set(&self, reader: Option<PositionReader>) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = reader;
+    }
+
+    /// The program's position now, if it plays.
+    pub fn get(&self) -> Option<u64> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(PositionReader::position_ns)
+    }
+
+    /// What the GUI's Session reads (`SessionConfig::player`).
+    pub fn source(&self) -> PlayerPosition {
+        let position = self.clone();
+        Arc::new(move || position.get())
     }
 }
 
@@ -1030,7 +1091,7 @@ impl ProgramSync {
             let inp = self.inputs(&state, &plan);
             self.machine.borrow_mut().sync(&inp)
         };
-        self.apply(out);
+        self.apply(out, &state);
         self.arm_timer();
     }
 
@@ -1042,7 +1103,7 @@ impl ProgramSync {
             let inp = self.inputs(&state, &plan);
             self.machine.borrow_mut().scrub(frame, &inp)
         };
-        self.apply(out);
+        self.apply(out, &state);
         self.arm_timer();
     }
 
@@ -1054,11 +1115,12 @@ impl ProgramSync {
             let inp = self.inputs(&state, &plan);
             self.machine.borrow_mut().on_event(event, &inp)
         };
-        self.apply(out);
+        self.apply(out, &state);
         self.arm_timer();
     }
 
-    fn apply(&self, out: Out) {
+    /// Carries `out` out; `state` is the snapshot the machine looked at.
+    fn apply(&self, out: Out, state: &State) {
         if let Some(player) = self.ctx.media.player() {
             for cmd in out.player {
                 match cmd {
@@ -1092,13 +1154,24 @@ impl ProgramSync {
             self.ctx.store.dispatch(cmd);
         }
         if let Some(frame) = out.park {
-            self.park_for_preview(frame);
+            self.park_for_preview(frame, state.runtime.playhead_rev);
         }
         if let Some(notice) = out.notice {
             self.ctx.store.notify(notice);
         }
         let playing = out.playing;
         let program_playing = out.program_playing;
+        if let Some(program) = program_playing {
+            // The Session's relative seeks go from the player's frame while
+            // the program plays in it (step 3).
+            let reader = self
+                .ctx
+                .media
+                .player()
+                .filter(|_| program)
+                .map(|p| p.position_reader());
+            self.ctx.media.program_position().set(reader);
+        }
         let rate = out.rate;
         if let Some(rate) = rate {
             self.own_rate.set(Some(rate));
@@ -1127,11 +1200,12 @@ impl ProgramSync {
     }
 
     /// The bin preview took the player from the playing program (step 8):
-    /// `Seek{To(frame)}` parks its playhead at the frame the player showed.
-    /// Until its reply the preview takes a playhead change as the
-    /// program's own, not a timeline action (`TakePreview::parking`, D-17):
-    /// the park's, and a once-a-second seek still on its way.
-    fn park_for_preview(&self, frame: Frame) {
+    /// the sync's seek parks its playhead at the frame the player showed
+    /// (read while the playhead revision was `rev`). Until its reply the
+    /// preview takes a playhead change as the program's own, not a
+    /// timeline action (`TakePreview::parking`, D-17): the park's, and a
+    /// once-a-second seek still on its way.
+    fn park_for_preview(&self, frame: Frame, rev: u64) {
         let set = |parking: bool| {
             move |l: &mut crate::store::LocalUi| {
                 if let Some(preview) = &mut l.take_preview {
@@ -1141,11 +1215,13 @@ impl ProgramSync {
         };
         self.ctx.store.update_local(set(true));
         let store = self.ctx.store.downgrade();
-        self.ctx.store.dispatch_then(seek_to(frame), move |_| {
-            if let Some(store) = store.upgrade() {
-                store.update_local(set(false));
-            }
-        });
+        self.ctx
+            .store
+            .dispatch_then(player_seek(frame, rev), move |_| {
+                if let Some(store) = store.upgrade() {
+                    store.update_local(set(false));
+                }
+            });
     }
 
     /// One timeout to the machine's next deadline.
@@ -1226,7 +1302,7 @@ pub fn busy() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use qrec_core::ids::ClipId;
-    use qrec_core::testkit;
+    use qrec_core::{TimeArg, testkit};
 
     use super::*;
 
@@ -1339,7 +1415,7 @@ mod tests {
     }
 
     fn seek_cmd(frame: Frame) -> Command {
-        seek_to(frame)
+        player_seek(frame, 0)
     }
 
     #[test]
@@ -2096,6 +2172,54 @@ mod tests {
         );
         rig.now += SEEK_EVERY_MS;
         assert_eq!(rig.sync().player, [PlayerCmd::Seek(rig.ns(2501))]);
+    }
+
+    /// Step 3: the sync's own seeks (the once-a-second one, the stop's
+    /// park, the close's) carry the playhead revision of the snapshot their
+    /// frame was read against, so the core drops one a newer seek beat (the
+    /// CLI's, an agent's). A seek that lands shows as a new revision: one to
+    /// the frame the playhead already had (the last own seek's) moves the
+    /// playing player too, which went on from there. A key's pre-step seek
+    /// to the player's frame (a revision of its own) still doesn't pull it
+    /// back (R22).
+    #[test]
+    fn own_seeks_carry_the_revision_and_a_landed_seek_moves_the_player() {
+        let mut rig = Rig::new(program()).loaded();
+        rig.state.runtime.playhead_rev = 5;
+        assert_eq!(rig.play().player, [PlayerCmd::Play(1.0)]);
+        rig.now += SEEK_EVERY_MS;
+        rig.position = 2467;
+        assert_eq!(rig.sync().dispatch, [player_seek(2467, 5)]);
+        // Its snapshot: the revision as it was, own.
+        rig.state.ui.playhead = 2467;
+        rig.position = 2470;
+        assert_eq!(rig.sync(), Out::default());
+        // `qrec seek --to 2467f`: the same frame, a new revision. The player
+        // was three frames on: back to the seek's frame.
+        rig.state.runtime.playhead_rev = 6;
+        assert_eq!(rig.sync().player, [PlayerCmd::Seek(rig.ns(2467))]);
+        rig.position = 2468;
+        assert_eq!(rig.sync(), Out::default(), "once");
+        // The next own seek is read against revision 6.
+        rig.now += SEEK_EVERY_MS;
+        rig.position = 2497;
+        assert_eq!(rig.sync().dispatch, [player_seek(2497, 6)]);
+        // A key's pre-step seek to the player's frame: a revision of its
+        // own, and own.
+        rig.now += 300;
+        rig.position = 2506;
+        rig.machine.note_own_seek(rig.now, 2506);
+        rig.now += 30;
+        rig.position = 2510;
+        rig.state.ui.playhead = 2506;
+        rig.state.runtime.playhead_rev = 7;
+        assert_eq!(rig.sync().player, [], "no pull back to 2506");
+        // The close's park and the stop's carry the revision too.
+        let mut machine = std::mem::take(&mut rig.machine);
+        assert_eq!(machine.on_close(&rig.inputs()), Some(player_seek(2510, 7)));
+        rig.machine = machine;
+        let out = rig.pause();
+        assert_eq!(out.dispatch, [player_seek(2510, 7)]);
     }
 
     /// G§3.6 (A1's audit): at the close a playing program parks the

@@ -255,6 +255,13 @@ pub struct Runtime {
     /// Allocates `JobId`s and `TimerId`s (one counter for both).
     pub next_id: u64,
     pub playing: bool,
+    /// The playhead revision (GUI G§3.10 step 3): bumped by every seek that
+    /// lands but the GUI's playback sync's (`SeekTarget::Player`), and by a
+    /// start from the end. The sync's seeks carry the revision their frame
+    /// was read against and land only while it holds, so a seek from the
+    /// CLI, an agent or the window itself is never undone by one of them.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub playhead_rev: u64,
     /// `qrec.json` on disk failed to load (A§7.7).
     pub disk_invalid: Option<String>,
     /// The capture engine wedged (A§5.3 `EngineWedged`): new takes can't
@@ -279,6 +286,7 @@ impl Runtime {
             capabilities: Capabilities::default(),
             next_id: 1,
             playing: false,
+            playhead_rev: 0,
             disk_invalid: None,
             engine_stuck: None,
             recovering: BTreeSet::new(),
@@ -302,6 +310,10 @@ impl Runtime {
         self.next_id += 1;
         id
     }
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// Which kind of process holds the project lock (A§8.3).

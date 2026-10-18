@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::apply::Outcome;
 use crate::apply::clip::describe;
-use crate::ctx::Ctx;
+use crate::ctx::{Ctx, Facts};
 use crate::error::CoreError;
 use crate::history::persist;
 use crate::ids::{ClipId, Frame};
@@ -24,7 +24,7 @@ use crate::protocol::command::{Nullable, SceneTarget, SeekTarget, SelectOp, Shut
 use crate::protocol::effect::Effect;
 use crate::protocol::reply::CmdResult;
 use crate::state::{CanvasMode, HostKind, State};
-use crate::time::timecode;
+use crate::time::{ns_to_frame_floor, timecode};
 use crate::timeline;
 use crate::ui_normalize::{canvas_scene, canvas_target};
 
@@ -111,11 +111,34 @@ pub fn select(state: &State, _ctx: &Ctx, op: SelectOp) -> Result<Outcome, CoreEr
 /// `qrec seek` (G, R): `To` is a timeline frame, `By` a relative move
 /// (an unsigned value counts as `+`); `EditPrev`/`EditNext` jump to the
 /// previous/next clip boundary. The playhead stays within `[0, total]`.
-pub fn seek(state: &State, _ctx: &Ctx, to: SeekTarget) -> Result<Outcome, CoreError> {
+///
+/// While the program plays (GUI G§3.10 step 3) the playhead only moves
+/// with the GUI's once-a-second seek, up to a second behind the picture:
+/// the relative ones go from the frame the GUI's player shows
+/// (`Facts::player_ns`, [`reads_playhead`]). Every seek that lands bumps
+/// `runtime.playhead_rev`, but the GUI sync's own (`Player`), which lands
+/// only while the revision is still the one it carries: a seek that landed
+/// since (the CLI's, an agent's, the window's) wins, and the sync's
+/// replies Ok, changing nothing.
+pub fn seek(state: &State, ctx: &Ctx, to: SeekTarget) -> Result<Outcome, CoreError> {
     let fps = state.project.canvas.fps;
-    let target = seek_frame(state, &to)?;
+    if let SeekTarget::Player { rev, .. } = to
+        && rev != state.runtime.playhead_rev
+    {
+        return Ok(finish(state, state.clone(), |s| {
+            let at = timecode(s.ui.playhead, fps);
+            CmdResult::new(format!(
+                "Playhead kept at {at}: it moved after revision {rev}"
+            ))
+            .with_result(&json!({ "playhead": s.ui.playhead, "timecode": at, "dropped": true }))
+        }));
+    }
+    let target = seek_frame_from(state, &to, from_frame(state, &ctx.facts))?;
     let mut next = state.clone();
     next.ui.playhead = target;
+    if !matches!(to, SeekTarget::Player { .. }) {
+        next.runtime.playhead_rev += 1;
+    }
     Ok(finish(state, next, |s| {
         let at = timecode(s.ui.playhead, fps);
         CmdResult::new(format!("Playhead at {at}"))
@@ -123,14 +146,43 @@ pub fn seek(state: &State, _ctx: &Ctx, to: SeekTarget) -> Result<Outcome, CoreEr
     }))
 }
 
+/// `to` goes from the playhead (`By`, `EditPrev`, `EditNext`): while the
+/// program plays its seek asks for the player's position
+/// (`FactsNeeded::player`).
+pub fn reads_playhead(to: &SeekTarget) -> bool {
+    matches!(
+        to,
+        SeekTarget::By(_) | SeekTarget::EditPrev | SeekTarget::EditNext
+    )
+}
+
+/// The frame a relative seek goes from: the playhead, or while the program
+/// plays the frame the GUI's player shows (`facts.player_ns`).
+fn from_frame(state: &State, facts: &Facts) -> Frame {
+    let total = timeline::total_frames(&state.project.timeline.clips);
+    match facts.player_ns.filter(|_| state.runtime.playing) {
+        Some(ns) => {
+            let ns = i64::try_from(ns).unwrap_or(i64::MAX);
+            let frame = ns_to_frame_floor(ns, state.project.canvas.fps).max(0);
+            Frame::try_from(frame).unwrap_or(0).min(total)
+        }
+        None => state.ui.playhead.min(total),
+    }
+}
+
 /// The frame `Seek{to}` puts `state`'s playhead on (see [`seek`]): the
 /// GUI's step while the program plays goes there as one absolute seek from
 /// the frame the player shows (G§2 D-51).
 pub fn seek_frame(state: &State, to: &SeekTarget) -> Result<Frame, CoreError> {
+    let total = timeline::total_frames(&state.project.timeline.clips);
+    seek_frame_from(state, to, state.ui.playhead.min(total))
+}
+
+/// [`seek_frame`] with the relative targets going from `here`.
+fn seek_frame_from(state: &State, to: &SeekTarget, here: Frame) -> Result<Frame, CoreError> {
     let fps = state.project.canvas.fps;
     let clips = &state.project.timeline.clips;
     let total = timeline::total_frames(clips);
-    let here = state.ui.playhead.min(total);
     Ok(match to {
         SeekTarget::To(arg) => timeline::absolute_frame(arg, fps, "seek --to")?.min(total),
         SeekTarget::By(arg) => {
@@ -148,6 +200,7 @@ pub fn seek_frame(state: &State, to: &SeekTarget) -> Result<Frame, CoreError> {
             .unwrap_or(total),
         SeekTarget::Start => 0,
         SeekTarget::End => total,
+        SeekTarget::Player { frame, .. } => (*frame).min(total),
     })
 }
 
@@ -361,7 +414,10 @@ fn start_playing(state: &State, reverse: bool) -> Result<Outcome, CoreError> {
         }));
     }
     if !reverse && here == total {
+        // A seek of its own: the GUI sync's park of an earlier stop (still
+        // on its way) mustn't put the playhead back at the end.
         next.ui.playhead = 0;
+        next.runtime.playhead_rev += 1;
     }
     next.ui.canvas_mode = CanvasMode::Program;
     next.runtime.playing = true;
@@ -399,7 +455,7 @@ mod tests {
 
     use super::*;
     use crate::ErrorCode;
-    use crate::apply::apply;
+    use crate::apply::{apply, facts_needed};
     use crate::ids::{LayerId, TakeId, TrackId};
     use crate::protocol::command::Command;
     use crate::state::{RecordMode, RecordPhase};
@@ -659,6 +715,156 @@ mod tests {
             seek_frame(&at, &SeekTarget::To(t("-1f"))).unwrap_err().code,
             ErrorCode::Usage
         );
+        let player = SeekTarget::Player { frame: 300, rev: 0 };
+        assert_eq!(seek_frame(&at, &player).unwrap(), 300);
+        let past = SeekTarget::Player { frame: 900, rev: 0 };
+        assert_eq!(seek_frame(&at, &past).unwrap(), 450, "clamped to the end");
+    }
+
+    /// GUI G§3.10 step 3: the GUI sync's seek (`Player`) lands only while
+    /// the playhead revision is the one it carries and leaves it as it is;
+    /// every other seek bumps it, also one that doesn't move the playhead
+    /// (it moves the window's player), and so does a start from the end. A
+    /// sync seek a newer seek beat replies Ok and changes nothing: the
+    /// CLI's seek it would have undone stays.
+    #[test]
+    fn the_players_seek_loses_to_a_newer_seek() {
+        let mut playing = state();
+        playing.ui.canvas_mode = CanvasMode::Program;
+        playing.runtime.playing = true;
+        playing.ui.playhead = 120;
+        let seek = |s: &State, to: SeekTarget| run(s, Command::Seek { to }).unwrap();
+        let player = |frame, rev| SeekTarget::Player { frame, rev };
+
+        let synced = seek(&playing, player(150, 0));
+        assert_eq!(
+            (synced.state.ui.playhead, synced.state.runtime.playhead_rev),
+            (150, 0)
+        );
+        assert_eq!(synced.effects, [Effect::WriteUi]);
+        // The CLI's seek lands while the sync's next one is on its way.
+        let cli = seek(&synced.state, SeekTarget::To(t("200f")));
+        assert_eq!(
+            (cli.state.ui.playhead, cli.state.runtime.playhead_rev),
+            (200, 1)
+        );
+        let stale = seek(&cli.state, player(160, 0));
+        assert_eq!(stale.state, cli.state, "the CLI's seek stays");
+        assert!(stale.effects.is_empty(), "{:?}", stale.effects);
+        let reply = stale.reply.unwrap().unwrap();
+        assert_eq!(
+            reply.message,
+            "Playhead kept at 00:00:06:20: it moved after revision 0"
+        );
+        assert_eq!(
+            reply.result,
+            json!({"playhead": 200, "timecode": "00:00:06:20", "dropped": true})
+        );
+        // The sync's next seek, read against the CLI's revision, lands.
+        let next = seek(&cli.state, player(230, 1));
+        assert_eq!(
+            (next.state.ui.playhead, next.state.runtime.playhead_rev),
+            (230, 1)
+        );
+        // A seek to where the playhead is still lands: the window's player
+        // follows it.
+        let same = seek(&next.state, SeekTarget::To(t("230f")));
+        assert_eq!(
+            (same.state.ui.playhead, same.state.runtime.playhead_rev),
+            (230, 2)
+        );
+        assert!(same.effects.is_empty(), "ui.json doesn't change");
+        // Relative seeks, the edit jumps, Start and End bump it too.
+        for to in [
+            SeekTarget::By(t("+1f")),
+            SeekTarget::EditNext,
+            SeekTarget::EditPrev,
+            SeekTarget::Start,
+            SeekTarget::End,
+        ] {
+            let out = seek(&same.state, to.clone());
+            assert_eq!(out.state.runtime.playhead_rev, 3, "{to:?}");
+        }
+        // A start from the end puts the playhead at 0, a seek of its own.
+        let mut ended = same.state.clone();
+        ended.runtime.playing = false;
+        ended.ui.playhead = 450;
+        let out = run(&ended, Command::Play).unwrap();
+        assert_eq!(
+            (out.state.ui.playhead, out.state.runtime.playhead_rev),
+            (0, 3)
+        );
+        let out = run(&same.state, Command::Pause).unwrap();
+        assert_eq!(out.state.runtime.playhead_rev, 2, "a pause moves nothing");
+        // Not persisted: ui.json has no revision, the runtime only shows it
+        // once it is one.
+        assert!(
+            !serde_json::to_string(&same.state.ui)
+                .unwrap()
+                .contains("Rev")
+        );
+        let runtime = |s: &State| serde_json::to_value(&s.runtime).unwrap();
+        assert_eq!(runtime(&same.state)["playheadRev"], 2);
+        assert!(runtime(&playing).get("playheadRev").is_none());
+    }
+
+    /// GUI G§3.10 step 3: while the program plays, the core's playhead is
+    /// the GUI's last once-a-second seek; a relative seek goes from the
+    /// frame the player shows (`Facts::player_ns`), which the Session
+    /// gathers for it. Paused, or without the fact, from the playhead; an
+    /// absolute seek never reads it.
+    #[test]
+    fn relative_seeks_while_playing_go_from_the_players_frame() {
+        let mut playing = state();
+        playing.ui.canvas_mode = CanvasMode::Program;
+        playing.runtime.playing = true;
+        playing.ui.playhead = 120;
+        let fps = playing.project.canvas.fps;
+        let mut ctx = testkit::ctx(NOW, 1);
+        // Two thirds into frame 140.
+        ctx.facts.player_ns = Some(crate::time::frame_ns(140, fps) as u64 + 22_000_000);
+        let landed = |s: &State, ctx: &Ctx, to: SeekTarget| {
+            apply(s, ctx, Command::Seek { to })
+                .unwrap()
+                .state
+                .ui
+                .playhead
+        };
+        assert_eq!(landed(&playing, &ctx, SeekTarget::By(t("+1s"))), 170);
+        assert_eq!(landed(&playing, &ctx, SeekTarget::By(t("-2f"))), 138);
+        assert_eq!(landed(&playing, &ctx, SeekTarget::EditNext), 250);
+        assert_eq!(landed(&playing, &ctx, SeekTarget::EditPrev), 100);
+        assert_eq!(landed(&playing, &ctx, SeekTarget::To(t("10f"))), 10);
+        // Past the end: clamped like the playhead.
+        let mut late = ctx.clone();
+        late.facts.player_ns = Some(crate::time::frame_ns(900, fps) as u64);
+        assert_eq!(landed(&playing, &late, SeekTarget::By(t("-1f"))), 449);
+        // Paused: the playhead is where the picture is.
+        let mut paused = playing.clone();
+        paused.runtime.playing = false;
+        assert_eq!(landed(&paused, &ctx, SeekTarget::By(t("+1s"))), 150);
+        // No player position (it plays a bin preview's take, or none).
+        let none = testkit::ctx(NOW, 1);
+        assert_eq!(landed(&playing, &none, SeekTarget::By(t("+1s"))), 150);
+        // The Session gathers it for exactly these.
+        let need = |s: &State, to: SeekTarget| facts_needed(s, &Command::Seek { to }).player;
+        for to in [
+            SeekTarget::By(t("+1s")),
+            SeekTarget::EditNext,
+            SeekTarget::EditPrev,
+        ] {
+            assert!(need(&playing, to.clone()), "{to:?} while playing");
+            assert!(!need(&paused, to.clone()), "{to:?} paused");
+        }
+        for to in [
+            SeekTarget::To(t("10f")),
+            SeekTarget::Start,
+            SeekTarget::End,
+            SeekTarget::Player { frame: 1, rev: 0 },
+        ] {
+            assert!(!need(&playing, to.clone()), "{to:?}");
+        }
+        assert!(!facts_needed(&playing, &Command::Pause).player);
     }
 
     #[test]

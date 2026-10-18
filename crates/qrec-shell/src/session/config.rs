@@ -13,7 +13,7 @@ use qrec_core::protocol::ToastLevel;
 use crate::caps::CapsOptions;
 use crate::capture::FakeInventoryKind;
 use crate::error::ShellError;
-use crate::facts::{ConfigFile, Sources};
+use crate::facts::{ConfigFile, PlayerPosition, Sources};
 use crate::lock::ProjectLock;
 use crate::msg::{Inbox, Msg};
 use crate::paths::{Env, UserDirs};
@@ -154,6 +154,10 @@ pub struct SessionConfig {
     /// The GUI passes a [`SharedSources`](crate::facts::SharedSources), so
     /// device facts never block the session thread (GUI H-5).
     pub sources: Option<Box<dyn Sources>>,
+    /// The GUI's Program player position, for a relative seek while the
+    /// program plays (`Facts::player_ns`, GUI G§3.10 step 3); `None`: no
+    /// player (such a seek goes from the playhead).
+    pub player: Option<PlayerPosition>,
     /// How long after opening commands wait for the recovery probes before
     /// they run anyway; `None`: [`RECOVERY_WAIT`](super::RECOVERY_WAIT).
     pub recovery_wait: Option<std::time::Duration>,

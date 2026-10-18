@@ -203,7 +203,8 @@ pub(super) fn open(
             Box::new(SystemSources::new(Some(logs)))
         }
     };
-    let facts = FactsGatherer::new(paths.clone(), env.config.clone(), sources);
+    let facts =
+        FactsGatherer::new(paths.clone(), env.config.clone(), sources).with_player(cfg.player);
     let timers = Timers::new(inbox.clone());
     let mut session = Session {
         dir,

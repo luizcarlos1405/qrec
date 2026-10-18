@@ -1628,6 +1628,103 @@ fn a_seek_while_playing_lands_and_plays_on() {
     assert_clean(&mut nested);
 }
 
+/// The seeks the window dispatched so far (its log's `dispatch #n seek`).
+fn seeks_dispatched(nested: &mut Nested) -> usize {
+    nested
+        .window(0)
+        .gui_log()
+        .lines()
+        .filter(|l| l.contains(" dispatch #") && l.ends_with(" seek"))
+        .count()
+}
+
+/// Waits for the window to dispatch a seek after the first `seen` (while
+/// the program plays: the sync's once-a-second seek). Returns the count.
+fn next_seek_dispatched(nested: &mut Nested, seen: usize) -> usize {
+    gui_support::poll(
+        Duration::from_secs(5),
+        "the window's once-a-second seek",
+        || {
+            let now = seeks_dispatched(nested);
+            (now > seen).then_some(now)
+        },
+    )
+}
+
+/// G§3.10 step 3: a seek from outside the window while the program plays
+/// (the CLI's, an agent's) lands and the program plays on from it. Every
+/// command of the window is held 600 ms on its way
+/// (`QREC_GUI_TEST_SEND_DELAY_MS`), and the CLI's seek goes right after the
+/// sync's once-a-second seek: that seek, to the player's frame before the
+/// CLI's, came after it and undid it (the playhead, and the player with
+/// it), until the core dropped it for a seek that landed since (it carries
+/// the playhead revision it was based on). A relative one (`--by +10s`)
+/// goes from the player's frame, not from the core's playhead a second and
+/// more behind it (the Session reads the player's position as a fact).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_cli_seek_while_playing_lands_over_the_windows_sync() {
+    let mut nested = Nested::start(AREA, "cli-seek-playing", Options::default());
+    let project = fixture(
+        &nested,
+        DesignVariant::Base,
+        Some(ui(CanvasMode::Program, 1200)),
+    );
+    open(
+        &mut nested,
+        &project,
+        Launch::a11y().with_env("QREC_GUI_TEST_SEND_DELAY_MS", "600"),
+    );
+    let reply = nested
+        .window(0)
+        .ctl(json!({"op": "dispatch", "command": {"cmd": "play"}}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    gui_support::poll(Duration::from_secs(20), "the program playing", || {
+        (nested.window(0).local()["programPlaying"] == true).then_some(())
+    });
+    // Where the program is 1.6 s after a seek to `to`: playing on from it,
+    // the picture and the playhead.
+    let plays_on_from = |nested: &mut Nested, to: u64, what: &str| {
+        thread::sleep(Duration::from_millis(1600));
+        let at = frame_of(player_ns(nested));
+        let head = playhead(nested, &project);
+        let local = nested.window(0).local();
+        assert_eq!(local["programPlaying"], true, "{what}: plays on: {local}");
+        assert!(
+            (to..to + 100).contains(&at) && (to..to + 100).contains(&head),
+            "{what} to {to}: 1.6 s later the picture is at {at}, the playhead at {head}"
+        );
+    };
+
+    // Absolute.
+    let seen = seeks_dispatched(&mut nested);
+    let seen = next_seek_dispatched(&mut nested, seen);
+    nested.cli_json(&project, &["seek", "--to", "300f"]);
+    plays_on_from(&mut nested, 300, "qrec seek --to 300f");
+
+    // Relative, from the picture.
+    next_seek_dispatched(&mut nested, seen);
+    let from = frame_of(player_ns(&mut nested));
+    let reply = nested.cli_json(&project, &["seek", "--by", "+10s"]);
+    let landed = reply["data"]["result"]["playhead"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{reply}"));
+    assert!(
+        (from + 300..from + 330).contains(&landed),
+        "--by +10s with the picture at {from} landed at {landed}"
+    );
+    plays_on_from(&mut nested, landed, "qrec seek --by +10s");
+    let reply = nested
+        .window(0)
+        .ctl(json!({"op": "dispatch", "command": {"cmd": "pause"}}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    gui_support::poll(Duration::from_secs(10), "the pause", || {
+        (status(&nested, &project)["runtime"]["playing"] == false).then_some(())
+    });
+    nested.window(0).wait_idle();
+    assert_clean(&mut nested);
+}
+
 // ------------------------------------------------- what a pause shows
 
 /// The frame a player position shows at the fixture's 30 fps (as

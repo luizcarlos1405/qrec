@@ -334,6 +334,12 @@ fn all_commands() -> Vec<Command> {
         Command::Seek {
             to: SeekTarget::End,
         },
+        Command::Seek {
+            to: SeekTarget::Player {
+                frame: 2467,
+                rev: 3,
+            },
+        },
         Command::Play,
         Command::Pause,
         Command::Shuttle {
@@ -496,6 +502,15 @@ fn command_json_forms() {
     insta::assert_snapshot!(json(&scene), @r#"{"cmd":"sceneApply","from":"project","to":{"takes":["take-0002"]}}"#);
 
     insta::assert_snapshot!(json(&Command::RecordStop), @r#"{"cmd":"recordStop"}"#);
+
+    // The GUI's playback sync (GUI G§3.10 step 3).
+    let synced = Command::Seek {
+        to: SeekTarget::Player {
+            frame: 2467,
+            rev: 3,
+        },
+    };
+    insta::assert_snapshot!(json(&synced), @r#"{"cmd":"seek","to":{"player":{"frame":2467,"rev":3}}}"#);
 }
 
 #[test]
