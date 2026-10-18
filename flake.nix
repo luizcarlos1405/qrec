@@ -197,6 +197,9 @@
             mkdir -p $out/share
             cp -r ${qrecFonts pkgs}/share/qrec $out/share/
             cp -r ${qrecFonts pkgs}/share/licenses $out/share/
+            # The copies keep the store's read-only modes: install.sh adds
+            # share/licenses/qrec (Lucide's license) next to the fonts'.
+            chmod -R u+w $out/share
             sh data/install.sh $out
             desktop-file-validate $out/share/applications/com.rsensato.qrec.desktop
           '';
