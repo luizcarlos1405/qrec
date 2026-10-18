@@ -12,7 +12,13 @@
 //! and JSON forms of `qrec keys`, and [`problems`] words the conflicts and
 //! `keys.toml` errors for notices. [`usable_keys`] are a binding's keys
 //! that run (conflicting ones drop out); [`KeyChord::cap_legends`] is how
-//! the GUI's key caps show one.
+//! the GUI's key caps show one. [`conflict_notes`] are the conflicts as
+//! Settings › Keyboard's banner names them (S22, Q5: the key and the
+//! bindings, none of which runs). [`set_binding`] and [`reset_binding`]
+//! edit `keys.toml`'s text, one line, the rest of the file as it was (the
+//! Keyboard page, through `qrec_shell::keys_file`). [`KEYLESS`] are the
+//! palette's actions no key runs ("Clear undo history", GUI D-19), which
+//! [`action_for`] knows by id.
 //!
 //! **Chord grammar** (`keys.toml`, `qrec keys --json`): modifiers `ctrl`,
 //! `alt`, `shift`, `super` joined with `+`, then a GDK keyval name:

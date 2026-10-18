@@ -1599,9 +1599,11 @@ time; A§8.7 rules for every child).
     they kept 176 px), and the empty timeline's art takes the new palette.
   - Known limits: a `config.toml` or `keys.toml` that is a symlink into
     another folder (a dotfiles manager) is re-read only when the link
-    itself changes; key caps drawn per render follow at their next render,
-    and so does the export panel's Failed page's stderr well, whose height
-    follows a live scale at its next refresh.
+    itself changes; key caps drawn per render follow at their next render.
+    The export panel's Failed page's stderr well follows a live scale at
+    once (WP9 lane: its own theme subscription; the timeline's re-layout
+    at a new scale refilled the page before too), and so does the toast
+    shown (DESIGN's 360–560 × the scale).
 - **UI scale** (100/125/150 %, `ui.scale`): every `<n>px` in the CSS text
   is multiplied by the scale before loading, and so is Fraunces' optical
   size (`"opsz" <n>`, which follows the font size, within 9–144); custom
@@ -2107,6 +2109,7 @@ previews, the player, io, opening, the portal).
 | `{"op":"labels","name":"region-header"}` | `{"ok":true,"labels":[…],"entries":{…}}`: the text of every visible label under the widget `name` (default: the window), in tree order, and each visible text field's value by its nearest given name (`"inspector-x": "1280"`, `Gui::entries`; WP5 integration) |
 | `{"op":"dispatch","command":{…},"confirmed":false}` | `Store::dispatch_with` with the default reply policy (confirmations open their modal); `{"ok":true}` at once |
 | `{"op":"action","id":"export.panel"}` | runs a binding or GUI action as its key would (pre-steps included) |
+| `{"op":"notify","level":"error","title":…,"body":…}` | shows a toast the window makes (`Store::notify`), `{"ok":true}`: WP9's probe of the toast's own layout (DESIGN's 360–560 px, the body's 2 lines) |
 | `{"op":"sources"}` | `{"ok":true,"inventory":…}`: discovery's last answer (`LocalUi.sources`, null before one); with `"inventory": <SourceInventory>`, that answer instead, pushed through the queue as discovery's own (`Inbound::Sources`; the first run's rows follow it; R25's audit) |
 | `{"op":"hints"}` | the rendered hint items (`keys`, `label`, `enabled`, `emphasized`) and the status text (`hintbar::current_items`); `shown`, the labels of the items the bar draws whole (a narrow window leaves the trailing ones out, `hintbar::fitting`), and `cut`, whether a drawn one runs past the bar (never; both WP7 integration audit) |
 | `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class; `colorScheme`, libadwaita's `scheme` as set and whether it draws `dark`; `settingsApplied`, the settings changes the follower applied, and `settingsPending`, one is being debounced: WP10, G§3.14); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); `focusBounds` and `focusType`, the focused widget's window bounds and GType, and `focusVisible`, the window's (WP10's focus walks); `announcements`, what the window announced to screen readers (`message`, `priority`, `sent`: false without a context that announces; WP10, G§3.7); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `playing`, the player plays (the program or a bin preview's take), and `programPlaying`, the program plays in it (`LocalUi.program_playing`, G§3.10 step 3; review R00, R16); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `gtkAnimations`, GTK's `gtk-enable-animations` (off in test mode but with its `animations` flag, and while the Narrow sheet is open under reduced motion; WP10); `fundamentalsFirst`, whether GTK's fundamental types were all registered when startup's workers (GStreamer's init) started (`app::register_fundamentals`; null before they start; WP10's code audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and the panel's (`layerRowsAlive`, `audioRowsAlive`; review R43), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit); `metersTicking`, the meter bars on their refresh timer, and `exportClockTicking`, the export panel's Running clock (null without a panel): each comes back with the next change after a caught panic (G§3.12; R65's audit); `themeSubscribers`, the theme's callbacks (a dropped bin thumbnail's goes with it, R11; WP7 integration's shot and code audits); `timelinePaints`, how many times the timeline's canvas made its render node again (not while only the playhead moves, C16; review R10); `timelineGhostColumns`, how many columns of the ghost's waveform the last paint with a ghost worked out a lane (those in the time area, G§4.5; R01's audit); `binSlide`, the bin drawer's last slide as asked (`open`, `animate`: test mode animates nothing, so a case reads whether the open at start would have slid in; review fix, G§3.3); `takePreview`, the bin preview (`take`, `playing`: `Space` pauses it; null without one; review fix, D-17) |
@@ -3818,7 +3821,78 @@ size (pixman's numbers; gles2's the same where not named;
   at most 2 (its label limits count characters, and the body has a line
   break: WP6's `toasts.rs`); the Frame saved toast names the absolute
   `/tmp/…/frames/…png` where BRIEF's S25 #4 shows `frames/…` (the shell's
-  FrameSaved carries the absolute path).
+  FrameSaved carries the absolute path). Fixed in the WP9 lane (below):
+  the toast is held to 560 × the scale and its body to one paragraph of 2
+  lines, and Frame saved names `frames/…`.
+
+WP9 lane (2026-10-17, on 65ee67d; WP9's parts that need no drawing,
+WP9's "As built"): no shot of S19–S22 or S25's variants yet, their
+frames aren't in the build (G§0.6), so these departures are of copy and
+measured layout only.
+
+- Copy from BRIEF, not from a frame (the frames will be compared when
+  they come):
+  - S25 (D-21), from its table: #2 "Recovered take 7 from the bog." /
+    "Qrec closed while it was recording. The take is in the bin." / Open
+    bin; #3 "Take 6 lasted 7 frames. Takes need at least 10." / Open bin;
+    #4 the project-relative `frames/…` path; #5 "Take 10 moved to the
+    bin" / "Its clip left the timeline. Files are kept." / Undo; #6 the
+    cut's Undo; #7 "Nothing to discard" / "Take 10 has no clips on the
+    timeline."; #8 "Camera / Screen / Mic / System audio disconnected" /
+    "<device> stopped sending frames. Take N keeps recording without <id>
+    <name>."; #10 "qrec.json changed on disk but isn't valid" / "<why>.
+    Keeping the last good state." / Copy details; #11 "Recording didn't
+    start" / "<why>, so take N stopped before any frames. It's marked
+    broken in the bin." / Try again · Open bin. #1 and #9 were in already.
+  - The lane's own words where BRIEF draws nothing: #2's body for a
+    recovered take too short to place too (its bin row says why, D-18);
+    #5 for several clips ("Its 3 clips left the timeline") and for the
+    clips a record-over discard puts back ("; c4a7 is back"); #8 for the
+    take's last source ("It was take N's last source, so the take
+    stops.") and while finalizing (its first sentence alone); #10's Copy
+    details ("qrec.json changed on disk but isn't valid: <why>.", then
+    "Restore the last good state from history: qrec history restore N
+    --yes", X3's line); #11's <why> is the engine's ("L1 (GIGA-BYTE
+    GS27QA): screen sharing for DP-4 failed: …"), BRIEF's "Screen access
+    to DP-4 was denied" needs the shell to report a portal refusal as
+    such (S24, the shell's); #7's other refusals keep `action_for`'s
+    reason. S25 draws #5's Undo with `[Ctrl][Z]` and #6's without: the
+    toast's buttons show no caps (a frame call).
+  - S19: the "Recent" group, then Record, Playback, Edit, Output, View
+    and Canvas (G§4.11 adds Canvas, the layer nudges); "Clear undo
+    history" after Redo (D-19). Labels and CLI forms are the core
+    keymap's (D-31): S19's "Split clip · qrec clip split" reads "Split
+    clip at the playhead · qrec clip split <clip> --at <t>". Reasons are
+    `action_for`'s ("Needs a contiguous selection" is BRIEF's too), plus
+    the lane's "Select the clips to zoom to" (Zoom to the selection with
+    nothing selected) and "The undo history is empty".
+  - S20: "Keyboard shortcuts", "Search shortcuts", the footer "Keys come
+    from ~/.config/qrec/keys.toml. Change them in Settings › Keyboard.",
+    Global (niri)'s rows "Record toggle", "Record over", "Discard last
+    take" with `Mod+Shift+R/O/D`, "Copy niri snippet"; G§4.11's "3
+    shortcuts match “trim”" (with the core labels "trim" matches 6), and
+    the lane's "1 shortcut matches …", "No shortcuts match …".
+  - S21: "Theme", "Swamp Night" (captioned "Default"), "Swamp Day",
+    "Dragon's Keep", "Ogre Mode", "Interface size", "100%" · "125%" ·
+    "150%", "Reduce motion" (captioned D-30's "Also on when your system
+    asks for less motion.", not BRIEF's), "Sounds", "Squelch on record
+    start and stop".
+  - S22: "1 conflict in ~/.config/qrec/keys.toml", "X is bound to both
+    <A> and <B>. Neither runs until one is changed.", "Open keys.toml",
+    "Also bound to <A>", "default C", "Press a key · Esc cancels ·
+    Backspace clears", "Changes are saved to ~/.config/qrec/keys.toml.";
+    the lane's: a key on three bindings ("X is bound to A, B and C. None
+    of them runs until only one has it.") and the search's placeholder
+    "Search shortcuts" (S22 names none). With the core labels the banner
+    reads "X is bound to both Autocut the selection, or every clip and
+    Remove selected clips (to the bin)…" (D-31).
+- Measured (nested, pixman, `gui_chrome`'s
+  `a_toast_keeps_to_designs_width`): a long error toast is 560 wide (615
+  without the clamp), its title in 2 lines (40 px), its body in 2 (36 px,
+  464 wide); 840 wide at `ui.scale` 1.5 set live (its body 54 px, 2
+  lines); a short toast 360. The Failed page's stderr well is 176 px high
+  at 1, 193.6 at 1.1 and 264 at 1.5, set live (`gui_bin_export`'s
+  `the_failed_pages_stderr_well_follows_a_live_scale`).
 
 ### WP0a — Interfaces, GTK-free (alone, first)
 
@@ -4350,6 +4424,59 @@ D-22, the D-30 caption, D-31. Re-registers `keys.help` and `palette.open`.
 - The palette runs every enabled row (a dispatch table test); Clear undo
   history → the modal → a confirmed `HistoryClear`.
 - CLI tests pass with the D-21 copy.
+
+**As built (wp9 lane, 2026-10-17: the parts that need no drawing).**
+- `keymap`: the `history.clear` id (`KEYLESS`, D-19: no key, no
+  `keys.toml` binding; `action_for` gives `HistoryClear` through the shared
+  gates, or "The undo history is empty"); `set_binding(keys_toml, id,
+  keys)` / `reset_binding(keys_toml, id)`: text edits at `toml_edit`'s
+  spans (`toml_text`, crate-private), the value in place or one line added
+  after `[bindings]`' last (under `[bindings.clip]` when the file has that
+  header) or removed, every other byte as it was (a `DocumentMut` printed
+  a dotted table's keys together); a file that isn't TOML is refused; an
+  inline `bindings = {…}` falls back to a document edit. Q5's data:
+  `conflict_notes` (one per key and set of bindings: a clash in `global`
+  and `recording`, or of two of three bindings in `recording`, is one; the
+  rebound binding first), `conflicting_keys`, `default_keys`,
+  `is_rebound`, `key_name` ("X", "Ctrl+Shift+Z"). Inert both ways as
+  before (`lookup`, `usable_keys`; `gui_live`'s conflict case).
+- `config::set_text` (`config::set` on the text, same validation, the same
+  text-preserving edits); `qrec_shell::config_file::{set, write_text}`
+  (bounded read, the edit, an atomic write that keeps the file's
+  permissions and writes through a symlink) and `keys_file::{set_binding,
+  reset_binding}` (the keymap and its problems back, for the window to
+  use at once). `qrec config set` writes through the new
+  `Backend::write_settings`, which the `qrec` binary implements with the
+  shell's `write_text` (`cli.rs`' `config_set_changes_one_line_through_
+  the_shells_writer`). Round trips with commented files in each.
+- `view::palette` (rows, `availability`, `fuzzy_match`, `highlight_ranges`
+  and `PaletteItem::highlights` for Pango's byte ranges), `view::
+  cheatsheet` (`cheat_sheet(keymap, keys_path, search)`: the search keeps
+  rows holding each word, `word_match`; `rebound_note`) and `view::
+  preferences` (`appearance_page` with each control's setting,
+  `keyboard_page(keymap, keys_path, search, capturing)` with the banner,
+  the rows' keys, state, flags and the capture caption; Recording and
+  Autocut their config values): insta snapshots of S19 ("sp", the
+  disabled record-over, the empty query), S20, S20b ("Trim"), S21, S22.
+- The dispatch table: `qrec-gui`'s `palette::decide_row` is the router's
+  `decide_button`; GTK-free, every enabled row of S02, S06, the canvas
+  with L2 and a take recording decides `Run` with `action_for`'s command
+  or the window's action, carried out on a recording sink; the core's
+  test has `apply` take every enabled row's command; Clear undo history
+  → `confirmation_required` → `Overlay::Confirm` (the default policy) →
+  G§4.9's copy → `dispatch_confirmed` → a cleared history and the row
+  off.
+- D-21's copy (G§7.2's WP9 lane paragraph names what is BRIEF's), with
+  the `record_machine`, handler, notices and `cli.rs` assertions.
+- The toast's width (DESIGN Lists): an `adw::Clamp` at 560 × `ui.scale`,
+  at least 360 × it, both following a live scale; the body one paragraph
+  (2 lines); the test channel's `notify` op for the probe. The Failed
+  page's stderr well follows a live scale through the panel's theme
+  subscription.
+- Waiting for the frames (G§0.6): the GTK palette, cheat sheet and Settings
+  pages (`Built` stays false, `palette.open` and `keys.help` still toast
+  "Not built yet"), `widgets/theme_card.rs`, `components/overlays.css`,
+  `gui_overlays.rs`, S25's variants shot for real, D-31's labels.
 
 ### WP10 — Themes, packaging, audits (after WP1–WP7; WP8 and WP9 once approved)
 
