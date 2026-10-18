@@ -30,6 +30,35 @@
           done
         '';
 
+      # The dev shell's builds (CLAUDE.md's dev loop): mold links every
+      # binary (the workspace has some 50 test binaries, each linking GTK
+      # and GStreamer), added to the target's rustflags the environment
+      # already has (a RUSTFLAGS of your own replaces them: Cargo then reads
+      # no target rustflags); and sccache caches the dependencies' builds in
+      # one cache for every worktree (the workspace's own crates build
+      # incrementally, which sccache leaves to rustc). The package's build
+      # uses neither.
+      devBuildHook =
+        pkgs:
+        let
+          rustflags = "CARGO_TARGET_${pkgs.stdenv.hostPlatform.rust.cargoEnvVarTarget}_RUSTFLAGS";
+        in
+        ''
+          case " ''${${rustflags}:-} " in
+            *" -C link-arg=-fuse-ld=mold "*) ;;
+            *) export ${rustflags}="''${${rustflags}:+''${${rustflags}} }-C link-arg=-fuse-ld=mold" ;;
+          esac
+          export RUSTC_WRAPPER=sccache
+          # sccache refuses to run under a CARGO_INCREMENTAL other than 0;
+          # Cargo's dev profile builds the workspace incrementally anyway.
+          case "''${CARGO_INCREMENTAL:-0}" in
+            0) ;;
+            *) unset CARGO_INCREMENTAL ;;
+          esac
+          export SCCACHE_DIR="''${SCCACHE_DIR:-''${XDG_CACHE_HOME:-$HOME/.cache}/sccache-qrec}"
+          export SCCACHE_CACHE_SIZE="''${SCCACHE_CACHE_SIZE:-40G}"
+        '';
+
       # gst-editing-services propagates the unfiltered gst-plugins-bad, so its
       # plugin dir is dropped from the search path again here.
       filterGstPluginPath = ''
@@ -119,10 +148,14 @@
             sway
             grim
             wtype
+            # Faster dev builds (this shell only: the package builds as it
+            # did): mold links, sccache keeps the dependencies' builds.
+            mold
+            sccache
           ];
           buildInputs = (linkLibs pkgs) ++ (runtimeTools pkgs) ++ (guiData pkgs);
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
-          shellHook = filterGstPluginPath + ''
+          shellHook = filterGstPluginPath + (devBuildHook pkgs) + ''
             # A registry of its own, so switching between this shell and the
             # system GStreamer doesn't trigger a full plugin rescan each time.
             export GST_REGISTRY_1_0="''${XDG_CACHE_HOME:-$HOME/.cache}/qrec-dev/gstreamer-registry.bin"
