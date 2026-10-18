@@ -101,7 +101,7 @@ impl RowView {
         let thumb = Thumb::new(&ctx.media, &ctx.theme);
         thumb.set_widget_name(&format!("bin-thumb-{}", take.number()));
         thumb_box.set_child(Some(&thumb));
-        let error_icon = gtk::Image::from_icon_name("dialog-error-symbolic");
+        let error_icon = gtk::Image::from_icon_name("qrec-circle-x-symbolic");
         error_icon.set_pixel_size(20);
         error_icon.add_css_class("record-text");
         error_icon.set_halign(gtk::Align::Center);
@@ -169,7 +169,7 @@ impl RowView {
         second.add_css_class("bin-actions-row");
         let keymap = ctx.store.keymap();
         let reveal = button::icon(
-            "folder-open-symbolic",
+            "qrec-folder-open-symbolic",
             "Reveal in file manager",
             None,
             &keymap,
@@ -182,7 +182,7 @@ impl RowView {
         second.append(&spacer);
         let purge = flat(
             "Purge from disk",
-            Some("user-trash-symbolic"),
+            Some("qrec-trash-2-symbolic"),
             button::Kind::DestructiveFlat,
         );
         purge.set_widget_name("bin-purge");

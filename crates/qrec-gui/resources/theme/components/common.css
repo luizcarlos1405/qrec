@@ -248,6 +248,8 @@ checkbutton {
   border-spacing: 8px;
 }
 
+/* Checked: the frames' 12 px `check` (C20 Checkbox, S01a's sources) in
+   `text-on-accent`, not libadwaita's own asset. */
 checkbutton > check {
   min-width: 14px;
   min-height: 14px;
@@ -257,11 +259,13 @@ checkbutton > check {
   background-image: none;
   box-shadow: inset 0 0 0 1px var(--qrec-border-strong);
   color: var(--qrec-text-on-accent);
+  -gtk-icon-size: 12px;
 }
 
 checkbutton > check:checked {
   background-color: var(--qrec-accent);
   box-shadow: none;
+  -gtk-icon-source: -gtk-icontheme("qrec-check-symbolic");
 }
 
 /* ------------------------------------------------------ C22 status chip */
@@ -564,6 +568,15 @@ dropdown > button {
 
 dropdown > button:hover {
   box-shadow: inset 0 0 0 1px var(--qrec-muted);
+}
+
+/* The frames' chevron (C29 Dropdown, S12, S18b: `chevron-down`, 16 px,
+   `muted`), not libadwaita's `pan-down-symbolic`. */
+dropdown > button arrow {
+  -gtk-icon-source: -gtk-icontheme("qrec-chevron-down-symbolic");
+  min-width: 16px;
+  min-height: 16px;
+  color: var(--qrec-muted);
 }
 
 dropdown popover listview > row:hover,

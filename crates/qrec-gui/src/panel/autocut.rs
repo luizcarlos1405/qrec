@@ -159,7 +159,12 @@ impl AutocutPage {
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         header.add_css_class("panel-header");
         header.add_css_class("autocut-header");
-        let back = button::icon("go-previous-symbolic", "Back", Some("cancel"), &keymap);
+        let back = button::icon(
+            "qrec-chevron-left-symbolic",
+            "Back",
+            Some("cancel"),
+            &keymap,
+        );
         back.remove_css_class("icon-32");
         back.add_css_class("icon-24");
         back.set_widget_name("autocut-back");

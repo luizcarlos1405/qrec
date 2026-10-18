@@ -44,7 +44,7 @@
 //! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`; whether the player plays, the program or a take, `playing`, and the program, `programPlaying`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it, and GTK's own animation setting, `gtkAnimations`: off in test mode but with its `animations` flag, and while the Narrow sheet is open under reduced motion; libadwaita's color scheme, `colorScheme`: `scheme`, `dark`), whether GTK's fundamental types were registered before startup's workers (`fundamentalsFirst`), the settings changes the follower applied and whether one is pending (`settingsApplied`, `settingsPending`, WP10), the live controls that show a binding's keys (`keyedControls`: a keymap reload makes none), the caught panics, the focused widget's path and its bounds (`focusBounds`), whether the window shows focus (`focusVisible`), what it announced to screen readers (`announcements`: `message`, `priority`, and `sent`, false without a context that announces: WP10), the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11) and the panel's (`layerRowsAlive`, `audioRowsAlive`), the bin drawer's last slide as asked (`binSlide`: `open`, `animate`; nothing animates on start), the bin preview (`takePreview`: `take`, `playing`; `null` without one), the theme's subscribers (`themeSubscribers`: a dropped bin thumbnail's goes with it), the mud bars ticking (`mudBarsTicking`: none under the frozen clock), the meter bars on their refresh timer (`metersTicking`) and whether the export panel's Running clock runs (`exportClockTicking`: both come back with the next change after a caught panic, R65), how many times the timeline's canvas re-rendered (`timelinePaints`: not while only the playhead moves), and how many columns of the ghost's waveform its last paint with one worked out (`timelineGhostColumns`: those in view, R01) |
 //! | `a11y` | every visible icon-only button, focusable region or custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 //! | `fonts` | the family Pango loads for each bundled font; GTK's text settings as they are (`rendering`: `mode`, `hintMetrics`, `hinting`, `hintStyle`, `antialias`; `QREC_GUI_TEST_FONT_RENDERING` names another setup, `theme::fonts::Rendering`) and the window's GSK renderer (`renderer`, `GskGLRenderer`, …); with `measure` (`[{"family", "sizePx", "weight", "text"}]`), each text's `logical` and `ink` widths in px laid out in the window's Pango context (`widths`) |
-//! | `icons` | each custom symbolic icon drawn in a probe color: found, pixels, recolored |
+//! | `icons` | every icon of the GResource (`count`) through the window's icon theme: found, its own resource `file`, and drawn at 16 px with a probe color in each of GTK's four symbolic slots, every pixel in the foreground's (`recolored`: symbolic, recolored in full, no status color) |
 //! | `art` | each illustration through `gtk::Svg`: its size, drawn pixels and SVG errors (none for `ok`), and a known-bad probe whose errors must be counted |
 //! | `probe` | the main-loop probe's report (`probe::report`, G§8.6): `on`, its `ticks`, `stalls` (over 50 ms), `longestMs` and the newest stalls `kept` (`atMs`, `driftMs`, `ran`: the dispatch that held the loop); `on: false` without `QREC_GUI_PROBE=1` |
 //!
@@ -888,70 +888,24 @@ fn has_label(w: &gtk::Widget) -> bool {
 
 // --------------------------------------------------------- icons and art
 
-/// The custom symbolic icons (G§5.2).
-pub const CUSTOM_ICONS: [&str; 10] = [
-    "qrec-record-symbolic",
-    "qrec-success-symbolic",
-    "qrec-magnet-symbolic",
-    "qrec-monitor-x-symbolic",
-    "qrec-package-x-symbolic",
-    "qrec-life-buoy-symbolic",
-    "qrec-timer-off-symbolic",
-    "qrec-gauge-symbolic",
-    "qrec-layers-symbolic",
-    "qrec-audio-lines-symbolic",
-];
+/// Where the symbolic icons are in the GResource (the icon theme's resource
+/// path is its parent's parent: `app::ICONS`, G§5.2).
+const ICON_RESOURCES: &str = "/com/rsensato/qrec/icons/scalable/actions";
 
-/// The Adwaita symbolic names G§5.2 maps the pen's icons to (checked
-/// against adwaita-icon-theme 50.0).
-pub const ADWAITA_ICONS: [&str; 44] = [
-    "media-playback-stop-symbolic",
-    "media-playback-start-symbolic",
-    "media-playback-pause-symbolic",
-    "go-previous-symbolic",
-    "go-next-symbolic",
-    "media-skip-backward-symbolic",
-    "media-skip-forward-symbolic",
-    "camera-photo-symbolic",
-    "document-save-symbolic",
-    "edit-find-symbolic",
-    // Settings: the gear as drawn (preferences-system-symbolic is tools in
-    // Adwaita 50).
-    "applications-system-symbolic",
-    "camera-video-symbolic",
-    "video-x-generic-symbolic",
-    "view-reveal-symbolic",
-    "view-conceal-symbolic",
-    "changes-prevent-symbolic",
-    "changes-allow-symbolic",
-    "list-drag-handle-symbolic",
-    "list-add-symbolic",
-    "video-display-symbolic",
-    "camera-web-symbolic",
-    "audio-input-microphone-symbolic",
-    "audio-speakers-symbolic",
-    "package-x-generic-symbolic",
-    "edit-cut-symbolic",
-    "preferences-other-symbolic",
-    "zoom-in-symbolic",
-    "zoom-out-symbolic",
-    "zoom-fit-best-symbolic",
-    "user-trash-symbolic",
-    "folder-open-symbolic",
-    "folder-symbolic",
-    "edit-copy-symbolic",
-    "adw-external-link-symbolic",
-    "dialog-information-symbolic",
-    "dialog-warning-symbolic",
-    "dialog-error-symbolic",
-    "object-select-symbolic",
-    "pan-down-symbolic",
-    "view-more-symbolic",
-    "window-close-symbolic",
-    "insert-link-symbolic",
-    "document-edit-symbolic",
-    "edit-undo-symbolic",
-];
+/// The GResource's icons, by name (`qrec-<icon>-symbolic`).
+pub fn resource_icons() -> Vec<String> {
+    let mut names: Vec<String> =
+        gtk::gio::resources_enumerate_children(ICON_RESOURCES, gtk::gio::ResourceLookupFlags::NONE)
+            .map(|files| {
+                files
+                    .iter()
+                    .filter_map(|f| f.strip_suffix(".svg").map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+    names.sort();
+    names
+}
 
 /// Renders `node` (`width`×`height`) with the window's renderer; RGBA8.
 fn render(app: &App, node: &gtk::gsk::RenderNode, width: f32, height: f32) -> Option<Vec<u8>> {
@@ -964,16 +918,27 @@ fn render(app: &App, node: &gtk::gsk::RenderNode, width: f32, height: f32) -> Op
     Some(bytes.to_vec())
 }
 
-/// Each custom icon drawn at 16 px in a probe color: it recolors when every
-/// pixel it covers takes the probe color (a stroke that doesn't recolor
-/// would stay black).
+/// Every icon of the GResource through the window's icon theme (G§5.2): it
+/// resolves to its own resource file (not another theme's icon of that
+/// name, nor `image-missing`), and drawn at 16 px with a probe color in
+/// each of GTK's four symbolic slots (foreground magenta, success green,
+/// warning yellow, error cyan), every pixel it covers takes the
+/// foreground's: it is symbolic and recolors in full from the widget's CSS
+/// `color` (a fill GTK doesn't recolor stays black, or its own color) and
+/// no part of it takes a status color.
 fn icons(app: &App) -> Value {
     let display = WidgetExt::display(&app.window.window);
     let icon_theme = gtk::IconTheme::for_display(&display);
-    let probe = gdk::RGBA::new(1.0, 0.0, 1.0, 1.0);
-    let mut all = true;
+    let probes = [
+        gdk::RGBA::new(1.0, 0.0, 1.0, 1.0),
+        gdk::RGBA::new(0.0, 1.0, 0.0, 1.0),
+        gdk::RGBA::new(1.0, 1.0, 0.0, 1.0),
+        gdk::RGBA::new(0.0, 1.0, 1.0, 1.0),
+    ];
+    let names = resource_icons();
+    let mut all = !names.is_empty();
     let mut out = Vec::new();
-    for name in CUSTOM_ICONS {
+    for name in &names {
         if !icon_theme.has_icon(name) {
             all = false;
             out.push(json!({"name": name, "found": false}));
@@ -987,8 +952,10 @@ fn icons(app: &App) -> Value {
             gtk::TextDirection::Ltr,
             gtk::IconLookupFlags::empty(),
         );
+        let file = paintable.file().map(|f| f.uri().to_string());
+        let own = file.as_deref() == Some(&format!("resource://{ICON_RESOURCES}/{name}.svg"));
         let snapshot = gtk::Snapshot::new();
-        paintable.snapshot_symbolic(&snapshot, 16.0, 16.0, &[probe, probe, probe, probe]);
+        paintable.snapshot_symbolic(&snapshot, 16.0, 16.0, &probes);
         let pixels = snapshot
             .to_node()
             .and_then(|node| render(app, &node, 16.0, 16.0))
@@ -997,29 +964,26 @@ fn icons(app: &App) -> Value {
         for px in pixels.chunks_exact(4) {
             if px[3] > 128 {
                 drawn += 1;
-                // Premultiplied or not, magenta has no green and red = blue.
-                if px[1] > 40 || px[0].abs_diff(px[2]) > 40 {
+                // The magenta probe, unpremultiplied: full red and blue, no
+                // green (black, an SVG's own fill or a status probe isn't).
+                if !(px[0] > 200 && px[2] > 200 && px[1] < 40) {
                     off_color += 1;
                 }
             }
         }
-        let recolored = drawn > 8 && off_color == 0;
-        all &= recolored;
+        // A chevron covers 8 px at 16 (its 1.3 px stroke).
+        let recolored = drawn >= 4 && off_color == 0;
+        all &= own && recolored;
         out.push(json!({
             "name": name,
             "found": true,
+            "file": file,
             "pixels": drawn,
             "offColor": off_color,
             "recolored": recolored,
         }));
     }
-    let missing: Vec<&str> = ADWAITA_ICONS
-        .iter()
-        .copied()
-        .filter(|name| !icon_theme.has_icon(name))
-        .collect();
-    all &= missing.is_empty();
-    json!({"ok": all, "icons": out, "adwaitaMissing": missing})
+    json!({"ok": all, "count": names.len(), "icons": out})
 }
 
 /// Each illustration through `gtk::Svg` in the theme's colors: its size and

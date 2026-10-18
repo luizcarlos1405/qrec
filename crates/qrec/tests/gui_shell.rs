@@ -231,6 +231,10 @@ fn the_skeleton_on_the_design_fixture() {
         let reply = gui.ctl(json!({"op": op}));
         assert_eq!(reply["ok"], true, "{op}: {reply}");
     }
+    // Every icon of the GResource resolves through the icon theme to its
+    // own file and recolors in full (G§5.2).
+    let icons = gui.ctl(json!({"op": "icons"}));
+    assert!(icons["count"].as_u64() >= Some(52), "{icons}");
     let local = gui.local();
     assert_eq!(local["panics"], 0, "{local}");
     assert_eq!(local["theme"], "swamp-night", "{local}");

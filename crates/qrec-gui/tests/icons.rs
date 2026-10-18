@@ -31,7 +31,7 @@
 //! every pixel), no `fill` or `stroke` (fill-only), no `transform`, no
 //! `opacity`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -576,6 +576,182 @@ fn the_icons_are_the_frames() {
         stale.is_empty(),
         "icons out of date (QREC_UPDATE_ICONS=1 cargo test -p qrec-gui --test icons \
          rewrites them): {stale:#?}"
+    );
+    // Nothing else: a placeholder no frame uses goes (the REC glyph is the
+    // art's).
+    let extra: Vec<String> = installed()
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .filter(|f| !icons.contains_key(f) && !GENERATED_ELSEWHERE.contains(&f.as_str()))
+        .collect();
+    assert!(
+        extra.is_empty(),
+        "icons no generator writes (a placeholder?): {extra:?}"
+    );
+}
+
+/// The icons another generator writes into the folder: the REC glyph is the
+/// art's (`tests/art.rs`).
+const GENERATED_ELSEWHERE: [&str; 1] = ["qrec-record-symbolic.svg"];
+
+// ------------------------------------------- the icons the GUI names
+
+/// G§5.2's Adwaita stand-ins, as the GUI named them until the pen export,
+/// and GTK's and libadwaita's own icons for widgets the frames draw (the
+/// dropdown's `pan-down`, the check box's `object-select`).
+const STAND_INS: [&str; 46] = [
+    "media-playback-stop-symbolic",
+    "media-playback-start-symbolic",
+    "media-playback-pause-symbolic",
+    "go-previous-symbolic",
+    "go-next-symbolic",
+    "media-skip-backward-symbolic",
+    "media-skip-forward-symbolic",
+    "camera-photo-symbolic",
+    "document-save-symbolic",
+    "edit-find-symbolic",
+    "applications-system-symbolic",
+    "preferences-system-symbolic",
+    "camera-video-symbolic",
+    "video-x-generic-symbolic",
+    "view-reveal-symbolic",
+    "view-conceal-symbolic",
+    "changes-prevent-symbolic",
+    "changes-allow-symbolic",
+    "list-drag-handle-symbolic",
+    "list-add-symbolic",
+    "video-display-symbolic",
+    "camera-web-symbolic",
+    "audio-input-microphone-symbolic",
+    "audio-speakers-symbolic",
+    "package-x-generic-symbolic",
+    "edit-cut-symbolic",
+    "preferences-other-symbolic",
+    "zoom-in-symbolic",
+    "zoom-out-symbolic",
+    "zoom-fit-best-symbolic",
+    "user-trash-symbolic",
+    "folder-open-symbolic",
+    "folder-symbolic",
+    "edit-copy-symbolic",
+    "adw-external-link-symbolic",
+    "dialog-information-symbolic",
+    "dialog-warning-symbolic",
+    "dialog-error-symbolic",
+    "object-select-symbolic",
+    "pan-down-symbolic",
+    "view-more-symbolic",
+    "window-close-symbolic",
+    "insert-link-symbolic",
+    "document-edit-symbolic",
+    "edit-undo-symbolic",
+    "emblem-ok-symbolic",
+];
+
+/// The system icons a frame really draws (none: every icon the frames draw
+/// is a Lucide one, the REC glyph or the Stop square).
+const SYSTEM_ICONS_THE_FRAMES_DRAW: [&str; 0] = [];
+
+fn files_under(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files_under(&path, ext, out);
+        } else if path.extension().is_some_and(|e| e == ext) {
+            out.push(path);
+        }
+    }
+}
+
+/// The icon names in `text`, each once, sorted: string literals ending in
+/// `-symbolic` (Rust) and `-gtk-icontheme("…")` sources (CSS).
+fn icon_names(text: &str) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for (end, _) in text.match_indices("-symbolic\"") {
+        let head = &text[..end];
+        let Some(start) = head.rfind('"') else {
+            continue;
+        };
+        let name = &text[start + 1..end + "-symbolic".len()];
+        if name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            names.insert(name.to_owned());
+        }
+    }
+    for (at, _) in text.match_indices("-gtk-icontheme(") {
+        let rest = &text[at + "-gtk-icontheme(".len()..];
+        let quote = rest.chars().next().filter(|q| matches!(q, '"' | '\''));
+        if let Some(q) = quote
+            && let Some(end) = rest[1..].find(q)
+        {
+            names.insert(rest[1..1 + end].to_owned());
+        }
+    }
+    names
+}
+
+/// Every icon name the GUI's code and stylesheets give, with where.
+fn named_icons() -> Vec<(String, String)> {
+    let mut files = Vec::new();
+    files_under(&crate_dir().join("src"), "rs", &mut files);
+    files_under(&crate_dir().join("resources/theme"), "css", &mut files);
+    files.sort();
+    let mut out = Vec::new();
+    for file in files {
+        let text = fs::read_to_string(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+        let place = file
+            .strip_prefix(crate_dir())
+            .unwrap_or(&file)
+            .display()
+            .to_string();
+        for name in icon_names(&text) {
+            out.push((name, place.clone()));
+        }
+    }
+    out
+}
+
+/// Every icon the GUI names is one of the GResource's (`qrec-<icon>-symbolic`,
+/// its file in `resources/icons/scalable/actions/`), and none of G§5.2's
+/// stand-ins is left (but a system icon a frame really draws: none).
+#[test]
+fn every_icon_the_gui_names_is_in_the_gresource() {
+    let named = named_icons();
+    assert!(named.len() >= 60, "the scan found {} names", named.len());
+    let mut wrong = Vec::new();
+    for (name, place) in &named {
+        if SYSTEM_ICONS_THE_FRAMES_DRAW.contains(&name.as_str()) {
+            continue;
+        }
+        if STAND_INS.contains(&name.as_str()) {
+            wrong.push(format!("{place}: {name} is a G§5.2 stand-in"));
+        } else if !name.starts_with("qrec-") || !name.ends_with("-symbolic") {
+            wrong.push(format!("{place}: {name} isn't a qrec-<icon>-symbolic"));
+        } else if !icons_dir().join(format!("{name}.svg")).is_file() {
+            wrong.push(format!("{place}: {name} isn't in the GResource"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[test]
+fn the_name_scan_finds_literals_and_css_sources() {
+    let rust = r#"let a = "qrec-x-symbolic"; f("go-next-symbolic", 1); // "not a name-symbolic""#;
+    assert_eq!(
+        icon_names(rust).into_iter().collect::<Vec<_>>(),
+        ["go-next-symbolic", "qrec-x-symbolic"],
+        "a comment's quoted words with spaces aren't names"
+    );
+    let css = "a { -gtk-icon-source: -gtk-icontheme(\"qrec-check-symbolic\"); }\n\
+               b { -gtk-icon-source: -gtk-icontheme('pan-down-symbolic'); }";
+    assert_eq!(
+        icon_names(css).into_iter().collect::<Vec<_>>(),
+        ["pan-down-symbolic", "qrec-check-symbolic"]
     );
 }
 

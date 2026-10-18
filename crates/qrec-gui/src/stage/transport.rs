@@ -34,27 +34,27 @@ struct Spec {
 const BUTTONS: [Spec; 5] = [
     Spec {
         binding: "seek.prev-edit",
-        icon: "media-skip-backward-symbolic",
+        icon: "qrec-skip-back-symbolic",
         action: "Previous edit",
     },
     Spec {
         binding: "seek.prev-frame",
-        icon: "go-previous-symbolic",
+        icon: "qrec-chevron-left-symbolic",
         action: "Previous frame",
     },
     Spec {
         binding: "play.toggle",
-        icon: "media-playback-start-symbolic",
+        icon: "qrec-play-symbolic",
         action: "Play",
     },
     Spec {
         binding: "seek.next-frame",
-        icon: "go-next-symbolic",
+        icon: "qrec-chevron-right-symbolic",
         action: "Next frame",
     },
     Spec {
         binding: "seek.next-edit",
-        icon: "media-skip-forward-symbolic",
+        icon: "qrec-skip-forward-symbolic",
         action: "Next edit",
     },
 ];
@@ -170,7 +170,7 @@ impl TransportRow {
         save.set_focus_on_click(false);
         // 8 px apart by CSS (`button.qrec-btn > box`, common.css).
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        content.append(&gtk::Image::from_icon_name("camera-photo-symbolic"));
+        content.append(&gtk::Image::from_icon_name("qrec-camera-symbolic"));
         let save_label = gtk::Label::new(Some("Save frame"));
         save_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         content.append(&save_label);
@@ -248,9 +248,9 @@ impl TransportRow {
             let mut action = spec.action;
             if spec.binding == "play.toggle" {
                 let (icon, label) = if playing {
-                    ("media-playback-pause-symbolic", "Pause")
+                    ("qrec-pause-symbolic", "Pause")
                 } else {
-                    ("media-playback-start-symbolic", "Play")
+                    ("qrec-play-symbolic", "Play")
                 };
                 button.set_icon_name(icon);
                 action = label;

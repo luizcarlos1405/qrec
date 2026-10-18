@@ -107,7 +107,7 @@ impl RecordButton {
             RecordButtonKind::Cancel => ("cancel", None, "Cancel", Some(CapVariant::Plain)),
             RecordButtonKind::Stop => (
                 "stop",
-                Some("media-playback-stop-symbolic"),
+                Some("qrec-stop-symbolic"),
                 "Stop",
                 Some(CapVariant::OnFill),
             ),
