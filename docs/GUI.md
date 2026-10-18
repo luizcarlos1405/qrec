@@ -4503,7 +4503,9 @@ codes of G§3.2; WP0b's takeover tests still pass.
   not-responding page go to `not_my_swamp`), `hintbar.rs` and
   `view/hints.rs` (`HintState::Blocking { page: BlockingHints }`),
   `gui_shell.rs` (its two X1 cases press Tab before Return: the drafted
-  X1 focuses Quit, as its frame).
+  X1 focuses Quit, as its frame), `gui_support/mod.rs` (`Nested::cli_with`,
+  `cli_json_with`, `cli_background_with`: the env's CLI with variables on
+  top, which a headless host it spawns inherits; never a display's).
 - `gui_blocking` (9 cases, G§8.4's table): each page's regions within a
   pixel of its frame, hints, focus and its ring, the a11y walk, no
   panic or critical, the exit code. Each shot is next to its frame in
