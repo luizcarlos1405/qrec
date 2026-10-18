@@ -159,6 +159,12 @@ fn pin_to_end(scroller: &gtk::ScrolledWindow) {
     });
 }
 
+/// The stderr well's content height (px) at UI scale `scale`: BRIEF S17's
+/// 10 lines of `mono-sm` (16 px each); its padding comes on top (CSS).
+pub fn stderr_height(scale: f64) -> i32 {
+    (f64::from(STDERR_VISIBLE) * 16.0 * scale).round() as i32
+}
+
 /// The running export, if any (one at a time, A§5.9).
 fn export_job(state: &State) -> Option<&Job> {
     state
@@ -257,6 +263,14 @@ impl Panel {
             .subscribe_local(move |_| {
                 if let Some(panel) = weak.upgrade() {
                     panel.sync();
+                }
+            })
+            .detach();
+        let weak = Rc::downgrade(&panel);
+        ctx.theme
+            .subscribe(move |theme| {
+                if let Some(panel) = weak.upgrade() {
+                    panel.size_stderr(theme.scale());
                 }
             })
             .detach();
@@ -767,6 +781,15 @@ impl Panel {
         self.done.bar.set_state(MudState::Done);
     }
 
+    /// The Failed page's stderr well at UI scale `scale`: as the page
+    /// fills, and at once when `ui.scale` changes live (WP9; it followed at
+    /// the page's next refresh only, G§3.14's known limit).
+    fn size_stderr(&self, scale: f64) {
+        self.failed
+            .scroller
+            .set_max_content_height(stderr_height(scale));
+    }
+
     fn fill_failed(&self) {
         let Some(Outcome::Failed { view, percent, .. }) =
             self.ctx.store.local().export_view.outcome().cloned()
@@ -786,10 +809,7 @@ impl Panel {
             pin_to_end(&page.scroller);
         }
         page.scroller.set_visible(!view.stderr_tail.is_empty());
-        let s = self.ctx.theme.scale();
-        // 10 lines of `mono-sm` (16 px); the well's padding comes on top.
-        page.scroller
-            .set_max_content_height((f64::from(STDERR_VISIBLE) * 16.0 * s).round() as i32);
+        self.size_stderr(self.ctx.theme.scale());
         match &view.log {
             Some(log) => {
                 page.log_path.set_text(&self.shown_path(log));
