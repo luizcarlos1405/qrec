@@ -392,6 +392,9 @@ fn activate(app: &adw::Application, startup: Startup) {
         .detach();
     the_app.window.window.present();
     tracing::info!("the window is presented");
+    // The GL renderer's programs, after the first frame and while the
+    // project opens, not on a take's first frames (G§8.6).
+    crate::gpu_warmup::start(the_app.window.window.upcast_ref());
     if testctl::mode().on {
         log_regions_when_mapped(&the_app);
     }

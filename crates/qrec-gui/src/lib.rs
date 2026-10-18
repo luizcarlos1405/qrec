@@ -32,6 +32,7 @@ pub mod cheatsheet;
 pub mod desktop;
 pub mod export;
 pub mod follow;
+pub mod gpu_warmup;
 pub mod guard;
 pub mod header;
 pub mod hintbar;

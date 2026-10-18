@@ -410,6 +410,10 @@ fn busy(app: &App) -> Vec<String> {
     // The stage's own (WP4): the live picture's first frames in Live, a
     // program reload still due.
     why.extend(crate::stage::busy());
+    // The renderer's programs still to compile (G§8.6).
+    if crate::gpu_warmup::pending() {
+        why.push("the gpu warm-up".to_owned());
+    }
     why
 }
 
