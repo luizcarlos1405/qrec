@@ -1061,7 +1061,14 @@ fn s05_finalizing() {
 /// motion reduced or not: the pixels of its hatch's lower half, under the
 /// label and its spinner (which spins under reduced motion too, G§1.3).
 fn saving_ghost(case: &str, reduced: bool, t_ms: &str) -> Vec<[u8; 3]> {
-    let mut nested = Nested::start(AREA, case, Options::default());
+    let mut nested = Nested::start(
+        AREA,
+        case,
+        Options::default().exclusive(
+            "the ghosts of three takes compared pixel for pixel: a take's length, and so the \
+             view's fit, is its real recording time",
+        ),
+    );
     let project = fixture(
         &nested,
         DesignVariant::Base,
