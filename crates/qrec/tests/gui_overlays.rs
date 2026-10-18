@@ -4,7 +4,8 @@
 //! Settings › Appearance (S21) and › Keyboard (S22: the conflict banner,
 //! Q5's inert key, the capture and the edits), the Recording and Autocut
 //! pages (not drawn), and S25's toasts, each triggered for real (#8: the
-//! fake engine's `QREC_FAKE_CAMERA_STALL_MS` hangs the camera mid-take).
+//! fake engine's `QREC_FAKE_CAMERA_STALL_MS` hangs the camera mid-take;
+//! #6 from the autocut page's Apply and from `c`).
 //!
 //! Each screen's shot gets a `-compare.png` next to its frame
 //! (`design/screens/`), cropped to the overlay where the window under it
@@ -1323,6 +1324,54 @@ fn s25_the_editing_toasts() {
         ],
     );
     shoot_toast(&mut nested, "10-invalid-external-edit");
+    assert_clean(&mut nested);
+    nested.close_window();
+    assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
+}
+
+/// S25 #6 from the key: `c` (`autocut.run`) on S06's c3e9 cuts it as the
+/// autocut page's Apply does and says so the same way, "Autocut take 8:
+/// removed 4 silences (6.2 s)" with Undo [Ctrl][Z] (the window waits for
+/// the run's reply, so the core doesn't toast it: the window's default
+/// reply policy does). The toast's Undo puts the clips back.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s25_autocut_from_the_key() {
+    let mut nested = Nested::start(AREA, "s25-autocut-key", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Take10Landed,
+        &UiState {
+            selection: vec![ClipId::from_raw("c3e9")],
+            ..s06()
+        },
+    );
+    open(&mut nested, &project, Launch::a11y());
+    let before = clip_ids(&project);
+    key(&mut nested, "c");
+    let title = poll(Duration::from_secs(120), "the autocut toast", || {
+        let labels = nested.window(0).labels("toast-host");
+        labels
+            .iter()
+            .find(|l| l.starts_with("Autocut take ") && l.contains(": removed "))
+            .cloned()
+    });
+    nested.window(0).wait_idle();
+    eprintln!("S25 #6 from c: {title:?} (S25: \"Autocut take 8: removed 4 silences (6.2 s)\")");
+    let labels = nested.window(0).labels("toast-host");
+    assert_toast(&labels, &["Undo", "Ctrl", "Z"]);
+    let cut = clip_ids(&project);
+    assert!(
+        cut.len() > before.len(),
+        "the cut: {before:?}, then {cut:?}"
+    );
+    shoot_toast(&mut nested, "6-autocut-applied");
+    // Undo from the toast.
+    click(&mut nested, "toast-action-0");
+    poll(Duration::from_secs(30), "the cut undone", || {
+        (clip_ids(&project) == before).then_some(())
+    });
     assert_clean(&mut nested);
     nested.close_window();
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));

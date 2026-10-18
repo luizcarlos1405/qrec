@@ -28,14 +28,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
+use qrec_core::protocol::ToastLevel;
 use qrec_core::protocol::command::SeekTarget;
 use qrec_core::protocol::reply::AutocutPlanView;
-use qrec_core::protocol::{ToastAction, ToastLevel, UiAction};
 use qrec_core::view::autocut::{
     self, AUTO_RUN, AutocutDraft, AutocutSummary, DETECT_ON, DryRunKey, Knob, NOTE, RegionRow,
     TITLE,
 };
-use qrec_core::view::notices::{Notice, NoticeAction, error_notice};
+use qrec_core::view::notices::Notice;
 use qrec_core::view::{AutocutPreview, PanelPageKind, format};
 use qrec_core::{CmdResult, Command, State, TimeArg, TrackId};
 
@@ -608,16 +608,10 @@ impl AutocutPage {
             return;
         }
         let draft = inner.draft.borrow().clone();
+        // The cut's toast (S25 #6) is the default reply policy's, as for
+        // `c` and the toolbar's Autocut (`store::replies::autocut_done`).
         for cmd in autocut::apply(&state, &draft) {
-            if matches!(cmd, Command::Autocut { .. }) {
-                let notify = store.clone();
-                let sent = cmd.clone();
-                store.dispatch_with(cmd, false, move |reply| {
-                    cut_done(&notify, &sent, reply);
-                });
-            } else {
-                store.dispatch(cmd);
-            }
+            store.dispatch(cmd);
         }
         self.close();
     }
@@ -1035,38 +1029,6 @@ fn labeled_with_caps(text: &str, caps: &[String], kind: Kind) -> gtk::Button {
         Some(caps),
     ))]);
     button
-}
-
-/// The cut's answer (the page closed already): its success toasts with
-/// Undo (S25 #6); an immediate failure toasts the core's error; a late one
-/// was toasted by the core (H-7).
-fn cut_done(store: &crate::store::Store, cmd: &Command, reply: Reply) {
-    match reply.result {
-        Ok(value) => {
-            let Some(result) = serde_json::from_value::<CmdResult>(value).ok() else {
-                return;
-            };
-            let level = if result.seq.is_some() {
-                ToastLevel::Success
-            } else {
-                ToastLevel::Info
-            };
-            let mut notice = Notice::new(level, format::capitalized(&result.message));
-            if result.seq.is_some() {
-                notice = notice.with_action(NoticeAction::Core(ToastAction {
-                    label: "Undo".to_owned(),
-                    action: UiAction::Dispatch(Box::new(Command::Undo { steps: 1 })),
-                }));
-            }
-            store.notify(notice);
-        }
-        Err(e) if !reply.late => {
-            if let Some(notice) = error_notice(&e, cmd, &store.state()) {
-                store.notify(notice);
-            }
-        }
-        Err(e) => tracing::info!("autocut failed: {e}"),
-    }
 }
 
 #[cfg(test)]
