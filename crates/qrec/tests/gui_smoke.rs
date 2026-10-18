@@ -56,17 +56,41 @@ const GLES2_STALL_MS: f64 = 50.0;
 
 /// The GL programs GSK compiled so far, in order, from the window's output
 /// under `GSK_DEBUG=shaders` (`Gsk-Message: 23:36:15.429: vertex 1,
-/// gskgpuborder:`, then the source): `vertex 1, gskgpuborder` each.
+/// gskgpuborder:`, then the source with its defines): `gskgpuborder (flags
+/// 0u, color states 4u, variation 0u)` each, what `gpu_warmup` must draw.
 fn compiled_programs(output: &str) -> Vec<String> {
-    output
-        .lines()
-        .filter_map(|line| {
-            let rest = line.strip_prefix("Gsk-Message: ")?;
-            let (_, what) = rest.split_once(": ")?;
-            let what = what.strip_suffix(':')?;
-            (what.starts_with("vertex ") && what.contains(", ")).then(|| what.to_owned())
-        })
-        .collect()
+    let lines: Vec<&str> = output.lines().collect();
+    let mut programs = Vec::new();
+    for (at, line) in lines.iter().enumerate() {
+        let Some(name) = line
+            .strip_prefix("Gsk-Message: ")
+            .and_then(|rest| rest.split_once(": "))
+            .and_then(|(_, what)| what.strip_prefix("vertex "))
+            .and_then(|what| what.strip_suffix(':'))
+            .and_then(|what| what.split_once(", "))
+            .map(|(_, name)| name)
+        else {
+            continue;
+        };
+        // Its defines, in the source that follows (up to the next message).
+        let define = |key: &str| {
+            lines[at + 1..]
+                .iter()
+                .take_while(|l| !l.starts_with("Gsk-Message: "))
+                .find_map(|l| {
+                    l.split_once(&format!("#define {key} "))
+                        .map(|(_, v)| v.trim())
+                })
+                .unwrap_or("?")
+        };
+        programs.push(format!(
+            "{name} (flags {}, color states {}, variation {})",
+            define("GSK_FLAGS"),
+            define("GSK_COLOR_STATES"),
+            define("GSK_VARIATION")
+        ));
+    }
+    programs
 }
 
 /// The design fixture's canvas: 1920×1080 at 30 fps (BRIEF §3).
