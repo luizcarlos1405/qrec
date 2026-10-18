@@ -160,7 +160,7 @@ Resolved conflicts (don't re-decide):
 | S12 summary | label/value rows: "Take 8" │ "00:01:43:15 → 00:01:37:09", "Timeline" │ "00:04:06:11 → 00:04:00:05" (PNG) |
 | S16b toast | body "<path> · 88.4 MB"; actions Open file, Open folder (PNG; DESIGN allows two actions) |
 | S14 take 9 | "Files didn't close within 10 s." |
-| DESIGN icon names that don't exist | `emblem-ok-symbolic` → custom `qrec-success-symbolic`; `emblem-system-symbolic` → `applications-system-symbolic` (the gear the frames draw; Adwaita 50's `preferences-system-symbolic` is tools; WP6) |
+| DESIGN's Adwaita icon names | every icon is the frame's own Lucide icon from the GResource (`qrec-<icon>-symbolic`, G§5.2), not DESIGN's Adwaita mapping (its `emblem-ok-symbolic` and `emblem-system-symbolic` don't exist; Adwaita 50's `preferences-system-symbolic` draws tools) |
 | Ghost settle S05 → S05b | 180 ms state crossfade; instant under reduced motion |
 | Spinner | one 270° arc, one turn per second; keeps spinning under reduced motion |
 | `N` during drags | live while trimming, disabled while moving (README polishing call) |
@@ -1770,11 +1770,33 @@ time; A§8.7 rules for every child).
     which leaves a fainter mark (4 px on the all-ascender title). So Qrec
     keeps its setup: every setup that matches the frames' widths brings the
     mark back.
-- **Icons**: Adwaita symbolic names (G§5.2). Custom symbolic SVGs (16 px
-  viewBox, fills only) live in
-  `resources/icons/scalable/actions/qrec-*-symbolic.svg`, registered with
-  `gtk::IconTheme::for_display(..).add_resource_path("/com/rsensato/qrec/icons")`.
-  `adwaita-icon-theme` and `hicolor-icon-theme` come from Nix (G§6).
+- **Icons**: every icon the GUI shows is Qrec's own symbolic icon (G§5.2),
+  `resources/icons/scalable/actions/qrec-<icon>-symbolic.svg` in the
+  GResource, registered with
+  `gtk::IconTheme::for_display(..).add_resource_path("/com/rsensato/qrec/icons")`:
+  the frames' Lucide icons (Lucide's ISC license with Feather's notice in
+  `resources/icons/LICENSE-lucide.txt`; the package installs it), the REC
+  glyph and the Record button's Stop square. `tests/icons.rs` writes them
+  from the pen export (`design/export/icons/`, G§0.6: one path per icon on
+  a 14-unit grid, every drawn size sharing it) on GTK's 16 px grid (× 16/14,
+  each point rounded where it lands), so a 16 px request draws the 16 px
+  frames' icon and a 20 px one the 20 px frames'. The markup is what GTK
+  4.22 loads from a resource as render nodes
+  (`gsk_render_node_new_from_bytes_symbolic` in `gtk/gdktextureutils.c`): a
+  16×16 `<svg>` whose `viewBox` is `0 0 16 16`, then only `<path>`,
+  `<circle>` and `<rect>` with geometry alone. GTK fills a shape without a
+  `class` with the foreground color, the widget's CSS `color`; a `class`
+  of `error`, `warning` or `success` would take that status color, a
+  `transform` or a `<g>` is dropped, and an attribute GTK doesn't know
+  sends the whole file to the rsvg texture path; so no `class`, no `fill`
+  or `stroke` (fill-only), no `transform`, no `opacity`, and an icon takes
+  a status color from its widget's CSS (`.record-text`, `.warning-text`).
+  The test holds every file to it and the test channel's `icons` takes each
+  through the icon theme: its own resource file, every pixel in the
+  foreground probe of GTK's four symbolic colors. `adwaita-icon-theme` and
+  `hicolor-icon-theme` still come from Nix (G§6): GTK's and libadwaita's
+  own widgets look icons up there (the switches' hidden images, the
+  dropdown button's hidden check), and the app icon is hicolor's.
 - **Art** (pen `w7Qg8`), exported read-only by WP0b while `design/qrec.pen`
   is the active document (G§0.6): walk each node with
   `Get(includePathGeometry: true)` and write SVG by script.
@@ -1797,12 +1819,31 @@ time; A§8.7 rules for every child).
 
   As built (WP0b part 2): `theme::art` substitutes any `{{token}}` in a
   template with the palette's color and draws it through `gtk::Svg` (the
-  test channel's `art`). Until the pen export, the three art files and the
-  10 custom symbolic icons (the REC glyph `w8imU`, success, magnet,
-  monitor-x, package-x, life-buoy, timer-off, gauge, layers, audio-lines;
-  recoloring checked by the test channel's `icons`) are placeholders of
-  the right size and colors, and the comparison with the pen crops is
-  open.
+  test channel's `art`).
+
+  As built (the pen export of 2026-10-17, the icons and art lane): the
+  MCP export gave each art component as positioned SVG pieces with Swamp
+  Night's resolved colors (`design/export/html/artwork.html`, an `<svg>`
+  per path with its `viewBox` stretched over its box, a `<div>` with
+  `border-radius: 50%` per ellipse, some rotated about their top left) and
+  its PNGs at 1× and 2× (`design/export/art/`). `tests/art.rs` writes each
+  component as one SVG (`QREC_UPDATE_ART=1`; skipped without `design/`),
+  every piece moved into the component's px, a rotated ellipse as two arcs:
+  `art/app-icon-24.svg` (`uH1BD`, fixed colors), `art/quiet-swamp.svg`
+  (`rfUfx`, 200×120) and `art/signpost.svg` (`W1Ia5`, 160×160) with their
+  `muted` and `border` fills as `{{muted}}` and `{{border}}`
+  (design/export/INDEX.md), the REC glyph `w8imU` as the symbolic icon
+  `qrec-record-symbolic.svg` (no fills: the badge's and the Record
+  button's CSS color it `text-on-record`), and the package's app icon
+  (`ptPs6`, G§6.4). The quiet swamp's two ripples are half the HTML's
+  1 px: pen draws that `non-scaling-stroke` inside the open path, and its
+  PNGs show half a pixel. Each SVG, rendered by rsvg-convert at the PNGs'
+  sizes, matches the PNG within antialiasing (over `bg` and over white, no
+  pixel more than 32 levels outside the PNG's 3×3 range around it and at
+  most 1 % of them more than 8: worst 24.1, 0.52 %); the test channel's
+  `art` with `compare` does the same for `gtk::Svg`'s renders and the REC
+  glyph through the icon theme (gui_shell: the same numbers on pixman), so
+  the PNG fallback isn't needed.
 - **GResource**: `build.rs` writes the `.gresource.xml` from every file
   under `resources/` (no hand-kept list, so WPs add files without
   conflicts) and runs `glib-compile-resources` (in the dev shell; added to
@@ -3162,44 +3203,56 @@ keys ("Settings, Ctrl+Comma"); each WP checks its own with the a11y walk
 
 ### G§5.2 Icons
 
-Names checked against adwaita-icon-theme 50.0 (pinned nixpkgs).
+Every icon the GUI shows is the icon the frame draws at that place, Qrec's
+own `qrec-<icon>-symbolic` from the GResource (G§3.14): the frames' Lucide
+icons as the pen export draws them (`design/export/icons/`, the name its
+Lucide name), the REC glyph (`w8imU`, the art's) and the Record button's
+Stop square (S04's "Stop square": 10×10, radius 1, centered in 16 px).
+Lucide's pause, which no frame draws (no frame shows Program playing;
+DESIGN Icons names `pause`), is outlined like the export's icons (Lucide
+1.0's two 5×18 bars, radius 1, its 2-unit stroke). No frame draws a system
+icon, so no Adwaita name is left (`tests/icons.rs` greps the code and the
+stylesheets for G§5.2's former stand-ins). Size: what the frame draws there;
+a 32 px icon button's icon is 20 px.
 
-| Purpose (Lucide in pen) | GTK icon |
-| --- | --- |
-| Record / Stop | custom `qrec-record-symbolic` / `media-playback-stop-symbolic` |
-| play / pause | `media-playback-start-symbolic` / `media-playback-pause-symbolic` |
-| chevron-left / chevron-right (frame) | `go-previous-symbolic` / `go-next-symbolic` |
-| skip-back / skip-forward (edit) | `media-skip-backward-symbolic` / `media-skip-forward-symbolic` |
-| camera (Save frame) | `camera-photo-symbolic` |
-| download (Export) | `document-save-symbolic` |
-| search / settings | `edit-find-symbolic` / `applications-system-symbolic` (the drawn gear; Adwaita 50 draws `preferences-system-symbolic` as tools; WP6) |
-| video / film (Live / Program) | `camera-video-symbolic` / `video-x-generic-symbolic` |
-| eye / eye-off | `view-reveal-symbolic` / `view-conceal-symbolic` |
-| lock / lock-open | `changes-prevent-symbolic` / `changes-allow-symbolic` |
-| grip-vertical / plus | `list-drag-handle-symbolic` / `list-add-symbolic` |
-| monitor / webcam / mic / volume-2 | `video-display-symbolic` / `camera-web-symbolic` / `audio-input-microphone-symbolic` / `audio-speakers-symbolic` |
-| archive (Bin) / scissors / sliders-horizontal | `package-x-generic-symbolic` / `edit-cut-symbolic` / `preferences-other-symbolic` |
-| zoom-in / zoom-out / arrow-left-right (Fit) | `zoom-in-symbolic` / `zoom-out-symbolic` / `zoom-fit-best-symbolic` |
-| trash-2 / folder-open / folder / copy / external-link | `user-trash-symbolic` / `folder-open-symbolic` / `folder-symbolic` / `edit-copy-symbolic` / `adw-external-link-symbolic` |
-| info / triangle-alert / circle-x | `dialog-information-symbolic` / `dialog-warning-symbolic` / `dialog-error-symbolic` |
-| check / chevron-down / ellipsis-vertical / x | `object-select-symbolic` / `pan-down-symbolic` / `view-more-symbolic` / `window-close-symbolic` |
-| link-2 (aspect lock) / pencil / rotate-ccw | `insert-link-symbolic` / `document-edit-symbolic` / `edit-undo-symbolic` |
-| arrow-left (ripple tag) | `go-previous-symbolic` |
+| Where (the frames) | Icon | px |
+| --- | --- | --- |
+| Header: Export, Commands, Settings, close | `download`, `search`, `settings`, `x` | 16, 20, 20, 20 |
+| Header: Record idle / recording; the REC badge | `record` (the REC glyph) / `stop` (the Stop square); `record` | 16 |
+| Header: the narrow layout's panel button (no frame) | `layers` | 20 |
+| Mode switch: Live / Program; the stage badge: LIVE / PROGRAM, PROXY | `video` / `film`; `video` / `film`, `gauge` | 16; 14 |
+| Transport: previous edit, previous frame, play, next frame, next edit; pause while Program plays (no frame) | `skip-back`, `chevron-left`, `play`, `chevron-right`, `skip-forward`; `pause` | 20 |
+| Save frame | `camera` | 16 |
+| First run's sources: screen, camera, mic, system audio; their check boxes | `monitor`, `webcam`, `mic`, `volume-2`; `check` (CSS `-gtk-icon-source`) | 16; 12 |
+| Panel header: Add layer; the autocut page's Back; the take banner's Layout | `plus`; `chevron-left`; `chevron-down` | 20; 20; 16 |
+| Layer rows: grip, visibility, source (screen, camera), lock, overflow | `grip-vertical`, `eye` / `eye-off`, `monitor` / `webcam`, `lock-open` / `lock`, `ellipsis-vertical` | 16 |
+| Layer rows: portal denied (a screen) / another error / missing media | `monitor-x` / `circle-x` (`record-text`) / `triangle-alert` (`warning-text`) | 16 |
+| Audio rows and track headers: mic, system audio; device missing (in the role icon's place, C10); overflow; the Autocut tag and marker | `mic`, `volume-2`; `triangle-alert` (`warning-text`); `ellipsis-vertical`; `scissors` | 16; 16; 16; 12 |
+| "+ Add layer", "+ Add audio track"; the empty panel's layers, audio | `plus`; `layers`, `audio-lines` | 16 |
+| Inspector: the aspect lock | `link-2` | 16 |
+| Timeline toolbar: Bin, Snap, Autocut, autocut settings, zoom out, zoom in, Fit | `archive`, `magnet`, `scissors`, `sliders-horizontal`, `zoom-out`, `zoom-in`, `arrow-left-right` | 16 |
+| Timeline: a missing clip's warning (in its label plate, C16); the ripple tag's arrow (S10, S11; mirrored for a shift right) | `triangle-alert` (`warning-text`); `arrow-left` (`video-text`) | 12 |
+| Bin: close; a broken take's thumbnail; Reveal; Purge from disk (row, footer) | `x`; `circle-x` (`record-text`); `folder-open`; `trash-2` (`record-text`) | 20; 20; 20; 16 |
+| Export panel: Done / Failed | `circle-check` (`success-text`) / `circle-x` (`record-text`) | 20 |
+| Toasts: info, success, warning, error; Dismiss | `info`, `circle-check`, `triangle-alert`, `circle-x` (their level's color); `x` | 20; 16 |
+| Settings: Close | `x` | 16 |
+| Dropdowns (C29: S12's track, S18b's Size): the chevron; the open list's selected item | `chevron-down` (`muted`, CSS `-gtk-icon-source`); `check` (a list factory) | 16 |
+| Menus (C25): a submenu's arrow (Add layer's Screen ▸); the submenu's back arrow (no frame draws a submenu: the transport's chevrons) | `chevron-right`; `chevron-left` (CSS `-gtk-icon-source`) | 16 |
+| Not built yet (WP8, WP9 drafts) | `copy`, `external-link`, `folder`, `pencil`, `rotate-ccw`, `chevron-right` (S23's disclosure), `circle-check` (S21, S23) | — |
 
-The transport, badge, first-run (WP4), toolbar (WP3) and panel (WP5) icons
-are these Adwaita symbolics, not the frames' Lucide outlines, until the
-pen export; so are the Program segment's film (`video-x-generic-symbolic`
-draws a camera) and the info toast (`dialog-information-symbolic` draws a
-bulb) (WP6).
-
-Custom symbolic icons (WP0b, 16 px grid, fills only, ISC notice in
-`resources/icons/LICENSE-lucide.txt` where the geometry follows Lucide):
-`qrec-record`, `qrec-success` (circle-check), `qrec-magnet`,
-`qrec-monitor-x`, `qrec-package-x`, `qrec-life-buoy`, `qrec-timer-off`,
-`qrec-gauge`, `qrec-layers` (also the narrow-mode header button),
-`qrec-audio-lines`. Cursors: GDK names `grab`, `grabbing`, `col-resize`,
-`move`, `nwse-resize`, `nesw-resize`, `ew-resize`, `ns-resize`,
-`not-allowed`, `copy` (bin drag over the timeline).
+GTK's and libadwaita's own widgets still look up two names for images
+Qrec never shows: the switches' `switch-on`/`switch-off-symbolic` (made
+transparent, common.css) and the dropdown button's `object-select-symbolic`
+(GTK hides it in the button; the open list draws Qrec's check). gui_panel's
+S02 case runs with `GTK_DEBUG=icontheme` and fails on any other name the
+window looks up (the Add layer menu's submenu arrows were libadwaita's
+`go-next` and `go-previous`, the icons and art lane's lookup audit of
+every suite). The
+frames' pointers (S01a's and S06's `mouse-pointer-2`, S11's and S13's
+`hand-grab`) are the cursor, which the compositor draws. Cursors: GDK
+names `grab`, `grabbing`, `col-resize`, `move`, `nwse-resize`,
+`nesw-resize`, `ew-resize`, `ns-resize`, `not-allowed`, `copy` (bin drag
+over the timeline).
 
 ---
 
@@ -3283,28 +3336,34 @@ devShells.default = pkgs.mkShell {
 
 ### G§6.4 Package
 
-- `nativeBuildInputs += [ glib librsvg ]` (`glib-compile-resources`;
-  `rsvg-convert` for the icon PNGs).
+- `nativeBuildInputs += [ glib ]` (`glib-compile-resources`; the icon
+  PNGs are committed, so no `rsvg-convert` since the pen export).
 - `buildInputs += [ adwaita-icon-theme hicolor-icon-theme
   gsettings-desktop-schemas librsvg ]`: wrapGAppsHook4 puts their share
   dirs and schemas on `XDG_DATA_DIRS`.
 - `postInstall` (WP0b): the fonts to `$out/share/qrec/fonts`, the licenses
   to `$out/share/licenses/qrec-fonts`.
 - `postInstall` (WP10): `share/applications/com.rsensato.qrec.desktop`;
-  icons in `share/icons/hicolor/{scalable,128x128,64x64,32x32}/apps/com.rsensato.qrec.*`
-  and `share/icons/hicolor/symbolic/apps/com.rsensato.qrec-symbolic.svg`.
+  icons in `share/icons/hicolor/{scalable,16x16,32x32,48x48,64x64,128x128,256x256,512x512}/apps/com.rsensato.qrec.*`
+  and `share/icons/hicolor/symbolic/apps/com.rsensato.qrec-symbolic.svg`;
+  Lucide's license in `share/licenses/qrec/LICENSE-lucide.txt`.
 - `cargoTestFlags` unchanged (core tests only in the sandbox).
 
 As built (WP10): the entry is `data/com.rsensato.qrec.desktop` (Name
 Qrec, `Exec=qrec` per R18, `Icon=com.rsensato.qrec`: SPEC's App ID row
 names the icon after the app id; Categories `AudioVideo;Video;Recorder;`,
 `StartupWMClass=com.rsensato.qrec`, the GTK application id), and
-`data/install.sh <prefix>` installs it with the icons: the scalable icon is
-the theme's placeholder art `resources/art/app-icon-24.svg` with its
-`{{token}}`s in Swamp Night's colors, the PNGs come from it through
-`rsvg-convert` at build time, and the symbolic icon is the REC glyph (the
-app icon's symbolic form, DESIGN). All of it stays a placeholder until the
-pen export (G§0.6). `postInstall` runs the script, then
+`data/install.sh <prefix>` installs it with the icons. Since the pen
+export (the icons and art lane): the scalable icon is the pen's app icon
+(`ptPs6`), `data/icons/hicolor/scalable/apps/com.rsensato.qrec.svg`, which
+`qrec-gui/tests/art.rs` writes from `artwork.html`'s "Art · App icon" (its
+rsvg render matches the pen's PNGs at 128 and 256 within antialiasing);
+the PNGs are the pen's own renders at 16, 32, 48, 64, 128, 256 and 512 px
+(`design/export/art/app-icon-<n>.png`, copied to `data/icons/hicolor/`
+by the same test: rsvg's renders of the SVG differ visibly at 16 to 64 px,
+a skin line and the shadow's edge); the symbolic icon is the REC glyph
+(the app icon's symbolic form, DESIGN); the script needs only `sh` and
+`install`. `postInstall` runs the script, then
 `desktop-file-validate` (`desktop-file-utils` in `nativeBuildInputs`).
 wrapGAppsHook4 puts the GSettings schemas and `$out/share` on the
 wrapper's `XDG_DATA_DIRS` but not the icon themes (the line above was
@@ -3312,8 +3371,9 @@ wrong: the packaged window missed 18 of the Adwaita symbolic icons G§5.2
 uses), so `preFixup` adds `adwaita-icon-theme` and `hicolor-icon-theme`
 too. The package's source leaves out `docs/`, `*.md` and the tests of
 every crate but the core's, so editing them doesn't rebuild it. Checks:
-`qrec-gui/tests/package_data.rs` (the entry's keys, the script's output and
-the 128 px icon's colors) and `gui_smoke`'s packaged case (G§8.5).
+`qrec-gui/tests/package_data.rs` (the entry's keys, the script's output:
+every icon the pen's, the 128 px icon's onion gold, the license) and
+`gui_smoke`'s packaged case (G§8.5: the seven sizes and the license).
 
 ---
 
@@ -3640,20 +3700,69 @@ but S07 and S12, whose new probes were too tight there (433327c: since,
 both pass at 1, 1.5 and 2 on pixman and at 1 on gles2). Every final shot
 is re-shot, with its compare, the theme boards and each renderer's
 per-theme shots (`final/themes/`, `final/gles2/themes/`: the gles2 run
-no longer overwrites pixman's). Visible departures of the final shots
-after WP10's fixes, measured on this re-shoot against the frames at full
-size (pixman's numbers; gles2's the same where not named;
-`tmp/fix12/notes/`):
+no longer overwrites pixman's).
+
+Status after the icons and art lane (on 5a16849: 7471c97…c05032c and
+this paragraph's commit): every icon the GUI shows is the frame's Lucide
+icon from the GResource (G§5.2; `tests/icons.rs` generates them from the
+pen export and checks every name the code and the stylesheets give), the
+art is the pen's (G§3.14; `tests/art.rs`, and gui_shell's `art` op draws
+it through `gtk::Svg` against the pen's PNGs), the package installs the
+pen's app icon (G§6.4), and G§0's M4 contrast decision is built (a
+pressed colored label turns `text`, S03's digit sits on a plate;
+`tests/contrast.rs`). The lane's lookup audit (every nested suite under
+`GTK_DEBUG=icontheme`) found the Add layer submenu's arrows still
+Adwaita's (20e193f) and its shot measure the first run's check drawn at
+16 px (cd0ce91); the theme and live suites' art checks follow the pen's
+art (c05032c). On the head: the workspace 1862 passed, 0 failed, 189
+ignored; nested on pixman, gui_shell 22, gui_smoke 2 (its packaged case
+skipped: no package, below), gui_chrome 14, gui_timeline 30, gui_stage
+32, gui_panel 21, gui_bin_export 28, gui_live 9, gui_themes 5, gui_a11y
+10, gui_audits 5, gui_text 2: 180 cases, no GLib or GTK critical.
+`nix build` failed for lack of disk (the daemon builds on the root file
+system, 2.1 GB free: ENOSPC compiling the dependencies), so the package
+and its smoke (gui_smoke's packaged case checks the seven icon sizes and
+the license) are the integrator's; `nix build --dry-run` evaluates, and
+`data/install.sh` into a scratch prefix with `desktop-file-validate` on
+its entry passes. The gles2 and the scale runs are the integrator's too
+(the lane runs pixman at 1 only); every final shot is re-shot, with its
+compare in `tmp/gui-shots/final/`. Visible
+departures of the final shots after WP10's fixes and the icons and art
+lane, measured on their re-shoots against the frames at full size
+(pixman's numbers; gles2's the same where not named;
+`tmp/fix12/notes/`, the icons' `tmp/icons-art/measure/`):
 
 - Everywhere, by design (G§8.4's known differences): the fake sources'
   names and test patterns, the fake tone's levels and block waveforms in
   the cases that don't pin the meters (`QREC_GUI_TEST_LEVELS` pins only
   the panel's), real elapsed times and dates (the exports' and logs'
   names), the test project's paths, no pointer in the shots (S11's frame
-  draws the hand); the icons are Adwaita stand-ins (G§5.2) and the
-  empty-state art a placeholder until the pen export (G§0.6).
+  draws the hand).
 - Everywhere: the fixture's files are small, so every size is the
   fixture's ("5 takes · 31.4 MB", "10 files (17.0 MB)", "1.6 MB").
+- Everywhere: the icons are the frames' (G§5.2) and the art the pen's
+  (G§3.14), measured on the icons and art lane's re-shoot. Each icon's
+  ink box in the frame and in the shot (57 places in S01a, S02, S06,
+  S07, S10, S12, S14, S16, S16b and S17; `tmp/icons-art/measure/`): 43
+  are the frame's box at its place within a pixel, with 92–116 % of its
+  ink (116: the 12 px check's 12 ink units for 10); S17's error icon is
+  in the frame's place with its ink, its box a row shorter at each end
+  (the frame's edge is softer there); the others move with their group
+  or line: the toolbar's (below), the A1 and A2 rows' and headers' mic
+  and speaker 1–2 px high with their lines (S02's track names are
+  1.0–1.7 px high), the Autocut tag's scissors 4 px right after the
+  name's and the A1 cap's widths, S10's ripple arrow 2 px right with its
+  tag's mono, S16b's toast icons 16–17 px in (its width, below), the
+  LIVE badge's video icon 12 px of ink for 14 over the fake's blue (its
+  edge pixels), and the take banner's `Layout ▾` chevron (S06 and every
+  shot with the banner) 4 px left of the frame's, its label 8 px: the
+  menu button's 8 px insets and gap and the banner's 6 px end padding
+  where C13's are 6, 4 and 4. The art,
+  drawn by `gtk::Svg` and compared with the pen's PNGs at 1× and 2×
+  (gui_shell's `art` op, over Swamp Night's `bg` and over white): the
+  app icon, the quiet swamp, the signpost and the REC glyph within
+  antialiasing (no pixel more than 24 levels past the range of the pen's
+  3×3 around it, at most 0.52 % of the pixels more than 8).
 - Everywhere: mono text is the bundled JetBrains Mono, but each glyph
   advances a whole pixel (7 px at 11 and 12 px, 8 px at 13 px, where the
   frames advance 6.6, 7.2 and 7.8 px), so a mono string drifts 0.2–0.4
@@ -3698,9 +3807,12 @@ size (pixman's numbers; gles2's the same where not named;
 - Every timeline shot: the toolbar's items are the frames' within 1–2 px
   (the key caps' fills from x 90, 189, 311 and 1098 for 89, 188, 309 and
   1099; the Snap toggle 95 px as the frames', 1 px right; the divider at
-  218 for 217), the stand-in icons a few px wider or narrower; in the
-  right group the clip count is 3.7 px narrower (its mono) and the zoom
-  slider's track ends at x 1003 for 1007.
+  218 for 217), its icons the frames' boxes (the left group's 0–2 px
+  right with their labels, the right group's 2 px left); in the right
+  group the clip count is 3.7 px narrower (its mono) and the zoom
+  slider's track ends at x 1003 for 1007. At the fit zoom (every fit
+  shot) zoom out is unavailable (G§4.3: px/frame > fit) and drawn dimmed
+  (85 % of the frame's ink), where the frames draw it enabled.
 - Every fit shot (G§1.3's fit inset: the timeline fits into 8 px less
   than the frames' 1040): clip edges, the playhead and S11's caret sit
   up to 8 px left of the frames' (S11's caret at 403 for 404.9), the end
@@ -3716,6 +3828,12 @@ size (pixman's numbers; gles2's the same where not named;
   dB) where the frame reuses the fixture's (Face, Main screen, System
   audio at −6 dB); "Press [R]"'s large cap sits 2 px left and 1 px up of
   the frame's (its 26×25 fill as theirs).
+- S03 (and its reduced-motion run): the digit sits on a `video-scrim`
+  disc the ring's size (C07; G§0's M4 decision: over the dim alone it
+  read 2.53:1 over a white screen, on the disc 10.10:1), where the frame
+  draws it over the dim alone, so the preview inside the ring is darker
+  than the frame's (gui_stage's S03 probe: no channel past 62 under the
+  digit).
 - S04, S04b, S05: the timers read the real elapsed time (`00:02:41:27`
   for `00:02:41:12`).
 - S04, S04b, S05 (and S04's reduced-motion run): the ghost's lanes carry
@@ -3740,8 +3858,7 @@ size (pixman's numbers; gles2's the same where not named;
   draw them enabled.
 - S11: the lifted copy's top 4 px (its take stripe, which the frame
   draws over the ruler's bottom edge) are cut at the canvas's top.
-- S12: the toolbar's settings icon is `preferences-other-symbolic` (the
-  frame's sliders); the summary heading is 11 px wider (its title +2.3,
+- S12: the summary heading is 11 px wider (its title +2.3,
   the gap before "(6.2 s)" and the mono the rest). The knobs, the
   regions' rows and the preview are as drawn: each region's hatch, edges
   and tag, and the dimmed rows, within 1–2 px.
@@ -3753,11 +3870,8 @@ size (pixman's numbers; gles2's the same where not named;
   reveal at 0.4; the rename field opens with the name selected; the
   focus ring is shot on L1 ("Main screen"), the board's on a "Face" row.
 - S14: the thumbnails are the fake test pattern's (take 6's from its
-  first frame: 7 frames have no strip image); take 9's broken thumbnail
-  carries `dialog-error-symbolic` and the bin's close Adwaita's smaller
-  `window-close-symbolic` (8×8 where the frame's x is 12×12; G§5.2's
-  stand-ins for circle-x and x); take 2 reads "Removed from the
-  timeline." where the frame reads "Discarded with D." (the fixture
+  first frame: 7 frames have no strip image); take 2 reads "Removed from
+  the timeline." where the frame reads "Discarded with D." (the fixture
   writes no history, G§8.4).
 - S15a: "software encode (x264)" where the frame names VA-API on
   renderD129 (the fake backend probes no VA device, G§8.4).
@@ -3779,8 +3893,7 @@ size (pixman's numbers; gles2's the same where not named;
   text (DESIGN's 360–560), 12 px from the body's end to the close button
   where the frame leaves 28.
 - S17: it fails at 11 % (units 1 and 2 rendered, 867 of 7,391 frames;
-  the frame's 37 %); the status icon is `dialog-error-symbolic` (G§5.2's
-  stand-in for circle-x); Open full log names the failed segment's log
+  the frame's 37 %); Open full log names the failed segment's log
   (`.qrec/logs/<stamp>-<pid>-j1-seg2.log`, ellipsized at its start)
   where the frame names `export-20261014-153012.log`; the frame's first
   stderr line looks faded (not built: a pen-file need). The box shows
@@ -4403,7 +4516,17 @@ icons), `README.md`, `docs/ARCHITECTURE.md` (final pass),
     WCAG 2.2 AA with the PO's 0.05 margin, alpha tokens composited 8-bit
     as the screen shows them (which reads DESIGN's table to its two
     decimals). The one waiver is P4 (Swamp Day `text-on-record` on
-    `record`, 4.53).
+    `record`, 4.53). Since G§0's M4 decision (the icons and art lane) it
+    also holds C01's pressed state (a pressed button's `text` on
+    `pressed` over `bg`, `surface` and `raised`, `text-on-accent` and
+    `text-on-record` on their pressed fills, `text` on a destructive flat
+    button's pressed `ghost-fill`) and C07's digit on its plate over a
+    white screen, and shows why the two fixes exist: `accent-text` and
+    `record-text` under `pressed` (and `record-text` on `ghost-fill`)
+    fall under the rule in some theme, so a pressed button's colored label
+    turns `text` (the stylesheets' three `:active` rules, which the test
+    reads); the digit over the dim alone reads 2.56:1, so it sits on a
+    `video-scrim` plate, the ring's disc (10.10:1).
 - Accessibility: `gtk::Accessible::announce` for record start and stop
   and export done; the focus-order audit (BRIEF §6).
 - Audits: reduced motion; every case at scale 1.5 and 2; widths 1300 and
@@ -4478,24 +4601,24 @@ the widths and heights (final since WP7) and the G§8.6 probes (audits
 lane); the desktop file and icons, `nix build` and the result in nested
 sway (pack lane); the complete smoke (G§8.5) and the checklist (G§8.7, its
 item 9 the text lane's). Waiting for the pen export (G§0.6,
-`tmp/pen-needs.md`): the app icon and its symbolic form, which
-`data/install.sh` installs as placeholders; the art and the ten custom
-icons (placeholders); frames for the theme proofs (no PNG of them in
-`design/screens/`: the boards stand alone) and S25's eleven toast variants (WP9 writes the copy);
-and WP8/WP9's screens. Open after the integration: G§8.5's 50 ms on gles2
+`tmp/pen-needs.md`), done by the icons and art lane on the export of
+2026-10-17: the app icon and its symbolic form (G§6.4), the art and the
+icons (G§3.14, G§5.2). Still waiting: frames for the theme proofs (no PNG
+of them in `design/screens/`: the boards stand alone) and S25's eleven
+toast variants (WP9 writes the copy); and WP8/WP9's screens. Open after the integration: G§8.5's 50 ms on gles2
 (the smoke's stalls of 60–215 ms at steps 4–8, G§8.6), the PO's calls on
 the text setup (G§8.7 #9), on the gtk dev-dependency of `qrec`'s tests
 (A§1.2, the AT-SPI case), on the contrast of the pressed states and of
 the countdown digit over a white screen (the themes lane's questions,
-below) and on the warnings' politeness (a warning toast such as "Camera
+below; fixed since, G§0's M4 decision) and on the warnings' politeness (a warning toast such as "Camera
 disconnected" is announced politely, like info; WP10's code audit), and
 ARCHITECTURE.md's final pass (with WP8/WP9). The code audit's and the
 shot review's findings are fixed since (G§7.2's "Status after WP10's
 fixes"). The themes lane's
-questions for the PO, not held by any test: `accent-text` and
-`record-text` under `pressed` on `raised` read 3.7–4.8 (DESIGN's audit
-covers hover only); the countdown's 160 px digit over a white screen is
-2.53:1.
+questions for the PO: `accent-text` and `record-text` under `pressed` on
+`raised` read 3.7–4.8 (DESIGN's audit covers hover only); the countdown's
+160 px digit over a white screen is 2.53:1. Both fixed since (G§0's M4
+decision; the contrast audit above holds them).
 
 ---
 
@@ -5089,14 +5212,16 @@ At the M4 review:
     the toasts and the export's end are spoken (an error assertively);
     `F6` and `Shift+Tab` walk BRIEF §6's order (G§3.7, G§3.8).
 12. The package (G§6.4): `nix profile install .` puts Qrec in the launcher
-    with the placeholder icon (started from it in `$HOME`: "Not my
+    with the pen's app icon (started from it in `$HOME`: "Not my
     swamp"); `nix run . -- --project <dir>` opens the window.
 13. WP10's calls for the PO: the gtk dev-dependency of `qrec`'s tests (the
     AT-SPI case, A§1.2); `accent-text` and `record-text` under `pressed`
     on `raised` (3.7–4.8) and the countdown's digit over a white screen
-    (2.53:1), outside DESIGN's audit; G§8.5's 50 ms main-loop target, not
-    met on gles2 at the take's landing (G§8.6: the smoke fails there only
-    on a hang, 400 ms).
+    (2.53:1), outside DESIGN's audit (decided and fixed since, G§0's M4
+    decision: a pressed colored label turns `text`, the digit sits on a
+    `video-scrim` plate); G§8.5's 50 ms main-loop target, not met on gles2
+    at the take's landing (G§8.6: the smoke fails there only on a hang,
+    400 ms).
 
 At M5: the drafted screens as built (WP8, WP9; the themes, reduced motion
 and the scales are at the M4 review now, items 1, 10).
@@ -5117,7 +5242,7 @@ otherwise.
 | R5 | Frame-zoom thumbnails need many short ffmpeg runs | blocks of 64 frames, a byte-bounded LRU, the strip image while loading |
 | R6 | Keyframes aren't exactly 1 s apart (x264 scene cuts), so strip images can be up to 1 s off | fine for thumbnails; exact frames only at frame zoom |
 | R7 | No portal or GSettings in the tests: FileDialog and FileLauncher fail there | the cases avoid them; failures toast |
-| R8 | Symbolic SVGs with strokes may not recolor | fills only; WP0b checks recoloring |
+| R8 | Symbolic SVGs with strokes may not recolor | fills only, the markup GTK 4.22 loads as render nodes (`tests/icons.rs`); the test channel's `icons` checks every icon recolors in full |
 | R9 | pen.dev has no SVG export, only reads are allowed, and the MCP reads the active document | art from `Get(includePathGeometry)` written to SVG by script while `design/qrec.pen` is active (G§0.6) |
 | R10 | The drafts aren't approved (SPEC §15.1, CLAUDE.md) | gated on G§0.2; interim pages carry the SPEC-required behavior |
 | R11 | `adw::Dialog` dims the whole window; the frames leave the hint bar live | custom overlay layers (G§3.15) |
@@ -5134,7 +5259,7 @@ otherwise.
 | R22 | gtk4-rs `gdk::Texture` isn't usable off the main thread | textures are built on the main thread from shared bytes (G§3.11) |
 | R23 | Parallel worktrees editing near the same files | ownership (G§3.16, G§3.17); WP0a and WP0b create every file as a stub; shared files only through the integrator |
 | R24 | `Take.recovered` makes older dev builds reject a project that has it | accepted before the first release; the first schema change after it bumps `version` (G§4.8) |
-| R25 | `gtk::Svg` (GTK 4.22's SVG subset) may misrender the generated art | WP0b checks first; PNG fallback (G§3.14) |
+| R25 | `gtk::Svg` (GTK 4.22's SVG subset) may misrender the generated art | closed: the test channel's `art` with `compare` draws each through `gtk::Svg` against the pen's PNGs within antialiasing, as `tests/art.rs` does with rsvg (G§3.14); the PNG fallback isn't needed |
 | R26 | The adaptive layouts have no frames, and niri tiles windows narrower than 1400 px | DESIGN's rules, built per region from WP0b on (G§1.1 #4); sign-off or frames (G§0.3) |
 | R27 | M4's approved hint bars show `Ctrl+K` and `?`, but the palette and cheat sheet are M5 and gated | the hints as drawn; the "Not built yet" toast (G§1.1) |
 | R28 | D-47 lets UI commands overtake parked edits | parked commands resolve the selection and playhead when they run, as every command does at its turn |
