@@ -1146,15 +1146,21 @@ pub const STUCK: &str = "the Program picture is stuck; restart Qrec";
      false` (WP7 owns the field). A bin preview that takes over a playing
      program pauses it, so the core doesn't play under the take (R16), and
      parks its playhead at the frame the player showed, as a stop does
-     (step 2): `Pause`, then `Seek{To(f)}`, f read before the take loads
-     (R16's follow-up: it stayed at the last once-a-second seek, up to a
-     second behind the picture, and the program came back there). A
-     playhead change ends a preview (D-17), so the park is the preview's
-     own: `TakePreview.parking` holds from the takeover until the park's
-     reply, and meanwhile a playhead change (the park's, a once-a-second
-     seek still on its way) doesn't end it
+     (step 2): `Pause`, then `Seek{Player{f, rev}}`, f read before the
+     take loads (R16's follow-up: it stayed at the last once-a-second
+     seek, up to a second behind the picture, and the program came back
+     there). A playhead change ends a preview (D-17), so the park is the
+     preview's own: `TakePreview.parking` holds from the takeover until
+     the park's reply, and meanwhile a playhead change (the park's, a
+     once-a-second seek still on its way) doesn't end it
      (`a_preview_parks_a_playing_programs_playhead`,
      `gui_bin_export::a_bin_preview_parks_the_playing_program_where_it_showed`).
+     The sync's steps run in a `HIGH_IDLE` idle, ahead of GTK's redraws
+     (`guard::idle_local_once_at`): at the default idle priority the
+     playing Program's redraws starved the takeover's step 0.5–1 s, the
+     program playing on meanwhile (the perf lane's timing; the park case
+     parked 16–17 frames past the picture in 3 of 6 runs, in none of 10
+     since; play and perf integration).
   9. Ruler scrub (D-40, round 3): the timeline calls
      `media::program::scrub(frame)` on each motion of a ruler drag and
      dispatches the throttled `Seek`s itself. The sync scrubs a paused

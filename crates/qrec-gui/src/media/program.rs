@@ -1068,18 +1068,27 @@ impl ProgramSync {
     }
 
     /// Runs a step soon (after the current dispatch: changes come in
-    /// bursts, a snapshot and a local change together).
+    /// bursts, a snapshot and a local change together), ahead of GTK's
+    /// redraws (`HIGH_IDLE`): at the default idle priority the playing
+    /// Program's redraws starved it, and a bin preview's takeover (step 8)
+    /// ran 0.5–1 s late, the program playing on meanwhile (the perf lane's
+    /// timing; `gui_bin_export`'s park case went 16–17 frames past the
+    /// picture in 3 of 6 runs).
     fn schedule(self: &Rc<Self>) {
         if self.pending.replace(true) {
             return;
         }
         let weak = Rc::downgrade(self);
-        guard::idle_local_once("program sync: a step", move || {
-            if let Some(sync) = weak.upgrade() {
-                sync.pending.set(false);
-                sync.run();
-            }
-        });
+        guard::idle_local_once_at(
+            gtk::glib::Priority::HIGH_IDLE,
+            "program sync: a step",
+            move || {
+                if let Some(sync) = weak.upgrade() {
+                    sync.pending.set(false);
+                    sync.run();
+                }
+            },
+        );
     }
 
     /// The program plan, recomputed only when what it reads changed.

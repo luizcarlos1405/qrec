@@ -240,6 +240,25 @@ pub fn idle_local_once(what: &'static str, f: impl FnOnce() + 'static) -> glib::
     glib::idle_add_local_once(move || run(what, f))
 }
 
+/// [`idle_local_once`] at `priority`: `glib::Priority::HIGH_IDLE` runs
+/// ahead of GTK's redraws (`GDK_PRIORITY_REDRAW` is `HIGH_IDLE + 20`),
+/// which a window that redraws every frame (the Program playing) can keep
+/// ready for as long as it plays, so the default idle priority waits
+/// behind them.
+pub fn idle_local_once_at(
+    priority: glib::Priority,
+    what: &'static str,
+    f: impl FnOnce() + 'static,
+) -> glib::SourceId {
+    let mut f = Some(f);
+    glib::idle_add_local_full(priority, move || {
+        if let Some(f) = f.take() {
+            run(what, f);
+        }
+        glib::ControlFlow::Break
+    })
+}
+
 /// `glib::timeout_add_local` (main thread); a panic stops it.
 pub fn timeout_local(
     interval: Duration,
