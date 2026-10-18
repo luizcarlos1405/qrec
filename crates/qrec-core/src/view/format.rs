@@ -200,13 +200,33 @@ pub fn local_when(at: DateTime<FixedOffset>, now: DateTime<FixedOffset>) -> Stri
 }
 
 /// A core message as a title or a sentence: its first letter uppercased
-/// ("no clip c9 on the timeline" → "No clip c9 on the timeline").
+/// ("no clip c9 on the timeline" → "No clip c9 on the timeline"), but a
+/// file name it starts with keeps its case, as the titles write it
+/// ("qrec.json is not valid JSON: …", "keys.toml: …"; S25 #10's body read
+/// "Qrec.json is not valid JSON" until M5).
 pub fn capitalized(text: &str) -> String {
+    if starts_with_file_name(text) {
+        return text.to_owned();
+    }
     let mut chars = text.chars();
     match chars.next() {
         Some(first) => first.to_uppercase().chain(chars).collect(),
         None => String::new(),
     }
+}
+
+/// `text`'s first word (up to a space, colon, comma or semicolon) is a
+/// file name: a dot between two letters or digits ("qrec.json",
+/// "take-0003.mkv"), not a sentence's full stop.
+fn starts_with_file_name(text: &str) -> bool {
+    let word: Vec<char> = text
+        .split([' ', ':', ',', ';'])
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .collect();
+    word.windows(3)
+        .any(|w| w[0].is_alphanumeric() && w[1] == '.' && w[2].is_alphanumeric())
 }
 
 /// `v` with one decimal and the true minus; never "−0.0".
@@ -375,5 +395,37 @@ mod tests {
         let canvas_text = canvas(&testkit::design_project().canvas);
         assert_eq!(canvas_text, "1920\u{00d7}1080 \u{00b7} 30 fps");
         assert_eq!(peak(-61.0), "\u{2014}");
+    }
+
+    /// A message's first letter goes up, but not a file name's: the
+    /// titles write `qrec.json`, `keys.toml` and `config.toml` as they are
+    /// on disk (M5: S25 #10's body read "Qrec.json is not valid JSON").
+    #[test]
+    fn capitalized_keeps_a_file_name() {
+        assert_eq!(
+            capitalized("no clip c9 on the timeline"),
+            "No clip c9 on the timeline"
+        );
+        assert_eq!(capitalized("éclair"), "Éclair");
+        assert_eq!(capitalized(""), "");
+        assert_eq!(
+            capitalized("done. take 3 is in the bin"),
+            "Done. take 3 is in the bin",
+            "a full stop isn't a file name"
+        );
+        for text in [
+            "qrec.json is not valid JSON: EOF while parsing a value at line 1 column 24",
+            "keys.toml: unknown binding `nope.nothing` (`qrec keys` lists the ids)",
+            "config.toml line 3: expected a value",
+            "take-0003.mkv is missing",
+        ] {
+            assert_eq!(capitalized(text), text);
+        }
+        assert_eq!(
+            crate::on_event::disk::invalid_why(
+                "qrec.json is not valid JSON: EOF while parsing a value at line 1 column 24."
+            ),
+            "qrec.json is not valid JSON: EOF while parsing a value at line 1 column 24"
+        );
     }
 }

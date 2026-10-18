@@ -152,7 +152,8 @@ pub const INVALID_ON_DISK_TITLE: &str = "qrec.json changed on disk but isn't val
 /// Why `qrec.json` on disk isn't valid, as S25 #10 says it (D-21): a clip
 /// past the end of its take reads "/timeline/clips/4/out: 1400 is past the
 /// end of take 3 (1,377 frames)" (the place, the value as written, the
-/// take's length); any other reason is the core's, capitalized.
+/// take's length); any other reason is the core's, capitalized (but a file
+/// name it starts with: "qrec.json is not valid JSON: …").
 pub fn invalid_why(msg: &str) -> String {
     out_past_take(msg)
         .unwrap_or_else(|| crate::view::format::capitalized(msg.trim_end().trim_end_matches('.')))

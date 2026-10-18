@@ -913,6 +913,16 @@ fn s25_toasts_in_swamp_day() {
 
         fs::write(project.join("qrec.json"), "{ \"version\": 1, \"name\": ").expect("qrec.json");
         wait_toast(&mut nested, "qrec.json changed on disk but isn't valid");
+        // Its body keeps the file name's case, as the title does (M5: it
+        // read "Qrec.json is not valid JSON: …", `format::capitalized`).
+        let labels = nested.window(0).labels("toast-host");
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.starts_with("qrec.json is not valid JSON: ")),
+            "{}: the error toast's body: {labels:?}",
+            t.theme
+        );
         column.push(shoot_toast(&mut nested, &t, "error", "record-text", false));
         assert_clean(&mut nested);
         columns.push(column);
