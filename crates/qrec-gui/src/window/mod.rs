@@ -140,8 +140,10 @@ impl MainWindow {
     }
 
     /// Builds every region and the layout; follows `LocalUi` (layout,
-    /// startup page, overlays) and the focus.
-    pub fn populate(&self, ctx: &Ctx, title: &str) {
+    /// startup page, overlays) and the focus. `_title`, the folder's name,
+    /// is the window's title already ([`MainWindow::new`]): the blocking
+    /// pages' minimal header shows none (WP8).
+    pub fn populate(&self, ctx: &Ctx, _title: &str) {
         let header = Header::new(ctx);
         let stage = Stage::new(ctx);
         let timeline = Timeline::new(ctx);
@@ -179,15 +181,42 @@ impl MainWindow {
         editor.add_top_bar(&header.widget());
         editor.set_content(Some(&split));
 
-        // The blocking pages' minimal header (C04 `Xba2H`): the wordmark,
-        // the folder's name, close.
+        // The blocking pages' minimal header (C04 `Xba2H`, as WP8's frames
+        // draw it): the app icon, the wordmark and close; no title (the
+        // window's own title is still the folder's name).
         let page_header = adw::HeaderBar::new();
+        page_header.set_widget_name("minimal-header");
         page_header.add_css_class("qrec-minimal-header");
+        let start = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        start.add_css_class("header-start");
+        start.set_valign(gtk::Align::Center);
+        let icon = gtk::Image::new();
+        icon.set_pixel_size(24);
+        icon.add_css_class("app-icon");
+        icon.set_valign(gtk::Align::Center);
+        icon.update_property(&[gtk::accessible::Property::Label("Qrec")]);
+        let show_icon = {
+            let icon = icon.downgrade();
+            move |theme: &crate::theme::Theme| {
+                if let Some(icon) = icon.upgrade() {
+                    match theme.art(crate::theme::art::Art::AppIcon24) {
+                        Some(svg) => icon.set_paintable(Some(&svg)),
+                        None => icon.set_icon_name(Some("qrec-record-symbolic")),
+                    }
+                }
+            }
+        };
+        show_icon(&ctx.theme);
+        ctx.theme.subscribe(show_icon).detach();
+        start.append(&icon);
         let wordmark = gtk::Label::new(Some("Qrec"));
         wordmark.add_css_class("wordmark");
         wordmark.add_css_class("t-wordmark");
-        page_header.pack_start(&wordmark);
-        page_header.set_title_widget(Some(&adw::WindowTitle::new(title, "")));
+        // At x 44, as in the main header (12 + 24 + 8).
+        wordmark.set_margin_start(8);
+        start.append(&wordmark);
+        page_header.pack_start(&start);
+        page_header.set_title_widget(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
         page_header.set_show_end_title_buttons(false);
         page_header.set_show_start_title_buttons(false);
         let keymap = ctx.store.keymap();
@@ -426,6 +455,11 @@ fn apply_local(ctx: &Ctx, parts: &Rc<Parts>, local: &LocalUi) {
                     let page = parts.page.borrow().as_ref().map(BlockingPage::focus_target);
                     if let Some(Some(target)) = page {
                         target.grab_focus();
+                        // A page is keyboard-first: its focused button shows
+                        // its ring (WP8's frames draw it).
+                        if let Some(window) = target.root().and_downcast::<gtk::Window>() {
+                            window.set_focus_visible(true);
+                        }
                     }
                 });
             }

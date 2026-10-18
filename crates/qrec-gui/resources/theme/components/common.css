@@ -661,8 +661,8 @@ tooltip .qrec-tooltip {
 }
 
 /* The minimal header (C04 `Xba2H`): the blocking pages' header. `surface`
-   with a 1 px bottom `border`, the wordmark, the window title (`title` over
-   `caption` `muted`). */
+   with a 1 px bottom `border`, the 24 px app icon at x 12, the wordmark at
+   x 44, close at x 1560; no title (the drafted frames draw none, WP8). */
 headerbar.qrec-minimal-header {
   min-height: 48px;
   background-color: var(--qrec-surface);
@@ -675,17 +675,4 @@ headerbar.qrec-minimal-header > windowhandle > box {
 
 headerbar.qrec-minimal-header .wordmark {
   color: var(--qrec-text);
-}
-
-headerbar.qrec-minimal-header windowtitle .title {
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 22px;
-}
-
-headerbar.qrec-minimal-header windowtitle .subtitle {
-  color: var(--qrec-muted);
-  font-size: 12px;
-  line-height: 16px;
-  opacity: 1;
 }

@@ -6,10 +6,14 @@
 //! gated on G§0.2).
 //!
 //! A drafted page (WP8's files) is used when it exists for the page's
-//! kind (its `view` returns `Some`); otherwise the interim page shows
-//! SPEC's copy and buttons as a plain C31 block. The flows behind the
-//! buttons are startup's (`startup/mod.rs`): a button runs the GUI action
-//! of its [`BlockingAction`] ([`action_id`]).
+//! kind (its `view` returns `Some`): S23 and GStreamer stuck
+//! (`missing_deps`), X1 (`cli_recording`), the export wait
+//! (`export_wait`), X2 and the pages of its shape, D-13's and the
+//! not-responding one (`not_my_swamp`), X3 (`unreadable`). Otherwise the
+//! interim page shows SPEC's copy and buttons as a plain C31 block: the
+//! folder or the host failing. The flows behind the buttons are startup's
+//! (`startup/mod.rs`): a button runs the GUI action of its
+//! [`BlockingAction`] ([`action_id`]).
 
 pub mod cli_recording;
 pub mod export_wait;
@@ -72,12 +76,13 @@ impl BlockingPage {
                 cli_recording::view(ctx, &kind, Rc::clone(&on_action))
             }
             BlockKind::ExportWait { .. } => export_wait::view(ctx, &kind, Rc::clone(&on_action)),
-            BlockKind::NotMySwamp { .. } => not_my_swamp::view(ctx, &kind, Rc::clone(&on_action)),
+            BlockKind::NotMySwamp { .. }
+            | BlockKind::HeldByWindow { .. }
+            | BlockKind::NotResponding { .. } => {
+                not_my_swamp::view(ctx, &kind, Rc::clone(&on_action))
+            }
             BlockKind::Unreadable { .. } => unreadable::view(ctx, &kind, Rc::clone(&on_action)),
-            BlockKind::HeldByWindow { .. }
-            | BlockKind::NotResponding { .. }
-            | BlockKind::FolderUnreadable { .. }
-            | BlockKind::HostFailed { .. } => None,
+            BlockKind::FolderUnreadable { .. } | BlockKind::HostFailed { .. } => None,
         };
         let view = drafted.unwrap_or_else(|| {
             Box::new(interim::InterimPage::new(
