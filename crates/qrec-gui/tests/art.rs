@@ -9,8 +9,9 @@
 //! piece moved into the component's px (each point mapped from its
 //! `viewBox` to its box; a rotated ellipse as two arcs), in the export's
 //! order (its z-order):
-//! - `resources/art/app-icon-24.svg` (`uH1BD`, the header's icon): fixed
-//!   colors;
+//! - `resources/art/app-icon-24.svg` (`uH1BD`, the header's icon) and
+//!   `data/icons/hicolor/scalable/apps/com.rsensato.qrec.svg` (the 128 px
+//!   `ptPs6`, the package's scalable icon): fixed colors;
 //! - `resources/art/quiet-swamp.svg` (`rfUfx`) and `resources/art/signpost.svg`
 //!   (`W1Ia5`), whose `muted` and `border` fills are the theme's
 //!   (design/export/INDEX.md): `{{muted}}` and `{{border}}`, which
@@ -19,11 +20,15 @@
 //!   glyph (`w8imU`, all `text-on-record`): a symbolic icon (no fills: GTK
 //!   colors it from the CSS, `tests/icons.rs`' markup).
 //!
-//! `QREC_UPDATE_ART=1` writes the files; the test fails when a committed
-//! one differs, and is skipped when `design/` is absent.
+//! It also copies the pen's own renders of the app icon,
+//! `design/export/art/app-icon-<n>.png`, to the package's hicolor sizes
+//! (`data/icons/hicolor/<n>x<n>/apps/com.rsensato.qrec.png`): rsvg's render
+//! of the SVG differs visibly at 16 to 64 px (a skin line, the shadow's
+//! edge). `QREC_UPDATE_ART=1` writes the files; the test fails when a
+//! committed one differs, and is skipped when `design/` is absent.
 //!
 //! **The renders.** Each SVG, rendered by rsvg-convert at the pen PNGs'
-//! sizes (1× and 2×), matches the PNG
+//! sizes (1× and 2×; the 128 px app icon at 128 and 256), matches the PNG
 //! within antialiasing: composited over Swamp Night's `bg` and over white,
 //! no pixel lies more than [`MAX_EXCESS`] levels outside the range of the
 //! PNG's pixels around it (3×3), and at most [`MAX_OFF_SHARE`] of them more
@@ -524,7 +529,7 @@ struct Output {
     pngs: &'static [(&'static str, u32)],
 }
 
-const OUTPUTS: [Output; 4] = [
+const OUTPUTS: [Output; 5] = [
     Output {
         component: "Art · App icon 24",
         file: "crates/qrec-gui/resources/art/app-icon-24.svg",
@@ -556,7 +561,21 @@ const OUTPUTS: [Output; 4] = [
                   app's symbolic icon, a symbolic icon GTK colors (text-on-record)",
         pngs: &[("rec-glyph@1x.png", 16), ("rec-glyph@2x.png", 32)],
     },
+    Output {
+        component: "Art · App icon",
+        file: "data/icons/hicolor/scalable/apps/com.rsensato.qrec.svg",
+        colors: Colors::Fixed,
+        comment: "Qrec's app icon (pen ptPs6), the package's scalable icon",
+        pngs: &[("app-icon-128.png", 128), ("app-icon-256.png", 256)],
+    },
 ];
+
+/// The package's hicolor PNG sizes: the pen's own renders.
+const HICOLOR: [u32; 7] = [16, 32, 48, 64, 128, 256, 512];
+
+fn hicolor_png(size: u32) -> String {
+    format!("data/icons/hicolor/{size}x{size}/apps/com.rsensato.qrec.png")
+}
 
 /// Every generated file's content, by its path under the repo.
 fn generated(export: &Path) -> BTreeMap<String, Vec<u8>> {
@@ -571,6 +590,13 @@ fn generated(export: &Path) -> BTreeMap<String, Vec<u8>> {
         out.insert(
             output.file.to_owned(),
             svg_file(output.comment, &shapes, w, h).into_bytes(),
+        );
+    }
+    for size in HICOLOR {
+        let png = export.join(format!("art/app-icon-{size}.png"));
+        out.insert(
+            hicolor_png(size),
+            fs::read(&png).unwrap_or_else(|e| panic!("{}: {e}", png.display())),
         );
     }
     out

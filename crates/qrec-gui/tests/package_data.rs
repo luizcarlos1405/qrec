@@ -1,10 +1,11 @@
 //! The desktop entry and the icons the package installs (docs/GUI.md G§6.4,
 //! `data/`). The entry and the icon are named after the app id (SPEC's App
 //! ID row): the compositor finds the entry from the window's Wayland
-//! `app_id`. `data/install.sh` renders the hicolor icons from the theme's
-//! placeholder art in Swamp Night's colors (until the pen export, G§0.6).
-//! The package's build also runs `desktop-file-validate` on the entry
-//! (`flake.nix`).
+//! `app_id`. `data/install.sh` installs the pen's app icon (`ptPs6`): the
+//! scalable SVG and the pen's own hicolor PNGs in `data/icons/`, which
+//! `tests/art.rs` writes from the export; the symbolic icon is the REC
+//! glyph. The package's build also runs `desktop-file-validate` on the
+//! entry (`flake.nix`).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -68,18 +69,6 @@ fn the_desktop_entry_names_the_app() {
     }
 }
 
-/// The color of the token `--qrec-<name>` in Swamp Night's tokens CSS.
-fn token(name: &str) -> String {
-    let css =
-        fs::read_to_string(repo().join("crates/qrec-gui/resources/theme/tokens/swamp-night.css"))
-            .expect("the tokens");
-    let prefix = format!("--qrec-{name}:");
-    css.lines()
-        .find_map(|l| l.trim().strip_prefix(&prefix))
-        .map(|v| v.trim().trim_end_matches(';').to_owned())
-        .unwrap_or_else(|| panic!("no token {name}"))
-}
-
 /// A PNG's width and height (its IHDR).
 fn png_size(file: &Path) -> (u32, u32) {
     let bytes = fs::read(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
@@ -120,12 +109,11 @@ fn pixel(png: &Path, x: u32, y: u32) -> [u8; 4] {
     [out.stdout[0], out.stdout[1], out.stdout[2], out.stdout[3]]
 }
 
-fn hex([r, g, b, _]: [u8; 4]) -> String {
-    format!("#{r:02X}{g:02X}{b:02X}")
-}
+/// The hicolor sizes the package installs: the pen's renders.
+const SIZES: [u32; 7] = [16, 32, 48, 64, 128, 256, 512];
 
 #[test]
-fn install_sh_renders_the_icons_from_the_placeholder_art() {
+fn install_sh_installs_the_pens_app_icon() {
     let prefix = tempfile::tempdir().expect("a prefix");
     let out = run_tool(
         Command::new("sh")
@@ -143,20 +131,36 @@ fn install_sh_renders_the_icons_from_the_placeholder_art() {
     );
 
     let icons = share.join("icons/hicolor");
+    let data = repo().join("data/icons/hicolor");
     let svg = fs::read_to_string(icons.join(format!("scalable/apps/{APP_ID}.svg")))
         .expect("the scalable icon");
-    assert!(!svg.contains("{{"), "every token substituted:\n{svg}");
-    for name in ["accent", "accent-2", "wood"] {
-        assert!(svg.contains(&token(name)), "{name}'s color in:\n{svg}");
-    }
-    for size in [32, 64, 128] {
-        let png = icons.join(format!("{size}x{size}/apps/{APP_ID}.png"));
+    assert_eq!(
+        svg,
+        fs::read_to_string(data.join(format!("scalable/apps/{APP_ID}.svg"))).expect("the art"),
+        "the pen's app icon (tests/art.rs writes it)"
+    );
+    assert!(
+        svg.starts_with("<?xml") && svg.contains("viewBox=\"0 0 128 128\"") && !svg.contains("{{"),
+        "a 128 px SVG with its own colors:\n{svg}"
+    );
+    for size in SIZES {
+        let at = format!("{size}x{size}/apps/{APP_ID}.png");
+        let png = icons.join(&at);
         assert_eq!(png_size(&png), (size, size), "{}", png.display());
+        assert_eq!(
+            fs::read(&png).expect("the PNG"),
+            fs::read(data.join(&at)).expect("the pen's PNG"),
+            "{at}: the pen's render"
+        );
     }
-    // The 128 px icon: the bulb's middle is `accent-2` (between its two
-    // `wood` skin lines), its corner transparent.
+    // The 128 px icon: the bulb's middle is the pen's onion gold, its
+    // corner transparent.
     let png = icons.join(format!("128x128/apps/{APP_ID}.png"));
-    assert_eq!(hex(pixel(&png, 64, 75)), token("accent-2"));
+    let [r, g, b, a] = pixel(&png, 64, 80);
+    assert!(
+        a == 255 && r > 200 && g > 150 && b < 140,
+        "onion gold at the bulb: {r},{g},{b},{a}"
+    );
     assert_eq!(pixel(&png, 2, 2)[3], 0, "a transparent corner");
 
     let symbolic = icons.join(format!("symbolic/apps/{APP_ID}-symbolic.svg"));
@@ -168,5 +172,12 @@ fn install_sh_renders_the_icons_from_the_placeholder_art() {
         )
         .expect("the REC glyph"),
         "the app's symbolic icon is the REC glyph"
+    );
+    let license = share.join("licenses/qrec/LICENSE-lucide.txt");
+    let text = fs::read_to_string(&license).expect("the Lucide license");
+    assert!(
+        text.contains("ISC License") && text.contains("Cole Bemis"),
+        "{}",
+        license.display()
     );
 }
