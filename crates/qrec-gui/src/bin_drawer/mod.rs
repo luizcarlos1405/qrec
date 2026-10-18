@@ -178,12 +178,7 @@ impl Drawer {
         titles.append(&count);
         header.append(&titles);
         let keymap = ctx.store.keymap();
-        let close = button::icon(
-            "window-close-symbolic",
-            "Close bin",
-            Some("bin.toggle"),
-            &keymap,
-        );
+        let close = button::icon("qrec-x-symbolic", "Close bin", Some("bin.toggle"), &keymap);
         close.set_widget_name("bin-close");
         close.set_valign(gtk::Align::Center);
         let keys = ctx.keys.clone();
@@ -226,7 +221,7 @@ impl Drawer {
         footer_purge.set_widget_name("bin-purge-selected");
         // 8 px apart by CSS (`button.qrec-btn > box`).
         let purge_content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        purge_content.append(&gtk::Image::from_icon_name("user-trash-symbolic"));
+        purge_content.append(&gtk::Image::from_icon_name("qrec-trash-2-symbolic"));
         purge_content.append(&gtk::Label::new(Some("Purge from disk")));
         footer_purge.set_child(Some(&purge_content));
         footer_purge.update_property(&[gtk::accessible::Property::Label("Purge from disk")]);

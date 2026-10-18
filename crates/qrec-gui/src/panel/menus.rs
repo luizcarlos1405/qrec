@@ -179,6 +179,7 @@ pub fn track_menu(ctx: &Ctx, button: &gtk::MenuButton, on_open: Option<Rc<dyn Fn
 /// list (its page closes). Every dropdown's: the autocut page's track list
 /// and Settings › Project's Size.
 pub fn track_dropdown(ctx: &Ctx, dropdown: &gtk::DropDown) {
+    list_with_check(dropdown);
     let mut child = dropdown.first_child();
     while let Some(c) = child {
         if let Ok(popover) = c.clone().downcast::<gtk::Popover>() {
@@ -197,6 +198,69 @@ pub fn track_dropdown(ctx: &Ctx, dropdown: &gtk::DropDown) {
         }
         child = c.next_sibling();
     }
+}
+
+/// The icon a dropdown's list marks its selected item with: the frames'
+/// `check` (G§5.2), where GTK's own list draws `object-select-symbolic`.
+pub const LIST_CHECK: &str = "qrec-check-symbolic";
+
+/// `dropdown`'s list (its strings) as GTK's own lays it out, a label then
+/// the check, shown on the selected item only, with Qrec's check
+/// ([`LIST_CHECK`]).
+fn list_with_check(dropdown: &gtk::DropDown) {
+    let factory = gtk::SignalListItemFactory::new();
+    let weak = dropdown.downgrade();
+    factory.connect_setup(guarded!("menus: a list row", move |_, item| {
+        let (Some(item), Some(dropdown)) = (item.downcast_ref::<gtk::ListItem>(), weak.upgrade())
+        else {
+            return;
+        };
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let label = gtk::Label::new(None);
+        label.set_xalign(0.0);
+        label.set_hexpand(true);
+        row.append(&label);
+        let check = gtk::Image::builder()
+            .icon_name(LIST_CHECK)
+            .accessible_role(gtk::AccessibleRole::Presentation)
+            .build();
+        row.append(&check);
+        item.set_child(Some(&row));
+        // The check follows the selection while the row shows (GTK's list
+        // does the same through `selected-item`).
+        let (item, check) = (item.downgrade(), check.downgrade());
+        dropdown.connect_selected_notify(guarded!("menus: a list's check", move |dropdown| {
+            if let (Some(item), Some(check)) = (item.upgrade(), check.upgrade()) {
+                check.set_opacity(if dropdown.selected() == item.position() {
+                    1.0
+                } else {
+                    0.0
+                });
+            }
+        }));
+    }));
+    let weak = dropdown.downgrade();
+    factory.connect_bind(guarded!("menus: a list row's item", move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let Some(row) = item.child().and_downcast::<gtk::Box>() else {
+            return;
+        };
+        if let (Some(label), Some(text)) = (
+            row.first_child().and_downcast::<gtk::Label>(),
+            item.item().and_downcast::<gtk::StringObject>(),
+        ) {
+            label.set_text(&text.string());
+        }
+        let selected = weak
+            .upgrade()
+            .is_some_and(|dropdown| dropdown.selected() == item.position());
+        if let Some(check) = row.last_child() {
+            check.set_opacity(if selected { 1.0 } else { 0.0 });
+        }
+    }));
+    dropdown.set_list_factory(Some(&factory));
 }
 
 /// Discovers the sources again on `qrec-gui-io` and hands them to

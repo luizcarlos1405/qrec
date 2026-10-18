@@ -39,7 +39,7 @@ impl HeaderView {
             &["flat", "icon-32", "panel-add-icon"],
             "Add layer",
         );
-        add.set_icon_name("list-add-symbolic");
+        add.set_icon_name("qrec-plus-symbolic");
         add.set_widget_name("panel-add-layer");
         add.set_valign(gtk::Align::Center);
         let refresh = {
@@ -94,7 +94,7 @@ impl BannerView {
         let label = gtk::Label::new(Some("Layout"));
         label.add_css_class("t-body-strong");
         content.append(&label);
-        content.append(&gtk::Image::from_icon_name("pan-down-symbolic"));
+        content.append(&gtk::Image::from_icon_name("qrec-chevron-down-symbolic"));
         layout.set_child(Some(&content));
         layout.set_valign(gtk::Align::Center);
         layout.set_widget_name("layout-menu");

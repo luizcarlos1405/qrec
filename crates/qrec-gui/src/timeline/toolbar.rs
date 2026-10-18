@@ -141,19 +141,19 @@ impl Toolbar {
         let bin = toggle(
             ctx,
             "Bin",
-            "package-x-generic-symbolic",
+            "qrec-archive-symbolic",
             "bin.toggle",
             Some(bin_count.upcast_ref()),
         );
         let snap = toggle(ctx, "Snap", "qrec-magnet-symbolic", "snapping.toggle", None);
         let divider = gtk::Separator::new(gtk::Orientation::Vertical);
         divider.add_css_class("tl-divider");
-        let autocut = labeled(ctx, "Autocut", "edit-cut-symbolic", "autocut.run");
+        let autocut = labeled(ctx, "Autocut", "qrec-scissors-symbolic", "autocut.run");
         // `autocut.preview` runs WP5's `autocut.page` (G§3.8 step 10):
         // opens the autocut page, or closes it when it shows.
         let settings = icon(
             ctx,
-            "preferences-other-symbolic",
+            "qrec-sliders-horizontal-symbolic",
             "Autocut settings and preview",
             "autocut.preview",
         );
@@ -184,7 +184,7 @@ impl Toolbar {
         summary_time.add_css_class("muted");
         summary.append(&summary_text);
         summary.append(&summary_time);
-        let zoom_out = icon(ctx, "zoom-out-symbolic", "Zoom out", "zoom.out");
+        let zoom_out = icon(ctx, "qrec-zoom-out-symbolic", "Zoom out", "zoom.out");
         let slider = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 0.01);
         slider.add_css_class("tl-zoom");
         slider.set_draw_value(false);
@@ -192,8 +192,8 @@ impl Toolbar {
         slider.set_focus_on_click(false);
         slider.set_valign(gtk::Align::Center);
         slider.update_property(&[gtk::accessible::Property::Label("Timeline zoom")]);
-        let zoom_in = icon(ctx, "zoom-in-symbolic", "Zoom in", "zoom.in");
-        let fit = labeled(ctx, "Fit", "zoom-fit-best-symbolic", "zoom.fit");
+        let zoom_in = icon(ctx, "qrec-zoom-in-symbolic", "Zoom in", "zoom.in");
+        let fit = labeled(ctx, "Fit", "qrec-arrow-left-right-symbolic", "zoom.fit");
         let readout = gtk::Label::new(Some("Fit"));
         readout.add_css_class("t-mono-xs");
         readout.add_css_class("muted");

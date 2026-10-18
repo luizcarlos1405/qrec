@@ -19,6 +19,11 @@
   padding: 0 8px 0 16px;
 }
 
+/* Close bin: the 32 px button's 20 px `x` (S14, S18). */
+.qrec-bin .bin-header button#bin-close image {
+  -gtk-icon-size: 20px;
+}
+
 .qrec-bin .bin-list {
   border-spacing: 2px;
 }

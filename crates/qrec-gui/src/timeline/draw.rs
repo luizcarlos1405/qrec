@@ -150,18 +150,8 @@ fn clip(s: &gtk::Snapshot, sc: &Scene<'_>, b: &ClipBox, dy: f64, with_selection:
     s.append_color(&p.take[b.color % 8], &rect(x, dy, w, STRIPE_PX));
     let film = rect(x, dy + STRIPE_PX, w, rows.filmstrip());
     if b.missing {
+        // Its warning icon is in the label plate (C16's missing media).
         paint::hatch(s, &film, &p.hatch_stripe, 0.0);
-        if w >= 24.0 {
-            let ix = x.max(0.0) + (w.min(sc.width() - x.max(0.0)) - 16.0).max(0.0) / 2.0;
-            paint::icon(
-                s,
-                sc.widget,
-                "dialog-warning-symbolic",
-                (ix, dy + STRIPE_PX + (rows.filmstrip() - 16.0) / 2.0),
-                16,
-                &p.warning_text,
-            );
-        }
     } else if !matches!(b.label, ClipLabel::Sliver) {
         filmstrip(s, sc, b, dy);
     }
@@ -241,19 +231,32 @@ fn label_x(b: &ClipBox) -> f64 {
     b.x.max(0.0) + 6.0
 }
 
+/// The size of the icons on label plates and tags (C16's missing-media
+/// warning, the ripple tag's arrow: 12 px in an 18 px plate).
+const PLATE_ICON: f64 = 12.0;
+
 /// The take label plate (C16) at (6, 10), with a spinner while autocut
-/// analyzes the clip.
+/// analyzes the clip, or the missing-media warning (`warning-text`, 4 px
+/// before the label: C16's "Label plate"). A missing clip too narrow for
+/// its label keeps the warning alone on its plate.
 fn label(s: &gtk::Snapshot, sc: &Scene<'_>, b: &ClipBox, dy: f64) {
-    let Some(text) = b.label.text() else {
-        return;
-    };
     let p = sc.palette;
-    let lead = if b.analyzing { 16.0 } else { 0.0 };
     let x = label_x(b);
-    let width = paint::plate_width(sc.widget, sc.texts, Role::CaptionStrong, text, lead);
-    if x + width > b.x + b.w - 2.0 {
-        return;
-    }
+    let fits = |text: &str, lead: f64| {
+        x + paint::plate_width(sc.widget, sc.texts, Role::CaptionStrong, text, lead)
+            <= b.x + b.w - 2.0
+    };
+    let warning = b.missing && !b.analyzing;
+    let lead = if b.analyzing || warning {
+        PLATE_ICON + 4.0
+    } else {
+        0.0
+    };
+    let (text, lead) = match b.label.text() {
+        Some(text) if fits(text, lead) => (text, lead),
+        _ if warning && fits("", PLATE_ICON) => ("", PLATE_ICON),
+        _ => return,
+    };
     paint::plate(
         s,
         sc.widget,
@@ -265,6 +268,19 @@ fn label(s: &gtk::Snapshot, sc: &Scene<'_>, b: &ClipBox, dy: f64) {
         &p.video_scrim,
         &p.video_text,
     );
+    if warning {
+        paint::icon(
+            s,
+            sc.widget,
+            "qrec-triangle-alert-symbolic",
+            (
+                x + paint::PLATE_PAD,
+                dy + 10.0 + (paint::PLATE_H - PLATE_ICON) / 2.0,
+            ),
+            PLATE_ICON as i32,
+            &p.warning_text,
+        );
+    }
     if b.analyzing {
         paint::spinner(
             s,
@@ -520,11 +536,29 @@ fn trim_preview(s: &gtk::Snapshot, sc: &Scene<'_>, t: &TrimPreview) {
     }
 }
 
+/// The arrow and the shift of a ripple tag's text ("← 00:00:00:29"):
+/// `Some(false)` for a shift left, `Some(true)` right, `None` without one.
+fn ripple_parts(text: &str) -> (Option<bool>, &str) {
+    match text.split_once(' ') {
+        Some(("\u{2190}", shift)) => (Some(false), shift),
+        Some(("\u{2192}", shift)) => (Some(true), shift),
+        _ => (None, text),
+    }
+}
+
 /// A ripple tag ("← 00:00:00:29"): after a clip's label (S10) or centered
-/// at the video row's lower edge (S11).
+/// at the video row's lower edge (S11). As S10 and S11 draw it, the arrow
+/// is the 12 px `arrow-left` icon (mirrored for a shift right), 3 px before
+/// the shift in `mono-xs`.
 fn ripple(s: &gtk::Snapshot, sc: &Scene<'_>, tag: &tl::RippleTag) {
     let p = sc.palette;
-    let width = paint::plate_width(sc.widget, sc.texts, Role::MonoSm, &tag.text, 0.0);
+    let (arrow, text) = ripple_parts(&tag.text);
+    let lead = if arrow.is_some() {
+        PLATE_ICON + 3.0
+    } else {
+        0.0
+    };
+    let width = paint::plate_width(sc.widget, sc.texts, Role::MonoXs, text, lead);
     let (x, y) = match &tag.anchor {
         TagAnchor::Center { x } => (x - width / 2.0, sc.rows.video - 4.0 - paint::PLATE_H),
         TagAnchor::AfterLabel { clip } => {
@@ -546,13 +580,37 @@ fn ripple(s: &gtk::Snapshot, sc: &Scene<'_>, tag: &tl::RippleTag) {
         s,
         sc.widget,
         sc.texts,
-        Role::MonoSm,
-        &tag.text,
+        Role::MonoXs,
+        text,
         (x, y),
-        0.0,
+        lead,
         &p.video_scrim,
         &p.video_text,
     );
+    if let Some(right) = arrow {
+        let (ix, iy) = (
+            x + paint::PLATE_PAD,
+            y + (paint::PLATE_H - PLATE_ICON) / 2.0,
+        );
+        s.save();
+        if right {
+            // Lucide's arrow-right is arrow-left mirrored.
+            s.translate(&gtk::graphene::Point::new(
+                (2.0 * ix + PLATE_ICON) as f32,
+                0.0,
+            ));
+            s.scale(-1.0, 1.0);
+        }
+        paint::icon(
+            s,
+            sc.widget,
+            "qrec-arrow-left-symbolic",
+            (ix, iy),
+            PLATE_ICON as i32,
+            &p.video_text,
+        );
+        s.restore();
+    }
 }
 
 /// The saving ghost's stripes' phase at `now_ms` (px along x): one stripe
@@ -801,4 +859,24 @@ pub fn overlay(
         }
     }
     s.pop();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ripple_parts;
+
+    /// The core's tag text ("← 00:00:00:29") splits into the arrow the tag
+    /// draws as the `arrow-left` icon (mirrored for "→") and the shift.
+    #[test]
+    fn a_ripple_tag_draws_its_arrow_as_an_icon() {
+        assert_eq!(
+            ripple_parts("\u{2190} 00:00:00:29"),
+            (Some(false), "00:00:00:29")
+        );
+        assert_eq!(
+            ripple_parts("\u{2192} 00:00:15:07"),
+            (Some(true), "00:00:15:07")
+        );
+        assert_eq!(ripple_parts("00:00:01:00"), (None, "00:00:01:00"));
+    }
 }

@@ -4,12 +4,13 @@
 //! WP3), the signpost the drafted blocking pages' (WP8), the 24 px app icon
 //! the header's (WP6).
 //!
-//! The drawn art is the pen file's (`w7Qg8`: `uH1BD`, `rfUfx`, `W1Ia5`),
-//! exported with the pencil MCP while `design/qrec.pen` is the active
-//! document (G§0.6). Until that export the files are placeholders of the
-//! right size and colors, so the path from template to `gtk::Svg` is
-//! ready and tested; the PNG fallback of G§3.14 is only needed if
-//! `gtk::Svg` misrenders the real art.
+//! The art is the pen file's (`w7Qg8`: `uH1BD`, `rfUfx`, `W1Ia5`), written
+//! by `tests/art.rs` from the 2026-10-17 export
+//! (`design/export/html/artwork.html`): the quiet swamp's and the
+//! signpost's `muted` and `border` fills are `{{muted}}` and `{{border}}`,
+//! the app icon's colors are fixed. The test compares each, rendered, with
+//! the pen's PNGs; the test channel's `art` compares `gtk::Svg`'s renders
+//! with them too, so the PNG fallback of G§3.14 isn't needed.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -172,7 +173,12 @@ mod tests {
             let text = std::fs::read_to_string(dir.join(relative))
                 .unwrap_or_else(|e| panic!("{relative}: {e}"));
             assert!(text.contains("<svg"), "{relative}");
-            assert!(text.contains("{{"), "{relative} takes the theme's colors");
+            // The quiet swamp and the signpost fill with the theme's `muted`
+            // and `border`; the app icon's colors are fixed (INDEX.md).
+            let themed = matches!(art, Art::QuietSwamp | Art::Signpost);
+            for token in ["fill=\"{{muted}}\"", "fill=\"{{border}}\""] {
+                assert_eq!(text.contains(token), themed, "{relative}: {token}");
+            }
         }
     }
 }

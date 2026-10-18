@@ -197,7 +197,7 @@ impl InspectorView {
         let w_group = group(InspectorField::W.label(), &get(InspectorField::W));
         let h_group = group(InspectorField::H.label(), &get(InspectorField::H));
         let lock = gtk::ToggleButton::new();
-        lock.set_icon_name("insert-link-symbolic");
+        lock.set_icon_name("qrec-link-2-symbolic");
         lock.add_css_class("aspect-lock");
         lock.set_active(true);
         lock.set_focus_on_click(false);

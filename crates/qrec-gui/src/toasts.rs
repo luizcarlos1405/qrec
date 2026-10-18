@@ -527,7 +527,7 @@ impl Host {
         }
         toast.append(&text);
 
-        let close = button::icon("window-close-symbolic", "Dismiss", None, &keymap);
+        let close = button::icon("qrec-x-symbolic", "Dismiss", None, &keymap);
         close.set_widget_name("toast-dismiss");
         close.remove_css_class("icon-32");
         close.add_css_class("icon-24");
@@ -703,10 +703,10 @@ fn level_class(level: ToastLevel) -> &'static str {
 /// success `success`, warning `warning-text`, error `record-text`).
 fn level_icon(level: ToastLevel) -> (&'static str, &'static str) {
     match level {
-        ToastLevel::Info => ("dialog-information-symbolic", "info-icon"),
-        ToastLevel::Success => ("qrec-success-symbolic", "success-icon"),
-        ToastLevel::Warning => ("dialog-warning-symbolic", "warning-text"),
-        ToastLevel::Error => ("dialog-error-symbolic", "record-text"),
+        ToastLevel::Info => ("qrec-info-symbolic", "info-icon"),
+        ToastLevel::Success => ("qrec-circle-check-symbolic", "success-icon"),
+        ToastLevel::Warning => ("qrec-triangle-alert-symbolic", "warning-text"),
+        ToastLevel::Error => ("qrec-circle-x-symbolic", "record-text"),
     }
 }
 

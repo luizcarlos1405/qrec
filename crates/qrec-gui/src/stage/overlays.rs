@@ -109,8 +109,8 @@ impl ModeBadges {
     fn badge(badge: &Badge) -> gtk::Box {
         let b = plate(gtk::Orientation::Horizontal, "stage-badge");
         let icon = match badge {
-            Badge::Live => "camera-video-symbolic",
-            Badge::Program | Badge::Take { .. } => "video-x-generic-symbolic",
+            Badge::Live => "qrec-video-symbolic",
+            Badge::Program | Badge::Take { .. } => "qrec-film-symbolic",
             Badge::Proxy => "qrec-gauge-symbolic",
         };
         b.append(&gtk::Image::from_icon_name(icon));

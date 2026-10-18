@@ -631,12 +631,15 @@ fn assert_package_files(package: &Path) {
         svg.contains("<svg") && !svg.contains("{{"),
         "the scalable icon has its colors: {svg}"
     );
-    for size in [32, 64, 128] {
+    // The pen's app icon at every hicolor size it renders (data/install.sh).
+    for size in [16, 32, 48, 64, 128, 256, 512] {
         let png = icons.join(format!("{size}x{size}/apps/{id}.png"));
         assert_eq!(png_size(&png), (size, size), "{}", png.display());
     }
     let symbolic = icons.join(format!("symbolic/apps/{id}-symbolic.svg"));
     assert!(symbolic.is_file(), "{}", symbolic.display());
+    let lucide = package.join("share/licenses/qrec/LICENSE-lucide.txt");
+    assert!(lucide.is_file(), "the icons' license: {}", lucide.display());
     for file in qrec_gui::theme::fonts::FILES {
         let font = package.join("share/qrec/fonts").join(file);
         assert!(font.is_file(), "{}", font.display());

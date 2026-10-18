@@ -166,11 +166,6 @@ checkbutton.first-run-row:last-child:not(:first-child) {
   min-height: 39px;
 }
 
-checkbutton.first-run-row > check {
-  min-width: 16px;
-  min-height: 16px;
-}
-
 checkbutton.first-run-row image {
   -gtk-icon-size: 16px;
 }

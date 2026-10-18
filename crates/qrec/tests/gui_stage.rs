@@ -276,6 +276,24 @@ fn s01a_first_run() {
             assert_eq!(px(x, y), border, "the separator at y {y} reaches x {x}");
         }
     }
+    // The icons and art lane's measure: a checked row's check is the
+    // frames' 12 px `check` centered in its 16 px box (C20: 8 px of ink
+    // across), where GTK drew it over the box's whole 16 px content (11).
+    // The first row's box is at x 380–395, y 221–236.
+    let accent = gui_support::token_rgb("swamp-night", "accent");
+    let inside = nested.opts.rect_px([382.0, 223.0, 12.0, 12.0]);
+    let columns = inside[2] as usize;
+    let mut inked = vec![false; columns];
+    for (i, p) in gui_support::rgb_pixels(&shot, inside).iter().enumerate() {
+        if p.iter().zip(accent).any(|(a, b)| a.abs_diff(b) > 40) {
+            inked[i % columns] = true;
+        }
+    }
+    let across = inked.iter().filter(|&&c| c).count() as f64 / nested.opts.scale;
+    assert!(
+        (6.0..=9.0).contains(&across),
+        "the first row's check: {across} px of ink across (the frame's 8)"
+    );
 }
 
 /// R25 (its audit: the GTK half was untested): the first run keeps the
@@ -768,6 +786,21 @@ fn countdown_case(case: &str, reduced: bool) {
     };
     let labels = stage_labels(&mut nested);
     assert_shows(&labels, &["Take 10", "Esc or R cancels", "LIVE"]);
+    // The digit's plate (C07; G§0's M4 decision: the digit over the dim
+    // alone read 2.53:1 over a white screen): inside the ring, off the
+    // digit, the preview is `video-scrim` darker than the dim alone, so no
+    // channel there is brighter than `video-scrim` over the dim over white
+    // (58): the fake screen's green bar under it reads 152 dimmed alone.
+    let inside = nested.opts.rect_px([666.0, 392.0, 4.0, 4.0]);
+    let brightest = gui_support::rgb_pixels(&shot, inside)
+        .into_iter()
+        .flatten()
+        .max()
+        .unwrap_or(255);
+    assert!(
+        brightest <= 62,
+        "the countdown's plate under the digit: a channel at {brightest}"
+    );
     // The hint bar (WP6, round 3) says the countdown's keys, as S03 draws.
     let hints = nested.window(0).ctl(json!({"op": "hints"}));
     let line: Vec<String> = hints["items"]

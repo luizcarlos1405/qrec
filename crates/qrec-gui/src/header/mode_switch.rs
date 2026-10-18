@@ -40,14 +40,14 @@ impl ModeSwitch {
             adw::Toggle::builder()
                 .name(LIVE)
                 .label("Live")
-                .icon_name("camera-video-symbolic")
+                .icon_name("qrec-video-symbolic")
                 .build(),
         );
         group.add(
             adw::Toggle::builder()
                 .name(PROGRAM)
                 .label("Program")
-                .icon_name("video-x-generic-symbolic")
+                .icon_name("qrec-film-symbolic")
                 .build(),
         );
         // Chrome is focus-on-click = false (D-11): a click never leaves a
