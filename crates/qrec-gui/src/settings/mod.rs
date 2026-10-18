@@ -82,7 +82,7 @@ impl Settings {
         header.set_center_widget(Some(&switcher));
         let close = button::labeled(
             "Close",
-            Some("window-close-symbolic"),
+            Some("qrec-x-symbolic"),
             Some("cancel"),
             &keymap,
             button::Kind::Flat,

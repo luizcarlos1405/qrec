@@ -522,7 +522,7 @@ impl Ghost {
         root.set_valign(gtk::Align::Start);
         root.set_can_target(false);
         root.set_visible(false);
-        let grip = gtk::Image::from_icon_name("list-drag-handle-symbolic");
+        let grip = gtk::Image::from_icon_name("qrec-grip-vertical-symbolic");
         grip.add_css_class("row-slot");
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.add_css_class("row-slot");
@@ -608,8 +608,8 @@ fn texts() -> (gtk::Box, gtk::Label, gtk::Label) {
 fn source_icon(state: &State, layer: &LayerId) -> &'static str {
     let scene = qrec_core::ui_normalize::canvas_scene(&state.project, &state.ui);
     match scene.layer(layer).map(|l| &l.source) {
-        Some(VideoSource::Camera { .. }) => "camera-web-symbolic",
-        _ => "video-display-symbolic",
+        Some(VideoSource::Camera { .. }) => "qrec-webcam-symbolic",
+        _ => "qrec-monitor-symbolic",
     }
 }
 
@@ -677,11 +677,11 @@ impl RowView {
         row.add_css_class("row-44");
         row.set_widget_name(&format!("layer-row-{layer}"));
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        let grip = gtk::Image::from_icon_name("list-drag-handle-symbolic");
+        let grip = gtk::Image::from_icon_name("qrec-grip-vertical-symbolic");
         grip.add_css_class("row-slot");
         grip.add_css_class("reveal");
         grip.add_css_class("muted");
-        let (eye, _) = row_button("view-reveal-symbolic");
+        let (eye, _) = row_button("qrec-eye-symbolic");
         eye.add_css_class("row-slot");
         let icon = gtk::Image::new();
         icon.add_css_class("row-slot");
@@ -700,12 +700,12 @@ impl RowView {
         source.set_ellipsize(gtk::pango::EllipsizeMode::End);
         texts.append(&name);
         texts.append(&source);
-        let (lock, _) = row_button("changes-allow-symbolic");
+        let (lock, _) = row_button("qrec-lock-open-symbolic");
         lock.add_css_class("lock");
         eye.add_css_class("eye");
         let menu = Menu::new();
         let menu_button = menus::menu_button(&menu, &["flat", "icon-24"], "More");
-        menu_button.set_icon_name("view-more-symbolic");
+        menu_button.set_icon_name("qrec-ellipsis-vertical-symbolic");
         menu_button.set_valign(gtk::Align::Center);
         menu_button.set_widget_name(&format!("layer-menu-{layer}"));
         menus::track_menu(ctx, &menu_button, None);
@@ -767,13 +767,13 @@ impl RowView {
                 if is_screen(state, &row.layer) {
                     "qrec-monitor-x-symbolic"
                 } else {
-                    "dialog-error-symbolic"
+                    "qrec-circle-x-symbolic"
                 },
                 Some("record-text"),
             ),
             (None, Some(missing)) => (
                 missing.as_str(),
-                "dialog-warning-symbolic",
+                "qrec-triangle-alert-symbolic",
                 Some("warning-text"),
             ),
             (None, None) => (row.source.as_str(), source_icon(state, &row.layer), None),
@@ -806,16 +806,16 @@ impl RowView {
         set(self.row.upcast_ref(), "locked", row.locked);
         if let Some(image) = self.eye.child().and_downcast::<gtk::Image>() {
             image.set_icon_name(Some(if row.hidden {
-                "view-conceal-symbolic"
+                "qrec-eye-off-symbolic"
             } else {
-                "view-reveal-symbolic"
+                "qrec-eye-symbolic"
             }));
         }
         if let Some(image) = self.lock.child().and_downcast::<gtk::Image>() {
             image.set_icon_name(Some(if row.locked {
-                "changes-prevent-symbolic"
+                "qrec-lock-symbolic"
             } else {
-                "changes-allow-symbolic"
+                "qrec-lock-open-symbolic"
             }));
         }
         set(self.eye.upcast_ref(), "reveal", !row.hidden);

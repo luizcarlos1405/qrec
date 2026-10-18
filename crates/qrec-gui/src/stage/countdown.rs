@@ -1,7 +1,9 @@
 //! The countdown overlay (C07, S03): the preview dimmed under `video-scrim`
 //! at 65 % (black at 40 %), a 200 px ring (a 6 px `video-text` 20 % track
-//! and a `record` sweep that empties over each second, linear) and the
-//! digit in the `countdown` type. The digit comes in at 1.12× and settles
+//! and a `record` sweep that empties over each second, linear) on a
+//! `video-scrim` disc, the digit's plate (G§0's M4 decision: the digit
+//! over the dim alone read 2.53:1 over a white screen), and the digit in
+//! the `countdown` type. The digit comes in at 1.12× and settles
 //! in 160 ms (expo out) with a fade. Reduced motion: a static full ring and
 //! a plain swap. Test mode freezes the clock (`motion::now`): the ring is
 //! full and the digit settled. The plate under the ring ("Take 10", "Esc
@@ -23,6 +25,12 @@ pub const RING: f64 = 200.0;
 pub const RING_STROKE: f64 = 6.0;
 /// The digit's settle (DESIGN Motion).
 const SETTLE: Duration = Duration::from_millis(160);
+
+/// The radius of the digit's `video-scrim` plate at `scale`: the ring's
+/// outer edge, so the ring is drawn over it too.
+pub fn plate_radius(scale: f64) -> f64 {
+    RING / 2.0 * scale
+}
 
 /// The ring's sweep `elapsed` into a second (1 full … 0 empty): it
 /// empties over the second, linear; a static full ring under reduced
@@ -122,6 +130,20 @@ mod imp {
             let s = state.scale;
             let elapsed = motion::now().saturating_sub(state.since);
             let (cx, cy) = (w / 2.0, h / 2.0);
+            // The digit's plate: the ring's disc in `video-scrim`, as text
+            // over video sits (DESIGN Canvas overlays, R5), so the digit
+            // reads over a white screen too (10.1:1, where the dim alone
+            // left 2.53: G§0's M4 decision; tests/contrast.rs).
+            let plate = gsk::PathBuilder::new();
+            plate.add_circle(
+                &graphene::Point::new(cx as f32, cy as f32),
+                plate_radius(s) as f32,
+            );
+            snapshot.append_fill(
+                &plate.to_path(),
+                gsk::FillRule::Winding,
+                &palette.video_scrim,
+            );
             let stroke_w = RING_STROKE * s;
             let radius = (RING / 2.0) * s - stroke_w / 2.0;
             let track = gsk::PathBuilder::new();

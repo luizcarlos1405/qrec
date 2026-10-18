@@ -38,7 +38,7 @@ impl ExportSlot {
         stack.set_hhomogeneous(false);
         let idle = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         idle.set_halign(gtk::Align::Center);
-        let icon = gtk::Image::from_icon_name("document-save-symbolic");
+        let icon = gtk::Image::from_icon_name("qrec-download-symbolic");
         icon.set_pixel_size(16);
         idle.append(&icon);
         idle.append(&gtk::Label::new(Some("Export\u{2026}")));

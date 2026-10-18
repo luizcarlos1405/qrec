@@ -364,7 +364,7 @@ fn menu_inner_button(button: &gtk::MenuButton) -> Option<gtk::Widget> {
 /// The header's close button (32×32): it asks its window to close, which
 /// runs the window's close sequence (D-12).
 pub fn close_window(keymap: &Keymap) -> gtk::Button {
-    let close = icon("window-close-symbolic", "Close", Some("app.quit"), keymap);
+    let close = icon("qrec-x-symbolic", "Close", Some("app.quit"), keymap);
     close.set_widget_name("close-button");
     close.connect_clicked(crate::guarded!("close button", move |button| {
         if let Some(window) = button.root().and_downcast::<gtk::Window>() {

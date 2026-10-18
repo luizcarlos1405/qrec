@@ -151,14 +151,36 @@ enum Ground {
     Over(&'static str, &'static str),
     /// `top` over white video (theme-independent content, R5).
     OverWhite(&'static str),
+    /// The countdown's dim over white video: `video-scrim` at 65 % (black
+    /// at 40 %, G§1.3), its worst case (C07).
+    DimmedWhite,
+    /// `top` over the countdown's dim over white video: the digit's plate.
+    OverDimmedWhite(&'static str),
+}
+
+/// The countdown dims the preview with `video-scrim` at this opacity
+/// (`stage::countdown`, G§1.3).
+const COUNTDOWN_DIM: f64 = 0.65;
+
+impl Rgba {
+    /// `self` at `opacity` (its alpha × `opacity`, rounded to 8 bits).
+    fn at(self, opacity: f64) -> Rgba {
+        Rgba {
+            rgb: self.rgb,
+            alpha: (f64::from(self.alpha) * opacity).round() as u8,
+        }
+    }
 }
 
 impl Ground {
     fn color(self, t: &Tokens) -> Rgba {
+        let dimmed_white = || color(t, "video-scrim").at(COUNTDOWN_DIM).over(Rgba::WHITE);
         match self {
             Ground::Token(name) => opaque(t, name),
             Ground::Over(top, base) => color(t, top).over(opaque(t, base)),
             Ground::OverWhite(top) => color(t, top).over(Rgba::WHITE),
+            Ground::DimmedWhite => dimmed_white(),
+            Ground::OverDimmedWhite(top) => color(t, top).over(dimmed_white()),
         }
     }
 
@@ -167,6 +189,21 @@ impl Ground {
             Ground::Token(name) => name.to_owned(),
             Ground::Over(top, base) => format!("{top} over {base}"),
             Ground::OverWhite(top) => format!("{top} over white video"),
+            Ground::DimmedWhite => "the countdown's dim over white video".to_owned(),
+            Ground::OverDimmedWhite(top) => {
+                format!("{top} over the countdown's dim over white video")
+            }
+        }
+    }
+
+    /// The tokens it is made of.
+    fn tokens(self) -> Vec<&'static str> {
+        match self {
+            Ground::Token(name) => vec![name],
+            Ground::Over(top, base) => vec![top, base],
+            Ground::OverWhite(top) => vec![top],
+            Ground::DimmedWhite => vec!["video-scrim"],
+            Ground::OverDimmedWhite(top) => vec![top, "video-scrim"],
         }
     }
 }
@@ -210,7 +247,7 @@ const fn indicator(fg: &'static str, ground: Ground, what: &'static str) -> Pair
     }
 }
 
-use Ground::{Over, OverWhite, Token};
+use Ground::{Over, OverDimmedWhite, OverWhite, Token};
 
 /// Every pair: DESIGN's Contrast audit, row by row (its "min of" rows one
 /// pair per background), then the pairs DESIGN's Components draw that the
@@ -407,6 +444,53 @@ const PAIRS: &[Pair] = &[
         Token("field"),
         "an invalid field's stroke (Inputs)",
     ),
+    // ------------- C01's pressed state (G§0's M4 decision: AA + 0.05 in
+    // every state, pressed included). A pressed button adds `pressed` over
+    // its fill or its ground; a colored label turns `text` while pressed
+    // (common.css, chrome.css: `accent-text` and `record-text` fail under
+    // `pressed`, [`colored_labels_fail_under_pressed`]), and destructive
+    // flat buttons press to a `ghost-fill` ground (README known gap).
+    text(
+        "text",
+        Over("pressed", "bg"),
+        "a pressed button on the window ground (the transport)",
+    ),
+    text(
+        "text",
+        Over("pressed", "surface"),
+        "a pressed button on the chrome; Cancel's and the bin's labels, pressed",
+    ),
+    text(
+        "text",
+        Over("pressed", "raised"),
+        "a pressed button on raised; a toast action's label, pressed",
+    ),
+    text(
+        "text-on-accent",
+        Over("pressed", "accent"),
+        "a pressed primary button",
+    ),
+    text(
+        "text-on-record",
+        Over("pressed", "record"),
+        "a pressed Record or destructive button",
+    ),
+    text(
+        "text",
+        Over("ghost-fill", "surface"),
+        "a pressed destructive-flat button (Purge from disk, the bin)",
+    ),
+    text(
+        "text",
+        Over("ghost-fill", "raised"),
+        "a pressed destructive-flat button on raised",
+    ),
+    // --------------------------------- C07's digit (G§0's M4 decision)
+    text(
+        "video-text",
+        OverDimmedWhite("video-scrim"),
+        "the countdown's digit and its caption on their video-scrim plates over a white screen",
+    ),
 ];
 
 /// A pair the PO accepted under the margin (it must still pass AA).
@@ -481,6 +565,112 @@ fn every_pair_meets_aa_with_the_pos_margin_in_every_theme() {
         WAIVERS.len(),
         "every waiver names a pair: {waived:?}"
     );
+}
+
+/// Why a pressed button's colored label turns `text` (WP10's contrast
+/// audit, G§0's M4 decision): `accent-text` and `record-text` under
+/// `pressed` (a toast's actions on `raised`, the countdown's Cancel on
+/// `surface`) and `record-text` on a destructive flat button's pressed
+/// `ghost-fill` fall below AA + 0.05 in some theme. When the tokens change
+/// so that every one of them passes, this fails: the labels can keep their
+/// color pressed (drop the `:active` rules [`pressed_colored_labels_turn_text`]
+/// holds).
+#[test]
+fn colored_labels_fail_under_pressed() {
+    let cases = [
+        text("accent-text", Over("pressed", "raised"), "a toast's action"),
+        text(
+            "record-text",
+            Over("pressed", "surface"),
+            "the countdown's Cancel",
+        ),
+        text(
+            "record-text",
+            Over("ghost-fill", "surface"),
+            "Purge from disk (the bin)",
+        ),
+    ];
+    for pair in cases {
+        let ratios: Vec<(&str, f64)> = THEMES
+            .iter()
+            .map(|theme| (*theme, pair_ratio(&read_tokens(theme), &pair)))
+            .collect();
+        assert!(
+            ratios.iter().any(|(_, r)| *r < Need::Text.floor() + MARGIN),
+            "{} on {} ({}) passes in every theme now: {ratios:?}",
+            pair.fg,
+            pair.ground.describe(),
+            pair.what
+        );
+    }
+}
+
+/// The rules of `files` (comments dropped): each selector of a rule with
+/// its declarations.
+fn css_rules(files: &[&str]) -> Vec<(String, String)> {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/theme/components");
+    let mut rules = Vec::new();
+    for file in files {
+        let mut text = fs::read_to_string(dir.join(file)).expect("a stylesheet");
+        while let Some(start) = text.find("/*") {
+            let end = text[start..]
+                .find("*/")
+                .map_or(text.len(), |e| start + e + 2);
+            text.replace_range(start..end, "");
+        }
+        for block in text.split('}') {
+            let Some((selectors, body)) = block.split_once('{') else {
+                continue;
+            };
+            for selector in selectors.split(',') {
+                rules.push((selector.trim().to_owned(), body.trim().to_owned()));
+            }
+        }
+    }
+    rules
+}
+
+/// Pressed, the colored labels the audit can't pass turn `text`.
+#[test]
+fn pressed_colored_labels_turn_text() {
+    let rules = css_rules(&["common.css", "chrome.css"]);
+    for selector in [
+        ".qrec-toast button.qrec-btn.toast-action:active",
+        "button.qrec-btn.record.cancel:active",
+        "button.qrec-btn.destructive-flat:active",
+    ] {
+        let colors: Vec<&str> = rules
+            .iter()
+            .filter(|(s, _)| s == selector)
+            .flat_map(|(_, body)| body.split(';'))
+            .filter_map(|decl| decl.trim().strip_prefix("color:"))
+            .map(str::trim)
+            .collect();
+        assert_eq!(
+            colors,
+            ["var(--qrec-text)"],
+            "{selector} draws its label in `text`"
+        );
+    }
+}
+
+/// Why the countdown's digit has a plate (G§0's M4 decision): over the
+/// dim alone it reads 2.56:1 over a white screen (`video-text` on black at
+/// 40 % over white; WP10 read 2.53 at an exact 40 %). When it passes, the
+/// plate can go.
+#[test]
+fn the_countdown_digit_needs_its_plate() {
+    let tokens = read_tokens("swamp-night");
+    let alone = pair_ratio(
+        &tokens,
+        &text("video-text", Ground::DimmedWhite, "the digit on the dim"),
+    );
+    assert!(alone < 3.0, "the digit on the dim alone reads {alone:.2}");
+    let plated = pair_ratio(
+        &tokens,
+        &text("video-text", OverDimmedWhite("video-scrim"), "the digit"),
+    );
+    assert!(plated > 10.0, "on its plate: {plated:.2}");
 }
 
 /// The method reads DESIGN's audit: the Decisions table's binding pairs, to
@@ -599,12 +789,7 @@ fn every_pair_names_real_tokens() {
         let tokens = read_tokens(theme);
         for pair in PAIRS {
             assert!(tokens.contains_key(pair.fg), "{theme}: no {}", pair.fg);
-            let names: Vec<&str> = match pair.ground {
-                Token(name) => vec![name],
-                Over(top, base) => vec![top, base],
-                OverWhite(top) => vec![top],
-            };
-            for name in names {
+            for name in pair.ground.tokens() {
                 assert!(tokens.contains_key(name), "{theme}: no {name}");
             }
         }

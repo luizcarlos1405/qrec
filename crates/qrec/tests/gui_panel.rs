@@ -16,7 +16,7 @@
 
 mod gui_support;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
@@ -38,6 +38,14 @@ const AREA: &str = "wp5";
 const PANEL: [f64; 4] = [1216.0, 48.0, 384.0, 920.0];
 /// The design levels of the meters (S02).
 const DESIGN_LEVELS: &str = "alsa_input.fake=-22/-16,alsa_output.fake.monitor=-52/-48";
+/// The icons GTK's and libadwaita's own widgets look up for images Qrec
+/// never shows (G§5.2): the switches' (transparent, common.css) and the
+/// dropdown button's selected-item check (GTK hides it in the button).
+const GTK_HIDDEN_ICONS: [&str; 3] = [
+    "switch-on-symbolic",
+    "switch-off-symbolic",
+    "object-select-symbolic",
+];
 
 type Regions = BTreeMap<String, [f64; 4]>;
 
@@ -229,7 +237,9 @@ fn s02_the_panel_in_live_mode() {
     let mut nested = Nested::start(AREA, "s02", Options::default());
     let scale = nested.opts.scale;
     let project = fixture(&nested, DesignVariant::Base, &ui(|_| {}));
-    let gui = open(&mut nested, &project, levels(DESIGN_LEVELS));
+    // Every icon lookup in the window's log (below).
+    let launch = levels(DESIGN_LEVELS).with_env("GTK_DEBUG", "icontheme");
+    let gui = open(&mut nested, &project, launch);
     let regions = gui.regions(&[]);
     assert_regions(
         &regions,
@@ -328,6 +338,28 @@ fn s02_the_panel_in_live_mode() {
     let labels = wait_for_label(gui, "Screen FAKE-2");
     assert_has(&labels, &["3", "Screen · FAKE-2 · Dell U2720Q"]);
     assert_clean(nested.window(0));
+
+    // G§5.2: every icon the window looked up (`GTK_DEBUG=icontheme`'s
+    // "looking up icon <name> for scale <n>") is Qrec's, the Add layer
+    // menu's and its submenu's too, but the hidden ones of GTK's own
+    // widgets. The icons and art lane's lookup audit: the submenu's arrow
+    // and its back arrow were libadwaita's `go-next` and `go-previous`.
+    let log = std::fs::read_to_string(&nested.window(0).log).expect("the window's log");
+    let looked_up: BTreeSet<&str> = log
+        .lines()
+        .filter_map(|l| l.strip_prefix("looking up icon "))
+        .filter_map(|l| l.split(" for scale ").next())
+        .collect();
+    assert!(
+        looked_up.contains("qrec-plus-symbolic"),
+        "GTK_DEBUG=icontheme logged no lookup: {looked_up:?}"
+    );
+    let foreign: Vec<&str> = looked_up
+        .iter()
+        .copied()
+        .filter(|name| !name.starts_with("qrec-") && !GTK_HIDDEN_ICONS.contains(name))
+        .collect();
+    assert!(foreign.is_empty(), "icons that aren't Qrec's: {foreign:?}");
 }
 
 // ------------------------------------------------------------------ S06

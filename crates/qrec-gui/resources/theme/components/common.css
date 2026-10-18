@@ -72,10 +72,15 @@ button.qrec-btn.destructive-flat {
   color: var(--qrec-record-text);
 }
 
-/* README known gap: destructive-flat pressed is a `ghost-fill` ground. */
+/* README known gap: destructive-flat pressed is a `ghost-fill` ground. Its
+   label turns `text` while pressed: `record-text` on `ghost-fill` reads
+   4.04–4.49 in some themes, under the PO's AA + 0.05 (G§0's M4 decision;
+   R1's rule for a tinted ground; tests/contrast.rs). The toast actions and
+   the countdown's Cancel do the same (chrome.css). */
 button.qrec-btn.destructive-flat:active {
   background-image: none;
   background-color: var(--qrec-ghost-fill);
+  color: var(--qrec-text);
 }
 
 button.qrec-btn.sm {
@@ -248,20 +253,26 @@ checkbutton {
   border-spacing: 8px;
 }
 
+/* C20 Checkbox: a 16 px box; checked, the frames' 12 px `check` centered
+   in it (S01a's sources) in `text-on-accent`, not libadwaita's own asset.
+   GTK draws a check's icon over its whole content box, whatever
+   `-gtk-icon-size` says: the content is 12 px and 2 px of padding. */
 checkbutton > check {
-  min-width: 14px;
-  min-height: 14px;
-  padding: 0;
+  min-width: 12px;
+  min-height: 12px;
+  padding: 2px;
   border-radius: 4px;
   background-color: var(--qrec-field);
   background-image: none;
   box-shadow: inset 0 0 0 1px var(--qrec-border-strong);
   color: var(--qrec-text-on-accent);
+  -gtk-icon-size: 12px;
 }
 
 checkbutton > check:checked {
   background-color: var(--qrec-accent);
   box-shadow: none;
+  -gtk-icon-source: -gtk-icontheme("qrec-check-symbolic");
 }
 
 /* ------------------------------------------------------ C22 status chip */
@@ -348,6 +359,17 @@ popover.menu modelbutton:focus:focus-visible {
 popover.menu separator {
   margin: 4px 0;
   background-color: var(--qrec-border);
+}
+
+/* A submenu's arrow (Add layer's Screen ▸) and the submenu's back arrow:
+   no frame draws a submenu, so they are the transport's chevrons (G§5.2),
+   not libadwaita's `go-next` and `go-previous`. */
+popover.menu modelbutton arrow.right {
+  -gtk-icon-source: -gtk-icontheme("qrec-chevron-right-symbolic");
+}
+
+popover.menu modelbutton arrow.left {
+  -gtk-icon-source: -gtk-icontheme("qrec-chevron-left-symbolic");
 }
 
 /* -------------------------------------------------------- C26 slider */
@@ -564,6 +586,15 @@ dropdown > button {
 
 dropdown > button:hover {
   box-shadow: inset 0 0 0 1px var(--qrec-muted);
+}
+
+/* The frames' chevron (C29 Dropdown, S12, S18b: `chevron-down`, 16 px,
+   `muted`), not libadwaita's `pan-down-symbolic`. */
+dropdown > button arrow {
+  -gtk-icon-source: -gtk-icontheme("qrec-chevron-down-symbolic");
+  min-width: 16px;
+  min-height: 16px;
+  color: var(--qrec-muted);
 }
 
 dropdown popover listview > row:hover,

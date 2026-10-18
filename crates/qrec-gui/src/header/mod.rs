@@ -142,7 +142,7 @@ impl Header {
         export.widget().set_margin_end(12);
         end.append(&export.widget());
         let commands = button::icon(
-            "edit-find-symbolic",
+            "qrec-search-symbolic",
             "Commands",
             Some("palette.open"),
             &keymap,
@@ -154,11 +154,8 @@ impl Header {
             keys.run_binding("palette.open")
         }));
         end.append(&commands);
-        // A gear, as drawn (G§1.3 named preferences-system-symbolic, which
-        // Adwaita 50 draws as tools; applications-system-symbolic is its
-        // gear).
         let settings = button::icon(
-            "applications-system-symbolic",
+            "qrec-settings-symbolic",
             "Settings",
             Some("settings.open"),
             &keymap,

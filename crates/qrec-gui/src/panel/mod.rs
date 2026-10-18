@@ -119,7 +119,7 @@ impl LocalBits {
 fn add_button(ctx: &Ctx, text: &str, menu: &Menu, name: &str) -> gtk::MenuButton {
     let button = menus::menu_button(menu, &["flat", "add-button"], text);
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    content.append(&gtk::Image::from_icon_name("list-add-symbolic"));
+    content.append(&gtk::Image::from_icon_name("qrec-plus-symbolic"));
     content.append(&gtk::Label::new(Some(text)));
     button.set_child(Some(&content));
     button.set_halign(gtk::Align::Start);

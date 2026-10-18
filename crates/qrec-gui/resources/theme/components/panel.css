@@ -20,8 +20,11 @@
   padding: 0 8px 0 16px;
 }
 
-.qrec-panel .panel-header button.panel-add-icon image {
-  -gtk-icon-size: 16px;
+/* The 32 px header buttons draw 20 px icons, as the frames do: Add layer's
+   `plus`, the autocut page's Back `chevron-left` (S02, S12). */
+.qrec-panel .panel-header button.panel-add-icon image,
+.qrec-panel button#autocut-back image {
+  -gtk-icon-size: 20px;
 }
 
 .qrec-panel .panel-column {
@@ -251,10 +254,6 @@
 .qrec-panel .audio-row .device-missing {
   margin-top: 6px;
   min-height: 16px;
-}
-
-.qrec-panel .audio-row .device-missing image {
-  -gtk-icon-size: 12px;
 }
 
 .qrec-panel .audio-row .audio-line3 {

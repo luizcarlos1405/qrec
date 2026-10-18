@@ -112,8 +112,8 @@ fn lane_header(store: &Store, header: &LaneHeader, height: i32) -> gtk::Box {
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     line.add_css_class("tl-lane-line");
     let role = gtk::Image::from_icon_name(match lane.role {
-        AudioRole::Mic => "audio-input-microphone-symbolic",
-        AudioRole::System => "audio-speakers-symbolic",
+        AudioRole::Mic => "qrec-mic-symbolic",
+        AudioRole::System => "qrec-volume-2-symbolic",
     });
     line.append(&role);
     let label = gtk::Label::new(Some(&lane.label));
@@ -131,7 +131,7 @@ fn lane_header(store: &Store, header: &LaneHeader, height: i32) -> gtk::Box {
     tools.add_css_class("tl-lane-tools");
     tools.set_vexpand(true);
     tools.set_valign(gtk::Align::End);
-    let scissors = gtk::Image::from_icon_name("edit-cut-symbolic");
+    let scissors = gtk::Image::from_icon_name("qrec-scissors-symbolic");
     scissors.add_css_class("tl-scissors");
     scissors.set_opacity(if lane.autocut { 1.0 } else { 0.0 });
     if lane.autocut {

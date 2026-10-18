@@ -329,7 +329,7 @@ impl AudioRowView {
         tag.add_css_class("autocut-tag");
         tag.set_valign(gtk::Align::Center);
         tag.set_widget_name(&format!("audio-tag-{track}"));
-        tag.append(&gtk::Image::from_icon_name("edit-cut-symbolic"));
+        tag.append(&gtk::Image::from_icon_name("qrec-scissors-symbolic"));
         let tag_label = gtk::Label::new(Some("Autocut"));
         tag_label.add_css_class("t-caption");
         tag.append(&tag_label);
@@ -342,7 +342,7 @@ impl AudioRowView {
         mute.set_widget_name(&format!("audio-mute-{track}"));
         let menu = Menu::new();
         let menu_button = menus::menu_button(&menu, &["flat", "icon-24"], "More");
-        menu_button.set_icon_name("view-more-symbolic");
+        menu_button.set_icon_name("qrec-ellipsis-vertical-symbolic");
         menu_button.set_valign(gtk::Align::Center);
         menu_button.set_widget_name(&format!("audio-menu-{track}"));
         let refresh = {
@@ -357,21 +357,19 @@ impl AudioRowView {
         line1.append(&spacer);
         line1.append(&mute);
         line1.append(&menu_button);
-        // Line 2: the meter, or why there is none.
+        // Line 2: the meter, or why there is none (C10's device missing:
+        // the note alone, the warning in the role icon's place).
         let meter = Meter::new(&ctx.media, &ctx.theme, "");
         meter.widget().add_css_class("audio-meter");
         meter
             .widget()
             .set_widget_name(&format!("audio-meter-{track}"));
-        let missing = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let missing = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         missing.add_css_class("device-missing");
-        let warning = gtk::Image::from_icon_name("dialog-warning-symbolic");
-        warning.add_css_class("warning-text");
         let missing_text = gtk::Label::new(None);
         missing_text.add_css_class("t-caption");
         missing_text.set_xalign(0.0);
         missing_text.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        missing.append(&warning);
         missing.append(&missing_text);
         missing.set_visible(false);
         // Line 3.
@@ -474,10 +472,18 @@ impl AudioRowView {
             return;
         }
         *self.model.borrow_mut() = Some(row.clone());
-        self.icon.set_icon_name(Some(match row.role {
-            AudioRole::Mic => "audio-input-microphone-symbolic",
-            AudioRole::System => "audio-speakers-symbolic",
-        }));
+        // A missing device's warning stands in the role icon's place (C10).
+        self.icon
+            .set_icon_name(Some(match (&row.device_missing, row.role) {
+                (Some(_), _) => "qrec-triangle-alert-symbolic",
+                (None, AudioRole::Mic) => "qrec-mic-symbolic",
+                (None, AudioRole::System) => "qrec-volume-2-symbolic",
+            }));
+        if row.device_missing.is_some() {
+            self.icon.add_css_class("warning-text");
+        } else {
+            self.icon.remove_css_class("warning-text");
+        }
         if !self.name.is_editing() && self.name.text() != row.label {
             self.name.set_text(&row.label);
         }

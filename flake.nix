@@ -88,9 +88,11 @@
           cp ${./crates/qrec-gui/resources/fonts}/OFL-*.txt $out/share/licenses/qrec-fonts/
         '';
 
-      # What the window needs at runtime besides GTK: icon themes and the
+      # What the window needs at runtime besides GTK: icon themes (GTK's and
+      # libadwaita's own icons; Qrec's are in its GResource) and the
       # GSettings schemas (wrapGAppsHook4 puts them on XDG_DATA_DIRS for the
-      # package), and librsvg (SVG icons; rsvg-convert for the art PNGs).
+      # package), and librsvg (SVG icons through gdk-pixbuf; rsvg-convert for
+      # tests/art.rs in the dev shell).
       guiData =
         pkgs: with pkgs; [
           adwaita-icon-theme
@@ -179,7 +181,6 @@
             wrapGAppsHook4
             makeWrapper
             glib # glib-compile-resources (qrec-gui's build.rs)
-            librsvg # rsvg-convert (icon PNGs)
             desktop-file-utils # desktop-file-validate
           ];
           buildInputs = (linkLibs pkgs) ++ (guiData pkgs);
@@ -189,9 +190,9 @@
           # Runs before wrapGAppsHook captures the plugin path.
           preBuild = filterGstPluginPath;
           # The GUI's fonts next to the binary (<exe>/../share/qrec/fonts)
-          # and their licenses; the desktop entry and the hicolor icons
-          # (G§6.4: data/install.sh, the PNGs rendered by rsvg-convert; the
-          # app icon is the theme's placeholder art until the pen export).
+          # and their licenses; the desktop entry, the hicolor icons and the
+          # icons' license (G§6.4: data/install.sh; the app icon is the pen's,
+          # its SVG and its own PNG renders in data/icons/).
           postInstall = ''
             mkdir -p $out/share
             cp -r ${qrecFonts pkgs}/share/qrec $out/share/
@@ -199,9 +200,10 @@
             sh data/install.sh $out
             desktop-file-validate $out/share/applications/com.rsensato.qrec.desktop
           '';
-          # The runtime tools, and the icon themes (G§5.2 uses Adwaita's
-          # symbolic icons): wrapGAppsHook4 puts the GSettings schemas on
-          # XDG_DATA_DIRS but not the icon themes.
+          # The runtime tools, and the icon themes (GTK's and libadwaita's
+          # own icons, the app icon's hicolor; Qrec's symbolic icons are in
+          # its GResource, G§5.2): wrapGAppsHook4 puts the GSettings schemas
+          # on XDG_DATA_DIRS but not the icon themes.
           preFixup = ''
             gappsWrapperArgs+=(--prefix PATH : ${pkgs.lib.makeBinPath (runtimeTools pkgs)})
             gappsWrapperArgs+=(--prefix XDG_DATA_DIRS : ${pkgs.adwaita-icon-theme}/share:${pkgs.hicolor-icon-theme}/share)

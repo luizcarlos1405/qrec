@@ -197,10 +197,10 @@ impl FirstRun {
         check.set_active(row.checked);
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let icon = match row.kind {
-            SourceKind::Screen => "video-display-symbolic",
-            SourceKind::Camera => "camera-web-symbolic",
-            SourceKind::Mic => "audio-input-microphone-symbolic",
-            SourceKind::SystemAudio => "audio-speakers-symbolic",
+            SourceKind::Screen => "qrec-monitor-symbolic",
+            SourceKind::Camera => "qrec-webcam-symbolic",
+            SourceKind::Mic => "qrec-mic-symbolic",
+            SourceKind::SystemAudio => "qrec-volume-2-symbolic",
         };
         content.append(&gtk::Image::from_icon_name(icon));
         let label = gtk::Label::new(Some(&row.label));

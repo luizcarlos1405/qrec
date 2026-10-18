@@ -391,7 +391,7 @@ impl DonePage {
         root.add_css_class("export-page");
         root.set_widget_name("export-done");
         root.append(&status_title(
-            "qrec-success-symbolic",
+            "qrec-circle-check-symbolic",
             "success-text",
             "Export finished",
         ));
@@ -460,7 +460,7 @@ impl FailedPage {
         root.add_css_class("export-page");
         root.set_widget_name("export-failed");
         root.append(&status_title(
-            "dialog-error-symbolic",
+            "qrec-circle-x-symbolic",
             "record-text",
             "Export failed",
         ));
