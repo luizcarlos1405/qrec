@@ -20,7 +20,8 @@
 //! through `qrec_shell::keys_file` (one line of `keys.toml`, comments and
 //! order kept, an atomic write; G§3.12 R8) on `qrec-gui-io`, and the
 //! window takes the keymap it gives at once (`Store::set_keymap`: the key
-//! router, the hint bar, every cap). Losing the focus ends a capture.
+//! router, the hint bar, every cap). Losing the focus ends a capture; when
+//! one ends or an edit lands, the row's Change shortcut has the keyboard.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -160,6 +161,7 @@ impl KeyboardPage {
             scroller,
             footer,
             capturing: RefCell::new(None),
+            refocus: RefCell::new(None),
             capture: RefCell::new(None),
             built: Cell::new(false),
         });
@@ -201,6 +203,9 @@ struct Parts {
     footer: Footer,
     /// The binding waiting for its new key.
     capturing: RefCell<Option<String>>,
+    /// The binding whose Change shortcut takes the keyboard at the next
+    /// refresh (a capture ended, an edit landed: the focus stays put).
+    refocus: RefCell<Option<String>>,
     /// The capture widget while one runs.
     capture: RefCell<Option<gtk::Box>>,
     built: Cell<bool>,
@@ -249,6 +254,15 @@ impl Parts {
             && let Some(root) = capture.root()
         {
             root.set_focus(Some(&capture));
+        } else if let Some(id) = self.refocus.borrow_mut().take() {
+            // The root's too: the rebuilt row isn't mapped yet, and the
+            // focus GTK moves off the row it dropped would win over a grab.
+            let list: gtk::Widget = self.list.clone().upcast();
+            if let Some(change) = crate::window::find_named(&list, &format!("keys-change-{id}"))
+                && let Some(root) = change.root()
+            {
+                root.set_focus(Some(&change));
+            }
         }
     }
 
@@ -467,7 +481,9 @@ impl Parts {
     }
 
     fn end_capture(self: &Rc<Self>) {
-        if self.capturing.borrow_mut().take().is_some() {
+        let ended = self.capturing.borrow_mut().take();
+        if let Some(id) = ended {
+            *self.refocus.borrow_mut() = Some(id);
             self.refresh();
         }
     }
@@ -478,6 +494,7 @@ impl Parts {
     fn edit(self: &Rc<Self>, id: &str, keys: Option<Vec<KeyChord>>) {
         let path = super::user_files().keys;
         let id_owned = id.to_owned();
+        let refocus = id.to_owned();
         tracing::info!("settings: keys.toml {id} = {keys:?}");
         let weak = Rc::downgrade(self);
         self.ctx.media.run_io_then(
@@ -496,6 +513,7 @@ impl Parts {
                     return;
                 };
                 *parts.capturing.borrow_mut() = None;
+                *parts.refocus.borrow_mut() = Some(refocus);
                 match result {
                     Ok((keymap, problems)) => {
                         parts.footer.show_error(None);

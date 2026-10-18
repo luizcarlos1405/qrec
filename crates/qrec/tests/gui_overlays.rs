@@ -883,6 +883,12 @@ fn s22_keyboard_conflicts_captures_and_edits() {
         (!shows(&mut nested, "keys-capture")).then_some(())
     });
     assert_eq!(overlays(&mut nested), [settings_overlay("keyboard")]);
+    // The keyboard is back on the row's Change shortcut.
+    let local = nested.window(0).local();
+    assert_eq!(
+        local["focusPath"][0], "keys-change-snapping.toggle",
+        "{local}"
+    );
     // Backspace unbinds.
     click(&mut nested, "keys-change-snapping.toggle");
     poll(Duration::from_secs(10), "the capture", || {
