@@ -3882,11 +3882,13 @@ signpost (720, 120, 160, 160), title (480, 296, 640, 38), checks box (480,
 968), well (564, 485, 472, 44) and REC badge (572, 493, 68, 28), the
 minimal header under the scrim #141910 as the frame's; X2's two-line
 title (480, 296, 640, 76, broken where the frame's breaks), folder row
-(480, 432, 640, 56), note (480, 496) and Quit (770, 536, 60, 40); X3's
-title (480, 296, 640, 30), validation box (480, 386, 640, 86), restore
-(480, 496, 640, 92), command well (480, 524, 477, 40), Copy command (965,
-524, 155, 40) and Quit (770, 612). Visible departures, measured on those
-shots against the frames at full size:
+(480, 432, 640, 56), note (480, 496) and Quit (770, 536, 59, 40 for 60);
+X3's title (480, 296, 640, 30), validation box (480, 386, 640, 87 for
+86: its lines a pixel lower, the explanation's ink from y 448 for 447),
+so the restore (480, 497, 640, 92), its command well (480, 525, 477, 40),
+Copy command (965, 525, 155, 40) and Quit (770, 613, 59, 40) a pixel
+lower than the frame's. Visible departures, measured on those shots
+against the frames at full size:
 
 - Everywhere (WP8): until the icons lane merges, the Lucide icons the
   pages name (`qrec-circle-x`, `-triangle-alert`, `-circle-check`,
