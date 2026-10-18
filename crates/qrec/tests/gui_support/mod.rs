@@ -35,6 +35,11 @@
 //!   Every tool run (grim, wtype, swaymsg, the CLI) has a deadline.
 //! - Checks: [`assert_regions`] (BRIEF §2.1's rects, ±1 px), the `a11y`
 //!   walk (launch with `a11y: true`, `GTK_A11Y=test`).
+//! - Parallel runs ([`slot`]): cases run side by side (`--test-threads`
+//!   above 1, every suite at once under `cargo nextest`), each in its own
+//!   env, compositor, bus, sockets and projects, writing only
+//!   `<shots>/<case>-…` (a second running case of the same name fails). A
+//!   timing-sensitive case says [`Options::exclusive`] and runs alone.
 //!
 //! The `qrec` binary is the one Cargo built for this test package
 //! (`CARGO_BIN_EXE_qrec`); without it the harness panics, never falling
@@ -43,6 +48,7 @@
 #![allow(dead_code)]
 
 pub mod pointer;
+pub mod slot;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -154,6 +160,8 @@ pub struct Options {
     /// The output's scale (`QREC_TEST_SCALE`, default 1).
     pub scale: f64,
     pub renderer: Renderer,
+    /// Why the case runs alone, if it does ([`Options::exclusive`]).
+    pub exclusive: Option<&'static str>,
 }
 
 /// `QREC_TEST_SCALE` (default 1).
@@ -212,7 +220,19 @@ impl Options {
             height: (f64::from(height) * scale).round() as u32,
             scale,
             renderer: Renderer::from_env(),
+            exclusive: None,
         }
+    }
+
+    /// The case runs alone in a parallel run ([`slot`]): it waits for the
+    /// running cases to end and none starts until it has. For the
+    /// timing-sensitive cases, `why` says how: a probe of the window's own
+    /// timing (frame times, main-loop stalls), a bound on how fast the
+    /// window reacts, a key held for a fixed window of time, a program that
+    /// plays in real time while the case reads its position.
+    pub fn exclusive(mut self, why: &'static str) -> Self {
+        self.exclusive = Some(why);
+        self
     }
 
     /// The output's size in logical px.
@@ -339,11 +359,24 @@ pub struct Nested {
     /// The projects the case launched or ran the CLI on (their logs are
     /// kept when it ends).
     projects: RefCell<BTreeSet<PathBuf>>,
+    /// The case's shots and logs, its own while it runs.
+    _claim: slot::Claim,
+    /// Its place in a parallel run, given back last: once the windows,
+    /// sway, the bus and the env are gone.
+    _slot: slot::Slot,
 }
 
 impl Nested {
-    /// Starts sway for case `case` of `area` (`wp0b`, …).
+    /// Starts sway for case `case` of `area` (`wp0b`, …), once the case
+    /// may run ([`Options::exclusive`]).
     pub fn start(area: &str, case: &str, opts: Options) -> Nested {
+        let shots = shots_dir(area);
+        let claim = slot::Claim::take(&slot::slot_dir(), &shots, case);
+        let sharing = match opts.exclusive {
+            Some(_) => slot::Sharing::Exclusive,
+            None => slot::Sharing::Shared,
+        };
+        let slot = slot::Slot::take(&slot::slot_dir(), sharing, case, slot::SLOT_WAIT);
         let env = TestEnv::new();
         let runtime = env.xdg_runtime_dir();
         // Never the developer's session (G§8.4): a private runtime dir, never
@@ -360,7 +393,6 @@ impl Nested {
                 "the nested compositor must not share the user's runtime dir"
             );
         }
-        let shots = shots_dir(area);
         fs::create_dir_all(shots.join("logs")).expect("create the shots folder");
         let log = |what: &str| shots.join("logs").join(format!("{case}-{what}.log"));
 
@@ -480,6 +512,8 @@ impl Nested {
             shots,
             case: case.to_owned(),
             projects: RefCell::new(BTreeSet::new()),
+            _claim: claim,
+            _slot: slot,
         }
     }
 
