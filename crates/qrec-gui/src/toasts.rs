@@ -168,6 +168,29 @@ pub fn gui_action(action: &NoticeAction) -> Option<&'static str> {
     }
 }
 
+/// The binding whose key a toast's action shows after its label (S25, a
+/// medium cap as on every button, D-21): the key that does the same.
+/// Undo is `history.undo` (#5, #6), Show export `export` (#9), Try again
+/// the record key (#11; S24's hint bar says "[R] Try again"). The others
+/// have no key of their own (Open bin's `b` toggles the bin; S25 draws
+/// none).
+pub fn action_binding(action: &NoticeAction) -> Option<&'static str> {
+    match action {
+        NoticeAction::ShowExport => Some("export"),
+        NoticeAction::Core(a) => match &a.action {
+            UiAction::Dispatch(cmd) => match **cmd {
+                Command::Undo { .. } => Some("history.undo"),
+                Command::RecordStart { .. } => Some("record.toggle"),
+                _ => None,
+            },
+            _ => None,
+        },
+        NoticeAction::OpenBin | NoticeAction::OpenSettings(_) | NoticeAction::RetrySource(_) => {
+            None
+        }
+    }
+}
+
 /// The body is a path a toast action names (`exports/….mp4 · 88.4 MB`,
 /// `frames/….png`): it reads in the mono face (S16b).
 pub fn body_is_path(notice: &Notice) -> bool {
@@ -510,8 +533,13 @@ impl Host {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
             row.add_css_class("toast-actions");
             for (n, action) in shown.iter().enumerate() {
-                let button =
-                    button::labeled(action.label(), None, None, &keymap, button::Kind::Flat);
+                let button = button::labeled(
+                    action.label(),
+                    None,
+                    action_binding(action),
+                    &keymap,
+                    button::Kind::Flat,
+                );
                 button.set_widget_name(&format!("toast-action-{n}"));
                 button.add_css_class("accent-text");
                 button.add_css_class("toast-action");
@@ -728,6 +756,43 @@ mod tests {
             label: "Open file".into(),
             action: UiAction::OpenPath(path.into()),
         })
+    }
+
+    /// S25's actions show the key that does the same (D-21): Undo
+    /// `[Ctrl][Z]` (#5, #6), Show export `[Ctrl][E]` (#9), Try again `[R]`
+    /// (#11, S24); the others none (Open bin, Open file, Copy details).
+    #[test]
+    fn actions_show_their_keys_as_s25_draws_them() {
+        assert_eq!(action_binding(&undo()), Some("history.undo"));
+        assert_eq!(action_binding(&NoticeAction::ShowExport), Some("export"));
+        let retry = NoticeAction::Core(ToastAction {
+            label: "Try again".into(),
+            action: UiAction::Dispatch(Box::new(Command::RecordStart {
+                mode: qrec_core::protocol::command::RecordModeArg::Append,
+                countdown: None,
+                wait: false,
+            })),
+        });
+        assert_eq!(action_binding(&retry), Some("record.toggle"));
+        assert_eq!(
+            action_binding(&NoticeAction::RetrySource("DP-4".into())),
+            None,
+            "S24's canvas Try again retries the screen, which no key does"
+        );
+        for none in [
+            open("/x.mp4"),
+            NoticeAction::OpenBin,
+            NoticeAction::Core(ToastAction {
+                label: "Open bin".into(),
+                action: qrec_core::on_event::toasts::open_bin(),
+            }),
+            NoticeAction::Core(ToastAction {
+                label: "Copy details".into(),
+                action: UiAction::CopyText("why".into()),
+            }),
+        ] {
+            assert_eq!(action_binding(&none), None, "{none:?}");
+        }
     }
 
     /// DESIGN's 360–560 at the UI scale, and a body of one paragraph (its
