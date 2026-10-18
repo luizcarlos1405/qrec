@@ -93,7 +93,8 @@ The draft frames, the icons and the art were exported the same day
      Quit), X1 ("A take is being recorded from the CLI.", Stop & open,
      Quit), the export wait, X2, X3, a project held by another window, a
      holder that doesn't respond, and GStreamer stuck. They are part of
-     the G§0.2 review.
+     the G§0.2 review. WP8 replaced every one of them with the drafted
+     pages; the folder and the host failing keep their interim page.
    - Until S24 is approved, a refused screen shows the approved S13b row
      error ("Access denied by the desktop portal"), the core toast, and
      the Live picture without that layer.
@@ -204,7 +205,7 @@ requirement review's numbering; H-n are host and engine calls.
 | D-26 | Shuttle speed shows after the transport total: `· 2×`, `· −4×` (`mono` `muted`, true minus). | WP4 |
 | D-27 | Program canvas on an empty timeline: the canvas background and the PROGRAM badge only. S01a comes back whenever the project scene is empty (Live mode). | WP4 |
 | D-28 | No splitters: fixed regions and breakpoints (DESIGN Layout). | WP0b |
-| D-29 | GUI-start variants not drawn. Export running: "An export from the CLI is running." with "exports/<name> · 43 %", Wait (primary) and Quit. Idle host: silent `shutdown`; the caption "Opening…" after 1 s. Stop & open: the button's loading state "Stopping…". Interim pages in WP0b; drafted look in WP8 (gated). | WP0b, WP8 |
+| D-29 | GUI-start variants not drawn. Export running: "An export from the CLI is running." with "exports/<name> · 43 %", Wait (primary) and Quit. Idle host: silent `shutdown`; the caption "Opening…" after 1 s. Stop & open: the button's loading state "Stopping…". Interim pages in WP0b; WP8 built the export wait in X1's modal (the well: the output, "43%" as S15b writes it, the header slot's mini mud bar; Quit focused as X1's, Wait loading "Waiting…"); the idle host has no page, the stage's "Opening <name>…" (G§3.3). | WP0b, WP8 |
 | D-30 | **PO** Reduced motion = config `ui.reduced_motion` OR the system (`gtk-interface-reduced-motion = reduce`, or `gtk-enable-animations = false`). Under `QREC_GUI_TEST` only the config counts (G§8.4). S21's caption (gated) becomes "Also on when your system asks for less motion." | WP0b, WP9 |
 | D-31 | Palette labels and CLI forms follow S19/S20/S22 only after G§0.2. Until then the core keymap labels stay, so `qrec keys` and the agent guide don't change. | WP9 |
 | D-32 | Layer drags in Program mode move the selection box and the readout; the video updates on release (one `LayerSet`). Live drags move the video too, through `LiveControl::transient_layout` (G§3.9). | WP4 |
@@ -474,7 +475,8 @@ take.)
 | unresponsive | "The Qrec process holding this project isn't responding" (pid, kind, since) + Quit, exit 6 |
 
 WP0a implements the four functions completely; WP0b's interim pages drive
-every row; WP8 restyles the pages per X1 and D-29 once approved.
+every row; WP8 drew the pages as X1 and D-29 (G§4.11; `gui_blocking`), the
+flows unchanged.
 
 ### G§3.5 State delivery to GTK
 
@@ -3090,11 +3092,40 @@ otherwise an info toast titled with the reason.
   recorded from the CLI." + "Take 11 started from the terminal 00:01:12
   ago. Stop it to open the project here. Quit leaves it recording."; the
   D-29 export wait; D-13; not responding; GStreamer stuck).
-- After G§0.2 (WP8): S23 rows from the doctor checks (`CheckView { id,
-  required, ok, detail, hint }`; item and what-it-does copy by check id
-  per BRIEF S23; other ids: the id and its detail; "✓ 14 other checks
-  passed"); X1 lines with the live timer; the D-29 lines; X2 and X3 as
-  drawn.
+- After G§0.2 (WP8, built): the drafted pages, each with its hint bar
+  (`hints(kind) -> BlockingHints`, `HintState::Blocking { page }`: S23
+  `[Enter] Check again`, X3 `[Enter] Copy command`, X1's modal `[Tab]
+  Move focus · [Enter] Activate focused button · [Esc] Quit`, the rest
+  `[Ctrl][Q] Quit`) and buttons (`PageButton { label, action: Flow(..) |
+  CopyReport | CopyCommand, kind, focused, busy }`):
+  - `missing_deps(&[CheckView]) -> MissingDepsPage`: a row per failed
+    check (`CheckView { id, required, ok, detail, hint }`, the GUI's copy
+    of `doctor::Check` from `LocalUi.doctor`), the required ones first,
+    each group in the doctor's order; BRIEF S23's item, what-it-does,
+    command and note for `gst.gtk4paintablesink`, `portal.screencast` and
+    `ffmpeg.libsvtav1`; other ids: the id (mono), the doctor's detail and
+    its hint as the note; an optional failure warns (⚠, the Optional
+    chip); the others behind "N other checks passed"; Check again
+    (focused), Copy report, Quit (flat). `gst_stuck()`: its shape with
+    GStreamer's row and Quit alone.
+  - `cli_recording(take, elapsed_secs, stopping, project) -> ModalPage`:
+    the title, the lead ("Take 11 started from the terminal 00:01:12
+    ago."), the body, the well (`Well::Recording`: the take, the project,
+    the time), Quit (secondary, focused as drawn) and Stop & open
+    (primary; "Stopping…", busy). `export_wait(name, percent, waiting)`:
+    the same modal for D-29 ("It's 43% done.", `Well::Export`, Wait).
+  - `not_my_swamp(dir, inside) -> FolderPage` (the folder's row, D-14's
+    line, the hidden-files note, Quit focused); `held_by_window(pid,
+    project)` and `not_responding(pid, kind, since, project)` in its
+    shape (the project's row says what holds it).
+  - `unreadable(error, file) -> UnreadablePage`: the validation box (the
+    file, the first error's JSON Pointer from `details.issues`, its
+    message as a sentence with takes named "take 3", "N more problems.";
+    a parse error's detail and what it means), the restore (the line, the
+    command from the hint, "Entry N is the last good state."), or advice
+    without a history; the missing file without the box, "Rebuild it from
+    the history:".
+  The folder and the host failing keep `interim`.
 - After G§0.2 (WP9): `view::palette` (rows from `keymap::palette` +
   `history.clear`; fuzzy match: subsequence, bonuses for consecutive
   characters and word starts, ties keep the table order, matched indices
@@ -3124,7 +3155,7 @@ below; read them with `Get` while `design/qrec.pen` is active).
 | C01 Spinner | `U574U` | `widgets::Spinner` (one 270° arc, 1 turn/s; 16/14/12 px) | WP0b |
 | C02 Key cap | `siZBm`, `vBUAG`, `G9zt10`, `CIRyG`, `RpGdo`, `NtDyY`, `TC7rA` | `widgets::KeyCap` (`gtk::Label`, CSS name `keycap`, not focusable or targetable; sm/md/lg, on-fill, disabled, rebound, capture, conflict). CSS `min-width` applies to the content box: subtract padding and border | WP0b |
 | C03 Hint bar | `g8llw` | `HintBar` from `view::hints` | WP6 |
-| C04 Header | `cnIdP` + variants, `Xba2H` minimal | `adw::HeaderBar` + custom title; Export slot is a `gtk::Stack` (button / progress); `headerbar.recording { box-shadow: inset 0 -2px var(--qrec-record), inset 0 -1px var(--qrec-border) }` (the hairline over the line's last row) | WP6 (minimal: WP0b) |
+| C04 Header | `cnIdP` + variants, `Xba2H` minimal | `adw::HeaderBar` + custom title; Export slot is a `gtk::Stack` (button / progress); `headerbar.recording { box-shadow: inset 0 -2px var(--qrec-record), inset 0 -1px var(--qrec-border) }` (the hairline over the line's last row); the minimal one (`minimal-header`, the blocking pages'): the 24 px app icon at x 12, the wordmark at x 44, close at x 1560, no title (WP8) | WP6 (minimal: WP0b, WP8) |
 | C05 Mode switch | `UUcbL` | `adw::ToggleGroup` (icons + labels) + the Tab key cap | WP6 |
 | C06 Badges, REC cluster, Saving | `D4pSZ`, `DlEnG`, `oHR8h`, `KwxRc`, `h5PLfO`, `hyWmc` | boxes in the stage overlay; the torch from `motion::now()` (G§3.14); timer label on the frame clock | WP4 |
 | C07 Countdown | `sTIwH`, `HPxd8`, `Q6JiWV` | `CountdownOverlay` (snapshot: `gsk::PathBuilder` arc, `gsk::Stroke` 6 px; Pango digit) | WP4 |
@@ -3418,6 +3449,7 @@ Two lanes, one compiling worktree each:
 | S16b | WP6 | WP1–WP7 (WP7 changes its copy) |
 | widths 1300 and 1000, height 800, scale 1.5 and 2, reduced motion | each region's WP | WP1–WP7 |
 | theme proofs: S02, S06 in every theme; S18, S25 in Swamp Day and Night; the narrow sheet (BRIEF §7; boards, no frames) | WP10 (themes lane) | WP1–WP7, WP10 |
+| S23, S23 stuck, X1, D-29 export wait and idle host, X2, X3, D-13, not responding (`gui_blocking`) | WP8 | WP8 and the icons and art lane (their icons, the signpost and the app icon) |
 
 For each case whose final set just completed, the integrator runs `cargo
 test -p qrec --test gui_<area> -- --ignored --test-threads=1`, lists the
@@ -3839,6 +3871,105 @@ size (pixman's numbers; gles2's the same where not named;
   break: WP6's `toasts.rs`); the Frame saved toast names the absolute
   `/tmp/…/frames/…png` where BRIEF's S25 #4 shows `frames/…` (the shell's
   FrameSaved carries the absolute path).
+
+WP8's pages (the WP8 lane on 5a16849, before the icons and art lane's
+merge; `gui_blocking`, 9 cases on pixman, each shot next to its frame in
+`tmp/gui-shots/wp8/`, the undrawn pages next to the frame of their
+shape). Every region the cases check is the frame's within a pixel: S23's
+signpost (720, 120, 160, 160), title (480, 296, 640, 38), checks box (480,
+432, 640, 260: three 72 px rows and the 44 px disclosure) and actions
+(656, 716, 287, 40); X1's modal (540, 351, 520, 266), scrim (0, 0, 1600,
+968), well (564, 485, 472, 44) and REC badge (572, 493, 68, 28), the
+minimal header under the scrim #141910 as the frame's; X2's two-line
+title (480, 296, 640, 76, broken where the frame's breaks), folder row
+(480, 432, 640, 56), note (480, 496) and Quit (770, 536, 60, 40); X3's
+title (480, 296, 640, 30), validation box (480, 386, 640, 86), restore
+(480, 496, 640, 92), command well (480, 524, 477, 40), Copy command (965,
+524, 155, 40) and Quit (770, 612). Visible departures, measured on those
+shots against the frames at full size:
+
+- Everywhere (WP8): until the icons lane merges, the Lucide icons the
+  pages name (`qrec-circle-x`, `-triangle-alert`, `-circle-check`,
+  `-chevron-right`, `-chevron-down`, `-copy`, `-folder`, `-folder-open`,
+  `-download`) show GTK's missing-image placeholder, and until the art
+  lane merges the signpost and the header's app icon are the art
+  loader's placeholders; the minimal header's close is the shared
+  `close_window` (Adwaita's `window-close-symbolic`, 8 px of ink where
+  the frames' x has 12). The test env's folders are under `/tmp`
+  (`/tmp/qrec-test-…/projects/…`) where the frames show `~/…` (their
+  `HOME` isn't an ancestor; the pages write `~` when it is).
+- Everywhere: the texts' widths follow G§3.14's whole-pixel advances
+  (kept): the Fraunces titles run 6–13 px narrower (S23's 490 px of ink
+  for 503, X2's lines 623 and 238 for 636 and 244, X3's 249 for 255,
+  X1's 428 for 434), the Atkinson body lines 4–14 px wider (S23's 254 for
+  245 and its "Run … report." 333 for 329, X2's and X3's bodies +14, X1's
+  +13, X3's "Restore the last good state from history:" +6); buttons,
+  chips and mono labels sit at the frames' x within a pixel; X1's Quit is
+  59 px for 60 and Stop & open 111 for 112, so Quit's label sits 2 px
+  right; X3's Quit 59 for 60.
+- S23: the rows are the test machine's failures, not the frame's (no test
+  env can lose gtk4paintablesink without a new GStreamer registry scan):
+  `ffmpeg.libx264` (✕, the id and the doctor's words: "ffmpeg has no
+  libx264 encoder (MP4 exports)", the hint as the note, no command box),
+  `libsvtav1 in ffmpeg` and the ScreenCast portal (⚠ with the Optional
+  chip: the fake backend makes the portal optional), in the doctor's
+  order; "25 other checks passed" for 14. BRIEF's copy for
+  gtk4paintablesink and the portal is the view model's snapshot
+  (`drafted_pages`). A row whose description fits one line centers its
+  item 4–8 px lower than the frame's two-line rows. The disclosure opens
+  (not drawn): a 28 px row per passed check (its id in mono, the
+  doctor's detail). Copy report and a row's Copy toast "Report copied",
+  "Command copied" (not drawn).
+- S23's GStreamer-stuck variant (not drawn, S23's shape): "GStreamer
+  didn't start", "Qrec can't record or draw the preview without it.",
+  "Run [qrec doctor] in a terminal, then start Qrec again."; one row,
+  GStreamer, "It didn't finish starting within 30 s: a GPU driver probably
+  hung its plugin scan." with no fix; no disclosure; Quit alone
+  (secondary, focused): no report to copy, and GStreamer starts once per
+  process.
+- X1: the well's time is HH:MM:SS ("00:00:04"), the frame's
+  HH:MM:SS:FF ("00:01:12:08"): the page knows no frame rate (`hello`
+  carries none, and the window doesn't read a held project's files); it
+  and the lead follow `hello`, every second. "Take 10" (the fixture's next
+  take; the frame's 11). Stop & open pressed: C01's loading state,
+  "Stopping…" with the spinner, insensitive at 0.45, the keyboard on Quit
+  (not drawn).
+- D-29's export wait (not drawn, X1's modal): "An export from the CLI is
+  running.", "It's 0% done." ("It's starting." before a percent), "Wait
+  to open the project here once it's done. Quit leaves it running."; the
+  well with the download icon (`muted`), the output (`mono-sm` `muted`),
+  the percent ("43%" as S15b writes it, D-29 "43 %") and the header slot's
+  40×4 mini mud bar, its trough in `border` (`field` vanished in the
+  `field` well); Quit (focused) and Wait ("Waiting…", loading).
+- D-29's idle host: no page; the editor's placeholder with the stage's
+  "Opening rust-traits-talk…" (G§3.3) where D-29 says "Opening…".
+- X2 inside a project (not drawn): D-14's line under the folder row in
+  `body` `text`, centered, above the hidden-files note.
+- X3: the mono line is the first error's JSON Pointer,
+  "/timeline/clips/4/out", where the frame adds ": 1400 > 1377" (no error
+  carries that short form); the explanation is the validation's message
+  as a sentence, "Clip c1b4 ends at frame 1400, past the end of take 3
+  (1377 frames)." (the frame's "1,377"), with "1 more problem." when
+  there are more; the entry note is "Entry 212 is the last good state."
+  with no label (the frame's ": Split clip c2d0 at 00:01:45:26": the
+  error names only the seq).
+- X3's missing file (not drawn): "qrec.json is missing", "Qrec won't
+  open this project without it.", no validation box, "Rebuild it from the
+  history:" and its command; without a history, advice ("There's no
+  history to rebuild it from: restore it from a backup.") and Quit
+  focused.
+- D-13's page and the not-responding one (not drawn, X2's shape): "This
+  project is open in another Qrec window" / "A project opens in one Qrec
+  window at a time.", the project in the row with `folder-open` and "Open
+  in process 4242"; "The Qrec process holding this project isn't
+  responding" (two lines) / "Qrec can't open the project while that
+  process holds it.", "Process 4242 · headless host · since 15:02" in the
+  row, "If it stays stuck, end process 4242 and start Qrec again."; Quit
+  focused.
+- The minimal header has no title now (the frames'), over the interim
+  pages too (the folder and the host failing).
+- A page's focused button shows its ring when the page shows; GTK hides
+  it 3 s later unless a key moves the focus (G§8.4's `VISIBLE_FOCUS_DURATION`).
 
 ### WP0a — Interfaces, GTK-free (alone, first)
 
@@ -4345,6 +4476,38 @@ interim pages one by one. The flows stay WP0b's.
 **Acceptance.** Screenshots of every page next to its frame; the exit
 codes of G§3.2; WP0b's takeover tests still pass.
 
+**As built** (the WP8 lane, on 5a16849). The view models are G§4.11's
+(`view::blocking`, snapshot `drafted_pages`); the GUI's pages:
+- S23 and GStreamer stuck (`missing_deps.rs`, which also holds the C31
+  shell the others share: a `ScrolledWindow` over an `adw::Clamp` of 640
+  × the UI scale, the column 72 px under the header, its parts 16 px
+  apart; the signpost a 160 px `gtk::Image` of `Art::Signpost`). The rows
+  follow `LocalUi.doctor` (a new report re-renders, the focused button
+  keeps the focus); Copy report copies `DoctorReport::to_text`, a row's
+  Copy its command, each with a success toast ("Report copied",
+  "Command copied").
+- X1 and the export wait (`cli_recording.rs`, `export_wait.rs`): the
+  modal goes into the window's modal layer (`Layer::Modal`) while the
+  page's empty body is mapped, over the scrim that dims the minimal
+  header (`scrim-blocking`, to y 968), centered above the hint bar (y
+  351); `Esc` quits through a key controller on the modal (the router
+  passes it before the Session is open, G§3.8). A primary that turns busy
+  hands the keyboard to Quit.
+- X2, D-13's and the not-responding page (`not_my_swamp.rs`); X3 and its
+  missing file (`unreadable.rs`).
+- Shared files: `window/mod.rs` (the minimal header as C04 `Xba2H`
+  draws it, with no title; a page's focused button shows its ring),
+  `common.css` (its CSS), `blocking/mod.rs` (D-13's and the
+  not-responding page go to `not_my_swamp`), `hintbar.rs` and
+  `view/hints.rs` (`HintState::Blocking { page: BlockingHints }`),
+  `gui_shell.rs` (its two X1 cases press Tab before Return: the drafted
+  X1 focuses Quit, as its frame).
+- `gui_blocking` (9 cases, G§8.4's table): each page's regions within a
+  pixel of its frame, hints, focus and its ring, the a11y walk, no
+  panic or critical, the exit code. Each shot is next to its frame in
+  `tmp/gui-shots/wp8/<case>-<page>-compare.png` (the undrawn pages next
+  to the frame of their shape). The departures are in G§7.2's WP8 list.
+
 ### WP9 — Palette, cheat sheet, Settings pages, toast copy (lane B, after WP5 and G§0.2)
 
 **Owns.** `qrec-core/src/view/{palette,cheatsheet,preferences}.rs`;
@@ -4767,7 +4930,16 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
 | S17 | Base, `tests/support/fail_ffmpeg.rs`'s wrapper first on the GUI's PATH (units 1 and 2 render, unit 3 fails after them and the case's go-ahead, the rest wait) | export; "Rendering clip 3/10" while unit 3 waits, then `fail_ffmpeg::go` (it waited a fixed 2 s until the WP7 integration audit); wait for Failed: "clip 3/10 (take 3, c1b2)", "Failed at 11%"; Try again sends it again, and the wrapper's second failure of unit 3 (`fail_ffmpeg::failures`) ends on Failed again (review fix: nothing pressed it) |
 | S18 | Base, bin open | click take 2, Ctrl+click take 4, click Purge from disk |
 | S18b | Base, Live | `wtype -M ctrl -k comma -m ctrl`; click Frame rate 25 |
-| S19–S25, X1–X3 | per WP8 and WP9 | — |
+| S23 (`gui_blocking::s23_missing_dependency`) | Base; the GUI's `PATH` first has an `ffmpeg` whose `-encoders` leaves out libx264 and libsvtav1 and a `pactl` that answers as PipeWire's (the nested env has no sound server) | launch: rows `ffmpeg.libx264` (✕), `ffmpeg.libsvtav1` and `portal.screencast` (⚠, the nested bus has no portal; optional with the fake backend); open and close the disclosure; Copy report and the portal row's Copy, read back with `wl-paste`; Ctrl+Q exits 5 |
+| S23 stuck (`s23_gstreamer_stuck`) | Base, `QREC_GUI_TEST=1,stuck-gst` | launch; Return exits 5 |
+| X1 (`x1_cli_recording`) | Base; `qrec record start` with `QREC_FAKE_EOS_DELAY_MS=6000` (the headless host inherits it) | launch; the time goes on; Esc exits 6, the take goes on; launch again, Tab, Return: "Stopping…" while it finalizes, then the window opens with the take |
+| D-29 export wait (`x1_export_wait`) | Base; `qrec export --quality draft` in the background with `fail_ffmpeg::slow_path` (4 s per unit) | launch; Esc exits 6; launch again, Tab, Return: "Waiting…", then the window opens once the export is done |
+| D-29 idle host (`x1_idle_host_opens_without_a_page`) | Base; a CLI take with an 8 s EOS, `qrec record stop` in the background | launch while it finalizes: no page, "Opening rust-traits-talk…"; it opens with the take |
+| X2 (`x2_not_my_swamp`) | a folder with one file; then `exports/` inside the Base project | launch; Return exits 3, nothing written; the inside folder: D-14's line, Ctrl+Q exits 3 |
+| X3 (`x3_project_cant_be_read`) | Base after a `clip split` (a history entry), c1b4's `out` set to 1400 (take 3 has 1377 frames); then `qrec.json` removed | launch; Return copies the restore command; `qrec history restore` works meanwhile; Ctrl+Q exits 1; the missing file: Ctrl+Q exits 1 |
+| D-13 (`d13_held_by_another_window`) | Base open in a first window (moved to workspace 2, so the second takes the output) | launch a second; Quit (the test channel's `blocking.quit`) exits 6, the first stays |
+| not responding (`a_holder_that_doesnt_respond`) | Base; the test holds the project's lock with a record (its own pid, `headless`, a socket that isn't there) | launch: the page after the 3 s a starting holder gets; Ctrl+Q exits 6 |
+| S19–S22, S24, S25 | per WP9 and WP4 | — |
 
 - **Scale runs**: S02, S06, S09 and S14 at `QREC_TEST_SCALE=2` and 1.5:
   regions scale; the live sink's caps are 1920×1080 at 2; strip textures
