@@ -1031,6 +1031,23 @@ impl Gui {
     /// One request on its window's test control channel (G§3.18,
     /// `qrec-gui-test-<pid>.sock`) and its reply.
     pub fn ctl(&self, request: Value) -> Value {
+        self.try_ctl(&request)
+            .unwrap_or_else(|| panic!("no reply to {request}: the channel closed"))
+    }
+
+    /// An action that ends the window (`blocking.quit`, `app.quit`): `ok`,
+    /// or no reply at all when the window is gone before its channel's
+    /// thread wrote it (the main loop hands the reply over, then the quit
+    /// may end the process first: seen on a machine loaded by a parallel
+    /// run). The case then checks the exit.
+    pub fn quit_action(&self, id: &str) {
+        if let Some(reply) = self.try_ctl(&json!({"op": "action", "id": id})) {
+            assert_eq!(reply["ok"], true, "{id}: {reply}");
+        }
+    }
+
+    /// [`Gui::ctl`], `None` when the channel closes without a reply.
+    fn try_ctl(&self, request: &Value) -> Option<Value> {
         let socket = self
             .runtime
             .join(format!("qrec-gui-test-{}.sock", self.pid()));
@@ -1056,10 +1073,13 @@ impl Gui {
         let mut writer = stream.try_clone().expect("clone the stream");
         writeln!(writer, "{request}").expect("send the request");
         let mut line = String::new();
-        BufReader::new(&stream)
+        let read = BufReader::new(&stream)
             .read_line(&mut line)
             .unwrap_or_else(|e| panic!("no reply to {request}: {e}"));
-        serde_json::from_str(line.trim()).unwrap_or_else(|e| panic!("{line:?}: {e}"))
+        if read == 0 {
+            return None;
+        }
+        Some(serde_json::from_str(line.trim()).unwrap_or_else(|e| panic!("{line:?}: {e}")))
     }
 
     /// `waitIdle` (G§3.18): panics when the window doesn't settle.

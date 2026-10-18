@@ -975,8 +975,7 @@ fn d13_held_by_another_window() {
     compare(&shot, "X2-not-my-swamp.png");
     let gui = nested.window(1);
     assert_rect(gui, "blocking-folder", [480.0, f64::NAN, 640.0, 56.0]);
-    let reply = gui.ctl(json!({"op": "action", "id": "blocking.quit"}));
-    assert_eq!(reply["ok"], true, "{reply}");
+    gui.quit_action("blocking.quit");
     assert_eq!(nested.window(1).wait_exit(EXIT), Some(6));
     assert!(nested.window(0).running(), "the first window stays");
     assert_clean(nested.window(0));

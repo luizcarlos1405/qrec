@@ -974,8 +974,7 @@ fn a_zoom_right_before_the_close_is_saved() {
     // Both on the main thread within a few ms, well inside the 300 ms.
     let zoom = gui.ctl(json!({"op": "action", "id": "zoom.in"}));
     assert_eq!(zoom["ok"], true, "{zoom}");
-    let quit = gui.ctl(json!({"op": "action", "id": "app.quit"}));
-    assert_eq!(quit["ok"], true, "{quit}");
+    gui.quit_action("app.quit");
     assert_eq!(gui.wait_exit(Duration::from_secs(70)), Some(0), "the exit");
     let path = project.join(".qrec").join("ui.json");
     let ui: Value = serde_json::from_slice(&fs::read(&path).expect("ui.json")).expect("its JSON");

@@ -2116,8 +2116,7 @@ fn a_pause_shows_the_frame_it_parks_at() {
 /// it debounced went out before its host closed, or never.
 fn quit_and_wait(nested: &mut Nested) {
     let gui = nested.window(0);
-    let quit = gui.ctl(json!({"op": "action", "id": "app.quit"}));
-    assert_eq!(quit["ok"], true, "{quit}");
+    gui.quit_action("app.quit");
     assert_eq!(gui.wait_exit(Duration::from_secs(70)), Some(0), "the exit");
     gui.assert_no_criticals();
     let log = gui.gui_log();
