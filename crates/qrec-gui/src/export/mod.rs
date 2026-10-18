@@ -266,6 +266,9 @@ impl Panel {
                 }
             })
             .detach();
+        // The stderr well follows `ui.scale`: sized now, and at once when
+        // it changes live (WP9), never by a page's refresh.
+        panel.size_stderr(ctx.theme.scale());
         let weak = Rc::downgrade(&panel);
         ctx.theme
             .subscribe(move |theme| {
@@ -781,9 +784,12 @@ impl Panel {
         self.done.bar.set_state(MudState::Done);
     }
 
-    /// The Failed page's stderr well at UI scale `scale`: as the page
-    /// fills, and at once when `ui.scale` changes live (WP9; it followed at
-    /// the page's next refresh only, G§3.14's known limit).
+    /// The Failed page's stderr well at UI scale `scale`: when the panel is
+    /// built, and at once when `ui.scale` changes live, through the theme
+    /// subscription alone (WP9; it followed at the page's next refresh only,
+    /// G§3.14's known limit, and while each fill sized it too the timeline's
+    /// re-layout at a new scale refreshed the page first, so
+    /// `gui_bin_export`'s live-scale case passed without the subscription).
     fn size_stderr(&self, scale: f64) {
         self.failed
             .scroller
@@ -809,7 +815,6 @@ impl Panel {
             pin_to_end(&page.scroller);
         }
         page.scroller.set_visible(!view.stderr_tail.is_empty());
-        self.size_stderr(self.ctx.theme.scale());
         match &view.log {
             Some(log) => {
                 page.log_path.set_text(&self.shown_path(log));

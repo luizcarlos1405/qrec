@@ -1666,9 +1666,10 @@ time; A§8.7 rules for every child).
     another folder (a dotfiles manager) is re-read only when the link
     itself changes; key caps drawn per render follow at their next render.
     The export panel's Failed page's stderr well follows a live scale at
-    once (WP9 lane: its own theme subscription; the timeline's re-layout
-    at a new scale refilled the page before too), and so does the toast
-    shown (DESIGN's 360–560 × the scale).
+    once (WP9 lane: its own theme subscription, which alone sizes it once
+    the panel is built since this round's audit; a refill of the page,
+    which the timeline's re-layout at a new scale also brought, no longer
+    does), and so does the toast shown (DESIGN's 360–560 × the scale).
 - **UI scale** (100/125/150 %, `ui.scale`): every `<n>px` in the CSS text
   is multiplied by the scale before loading, and so is Fraunces' optical
   size (`"opsz" <n>`, which follows the font size, within 9–144); custom
@@ -4633,7 +4634,8 @@ D-22, the D-30 caption, D-31. Re-registers `keys.help` and `palette.open`.
   at least 360 × it, both following a live scale; the body one paragraph
   (2 lines); the test channel's `notify` op for the probe. The Failed
   page's stderr well follows a live scale through the panel's theme
-  subscription.
+  subscription (which alone sizes it once the panel is built, since this
+  round's audit).
 - Waiting for the frames (G§0.6): the GTK palette, cheat sheet and Settings
   pages (`Built` stays false, `palette.open` and `keys.help` still toast
   "Not built yet"), `widgets/theme_card.rs`, `components/overlays.css`,
@@ -4654,10 +4656,12 @@ palette row), `components/overlays.css`,
 Their frames are no longer the gate: the drafts were exported on
 2026-10-17 (`design/screens/S19…S25`, `design/export/html/`, G§0), and
 the next lane builds them from that export on top of this section's
-view models and dispatch table. Known gap: the stderr well's case passes
-without the panel's own theme subscription too (the timeline's re-layout
-at a new scale refreshes the page first), so it doesn't prove that fix;
-re-scrolling the well to its end after a live scale isn't built or
+view models and dispatch table. The stderr well's case passed without
+the panel's own theme subscription too (the timeline's re-layout at a new
+scale refilled the page, which sized the well); since this round's audit
+the subscription alone sizes it once the panel is built, so the case
+fails without it (177.6 px at 1.1 for 193.6) and passes with it. Known
+gap: re-scrolling the well to its end after a live scale isn't built or
 tested.
 
 ### WP10 — Themes, packaging, audits (after WP1–WP7; WP8 and WP9 once approved)

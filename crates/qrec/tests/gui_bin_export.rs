@@ -2564,10 +2564,12 @@ fn config_set_applied(nested: &mut Nested, project: &Path, key: &str, value: &st
 /// WP9: S17's stderr well (10 lines of `mono-sm`) follows `qrec config
 /// set ui.scale` at once, as the rest of the page does: its height times
 /// the scale (its padding scales with the CSS), and back. It followed only
-/// at the page's next refresh (G§3.14's known limit): at 1.1, where the
-/// window keeps its Wide layout and nothing else refreshes the page, 160 px
-/// of text in a well whose padding had grown; at 1.5 the layout's change
-/// (Narrow, 1067 px wide) refreshed it.
+/// at the page's next refresh (G§3.14's known limit). The panel's theme
+/// subscription alone sizes it once the panel is built: while each fill
+/// of the page sized it too, the timeline's re-layout at a new scale
+/// refilled the page first and this case passed without the subscription
+/// (this round's audit); without it now the well keeps 160 px of text at
+/// 1.1 in a padding that grew (177.6 px high for 193.6).
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn the_failed_pages_stderr_well_follows_a_live_scale() {
