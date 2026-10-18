@@ -836,6 +836,25 @@ mod tests {
         );
     }
 
+    /// SPEC §5.5: `recording.countdownSecs` defaults to 0 (BRIEF's S03
+    /// mock sets 3 for its shot alone), everywhere a default comes from: a
+    /// project without one, `config.toml` without one (none at all, or one
+    /// that sets something else), what `Init` starts a project from, and so
+    /// Settings › Recording on a fresh config: "0" s. (The snapshot below
+    /// sets 3 to show a configured value.)
+    #[test]
+    fn the_countdown_defaults_to_specs_0() {
+        use crate::model::RecordingSettings;
+        assert_eq!(RecordingSettings::default().countdown_secs, 0);
+        let fresh = UserConfig::default();
+        assert_eq!(fresh.recording.countdown_secs, 0);
+        assert_eq!(fresh.project_defaults().recording.countdown_secs, 0);
+        let other = crate::config::parse("theme = \"swamp-day\"\n[recording]\n").unwrap();
+        assert_eq!(other.recording.countdown_secs, 0);
+        assert_eq!(recording_page(&fresh, CONFIG).countdown.value, "0");
+        assert_eq!(recording_page(&other, CONFIG).countdown.value, "0");
+    }
+
     /// The pages not drawn follow S21's pattern; each control writes a
     /// setting `qrec config set` takes, with the value its field shows.
     #[test]
