@@ -222,3 +222,129 @@
 .qrec-cheatsheet .cheat-settings-hint {
   border-spacing: 6px;
 }
+
+/* ------------------------------------- the Settings pages (S21, S22) */
+
+/* A page (S21; Recording and Autocut in its patterns): 24/32 in, its
+   groups 24 apart. */
+.qrec-settings .pref-body {
+  padding: 24px 32px;
+  border-spacing: 24px;
+}
+
+/* A group: its header 12 over Theme's cards, 8 over the rows elsewhere;
+   the title over its description, 2 apart. */
+.qrec-settings .pref-group.gap-12 {
+  border-spacing: 12px;
+}
+
+.qrec-settings .pref-group.gap-8 {
+  border-spacing: 8px;
+}
+
+.qrec-settings .pref-group-header {
+  border-spacing: 2px;
+}
+
+/* The rows: a hairline over them and one under each 60 px row; the label
+   over its caption (2 apart), the control 24 to their right. */
+.qrec-settings .pref-rows {
+  border-top: 1px solid var(--qrec-border);
+}
+
+.qrec-settings .pref-row {
+  min-height: 59px;
+  border-bottom: 1px solid var(--qrec-border);
+  border-spacing: 24px;
+}
+
+.qrec-settings .pref-row-text {
+  border-spacing: 2px;
+}
+
+/* C32: the card draws itself (widgets/theme_card.rs); its button is only
+   the 12 px corners the focus ring follows. */
+.qrec-settings button.theme-card,
+.qrec-settings button.theme-card:hover,
+.qrec-settings button.theme-card:active,
+.qrec-settings button.theme-card:checked {
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: 12px;
+  background: none;
+  box-shadow: none;
+}
+
+/* S22: 12 in at the top, 32 at the sides; the banner, the search and the
+   list 8 apart. */
+.qrec-settings .keys-body {
+  padding: 12px 32px 0 32px;
+  border-spacing: 8px;
+}
+
+/* The banner: a `warning` 16 % tint in a 1 px `warning` stroke, `md`
+   radius, 56 high as S22 draws it (the stroke inside its 8 px padding);
+   the icon 12 before the text, the button 12 after it. */
+.qrec-settings .keys-banner {
+  padding: 7px 7px 7px 11px;
+  border: 1px solid var(--qrec-warning);
+  border-radius: 6px;
+  background-color: var(--qrec-warning-16);
+  border-spacing: 12px;
+}
+
+.qrec-settings .keys-banner-text {
+  border-spacing: 2px;
+}
+
+.qrec-settings .keys-banner-title {
+  border-spacing: 4px;
+}
+
+/* A group's title: 32 px, its text at the bottom, 4 over the rows. */
+.qrec-settings .keys-group {
+  min-height: 28px;
+  padding-bottom: 4px;
+}
+
+/* 40 px rows, a hairline between them: the label (240), the keys, the
+   two 24 px buttons 4 apart; 16 between the parts. */
+.qrec-settings .keys-row {
+  min-height: 40px;
+  padding: 0 4px 0 8px;
+  border-spacing: 16px;
+}
+
+.qrec-settings .keys-row.ruled {
+  min-height: 39px;
+  border-bottom: 1px solid var(--qrec-border);
+}
+
+/* The capture: R1's highlight, a `selected` tint in a 1 px `accent`
+   stroke (a real one, as the frame's). */
+.qrec-settings .keys-row.capturing {
+  min-height: 38px;
+  border: 1px solid var(--qrec-accent);
+  border-radius: 6px;
+  background-color: var(--qrec-selected);
+}
+
+.qrec-settings .keys-binding {
+  border-spacing: 8px;
+}
+
+.qrec-settings .keys-conflict {
+  border-spacing: 4px;
+}
+
+.qrec-settings .keys-actions {
+  border-spacing: 4px;
+}
+
+/* "…" and "Press a key · Esc cancels · Backspace clears", 6 apart. */
+.qrec-settings .keys-capture {
+  border-spacing: 6px;
+  outline: none;
+}

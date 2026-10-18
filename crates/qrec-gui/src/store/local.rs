@@ -328,11 +328,11 @@ mod tests {
 
     #[test]
     fn facts_follow_the_local_state() {
-        // WP9 built the palette and the cheat sheet.
+        // WP9 built them all.
         let built = Built {
             palette: true,
             cheat_sheet: true,
-            settings_pages: false,
+            settings_pages: true,
         };
         let mut local = LocalUi::default();
         assert_eq!(

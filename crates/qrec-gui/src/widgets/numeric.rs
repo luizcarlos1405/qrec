@@ -21,7 +21,9 @@
 //!   message (the text stays the person's to fix); the owner shows the
 //!   message where it goes ([`NumericField::on_error`]: a helper text, a
 //!   tooltip). The stroke and the message go together: typing, `Esc` and a
-//!   model value that replaces the text clear both.
+//!   model value that replaces the text clear both. With nothing to put
+//!   back, `Esc` goes on to what holds the field (the Settings dialog
+//!   closes on it).
 //!
 //! Keys reach the field: the window's router lets everything through while
 //! an editable has the focus (G§3.8 step 2).
@@ -74,6 +76,13 @@ impl FieldState {
     /// Why the text is invalid, if it is.
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+
+    /// `Esc` has something to put back (the text isn't the model's, or is
+    /// invalid). Otherwise it goes on to what holds the field: the
+    /// Settings dialog closes on it (WP9).
+    pub fn takes_escape(&self) -> bool {
+        self.is_dirty() || self.error.is_some()
     }
 
     /// The model's value came in (`focused`: the field has the focus): the
@@ -458,7 +467,7 @@ impl NumericField {
                     gdk::Key::Down | gdk::Key::KP_Down => field.step_by(-ten),
                     gdk::Key::Page_Up | gdk::Key::KP_Page_Up => field.step_by(10.0),
                     gdk::Key::Page_Down | gdk::Key::KP_Page_Down => field.step_by(-10.0),
-                    gdk::Key::Escape => field.revert(),
+                    gdk::Key::Escape if field.inner.state.borrow().takes_escape() => field.revert(),
                     _ => return glib::Propagation::Proceed,
                 }
                 glib::Propagation::Stop
@@ -634,6 +643,26 @@ mod tests {
         f.typed("38");
         f.typed("384");
         assert_eq!(f.begin_commit(), None);
+    }
+
+    /// Esc puts back an edit or an invalid text; with nothing to put back
+    /// it goes on (the Settings dialog closes on it, WP9).
+    #[test]
+    fn esc_goes_on_with_nothing_to_put_back() {
+        let mut f = FieldState::default();
+        f.set_value("3", false);
+        assert!(!f.takes_escape());
+        f.typed("5");
+        assert!(f.takes_escape(), "an edit");
+        f.revert();
+        assert!(!f.takes_escape(), "put back");
+        f.typed("0");
+        f.begin_commit();
+        f.set_error(Some("must be at least 1"));
+        f.end_commit();
+        f.typed("3");
+        f.set_error(Some("must be at least 1"));
+        assert!(f.takes_escape(), "invalid, though it reads as the model");
     }
 
     /// R38: what the field edits changed under the edit (another scene, an

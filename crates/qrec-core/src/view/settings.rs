@@ -1,8 +1,9 @@
 //! The Settings dialog's shell and its Project page (G§4.10, S18b). Owner:
 //! WP6.
 //!
-//! The shell has the five tabs as drawn; only Project opens until WP9
-//! builds the others (D-48: they show disabled, "Not built yet"). The
+//! The shell has the five tabs as drawn; Project always opens, the others
+//! once the GUI has built them (`Built::settings_pages`, D-48: true since
+//! WP9, so the disabled tabs and their "Not built yet" are gone). The
 //! Project page holds the "Canvas" group: Size, Frame rate and Background,
 //! each a `ProjectSet` (an fps change on a project with takes needs the
 //! S18b confirmation, which the core asks for).
@@ -66,8 +67,8 @@ impl SettingsPage {
     }
 }
 
-/// One tab: the page, its label and whether it opens (only Project until
-/// WP9, D-48; the others show the tooltip "Not built yet").
+/// One tab: the page, its label and whether it opens (Project always; the
+/// others once built, D-48: every one since WP9).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsTab {

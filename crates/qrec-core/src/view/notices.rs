@@ -116,10 +116,6 @@ pub fn error_notice(err: &CoreError, cmd: &Command, state: &State) -> Option<Not
     })
 }
 
-/// "Not built yet", the tooltip of the Settings tabs whose pages come
-/// later (D-48).
-pub const NOT_BUILT: &str = "Not built yet";
-
 /// The toast for a key whose binding `binding_id` is unavailable (D-34),
 /// `reason` being `keymap::action_for`'s: none for "Nothing to cancel"
 /// (`Esc` with nothing to cancel is silent); recording keys during an
