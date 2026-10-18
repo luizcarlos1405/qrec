@@ -361,6 +361,17 @@ popover.menu separator {
   background-color: var(--qrec-border);
 }
 
+/* A submenu's arrow (Add layer's Screen ▸) and the submenu's back arrow:
+   no frame draws a submenu, so they are the transport's chevrons (G§5.2),
+   not libadwaita's `go-next` and `go-previous`. */
+popover.menu modelbutton arrow.right {
+  -gtk-icon-source: -gtk-icontheme("qrec-chevron-right-symbolic");
+}
+
+popover.menu modelbutton arrow.left {
+  -gtk-icon-source: -gtk-icontheme("qrec-chevron-left-symbolic");
+}
+
 /* -------------------------------------------------------- C26 slider */
 
 /* A 4 px track (`border-strong`, `accent` filled), a 16 px `text` thumb
