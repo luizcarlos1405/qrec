@@ -4589,7 +4589,12 @@ D-22, the D-30 caption, D-31. Re-registers `keys.help` and `palette.open`.
   `Backend::write_settings`, which the `qrec` binary implements with the
   shell's `write_text` (`cli.rs`:
   `config_set_changes_one_line_through_the_shells_writer`). Round trips
-  with commented files in each.
+  with commented files in each. The whole-file replace is held too: the
+  path names a new inode after a write and a reader of the old file reads
+  it whole (`config_file`'s `a_write_replaces_the_file_whole`, an inode
+  check through the symlink in the shell's and `cli.rs`'s symlink cases;
+  the audit found a plain in-place `fs::write` passing every writer test).
+  That the write syncs isn't tested.
 - `view::palette` (rows, `availability`, `fuzzy_match`, `highlight_ranges`
   and `PaletteItem::highlights` for Pango's byte ranges),
   `view::cheatsheet` (`cheat_sheet(keymap, keys_path, search)`: the search

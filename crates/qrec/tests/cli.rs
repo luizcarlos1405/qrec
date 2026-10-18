@@ -328,6 +328,8 @@ fn config_set_changes_one_line_through_the_shells_writer() {
     fs::create_dir_all(&config_dir).unwrap();
     let link = config_dir.join("config.toml");
     std::os::unix::fs::symlink(&real, &link).unwrap();
+    let inode = |path: &Path| std::os::unix::fs::MetadataExt::ino(&fs::metadata(path).unwrap());
+    let before = inode(&real);
 
     let set = qrec(&env, &dir, &["config", "set", "ui.scale", "1.5", "--json"]);
     set.ok();
@@ -338,6 +340,11 @@ fn config_set_changes_one_line_through_the_shells_writer() {
             .file_type()
             .is_symlink(),
         "still a symlink"
+    );
+    assert_ne!(
+        inode(&real),
+        before,
+        "the link's target is replaced whole (a temp file renamed over it), not written into"
     );
     assert_eq!(
         fs::read_to_string(&real).unwrap(),

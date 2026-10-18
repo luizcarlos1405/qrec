@@ -153,7 +153,7 @@ fn write_target(path: &Path) -> PathBuf {
 mod tests {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     use qrec_core::Fps;
 
@@ -268,6 +268,7 @@ padding_ms = 80
         fs::create_dir(&dir).unwrap();
         let link = dir.join("config.toml");
         std::os::unix::fs::symlink("../dotfiles/qrec-config.toml", &link).unwrap();
+        let before = fs::metadata(&real).unwrap().ino();
 
         set(&link, "theme", "swamp-day").unwrap();
         assert!(
@@ -276,6 +277,11 @@ padding_ms = 80
                 .file_type()
                 .is_symlink(),
             "still a link"
+        );
+        assert_ne!(
+            fs::metadata(&real).unwrap().ino(),
+            before,
+            "the link's target is replaced, not written into"
         );
         assert_eq!(
             fs::read_to_string(&real).unwrap(),
@@ -293,6 +299,36 @@ padding_ms = 80
             fs::read_to_string(dotfiles.join("qrec-keys.toml")).unwrap(),
             "[bindings]\n"
         );
+    }
+
+    /// A write replaces the file whole instead of writing into it: the
+    /// path names a new file, and a reader that opened the old one (the
+    /// settings watcher, a host's `ConfigFile`) reads the old text whole,
+    /// never a truncated or half-written one. Then a crash mid-write
+    /// leaves the old file or the new one.
+    #[test]
+    fn a_write_replaces_the_file_whole() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        let old = "# mine\ntheme = \"swamp-night\"\n";
+        fs::write(&path, old).unwrap();
+        let before = fs::metadata(&path).unwrap().ino();
+        let mut reader = fs::File::open(&path).unwrap();
+
+        write_text(&path, "# mine\ntheme = \"swamp-day\"\n").unwrap();
+        assert_ne!(fs::metadata(&path).unwrap().ino(), before, "a new file");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# mine\ntheme = \"swamp-day\"\n"
+        );
+        let mut seen = String::new();
+        reader.read_to_string(&mut seen).unwrap();
+        assert_eq!(seen, old, "the open file still holds the old text");
+        let names: Vec<_> = fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["config.toml"], "no temp file left");
     }
 
     #[test]
