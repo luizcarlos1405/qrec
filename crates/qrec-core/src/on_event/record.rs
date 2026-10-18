@@ -916,7 +916,10 @@ fn end_broken(
     let n = take.number();
     let phase = std::mem::take(&mut next.runtime.record);
     let toast = match &phase {
-        RecordPhase::Starting { mode, .. } => didnt_start_toast(n, reason, mode),
+        // A stuck engine refuses every start until a restart: no Try again.
+        RecordPhase::Starting { mode, .. } => {
+            didnt_start_toast(n, reason, mode, next.runtime.engine_stuck.is_none())
+        }
         _ => Toast::new(ToastLevel::Error, format!("Take {n} is broken")).with_body(reason),
     };
     if let Some(t) = next.project.takes.get_mut(take) {
@@ -1291,10 +1294,11 @@ fn lost_source(scene: &Scene, id: &str) -> (&'static str, String, String) {
 
 /// S25 #11: "Recording didn't start" / "<why>, so take 10 stopped before
 /// any frames. It's marked broken in the bin." / Try again (the same take
-/// again: append, or over the same clips) · Open bin. `reason` is the
-/// failure as the engine words it (BRIEF's "Screen access to DP-4 was
-/// denied" needs the portal's refusal from the shell, S24).
-fn didnt_start_toast(n: u32, reason: &str, mode: &RecordMode) -> Toast {
+/// again: append, or over the same clips; not when `retry` is false: a
+/// stuck engine refuses it) · Open bin. `reason` is the failure as the
+/// engine words it (BRIEF's "Screen access to DP-4 was denied" needs the
+/// portal's refusal from the shell, S24).
+fn didnt_start_toast(n: u32, reason: &str, mode: &RecordMode, retry: bool) -> Toast {
     let mode = match mode {
         RecordMode::Append => crate::protocol::command::RecordModeArg::Append,
         RecordMode::Over { clips } => crate::protocol::command::RecordModeArg::Over(
@@ -1302,11 +1306,11 @@ fn didnt_start_toast(n: u32, reason: &str, mode: &RecordMode) -> Toast {
         ),
     };
     let why = crate::view::format::capitalized(reason.trim_end_matches('.'));
-    Toast::new(ToastLevel::Error, "Recording didn't start")
-        .with_body(format!(
-            "{why}, so take {n} stopped before any frames. It's marked broken in the bin."
-        ))
-        .with_action(
+    let mut toast = Toast::new(ToastLevel::Error, "Recording didn't start").with_body(format!(
+        "{why}, so take {n} stopped before any frames. It's marked broken in the bin."
+    ));
+    if retry {
+        toast = toast.with_action(
             "Try again",
             crate::protocol::toast::UiAction::Dispatch(Box::new(
                 crate::protocol::command::Command::RecordStart {
@@ -1315,8 +1319,9 @@ fn didnt_start_toast(n: u32, reason: &str, mode: &RecordMode) -> Toast {
                     wait: false,
                 },
             )),
-        )
-        .with_action("Open bin", super::toasts::open_bin())
+        );
+    }
+    toast.with_action("Open bin", super::toasts::open_bin())
 }
 
 // ------------------------------------------------------------------ misc

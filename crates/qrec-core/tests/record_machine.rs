@@ -2023,6 +2023,18 @@ fn engine_wedged_in_every_phase() {
                 .any(|e| matches!(e, Effect::SetLive(_) | Effect::StopCapture { .. })),
             "nothing more is asked of a stuck engine"
         );
+        // A take that never started (S25 #11) offers no Try again: a stuck
+        // engine refuses every start until a restart.
+        let toast = toasts(&out)[0];
+        if state.runtime.record.take().is_some()
+            && matches!(state.runtime.record, RecordPhase::Starting { .. })
+        {
+            assert_eq!(toast.title, "Recording didn't start");
+            let labels: Vec<&str> = toast.actions.iter().map(|a| a.label.as_str()).collect();
+            assert_eq!(labels, ["Open bin"]);
+        } else {
+            assert_eq!(toast.title, "Take 2 is broken");
+        }
     }
 }
 
