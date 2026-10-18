@@ -4146,3 +4146,51 @@ fn lane_mutes_round_trip_through_ui_json() {
         BTreeSet::from([qrec_core::TrackId::numbered(1)])
     );
 }
+
+/// GUI G§3.10 step 3: in a GUI host a relative seek while the program
+/// plays goes from the window's player (`SessionConfig::player`, gathered
+/// as a fact for it), not from the playhead the window's sync moves once a
+/// second; paused, from the playhead. And the sync's own seek, read against
+/// an older playhead revision, doesn't undo it.
+#[test]
+fn a_relative_seek_while_playing_goes_from_the_player() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use qrec_core::protocol::SeekTarget;
+
+    let h = Harness::with_sample("seek-from-player");
+    let position = Arc::new(AtomicU64::new(0));
+    let player: crate::facts::PlayerPosition = {
+        let position = Arc::clone(&position);
+        Arc::new(move || Some(position.load(Ordering::SeqCst)))
+    };
+    let opts = OpenOpts {
+        host: HostKind::Gui,
+        mutating: true,
+        recovery: false,
+    };
+    let mut s = Harness::retry_busy(|| {
+        let cfg = SessionConfig {
+            player: Some(Arc::clone(&player)),
+            ..h.config()
+        };
+        Session::open_with(&h.dir, opts, h.deps(), cfg)
+    })
+    .unwrap();
+    let seek = |s: &mut Session, to: SeekTarget| {
+        let reply = send(s, Command::Seek { to }, false).unwrap();
+        reply["result"]["playhead"].as_u64().unwrap()
+    };
+    assert_eq!(seek(&mut s, SeekTarget::To("10f".parse().unwrap())), 10);
+    let rev = s.state().runtime.playhead_rev;
+    send(&mut s, Command::Play, false).unwrap();
+    // The player played on to frame 40 (and a bit); the playhead says 10.
+    position.store(1_350_000_000, Ordering::SeqCst);
+    assert_eq!(seek(&mut s, SeekTarget::By("+1s".parse().unwrap())), 70);
+    // The sync's seek of before that lands too late: dropped.
+    let stale = SeekTarget::Player { frame: 41, rev };
+    assert_eq!(seek(&mut s, stale), 70);
+    assert_eq!(s.state().ui.playhead, 70);
+    send(&mut s, Command::Pause, false).unwrap();
+    assert_eq!(seek(&mut s, SeekTarget::By("+1s".parse().unwrap())), 100);
+}

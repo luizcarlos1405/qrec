@@ -971,6 +971,7 @@ impl Startup {
                 .clone()
                 .unwrap_or_else(|| ConfigFile::new(PathBuf::from("/nonexistent/config.toml"))),
             sources: self.sources.clone(),
+            player: app.ctx.media.program_position().source(),
             side: app.ctx.media.side_sender(),
             live_sink: app.ctx.media.live_sink(),
             max_size: (PREVIEW_MAX.0 * scale, PREVIEW_MAX.1 * scale),

@@ -92,6 +92,12 @@ pub struct Facts {
     pub min_take_number: u32,
     /// Size and mtime of project files, keyed by project-relative path (silence keys).
     pub files: BTreeMap<String, FileFact>,
+    /// A relative `Seek` while the program plays: where the GUI's Program
+    /// player is (timeline ns), `None` when it doesn't play the program.
+    /// The core's playhead only moves with the GUI's once-a-second seek
+    /// then, so the seek goes from the player's frame (GUI G§3.10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub player_ns: Option<u64>,
 }
 
 /// A PulseAudio/PipeWire source.
@@ -195,6 +201,8 @@ pub struct FactsNeeded {
     pub take_dirs: bool,
     /// Project-relative paths to stat into `Facts::files`.
     pub files: Vec<String>,
+    /// The GUI's Program player position (`Facts::player_ns`).
+    pub player: bool,
 }
 
 impl FactsNeeded {

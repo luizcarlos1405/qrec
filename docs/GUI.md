@@ -226,7 +226,7 @@ requirement review's numbering; H-n are host and engine calls.
 | D-48 | **PO** Settings in M4: the dialog with its five tabs as drawn (S18b); only Project is enabled; the others are disabled with the tooltip "Not built yet" until WP9. | WP6 |
 | D-49 | Export panel: Setup, Done and Failed trap focus (Overlay keys; an outside click closes them). Running is passive: no focus trap and no click-catcher, keys and clicks reach the window (S15b: the S06 hints stay live), and `Esc`, `Ctrl+E` or the header slot close it. | WP0b, WP7 |
 | D-50 | Retrying the live preview (S24 "Try again", gated) goes through the Session: `GuiHost::retry_live()` posts `Msg::RetryLive`, which the session thread turns into `CaptureEngine::retry_live`, ordered with `SetLive` and `StartCapture` and logged. | WP0a, WP1 |
-| D-51 | **PO** A step while the program plays (`←` `→` a frame, `Shift+←` `Shift+→` 1 s, `↑` `↓` an edit point; a key or the transport's button) pauses it first and steps from the frame the picture shows, as an editor's frame step does (Resolve, Premiere): `Pause`, then one `Seek{To(f)}` to where the step lands from the player's frame (`apply::ui::seek_frame`). SPEC §10.2, DESIGN and BRIEF don't say what a step does while playing; before, a frame step barely moved (its seek landed within the sync's 2-frame tolerance of the playing player, which played on; R18's audit), and ±1 s and the edit jumps played on from where they landed (keeping that for them is the alternative). `Home`, `End`, a ruler click and the CLI's `qrec seek` still move a playing program on (the sync's once-a-second seek waits for the window's, G§3.10 step 3). The sync leaves the playhead to the step's seek and holds the paused picture until it lands (G§3.10 step 2). | WP4 |
+| D-51 | **PO** A step while the program plays (`←` `→` a frame, `Shift+←` `Shift+→` 1 s, `↑` `↓` an edit point; a key or the transport's button) pauses it first and steps from the frame the picture shows, as an editor's frame step does (Resolve, Premiere): `Pause`, then one `Seek{To(f)}` to where the step lands from the player's frame (`apply::ui::seek_frame`). SPEC §10.2, DESIGN and BRIEF don't say what a step does while playing; before, a frame step barely moved (its seek landed within the sync's 2-frame tolerance of the playing player, which played on; R18's audit), and ±1 s and the edit jumps played on from where they landed (keeping that for them is the alternative). `Home`, `End`, a ruler click and the CLI's `qrec seek` still move a playing program on (the sync's once-a-second seek waits for the window's and loses to any seek that landed after the snapshot it read, G§3.10 step 3; the CLI's `--by` and `--edit` go from the player's frame). The sync leaves the playhead to the step's seek and holds the paused picture until it lands (G§3.10 step 2). | WP4 |
 | H-1 | Live preview: a `gtk4paintablesink` created on the GTK thread and handed to the engine (SPEC §5.2), composited at the preview size (≤ 960×540 × the device scale), BGRx. The RGBA appsink path stays for tests and as the picture before WP1 merges. | WP1 |
 | H-2 | Program playback: one GES timeline and pipeline per session, edited in place and committed; a second `gtk4paintablesink`. | WP1 |
 | H-3 | The GUI renders with GSK GL: `GDK_DISABLE=vulkan` is set unless the user set `GDK_DISABLE` or `GSK_RENDERER`, in which case both are left alone and doctor notes it (G§3.13). | WP0a |
@@ -985,6 +985,7 @@ impl ProgramPlayer {
     pub fn pause(&self);
     pub fn scrub(&self, ns: u64);                               // seek + 60 ms of audio
     pub fn position_ns(&self) -> u64;                           // AtomicU64: read about 125 times a second while playing forward; in reverse it moves once per step (≤ 15 a second)
+    pub fn position_reader(&self) -> PositionReader;            // position_ns from any thread (the GUI's Session, step 3)
     pub fn idle(&self) -> bool;                                 // nothing to load, seek or scrub, queued or in flight (waitIdle, G§3.18)
     pub fn shutdown(&self);                                     // asynchronous; Stopped once NULL (≤ 5 s), at once when there is no pipeline
 }
@@ -1054,8 +1055,23 @@ pub const STUCK: &str = "the Program picture is stuck; restart Qrec";
      While the stage shows Live, only mark it dirty.
   2. `runtime.playing` false → true: `play(LocalUi.playing_rate)` from
      `ui.playhead` (the rate is 1 unless the GUI sent the Shuttle, D-44).
-     true → false: `pause()`, then `Seek{To(player_frame)}`; the rate
-     resets to 1. Leaving Program while playing (`Tab`, D-05's record
+     true → false: `pause()` and `seek(f)`, then the park
+     `Seek{Player{f, rev}}` (step 3), `f` the player's frame; the rate
+     resets to 1. The player's seek puts the
+     paused picture on `f`: a sink that pauses shows its preroll buffer,
+     the frame after the one on screen, so the picture was one frame past
+     the parked playhead and D-51's step went from one frame behind it
+     (G§8.5's step 6 shot; `gui_stage::a_pause_shows_the_frame_it_parks_at`
+     reads the frame from the fixture's pixels: testsrc2's counter against
+     ffmpeg's decode of the take's file). Until the park's snapshot comes
+     the paused player holds `f` (`SyncMachine::stop_park`): a
+     once-a-second seek sent before the pause landed comes after it, and
+     the paused picture went back to that seek's older frame, then forward
+     to `f` (with every command held 600 ms, the end of
+     `a_cli_seek_while_playing_lands_over_the_windows_sync`). A seek that
+     lands meanwhile (a new playhead revision: the core drops the park for
+     it) moves it at once; a park that never echoes lets go after a
+     second. Leaving Program while playing (`Tab`, D-05's record
      start, CLI `SetCanvasMode`) is the same stop: the core turns
      `playing` false in the snapshot that switches to Live (R21). A
      step's stop (D-51) parks nothing: the step's own `Seek{To(f)}` comes
@@ -1069,7 +1085,8 @@ pub const STUCK: &str = "the Program picture is stuck; restart Qrec";
      picture went on past `f` until the pause, a frame or more on a loaded
      machine, within the sync's tolerance, so nothing sought again).
   3. While playing, the drawn playhead is `position_ns`;
-     `Seek{To(player_frame)}` goes out every second (an own seek); the
+     `Seek{Player{player_frame, rev}}` goes out every second (an own seek,
+     `rev` the snapshot's `runtime.playhead_rev`); the
      timeline auto-pages. The own seek waits (polling every 20 ms) while a
      `Seek` the window sent is unanswered (`Store::seek_unanswered`: Home,
      End, a click on the ruler, a key's pre-step; a step's park, D-51):
@@ -1078,7 +1095,27 @@ pub const STUCK: &str = "the Program picture is stuck; restart Qrec";
      window is the 20–30 ms a seek takes to come back, each second;
      `a_seek_while_playing_lands_and_plays_on` holds every command 400 ms;
      found verifying D-51). A seek from outside the window (the CLI's, an
-     agent's) can still meet it. "Playing" is `LocalUi.program_playing`: the
+     agent's) met it the same way, and the window never knew of it: so the
+     sync's own seeks (this one, the stop's park, a preview's, the close's)
+     are conditional (`SeekTarget::Player { frame, rev }`, A§4.4). Every
+     other seek that lands bumps `runtime.playhead_rev` (one to the frame
+     the playhead already had too, and a start from the end), the sync's
+     own leave it as it is, and the core drops an own seek whose `rev` is
+     older (Ok, nothing changes): the newer seek stays. The sync takes a
+     new revision for a seek that landed (not its own) and moves the player
+     to it. A relative seek (`By`, `EditPrev`, `EditNext`; the CLI's
+     `seek --by`, `--edit`) while the program plays goes from the player's
+     frame, not from the core's playhead a second behind it: the Session
+     gathers the player's position as a fact for it (`Facts::player_ns`,
+     A§4.2) from `SessionConfig::player`, the window's
+     `media::program::ProgramPosition`, which the sync points at the
+     player (`ProgramPlayer::position_reader`) while `program_playing` and
+     clears otherwise (`a_cli_seek_while_playing_lands_over_the_windows_sync`
+     holds every command of the window 600 ms and seeks from the CLI
+     right after a once-a-second seek went out: before, the absolute seek
+     was undone, the playhead and the player back at the sync's frame, and
+     `--by +10s` went from a playhead a second and more behind the
+     picture). "Playing" is `LocalUi.program_playing`: the
      program plays in the player, not a bin preview's take (R00, R16), and
      only once the program's load after a take landed (the player idle),
      since until then `position_ns` is the take's. The timeline's playhead,
@@ -4927,12 +4964,12 @@ paused playhead and player position, and each step's time go to
 runs the steps' window from another binary (the package's optimized
 `result/bin/qrec`, WP10 integration).
 
-Seen in step 6's shot, not fixed here (`media/program.rs`, G§3.10, D-51):
-the paused picture is the frame after the parked playhead. Take 8's frame
-1 showed at playhead 60, and take 1's frame 29 at playhead 28 with the
-player at 28.97 frames: on a pause the sink renders its preroll frame,
-the next one. A step from "the frame shown" (D-51) then starts one frame
-behind the picture.
+Seen in step 6's shot (fixed since, G§3.10 step 2): the paused picture
+was the frame after the parked playhead. Take 8's frame 1 showed at
+playhead 60, and take 1's frame 29 at playhead 28 with the player at
+28.97 frames: on a pause the sink renders its preroll frame, the next
+one. A step from "the frame shown" (D-51) then started one frame behind
+the picture. The stop now seeks the paused player to the parked frame.
 `the_packaged_build_opens_the_smoke_fixture` runs `nix build`'s
 `result/bin/qrec` (or `$QREC_PACKAGE/bin/qrec`; without one it says so
 and passes). It first checks the package's files (the desktop entry equal

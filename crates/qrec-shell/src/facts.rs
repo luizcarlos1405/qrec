@@ -18,6 +18,10 @@
 //! fills in), or [`SharedSources`], the GUI's cache that a worker refreshes
 //! (GUI H-5), so the session thread never waits for discovery once it has
 //! run.
+//!
+//! **The player.** A relative seek while the program plays goes from the
+//! GUI's Program player's frame ([`PlayerPosition`], GUI G§3.10): the GUI
+//! hands its Session one that reads the player's position atomically.
 
 use std::collections::{HashSet, VecDeque};
 use std::ffi::OsStr;
@@ -450,6 +454,14 @@ pub fn parse_config(text: &str) -> Result<UserConfig, String> {
 
 // -------------------------------------------------------------------- facts
 
+/// Where the GUI's Program player is while the program plays in it, in
+/// timeline ns, `None` otherwise (`Facts::player_ns`, GUI G§3.10 step 3):
+/// a relative seek then goes from its frame, not from the core's playhead,
+/// which the window's sync moves once a second. The GUI keeps it
+/// (`media::program::ProgramPosition`). It runs on the session thread, so
+/// it returns at once: it reads atomics, never waits for the GTK thread.
+pub type PlayerPosition = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
+
 /// Gathers facts for one project.
 pub struct FactsGatherer {
     /// The canonical project folder.
@@ -458,6 +470,8 @@ pub struct FactsGatherer {
     /// `keys.toml`, next to `config.toml`.
     keys_file: PathBuf,
     sources: Box<dyn Sources>,
+    /// The GUI's player, in a GUI host.
+    player: Option<PlayerPosition>,
 }
 
 impl std::fmt::Debug for FactsGatherer {
@@ -486,7 +500,14 @@ impl FactsGatherer {
             keys_file: config.path().with_file_name("keys.toml"),
             config,
             sources,
+            player: None,
         }
+    }
+
+    /// Reads `player` for `FactsNeeded::player` (the GUI's Session).
+    pub fn with_player(mut self, player: Option<PlayerPosition>) -> Self {
+        self.player = player;
+        self
     }
 
     /// The config alone (every dispatch needs it).
@@ -569,6 +590,9 @@ impl FactsGatherer {
                 }
                 Err(e) => warnings.push(format!("{file}: {e}")),
             }
+        }
+        if need.player {
+            facts.player_ns = self.player.as_ref().and_then(|position| position());
         }
         Gathered { facts, warnings }
     }
@@ -1395,8 +1419,10 @@ mod tests {
                 "takes/take-0002/A1-mic.mka".into(),
                 "takes/take-0002/missing.mka".into(),
             ],
+            player: true,
         });
         let facts = &all.facts;
+        assert_eq!(facts.player_ns, None, "no player outside the GUI");
         assert_eq!(facts.folder_name.as_deref(), Some("swamp"));
         assert_eq!(facts.default_mic.as_ref().unwrap().name, FAKE_MIC);
         assert_eq!(facts.default_monitor.as_ref().unwrap().name, FAKE_MONITOR);
@@ -1434,6 +1460,37 @@ mod tests {
 
         let empty = ProjectPaths::new(tmp.path().join("nowhere"));
         assert_eq!(min_take_number(&empty), 1);
+    }
+
+    /// GUI G§3.10 step 3: a relative seek while the program plays asks for
+    /// the GUI's player position; the GUI's gatherer reads the one the
+    /// window gave it, and only when asked.
+    #[test]
+    fn the_players_position_is_read_when_asked() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (_tmp, paths) = project_dir();
+        let config = ConfigFile::new("/nonexistent/config.toml".into());
+        let reads = Arc::new(AtomicUsize::new(0));
+        let position: PlayerPosition = {
+            let reads = Arc::clone(&reads);
+            Arc::new(move || {
+                reads.fetch_add(1, Ordering::SeqCst);
+                Some(40_500_000_000)
+            })
+        };
+        let mut gatherer = FactsGatherer::new(paths, config, Box::new(FakeSources::default()))
+            .with_player(Some(position));
+        let need = FactsNeeded {
+            player: true,
+            ..FactsNeeded::default()
+        };
+        assert_eq!(gatherer.gather(&need).facts.player_ns, Some(40_500_000_000));
+        let other = FactsNeeded {
+            folder_name: true,
+            ..FactsNeeded::default()
+        };
+        assert_eq!(gatherer.gather(&other).facts.player_ns, None);
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "read only when asked");
     }
 
     #[test]

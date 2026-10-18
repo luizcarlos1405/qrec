@@ -142,6 +142,8 @@ struct Inner {
     /// Monitors told to stop that may not have reached NULL yet (R4).
     meters_stopping: RefCell<Vec<MeterMonitor>>,
     player: RefCell<Option<Rc<ProgramPlayer>>>,
+    /// The program's position while it plays, for the Session (G§3.10).
+    program_position: program::ProgramPosition,
     /// The player said `Stopped` (R4).
     player_stopped: Cell<bool>,
     preview: RefCell<Option<PreviewCache>>,
@@ -183,6 +185,7 @@ impl MediaHub {
                 meters: RefCell::new(None),
                 meters_stopping: RefCell::new(Vec::new()),
                 player: RefCell::new(None),
+                program_position: program::ProgramPosition::default(),
                 player_stopped: Cell::new(false),
                 preview: RefCell::new(None),
                 thumbs: RefCell::new(None),
@@ -244,6 +247,13 @@ impl MediaHub {
     /// The player's position, if there is a player.
     pub fn position_ns(&self) -> Option<u64> {
         self.player().map(|p| p.position_ns())
+    }
+
+    /// The program's position while it plays in the player, which the
+    /// program sync keeps and the Session reads (`SessionConfig::player`,
+    /// G§3.10 step 3).
+    pub fn program_position(&self) -> program::ProgramPosition {
+        self.inner.program_position.clone()
     }
 
     /// The preview cache, once the Session is open.

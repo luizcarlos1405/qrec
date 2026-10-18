@@ -19,7 +19,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::CoreError;
-use crate::ids::{ClipId, JobId, LayerId, TakeId, TrackId};
+use crate::ids::{ClipId, Frame, JobId, LayerId, TakeId, TrackId};
 use crate::model::{AudioRole, Color, Crop, EncoderPref, Fit, Fps, Rect};
 use crate::state::{CanvasMode, RecordPhase};
 use crate::time::TimeArg;
@@ -827,7 +827,8 @@ pub enum SelectOp {
     Clear,
 }
 
-/// Where `Seek` moves the playhead. `To` is a timeline position; `By` is relative.
+/// Where `Seek` moves the playhead. `To` is a timeline position; `By` is
+/// relative (`EditPrev` and `EditNext` too: they read the playhead).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum SeekTarget {
@@ -837,6 +838,15 @@ pub enum SeekTarget {
     EditNext,
     Start,
     End,
+    /// The GUI's playback sync (GUI G§3.10): timeline frame `frame`, the
+    /// one its player showed while `runtime.playhead_rev` was `rev`. It
+    /// lands only while the revision is still `rev` (a seek that landed
+    /// since wins: it replies Ok and changes nothing) and leaves the
+    /// revision as it is (`{"player":{"frame":2467,"rev":3}}`).
+    Player {
+        frame: Frame,
+        rev: u64,
+    },
 }
 
 /// `j` / `k` / `l`.

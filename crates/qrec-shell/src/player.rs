@@ -263,6 +263,12 @@ impl ProgramPlayer {
         self.shared.position.load(Ordering::SeqCst)
     }
 
+    /// Reads [`position_ns`](Self::position_ns) from any thread (the GUI's
+    /// Session, for a relative seek while the program plays, G§3.10).
+    pub fn position_reader(&self) -> PositionReader {
+        PositionReader(Arc::clone(&self.shared))
+    }
+
     /// Nothing to load, seek or scrub, queued or in flight: the picture
     /// shows the last load's or seek's frame (for the GUI's `waitIdle`,
     /// G§3.18). Playing doesn't count.
@@ -292,6 +298,18 @@ impl ProgramPlayer {
 impl Drop for ProgramPlayer {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+/// A player's position, readable from any thread
+/// ([`ProgramPlayer::position_reader`]): an atomic load, never waits.
+#[derive(Debug, Clone)]
+pub struct PositionReader(Arc<Shared>);
+
+impl PositionReader {
+    /// [`ProgramPlayer::position_ns`].
+    pub fn position_ns(&self) -> u64 {
+        self.0.position.load(Ordering::SeqCst)
     }
 }
 

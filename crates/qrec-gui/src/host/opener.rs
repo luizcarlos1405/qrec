@@ -28,7 +28,7 @@ use qrec_shell::capture::{
 };
 use qrec_shell::deps::{CaptureEngine, Deps, NoCapture, OpenOpts, os_entropy, system_clock};
 use qrec_shell::error::ShellError;
-use qrec_shell::facts::{ConfigFile, SharedSources};
+use qrec_shell::facts::{ConfigFile, PlayerPosition, SharedSources};
 use qrec_shell::host::gui::{PortNotifier, PortObserver};
 use qrec_shell::host::{GuiPort, HostSession, Opener, SessionLock};
 use qrec_shell::media::FfmpegRunner;
@@ -47,6 +47,10 @@ pub struct GuiOpener {
     pub config: ConfigFile,
     /// The device facts cache the window refreshes on `qrec-gui-io`.
     pub sources: SharedSources,
+    /// The program's position while it plays, which the program sync keeps
+    /// (`MediaHub::program_position`): a relative seek then goes from the
+    /// player's frame (G§3.10 step 3).
+    pub player: PlayerPosition,
     /// The media hub's side channel.
     pub side: Sender<SideEvent>,
     /// The live `gtk4paintablesink` (step 5), if one could be made.
@@ -143,6 +147,7 @@ impl Opener for GuiOpener {
             notifier: Some(Box::new(PortNotifier(Arc::clone(&self.port)))),
             observer: Some(Box::new(PortObserver(Arc::clone(&self.port)))),
             sources: Some(Box::new(self.sources.clone())),
+            player: Some(Arc::clone(&self.player)),
             ..SessionConfig::default()
         };
         Ok(Box::new(Session::open_with(dir, opts, deps, cfg)?))
@@ -167,6 +172,7 @@ mod tests {
             port: Arc::new(Port::new(Queue::new(|| {}))),
             config: ConfigFile::new("/nonexistent/config.toml".into()),
             sources: SharedSources::new(),
+            player: Arc::new(|| None),
             side: crossbeam_channel::unbounded().0,
             live_sink: None,
             max_size: PREVIEW_MAX,

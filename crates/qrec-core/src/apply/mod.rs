@@ -280,6 +280,11 @@ pub fn facts_needed(state: &State, cmd: &Command) -> FactsNeeded {
             need.out = Some(out.clone());
         }
         Command::Autocut { scope, .. } => need.files = audio_files_in_scope(&state.project, scope),
+        // While the program plays the playhead lags the picture (the GUI's
+        // once-a-second seek): a relative seek goes from the player's frame.
+        Command::Seek { to } if state.runtime.playing && ui::reads_playhead(to) => {
+            need.player = true;
+        }
         _ => {}
     }
     need

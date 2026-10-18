@@ -298,6 +298,7 @@ pub struct Runtime {
     pub capabilities: Capabilities,
     pub next_id: u64,                    // allocates JobId and TimerId
     pub playing: bool,
+    pub playhead_rev: u64,               // "playheadRev" (omitted at 0): bumped by every seek that lands but the GUI sync's (below)
     pub disk_invalid: Option<String>,    // qrec.json on disk failed to load (A§7.7)
     pub engine_stuck: Option<String>,    // the capture engine wedged (A§5.3)
     pub recovering: BTreeSet<TakeId>,    // startup recovery probes still out (A§5.3)
@@ -420,6 +421,7 @@ pub struct Facts {
     pub take_left: BTreeMap<TakeId, Vec<String>>,   // purge: what it would leave on disk (A§5.6)
     pub min_take_number: u32,                       // 1 + highest takes/take-N folder
     pub files: BTreeMap<String, FileFact>,          // size/mtime for silence keys
+    pub player_ns: Option<u64>,                     // a relative Seek while playing: the GUI's Program player (timeline ns)
 }
 pub struct AudioDeviceInfo { pub name: String, pub description: String, pub is_monitor: bool }
 pub struct ScreenInfo { pub output: String, pub description: String, pub x: i32, pub y: i32, pub width: u32, pub height: u32, pub scale: f64 }
@@ -433,7 +435,7 @@ pub struct FileFact { pub path: String, pub bytes: u64, pub mtime_ns: i64 }
 pub struct FactsNeeded {
     pub folder_name: bool, pub audio_devices: bool, pub video_sources: bool,
     pub out: Option<String>, pub take_files: Vec<TakeId>, pub take_dirs: bool,
-    pub files: Vec<String>,
+    pub files: Vec<String>, pub player: bool,
 }
 ```
 
@@ -444,6 +446,15 @@ the begin-take facts (take number, camera modes), `TakeProbed{Finalize}`
 the file facts an `autoRunAfterTake` autocut needs. Under
 `QREC_CAPTURE_BACKEND=fake` device facts come from the fake inventory
 (A§8.12).
+
+`player_ns` is asked for (`FactsNeeded::player`) by a relative `Seek`
+(`By`, `EditPrev`, `EditNext`) while `runtime.playing`: the core's playhead
+only moves with the GUI's once-a-second sync seek then, up to a second
+behind the picture, so the seek goes from the frame the GUI's player shows
+(`ns_to_frame_floor` of it, within the timeline). A GUI host's Session reads
+it from `SessionConfig::player`, a `facts::PlayerPosition` the window keeps
+(`None` while the program doesn't play in its player); other hosts have
+none, and such a seek goes from the playhead (GUI G§3.10 step 3).
 
 `Facts.config` is `config.toml` read with `config::parse` (A§9.8), again
 whenever its size or mtime changed, so `qrec config set` reaches a running
@@ -546,7 +557,8 @@ pub enum InsertAt { End, Index(usize), After(ClipId), AfterSelection }
 pub enum MoveTo { Index(usize), By(i64), Before(ClipId), After(ClipId) }
 pub enum ClipScope { All, Clips(Vec<ClipId>) }          // the CLI sends All when no flag is given
 pub enum SelectOp { Set(Vec<ClipId>), Toggle(ClipId), RangeTo(ClipId), Prev, Next, All, Clear }
-pub enum SeekTarget { To(TimeArg), By(TimeArg), EditPrev, EditNext, Start, End }
+pub enum SeekTarget { To(TimeArg), By(TimeArg), EditPrev, EditNext, Start, End,
+                      Player { frame: Frame, rev: u64 } }   // {"player":{"frame":2467,"rev":3}}: the GUI's playback sync
 pub enum ShuttleDir { Reverse, Stop, Forward }
 pub enum ExportFormat { Mp4, Webm }                      // default mp4
 pub enum Quality { Draft, Standard, High }               // default standard
@@ -572,6 +584,18 @@ whether that stream has media), and `AllTakes` skips takes still
 recording. `AudioRemove` of the project-scene track named by
 `autocut.track` also sets it to null in the same entry. `LayerOrder` past
 the top means the top.
+
+Seek rules (GUI G§3.10 step 3): every `Seek` that lands bumps
+`runtime.playhead_rev`, also one that leaves the playhead where it was,
+and so does a `Play` or `Shuttle` from the end (the playhead back to 0).
+`SeekTarget::Player { frame, rev }` is the GUI's playback sync (its
+once-a-second seek and its parks: the frame its player showed while the
+revision was `rev`): it lands only while `playhead_rev` is still `rev` and
+leaves it as it is; otherwise it replies Ok with `"dropped": true` and
+changes nothing, so it never undoes a seek of the CLI, an agent or the
+window that landed after the snapshot it read. While the program plays,
+`By`, `EditPrev` and `EditNext` go from the GUI player's frame
+(`Facts::player_ns`, A§4.2), not from the playhead.
 
 ### A§4.5 Queries, replies, progress, toasts
 
@@ -1445,7 +1469,7 @@ pub trait MediaRunner: Send {
 `Session::handle(Request)`: allocate `ReqId`, `facts_needed` → gather facts →
 `apply` → run effects (A§7.6 order) → `Responder`. Events go to `on_event`.
 Fake `Deps` make the Session testable without GStreamer or ffmpeg.
-`SessionConfig { lock, channel, env, notifier, observer, sources,
+`SessionConfig { lock, channel, env, notifier, observer, sources, player,
 recovery_wait }`: a host passes the lock it holds (A§8.3 step 1) and the
 inbox its server already fills; without a lock, a mutating open takes it
 (`Busy` when held). A GUI passes `facts::SharedSources` as `sources` (GUI
@@ -1454,6 +1478,10 @@ discovers on the caller's thread; an empty cache discovers once, on the
 thread that asks first, and a caller that comes during a refresh waits for
 it), so `LayerAdd`, `AudioAdd` and a take's start never wait for `pactl`,
 Wayland or the camera monitor on the session thread once a discovery ran.
+It passes its program position as `player` (`facts::PlayerPosition`: the
+Program player's position while the program plays in it, read with
+atomics), which the gatherer reads for a relative seek while playing
+(A§4.2, GUI G§3.10 step 3).
 During a responder's calls `session::current_request()` is its `ReqId`,
 which an IPC responder keeps to post `RequesterGone` when its client leaves.
 
@@ -2444,7 +2472,11 @@ Program sink; calls return at once, loads and seeks coalesce (newest wins).
   READY or NULL (abandoned past 5 s: leaked): GES frees a removed clip's
   sources with it while their decoders may still be starting.
 - Seeks are FLUSH|ACCURATE and frame-aligned, one in flight, done when the
-  first frame after the flush reaches the sink. Forward rates are seeks
+  first frame after the flush reaches the sink. A pause alone shows the
+  sink's preroll buffer, the frame after the one on screen: the GUI's stop
+  seeks the paused player to the frame it parks the playhead at (GUI
+  G§3.10 step 2). `position_reader()` reads the position from any thread
+  (the GUI's Session facts, A§4.2). Forward rates are seeks
   with the rate; reverse is stepping (accurate seeks, ≤ 15 a second, video
   only), `Ended { reverse: true }` at 0. `scrub` plays 60 ms of sound (a
   plain seek while playing, or while a load waits: that load still says
@@ -2597,7 +2629,7 @@ strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
 | Parity | GES vs frame plan: SSIM ≥ 0.98 **per layer rect**, plus a frame-ID fixture (frame index drawn as binary bars) asserting the exact source frame in both renderers; at another recorded rate, export segments, frame saves and GES all show `shown_frame` (A§9.3) in units starting anywhere |
 | Late errors | `tests/props_late_errors.rs`: an `on_event` outcome that replies `Err` to a requester also has a `Notify` (A§8.1), over random requests answered late, out of order or as failures, plus a table of every known path |
 | GUI host | `host/gui_tests.rs`: `GuiHost` with a fake `GuiPort` and Session (`ipc::testing`) and shortened `ExitRules`: no idle exit, `first` ahead of early requests, one FIFO, `fail`, a failed open, close (after what the window submitted before it; dropping autocut analyses; the grace ending a recovery hold), every window request answered once (also unhandled ones, and at once while the Session drops), `first`'s toasts only while serving, signals (the second in a child process), the `shutdown` refusal, a crash; with a real Session and no capture (a closing window's autocut cuts nothing; a signal while it opens toasts nothing); and once with a real Session on the fake capture backend (the port as its observer and notifier: `first` initializes an empty folder, a CLI take records, the window's stop is answered after its state, close); `host/takeover_tests.rs` against hosts with a fake Session, and Stop & open on a real fake-backend recording and countdown (`crates/qrec/tests/cli.rs`) |
-| Session for the GUI | `session/tests.rs`: the observer's snapshots (commands, `RecordClock`, export progress, before their replies), `reply_late` only for `Effect::Reply`, D-47 (UI commands answered while edits wait for a recovery), `RetryLive` in order with `SetLive`; `SharedSources` never discovering on the session thread once cached; `laneMute` through `.qrec/ui.json` |
+| Session for the GUI | `session/tests.rs`: the observer's snapshots (commands, `RecordClock`, export progress, before their replies), `reply_late` only for `Effect::Reply`, D-47 (UI commands answered while edits wait for a recovery), `RetryLive` in order with `SetLive`; `SharedSources` never discovering on the session thread once cached; `laneMute` through `.qrec/ui.json`; a relative seek while playing from the window's player (`SessionConfig::player`) and the sync's stale seek dropped (GUI G§3.10 step 3) |
 | View models | `insta` per `view` module over `testkit::design_state()` and its owner's variants (docs/GUI.md G§8.1) |
 | GUI | headless screenshots against the design fixture and the end-to-end smoke run (docs/GUI.md G§8.4–G§8.5; not built yet) |
 
