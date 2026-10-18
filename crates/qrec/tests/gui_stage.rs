@@ -280,7 +280,11 @@ fn s01a_first_run() {
     // The icons and art lane's measure: a checked row's check is the
     // frames' 12 px `check` centered in its 16 px box (C20: 8 px of ink
     // across), where GTK drew it over the box's whole 16 px content (11).
-    // The first row's box is at x 380–395, y 221–236.
+    // The first row's box is at x 380–395, y 221–236. The stroke's span
+    // is 9 px (x 383.5–392.5): at 1 the faint edge columns stay under the
+    // threshold (8), at 1.5 and 2 an edge's device pixel counts (9.3 and
+    // 9.5), and the 16 px draw is 11 or more at every scale, so the bound
+    // sits between them (M5's scale runs).
     let accent = gui_support::token_rgb("swamp-night", "accent");
     let inside = nested.opts.rect_px([382.0, 223.0, 12.0, 12.0]);
     let columns = inside[2] as usize;
@@ -292,7 +296,7 @@ fn s01a_first_run() {
     }
     let across = inked.iter().filter(|&&c| c).count() as f64 / nested.opts.scale;
     assert!(
-        (6.0..=9.0).contains(&across),
+        (6.0..=10.5).contains(&across),
         "the first row's check: {across} px of ink across (the frame's 8)"
     );
 }
