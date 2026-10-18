@@ -279,7 +279,7 @@ mod tests {
     fn a_two_digit_countdown_fits_inside_its_ring() {
         assert_eq!(digit_fit(100.0, 117.0, 1.0), 1.0);
         assert_eq!(digit_fit(200.0, 234.0, 2.0), 1.0);
-        assert!(DIGIT_ROOM < RING / 2.0 - RING_STROKE);
+        const { assert!(DIGIT_ROOM < RING / 2.0 - RING_STROKE) };
         for scale in [1.0, 1.5, 2.0] {
             let (w, h) = (190.0 * scale, 117.0 * scale);
             let fit = digit_fit(w, h, scale);
