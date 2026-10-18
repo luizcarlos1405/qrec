@@ -57,8 +57,9 @@ twice).
 | Crate | Version / features | Used by |
 | --- | --- | --- |
 | serde, serde_json | 1, **never** `preserve_order` | all |
+| thiserror | 2 | core, shell |
 | schemars | 1.2, `chrono04` | core (`qrec schema`) |
-| chrono | 0.4, `std, serde`, no default features; the shell adds `clock` | core, shell |
+| chrono | 0.4, `std, serde`, no default features; the shell, the GUI and the binary add `clock` | core, shell, gui, qrec |
 | json-patch | 4.2 (use its re-exported `jsonptr`) | core |
 | sha2 0.11 + hex | only through `qrec_core::hash` | core |
 | toml 1.1, toml_edit 0.25 | config and keys files | core |
@@ -70,11 +71,11 @@ twice).
 | crossbeam-channel | 0.5 | shell, gui |
 | notify | 8 (inotify) | shell |
 | wayland-client | 0.31 (wl_output names) | shell |
-| rustix | 1.1 `process, termios` (setsid, kill, process groups) | shell |
-| libc | 0.2 (`renameat2`, `SO_PEERCRED`, `prctl`, `flock`, `sigaction`) | shell |
-| tempfile, getrandom, dirs, which, tracing(-subscriber), anyhow | | shell, cli; tracing also gui |
+| rustix | 1.1 `process, termios` (uids, kill, process groups) | shell |
+| libc | 0.2 (`renameat2`, `SO_PEERCRED`, `prctl`, `flock`, `sigaction`, `setsid`; `clone`, `execve` and the child's steps in `spawn.rs`, A§8.7) | shell |
+| tempfile, getrandom, dirs, which, tracing, anyhow | | shell; tracing also gui and the binary, which adds tracing-subscriber; tempfile also the GUI's and the binary's tests |
 | clap 4.6 (derive), clap_complete | | cli |
-| assert_cmd, predicates | tests | qrec |
+| assert_cmd, predicates | tests | qrec (assert_cmd also the shell's `testkit`) |
 
 The workspace MSRV is Rust 1.92 (`rust-version`): gtk4 0.11.5, glib
 0.22.10 and gstreamer 0.25.4 need it. File locking stays `flock(2)` through
@@ -113,7 +114,8 @@ crates/qrec-core/src/
     reply,progress,toast,wire}.rs testkit.rs                      foundation
   apply/mod.rs on_event/mod.rs history/commit.rs                  foundation (skeleton + commit helper)
   timeline.rs apply/{clip,ui}.rs ui_normalize.rs                  owner: timeline
-  history/{view,diff,ops,purge,external}.rs apply/history.rs     owner: history
+  history/{view,diff,ops,purge,external}.rs apply/history.rs
+    on_event/disk.rs                                              owner: history
   apply/{project,scene}.rs requantize.rs                          owner: scene
   apply/record.rs on_event/record.rs capture_plan.rs              owner: record
   autocut.rs apply/autocut.rs on_event/autocut.rs
@@ -122,12 +124,12 @@ crates/qrec-core/src/
     media_argv.rs apply/output.rs on_event/output.rs
     parse/{ffprobe,progress}.rs                                   owner: output
   validate.rs migrate.rs schema.rs query.rs keymap.rs config.rs
-    agent_guide.rs                                                owner: meta
+    toml_text.rs agent_guide.rs                                   owner: meta
   view/                                                           owners: G§3.17
 crates/qrec-shell/src/
-  lib.rs paths.rs msg.rs deps.rs wire.rs testkit/                foundation (skeleton)
+  lib.rs paths.rs msg.rs deps.rs wire.rs error.rs testkit/       foundation (skeleton)
   store/ lock.rs host/{lockfile,publish}.rs watcher.rs           owner: store
-  session/ facts.rs caps.rs timers.rs proc.rs                    owner: session
+  session/ facts.rs caps.rs timers.rs proc.rs spawn.rs           owner: session
   ipc/ host/{headless,cli_host,gui,takeover,signals,spawn}.rs     owner: ipc
   media/ sources.rs doctor.rs                                     owner: media
   capture/ gpu.rs gst_init.rs ges_render.rs player.rs             owner: capture
@@ -139,8 +141,11 @@ crates/qrec-gui/                                                  owners: G§3.1
 The GUI's files keep the owner of their area: the GUI host and the
 takeover (`host/{gui,takeover}.rs`) are ipc's, the Program player
 (`player.rs`) is capture's, the preview cache and take sizes
-(`media/{preview,sizes}.rs`) are media's, and the bounded readers of
-`config.toml` and `keys.toml` (`config_file.rs`, `keys_file.rs`) are meta's.
+(`media/{preview,sizes}.rs`) are media's, and the bounded readers and the
+atomic writers of `config.toml` and `keys.toml` (`config_file.rs`,
+`keys_file.rs`; the writers since WP9) are meta's. `spawn.rs`, how both
+process runners start a child (A§8.7), is the session's, next to
+`proc.rs`; media's runner (`media/child.rs`) uses it too.
 The core's `view/` modules and `qrec-gui` belong to the GUI's work
 packages, which edit only the files docs/GUI.md G§3.16–G§3.17 give them;
 G§7.0 adds `view/mod.rs`, the `capture/mod.rs` types and the module lists
@@ -457,9 +462,10 @@ it from `SessionConfig::player`, a `facts::PlayerPosition` the window keeps
 none, and such a seek goes from the playhead (GUI G§3.10 step 3).
 
 `Facts.config` is `config.toml` read with `config::parse` (A§9.8), again
-whenever its size or mtime changed, so `qrec config set` reaches a running
-host. A file that can't be used (bad TOML, an unknown key such as a typo, a
-wrong type, a value out of range, a file or folder that can't be read, one
+whenever its size, mtime, inode or change time changed (`ConfigFile`), so
+`qrec config set` reaches a running host. A file that can't be used (bad
+TOML, an unknown key such as a typo, a wrong type, a value out of range, a
+file or folder that can't be read, one
 that isn't a regular file or holds over 1 MiB: `config_file::read_text`, so
 a FIFO never blocks) gives the defaults for every setting, and people are
 told: a warning toast "config.toml is invalid" whose body is the problem and
@@ -595,7 +601,12 @@ leaves it as it is; otherwise it replies Ok with `"dropped": true` and
 changes nothing, so it never undoes a seek of the CLI, an agent or the
 window that landed after the snapshot it read. While the program plays,
 `By`, `EditPrev` and `EditNext` go from the GUI player's frame
-(`Facts::player_ns`, A§4.2), not from the playhead.
+(`Facts::player_ns`, A§4.2), not from the playhead. A step of the
+window's while the program plays (a frame, a second, an edit point: GUI
+D-51) is two plain commands, `Pause`, then `Seek{To(f)}` with `f` what
+`apply::ui::seek_frame` gives from the frame the picture shows; the sync
+parks nothing for that stop and holds the paused picture until the seek
+lands (GUI G§3.10 step 2).
 
 ### A§4.5 Queries, replies, progress, toasts
 
@@ -952,7 +963,10 @@ clips whose take is still `ok`, clamped to its current `durationFrames`).
 If no clip references it: `NotFound` "Take N is already in the bin" — `d`
 never reaches older takes. In Finalizing the discard is applied right after
 placement ("Record take N" then "Discard take N", both undoable); if the
-take wasn't placed, reply Ok "take N was not placed".
+take wasn't placed, reply Ok "take N was not placed". A discard toasts
+"Take N moved to the bin" / "Its clip left the timeline. Files are kept."
+(its clip count, and the clips a record-over discard put back, named)
+with Undo (GUI D-21, S25 #5), in every host: the CLI prints it on stderr.
 
 ### A§5.6 Purge
 
@@ -1478,9 +1492,11 @@ discovers on the caller's thread; an empty cache discovers once, on the
 thread that asks first, and a caller that comes during a refresh waits for
 it), so `LayerAdd`, `AudioAdd` and a take's start never wait for `pactl`,
 Wayland or the camera monitor on the session thread once a discovery ran.
-It passes its program position as `player` (`facts::PlayerPosition`: the
-Program player's position while the program plays in it, read with
-atomics), which the gatherer reads for a relative seek while playing
+It passes its program position as `player` (`facts::PlayerPosition`, a
+closure: the Program player's position while the program plays in it,
+`None` otherwise; the window's `media::program::ProgramPosition` holds the
+player's `PositionReader` under a lock taken only for its atomic load, never
+across a wait), which the gatherer reads for a relative seek while playing
 (A§4.2, GUI G§3.10 step 3).
 During a responder's calls `session::current_request()` is its `ReqId`,
 which an IPC responder keeps to post `RequesterGone` when its client leaves.
@@ -1798,23 +1814,25 @@ nothing of anyone else's may be tied to it for long:
 ### A§8.7 Process runner (`proc.rs`) and logs
 
 Two runners apply these rules: `proc.rs` (the session's: capability
-checks, `pactl` facts) and `media/child.rs` (the media runner, `sources`,
-`doctor`). Both start their children without forking Qrec (`spawn.rs`:
+checks, `pactl` facts; and the window's `wl-copy`) and `media/child.rs`
+(the media runner, `sources`, `doctor`). Both start their children without
+forking Qrec (`spawn.rs`:
 `clone(CLONE_VM | CLONE_VFORK)`, the way `posix_spawn` does, with the
 steps below in the child before `execve`; it allocates nothing there and
 only makes system calls). A fork copies the whole process's page tables
 while glibc holds every malloc arena's lock: in the GUI's process under GL
 one took 25–48 ms, and its main thread waited out each one (G§8.6).
-Every child: stdin null, its own process group, stdout piped only
-when parsed (drained on its own thread), stderr appended to a log file
+Every child: stdin null (`wl-copy`'s is the PNG it copies), its own
+process group, stdout piped only when parsed (drained on its own thread),
+stderr appended to a log file
 (an anonymous temp file for project-less runs: `sources list`, `doctor`), and
 nothing else (but an output's temp file, which the ffmpeg writing it keeps
 under the same descriptor number, A§8.8): in the child, every descriptor
 from 3 up is made
 close-on-exec (`proc::close_on_exec_from`: `close_range(…,
 CLOSE_RANGE_CLOEXEC)`, else an `fcntl` sweep below `RLIMIT_NOFILE`; never
-closed outright, so std still hears a failed `exec` where a `pre_exec` does
-it). Rust opens everything
+closed outright, so the exec-error pipe, `spawn.rs`'s own or std's after a
+`pre_exec`, still reports a failed `exec`). Rust opens everything
 close-on-exec already; this also keeps out what Qrec itself inherited from
 whoever started it. It gets SIGKILL when the thread that started it dies
 (`PR_SET_PDEATHSIG`; it doesn't start when that process is already gone),
@@ -1979,6 +1997,16 @@ its size, mtime, inode or change time changed (`ConfigFile`), and
   node is probed at all (no factory, no h264_vaapi check, none in `doctor`).
 - The Nix package ships gst-plugins-bad without `nvcodec` and `qsv`, which
   hang the plugin scan on the dev machine.
+- The package (`nix build`, `flake.nix`; docs/GUI.md G§6.4) is the release
+  binary wrapped by `wrapGAppsHook4`: the runtime tools (ffmpeg, `pactl`,
+  `wl-copy`, v4l-utils) on `PATH`, Adwaita's and hicolor's icon themes on
+  `XDG_DATA_DIRS`, and GStreamer's plugin path set to the package's own
+  plugins (`GST_PLUGIN_SYSTEM_PATH_1_0` replaced, not prefixed, and
+  `GST_PLUGIN_PATH_1_0` unset), so a session's plugin paths (NixOS sets one
+  for GNOME, with an unfiltered gst-plugins-bad) are never scanned. It
+  installs the bundled fonts next to the binary (`share/qrec/fonts`) and
+  the desktop entry and icons (`data/install.sh`); the build sandbox runs
+  `qrec-core`'s tests only.
 
 ### A§8.11 Capture engine
 
@@ -2482,7 +2510,10 @@ Program sink; calls return at once, loads and seeks coalesce (newest wins).
   READY or NULL (abandoned past 5 s: leaked): GES frees a removed clip's
   sources with it while their decoders may still be starting.
 - Seeks are FLUSH|ACCURATE and frame-aligned, one in flight, done when the
-  first frame after the flush reaches the sink. A pause alone shows the
+  first frame after the flush reaches the sink. One the pipeline refuses
+  (now and then during a fast ruler scrub) goes again 30 ms later, a newer
+  one in its place, at most 30 times; a seek that comes with a pause goes
+  with the pipeline paused, so it ends on its frame. A pause alone shows the
   sink's preroll buffer, the frame after the one on screen: the GUI's stop
   seeks the paused player to the frame it parks the playhead at (GUI
   G§3.10 step 2). `position_reader()` reads the position from any thread
@@ -2550,14 +2581,17 @@ can't start: the capture engine is stuck ("The capture engine is stuck
 GUI's Record button says the same); an invalid `qrec.json` isn't one, since
 a take moves the bad file aside first (A§7.7).
 `keys.toml`: `[bindings]` id → string or array. `qrec keys --json` prints
-`[{"id","group","label","keys":[..],"cli","contexts"}]`. Settings ›
-Keyboard edits it (WP9): `set_binding` / `reset_binding` change one line
-of the text at `toml_edit`'s spans and leave every other byte (comments,
-order, spacing), refuse a file that isn't TOML, and fall back to a
-document edit for an inline `bindings` table; the shell writes the result
-atomically (`keys_file::{set_binding, reset_binding}`). `history.clear`
-is an id `action_for` knows without being a binding (no key, not in
-`keys.toml`): the palette's "Clear undo history". An open window
+`[{"id","group","label","keys":[..],"cli","contexts"}]`. Its editor is
+Settings › Keyboard (WP9: the edits and the writer are built, the GTK
+page waits for its frames, docs/GUI.md WP9): `set_binding` /
+`reset_binding` change one line of the text at `toml_edit`'s spans and
+leave every other byte (comments, order, spacing), refuse a file that
+isn't TOML, and fall back to a document edit for an inline `bindings`
+table; the shell writes the result atomically (`keys_file::{set_binding,
+reset_binding}`). `history.clear` is an id `action_for` knows without
+being a binding (no key, not in `keys.toml`): the palette's "Clear undo
+history" (its row and dispatch are built; the palette's GTK view waits
+like Settings'). An open window
 reloads it when the file changes (A§8.9's settings watcher): the new keys
 work and show at once, and each problem it didn't have is a toast (GUI
 G§3.14).
@@ -2587,8 +2621,9 @@ shell only reads and atomically writes the file. Since WP9 the edit is
 next to `ui.sounds`): the value replaced at its span, or one line added or
 removed; and the write goes through `Backend::write_settings`, which the
 `qrec` binary implements with `qrec_shell::config_file::write_text`, the
-Settings pages' writer (`config_file::set`): a temp file renamed over the
-file, its permissions kept, a symlink written through. Hosts read it as
+writer behind `config_file::set`, which WP9's Settings pages are to use (their
+GTK pages wait for their frames): a temp file renamed over the file, its
+permissions kept, a symlink written through. Hosts read it as
 `Facts.config`: a file `parse` refuses gives all the defaults, and people
 get a "config.toml is invalid" warning once per change of the file
 (A§4.2), so a typo never drops the settings silently. An open window
@@ -2631,9 +2666,10 @@ strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
 - `qrec` without a command opens the window on `--project DIR` (made
   absolute) or the cwd, as is (`Backend::gui`: the window applies its own
   folder rule, GUI D-14), and exits with its code; under `--json` it is
-  `usage` "the GUI has no --json output; give a command" (exit 2). Until the
-  binary runs `qrec-gui`, it logs to the project's GUI log (A§8.2), then
-  answers `unavailable` "The Qrec GUI is not built yet…".
+  `usage` "the GUI has no --json output; give a command" (exit 2). The
+  binary's backend logs to the project's GUI log (A§8.2) and runs
+  `qrec_gui::run` on the main thread; a `Backend` without a window (the
+  trait's default) answers `unavailable` "The Qrec GUI is not built yet…".
 - Extensions to SPEC §14 (for GUI parity): `qrec project set`,
   `qrec autocut settings`, `qrec export cancel`, `qrec history clear`,
   `qrec completions`, `--codec`, `seek --to start|end`,
@@ -2650,7 +2686,7 @@ strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
 | --- | --- |
 | Core unit + properties | per module; `tests/props_<area>.rs`: split identity (plans equal), trim bounds, move permutation, undo∘apply = id, redo∘undo = id, patch size, autocut padding, fps requantize, migration round trip, time and layout (done) |
 | Planner snapshots | `insta`: export/frame/probe/silence argv, capture plan, GES plan, keymap, every `Command` JSON |
-| Shell | store order and crash points, lock/socket protocol, history persistence, IPC round trip, process runner timeouts |
+| Shell | store order and crash points, lock/socket protocol, history persistence, IPC round trip, process runner timeouts; `spawn.rs`'s child start (arguments, env, folder, `PATH` lookup, exit statuses, missing or unrunnable programs, process group, descriptors, signals, the parent-death signal) and both runners starting children without a fork (a `pthread_atfork` counter, A§8.7); the settings writers' round trips on commented files (`config_file`, `keys_file`) |
 | CLI integration | `crates/qrec/tests/<area>.rs` with `assert_cmd` |
 | Fake capture | `QREC_CAPTURE_BACKEND=fake` record start/stop end to end (M2); the GUI's parts (`capture/tests.rs`): the preview into an appsink standing in for the paintable sink (BGRx at the fitted size, one element through rebuilds), `transient_layout`, `retry_live`, the cast grace (a sharing fake portal's call count), `LiveStatus` for builds, refusals and deaths, a rebuilt preview keeping a cropped camera (both paths), `MeterMonitor` |
 | Player | `player_tests.rs`: an appsink and the frame-ID fixture: accurate seeks show the frame plan's frame, `load` keeps the position, back-to-back loads free no running source (`Retired`), rates and reverse stepping, `Ended`, `Error`, `out_size`, shutdown ≤ 5 s |
@@ -2659,7 +2695,7 @@ strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
 | GUI host | `host/gui_tests.rs`: `GuiHost` with a fake `GuiPort` and Session (`ipc::testing`) and shortened `ExitRules`: no idle exit, `first` ahead of early requests, one FIFO, `fail`, a failed open, close (after what the window submitted before it; dropping autocut analyses; the grace ending a recovery hold), every window request answered once (also unhandled ones, and at once while the Session drops), `first`'s toasts only while serving, signals (the second in a child process), the `shutdown` refusal, a crash; with a real Session and no capture (a closing window's autocut cuts nothing; a signal while it opens toasts nothing); and once with a real Session on the fake capture backend (the port as its observer and notifier: `first` initializes an empty folder, a CLI take records, the window's stop is answered after its state, close); `host/takeover_tests.rs` against hosts with a fake Session, and Stop & open on a real fake-backend recording and countdown (`crates/qrec/tests/cli.rs`) |
 | Session for the GUI | `session/tests.rs`: the observer's snapshots (commands, `RecordClock`, export progress, before their replies), `reply_late` only for `Effect::Reply`, D-47 (UI commands answered while edits wait for a recovery), `RetryLive` in order with `SetLive`; `SharedSources` never discovering on the session thread once cached; `laneMute` through `.qrec/ui.json`; a relative seek while playing from the window's player (`SessionConfig::player`) and the sync's stale seek dropped (GUI G§3.10 step 3) |
 | View models | `insta` per `view` module over `testkit::design_state()` and its owner's variants (docs/GUI.md G§8.1) |
-| GUI | headless screenshots against the design fixture and the end-to-end smoke run (docs/GUI.md G§8.4–G§8.5; not built yet) |
+| GUI | GTK-free logic as unit tests in `qrec-gui` (G§8.2), and its `tests/resources_fresh.rs` (the compiled GResource is `resources/` byte for byte: `build.rs` reruns only on a newer mtime, G§3.14); the nested suites in `crates/qrec/tests/gui_*.rs` (`gui_shell`, `gui_smoke`, `gui_chrome`, `gui_timeline`, `gui_stage`, `gui_panel`, `gui_bin_export`, `gui_live`, `gui_themes`, `gui_a11y`, `gui_audits`, `gui_text`; `-- --ignored`): the window in a headless sway on the design fixture, on pixman or gles2 (`QREC_TEST_WLR`), at any scale (`QREC_TEST_SCALE`), probed through its test channel and shot against the frames, failing on any GLib or GTK critical; the end-to-end smoke with the main-loop probe (docs/GUI.md G§8.4–G§8.6) |
 
 **`qrec_core::testkit`** (feature `testkit`, also under `cfg(test)`; pure):
 `ctx(now, entropy)`, `ProjectBuilder` (`.canvas()`, `.screen_layer()`,
