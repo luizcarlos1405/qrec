@@ -54,17 +54,23 @@ fn page_of(local: &Value) -> String {
         .to_owned()
 }
 
-/// Waits until the window shows page `page`, then until it settles: the
-/// keyboard is on the page with its ring showing (the frames draw it).
+/// Waits until the window shows page `page` with the keyboard on it and
+/// its ring showing (the frames draw it), then until it settles. GTK shows
+/// a ring for 3 s from then (`VISIBLE_FOCUS_DURATION`), so it is looked
+/// for as the page shows: after a settle on a loaded machine (the gles2
+/// run beside a `nix build`) it had gone.
 fn wait_page(gui: &Gui, page: &str, within: Duration) -> Value {
     let deadline = Instant::now() + within;
     loop {
         let local = gui.local();
         if local["startup"]["phase"] == "blocked" && page_of(&local) == page {
+            let ring = poll(Duration::from_secs(2), "the page's focus ring", || {
+                let local = gui.local();
+                (local["focusVisible"] == true).then_some(local)
+            });
+            assert_eq!(ring["focusVisible"], true, "the focus ring: {ring}");
             gui.wait_idle();
-            let local = gui.local();
-            assert_eq!(local["focusVisible"], true, "the focus ring: {local}");
-            return local;
+            return gui.local();
         }
         assert!(
             Instant::now() < deadline,
