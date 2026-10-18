@@ -3843,7 +3843,9 @@ measured layout only.
     <name>."; #10 "qrec.json changed on disk but isn't valid" / "<why>.
     Keeping the last good state." / Copy details; #11 "Recording didn't
     start" / "<why>, so take N stopped before any frames. It's marked
-    broken in the bin." / Try again · Open bin. #1 and #9 were in already.
+    broken in the bin." / Try again · Open bin (Open bin alone when the
+    capture engine is stuck: it refuses every start until a restart). #1
+    and #9 were in already.
   - The lane's own words where BRIEF draws nothing: #2's body for a
     recovered take too short to place too (its bin row says why, D-18);
     #5 for several clips ("Its 3 clips left the timeline") and for the
@@ -4447,13 +4449,14 @@ D-22, the D-30 caption, D-31. Re-registers `keys.help` and `palette.open`.
   reset_binding}` (the keymap and its problems back, for the window to
   use at once). `qrec config set` writes through the new
   `Backend::write_settings`, which the `qrec` binary implements with the
-  shell's `write_text` (`cli.rs`' `config_set_changes_one_line_through_
-  the_shells_writer`). Round trips with commented files in each.
+  shell's `write_text` (`cli.rs`:
+  `config_set_changes_one_line_through_the_shells_writer`). Round trips
+  with commented files in each.
 - `view::palette` (rows, `availability`, `fuzzy_match`, `highlight_ranges`
-  and `PaletteItem::highlights` for Pango's byte ranges), `view::
-  cheatsheet` (`cheat_sheet(keymap, keys_path, search)`: the search keeps
-  rows holding each word, `word_match`; `rebound_note`) and `view::
-  preferences` (`appearance_page` with each control's setting,
+  and `PaletteItem::highlights` for Pango's byte ranges),
+  `view::cheatsheet` (`cheat_sheet(keymap, keys_path, search)`: the search
+  keeps rows holding each word, `word_match`; `rebound_note`) and
+  `view::preferences` (`appearance_page` with each control's setting,
   `keyboard_page(keymap, keys_path, search, capturing)` with the banner,
   the rows' keys, state, flags and the capture caption; Recording and
   Autocut their config values): insta snapshots of S19 ("sp", the
