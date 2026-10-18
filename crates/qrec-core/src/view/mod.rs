@@ -80,7 +80,8 @@ pub struct GuiFacts {
     pub built: Built,
 }
 
-/// GUI parts that exist yet (all false until WP9, G§1.1).
+/// GUI parts that exist yet (G§1.1): all of them since WP9; the core
+/// keeps the facts for a GUI built without some.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Built {

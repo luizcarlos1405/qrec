@@ -130,7 +130,7 @@ fn invalid_on_disk(state: &State, msg: String) -> Outcome {
         format!("qrec.json on disk is invalid: {msg}"),
     )];
     if new {
-        let why = crate::view::format::capitalized(msg.trim_end().trim_end_matches('.'));
+        let why = invalid_why(&msg);
         let details = format!(
             "qrec.json changed on disk but isn't valid: {why}.\nRestore the last good state \
              from history: qrec history restore {} --yes",
@@ -148,6 +148,33 @@ fn invalid_on_disk(state: &State, msg: String) -> Outcome {
 /// The toast of a `qrec.json` that changed on disk and can't be read
 /// (S25 #10).
 pub const INVALID_ON_DISK_TITLE: &str = "qrec.json changed on disk but isn't valid";
+
+/// Why `qrec.json` on disk isn't valid, as S25 #10 says it (D-21): a clip
+/// past the end of its take reads "/timeline/clips/4/out: 1400 is past the
+/// end of take 3 (1,377 frames)" (the place, the value as written, the
+/// take's length); any other reason is the core's, capitalized.
+pub fn invalid_why(msg: &str) -> String {
+    out_past_take(msg)
+        .unwrap_or_else(|| crate::view::format::capitalized(msg.trim_end().trim_end_matches('.')))
+}
+
+/// The validator's "invalid project: clip c1b4 ends at frame 1400, past the
+/// end of take-0003 (1377 frames) (/timeline/clips/4/out)" in S25's words.
+fn out_past_take(msg: &str) -> Option<String> {
+    let rest = msg.strip_prefix("invalid project: clip ")?;
+    let (_, rest) = rest.split_once(" ends at frame ")?;
+    let (out, rest) = rest.split_once(", past the end of take-")?;
+    let (take, rest) = rest.split_once(" (")?;
+    let (frames, rest) = rest.split_once(" frames) (")?;
+    let pointer = rest.strip_suffix(')').filter(|p| p.starts_with('/'))?;
+    let out: u64 = out.parse().ok()?;
+    let take: u32 = take.parse().ok()?;
+    let frames: u64 = frames.parse().ok()?;
+    Some(format!(
+        "{pointer}: {out} is past the end of take {take} ({} frames)",
+        crate::view::format::count(frames)
+    ))
+}
 
 /// The purge job finished: drop the job, reply to its requester.
 pub fn take_dirs_deleted(
@@ -604,6 +631,44 @@ mod tests {
         // Not a purge: ignored.
         let out = purge_failed(&state, &ctx(), JobId(9), "EIO".into());
         assert_eq!(out.state, state);
+    }
+
+    /// S25 #10 (D-21): a clip past its take's end reads as the frame says
+    /// it, in the toast's body and its details; other reasons stay the
+    /// core's.
+    #[test]
+    fn an_out_past_its_take_reads_as_s25_draws_it() {
+        let msg = "invalid project: clip c1b4 ends at frame 1400, past the end of take-0003 \
+                   (1377 frames) (/timeline/clips/4/out)";
+        assert_eq!(
+            invalid_why(msg),
+            "/timeline/clips/4/out: 1400 is past the end of take 3 (1,377 frames)"
+        );
+        let out = project_changed_on_disk(&state(), &ctx(), Err(msg.to_owned()));
+        let toast = toasts(&out)[0];
+        assert_eq!(
+            toast.body.as_deref(),
+            Some(
+                "/timeline/clips/4/out: 1400 is past the end of take 3 (1,377 frames). \
+                 Keeping the last good state."
+            )
+        );
+        assert!(matches!(
+            &toast.actions[0].action,
+            UiAction::CopyText(text) if text.starts_with(
+                "qrec.json changed on disk but isn't valid: /timeline/clips/4/out: 1400 is past"
+            )
+        ));
+        assert_eq!(
+            invalid_why(
+                "invalid project: clip c002 uses take-0001, which is recording (/timeline/clips/0)"
+            ),
+            "Invalid project: clip c002 uses take-0001, which is recording (/timeline/clips/0)"
+        );
+        assert_eq!(
+            invalid_why("expected value at line 3."),
+            "Expected value at line 3"
+        );
     }
 
     #[test]

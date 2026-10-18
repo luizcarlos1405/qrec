@@ -1296,8 +1296,8 @@ fn lost_source(scene: &Scene, id: &str) -> (&'static str, String, String) {
 /// any frames. It's marked broken in the bin." / Try again (the same take
 /// again: append, or over the same clips; not when `retry` is false: a
 /// stuck engine refuses it) · Open bin. `reason` is the failure as the
-/// engine words it (BRIEF's "Screen access to DP-4 was denied" needs the
-/// portal's refusal from the shell, S24).
+/// engine words it; a screen the portal refused reads as S25 draws it
+/// ([`portal_refusal`]).
 fn didnt_start_toast(n: u32, reason: &str, mode: &RecordMode, retry: bool) -> Toast {
     let mode = match mode {
         RecordMode::Append => crate::protocol::command::RecordModeArg::Append,
@@ -1305,7 +1305,8 @@ fn didnt_start_toast(n: u32, reason: &str, mode: &RecordMode, retry: bool) -> To
             clips.iter().map(|c| c.id.clone()).collect(),
         ),
     };
-    let why = crate::view::format::capitalized(reason.trim_end_matches('.'));
+    let why = portal_refusal(reason)
+        .unwrap_or_else(|| crate::view::format::capitalized(reason.trim_end_matches('.')));
     let mut toast = Toast::new(ToastLevel::Error, "Recording didn't start").with_body(format!(
         "{why}, so take {n} stopped before any frames. It's marked broken in the bin."
     ));
@@ -1322,6 +1323,27 @@ fn didnt_start_toast(n: u32, reason: &str, mode: &RecordMode, retry: bool) -> To
         );
     }
     toast.with_action("Open bin", super::toasts::open_bin())
+}
+
+/// What the ScreenCast portal's failure to share a screen reads as in S25
+/// #11 (D-21): the shell's portal words it "screen sharing for <output>
+/// failed: <why>" (`qrec_shell::capture::portal`'s answer to the dialog,
+/// and its fake's); closed: "The screen picker for DP-4 was closed" (S24's
+/// variant), refused any other way: "Screen access to DP-4 was denied"
+/// (S24, as the live engine calls every such answer but a closed dialog
+/// refused). `None` for anything else (a missing portal is told as it is).
+pub fn portal_refusal(reason: &str) -> Option<String> {
+    const PREFIX: &str = "screen sharing for ";
+    let rest = &reason[reason.find(PREFIX)? + PREFIX.len()..];
+    let (output, why) = rest.split_once(" failed")?;
+    if output.is_empty() || why.contains("no ScreenCast portal") {
+        return None;
+    }
+    Some(if why.contains("cancelled in the dialog") {
+        format!("The screen picker for {output} was closed")
+    } else {
+        format!("Screen access to {output} was denied")
+    })
 }
 
 // ------------------------------------------------------------------ misc

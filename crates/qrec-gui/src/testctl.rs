@@ -368,6 +368,7 @@ pub fn handle(app: &Rc<App>, request: TestRequest) {
         "icons" => icons(app),
         "art" => art(app, &request),
         "probe" => crate::probe::report(),
+        "paletteRecent" => palette_recent(&request),
         other => json!({"ok": false, "error": format!("no op {other:?}")}),
     };
     answer(&reply, value);
@@ -588,6 +589,20 @@ fn notify(app: &App, request: &Value) -> Value {
     }
     app.ctx.store.notify(notice);
     json!({"ok": true})
+}
+
+/// `paletteRecent`: the palette's Recent as `ids` says, newest first (WP9:
+/// S19b's shot shows the frame's Recent without running its rows), and
+/// what it holds now.
+fn palette_recent(request: &Value) -> Value {
+    if let Some(ids) = request["ids"].as_array() {
+        let ids: Vec<String> = ids
+            .iter()
+            .filter_map(|id| id.as_str().map(str::to_owned))
+            .collect();
+        crate::palette::seed_recent(ids);
+    }
+    json!({"ok": true, "recent": crate::palette::recent()})
 }
 
 /// `sources`: the discovery's last answer, or a new one in its place.

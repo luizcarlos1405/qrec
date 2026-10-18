@@ -273,14 +273,20 @@ fn key_input(
     }
 }
 
-/// Typing goes to it: a text field, a numeric field, a label being edited.
+/// The CSS class of a widget that takes any key while it has the focus:
+/// Settings › Keyboard's capture (S22, "Press a key · Esc cancels ·
+/// Backspace clears"), which is an editable to the router (step 2).
+pub const KEY_CAPTURE: &str = "key-capture";
+
+/// Typing goes to it: a text field, a numeric field, a label being edited,
+/// a key capture ([`KEY_CAPTURE`]).
 pub fn is_editable(widget: &gtk::Widget) -> bool {
     let mut at = Some(widget.clone());
     while let Some(w) = at {
         if let Some(label) = w.downcast_ref::<gtk::EditableLabel>() {
             return label.is_editing();
         }
-        if w.is::<gtk::Text>() || w.is::<gtk::TextView>() {
+        if w.is::<gtk::Text>() || w.is::<gtk::TextView>() || w.has_css_class(KEY_CAPTURE) {
             return true;
         }
         if w.is::<gtk::Window>() {

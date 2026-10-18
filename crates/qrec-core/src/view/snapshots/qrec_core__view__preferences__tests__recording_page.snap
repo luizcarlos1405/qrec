@@ -1,0 +1,64 @@
+---
+source: crates/qrec-core/src/view/preferences.rs
+expression: recording
+---
+{
+  "takes": {
+    "title": "New projects",
+    "description": "A project keeps its own settings in its qrec.json; these are where new ones start."
+  },
+  "countdown": {
+    "text": {
+      "label": "Countdown",
+      "caption": "Seconds before each take starts; 0 starts at once."
+    },
+    "value": "3",
+    "unit": "s",
+    "key": "recording.countdown_secs",
+    "min": 0.0,
+    "max": 10.0,
+    "step": 1.0
+  },
+  "encoder": {
+    "title": "Encoder",
+    "description": "How takes and exports encode H.264 when a project says auto."
+  },
+  "preference": {
+    "label": "H.264 encoder",
+    "caption": "VA-API encodes on the GPU, x264 on the CPU."
+  },
+  "preferences": [
+    {
+      "label": "Auto",
+      "selected": true,
+      "setting": [
+        "encoder.preference",
+        "auto"
+      ]
+    },
+    {
+      "label": "VA-API",
+      "selected": false,
+      "setting": [
+        "encoder.preference",
+        "vaapi"
+      ]
+    },
+    {
+      "label": "x264",
+      "selected": false,
+      "setting": [
+        "encoder.preference",
+        "x264"
+      ]
+    }
+  ],
+  "device": {
+    "label": "VA-API device",
+    "caption": "Auto picks the first Intel or AMD render node, never NVIDIA."
+  },
+  "vaapiDevice": "/dev/dri/renderD129",
+  "deviceAuto": "Auto",
+  "footer": "Changes are saved to ~/.config/qrec/config.toml.",
+  "footerPath": "~/.config/qrec/config.toml"
+}

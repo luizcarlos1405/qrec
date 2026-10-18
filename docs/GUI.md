@@ -41,7 +41,8 @@ active. 0.3–0.5: the defaults.
 engineering ("I'll trust your decisions. As long as the main use case is
 good I can start with it and we can iterate later"). Decided:
 - the departures marked **PO** in G§2 stay as built: D-03, D-04, D-07,
-  D-08, D-17, D-30, D-48 (until WP9 builds the other Settings pages) and
+  D-08, D-17, D-30, D-48 (until WP9 built the other Settings pages: every
+  tab opens since the wp9-ui lane) and
   D-51;
 - text keeps GTK's manual rendering with whole-pixel advances (G§3.14):
   fractional advances match the frames' widths but bring the header
@@ -99,10 +100,10 @@ The draft frames, the icons and the art were exported the same day
      error ("Access denied by the desktop portal"), the core toast, and
      the Live picture without that layer. (S24 is approved and built: the
      S24 lane's canvas over that, G§4.6.)
-   - Until S19 and S20 are approved, `Ctrl+K`, `:` and `?` (and the header
-     Commands button) show the info toast "Not built yet" with "The command
-     palette comes with milestone M5." or "The cheat sheet comes with
-     milestone M5." Their hints are drawn as in the approved frames.
+   - S19 and S20 came with the 2026-10-17 export: `Ctrl+K`, `:` and `?`
+     (and the header Commands button) open the palette and the cheat sheet
+     (WP9; until then they toasted "Not built yet"). Their hints are drawn
+     as in the approved frames.
 3. **The other three themes** (Swamp Day, Dragon's Keep, Ogre Mode) are
    token swaps (SPEC §15.2, README): one token CSS file and one Rust palette
    per theme, generated from `design/tokens/qrec-tokens.json`; no
@@ -225,7 +226,7 @@ requirement review's numbering; H-n are host and engine calls.
 | D-45 | Trim zones: the 4 px inside each clip edge. At a cut the left clip owns its end zone and the right clip its start zone; when one of the two is selected, its edge takes both (8 px). Clips under 6 px wide have no zones (body only; `[` `]` and `Alt+[` `]` trim them). | WP3 |
 | D-46 | Units: `ui.zoom` (px per frame) and `ui.scroll_px` are logical px at 100 % UI scale. View models compute at 100 %; widgets multiply by `ui.scale` when drawing and divide pointer positions by it. | WP0b, WP3 |
 | D-47 | Recovery hold (A§5.3): UI-state commands (new `Command::ui_only()`: `Select`, `Seek`, `SetUi`, `SetCanvasMode`, `Play`, `Pause`, `Shuttle`) are never parked. Parked commands keep their order among themselves and resolve the selection and playhead when they run. The header shows "Recovering take 7…" meanwhile. | WP0a |
-| D-48 | **PO** Settings in M4: the dialog with its five tabs as drawn (S18b); only Project is enabled; the others are disabled with the tooltip "Not built yet" until WP9. | WP6 |
+| D-48 | **PO** Settings in M4: the dialog with its five tabs as drawn (S18b); only Project was enabled, the others disabled with the tooltip "Not built yet", until WP9 built them (the wp9-ui lane, 2026-10-18: every tab opens). | WP6, WP9 |
 | D-49 | Export panel: Setup, Done and Failed trap focus (Overlay keys; an outside click closes them). Running is passive: no focus trap and no click-catcher, keys and clicks reach the window (S15b: the S06 hints stay live), and `Esc`, `Ctrl+E` or the header slot close it. | WP0b, WP7 |
 | D-50 | Retrying the live preview (S24 "Try again", gated) goes through the Session: `GuiHost::retry_live()` posts `Msg::RetryLive`, which the session thread turns into `CaptureEngine::retry_live`, ordered with `SetLive` and `StartCapture` and logged. As built (the S24 lane): S24's canvas Try again runs `record.toggle` instead, as its drawn `R` cap says, like the hint bar's `[R] Try again` and S25 #11's toast (`KeyRouter::run_binding`, so `Session::dispatch`): a take asks the portal for its screens again. `retry_live` stays for a toast's `NoticeAction::RetrySource`. | WP0a, WP1 |
 | D-51 | **PO** A step while the program plays (`←` `→` a frame, `Shift+←` `Shift+→` 1 s, `↑` `↓` an edit point; a key or the transport's button) pauses it first and steps from the frame the picture shows, as an editor's frame step does (Resolve, Premiere): `Pause`, then one `Seek{To(f)}` to where the step lands from the player's frame (`apply::ui::seek_frame`). SPEC §10.2, DESIGN and BRIEF don't say what a step does while playing; before, a frame step barely moved (its seek landed within the sync's 2-frame tolerance of the playing player, which played on; R18's audit), and ±1 s and the edit jumps played on from where they landed (keeping that for them is the alternative). `Home`, `End`, a ruler click and the CLI's `qrec seek` still move a playing program on (the sync's once-a-second seek waits for the window's and loses to any seek that landed after the snapshot it read, G§3.10 step 3; the CLI's `--by` and `--edit` go from the player's frame). The sync leaves the playhead to the step's seek and holds the paused picture until it lands (G§3.10 step 2). | WP4 |
@@ -854,8 +855,9 @@ Registered by: `zoom.in`, `zoom.out`, `zoom.fit`, `zoom.selection` (WP3);
 `export.show`, a toast's Show export, only opens the panel: the toggle
 closed the passive panel the D-34 toast shows under);
 `autocut.page` (WP5); `region.next`, `region.prev`, `app.quit`, and
-`keys.help` and `palette.open` as the "Not built yet" toast (WP0b; WP9
-re-registers them). An id nobody registered logs at debug level.
+`keys.help` and `palette.open` (WP9: the cheat sheet and the palette;
+WP0b's "Not built yet" toast stood in until then). An id nobody
+registered logs at debug level.
 
 Focus: chrome buttons are `focus-on-click = false`; the stage canvas, the
 timeline canvas and bin rows are focusable and take focus on click;
@@ -2045,7 +2047,7 @@ a module list.
 | `src/header/**` | C04, C05, record button, export slot, narrow-mode layers button | WP6 |
 | `src/{hintbar,toasts,modal}.rs` | C03, C23, C24 | WP6 |
 | `src/settings/{mod,project}.rs` | Settings shell (S18b), Project page | WP6 |
-| `src/settings/{appearance,recording,autocut,keyboard}.rs` | the other pages (stub: disabled tab, D-48) | WP9 |
+| `src/settings/{appearance,recording,autocut,keyboard}.rs` | the other pages: Appearance (S21), Recording and Autocut (S21's patterns), Keyboard (S22) | WP9 |
 | `src/stage/**` | preview, overlays, countdown, transport, first run, portal denied (S24, `denied.rs`) | WP4 |
 | `src/timeline/**` | toolbar, headers, canvas, overlay, gestures, drop target, tooltip, zoom | WP3 |
 | `src/panel/**` | header, banner, layer rows, audio rows, inspector, menus, autocut page | WP5 |
@@ -2237,6 +2239,7 @@ previews, the player, io, opening, the portal).
 | `{"op":"dispatch","command":{…},"confirmed":false}` | `Store::dispatch_with` with the default reply policy (confirmations open their modal); `{"ok":true}` at once |
 | `{"op":"action","id":"export.panel"}` | runs a binding or GUI action as its key would (pre-steps included) |
 | `{"op":"notify","level":"error","title":…,"body":…}` | shows a toast the window makes (`Store::notify`), `{"ok":true}`: WP9's probe of the toast's own layout (DESIGN's 360–560 px, the body's 2 lines) |
+| `{"op":"paletteRecent","ids":["clip.split",…]}` | sets the palette's Recent, newest first, and answers `{"ok":true,"recent":[…]}` (without `ids`: what it holds): S19b's shot draws the frame's Recent without running its rows (WP9) |
 | `{"op":"sources"}` | `{"ok":true,"inventory":…}`: discovery's last answer (`LocalUi.sources`, null before one); with `"inventory": <SourceInventory>`, that answer instead, pushed through the queue as discovery's own (`Inbound::Sources`; the first run's rows follow it; R25's audit) |
 | `{"op":"hints"}` | the rendered hint items (`keys`, `label`, `enabled`, `emphasized`) and the status text (`hintbar::current_items`); `shown`, the labels of the items the bar draws whole (a narrow window leaves the trailing ones out, `hintbar::fitting`), and `cut`, whether a drawn one runs past the bar (never; both WP7 integration audit) |
 | `{"op":"local"}` | a summary of `LocalUi`: the startup phase (and a blocked window's page), focus, overlays, drag, layout, playing rate, bin selection, keymap problems; the theme, scale and reduced motion (and `reducedMotionClass`, the window's real class; `colorScheme`, libadwaita's `scheme` as set and whether it draws `dark`; `settingsApplied`, the settings changes the follower applied, and `settingsPending`, one is being debounced: WP10, G§3.14); the Store's `rev`; `panics` caught by the guard (G§3.12 R10); `focusPath`, the focused GTK widget's name (or type) and its ancestors', and `focusInTopLayer` (null without an open layer); `focusBounds` and `focusType`, the focused widget's window bounds and GType, and `focusVisible`, the window's (WP10's focus walks); `announcements`, what the window announced to screen readers (`message`, `priority`, `sent`: false without a context that announces; WP10, G§3.7); the window's `pid`; `playerNs`, the Program player's position (null without a player; round 3); `playing`, the player plays (the program or a bin preview's take), and `programPlaying`, the program plays in it (`LocalUi.program_playing`, G§3.10 step 3; review R00, R16); `panelPage` and `autocutPreview`, the autocut page's preview the timeline draws (null when the page is closed; WP5 integration); `panelTransition`, the panel pages' transition (`"slide-left-right"`, `"none"` under reduced motion: test mode turns GTK's animations off, so a case reads the stack's; WP5 integration audit); `gtkAnimations`, GTK's `gtk-enable-animations` (off in test mode but with its `animations` flag, and while the Narrow sheet is open under reduced motion; WP10); `fundamentalsFirst`, whether GTK's fundamental types were all registered when startup's workers (GStreamer's init) started (`app::register_fundamentals`; null before they start; WP10's code audit); `binRowsAlive`, the bin rows still alive (the rows shown, once a rebuild's dropped ones are gone, G§3.12 R11), and the panel's (`layerRowsAlive`, `audioRowsAlive`; review R43), and `mudBarsTicking`, the mud bars running a tick callback (none under the frozen clock, G§3.14; both WP7 integration audit); `metersTicking`, the meter bars on their refresh timer, and `exportClockTicking`, the export panel's Running clock (null without a panel): each comes back with the next change after a caught panic (G§3.12; R65's audit); `themeSubscribers`, the theme's callbacks (a dropped bin thumbnail's goes with it, R11; WP7 integration's shot and code audits); `timelinePaints`, how many times the timeline's canvas made its render node again (not while only the playhead moves, C16; review R10); `timelineGhostColumns`, how many columns of the ghost's waveform the last paint with a ghost worked out a lane (those in the time area, G§4.5; R01's audit); `binSlide`, the bin drawer's last slide as asked (`open`, `animate`: test mode animates nothing, so a case reads whether the open at start would have slid in; review fix, G§3.3); `takePreview`, the bin preview (`take`, `playing`: `Space` pauses it; null without one; review fix, D-17) |
@@ -2392,7 +2395,7 @@ decides, because some ids are handled by the GUI and not by
 | `zoom.in` / `zoom.out` | px/frame < 128 / px/frame > fit; a combined item when either is |
 | `zoom.fit` | the timeline has clips |
 | `snapping.toggle` | always, except during a move drag (D-23) |
-| `palette.open`, `keys.help`, `settings.open`, `region.*`, `app.quit` | always (the "Not built yet" toast stands in until WP9, G§1.1) |
+| `palette.open`, `keys.help`, `settings.open`, `region.*`, `app.quit` | always (the window's own: the palette, the cheat sheet, Settings, the regions, quit) |
 | anything else | `keymap::action_for(id, state)` is `Run` or `Gui` (not `Unavailable`) |
 
 | State | Items |
@@ -2462,8 +2465,8 @@ As built (WP6, round 3):
   tooltip "Exporting 42%" + `Ctrl` `E`, pressed look while the panel is
   open; a click toggles the panel.
 - Mode switch: always enabled (R-allowed, A§5.3). Tooltips: "Commands" +
-  `Ctrl` `K`; "Settings" + `Ctrl` `,`. Until WP9 the Commands button shows
-  the "Not built yet" toast (G§1.1).
+  `Ctrl` `K`; "Settings" + `Ctrl` `,`. The Commands button opens the
+  palette (WP9).
 - Narrow layout only: a layers button (`qrec-layers-symbolic`, 32×32, left
   of Record) toggles `Overlay::LayersSheet`; tooltip "Onion layers".
   `header(&State, &GuiFacts, &Keymap, narrow: bool) -> HeaderView`: the
@@ -3181,14 +3184,17 @@ uppercased; body = the hint. `notices::unavailable_notice(binding_id,
 reason, &State) -> Option<Notice>` (D-34): `None` for "Nothing to cancel";
 `record.*` during an export → "Can't record while exporting" / "Recording
 works again once the export finishes or you cancel it." / Show export;
-`palette.open` and `keys.help` before WP9 → "Not built yet" (G§1.1);
-otherwise an info toast titled with the reason.
+`take.discard-last` with the newest take's clips gone → "Nothing to
+discard" / "Take N has no clips on the timeline." (S25 #7); otherwise an
+info toast titled with the reason. (`palette.open` and `keys.help`
+toasted "Not built yet" until WP9 built them.)
 
 ### G§4.10 `view::settings` (WP6): the Settings shell and the Project page (S18b)
 
 - `tabs(&GuiFacts) -> [(SettingsPage, label, enabled)]`: Appearance,
-  Recording, Project, Autocut, Keyboard; only Project is enabled until WP9
-  (D-48, tooltip "Not built yet").
+  Recording, Project, Autocut, Keyboard; Project always, the others once
+  the GUI built them (`Built::settings_pages`: every tab since WP9, so
+  D-48's disabled tabs and their "Not built yet" are gone).
 - `project_page(&State, dir_display: &str) -> ProjectPage`: the "Canvas"
   group and its caption; Size (dropdown: 1280×720 (16:9), 1920×1080
   (16:9), 2560×1440 (16:9), 3840×2160 (16:9), 1080×1920 (9:16),
@@ -3331,9 +3337,9 @@ below; read them with `Get` while `design/qrec.pen` is active).
 | C29 Fields | `j1hIDi`, `oc5uM`, `vpmJy`, `EfoCl`, `oE7jW` | `gtk::Entry`; `NumericField` (Box `.field` + `gtk::Text` right-aligned + unit label; arrows and scroll step; no ± buttons; the text a `TextBox` named for the field, "Position X": a bare `gtk::Text` is left out of the accessibility tree, WP10); `gtk::DropDown`; `gtk::SearchEntry` | WP0b (CSS), WP5 |
 | C30 Mud bar, export progress | `S5YPm4`, `T2C2U5`, `J6HyOH`, `TKIqZ`, `c0pJo3`, `cUfiU` | `widgets::MudBar` (snapshot from `motion::now()` over the GTK-free `MudSim`, seeded PRNG; frame A, the clock's 0, holds the frames' own bubbles: `RUNNING_FRAME_A`, S15b's and the S15c board's three, and the done page's `DONE_FRAME_A`, S16's two; the 3 px sediment band counted from the bar's outer bottom, 2 px of it above the border under 16 px of mud; a tick callback only while it animates: running, motion allowed, the clock moving) | WP7 |
 | C31 Empty states | `HVO2S`, `p3Dpn`, `uBSb8` | timeline (WP3), panel (WP5), blocking: interim pages (WP0b), drawn pages (WP8) | WP3, WP5, WP0b, WP8 |
-| C32 Theme card | `qqnCi` + themes | `ThemeCard` drawn from that theme's `Palette` | WP9 |
+| C32 Theme card | `qqnCi` + themes | `widgets::theme_card::ThemeCard`: a grouped `gtk::ToggleButton` (`theme-card-<id>`) around `CardArt`, which draws S21's 180×132 card from that theme's `Palette` at `ui.scale`: the 164×92 miniature's 19 parts over the canvas texture (`art/theme-card-canvas.png`, from the pen's screen art), the name, "Default", 2 px `accent` and `circle-check` when selected, its hover's stroke | WP9 |
 | C33 Tooltip | `AbHWk`, `T7Ws1`, `m1fwku` | `widgets::tooltip::{text, keys}` via `query-tooltip` + `set_custom`; the clip tooltip is WP3 | WP0b |
-| C34 Palette row | `G4Ecf`, `J1uAai`, `OE0J8`, `ROIMl` | `gtk::ListView` row; Pango markup for matches | WP9 |
+| C34 Palette row | `G4Ecf`, `J1uAai`, `OE0J8`, `ROIMl` | a `gtk::Box` row in the palette's scroller (`palette-row-<id>`): the label in Pango markup with the matches bold, a disabled row's reason under it at 0.45, the first chord's caps, the CLI form 200 px right-aligned ("—" for none); R2's highlight (`selected` and an `accent` stroke) follows the arrows and the pointer | WP9 |
 
 Every icon-only button gets an accessible label naming the action and its
 keys ("Settings, Ctrl+Comma"); each WP checks its own with the a11y walk
@@ -3376,7 +3382,11 @@ a 32 px icon button's icon is 20 px.
 | Settings: Close | `x` | 16 |
 | Dropdowns (C29: S12's track, S18b's Size): the chevron; the open list's selected item | `chevron-down` (`muted`, CSS `-gtk-icon-source`); `check` (a list factory) | 16 |
 | Menus (C25): a submenu's arrow (Add layer's Screen ▸); the submenu's back arrow (no frame draws a submenu: the transport's chevrons) | `chevron-right`; `chevron-left` (CSS `-gtk-icon-source`) | 16 |
-| Not built yet (WP8, WP9 drafts) | `copy`, `external-link`, `folder`, `pencil`, `rotate-ccw`, `chevron-right` (S23's disclosure), `circle-check` (S21, S23) | — |
+| The palette's, the cheat sheet's and Settings › Keyboard's search fields (WP9) | `search` | 20; 16; 16 |
+| The cheat sheet: Close, Copy niri snippet (WP9) | `x`, `copy` | 16 |
+| Settings › Keyboard: the banner's warning, Open keys.toml, Change shortcut, Reset to default, a conflicting key's flag (WP9) | `triangle-alert` (`warning-text`), `external-link`, `pencil`, `rotate-ccw`, `triangle-alert` (`warning-text`) | 20, 16, 16, 16, 12 |
+| Settings › Appearance: the selected theme card's check, drawn by the card (WP9) | `circle-check` (`accent`) | 16 |
+| Not built yet (WP8 drafts) | `copy`, `folder`, `chevron-right` (S23's disclosure), `circle-check` (S23) | — |
 
 GTK's and libadwaita's own widgets still look up two names for images
 Qrec never shows: the switches' `switch-on`/`switch-off-symbolic` (made
@@ -4048,7 +4058,7 @@ lane, measured on their re-shoots against the frames at full size
   fixture has no history), so it is 20 px shorter (y 287–712 where the
   frame's is 277–722) and its list 10 px higher, its scroll bar too (x
   1026–1029 as the frame's, y 430–579 for 440–587).
-- S18b: the Settings pages not built yet read disabled (D-48).
+- S18b: none since WP9 (the other tabs open, as the frame draws them).
 - S24 (the S24 lane: `gui_stage`'s `s24_portal_denied` and
   `s24_screen_picker_closed`, shots and compares in the lane's
   `tmp/gui-shots/s24/`, measured on pixman at 1 with its
@@ -4180,9 +4190,8 @@ measured layout only.
     Backspace clears", "Changes are saved to ~/.config/qrec/keys.toml.";
     the lane's: a key on three bindings ("X is bound to A, B and C. None
     of them runs until only one has it.") and the search's placeholder
-    "Search shortcuts" (S22 names none). With the core labels the banner
-    reads "X is bound to both Autocut the selection, or every clip and
-    Remove selected clips (to the bin)…" (D-31).
+    "Search shortcuts" (S22 names none). D-31's labels (the wp9-ui lane)
+    make the banner read as S22 draws it.
 - Measured (nested, pixman, `gui_chrome`'s
   `a_toast_keeps_to_designs_width`): a long error toast is 560 wide (615
   without the clamp), its title in 2 lines (40 px), its body in 2 (36 px,
@@ -4371,6 +4380,70 @@ against the frames at full size:
   pages too (the folder and the host failing).
 - A page's focused button shows its ring when the page shows; GTK hides
   it 3 s later unless a key moves the focus (G§8.4's `VISIBLE_FOCUS_DURATION`).
+
+WP9 UI lane (wp9-ui, 2026-10-18, on f7be060: S19–S22 and S25 from the
+2026-10-17 export; `gui_overlays`, nested, pixman, scale 1; shots and
+compares in `tmp/gui-shots/wp9/`).
+
+- Measured against the frames:
+  - S19: the palette at (480, 96, 640), its field (497, 113, 606×40),
+    Split clip's row (489, 178, 622×40), the scrim 1600×968: as drawn.
+    S19b: 560 high, Recent first, Record over selection off with "Needs
+    a contiguous selection".
+  - S20: the sheet (40, 40, 1520×920) over `scrim-strong` (1600×1000) as
+    drawn; its search 320×32 at y 60, x 1083–1087 for the frame's 1086
+    (Close's `Esc` cap is up to 2 px wider: whole-pixel advances, G§0).
+  - S21: the dialog (380, 180, 840×640); the cards 180×132 at y 310 and x
+    412, 611, 810, 1008, on the frame's pixels within 1 px (a row through
+    them: the cards' grounds start at 612, 811 and 1009 in both; the
+    dialog's stroke is drawn inside, WP6's, so its content box is 2 px
+    wider and the gaps 18–19 px for 18); C27's switch 40×22; the groups'
+    and rows' y within 1 px of the frame.
+  - S22: the banner (412, 248, 776×56) for the frame's 248–303 (56 high:
+    pen draws its stroke inside the 8 px padding, so the CSS pads 7/7/7/11
+    inside a real 1 px border), the search (412, 312, 776×32) at the
+    frame's 312; 40 px rows, the capture row's `selected` tint in its 1 px
+    `accent` stroke.
+  - S25: each toast at the bottom 956, centered on 800, 360–560 wide (the
+    frame draws them in 440 px cells). Word for word but the fixture's
+    facts: #1's path and size (this export's), #2's take 10 (the frame's
+    7), #3's "Take 10 lasted 8 frames" (6, 7), #11's FAKE-1 (the fake
+    screens keep their output names; the frame's DP-4); #4, #5, #6, #7,
+    #9 and #10 as drawn (#10 now in S25's words, `disk::invalid_why`).
+- Departures (not drawn, or drawn otherwise):
+  - The Settings scrim and hints stay S18b's (1600×968, "[Tab] Move
+    focus · [Esc] Close"); S21 and S22 draw the scrim over the hint bar.
+  - S22 draws a sample of four groups starting with Edit; the page lists
+    every binding in the keymap's groups (Record, Playback, Edit, Output,
+    View, Canvas). The capture row in the shot is searched up
+    ("snapping").
+  - Recording and Autocut (not drawn) follow S21's patterns: the group
+    header, 60 px rows with a caption, 104 px C29 fields, C28's segmented
+    encoder, a 260 px device dropdown, the footer. Recording: "New
+    projects" / Countdown "Seconds before each take starts; 0 starts at
+    once."; "Encoder" "How takes and exports encode H.264 when a project
+    says auto." / "H.264 encoder" "VA-API encodes on the GPU, x264 on the
+    CPU." (Auto · VA-API · x264) / "VA-API device" "Auto picks the first
+    Intel or AMD render node, never NVIDIA." (Auto, then sysfs's Intel
+    and AMD nodes; a configured NVIDIA node shows as it is). Autocut:
+    "New projects" "A project's own autocut settings are on its autocut
+    page (Shift C)." / "Run autocut after every take" "Cuts the silences
+    of each take as it lands." / S12's four knobs with captions.
+  - A refused value says why under its field (C29's helper text, the row
+    grows); a write that fails says why in the footer.
+  - `Esc`: a numeric field with nothing to put back lets it go on, so the
+    dialog closes from an untouched field (`FieldState::takes_escape`,
+    WP5's widget); the keys search clears its text first; a tab clicked
+    keeps the focus (the page's first control takes it when the dialog
+    opens on that page).
+  - The capture ends when the focus leaves it, and so when the window
+    loses the keyboard.
+  - Theme cards draw their hover (a `border-strong` stroke); the frames
+    draw none.
+  - S25 #6 is the autocut page's Apply (WP5's toast); `c` (`autocut.run`)
+    cuts with no toast. #8 (a camera that stops sending frames mid-take)
+    isn't triggered for real: the fake engine's stall
+    (`inject_fake_failure`) has no hook outside its own tests.
 
 ### WP0a — Interfaces, GTK-free (alone, first)
 
@@ -5007,10 +5080,47 @@ D-22, the D-30 caption, D-31. Re-registers `keys.help` and `palette.open`.
   page's stderr well follows a live scale through the panel's theme
   subscription (which alone sizes it once the panel is built, since this
   round's audit).
-- Waiting for the frames (G§0.6): the GTK palette, cheat sheet and Settings
-  pages (`Built` stays false, `palette.open` and `keys.help` still toast
-  "Not built yet"), `widgets/theme_card.rs`, `components/overlays.css`,
-  `gui_overlays.rs`, S25's variants shot for real, D-31's labels.
+- The frames came with the 2026-10-17 export; the wp9-ui lane built the
+  rest (below).
+
+**As built (wp9-ui lane, 2026-10-18).**
+- `palette.rs` (S19, S19b, C34): `Ctrl+K`/`:` push `Overlay::Palette`;
+  the layer's scrim ends above the hint bar; the field keeps the keyboard
+  (G§3.8 step 2): ↑ ↓ PgUp PgDn move R2's highlight (the pointer too),
+  Enter runs the highlighted row as its button would (`decide_row`, the
+  router's `decide_button`) after closing the palette, Esc closes it.
+  Recent is this session's last 12 runs, 3 shown (`remember`); the list
+  is 560 px at most, the rest scrolls. D-19's Clear undo history goes
+  through `confirmation_required` to the modal and a confirmed
+  `HistoryClear`. `search_field` is the 40 px (palette) and 32 px (sheet,
+  keys) search field.
+- `cheatsheet.rs` (S20, S20b, D-22): `?` pushes `Overlay::CheatSheet`
+  over `scrim-strong`; `view::cheatsheet`'s columns; each binding's keys
+  ("or" between chords, "/" between bindings, "default P" when
+  rebound); Copy niri snippet (wl-copy through `desktop::run`, "Copied"
+  for 2 s); the footer's [Ctrl][,] opens Settings › Keyboard in its
+  place; the search lists rows holding every word in one column with the
+  count and the palette tip.
+- `settings/` (S21, S22, Recording, Autocut): every tab opens
+  (`Built::settings_pages`); each page reads its file on `qrec-gui-io`
+  when the dialog opens and writes one setting per change through
+  `config_file::set` or `keys_file::{set_binding, reset_binding}` (the
+  file's comments and order kept); the window takes the look
+  (`apply_look`) or the keymap (`Store::set_keymap`) at once. Keyboard's
+  capture is an editable to the router (`keys::KEY_CAPTURE`); once a
+  capture ends or an edit lands, the row's Change shortcut has the
+  keyboard. The footers name the files as people read them
+  (`~/.config/qrec/…`).
+- `widgets/theme_card.rs` (C32), `components/overlays.css` (the palette,
+  the sheet, the pages), `toasts::action_binding` (S25's action caps),
+  `disk::invalid_why` and `record::portal_refusal` (S25 #10, #11 in the
+  frame's words).
+- Tests: the GTK-free parts' unit tests (`decide_row` over every enabled
+  row, `remember`, `label_markup`, `row_keys`, `captured`,
+  `device_items`, `typed_value`, `takes_escape`, the card's parts and
+  colors); `gui_overlays.rs`'s eleven nested cases (S19, S19b, the
+  palette's rows and D-19, S20/S20b, S21, S22 with Q5, the Recording and
+  Autocut pages, S25's toasts in four cases).
 
 **Status (integration of run `wf_083221c5-8eb`, 2026-10-17).** Merged on
 `qrec-v1` (`gui: merge wp9`, 19fbd43) after the play and perf lanes; no
@@ -5885,6 +5995,6 @@ otherwise.
 | R24 | `Take.recovered` makes older dev builds reject a project that has it | accepted before the first release; the first schema change after it bumps `version` (G§4.8) |
 | R25 | `gtk::Svg` (GTK 4.22's SVG subset) may misrender the generated art | closed: the test channel's `art` with `compare` draws each through `gtk::Svg` against the pen's PNGs within antialiasing, as `tests/art.rs` does with rsvg (G§3.14); the PNG fallback isn't needed |
 | R26 | The adaptive layouts have no frames, and niri tiles windows narrower than 1400 px | DESIGN's rules, built per region from WP0b on (G§1.1 #4); sign-off or frames (G§0.3) |
-| R27 | M4's approved hint bars show `Ctrl+K` and `?`, but the palette and cheat sheet are M5 and gated | the hints as drawn; the "Not built yet" toast (G§1.1) |
+| R27 | M4's approved hint bars show `Ctrl+K` and `?`, but the palette and cheat sheet are M5 and gated | closed: both came with the 2026-10-17 export and are built (WP9) |
 | R28 | D-47 lets UI commands overtake parked edits | parked commands resolve the selection and playhead when they run, as every command does at its turn |
 | R29 | Test mode turns animations off, which D-30 reads as reduced motion | test mode takes reduced motion from the config only (G§8.4) |

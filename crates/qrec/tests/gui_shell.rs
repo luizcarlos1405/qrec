@@ -387,8 +387,8 @@ fn the_control_channel_ops_work() {
     assert_a11y(nested.window(0));
     nested.screenshot("bin");
 
-    // action: a binding (b toggles the bin) and a GUI action (the palette's
-    // "Not built yet" toast, G§1.1).
+    // action: a binding (b toggles the bin) and a GUI action (the palette
+    // opens, WP9; Esc closes it).
     let gui = nested.window(0);
     assert_eq!(
         gui.ctl(json!({"op": "action", "id": "bin.toggle"}))["ok"],
@@ -401,8 +401,12 @@ fn the_control_channel_ops_work() {
         true
     );
     gui.wait_idle();
-    let toast = gui.labels("toast-host");
-    assert!(toast.contains(&"Not built yet".to_owned()), "{toast:?}");
+    assert_eq!(gui.local()["overlays"], json!(["Palette"]));
+    assert!(gui.regions(&["palette"]).contains_key("palette"));
+    nested.keys(&["-k", "Escape"]);
+    let gui = nested.window(0);
+    gui.wait_idle();
+    assert_eq!(gui.local()["overlays"], json!([]));
     let unknown = gui.ctl(json!({"op": "action", "id": "no.such.thing"}));
     assert_eq!(unknown["ok"], false, "{unknown}");
 

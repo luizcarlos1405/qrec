@@ -1,0 +1,68 @@
+---
+source: crates/qrec-core/src/view/preferences.rs
+expression: autocut
+---
+{
+  "group": {
+    "title": "New projects",
+    "description": "A project's own autocut settings are on its autocut page (Shift C)."
+  },
+  "autoRun": {
+    "label": "Run autocut after every take",
+    "caption": "Cuts the silences of each take as it lands.",
+    "on": false,
+    "key": "autocut.auto_run_after_take"
+  },
+  "knobs": [
+    {
+      "text": {
+        "label": "Threshold",
+        "caption": "Anything quieter is silence."
+      },
+      "value": "−35",
+      "unit": "dB",
+      "key": "autocut.threshold_db",
+      "min": -90.0,
+      "max": 0.0,
+      "step": 1.0
+    },
+    {
+      "text": {
+        "label": "Min silence",
+        "caption": "Only silences at least this long are cut."
+      },
+      "value": "400",
+      "unit": "ms",
+      "key": "autocut.min_silence_ms",
+      "min": 0.0,
+      "max": 60000.0,
+      "step": 50.0
+    },
+    {
+      "text": {
+        "label": "Padding",
+        "caption": "Audio kept on each side of speech."
+      },
+      "value": "80",
+      "unit": "ms",
+      "key": "autocut.padding_ms",
+      "min": 0.0,
+      "max": 60000.0,
+      "step": 10.0
+    },
+    {
+      "text": {
+        "label": "Min keep",
+        "caption": "Kept pieces shorter than this are cut too."
+      },
+      "value": "200",
+      "unit": "ms",
+      "key": "autocut.min_keep_ms",
+      "min": 0.0,
+      "max": 60000.0,
+      "step": 10.0
+    }
+  ],
+  "footer": "Changes are saved to ~/.config/qrec/config.toml.",
+  "footerPath": "~/.config/qrec/config.toml"
+}

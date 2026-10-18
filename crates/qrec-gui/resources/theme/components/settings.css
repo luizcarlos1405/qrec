@@ -23,8 +23,7 @@
   color: var(--qrec-text);
 }
 
-/* The tabs: C28 with five label segments; the disabled ones (WP9's) at
-   0.45 with the tooltip "Not built yet". */
+/* The tabs: C28 with five label segments (every page opens since WP9). */
 toggle-group.settings-tabs > toggle {
   padding: 0 12px;
 }

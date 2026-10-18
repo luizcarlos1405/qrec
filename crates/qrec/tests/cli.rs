@@ -1351,18 +1351,48 @@ fn schema_keys_and_agent_guide() {
         assert_eq!(row["keys"], json!([key]), "{id}");
         assert_eq!(row["cli"], Value::Null, "{id}");
     }
+    // GUI D-31: the frames' labels and short CLI forms (S19, S22).
+    for (id, label, cli) in [
+        ("clip.split", "Split clip", json!("qrec clip split")),
+        ("frame.save", "Save frame as PNG", json!("qrec frame save")),
+        ("autocut.run", "Autocut", json!("qrec autocut")),
+        ("clip.remove", "Remove clips", json!("qrec clip remove")),
+        ("snapping.toggle", "Toggle snapping", Value::Null),
+    ] {
+        let row = rows
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("no {id} in {rows:?}"));
+        assert_eq!((&row["label"], &row["cli"]), (&json!(label), &cli), "{id}");
+    }
     let human = qrec(&env, &dir, &["keys"]);
     human.ok();
     assert!(human.stdout.contains("qrec record toggle"));
     for id in ["region.next", "region.prev", "app.quit"] {
         assert!(human.stdout.contains(id), "{id}: {}", human.stdout);
     }
+    let split = human
+        .stdout
+        .lines()
+        .find(|l| l.contains("clip.split"))
+        .unwrap_or_else(|| panic!("no clip.split line: {}", human.stdout));
+    assert!(
+        split.contains("Split clip") && split.trim_end().ends_with("qrec clip split"),
+        "{split}"
+    );
     let guide = qrec(&env, &dir, &["agent-guide"]);
     guide.ok();
     assert!(guide.stdout.contains("--json"), "{}", guide.stdout);
     assert!(
         guide.stdout.contains("| Ctrl+Q | Quit |"),
         "{}",
+        guide.stdout
+    );
+    assert!(
+        guide
+            .stdout
+            .contains("| s | Split clip | `qrec clip split` |"),
+        "D-31: {}",
         guide.stdout
     );
     let json = qrec(&env, &dir, &["agent-guide", "--json"]);

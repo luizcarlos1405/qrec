@@ -358,14 +358,14 @@ mod tests {
             let b = map.binding(id).unwrap_or_else(|| panic!("no binding {id}"));
             assert!(guide.contains(b.cli.unwrap()), "{id}");
         }
-        assert!(guide.contains("| r | Start / stop recording | `qrec record toggle` |"));
+        assert!(guide.contains("| r | Toggle record | `qrec record toggle` |"));
         for id in WINDOW_KEYS {
             let b = map.binding(id).unwrap_or_else(|| panic!("no binding {id}"));
             assert_eq!(b.cli, None, "{id} is window-only");
             assert!(guide.contains(&format!("| {} |", b.label)), "{id}");
         }
-        assert!(guide.contains("| F6 | Focus the next region |"));
-        assert!(guide.contains("| Shift+F6 | Focus the previous region |"));
+        assert!(guide.contains("| F6 | Focus next region |"));
+        assert!(guide.contains("| Shift+F6 | Focus previous region |"));
         assert!(guide.contains("| Ctrl+Q | Quit |"));
         assert!(guide.contains(keymap::NIRI_SNIPPET));
         for key in config::KEYS {

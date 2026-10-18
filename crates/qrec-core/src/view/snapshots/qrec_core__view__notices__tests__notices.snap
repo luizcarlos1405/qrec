@@ -104,23 +104,5 @@ expression: notices
       "body": null,
       "actions": []
     }
-  ],
-  [
-    "unavailable_notice(palette.open, \"\")",
-    {
-      "level": "info",
-      "title": "Not built yet",
-      "body": "The command palette comes with milestone M5.",
-      "actions": []
-    }
-  ],
-  [
-    "unavailable_notice(keys.help, \"\")",
-    {
-      "level": "info",
-      "title": "Not built yet",
-      "body": "The cheat sheet comes with milestone M5.",
-      "actions": []
-    }
   ]
 ]

@@ -9,7 +9,7 @@
 //! | `export.panel`, `export.show`, `bin.preview` | WP7 (export panel, bin) |
 //! | `autocut.page` | WP5 (panel) |
 //! | `region.next`, `region.prev`, `app.quit` | WP0b (window, app) |
-//! | `keys.help`, `palette.open` | WP0b: the "Not built yet" toast; WP9 re-registers them |
+//! | `keys.help`, `palette.open` | WP9 (the cheat sheet, the palette) |
 //!
 //! `export.panel`, `autocut.page` and `bin.preview` toggle what they open:
 //! the `Esc` chain runs them to close the passive export panel, the

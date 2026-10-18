@@ -317,8 +317,10 @@ fn a_repeated_toast_is_announced_once() {
     let project = fixture(&nested, DesignVariant::Base, &s02_ui());
     open(&mut nested, &project, Launch::a11y());
     let gui = nested.window(0);
+    // A key that can't run (D-34), pressed 30 times through the channel
+    // (WP9 built `keys.help`, whose "Not built yet" toast this was).
     for _ in 0..30 {
-        let reply = gui.ctl(json!({"op": "action", "id": "keys.help"}));
+        let reply = gui.ctl(json!({"op": "action", "id": "history.redo"}));
         assert_eq!(reply["ok"], true, "{reply}");
     }
     gui.wait_idle();
@@ -342,7 +344,7 @@ fn a_repeated_toast_is_announced_once() {
     let spoken = announcements(gui);
     let repeated = spoken
         .iter()
-        .filter(|s| s.message.starts_with("Not built yet"))
+        .filter(|s| s.message.starts_with("Nothing to redo"))
         .count();
     assert_eq!(repeated, 1, "announced once: {spoken:#?}");
     assert_clean(gui);
