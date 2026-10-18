@@ -604,6 +604,124 @@ mod tests {
         assert!(palette(&map, &s06(), "zzzzzz", &[]).groups.is_empty());
     }
 
+    /// The states the dispatch table runs in: S02 (Live, nothing
+    /// selected), S06 (Program, c2d0), a layer selected on the canvas, a
+    /// take recording; all with a history.
+    fn dispatch_states() -> Vec<(&'static str, State)> {
+        let s02 = with_history(testkit::design_state(), 128);
+        let mut layer = s02.clone();
+        layer.ui.selected_layer = Some(crate::ids::LayerId::numbered(2));
+        let mut recording = s06();
+        recording.runtime.record = RecordPhase::Recording {
+            take: TakeId::numbered(10),
+            mode: RecordMode::Append,
+            elapsed_ns: 2_000_000_000,
+            waiters: vec![],
+        };
+        vec![
+            ("S02", s02),
+            ("S06", s06()),
+            ("layer", layer),
+            ("recording", recording),
+        ]
+    }
+
+    /// The ids whose key the window takes over (G§3.8 step 10): they run
+    /// a GUI action, not `action_for`'s command.
+    const WINDOW_RUNS: [&str; 3] = ["export", "autocut.preview", "zoom.fit"];
+
+    /// The dispatch table (WP9): every enabled row runs. A row whose key
+    /// dispatches a command (`action_for`'s `Run`, the path a key takes)
+    /// has one `apply` takes in that state: it acts, or asks for the
+    /// confirmation (only "Clear undo history"); the window runs the
+    /// others (`Gui`, and the ids it takes over). A disabled row's command
+    /// is refused, or isn't one: its reason holds.
+    #[test]
+    fn every_enabled_row_runs() {
+        let ctx = testkit::ctx(testkit::CREATED_AT, 7);
+        let mut ran = 0;
+        for (name, state) in dispatch_states() {
+            let view = palette(&resolve(""), &state, "", &[]);
+            for row in view
+                .groups
+                .iter()
+                .filter(|g| g.title.as_deref() != Some("Recent"))
+                .flat_map(|g| &g.rows)
+            {
+                let action = action_for(&row.id, &state);
+                if !row.enabled {
+                    assert!(
+                        !matches!(action, Some(Action::Run(_) | Action::Gui))
+                            || WINDOW_RUNS.contains(&row.id.as_str())
+                            || row.id == "zoom.selection",
+                        "{name}: {} is off ({:?}) but {action:?}",
+                        row.id,
+                        row.reason
+                    );
+                    continue;
+                }
+                match action {
+                    Some(Action::Run(_)) if WINDOW_RUNS.contains(&row.id.as_str()) => {}
+                    Some(Action::Run(cmd)) => {
+                        ran += 1;
+                        match crate::apply(&state, &ctx, cmd.clone()) {
+                            Ok(_) => {}
+                            Err(e) if e.code == crate::ErrorCode::ConfirmationRequired => {
+                                assert_eq!(row.id, "history.clear", "{name}: {e}");
+                            }
+                            Err(e) => panic!("{name}: {} is on but {cmd:?} fails: {e}", row.id),
+                        }
+                    }
+                    Some(Action::Gui) => {}
+                    other => panic!("{name}: {} is on but {other:?}", row.id),
+                }
+            }
+        }
+        assert!(ran > 40, "{ran} commands ran");
+    }
+
+    /// "Clear undo history" → the confirmation (SPEC §11's modal, with
+    /// G§4.9's copy) → confirmed, the history is gone and the row is off.
+    #[test]
+    fn clearing_the_history_asks_then_clears() {
+        let state = s06();
+        let Some(Action::Run(cmd)) = action_for("history.clear", &state) else {
+            panic!("history.clear doesn't run");
+        };
+        assert_eq!(cmd, Command::HistoryClear);
+        let mut ctx = testkit::ctx(testkit::CREATED_AT, 7);
+        let err = crate::apply(&state, &ctx, cmd.clone()).unwrap_err();
+        assert_eq!(err.code, crate::ErrorCode::ConfirmationRequired);
+        let modal = crate::view::confirm::modal(
+            &cmd,
+            &err,
+            &state,
+            &crate::view::confirm::ConfirmFacts::default(),
+        );
+        assert_eq!(modal.title, "Get out of my swamp?");
+        assert_eq!(modal.lead, "Clear undo history?");
+        assert_eq!(
+            modal.body.as_deref(),
+            Some(
+                "This removes 128 undo steps from .qrec/history.jsonl. The timeline stays as \
+                 it is, but you can't undo anything done before now."
+            )
+        );
+        assert_eq!(
+            (modal.cancel.as_str(), modal.confirm.as_str()),
+            ("Cancel", "Clear history")
+        );
+        ctx.confirmed = true;
+        let out = crate::apply(&state, &ctx, cmd).unwrap();
+        assert!(out.state.history.entries.is_empty());
+        assert_eq!(
+            out.state.project.timeline, state.project.timeline,
+            "the timeline stays"
+        );
+        let row = palette(&resolve(""), &out.state, "clear undo", &[]).groups[0].rows[0].clone();
+        assert_eq!(row.reason.as_deref(), Some("The undo history is empty"));
+    }
+
     #[test]
     fn fuzzy_matching() {
         assert_eq!(fuzzy_match("", "x"), Some((0, vec![])));
