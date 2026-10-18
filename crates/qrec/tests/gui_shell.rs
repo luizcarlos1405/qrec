@@ -856,7 +856,8 @@ fn a_cli_recording_shows_x1_stop_and_open_or_quit() {
     let local = gui.wait_phase("blocked", OPEN);
     assert_eq!(page_of(&local), "cliRecording", "{local}");
     gui.wait_idle();
-    nested.keys(&["-k", "Return"]);
+    // The drafted X1 (WP8) focuses Quit, as its frame: Tab to Stop & open.
+    nested.keys(&["-k", "Tab", "-k", "Return"]);
     let gui = nested.window(1);
     gui.wait_phase("open", OPEN);
     let status = wait_for_gui_host(&nested, &project, OPEN);
@@ -875,10 +876,10 @@ fn a_cli_recording_shows_x1_stop_and_open_or_quit() {
 
 /// R36: before the project opens a button does what its key does (only
 /// Quit), so the header's gear opens no Settings over the opening window,
-/// and the X1 page that follows keeps the keyboard: `Return` is its focused
-/// Stop & open. (Settings opened while the window waited for a CLI
-/// countdown, then stayed over X1 with its scrim, and `Esc` couldn't close
-/// it.)
+/// and the X1 page that follows keeps the keyboard: `Tab` and `Return` from
+/// its focused Quit run Stop & open (the drafted X1 focuses Quit, WP8).
+/// (Settings opened while the window waited for a CLI countdown, then
+/// stayed over X1 with its scrim, and `Esc` couldn't close it.)
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn nothing_opens_over_the_opening_window() {
@@ -907,7 +908,7 @@ fn nothing_opens_over_the_opening_window() {
     assert_eq!(local["overlays"], json!([]), "{local}");
     assert_a11y(gui);
     nested.screenshot("x1");
-    nested.keys(&["-k", "Return"]);
+    nested.keys(&["-k", "Tab", "-k", "Return"]);
     let gui = nested.window(0);
     gui.wait_phase("open", OPEN);
     gui.wait_idle();

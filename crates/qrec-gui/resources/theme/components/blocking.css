@@ -1,7 +1,7 @@
 /*
- * Blocking pages (C31 Blocking, G§1.1 #2). The interim pages: WP0b. The
- * drafted pages (art, per-row layout, the minimal header): WP8, once
- * G§0.2 approves them.
+ * Blocking pages (C31 Blocking, G§1.1 #2). The interim pages: WP0b (the
+ * folder and the host failing still show them). The drafted pages (art,
+ * per-row layout; the minimal header is `common.css`'s): WP8, below.
  *
  * An interim page is one centered block on `bg`: the `display` title
  * (Fraunces, the storybook voice of blocking screens), `body` lines, a
@@ -50,4 +50,250 @@
 .qrec-blocking .qrec-blocking-buttons {
   margin-top: 8px;
   border-spacing: 8px;
+}
+
+/* ------------------------------------------------- the drafted pages (WP8)
+ *
+ * As G§0.2 approved them (S23, X1, X2, X3; D-29's export wait, D-13's and
+ * the not-responding pages in their shapes). Pen draws strokes inside a
+ * frame: a GTK border comes on top of the size, so a bordered part's
+ * min-height and padding are a pixel less than the frame's on each side
+ * (and `box-shadow: inset` draws a stroke that takes no room).
+ */
+
+/* C31 Blocking (S23's shell): a column 640 wide, 72 px under the minimal
+   header, its parts 16 px apart: the signpost, the title, the body lines,
+   the content (8 px more above it), the actions (8 px more above them). */
+.qrec-blocking-page {
+  background-color: var(--qrec-bg);
+  color: var(--qrec-text);
+}
+
+.qrec-blocking-page .blocking-column {
+  margin: 72px 0 48px 0;
+  border-spacing: 16px;
+}
+
+.qrec-blocking-page image.blocking-art {
+  -gtk-icon-size: 160px;
+}
+
+.qrec-blocking-page .blocking-title {
+  color: var(--qrec-text);
+}
+
+.qrec-blocking-page .blocking-body {
+  border-spacing: 16px;
+}
+
+/* "Run [qrec doctor] in a terminal…": the command in a 22 px `field` chip. */
+.qrec-blocking-page .blocking-command-line {
+  border-spacing: 6px;
+}
+
+.qrec-blocking-page .blocking-chip {
+  min-height: 20px;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid var(--qrec-border);
+  background-color: var(--qrec-field);
+  color: var(--qrec-text);
+}
+
+.qrec-blocking-page .blocking-content {
+  margin-top: 8px;
+  border-spacing: 8px;
+}
+
+/* X3: the validation box, then the restore, 24 px apart. */
+.qrec-blocking-page .blocking-content.wide {
+  border-spacing: 24px;
+}
+
+.qrec-blocking-page .blocking-actions {
+  margin-top: 8px;
+  border-spacing: 12px;
+}
+
+/* S23's flat Quit keeps C01 flat's 8 px sides at 40 px. */
+.qrec-blocking-page button.qrec-btn.flat.lg {
+  padding: 0 8px;
+}
+
+.qrec-blocking-page image.blocking-status {
+  -gtk-icon-size: 20px;
+}
+
+/* S23's checks: a `surface` box, `lg` radius, a 1 px `border`; a 72 px row
+   per failed check with a hairline under it, then the 44 px disclosure. */
+.qrec-blocking-page .blocking-checks {
+  border-radius: 12px;
+  background-color: var(--qrec-surface);
+  box-shadow: inset 0 0 0 1px var(--qrec-border);
+}
+
+.qrec-blocking-page .blocking-check {
+  min-height: 71px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--qrec-border);
+  border-spacing: 12px;
+}
+
+.qrec-blocking-page .blocking-columns {
+  border-spacing: 16px;
+}
+
+.qrec-blocking-page .blocking-what {
+  border-spacing: 2px;
+}
+
+.qrec-blocking-page .blocking-item {
+  border-spacing: 6px;
+}
+
+.qrec-blocking-page .blocking-name {
+  color: var(--qrec-text);
+}
+
+.qrec-blocking-page .blocking-name.t-mono {
+  font-weight: 600;
+}
+
+/* The fix: 288 wide, the command in a 28 px `field` box with its 24 px
+   Copy, the note 4 px under it. */
+.qrec-blocking-page .blocking-fix {
+  min-width: 288px;
+  border-spacing: 4px;
+}
+
+.qrec-blocking-page .blocking-command {
+  min-height: 26px;
+  padding: 0 1px 0 7px;
+  border-radius: 4px;
+  border: 1px solid var(--qrec-border);
+  background-color: var(--qrec-field);
+  color: var(--qrec-text);
+  border-spacing: 4px;
+}
+
+/* "✓ 14 other checks passed": a 44 px row, the chevron at its end. */
+.qrec-blocking-page button.qrec-btn.blocking-disclosure {
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 0;
+}
+
+.qrec-blocking-page button.qrec-btn.blocking-disclosure > box {
+  border-spacing: 12px;
+}
+
+.qrec-blocking-page button.qrec-btn.blocking-disclosure image.blocking-chevron {
+  -gtk-icon-size: 16px;
+}
+
+.qrec-blocking-page .blocking-passed {
+  padding: 4px 0 8px 0;
+  border-top: 1px solid var(--qrec-border);
+}
+
+.qrec-blocking-page .blocking-passed-row {
+  min-height: 28px;
+  padding: 0 16px 0 20px;
+  border-spacing: 12px;
+}
+
+.qrec-blocking-page image.blocking-passed-icon {
+  -gtk-icon-size: 12px;
+}
+
+/* X2's folder row: 56 px on `surface`, `lg` radius, a 1 px `border`. */
+.qrec-blocking-page .blocking-folder {
+  min-height: 54px;
+  padding: 0 15px;
+  border-radius: 12px;
+  border: 1px solid var(--qrec-border);
+  background-color: var(--qrec-surface);
+  border-spacing: 12px;
+}
+
+.qrec-blocking-page .blocking-path {
+  font-weight: 600;
+  color: var(--qrec-text);
+}
+
+/* X3's validation box: a `field` well, 12 16 inside, its lines 6 apart. */
+.qrec-blocking-page .blocking-problem {
+  padding: 11px 15px;
+  border-radius: 6px;
+  border: 1px solid var(--qrec-border);
+  background-color: var(--qrec-field);
+  border-spacing: 6px;
+}
+
+.qrec-blocking-page .blocking-file-line {
+  border-spacing: 8px;
+}
+
+.qrec-blocking-page image.blocking-error-icon {
+  -gtk-icon-size: 16px;
+}
+
+.qrec-blocking-page .blocking-message {
+  font-weight: 600;
+  color: var(--qrec-text);
+}
+
+/* X3's restore: the line, the command in a 40 px well with Copy command,
+   which entry it is; 8 px apart. */
+.qrec-blocking-page .blocking-restore,
+.qrec-blocking-page .blocking-command-row {
+  border-spacing: 8px;
+}
+
+.qrec-blocking-page .blocking-command-well {
+  min-height: 38px;
+  padding: 0 11px;
+  border-radius: 6px;
+  border: 1px solid var(--qrec-border);
+  background-color: var(--qrec-field);
+  color: var(--qrec-text);
+}
+
+/* X1's modal (C24's look, `chrome.css`): the title, the lead 8 under it,
+   the body and the well 16 apart, the footer 24 under them, its buttons
+   12 apart. */
+.qrec-modal.blocking-modal .blocking-well {
+  margin-top: 16px;
+  min-height: 42px;
+  padding: 0 11px 0 7px;
+  border-radius: 6px;
+  border: 1px solid var(--qrec-border);
+  background-color: var(--qrec-field);
+  border-spacing: 10px;
+}
+
+.qrec-modal.blocking-modal .blocking-modal-footer {
+  border-spacing: 12px;
+}
+
+/* The static REC badge: a 28 px `record` pill, the glyph and REC in
+   `text-on-record`. */
+.qrec-modal.blocking-modal .blocking-rec {
+  min-height: 28px;
+  padding: 0 10px 0 8px;
+  border-radius: 999px;
+  background-color: var(--qrec-record);
+  color: var(--qrec-text-on-record);
+  border-spacing: 6px;
+}
+
+.qrec-modal.blocking-modal image.blocking-rec-glyph,
+.qrec-modal.blocking-modal image.blocking-export-glyph {
+  -gtk-icon-size: 16px;
+}
+
+/* The export wait's mini mud bar (the header slot's, `chrome.css`) sits in
+   a `field` well: its trough in `border`, or it would vanish there. */
+.qrec-modal.blocking-modal .blocking-well progressbar.mini-mud > trough {
+  background-color: var(--qrec-border);
 }
