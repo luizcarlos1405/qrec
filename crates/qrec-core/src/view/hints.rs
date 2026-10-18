@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::keymap::{Action, KeyChord, Keymap, action_for, usable_keys};
 use crate::state::{CanvasMode, JobKind, RecordPhase, State};
 use crate::ui_normalize::edit_target;
+use crate::view::blocking::BlockingHints;
 use crate::view::{
     DragKind, ExportPanelKind, FocusRegion, GuiFacts, HintItem, OverlayKind, PanelPageKind, format,
 };
@@ -59,9 +60,10 @@ pub enum HintState {
     ClipSelected,
     ProgramIdle,
     LiveIdle,
-    /// A blocking page: S23 offers Check again.
+    /// A blocking page, with its frame's hints (`view::blocking::hints`:
+    /// S23 offers Check again, X3 Copy command, X1's modal its own keys).
     Blocking {
-        check_again: bool,
+        page: BlockingHints,
     },
 }
 
@@ -517,12 +519,25 @@ impl Items<'_> {
                     .bind(&["bin.toggle"], "Bin")
                     .bind(&["keys.help"], "All keys");
             }
-            H::Blocking { check_again } => {
-                if *check_again {
-                    self.literal(&[&["Enter"]], "Check again", true);
+            H::Blocking { page } => match page {
+                BlockingHints::CheckAgain => {
+                    self.literal(&[&["Enter"]], "Check again", true)
+                        .bind(&["app.quit"], "Quit");
                 }
-                self.bind(&["app.quit"], "Quit");
-            }
+                BlockingHints::CopyCommand => {
+                    self.literal(&[&["Enter"]], "Copy command", true)
+                        .bind(&["app.quit"], "Quit");
+                }
+                // X1's modal: its widget keys, `Esc` quits (the page's).
+                BlockingHints::Modal => {
+                    self.literal(&[&["Tab"]], "Move focus", true)
+                        .literal(&[&["Enter"]], "Activate focused button", true)
+                        .literal(&[&["Esc"]], "Quit", true);
+                }
+                BlockingHints::Quit => {
+                    self.bind(&["app.quit"], "Quit");
+                }
+            },
         }
         self.out
     }
@@ -1151,21 +1166,40 @@ mod tests {
         let keymap = keymap::resolve("");
         let state = testkit::design_state();
         let facts = GuiFacts::default();
-        let (items, status) = hint_bar(
-            &HintState::Blocking { check_again: true },
-            &state,
-            &facts,
-            &keymap,
+        let bar = |page| {
+            let (items, status) = hint_bar(&HintState::Blocking { page }, &state, &facts, &keymap);
+            assert_eq!(status, "", "{page:?}");
+            line(&items)
+        };
+        // Each page's frame (WP8): S23, X3, X1's modal, X2.
+        assert_eq!(
+            bar(BlockingHints::CheckAgain),
+            ["[Enter] Check again", "[Ctrl][Q] Quit"]
         );
-        assert_eq!(line(&items), ["[Enter] Check again", "[Ctrl][Q] Quit"]);
-        assert_eq!(status, "");
+        assert_eq!(
+            bar(BlockingHints::CopyCommand),
+            ["[Enter] Copy command", "[Ctrl][Q] Quit"]
+        );
+        assert_eq!(
+            bar(BlockingHints::Modal),
+            [
+                "[Tab] Move focus",
+                "[Enter] Activate focused button",
+                "[Esc] Quit"
+            ]
+        );
+        assert_eq!(bar(BlockingHints::Quit), ["[Ctrl][Q] Quit"]);
+        // Quit follows the user's key.
+        let rebound = keymap::resolve("[bindings]\n\"app.quit\" = \"Ctrl+W\"\n");
         let (items, _) = hint_bar(
-            &HintState::Blocking { check_again: false },
+            &HintState::Blocking {
+                page: BlockingHints::Quit,
+            },
             &state,
             &facts,
-            &keymap,
+            &rebound,
         );
-        assert_eq!(line(&items), ["[Ctrl][Q] Quit"]);
+        assert_eq!(line(&items), ["[Ctrl][W] Quit"]);
     }
 
     /// Rebound keys show; an item whose binding has no usable key (a

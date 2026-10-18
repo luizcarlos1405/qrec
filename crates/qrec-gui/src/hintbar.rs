@@ -23,7 +23,7 @@ use std::rc::Rc;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
-use qrec_core::view::blocking::BlockKind;
+use qrec_core::view::blocking;
 use qrec_core::view::hints::{HintState, hint_bar, hint_state};
 use qrec_core::view::{HintItem, OverlayKind};
 
@@ -47,8 +47,9 @@ pub fn current_items(ctx: &Ctx) -> (Vec<HintItem>, String) {
     let hint = match &local.startup {
         // The placeholder state says nothing of the project yet.
         StartupPhase::Opening { .. } => return (Vec::new(), String::new()),
+        // Each page's frame (`view::blocking::hints`, WP8).
         StartupPhase::Blocked(kind) => HintState::Blocking {
-            check_again: matches!(kind, BlockKind::MissingDeps { .. }),
+            page: blocking::hints(kind),
         },
         StartupPhase::Open | StartupPhase::Closing => hint_state(&state, &facts),
     };

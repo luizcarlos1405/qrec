@@ -1,0 +1,696 @@
+---
+source: crates/qrec-core/src/view/blocking.rs
+expression: pages
+---
+{
+  "exportWait": {
+    "body": "Wait to open the project here once it's done. Quit leaves it running.",
+    "buttons": [
+      {
+        "action": {
+          "flow": "quit"
+        },
+        "busy": false,
+        "focused": true,
+        "kind": "secondary",
+        "label": "Quit"
+      },
+      {
+        "action": {
+          "flow": "wait"
+        },
+        "busy": false,
+        "focused": false,
+        "kind": "primary",
+        "label": "Wait"
+      }
+    ],
+    "lead": "It's 43% done.",
+    "title": "An export from the CLI is running.",
+    "well": {
+      "file": "exports/rust-traits-talk-20261014-153012.mp4",
+      "percent": 43,
+      "well": "export"
+    }
+  },
+  "exportWaiting": {
+    "body": "Wait to open the project here once it's done. Quit leaves it running.",
+    "buttons": [
+      {
+        "action": {
+          "flow": "quit"
+        },
+        "busy": false,
+        "focused": true,
+        "kind": "secondary",
+        "label": "Quit"
+      },
+      {
+        "action": {
+          "flow": "wait"
+        },
+        "busy": true,
+        "focused": false,
+        "kind": "primary",
+        "label": "Waiting…"
+      }
+    ],
+    "lead": "It's starting.",
+    "title": "An export from the CLI is running.",
+    "well": {
+      "file": "exports/rust-traits-talk-20261014-153012.mp4",
+      "percent": null,
+      "well": "export"
+    }
+  },
+  "gstStuck": {
+    "buttons": [
+      {
+        "action": {
+          "flow": "quit"
+        },
+        "busy": false,
+        "focused": true,
+        "kind": "secondary",
+        "label": "Quit"
+      }
+    ],
+    "head": {
+      "body": [
+        {
+          "line": "text",
+          "text": "Qrec can't record or draw the preview without it."
+        },
+        {
+          "after": "in a terminal, then start Qrec again.",
+          "before": "Run",
+          "command": "qrec doctor",
+          "line": "command"
+        }
+      ],
+      "smallTitle": false,
+      "title": "GStreamer didn't start"
+    },
+    "passed": [],
+    "passedLabel": "",
+    "rows": [
+      {
+        "command": null,
+        "description": "It didn't finish starting within 30 s: a GPU driver probably hung its plugin scan.",
+        "id": "gstreamer",
+        "item": [
+          {
+            "face": "text",
+            "text": "GStreamer"
+          }
+        ],
+        "note": null,
+        "status": "missing"
+      }
+    ]
+  },
+  "heldByWindow": {
+    "buttons": [
+      {
+        "action": {
+          "flow": "quit"
+        },
+        "busy": false,
+        "focused": true,
+        "kind": "secondary",
+        "label": "Quit"
+      }
+    ],
+    "head": {
+      "body": [
+        {
+          "line": "text",
+          "text": "A project opens in one Qrec window at a time."
+        }
+      ],
+      "smallTitle": false,
+      "title": "This project is open in another Qrec window"
+    },
+    "lines": [],
+    "note": "Switch to that window, or close it and start Qrec here again.",
+    "row": {
+      "icon": "folderOpen",
+      "path": "~/videos/rust-traits-talk",
+      "why": "Open in process 4242"
+    }
+  },
+  "notResponding": {
+    "buttons": [
+      {
+        "action": {
+          "flow": "quit"
+        },
+        "busy": false,
+        "focused": true,
+        "kind": "secondary",
+        "label": "Quit"
+      }
+    ],
+    "head": {
+      "body": [
+        {
+          "line": "text",
+          "text": "Qrec can't open the project while that process holds it."
+        }
+      ],
+      "smallTitle": false,
+      "title": "The Qrec process holding this project isn't responding"
+    },
+    "lines": [],
+    "note": "If it stays stuck, end process 4242 and start Qrec again.",
+    "row": {
+      "icon": "folderOpen",
+      "path": "~/videos/rust-traits-talk",
+      "why": "Process 4242 · headless host · since 15:02"
+    }
+  },
+  "notRespondingUnknown": {
+    "buttons": [
+      {
+        "action": {
+          "flow": "quit"
+        },
+        "busy": false,
+        "focused": true,
+        "kind": "secondary",
+        "label": "Quit"
+      }
+    ],
+    "head": {
+      "body": [
+        {
+          "line": "text",
+          "text": "Qrec can't open the project while that process holds it."
+        }
+      ],
+      "smallTitle": false,
+      "title": "The Qrec process holding this project isn't responding"
+    },
+    "lines": [],
+    "note": "If it stays stuck, end it and start Qrec again.",
+    "row": {
+      "icon": "folderOpen",
+      "path": "~/videos/rust-traits-talk",
+      "why": "A Qrec process"
+    }
+  },
+  "s23": {
+    "buttons": [
+      {
+        "action": {
+          "flow": "checkAgain"
+        },
+        "busy": false,
+        "focused": true,
+        "kind": "primary",
+        "label": "Check again"
+      },
+      {
+        "action": "copyReport",
+        "busy": false,
+        "focused": false,
+        "kind": "secondary",
+        "label": "Copy report"
+      },
+      {
+        "action": {
+          "flow": "quit"
+        },
+        "busy": false,
+        "focused": false,
+        "kind": "flat",
+        "label": "Quit"
+      }
+    ],
+    "head": {
+      "body": [
+        {
+          "line": "text",
+          "text": "Qrec can't start until these are installed."
+        },
+        {
+          "after": "in a terminal for the same report.",
+          "before": "Run",
+          "command": "qrec doctor",
+          "line": "command"
+        }
+      ],
+      "smallTitle": false,
+      "title": "The swamp is missing something"
+    },
+    "passed": [
+      {
+        "detail": "1.26.6",
+        "id": "gstreamer"
+      },
+      {
+        "detail": "found",
+        "id": "gst.element0"
+      },
+      {
+        "detail": "found",
+        "id": "gst.element1"
+      },
+      {
+        "detail": "found",
+        "id": "gst.element2"
+      },
+      {
+        "detail": "found",
+        "id": "gst.element3"
+      },
+      {
+        "detail": "found",
+        "id": "gst.element4"
+      },
+      {
+        "detail": "found",
+        "id": "gst.element5"
+      },
+      {
+        "detail": "found",
+        "id": "gst.element6"
+      },
+      {
+        "detail": "found",
+        "id": "gst.element7"
+      },
+      {
+        "detail": "found",
+        "id": "gst.element8"
+      },
+      {
+        "detail": "found",
+        "id": "gst.element9"
+      },
+      {
+        "detail": "found",
+        "id": "gst.element10"
+      },
+      {
+        "detail": "found",
+        "id": "gst.element11"
+      },
+      {
+        "detail": "found",
+        "id": "gst.element12"
+      }
+    ],
+    "passedLabel": "14 other checks passed",
+    "rows": [
+      {
+        "command": "nix develop",
+        "description": "GStreamer GTK 4 video sink (gst-plugins-rs). Qrec draws the preview with it.",
+        "id": "gst.gtk4paintablesink",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gtk4paintablesink"
+          }
+        ],
+        "note": "The flake provides gst-plugins-rs.",
+        "status": "missing"
+      },
+      {
+        "command": "xdg-desktop-portal-gnome",
+        "description": "Needed to capture screens on Wayland.",
+        "id": "portal.screencast",
+        "item": [
+          {
+            "face": "text",
+            "text": "ScreenCast portal backend"
+          }
+        ],
+        "note": "On niri, install it, then log out and back in.",
+        "status": "missing"
+      },
+      {
+        "command": null,
+        "description": "AV1 export will be unavailable. Everything else works.",
+        "id": "ffmpeg.libsvtav1",
+        "item": [
+          {
+            "face": "mono",
+            "text": "libsvtav1"
+          },
+          {
+            "face": "text",
+            "text": "in ffmpeg"
+          }
+        ],
+        "note": null,
+        "status": "optional"
+      }
+    ]
+  },
+  "s23NoFfmpeg": {
+    "buttons": [
+      {
+        "action": {
+          "flow": "checkAgain"
+        },
+        "busy": false,
+        "focused": true,
+        "kind": "primary",
+        "label": "Check again"
+      },
+      {
+        "action": "copyReport",
+        "busy": false,
+        "focused": false,
+        "kind": "secondary",
+        "label": "Copy report"
+      },
+      {
+        "action": {
+          "flow": "quit"
+        },
+        "busy": false,
+        "focused": false,
+        "kind": "flat",
+        "label": "Quit"
+      }
+    ],
+    "head": {
+      "body": [
+        {
+          "line": "text",
+          "text": "Qrec can't start until these are installed."
+        },
+        {
+          "after": "in a terminal for the same report.",
+          "before": "Run",
+          "command": "qrec doctor",
+          "line": "command"
+        }
+      ],
+      "smallTitle": false,
+      "title": "The swamp is missing something"
+    },
+    "passed": [
+      {
+        "detail": "ffprobe version 7.1",
+        "id": "ffprobe"
+      }
+    ],
+    "passedLabel": "1 other check passed",
+    "rows": [
+      {
+        "command": null,
+        "description": "ffmpeg wasn't found on PATH",
+        "id": "ffmpeg",
+        "item": [
+          {
+            "face": "mono",
+            "text": "ffmpeg"
+          }
+        ],
+        "note": "install ffmpeg (a full build with libx264, libvpx and libopus; NixOS: ffmpeg-full)",
+        "status": "missing"
+      }
+    ]
+  },
+  "x1": {
+    "body": "Stop it to open the project here. Quit leaves it recording.",
+    "buttons": [
+      {
+        "action": {
+          "flow": "quit"
+        },
+        "busy": false,
+        "focused": true,
+        "kind": "secondary",
+        "label": "Quit"
+      },
+      {
+        "action": {
+          "flow": "stopAndOpen"
+        },
+        "busy": false,
+        "focused": false,
+        "kind": "primary",
+        "label": "Stop & open"
+      }
+    ],
+    "lead": "Take 11 started from the terminal 00:01:12 ago.",
+    "title": "A take is being recorded from the CLI.",
+    "well": {
+      "elapsed": "00:01:12",
+      "project": "~/videos/rust-traits-talk",
+      "take": "Take 11",
+      "well": "recording"
+    }
+  },
+  "x1Stopping": {
+    "body": "Stop it to open the project here. Quit leaves it recording.",
+    "buttons": [
+      {
+        "action": {
+          "flow": "quit"
+        },
+        "busy": false,
+        "focused": true,
+        "kind": "secondary",
+        "label": "Quit"
+      },
+      {
+        "action": {
+          "flow": "stopAndOpen"
+        },
+        "busy": true,
+        "focused": false,
+        "kind": "primary",
+        "label": "Stopping…"
+      }
+    ],
+    "lead": "Take 11 started from the terminal 00:01:15 ago.",
+    "title": "A take is being recorded from the CLI.",
+    "well": {
+      "elapsed": "00:01:15",
+      "project": "~/videos/rust-traits-talk",
+      "take": "Take 11",
+      "well": "recording"
+    }
+  },
+  "x2": {
+    "buttons": [
+      {
+        "action": {
+          "flow": "quit"
+        },
+        "busy": false,
+        "focused": true,
+        "kind": "secondary",
+        "label": "Quit"
+      }
+    ],
+    "head": {
+      "body": [
+        {
+          "line": "text",
+          "text": "Start Qrec in an empty folder to create a project, or in a folder that has qrec.json."
+        }
+      ],
+      "smallTitle": false,
+      "title": "Not my swamp: this folder isn't empty and has no qrec.json"
+    },
+    "lines": [],
+    "note": "Hidden files count too, such as .git or .envrc.",
+    "row": {
+      "icon": "folder",
+      "path": "~/Downloads",
+      "why": "Not empty · no qrec.json"
+    }
+  },
+  "x2Inside": {
+    "buttons": [
+      {
+        "action": {
+          "flow": "quit"
+        },
+        "busy": false,
+        "focused": true,
+        "kind": "secondary",
+        "label": "Quit"
+      }
+    ],
+    "head": {
+      "body": [
+        {
+          "line": "text",
+          "text": "Start Qrec in an empty folder to create a project, or in a folder that has qrec.json."
+        }
+      ],
+      "smallTitle": false,
+      "title": "Not my swamp: this folder isn't empty and has no qrec.json"
+    },
+    "lines": [
+      "It's inside the project ~/videos/rust-traits-talk; run qrec there."
+    ],
+    "note": "Hidden files count too, such as .git or .envrc.",
+    "row": {
+      "icon": "folder",
+      "path": "~/videos/rust-traits-talk/exports",
+      "why": "Not empty · no qrec.json"
+    }
+  },
+  "x3": {
+    "advice": null,
+    "buttons": [
+      {
+        "action": {
+          "flow": "quit"
+        },
+        "busy": false,
+        "focused": false,
+        "kind": "secondary",
+        "label": "Quit"
+      }
+    ],
+    "head": {
+      "body": [
+        {
+          "line": "text",
+          "text": "Qrec won't open this project, and it never overwrites a broken qrec.json."
+        }
+      ],
+      "smallTitle": true,
+      "title": "qrec.json can't be read"
+    },
+    "problem": {
+      "explanation": "Clip c1b4 ends at frame 1400, past the end of take 3 (1377 frames). 1 more problem.",
+      "file": "~/videos/rust-traits-talk/qrec.json",
+      "message": "/timeline/clips/4/out"
+    },
+    "restore": {
+      "command": "qrec history restore 212 --yes",
+      "line": "Restore the last good state from history:",
+      "note": "Entry 212 is the last good state."
+    }
+  },
+  "x3Json": {
+    "advice": null,
+    "buttons": [
+      {
+        "action": {
+          "flow": "quit"
+        },
+        "busy": false,
+        "focused": false,
+        "kind": "secondary",
+        "label": "Quit"
+      }
+    ],
+    "head": {
+      "body": [
+        {
+          "line": "text",
+          "text": "Qrec won't open this project, and it never overwrites a broken qrec.json."
+        }
+      ],
+      "smallTitle": true,
+      "title": "qrec.json can't be read"
+    },
+    "problem": {
+      "explanation": "It isn't valid JSON.",
+      "file": "~/videos/rust-traits-talk/qrec.json",
+      "message": "key must be a string at line 1 column 15"
+    },
+    "restore": {
+      "command": "qrec history restore 3 --yes",
+      "line": "Restore the last good state from history:",
+      "note": "Entry 3 is the last good state."
+    }
+  },
+  "x3Missing": {
+    "advice": null,
+    "buttons": [
+      {
+        "action": {
+          "flow": "quit"
+        },
+        "busy": false,
+        "focused": false,
+        "kind": "secondary",
+        "label": "Quit"
+      }
+    ],
+    "head": {
+      "body": [
+        {
+          "line": "text",
+          "text": "Qrec won't open this project without it."
+        }
+      ],
+      "smallTitle": true,
+      "title": "qrec.json is missing"
+    },
+    "problem": null,
+    "restore": {
+      "command": "qrec history restore 41 --yes",
+      "line": "Rebuild it from the history:",
+      "note": "Entry 41 is the last good state."
+    }
+  },
+  "x3MissingNoHistory": {
+    "advice": "There's no history to rebuild it from: restore it from a backup.",
+    "buttons": [
+      {
+        "action": {
+          "flow": "quit"
+        },
+        "busy": false,
+        "focused": true,
+        "kind": "secondary",
+        "label": "Quit"
+      }
+    ],
+    "head": {
+      "body": [
+        {
+          "line": "text",
+          "text": "Qrec won't open this project without it."
+        }
+      ],
+      "smallTitle": true,
+      "title": "qrec.json is missing"
+    },
+    "problem": null,
+    "restore": null
+  },
+  "x3NoHistory": {
+    "advice": "There's no history to restore it from: fix it, or restore it from a backup.",
+    "buttons": [
+      {
+        "action": {
+          "flow": "quit"
+        },
+        "busy": false,
+        "focused": true,
+        "kind": "secondary",
+        "label": "Quit"
+      }
+    ],
+    "head": {
+      "body": [
+        {
+          "line": "text",
+          "text": "Qrec won't open this project, and it never overwrites a broken qrec.json."
+        }
+      ],
+      "smallTitle": true,
+      "title": "qrec.json can't be read"
+    },
+    "problem": {
+      "explanation": "It isn't valid JSON.",
+      "file": "~/talk/qrec.json",
+      "message": "EOF while parsing a value at line 1 column 0"
+    },
+    "restore": null
+  }
+}
