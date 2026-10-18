@@ -1422,7 +1422,14 @@ impl Engine {
             }
         } else {
             for (output, message) in failures {
-                self.side(SideEvent::LiveError(format!("screen {output}: {message}")));
+                // A refusal (denied, or the picker closed) is the source's
+                // `LiveSourceState::Refused`: the canvas's S24 block and its
+                // layer's row say it, so no "Live preview problem" toast
+                // repeats it; anything else the portal answered (no
+                // ScreenCast portal) is that toast too.
+                if qrec_core::on_event::record::portal_refusal(&message).is_none() {
+                    self.side(SideEvent::LiveError(format!("screen {output}: {message}")));
+                }
                 self.refused.insert(output, message);
             }
             if self.take.is_none() {

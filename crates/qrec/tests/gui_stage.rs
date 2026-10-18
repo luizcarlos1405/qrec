@@ -2259,8 +2259,14 @@ fn refused_take(nested: &mut Nested, portal: &str) -> PathBuf {
         Some(ui(CanvasMode::Live, 7391)),
     );
     open(nested, &project, s24_launch(portal));
-    // Queued before the window settled (the refusal comes with the live
-    // statuses `waitIdle` waits for); gone by itself on a loaded machine.
+    // The refusal is the canvas's block and the layer's row: no "Live
+    // preview problem" toast repeats it (it came with the live statuses
+    // `waitIdle` waits for).
+    let toasts = nested.window(0).labels("toast-host");
+    assert!(
+        !toasts.iter().any(|l| l == "Live preview problem"),
+        "the refusal toasted: {toasts:?}"
+    );
     dismiss_toasts(nested);
     nested.keys(&["-k", "r"]);
     wait_broken(nested, &project, "take-0010");
@@ -2474,6 +2480,13 @@ fn s24_portal_denied() {
     assert_hides(
         &stage_labels(&mut nested),
         &["Screen access denied", "Try again"],
+    );
+    // ...and the hints are Program's: Try again is the block's, in Live.
+    let hints = hint_line(&mut nested);
+    assert!(
+        !hints.iter().any(|h| h.contains("Try again"))
+            && hints.iter().any(|h| h.ends_with(" Live")),
+        "Program's hints: {hints:?}"
     );
     assert_clean(&mut nested);
 }

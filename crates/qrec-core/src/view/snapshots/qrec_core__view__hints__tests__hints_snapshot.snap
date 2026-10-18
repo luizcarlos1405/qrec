@@ -1560,5 +1560,77 @@ expression: all
       "state": "portalDenied"
     },
     "status": "Snapping on · 1920×1080 · 30 fps"
+  },
+  {
+    "items": [
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Space"
+          ]
+        ],
+        "label": "Play"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            ","
+          ],
+          [
+            "."
+          ]
+        ],
+        "label": "Select clip"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "="
+          ]
+        ],
+        "label": "Zoom in"
+      },
+      {
+        "emphasized": false,
+        "enabled": false,
+        "keys": [
+          [
+            "Z"
+          ]
+        ],
+        "label": "Zoom to selection"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "Tab"
+          ]
+        ],
+        "label": "Live"
+      },
+      {
+        "emphasized": false,
+        "enabled": true,
+        "keys": [
+          [
+            "?"
+          ]
+        ],
+        "label": "All keys"
+      }
+    ],
+    "screen": "S24 in Program",
+    "state": {
+      "state": "programIdle"
+    },
+    "status": "Snapping on · 1920×1080 · 30 fps"
   }
 ]

@@ -133,8 +133,10 @@ pub fn hint_state(state: &State, facts: &GuiFacts) -> HintState {
     if crate::view::canvas::first_run(state) {
         return HintState::FirstRun;
     }
-    // S24 is approved (G§0.2): a refused screen is its own state.
-    if facts.portal_denied {
+    // S24 is approved (G§0.2): a refused screen is its own state, in Live,
+    // where the stage shows its block and Try again; Program shows the
+    // program, so its hints are Program's.
+    if facts.portal_denied && state.ui.canvas_mode == CanvasMode::Live {
         return HintState::PortalDenied;
     }
     if state.project.timeline.clips.is_empty() {
@@ -873,7 +875,7 @@ mod tests {
                 ..fit()
             },
             HintState::ProgramIdle,
-            program_idle,
+            program_idle.clone(),
         ));
 
         // S09: frame level, c2d1 selected, playhead 3176. The playhead sits
@@ -1129,6 +1131,18 @@ mod tests {
             },
             HintState::PortalDenied,
             vec!["[R] Try again", "[Tab] Program", "[B] Bin", "[?] All keys"],
+        ));
+        // S24's refusal in Program (not drawn): the stage shows the program,
+        // not the block, so the hints are Program's.
+        out.push((
+            "S24 in Program",
+            program(&[]),
+            GuiFacts {
+                portal_denied: true,
+                ..fit()
+            },
+            HintState::ProgramIdle,
+            program_idle,
         ));
         out
     }

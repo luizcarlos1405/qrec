@@ -16,7 +16,9 @@ use qrec_core::{Event, Fps, TakeId};
 
 use super::fake::{FAKE_CAMERA, FAKE_MIC, FakeHooks, FakePortal};
 use super::spec::SourceSpec;
-use super::{Backend, EngineOptions, GstCaptureEngine, STALL_LIMIT, SideEvent};
+use super::{
+    Backend, EngineOptions, GstCaptureEngine, LiveSource, LiveSourceState, STALL_LIMIT, SideEvent,
+};
 use crate::deps::CaptureEngine;
 use crate::gst_init::testing::{assert_quiet_since, problems, serial};
 use crate::msg::{Inbox, Msg};
@@ -345,21 +347,37 @@ fn the_fake_portal_refuses_the_fake_screens() {
             "{message}"
         );
 
-        // The live preview goes on without the refused screen.
+        // The live preview goes on without the refused screen, which its
+        // live status says is refused (the canvas's S24 block and the
+        // layer's row show it): no `LiveError` (no "Live preview problem"
+        // toast) repeats it.
         h.engine
             .set_live(Some(live_scene(&["FAKE-1"])), h.inbox.clone());
         let deadline = Instant::now() + WAIT;
-        let refused = loop {
+        let (refused, cancelled) = loop {
             match h
                 .side
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             {
-                Ok(SideEvent::LiveError(text)) if text.contains("FAKE-1") => break text,
+                Ok(SideEvent::LiveError(text)) => panic!("{portal:?}: a live error: {text}"),
+                Ok(SideEvent::LiveStatus(statuses)) => {
+                    let refusal = statuses.iter().find_map(|s| match (&s.source, &s.state) {
+                        (
+                            LiveSource::Screen { output },
+                            LiveSourceState::Refused { cancelled, message },
+                        ) if output == "FAKE-1" => Some((message.clone(), *cancelled)),
+                        _ => None,
+                    });
+                    if let Some(refusal) = refusal {
+                        break refusal;
+                    }
+                }
                 Ok(_) => {}
-                Err(_) => panic!("{portal:?}: no live error for FAKE-1"),
+                Err(_) => panic!("{portal:?}: FAKE-1 never refused in a live status"),
             }
         };
         assert!(refused.contains(why), "{refused}");
+        assert_eq!(cancelled, portal == FakePortal::Cancel, "{refused}");
         // The engine handles one command at a time: the refusal's rebuild ran
         // with the command that brought the error, before this inspect. The
         // pipeline exists, with the mic and the preview, without the screen.
@@ -379,6 +397,17 @@ fn the_fake_portal_refuses_the_fake_screens() {
             info.preview,
             "{portal:?}: the preview runs without the refused layer"
         );
+        // Whatever the engine sent before it answered the inspect: no
+        // live error about the refusal either.
+        let errors: Vec<String> = h
+            .side
+            .try_iter()
+            .filter_map(|e| match e {
+                SideEvent::LiveError(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert!(errors.is_empty(), "{portal:?}: {errors:?}");
     }
 }
 
