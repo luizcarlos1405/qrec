@@ -3,9 +3,8 @@
 //! history through its confirmation), the cheat sheet (S20, S20b),
 //! Settings › Appearance (S21) and › Keyboard (S22: the conflict banner,
 //! Q5's inert key, the capture and the edits), the Recording and Autocut
-//! pages (not drawn), and S25's toasts, each triggered for real but #8
-//! (a camera that stops sending frames mid-take: the fake engine has no
-//! hook for it outside its own tests).
+//! pages (not drawn), and S25's toasts, each triggered for real (#8: the
+//! fake engine's `QREC_FAKE_CAMERA_STALL_MS` hangs the camera mid-take).
 //!
 //! Each screen's shot gets a `-compare.png` next to its frame
 //! (`design/screens/`), cropped to the overlay where the window under it
@@ -1324,6 +1323,58 @@ fn s25_the_editing_toasts() {
         ],
     );
     shoot_toast(&mut nested, "10-invalid-external-edit");
+    assert_clean(&mut nested);
+    nested.close_window();
+    assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
+}
+
+/// S25 #8, for real: the fake engine's camera hangs 1 s into take 10
+/// (`QREC_FAKE_CAMERA_STALL_MS`, fake backend only), so `STALL_LIMIT` later
+/// the take loses L2 Face and records on without it: "Camera disconnected"
+/// / "Logitech C920 stopped sending frames. Take 10 keeps recording without
+/// L2 Face." (S25's words: the design inventory's camera). The take goes on
+/// recording and lands with L2 missing.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s25_a_camera_lost_mid_take() {
+    let mut nested = Nested::start(AREA, "s25-camera", Options::default());
+    let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base, &s02());
+    open(
+        &mut nested,
+        &project,
+        Launch::a11y().with_env("QREC_FAKE_CAMERA_STALL_MS", "1000"),
+    );
+    dismiss_toasts(&mut nested);
+    let started = nested.cli_json(&project, &["record", "start", "--countdown", "0"]);
+    assert_eq!(started["ok"], true, "{started}");
+    let labels = wait_toast(&mut nested, "Camera disconnected");
+    assert_toast(
+        &labels,
+        &["Logitech C920 stopped sending frames. Take 10 keeps recording without L2 Face."],
+    );
+    assert_eq!(
+        state(&nested, &project)["runtime"]["record"]["phase"],
+        "recording",
+        "the take records on"
+    );
+    shoot_toast(&mut nested, "8-camera-lost");
+    assert_a11y(&mut nested);
+    let stopped = nested.cli_json(&project, &["record", "stop"]);
+    assert_eq!(stopped["ok"], true, "{stopped}");
+    wait_record_phase(&nested, &project, "idle");
+    // Take 10 lands (`qrec.json`, as the Session wrote it) with L2 missing.
+    let take = poll(Duration::from_secs(30), "take 10 landed", || {
+        let text = fs::read_to_string(project.join("qrec.json")).ok()?;
+        let json: Value = serde_json::from_str(&text).ok()?;
+        let take = json["takes"]["take-0010"].clone();
+        (take["status"] == "ok").then_some(take)
+    });
+    let face = take["scene"]["layers"]
+        .as_array()
+        .and_then(|layers| layers.iter().find(|l| l["id"] == "L2"))
+        .cloned()
+        .unwrap_or_else(|| panic!("L2 in take 10's scene: {take}"));
+    assert_eq!(face["missing"], true, "{face}");
     assert_clean(&mut nested);
     nested.close_window();
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));

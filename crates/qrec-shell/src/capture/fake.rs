@@ -20,6 +20,11 @@
 //!   answering like the real one (S13b, S24).
 //! - `QREC_FAKE_RECORD_OFFSET_FRAMES=<n>`: every `RecordClock` reads `n`
 //!   frames more, as if the take started earlier (S04's timer and ghost).
+//! - `QREC_FAKE_CAMERA_STALL_MS=<ms>`: `<ms>` into each take's recording,
+//!   the fake cameras it records stop sending frames (a camera that hangs:
+//!   no error, no EOS), so the take loses them
+//!   [`STALL_LIMIT`](super::STALL_LIMIT) later, like an unplugged one, and
+//!   records on without them (S25 #8, "Camera disconnected").
 //! - `QREC_FAKE_INVENTORY=design`: the fake devices carry the design
 //!   brief's names and sizes (BRIEF §3); their output names, device paths
 //!   and test patterns stay the same.
@@ -37,6 +42,8 @@ pub const FAKE_PORTAL_ENV: &str = "QREC_FAKE_PORTAL";
 pub const FAKE_RECORD_OFFSET_ENV: &str = "QREC_FAKE_RECORD_OFFSET_FRAMES";
 /// `QREC_FAKE_INVENTORY` ([`FakeHooks::inventory`]).
 pub const FAKE_INVENTORY_ENV: &str = "QREC_FAKE_INVENTORY";
+/// `QREC_FAKE_CAMERA_STALL_MS` ([`FakeHooks::camera_stall`]).
+pub const FAKE_CAMERA_STALL_ENV: &str = "QREC_FAKE_CAMERA_STALL_MS";
 
 /// The fake backend's test hooks (docs/GUI.md G§8.4). The engine takes them
 /// from `EngineOptions::fake` (none by default), which the binary's hosts
@@ -52,6 +59,8 @@ pub struct FakeHooks {
     pub record_offset_frames: u64,
     /// Which names and sizes the fake devices carry.
     pub inventory: FakeInventoryKind,
+    /// How long into each take's recording its fake cameras stall.
+    pub camera_stall: Option<Duration>,
 }
 
 /// How the fake portal answers a screen (`QREC_FAKE_PORTAL`).
@@ -109,6 +118,7 @@ impl FakeHooks {
             portal,
             record_offset_frames: number(FAKE_RECORD_OFFSET_ENV).unwrap_or(0),
             inventory: FakeInventoryKind::parse(value(FAKE_INVENTORY_ENV).as_deref()),
+            camera_stall: number(FAKE_CAMERA_STALL_ENV).map(Duration::from_millis),
         }
     }
 
@@ -421,6 +431,7 @@ mod tests {
             (FAKE_PORTAL_ENV, "deny"),
             (FAKE_RECORD_OFFSET_ENV, "4842"),
             (FAKE_INVENTORY_ENV, "design"),
+            (FAKE_CAMERA_STALL_ENV, "1500"),
         ]);
         assert_eq!(
             hooks,
@@ -429,6 +440,7 @@ mod tests {
                 portal: Some(FakePortal::Deny),
                 record_offset_frames: 4842,
                 inventory: FakeInventoryKind::Design,
+                camera_stall: Some(Duration::from_millis(1500)),
             }
         );
         assert_eq!(
@@ -441,6 +453,7 @@ mod tests {
             (FAKE_PORTAL_ENV, "maybe"),
             (FAKE_RECORD_OFFSET_ENV, "-3"),
             (FAKE_INVENTORY_ENV, "brief"),
+            (FAKE_CAMERA_STALL_ENV, "later"),
         ]);
         assert_eq!(bad, FakeHooks::default());
     }

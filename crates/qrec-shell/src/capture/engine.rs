@@ -472,6 +472,8 @@ struct TakeRun {
     cancel: bool,
     /// `QREC_FAKE_EOS_DELAY_MS`: a stopped take ends no sooner than this.
     hold_until: Option<Instant>,
+    /// `QREC_FAKE_CAMERA_STALL_MS`: when the take's cameras stall.
+    camera_stall_at: Option<Instant>,
 }
 
 struct Engine {
@@ -1574,6 +1576,7 @@ impl Engine {
             bins: Vec::new(),
             cancel: false,
             hold_until: None,
+            camera_stall_at: None,
         };
         run.log.line(format!(
             "start {} ({:?} backend): {}",
@@ -1865,6 +1868,16 @@ impl Engine {
     fn fake_eos_delay(&self) -> Option<Duration> {
         match self.opts.backend {
             Backend::Fake => self.opts.fake.eos_delay,
+            Backend::Real => None,
+        }
+    }
+
+    /// `QREC_FAKE_CAMERA_STALL_MS` (fake backend only): how long into each
+    /// take's recording its cameras stall (`FakeFailure::Stall`, so
+    /// `check_stalls` loses them `STALL_LIMIT` later: S25 #8).
+    fn fake_camera_stall(&self) -> Option<Duration> {
+        match self.opts.backend {
+            Backend::Fake => self.opts.fake.camera_stall,
             Backend::Real => None,
         }
     }
@@ -2337,6 +2350,7 @@ impl Engine {
         if self.casts_close_at.is_some_and(|at| now >= at) {
             self.end_cast_grace();
         }
+        let camera_stall = self.fake_camera_stall();
         let Some(run) = &mut self.take else { return };
         match run.phase {
             Phase::New => {}
@@ -2354,6 +2368,7 @@ impl Engine {
                     run.phase = Phase::Recording {
                         next_clock: now + CLOCK_INTERVAL,
                     };
+                    run.camera_stall_at = camera_stall.map(|after| now + after);
                     let files: Vec<String> = run.bins.iter().map(|b| b.file.clone()).collect();
                     // Every bin passed its first buffer (it wrote one): the
                     // offsets are known now, not only at the stop (a crash
@@ -2403,7 +2418,28 @@ impl Engine {
                         next = now + CLOCK_INTERVAL;
                     }
                     run.phase = Phase::Recording { next_clock: next };
+                    // QREC_FAKE_CAMERA_STALL_MS: the take's cameras hang.
+                    let mut cameras: Vec<String> = Vec::new();
+                    if run.camera_stall_at.is_some_and(|at| now >= at) {
+                        run.camera_stall_at = None;
+                        run.log
+                            .line("QREC_FAKE_CAMERA_STALL_MS: the cameras stop sending frames");
+                        if let Some(live) = &self.live {
+                            cameras = run
+                                .bins
+                                .iter()
+                                .filter_map(|b| live.sources.get(b.source))
+                                .filter(|branch| matches!(branch.spec, SourceSpec::Camera { .. }))
+                                .map(|branch| branch.spec.device_name().to_owned())
+                                .collect();
+                            cameras.sort();
+                            cameras.dedup();
+                        }
+                    }
                     let (take, t0) = (run.plan.take.clone(), run.t0);
+                    for camera in cameras {
+                        self.inject(&camera, FakeFailure::Stall);
+                    }
                     self.emit_clock(&take, t0);
                     self.check_stalls();
                 }

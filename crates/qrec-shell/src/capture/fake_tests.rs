@@ -9,13 +9,14 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
+use qrec_core::ctx::CameraMode;
 use qrec_core::model::{AudioRole, AudioTrack, Canvas, Crop, Fit, Layer, Rect, Scene, VideoSource};
 use qrec_core::plans::{AudioRecord, CapturePlan, LiveScene, VideoEncoder, VideoRecord};
 use qrec_core::{Event, Fps, TakeId};
 
-use super::fake::{FAKE_MIC, FakeHooks, FakePortal};
+use super::fake::{FAKE_CAMERA, FAKE_MIC, FakeHooks, FakePortal};
 use super::spec::SourceSpec;
-use super::{Backend, EngineOptions, GstCaptureEngine, SideEvent};
+use super::{Backend, EngineOptions, GstCaptureEngine, STALL_LIMIT, SideEvent};
 use crate::deps::CaptureEngine;
 use crate::gst_init::testing::{assert_quiet_since, problems, serial};
 use crate::msg::{Inbox, Msg};
@@ -152,6 +153,102 @@ fn screen(id: &str, output: &str) -> VideoRecord {
         key_int_max: 30,
         camera_mode: None,
     }
+}
+
+/// The fake camera (`/dev/fake0`, 640×480 YUY2 at 30 fps) as `id`.
+fn camera(id: &str) -> VideoRecord {
+    VideoRecord {
+        id: id.parse().unwrap(),
+        source: VideoSource::Camera {
+            device: FAKE_CAMERA.into(),
+            label: "Fake camera".into(),
+        },
+        file: format!("{id}-camera-0.mkv"),
+        encoder: VideoEncoder::X264 {
+            pass: "qual".into(),
+            quantizer: 18,
+            speed_preset: "veryfast".into(),
+            tune: "zerolatency".into(),
+        },
+        key_int_max: 30,
+        camera_mode: Some(CameraMode {
+            width: 640,
+            height: 480,
+            fps: Fps::new(30, 1),
+            format: "YUY2".into(),
+        }),
+    }
+}
+
+/// `QREC_FAKE_CAMERA_STALL_MS`: that long into the recording, the take's
+/// fake camera stops sending frames (no error, no EOS), so `STALL_LIMIT`
+/// later the take loses it (S25 #8: "Camera disconnected") and records on
+/// with the rest; the take's log says so. Without the hook it never does.
+#[test]
+fn the_camera_stall_loses_the_camera_mid_take() {
+    let _serial = serial();
+    let stall = Duration::from_millis(600);
+    let mut h = Hooked::new(FakeHooks {
+        camera_stall: Some(stall),
+        ..FakeHooks::default()
+    });
+    let mut take = h.plan(1, &["FAKE-1"], 10_000);
+    take.video.push(camera("L2"));
+    h.engine.start(take.clone(), h.inbox.clone());
+    h.started();
+    let recording = Instant::now();
+    let lost = h.wait_for("StreamLost", |e| {
+        matches!(
+            e,
+            Event::StreamLost { .. } | Event::CaptureStopped { .. } | Event::CaptureFailed { .. }
+        )
+    });
+    let after = recording.elapsed();
+    let Event::StreamLost {
+        stream, message, ..
+    } = lost
+    else {
+        panic!("{lost:?}");
+    };
+    assert_eq!(stream, "L2", "{message}");
+    assert!(message.contains("stopped sending frames"), "{message}");
+    // The stall comes at a clock tick past `stall` (≤ 250 ms on), the loss
+    // `STALL_LIMIT` after the camera's last frame, checked at a tick.
+    assert!(
+        after >= stall + STALL_LIMIT - Duration::from_millis(200)
+            && after < stall + STALL_LIMIT + Duration::from_secs(2),
+        "{after:?}"
+    );
+    // The take records on (the screen and the mic) and stops normally.
+    let (_, timed_out) = h.stop(&take.take);
+    assert!(!timed_out);
+    let log = fs::read_to_string(h.project.join(&take.log)).unwrap();
+    assert!(log.contains("QREC_FAKE_CAMERA_STALL_MS"), "{log}");
+
+    // Without the hook the camera records the whole take.
+    let mut h = Hooked::new(FakeHooks::default());
+    let mut take = h.plan(1, &["FAKE-1"], 10_000);
+    take.video.push(camera("L2"));
+    h.engine.start(take.clone(), h.inbox.clone());
+    h.started();
+    std::thread::sleep(stall + STALL_LIMIT + Duration::from_millis(500));
+    h.engine.stop(&take.take, false);
+    let stopped = h.wait_for("CaptureStopped", |e| {
+        matches!(
+            e,
+            Event::StreamLost { .. } | Event::CaptureStopped { .. } | Event::CaptureFailed { .. }
+        )
+    });
+    assert!(
+        matches!(
+            stopped,
+            Event::CaptureStopped {
+                timed_out: false,
+                ..
+            }
+        ),
+        "{stopped:?}"
+    );
 }
 
 /// `QREC_FAKE_EOS_DELAY_MS`: a stopped take's files close that much later,
