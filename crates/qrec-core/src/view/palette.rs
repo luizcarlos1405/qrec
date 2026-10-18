@@ -21,8 +21,8 @@
 //! rows whose label holds it as a subsequence ([`fuzzy_match`]: case
 //! doesn't matter, spaces in the query are ignored, consecutive characters
 //! and word starts score higher), best first, ties in the table order.
-//! Labels and CLI forms are the core keymap's until S19's frame is drawn
-//! into the build (D-31).
+//! Labels and CLI forms are the keymap's, which are S19's (D-31: "Split
+//! clip", `qrec clip split`).
 
 use std::ops::Range;
 
@@ -423,6 +423,46 @@ mod tests {
         assert_eq!(rows[0].matched, [0, 1]);
         assert_eq!(rows[0].highlights(), vec![0..2]);
         assert!(view.groups[0].title.is_none());
+        // S19's six rows as drawn (D-31): label with its bold letters, key
+        // caps, CLI form.
+        let drawn: [(&str, &str, &[&str], Option<&str>); 6] = [
+            (
+                "clip.split",
+                "[Sp]lit clip",
+                &["S"],
+                Some("qrec clip split"),
+            ),
+            (
+                "frame.save",
+                "[S]ave frame as [P]NG",
+                &["P"],
+                Some("qrec frame save"),
+            ),
+            (
+                "autocut.preview",
+                "Autocut [s]ettings and [p]review",
+                &["Shift", "C"],
+                Some("qrec autocut --dry-run"),
+            ),
+            ("snapping.toggle", "Toggle [s]na[p]ping", &["N"], None),
+            ("select.prev", "[S]elect [p]revious clip", &[","], None),
+            (
+                "seek.prev-edit",
+                "[S]eek to [p]revious edit point",
+                &["\u{2191}"],
+                Some("qrec seek --edit prev"),
+            ),
+        ];
+        for (id, label, caps, cli) in drawn {
+            let row = rows
+                .iter()
+                .find(|r| r.id == id)
+                .unwrap_or_else(|| panic!("{id} matches"));
+            assert_eq!(bracketed(&row.label, &row.matched), label, "{id}");
+            assert_eq!(row.keys, [caps.to_vec()], "{id}");
+            assert_eq!(row.cli.as_deref(), cli, "{id}");
+            assert!(row.enabled, "{id}");
+        }
     }
 
     #[test]

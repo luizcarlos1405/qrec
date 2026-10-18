@@ -1,9 +1,12 @@
 ---
 source: crates/qrec-core/src/view/preferences.rs
-expression: "appearance_page(&UserConfig::default())"
+expression: page
 ---
 {
-  "themeTitle": "Theme",
+  "theme": {
+    "title": "Theme",
+    "description": "Changes apply right away. Every theme keeps the same layout and keys."
+  },
   "themes": [
     {
       "id": "swamp-night",
@@ -46,7 +49,14 @@ expression: "appearance_page(&UserConfig::default())"
       ]
     }
   ],
-  "scaleTitle": "Interface size",
+  "interface": {
+    "title": "Interface",
+    "description": null
+  },
+  "scale": {
+    "label": "Interface size",
+    "caption": "Scales text, controls and the timeline together."
+  },
   "scales": [
     {
       "label": "100%",
@@ -74,17 +84,21 @@ expression: "appearance_page(&UserConfig::default())"
     }
   ],
   "reducedMotion": {
-    "title": "Reduce motion",
-    "label": null,
+    "label": "Reduce motion",
     "caption": "Also on when your system asks for less motion.",
     "on": false,
     "key": "ui.reduced_motion"
   },
+  "sound": {
+    "title": "Sound",
+    "description": null
+  },
   "sounds": {
-    "title": "Sounds",
     "label": "Squelch on record start and stop",
-    "caption": null,
+    "caption": "A short, wet squelch. Nothing else in Qrec makes a sound.",
     "on": false,
     "key": "ui.sounds"
-  }
+  },
+  "footer": "Changes are saved to ~/.config/qrec/config.toml.",
+  "footerPath": "~/.config/qrec/config.toml"
 }

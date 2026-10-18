@@ -6,7 +6,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "record.toggle",
     "group": "Record",
-    "label": "Start / stop recording",
+    "label": "Toggle record",
     "keys": [
       "r"
     ],
@@ -19,11 +19,11 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "record.over",
     "group": "Record",
-    "label": "Record over the selection",
+    "label": "Record over selection",
     "keys": [
       "o"
     ],
-    "cli": "qrec record start --over <clip>…",
+    "cli": "qrec record start --over",
     "contexts": [
       "global"
     ]
@@ -31,7 +31,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "take.discard-last",
     "group": "Record",
-    "label": "Discard the last take (to the bin)",
+    "label": "Discard last take",
     "keys": [
       "d"
     ],
@@ -44,7 +44,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "cancel",
     "group": "Record",
-    "label": "Cancel recording, deselect, close overlay",
+    "label": "Cancel recording",
     "keys": [
       "Escape"
     ],
@@ -71,7 +71,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "shuttle.reverse",
     "group": "Playback",
-    "label": "Shuttle reverse (again: 2×, 4×)",
+    "label": "Shuttle reverse",
     "keys": [
       "j"
     ],
@@ -95,7 +95,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "shuttle.forward",
     "group": "Playback",
-    "label": "Shuttle forward (again: 2×, 4×)",
+    "label": "Shuttle forward",
     "keys": [
       "l"
     ],
@@ -107,7 +107,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "seek.prev-frame",
     "group": "Playback",
-    "label": "Previous frame",
+    "label": "Seek to previous frame",
     "keys": [
       "Left"
     ],
@@ -120,7 +120,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "seek.next-frame",
     "group": "Playback",
-    "label": "Next frame",
+    "label": "Seek to next frame",
     "keys": [
       "Right"
     ],
@@ -133,7 +133,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "seek.back",
     "group": "Playback",
-    "label": "Back 1 s",
+    "label": "Seek back 1 s",
     "keys": [
       "shift+Left"
     ],
@@ -146,7 +146,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "seek.forward",
     "group": "Playback",
-    "label": "Forward 1 s",
+    "label": "Seek forward 1 s",
     "keys": [
       "shift+Right"
     ],
@@ -159,7 +159,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "seek.prev-edit",
     "group": "Playback",
-    "label": "Previous edit point",
+    "label": "Seek to previous edit point",
     "keys": [
       "Up"
     ],
@@ -172,7 +172,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "seek.next-edit",
     "group": "Playback",
-    "label": "Next edit point",
+    "label": "Seek to next edit point",
     "keys": [
       "Down"
     ],
@@ -185,7 +185,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "seek.start",
     "group": "Playback",
-    "label": "Timeline start",
+    "label": "Seek to timeline start",
     "keys": [
       "Home"
     ],
@@ -198,7 +198,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "seek.end",
     "group": "Playback",
-    "label": "Timeline end",
+    "label": "Seek to timeline end",
     "keys": [
       "End"
     ],
@@ -237,11 +237,11 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "clip.move-left",
     "group": "Edit",
-    "label": "Move selection left one slot",
+    "label": "Move selection left",
     "keys": [
       "less"
     ],
-    "cli": "qrec clip move <clip>… --by -1",
+    "cli": "qrec clip move --by -1",
     "contexts": [
       "global"
     ]
@@ -249,11 +249,11 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "clip.move-right",
     "group": "Edit",
-    "label": "Move selection right one slot",
+    "label": "Move selection right",
     "keys": [
       "greater"
     ],
-    "cli": "qrec clip move <clip>… --by 1",
+    "cli": "qrec clip move --by 1",
     "contexts": [
       "global"
     ]
@@ -261,11 +261,11 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "clip.split",
     "group": "Edit",
-    "label": "Split clip at the playhead",
+    "label": "Split clip",
     "keys": [
       "s"
     ],
-    "cli": "qrec clip split <clip> --at <t>",
+    "cli": "qrec clip split",
     "contexts": [
       "global"
     ]
@@ -273,11 +273,11 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "clip.trim-start",
     "group": "Edit",
-    "label": "Trim start to the playhead",
+    "label": "Trim start to playhead",
     "keys": [
       "bracketleft"
     ],
-    "cli": "qrec clip trim <clip> --start <t>",
+    "cli": "qrec clip trim --start",
     "contexts": [
       "global"
     ]
@@ -285,11 +285,11 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "clip.trim-end",
     "group": "Edit",
-    "label": "Trim end to the playhead",
+    "label": "Trim end to playhead",
     "keys": [
       "bracketright"
     ],
-    "cli": "qrec clip trim <clip> --end <t>",
+    "cli": "qrec clip trim --end",
     "contexts": [
       "global"
     ]
@@ -297,11 +297,11 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "clip.nudge-start",
     "group": "Edit",
-    "label": "Trim 1 frame off the start",
+    "label": "Nudge start edge 1 frame",
     "keys": [
       "alt+bracketleft"
     ],
-    "cli": "qrec clip trim <clip> --start +1f",
+    "cli": "qrec clip trim --start +1f",
     "contexts": [
       "global"
     ]
@@ -309,11 +309,11 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "clip.nudge-end",
     "group": "Edit",
-    "label": "Trim 1 frame off the end",
+    "label": "Nudge end edge 1 frame",
     "keys": [
       "alt+bracketright"
     ],
-    "cli": "qrec clip trim <clip> --end -1f",
+    "cli": "qrec clip trim --end -1f",
     "contexts": [
       "global"
     ]
@@ -321,11 +321,11 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "clip.nudge-start-10",
     "group": "Edit",
-    "label": "Trim 10 frames off the start",
+    "label": "Nudge start edge 10 frames",
     "keys": [
       "alt+braceleft"
     ],
-    "cli": "qrec clip trim <clip> --start +10f",
+    "cli": "qrec clip trim --start +10f",
     "contexts": [
       "global"
     ]
@@ -333,11 +333,11 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "clip.nudge-end-10",
     "group": "Edit",
-    "label": "Trim 10 frames off the end",
+    "label": "Nudge end edge 10 frames",
     "keys": [
       "alt+braceright"
     ],
-    "cli": "qrec clip trim <clip> --end -10f",
+    "cli": "qrec clip trim --end -10f",
     "contexts": [
       "global"
     ]
@@ -345,13 +345,13 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "clip.remove",
     "group": "Edit",
-    "label": "Remove selected clips (to the bin)",
+    "label": "Remove clips",
     "keys": [
       "Delete",
       "x",
       "BackSpace"
     ],
-    "cli": "qrec clip remove <clip>…",
+    "cli": "qrec clip remove",
     "contexts": [
       "global"
     ]
@@ -359,11 +359,11 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "autocut.run",
     "group": "Edit",
-    "label": "Autocut the selection, or every clip",
+    "label": "Autocut",
     "keys": [
       "c"
     ],
-    "cli": "qrec autocut [--clips <clip>…]",
+    "cli": "qrec autocut",
     "contexts": [
       "global"
     ]
@@ -408,7 +408,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "select.all",
     "group": "Edit",
-    "label": "Select all clips",
+    "label": "Select all",
     "keys": [
       "ctrl+a"
     ],
@@ -421,11 +421,11 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "frame.save",
     "group": "Output",
-    "label": "Save the frame at the playhead (PNG)",
+    "label": "Save frame as PNG",
     "keys": [
       "p"
     ],
-    "cli": "qrec frame save --at <t>",
+    "cli": "qrec frame save",
     "contexts": [
       "global"
     ]
@@ -484,7 +484,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "zoom.selection",
     "group": "View",
-    "label": "Zoom to the selection",
+    "label": "Zoom to selection",
     "keys": [
       "z"
     ],
@@ -510,7 +510,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "canvas.mode",
     "group": "View",
-    "label": "Switch canvas Live / Program",
+    "label": "Switch Live / Program",
     "keys": [
       "Tab"
     ],
@@ -523,7 +523,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "bin.toggle",
     "group": "View",
-    "label": "Toggle the bin",
+    "label": "Toggle bin",
     "keys": [
       "b"
     ],
@@ -536,7 +536,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "keys.help",
     "group": "View",
-    "label": "Cheat sheet",
+    "label": "Keyboard shortcuts",
     "keys": [
       "question"
     ],
@@ -575,7 +575,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "region.next",
     "group": "View",
-    "label": "Focus the next region",
+    "label": "Focus next region",
     "keys": [
       "F6"
     ],
@@ -588,7 +588,7 @@ expression: "keys_view(&resolve(\"\"))"
   {
     "id": "region.prev",
     "group": "View",
-    "label": "Focus the previous region",
+    "label": "Focus previous region",
     "keys": [
       "shift+F6"
     ],
@@ -619,7 +619,7 @@ expression: "keys_view(&resolve(\"\"))"
     "keys": [
       "Left"
     ],
-    "cli": "qrec scene layer set <layer> --rect X,Y,W,H",
+    "cli": "qrec scene layer set --rect",
     "contexts": [
       "canvas"
     ]
@@ -631,7 +631,7 @@ expression: "keys_view(&resolve(\"\"))"
     "keys": [
       "Right"
     ],
-    "cli": "qrec scene layer set <layer> --rect X,Y,W,H",
+    "cli": "qrec scene layer set --rect",
     "contexts": [
       "canvas"
     ]
@@ -643,7 +643,7 @@ expression: "keys_view(&resolve(\"\"))"
     "keys": [
       "Up"
     ],
-    "cli": "qrec scene layer set <layer> --rect X,Y,W,H",
+    "cli": "qrec scene layer set --rect",
     "contexts": [
       "canvas"
     ]
@@ -655,7 +655,7 @@ expression: "keys_view(&resolve(\"\"))"
     "keys": [
       "Down"
     ],
-    "cli": "qrec scene layer set <layer> --rect X,Y,W,H",
+    "cli": "qrec scene layer set --rect",
     "contexts": [
       "canvas"
     ]
@@ -667,7 +667,7 @@ expression: "keys_view(&resolve(\"\"))"
     "keys": [
       "shift+Left"
     ],
-    "cli": "qrec scene layer set <layer> --rect X,Y,W,H",
+    "cli": "qrec scene layer set --rect",
     "contexts": [
       "canvas"
     ]
@@ -679,7 +679,7 @@ expression: "keys_view(&resolve(\"\"))"
     "keys": [
       "shift+Right"
     ],
-    "cli": "qrec scene layer set <layer> --rect X,Y,W,H",
+    "cli": "qrec scene layer set --rect",
     "contexts": [
       "canvas"
     ]
@@ -691,7 +691,7 @@ expression: "keys_view(&resolve(\"\"))"
     "keys": [
       "shift+Up"
     ],
-    "cli": "qrec scene layer set <layer> --rect X,Y,W,H",
+    "cli": "qrec scene layer set --rect",
     "contexts": [
       "canvas"
     ]
@@ -703,7 +703,7 @@ expression: "keys_view(&resolve(\"\"))"
     "keys": [
       "shift+Down"
     ],
-    "cli": "qrec scene layer set <layer> --rect X,Y,W,H",
+    "cli": "qrec scene layer set --rect",
     "contexts": [
       "canvas"
     ]

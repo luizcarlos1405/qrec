@@ -178,30 +178,30 @@ lists all of them, with ids for `~/.config/qrec/keys.toml`):
 
 | Key | Action | CLI |
 | --- | --- | --- |
-| r | Start / stop recording | `qrec record toggle` |
-| o | Record over the selection | `qrec record start --over <clip>…` |
-| d | Discard the last take (to the bin) | `qrec take discard-last` |
-| Esc | Cancel recording, deselect, close overlay | `qrec record cancel` |
-| s | Split clip at the playhead | `qrec clip split <clip> --at <t>` |
-| [ | Trim start to the playhead | `qrec clip trim <clip> --start <t>` |
-| ] | Trim end to the playhead | `qrec clip trim <clip> --end <t>` |
-| Alt+[ | Trim 1 frame off the start | `qrec clip trim <clip> --start +1f` |
-| < | Move selection left one slot | `qrec clip move <clip>… --by -1` |
-| Del x Backspace | Remove selected clips (to the bin) | `qrec clip remove <clip>…` |
-| c | Autocut the selection, or every clip | `qrec autocut [--clips <clip>…]` |
+| r | Toggle record | `qrec record toggle` |
+| o | Record over selection | `qrec record start --over` |
+| d | Discard last take | `qrec take discard-last` |
+| Esc | Cancel recording | `qrec record cancel` |
+| s | Split clip | `qrec clip split` |
+| [ | Trim start to playhead | `qrec clip trim --start` |
+| ] | Trim end to playhead | `qrec clip trim --end` |
+| Alt+[ | Nudge start edge 1 frame | `qrec clip trim --start +1f` |
+| < | Move selection left | `qrec clip move --by -1` |
+| Del x Backspace | Remove clips | `qrec clip remove` |
+| c | Autocut | `qrec autocut` |
 | Shift+C | Autocut settings and preview | `qrec autocut --dry-run` |
 | Ctrl+Z | Undo | `qrec undo` |
 | Ctrl+Shift+Z Ctrl+Y | Redo | `qrec redo` |
-| p | Save the frame at the playhead (PNG) | `qrec frame save --at <t>` |
+| p | Save frame as PNG | `qrec frame save` |
 | Ctrl+E | Export… | `qrec export` |
-| b | Toggle the bin | `qrec take list --unused` |
+| b | Toggle bin | `qrec take list --unused` |
 
 Some keys only act on the window and have no CLI form:
 
 | Key | Action |
 | --- | --- |
-| F6 | Focus the next region |
-| Shift+F6 | Focus the previous region |
+| F6 | Focus next region |
+| Shift+F6 | Focus previous region |
 | Ctrl+Q | Quit |
 
 Global binds for recording while another app has focus (niri; `qrec doctor`

@@ -5,72 +5,53 @@ expression: text(&sheet)
 # Keyboard shortcuts [Search shortcuts]
 === column 1
 ## Record
-[R]                    Start / stop recording
-[O]                    Record over the selection
-[D]                    Discard the last take (to the bin)
-[Esc]                  Cancel recording, deselect, close overlay
+Toggle record (start / stop)             [R]
+Record over the selection                [O]
+Discard the last take                    [D]
+Cancel countdown or recording            [Esc]
 ## Output
-[F]                    Save the frame at the playhead (PNG)  (default P)
-[Ctrl][E]              Export…
+Save frame as PNG                        [F]  (default P)
+Export…                                  [Ctrl][E]
 ## Global (niri)
-[Mod][Shift][R]        Record toggle
-[Mod][Shift][O]        Record over
-[Mod][Shift][D]        Discard last take
-<Copy niri snippet>
+Record toggle                            [Mod][Shift][R]
+Record over                              [Mod][Shift][O]
+Discard last take                        [Mod][Shift][D]
+Bind these in niri to record while another app has focus. <Copy niri snippet> Paste into ~/.config/niri/config.kdl
+## Window
+Focus next / previous region             [F6] / [Shift][F6]
+Quit                                     [Ctrl][Q]
 === column 2
 ## Playback
-[Space]                Play / pause
-[J]                    Shuttle reverse (again: 2×, 4×)
-[K]                    Shuttle stop
-[L]                    Shuttle forward (again: 2×, 4×)
-[←]                    Previous frame
-[→]                    Next frame
-[Shift][←]             Back 1 s
-[Shift][→]             Forward 1 s
-[↑]                    Previous edit point
-[↓]                    Next edit point
-[Home]                 Timeline start
-[End]                  Timeline end
+Play / pause                             [Space]
+Shuttle reverse / stop / forward         [J] / [K] / [L]
+Previous / next frame                    [←] / [→]
+Back / forward 1 s                       [Shift][←] / [Shift][→]
+Previous / next edit point               [↑] / [↓]
+Timeline start / end                     [Home] / [End]
 ## View
-[=]                    Zoom timeline in
-[−]                    Zoom timeline out
-[\]                    Zoom to fit
-[Z]                    Zoom to the selection
-[N]                    Toggle snapping
-[Tab]                  Switch canvas Live / Program
-[B]                    Toggle the bin
-[?]                    Cheat sheet
-[Ctrl][K] [:]          Command palette
-[Ctrl][,]              Settings
-[F6]                   Focus the next region
-[Shift][F6]            Focus the previous region
-[Ctrl][Q]              Quit
+Zoom timeline in / out                   [=] / [−]
+Zoom to fit                              [\]
+Zoom to selection                        [Z]
+Toggle snapping                          [N]
+Switch Live / Program                    [Tab]
+Toggle bin                               [B]
+Keyboard shortcuts                       [?]
+Command palette                          [Ctrl][K] or [:]
+Settings                                 [Ctrl][,]
 === column 3
 ## Edit
-[,]                    Select previous clip
-[.]                    Select next clip
-[<]                    Move selection left one slot
-[>]                    Move selection right one slot
-[S]                    Split clip at the playhead
-[[]                    Trim start to the playhead
-[]]                    Trim end to the playhead
-[Alt][[]               Trim 1 frame off the start
-[Alt][]]               Trim 1 frame off the end
-[Alt][{]               Trim 10 frames off the start
-[Alt][}]               Trim 10 frames off the end
-[Del] [X] [Backspace]  Remove selected clips (to the bin)
-[C]                    Autocut the selection, or every clip
-[Shift][C]             Autocut settings and preview
-[Ctrl][Z]              Undo
-[Ctrl][Shift][Z] [Ctrl][Y] Redo
-[Ctrl][A]              Select all clips
+Select previous / next clip              [,] / [.]
+Move selection left / right              [<] / [>]
+Split at playhead                        [S]
+Trim start to playhead                   [[]
+Trim end to playhead                     []]
+Nudge trim edge 1 frame (Shift: 10)      [Alt][[] / [Alt][]]
+Remove selected clips                    [Del] or [X] or [Backspace]
+Autocut selection or all                 [C]
+Autocut settings and preview             [Shift][C]
+Undo                                     [Ctrl][Z]
+Redo                                     [Ctrl][Shift][Z] or [Ctrl][Y]
+Select all                               [Ctrl][A]
 ## Canvas
-[←]                    Nudge layer left 1 px
-[→]                    Nudge layer right 1 px
-[↑]                    Nudge layer up 1 px
-[↓]                    Nudge layer down 1 px
-[Shift][←]             Nudge layer left 10 px
-[Shift][→]             Nudge layer right 10 px
-[Shift][↑]             Nudge layer up 10 px
-[Shift][↓]             Nudge layer down 10 px
--- Keys come from ~/.config/qrec/keys.toml. Change them in Settings › Keyboard.
+Nudge layer 1 px (Shift: 10)             [←] / [→] / [↑] / [↓]
+-- Keys come from ~/.config/qrec/keys.toml. Change them in Settings › Keyboard. | ["Ctrl", ","] Settings

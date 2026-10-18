@@ -513,68 +513,71 @@ const fn def(
 /// The groups in cheat-sheet order.
 pub const GROUPS: [&str; 6] = ["Record", "Playback", "Edit", "Output", "View", "Canvas"];
 
-const CLI_NUDGE_LAYER: Option<&str> = Some("qrec scene layer set <layer> --rect X,Y,W,H");
+const CLI_NUDGE_LAYER: Option<&str> = Some("qrec scene layer set --rect");
 
 /// SPEC §10.2, plus Backspace for remove (A§9.7) and the canvas nudges of
-/// SPEC §12 (arrow keys with the canvas focused; Shift = 10 px).
+/// SPEC §12 (arrow keys with the canvas focused; Shift = 10 px). Labels and
+/// CLI forms are the frames' (GUI D-31: S19's palette rows, S19b's, S22's
+/// Keyboard page, S20's single rows; the rest in their style): plain verbs,
+/// and the short CLI form, its arguments left out (`qrec clip split`).
 #[rustfmt::skip]
 const DEFAULTS: &[Def] = &[
     // Record
-    def("record.toggle", "Record", "Start / stop recording", &["r"], Some("qrec record toggle"), &[Global, Recording]),
-    def("record.over", "Record", "Record over the selection", &["o"], Some("qrec record start --over <clip>…"), &[Global]),
-    def("take.discard-last", "Record", "Discard the last take (to the bin)", &["d"], Some("qrec take discard-last"), &[Global, Recording]),
-    def("cancel", "Record", "Cancel recording, deselect, close overlay", &["Escape"], Some("qrec record cancel"), &[Global, Recording, Overlay]),
+    def("record.toggle", "Record", "Toggle record", &["r"], Some("qrec record toggle"), &[Global, Recording]),
+    def("record.over", "Record", "Record over selection", &["o"], Some("qrec record start --over"), &[Global]),
+    def("take.discard-last", "Record", "Discard last take", &["d"], Some("qrec take discard-last"), &[Global, Recording]),
+    def("cancel", "Record", "Cancel recording", &["Escape"], Some("qrec record cancel"), &[Global, Recording, Overlay]),
     // Playback
     def("play.toggle", "Playback", "Play / pause", &["space"], Some("qrec play"), &[Global, Recording]),
-    def("shuttle.reverse", "Playback", "Shuttle reverse (again: 2×, 4×)", &["j"], None, &[Global]),
+    def("shuttle.reverse", "Playback", "Shuttle reverse", &["j"], None, &[Global]),
     def("shuttle.stop", "Playback", "Shuttle stop", &["k"], None, &[Global]),
-    def("shuttle.forward", "Playback", "Shuttle forward (again: 2×, 4×)", &["l"], None, &[Global]),
+    def("shuttle.forward", "Playback", "Shuttle forward", &["l"], None, &[Global]),
     // Seeking is allowed while recording (A§4.4 R); the arrows belong to the
     // canvas (layer nudges) when it has focus.
-    def("seek.prev-frame", "Playback", "Previous frame", &["Left"], Some("qrec seek --by -1f"), &[Timeline, Recording]),
-    def("seek.next-frame", "Playback", "Next frame", &["Right"], Some("qrec seek --by +1f"), &[Timeline, Recording]),
-    def("seek.back", "Playback", "Back 1 s", &["shift+Left"], Some("qrec seek --by -1s"), &[Timeline, Recording]),
-    def("seek.forward", "Playback", "Forward 1 s", &["shift+Right"], Some("qrec seek --by +1s"), &[Timeline, Recording]),
-    def("seek.prev-edit", "Playback", "Previous edit point", &["Up"], Some("qrec seek --edit prev"), &[Timeline, Recording]),
-    def("seek.next-edit", "Playback", "Next edit point", &["Down"], Some("qrec seek --edit next"), &[Timeline, Recording]),
-    def("seek.start", "Playback", "Timeline start", &["Home"], Some("qrec seek --to start"), &[Global, Recording]),
-    def("seek.end", "Playback", "Timeline end", &["End"], Some("qrec seek --to end"), &[Global, Recording]),
+    def("seek.prev-frame", "Playback", "Seek to previous frame", &["Left"], Some("qrec seek --by -1f"), &[Timeline, Recording]),
+    def("seek.next-frame", "Playback", "Seek to next frame", &["Right"], Some("qrec seek --by +1f"), &[Timeline, Recording]),
+    def("seek.back", "Playback", "Seek back 1 s", &["shift+Left"], Some("qrec seek --by -1s"), &[Timeline, Recording]),
+    def("seek.forward", "Playback", "Seek forward 1 s", &["shift+Right"], Some("qrec seek --by +1s"), &[Timeline, Recording]),
+    def("seek.prev-edit", "Playback", "Seek to previous edit point", &["Up"], Some("qrec seek --edit prev"), &[Timeline, Recording]),
+    def("seek.next-edit", "Playback", "Seek to next edit point", &["Down"], Some("qrec seek --edit next"), &[Timeline, Recording]),
+    def("seek.start", "Playback", "Seek to timeline start", &["Home"], Some("qrec seek --to start"), &[Global, Recording]),
+    def("seek.end", "Playback", "Seek to timeline end", &["End"], Some("qrec seek --to end"), &[Global, Recording]),
     // Edit
     def("select.prev", "Edit", "Select previous clip", &["comma"], None, &[Global, Recording]),
     def("select.next", "Edit", "Select next clip", &["period"], None, &[Global, Recording]),
-    def("clip.move-left", "Edit", "Move selection left one slot", &["less"], Some("qrec clip move <clip>… --by -1"), &[Global]),
-    def("clip.move-right", "Edit", "Move selection right one slot", &["greater"], Some("qrec clip move <clip>… --by 1"), &[Global]),
-    def("clip.split", "Edit", "Split clip at the playhead", &["s"], Some("qrec clip split <clip> --at <t>"), &[Global]),
-    def("clip.trim-start", "Edit", "Trim start to the playhead", &["bracketleft"], Some("qrec clip trim <clip> --start <t>"), &[Global]),
-    def("clip.trim-end", "Edit", "Trim end to the playhead", &["bracketright"], Some("qrec clip trim <clip> --end <t>"), &[Global]),
-    def("clip.nudge-start", "Edit", "Trim 1 frame off the start", &["alt+bracketleft"], Some("qrec clip trim <clip> --start +1f"), &[Global]),
-    def("clip.nudge-end", "Edit", "Trim 1 frame off the end", &["alt+bracketright"], Some("qrec clip trim <clip> --end -1f"), &[Global]),
-    def("clip.nudge-start-10", "Edit", "Trim 10 frames off the start", &["alt+braceleft"], Some("qrec clip trim <clip> --start +10f"), &[Global]),
-    def("clip.nudge-end-10", "Edit", "Trim 10 frames off the end", &["alt+braceright"], Some("qrec clip trim <clip> --end -10f"), &[Global]),
-    def("clip.remove", "Edit", "Remove selected clips (to the bin)", &["Delete", "x", "BackSpace"], Some("qrec clip remove <clip>…"), &[Global]),
-    def("autocut.run", "Edit", "Autocut the selection, or every clip", &["c"], Some("qrec autocut [--clips <clip>…]"), &[Global]),
+    def("clip.move-left", "Edit", "Move selection left", &["less"], Some("qrec clip move --by -1"), &[Global]),
+    def("clip.move-right", "Edit", "Move selection right", &["greater"], Some("qrec clip move --by 1"), &[Global]),
+    def("clip.split", "Edit", "Split clip", &["s"], Some("qrec clip split"), &[Global]),
+    def("clip.trim-start", "Edit", "Trim start to playhead", &["bracketleft"], Some("qrec clip trim --start"), &[Global]),
+    def("clip.trim-end", "Edit", "Trim end to playhead", &["bracketright"], Some("qrec clip trim --end"), &[Global]),
+    def("clip.nudge-start", "Edit", "Nudge start edge 1 frame", &["alt+bracketleft"], Some("qrec clip trim --start +1f"), &[Global]),
+    def("clip.nudge-end", "Edit", "Nudge end edge 1 frame", &["alt+bracketright"], Some("qrec clip trim --end -1f"), &[Global]),
+    def("clip.nudge-start-10", "Edit", "Nudge start edge 10 frames", &["alt+braceleft"], Some("qrec clip trim --start +10f"), &[Global]),
+    def("clip.nudge-end-10", "Edit", "Nudge end edge 10 frames", &["alt+braceright"], Some("qrec clip trim --end -10f"), &[Global]),
+    def("clip.remove", "Edit", "Remove clips", &["Delete", "x", "BackSpace"], Some("qrec clip remove"), &[Global]),
+    def("autocut.run", "Edit", "Autocut", &["c"], Some("qrec autocut"), &[Global]),
     def("autocut.preview", "Edit", "Autocut settings and preview", &["shift+c"], Some("qrec autocut --dry-run"), &[Global]),
     def("history.undo", "Edit", "Undo", &["ctrl+z"], Some("qrec undo"), &[Global]),
     def("history.redo", "Edit", "Redo", &["ctrl+shift+z", "ctrl+y"], Some("qrec redo"), &[Global]),
-    def("select.all", "Edit", "Select all clips", &["ctrl+a"], None, &[Global, Recording]),
+    def("select.all", "Edit", "Select all", &["ctrl+a"], None, &[Global, Recording]),
     // Output
-    def("frame.save", "Output", "Save the frame at the playhead (PNG)", &["p"], Some("qrec frame save --at <t>"), &[Global]),
+    def("frame.save", "Output", "Save frame as PNG", &["p"], Some("qrec frame save"), &[Global]),
     def("export", "Output", "Export…", &["ctrl+e"], Some("qrec export"), &[Global]),
     // View
     def("zoom.in", "View", "Zoom timeline in", &["equal"], None, &[Global, Recording]),
     def("zoom.out", "View", "Zoom timeline out", &["minus"], None, &[Global, Recording]),
     def("zoom.fit", "View", "Zoom to fit", &["backslash"], None, &[Global, Recording]),
-    def("zoom.selection", "View", "Zoom to the selection", &["z"], None, &[Global, Recording]),
+    def("zoom.selection", "View", "Zoom to selection", &["z"], None, &[Global, Recording]),
     def("snapping.toggle", "View", "Toggle snapping", &["n"], None, &[Global, Recording]),
-    def("canvas.mode", "View", "Switch canvas Live / Program", &["Tab"], None, &[Global, Recording]),
-    def("bin.toggle", "View", "Toggle the bin", &["b"], Some("qrec take list --unused"), &[Global, Recording]),
-    def("keys.help", "View", "Cheat sheet", &["question"], Some("qrec keys"), &[Global, Recording]),
+    def("canvas.mode", "View", "Switch Live / Program", &["Tab"], None, &[Global, Recording]),
+    def("bin.toggle", "View", "Toggle bin", &["b"], Some("qrec take list --unused"), &[Global, Recording]),
+    def("keys.help", "View", "Keyboard shortcuts", &["question"], Some("qrec keys"), &[Global, Recording]),
     def("palette.open", "View", "Command palette", &["ctrl+k", "colon"], None, &[Global, Recording]),
     def("settings.open", "View", "Settings", &["ctrl+comma"], Some("qrec config"), &[Global]),
     // Window focus and quitting (GUI D-10): header → transport → timeline
     // toolbar → timeline → panel → bin; Ctrl+Q also works in overlays.
-    def("region.next", "View", "Focus the next region", &["F6"], None, &[Global, Recording]),
-    def("region.prev", "View", "Focus the previous region", &["shift+F6"], None, &[Global, Recording]),
+    def("region.next", "View", "Focus next region", &["F6"], None, &[Global, Recording]),
+    def("region.prev", "View", "Focus previous region", &["shift+F6"], None, &[Global, Recording]),
     def("app.quit", "View", "Quit", &["ctrl+q"], None, &[Global, Recording, Overlay]),
     // Canvas (SPEC §12)
     def("layer.nudge-left", "Canvas", "Nudge layer left 1 px", &["Left"], CLI_NUDGE_LAYER, &[Canvas]),
@@ -1905,7 +1908,7 @@ fn nudge_layer(state: &State, dx: i32, dy: i32) -> Action {
 
 // --------------------------------------------------------------- palette
 
-/// One row of the command palette: `Split clip at the playhead — s — qrec clip split <clip> --at <t>`.
+/// One row of the command palette: `Split clip — s — qrec clip split`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PaletteRow {
@@ -3054,10 +3057,7 @@ mod tests {
         let rows = palette(&map, &state);
         assert_eq!(rows.len(), map.bindings.len());
         let row = |id: &str| rows.iter().find(|r| r.id == id).unwrap();
-        assert_eq!(
-            row("clip.split").line(),
-            "Split clip at the playhead — s — qrec clip split <clip> --at <t>"
-        );
+        assert_eq!(row("clip.split").line(), "Split clip — s — qrec clip split");
         assert_eq!(row("snapping.toggle").line(), "Toggle snapping — n — —");
         let over = row("record.over");
         assert!(!over.enabled);
@@ -3202,10 +3202,7 @@ mod tests {
                 chord: chord("x"),
                 key: "X".into(),
                 ids: vec!["autocut.run".into(), "clip.remove".into()],
-                labels: vec![
-                    "Autocut the selection, or every clip".into(),
-                    "Remove selected clips (to the bin)".into()
-                ],
+                labels: vec!["Autocut".into(), "Remove clips".into()],
             }],
             "the rebound binding first"
         );
@@ -3481,5 +3478,81 @@ clip.trim-start = \"q\"  # trailing
     fn total_frames_helper_is_consistent() {
         let state = editing_state();
         assert_eq!(total_frames(&state.project.timeline.clips), 450);
+    }
+
+    /// GUI D-31: the labels and CLI forms the frames draw (S19's query
+    /// "sp", S19b's empty query, S22's Keyboard page); the CLI forms are
+    /// the short ones, no `<clip>` or `<t>` placeholders.
+    #[test]
+    fn labels_and_cli_forms_are_the_frames() {
+        let map = resolve("");
+        let drawn: [(&str, &str, Option<&str>); 20] = [
+            // S19
+            ("clip.split", "Split clip", Some("qrec clip split")),
+            ("frame.save", "Save frame as PNG", Some("qrec frame save")),
+            (
+                "autocut.preview",
+                "Autocut settings and preview",
+                Some("qrec autocut --dry-run"),
+            ),
+            ("snapping.toggle", "Toggle snapping", None),
+            ("select.prev", "Select previous clip", None),
+            (
+                "seek.prev-edit",
+                "Seek to previous edit point",
+                Some("qrec seek --edit prev"),
+            ),
+            // S19b
+            ("autocut.run", "Autocut", Some("qrec autocut")),
+            ("record.toggle", "Toggle record", Some("qrec record toggle")),
+            (
+                "record.over",
+                "Record over selection",
+                Some("qrec record start --over"),
+            ),
+            (
+                "take.discard-last",
+                "Discard last take",
+                Some("qrec take discard-last"),
+            ),
+            ("cancel", "Cancel recording", Some("qrec record cancel")),
+            ("play.toggle", "Play / pause", Some("qrec play")),
+            (
+                "seek.prev-frame",
+                "Seek to previous frame",
+                Some("qrec seek --by -1f"),
+            ),
+            (
+                "seek.next-frame",
+                "Seek to next frame",
+                Some("qrec seek --by +1f"),
+            ),
+            // S22
+            (
+                "clip.trim-start",
+                "Trim start to playhead",
+                Some("qrec clip trim --start"),
+            ),
+            ("clip.remove", "Remove clips", Some("qrec clip remove")),
+            ("export", "Export\u{2026}", Some("qrec export")),
+            // S20's single rows
+            ("zoom.selection", "Zoom to selection", None),
+            ("canvas.mode", "Switch Live / Program", None),
+            ("keys.help", "Keyboard shortcuts", Some("qrec keys")),
+        ];
+        for (id, label, cli) in drawn {
+            let b = map.binding(id).unwrap_or_else(|| panic!("no {id}"));
+            assert_eq!((b.label, b.cli), (label, cli), "{id}");
+        }
+        for b in &map.bindings {
+            assert!(
+                b.cli.is_none_or(|c| !c.contains('<') && !c.contains('[')),
+                "{}: {:?}",
+                b.id,
+                b.cli
+            );
+        }
+        let clear = KEYLESS.iter().find(|k| k.id == "history.clear").unwrap();
+        assert_eq!(clear.label, "Clear undo history");
     }
 }

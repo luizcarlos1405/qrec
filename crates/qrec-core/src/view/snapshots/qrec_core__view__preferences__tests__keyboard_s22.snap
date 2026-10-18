@@ -3,59 +3,59 @@ source: crates/qrec-core/src/view/preferences.rs
 expression: text(&page)
 ---
 ! 1 conflict in ~/.config/qrec/keys.toml <Open keys.toml>
-!   X is bound to both Autocut the selection, or every clip and Remove selected clips (to the bin). Neither runs until one is changed.
+!   X is bound to both Autocut and Remove clips. Neither runs until one is changed.
 ## Record
-Start / stop recording                   [R]                      Default
-Record over the selection                [O]                      Default
-Discard the last take (to the bin)       [D]                      Default
-Cancel recording, deselect, close overlay [Esc]                    Default
+Toggle record                            [R]                      Default
+Record over selection                    [O]                      Default
+Discard last take                        [D]                      Default
+Cancel recording                         [Esc]                    Default
 ## Playback
 Play / pause                             [Space]                  Default
-Shuttle reverse (again: 2×, 4×)          [J]                      Default
+Shuttle reverse                          [J]                      Default
 Shuttle stop                             [K]                      Default
-Shuttle forward (again: 2×, 4×)          [L]                      Default
-Previous frame                           [←]                      Default
-Next frame                               [→]                      Default
-Back 1 s                                 [Shift][←]               Default
-Forward 1 s                              [Shift][→]               Default
-Previous edit point                      [↑]                      Default
-Next edit point                          [↓]                      Default
-Timeline start                           [Home]                   Default
-Timeline end                             [End]                    Default
+Shuttle forward                          [L]                      Default
+Seek to previous frame                   [←]                      Default
+Seek to next frame                       [→]                      Default
+Seek back 1 s                            [Shift][←]               Default
+Seek forward 1 s                         [Shift][→]               Default
+Seek to previous edit point              [↑]                      Default
+Seek to next edit point                  [↓]                      Default
+Seek to timeline start                   [Home]                   Default
+Seek to timeline end                     [End]                    Default
 ## Edit
 Select previous clip                     [,]                      Default
 Select next clip                         [.]                      Default
-Move selection left one slot             [<]                      Default
-Move selection right one slot            [>]                      Default
-Split clip at the playhead               [S]                      Default
-Trim start to the playhead               [[]                      Default
-Trim end to the playhead                 []]                      Default
-Trim 1 frame off the start               [Alt][[]                 Default
-Trim 1 frame off the end                 [Alt][]]                 Default
-Trim 10 frames off the start             [Alt][{]                 Default
-Trim 10 frames off the end               [Alt][}]                 Default
-Remove selected clips (to the bin)       [Del] [X]! [Backspace]   Conflict · Also bound to Autocut the selection, or every clip
-Autocut the selection, or every clip     [X]!                     Conflict · default C · Also bound to Remove selected clips (to the bin) · <reset>
+Move selection left                      [<]                      Default
+Move selection right                     [>]                      Default
+Split clip                               [S]                      Default
+Trim start to playhead                   [[]                      Default
+Trim end to playhead                     []]                      Default
+Nudge start edge 1 frame                 [Alt][[]                 Default
+Nudge end edge 1 frame                   [Alt][]]                 Default
+Nudge start edge 10 frames               [Alt][{]                 Default
+Nudge end edge 10 frames                 [Alt][}]                 Default
+Remove clips                             [Del] or [X]! or [Backspace] Conflict · Also bound to Autocut
+Autocut                                  [X]!                     Conflict · default C · Also bound to Remove clips · <reset>
 Autocut settings and preview             [Shift][C]               Default
 Undo                                     [Ctrl][Z]                Default
-Redo                                     [Ctrl][Shift][Z] [Ctrl][Y] Default
-Select all clips                         [Ctrl][A]                Default
+Redo                                     [Ctrl][Shift][Z] or [Ctrl][Y] Default
+Select all                               [Ctrl][A]                Default
 ## Output
-Save the frame at the playhead (PNG)     [F]                      Rebound · default P · <reset>
+Save frame as PNG                        [F]                      Rebound · default P · <reset>
 Export…                                  [Ctrl][E]                Default
 ## View
 Zoom timeline in                         [=]                      Default
 Zoom timeline out                        [−]                      Default
 Zoom to fit                              [\]                      Default
-Zoom to the selection                    [Z]                      Default
+Zoom to selection                        [Z]                      Default
 Toggle snapping                          […]                      Default · Press a key · Esc cancels · Backspace clears
-Switch canvas Live / Program             [Tab]                    Default
-Toggle the bin                           [B]                      Default
-Cheat sheet                              [?]                      Default
-Command palette                          [Ctrl][K] [:]            Default
+Switch Live / Program                    [Tab]                    Default
+Toggle bin                               [B]                      Default
+Keyboard shortcuts                       [?]                      Default
+Command palette                          [Ctrl][K] or [:]         Default
 Settings                                 [Ctrl][,]                Default
-Focus the next region                    [F6]                     Default
-Focus the previous region                [Shift][F6]              Default
+Focus next region                        [F6]                     Default
+Focus previous region                    [Shift][F6]              Default
 Quit                                     [Ctrl][Q]                Default
 ## Canvas
 Nudge layer left 1 px                    [←]                      Default
