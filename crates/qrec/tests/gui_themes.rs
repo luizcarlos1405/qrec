@@ -257,15 +257,21 @@ fn brightness(c: [u8; 3]) -> u32 {
     c.iter().map(|&v| u32::from(v)).sum()
 }
 
+/// The header's app icon (24 px at x 12, y 12): the pen's onion in its
+/// own colors in every theme (G§3.14's art; artwork.html's "Art · App
+/// icon" has no themed fill), so it reads alike in both, as video does.
+const APP_ICON: [f64; 4] = [12.0, 12.0, 24.0, 24.0];
+
 /// Every color outside `video` (logical px: the preview, the filmstrips,
-/// what is drawn over video) follows the theme: Swamp Night and Swamp Day
-/// share no color token, so a spot that reads the same in both shots of a
-/// case is drawn in a color no token gives: one hard-coded in custom
-/// drawing (`gdk::RGBA::BLACK`) or in CSS (`white`), which the tokens
-/// test's hex grep doesn't see. Spots, not single pixels: 8×8 cells with
-/// 4 or more pixels alike (an antialiased edge may match by chance; none
-/// did in any shot). A hard-coded hairline at a fractional x mixes with
-/// each theme's ground and reads apart: the probes are for those.
+/// what is drawn over video) and the app icon follows the theme: Swamp
+/// Night and Swamp Day share no color token, so a spot that reads the same
+/// in both shots of a case is drawn in a color no token gives: one
+/// hard-coded in custom drawing (`gdk::RGBA::BLACK`) or in CSS (`white`),
+/// which the tokens test's hex grep doesn't see. Spots, not single
+/// pixels: 8×8 cells with 4 or more pixels alike (an antialiased edge may
+/// match by chance; none did in any shot). A hard-coded hairline at a
+/// fractional x mixes with each theme's ground and reads apart: the
+/// probes are for those.
 fn assert_follows_the_theme(opts: &Options, night: &Path, day: &Path, video: &[[f64; 4]]) {
     let (w, h) = opts.logical();
     let full = device(opts.scale, [0.0, 0.0, w, h]);
@@ -274,7 +280,11 @@ fn assert_follows_the_theme(opts: &Options, night: &Path, day: &Path, video: &[[
         gui_support::rgb_pixels(day, full),
     );
     let width = full[2] as usize;
-    let out: Vec<[u32; 4]> = video.iter().map(|r| device(opts.scale, *r)).collect();
+    let out: Vec<[u32; 4]> = video
+        .iter()
+        .chain([&APP_ICON])
+        .map(|r| device(opts.scale, *r))
+        .collect();
     let mut cells: BTreeMap<(usize, usize), usize> = BTreeMap::new();
     for (i, (pa, pb)) in a.iter().zip(&b).enumerate() {
         if pa != pb {

@@ -241,7 +241,9 @@ fn the_theme_follows_qrec_config_set() {
 
 /// The empty timeline's art (the quiet swamp, drawn through `gtk::Svg` in
 /// the palette's `border` and `muted`) takes the new theme's colors too:
-/// nothing of the old `border` is left in it.
+/// nothing of the old `border` is left in it. Its `border` is the pen's
+/// mud bank under the onion and the reeds: 466 px of it at scale 1 (the
+/// placeholder art drew more).
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn the_empty_timelines_art_takes_the_new_theme() {
@@ -259,7 +261,7 @@ fn the_empty_timelines_art_takes_the_new_theme() {
     let shot = nested.screenshot("swamp-night");
     let night = gui_support::token_rgb("swamp-night", "border");
     assert!(
-        gui_support::count_near(&shot, rect, night, 2) > 500,
+        gui_support::count_near(&shot, rect, night, 2) > 300,
         "the art in Swamp Night's border"
     );
     let gui = nested.window(0);
@@ -271,7 +273,7 @@ fn the_empty_timelines_art_takes_the_new_theme() {
     let day = gui_support::token_rgb("swamp-day", "border");
     let now = gui_support::count_near(&shot, rect, day, 2);
     let stale = gui_support::count_near(&shot, rect, night, 2);
-    assert!(now > 500, "{now} pixels of Swamp Day's border");
+    assert!(now > 300, "{now} pixels of Swamp Day's border");
     assert_eq!(stale, 0, "Swamp Night's border is still drawn");
     assert_clean(nested.window(0));
 }
