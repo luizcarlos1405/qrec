@@ -1714,14 +1714,22 @@ fn a_cli_seek_while_playing_lands_over_the_windows_sync() {
         "--by +10s with the picture at {from} landed at {landed}"
     );
     plays_on_from(&mut nested, landed, "qrec seek --by +10s");
-    let reply = nested
-        .window(0)
-        .ctl(json!({"op": "dispatch", "command": {"cmd": "pause"}}));
-    assert_eq!(reply["ok"], true, "{reply}");
-    gui_support::poll(Duration::from_secs(10), "the pause", || {
-        (status(&nested, &project)["runtime"]["playing"] == false).then_some(())
-    });
-    nested.window(0).wait_idle();
+
+    // The pause (held too) shows the frame it parks at and stays there: the
+    // once-a-second seek sent before the pause landed came after it, and the
+    // paused picture went back to that seek's older frame, then forward to
+    // the park's (step 2's hold).
+    let before = gui_log(&mut nested).lines().count();
+    let (at, ns) = pause_and_settle(&mut nested, &project);
+    assert_eq!(frame_of(ns), at, "the player on the parked playhead");
+    let log = gui_log(&mut nested);
+    let seeks: Vec<&str> = log
+        .lines()
+        .skip(before)
+        .skip_while(|l| !l.contains("program sync: pause"))
+        .filter(|l| l.contains("program sync: seek"))
+        .collect();
+    assert_eq!(seeks.len(), 1, "the paused picture moved: {seeks:#?}");
     assert_clean(&mut nested);
 }
 

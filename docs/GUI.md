@@ -1043,7 +1043,15 @@ pub const STUCK: &str = "the Program picture is stuck; restart Qrec";
      the parked playhead and D-51's step went from one frame behind it
      (G§8.5's step 6 shot; `gui_stage::a_pause_shows_the_frame_it_parks_at`
      reads the frame from the fixture's pixels: testsrc2's counter against
-     ffmpeg's decode of the take's file). Leaving Program while playing (`Tab`, D-05's record
+     ffmpeg's decode of the take's file). Until the park's snapshot comes
+     the paused player holds `f` (`SyncMachine::stop_park`): a
+     once-a-second seek sent before the pause landed comes after it, and
+     the paused picture went back to that seek's older frame, then forward
+     to `f` (with every command held 600 ms, the end of
+     `a_cli_seek_while_playing_lands_over_the_windows_sync`). A seek that
+     lands meanwhile (a new playhead revision: the core drops the park for
+     it) moves it at once; a park that never echoes lets go after a
+     second. Leaving Program while playing (`Tab`, D-05's record
      start, CLI `SetCanvasMode`) is the same stop: the core turns
      `playing` false in the snapshot that switches to Live (R21). A
      step's stop (D-51) parks nothing: the step's own `Seek{To(f)}` comes
