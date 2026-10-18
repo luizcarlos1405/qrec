@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# The inner loop (CLAUDE.md, docs/GUI.md G§8.4): fmt, clippy, the tests of
+# the crates changed since main, and nested GUI suites on pixman, many
+# cases at once (each timing-sensitive case alone).
+#
+#   scripts/check-quick                  the suites of the areas you changed
+#   scripts/check-quick gui_stage ...    these suites (`all`: every one)
+#   scripts/check-quick --plan [...]     what it would run, and nothing else
+#
+# Changed: `git diff` against the merge base with main (QREC_CHECK_BASE to
+# compare with another ref) plus untracked files. Runs in the dev env
+# (tmp/dev when this checkout has one, else `nix develop`); the nested
+# cases run in headless sway, never on your display. QREC_NESTED_THREADS
+# sets how many cases run at once (default 6). A failed nested case runs
+# once more and, passed then, is FLAKY, not a failure: the Program
+# player's load can stall under load (G§8.4); QREC_NESTED_RETRIES=0 for
+# none. Exit status 1 if any step failed.
+set -uo pipefail
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+self="$repo/scripts/$(basename "${BASH_SOURCE[0]}")"
+cd "$repo" || exit 2
+if [ -z "${QREC_FONT_DIR:-}" ] || ! command -v sway >/dev/null 2>&1; then
+  if [ -n "${QREC_CHECK_REEXEC:-}" ]; then
+    echo "check-quick: the dev env didn't come up" >&2
+    exit 2
+  fi
+  export QREC_CHECK_REEXEC=1
+  [ -x tmp/dev ] && exec tmp/dev "$self" "$@"
+  exec nix develop "git+file://$repo" --command "$self" "$@"
+fi
+unset DISPLAY WAYLAND_DISPLAY WAYLAND_SOCKET
+threads=${QREC_NESTED_THREADS:-6}
+plan=0
+if [ "${1:-}" = --plan ]; then
+  plan=1
+  shift
+fi
+
+# The suites a changed file's area has (G§3.16's owners), "all", or none.
+suites_for() {
+  case "$1" in
+    crates/qrec/tests/gui_support/* | crates/qrec/tests/support/*) echo all ;;
+    crates/qrec/tests/gui_*.rs) basename "$1" .rs ;;
+    crates/qrec-gui/src/timeline/* | */components/timeline.css | crates/qrec-core/src/view/timeline* | crates/qrec-core/src/view/ruler*)
+      echo gui_timeline ;;
+    crates/qrec-gui/src/stage/* | crates/qrec-gui/src/media/live.rs | crates/qrec-gui/src/media/program.rs | */components/stage.css | crates/qrec-core/src/view/canvas*)
+      echo gui_stage ;;
+    crates/qrec-gui/src/panel/* | crates/qrec-gui/src/widgets/numeric.rs | crates/qrec-gui/src/widgets/meter.rs | crates/qrec-gui/src/widgets/scale_tooltip.rs | */components/panel.css | crates/qrec-core/src/view/panel* | crates/qrec-core/src/view/meter* | crates/qrec-core/src/view/autocut*)
+      echo gui_panel ;;
+    crates/qrec-gui/src/header/* | crates/qrec-gui/src/hintbar.rs | crates/qrec-gui/src/toasts.rs | crates/qrec-gui/src/modal.rs | crates/qrec-gui/src/settings/mod.rs | crates/qrec-gui/src/settings/project.rs | */components/chrome.css | */components/settings.css | crates/qrec-core/src/view/header* | crates/qrec-core/src/view/hints* | crates/qrec-core/src/view/confirm* | crates/qrec-core/src/view/notices* | crates/qrec-core/src/view/settings*)
+      echo gui_chrome ;;
+    crates/qrec-gui/src/bin_drawer/* | crates/qrec-gui/src/export/* | crates/qrec-gui/src/widgets/mud_bar.rs | crates/qrec-gui/src/media/thumbs.rs | crates/qrec-gui/src/media/peaks.rs | */components/bin.css | */components/export.css | crates/qrec-core/src/view/bin* | crates/qrec-core/src/view/export*)
+      echo gui_bin_export ;;
+    crates/qrec-gui/src/blocking/* | */components/blocking.css | crates/qrec-core/src/view/blocking*) echo gui_blocking ;;
+    crates/qrec-gui/src/startup/*) echo gui_shell gui_blocking ;;
+    crates/qrec-gui/src/palette.rs | crates/qrec-gui/src/cheatsheet.rs | crates/qrec-gui/src/settings/* | crates/qrec-gui/src/widgets/theme_card.rs | */components/overlays.css)
+      echo gui_overlays ;;
+    crates/qrec-gui/src/theme/fonts.rs | crates/qrec-gui/resources/fonts/*) echo gui_text ;;
+    crates/qrec-gui/src/theme/* | crates/qrec-gui/resources/theme/* | design/tokens/*) echo gui_themes gui_live ;;
+    crates/qrec-gui/src/follow.rs) echo gui_live ;;
+    crates/qrec-gui/src/window/announce.rs | crates/qrec-gui/src/keys/*) echo gui_a11y gui_shell ;;
+    crates/qrec-gui/src/probe.rs | crates/qrec-gui/src/gpu_warmup.rs) echo gui_smoke gui_audits ;;
+    crates/qrec-gui/* | crates/qrec-shell/*) echo gui_shell gui_smoke ;;
+    crates/qrec-core/* | crates/qrec-cli/* | crates/qrec/src/*) echo gui_smoke ;;
+  esac
+}
+
+base_ref=${QREC_CHECK_BASE:-main}
+base=$(git merge-base "$base_ref" HEAD 2>/dev/null || echo "$base_ref")
+mapfile -t changed < <({
+  git diff --name-only "$base" --
+  git ls-files --others --exclude-standard
+} | sort -u)
+
+# The crates changed, and the nextest filter of their tests (the CLI's
+# integration tests are the qrec package's `cli`).
+packages=()
+filters=()
+add_package() {
+  local p
+  for p in "${packages[@]}"; do [ "$p" = "$1" ] && return; done
+  packages+=("$1")
+}
+for f in "${changed[@]}"; do
+  case "$f" in
+    crates/*/*)
+      crate=${f#crates/}
+      crate=${crate%%/*}
+      case " ${filters[*]} " in *" package($crate) "*) continue ;; esac
+      add_package "$crate"
+      filters+=("package($crate)")
+      if [ "$crate" = qrec-cli ]; then
+        add_package qrec
+        filters+=("(package(qrec) & binary(cli))")
+      fi
+      ;;
+  esac
+done
+
+suites=()
+add_suite() {
+  local s
+  for s in "${suites[@]}"; do [ "$s" = "$1" ] && return; done
+  suites+=("$1")
+}
+all_suites() {
+  local f
+  for f in crates/qrec/tests/gui_*.rs; do basename "$f" .rs; done
+}
+if [ $# -gt 0 ]; then
+  for s in "$@"; do
+    if [ "$s" = all ]; then
+      while read -r t; do add_suite "$t"; done < <(all_suites)
+    elif [ -f "crates/qrec/tests/$s.rs" ]; then
+      add_suite "$s"
+    else
+      echo "check-quick: no suite $s (crates/qrec/tests/$s.rs)" >&2
+      exit 2
+    fi
+  done
+else
+  for f in "${changed[@]}"; do
+    for s in $(suites_for "$f"); do
+      if [ "$s" = all ]; then
+        while read -r t; do add_suite "$t"; done < <(all_suites)
+      else
+        add_suite "$s"
+      fi
+    done
+  done
+fi
+
+# nested <threads> <suite...>: the suites' nested cases, <threads> at once,
+# then the cases that ran alone last time, one at a time (the harness lists
+# them in target/tmp/gui-exclusive/; its locks keep them alone either way,
+# the list only spares the parallel run a drain for each).
+nested() {
+  local threads=$1 f n s rc=0
+  shift
+  local args=() alone=()
+  for s in "$@"; do args+=(--test "$s"); done
+  for f in target/tmp/gui-exclusive/*--*; do
+    [ -e "$f" ] || continue
+    n=${f##*/}
+    for s in "$@"; do
+      [ "${n%%--*}" = "$s" ] && alone+=("(binary(=$s) & test(=${n#*--}))")
+    done
+  done
+  local run=(cargo nextest run -p qrec --no-fail-fast --no-tests=warn --run-ignored only
+    --retries "${QREC_NESTED_RETRIES:-1}" "${args[@]}")
+  if [ ${#alone[@]} -eq 0 ]; then
+    "${run[@]}" --test-threads "$threads"
+    return
+  fi
+  local expr
+  expr=$(printf ' | %s' "${alone[@]}")
+  expr=${expr:3}
+  "${run[@]}" --test-threads "$threads" -E "not ($expr)" || rc=1
+  "${run[@]}" --test-threads 1 -E "$expr" || rc=1
+  return $rc
+}
+
+results=()
+failed=0
+step() {
+  local name=$1
+  shift
+  local start=$SECONDS
+  echo
+  echo "== $name"
+  "$@"
+  local rc=$?
+  local took=$((SECONDS - start))
+  if [ $rc = 0 ]; then
+    results+=("$(printf '%-34s %5s s  ok' "$name" "$took")")
+  else
+    results+=("$(printf '%-34s %5s s  FAILED (exit %s)' "$name" "$took" "$rc")")
+    failed=1
+  fi
+}
+
+echo "check-quick: ${#changed[@]} file(s) changed since $(git rev-parse --short "$base")"
+if [ $plan = 1 ]; then
+  printf '  %s\n' "${changed[@]}"
+  echo "tests of: ${packages[*]:-none} (${filters[*]:-})"
+  echo "nested suites ($threads at once): ${suites[*]:-none}"
+  exit 0
+fi
+step "fmt" cargo fmt --all --check
+step "clippy" cargo clippy --workspace --all-targets -- -D warnings
+if [ ${#packages[@]} -gt 0 ]; then
+  args=()
+  for p in "${packages[@]}"; do args+=(-p "$p"); done
+  expr=$(printf ' | %s' "${filters[@]}")
+  expr=${expr:3}
+  step "tests: ${packages[*]}" cargo nextest run --no-fail-fast "${args[@]}" -E "$expr"
+else
+  results+=("$(printf '%-34s %5s    no crate changed' "tests" "-")")
+fi
+if [ ${#suites[@]} -gt 0 ]; then
+  step "nested (pixman, $threads at once)" nested "$threads" "${suites[@]}"
+  results+=("  suites: ${suites[*]}")
+else
+  results+=("$(printf '%-34s %5s    no area changed (name a suite to run one)' "nested" "-")")
+fi
+
+echo
+echo "== check-quick"
+printf '%s\n' "${results[@]}"
+exit $failed

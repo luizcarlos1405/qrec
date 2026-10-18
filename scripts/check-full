@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# The milestone gate (CLAUDE.md, docs/GUI.md G§8.4): fmt, clippy, the
+# workspace tests, `nix build` (the package; its own sandbox runs the
+# core's tests), every nested suite on gles2 and on pixman (many cases at
+# once, each timing-sensitive case alone; the packaged case runs the fresh
+# build), every suite again at scale 1.5 and 2 on pixman, and G§8.6's
+# probes (the frame-time probe and the smoke's main-loop check, three times
+# each alone on gles2; the cache bounds).
+#
+#   scripts/check-full
+#
+# Logs and the summary go to tmp/check-full/<date>/ (summary.txt); the gles2
+# run's shots are copied to shots-gles2/ there before the pixman run takes
+# their names in tmp/gui-shots/. Runs in the dev env (tmp/dev when this
+# checkout has one, else `nix develop`); the nested cases run in headless
+# sway, never on your display, and gles2 only ever on the Intel or AMD
+# render node. Keep the machine otherwise quiet while it runs: the
+# exclusive cases time the window. QREC_NESTED_THREADS sets how many cases
+# run at once (default 6). A failed nested case runs once more and, passed
+# then, is FLAKY in the summary, not a failure: the Program player's load
+# can stall under load (G§8.4, a GstDiscoverer race in the window);
+# QREC_NESTED_RETRIES=0 for none. Exit status 1 if any step failed.
+set -uo pipefail
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+self="$repo/scripts/$(basename "${BASH_SOURCE[0]}")"
+cd "$repo" || exit 2
+if [ -z "${QREC_FONT_DIR:-}" ] || ! command -v sway >/dev/null 2>&1; then
+  if [ -n "${QREC_CHECK_REEXEC:-}" ]; then
+    echo "check-full: the dev env didn't come up" >&2
+    exit 2
+  fi
+  export QREC_CHECK_REEXEC=1
+  [ -x tmp/dev ] && exec tmp/dev "$self" "$@"
+  exec nix develop "git+file://$repo" --command "$self" "$@"
+fi
+unset DISPLAY WAYLAND_DISPLAY WAYLAND_SOCKET QREC_TEST_WLR QREC_TEST_SCALE
+threads=${QREC_NESTED_THREADS:-6}
+out="$repo/tmp/check-full/$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$out"
+summary="$out/summary.txt"
+suites=()
+for f in crates/qrec/tests/gui_*.rs; do suites+=("$(basename "$f" .rs)"); done
+nested=()
+for s in "${suites[@]}"; do nested+=(--test "$s"); done
+
+failed=0
+note() { echo "$*" | tee -a "$summary"; }
+# step <name> <log name> <command...>: its output in <log name>.log, a
+# summary line with its time, and what its runner reported.
+step() {
+  local name=$1 log="$out/$2.log"
+  shift 2
+  local start=$SECONDS
+  echo "== $name ($(date +%T)): $*"
+  "$@" >"$log" 2>&1
+  local rc=$?
+  local took=$((SECONDS - start)) result
+  if [ $rc = 0 ]; then result=ok; else result="FAILED (exit $rc)"; failed=1; fi
+  note "$(printf '%-30s %5s s  %s' "$name" "$took" "$result")"
+  # nextest's summary and failures, libtest's totals.
+  grep -E '^ +Summary \[' "$log" | sed 's/^ */    /' | tee -a "$summary"
+  grep -E '^ +(FAIL|FLAKY|SIGSEGV|SIGABRT|TIMEOUT|LEAK) ' "$log" | sort -u | sed 's/^ */    /' | tee -a "$summary"
+  awk '/^test result:/ { p += $4; f += $6; i += $8; n++ }
+       END { if (n) printf "    %d binaries: %d passed, %d failed, %d ignored\n", n, p, f, i }' "$log" |
+    tee -a "$summary"
+  return $rc
+}
+# Every nested case with the variables given, <threads> at once, then the
+# cases that ran alone last time, one at a time (the harness lists them in
+# target/tmp/gui-exclusive/; its locks keep them alone either way, the
+# list only spares the parallel run a drain for each).
+all_nested() {
+  (
+    for kv in "$@"; do export "${kv?}"; done
+    local f n alone=() rc=0
+    for f in target/tmp/gui-exclusive/*--*; do
+      [ -e "$f" ] || continue
+      n=${f##*/}
+      [ -f "crates/qrec/tests/${n%%--*}.rs" ] && alone+=("(binary(=${n%%--*}) & test(=${n#*--}))")
+    done
+    local run=(cargo nextest run -p qrec --no-fail-fast --no-tests=warn --run-ignored only
+      --retries "${QREC_NESTED_RETRIES:-1}" "${nested[@]}")
+    if [ ${#alone[@]} -eq 0 ]; then
+      "${run[@]}" --test-threads "$threads"
+      exit
+    fi
+    local expr
+    expr=$(printf ' | %s' "${alone[@]}")
+    expr=${expr:3}
+    "${run[@]}" --test-threads "$threads" -E "not ($expr)" || rc=1
+    "${run[@]}" --test-threads 1 -E "$expr" || rc=1
+    exit $rc
+  )
+}
+matrix() { # matrix <name> <log> [VAR=value...]
+  local name=$1 log=$2
+  shift 2
+  step "$name" "$log" all_nested "$@"
+}
+
+note "check-full on $(git rev-parse --short HEAD)$(git diff --quiet HEAD -- || echo ' (with uncommitted changes)'), $(date '+%F %T'), $threads nested cases at once"
+
+# The package builds meanwhile (4 cores), alone in its sandbox. A git
+# flake: only what git tracks goes to the store (a `path:` one would copy
+# target/ and tmp/ too).
+nix_start=$SECONDS
+nix build "git+file://$repo" --cores 4 --max-jobs 1 --out-link "$repo/result" -L >"$out/nix-build.log" 2>&1 &
+nix_pid=$!
+
+step "fmt" fmt cargo fmt --all --check
+step "clippy" clippy cargo clippy --workspace --all-targets -- -D warnings
+step "workspace tests" workspace cargo test --workspace --no-fail-fast
+step "nested binaries (build)" nested-build cargo nextest run -p qrec --no-run "${nested[@]}"
+
+echo "== nix build: waiting for it"
+wait "$nix_pid"
+rc=$?
+if [ $rc = 0 ]; then
+  note "$(printf '%-30s %5s s  ok: %s' "nix build" "$((SECONDS - nix_start))" "$(readlink result)")"
+else
+  failed=1
+  note "$(printf '%-30s %5s s  FAILED (exit %s): see nix-build.log; the packaged case runs the old result' \
+    "nix build" "$((SECONDS - nix_start))" "$rc")"
+fi
+
+start=$(date +%s)
+matrix "nested, gles2" nested-gles2 QREC_TEST_WLR=gles2
+# Its shots, before the pixman run writes the same names.
+(cd tmp/gui-shots && find . -path ./scale -prune -o -path ./final -prune -o -type f -newermt "@$start" -print) |
+  while read -r f; do
+    mkdir -p "$out/shots-gles2/$(dirname "$f")" && cp -p "tmp/gui-shots/$f" "$out/shots-gles2/$f"
+  done
+matrix "nested, pixman" nested-pixman
+matrix "nested, pixman, scale 1.5" nested-scale-1.5 QREC_TEST_SCALE=1.5
+matrix "nested, pixman, scale 2" nested-scale-2 QREC_TEST_SCALE=2
+
+# G§8.6's probes, each alone.
+for i in 1 2 3; do
+  step "probe: frame time (gles2) $i" "probe-frame-time-$i" env QREC_TEST_WLR=gles2 \
+    cargo nextest run -p qrec --run-ignored only --test gui_timeline -E 'test(=frame_times_on_300_clips)'
+  grep -h "gles2 warm" tmp/gui-shots/wp3/perf-300-frame-times-gles2.txt 2>/dev/null | tail -1 |
+    sed 's/^.*main timeline probe: /    warm: /' | tee -a "$summary"
+done
+for i in 1 2 3; do
+  step "probe: smoke stalls (gles2) $i" "probe-smoke-$i" env QREC_TEST_WLR=gles2 \
+    cargo nextest run -p qrec --run-ignored only --test gui_smoke -E 'test(=smoke_steps_1_to_10)'
+  cp tmp/gui-shots/smoke/smoke-measurements.json "$out/smoke-measurements-$i.json" 2>/dev/null &&
+    command -v python3 >/dev/null &&
+    python3 -I - "$out/smoke-measurements-$i.json" <<'EOF' | tee -a "$summary"
+import json, sys
+p = json.load(open(sys.argv[1]))["probe"]
+print(f"    stalls during the steps: {p.get('stallsDuringSteps')}; the opening: "
+      f"{p['opened']['stalls']}, longest {p['opened']['longestMs']:.0f} ms")
+EOF
+done
+step "probe: cache bounds" probe-cache-bounds crates/qrec/tests/gui_support/scripts/cache-bounds.sh
+grep -h "an hour scrolled" tmp/gui-shots/cache-bounds/*.log 2>/dev/null | tail -1 | sed 's/^/    /' |
+  tee -a "$summary"
+
+note "$( [ $failed = 0 ] && echo "check-full: all green" || echo "check-full: FAILED")" \
+  "($((SECONDS / 60)) min); logs in $out"
+exit $failed
