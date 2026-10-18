@@ -37,6 +37,26 @@ the MCP only while `get_app_state` shows it active, and never switch the
 active document; the art export asks the PO for a short window with it
 active. 0.3–0.5: the defaults.
 
+**M4 review (2026-10-17):** the PO delegated the review's decisions to
+engineering ("I'll trust your decisions. As long as the main use case is
+good I can start with it and we can iterate later"). Decided:
+- the departures marked **PO** in G§2 stay as built: D-03, D-04, D-07,
+  D-08, D-17, D-30, D-48 (until WP9 builds the other Settings pages) and
+  D-51;
+- text keeps GTK's manual rendering with whole-pixel advances (G§3.14):
+  fractional advances match the frames' widths but bring the header
+  title's stray mark back on GL, and crisp, stable text matters more
+  than a few px of width;
+- contrast follows the PO's 2026-10-15 rule (AA with a 0.05 margin) where
+  WP10's contrast test flagged a gap: a pressed state's text below 4.55:1
+  and the countdown digit over a bright screen (2.53:1) get fixed, not
+  waived;
+- warnings stay polite announcements, errors assertive; the `gtk`
+  dev-dependency of the `qrec` tests stays (test only); the icon name
+  follows SPEC's app id (`com.rsensato.qrec`).
+The draft frames, the icons and the art were exported the same day
+(`design/export/INDEX.md`), so 0.2's frames and 0.6's export are done.
+
 | # | Ask | Blocks | Default until answered |
 | --- | --- | --- | --- |
 | 0.1 | A§1.2: add `gtk4` 0.11.5, `libadwaita` 0.9.2, `pango` 0.22.9 (G§6.1) and raise `rust-version` from 1.85 to 1.92 | WP0b and everything after it | WP0a runs (it adds no dependency) |
