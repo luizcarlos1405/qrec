@@ -20,7 +20,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -30,7 +30,7 @@ use qrec_core::state::HostKind;
 use qrec_shell::host::lockfile::{self, HostState, LockRecord};
 use qrec_shell::lock::ProjectLock;
 use qrec_shell::testkit::design::{DesignVariant, design_fixture};
-use qrec_shell::testkit::{process, run_tool};
+use qrec_shell::testkit::run_tool;
 use serde_json::{Value, json};
 
 const AREA: &str = "wp8";
@@ -249,63 +249,6 @@ fn wait_phase(nested: &Nested, project: &Path, want: &str, within: Duration) -> 
         assert!(Instant::now() < deadline, "never {want}: {status}");
         thread::sleep(Duration::from_millis(100));
     }
-}
-
-/// `qrec <args> --json` in the env with `vars` on top (a headless host the
-/// CLI spawns inherits them: the fake hooks, a `PATH`).
-fn cli_with(nested: &Nested, project: &Path, args: &[&str], vars: &[(&str, OsString)]) -> Value {
-    let mut command = nested.env.command(&gui_support::qrec_bin());
-    command
-        .arg("--project")
-        .arg(project)
-        .args(args)
-        .arg("--json");
-    for (key, value) in vars {
-        command.env(key, value);
-    }
-    let out = run_tool(&mut command, gui_support::CLI_TIMEOUT);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let last = stdout
-        .lines()
-        .rfind(|l| !l.trim().is_empty())
-        .unwrap_or("{}");
-    serde_json::from_str(last)
-        .unwrap_or_else(|e| panic!("qrec {args:?}: {e}\n{stdout}\n{}", out.stderr))
-}
-
-/// `qrec <args>` in the background with `vars` on top: its output goes to
-/// `<shots>/logs/<case>-cli.log`, it dies with the test's thread.
-fn cli_background_with(
-    nested: &Nested,
-    project: &Path,
-    args: &[&str],
-    vars: &[(&str, OsString)],
-) -> Child {
-    let log = nested
-        .shots
-        .join("logs")
-        .join(format!("{}-cli.log", nested.case));
-    let out = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log)
-        .unwrap_or_else(|e| panic!("{}: {e}", log.display()));
-    let err = out.try_clone().expect("clone the log");
-    let mut command = nested.env.command(&gui_support::qrec_bin());
-    command
-        .arg("--project")
-        .arg(project)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(out)
-        .stderr(err);
-    for (key, value) in vars {
-        command.env(key, value);
-    }
-    process::die_with_parent(&mut command);
-    command
-        .spawn()
-        .unwrap_or_else(|e| panic!("can't run qrec {args:?}: {e}"))
 }
 
 /// A `PATH` whose `ffmpeg` hides encoders `hidden` from `ffmpeg -encoders`
@@ -714,7 +657,7 @@ fn x1_cli_recording() {
     let mut nested = Nested::start(AREA, "x1", Options::default());
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
     let slow_eos = [("QREC_FAKE_EOS_DELAY_MS", OsString::from("6000"))];
-    let start = cli_with(&nested, &project, &["record", "start"], &slow_eos);
+    let start = nested.cli_json_with(&project, &["record", "start"], &slow_eos);
     assert_eq!(start["ok"], true, "{start}");
     wait_phase(&nested, &project, "recording", Duration::from_secs(30));
     nested.launch(&project, Launch::a11y());
@@ -842,8 +785,7 @@ fn x1_export_wait() {
     let mut nested = Nested::start(AREA, "x1-export", Options::default());
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
     let slow = fail_ffmpeg::slow_path(nested.env.root(), 4);
-    let export = cli_background_with(
-        &nested,
+    let export = nested.cli_background_with(
         &project,
         &["export", "--quality", "draft"],
         &[("PATH", slow)],
@@ -928,7 +870,7 @@ fn x1_idle_host_opens_without_a_page() {
     let mut nested = Nested::start(AREA, "x1-idle", Options::default());
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
     let slow_eos = [("QREC_FAKE_EOS_DELAY_MS", OsString::from("8000"))];
-    let start = cli_with(&nested, &project, &["record", "start"], &slow_eos);
+    let start = nested.cli_json_with(&project, &["record", "start"], &slow_eos);
     assert_eq!(start["ok"], true, "{start}");
     wait_phase(&nested, &project, "recording", Duration::from_secs(30));
     let clips = nested.cli_json(&project, &["clip", "list"])["data"]

@@ -83,6 +83,17 @@ pub const DISPLAY_VARS: [&str; 5] = [
     "GDK_BACKEND",
 ];
 
+/// A CLI's extra variables ([`Nested::cli_with`]) name no display: the CLI
+/// runs in the env, never on a display.
+fn assert_no_display_vars(vars: &[(&str, OsString)]) {
+    for (key, _) in vars {
+        assert!(
+            !DISPLAY_VARS.contains(key),
+            "a CLI can't be given {key}: it runs in the env, with no display (G§8.4)"
+        );
+    }
+}
+
 /// The render node the GL runs use: the first Intel or AMD one, by its PCI
 /// vendor (the node numbers aren't stable: on the dev machine NVIDIA's is
 /// renderD128 on most boots and renderD129 on others). Never NVIDIA's.
@@ -507,10 +518,19 @@ impl Nested {
     /// `qrec <args>` as the CLI, in the env (no display), within
     /// [`CLI_TIMEOUT`].
     pub fn cli(&self, project: &Path, args: &[&str]) -> Output {
+        self.cli_with(project, args, &[])
+    }
+
+    /// [`Nested::cli`] with `vars` on top of the env's: a headless host
+    /// the CLI spawns inherits them (the fake hooks, a `PATH` with a slowed
+    /// ffmpeg: WP8's takeover pages). None may name a display.
+    pub fn cli_with(&self, project: &Path, args: &[&str], vars: &[(&str, OsString)]) -> Output {
+        assert_no_display_vars(vars);
         self.projects.borrow_mut().insert(project.to_path_buf());
         let out = run_tool(
             self.env
                 .command(&qrec_bin())
+                .envs(vars.iter().map(|(key, value)| (*key, value)))
                 .arg("--project")
                 .arg(project)
                 .args(args),
@@ -528,6 +548,18 @@ impl Nested {
     /// `<shots>/logs/<case>-cli.log`, it dies with the test's thread, and
     /// [`reap_within`] waits for it.
     pub fn cli_background(&self, project: &Path, args: &[&str]) -> Child {
+        self.cli_background_with(project, args, &[])
+    }
+
+    /// [`Nested::cli_background`] with `vars` on top of the env's
+    /// ([`Nested::cli_with`]).
+    pub fn cli_background_with(
+        &self,
+        project: &Path,
+        args: &[&str],
+        vars: &[(&str, OsString)],
+    ) -> Child {
+        assert_no_display_vars(vars);
         self.projects.borrow_mut().insert(project.to_path_buf());
         let log = self
             .shots
@@ -542,6 +574,7 @@ impl Nested {
         let err = out.try_clone().expect("clone the log");
         let mut command = self.env.command(&qrec_bin());
         command
+            .envs(vars.iter().map(|(key, value)| (*key, value)))
             .arg("--project")
             .arg(project)
             .args(args)
@@ -556,9 +589,15 @@ impl Nested {
 
     /// `qrec <args> --json`'s reply object (the last stdout line).
     pub fn cli_json(&self, project: &Path, args: &[&str]) -> Value {
+        self.cli_json_with(project, args, &[])
+    }
+
+    /// [`Nested::cli_json`] with `vars` on top of the env's
+    /// ([`Nested::cli_with`]).
+    pub fn cli_json_with(&self, project: &Path, args: &[&str], vars: &[(&str, OsString)]) -> Value {
         let mut all: Vec<&str> = args.to_vec();
         all.push("--json");
-        let out = self.cli(project, &all);
+        let out = self.cli_with(project, &all, vars);
         let stdout = String::from_utf8_lossy(&out.stdout);
         let last = stdout
             .lines()
@@ -1494,6 +1533,20 @@ mod tests {
         if frame.exists() {
             assert_eq!(png_size(&frame), (1600, 1000));
         }
+    }
+
+    /// A CLI's extra variables may set the fake hooks or a `PATH`, never a
+    /// display (WP8).
+    #[test]
+    fn a_clis_variables_name_no_display() {
+        assert_no_display_vars(&[
+            ("PATH", OsString::from("/bin")),
+            ("QREC_FAKE_EOS_DELAY_MS", OsString::from("6000")),
+        ]);
+        let caught = std::panic::catch_unwind(|| {
+            assert_no_display_vars(&[("WAYLAND_DISPLAY", OsString::from("wayland-1"))]);
+        });
+        assert!(caught.is_err(), "WAYLAND_DISPLAY is refused");
     }
 
     /// A background child that exits is reaped with its status.
