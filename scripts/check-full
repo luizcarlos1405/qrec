@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # The milestone gate (CLAUDE.md, docs/GUI.md G§8.4): fmt, clippy, the
-# workspace tests, `nix build` (the package; its own sandbox runs the
-# core's tests), every nested suite on gles2 and on pixman (many cases at
-# once, each timing-sensitive case alone; the packaged case runs the fresh
-# build), every suite again at scale 1.5 and 2 on pixman, and G§8.6's
-# probes (the frame-time probe and the smoke's main-loop check, three times
-# each alone on gles2; the cache bounds).
+# workspace tests (nextest, then the doc-tests), `nix build` (the package;
+# its own sandbox runs the core's tests), every nested suite on gles2 and
+# on pixman (many cases at once, each timing-sensitive case alone; the
+# packaged case runs the fresh build), every suite again at scale 1.5 and
+# 2 on pixman, and G§8.6's probes (the frame-time probe and the smoke's
+# main-loop check, three times each alone on gles2; the cache bounds).
 #
 #   scripts/check-full
 #
@@ -109,7 +109,8 @@ nix_pid=$!
 
 step "fmt" fmt cargo fmt --all --check
 step "clippy" clippy cargo clippy --workspace --all-targets -- -D warnings
-step "workspace tests" workspace cargo test --workspace --no-fail-fast
+step "workspace tests" workspace cargo nextest run --workspace --no-fail-fast
+step "doc-tests" doc-tests cargo test --workspace --doc --no-fail-fast
 step "nested binaries (build)" nested-build cargo nextest run -p qrec --no-run "${nested[@]}"
 
 echo "== nix build: waiting for it"

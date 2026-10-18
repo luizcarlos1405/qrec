@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The inner loop (CLAUDE.md, docs/GUI.md G§8.4): fmt, clippy, the tests of
-# the crates changed since main, and nested GUI suites on pixman, many
-# cases at once (each timing-sensitive case alone).
+# the crates changed since main (nextest, then their doc-tests), and nested
+# GUI suites on pixman, many cases at once (each timing-sensitive case
+# alone).
 #
 #   scripts/check-quick                  the suites of the areas you changed
 #   scripts/check-quick gui_stage ...    these suites (`all`: every one)
@@ -194,6 +195,12 @@ if [ ${#packages[@]} -gt 0 ]; then
   expr=$(printf ' | %s' "${filters[@]}")
   expr=${expr:3}
   step "tests: ${packages[*]}" cargo nextest run --no-fail-fast "${args[@]}" -E "$expr"
+  # nextest runs no doc-tests; the library crates' run here.
+  docs=()
+  for p in "${packages[@]}"; do [ "$p" = qrec ] || docs+=(-p "$p"); done
+  if [ ${#docs[@]} -gt 0 ]; then
+    step "doc-tests" cargo test --doc --no-fail-fast "${docs[@]}"
+  fi
 else
   results+=("$(printf '%-34s %5s    no crate changed' "tests" "-")")
 fi
