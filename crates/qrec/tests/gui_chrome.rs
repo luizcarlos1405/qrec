@@ -820,20 +820,18 @@ fn toasts_queue_and_their_undo_waits_for_nothing_else() {
         Some(live_ui()),
     );
     open(&mut nested, &project, Launch::a11y());
-    // Three "Not built yet" toasts (G§1.1): one shows, two wait.
-    for id in ["palette.open", "keys.help", "palette.open"] {
+    // Three toasts of keys that can't run (D-34; nothing selected, nothing
+    // to redo): one shows, two wait. (They were the palette's and the cheat
+    // sheet's "Not built yet" until WP9 built them.)
+    for id in ["history.redo", "clip.remove", "record.over"] {
         let reply = nested.window(0).ctl(json!({"op": "action", "id": id}));
         assert_eq!(reply["ok"], true, "{reply}");
     }
     let gui = nested.window(0);
     gui.wait_idle();
     let labels = gui.labels("toast-host");
-    assert!(labels.contains(&"Not built yet".to_owned()), "{labels:?}");
+    assert!(labels.contains(&"Nothing to redo".to_owned()), "{labels:?}");
     assert!(labels.contains(&"+2".to_owned()), "{labels:?}");
-    assert!(
-        labels.contains(&"The command palette comes with milestone M5.".to_owned()),
-        "{labels:?}"
-    );
     nested.screenshot("queue");
     let regions = nested.window(0).regions(&["toast-dismiss"]);
     let [x, y, w, h] = regions["toast-dismiss"];
@@ -843,17 +841,35 @@ fn toasts_queue_and_their_undo_waits_for_nothing_else() {
     gui.wait_idle();
     let labels = gui.labels("toast-host");
     assert!(
-        labels.contains(&"The cheat sheet comes with milestone M5.".to_owned()),
+        labels.contains(&"Select the clips to remove".to_owned()),
         "the next one: {labels:?}"
     );
     assert!(labels.contains(&"+1".to_owned()), "{labels:?}");
     for _ in 0..2 {
-        let regions = nested.window(0).regions(&["toast-dismiss"]);
-        let [x, y, w, h] = regions["toast-dismiss"];
+        // Where the close button is once the toast stopped rising (its
+        // 200 ms entrance: these toasts differ in width and place it apart).
+        let at = |nested: &mut Nested| {
+            nested
+                .window(0)
+                .regions(&["toast-dismiss"])
+                .get("toast-dismiss")
+                .copied()
+        };
+        let [x, y, w, h] = gui_support::poll(Duration::from_secs(5), "the close button", || {
+            let first = at(&mut nested)?;
+            thread::sleep(Duration::from_millis(100));
+            (at(&mut nested)? == first).then_some(first)
+        });
         nested.pointer().click(x + w / 2.0, y + h / 2.0);
         nested.window(0).wait_idle();
     }
-    assert!(nested.window(0).labels("toast-host").is_empty());
+    gui_support::poll(Duration::from_secs(5), "no toast left", || {
+        nested
+            .window(0)
+            .labels("toast-host")
+            .is_empty()
+            .then_some(())
+    });
 
     // An external edit of qrec.json: the core toasts it with Undo.
     let split = nested.cli_json(&project, &["clip", "split", "--timeline", "--at", "2437f"]);

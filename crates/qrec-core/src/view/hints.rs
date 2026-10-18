@@ -189,7 +189,7 @@ pub fn hint_enabled(id: &str, state: &State, facts: &GuiFacts) -> bool {
         "zoom.fit" => clips,
         // D-23: `n` works mid-trim, not mid-move.
         "snapping.toggle" => facts.drag != Some(DragKind::Move),
-        // Until WP9 these show "Not built yet" (G§1.1); the window's own.
+        // The window's own (the palette, the cheat sheet: WP9).
         "palette.open" | "keys.help" | "settings.open" | "region.next" | "region.prev"
         | "app.quit" => true,
         _ => matches!(action_for(id, state), Some(Action::Run(_) | Action::Gui)),

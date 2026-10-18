@@ -328,11 +328,18 @@ mod tests {
 
     #[test]
     fn facts_follow_the_local_state() {
+        // WP9 built the palette and the cheat sheet.
+        let built = Built {
+            palette: true,
+            cheat_sheet: true,
+            settings_pages: false,
+        };
         let mut local = LocalUi::default();
         assert_eq!(
             local.facts(),
             GuiFacts {
                 playing: false,
+                built,
                 ..GuiFacts::default()
             }
         );
@@ -358,7 +365,7 @@ mod tests {
         assert_eq!(facts.drag, Some(DragKind::TrimEnd));
         assert_eq!(facts.bin_selection, 2);
         assert!(facts.portal_denied);
-        assert_eq!(facts.built, Built::default(), "nothing of WP9 yet");
+        assert_eq!(facts.built, built);
     }
 
     /// R16: the hint bar's Play/Pause follows the program, not a take the

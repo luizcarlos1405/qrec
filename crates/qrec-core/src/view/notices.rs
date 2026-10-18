@@ -116,14 +116,15 @@ pub fn error_notice(err: &CoreError, cmd: &Command, state: &State) -> Option<Not
     })
 }
 
-/// "Not built yet", the toast of keys whose GUI comes later (G§1.1).
+/// "Not built yet", the tooltip of the Settings tabs whose pages come
+/// later (D-48).
 pub const NOT_BUILT: &str = "Not built yet";
 
 /// The toast for a key whose binding `binding_id` is unavailable (D-34),
 /// `reason` being `keymap::action_for`'s: none for "Nothing to cancel"
 /// (`Esc` with nothing to cancel is silent); recording keys during an
-/// export say why and offer the export; the palette and the cheat sheet say
-/// they come with M5; anything else is an info toast titled with the reason.
+/// export say why and offer the export; `d` with the newest take gone says
+/// so (S25 #7); anything else is an info toast titled with the reason.
 pub fn unavailable_notice(binding_id: &str, reason: &str, state: &State) -> Option<Notice> {
     if reason == "Nothing to cancel" {
         return None;
@@ -145,10 +146,6 @@ pub fn unavailable_notice(binding_id: &str, reason: &str, state: &State) -> Opti
                 .with_body(format!("Take {n} has no clips on the timeline.")),
             None => Notice::new(ToastLevel::Info, reason),
         },
-        "palette.open" => Notice::new(ToastLevel::Info, NOT_BUILT)
-            .with_body("The command palette comes with milestone M5."),
-        "keys.help" => Notice::new(ToastLevel::Info, NOT_BUILT)
-            .with_body("The cheat sheet comes with milestone M5."),
         _ => Notice::new(ToastLevel::Info, reason),
     };
     Some(notice)
@@ -288,7 +285,7 @@ mod tests {
             ),
             ("history.undo", reason("history.undo", &live), live.clone()),
         ];
-        let mut program = live.clone();
+        let mut program = live;
         program.ui.canvas_mode = crate::state::CanvasMode::Program;
         program.ui.selected_layer = Some(crate::ids::LayerId::numbered(2));
         cases.push((
@@ -296,8 +293,6 @@ mod tests {
             reason("layer.nudge-left", &program),
             program,
         ));
-        cases.push(("palette.open", String::new(), live.clone()));
-        cases.push(("keys.help", String::new(), live));
         for (id, why, state) in &cases {
             notices.push((
                 format!("unavailable_notice({id}, {why:?})"),

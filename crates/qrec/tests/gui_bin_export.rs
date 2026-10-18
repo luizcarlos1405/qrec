@@ -1539,11 +1539,12 @@ fn a_held_unavailable_key_toasts_once() {
 }
 
 /// G§3.7: a toast that says what the newest one says is that toast again,
-/// whatever sends it: `keys.help` run 30 times through the test channel's
-/// `action` op (as a button would; no key repeat to filter) shows one
-/// "Not built yet" toast and no "+N" chip (R29's audit: the held-key case
-/// above passes without the coalescing since R30 swallows a held
-/// unavailable key's repeats; without it this one reads "+29").
+/// whatever sends it: `history.redo` with nothing to redo run 30 times
+/// through the test channel's `action` op (as a button would; no key
+/// repeat to filter) shows one "Nothing to redo" toast and no "+N" chip
+/// (R29's audit: the held-key case above passes without the coalescing
+/// since R30 swallows a held unavailable key's repeats; without it this
+/// one reads "+29"). (It was `keys.help`'s "Not built yet" until WP9.)
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn the_same_toast_thirty_times_is_one() {
@@ -1556,12 +1557,12 @@ fn the_same_toast_thirty_times_is_one() {
     open(&mut nested, &project, launch());
     let gui = nested.window(0);
     for _ in 0..30 {
-        let reply = gui.ctl(json!({"op": "action", "id": "keys.help"}));
+        let reply = gui.ctl(json!({"op": "action", "id": "history.redo"}));
         assert_eq!(reply["ok"], true, "{reply}");
     }
     gui.wait_idle();
     let labels = gui.labels("toast-host");
-    let titles = labels.iter().filter(|l| *l == "Not built yet").count();
+    let titles = labels.iter().filter(|l| *l == "Nothing to redo").count();
     assert_eq!(titles, 1, "one toast: {labels:?}");
     assert!(
         !labels.iter().any(|l| l.starts_with('+')),

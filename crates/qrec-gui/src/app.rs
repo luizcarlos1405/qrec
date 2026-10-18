@@ -37,7 +37,7 @@ use qrec_core::model::Project;
 use qrec_core::on_event::output::export_readout;
 use qrec_core::protocol::ToastLevel;
 use qrec_core::state::{HostKind, JobKind, RecordPhase, State};
-use qrec_core::view::notices::{Notice, unavailable_notice};
+use qrec_core::view::notices::Notice;
 use qrec_core::{Command, CoreError, History, UiState};
 use qrec_shell::host::HostEnd;
 use qrec_shell::host::signals::{self, HOST_SIGNALS, Interrupts};
@@ -495,8 +495,9 @@ impl App {
         }
     }
 
-    /// The GUI actions the app owns: quit, the "Not built yet" keys (G§1.1),
-    /// the blocking pages' buttons and the D-12 modal's.
+    /// The GUI actions the app owns: quit, the blocking pages' buttons and
+    /// the D-12 modal's. (`palette.open` and `keys.help` are the palette's
+    /// and the cheat sheet's, WP9.)
     fn register_actions(self: &Rc<Self>) {
         let actions = &self.ctx.actions;
         let weak = Rc::downgrade(self);
@@ -508,17 +509,6 @@ impl App {
                 }
             }),
         );
-        for id in ["palette.open", "keys.help"] {
-            let store = self.ctx.store.clone();
-            actions.register(
-                id,
-                Rc::new(move || {
-                    if let Some(notice) = unavailable_notice(id, "", &store.state()) {
-                        store.notify(notice);
-                    }
-                }),
-            );
-        }
         for action in [
             qrec_core::view::blocking::BlockingAction::CheckAgain,
             qrec_core::view::blocking::BlockingAction::StopAndOpen,
