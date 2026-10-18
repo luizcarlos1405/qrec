@@ -72,10 +72,15 @@ button.qrec-btn.destructive-flat {
   color: var(--qrec-record-text);
 }
 
-/* README known gap: destructive-flat pressed is a `ghost-fill` ground. */
+/* README known gap: destructive-flat pressed is a `ghost-fill` ground. Its
+   label turns `text` while pressed: `record-text` on `ghost-fill` reads
+   4.04–4.49 in some themes, under the PO's AA + 0.05 (G§0's M4 decision;
+   R1's rule for a tinted ground; tests/contrast.rs). The toast actions and
+   the countdown's Cancel do the same (chrome.css). */
 button.qrec-btn.destructive-flat:active {
   background-image: none;
   background-color: var(--qrec-ghost-fill);
+  color: var(--qrec-text);
 }
 
 button.qrec-btn.sm {

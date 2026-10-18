@@ -768,6 +768,21 @@ fn countdown_case(case: &str, reduced: bool) {
     };
     let labels = stage_labels(&mut nested);
     assert_shows(&labels, &["Take 10", "Esc or R cancels", "LIVE"]);
+    // The digit's plate (C07; G§0's M4 decision: the digit over the dim
+    // alone read 2.53:1 over a white screen): inside the ring, off the
+    // digit, the preview is `video-scrim` darker than the dim alone, so no
+    // channel there is brighter than `video-scrim` over the dim over white
+    // (58): the fake screen's green bar under it reads 152 dimmed alone.
+    let inside = nested.opts.rect_px([666.0, 392.0, 4.0, 4.0]);
+    let brightest = gui_support::rgb_pixels(&shot, inside)
+        .into_iter()
+        .flatten()
+        .max()
+        .unwrap_or(255);
+    assert!(
+        brightest <= 62,
+        "the countdown's plate under the digit: a channel at {brightest}"
+    );
     // The hint bar (WP6, round 3) says the countdown's keys, as S03 draws.
     let hints = nested.window(0).ctl(json!({"op": "hints"}));
     let line: Vec<String> = hints["items"]

@@ -117,11 +117,17 @@ button.qrec-btn.record keycap.on-fill {
   border-color: var(--qrec-text-on-record-45);
 }
 
-/* Countdown: outlined, the label in `record-text`, a plain key cap. */
+/* Countdown: outlined, the label in `record-text`, a plain key cap. Pressed,
+   the label turns `text`: `record-text` under `pressed` over `surface`
+   reads 4.01–4.44 in three themes (G§0's M4 decision; tests/contrast.rs). */
 button.qrec-btn.record.cancel {
   background-color: transparent;
   box-shadow: inset 0 0 0 1px var(--qrec-record);
   color: var(--qrec-record-text);
+}
+
+button.qrec-btn.record.cancel:active {
+  color: var(--qrec-text);
 }
 
 button.qrec-btn.record.saving qrec-spinner {
@@ -241,6 +247,13 @@ progressbar.mini-mud > trough > progress {
 
 .qrec-toast button.qrec-btn.toast-action {
   color: var(--qrec-accent-text);
+}
+
+/* Pressed, an action's label turns `text`: `accent-text` under `pressed`
+   over `raised` reads 3.75 and 3.84 in Dragon's Keep and Ogre Mode (G§0's
+   M4 decision; tests/contrast.rs). */
+.qrec-toast button.qrec-btn.toast-action:active {
+  color: var(--qrec-text);
 }
 
 /* ---------------------------------------------------------- C24 modal */
