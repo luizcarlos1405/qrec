@@ -35,15 +35,18 @@
 
 .qrec-panel .take-banner {
   min-height: 40px;
-  padding: 0 6px 0 12px;
+  padding: 0 4px 0 12px;
   margin-bottom: 8px;
   border-radius: 6px;
   background-color: var(--qrec-raised);
   box-shadow: inset 0 0 0 1px var(--qrec-border);
 }
 
+/* C13's `Layout ▾` (S06): 8 px before the label, a 4 px gap
+   (`panel/header.rs`), 6 px after the chevron. */
 .qrec-panel .take-banner button.qrec-btn.sm {
   min-height: 28px;
+  padding: 0 6px 0 8px;
 }
 
 .qrec-panel .take-banner button image {

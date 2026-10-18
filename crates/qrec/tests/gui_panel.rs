@@ -391,6 +391,37 @@ fn s06_the_take_layout_and_the_inspector() {
         &["take-banner", "layer-row-L2", "inspector"],
         scale,
     );
+    // C13's `Layout ▾` as S06 draws it (the icons and art lane measured
+    // its chevron 4 px and its label 8 px left of the frame's): the button
+    // 4 px from the banner's end, 8 px before its label, a 4 px gap, the
+    // 16 px chevron, 6 px after it.
+    let parts = gui.regions(&[
+        "take-banner",
+        "layout-menu",
+        "layout-menu-label",
+        "layout-menu-chevron",
+    ]);
+    let part = |name: &str| {
+        *parts
+            .get(name)
+            .unwrap_or_else(|| panic!("no {name}: {parts:#?}"))
+    };
+    let right = |r: [f64; 4]| r[0] + r[2];
+    let (banner, menu) = (part("take-banner"), part("layout-menu"));
+    let (label, chevron) = (part("layout-menu-label"), part("layout-menu-chevron"));
+    let c13 = [
+        ("the banner's end padding", right(banner) - right(menu), 4.0),
+        ("after the chevron", right(menu) - right(chevron), 6.0),
+        ("the chevron", chevron[2], 16.0),
+        ("the gap", chevron[0] - right(label), 4.0),
+        ("before the label", label[0] - menu[0], 8.0),
+    ];
+    for (what, got, want) in c13 {
+        assert!(
+            (got - want).abs() <= 0.5,
+            "Layout ▾, {what}: {got} px for C13's {want} ({parts:?})"
+        );
+    }
     assert_has(
         &panel_labels(gui),
         &[

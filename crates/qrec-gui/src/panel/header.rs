@@ -90,11 +90,16 @@ impl BannerView {
         text.set_ellipsize(gtk::pango::EllipsizeMode::End);
         let menu = Menu::new();
         let layout = menus::menu_button(&menu, &["flat", "sm"], "Take layout");
-        let content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        // C13's `Layout ▾`: the label, a 4 px gap, the 16 px chevron (its
+        // insets are panel.css's).
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         let label = gtk::Label::new(Some("Layout"));
         label.add_css_class("t-body-strong");
+        label.set_widget_name("layout-menu-label");
         content.append(&label);
-        content.append(&gtk::Image::from_icon_name("qrec-chevron-down-symbolic"));
+        let chevron = gtk::Image::from_icon_name("qrec-chevron-down-symbolic");
+        chevron.set_widget_name("layout-menu-chevron");
+        content.append(&chevron);
         layout.set_child(Some(&content));
         layout.set_valign(gtk::Align::Center);
         layout.set_widget_name("layout-menu");
