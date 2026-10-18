@@ -196,7 +196,7 @@ requirement review's numbering; H-n are host and engine calls.
 | D-18 | Bin secondary lines need one new fact, `Take.recovered` (set by startup recovery, G§4.8); the rest is derived. tooShort → "7 frames; takes need 10."; broken → mapped from `Take.error` (the EOS timeout reason → "Files didn't close within 10 s."); recovered → chip Recovered and "Recovered after Qrec closed mid-take."; status ok and never placed → "Cancelled with Esc."; another take's `replaced` holds its clip → "Replaced by take 5."; a history entry "Discard take N" at or before the cursor → "Discarded with D."; otherwise "Removed from the timeline." | WP0a, WP7 |
 | D-19 | Clear history: the palette row "Clear undo history" (WP9, gated); CLI only until then. No project rename in the GUI (S18b's Project page has no Name field). No in-app history restore. | WP9 |
 | D-20 | Settings › Project follows S18b: the "Canvas" group (Size dropdown "1920×1080 (16:9)", Frame rate 24 / 25 / 30 / 50 / 60, Background) and the footer "Saved in this project's <dir>/qrec.json." (`~` for the home dir). Settings › Recording and › Autocut aren't drawn: built only with frames or a waiver (G§0.2), in WP9. | WP6, WP9 |
-| D-21 | Toast copy follows S25 once approved (WP9): "Recording didn't start"; "Camera disconnected" / "Screen disconnected" / "Mic disconnected" / "System audio disconnected" with "<label> stopped sending frames. Take N keeps recording without <id> <name>."; "qrec.json changed on disk but isn't valid". The core's current copy stays until then. | WP9 |
+| D-21 | Toast copy follows S25 once approved (WP9): "Recording didn't start"; "Camera disconnected" / "Screen disconnected" / "Mic disconnected" / "System audio disconnected" with "<label> stopped sending frames. Take N keeps recording without <id> <name>."; "qrec.json changed on disk but isn't valid". In since the WP9 lane, from BRIEF's S25 table, rows 1–11 (G§7.2's WP9 lane paragraph names what is BRIEF's and what the lane wrote); S25's frame is compared when the toasts are shot for real. | WP9 |
 | D-22 | The cheat sheet keeps the `Canvas` group (layer nudges) at the bottom of column 3 (gated). | WP9 |
 | D-23 | `N` during drags: G§1.3, D-42. | WP0b, WP6 |
 | D-24 | Export "Change…" opens `gtk::FileDialog::save` (portal) on `exports/` with the auto name. The GUI still dispatches `confirmed: false` and shows the "Replace file" modal on `confirmation_required` (SPEC §11 binds, so an existing file is confirmed twice). A forbidden path shows the core message under the Output field (C29 invalid state). A picked file follows the Format switch: a name in the old format's extension gets the new one's (`talk.mp4` → `talk.webm`; review fix: WebM was written into talk.mp4), another name stays as picked. | WP7 |
@@ -3890,15 +3890,18 @@ size (pixman's numbers; gles2's the same where not named;
   preview fitted at 746×420 and the transport under it, the panel 720
   high; nothing else moves.
 - Theme proofs (BRIEF §7, `final/themes/`; no frames, G§0.3): S25 is one
-  toast per core level in the core's copy (info, warning, success, error),
-  not the draft's eleven variants (WP9 writes the copy); the error toast
-  is 607 px wide where DESIGN's toasts are 360–560, its body 3 lines for
-  at most 2 (its label limits count characters, and the body has a line
-  break: WP6's `toasts.rs`); the Frame saved toast names the absolute
-  `/tmp/…/frames/…png` where BRIEF's S25 #4 shows `frames/…` (the shell's
-  FrameSaved carries the absolute path). Fixed in the WP9 lane (below):
-  the toast is held to 560 × the scale and its body to one paragraph of 2
-  lines, and Frame saved names `frames/…`.
+  toast per core level (info, warning, success, error), not the draft's
+  eleven variants (their frame is exported now; WP9's drawn part shoots
+  them). Re-shot after the WP9 lane (its copy and DESIGN's width, below;
+  the play, perf and wp9 lanes' integration, both themes, both
+  renderers): the error toast is "qrec.json changed on disk but isn't
+  valid" with Copy details, 560 px wide and its body in 2 lines (it was
+  607 px, "qrec.json on disk is invalid", its body in 3: WP6's `toasts.rs`
+  sized it by characters and kept the body's line break); the success
+  toast's Frame saved names `frames/rust-traits-talk-v2-take-0005-00012107.png`
+  on one line, 439 px wide (516 with the absolute `/tmp/…/frames/…png` on
+  two, where BRIEF's S25 #4 shows `frames/…`); info and warning are as
+  they were (360 and 371 px).
 
 WP9 lane (2026-10-17, on 65ee67d; WP9's parts that need no drawing,
 WP9's "As built"): no shot of S19–S22 or S25's variants yet, their
@@ -3970,6 +3973,50 @@ measured layout only.
   lines); a short toast 360. The Failed page's stderr well is 176 px high
   at 1, 193.6 at 1.1 and 264 at 1.5, set live (`gui_bin_export`'s
   `the_failed_pages_stderr_well_follows_a_live_scale`).
+
+Status after the play, perf and wp9 lanes (run `wf_083221c5-8eb`, merged
+on 5a16849 in this order: play d12e941, perf a583946, wp9 19fbd43; no
+conflict; the integration dd7b549, f6a6bf3, 3da95a3 and the docs after
+them):
+**the final shots stay final but the theme proofs' S25**, re-shot above
+on both renderers (`final/themes/`, `final/gles2/themes/`: the board and
+the error and success toasts of both themes). Every final shot was shot
+again and diffed against the finals pixel by pixel
+(`tmp/integ9/diffs-px*`, `diffs-gl*`): live pixels only (the fake
+camera's dot, the meters, the moving test pattern, real times, the
+export's file name and log path) in S01a, S01b, S02, S02-1000-sheet,
+S02-1300, S02-scale1.5, S02-scale2, S03, S03-reduced, S04, S04-reduced,
+S04b, S05, S05b, S07, S08, S09, S09-scale1.5, S09-scale2, S10,
+S10-scale1.5, S10-scale2, S11, S13, S15b, S15c-reduced, S16, S16b, S17,
+S18b and S02's theme proofs, on one renderer or both.
+So S16b's toast keeps its 467 px (it sizes to its text, inside the new
+360–560) and S17's page its look; the Failed page's stderr well moves
+only with a live scale. The integration's three fixes: the program sync's
+steps run ahead of GTK's redraws (dd7b549: a bin preview's takeover ran
+0.5–1 s late behind the playing Program's frames, so
+`a_bin_preview_parks_the_playing_program_where_it_showed` parked 16–17
+frames on in 3 of 6 runs; 10 of 10 since), the compiled resources are
+held to their sources (f6a6bf3: the worktree's bundle still had a
+WP10 revert check's `panel.css` and `chrome.css`, and S12's summary
+heading came a pixel low in every run here until it was rebuilt; a first
+pixman run on that bundle is discarded, `tmp/integ9/stale-px/`); and the
+packaged case pauses once the program plays (3da95a3: a fresh package's
+first start loaded the program for most of the case's fixed 500 ms on
+pixman, so the park snapped to frame 0, 1 run of 4). On the head's code:
+the workspace 1915 passed, 0 failed, 193 ignored (fmt and clippy
+`-D warnings` clean); nested, on pixman and
+on gles2 alike, gui_shell 22, gui_smoke 2 (its packaged case on the
+suite runs' `result`, WP10's package, then on `nix build`'s
+`/nix/store/zwnkxrx0jrijr578n5hfba86zd8z8pg0-qrec-0.1.0` of this head:
+3 of 3 on pixman and 2 of 2 on gles2 after 3da95a3), gui_chrome 15,
+gui_timeline 30, gui_stage 34, gui_panel 21, gui_bin_export 29, gui_live
+9, gui_themes 5, gui_a11y 10, gui_audits 5, gui_text 2: 184 cases each,
+no GLib or GTK critical; gles2's smoke with no stall over 50 ms during
+the steps in 4 of 4 runs (the full run's and 3 alone) and the frame-time
+probe's warm p99 16.58, 16.59 and 16.61 ms in 3 runs alone (16.59 in the
+full run; max 16.67). The scale runs weren't repeated (no change of this
+run draws at a scale but the toast, whose bounds follow `ui.scale`:
+`a_toast_keeps_to_designs_width` measures it at 1.5).
 
 ### WP0a — Interfaces, GTK-free (alone, first)
 
@@ -4556,6 +4603,27 @@ D-22, the D-30 caption, D-31. Re-registers `keys.help` and `palette.open`.
   "Not built yet"), `widgets/theme_card.rs`, `components/overlays.css`,
   `gui_overlays.rs`, S25's variants shot for real, D-31's labels.
 
+**Status (integration of run `wf_083221c5-8eb`, 2026-10-17).** Merged on
+`qrec-v1` (`gui: merge wp9`, 19fbd43) after the play and perf lanes; no
+conflict. Built and held by tests on the head: every item of the "As
+built" list above, with `gui_chrome::a_toast_keeps_to_designs_width`,
+`gui_bin_export::the_failed_pages_stderr_well_follows_a_live_scale` and
+`gui_themes`' S25 shots passing on pixman and on gles2 (G§7.2's "Status
+after the play, perf and wp9 lanes" has the measures and the re-shot
+cases). Not built: WP9's drawn parts, S19 and S19b (the GTK palette),
+S20 and S20b (the cheat sheet), S21 and S22 (Settings › Appearance and
+Keyboard), C32 (the theme card, `widgets/theme_card.rs`) and C34 (the
+palette row), `components/overlays.css`,
+`gui_overlays.rs`, S25's eleven variants shot for real and D-31's labels.
+Their frames are no longer the gate: the drafts were exported on
+2026-10-17 (`design/screens/S19…S25`, `design/export/html/`, G§0), and
+the next lane builds them from that export on top of this section's
+view models and dispatch table. Known gap: the stderr well's case passes
+without the panel's own theme subscription too (the timeline's re-layout
+at a new scale refreshes the page first), so it doesn't prove that fix;
+re-scrolling the well to its end after a live scale isn't built or
+tested.
+
 ### WP10 — Themes, packaging, audits (after WP1–WP7; WP8 and WP9 once approved)
 
 Touches, by agreement with their former owners: CSS fixes,
@@ -4675,7 +4743,10 @@ the text setup (G§8.7 #9), on the gtk dev-dependency of `qrec`'s tests
 the countdown digit over a white screen (the themes lane's questions,
 below) and on the warnings' politeness (a warning toast such as "Camera
 disconnected" is announced politely, like info; WP10's code audit), and
-ARCHITECTURE.md's final pass (with WP8/WP9). The code audit's and the
+ARCHITECTURE.md's final pass (with WP8/WP9; done at the play, perf and
+wp9 lanes' integration for the code as it is then, and the PO's calls
+are G§0's since; WP8's and WP9's drawn parts add theirs as they merge).
+The code audit's and the
 shot review's findings are fixed since (G§7.2's "Status after WP10's
 fixes"). The themes lane's
 questions for the PO, not held by any test: `accent-text` and
@@ -5233,6 +5304,17 @@ loaded and that the registry is still the seeded one.
   `gui_smoke.rs` fails on a stall over 50 ms during the steps under gles2
   again (`GLES2_STALL_MS`) and on a GL program compiled after the window
   settled.
+  At the integration of the play, perf and wp9 lanes (the head's code,
+  dd7b549; the machine at load 3–11 with other lanes running): gles2, 4
+  of 4 smoke runs with no stall during the steps (the full suite's and 3
+  alone), the opening's 17–20 stalls reported (the warm-up's cells, and
+  the first frame, 587–648 ms); the paused position each time the exact
+  start of the parked frame (`playerNs` 833,333,333 at playhead 25, then
+  900,000,000, 933,333,333 and 866,666,666 at 27, 28 and 26: the play
+  lane's paused frame). Pixman, the full suite's run: 8 stalls of
+  55–119 ms, four at the opening and four at 5.1–5.5 s while the take
+  lands, each mostly waiting for a CPU (33–64 ms runnable of 55–74),
+  reported.
   The audits lane's run of WP0b's steps 1–3 and 10 alone (pixman): 0
   stalls in 2 s at scale 1, 1.5 and 2, the worst tick 23–35 ms late at 1,
   43–49 at 1.5 and 37–47 at 2 (several runs).
@@ -5246,7 +5328,10 @@ loaded and that the registry is still the seeded one.
   (WP5 integration). Recorded under pixman in WP10's scale runs (the warm
   pass, p50 / p99): 16.39 / 19.41 ms at 1, 19.81 / 33.33 at 2, 35.82 /
   50.09 at 1.5 (GTK draws at 2 and sway scales the buffer down, on the
-  CPU).
+  CPU). After the play, perf and wp9 lanes (gles2): the warm p99 16.58,
+  16.59 and 16.61 ms in 3 runs alone and 16.59 in the full suite's (max
+  16.67), the cold pass 16.54–16.59 (the GPU warm-up compiles its
+  programs first).
 - **Program playback**: WP1's measurement (G§3.10).
 - **Live preview CPU**: manual, against *(spike)*: 29 % for one 1080p30
   BGRx stream into the sink with GSK GL, 46–65 % for a two-source 1080p30
