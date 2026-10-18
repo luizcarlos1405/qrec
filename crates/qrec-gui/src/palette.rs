@@ -23,10 +23,10 @@
 //! treatment). It fits its content up to 560 px (S19b), then scrolls.
 //!
 //! The keyboard stays in the field: `↑` `↓` move the highlight over the
-//! rows that can run (`Home`, `End`, `Page_Up`, `Page_Down` too), `Enter`
-//! runs it (the palette closes first, so the action lands on the window),
-//! `Esc` closes. A click on a row runs it. The ids run this session feed
-//! "Recent" (newest first).
+//! rows that can run (`Page_Up` `Page_Down` by 8; `Home` and `End` stay
+//! the field's), `Enter` runs it (the palette closes first, so the action
+//! lands on the window), `Esc` closes. A click on a row runs it. The ids
+//! run this session feed "Recent" (newest first).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
