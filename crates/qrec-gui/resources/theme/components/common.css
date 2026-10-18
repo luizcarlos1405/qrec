@@ -253,12 +253,14 @@ checkbutton {
   border-spacing: 8px;
 }
 
-/* Checked: the frames' 12 px `check` (C20 Checkbox, S01a's sources) in
-   `text-on-accent`, not libadwaita's own asset. */
+/* C20 Checkbox: a 16 px box; checked, the frames' 12 px `check` centered
+   in it (S01a's sources) in `text-on-accent`, not libadwaita's own asset.
+   GTK draws a check's icon over its whole content box, whatever
+   `-gtk-icon-size` says: the content is 12 px and 2 px of padding. */
 checkbutton > check {
-  min-width: 14px;
-  min-height: 14px;
-  padding: 0;
+  min-width: 12px;
+  min-height: 12px;
+  padding: 2px;
   border-radius: 4px;
   background-color: var(--qrec-field);
   background-image: none;
