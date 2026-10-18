@@ -1853,7 +1853,16 @@ time; A§8.7 rules for every child).
   conflicts) and runs `glib-compile-resources` (in the dev shell; added to
   the package's `nativeBuildInputs`). The app registers
   `include_bytes!(concat!(env!("OUT_DIR"), "/qrec.gresource"))` at
-  startup. Prefix `/com/rsensato/qrec/`.
+  startup. Prefix `/com/rsensato/qrec/`. Cargo reruns `build.rs` only for
+  a resource with a newer mtime, so a file put back with its old one (a
+  revert check restoring its copy with `cp -p`) keeps the bundle stale:
+  it happened once, and the integration worktree's nested runs shot a
+  reverted `panel.css` and `chrome.css` for hours (S12's summary heading a
+  pixel low; found at the play, perf and wp9 lanes' integration).
+  `qrec-gui`'s `tests/resources_fresh.rs` holds every source file in the
+  bundle byte for byte (and nothing else); it fails with that case
+  rebuilt (a source edited behind an old mtime). `touch
+  crates/qrec-gui/build.rs` compiles the bundle again.
 
 ### G§3.15 Window layout and overlay layers (WP0b)
 
