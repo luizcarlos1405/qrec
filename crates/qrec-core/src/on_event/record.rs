@@ -256,7 +256,7 @@ pub fn stream_lost(
         );
     }
     let n = take.number();
-    let label = entry_label(&t.scene, &stream);
+    let (kind, device, name) = lost_source(&t.scene, &stream);
     let mut next = state.clone();
     if let Some(t) = next.project.takes.get_mut(&take) {
         set_missing(&mut t.scene, &stream);
@@ -276,12 +276,16 @@ pub fn stream_lost(
         RecordPhase::Starting { .. } | RecordPhase::Recording { .. }
     );
     let body = match (capturing, all_lost) {
-        (true, true) => format!("{message}. That was its last source, so take {n} stops."),
-        (true, false) => format!("{message}. Take {n} continues without it."),
-        (false, _) => format!("{message}."),
+        (true, true) => format!(
+            "{device} stopped sending frames. It was take {n}'s last source, so the take stops."
+        ),
+        (true, false) => format!(
+            "{device} stopped sending frames. Take {n} keeps recording without {stream} {name}."
+        ),
+        (false, _) => format!("{device} stopped sending frames."),
     };
     effects.push(Effect::Notify(
-        Toast::new(ToastLevel::Warning, format!("Lost {label}")).with_body(body),
+        Toast::new(ToastLevel::Warning, format!("{kind} disconnected")).with_body(body),
     ));
     let mut next = persisted.state;
     if all_lost && capturing {
@@ -707,10 +711,7 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
     let mut record_seq = None;
     let message = match verdict {
         Verdict::TooShort => {
-            notes.push(Effect::Notify(Toast::new(
-                ToastLevel::Warning,
-                "That was shorter than Lord Farquaad. Take moved to the bin.",
-            )));
+            notes.push(Effect::Notify(too_short_toast(n, frames)));
             format!("Take {n} was too short ({frames} frames); it is in the bin")
         }
         Verdict::Cancelled => {
@@ -779,6 +780,7 @@ fn finalize(state: &State, ctx: &Ctx, take: &TakeId, results: &[ProbeResult]) ->
             discard_last(&current, ctx).map(|d| {
                 effects.extend(d.committed.effects);
                 current = d.committed.state;
+                notes.push(Effect::Notify(d.toast));
                 d.result.with_seq(d.committed.seq)
             })
         } else {
@@ -874,15 +876,13 @@ fn recover(state: &State, current: State, take: &TakeId, results: &[ProbeResult]
             t.duration_frames = frames;
             t.error = None;
             t.recovered = true;
-            let recovered = format!("Recovered take {n} from the bog.");
-            if frames < MIN_TAKE_FRAMES {
-                t.status = TakeStatus::TooShort;
-                Toast::new(ToastLevel::Info, recovered)
-                    .with_body("It was shorter than Lord Farquaad, so it stays in the bin.")
+            // A take too short to place says so in the bin (D-18).
+            t.status = if frames < MIN_TAKE_FRAMES {
+                TakeStatus::TooShort
             } else {
-                t.status = TakeStatus::Ok;
-                Toast::new(ToastLevel::Success, recovered).with_body("It is in the bin.")
-            }
+                TakeStatus::Ok
+            };
+            recovered_toast(n)
         }
     };
     next.project.takes.insert(take.clone(), t);
@@ -915,6 +915,13 @@ fn end_broken(
 ) -> Outcome {
     let n = take.number();
     let phase = std::mem::take(&mut next.runtime.record);
+    let toast = match &phase {
+        // A stuck engine refuses every start until a restart: no Try again.
+        RecordPhase::Starting { mode, .. } => {
+            didnt_start_toast(n, reason, mode, next.runtime.engine_stuck.is_none())
+        }
+        _ => Toast::new(ToastLevel::Error, format!("Take {n} is broken")).with_body(reason),
+    };
     if let Some(t) = next.project.takes.get_mut(take) {
         mark_broken(t, reason);
     }
@@ -968,9 +975,7 @@ fn end_broken(
     }
     let ready = autocut_hooks::apply_ready_autocuts(&persisted.state, ctx);
     effects.extend(ready.effects);
-    effects.push(Effect::Notify(
-        Toast::new(ToastLevel::Error, format!("Take {n} is broken")).with_body(reason),
-    ));
+    effects.push(Effect::Notify(toast));
     Outcome::new(ready.state, ordered(effects), None)
 }
 
@@ -1233,6 +1238,90 @@ fn source_label(state: &State, take: &TakeId, source: &str) -> String {
         Some(t) if scene_has(&t.scene, source) => entry_label(&t.scene, source),
         _ => source.to_owned(),
     }
+}
+
+// --------------------------------------------------------- toasts (S25)
+
+/// S25 #3: "That was shorter than Lord Farquaad. Take moved to the bin." /
+/// "Take 6 lasted 7 frames. Takes need at least 10." / Open bin.
+fn too_short_toast(n: u32, frames: Frame) -> Toast {
+    let lasted = match frames {
+        1 => "1 frame".to_owned(),
+        n => format!("{n} frames"),
+    };
+    Toast::new(
+        ToastLevel::Warning,
+        "That was shorter than Lord Farquaad. Take moved to the bin.",
+    )
+    .with_body(format!(
+        "Take {n} lasted {lasted}. Takes need at least {MIN_TAKE_FRAMES}."
+    ))
+    .with_action("Open bin", super::toasts::open_bin())
+}
+
+/// S25 #2: "Recovered take 7 from the bog." / "Qrec closed while it was
+/// recording. The take is in the bin." / Open bin (a take too short to
+/// place too: its bin row says why, D-18).
+fn recovered_toast(n: u32) -> Toast {
+    Toast::new(
+        ToastLevel::Info,
+        format!("Recovered take {n} from the bog."),
+    )
+    .with_body("Qrec closed while it was recording. The take is in the bin.")
+    .with_action("Open bin", super::toasts::open_bin())
+}
+
+/// What a lost stream was, for S25 #8 (D-21): its kind ("Camera"),
+/// its device as people know it ("Logitech C920") and its id's name
+/// ("Face", for "L2 Face").
+fn lost_source(scene: &Scene, id: &str) -> (&'static str, String, String) {
+    if let Some(layer) = scene.layers.iter().find(|l| l.id.as_str() == id) {
+        let kind = match layer.source {
+            crate::model::VideoSource::Screen { .. } => "Screen",
+            crate::model::VideoSource::Camera { .. } => "Camera",
+        };
+        return (kind, layer.source.label().to_owned(), layer.name.clone());
+    }
+    if let Some(track) = scene.audio.iter().find(|t| t.id.as_str() == id) {
+        let kind = match track.role {
+            crate::model::AudioRole::Mic => "Mic",
+            crate::model::AudioRole::System => "System audio",
+        };
+        return (kind, track.label.clone(), track.label.clone());
+    }
+    ("Source", id.to_owned(), String::new())
+}
+
+/// S25 #11: "Recording didn't start" / "<why>, so take 10 stopped before
+/// any frames. It's marked broken in the bin." / Try again (the same take
+/// again: append, or over the same clips; not when `retry` is false: a
+/// stuck engine refuses it) · Open bin. `reason` is the failure as the
+/// engine words it (BRIEF's "Screen access to DP-4 was denied" needs the
+/// portal's refusal from the shell, S24).
+fn didnt_start_toast(n: u32, reason: &str, mode: &RecordMode, retry: bool) -> Toast {
+    let mode = match mode {
+        RecordMode::Append => crate::protocol::command::RecordModeArg::Append,
+        RecordMode::Over { clips } => crate::protocol::command::RecordModeArg::Over(
+            clips.iter().map(|c| c.id.clone()).collect(),
+        ),
+    };
+    let why = crate::view::format::capitalized(reason.trim_end_matches('.'));
+    let mut toast = Toast::new(ToastLevel::Error, "Recording didn't start").with_body(format!(
+        "{why}, so take {n} stopped before any frames. It's marked broken in the bin."
+    ));
+    if retry {
+        toast = toast.with_action(
+            "Try again",
+            crate::protocol::toast::UiAction::Dispatch(Box::new(
+                crate::protocol::command::Command::RecordStart {
+                    mode,
+                    countdown: None,
+                    wait: false,
+                },
+            )),
+        );
+    }
+    toast.with_action("Open bin", super::toasts::open_bin())
 }
 
 // ------------------------------------------------------------------ misc

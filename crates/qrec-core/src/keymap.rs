@@ -12,7 +12,13 @@
 //! and JSON forms of `qrec keys`, and [`problems`] words the conflicts and
 //! `keys.toml` errors for notices. [`usable_keys`] are a binding's keys
 //! that run (conflicting ones drop out); [`KeyChord::cap_legends`] is how
-//! the GUI's key caps show one.
+//! the GUI's key caps show one. [`conflict_notes`] are the conflicts as
+//! Settings › Keyboard's banner names them (S22, Q5: the key and the
+//! bindings, none of which runs). [`set_binding`] and [`reset_binding`]
+//! edit `keys.toml`'s text, one line, the rest of the file as it was (the
+//! Keyboard page, through `qrec_shell::keys_file`). [`KEYLESS`] are the
+//! palette's actions no key runs ("Clear undo history", GUI D-19), which
+//! [`action_for`] knows by id.
 //!
 //! **Chord grammar** (`keys.toml`, `qrec keys --json`): modifiers `ctrl`,
 //! `alt`, `shift`, `super` joined with `+`, then a GDK keyval name:
@@ -581,6 +587,28 @@ const DEFAULTS: &[Def] = &[
     def("layer.nudge-down-10", "Canvas", "Nudge layer down 10 px", &["shift+Down"], CLI_NUDGE_LAYER, &[Canvas]),
 ];
 
+/// An action the command palette lists that no key runs (GUI D-19):
+/// [`action_for`] knows its id like a binding's, `keys.toml` doesn't.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeylessAction {
+    pub id: &'static str,
+    pub group: &'static str,
+    pub label: &'static str,
+    pub cli: Option<&'static str>,
+    /// The binding it is listed after in its group.
+    pub after: &'static str,
+}
+
+/// The palette's actions without a key: "Clear undo history" (D-19), after
+/// Redo. The core asks for its confirmation (SPEC §11's modal).
+pub const KEYLESS: &[KeylessAction] = &[KeylessAction {
+    id: "history.clear",
+    group: "Edit",
+    label: "Clear undo history",
+    cli: Some("qrec history clear --yes"),
+    after: "history.redo",
+}];
+
 /// The niri key binds for recording while another app has focus (SPEC
 /// §10.2); `qrec doctor` and the agent guide print it.
 pub const NIRI_SNIPPET: &str = "binds {
@@ -765,17 +793,311 @@ pub fn lookup<'a>(map: &'a Keymap, chord: &KeyChord, ctx: KeyContext) -> Option<
 /// tooltips and the palette show (rebound keys show, conflicting ones drop
 /// out because they never run).
 pub fn usable_keys<'a>(map: &Keymap, binding: &'a Binding) -> Vec<&'a KeyChord> {
-    let conflicted: Vec<&KeyChord> = map
-        .conflicts
-        .iter()
-        .filter(|c| c.ids.iter().any(|id| id == binding.id))
-        .map(|c| &c.chord)
-        .collect();
+    let conflicted = conflicting_keys(map, binding.id);
     binding
         .keys
         .iter()
         .filter(|k| !conflicted.contains(k))
         .collect()
+}
+
+/// The chords of binding `id` that another binding shares (Q5: neither
+/// runs).
+pub fn conflicting_keys<'a>(map: &'a Keymap, id: &str) -> Vec<&'a KeyChord> {
+    let mut out: Vec<&KeyChord> = Vec::new();
+    for c in map
+        .conflicts
+        .iter()
+        .filter(|c| c.ids.iter().any(|i| i == id))
+    {
+        if !out.contains(&&c.chord) {
+            out.push(&c.chord);
+        }
+    }
+    out
+}
+
+/// The default keys of binding `id` (SPEC §10.2's table); `None` for an
+/// unknown id.
+pub fn default_keys(id: &str) -> Option<Vec<KeyChord>> {
+    let def = DEFAULTS.iter().find(|d| d.id == id)?;
+    Some(
+        def.keys
+            .iter()
+            .filter_map(|k| KeyChord::parse(k).ok())
+            .collect(),
+    )
+}
+
+/// Whether `keys.toml` changed binding `id`'s keys (S20's and S22's
+/// "default P").
+pub fn is_rebound(binding: &Binding) -> bool {
+    default_keys(binding.id).is_some_and(|keys| keys != binding.keys)
+}
+
+/// How a key reads in a sentence: its caps joined, `X`, `Ctrl+Shift+Z`,
+/// `Alt+[` (S22's banner: "X is bound to both …").
+pub fn key_name(chord: &KeyChord) -> String {
+    chord.cap_legends().join("+")
+}
+
+/// One conflict as people read it (S22's banner, Q5): the key and the
+/// bindings that share it, none of which runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConflictNote {
+    pub chord: KeyChord,
+    /// [`key_name`]: "X".
+    pub key: String,
+    /// The bindings, the rebound ones first (what `keys.toml` changed
+    /// came to clash with what it left), then in table order.
+    pub ids: Vec<String>,
+    pub labels: Vec<String>,
+}
+
+/// The keymap's conflicts, one per key and set of bindings: two bindings
+/// that clash in several contexts (`global` and `recording`) are one
+/// conflict for people, and so is a clash of some of them in one context
+/// (`recording`) that the others' clash (`global`) holds. In the order
+/// `keys.toml`'s conflicts were found.
+pub fn conflict_notes(map: &Keymap) -> Vec<ConflictNote> {
+    let mut out: Vec<ConflictNote> = Vec::new();
+    for c in &map.conflicts {
+        let mut bindings: Vec<&Binding> = c.ids.iter().filter_map(|id| map.binding(id)).collect();
+        // A stable sort: rebound first, the table order otherwise.
+        bindings.sort_by_key(|b| !is_rebound(b));
+        let ids: Vec<String> = bindings.iter().map(|b| b.id.to_owned()).collect();
+        if out
+            .iter()
+            .any(|n| n.chord == c.chord && contains_all(&n.ids, &ids))
+        {
+            continue;
+        }
+        out.retain(|n| !(n.chord == c.chord && contains_all(&ids, &n.ids)));
+        out.push(ConflictNote {
+            chord: c.chord.clone(),
+            key: key_name(&c.chord),
+            labels: bindings.iter().map(|b| b.label.to_owned()).collect(),
+            ids,
+        });
+    }
+    out
+}
+
+/// Every id of `part` is in `all`.
+fn contains_all(all: &[String], part: &[String]) -> bool {
+    part.iter().all(|id| all.contains(id))
+}
+
+// --------------------------------------------------- editing keys.toml
+
+/// `keys_toml` with binding `id` set to `keys` (none: unbound, `id = []`;
+/// one: `id = "f"`; more: a list), the rest of the file as it was:
+/// comments, blank lines, the order of its lines (`toml_text`). An entry
+/// for `id` gets the new value in place (its spacing and comment stay; a
+/// second entry for it goes); else a line goes after the last line of
+/// `[bindings]` (`clip.split = "s"`, or under `[bindings.clip]` when the
+/// file has that header), or a `[bindings]` at the end. The Keyboard
+/// settings page writes it (S22, through `qrec_shell::keys_file`). A file
+/// that isn't valid TOML is refused, never rewritten.
+pub fn set_binding(keys_toml: &str, id: &str, keys: &[KeyChord]) -> Result<String, CoreError> {
+    known_binding(id)?;
+    let mut unique: Vec<KeyChord> = Vec::new();
+    for k in keys {
+        if !unique.contains(k) {
+            unique.push(k.clone());
+        }
+    }
+    let value = keys_value(&unique);
+    let doc = keys_document(keys_toml)?;
+    let text_edit = edit_as_text(keys_toml, &doc, id, Some(&value));
+    finish_edit(keys_toml, id, text_edit, Some(value), &unique)
+}
+
+/// `keys_toml` without its entries for binding `id`, so it has its
+/// default keys again (S22's reset), the rest of the file as it was (a
+/// comment on the line above an entry stays). Unchanged when the file
+/// doesn't set `id`.
+pub fn reset_binding(keys_toml: &str, id: &str) -> Result<String, CoreError> {
+    known_binding(id)?;
+    let defaults = default_keys(id).unwrap_or_default();
+    let doc = keys_document(keys_toml)?;
+    if binding_entries(&doc, id).is_empty() {
+        return Ok(keys_toml.to_owned());
+    }
+    let text_edit = edit_as_text(keys_toml, &doc, id, None);
+    finish_edit(keys_toml, id, text_edit, None, &defaults)
+}
+
+fn known_binding(id: &str) -> Result<(), CoreError> {
+    if DEFAULTS.iter().any(|d| d.id == id) {
+        Ok(())
+    } else {
+        Err(CoreError::usage(format!("unknown binding `{id}`"))
+            .with_hint("`qrec keys` lists the ids"))
+    }
+}
+
+/// `keys.toml` parsed with its spans; one that isn't valid TOML is
+/// refused, so a person's half-finished edit is never written over.
+fn keys_document(text: &str) -> Result<toml_edit::Document<String>, CoreError> {
+    crate::toml_text::parse(text).map_err(|e| {
+        let line = e
+            .span()
+            .map(|s| 1 + text[..s.start.min(text.len())].matches('\n').count());
+        let message = e.message().trim().to_owned();
+        CoreError::invalid(match line {
+            Some(line) => format!("keys.toml line {line}: {message}"),
+            None => format!("keys.toml: {message}"),
+        })
+        .with_hint("fix keys.toml by hand: Qrec doesn't rewrite a file it can't read")
+    })
+}
+
+/// The TOML value of `keys`: `"f"`, `["Delete", "x"]`, `[]`.
+fn keys_value(keys: &[KeyChord]) -> String {
+    match keys {
+        [one] => toml_edit::Value::from(one.to_string()).to_string(),
+        many => toml_edit::Value::Array(many.iter().map(|k| k.to_string()).collect()).to_string(),
+    }
+}
+
+/// The entries of `doc` that set binding `id` (`[bindings]`'s keys,
+/// dotted or quoted, as `resolve` reads them), in the file's order.
+fn binding_entries(doc: &toml_edit::Document<String>, id: &str) -> Vec<crate::toml_text::Entry> {
+    let mut found: Vec<crate::toml_text::Entry> = crate::toml_text::entries(doc)
+        .into_iter()
+        .filter(|e| e.path.len() > 1 && e.path[0] == "bindings" && e.path[1..].join(".") == id)
+        .collect();
+    found.sort_by_key(|e| e.key_start);
+    found
+}
+
+/// The text edit: `value` set (`Some`) or the entries removed (`None`);
+/// `None` when the file's layout needs a document edit (an inline table).
+fn edit_as_text(
+    text: &str,
+    doc: &toml_edit::Document<String>,
+    id: &str,
+    value: Option<&str>,
+) -> Option<String> {
+    use crate::toml_text::{
+        TableForm, add_line, key_text, remove_lines, replace_value, table_form,
+    };
+    let found = binding_entries(doc, id);
+    match (value, found.split_first()) {
+        (None, _) => remove_lines(text, &found.iter().collect::<Vec<_>>()),
+        (Some(value), Some((first, rest))) => {
+            // The others are on later lines: removing them leaves the
+            // first one's place as it is (a value in an inline table is
+            // replaced in place too; a line can't leave one).
+            let kept = remove_lines(text, &rest.iter().collect::<Vec<_>>())?;
+            Some(replace_value(&kept, first, value))
+        }
+        (Some(value), None) => {
+            if !matches!(
+                table_form(doc, &["bindings"]),
+                TableForm::Header | TableForm::Missing
+            ) {
+                return None;
+            }
+            let parts: Vec<&str> = id.split('.').collect();
+            match parts.split_first() {
+                Some((group, rest)) if !rest.is_empty() => {
+                    let rest_key = rest
+                        .iter()
+                        .map(|p| key_text(p))
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    match table_form(doc, &["bindings", group]) {
+                        // `[bindings.clip]`: under that header.
+                        TableForm::Header => add_line(
+                            text,
+                            doc,
+                            &["bindings", group],
+                            &format!("{rest_key} = {value}"),
+                        ),
+                        TableForm::Dotted | TableForm::Missing => add_line(
+                            text,
+                            doc,
+                            &["bindings"],
+                            &format!("{}.{rest_key} = {value}", key_text(group)),
+                        ),
+                        // `clip` is something else: the id as one name.
+                        TableForm::Root | TableForm::Other => add_line(
+                            text,
+                            doc,
+                            &["bindings"],
+                            &format!("{} = {value}", key_text(id)),
+                        ),
+                    }
+                }
+                _ => add_line(
+                    text,
+                    doc,
+                    &["bindings"],
+                    &format!("{} = {value}", key_text(id)),
+                ),
+            }
+        }
+    }
+}
+
+/// The edited text once it reads back with `expected` as `id`'s keys: the
+/// text edit, else a `toml_edit` document edit (which keeps the comments
+/// but may print a dotted table's keys together), else an error.
+fn finish_edit(
+    original: &str,
+    id: &str,
+    text_edit: Option<String>,
+    value: Option<String>,
+    expected: &[KeyChord],
+) -> Result<String, CoreError> {
+    let reads_back = |text: &str| {
+        crate::toml_text::parse(text).is_ok()
+            && resolve(text)
+                .binding(id)
+                .is_some_and(|b| b.keys == expected)
+    };
+    if let Some(text) = text_edit.filter(|t| reads_back(t)) {
+        return Ok(text);
+    }
+    match edit_as_document(original, id, value.as_deref()) {
+        Some(text) if reads_back(&text) => Ok(text),
+        _ => Err(CoreError::invalid(format!(
+            "keys.toml is written in a way Qrec can't change `{id}` in"
+        ))
+        .with_hint("change it by hand: `qrec keys` shows the keys it ends up with")),
+    }
+}
+
+/// [`edit_as_text`]'s fallback on a `toml_edit` document.
+fn edit_as_document(text: &str, id: &str, value: Option<&str>) -> Option<String> {
+    let mut doc: toml_edit::DocumentMut = text.parse().ok()?;
+    let bindings = doc
+        .as_table_mut()
+        .entry("bindings")
+        .or_insert_with(toml_edit::table)
+        .as_table_like_mut()?;
+    remove_id(bindings, id);
+    if let Some(value) = value {
+        let value: toml_edit::Value = value.parse().ok()?;
+        bindings.insert(id, toml_edit::Item::Value(value));
+    }
+    Some(doc.to_string())
+}
+
+/// Removes every entry of `table` that names `id` (`a.b` as one quoted
+/// name, or dotted).
+fn remove_id(table: &mut dyn toml_edit::TableLike, id: &str) {
+    table.remove(id);
+    if let Some((first, rest)) = id.split_once('.')
+        && let Some(inner) = table
+            .get_mut(first)
+            .and_then(toml_edit::Item::as_table_like_mut)
+    {
+        remove_id(inner, rest);
+    }
 }
 
 // ----------------------------------------------------------------- views
@@ -1148,6 +1470,15 @@ pub fn action_for(id: &str, state: &State) -> Option<Action> {
                 run(Command::Redo { steps: 1 })
             } else {
                 Action::Unavailable("Nothing to redo".to_owned())
+            }
+        }
+        // D-19: the palette's "Clear undo history" (no key); the core asks
+        // for the confirmation (SPEC §11).
+        "history.clear" => {
+            if state.history.entries.is_empty() {
+                Action::Unavailable("The undo history is empty".to_owned())
+            } else {
+                run(Command::HistoryClear)
             }
         }
         "frame.save" => {
@@ -2786,6 +3117,338 @@ mod tests {
         );
         assert_eq!(join_and(&["a".into(), "b".into()]), "a and b");
         assert_eq!(join_and(&[]), "");
+    }
+
+    /// D-19: the palette's "Clear undo history" is an id `action_for`
+    /// knows (no key, no `keys.toml` binding); the shared gates apply.
+    #[test]
+    fn history_clear_is_an_action_without_a_key() {
+        let mut state = testkit::design_state();
+        state.history.entries = std::sync::Arc::new(
+            (1..=3)
+                .map(|seq| crate::history::HistoryEntry {
+                    seq,
+                    ts: state.project.created_at,
+                    label: format!("Edit {seq}"),
+                    cmd: serde_json::Value::Null,
+                    forward: json_patch::Patch(vec![]),
+                    inverse: json_patch::Patch(vec![]),
+                    after_hash: String::new(),
+                })
+                .collect(),
+        );
+        state.history.cursor = 3;
+        assert_eq!(
+            action_for("history.clear", &state),
+            Some(Action::Run(Command::HistoryClear))
+        );
+        let map = resolve("");
+        assert!(map.binding("history.clear").is_none(), "not a binding");
+        assert!(
+            resolve("[bindings]\n\"history.clear\" = \"ctrl+alt+h\"\n").errors[0]
+                .contains("unknown binding `history.clear`")
+        );
+        assert_eq!(
+            KEYLESS.iter().map(|a| a.id).collect::<Vec<_>>(),
+            ["history.clear"]
+        );
+        assert!(map.binding(KEYLESS[0].after).is_some());
+        state.runtime.disk_invalid = Some("bad".into());
+        assert_eq!(
+            action_for("history.clear", &state),
+            Some(Action::Unavailable("qrec.json on disk is invalid".into()))
+        );
+        state.runtime.disk_invalid = None;
+        state.runtime.record = RecordPhase::Recording {
+            take: TakeId::numbered(10),
+            mode: RecordMode::Append,
+            elapsed_ns: 0,
+            waiters: vec![],
+        };
+        assert_eq!(
+            action_for("history.clear", &state),
+            Some(Action::Unavailable("Not while recording".into()))
+        );
+        let empty = testkit::state(ProjectBuilder::new().build());
+        assert!(empty.history.entries.is_empty());
+        assert_eq!(
+            action_for("history.clear", &empty),
+            Some(Action::Unavailable("The undo history is empty".into()))
+        );
+    }
+
+    /// Q5: a key two bindings share runs neither, in any context, and
+    /// neither shows it; the banner's data names it once.
+    #[test]
+    fn a_conflict_leaves_both_bindings_inert() {
+        let map = resolve("[bindings]\nautocut.run = \"x\"\n");
+        for ctx in [KeyContext::Timeline, KeyContext::Canvas, KeyContext::Global] {
+            assert_eq!(lookup(&map, &chord("x"), ctx), None, "{ctx:?}");
+        }
+        let remove = map.binding("clip.remove").unwrap();
+        let autocut = map.binding("autocut.run").unwrap();
+        assert_eq!(
+            usable_keys(&map, remove),
+            [&chord("Delete"), &chord("BackSpace")]
+        );
+        assert!(usable_keys(&map, autocut).is_empty());
+        assert_eq!(conflicting_keys(&map, "autocut.run"), [&chord("x")]);
+        assert!(conflicting_keys(&map, "clip.split").is_empty());
+        assert!(is_rebound(autocut));
+        assert!(!is_rebound(remove));
+        assert_eq!(
+            conflict_notes(&map),
+            [ConflictNote {
+                chord: chord("x"),
+                key: "X".into(),
+                ids: vec!["autocut.run".into(), "clip.remove".into()],
+                labels: vec![
+                    "Autocut the selection, or every clip".into(),
+                    "Remove selected clips (to the bin)".into()
+                ],
+            }],
+            "the rebound binding first"
+        );
+        // A clash in two contexts (global and recording) is one conflict.
+        let map = resolve("[bindings]\nzoom.selection = \"r\"\n");
+        assert_eq!(map.conflicts.len(), 2);
+        let notes = conflict_notes(&map);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].ids, ["zoom.selection", "record.toggle"]);
+        // Three on S in `global`, two of them in `recording` too: one.
+        let map = resolve("[bindings]\nbin.toggle = \"s\"\nzoom.fit = \"s\"\n");
+        assert_eq!(map.conflicts.len(), 2, "{:?}", map.conflicts);
+        let notes = conflict_notes(&map);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].ids, ["zoom.fit", "bin.toggle", "clip.split"]);
+        assert_eq!(key_name(&chord("ctrl+shift+z")), "Ctrl+Shift+Z");
+        assert_eq!(key_name(&chord("alt+bracketleft")), "Alt+[");
+        assert!(conflict_notes(&resolve("")).is_empty());
+    }
+
+    /// A `keys.toml` people wrote: comments everywhere, dotted keys out of
+    /// order, a quoted key, a multi-line list, a trailing comment.
+    const COMMENTED_KEYS: &str = "\
+# My Qrec keys
+
+[bindings]
+# Output
+frame.save = \"f\"   # closer to my left hand
+clip.split = \"s\"
+# my editing keys
+export = \"ctrl+e\"
+clip.trim-start = \"q\"  # trailing
+\"zoom.fit\" = [
+  \"backslash\",
+  \"F4\",
+]
+
+# the end
+";
+
+    fn keys_of(text: &str, id: &str) -> Vec<KeyChord> {
+        let map = resolve(text);
+        assert!(map.errors.is_empty(), "{:?}\n{text}", map.errors);
+        map.binding(id).unwrap().keys.clone()
+    }
+
+    #[test]
+    fn set_binding_changes_one_value_in_place() {
+        let edited = set_binding(COMMENTED_KEYS, "frame.save", &[chord("g")]).unwrap();
+        assert_eq!(
+            edited,
+            COMMENTED_KEYS.replace("frame.save = \"f\"", "frame.save = \"g\""),
+            "only the value changed"
+        );
+        assert_eq!(keys_of(&edited, "frame.save"), [chord("g")]);
+        // A quoted key, a list, then unbound.
+        let edited = set_binding(COMMENTED_KEYS, "zoom.fit", &[chord("F4")]).unwrap();
+        assert_eq!(
+            edited,
+            COMMENTED_KEYS.replace("[\n  \"backslash\",\n  \"F4\",\n]", "\"F4\"")
+        );
+        let edited =
+            set_binding(COMMENTED_KEYS, "clip.split", &[chord("s"), chord("ctrl+s")]).unwrap();
+        assert!(
+            edited.contains("clip.split = [\"s\", \"ctrl+s\"]\n"),
+            "{edited}"
+        );
+        assert_eq!(
+            keys_of(&edited, "clip.split"),
+            [chord("s"), chord("ctrl+s")]
+        );
+        let edited = set_binding(COMMENTED_KEYS, "clip.trim-start", &[]).unwrap();
+        assert!(
+            edited.contains("clip.trim-start = []  # trailing\n"),
+            "{edited}"
+        );
+        assert!(keys_of(&edited, "clip.trim-start").is_empty());
+        // The same chord twice is one.
+        let edited = set_binding("", "export", &[chord("F5"), chord("F5")]).unwrap();
+        assert_eq!(edited, "[bindings]\nexport = \"F5\"\n");
+    }
+
+    #[test]
+    fn set_binding_adds_a_line_after_the_bindings() {
+        let edited = set_binding(COMMENTED_KEYS, "clip.trim-end", &[chord("w")]).unwrap();
+        assert_eq!(
+            edited,
+            COMMENTED_KEYS.replace("  \"F4\",\n]\n", "  \"F4\",\n]\nclip.trim-end = \"w\"\n"),
+            "after the last binding, everything else as it was"
+        );
+        assert_eq!(keys_of(&edited, "clip.trim-end"), [chord("w")]);
+        assert_eq!(keys_of(&edited, "clip.split"), [chord("s")]);
+        // No file yet, no [bindings] yet, a [bindings.clip] header.
+        assert_eq!(
+            set_binding("", "frame.save", &[chord("f")]).unwrap(),
+            "[bindings]\nframe.save = \"f\"\n"
+        );
+        assert_eq!(
+            set_binding("# nothing yet\n", "cancel", &[chord("q")]).unwrap(),
+            "# nothing yet\n\n[bindings]\ncancel = \"q\"\n"
+        );
+        let text = "[bindings.clip]\nsplit = \"s\"\n";
+        let edited = set_binding(text, "clip.remove", &[chord("x")]).unwrap();
+        assert_eq!(edited, "[bindings.clip]\nsplit = \"s\"\nremove = \"x\"\n");
+        let edited = set_binding(text, "frame.save", &[chord("f")]).unwrap();
+        assert_eq!(keys_of(&edited, "frame.save"), [chord("f")]);
+        assert_eq!(keys_of(&edited, "clip.split"), [chord("s")]);
+    }
+
+    #[test]
+    fn set_binding_keeps_one_entry_of_a_binding_set_twice() {
+        let text = "[bindings]\n\"clip.split\" = \"q\" # first\nother = 1\nclip.split = \"w\"\n";
+        // (`other` is an unknown id: left as it is.)
+        let edited = set_binding(text, "clip.split", &[chord("e")]).unwrap();
+        assert_eq!(
+            edited,
+            "[bindings]\n\"clip.split\" = \"e\" # first\nother = 1\n"
+        );
+        let map = resolve(&edited);
+        assert_eq!(map.binding("clip.split").unwrap().keys, [chord("e")]);
+        assert!(!map.errors.iter().any(|e| e.contains("set twice")));
+    }
+
+    #[test]
+    fn reset_binding_removes_its_lines_only() {
+        let edited = reset_binding(COMMENTED_KEYS, "export").unwrap();
+        assert_eq!(
+            edited,
+            COMMENTED_KEYS.replace("export = \"ctrl+e\"\n", ""),
+            "the comment above it stays"
+        );
+        assert_eq!(keys_of(&edited, "export"), [chord("ctrl+e")]);
+        let edited = reset_binding(COMMENTED_KEYS, "zoom.fit").unwrap();
+        assert_eq!(
+            edited,
+            COMMENTED_KEYS.replace("\"zoom.fit\" = [\n  \"backslash\",\n  \"F4\",\n]\n", "")
+        );
+        assert_eq!(keys_of(&edited, "zoom.fit"), [chord("backslash")]);
+        // Not set: nothing changes.
+        assert_eq!(
+            reset_binding(COMMENTED_KEYS, "record.toggle").unwrap(),
+            COMMENTED_KEYS
+        );
+        assert_eq!(reset_binding("", "record.toggle").unwrap(), "");
+    }
+
+    /// The order a person wrote stays: a `toml_edit` document would print
+    /// `clip.split` next to `clip.trim-start`, and the other way round.
+    #[test]
+    fn edits_keep_dotted_keys_where_they_were() {
+        let text = "[bindings]\nclip.split = \"s\"\nframe.save = \"f\"\nclip.remove = \"x\"\n";
+        let edited = set_binding(text, "frame.save", &[chord("g")]).unwrap();
+        assert_eq!(
+            edited,
+            "[bindings]\nclip.split = \"s\"\nframe.save = \"g\"\nclip.remove = \"x\"\n"
+        );
+        let edited = set_binding(text, "export", &[chord("F5")]).unwrap();
+        assert_eq!(edited, format!("{text}export = \"F5\"\n"));
+        let edited = reset_binding(text, "clip.split").unwrap();
+        assert_eq!(
+            edited,
+            "[bindings]\nframe.save = \"f\"\nclip.remove = \"x\"\n"
+        );
+    }
+
+    #[test]
+    fn edits_refuse_a_broken_file_and_unknown_ids() {
+        let err = set_binding("[bindings\nframe.save = \"f\"\n", "frame.save", &[]).unwrap_err();
+        assert_eq!(err.code, crate::ErrorCode::Invalid);
+        assert!(
+            err.message.starts_with("keys.toml line 1:"),
+            "{}",
+            err.message
+        );
+        let err = reset_binding("[bindings\n", "frame.save").unwrap_err();
+        assert_eq!(err.code, crate::ErrorCode::Invalid);
+        let err = set_binding("", "nope", &[chord("q")]).unwrap_err();
+        assert_eq!(err.code, crate::ErrorCode::Usage);
+        assert_eq!(err.message, "unknown binding `nope`");
+        let err = reset_binding("", "history.clear").unwrap_err();
+        assert_eq!(err.code, crate::ErrorCode::Usage);
+    }
+
+    /// An inline `bindings` table can't take a line as text: the document
+    /// edit does it, keeping the comments.
+    #[test]
+    fn an_inline_bindings_table_is_edited_as_a_document() {
+        let text = "# keys\nbindings = { \"frame.save\" = \"f\" }\n";
+        let edited = set_binding(text, "frame.save", &[chord("g")]).unwrap();
+        assert_eq!(edited, "# keys\nbindings = { \"frame.save\" = \"g\" }\n");
+        let edited = set_binding(text, "export", &[chord("F5")]).unwrap();
+        assert!(edited.starts_with("# keys\n"), "{edited}");
+        assert_eq!(keys_of(&edited, "export"), [chord("F5")]);
+        assert_eq!(keys_of(&edited, "frame.save"), [chord("f")]);
+        let edited = reset_binding(text, "frame.save").unwrap();
+        assert!(edited.starts_with("# keys\n"), "{edited}");
+        assert_eq!(keys_of(&edited, "frame.save"), [chord("p")]);
+    }
+
+    proptest::proptest! {
+        /// Any run of sets and resets over a commented file: every comment
+        /// stays, the lines nobody edited keep their order, and the file
+        /// reads back with each binding's keys as last set (or its
+        /// defaults after a reset).
+        #[test]
+        fn binding_edits_keep_the_file_and_read_back(
+            edits in proptest::collection::vec(
+                (0usize..DEFAULTS.len(), proptest::option::of(proptest::collection::vec(0usize..6, 0..3))),
+                1..12,
+            )
+        ) {
+            const CHORDS: [&str; 6] = ["f", "ctrl+shift+f", "F7", "less", "alt+bracketleft", "space"];
+            let mut text = COMMENTED_KEYS.to_owned();
+            let mut expected: BTreeMap<&str, Vec<KeyChord>> = BTreeMap::new();
+            for (which, keys) in &edits {
+                let id = DEFAULTS[*which].id;
+                match keys {
+                    Some(keys) => {
+                        let mut chords: Vec<KeyChord> = Vec::new();
+                        for k in keys {
+                            let c = chord(CHORDS[*k]);
+                            if !chords.contains(&c) {
+                                chords.push(c);
+                            }
+                        }
+                        text = set_binding(&text, id, &chords).unwrap();
+                        expected.insert(id, chords);
+                    }
+                    None => {
+                        text = reset_binding(&text, id).unwrap();
+                        expected.insert(id, default_keys(id).unwrap());
+                    }
+                }
+            }
+            let map = resolve(&text);
+            proptest::prop_assert!(map.errors.is_empty(), "{:?}\n{}", map.errors, text);
+            for (id, keys) in &expected {
+                proptest::prop_assert_eq!(&map.binding(id).unwrap().keys, keys, "{}\n{}", id, text);
+            }
+            let comments: Vec<&str> = COMMENTED_KEYS.lines().filter(|l| l.trim_start().starts_with('#')).collect();
+            let kept: Vec<&str> = text.lines().filter(|l| l.trim_start().starts_with('#')).collect();
+            proptest::prop_assert_eq!(kept, comments, "{}", text);
+        }
     }
 
     #[test]

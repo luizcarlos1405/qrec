@@ -412,7 +412,10 @@ pub fn export_cancelled(state: &State, ctx: &Ctx, job: JobId) -> Outcome {
     Outcome::new(next, effects, None)
 }
 
-/// Reply `FrameSavedView`; toast with Copy image / Open folder.
+/// Reply `FrameSavedView`; toast "Frame saved" / the PNG / Copy image ·
+/// Open folder (S25 #4). The toast's path is project-relative for an auto
+/// name, as the job named it (`frames/…`, [`shown_output`]); the reply keeps
+/// the shell's.
 pub fn frame_saved(state: &State, ctx: &Ctx, job: JobId, path: String) -> Outcome {
     let _ = ctx;
     let Some(entry) = job_of(state, job, |k| matches!(k, JobKind::FrameSave { .. })) else {
@@ -420,6 +423,10 @@ pub fn frame_saved(state: &State, ctx: &Ctx, job: JobId, path: String) -> Outcom
             state,
             format!("FrameSaved for {job}, which isn't a running frame save"),
         );
+    };
+    let shown = match &entry.kind {
+        JobKind::FrameSave { out, .. } => shown_output(out, &path),
+        _ => path.clone(),
     };
     let mut next = state.clone();
     next.runtime.jobs.remove(&job);
@@ -433,9 +440,9 @@ pub fn frame_saved(state: &State, ctx: &Ctx, job: JobId, path: String) -> Outcom
     }
     effects.push(Effect::Notify(
         Toast::new(ToastLevel::Success, "Frame saved")
-            .with_body(path.clone())
-            .with_action("Copy image", UiAction::CopyImage(path.clone()))
-            .with_action("Open folder", UiAction::RevealPath(path.clone())),
+            .with_body(shown.clone())
+            .with_action("Copy image", UiAction::CopyImage(shown.clone()))
+            .with_action("Open folder", UiAction::RevealPath(shown)),
     ));
     Outcome::new(next, effects, None)
 }

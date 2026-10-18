@@ -177,7 +177,8 @@ fn run_local(
         Local::ConfigSet { key, value } => {
             let path = config::file(&backend.config_dir()?);
             let text = backend.settings_text(&path)?.unwrap_or_default();
-            let new = config::set(&path, &text, key, value)?;
+            let (new_text, new) = config::set(&path, &text, key, value)?;
+            backend.write_settings(&path, &new_text)?;
             if ui.json {
                 ui.print_ok(&json!({
                     "key": key, "value": new, "file": path.display().to_string()

@@ -657,6 +657,146 @@ fn s16b_the_export_done_toast() {
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
 }
 
+/// How many settings changes the window applied (WP10's follower).
+fn settings_applied(nested: &mut Nested) -> u64 {
+    nested.window(0).local()["settingsApplied"]
+        .as_u64()
+        .unwrap_or(0)
+}
+
+/// `qrec config set <key> <value>` as a person runs it, then the window
+/// applying it (`settingsApplied` past `before`, nothing pending) and
+/// drawing a frame after.
+fn config_set_applied(nested: &mut Nested, project: &Path, key: &str, value: &str) {
+    let before = settings_applied(nested);
+    let out = nested.cli(project, &["config", "set", key, value]);
+    assert!(
+        out.status.success(),
+        "qrec config set {key} {value}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    gui_support::poll(
+        Duration::from_secs(20),
+        "the settings change applied",
+        || {
+            let local = nested.window(0).local();
+            let n = local["settingsApplied"].as_u64().unwrap_or(0);
+            (n > before && local["settingsPending"] == false).then_some(())
+        },
+    );
+    nested.window(0).wait_idle();
+}
+
+/// WP9: a toast keeps to DESIGN's 360–560 px (Lists) whatever it says: a
+/// long title wraps, a long body wraps to 2 lines at most (one with a line
+/// break too: its lines are the toast's), a short toast stays narrower,
+/// and at `ui.scale` 1.5, set live while the toast shows, the bounds are
+/// 540–840 at once. (WP10's S25 shot measured the error toast 607 wide,
+/// its body 3 lines: its labels' limits counted characters.)
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_toast_keeps_to_designs_width() {
+    let mut nested = Nested::start(AREA, "toast-width", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(live_ui()),
+    );
+    open(&mut nested, &project, Launch::a11y());
+    let long = json!({
+        "op": "notify",
+        "level": "error",
+        "title": "qrec.json changed on disk but isn't valid, and this title runs on past one line",
+        "body": "/timeline/clips/4/out: 1400 is past the end of take 3 (1,377 frames), \
+                 which a hand edit wrote over the last good state.\nKeeping the last good \
+                 state; restore it from history with qrec history restore 212 --yes.",
+    });
+    let reply = nested.window(0).ctl(long);
+    assert_eq!(reply["ok"], true, "{reply}");
+    let gui = nested.window(0);
+    gui.wait_idle();
+    let measure = |nested: &mut Nested| {
+        let regions = nested
+            .window(0)
+            .regions(&["toast-host", "toast-title", "toast-body"]);
+        let get = |name: &str| {
+            *regions
+                .get(name)
+                .unwrap_or_else(|| panic!("no {name}: {regions:?}"))
+        };
+        (get("toast-host"), get("toast-title"), get("toast-body"))
+    };
+    let (host, title, body) = measure(&mut nested);
+    assert!(
+        (359.0..=561.0).contains(&host[2]),
+        "the long toast is {} wide (360–560)",
+        host[2]
+    );
+    assert!(
+        (host[1] + host[3] - 956.0).abs() <= 1.0,
+        "its bottom: {host:?}"
+    );
+    assert!(
+        (host[0] + host[2] / 2.0 - 800.0).abs() <= 1.0,
+        "centered: {host:?}"
+    );
+    assert!(title[3] >= 39.0, "the title wraps: {title:?}");
+    // `body-sm` is 13/18: two lines at most.
+    assert!(
+        body[3] <= 37.0,
+        "the body is {} high: 2 lines at most",
+        body[3]
+    );
+    assert!(body[3] >= 35.0, "the body takes its 2 lines: {body:?}");
+    let labels = nested.window(0).labels("toast-host");
+    assert!(
+        labels
+            .iter()
+            .any(|l| l.contains("good state. Keeping") || l.contains("state), which")),
+        "one paragraph: {labels:?}"
+    );
+    nested.screenshot("long");
+
+    // Set live: the toast shown takes the new bounds at once.
+    config_set_applied(&mut nested, &project, "ui.scale", "1.5");
+    let (host, _, body) = measure(&mut nested);
+    assert!(
+        (562.0..=841.0).contains(&host[2]),
+        "at 1.5 the long toast is {} wide (540–840, and past the 560 it had)",
+        host[2]
+    );
+    assert!(body[3] <= 55.0, "2 lines of 27 at most: {body:?}");
+    nested.screenshot("long-1.5");
+    config_set_applied(&mut nested, &project, "ui.scale", "1");
+    let (host, _, _) = measure(&mut nested);
+    assert!((359.0..=561.0).contains(&host[2]), "back to 1: {host:?}");
+
+    // A short one is as wide as it needs, from 360.
+    let (x, y) = {
+        let r = nested.window(0).regions(&["toast-dismiss"])["toast-dismiss"];
+        (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)
+    };
+    nested.pointer().click(x, y);
+    nested.window(0).wait_idle();
+    let reply = nested
+        .window(0)
+        .ctl(json!({"op": "notify", "level": "info", "title": "Frame saved"}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    nested.window(0).wait_idle();
+    let regions = nested.window(0).regions(&["toast-host"]);
+    let w = regions["toast-host"][2];
+    assert!(
+        (359.0..=361.0).contains(&w),
+        "a short toast is 360 wide: {w}"
+    );
+    assert_a11y(&mut nested);
+    assert_no_panics(&mut nested);
+    nested.window(0).assert_no_criticals();
+    nested.close_window();
+    assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
+}
+
 /// The history cursor `qrec status` reports.
 fn cursor(nested: &Nested, project: &Path) -> u64 {
     let status = nested.cli_json(project, &["status"]);

@@ -191,17 +191,23 @@ pub(crate) fn get(cfg: &UserConfig, key: &str) -> Result<Value, CoreError> {
         })
 }
 
-/// Sets `key` to `value` in the file at `path` (created when missing),
-/// whose text is `text` (empty when there is none), keeping its comments,
-/// and returns the new value.
-pub(crate) fn set(path: &Path, text: &str, key: &str, value: &str) -> Result<Value, CoreError> {
-    let mut doc = document(text, path, qrec_core::config::set)?;
-    qrec_core::config::set(&mut doc, key, value)?;
-    let new_text = doc.to_string();
+/// The text of the file at `path` (whose text is `text`, empty when there
+/// is none) with `key` set to `value`, and the new value: the one line
+/// changed, added or removed, every other one as it was
+/// (`qrec_core::config::set_text`: comments and order stay). The caller
+/// writes it (`Backend::write_settings`).
+pub(crate) fn set(
+    path: &Path,
+    text: &str,
+    key: &str,
+    value: &str,
+) -> Result<(String, Value), CoreError> {
+    document(text, path, qrec_core::config::set)?;
+    let new_text = qrec_core::config::set_text(text, key, value)?;
     let cfg: UserConfig = serde_json::from_value(to_json(&new_text, path)?)
         .map_err(|e| CoreError::invalid(format!("{key} = {value} doesn't fit: {e}")))?;
-    write_atomic(path, new_text.as_bytes())?;
-    get(&cfg, key)
+    let value = get(&cfg, key)?;
+    Ok((new_text, value))
 }
 
 /// `value` for people: text without quotes, `(not set)` for null.
@@ -214,8 +220,9 @@ pub(crate) fn display(value: &Value) -> String {
 }
 
 /// Writes `bytes` to a temp file next to `path`, syncs it and renames it
-/// over `path`, so a crash leaves the old file or the new one.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
+/// over `path`, so a crash leaves the old file or the new one (the default
+/// `Backend::write_settings`).
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
     let io_err =
         |what: &str, e: io::Error| CoreError::io(format!("can't {what} {}: {e}", path.display()));
     let dir = path.parent().unwrap_or(Path::new("."));

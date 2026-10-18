@@ -2536,6 +2536,97 @@ fn s17_export_failed() {
     close(&mut nested);
 }
 
+/// `qrec config set <key> <value>` as a person runs it, then the window
+/// applying it (WP10's follower: `settingsApplied` past the count before,
+/// nothing pending) and drawing a frame after.
+fn config_set_applied(nested: &mut Nested, project: &Path, key: &str, value: &str) {
+    let before = nested.window(0).local()["settingsApplied"]
+        .as_u64()
+        .unwrap_or(0);
+    let out = nested.cli(project, &["config", "set", key, value]);
+    assert!(
+        out.status.success(),
+        "qrec config set {key} {value}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    gui_support::poll(
+        Duration::from_secs(20),
+        "the settings change applied",
+        || {
+            let local = nested.window(0).local();
+            let n = local["settingsApplied"].as_u64().unwrap_or(0);
+            (n > before && local["settingsPending"] == false).then_some(())
+        },
+    );
+    nested.window(0).wait_idle();
+}
+
+/// WP9: S17's stderr well (10 lines of `mono-sm`) follows `qrec config
+/// set ui.scale` at once, as the rest of the page does: its height times
+/// the scale (its padding scales with the CSS), and back. It followed only
+/// at the page's next refresh (G§3.14's known limit): at 1.1, where the
+/// window keeps its Wide layout and nothing else refreshes the page, 160 px
+/// of text in a well whose padding had grown; at 1.5 the layout's change
+/// (Narrow, 1067 px wide) refreshed it.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_failed_pages_stderr_well_follows_a_live_scale() {
+    let mut nested = Nested::start(AREA, "s17-live-scale", Options::default());
+    let project = fixture(
+        &nested,
+        "rust-traits-talk",
+        DesignVariant::Base,
+        Some(program_ui()),
+    );
+    let path = fail_ffmpeg::failing_path(nested.env.root());
+    let launch = Launch {
+        path: Some(path),
+        ..launch()
+    };
+    open(&mut nested, &project, launch);
+    ctrl_e(&mut nested);
+    click(&mut nested, "export-start");
+    wait_label(
+        &mut nested,
+        "export-panel",
+        "clip 3/10",
+        Duration::from_secs(300),
+        |l| l == "Rendering clip 3/10",
+    );
+    fail_ffmpeg::go(nested.env.root());
+    wait_overlays(
+        &mut nested,
+        &["ExportPanel(Failed)"],
+        Duration::from_secs(300),
+    );
+    nested.window(0).wait_idle();
+    let well = |nested: &mut Nested| nested.window(0).regions(&["export-stderr"])["export-stderr"];
+    let at_1 = well(&mut nested);
+    nested.screenshot("failed-1");
+    for (scale, text) in [(1.1, "1.1"), (1.5, "1.5")] {
+        config_set_applied(&mut nested, &project, "ui.scale", text);
+        assert_eq!(overlays(&mut nested), ["ExportPanel(Failed)"]);
+        let now = well(&mut nested);
+        nested.screenshot(&format!("failed-{text}"));
+        assert!(
+            (now[3] - at_1[3] * scale).abs() <= 2.0,
+            "the stderr well is {} high at {text} for {} at 1",
+            now[3],
+            at_1[3]
+        );
+    }
+    config_set_applied(&mut nested, &project, "ui.scale", "1");
+    let back = well(&mut nested);
+    assert!(
+        (back[3] - at_1[3]).abs() <= 1.0,
+        "back at 1: {} for {}",
+        back[3],
+        at_1[3]
+    );
+    assert_clean(&mut nested);
+    close(&mut nested);
+}
+
 /// A CLI export shows in the panel (Running, passive); when it ends the
 /// panel closes and the core's toast says it is ready.
 #[test]

@@ -1,0 +1,71 @@
+---
+source: crates/qrec-core/src/view/palette.rs
+expression: text(&view)
+---
+## Recent
+Save the frame at the playhead (PNG)         [P]              qrec frame save --at <t>
+Split clip at the playhead                   [S]              qrec clip split <clip> --at <t>
+Export…                                      [Ctrl][E]        qrec export
+## Record
+Start / stop recording                       [R]              qrec record toggle
+Record over the selection                    [O]              qrec record start --over <clip>…
+Discard the last take (to the bin)           [D]              qrec take discard-last
+Cancel recording, deselect, close overlay    [Esc]            qrec record cancel
+## Playback
+Play / pause                                 [Space]          qrec play
+Shuttle reverse (again: 2×, 4×)              [J]              —
+Shuttle stop                                 [K]              —
+Shuttle forward (again: 2×, 4×)              [L]              —
+Previous frame                               [←]              qrec seek --by -1f
+Next frame                                   [→]              qrec seek --by +1f
+Back 1 s                                     [Shift][←]       qrec seek --by -1s
+Forward 1 s                                  [Shift][→]       qrec seek --by +1s
+Previous edit point                          [↑]              qrec seek --edit prev
+Next edit point                              [↓]              qrec seek --edit next
+Timeline start                               [Home]           qrec seek --to start
+Timeline end                                 [End]            qrec seek --to end
+## Edit
+Select previous clip                         [,]              —
+Select next clip                             [.]              —
+Move selection left one slot                 [<]              qrec clip move <clip>… --by -1
+Move selection right one slot                [>]              qrec clip move <clip>… --by 1
+Split clip at the playhead                   [S]              qrec clip split <clip> --at <t>
+Trim start to the playhead                   [[]              qrec clip trim <clip> --start <t>
+Trim end to the playhead                     []]              qrec clip trim <clip> --end <t>
+Trim 1 frame off the start                   [Alt][[]         qrec clip trim <clip> --start +1f
+Trim 1 frame off the end                     [Alt][]]         qrec clip trim <clip> --end -1f
+Trim 10 frames off the start                 [Alt][{]         qrec clip trim <clip> --start +10f
+Trim 10 frames off the end                   [Alt][}]         qrec clip trim <clip> --end -10f
+Remove selected clips (to the bin)           [Del] [X] [Backspace] qrec clip remove <clip>…
+Autocut the selection, or every clip         [C]              qrec autocut [--clips <clip>…]
+Autocut settings and preview                 [Shift][C]       qrec autocut --dry-run
+Undo                                         [Ctrl][Z]        qrec undo
+Redo                                         [Ctrl][Shift][Z] [Ctrl][Y] qrec redo  (off: Nothing to redo)
+Clear undo history                                            qrec history clear --yes
+Select all clips                             [Ctrl][A]        —
+## Output
+Save the frame at the playhead (PNG)         [P]              qrec frame save --at <t>
+Export…                                      [Ctrl][E]        qrec export
+## View
+Zoom timeline in                             [=]              —
+Zoom timeline out                            [−]              —
+Zoom to fit                                  [\]              —
+Zoom to the selection                        [Z]              —
+Toggle snapping                              [N]              —
+Switch canvas Live / Program                 [Tab]            —
+Toggle the bin                               [B]              qrec take list --unused
+Cheat sheet                                  [?]              qrec keys
+Command palette                              [Ctrl][K] [:]    —
+Settings                                     [Ctrl][,]        qrec config
+Focus the next region                        [F6]             —
+Focus the previous region                    [Shift][F6]      —
+Quit                                         [Ctrl][Q]        —
+## Canvas
+Nudge layer left 1 px                        [←]              qrec scene layer set <layer> --rect X,Y,W,H  (off: Select a layer on the canvas)
+Nudge layer right 1 px                       [→]              qrec scene layer set <layer> --rect X,Y,W,H  (off: Select a layer on the canvas)
+Nudge layer up 1 px                          [↑]              qrec scene layer set <layer> --rect X,Y,W,H  (off: Select a layer on the canvas)
+Nudge layer down 1 px                        [↓]              qrec scene layer set <layer> --rect X,Y,W,H  (off: Select a layer on the canvas)
+Nudge layer left 10 px                       [Shift][←]       qrec scene layer set <layer> --rect X,Y,W,H  (off: Select a layer on the canvas)
+Nudge layer right 10 px                      [Shift][→]       qrec scene layer set <layer> --rect X,Y,W,H  (off: Select a layer on the canvas)
+Nudge layer up 10 px                         [Shift][↑]       qrec scene layer set <layer> --rect X,Y,W,H  (off: Select a layer on the canvas)
+Nudge layer down 10 px                       [Shift][↓]       qrec scene layer set <layer> --rect X,Y,W,H  (off: Select a layer on the canvas)

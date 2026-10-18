@@ -278,6 +278,13 @@ impl Backend for Shell {
         qrec_shell::config_file::read_text(path).map_err(CoreError::io)
     }
 
+    /// The writer the window's Settings pages use (WP9): `qrec config set`
+    /// replaces `config.toml` the same way (its permissions kept, a
+    /// symlink to it written through).
+    fn write_settings(&mut self, path: &Path, text: &str) -> Result<(), CoreError> {
+        qrec_shell::config_file::write_text(path, text).map_err(CoreError::io)
+    }
+
     fn live_hosts(&mut self) -> Result<Vec<HelloInfo>, CoreError> {
         let runtime = self.dirs()?.runtime;
         Ok(ipc::resolve::live_hosts(&runtime, ipc::HELLO_TIMEOUT))

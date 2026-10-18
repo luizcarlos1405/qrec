@@ -24,19 +24,19 @@ expression: out.effects
             level: Success,
             title: "Frame saved",
             body: Some(
-                "/p/frames/a.png",
+                "frames/a.png",
             ),
             actions: [
                 ToastAction {
                     label: "Copy image",
                     action: CopyImage(
-                        "/p/frames/a.png",
+                        "frames/a.png",
                     ),
                 },
                 ToastAction {
                     label: "Open folder",
                     action: RevealPath(
-                        "/p/frames/a.png",
+                        "frames/a.png",
                     ),
                 },
             ],

@@ -1,0 +1,76 @@
+---
+source: crates/qrec-core/src/view/cheatsheet.rs
+expression: text(&sheet)
+---
+# Keyboard shortcuts [Search shortcuts]
+=== column 1
+## Record
+[R]                    Start / stop recording
+[O]                    Record over the selection
+[D]                    Discard the last take (to the bin)
+[Esc]                  Cancel recording, deselect, close overlay
+## Output
+[F]                    Save the frame at the playhead (PNG)  (default P)
+[Ctrl][E]              Export…
+## Global (niri)
+[Mod][Shift][R]        Record toggle
+[Mod][Shift][O]        Record over
+[Mod][Shift][D]        Discard last take
+<Copy niri snippet>
+=== column 2
+## Playback
+[Space]                Play / pause
+[J]                    Shuttle reverse (again: 2×, 4×)
+[K]                    Shuttle stop
+[L]                    Shuttle forward (again: 2×, 4×)
+[←]                    Previous frame
+[→]                    Next frame
+[Shift][←]             Back 1 s
+[Shift][→]             Forward 1 s
+[↑]                    Previous edit point
+[↓]                    Next edit point
+[Home]                 Timeline start
+[End]                  Timeline end
+## View
+[=]                    Zoom timeline in
+[−]                    Zoom timeline out
+[\]                    Zoom to fit
+[Z]                    Zoom to the selection
+[N]                    Toggle snapping
+[Tab]                  Switch canvas Live / Program
+[B]                    Toggle the bin
+[?]                    Cheat sheet
+[Ctrl][K] [:]          Command palette
+[Ctrl][,]              Settings
+[F6]                   Focus the next region
+[Shift][F6]            Focus the previous region
+[Ctrl][Q]              Quit
+=== column 3
+## Edit
+[,]                    Select previous clip
+[.]                    Select next clip
+[<]                    Move selection left one slot
+[>]                    Move selection right one slot
+[S]                    Split clip at the playhead
+[[]                    Trim start to the playhead
+[]]                    Trim end to the playhead
+[Alt][[]               Trim 1 frame off the start
+[Alt][]]               Trim 1 frame off the end
+[Alt][{]               Trim 10 frames off the start
+[Alt][}]               Trim 10 frames off the end
+[Del] [X] [Backspace]  Remove selected clips (to the bin)
+[C]                    Autocut the selection, or every clip
+[Shift][C]             Autocut settings and preview
+[Ctrl][Z]              Undo
+[Ctrl][Shift][Z] [Ctrl][Y] Redo
+[Ctrl][A]              Select all clips
+## Canvas
+[←]                    Nudge layer left 1 px
+[→]                    Nudge layer right 1 px
+[↑]                    Nudge layer up 1 px
+[↓]                    Nudge layer down 1 px
+[Shift][←]             Nudge layer left 10 px
+[Shift][→]             Nudge layer right 10 px
+[Shift][↑]             Nudge layer up 10 px
+[Shift][↓]             Nudge layer down 10 px
+-- Keys come from ~/.config/qrec/keys.toml. Change them in Settings › Keyboard.

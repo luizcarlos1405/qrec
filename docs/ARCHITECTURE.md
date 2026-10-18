@@ -2525,6 +2525,10 @@ pub fn command_for(id: &str, state: &State) -> Option<Command>;  // action_for's
 pub fn gate_reason(state: &State, cmd: &Command) -> Option<String>; // why apply's shared gates (phase, GUI host, disk) refuse cmd
 pub fn usable_keys<'a>(map: &Keymap, b: &'a Binding) -> Vec<&'a KeyChord>; // its chords outside conflicts
 impl KeyChord { pub fn cap_legends(&self) -> Vec<String>; }     // the GUI's key caps: ["Ctrl", "Shift", "Z"]
+pub fn conflict_notes(map: &Keymap) -> Vec<ConflictNote>;       // Q5/S22's banner: { chord, key: "X", ids, labels }
+pub fn set_binding(keys_toml: &str, id: &str, keys: &[KeyChord]) -> Result<String, CoreError>; // one line edited (WP9)
+pub fn reset_binding(keys_toml: &str, id: &str) -> Result<String, CoreError>;               // its lines removed
+pub const KEYLESS: &[KeylessAction];                            // the palette's actions with no key: history.clear (D-19)
 ```
 
 Grammar `ctrl+shift+z`; shift is recorded only for letters and named keys
@@ -2546,7 +2550,14 @@ can't start: the capture engine is stuck ("The capture engine is stuck
 GUI's Record button says the same); an invalid `qrec.json` isn't one, since
 a take moves the bad file aside first (A§7.7).
 `keys.toml`: `[bindings]` id → string or array. `qrec keys --json` prints
-`[{"id","group","label","keys":[..],"cli","contexts"}]`. An open window
+`[{"id","group","label","keys":[..],"cli","contexts"}]`. Settings ›
+Keyboard edits it (WP9): `set_binding` / `reset_binding` change one line
+of the text at `toml_edit`'s spans and leave every other byte (comments,
+order, spacing), refuse a file that isn't TOML, and fall back to a
+document edit for an inline `bindings` table; the shell writes the result
+atomically (`keys_file::{set_binding, reset_binding}`). `history.clear`
+is an id `action_for` knows without being a binding (no key, not in
+`keys.toml`): the palette's "Clear undo history". An open window
 reloads it when the file changes (A§8.9's settings watcher): the new keys
 work and show at once, and each problem it didn't have is a toast (GUI
 G§3.14).
@@ -2567,10 +2578,17 @@ pub fn get(cfg: &UserConfig, key: &str) -> Result<toml::Value, CoreError>;
 pub fn get_json(cfg: &UserConfig, key: &str) -> Result<serde_json::Value, CoreError>; // null for an unset optional key
 pub fn list(cfg: &UserConfig) -> Vec<ConfigEntry>;                // { key, value } for every setting
 pub fn set(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> Result<(), CoreError>; // validated by re-parsing
+pub fn set_text(text: &str, key: &str, value: &str) -> Result<String, CoreError>; // `set` on the text: one line, the rest as it was (WP9)
 ```
 
 `qrec config set` edits with `toml_edit`, so comments and order survive; the
-shell only reads and atomically writes the file. Hosts read it as
+shell only reads and atomically writes the file. Since WP9 the edit is
+`set_text` (a `DocumentMut` printed a dotted table's keys together, `ui.scale`
+next to `ui.sounds`): the value replaced at its span, or one line added or
+removed; and the write goes through `Backend::write_settings`, which the
+`qrec` binary implements with `qrec_shell::config_file::write_text`, the
+Settings pages' writer (`config_file::set`): a temp file renamed over the
+file, its permissions kept, a symlink written through. Hosts read it as
 `Facts.config`: a file `parse` refuses gives all the defaults, and people
 get a "config.toml is invalid" warning once per change of the file
 (A§4.2), so a typo never drops the settings silently. An open window

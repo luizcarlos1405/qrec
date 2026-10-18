@@ -153,6 +153,17 @@ pub trait Backend {
         crate::config::read_settings(path)
     }
 
+    /// Writes a settings file whole (`qrec config set`'s new
+    /// `config.toml`), atomically: a temp file next to it, synced, renamed
+    /// over it. Default: the CLI's own writer (a build without the shell);
+    /// the `qrec` binary writes through the shell's
+    /// (`qrec_shell::config_file::write_text`), the one the window's
+    /// Settings pages use, which also keeps the file's permissions and a
+    /// symlink to it.
+    fn write_settings(&mut self, path: &Path, text: &str) -> Result<(), CoreError> {
+        crate::config::write_atomic(path, text.as_bytes())
+    }
+
     /// The hosts that answer `hello` on `<runtime>/*.sock` (A§8.4): the
     /// fallback project when the current folder isn't one.
     fn live_hosts(&mut self) -> Result<Vec<HelloInfo>, CoreError>;

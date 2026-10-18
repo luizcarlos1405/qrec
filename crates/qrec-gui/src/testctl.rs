@@ -39,6 +39,7 @@
 //! | `labels` | the text of every visible label under the widget `name` (default: the window), and `entries`: each visible text field's value by its nearest given name (`{"inspector-x":"1280"}`) |
 //! | `dispatch` | `Store::dispatch` of `command` (`confirmed`: as confirmed), `{"ok":true}` at once |
 //! | `action` | runs binding or GUI action `id` as its key would |
+//! | `notify` | shows a toast the window makes (`Store::notify`): `level` (`info`, `success`, `warning`, `error`), `title`, `body` (WP9's width probe, DESIGN's 360–560 px) |
 //! | `sources` | the source discovery's last answer (`LocalUi.sources`, `inventory`: `null` before one); with `inventory` (a `SourceInventory`), that answer instead, through the queue as discovery's own (the first run's rows follow it, R25) |
 //! | `hints` | the hint bar's items and status (`hintbar::current_items`), the labels of the items it draws whole (`shown`: a narrow window leaves the trailing ones out) and whether a drawn one runs past the bar (`cut`, never) |
 //! | `local` | a summary of `LocalUi` (with the panel's page and the autocut page's preview, `panelPage`, `autocutPreview`; whether the player plays, the program or a take, `playing`, and the program, `programPlaying`), the theme (and the window's `.reduced-motion`, and `panelTransition`, the panel pages' transition that follows it, and GTK's own animation setting, `gtkAnimations`: off in test mode but with its `animations` flag, and while the Narrow sheet is open under reduced motion; libadwaita's color scheme, `colorScheme`: `scheme`, `dark`), whether GTK's fundamental types were registered before startup's workers (`fundamentalsFirst`), the settings changes the follower applied and whether one is pending (`settingsApplied`, `settingsPending`, WP10), the live controls that show a binding's keys (`keyedControls`: a keymap reload makes none), the caught panics, the focused widget's path and its bounds (`focusBounds`), whether the window shows focus (`focusVisible`), what it announced to screen readers (`announcements`: `message`, `priority`, and `sent`, false without a context that announces: WP10), the window's pid, the Program player's position (`playerNs`, `null` without a player), the bin rows still alive (`binRowsAlive`: a rebuild's dropped rows go, G§3.12 R11) and the panel's (`layerRowsAlive`, `audioRowsAlive`), the bin drawer's last slide as asked (`binSlide`: `open`, `animate`; nothing animates on start), the bin preview (`takePreview`: `take`, `playing`; `null` without one), the theme's subscribers (`themeSubscribers`: a dropped bin thumbnail's goes with it), the mud bars ticking (`mudBarsTicking`: none under the frozen clock), the meter bars on their refresh timer (`metersTicking`) and whether the export panel's Running clock runs (`exportClockTicking`: both come back with the next change after a caught panic, R65), how many times the timeline's canvas re-rendered (`timelinePaints`: not while only the playhead moves), and how many columns of the ghost's waveform its last paint with one worked out (`timelineGhostColumns`: those in view, R01) |
@@ -343,6 +344,7 @@ pub fn handle(app: &Rc<App>, request: TestRequest) {
         "labels" => labels(app, &request),
         "dispatch" => dispatch(app, &request),
         "action" => action(app, &request),
+        "notify" => notify(app, &request),
         "sources" => sources(app, &request),
         "hints" => hints(app),
         "local" => local(app),
@@ -564,6 +566,28 @@ fn action(app: &App, request: &Value) -> Value {
     } else {
         json!({"ok": false, "error": format!("no binding or GUI action {id}")})
     }
+}
+
+/// `notify`: a toast as the window makes one (G§3.7), for probes of the
+/// toast's own layout (WP9: DESIGN's width, the body's two lines).
+fn notify(app: &App, request: &Value) -> Value {
+    use qrec_core::protocol::ToastLevel;
+    use qrec_core::view::notices::Notice;
+    let Some(title) = request["title"].as_str() else {
+        return json!({"ok": false, "error": "no title"});
+    };
+    let level = match request["level"].as_str() {
+        Some("success") => ToastLevel::Success,
+        Some("warning") => ToastLevel::Warning,
+        Some("error") => ToastLevel::Error,
+        _ => ToastLevel::Info,
+    };
+    let mut notice = Notice::new(level, title);
+    if let Some(body) = request["body"].as_str() {
+        notice = notice.with_body(body);
+    }
+    app.ctx.store.notify(notice);
+    json!({"ok": true})
 }
 
 /// `sources`: the discovery's last answer, or a new one in its place.

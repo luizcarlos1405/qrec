@@ -466,6 +466,87 @@ pub fn set(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> Result<(
     Ok(())
 }
 
+/// [`set`] on the file's text, every other byte of it as it was: the value
+/// replaced in place (its spacing and comment stay), or one line added
+/// after its section's last line (`[ui]`, a new `[ui]` at the end when
+/// there is none; a root key above the first section), or its line
+/// removed (`auto` for `encoder.vaapi_device`). A `toml_edit` document
+/// keeps the comments too, but prints a dotted table's keys together
+/// (`ui.scale`, `canvas.fps`, `ui.sounds` come back with the `ui.` lines
+/// side by side): only a layout no line can be cut from or added to (an
+/// inline table) goes through [`set`]. Validated like [`set`]. What `qrec
+/// config set` writes, and the Settings pages (`qrec_shell::config_file`).
+pub fn set_text(text: &str, key: &str, value: &str) -> Result<String, CoreError> {
+    use crate::toml_text::{
+        TableForm, add_line, entries, key_text, parse, remove_lines, replace_value, table_form,
+    };
+    let spec = find_key(key).ok_or_else(|| unknown_key(key))?;
+    let new = spec.parse_value(value)?;
+    let doc = parse(text).map_err(|e| {
+        CoreError::invalid(format!(
+            "config.toml is not valid TOML: {}",
+            e.message().trim()
+        ))
+        .with_hint("fix the file, or delete it to get the defaults back")
+    })?;
+    let path: Vec<&str> = key.split('.').collect();
+    let found: Vec<crate::toml_text::Entry> = entries(&doc)
+        .into_iter()
+        .filter(|e| e.path.iter().map(String::as_str).eq(path.iter().copied()))
+        .collect();
+    let new_text = new.as_ref().map(ToString::to_string);
+    let edited = match (&new_text, found.first()) {
+        (Some(v), Some(entry)) => Some(replace_value(text, entry, v)),
+        (None, Some(_)) => remove_lines(text, &found.iter().collect::<Vec<_>>()),
+        (None, None) => Some(text.to_owned()),
+        (Some(v), None) => match path.as_slice() {
+            [field] => add_line(text, &doc, &[], &format!("{} = {v}", key_text(field))),
+            [section, field] => match table_form(&doc, &[section]) {
+                TableForm::Header | TableForm::Missing => add_line(
+                    text,
+                    &doc,
+                    &[section],
+                    &format!("{} = {v}", key_text(field)),
+                ),
+                // `ui.scale = 1` at the root: the new line spelled the same.
+                TableForm::Dotted => add_line(
+                    text,
+                    &doc,
+                    &[],
+                    &format!("{}.{} = {v}", key_text(section), key_text(field)),
+                ),
+                TableForm::Root | TableForm::Other => None,
+            },
+            _ => None,
+        },
+    };
+    let edited = match edited {
+        Some(edited) => edited,
+        None => {
+            let mut doc: toml_edit::DocumentMut =
+                text.parse().map_err(|e: toml_edit::TomlError| {
+                    CoreError::invalid(format!(
+                        "config.toml is not valid TOML: {}",
+                        e.message().trim()
+                    ))
+                })?;
+            set(&mut doc, key, value)?;
+            doc.to_string()
+        }
+    };
+    let cfg: UserConfig = toml::from_str(&edited).map_err(|e| {
+        CoreError::usage(format!(
+            "config.toml would be invalid: {}",
+            toml_error("config.toml", &edited, &e)
+        ))
+        .with_hint("fix config.toml by hand")
+    })?;
+    if let Some(problem) = problems(&cfg).into_iter().next() {
+        return Err(CoreError::usage(problem).with_hint("fix config.toml by hand"));
+    }
+    Ok(edited)
+}
+
 /// `Fps` as TOML text (`"30"`, `"30000/1001"`); integers are accepted too.
 mod fps_text {
     use super::*;
@@ -667,6 +748,88 @@ vaapi_device = \"/dev/dri/renderD129\"
         let mut empty = doc("");
         set(&mut empty, "encoder.vaapi_device", "auto").unwrap();
         assert_eq!(empty.to_string(), "", "unsetting doesn't create a section");
+    }
+
+    /// `set_text` writes what `set` writes for a file in sections, and keeps
+    /// a layout `set`'s document reorders: the root's dotted keys stay
+    /// where they were.
+    #[test]
+    fn set_text_changes_only_the_line_it_edits() {
+        let mut text = COMMENTED.to_owned();
+        let mut d = doc(COMMENTED);
+        for (key, value) in [
+            ("autocut.threshold_db", "-40"),
+            ("theme", "ogre-mode"),
+            ("canvas.fps", "29.97"),
+            ("encoder.vaapi_device", "/dev/dri/renderD129"),
+            ("ui.reduced_motion", "true"),
+        ] {
+            text = set_text(&text, key, value).unwrap();
+            set(&mut d, key, value).unwrap();
+        }
+        pretty_assertions::assert_eq!(text, d.to_string());
+        text = set_text(&text, "encoder.vaapi_device", "auto").unwrap();
+        assert!(!text.contains("vaapi_device"), "{text}");
+        assert!(text.ends_with("[encoder]\n"), "{text}");
+        assert_eq!(set_text("", "encoder.vaapi_device", "auto").unwrap(), "");
+
+        let dotted =
+            "# mine\nui.scale = 1.25\ncanvas.fps = \"30\"  # PAL later\nui.sounds = true\n";
+        let mut d = doc(dotted);
+        set(&mut d, "theme", "swamp-day").unwrap();
+        assert_ne!(
+            d.to_string().lines().nth(2),
+            Some("canvas.fps = \"30\"  # PAL later"),
+            "a document reorders them"
+        );
+        pretty_assertions::assert_eq!(
+            set_text(dotted, "ui.scale", "1.5").unwrap(),
+            "# mine\nui.scale = 1.5\ncanvas.fps = \"30\"  # PAL later\nui.sounds = true\n"
+        );
+        pretty_assertions::assert_eq!(
+            set_text(dotted, "ui.reduced_motion", "true").unwrap(),
+            "# mine\nui.scale = 1.25\ncanvas.fps = \"30\"  # PAL later\nui.sounds = true\n\
+             ui.reduced_motion = true\n"
+        );
+        pretty_assertions::assert_eq!(
+            set_text(dotted, "theme", "swamp-day").unwrap(),
+            "# mine\nui.scale = 1.25\ncanvas.fps = \"30\"  # PAL later\nui.sounds = true\n\
+             theme = \"swamp-day\"\n"
+        );
+        // An inline table takes its value in place; a new key goes
+        // through the document.
+        let inline = "ui = { scale = 1.0 }  # big\n";
+        assert_eq!(
+            set_text(inline, "ui.scale", "1.5").unwrap(),
+            "ui = { scale = 1.5 }  # big\n"
+        );
+        let edited = set_text(inline, "ui.sounds", "true").unwrap();
+        assert_eq!(parse(&edited).unwrap().ui.scale, 1.0);
+        assert!(parse(&edited).unwrap().ui.sounds);
+        assert!(edited.contains("# big"), "{edited}");
+    }
+
+    #[test]
+    fn set_text_refuses_what_set_refuses() {
+        assert_eq!(
+            set_text("", "canvas.width", "1921").unwrap_err().code,
+            ErrorCode::Usage
+        );
+        assert_eq!(
+            set_text("", "nope", "1").unwrap_err().code,
+            ErrorCode::Usage
+        );
+        let err = set_text("[ui\n", "ui.scale", "1.5").unwrap_err();
+        assert_eq!(err.code, ErrorCode::Invalid);
+        assert!(
+            err.message.starts_with("config.toml is not valid TOML"),
+            "{}",
+            err.message
+        );
+        // A file that already holds a bad value elsewhere can't be saved.
+        let err = set_text("[ui]\nscale = 9.0\n", "theme", "swamp-day").unwrap_err();
+        assert_eq!(err.code, ErrorCode::Usage);
+        assert!(err.message.contains("ui.scale"), "{}", err.message);
     }
 
     #[test]
