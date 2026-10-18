@@ -904,9 +904,10 @@ fn contains_all(all: &[String], part: &[String]) -> bool {
 /// for `id` gets the new value in place (its spacing and comment stay; a
 /// second entry for it goes); else a line goes after the last line of
 /// `[bindings]` (`clip.split = "s"`, or under `[bindings.clip]` when the
-/// file has that header), or a `[bindings]` at the end. The Keyboard
-/// settings page writes it (S22, through `qrec_shell::keys_file`). A file
-/// that isn't valid TOML is refused, never rewritten.
+/// file has that header), or a `[bindings]` at the end, ending like the
+/// file's lines (CRLF in a file saved with them). The Keyboard settings
+/// page writes it (S22, through `qrec_shell::keys_file`). A file that
+/// isn't valid TOML is refused, never rewritten.
 pub fn set_binding(keys_toml: &str, id: &str, keys: &[KeyChord]) -> Result<String, CoreError> {
     known_binding(id)?;
     let mut unique: Vec<KeyChord> = Vec::new();
@@ -1091,7 +1092,7 @@ fn edit_as_document(text: &str, id: &str, value: Option<&str>) -> Option<String>
         let value: toml_edit::Value = value.parse().ok()?;
         bindings.insert(id, toml_edit::Item::Value(value));
     }
-    Some(doc.to_string())
+    Some(crate::toml_text::with_newlines_of(text, doc.to_string()))
 }
 
 /// Removes every entry of `table` that names `id` (`a.b` as one quoted
@@ -3475,6 +3476,34 @@ clip.trim-start = \"q\"  # trailing
         let edited = reset_binding(text, "frame.save").unwrap();
         assert!(edited.starts_with("# keys\n"), "{edited}");
         assert_eq!(keys_of(&edited, "frame.save"), [chord("p")]);
+    }
+
+    /// A CRLF `keys.toml` (a Windows editor's) gets CRLF lines, and one
+    /// blank line before a new `[bindings]` as an LF file does; a reset
+    /// takes its line's CRLF with it.
+    #[test]
+    fn edits_keep_a_crlf_files_line_endings() {
+        let lone_lf = |text: &str| text.replace("\r\n", "").contains('\n');
+        let text = "# mine\r\n[bindings]\r\nframe.save = \"f\"\r\n";
+        let edited = set_binding(text, "export", &[chord("F5")]).unwrap();
+        assert_eq!(
+            edited,
+            "# mine\r\n[bindings]\r\nframe.save = \"f\"\r\nexport = \"F5\"\r\n"
+        );
+        assert_eq!(reset_binding(&edited, "export").unwrap(), text);
+        for text in ["# only a comment\r\n", "# only a comment\r\n\r\n"] {
+            assert_eq!(
+                set_binding(text, "frame.save", &[chord("g")]).unwrap(),
+                "# only a comment\r\n\r\n[bindings]\r\nframe.save = \"g\"\r\n",
+                "{text:?}"
+            );
+        }
+        let inline = "# keys\r\nbindings = { \"frame.save\" = \"f\" }\r\n";
+        let edited = set_binding(inline, "export", &[chord("F5")]).unwrap();
+        assert!(!lone_lf(&edited), "{edited:?}");
+        assert_eq!(keys_of(&edited, "export"), [chord("F5")]);
+        let edited = reset_binding(inline, "frame.save").unwrap();
+        assert!(!lone_lf(&edited), "{edited:?}");
     }
 
     proptest::proptest! {

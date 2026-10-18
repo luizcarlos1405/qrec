@@ -170,6 +170,24 @@ record.over = []
         assert_eq!(fs::read_to_string(&path).unwrap(), "[bindings]\n");
     }
 
+    /// A `keys.toml` saved with CRLF line endings keeps them on the lines
+    /// an edit adds, and a reset takes its line's CRLF with it.
+    #[test]
+    fn edits_keep_a_crlf_files_line_endings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("keys.toml");
+        let text = "# mine\r\n[bindings]\r\nframe.save = \"f\"\r\n";
+        fs::write(&path, text).unwrap();
+        set_binding(&path, "export", &[chord("F5")]).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# mine\r\n[bindings]\r\nframe.save = \"f\"\r\nexport = \"F5\"\r\n"
+        );
+        let (keymap, _) = reset_binding(&path, "export").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        assert_eq!(keymap.binding("export").unwrap().keys, [chord("ctrl+e")]);
+    }
+
     #[test]
     fn a_broken_file_is_never_written_over() {
         let tmp = tempfile::tempdir().unwrap();

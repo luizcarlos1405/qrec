@@ -4560,7 +4560,12 @@ D-22, the D-30 caption, D-31. Re-registers `keys.help` and `palette.open`.
   after `[bindings]`' last (under `[bindings.clip]` when the file has that
   header) or removed, every other byte as it was (a `DocumentMut` printed
   a dotted table's keys together); a file that isn't TOML is refused; an
-  inline `bindings = {…}` falls back to a document edit. Q5's data:
+  inline `bindings = {…}` falls back to a document edit. A line either
+  file's edits add (and a document edit's text) ends like the file's
+  lines: CRLF in a file a Windows editor saved, with one blank line before
+  a new section as in an LF file (`toml_text::newline`; the audit found
+  LF lines added to CRLF files, and a second blank line before a new
+  section). Q5's data:
   `conflict_notes` (one per key and set of bindings: a clash in `global`
   and `recording`, or of two of three bindings in `recording`, is one; the
   rebound binding first), `conflicting_keys`, `default_keys`,

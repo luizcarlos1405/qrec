@@ -474,8 +474,10 @@ pub fn set(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> Result<(
 /// keeps the comments too, but prints a dotted table's keys together
 /// (`ui.scale`, `canvas.fps`, `ui.sounds` come back with the `ui.` lines
 /// side by side): only a layout no line can be cut from or added to (an
-/// inline table) goes through [`set`]. Validated like [`set`]. What `qrec
-/// config set` writes, and the Settings pages (`qrec_shell::config_file`).
+/// inline table) goes through [`set`]. A line it adds ends like the
+/// file's lines (CRLF in a file saved with them). Validated like [`set`].
+/// What `qrec config set` writes, and the Settings pages
+/// (`qrec_shell::config_file`).
 pub fn set_text(text: &str, key: &str, value: &str) -> Result<String, CoreError> {
     use crate::toml_text::{
         TableForm, add_line, entries, key_text, parse, remove_lines, replace_value, table_form,
@@ -531,7 +533,7 @@ pub fn set_text(text: &str, key: &str, value: &str) -> Result<String, CoreError>
                     ))
                 })?;
             set(&mut doc, key, value)?;
-            doc.to_string()
+            crate::toml_text::with_newlines_of(text, doc.to_string())
         }
     };
     let cfg: UserConfig = toml::from_str(&edited).map_err(|e| {
@@ -807,6 +809,49 @@ vaapi_device = \"/dev/dri/renderD129\"
         assert_eq!(parse(&edited).unwrap().ui.scale, 1.0);
         assert!(parse(&edited).unwrap().ui.sounds);
         assert!(edited.contains("# big"), "{edited}");
+    }
+
+    /// A CRLF `config.toml` (a Windows editor's) keeps CRLF on every line
+    /// an edit adds: a key in its section, a new section after one blank
+    /// line, a root key, and through the document edit (an inline table).
+    #[test]
+    fn set_text_keeps_a_crlf_files_line_endings() {
+        let lone_lf = |text: &str| text.replace("\r\n", "").contains('\n');
+        let text = "# mine\r\ntheme = \"swamp-night\"\r\n\r\n[ui]\r\nscale = 1.25\r\n";
+        let edited = set_text(text, "ui.sounds", "true").unwrap();
+        pretty_assertions::assert_eq!(
+            edited,
+            "# mine\r\ntheme = \"swamp-night\"\r\n\r\n[ui]\r\nscale = 1.25\r\nsounds = true\r\n"
+        );
+        let edited = set_text(&edited, "autocut.padding_ms", "80").unwrap();
+        assert!(
+            edited.ends_with("sounds = true\r\n\r\n[autocut]\r\npadding_ms = 80\r\n"),
+            "{edited:?}"
+        );
+        let edited = set_text(&edited, "recording.countdown_secs", "5").unwrap();
+        assert!(!lone_lf(&edited), "{edited:?}");
+        assert!(
+            edited.ends_with("padding_ms = 80\r\n\r\n[recording]\r\ncountdown_secs = 5\r\n"),
+            "{edited:?}"
+        );
+        let cfg = parse(&edited).unwrap();
+        assert_eq!(
+            (
+                cfg.ui.sounds,
+                cfg.autocut.padding_ms,
+                cfg.recording.countdown_secs
+            ),
+            (true, 80, 5)
+        );
+        let edited = set_text("[ui]\r\nscale = 1.0\r\n", "theme", "ogre-mode").unwrap();
+        pretty_assertions::assert_eq!(
+            edited,
+            "theme = \"ogre-mode\"\r\n\r\n[ui]\r\nscale = 1.0\r\n"
+        );
+        let inline = "ui = { scale = 1.0 }  # big\r\ntheme = \"swamp-day\"\r\n";
+        let edited = set_text(inline, "ui.sounds", "true").unwrap();
+        assert!(!lone_lf(&edited), "{edited:?}");
+        assert!(parse(&edited).unwrap().ui.sounds);
     }
 
     #[test]

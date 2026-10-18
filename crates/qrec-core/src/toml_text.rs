@@ -6,8 +6,11 @@
 //! with the two `ui.` lines next to each other), so these edits cut the
 //! text at the spans its parser reports instead. A layout they can't edit
 //! as text (a line to add to or remove from an inline table) answers
-//! `None`, and the caller edits a `toml_edit` document instead. Owner:
-//! meta (for `config::set_text` and `keymap::set_binding`).
+//! `None`, and the caller edits a `toml_edit` document instead. A line
+//! these edits add ends as the file's lines do ([`newline`]: CRLF in a
+//! file a Windows editor saved), and so does a document edit's text
+//! ([`with_newlines_of`]). Owner: meta (for `config::set_text` and
+//! `keymap::set_binding`).
 
 use std::ops::Range;
 
@@ -181,20 +184,36 @@ pub(crate) fn add_line(
         Found::Missing => return Some(with_new_table(text, table, line)),
         Found::Unusable => return None,
     };
-    let mut out = String::with_capacity(text.len() + line.len() + 2);
+    let newline = newline(text);
+    let mut out = String::with_capacity(text.len() + line.len() + 4);
     out.push_str(&text[..at]);
     if !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
+        out.push_str(newline);
     }
     out.push_str(line);
-    out.push('\n');
+    out.push_str(newline);
     // A root line added above a header's comments keeps a blank line
     // between them.
     if at < text.len() && root_first {
-        out.push('\n');
+        out.push_str(newline);
     }
     out.push_str(&text[at..]);
     Some(out)
+}
+
+/// The line ending `text` uses, its first line's: `"\r\n"` (a Windows
+/// editor's file) or `"\n"` (one line, or none, is LF's).
+pub(crate) fn newline(text: &str) -> &'static str {
+    match text.find('\n') {
+        Some(i) if text[..i].ends_with('\r') => "\r\n",
+        _ => "\n",
+    }
+}
+
+/// `text` ends with a blank line: a TOML table is set off from what is
+/// above it by one.
+fn ends_with_blank_line(text: &str) -> bool {
+    text.ends_with("\n\n") || text.ends_with("\n\r\n")
 }
 
 /// What a table path names in a document.
@@ -271,17 +290,38 @@ fn headers(table: &Table, found: &mut dyn FnMut(usize)) {
     }
 }
 
-/// `text` with `[table]` and `line` added at its end.
+/// `edited` (a `toml_edit` document's text, the fallback edits') with
+/// `original`'s line endings: in a CRLF file every LF that isn't one
+/// already becomes CRLF.
+pub(crate) fn with_newlines_of(original: &str, edited: String) -> String {
+    if newline(original) == "\n" {
+        return edited;
+    }
+    let mut out = String::with_capacity(edited.len() + edited.len() / 16);
+    let mut previous = None;
+    for c in edited.chars() {
+        if c == '\n' && previous != Some('\r') {
+            out.push('\r');
+        }
+        out.push(c);
+        previous = Some(c);
+    }
+    out
+}
+
+/// `text` with `[table]` and `line` added at its end, in `text`'s line
+/// endings.
 fn with_new_table(text: &str, table: &[&str], line: &str) -> String {
+    let newline = newline(text);
     let mut out = text.to_owned();
     if !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
+        out.push_str(newline);
     }
-    if !out.is_empty() && !out.ends_with("\n\n") {
-        out.push('\n');
+    if !out.is_empty() && !ends_with_blank_line(&out) {
+        out.push_str(newline);
     }
     let header: Vec<String> = table.iter().map(|t| key_text(t)).collect();
-    out.push_str(&format!("[{}]\n{line}\n", header.join(".")));
+    out.push_str(&format!("[{}]{newline}{line}{newline}", header.join(".")));
     out
 }
 
@@ -441,6 +481,70 @@ zoom = 1
         assert_eq!(
             add_line(text, &doc, &[], "x = 1").unwrap(),
             "theme = \"swamp-day\" # day\nx = 1\n\n[ui]\nscale = 1.0\n"
+        );
+    }
+
+    /// A file with CRLF line endings (a Windows editor's) gets CRLF lines:
+    /// a line in a table, a new table at the end (after one blank line,
+    /// as in an LF file), a root line above the first header's comments.
+    #[test]
+    fn a_crlf_file_gets_crlf_lines() {
+        let text = "# mine\r\n[bindings]\r\nclip.split = \"s\"\r\n\r\n[other]\r\na = 1\r\n";
+        let doc = parse(text).unwrap();
+        assert_eq!(
+            add_line(text, &doc, &["bindings"], "x = 1").unwrap(),
+            "# mine\r\n[bindings]\r\nclip.split = \"s\"\r\nx = 1\r\n\r\n[other]\r\na = 1\r\n"
+        );
+        for (text, edited) in [
+            (
+                "theme = \"swamp-day\"\r\n",
+                "theme = \"swamp-day\"\r\n\r\n[ui]\r\nscale = 1.5\r\n",
+            ),
+            (
+                "theme = \"swamp-day\"\r\n\r\n",
+                "theme = \"swamp-day\"\r\n\r\n[ui]\r\nscale = 1.5\r\n",
+            ),
+            (
+                "# mine\r\ntheme = \"swamp-day\"",
+                "# mine\r\ntheme = \"swamp-day\"\r\n\r\n[ui]\r\nscale = 1.5\r\n",
+            ),
+        ] {
+            let doc = parse(text).unwrap();
+            assert_eq!(
+                add_line(text, &doc, &["ui"], "scale = 1.5").unwrap(),
+                edited,
+                "{text:?}"
+            );
+        }
+        let text = "theme = \"swamp-day\"\r\nx = 1";
+        let doc = parse(text).unwrap();
+        assert_eq!(
+            add_line(text, &doc, &[], "y = 2").unwrap(),
+            "theme = \"swamp-day\"\r\nx = 1\r\ny = 2\r\n"
+        );
+        let text = "# Qrec settings\r\n\r\n# lower = more sensitive\r\n[autocut]\r\nthreshold_db = -35.0\r\n";
+        let doc = parse(text).unwrap();
+        assert_eq!(
+            add_line(text, &doc, &[], "theme = \"ogre-mode\"").unwrap(),
+            "# Qrec settings\r\n\r\ntheme = \"ogre-mode\"\r\n\r\n# lower = more sensitive\r\n\
+             [autocut]\r\nthreshold_db = -35.0\r\n"
+        );
+        // A line goes with its CRLF.
+        let text = "[bindings]\r\nx = 1\r\ny = 2\r\n";
+        let doc = parse(text).unwrap();
+        let all = entries(&doc);
+        assert_eq!(
+            remove_lines(text, &[entry(&all, &["bindings", "x"])]).unwrap(),
+            "[bindings]\r\ny = 2\r\n"
+        );
+        // A document's text gets the original's line endings.
+        assert_eq!(
+            with_newlines_of(text, "[bindings]\ny = 2\r\nz = { a = 1 }\n".to_owned()),
+            "[bindings]\r\ny = 2\r\nz = { a = 1 }\r\n"
+        );
+        assert_eq!(
+            with_newlines_of("a = 1\n", "a = 1\nb = 2\n".to_owned()),
+            "a = 1\nb = 2\n"
         );
     }
 

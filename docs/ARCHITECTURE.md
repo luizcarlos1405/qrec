@@ -2587,7 +2587,8 @@ a take moves the bad file aside first (A§7.7).
 Settings › Keyboard (WP9: the edits and the writer are built, the GTK
 page waits for its frames, docs/GUI.md WP9): `set_binding` /
 `reset_binding` change one line of the text at `toml_edit`'s spans and
-leave every other byte (comments, order, spacing), refuse a file that
+leave every other byte (comments, order, spacing; a line they add ends
+like the file's, CRLF or LF), refuse a file that
 isn't TOML, and fall back to a document edit for an inline `bindings`
 table; the shell writes the result atomically (`keys_file::{set_binding,
 reset_binding}`). `history.clear` is an id `action_for` knows without
@@ -2621,7 +2622,9 @@ pub fn set_text(text: &str, key: &str, value: &str) -> Result<String, CoreError>
 shell only reads and atomically writes the file. Since WP9 the edit is
 `set_text` (a `DocumentMut` printed a dotted table's keys together, `ui.scale`
 next to `ui.sounds`): the value replaced at its span, or one line added or
-removed; and the write goes through `Backend::write_settings`, which the
+removed (an added line, or a new section's, ends like the file's lines:
+CRLF in a CRLF file, `toml_text::newline`); and the write goes through
+`Backend::write_settings`, which the
 `qrec` binary implements with `qrec_shell::config_file::write_text`, the
 writer behind `config_file::set`, which WP9's Settings pages are to use (their
 GTK pages wait for their frames): a temp file renamed over the file, its

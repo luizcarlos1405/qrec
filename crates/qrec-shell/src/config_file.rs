@@ -221,6 +221,23 @@ padding_ms = 80
         assert_eq!(names, ["config.toml"]);
     }
 
+    /// A `config.toml` saved with CRLF line endings keeps them on the
+    /// lines a setting adds (its section's, a new section's).
+    #[test]
+    fn set_keeps_a_crlf_files_line_endings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        fs::write(&path, "# mine\r\n[ui]\r\nscale = 1.25\r\n").unwrap();
+        set(&path, "ui.sounds", "true").unwrap();
+        set(&path, "autocut.padding_ms", "80").unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# mine\r\n[ui]\r\nscale = 1.25\r\nsounds = true\r\n\r\n[autocut]\r\npadding_ms = 80\r\n"
+        );
+        let (config, _) = read(&path);
+        assert!(config.ui.sounds);
+    }
+
     #[test]
     fn set_makes_the_file_and_its_folder() {
         let tmp = tempfile::tempdir().unwrap();
