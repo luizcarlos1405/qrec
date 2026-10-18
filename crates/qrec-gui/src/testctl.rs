@@ -45,7 +45,7 @@
 //! | `a11y` | every visible icon-only button, focusable region or custom widget without an accessible label (expected empty; needs `GTK_A11Y=test`) |
 //! | `fonts` | the family Pango loads for each bundled font; GTK's text settings as they are (`rendering`: `mode`, `hintMetrics`, `hinting`, `hintStyle`, `antialias`; `QREC_GUI_TEST_FONT_RENDERING` names another setup, `theme::fonts::Rendering`) and the window's GSK renderer (`renderer`, `GskGLRenderer`, …); with `measure` (`[{"family", "sizePx", "weight", "text"}]`), each text's `logical` and `ink` widths in px laid out in the window's Pango context (`widths`) |
 //! | `icons` | every icon of the GResource (`count`) through the window's icon theme: found, its own resource `file`, and drawn at 16 px with a probe color in each of GTK's four symbolic slots, every pixel in the foreground's (`recolored`: symbolic, recolored in full, no status color) |
-//! | `art` | each illustration through `gtk::Svg`: its size, drawn pixels and SVG errors (none for `ok`), and a known-bad probe whose errors must be counted |
+//! | `art` | each illustration through `gtk::Svg`: its size, drawn pixels and SVG errors (none for `ok`), and a known-bad probe whose errors must be counted; with `compare` (a folder of the pen's PNGs, `design/export/art/`), each drawn at 1× and 2× and the REC glyph through the icon theme, against the pen's PNG within antialiasing (`compared`: the worst excess and the share over 8 levels, over `bg` and over white) |
 //! | `probe` | the main-loop probe's report (`probe::report`, G§8.6): `on`, its `ticks`, `stalls` (over 50 ms), `longestMs` and the newest stalls `kept` (`atMs`, `driftMs`, `ran`: the dispatch that held the loop); `on: false` without `QREC_GUI_PROBE=1` |
 //!
 //! Dispatches go through the Store (R8), a pushed inventory through the
@@ -364,7 +364,7 @@ pub fn handle(app: &Rc<App>, request: TestRequest) {
             })
         }
         "icons" => icons(app),
-        "art" => art(app),
+        "art" => art(app, &request),
         "probe" => crate::probe::report(),
         other => json!({"ok": false, "error": format!("no op {other:?}")}),
     };
@@ -988,10 +988,18 @@ fn icons(app: &App) -> Value {
 
 /// Each illustration through `gtk::Svg` in the theme's colors: its size and
 /// how many pixels it draws.
-fn art(app: &App) -> Value {
+///
+/// With `compare` (a folder of the pen's PNGs: `design/export/art/`), each
+/// is also drawn at 1× and 2× and compared with `<name>@<n>x.png` within
+/// antialiasing ([`aa_excess`]), and so is the REC glyph
+/// (`qrec-record-symbolic` through the icon theme, in `text-on-record`,
+/// against `rec-glyph@<n>x.png`): `compared`.
+fn art(app: &App, request: &Value) -> Value {
     let mut all = true;
     let mut out = Vec::new();
+    let mut compared = Vec::new();
     let palette = app.ctx.theme.palette();
+    let pens = request["compare"].as_str().map(PathBuf::from);
     for which in theme::art::Art::ALL {
         let Some(svg) = theme::art::paintable_checked(which, &palette) else {
             all = false;
@@ -999,12 +1007,16 @@ fn art(app: &App) -> Value {
             continue;
         };
         let (w, h) = (svg.svg.intrinsic_width(), svg.svg.intrinsic_height());
-        let snapshot = gtk::Snapshot::new();
-        svg.svg.snapshot(&snapshot, f64::from(w), f64::from(h));
-        let pixels = snapshot
-            .to_node()
-            .and_then(|node| render(app, &node, w as f32, h as f32))
-            .unwrap_or_default();
+        let draw = |scale: i32| {
+            let snapshot = gtk::Snapshot::new();
+            svg.svg
+                .snapshot(&snapshot, f64::from(w * scale), f64::from(h * scale));
+            snapshot
+                .to_node()
+                .and_then(|node| render(app, &node, (w * scale) as f32, (h * scale) as f32))
+                .unwrap_or_default()
+        };
+        let pixels = draw(1);
         let drawn = pixels.chunks_exact(4).filter(|px| px[3] > 0).count();
         let errors = svg.errors();
         all &= w > 0 && h > 0 && drawn > 0 && errors == 0;
@@ -1015,12 +1027,126 @@ fn art(app: &App) -> Value {
             "pixels": drawn,
             "errors": errors,
         }));
+        if let Some(dir) = &pens {
+            for scale in [1, 2] {
+                let pen = dir.join(format!("{}@{scale}x.png", which.name()));
+                let result = compare_with(&draw(scale), &pen, (w * scale, h * scale));
+                all &= result["ok"] == true;
+                compared.push(result);
+            }
+        }
+    }
+    if let Some(dir) = &pens {
+        let display = WidgetExt::display(&app.window.window);
+        let icon_theme = gtk::IconTheme::for_display(&display);
+        for scale in [1, 2] {
+            let size = 16 * scale;
+            let paintable = icon_theme.lookup_icon(
+                "qrec-record-symbolic",
+                &[],
+                size,
+                1,
+                gtk::TextDirection::Ltr,
+                gtk::IconLookupFlags::empty(),
+            );
+            let snapshot = gtk::Snapshot::new();
+            paintable.snapshot_symbolic(
+                &snapshot,
+                f64::from(size),
+                f64::from(size),
+                &[palette.text_on_record],
+            );
+            let pixels = snapshot
+                .to_node()
+                .and_then(|node| render(app, &node, size as f32, size as f32))
+                .unwrap_or_default();
+            let pen = dir.join(format!("rec-glyph@{scale}x.png"));
+            let result = compare_with(&pixels, &pen, (size, size));
+            all &= result["ok"] == true;
+            compared.push(result);
+        }
     }
     // What GtkSvg drops while it parses is counted (an unsupported element
     // here): the art's zero means something.
     let probe = theme::art::load("probe", PROBE_SVG).errors();
     all &= probe > 0;
-    json!({"ok": all, "art": out, "probeErrors": probe})
+    json!({"ok": all, "art": out, "probeErrors": probe, "compared": compared})
+}
+
+/// How far outside antialiasing a pixel of a render may be (levels), and
+/// the share of its pixels allowed more than 8 levels off (`tests/art.rs`
+/// holds rsvg's renders to the same).
+const ART_MAX_EXCESS: f64 = 32.0;
+const ART_MAX_OFF_SHARE: f64 = 0.01;
+
+/// `ours` (RGBA, `w`×`h`) against the PNG `pen`: the worst excess over
+/// antialiasing and the share over 8 levels, over Swamp Night's `bg` and
+/// over white.
+fn compare_with(ours: &[u8], pen: &std::path::Path, (w, h): (i32, i32)) -> Value {
+    let name = pen.file_name().map(|n| n.to_string_lossy().into_owned());
+    let texture = match gdk::Texture::from_filename(pen) {
+        Ok(texture) => texture,
+        Err(e) => return json!({"pen": name, "ok": false, "error": e.to_string()}),
+    };
+    if (texture.width(), texture.height()) != (w, h) || ours.len() != (w * h * 4) as usize {
+        return json!({
+            "pen": name,
+            "ok": false,
+            "error": format!("{}×{} for {w}×{h}", texture.width(), texture.height()),
+        });
+    }
+    let mut downloader = gdk::TextureDownloader::new(&texture);
+    downloader.set_format(gdk::MemoryFormat::R8g8b8a8);
+    let (bytes, stride) = downloader.download_bytes();
+    let row = (w * 4) as usize;
+    let theirs: Vec<u8> = bytes
+        .chunks(stride)
+        .take(h as usize)
+        .flat_map(|line| line[..row].to_vec())
+        .collect();
+    let mut ok = true;
+    let mut grounds = Vec::new();
+    for ground in [[18.0, 23.0, 15.0], [255.0, 255.0, 255.0]] {
+        let (worst, share) = aa_excess(ours, &theirs, (w as usize, h as usize), ground);
+        ok &= worst <= ART_MAX_EXCESS && share <= ART_MAX_OFF_SHARE;
+        grounds.push(json!({"ground": ground, "worst": worst, "share": share}));
+    }
+    json!({"pen": name, "ok": ok, "grounds": grounds})
+}
+
+/// The worst excess over antialiasing of `ours` against `pen` (RGBA, both
+/// over `ground`): each pixel against the range of `pen`'s 3×3 window
+/// around it; and the share of pixels more than 8 levels off.
+fn aa_excess(ours: &[u8], pen: &[u8], (w, h): (usize, usize), ground: [f64; 3]) -> (f64, f64) {
+    let at = |data: &[u8], x: usize, y: usize| {
+        let px = &data[(y * w + x) * 4..][..4];
+        let a = f64::from(px[3]) / 255.0;
+        [0, 1, 2].map(|k| f64::from(px[k]) * a + ground[k] * (1.0 - a))
+    };
+    let (mut worst, mut off) = (0.0f64, 0usize);
+    for y in 0..h {
+        for x in 0..w {
+            let ours = at(ours, x, y);
+            let (mut lo, mut hi) = ([255.0f64; 3], [0.0f64; 3]);
+            for yy in y.saturating_sub(1)..(y + 2).min(h) {
+                for xx in x.saturating_sub(1)..(x + 2).min(w) {
+                    let p = at(pen, xx, yy);
+                    for k in 0..3 {
+                        lo[k] = lo[k].min(p[k]);
+                        hi[k] = hi[k].max(p[k]);
+                    }
+                }
+            }
+            let d = (0..3)
+                .map(|k| (lo[k] - ours[k]).max(ours[k] - hi[k]).max(0.0))
+                .fold(0.0, f64::max);
+            worst = worst.max(d);
+            if d > 8.0 {
+                off += 1;
+            }
+        }
+    }
+    (worst, off as f64 / (w * h).max(1) as f64)
 }
 
 /// An SVG with an element GtkSvg doesn't support (`<foreignObject>`).

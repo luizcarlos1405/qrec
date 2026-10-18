@@ -235,6 +235,18 @@ fn the_skeleton_on_the_design_fixture() {
     // own file and recolors in full (G§5.2).
     let icons = gui.ctl(json!({"op": "icons"}));
     assert!(icons["count"].as_u64() >= Some(52), "{icons}");
+    // The art as `gtk::Svg` draws it (and the REC glyph as the icon theme
+    // does), against the pen's PNGs within antialiasing (tests/art.rs holds
+    // rsvg's renders to the same).
+    let pens = gui_support::repo().join("design/export/art");
+    if pens.is_dir() {
+        let art = gui.ctl(json!({"op": "art", "compare": pens, "timeoutMs": 30000}));
+        assert_eq!(art["ok"], true, "{art}");
+        assert_eq!(art["compared"].as_array().map(Vec::len), Some(8), "{art}");
+        let report = serde_json::to_string_pretty(&art["compared"]).expect("JSON");
+        fs::write(nested.shots.join("art-compared.json"), report).expect("write the comparison");
+    }
+    let gui = nested.window(0);
     let local = gui.local();
     assert_eq!(local["panics"], 0, "{local}");
     assert_eq!(local["theme"], "swamp-night", "{local}");
