@@ -780,9 +780,9 @@ fn edit_project(project: &Path, edit: impl FnOnce(&mut Value)) {
 /// level icon in its token, its action (if any) in `accent-text`, and its
 /// e2 shadow on the lanes' `bg` under it. Returns the shot.
 ///
-/// DESIGN's 560 px most isn't checked: the error toast's two-line body
-/// makes it 607 wide in every theme (C23 caps its labels in characters,
-/// `max_width_chars`, not in px), a layout matter outside the theme proofs.
+/// At most DESIGN's 560 too, its body in 2 lines at most (WP9: the error
+/// toast measured 607 wide with 3; C23's labels counted characters, and
+/// the body's line break let it run past its 2 lines).
 fn shoot_toast(
     nested: &mut Nested,
     t: &Tokens,
@@ -800,7 +800,11 @@ fn shoot_toast(
         (x + w / 2.0 - 800.0).abs() <= 1.0,
         "{level}: centered: {x} + {w}"
     );
-    assert!(w >= 360.0, "{level}: {w} wide");
+    assert!((360.0..=561.0).contains(&w), "{level}: {w} wide (360–560)");
+    if let Some(body) = nested.window(0).regions(&["toast-body"]).get("toast-body") {
+        // `body-sm` is 13/18.
+        assert!(body[3] <= 37.0, "{level}: the body is {} high", body[3]);
+    }
     let action_rect = action.then(|| rect(nested, "toast-action-0"));
     let shot = nested.screenshot(level);
     assert_probes(
@@ -898,7 +902,7 @@ fn s25_toasts_in_swamp_day() {
         dismiss(&mut nested);
 
         fs::write(project.join("qrec.json"), "{ \"version\": 1, \"name\": ").expect("qrec.json");
-        wait_toast(&mut nested, "qrec.json on disk is invalid");
+        wait_toast(&mut nested, "qrec.json changed on disk but isn't valid");
         column.push(shoot_toast(&mut nested, &t, "error", "record-text", false));
         assert_clean(&mut nested);
         columns.push(column);

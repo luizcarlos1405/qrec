@@ -1,7 +1,10 @@
 //! The toast host (C23, G§3.7): one toast at a time with a "+N" queue
-//! chip, bottom-centered 12 px above the hint bar, 360–560 wide; info and
-//! success 5 s (8 s with actions), warning 8 s, error until dismissed; at
-//! most two actions. Owner: WP6.
+//! chip, bottom-centered 12 px above the hint bar, 360–560 wide (DESIGN
+//! Lists; × `ui.scale`, and again at once when it changes live: an
+//! `adw::Clamp` holds the toast to the most, its labels wrap inside it, the
+//! body in one paragraph so its "up to 2 lines" are the toast's, WP9);
+//! info and success 5 s (8 s with actions), warning 8 s, error until
+//! dismissed; at most two actions. Owner: WP6.
 //!
 //! [`ToastQueue`] is the GTK-free part (timings, the queue, the actions
 //! shown, the Undo guard): a toast equal to the newest one is that one
@@ -58,6 +61,29 @@ pub fn duration(notice: &Notice) -> Option<Duration> {
 /// The actions a toast shows: at most two (DESIGN), in order.
 pub fn shown_actions(notice: &Notice) -> &[NoticeAction] {
     &notice.actions[..notice.actions.len().min(2)]
+}
+
+/// DESIGN's toast width at 100 % (Lists: 360–560 px).
+pub const MIN_WIDTH: f64 = 360.0;
+pub const MAX_WIDTH: f64 = 560.0;
+
+/// The toast's least and most width (px) at UI scale `scale`.
+pub fn width_bounds(scale: f64) -> (i32, i32) {
+    (
+        (MIN_WIDTH * scale).round() as i32,
+        (MAX_WIDTH * scale).round() as i32,
+    )
+}
+
+/// The body as one paragraph: DESIGN's "up to 2 lines" are the toast's,
+/// and Pango's line limit counts each paragraph's (a body with a line
+/// break showed 3; WP10's S25 shot).
+pub fn body_text(body: &str) -> String {
+    body.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// An action that undoes (`Dispatch(Undo{..})`): enabled only while the
@@ -271,6 +297,16 @@ impl ToastHost {
                 }
             })
             .detach();
+        // The toast shown takes a live `ui.scale` at once (its labels'
+        // sizes come with the CSS).
+        let weak = Rc::downgrade(&host);
+        ctx.theme
+            .subscribe(move |theme| {
+                if let Some(host) = weak.upgrade() {
+                    host.resize(theme.scale());
+                }
+            })
+            .detach();
         Self { root }
     }
 
@@ -299,6 +335,8 @@ const OUT_MS: u32 = 140;
 #[derive(Default)]
 struct Inner {
     queue: ToastQueue,
+    /// The toast shown and the clamp that holds it to DESIGN's width.
+    sized: Option<(gtk::Box, adw::Clamp)>,
     /// The toast's action buttons and the actions they run.
     actions: Vec<(gtk::Button, NoticeAction)>,
     /// The running in or out animation (kept alive while it plays).
@@ -379,14 +417,27 @@ impl Host {
         self.timer.stop();
         let current = self.inner.borrow().queue.current().cloned();
         let Some(queued) = current else {
-            self.inner.borrow_mut().actions.clear();
+            let mut inner = self.inner.borrow_mut();
+            inner.actions.clear();
+            inner.sized = None;
+            drop(inner);
             self.root.set_visible(false);
             return;
         };
         let waiting = self.inner.borrow().queue.waiting();
         let (toast, actions) = self.build(&queued.notice, waiting);
-        self.inner.borrow_mut().actions = actions;
-        self.root.append(&toast);
+        let clamp = adw::Clamp::builder()
+            .unit(adw::LengthUnit::Px)
+            .child(&toast)
+            .build();
+        clamp.set_widget_name("toast-clamp");
+        {
+            let mut inner = self.inner.borrow_mut();
+            inner.actions = actions;
+            inner.sized = Some((toast.clone(), clamp.clone()));
+        }
+        self.resize(self.ctx.theme.scale());
+        self.root.append(&clamp);
         self.root.set_visible(true);
         self.refresh_actions();
         self.animate_in(&toast);
@@ -399,9 +450,9 @@ impl Host {
         waiting: usize,
     ) -> (gtk::Box, Vec<(gtk::Button, NoticeAction)>) {
         let toast = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        toast.set_widget_name("toast");
         toast.add_css_class("qrec-toast");
         toast.add_css_class(level_class(notice.level));
-        toast.set_width_request(360);
         let (icon_name, icon_class) = level_icon(notice.level);
         let icon = gtk::Image::from_icon_name(icon_name);
         icon.set_pixel_size(20);
@@ -413,9 +464,12 @@ impl Host {
         let text = gtk::Box::new(gtk::Orientation::Vertical, 0);
         text.set_hexpand(true);
         let title_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        title_row.set_widget_name("toast-title-row");
         let title = gtk::Label::new(Some(&notice.title));
+        title.set_widget_name("toast-title");
         title.set_xalign(0.0);
         title.set_wrap(true);
+        title.set_wrap_mode(gtk::pango::WrapMode::WordChar);
         title.set_max_width_chars(58);
         title.add_css_class("t-body-strong");
         title.add_css_class("toast-title");
@@ -430,7 +484,8 @@ impl Host {
         }
         text.append(&title_row);
         if let Some(body) = &notice.body {
-            let body_label = gtk::Label::new(Some(body));
+            let body_label = gtk::Label::new(Some(&body_text(body)));
+            body_label.set_widget_name("toast-body");
             body_label.set_xalign(0.0);
             body_label.set_wrap(true);
             body_label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
@@ -483,6 +538,17 @@ impl Host {
         (toast, buttons)
     }
 
+    /// DESIGN's width at UI scale `scale` for the toast shown: at least
+    /// 360, at most 560 (its labels wrap inside), times the scale.
+    fn resize(&self, scale: f64) {
+        let (min, max) = width_bounds(scale);
+        if let Some((toast, clamp)) = &self.inner.borrow().sized {
+            toast.set_width_request(min);
+            clamp.set_maximum_size(max);
+            clamp.set_tightening_threshold(max);
+        }
+    }
+
     /// The Undo guard: actions follow the history cursor.
     fn refresh_actions(&self) {
         let now = self.ctx.store.state().history.cursor;
@@ -509,13 +575,8 @@ impl Host {
                 }
             }
             None => {
-                // The title row is the text column's first child.
-                let title_row = root
-                    .first_child()
-                    .and_then(|toast| toast.first_child())
-                    .and_then(|icon| icon.next_sibling())
-                    .and_then(|text| text.first_child())
-                    .and_downcast::<gtk::Box>();
+                let title_row =
+                    crate::window::find_named(&root, "toast-title-row").and_downcast::<gtk::Box>();
                 if let Some(row) = title_row {
                     let more = gtk::Label::new(Some(&chip));
                     more.set_widget_name("toast-more");
@@ -667,6 +728,20 @@ mod tests {
             label: "Open file".into(),
             action: UiAction::OpenPath(path.into()),
         })
+    }
+
+    /// DESIGN's 360–560 at the UI scale, and a body of one paragraph (its
+    /// 2 lines are the toast's: WP10's S25 error toast showed 3).
+    #[test]
+    fn designs_width_and_one_paragraph() {
+        assert_eq!(width_bounds(1.0), (360, 560));
+        assert_eq!(width_bounds(1.25), (450, 700));
+        assert_eq!(width_bounds(1.5), (540, 840));
+        assert_eq!(
+            body_text("a reason\n\nKeeping  it. \n"),
+            "a reason Keeping  it."
+        );
+        assert_eq!(body_text("one line"), "one line");
     }
 
     #[test]
