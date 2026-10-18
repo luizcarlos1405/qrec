@@ -875,10 +875,11 @@ fn the_packaged_build_opens_the_smoke_fixture() {
 
     // Program plays (GES): the player moves, then parks. The pause waits
     // until the program plays past its first frame: the park snaps the
-    // paused player to the frame the picture shows (G§3.10 step 2), and a
-    // first start of a fresh package can spend most of a second loading
-    // the program on pixman, so a pause 500 ms after `play` parked it at 0
-    // (1 run of 4 after a new `nix build`, the play lane's integration).
+    // paused player to the frame the picture shows (G§3.10 step 2), and
+    // the packaged window can spend most of a second loading the program,
+    // so a pause 500 ms after `play` parked it at 0 (1 run of 4 on pixman
+    // after a new `nix build` at the play lane's integration, 2 of 4 on a
+    // warm package at its audit).
     let play = packaged_cli(&nested, &bin, &no_tools, &project, &["play"]);
     assert_eq!(play["ok"], true, "play: {play}");
     let frame_ns = 1_000_000_000 / 30;

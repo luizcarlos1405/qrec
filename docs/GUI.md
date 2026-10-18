@@ -3160,14 +3160,16 @@ otherwise an info toast titled with the reason.
   per BRIEF S23; other ids: the id and its detail; "✓ 14 other checks
   passed"); X1 lines with the live timer; the D-29 lines; X2 and X3 as
   drawn.
-- After G§0.2 (WP9): `view::palette` (rows from `keymap::palette` +
-  `history.clear`; fuzzy match: subsequence, bonuses for consecutive
-  characters and word starts, ties keep the table order, matched indices
-  for bold; empty query: "Recent" (the last 3 ids run this session), then
-  Record, Playback, Edit, Output, View, Canvas; the short CLI table of
-  D-31); `view::cheatsheet` (three columns: Record, Output, Global (niri)
-  with "Copy niri snippet" │ Playback, View │ Edit, Canvas; "default P"
-  when rebound; search with bold matches; "3 shortcuts match “trim”");
+- After G§0.2 (WP9): `view::palette` (rows from `keymap.bindings` in
+  `GROUPS` order + `KEYLESS`'s `history.clear` after Redo; `keymap::palette`,
+  the older flat list, is used by tests only; fuzzy match: subsequence,
+  bonuses for consecutive characters and word starts, ties keep the table
+  order, matched indices for bold; empty query: "Recent" (the last 3 ids
+  run this session), then Record, Playback, Edit, Output, View, Canvas;
+  the short CLI table of D-31); `view::cheatsheet` (three columns: Record,
+  Output, Global (niri) with "Copy niri snippet" │ Playback, View │ Edit,
+  Canvas; "default P" when rebound; search with bold matches; "3
+  shortcuts match “trim”");
   `view::preferences` (Appearance, Recording, Autocut and Keyboard pages,
   including the conflict banner "1 conflict in ~/.config/qrec/keys.toml",
   "X is bound to both Autocut and Remove clips. Neither runs until one is
@@ -3943,8 +3945,10 @@ measured layout only.
     GS27QA): screen sharing for DP-4 failed: …"), BRIEF's "Screen access
     to DP-4 was denied" needs the shell to report a portal refusal as
     such (S24, the shell's); #7's other refusals keep `action_for`'s
-    reason. S25 draws #5's Undo with `[Ctrl][Z]` and #6's without: the
-    toast's buttons show no caps (a frame call).
+    reason. S25 draws key caps on four toast buttons: #5's and #6's Undo
+    `[Ctrl][Z]`, #9's Show export `[Ctrl][E]` and #11's Try again `[R]`
+    (`design/export/html/S25-toasts.html`); the built toasts' buttons show
+    none, a departure until S25 is built from its frame (WP9's drawn part).
   - S19: the "Recent" group, then Record, Playback, Edit, Output, View
     and Canvas (G§4.11 adds Canvas, the layer nudges); "Clear undo
     history" after Redo (D-19). Labels and CLI forms are the core
@@ -4007,9 +4011,11 @@ held to their sources (f6a6bf3: the worktree's bundle still had a
 WP10 revert check's `panel.css` and `chrome.css`, and S12's summary
 heading came a pixel low in every run here until it was rebuilt; a first
 pixman run on that bundle is discarded, `tmp/integ9/stale-px/`); and the
-packaged case pauses once the program plays (3da95a3: a fresh package's
-first start loaded the program for most of the case's fixed 500 ms on
-pixman, so the park snapped to frame 0, 1 run of 4). On the head's code:
+packaged case pauses once the program plays (3da95a3: the packaged window
+loaded the program for most of the case's fixed 500 ms, so the park
+snapped to frame 0: 1 run of 4 on pixman here, on a fresh package's first
+start, and 2 of 4 on a warm package at the audit, so not a first start's
+alone; 2 of 2 passed with the fix there). On the head's code:
 the workspace 1915 passed, 0 failed, 193 ignored (fmt and clippy
 `-D warnings` clean); nested, on pixman and
 on gles2 alike, gui_shell 22, gui_smoke 2 (its packaged case on the
@@ -4018,10 +4024,14 @@ suite runs' `result`, WP10's package, then on `nix build`'s
 3 of 3 on pixman and 2 of 2 on gles2 after 3da95a3), gui_chrome 15,
 gui_timeline 30, gui_stage 34, gui_panel 21, gui_bin_export 29, gui_live
 9, gui_themes 5, gui_a11y 10, gui_audits 5, gui_text 2: 184 cases each,
-no GLib or GTK critical; gles2's smoke with no stall over 50 ms during
-the steps in 4 of 4 runs (the full run's and 3 alone) and the frame-time
-probe's warm p99 16.58, 16.59 and 16.61 ms in 3 runs alone (16.59 in the
-full run; max 16.67). The scale runs weren't repeated (no change of this
+no GLib or GTK critical (on gles2 that held in this one run only:
+gui_text's GL case failed 7 of 9 gles2 runs at the audit, its control
+leaving no mark, a side effect of the GPU warm-up; fixed after it, see
+"Status after the audit of run `wf_083221c5-8eb`" below); gles2's smoke
+with no stall over 50 ms during the steps in 4 of 4 runs (the full run's
+and 3 alone) and the frame-time probe's warm p99 16.58, 16.59 and
+16.61 ms in 3 runs alone (16.59 in the full run; max 16.67). The scale
+runs weren't repeated (no change of this
 run draws at a scale but the toast, whose bounds follow `ui.scale`:
 `a_toast_keeps_to_designs_width` measures it at 1.5).
 
