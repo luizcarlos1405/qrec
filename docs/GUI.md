@@ -4051,9 +4051,11 @@ compares in `tmp/gui-shots/wp9/`).
     drawn; its search 320×32 at y 60, x 1083–1087 for the frame's 1086
     (Close's `Esc` cap is up to 2 px wider: whole-pixel advances, G§0).
   - S21: the dialog (380, 180, 840×640); the cards 180×132 at y 310 and x
-    412, 611, 810, 1008 (the frame's 413, 611, 809, 1007: the dialog's
-    stroke is drawn inside, WP6's, so its content box is 2 px wider);
-    C27's switch 40×22; the groups' and rows' y within 1 px of the frame.
+    412, 611, 810, 1008, on the frame's pixels within 1 px (a row through
+    them: the cards' grounds start at 612, 811 and 1009 in both; the
+    dialog's stroke is drawn inside, WP6's, so its content box is 2 px
+    wider and the gaps 18–19 px for 18); C27's switch 40×22; the groups'
+    and rows' y within 1 px of the frame.
   - S22: the banner (412, 248, 776×56) for the frame's 248–303 (56 high:
     pen draws its stroke inside the 8 px padding, so the CSS pads 7/7/7/11
     inside a real 1 px border), the search (412, 312, 776×32) at the
@@ -4707,8 +4709,10 @@ D-22, the D-30 caption, D-31. Re-registers `keys.help` and `palette.open`.
   `config_file::set` or `keys_file::{set_binding, reset_binding}` (the
   file's comments and order kept); the window takes the look
   (`apply_look`) or the keymap (`Store::set_keymap`) at once. Keyboard's
-  capture is an editable to the router (`keys::KEY_CAPTURE`). The
-  footers name the files as people read them (`~/.config/qrec/…`).
+  capture is an editable to the router (`keys::KEY_CAPTURE`); once a
+  capture ends or an edit lands, the row's Change shortcut has the
+  keyboard. The footers name the files as people read them
+  (`~/.config/qrec/…`).
 - `widgets/theme_card.rs` (C32), `components/overlays.css` (the palette,
   the sheet, the pages), `toasts::action_binding` (S25's action caps),
   `disk::invalid_why` and `record::portal_refusal` (S25 #10, #11 in the
