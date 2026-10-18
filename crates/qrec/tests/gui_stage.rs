@@ -827,6 +827,70 @@ fn s03_countdown() {
     countdown_case("S03", false);
 }
 
+/// A two-digit countdown (not drawn: C07 and S03 draw one digit):
+/// `recording.countdownSecs` 10 and `qrec record start`. In the `countdown`
+/// type "10" would run into the ring (about 190 px of ink in a 188 px
+/// opening), so it shrinks to stay inside it (`countdown::digit_fit`):
+/// every bright pixel of the ring's disc (the digit's `video-text`) is
+/// inside the ring's inner edge, and there is a digit's worth of them.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_two_digit_countdown_fits_its_ring() {
+    let mut nested = Nested::start(AREA, "countdown-10", Options::default());
+    let project = fixture(
+        &nested,
+        DesignVariant::Base,
+        Some(ui(CanvasMode::Live, 7391)),
+    );
+    let set = nested.cli_json(&project, &["project", "set", "--countdown", "10"]);
+    assert_eq!(set["ok"], true, "{set}");
+    open(&mut nested, &project, Launch::a11y());
+    let mut attempt = 0;
+    let (shot, start) = loop {
+        attempt += 1;
+        let start = record_start_in_background(&nested, &project);
+        wait_phase(&nested, &project, "countdown", Duration::from_secs(20));
+        nested.window(0).wait_idle();
+        let shot = nested.screenshot("countdown");
+        // Still on 10 after the shot: the shot shows 10.
+        let record = status(&nested, &project)["runtime"]["record"].clone();
+        if record["phase"] == "countdown" && record["remaining"] == 10 {
+            break (shot, start);
+        }
+        assert!(attempt < 3, "never shot on 10: {record}");
+        cancel_record(&nested, &project, start);
+    };
+    // The ring is centered on the preview (STAGE's (128, 64, 960, 540)):
+    // its outer radius 100, its 6 px stroke inside that.
+    let s = nested.opts.scale;
+    let (cx, cy) = (608.0 * s, 334.0 * s);
+    let outer = 100.0 * s;
+    let inner = (100.0 - 6.0) * s;
+    let square = nested.opts.rect_px([508.0, 234.0, 200.0, 200.0]);
+    let pixels = gui_support::rgb_pixels(&shot, square);
+    let mut bright = 0;
+    let mut farthest: f64 = 0.0;
+    for (i, p) in pixels.iter().enumerate() {
+        let x = f64::from(square[0]) + (i % square[2] as usize) as f64 + 0.5;
+        let y = f64::from(square[1]) + (i / square[2] as usize) as f64 + 0.5;
+        let r = (x - cx).hypot(y - cy);
+        if r < outer && p.iter().all(|&c| c >= 200) {
+            bright += 1;
+            farthest = farthest.max(r);
+        }
+    }
+    assert!(
+        bright as f64 >= 2000.0 * s * s,
+        "the digits' ink: {bright} bright pixels"
+    );
+    assert!(
+        farthest < inner,
+        "the digits reach {farthest:.1} px from the center, the ring's inner edge is at {inner:.1}"
+    );
+    cancel_record(&nested, &project, start);
+    assert_clean(&mut nested);
+}
+
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s03_countdown_reduced_motion() {

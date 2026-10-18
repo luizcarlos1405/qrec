@@ -59,6 +59,24 @@ pub fn digit_zoom(settled: f64) -> f64 {
     1.12 - 0.12 * motion::EASE_OUT_EXPO.at(settled)
 }
 
+/// How far from the ring's center the digit's ink may reach (logical px
+/// at 100 %): 10 px inside the ring's inner edge.
+pub const DIGIT_ROOM: f64 = RING / 2.0 - RING_STROKE - 10.0;
+
+/// The digit's shrink to stay inside the ring (not drawn: C07 and S03 draw
+/// one digit): 1 for any one digit in the `countdown` type (their ink
+/// boxes' corners stay within [`DIGIT_ROOM`]), less for "10", the widest
+/// countdown (`recording.countdownSecs` is 0–10), whose ink would run into
+/// the ring: its box scaled until its corners are [`DIGIT_ROOM`] × `scale`
+/// from the center. `ink_w` and `ink_h` are device px at `scale`.
+pub fn digit_fit(ink_w: f64, ink_h: f64, scale: f64) -> f64 {
+    let half_diagonal = ink_w.hypot(ink_h) / 2.0;
+    if half_diagonal <= 0.0 {
+        return 1.0;
+    }
+    (DIGIT_ROOM * scale / half_diagonal).min(1.0)
+}
+
 /// What the overlay shows.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CountdownState {
@@ -188,11 +206,12 @@ mod imp {
             attrs.insert(pango::AttrFontFeatures::new("tnum 1"));
             layout.set_attributes(Some(&attrs));
             let (ink, _) = layout.pixel_extents();
+            let fit = digit_fit(f64::from(ink.width()), f64::from(ink.height()), s);
             let mut color = palette.video_text;
             color.set_alpha(color.alpha() * eased.clamp(0.0, 1.0) as f32);
             snapshot.save();
             snapshot.translate(&graphene::Point::new(cx as f32, cy as f32));
-            snapshot.scale(zoom as f32, zoom as f32);
+            snapshot.scale((zoom * fit) as f32, (zoom * fit) as f32);
             let x = -(f64::from(ink.x()) + f64::from(ink.width()) / 2.0);
             let y = -(f64::from(ink.y()) + f64::from(ink.height()) / 2.0);
             snapshot.translate(&graphene::Point::new(x as f32, y as f32));
@@ -245,5 +264,29 @@ impl Countdown {
             _ => {}
         }
         self.queue_draw();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One digit keeps the `countdown` type's size (S03's 3, any of 1–9,
+    /// their ink about 100×117 px at 160 px); "10" (about 190 px of ink)
+    /// shrinks until its box's corners are `DIGIT_ROOM` from the center,
+    /// inside the ring's inner edge, at any scale.
+    #[test]
+    fn a_two_digit_countdown_fits_inside_its_ring() {
+        assert_eq!(digit_fit(100.0, 117.0, 1.0), 1.0);
+        assert_eq!(digit_fit(200.0, 234.0, 2.0), 1.0);
+        assert!(DIGIT_ROOM < RING / 2.0 - RING_STROKE);
+        for scale in [1.0, 1.5, 2.0] {
+            let (w, h) = (190.0 * scale, 117.0 * scale);
+            let fit = digit_fit(w, h, scale);
+            assert!(fit < 0.8, "{fit}");
+            let corner = (w * fit).hypot(h * fit) / 2.0;
+            assert!((corner - DIGIT_ROOM * scale).abs() < 1e-9, "{corner}");
+        }
+        assert_eq!(digit_fit(0.0, 0.0, 1.0), 1.0);
     }
 }
