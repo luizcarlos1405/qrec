@@ -972,6 +972,55 @@ fn starting_capture_started() {
     );
 }
 
+/// S25 #11 as drawn (D-21): a screen the ScreenCast portal refused reads
+/// "Screen access to DP-4 was denied", a closed picker S24's variant; the
+/// take's error keeps the engine's words (its bin row, the log).
+#[test]
+fn a_refused_screen_reads_as_s25_draws_it() {
+    for (why, shown) in [
+        (
+            "the desktop portal denied access to the screen",
+            "Screen access to DP-4 was denied",
+        ),
+        (
+            "Portal request didn't succeed: Other",
+            "Screen access to DP-4 was denied",
+        ),
+        (
+            "screen sharing was cancelled in the dialog",
+            "The screen picker for DP-4 was closed",
+        ),
+    ] {
+        let state = starting(false);
+        let message = format!("screen sharing for DP-4 failed: {why}");
+        let out = event(
+            &state,
+            Event::CaptureFailed {
+                take: Some(take2()),
+                source: Some("L1".into()),
+                message: message.clone(),
+                missing: None,
+            },
+        );
+        let toast = toasts(&out)[0];
+        assert_eq!(toast.title, "Recording didn't start");
+        assert_eq!(
+            toast.body.as_deref(),
+            Some(
+                format!(
+                    "{shown}, so take 2 stopped before any frames. It's marked broken in the bin."
+                )
+                .as_str()
+            ),
+            "{why}"
+        );
+        assert_eq!(
+            out.state.project.takes[&take2()].error.as_deref(),
+            Some(format!("L1 (Monitor DP-4): {message}").as_str())
+        );
+    }
+}
+
 #[test]
 fn starting_capture_failed_breaks_the_take() {
     let state = starting(false);
