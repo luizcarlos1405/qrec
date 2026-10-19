@@ -1,5 +1,5 @@
 //! WP10's theme proofs (docs/GUI.md WP10, BRIEF §7) in a nested headless
-//! sway: S02 and S06 in all four themes, S18 and S25's toasts in Swamp Day
+//! sway: S02, S06 and S12 in all four themes, S18 and S25's toasts in Swamp Day
 //! next to Swamp Night (the approved slice's theme), and the narrow
 //! layout's sheet, whose shades came from libadwaita until WP10. Each
 //! window starts with its theme in `config.toml` (G§3.14: loaded before
@@ -600,6 +600,159 @@ fn s06_program_with_selection_in_every_theme() {
     }
     board(opts.scale, "S06", &shots, None);
     assert_follows_the_theme(&opts, &shots[0][0], &shots[1][0], &VIDEO);
+}
+
+// ------------------------------------------------------------------- S12
+
+/// S12's preset: Program, c3e9 selected, the playhead at 4842 (gui_panel's
+/// S12).
+fn s12_ui() -> UiState {
+    UiState {
+        canvas_mode: CanvasMode::Program,
+        selection: vec![ClipId::from_raw("c3e9")],
+        playhead: 4842,
+        ..UiState::default()
+    }
+}
+
+/// A user stylesheet like the ones desktop color generators write
+/// (Noctalia, pywal, matugen): libadwaita's named colors, dark, in
+/// `$XDG_CONFIG_HOME/gtk-4.0/gtk.css`. GTK loads it at USER priority,
+/// above Qrec's own CSS (issue #2: under one, Swamp Day's autocut title
+/// read the user's `--sidebar-fg-color`, white).
+fn use_dark_user_css(nested: &Nested) {
+    let dir = nested.env.config_home().join("gtk-4.0");
+    fs::create_dir_all(&dir).expect("the gtk-4.0 folder");
+    let mut css = String::new();
+    for (name, color) in [
+        ("window", "#090c34"),
+        ("view", "#090c34"),
+        ("headerbar", "#090c34"),
+        ("popover", "#0f1357"),
+        ("dialog", "#090c34"),
+        ("card", "#0f1357"),
+        ("sidebar", "#0f1357"),
+        ("secondary-sidebar", "#090c34"),
+        ("overview", "#0f1357"),
+    ] {
+        let legacy = name.replace('-', "_");
+        css.push_str(&format!(
+            "@define-color {legacy}_bg_color {color};\n@define-color {legacy}_fg_color #f2f2f3;\n"
+        ));
+        css.push_str(&format!(
+            ":root {{ --{name}-bg-color: {color}; --{name}-fg-color: #f2f2f3; }}\n"
+        ));
+    }
+    css.push_str(":root { --accent-color: #676ee4; --accent-bg-color: #676ee4; }\n");
+    fs::write(dir.join("gtk.css"), css).expect("gtk.css");
+}
+
+/// `Z` then `Shift+C`: the autocut page, its first dry run read.
+fn open_autocut(nested: &mut Nested) {
+    nested.keys(&["-k", "z"]);
+    nested.keys(&["-M", "shift", "-k", "c", "-m", "shift"]);
+    gui_support::poll(Duration::from_secs(10), "the dry run's summary", || {
+        let gui = nested.window(0);
+        gui.wait_idle();
+        let labels = gui.labels("autocut-page");
+        labels
+            .iter()
+            .any(|l| l == "Removes 4 silences")
+            .then_some(())
+    });
+    // The pointer over the hint bar (no hover in the panel).
+    nested.pointer().move_to(1500.0, 984.0);
+    nested.window(0).wait_idle();
+}
+
+/// WCAG's relative luminance of an sRGB color.
+fn luminance(c: [u8; 3]) -> f64 {
+    let lin = |v: u8| {
+        let v = f64::from(v) / 255.0;
+        if v <= 0.040_45 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
+}
+
+/// WCAG's contrast ratio of two colors.
+fn contrast(a: [u8; 3], b: [u8; 3]) -> f64 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// The autocut page's "Autocut" title reads in the theme's `text` over
+/// the panel's `surface`: its glyphs' core pixels are `text`, and the ink
+/// farthest from the ground keeps AA contrast (issue #2: Swamp Day's title
+/// stayed white).
+fn assert_title_in_text(nested: &mut Nested, png: &Path, theme: &'static str) {
+    let t = Tokens::of(theme);
+    let title = rect(nested, "autocut-title");
+    let ground = t.rgb("surface");
+    let ink = gui_support::rgb_pixels(png, device(nested.opts.scale, title))
+        .into_iter()
+        .max_by(|a, b| contrast(*a, ground).total_cmp(&contrast(*b, ground)))
+        .expect("the title's pixels");
+    let ratio = contrast(ink, ground);
+    assert!(
+        ratio >= 4.5,
+        "{theme}: the title's ink {} on {} is {ratio:.2}:1 ({})",
+        hex(ink),
+        hex(ground),
+        png.display()
+    );
+    let glyphs = count_near(nested, png, title, t.rgb("text"), 8);
+    assert!(
+        glyphs >= 20,
+        "{theme}: {glyphs} px of the title read text {} (its ink {}; {})",
+        hex(t.rgb("text")),
+        hex(ink),
+        png.display()
+    );
+}
+
+/// S12 in every theme, each window started in it under a dark user
+/// stylesheet ([`use_dark_user_css`]): the page's title in the theme's
+/// `text`; then Swamp Night switched live to Swamp Day with the page built
+/// and open (a widget that missed the restyle would keep the dark theme's
+/// color).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn s12_the_autocut_page_in_every_theme() {
+    let opts = Options::default();
+    let mut shots = Vec::new();
+    for theme in THEMES {
+        let mut nested = Nested::start(AREA, &format!("S12-{theme}"), opts.clone());
+        let project = fixture(&nested, DesignVariant::Base, &s12_ui());
+        use_dark_user_css(&nested);
+        open(&mut nested, &project, theme, launch());
+        open_autocut(&mut nested);
+        assert_clean(&mut nested);
+        let shot = nested.screenshot("autocut");
+        assert_title_in_text(&mut nested, &shot, theme);
+        shots.push(vec![shot]);
+        close(&mut nested);
+    }
+    board(opts.scale, "S12", &shots, None);
+    // Night to Day live, the page open.
+    let mut nested = Nested::start(AREA, "S12-night-to-day", opts.clone());
+    let project = fixture(&nested, DesignVariant::Base, &s12_ui());
+    use_dark_user_css(&nested);
+    open(&mut nested, &project, "swamp-night", launch());
+    open_autocut(&mut nested);
+    use_theme(&nested, "swamp-day");
+    gui_support::poll(Duration::from_secs(10), "the live switch", || {
+        let gui = nested.window(0);
+        (gui.local()["theme"] == "swamp-day").then_some(())
+    });
+    nested.window(0).wait_idle();
+    assert_clean(&mut nested);
+    let shot = nested.screenshot("switched");
+    assert_title_in_text(&mut nested, &shot, "swamp-day");
+    close(&mut nested);
 }
 
 // ------------------------------------------------------------------- S18

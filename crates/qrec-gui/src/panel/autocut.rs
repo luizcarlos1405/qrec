@@ -173,6 +173,7 @@ impl AutocutPage {
         titles.set_valign(gtk::Align::Center);
         titles.set_hexpand(true);
         let title = label(TITLE, &["t-title"]);
+        title.set_widget_name("autocut-title");
         let subtitle = label("", &["t-caption", "muted"]);
         subtitle.set_ellipsize(gtk::pango::EllipsizeMode::End);
         titles.append(&title);
