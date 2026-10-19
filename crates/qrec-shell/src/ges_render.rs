@@ -38,6 +38,17 @@
 //! (which opens every render node, A§8.10). Use all of it from a worker
 //! thread: building a timeline discovers every file and rendering blocks
 //! while it seeks.
+//!
+//! Files are discovered on thread `qrec-ges-discover`, which iterates a
+//! main context of its own ([`discover`]). GES's discoverer runs its bus on
+//! the main context that is thread-default where a file is asked for, and
+//! `UriClipAsset::request_sync` iterates the global default one: in the
+//! GUI that is GTK's, so the main thread finished each discovery while the
+//! Program player waited, and the player's next file could start its
+//! discovery between the last one's result and its cleanup, on a pipeline
+//! still paused, which the cleanup then reset: that discovery never ended
+//! and the load stalled (GUI G§8.4). One thread now asks for every file and
+//! runs every discovery's callbacks, one after the other.
 
 use std::collections::BTreeMap;
 use std::ffi::c_void;
@@ -72,6 +83,10 @@ pub const MKV_INPOINT_NUDGE_NS: u64 = 2_000_000;
 /// The audio rate of the timeline (fades are counted in its samples).
 pub const AUDIO_RATE: u32 = 48_000;
 
+/// How long discovering one file may take: GES's discoverer gives up on it
+/// then (it waited 60 s), and [`discover`] waits that and a little more.
+pub const DISCOVER_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Why GES couldn't build or render a timeline.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum GesError {
@@ -97,7 +112,10 @@ pub fn init() -> Result<(), GesError> {
     GES.get_or_init(|| {
         // Before ges_init: it already picks its compositor.
         software_only(&gst::Registry::get());
-        ges::init().map_err(|e| format!("GES failed to initialize: {e}"))
+        ges::init().map_err(|e| format!("GES failed to initialize: {e}"))?;
+        ges::DiscovererManager::default()
+            .set_timeout(gst::ClockTime::from_seconds(DISCOVER_TIMEOUT.as_secs()));
+        Ok(())
     })
     .clone()
     .map_err(GesError::Build)
@@ -470,10 +488,66 @@ impl Assets {
         if let Some(asset) = self.0.get(&uri) {
             return Ok(asset.clone());
         }
-        let asset = ges::UriClipAsset::request_sync(&uri)
-            .map_err(|e| GesError::Build(format!("can't read {}: {e}", path.display())))?;
+        let asset = discover(&path, &uri)?;
         self.0.insert(uri, asset.clone());
         Ok(asset)
+    }
+}
+
+/// The main context of thread `qrec-ges-discover`, started once: the
+/// thread runs it until the process ends, with it thread-default, so the
+/// GES discoverer it gets and every callback of its discoveries are on it.
+fn discovery_context() -> Result<glib::MainContext, GesError> {
+    static CONTEXT: OnceLock<Result<glib::MainContext, String>> = OnceLock::new();
+    CONTEXT
+        .get_or_init(|| {
+            let (tx, rx) = mpsc::channel();
+            thread::Builder::new()
+                .name("qrec-ges-discover".into())
+                .spawn(move || {
+                    let context = glib::MainContext::new();
+                    let main_loop = glib::MainLoop::new(Some(&context), false);
+                    let ran = context.with_thread_default(|| {
+                        let _ = tx.send(Ok(context.clone()));
+                        main_loop.run();
+                    });
+                    if let Err(e) = ran {
+                        let _ = tx.send(Err(format!("GES's discovery thread: {e}")));
+                    }
+                })
+                .map_err(|e| format!("can't start GES's discovery thread: {e}"))?;
+            rx.recv_timeout(STEP_TIMEOUT)
+                .unwrap_or_else(|_| Err("GES's discovery thread didn't start".into()))
+        })
+        .clone()
+        .map_err(GesError::Build)
+}
+
+/// The asset of `uri` (the file at `path`): GES's, or discovered on thread
+/// `qrec-ges-discover` (the module docs), waiting at most
+/// [`DISCOVER_TIMEOUT`] and a second.
+fn discover(path: &Path, uri: &str) -> Result<ges::UriClipAsset, GesError> {
+    init()?;
+    let context = discovery_context()?;
+    let (tx, rx) = mpsc::channel();
+    let asked = uri.to_owned();
+    // Never on the caller's thread: that context is the discovery thread's
+    // own, so this goes to it as an idle source.
+    context.invoke(move || {
+        ges::UriClipAsset::new(&asked, None::<&ges::gio::Cancellable>, move |result| {
+            let _ = tx.send(result);
+        });
+    });
+    match rx.recv_timeout(DISCOVER_TIMEOUT + Duration::from_secs(1)) {
+        Ok(Ok(asset)) => Ok(asset),
+        Ok(Err(e)) => Err(GesError::Build(format!(
+            "can't read {}: {e}",
+            path.display()
+        ))),
+        Err(_) => Err(GesError::Timeout(
+            format!("discovering {}", path.display()),
+            DISCOVER_TIMEOUT.as_secs(),
+        )),
     }
 }
 

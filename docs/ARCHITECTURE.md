@@ -2515,7 +2515,11 @@ and `scaled(p, canvas size) == p`.
 `FULL_PREVIEW` pipeline per session on thread `qrec-player`, into the GUI's
 Program sink; calls return at once, loads and seeks coalesce (newest wins).
 - `load`: pause, `ges_render::rebuild_into` (layers cleared, restriction
-  caps from the plan), commit and wait ≤ 10 s for "commited" (a stopped
+  caps from the plan; each new file discovered on thread
+  `qrec-ges-discover`, which runs a main context of its own, ≤ 10 s:
+  discovered on the default context, GTK's, a discovery could start
+  before the last one's cleanup and never end, GUI G§8.4), commit and
+  wait ≤ 10 s for "commited" (a stopped
   pipeline prerolls first: it applies a commit only as it starts; seeking
   before that met the old timeline), an accurate seek to `at_ns`, `Loaded`
   once that frame reached the sink, then play again if it was playing. An

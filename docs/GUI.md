@@ -1374,6 +1374,7 @@ time; A§8.7 rules for every child).
 | `qrec-capture` + GStreamer streaming threads | the capture pipeline (A§8.11) |
 | `qrec-side` | side-channel pump |
 | `qrec-player` | the GES pipeline |
+| `qrec-ges-discover` | GES's file discovery, on a main context of its own (`ges_render::discover`, G§8.4) |
 | `qrec-meters` | meter monitor pipelines |
 | `qrec-preview-<n>` | ffmpeg for thumbnails and peaks |
 | `qrec-preview-trim` | the preview caches' disk-cap trim when a cache starts (G§3.11) |
@@ -5734,19 +5735,33 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   once under a heavier load (6 at once, GStreamer's debug log on) and
   joined the table. And a product race, seen before in a serial run
   (2026-10-17, `s14_stage_with_the_bin`) and more often under a parallel
-  run's load: the Program player's load stalls ("not idle: the player"
+  run's load: the Program player's load stalled ("not idle: the player"
   past `waitIdle`'s 30 s; no `player: Loaded` and no error in the GUI
-  log). The player thread builds the GES timeline with
-  `UriClipAsset::request_sync` (`ges_render::Assets::get`), and GES's
-  discoverer runs its bus on the default main context, which the GTK main
-  thread iterates: with `GST_DEBUG=discoverer:6` a stalled window shows
-  the player thread starting the next file's discovery ("Pipeline going
-  to PAUSED : SUCCESS", not ASYNC) while the main thread was still in the
-  previous one's `discoverer_cleanup`, and nothing more until GES's 60 s
-  discovery timeout. To fix in the player (discover on a context of its
-  own thread, or ask the assets from one thread), not in the tests; until
-  then the scripts run a failed nested case once more and list it as
-  FLAKY (`QREC_NESTED_RETRIES=0`: no retry). The gate's first run (four
+  log). The player thread built the GES timeline with
+  `UriClipAsset::request_sync` (`ges_render::Assets::get`), which runs a
+  loop on the global default main context, and GES's discoverer for that
+  thread ran its bus there too (GStreamer's discoverer takes the context
+  that is thread-default where it starts, the default one without): the
+  GTK main thread iterates that context, so it handled each discovery's
+  end, `discoverer_collect` (the result out: the player's loop quits)
+  then `discoverer_cleanup`. Between the two the player thread could start
+  the next file's discovery on the discoverer's pipeline, still paused
+  ("Pipeline going to PAUSED : SUCCESS", not ASYNC, with
+  `GST_DEBUG=discoverer:6`); the cleanup then reset it, and nothing more
+  came until GES's 60 s discovery timeout. Fixed 2026-10-18 at the source:
+  every file is asked for on thread `qrec-ges-discover`, which runs a main
+  context of its own, thread-default there, so GES's discoverer and every
+  callback of its discoveries are on it and one discovery's cleanup ends
+  before the next starts; `Assets::get` waits at most `DISCOVER_TIMEOUT`
+  (10 s, GES's discoverer timeout too) and a second
+  (`ges_render::discover`). qrec-shell's
+  `fifty_loads_in_a_row_beside_a_busy_main_context` proves it: 50 loads
+  of two new files each, the default context run on a thread of its own
+  as GTK's, and whoever ends a discovery held 10 ms at GStreamer's
+  "Cleaning up" (a loaded machine's scheduler, through a log function):
+  before the fix the first load stalled, 3 runs of 3; after, all 50 in
+  16 s. `scripts/check-quick all` with `QREC_NESTED_RETRIES=0`, twice
+  after it: no stalled load. The gate's first run (four
   matrices, some 840 case runs) also lost a typed key three times: each
   `wtype` run brings the seat a new keyboard 400 ms before its keys, a key
   the compositor gets before the window has bound that keyboard reaches

@@ -551,6 +551,166 @@ fn back_to_back_loads_free_no_running_source() {
     assert_quiet_since(quiet);
 }
 
+/// A loop on the default main context on a thread of its own, as the GUI's
+/// main thread runs GTK's, until dropped.
+struct DefaultContextLoop {
+    main_loop: gst::glib::MainLoop,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl DefaultContextLoop {
+    fn start() -> Self {
+        let main_loop = gst::glib::MainLoop::new(None, false);
+        let running = main_loop.clone();
+        let thread = thread::Builder::new()
+            .name("default-context".into())
+            .spawn(move || running.run())
+            .expect("the loop's thread starts");
+        wait_until("the loop runs", SETTLE, || main_loop.is_running());
+        Self {
+            main_loop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for DefaultContextLoop {
+    fn drop(&mut self) {
+        self.main_loop.quit();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Whichever thread logs GstDiscoverer's "Cleaning up" waits `hold` there,
+/// until dropped: the moment after a discovery's result went out and
+/// before the discoverer cleans up for the next file, where a loaded
+/// machine's scheduler now and then holds a thread back (the window of the
+/// player's load race, G§8.4). GStreamer's own log function is off
+/// meanwhile, so the discoverer's debug lines aren't printed.
+struct HeldCleanups {
+    category: gst::DebugCategory,
+    threshold: gst::DebugLevel,
+    log: Option<gst::log::DebugLogFunction>,
+    holds: Arc<AtomicU64>,
+}
+
+impl HeldCleanups {
+    fn start(hold: Duration) -> Self {
+        let category = gst::DebugCategory::get("discoverer").expect("GstDiscoverer's category");
+        let threshold = category.threshold();
+        let holds = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&holds);
+        gst::log::remove_default_log_function();
+        let log = gst::log::add_log_function(move |cat, level, _, _, _, _, message| {
+            if cat.name() == "discoverer"
+                && level == gst::DebugLevel::Debug
+                && message.get().is_some_and(|m| m.as_str() == "Cleaning up")
+            {
+                counted.fetch_add(1, Ordering::SeqCst);
+                thread::sleep(hold);
+            }
+        });
+        category.set_threshold(gst::DebugLevel::Debug);
+        Self {
+            category,
+            threshold,
+            log: Some(log),
+            holds,
+        }
+    }
+
+    fn holds(&self) -> u64 {
+        self.holds.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for HeldCleanups {
+    fn drop(&mut self) {
+        self.category.set_threshold(self.threshold);
+        if let Some(log) = self.log.take() {
+            gst::log::remove_log_function(log);
+        }
+        // GStreamer's own log function (to stderr), back.
+        unsafe {
+            gst::ffi::gst_debug_add_log_function(
+                Some(gst::ffi::gst_debug_log_default),
+                std::ptr::null_mut(),
+                None,
+            );
+        }
+    }
+}
+
+/// The player's load race (G§8.4): GES discovered each file of a plan on
+/// the default main context, which the GUI's main thread iterates, and the
+/// player's next file could start its discovery after the last one's
+/// result went out but before the discoverer cleaned up after it: set up
+/// on a pipeline still paused, then cleaned away, that discovery never
+/// ended, and the load stalled. 50 loads in a row, each of two files no
+/// load discovered before, with the default context run on a thread of its
+/// own and whoever finishes a discovery held 10 ms before its cleanup (a
+/// loaded machine's scheduler): every load ends, fast (before the fix the
+/// first load stalled, 3 runs of 3).
+#[test]
+fn fifty_loads_in_a_row_beside_a_busy_main_context() {
+    const LOADS: u64 = 50;
+    const FILES: u64 = 2;
+    const FRAMES: u64 = 10;
+    // A load is done well within this; a stalled one waited GES's 60 s.
+    const LOAD_LIMIT: Duration = Duration::from_secs(10);
+    let _serial = serial();
+    let quiet = problems();
+    ges_render::init().unwrap();
+    let env = TestEnv::new();
+    let dir = env.empty_dir("fifty-loads");
+    let fixture = frame_id_fixture(160, 120, FPS, FRAMES);
+    let plan = |load: u64| {
+        let mut plan = frame_id_plan(&dir, FRAMES);
+        let clip = plan.video.remove(0);
+        plan.video = (0..FILES)
+            .map(|k| {
+                let file = format!("load-{load}-{k}.mkv");
+                fs::copy(&fixture, dir.join(&file)).unwrap();
+                GesVideoClip {
+                    file,
+                    layer_priority: k as u32,
+                    ..clip.clone()
+                }
+            })
+            .collect();
+        plan
+    };
+    let _main = DefaultContextLoop::start();
+    let held = HeldCleanups::start(Duration::from_millis(10));
+    let tap = Tap::new(Some(ID_RECT));
+    let events = Events::default();
+    let player = spawn(&tap, &dir, None, &events);
+    for load in 0..LOADS {
+        player.load(plan(load), 0);
+        let n = load as usize + 1;
+        wait_until(&format!("load {n} of {LOADS}"), LOAD_LIMIT, || {
+            events.count(|e| matches!(e, PlayerEvent::Loaded { .. })) >= n
+                || !events.errors().is_empty()
+        });
+        assert!(
+            events.errors().is_empty(),
+            "load {n}: {:?}",
+            events.errors()
+        );
+    }
+    assert!(
+        held.holds() >= LOADS * FILES,
+        "GstDiscoverer logged its cleanup {} times: the hold didn't hold",
+        held.holds()
+    );
+    assert_eq!(tap.showing(0).id, Some(0));
+    stop(player, &events);
+    drop(held);
+    assert_quiet_since(quiet);
+}
+
 /// The playback rate measured over `window` of playing: timeline time per
 /// wall time.
 fn measured_rate(player: &ProgramPlayer, window: Duration) -> f64 {

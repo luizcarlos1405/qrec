@@ -17,9 +17,8 @@
 # render node. Keep the machine otherwise quiet while it runs: the
 # exclusive cases time the window. QREC_NESTED_THREADS sets how many cases
 # run at once (default 6). A failed nested case runs once more and, passed
-# then, is FLAKY in the summary, not a failure: under load the Program
-# player's load can stall (a GstDiscoverer race in the window) and a typed
-# key can be lost (the window binds the run's new keyboard late), G§8.4;
+# then, is FLAKY in the summary, not a failure: under load a typed key can
+# be lost (the window binds the run's new keyboard late), G§8.4;
 # QREC_NESTED_RETRIES=0 for none. Exit status 1 if any step failed.
 set -uo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
