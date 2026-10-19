@@ -16,7 +16,10 @@
 //! same way. The REC glyph (`qrec-record`) is the art's (`tests/art.rs`).
 //! This test renders every file in memory and fails when a committed one
 //! differs (`QREC_UPDATE_ICONS=1` writes them); it is skipped when
-//! `design/` is absent (the Nix build has no `design/`).
+//! `design/` is absent (the Nix build has no `design/`). S04's HTML isn't
+//! committed (`design/qrec.pen` is the source): the Stop square is checked
+//! only after exporting S04 through the pen MCP to
+//! `design/export/html/S04.html` (gitignored).
 //!
 //! **The markup** (checked without `design/`): GTK 4.22 loads a
 //! `-symbolic.svg` from a resource as render nodes
@@ -531,7 +534,9 @@ fn generated(design: &Path) -> BTreeMap<String, String> {
     for icon in read_export(&design.join("icons")) {
         out.insert(icon_file(&icon.name), lucide_icon(&icon));
     }
-    out.insert(icon_file("stop"), stop_icon(design));
+    if design.join("html/S04.html").is_file() {
+        out.insert(icon_file("stop"), stop_icon(design));
+    }
     out.insert(icon_file("pause"), pause_icon());
     out
 }
@@ -565,9 +570,10 @@ fn the_icons_are_the_frames() {
         return;
     };
     let icons = generated(&design);
-    // The frames' Lucide icons (design/export/INDEX.md), the Stop square and
-    // the pause.
-    assert_eq!(icons.len(), 49 + 2, "{:?}", icons.keys());
+    // The frames' Lucide icons (design/export/INDEX.md), the pause and, with
+    // S04's HTML, the Stop square.
+    let stop = usize::from(design.join("html/S04.html").is_file());
+    assert_eq!(icons.len(), 49 + 1 + stop, "{:?}", icons.keys());
     let mut stale = Vec::new();
     for (file, svg) in &icons {
         check_or_write(&icons_dir().join(file), svg, &mut stale);
@@ -578,11 +584,12 @@ fn the_icons_are_the_frames() {
          rewrites them): {stale:#?}"
     );
     // Nothing else: a placeholder no frame uses goes (the REC glyph is the
-    // art's).
+    // art's; without S04's HTML the committed Stop square stays as it is).
     let extra: Vec<String> = installed()
         .iter()
         .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
         .filter(|f| !icons.contains_key(f) && !GENERATED_ELSEWHERE.contains(&f.as_str()))
+        .filter(|f| stop == 1 || *f != icon_file("stop"))
         .collect();
     assert!(
         extra.is_empty(),

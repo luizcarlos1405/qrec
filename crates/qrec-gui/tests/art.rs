@@ -1,5 +1,5 @@
-//! The illustrations (G§3.14), from the pen file's art (`w7Qg8`) as
-//! `design/export/html/artwork.html` draws it: each "Art · …" component is a
+//! The illustrations (G§3.14), from the pen file's art (`w7Qg8`) as its
+//! html-css export, `design/export/html/artwork.html`, draws it: each "Art · …" component is a
 //! box of absolutely placed pieces (an `<svg>` per path, its `viewBox`
 //! stretched over its box, `preserveAspectRatio="none"`; a `<div>` with
 //! `border-radius: 50%` per ellipse, some rotated about their top left),
@@ -25,7 +25,11 @@
 //! (`data/icons/hicolor/<n>x<n>/apps/com.rsensato.qrec.png`): rsvg's render
 //! of the SVG differs visibly at 16 to 64 px (a skin line, the shadow's
 //! edge). `QREC_UPDATE_ART=1` writes the files; the test fails when a
-//! committed one differs, and is skipped when `design/` is absent.
+//! committed one differs, and is skipped when `design/` is absent. The
+//! HTML isn't committed (`design/qrec.pen` is the source): to regenerate
+//! the SVGs, export the `w7Qg8` frame through the pen MCP to
+//! `design/export/html/artwork.html` (gitignored); without it only the
+//! hicolor copies are checked.
 //!
 //! **The renders.** Each SVG, rendered by rsvg-convert at the pen PNGs'
 //! sizes (1× and 2×; the 128 px app icon at 128 and 256), matches the PNG
@@ -53,7 +57,7 @@ fn repo() -> PathBuf {
 
 fn export_dir() -> Option<PathBuf> {
     let dir = repo().join("design/export");
-    dir.join("html/artwork.html").is_file().then_some(dir)
+    dir.join("art").is_dir().then_some(dir)
 }
 
 // ------------------------------------------------------------- the HTML
@@ -579,9 +583,12 @@ fn hicolor_png(size: u32) -> String {
 
 /// Every generated file's content, by its path under the repo.
 fn generated(export: &Path) -> BTreeMap<String, Vec<u8>> {
-    let html = fs::read_to_string(export.join("html/artwork.html")).expect("artwork.html");
-    let tree = parse_html(&html);
     let mut out = BTreeMap::new();
+    let Ok(html) = fs::read_to_string(export.join("html/artwork.html")) else {
+        eprintln!("no design/export/html/artwork.html: the SVGs aren't checked against the pen");
+        return hicolor(export, out);
+    };
+    let tree = parse_html(&html);
     for output in &OUTPUTS {
         let art = tree
             .find(output.component)
@@ -592,6 +599,11 @@ fn generated(export: &Path) -> BTreeMap<String, Vec<u8>> {
             svg_file(output.comment, &shapes, w, h).into_bytes(),
         );
     }
+    hicolor(export, out)
+}
+
+/// Adds the pen's app icon PNGs, copied to the package's hicolor sizes.
+fn hicolor(export: &Path, mut out: BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
     for size in HICOLOR {
         let png = export.join(format!("art/app-icon-{size}.png"));
         out.insert(

@@ -2,13 +2,15 @@
 
 Read-only exports of `design/qrec.pen` made through the pen.dev MCP on 2026-10-17, while the product owner had the file open. The `.pen` file is encrypted; these are the copies tools can read. Regenerate them the same way after the design changes.
 
-- `html/`: every top-level frame as pen.dev's html-css export (no scaffold). Each element carries `data-pencil-name`; positions, sizes, paddings, fonts and resolved colors (Swamp Night) are exact, so measure here rather than on the PNGs. Icons appear as inline SVG with `data-icon-name` (Lucide, outlined to fills).
+- `html/` (not committed, ignored): pen.dev's html-css export of a frame (no scaffold), made through the pen MCP when a tool needs exact positions, sizes, paddings, fonts and resolved colors (Swamp Night) or the icons as inline SVG (`data-icon-name`). `design/qrec.pen` is the source; read it through the pen MCP first. `crates/qrec-gui/tests/art.rs` regenerates the art from `html/artwork.html` and `tests/icons.rs` the Stop square from `html/S04.html` when those are present.
 - `icons/`: one SVG per Lucide icon and drawn size (`<icon>@<w>x<h>.svg`), cut from the frames' HTML. Every size of an icon shares one path on a 14-unit grid.
-- `art/`: the art components as PNG at 1x and 2x, and the app icon at 16–512 px. Their vector form is in `html/artwork.html`. Token fills: the quiet swamp and the signpost use `$muted` and `$border`, the REC glyph `$text-on-record`; the rest are fixed colors.
-- `../components/`: the component sheets and the token sheet at 1x.
+- `art/`: the art components the GUI tests compare against (app icon, quiet swamp, signpost, REC glyph) as PNG at 1x and 2x, and the app icon at 16–512 px; the sample screen and webcam images are in `../../DESIGN-assets/`. Their vector form is the `w7Qg8` frame (`html/artwork.html` when exported). Token fills: the quiet swamp and the signpost use `$muted` and `$border`, the REC glyph `$text-on-record`; the rest are fixed colors.
+- The component sheets and the token sheet live only in `design/qrec.pen`.
 - `../screens/`: the frames at 1x; the drafts S19–S25 and X1–X3 were added in this export. The slice frames were re-exported and compared: 22 of 26 are pixel-identical to the committed PNGs, and S03, S13b, S14 and S17 differ only in icon antialiasing.
 
 The variables (93: 75 colors × 4 themes, 15 numbers, 3 fonts) match `design/tokens/qrec-tokens.json` exactly (one fingerprint over every value).
+
+The frames' node ids, to export one again (`<file>.html` was its name in the 2026-10-17 export):
 
 | HTML file | Node |
 | --- | --- |

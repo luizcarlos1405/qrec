@@ -6,3 +6,5 @@
 *.pending-snap
 *.snap.new
 /tmp/
+# html-css exports of design/qrec.pen, made on demand (design/export/INDEX.md)
+/design/export/html/

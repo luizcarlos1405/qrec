@@ -1901,7 +1901,8 @@ time; A§8.7 rules for every child).
   Night's resolved colors (`design/export/html/artwork.html`, an `<svg>`
   per path with its `viewBox` stretched over its box, a `<div>` with
   `border-radius: 50%` per ellipse, some rotated about their top left) and
-  its PNGs at 1× and 2× (`design/export/art/`). `tests/art.rs` writes each
+  its PNGs at 1× and 2× (`design/export/art/`); the HTML is no longer
+  committed, so re-export `w7Qg8` there to regenerate. `tests/art.rs` writes each
   component as one SVG (`QREC_UPDATE_ART=1`; skipped without `design/`),
   every piece moved into the component's px, a rotated ellipse as two arcs:
   `art/app-icon-24.svg` (`uH1BD`, fixed colors), `art/quiet-swamp.svg`

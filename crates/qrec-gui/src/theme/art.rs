@@ -5,8 +5,8 @@
 //! the header's (WP6).
 //!
 //! The art is the pen file's (`w7Qg8`: `uH1BD`, `rfUfx`, `W1Ia5`), written
-//! by `tests/art.rs` from the 2026-10-17 export
-//! (`design/export/html/artwork.html`): the quiet swamp's and the
+//! by `tests/art.rs` from the 2026-10-17 html-css export of `w7Qg8`
+//! (not committed; re-export it to regenerate): the quiet swamp's and the
 //! signpost's `muted` and `border` fills are `{{muted}}` and `{{border}}`,
 //! the app icon's colors are fixed. The test compares each, rendered, with
 //! the pen's PNGs; the test channel's `art` compares `gtk::Svg`'s renders

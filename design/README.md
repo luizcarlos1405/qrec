@@ -94,7 +94,7 @@ Both files were generated from the pen.dev variables on 2026-10-14, and every co
 
 ## Exports for tools (2026-10-17)
 
-`qrec.pen` is encrypted, so tools read the design through [`export/`](export/INDEX.md): every frame as pen.dev's HTML export (exact positions, sizes, fonts, colors and the icons as SVG), one SVG per icon and size, the art as PNG, and the component sheets in [`components/`](components/). [`export/INDEX.md`](export/INDEX.md) lists what is where and how the exports were checked (the slice PNGs and the tokens still match the document).
+`qrec.pen` is encrypted: read it through the pen MCP. [`export/`](export/INDEX.md) keeps what the build and tests need from it: one SVG per icon and size and the art as PNG (frames are exported as HTML on demand, uncommitted). [`export/INDEX.md`](export/INDEX.md) lists what is where and how the exports were checked (the slice PNGs and the tokens still match the document).
 
 ## Decisions (product owner, 2026-10-15)
 
