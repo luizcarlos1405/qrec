@@ -5847,7 +5847,12 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   data loads after it enters), and a hover that stopped before it loaded
   stays refused, so the release dropped nothing. Both drops now hold the
   drag, a pixel back and forth, until the timeline's tooltip says it took
-  it ("Insert take 2 · slot 7 of 12"). Measured on the dev machine
+  it ("Insert take 2 · slot 7 of 12"). That showed a defect on gles2: the
+  pointer's motion reaches the canvas under a drag there too, and the
+  hovered clip's tooltip took the drop's place (the gles2 shot of the
+  drag over the timeline showed "Split", "Trim", "Remove"); a clip's
+  tooltip never shows while a bin drop hovers now (`timeline/`).
+  Measured on the dev machine
   (16 cores, the desktop in use): the pixman matrix, 210 cases, took
   1,749 s one case at a time (`cargo test`, suite after suite); with
   nextest and the exclusive cases last, 586–613 s with 4 at once and

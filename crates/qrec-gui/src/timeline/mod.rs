@@ -1436,8 +1436,15 @@ impl Inner {
         self.hover_source.stop();
     }
 
-    /// The clip tooltip after the pointer rests on a clip (C33 clip).
+    /// The clip tooltip after the pointer rests on a clip (C33 clip), never
+    /// over a bin drag's own (D-38): the pointer's motion reaches the
+    /// canvas under a drag too, under sway's GLES2 renderer at least, and
+    /// its clip's tooltip took the drop's place.
     fn schedule_hover_tip(&self) {
+        if self.m.borrow().drop.is_some() {
+            self.cancel_hover_tip();
+            return;
+        }
         let hovered = self.ctx.store.local().hover_clip.clone();
         let shown = self.m.borrow().tip_clip.clone();
         if hovered.is_none() {
@@ -1470,6 +1477,9 @@ impl Inner {
     }
 
     fn show_hover_tip(&self) {
+        if self.m.borrow().drop.is_some() {
+            return;
+        }
         let Some(clip) = self.ctx.store.local().hover_clip.clone() else {
             return;
         };
