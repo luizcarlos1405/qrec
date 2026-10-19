@@ -5841,8 +5841,13 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   line). `scripts/check-quick all` with `QREC_NESTED_RETRIES=0` after it:
   no key lost. The same gate saw gui_bin_export's
   `a_bin_row_drags_onto_the_timeline` release its second drop before the
-  window had the drag (1.5, once: no drop at all): both drops wait for
-  `local`'s `drag` now. Measured on the dev machine
+  window had the drag (1.5, once: no drop at all), and again at 2 after a
+  wait for `local`'s `drag`, which is `BinInsert` from the drag's start:
+  the timeline reads the take while the drag hovers (a Wayland drag's
+  data loads after it enters), and a hover that stopped before it loaded
+  stays refused, so the release dropped nothing. Both drops now hold the
+  drag, a pixel back and forth, until the timeline's tooltip says it took
+  it ("Insert take 2 · slot 7 of 12"). Measured on the dev machine
   (16 cores, the desktop in use): the pixman matrix, 210 cases, took
   1,749 s one case at a time (`cargo test`, suite after suite); with
   nextest and the exclusive cases last, 586–613 s with 4 at once and

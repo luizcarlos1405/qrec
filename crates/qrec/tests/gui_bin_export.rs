@@ -1107,7 +1107,12 @@ fn a_bin_row_drags_onto_the_timeline() {
     pointer.drag_to(tx + 2.0, ty + th / 2.0, 12);
     thread::sleep(Duration::from_millis(400));
     pointer.drag_to(tx + 3.0, ty + th / 2.0, 2);
-    // The shot and the drop once the window has the drag over the timeline.
+    // The shot and the drop once the timeline took the drag.
+    hover_until_taken(
+        &mut nested,
+        (tx + 3.0, ty + th / 2.0),
+        "Insert take 4 \u{b7} slot 1 of 11",
+    );
     let gui = nested.window(0);
     let drag = poll(
         Duration::from_secs(10),
@@ -1166,14 +1171,11 @@ fn a_bin_row_drags_onto_the_timeline() {
     pointer.drag_to(boundary + 2.0, ty + th / 2.0, 12);
     thread::sleep(Duration::from_millis(400));
     pointer.drag_to(boundary + 3.0, ty + th / 2.0, 2);
-    // Dropped once the window has the drag over the timeline (as the first
-    // drop reads `drag` before its release): a window busy past the moves
-    // took a release before it as no drop at all (a 1.5 run under load).
-    let gui = nested.window(0);
-    poll(
-        Duration::from_secs(10),
-        "the drag over the timeline",
-        || (gui.local()["drag"] == "binInsert").then_some(()),
+    // Dropped once the timeline took the drag, as the first one.
+    hover_until_taken(
+        &mut nested,
+        (boundary + 3.0, ty + th / 2.0),
+        "Insert take 2 \u{b7} slot 7 of 12",
     );
     nested
         .pointer()
@@ -1207,6 +1209,29 @@ fn a_bin_row_drags_onto_the_timeline() {
     assert_eq!(nested.window(0).local()["drag"], Value::Null);
     assert_clean(&mut nested);
     close(&mut nested);
+}
+
+/// Holds a bin drag at (`x`, `y`) until the timeline's drop target took it
+/// (its tooltip reads `tip`), a pixel back and forth meanwhile. The target
+/// reads the take while the drag hovers (a Wayland drag's data loads after
+/// it enters), and a hover that stopped before the take loaded stays
+/// refused until the drag moves again: a release then dropped nothing
+/// (check-full at 1.5 and 2 under load). `LocalUi.drag` is `BinInsert`
+/// from the drag's start, so it tells nothing of the target.
+fn hover_until_taken(nested: &mut Nested, (x, y): (f64, f64), tip: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    for step in 0u32.. {
+        let shown = nested.window(0).labels("timeline-tooltip");
+        if shown.iter().any(|l| l == tip) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the timeline never took the drag ({tip}): {shown:?}"
+        );
+        nested.pointer().move_to(x + f64::from(step % 2), y);
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// SPEC §7.1, D-38: a bin row dragged onto an empty timeline (S01b: its
