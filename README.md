@@ -125,6 +125,7 @@ my-video/
 
 ```sh
 cargo test --workspace                               # ~1,900 tests; CLI tests spawn ffmpeg
+cargo nextest run --workspace                        # the same but the doc-tests, a process each, ~2x faster
 cargo clippy --workspace --all-targets -- -D warnings
 cargo check -p qrec-core                             # the pure core on its own
 QREC_CAPTURE_BACKEND=fake qrec record start          # record test patterns, no devices

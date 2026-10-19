@@ -5746,7 +5746,20 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   discovery timeout. To fix in the player (discover on a context of its
   own thread, or ask the assets from one thread), not in the tests; until
   then the scripts run a failed nested case once more and list it as
-  FLAKY (`QREC_NESTED_RETRIES=0`: no retry). Measured on the dev machine
+  FLAKY (`QREC_NESTED_RETRIES=0`: no retry). The gate's first run (four
+  matrices, some 840 case runs) also lost a typed key three times: each
+  `wtype` run brings the seat a new keyboard 400 ms before its keys, a key
+  the compositor gets before the window has bound that keyboard reaches
+  no one, and a window whose main loop stalls longer under the load (gaps
+  of ~500 ms between the harness's polls in its log) binds it late; the
+  case then waits for an effect that never comes, and the window's log
+  has no `key` line for it. The keyboard walks lost two (S02's on pixman,
+  S06's at scale 2: a fresh keyboard for each of their 40–60 steps), so a
+  walk's step types a key its router hasn't logged after 3 s once more,
+  never one the router saw (`gui_a11y`'s `step`). `s20_the_cheat_sheet`
+  lost its `Ctrl+,` at 1.5: elsewhere the retry covers it, until the
+  harness types only into a window that has its keyboard (`is-active`,
+  which the test channel doesn't report yet). Measured on the dev machine
   (16 cores, the desktop in use): the pixman matrix, 210 cases, took
   1,749 s one case at a time (`cargo test`, suite after suite); with
   nextest and the exclusive cases last, 586–613 s with 4 at once and
@@ -5768,13 +5781,25 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
     `gui_timeline`'s, the harness every suite's), on pixman, 6 at once;
     `--plan` prints what it would run.
   - `scripts/check-full`, the milestone gate: fmt, clippy, the workspace
-    tests (nextest: 65 s, against 242 s for `cargo test --workspace`; then
-    the doc-tests), `nix build` (4 cores, meanwhile), every suite on gles2
-    and then on pixman (the packaged case on the fresh build), at scale
-    1.5 and 2, G§8.6's probes three times each alone on gles2 (the
-    frame-time probe and the smoke's stalls) and the cache bounds, into
+    tests (nextest, then the doc-tests), `nix build` (4 cores, once the
+    workspace tests are done), every suite on gles2 and then on pixman
+    (the packaged case on the fresh build), at scale 1.5 and 2, G§8.6's
+    probes three times each alone on gles2 (the frame-time probe and the
+    smoke's stalls) and the cache bounds, into
     `tmp/check-full/<date>/summary.txt` (the gles2 shots copied to
     `shots-gles2/` there before the pixman run writes the same names).
+    52 min, all green, on 2026-10-18 (the workspace tests 134 s, `nix
+    build` 602 s, the four matrices 517–634 s each, the probes 2 min;
+    the retry used twice, both the player's race), against some 2 h 17
+    min for the same steps one case at a time.
+  - The workspace tests under nextest: a process per test, so
+    `.config/nextest.toml` keeps qrec-shell's GStreamer pipeline tests one
+    at a time across processes (the `gst-pipelines` group, scheduled
+    first), as `gst_init::testing::serial()` does within libtest's one
+    process (it fails a test that takes it outside the group). 133 s,
+    against 236 s for `cargo test --workspace`; without the group 65 s,
+    but up to 16 pipelines ran at once and one missed its frame beside
+    `nix build`.
 
 ### G§8.5 End-to-end smoke (SPEC §17)
 

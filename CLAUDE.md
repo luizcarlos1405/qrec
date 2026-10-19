@@ -22,10 +22,13 @@ scripts/check-quick [suite...]   # inner loop: fmt, clippy, changed crates' test
 scripts/check-full               # milestone gate: all suites, both renderers, scales, probes, nix build
 ```
 
-The shell links with mold and caches dependency builds with sccache. GUI
-cases run several at once (`cargo nextest run -p qrec --run-ignored only
---test gui_<area>`); a timing-sensitive case says `Options::exclusive` and
-runs alone (docs/GUI.md G§8.4).
+The shell links with mold and caches dependency builds with sccache.
+`cargo nextest run --workspace` runs the tests a process each, about twice
+as fast (no doc-tests; `.config/nextest.toml` keeps qrec-shell's GStreamer
+pipeline tests one at a time). GUI cases run several at once (`cargo
+nextest run -p qrec --run-ignored only --test gui_<area>`); a
+timing-sensitive case says `Options::exclusive` and runs alone
+(docs/GUI.md G§8.4).
 
 ## Rules
 
