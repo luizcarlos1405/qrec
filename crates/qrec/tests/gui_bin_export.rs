@@ -1107,7 +1107,16 @@ fn a_bin_row_drags_onto_the_timeline() {
     pointer.drag_to(tx + 2.0, ty + th / 2.0, 12);
     thread::sleep(Duration::from_millis(400));
     pointer.drag_to(tx + 3.0, ty + th / 2.0, 2);
-    let drag = nested.window(0).local()["drag"].clone();
+    // The shot and the drop once the window has the drag over the timeline.
+    let gui = nested.window(0);
+    let drag = poll(
+        Duration::from_secs(10),
+        "the drag over the timeline",
+        || {
+            let drag = gui.local()["drag"].clone();
+            (drag == "binInsert").then_some(drag)
+        },
+    );
     nested.screenshot("over-timeline");
     nested
         .pointer()
@@ -1157,6 +1166,15 @@ fn a_bin_row_drags_onto_the_timeline() {
     pointer.drag_to(boundary + 2.0, ty + th / 2.0, 12);
     thread::sleep(Duration::from_millis(400));
     pointer.drag_to(boundary + 3.0, ty + th / 2.0, 2);
+    // Dropped once the window has the drag over the timeline (as the first
+    // drop reads `drag` before its release): a window busy past the moves
+    // took a release before it as no drop at all (a 1.5 run under load).
+    let gui = nested.window(0);
+    poll(
+        Duration::from_secs(10),
+        "the drag over the timeline",
+        || (gui.local()["drag"] == "binInsert").then_some(()),
+    );
     nested
         .pointer()
         .button(gui_support::pointer::BUTTON_LEFT, false);

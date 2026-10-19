@@ -270,8 +270,9 @@ fn s19_the_palette_finds_sp() {
     let [px, py, pw, ph] = regions["palette"];
     assert_eq!([px, py, pw, ph], [480.0, 96.0, 640.0, 560.0], "{regions:?}");
     // The twelve rows scroll: S19b's 4 px `border-strong` bar 2 px in from
-    // the palette's right edge, from 4 px under the hairline.
-    let bar = nested.opts.rect_px([1113.0, 176.0, 4.0, 120.0]);
+    // the palette's right edge, from 4 px under the hairline (its middle 2
+    // px probed: at 1.5 its edges share their device px).
+    let bar = nested.opts.rect_px([1114.0, 176.0, 2.0, 120.0]);
     let strong = gui_support::token_rgb("swamp-night", "border-strong");
     let drawn = gui_support::count_near(&shot, bar, strong, 3);
     assert!(

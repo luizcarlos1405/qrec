@@ -508,7 +508,7 @@ impl Nested {
         let pointer = VirtualPointer::connect(&runtime.join(&display), opts.logical());
         Nested {
             windows: Vec::new(),
-            keyboard: Rc::new(SeatKeyboard::default()),
+            keyboard: Rc::new(SeatKeyboard::new(swaysock.clone())),
             pointer,
             sway,
             bus,
@@ -721,6 +721,10 @@ impl Nested {
             log,
             state_home: self.env.state_home(),
         };
+        self.keyboard
+            .windows
+            .borrow_mut()
+            .push(test_socket(&gui.runtime, gui.pid));
         self.windows.push(gui);
         self.windows.last_mut().expect("just pushed")
     }
@@ -827,7 +831,7 @@ impl Nested {
             return KeyboardHold(Rc::clone(seat));
         }
         poll(TOOL_TIMEOUT, "the seat's last keyboard gone", || {
-            (!self.seat_has_keyboard()).then_some(())
+            (!seat_has_keyboard(&self.swaysock)).then_some(())
         });
         let before: Vec<u64> = self
             .windows
@@ -875,15 +879,6 @@ impl Nested {
             },
         );
         hold
-    }
-
-    /// Whether the compositor has a keyboard on the seat.
-    fn seat_has_keyboard(&self) -> bool {
-        let inputs: Value =
-            serde_json::from_str(&self.swaymsg(&["-t", "get_inputs", "-r"])).unwrap_or_default();
-        inputs
-            .as_array()
-            .is_some_and(|all| all.iter().any(|i| i["type"] == "keyboard"))
     }
 
     /// A virtual pointer on the output (keep it while clicking).
@@ -1019,17 +1014,53 @@ pub struct HeldKeys {
 
 /// The seat's keyboard for the key runs ([`Nested::hold_keyboard`]): a
 /// `wtype` that types nothing and waits, while a run holds it.
-#[derive(Default)]
 struct SeatKeyboard {
     holder: RefCell<Option<Child>>,
     holds: Cell<usize>,
+    /// Sway's IPC socket (its inputs).
+    swaysock: PathBuf,
+    /// Each window's test channel.
+    windows: RefCell<Vec<PathBuf>>,
 }
 
 impl SeatKeyboard {
+    fn new(swaysock: PathBuf) -> Self {
+        Self {
+            holder: RefCell::new(None),
+            holds: Cell::new(0),
+            swaysock,
+            windows: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Stops the holder, then waits (a tool's deadline) until the
+    /// compositor has no keyboard left and no window is still active: the
+    /// case goes on with the windows past the keyboard's going, as when a
+    /// run's own keyboard went with its keys. (The holder goes after the
+    /// run, and a compositor busy compositing a scaled Live picture handled
+    /// its end late: a click meanwhile met a window still active, and the
+    /// capture it started ended as the focus left.)
     fn stop(&self) {
-        if let Some(mut holder) = self.holder.borrow_mut().take() {
-            let _ = holder.kill();
-            let _ = holder.wait();
+        let Some(mut holder) = self.holder.borrow_mut().take() else {
+            return;
+        };
+        let _ = holder.kill();
+        let _ = holder.wait();
+        // A case that failed goes no further (and a tool's panic in this
+        // drop would abort the run).
+        if thread::panicking() {
+            return;
+        }
+        let deadline = Instant::now() + TOOL_TIMEOUT;
+        while Instant::now() < deadline
+            && (seat_has_keyboard(&self.swaysock)
+                || self
+                    .windows
+                    .borrow()
+                    .iter()
+                    .any(|w| keyboard_state(w, 2_000).is_some_and(|k| k.active)))
+        {
+            thread::sleep(Duration::from_millis(20));
         }
     }
 }
@@ -1060,6 +1091,50 @@ struct KeyboardState {
     active: bool,
     /// How many keyboards it has bound so far.
     added: u64,
+}
+
+/// The window `pid`'s test channel in the runtime dir `runtime`.
+fn test_socket(runtime: &Path, pid: u32) -> PathBuf {
+    runtime.join(format!("qrec-gui-test-{pid}.sock"))
+}
+
+/// The `keyboard` op's reply from the window at `socket` within `wait_ms`,
+/// or `None` when it doesn't answer (gone, not listening yet, or stalled
+/// past it).
+fn keyboard_state(socket: &Path, wait_ms: u64) -> Option<KeyboardState> {
+    let stream = UnixStream::connect(socket).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(wait_ms + 1_000)))
+        .ok()?;
+    let mut writer = stream.try_clone().ok()?;
+    writeln!(
+        writer,
+        "{}",
+        json!({"op": "keyboard", "timeoutMs": wait_ms})
+    )
+    .ok()?;
+    let mut line = String::new();
+    BufReader::new(&stream).read_line(&mut line).ok()?;
+    let reply: Value = serde_json::from_str(line.trim()).ok()?;
+    Some(KeyboardState {
+        active: reply["active"] == true,
+        added: reply["keyboardsAdded"].as_u64()?,
+    })
+}
+
+/// Whether the compositor at `swaysock` has a keyboard on the seat.
+fn seat_has_keyboard(swaysock: &Path) -> bool {
+    let out = run_tool(
+        Command::new("swaymsg")
+            .args(["-t", "get_inputs", "-r"])
+            .env("SWAYSOCK", swaysock),
+        TOOL_TIMEOUT,
+    );
+    let inputs: Value =
+        serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap_or_default();
+    inputs
+        .as_array()
+        .is_some_and(|all| all.iter().any(|i| i["type"] == "keyboard"))
 }
 
 impl HeldKeys {
@@ -1187,34 +1262,12 @@ impl Gui {
     /// The `keyboard` op's reply within `wait_ms`, or `None` when the
     /// window doesn't answer (gone, not listening yet, or stalled past it).
     fn keyboard_state(&self, wait_ms: u64) -> Option<KeyboardState> {
-        let socket = self
-            .runtime
-            .join(format!("qrec-gui-test-{}.sock", self.pid()));
-        let stream = UnixStream::connect(&socket).ok()?;
-        stream
-            .set_read_timeout(Some(Duration::from_millis(wait_ms + 1_000)))
-            .ok()?;
-        let mut writer = stream.try_clone().ok()?;
-        writeln!(
-            writer,
-            "{}",
-            json!({"op": "keyboard", "timeoutMs": wait_ms})
-        )
-        .ok()?;
-        let mut line = String::new();
-        BufReader::new(&stream).read_line(&mut line).ok()?;
-        let reply: Value = serde_json::from_str(line.trim()).ok()?;
-        Some(KeyboardState {
-            active: reply["active"] == true,
-            added: reply["keyboardsAdded"].as_u64()?,
-        })
+        keyboard_state(&test_socket(&self.runtime, self.pid()), wait_ms)
     }
 
     /// [`Gui::ctl`], `None` when the channel closes without a reply.
     fn try_ctl(&self, request: &Value) -> Option<Value> {
-        let socket = self
-            .runtime
-            .join(format!("qrec-gui-test-{}.sock", self.pid()));
+        let socket = test_socket(&self.runtime, self.pid());
         let wait = request["timeoutMs"].as_u64().unwrap_or(10_000);
         let deadline = Instant::now() + Duration::from_secs(20);
         let stream = loop {

@@ -5471,9 +5471,14 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   nothing and waits (its keyboard on the seat), and returns once a window
   says it bound one more and is active; the run's own keyboard then joins
   the held one, which the window keeps. The holder goes with the last
-  hold (a run's end, `HeldKeys` reaped or dropped), so the seat still has
-  a keyboard only while a run lasts. And the control channel's `dispatch`
-  and `action`.
+  hold (a run's end, `HeldKeys` reaped or dropped), and the run returns
+  once the compositor has no keyboard left and no window is still active,
+  so the seat still has a keyboard only while a run lasts and a click
+  after a key meets an inactive window, as when a run's keyboard went
+  with its keys (check-full's first run of this, at 1.5: a compositor
+  busy with S22's scaled Live picture handled the holder's end late, and
+  the capture a click started meanwhile ended as the focus left). And the
+  control channel's `dispatch` and `action`.
   The seat has a keyboard only while a `wtype` runs, so the window is
   active only then (round 3 integration audit: `is_active` false before
   the first key and after each run). GTK takes `:focus` and
@@ -5818,7 +5823,10 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   (the test channel's `stall`) and types `b` at once, three rounds: the
   bin toggled each time; before the fix the first `b` was lost (no `key`
   line). `scripts/check-quick all` with `QREC_NESTED_RETRIES=0` after it:
-  no key lost. Measured on the dev machine
+  no key lost. The same gate saw gui_bin_export's
+  `a_bin_row_drags_onto_the_timeline` release its second drop before the
+  window had the drag (1.5, once: no drop at all): both drops wait for
+  `local`'s `drag` now. Measured on the dev machine
   (16 cores, the desktop in use): the pixman matrix, 210 cases, took
   1,749 s one case at a time (`cargo test`, suite after suite); with
   nextest and the exclusive cases last, 586–613 s with 4 at once and
