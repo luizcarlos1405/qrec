@@ -7,22 +7,76 @@ already mostly edited: trim, split, reorder, autocut the silences, export.
 
 _Ogres have layers. So do your recordings._
 
+![The Qrec window: the live canvas with a screen and a camera layer, the onion layers panel and the timeline of takes](design/screens/S02-live-idle.png)
+
+Qrec runs on Linux under Wayland (screens through the desktop portal,
+cameras, microphones and system audio through PipeWire/GStreamer). The
+window and the `qrec` command line drive the same project, so you can
+record from a compositor key bind, edit in the window, or let a script or
+an LLM agent do either.
+
+## How it works
+
+### 1. Set up the scene once
+
+A project is a plain folder. Add **layers** (screens and cameras, stacked
+like an onion: drag the camera into a corner, crop it, resize it) and
+**audio tracks** (mics, system audio) with their gain and sync offset.
+Every new take records this scene, and each layer goes to its own file.
+
+![Editing a layer on the canvas: the camera selected with handles, its position, size, crop and opacity in the inspector](design/screens/S13-layer-editing.png)
+
+### 2. Press R, talk, press R
+
+`R` starts a take (after an optional countdown) and stops it; the take is
+appended to the end of the timeline while you watch it grow. Didn't like
+it? `D` discards the last take (undoable). The same works from any app
+with a global key bind (`qrec record toggle`).
+
+![Recording: the REC badge and timer on the canvas, take 10 growing at the end of the timeline](design/screens/S04-recording.png)
+
+### 3. Edit on the magnetic timeline
+
+Takes land as clips on a timeline with no gaps: trim an edge, split at
+the playhead, drag to reorder, and the rest closes up. **Live** shows what
+the cameras see now; **Program** shows the edit. Thumbnails and waveforms
+are per layer and track, and everything is undoable, even after a restart.
+
+![Trimming a clip's start with the frame readout, in the Program view](design/screens/S10-trimming.png)
+
+**Autocut** finds the silences on a chosen track and previews what it
+would remove before you apply it; removed media comes back by dragging a
+clip edge out.
+
+![The autocut panel previewing four silences to remove, marked on the timeline](design/screens/S12-autocut-preview.png)
+
+### 4. Export while you keep editing
+
+Export renders the timeline as it was when you started (MP4 or WebM,
+H.264, VP9 or AV1) into `exports/`, never over an earlier file, and you
+can keep editing meanwhile. `P` saves the current frame as a PNG.
+
+![An export running at 42 % in the export panel while the timeline stays editable](design/screens/S15b-export-running.png)
+
+### Keyboard first, and themed
+
+Every action has a key (the hint bar shows the ones that apply now,
+`?` lists them all, `Ctrl+K` searches every command), and the four themes
+share one layout: Swamp Night, Swamp Day, Dragon's Keep and Ogre Mode.
+
+![Settings › Appearance with the four theme cards](design/screens/S21-settings-appearance.png)
+
+_The screenshots are the approved designs in `design/qrec.pen` (exported
+to `design/screens/`). The GUI tests compare the running window against
+these frames (docs/GUI.md G§7.2)._
+
+## Documentation
+
 - `SPEC.md` — the product spec (what Qrec does and why).
 - `docs/ARCHITECTURE.md` — the engineering contract (types, protocols, rules).
 - `docs/GUI.md` — the window's plan: its architecture, work packages and tests.
 - `docs/RECORDING.md` — capture lessons from the earlier `qrec-tui`.
 - `design/README.md` — the pen.dev designs and the decisions waiting for review.
-
-## Status
-
-| Milestone (SPEC §18) | State |
-| --- | --- |
-| M1 Core + CLI | Done: project model, folder rule, every timeline operation, undo/redo with persistent history, autocut, export (MP4/WebM, VP9/AV1), frame save, `--json` |
-| M2 Capture engine + hosts | Done: GStreamer engine (screens through the portal, cameras, mics, system audio), fake backend, headless host, IPC, locking, crash recovery, `doctor` |
-| M0 Spikes | Export ↔ GES parity verified (per-layer SSIM ≥ 0.986, exact frames). Portal restore tokens, screen/system-audio sync and a 10-minute take verified on real hardware; the camera clap test needs a person (below) |
-| M3 Design | Swamp Night vertical slice in `design/qrec.pen`, **approved** 2026-10-15 (contrast decisions in DESIGN.md) |
-| M4 GUI | Done: the approved slice (S01–S18b) in GTK4/libadwaita: header, stage and canvas, timeline, onion layers panel, bin, export, toasts, modals and Settings › Project, with the adaptive layouts and the end-to-end smoke; the product owner left the review's calls to engineering (docs/GUI.md G§0). A pause shows the frame it parks at, and a CLI or agent seek lands while the window plays. The drafted screens came in M5 (below) |
-| M5 Polish | Done: every drafted screen as drawn (2026-10-17 export): the blocking pages (S23, X1, X2, X3, and the undrawn ones in their shapes but two rare error pages, a folder Qrec can't read and a host that failed, which keep the interim layout), the command palette and the cheat sheet, Settings › Appearance, Keyboard, Recording and Autocut (edits keep `config.toml`'s and `keys.toml`'s comments; a conflicting key runs neither binding), a refused screen on the stage (S24) and S25's toasts in the frame's words, each triggered for real; every icon is the frames' Lucide icon and the art and app icon the pen's. Themes as tokens, proved on the main screens and holding AA contrast; `qrec config set theme`, `ui.scale`, `ui.reduced_motion` and `keys.toml` apply to an open window; screen readers hear the record loop, the toasts and the export's end, and the keyboard reaches every control in BRIEF's order; every screen is checked at 1.5× and 2× and with reduced motion; `nix build` installs a desktop entry and the app icon; the window's main loop holds 50 ms on GL. Each screen is shot next to its frame, the departures listed (docs/GUI.md G§7.2) |
 
 ## Build and run
 
@@ -52,7 +106,7 @@ QREC_CAPTURE_BACKEND=fake cargo run -- --project tmp/try   # test patterns, no d
 
 The package also installs `share/applications/com.rsensato.qrec.desktop`
 and hicolor icons, so `nix profile install .` puts Qrec in the app
-launcher (the app icon is a placeholder until the design's is exported).
+launcher.
 A launcher starts Qrec in `$HOME`, which isn't a project: the window says
 "Not my swamp". Start it from a project folder, or with `--project`.
 
@@ -120,6 +174,17 @@ my-video/
 ├── frames/
 └── .qrec/           # lock, history, UI state, caches, logs
 ```
+
+## Status
+
+| Milestone (SPEC §18) | State |
+| --- | --- |
+| M1 Core + CLI | Done: project model, folder rule, every timeline operation, undo/redo with persistent history, autocut, export (MP4/WebM, VP9/AV1), frame save, `--json` |
+| M2 Capture engine + hosts | Done: GStreamer engine (screens through the portal, cameras, mics, system audio), fake backend, headless host, IPC, locking, crash recovery, `doctor` |
+| M0 Spikes | Export ↔ GES parity verified (per-layer SSIM ≥ 0.986, exact frames). Portal restore tokens, screen/system-audio sync and a 10-minute take verified on real hardware; the camera clap test needs a person (below) |
+| M3 Design | Swamp Night vertical slice in `design/qrec.pen`, **approved** 2026-10-15 (contrast decisions in DESIGN.md) |
+| M4 GUI | Done: the approved slice (S01–S18b) in GTK4/libadwaita: header, stage and canvas, timeline, onion layers panel, bin, export, toasts, modals and Settings › Project, with the adaptive layouts and the end-to-end smoke; the product owner left the review's calls to engineering (docs/GUI.md G§0). A pause shows the frame it parks at, and a CLI or agent seek lands while the window plays. The drafted screens came in M5 (below) |
+| M5 Polish | Done: every drafted screen as drawn (2026-10-17 export): the blocking pages (S23, X1, X2, X3, and the undrawn ones in their shapes but two rare error pages, a folder Qrec can't read and a host that failed, which keep the interim layout), the command palette and the cheat sheet, Settings › Appearance, Keyboard, Recording and Autocut (edits keep `config.toml`'s and `keys.toml`'s comments; a conflicting key runs neither binding), a refused screen on the stage (S24) and S25's toasts in the frame's words, each triggered for real; every icon is the frames' Lucide icon and the art and app icon the pen's. Themes as tokens, proved on the main screens and holding AA contrast; `qrec config set theme`, `ui.scale`, `ui.reduced_motion` and `keys.toml` apply to an open window; screen readers hear the record loop, the toasts and the export's end, and the keyboard reaches every control in BRIEF's order; every screen is checked at 1.5× and 2× and with reduced motion; `nix build` installs a desktop entry and the app icon; the window's main loop holds 50 ms on GL. Each screen is shot next to its frame, the departures listed (docs/GUI.md G§7.2) |
 
 ## Development
 
