@@ -17,8 +17,12 @@
 //!   added: S01b's steps) sends no `LiveStatus`, and its new pipeline
 //!   draws black until its sources deliver: so `waitIdle` also waits for
 //!   the engine's [`LiveControl::progress`] (every `SetLive` handled, each
-//!   video source negotiated in the pipeline it built), then counts
-//!   [`FIRST_FRAMES`] again for each new pipeline.
+//!   video source negotiated in the pipeline it built and each layer's
+//!   first frame drawn into the preview), then counts [`FIRST_FRAMES`]
+//!   again for each new pipeline, from when it settled: a new source
+//!   reports its size before its first frame is drawn, and the frames
+//!   between are the canvas alone (S01b's first screen, black at 1.5 under
+//!   load).
 //!
 //! [`LiveControl::progress`]: qrec_shell::capture::LiveControl::progress
 
@@ -163,8 +167,14 @@ impl LiveWatch {
         match now {
             Readiness::Ready if before != Readiness::Ready => {
                 self.ready_at.set(Some(self.frames.get()));
-                // The pipeline these frames come from.
-                self.generation.set((self.progress)().map(|p| p.generation));
+                // The pipeline these frames come from, once it settled
+                // (every layer drawn); until then they are the canvas
+                // alone, and they count from when it does (`busy`).
+                self.generation.set(
+                    (self.progress)()
+                        .filter(|p| p.settled)
+                        .map(|p| p.generation),
+                );
             }
             Readiness::Ready => {}
             _ => self.ready_at.set(None),
@@ -389,6 +399,47 @@ mod tests {
             generation: 3,
         });
         watch.update(false, &scene, &live);
+        assert_eq!(watch.busy(), None);
+    }
+
+    /// A new source (S01b's first screen) reports its size before its
+    /// first frame is drawn into the preview, which shows the canvas alone
+    /// meanwhile (black): its frames count once the engine settled (every
+    /// layer drawn), not from its status. At 1.5 under load, `waitIdle`
+    /// took ten frames of the canvas alone and the S01b shot was black.
+    #[test]
+    fn a_new_sources_frames_count_once_its_layers_are_drawn() {
+        let progress = Rc::new(Cell::new(LiveProgress {
+            settled: false,
+            generation: 2,
+        }));
+        let watch = LiveWatch::new(Box::new({
+            let progress = Rc::clone(&progress);
+            move || Some(progress.get())
+        }));
+        let scene = testkit::design_project().scene;
+        let mut live = LiveSources::new();
+        for (name, size) in [("DP-4", (2560, 1440)), ("/dev/video0", (1280, 720))] {
+            live.insert(name.into(), view(LiveSourceState::Live, Some(size)));
+        }
+        // Negotiated: the sizes are in; no layer drawn yet.
+        watch.update(true, &scene, &live);
+        assert_eq!(watch.busy().as_deref(), Some("the live pipeline"));
+        // The canvas alone, drawn meanwhile.
+        watch.frames.set(3 * FIRST_FRAMES);
+        assert_eq!(watch.busy().as_deref(), Some("the live pipeline"));
+        // Every layer drawn: the frames count from now.
+        progress.set(LiveProgress {
+            settled: true,
+            generation: 2,
+        });
+        assert_eq!(
+            watch.busy().as_deref(),
+            Some("the live picture's first frames")
+        );
+        watch.frames.set(4 * FIRST_FRAMES - 1);
+        assert!(watch.busy().is_some(), "one frame short");
+        watch.frames.set(4 * FIRST_FRAMES);
         assert_eq!(watch.busy(), None);
     }
 }

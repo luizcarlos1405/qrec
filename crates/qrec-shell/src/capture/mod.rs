@@ -297,11 +297,13 @@ impl std::fmt::Debug for LiveControl {
 /// was given.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveProgress {
-    /// Every `set_live` and `retry_live` so far was handled, and each
-    /// video source of the live pipeline negotiated its caps in it (or
+    /// Every `set_live` and `retry_live` so far was handled, each video
+    /// source of the live pipeline negotiated its caps in it, and each
+    /// preview layer's first frame went into the composite (or its source
     /// died); also with no live pipeline (Program, a portal dialog open,
     /// none wanted). A rebuild that keeps every source's state and size
-    /// sends no `LiveStatus`: this is how a GUI knows it is in progress.
+    /// sends no `LiveStatus`, and a new source reports its size before its
+    /// first frame is drawn: this is how a GUI knows either is in progress.
     pub settled: bool,
     /// The live pipeline the preview comes from (bumped by every build, 0
     /// before the first): a new one draws its own first frames.
@@ -313,12 +315,13 @@ pub struct LiveProgress {
 /// themselves on the caller's thread before the engine thread can see
 /// them, so a `waitIdle` that comes after a request was answered never
 /// sees the last pipeline as settled; the engine thread publishes what it
-/// handled after each command (negotiation first, then the count).
+/// handled after each command (the pipeline's state first, then the
+/// count).
 #[derive(Debug)]
 pub struct LiveTracker {
     asked: AtomicU64,
     handled: AtomicU64,
-    negotiated: AtomicBool,
+    shown: AtomicBool,
     generation: AtomicU64,
 }
 
@@ -334,7 +337,7 @@ impl LiveTracker {
         Self {
             asked: AtomicU64::new(0),
             handled: AtomicU64::new(0),
-            negotiated: AtomicBool::new(true),
+            shown: AtomicBool::new(true),
             generation: AtomicU64::new(0),
         }
     }
@@ -351,21 +354,22 @@ impl LiveTracker {
 
     /// The engine thread, after a command: it handled `handled` asks in
     /// all, the live pipeline `generation` (0: none) shows, and its video
-    /// sources negotiated (or died, or there is none) when `negotiated`.
-    pub fn publish(&self, handled: u64, negotiated: bool, generation: u64) {
+    /// sources negotiated and its preview drew each layer (or they died,
+    /// or there is none) when `shown`.
+    pub fn publish(&self, handled: u64, shown: bool, generation: u64) {
         self.generation.store(generation, Ordering::SeqCst);
-        self.negotiated.store(negotiated, Ordering::SeqCst);
+        self.shown.store(shown, Ordering::SeqCst);
         self.handled.store(handled, Ordering::SeqCst);
     }
 
     pub fn progress(&self) -> LiveProgress {
         // `handled` first: a count that includes the last ask comes with
-        // the negotiation state published with it, or a later one.
+        // the pipeline's state published with it, or a later one.
         let handled = self.handled.load(Ordering::SeqCst);
-        let negotiated = self.negotiated.load(Ordering::SeqCst);
+        let shown = self.shown.load(Ordering::SeqCst);
         let asked = self.asked.load(Ordering::SeqCst);
         LiveProgress {
-            settled: handled >= asked && negotiated,
+            settled: handled >= asked && shown,
             generation: self.generation.load(Ordering::SeqCst),
         }
     }

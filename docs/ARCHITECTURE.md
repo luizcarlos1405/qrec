@@ -2089,9 +2089,12 @@ pipeline first. Paths in the plan are joined with the project dir.
   or `None` (D-32, D-33). Preview only: it never reaches a take. Its
   `progress()` (`LiveProgress { settled, generation }`, from a
   `LiveTracker` the engine shares) says whether every `set_live` and
-  `retry_live` so far was handled and each video source of the live
-  pipeline negotiated in it (or died; trivially without a pipeline), and
-  which pipeline the preview comes from. The asks are counted on the
+  `retry_live` so far was handled, each video source of the live
+  pipeline negotiated in it and each preview layer's first frame went
+  into the composite (`live::watch_drawn`, on the compositor's
+  `samples-selected`: a new source reports its size before that; or its
+  source died; trivially without a pipeline), and which pipeline the
+  preview comes from. The asks are counted on the
   caller's thread, so a reader after a request's answer never sees the
   old pipeline as the new one; the engine thread publishes after each
   command. A rebuild whose sources keep their states and sizes sends no

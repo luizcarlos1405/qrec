@@ -34,7 +34,7 @@
 //!
 //! | op | reply |
 //! | --- | --- |
-//! | `waitIdle` | `{"ok":true,"rev":R}` once the previews, the player and the io worker are idle (checked before the queue: what they send is queued before they say so), the queue is empty, the window's requests are answered (its own export once its job runs: `Store::unsettled_requests`), no source awaits the portal, the window isn't opening, the stage is idle (no program reload due; in Live, the engine settled its live scenes and the picture drew its live sources, also after a rebuild that sent no status: `media::live`), and a frame was drawn after that |
+//! | `waitIdle` | `{"ok":true,"rev":R}` once the previews, the player and the io worker are idle (checked before the queue: what they send is queued before they say so), the queue is empty, the window's requests are answered (its own export once its job runs: `Store::unsettled_requests`), no source awaits the portal, the window isn't opening, the stage is idle (no program reload due; in Live, the engine settled its live scenes, each layer's first frame in the composite, and the picture drew its live sources since, also after a rebuild that sent no status: `media::live`), and a frame was drawn after that |
 //! | `regions` | `{"regions":{"<name>":[x,y,w,h],…}}`: every `region-*` widget and named part (G§8.4), window coordinates; `names` adds widgets by name |
 //! | `labels` | the text of every visible label under the widget `name` (default: the window), and `entries`: each visible text field's value by its nearest given name (`{"inspector-x":"1280"}`) |
 //! | `dispatch` | `Store::dispatch` of `command` (`confirmed`: as confirmed), `{"ok":true}` at once |

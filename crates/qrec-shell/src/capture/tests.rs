@@ -1537,8 +1537,9 @@ fn live_status_follows_a_build() {
 }
 
 /// `LiveControl::progress` (the GUI's `waitIdle`, G§3.18): a `set_live` is
-/// unsettled from the moment it returns until the engine handled it and
-/// every video source of the pipeline it built negotiated there, also for
+/// unsettled from the moment it returns until the engine handled it,
+/// every video source of the pipeline it built negotiated there and every
+/// preview layer's first frame went into the composite, also for
 /// the rebuilds S01b's audio tracks make, which keep both video sources'
 /// states and sizes and so send no status that could tell a GUI (the
 /// S01b shot caught the new pipeline's black frames). A layout change
@@ -1605,6 +1606,9 @@ fn the_live_progress_waits_for_each_rebuild_to_negotiate() {
             .map(|(_, negotiated)| *negotiated)
             .collect();
         assert_eq!(video, [true, true], "scene {i}: {info:?}");
+        // Each layer's first frame went into the composite: the preview
+        // showed the sources, not the canvas alone, when it settled.
+        assert_eq!(info.drawn, [true, true], "scene {i}: {info:?}");
     }
     // The audio tracks' rebuilds told nothing of the video sources: their
     // sizes were there in every status (the cached ones at once).

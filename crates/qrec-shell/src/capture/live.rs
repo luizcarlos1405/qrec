@@ -40,6 +40,7 @@
 
 use std::collections::BTreeMap;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::Sender;
@@ -86,6 +87,9 @@ pub(super) struct PreviewLayer {
     pub pad: gst::Pad,
     /// What the streaming thread applies to `crop` (and `pad`) next.
     pub slot: Arc<Mutex<CropSlot>>,
+    /// A frame of it went into the composite ([`watch_drawn`]): the
+    /// preview shows its source, not the canvas alone.
+    pub drawn: bool,
 }
 
 /// A preview layer's crop as `videocrop` takes it: left, top, right, bottom.
@@ -939,11 +943,51 @@ fn add_preview(live: &Live, scene: &LiveScene, ctx: &BuildCtx<'_>) -> Result<Pre
             crop,
             pad,
             slot,
+            drawn: false,
         };
         apply_layer(&pl, layer, None, z as u32 + 1, scale);
         layers.push(pl);
     }
+    watch_drawn(&compositor, &layers, ctx);
     Ok(Preview { layers, scale })
+}
+
+/// Tells the engine (`Cmd::LayerDrawn`) when each layer's first frame goes
+/// into the composite: the compositor selected a frame of its pad for an
+/// output frame. Until then the preview draws the canvas alone, black for
+/// the scene's sources (the pipeline plays before they deliver, and a
+/// frame that came too late for its slot is dropped), so `LiveProgress`
+/// waits for every layer (S01b's first screen at 1.5 under load).
+fn watch_drawn(compositor: &gst::Element, layers: &[PreviewLayer], ctx: &BuildCtx<'_>) {
+    use gst_video::gst_base::prelude::*;
+    use gst_video::gst_base::{Aggregator, AggregatorPad};
+    let Some(aggregator) = compositor.downcast_ref::<Aggregator>() else {
+        return;
+    };
+    let pads: Vec<(glib::WeakRef<AggregatorPad>, AtomicBool)> = layers
+        .iter()
+        .filter_map(|l| l.pad.downcast_ref::<AggregatorPad>())
+        .map(|pad| (pad.downgrade(), AtomicBool::new(false)))
+        .collect();
+    if pads.len() != layers.len() {
+        return;
+    }
+    let tx = ctx.tx.clone();
+    let generation = ctx.generation;
+    aggregator.set_property("emit-signals", true);
+    aggregator.connect_samples_selected(move |aggregator, _, _, _, _, _| {
+        for (layer, (pad, drawn)) in pads.iter().enumerate() {
+            if drawn.load(Ordering::Relaxed) {
+                continue;
+            }
+            if let Some(pad) = pad.upgrade()
+                && aggregator.peek_next_sample(&pad).is_some()
+            {
+                drawn.store(true, Ordering::Relaxed);
+                let _ = tx.send(Cmd::LayerDrawn { generation, layer });
+            }
+        }
+    });
 }
 
 /// A compositor pad scales its input bilinearly instead of with the default

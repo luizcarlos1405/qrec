@@ -947,9 +947,11 @@ Live, then the project opened in Program).
   `transient_layout(Option<Scene>)`, and `progress()` (round 3
   integration fixes): `LiveProgress { settled, generation }`, where the
   engine is with the live scenes it was given, for `waitIdle` (G§3.18):
-  `settled` once every `set_live`/`retry_live` so far was handled and each
-  video source of the live pipeline negotiated in it (or died, or there is
-  no pipeline); `generation` is the pipeline the preview comes from
+  `settled` once every `set_live`/`retry_live` so far was handled, each
+  video source of the live pipeline negotiated in it and each preview
+  layer's first frame went into the composite (the compositor's
+  `samples-selected`; or its source died, or there is no pipeline);
+  `generation` is the pipeline the preview comes from
   (`capture::LiveTracker`, counted on the caller's thread). It lays the
   preview out until the next `SetLive` (any) or `None`, and never touches
   State: the
@@ -2248,7 +2250,7 @@ previews, the player, io, opening, the portal).
 
 | Request | Reply |
 | --- | --- |
-| `{"op":"waitIdle"}` | `{"ok":true,"rev":R}` once: `PreviewCache::in_flight()` is 0, the player isn't loading or seeking, and every `qrec-gui-io` job finished with no `MediaHub::hold_io_busy` token held (all checked before the queue: what they send is in the queue before they say they are idle; a debounce that leads to io work holds a token, as the autocut page's 250 ms dry-run debounce does until its dry run is sent, WP5); the inbound queue is empty; the GUI's own requests are answered, but for an export of its own once its job runs (`Store::unsettled_requests`: it reported progress and an export is in the job table; WP7 integration); no source is `AwaitingPortal`; the window isn't opening; the stage is idle (`stage::busy`, WP4: no program reload is due, and in Live the engine settled its live scenes, `LiveControl::progress`, and the picture drew 10 frames since its visible live sources had sizes, again for each new pipeline, `media::live::LiveWatch`); the GPU warm-up drew its last cell (`gpu_warmup::pending`, perf lane); and a frame was drawn after all that and it still holds (frame clock `after-paint`) |
+| `{"op":"waitIdle"}` | `{"ok":true,"rev":R}` once: `PreviewCache::in_flight()` is 0, the player isn't loading or seeking, and every `qrec-gui-io` job finished with no `MediaHub::hold_io_busy` token held (all checked before the queue: what they send is in the queue before they say they are idle; a debounce that leads to io work holds a token, as the autocut page's 250 ms dry-run debounce does until its dry run is sent, WP5); the inbound queue is empty; the GUI's own requests are answered, but for an export of its own once its job runs (`Store::unsettled_requests`: it reported progress and an export is in the job table; WP7 integration); no source is `AwaitingPortal`; the window isn't opening; the stage is idle (`stage::busy`, WP4: no program reload is due, and in Live the engine settled its live scenes, `LiveControl::progress` (each layer's first frame in the composite), and the picture drew 10 frames since then and since its visible live sources had sizes, again for each new pipeline, `media::live::LiveWatch`); the GPU warm-up drew its last cell (`gpu_warmup::pending`, perf lane); and a frame was drawn after all that and it still holds (frame clock `after-paint`) |
 | `{"op":"regions","names":[…]}` | `{"regions":{"<name>":[x,y,w,h],…}}`: window-logical bounds of every widget named `region-*` and of the named parts in G§8.4, plus the visible widgets named in `names` (a button a case clicks) |
 | `{"op":"labels","name":"region-header"}` | `{"ok":true,"labels":[…],"entries":{…}}`: the text of every visible label under the widget `name` (default: the window), in tree order, and each visible text field's value by its nearest given name (`"inspector-x": "1280"`, `Gui::entries`; WP5 integration) |
 | `{"op":"dispatch","command":{…},"confirmed":false}` | `Store::dispatch_with` with the default reply policy (confirmations open their modal); `{"ok":true}` at once |
@@ -2288,9 +2290,13 @@ track added: S01b's steps; a rebuilt branch reports its cached size at
 once) sends no `LiveStatus`, and its new pipeline draws black until its
 sources deliver, so `LiveWatch` also reads the engine's
 `LiveControl::progress()` (round 3 integration fixes): busy ("the live
-pipeline") until every `set_live`/`retry_live` so far was handled and
-each video source of the live pipeline negotiated there (or died; at most
-15 s), then 10 frames again for each new pipeline (`generation`). The
+pipeline") until every `set_live`/`retry_live` so far was handled, each
+video source of the live pipeline negotiated there and each preview
+layer's first frame went into the composite (or its source died; at most
+15 s), then 10 frames again for each new pipeline (`generation`), counted
+from then: a new source reports its size before its first frame is drawn,
+and the frames between are the canvas alone (S01b's first screen was
+black at 1.5 under load, 2026-10-19). The
 asks are counted on the session thread before the engine thread sees
 them, so a `waitIdle` after a dispatch's answer never takes the old
 pipeline for the new one (the S01b shots were black in nearly every run

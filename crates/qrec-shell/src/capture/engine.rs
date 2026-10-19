@@ -122,6 +122,12 @@ pub(super) enum Cmd {
         generation: u64,
         source: usize,
     },
+    /// A frame of this preview layer of the live pipeline with this
+    /// generation went into the composite (`live::watch_drawn`).
+    LayerDrawn {
+        generation: u64,
+        layer: usize,
+    },
     /// The portal worker finished an open request.
     PortalDone {
         id: u64,
@@ -163,6 +169,8 @@ pub(super) struct LiveInfo {
     pub preview_size: Option<(u32, u32)>,
     /// Each preview layer's compositor pad.
     pub layers: Vec<PadInfo>,
+    /// Whether a frame of each preview layer went into the composite.
+    pub drawn: Vec<bool>,
     /// Outputs with an open screen share.
     pub casts: Vec<String>,
     /// Screens asked of the portal so far (one per screen per request).
@@ -614,20 +622,28 @@ impl Engine {
 
     /// Publishes where the live picture is (`LiveControl::progress`): the
     /// asks handled, and whether each video source of the live pipeline
-    /// negotiated in it or died (none to wait for without a pipeline). A
-    /// rebuild whose sources keep their states and sizes reports no new
-    /// `LiveStatus`; this is how the GUI's `waitIdle` waits for it.
+    /// negotiated in it and each preview layer's first frame went into the
+    /// composite, or its source died (none to wait for without a
+    /// pipeline). A rebuild whose sources keep their states and sizes
+    /// reports no new `LiveStatus`, and a new source reports its size
+    /// before its first frame is drawn; this is how the GUI's `waitIdle`
+    /// waits for both.
     fn publish_progress(&self) {
-        let (negotiated, generation) = match &self.live {
+        let (settled, generation) = match &self.live {
             Some(live) => (
                 live.sources
                     .iter()
-                    .all(|b| !b.spec.is_video() || b.negotiated || b.dead.is_some()),
+                    .all(|b| !b.spec.is_video() || b.negotiated || b.dead.is_some())
+                    && live.preview.as_ref().is_none_or(|p| {
+                        p.layers
+                            .iter()
+                            .all(|l| l.drawn || live.sources[l.source].dead.is_some())
+                    }),
                 live.generation,
             ),
             None => (true, 0),
         };
-        self.tracker.publish(self.handled, negotiated, generation);
+        self.tracker.publish(self.handled, settled, generation);
     }
 
     fn emit(&self, event: Event) {
@@ -664,6 +680,17 @@ impl Engine {
                 height,
             } => self.on_source_size(generation, source, width, height),
             Cmd::SourceEos { generation, source } => self.on_source_eos(generation, source),
+            Cmd::LayerDrawn { generation, layer } => {
+                if let Some(layer) = self
+                    .live
+                    .as_mut()
+                    .filter(|l| l.generation == generation)
+                    .and_then(|l| l.preview.as_mut())
+                    .and_then(|p| p.layers.get_mut(layer))
+                {
+                    layer.drawn = true;
+                }
+            }
             Cmd::PortalDone { id, results } => {
                 tracing::debug!("capture: portal answer {id}");
                 let results = results
@@ -732,6 +759,9 @@ impl Engine {
             },
             preview_size: preview.map(|p| p.scale.out),
             layers,
+            drawn: preview
+                .map(|p| p.layers.iter().map(|l| l.drawn).collect())
+                .unwrap_or_default(),
             casts: self.casts.keys().cloned().collect(),
             portal_asks: self.portal_asks,
             transient: self.transient.is_some(),
