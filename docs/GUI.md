@@ -5125,7 +5125,10 @@ D-22, the D-30 caption, D-31. Re-registers `keys.help` and `palette.open`.
   (`apply_look`) or the keymap (`Store::set_keymap`) at once. Keyboard's
   capture is an editable to the router (`keys::KEY_CAPTURE`); once a
   capture ends or an edit lands, the row's Change shortcut has the
-  keyboard. The footers name the files as people read them
+  keyboard. A capture ends when the window's focus moves off it (a press
+  elsewhere, Tab), not when the window goes inactive (GTK's `has_focus`
+  is false then): back in the window, a key still binds (S22 checks it
+  with a keyboard that comes to the seat and goes). The footers name the files as people read them
   (`~/.config/qrec/…`).
 - `widgets/theme_card.rs` (C32), `components/overlays.css` (the palette,
   the sheet, the pages), `toasts::action_binding` (S25's action caps),
@@ -5479,7 +5482,9 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   when a run's keyboard went with its keys (check-full's first runs of
   this, at 1.5: a compositor busy with S22's scaled Live picture handled
   the holder's end late, and the capture a click started meanwhile ended
-  as the focus left). A click in gui_overlays comes from a pixel aside:
+  as the focus left; the window still got a run's focus-out after these
+  checks now and then, so a capture now outlives the window going
+  inactive: `settings/`). A click in gui_overlays comes from a pixel aside:
   wlroots drops a motion to where the pointer already is, and GTK presses
   what the last motion found (S22's Change again, its row rebuilt under a
   pointer that hadn't moved, pressed the gone button's parent). And the

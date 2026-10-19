@@ -820,7 +820,8 @@ fn shows(nested: &mut Nested, name: &str) -> bool {
 /// conflict and the file (Open keys.toml); the rows flag X, "default C",
 /// "default P". X runs neither binding (Q5): not by key, and neither the
 /// palette's rows nor the toolbar's Autocut offer it. Change shortcut
-/// captures (S22's capture row): F8 binds Toggle snapping in `keys.toml`,
+/// captures (S22's capture row), the window going inactive meanwhile too:
+/// F8 binds Toggle snapping in `keys.toml`,
 /// its comment kept, and the window takes it at once (the toolbar's Snap
 /// shows F8); Reset puts N back; `Esc` ends a capture and leaves the
 /// dialog open; Backspace unbinds; `Esc` in the search clears it first.
@@ -967,6 +968,16 @@ fn s22_keyboard_conflicts_captures_and_edits() {
             .labels("keys-row-snapping.toggle")
             .contains(&"Press a key \u{b7} Esc cancels \u{b7} Backspace clears".to_owned()),
         "S22's capture caption"
+    );
+    // The window going inactive keeps the capture: a keyboard comes to the
+    // seat and goes (as each key run's does), and F8 below still binds.
+    // (At 1.5 under load, a run's focus-out GTK delivered late ended a
+    // capture that a click had just started.)
+    drop(nested.hold_keyboard());
+    nested.window(0).wait_idle();
+    assert!(
+        shows(&mut nested, "keys-capture"),
+        "the capture ended as the window went inactive"
     );
     // F8 binds it: one line of keys.toml, the comment kept; the window
     // takes the keymap at once.

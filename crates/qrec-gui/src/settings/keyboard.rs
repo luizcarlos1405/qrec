@@ -455,15 +455,15 @@ impl Parts {
             "settings: the capture loses the focus",
             move |_| {
                 if let Some(parts) = parts.upgrade() {
-                    // After the press that moved the focus is handled.
+                    // After the press that moved the focus is handled. It
+                    // ends once the window's focus is elsewhere, not when
+                    // the window goes inactive (GTK's `has_focus` is false
+                    // then): back in the window, a key still binds.
                     crate::guard::idle_local_once("settings: the capture ends", move || {
-                        if parts.capturing.borrow().is_some()
-                            && !parts
-                                .capture
-                                .borrow()
-                                .as_ref()
-                                .is_some_and(|c| c.has_focus())
-                        {
+                        let kept = parts.capture.borrow().as_ref().is_some_and(|c| {
+                            c.root().and_then(|r| r.focus()).as_ref() == Some(c.upcast_ref())
+                        });
+                        if parts.capturing.borrow().is_some() && !kept {
                             parts.end_capture();
                         }
                     });
