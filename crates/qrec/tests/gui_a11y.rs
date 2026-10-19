@@ -29,7 +29,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use gui_support::{
     CLI_TIMEOUT, Gui, Launch, Nested, Options, poll, reap_within, rgb_pixels, token_rgb,
@@ -756,51 +756,21 @@ struct Step {
 
 /// Presses `keys` (one `wtype` run that holds its keyboard), waits for the
 /// focus to move, and shoots while the window is active; then ends the
-/// run (its keys were typed, only its hold is left).
-///
-/// Each run brings the seat a new keyboard 400 ms before its key, and a key
-/// the compositor gets before the window has bound that keyboard is lost:
-/// a window busier than that (many cases at once, G§8.4) binds it late.
-/// A key the window's router never logged within [`LOST_KEY`] is typed
-/// once more, by a second run while the first still holds the keyboard; a
-/// key the router saw is never typed twice, so no step skips a widget.
+/// run (its keys were typed, only its hold is left). The run types once
+/// the window has the seat's keyboard (`Nested::hold_keyboard`, G§8.4):
+/// a busy window no longer misses a step's key, so none is typed twice.
 fn step(nested: &mut Nested, keys: &[&str], name: &str) -> Step {
     let before = focus(nested.window(0));
-    let seen = router_keys(nested.window(0));
-    let typed = Instant::now();
-    let mut held = vec![nested.keys_held(keys, 5000)];
+    let held = nested.keys_held(keys, 5000);
     let focus = poll(
         Duration::from_secs(10),
         &format!("{keys:?} moving the focus"),
-        || {
-            let moved = focus(nested.window(0)).filter(|f| Some(f) != before.as_ref());
-            if moved.is_none()
-                && held.len() == 1
-                && typed.elapsed() >= LOST_KEY
-                && router_keys(nested.window(0)) == seen
-            {
-                held.push(nested.keys_held(keys, 5000));
-            }
-            moved
-        },
+        || focus(nested.window(0)).filter(|f| Some(f) != before.as_ref()),
     );
     nested.window(0).wait_idle();
     let shot = nested.screenshot(name);
     drop(held);
     Step { focus, shot }
-}
-
-/// How long a walk's [`step`] waits for the window's router to see its
-/// key before typing it again.
-const LOST_KEY: Duration = Duration::from_secs(3);
-
-/// The key presses the window's router has seen: its log's `key …` lines
-/// (the router logs each press it decides on, `KeyRouter::handle`).
-fn router_keys(gui: &Gui) -> usize {
-    gui.gui_log()
-        .lines()
-        .filter(|line| line.contains(" key ") && line.contains(" (editable "))
-        .count()
 }
 
 /// The focus-ring color pixels of `shot` in `rect` (the shot's device px)

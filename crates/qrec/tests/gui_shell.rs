@@ -441,6 +441,40 @@ fn the_control_channel_ops_work() {
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
 }
 
+/// A key typed while the window's main loop is held up still lands
+/// (G§8.4): each `wtype` run brings the seat a keyboard of its own, and a
+/// window busy past the run's 400 ms pause handled the seat's news of it
+/// after the key went by (the bind came late, the key reached no one).
+/// Three rounds of the test channel's `stall` (the loop held 2 s) and `b`
+/// right after it: the bin opens and closes each time.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_key_typed_while_the_window_is_busy_lands() {
+    let mut nested = Nested::start("wp0b", "busy-key", Options::default());
+    let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
+    nested.launch(&project, Launch::a11y());
+    wait_for_gui_host(&nested, &project, OPEN);
+    let gui = nested.window(0);
+    gui.wait_phase("open", OPEN);
+    gui.wait_idle();
+    let bin_open =
+        |nested: &Nested| nested.cli_json(&project, &["status"])["data"]["ui"]["binOpen"] == true;
+    for round in 0..3 {
+        let was = bin_open(&nested);
+        let stall = nested.window(0).ctl(json!({"op": "stall", "ms": 2000}));
+        assert_eq!(stall["ok"], true, "{stall}");
+        nested.keys(&["-k", "b"]);
+        gui_support::poll(
+            Duration::from_secs(10),
+            &format!("round {round}: b toggling the bin"),
+            || (bin_open(&nested) != was).then_some(()),
+        );
+    }
+    nested.window(0).wait_idle();
+    nested.close_window();
+    assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
+}
+
 /// A trap takes the toasts out of the focus chain too (G§3.15): with an
 /// error toast up (it stays until dismissed) and a confirmation open, Tab
 /// keeps going round the modal. (It reached the toast's buttons, under the

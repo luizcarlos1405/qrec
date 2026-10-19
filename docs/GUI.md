@@ -2262,6 +2262,8 @@ previews, the player, io, opening, the portal).
 | `{"op":"fonts"}` | the family Pango loads for each bundled font; `ok` when each resolves to itself; `rendering`, GTK's text settings as they are (`mode`, `hintMetrics`, `hinting`, `hintStyle`, `antialias`: G§3.14's experiment), and `renderer`, the window's GSK renderer (`GskGLRenderer`, `GskCairoRenderer`); with `"measure": [{"family", "sizePx", "weight", "text"}]`, `widths`: each text laid out in the window's Pango context, its `logical` and `ink` widths in px (WP10) |
 | `{"op":"icons"}` | each custom symbolic icon drawn in a probe color: found, its pixels, recolored |
 | `{"op":"art"}` | each illustration through `gtk::Svg` (`theme::art`): loaded, its size, drawn pixels and `errors` (GtkSvg's, none for `ok`), and `probeErrors` of a known-bad SVG (`<foreignObject>`; at least one for `ok`: the count works) |
+| `{"op":"keyboard"}` | `{"ok":true,"active":A,"keyboards":K,"keyboardsAdded":N}`: whether a key typed now reaches the window (G§8.4): `active`, it has the keyboard focus (GTK's `is-active`, set on the compositor's `enter`); `keyboards`, the keyboards GTK has bound (the seat's `devices`); `keyboardsAdded`, how many it has bound since it started (`device-added`: one each time the seat gets a keyboard back), so the harness knows the window handled a keyboard newer than the last it saw (2026-10-18) |
+| `{"op":"stall","ms":2000}` | `{"ok":true}`, then the main loop held `ms` (at most 5000): a window too busy to bind the seat's new keyboard before a key run types (G§8.4's lost keys; gui_shell's `a_key_typed_while_the_window_is_busy_lands`) |
 | `{"op":"probe"}` | the main-loop probe's report (G§8.6, WP10): `on`, `ticks`, `stalls` (over 50 ms), `longestMs`, `runningMs` and the newest 64 stalls `kept` (`atMs` since it started, `driftMs`, `ran`: the dispatch that held the loop, or null; `cpuMs`, `runnableMs`, `asleepMs`: where the main thread's time since the tick before went, from its schedstat, perf lane); `{"ok":true,"on":false}` without `QREC_GUI_PROBE=1` |
 
 Dispatches go through the Store (R8); the other ops only read.
@@ -5431,9 +5433,21 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   click) loses the click. `move_to`, `button`,
   `click`, `drag_to` take output-layout px and each ends with a `frame` and
   a `wl_display.sync` round trip. Keys: `Nested::keys`, one `wtype` run
-  per key sequence, `-s 400` first so the compositor has the virtual
-  keyboard's keymap (`wtype -k <key>`, `-M ctrl -k e -m ctrl`). And the
-  control channel's `dispatch` and `action`.
+  per key sequence, `-s 400` first (`wtype -k <key>`, `-M ctrl -k e -m
+  ctrl`), typed only into a window that has the seat's keyboard
+  (`Nested::hold_keyboard`, 2026-10-18): each `wtype` run brings the seat
+  a keyboard of its own, and a window gets keys only once it has handled
+  the seat's news of it, so a window whose main loop stalled past the
+  run's 400 ms (a parallel run's load) missed the key. The first hold
+  waits until the compositor has no keyboard left (`swaymsg -t
+  get_inputs`), asks each window how many keyboards it has bound (the
+  test channel's `keyboard` op, G§3.18), starts a `wtype` that types
+  nothing and waits (its keyboard on the seat), and returns once a window
+  says it bound one more and is active; the run's own keyboard then joins
+  the held one, which the window keeps. The holder goes with the last
+  hold (a run's end, `HeldKeys` reaped or dropped), so the seat still has
+  a keyboard only while a run lasts. And the control channel's `dispatch`
+  and `action`.
   The seat has a keyboard only while a `wtype` runs, so the window is
   active only then (round 3 integration audit: `is_active` false before
   the first key and after each run). GTK takes `:focus` and
@@ -5769,12 +5783,16 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   of ~500 ms between the harness's polls in its log) binds it late; the
   case then waits for an effect that never comes, and the window's log
   has no `key` line for it. The keyboard walks lost two (S02's on pixman,
-  S06's at scale 2: a fresh keyboard for each of their 40–60 steps), so a
-  walk's step types a key its router hasn't logged after 3 s once more,
-  never one the router saw (`gui_a11y`'s `step`). `s20_the_cheat_sheet`
-  lost its `Ctrl+,` at 1.5: elsewhere the retry covers it, until the
-  harness types only into a window that has its keyboard (`is-active`,
-  which the test channel doesn't report yet). Measured on the dev machine
+  S06's at scale 2: a fresh keyboard for each of their 40–60 steps), and
+  `s20_the_cheat_sheet` its `Ctrl+,` at 1.5. Fixed 2026-10-18: the
+  harness types only into a window that has the seat's keyboard
+  (`Nested::hold_keyboard`, Driving above), and the walks' retype of a
+  key their router hadn't logged after 3 s is gone. gui_shell's
+  `a_key_typed_while_the_window_is_busy_lands` holds the window's loop 2 s
+  (the test channel's `stall`) and types `b` at once, three rounds: the
+  bin toggled each time; before the fix the first `b` was lost (no `key`
+  line). `scripts/check-quick all` with `QREC_NESTED_RETRIES=0` after it:
+  no key lost. Measured on the dev machine
   (16 cores, the desktop in use): the pixman matrix, 210 cases, took
   1,749 s one case at a time (`cargo test`, suite after suite); with
   nextest and the exclusive cases last, 586–613 s with 4 at once and

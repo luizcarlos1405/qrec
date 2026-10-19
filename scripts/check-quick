@@ -13,9 +13,9 @@
 # (tmp/dev when this checkout has one, else `nix develop`); the nested
 # cases run in headless sway, never on your display. QREC_NESTED_THREADS
 # sets how many cases run at once (default 6). A failed nested case runs
-# once more and, passed then, is FLAKY, not a failure: under load a typed
-# key can be lost (G§8.4); QREC_NESTED_RETRIES=0 for none. Exit status 1
-# if any step failed.
+# once more and, passed then, is FLAKY, not a failure (no known cause
+# since 2026-10-18's fixes, G§8.4); QREC_NESTED_RETRIES=0 for none. Exit
+# status 1 if any step failed.
 set -uo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 self="$repo/scripts/$(basename "${BASH_SOURCE[0]}")"

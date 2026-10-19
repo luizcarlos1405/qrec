@@ -23,7 +23,8 @@
 //! - Input: [`Nested::pointer`], a virtual pointer that lives as long as it
 //!   is held (headless sway has no pointer device, and one-shot clicks were
 //!   lost); [`Nested::keys`], one `wtype` run per key sequence, `-s 400`
-//!   first so the compositor has the keyboard's keymap;
+//!   first, typed only once a window has the seat's keyboard
+//!   ([`Nested::hold_keyboard`]: a busy window missed a run's key);
 //!   [`Nested::keys_held`], a run in the background that keeps its
 //!   keyboard (and so the window active: focus rings, inline edits) for a
 //!   while after its keys, for a shot taken meanwhile ([`poll`] for what
@@ -50,7 +51,7 @@
 pub mod pointer;
 pub mod slot;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
@@ -60,6 +61,7 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::rc::Rc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -74,6 +76,9 @@ pub use pointer::VirtualPointer;
 pub const MESA_EGL: &str = "/run/opengl-driver/share/glvnd/egl_vendor.d/50_mesa.json";
 /// How long one grim, wtype or swaymsg run may take.
 pub const TOOL_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a window may take to bind the seat's new keyboard and get its
+/// focus ([`Nested::hold_keyboard`]).
+pub const KEYBOARD_TIMEOUT: Duration = Duration::from_secs(20);
 /// How long one CLI run may take (`record stop` finalizes a take).
 pub const CLI_TIMEOUT: Duration = Duration::from_secs(120);
 /// The window's text setup in test mode (`theme::fonts::Rendering`): passed
@@ -342,6 +347,8 @@ impl Drop for Group {
 pub struct Nested {
     /// The window (dropped first), if launched.
     windows: Vec<Gui>,
+    /// The seat's keyboard for the key runs, while one lasts.
+    keyboard: Rc<SeatKeyboard>,
     /// The seat's pointer, from before any window maps to the end.
     pointer: VirtualPointer,
     sway: Group,
@@ -501,6 +508,7 @@ impl Nested {
         let pointer = VirtualPointer::connect(&runtime.join(&display), opts.logical());
         Nested {
             windows: Vec::new(),
+            keyboard: Rc::new(SeatKeyboard::default()),
             pointer,
             sway,
             bus,
@@ -747,9 +755,11 @@ impl Nested {
         path
     }
 
-    /// One `wtype` run (one key sequence), after a 400 ms pause for the
-    /// virtual keyboard's keymap: `keys(&["-M", "ctrl", "-k", "q", "-m", "ctrl"])`.
+    /// One `wtype` run (one key sequence), after a 400 ms pause, typed
+    /// once a window has the seat's keyboard ([`Nested::hold_keyboard`]):
+    /// `keys(&["-M", "ctrl", "-k", "q", "-m", "ctrl"])`.
     pub fn keys(&self, args: &[&str]) {
+        let _keyboard = self.hold_keyboard();
         let out = run_tool(
             self.nested_tool("wtype").args(["-s", "400"]).args(args),
             TOOL_TIMEOUT,
@@ -764,10 +774,12 @@ impl Nested {
     /// One `wtype` run in the background whose virtual keyboard stays
     /// `hold_ms` after its keys: the seat has a keyboard only while a
     /// `wtype` runs, so only then is the window active, with focus rings
-    /// drawn and inline edits kept (G§8.4). Its output goes to
-    /// `<shots>/logs/<case>-wtype.log`; [`HeldKeys::wait`] reaps it, and
-    /// dropping it kills it.
+    /// drawn and inline edits kept (G§8.4). It starts once a window has
+    /// the seat's keyboard ([`Nested::hold_keyboard`], held until the run
+    /// ends). Its output goes to `<shots>/logs/<case>-wtype.log`;
+    /// [`HeldKeys::wait`] reaps it, and dropping it kills it.
     pub fn keys_held(&self, args: &[&str], hold_ms: u32) -> HeldKeys {
+        let keyboard = self.hold_keyboard();
         let log = self
             .shots
             .join("logs")
@@ -792,7 +804,86 @@ impl Nested {
             child: Some(child),
             within: Duration::from_millis(u64::from(hold_ms)) + TOOL_TIMEOUT,
             args: args.iter().map(|a| (*a).to_owned()).collect(),
+            _keyboard: keyboard,
         }
+    }
+
+    /// A keyboard on the seat that a window has bound, with its focus:
+    /// what is typed while the hold lasts reaches the window, however busy
+    /// it is (G§8.4). Each `wtype` run brings the seat a keyboard of its
+    /// own, and a window gets keys only once it has handled the seat's
+    /// news of it: a window that stalled past a run's 400 ms pause (many
+    /// cases at once) missed the run's key. So the first hold starts a
+    /// `wtype` that types nothing and waits, once the seat's last keyboard
+    /// is gone (the window binds a new one then, never keeps an old one),
+    /// and returns once a window says it bound a keyboard since and is
+    /// active (the test channel's `keyboard` op, G§3.18); a run's own
+    /// keyboard joins it there. The holder goes with the last hold, so the
+    /// seat has a keyboard only while a run lasts, as before.
+    pub fn hold_keyboard(&self) -> KeyboardHold {
+        let seat = &self.keyboard;
+        if seat.holds.get() > 0 {
+            seat.holds.set(seat.holds.get() + 1);
+            return KeyboardHold(Rc::clone(seat));
+        }
+        poll(TOOL_TIMEOUT, "the seat's last keyboard gone", || {
+            (!self.seat_has_keyboard()).then_some(())
+        });
+        let before: Vec<u64> = self
+            .windows
+            .iter()
+            .map(|w| w.keyboard_state(10_000).map_or(0, |k| k.added))
+            .collect();
+        let log = self
+            .shots
+            .join("logs")
+            .join(format!("{}-wtype.log", self.case));
+        let out = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+            .unwrap_or_else(|e| panic!("{}: {e}", log.display()));
+        let err = out.try_clone().expect("clone the log");
+        let mut command = self.nested_tool("wtype");
+        command
+            .args(["-s", "120000"])
+            .stdin(Stdio::null())
+            .stdout(out)
+            .stderr(err);
+        process::die_with_parent(&mut command);
+        *seat.holder.borrow_mut() = Some(command.spawn().expect("run wtype"));
+        seat.holds.set(1);
+        // Held from here: a panic below stops the holder.
+        let hold = KeyboardHold(Rc::clone(seat));
+        poll(
+            KEYBOARD_TIMEOUT,
+            "a window with the seat's new keyboard and its focus",
+            || {
+                if let Some(holder) = seat.holder.borrow_mut().as_mut()
+                    && let Ok(Some(status)) = holder.try_wait()
+                {
+                    panic!("the waiting wtype exited ({status}): {}", log.display());
+                }
+                self.windows
+                    .iter()
+                    .zip(&before)
+                    .any(|(w, before)| {
+                        w.keyboard_state(2_000)
+                            .is_some_and(|k| k.active && k.added > *before)
+                    })
+                    .then_some(())
+            },
+        );
+        hold
+    }
+
+    /// Whether the compositor has a keyboard on the seat.
+    fn seat_has_keyboard(&self) -> bool {
+        let inputs: Value =
+            serde_json::from_str(&self.swaymsg(&["-t", "get_inputs", "-r"])).unwrap_or_default();
+        inputs
+            .as_array()
+            .is_some_and(|all| all.iter().any(|i| i["type"] == "keyboard"))
     }
 
     /// A virtual pointer on the output (keep it while clicking).
@@ -922,6 +1013,53 @@ pub struct HeldKeys {
     /// Its hold plus a tool's deadline.
     within: Duration,
     args: Vec<String>,
+    /// The seat's keyboard, held until the run is reaped or killed.
+    _keyboard: KeyboardHold,
+}
+
+/// The seat's keyboard for the key runs ([`Nested::hold_keyboard`]): a
+/// `wtype` that types nothing and waits, while a run holds it.
+#[derive(Default)]
+struct SeatKeyboard {
+    holder: RefCell<Option<Child>>,
+    holds: Cell<usize>,
+}
+
+impl SeatKeyboard {
+    fn stop(&self) {
+        if let Some(mut holder) = self.holder.borrow_mut().take() {
+            let _ = holder.kill();
+            let _ = holder.wait();
+        }
+    }
+}
+
+impl Drop for SeatKeyboard {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// A hold on the seat's keyboard; the last one dropped stops its holder.
+pub struct KeyboardHold(Rc<SeatKeyboard>);
+
+impl Drop for KeyboardHold {
+    fn drop(&mut self) {
+        let left = self.0.holds.get().saturating_sub(1);
+        self.0.holds.set(left);
+        if left == 0 {
+            self.0.stop();
+        }
+    }
+}
+
+/// The test channel's `keyboard` op (G§3.18).
+#[derive(Debug, Clone, Copy)]
+struct KeyboardState {
+    /// The window has the keyboard's focus.
+    active: bool,
+    /// How many keyboards it has bound so far.
+    added: u64,
 }
 
 impl HeldKeys {
@@ -1044,6 +1182,32 @@ impl Gui {
         if let Some(reply) = self.try_ctl(&json!({"op": "action", "id": id})) {
             assert_eq!(reply["ok"], true, "{id}: {reply}");
         }
+    }
+
+    /// The `keyboard` op's reply within `wait_ms`, or `None` when the
+    /// window doesn't answer (gone, not listening yet, or stalled past it).
+    fn keyboard_state(&self, wait_ms: u64) -> Option<KeyboardState> {
+        let socket = self
+            .runtime
+            .join(format!("qrec-gui-test-{}.sock", self.pid()));
+        let stream = UnixStream::connect(&socket).ok()?;
+        stream
+            .set_read_timeout(Some(Duration::from_millis(wait_ms + 1_000)))
+            .ok()?;
+        let mut writer = stream.try_clone().ok()?;
+        writeln!(
+            writer,
+            "{}",
+            json!({"op": "keyboard", "timeoutMs": wait_ms})
+        )
+        .ok()?;
+        let mut line = String::new();
+        BufReader::new(&stream).read_line(&mut line).ok()?;
+        let reply: Value = serde_json::from_str(line.trim()).ok()?;
+        Some(KeyboardState {
+            active: reply["active"] == true,
+            added: reply["keyboardsAdded"].as_u64()?,
+        })
     }
 
     /// [`Gui::ctl`], `None` when the channel closes without a reply.

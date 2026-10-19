@@ -48,6 +48,8 @@
 //! | `icons` | every icon of the GResource (`count`) through the window's icon theme: found, its own resource `file`, and drawn at 16 px with a probe color in each of GTK's four symbolic slots, every pixel in the foreground's (`recolored`: symbolic, recolored in full, no status color) |
 //! | `art` | each illustration through `gtk::Svg`: its size, drawn pixels and SVG errors (none for `ok`), and a known-bad probe whose errors must be counted; with `compare` (a folder of the pen's PNGs, `design/export/art/`), each drawn at 1× and 2× and the REC glyph through the icon theme, against the pen's PNG within antialiasing (`compared`: the worst excess and the share over 8 levels, over `bg` and over white) |
 //! | `probe` | the main-loop probe's report (`probe::report`, G§8.6): `on`, its `ticks`, `stalls` (over 50 ms), `longestMs` and the newest stalls `kept` (`atMs`, `driftMs`, `ran`: the dispatch that held the loop; `cpuMs`, `runnableMs`, `asleepMs`: where the main thread's time went, from its schedstat); `on: false` without `QREC_GUI_PROBE=1` |
+//! | `keyboard` | whether a key typed now reaches the window (G§8.4): `active` (it has the keyboard focus), `keyboards` (the keyboards GTK has bound) and `keyboardsAdded` (how many it has bound so far: the harness types once one came after its own keyboard started) |
+//! | `stall` | `{"ok":true}`, then holds the main loop `ms` (at most 5000): a window too busy to bind the seat's new keyboard before a key run types (G§8.4's lost keys, gui_shell's case) |
 //!
 //! Dispatches go through the Store (R8), a pushed inventory through the
 //! queue as discovery's answer; the other ops only read.
@@ -60,6 +62,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -283,7 +286,26 @@ pub fn listen(queue: Queue) -> Option<Channel> {
         return None;
     }
     tracing::info!("test channel on {}", path.display());
+    count_keyboards();
     Some(Channel { path })
+}
+
+/// The keyboards GTK has bound in this window's seat so far (the `keyboard`
+/// op): the seat gets one each time a `wtype` run brings the compositor
+/// its first virtual keyboard, once the window handled that.
+static KEYBOARDS_ADDED: AtomicU64 = AtomicU64::new(0);
+
+/// Counts the keyboards GTK binds from now on ([`KEYBOARDS_ADDED`]).
+fn count_keyboards() {
+    let Some(seat) = gdk::Display::default().and_then(|d| d.default_seat()) else {
+        tracing::warn!("test channel: no seat; the keyboard op counts nothing");
+        return;
+    };
+    seat.connect_device_added(guarded!("test channel: a keyboard", move |_, device| {
+        if device.source() == gdk::InputSource::Keyboard {
+            KEYBOARDS_ADDED.fetch_add(1, Ordering::SeqCst);
+        }
+    }));
 }
 
 /// One connection: a request line in, its reply line out.
@@ -368,6 +390,8 @@ pub fn handle(app: &Rc<App>, request: TestRequest) {
         "icons" => icons(app),
         "art" => art(app, &request),
         "probe" => crate::probe::report(),
+        "keyboard" => keyboard(app),
+        "stall" => return stall(&request, &reply),
         "paletteRecent" => palette_recent(&request),
         other => json!({"ok": false, "error": format!("no op {other:?}")}),
     };
@@ -619,6 +643,31 @@ fn sources(app: &App, request: &Value) -> Value {
         }
         Err(e) => json!({"ok": false, "error": format!("not an inventory: {e}")}),
     }
+}
+
+/// Answers, then holds the main loop `ms` (at most 5000; test mode only):
+/// a window busy past a key run's pause (G§8.4).
+fn stall(request: &Value, reply: &Reply) {
+    let ms = request["ms"].as_u64().unwrap_or(0).min(5_000);
+    answer(reply, json!({"ok": true}));
+    guard::idle_local_once("test channel: stall", move || {
+        thread::sleep(Duration::from_millis(ms));
+    });
+}
+
+/// Whether a key typed now reaches the window: GTK makes it active once
+/// the compositor gave its surface the focus of a keyboard it bound.
+fn keyboard(app: &App) -> Value {
+    let window = &app.window.window;
+    let keyboards = WidgetExt::display(window).default_seat().map_or(0, |seat| {
+        seat.devices(gdk::SeatCapabilities::KEYBOARD).len()
+    });
+    json!({
+        "ok": true,
+        "active": window.is_active(),
+        "keyboards": keyboards,
+        "keyboardsAdded": KEYBOARDS_ADDED.load(Ordering::SeqCst),
+    })
 }
 
 fn hints(app: &App) -> Value {
