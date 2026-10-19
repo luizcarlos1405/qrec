@@ -1304,9 +1304,16 @@ impl Gui {
         Some(serde_json::from_str(line.trim()).unwrap_or_else(|e| panic!("{line:?}: {e}")))
     }
 
-    /// `waitIdle` (G§3.18): panics when the window doesn't settle.
+    /// `waitIdle` (G§3.18): panics when the window doesn't settle in 30 s.
     pub fn wait_idle(&self) -> u64 {
-        let reply = self.ctl(json!({"op": "waitIdle", "timeoutMs": 30_000}));
+        self.wait_idle_within(Duration::from_secs(30))
+    }
+
+    /// [`Gui::wait_idle`] within `within` (a window that compiles its GL
+    /// programs in software, gui_text's, at 2× under a parallel run).
+    pub fn wait_idle_within(&self, within: Duration) -> u64 {
+        let ms = u64::try_from(within.as_millis()).unwrap_or(u64::MAX);
+        let reply = self.ctl(json!({"op": "waitIdle", "timeoutMs": ms}));
         assert_eq!(reply["ok"], true, "waitIdle: {reply}");
         reply["rev"].as_u64().unwrap_or(0)
     }

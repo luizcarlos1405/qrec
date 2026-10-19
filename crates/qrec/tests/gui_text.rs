@@ -194,7 +194,10 @@ fn title_trace(case: &str, spec: &str) -> (usize, Vec<PathBuf>, Vec<Value>) {
         wait_for_gui_host(&nested, &project, OPEN);
         let gui = nested.window(0);
         gui.wait_phase("open", OPEN);
-        gui.wait_idle();
+        // The GPU warm-up compiles GSK's programs in llvmpipe (two
+        // threads): at 2× under a parallel run, past `wait_idle`'s 30 s
+        // (check-full, 2026-10-19).
+        gui.wait_idle_within(Duration::from_secs(90));
         fonts.push(gui.ctl(json!({"op": "fonts"})));
         let renamed = nested.cli_json(&project, &["project", "set", "--name", PLAIN_TITLE]);
         assert_eq!(renamed["ok"], true, "{renamed}");
