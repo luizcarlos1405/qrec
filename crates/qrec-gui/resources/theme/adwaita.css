@@ -3,9 +3,13 @@
  * Qrec's tokens, so its own widgets (header bar, popovers, entries,
  * switches, scales) draw in the theme. Owner: WP0b.
  *
- * Loaded with base.css and the components at APPLICATION + 1, after the
- * theme's token provider (APPLICATION). No color is written here: every
- * value is a token (crates/qrec-gui/tests/tokens.rs holds that).
+ * Loaded on its own at USER + 1: above the theme's token provider
+ * (APPLICATION), base.css and the components (APPLICATION + 1), and the
+ * user's gtk-4.0/gtk.css (USER), where desktop color generators (Noctalia,
+ * pywal, matugen) redefine these variables; text that inherits them read
+ * the desktop's colors in place of the theme's (issue #2). No color is
+ * written here: every value is a token (crates/qrec-gui/tests/tokens.rs
+ * holds that).
  */
 
 :root {

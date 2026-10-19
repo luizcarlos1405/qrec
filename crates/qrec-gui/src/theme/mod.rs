@@ -11,11 +11,16 @@
 //! through [`css::scale_px`]):
 //! - the theme's generated tokens, `theme/tokens/<theme>.css`, at
 //!   `APPLICATION`;
-//! - one provider at `APPLICATION + 1` with `theme/adwaita.css` (the
-//!   libadwaita bridge), `theme/base.css` (type roles, focus, disabled,
-//!   selection, elevation, take colors) and every file under
-//!   `theme/components/`, `common.css` first, the others by name (no
-//!   hand-kept list: a work package adds its file and it loads).
+//! - one provider at `APPLICATION + 1` with `theme/base.css` (type roles,
+//!   focus, disabled, selection, elevation, take colors) and every file
+//!   under `theme/components/`, `common.css` first, the others by name (no
+//!   hand-kept list: a work package adds its file and it loads);
+//! - `theme/adwaita.css` (the libadwaita bridge) at `USER + 1`, above the
+//!   user's `gtk-4.0/gtk.css`: desktop color generators (Noctalia, pywal,
+//!   matugen) redefine libadwaita's named colors there, and text that
+//!   inherits them (the panel is the split view's sidebar) read the
+//!   desktop's colors in place of the theme's (issue #2: Swamp Day's
+//!   autocut title stayed white).
 //!
 //! libadwaita's color scheme follows the theme: Swamp Day forces light,
 //! the others dark. CSS parse errors are logged with the file and line.
@@ -219,10 +224,12 @@ impl Theme {
         let scale = self.scale();
         let tokens = Stylesheet::load(&[format!("tokens/{}.css", css_name(self.id()))]);
         let main = Stylesheet::load(&main_files(&component_files()));
+        let bridge = Stylesheet::load(&[BRIDGE.to_owned()]);
         let mut fresh = Vec::new();
         for (sheet, priority) in [
             (tokens, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION),
             (main, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1),
+            (bridge, gtk::STYLE_PROVIDER_PRIORITY_USER + 1),
         ] {
             let provider = gtk::CssProvider::new();
             let files = sheet.files.clone();
@@ -270,14 +277,16 @@ fn component_files() -> Vec<String> {
         })
 }
 
-/// The main provider's files, in load order: the bridge, the base, then
-/// the components with `common.css` first and the rest by name (later
-/// rules win among equals, so an owner's file can refine a shared rule).
+/// The libadwaita bridge, loaded on its own above the user's stylesheet.
+const BRIDGE: &str = "adwaita.css";
+
+/// The main provider's files, in load order: the base, then the
+/// components with `common.css` first and the rest by name (later rules
+/// win among equals, so an owner's file can refine a shared rule).
 pub fn main_files(components: &[String]) -> Vec<String> {
     let mut names: Vec<&String> = components.iter().filter(|n| n.ends_with(".css")).collect();
     names.sort_by_key(|name| (name.as_str() != "common.css", name.as_str()));
-    ["adwaita.css".to_owned(), "base.css".to_owned()]
-        .into_iter()
+    std::iter::once("base.css".to_owned())
         .chain(names.into_iter().map(|n| format!("components/{n}")))
         .collect()
 }
@@ -366,7 +375,6 @@ mod tests {
         assert_eq!(
             main_files(&components),
             [
-                "adwaita.css",
                 "base.css",
                 "components/common.css",
                 "components/bin.css",

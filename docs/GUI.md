@@ -1583,9 +1583,14 @@ time; A§8.7 rules for every child).
   - `components/<area>.css`, one per owner (G§3.16).
 
   Load order: the tokens provider (priority APPLICATION), then one provider
-  with adwaita + base + every `components/*.css` of the GResource,
-  `common.css` first, the others by name (APPLICATION + 1), all through
-  `css::scale_px`; CSS parse errors are logged with the file and line.
+  with base + every `components/*.css` of the GResource, `common.css`
+  first, the others by name (APPLICATION + 1), then `adwaita.css` alone at
+  USER + 1, all through `css::scale_px`; CSS parse errors are logged with
+  the file and line. The bridge sits above the user's `gtk-4.0/gtk.css`
+  (USER): desktop color generators (Noctalia, pywal, matugen) redefine
+  libadwaita's named colors there, and text that inherits them (the panel
+  is the split view's sidebar) read the desktop's colors in place of the
+  theme's (issue #2; `gui_themes`' S12 case runs under such a stylesheet).
   `adwaita.css` also zeroes the header bar's side margins (libadwaita's
   −1 px made the header region (−1, 0, 1602, 48)).
 - **Box spacing is CSS.** GtkBox adds its CSS `border-spacing` to its own
