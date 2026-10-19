@@ -603,8 +603,8 @@ fn x3_project_cant_be_read() {
         &[
             "qrec.json can't be read",
             "Qrec won't open this project, and it never overwrites a broken qrec.json.",
-            "/timeline/clips/4/out",
-            "Clip c1b4 ends at frame 1400, past the end of take 3 (1377 frames).",
+            "/timeline/clips/4/out: 1400 > 1377",
+            "Clip c1b4 ends at frame 1400, past the end of take 3 (1,377 frames).",
             "Restore the last good state from history:",
             &restore,
             "Copy command",
@@ -666,7 +666,11 @@ fn x3_project_cant_be_read() {
             .any(|l| l.starts_with("qrec history restore ")),
         "{labels:?}"
     );
-    assert!(!labels.iter().any(|l| l == "/timeline/clips/4/out"));
+    assert!(
+        !labels
+            .iter()
+            .any(|l| l.starts_with("/timeline/clips/4/out"))
+    );
     assert_eq!(focused(gui), "blocking-copy-command");
     assert_clean(gui);
     let shot = nested.screenshot("missing");

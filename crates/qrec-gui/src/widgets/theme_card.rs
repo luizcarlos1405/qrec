@@ -3,7 +3,9 @@
 //!
 //! S21's card (pen `qqnCi`), 180×132 × the UI scale: the theme's `surface`
 //! with a 1 px `border` (selected: 2 px `accent` and the `circle-check`),
-//! `lg` radius, 8 px in; the 164×92 preview (`md` radius, the theme's
+//! `lg` radius, the stroke inside, over the padding (what is in the card
+//! sits from its outer edge, as S21 draws every card); 8 px in, the 164×92
+//! preview (`md` radius, the theme's
 //! `bg`): the header, the Record pill, the wordmark, the panel with a
 //! selected row, a muted line and a meter, the canvas (the frames' screen,
 //! `resources/art/theme-card-canvas.png`), the toolbar, four take-colored
@@ -197,8 +199,10 @@ mod imp {
                 12.0 - b,
                 &colors.ground,
             );
-            // The preview, 8 px in.
-            let (px, py) = (b + 8.0, b + 8.0);
+            // The preview, 8 px in from the outer edge: the stroke is
+            // inside, over the padding (the pen's; S21's preview at 8 px in
+            // on every card, the selected one's 2 px stroke too).
+            let (px, py) = (8.0, 8.0);
             let preview = graphene::Rect::new(px, py, 164.0, 92.0);
             snapshot.push_rounded_clip(&gsk::RoundedRect::from_rect(preview, 6.0));
             snapshot.append_color(&palette.bg, &preview);
@@ -241,7 +245,7 @@ mod imp {
                 draw::text(snapshot, &small, x, y, &colors.caption);
             }
             if self.selected.get() {
-                let icon_x = f64::from(w - b - 8.0 - 16.0);
+                let icon_x = f64::from(w - 8.0 - 16.0);
                 let icon_y = f64::from(row_y + 1.0);
                 symbolic_icon(
                     snapshot,

@@ -883,7 +883,11 @@ pub struct UnreadablePage {
 
 /// The validation box of an invalid `qrec.json`: the first error the
 /// validation lists (`details.issues`, with its JSON Pointer as the mono
-/// line) and how many more; a parse error's detail with what it means.
+/// line) and how many more; a parse error's detail with what it means. A
+/// clip past the end of its take reads as X3 draws it: the place with the
+/// value and the take's length (`/timeline/clips/4/out: 1400 > 1377`), the
+/// sentence with the length counted ("… past the end of take 3 (1,377
+/// frames).").
 fn problem(error: &CoreError, file: &str) -> Problem {
     let issues: Vec<(&str, &str)> = error
         .details
@@ -896,7 +900,10 @@ fn problem(error: &CoreError, file: &str) -> Problem {
         .filter_map(|i| Some((i.get("path")?.as_str()?, i.get("message")?.as_str()?)))
         .collect();
     if let Some((path, message)) = issues.first() {
-        let mut explanation = sentence(message);
+        let (line, mut explanation) = match out_past_take(path, message) {
+            Some((line, explanation)) => (line, explanation),
+            None => ((*path).to_owned(), sentence(message)),
+        };
         match issues.len() - 1 {
             0 => {}
             1 => explanation.push_str(" 1 more problem."),
@@ -904,7 +911,7 @@ fn problem(error: &CoreError, file: &str) -> Problem {
         }
         return Problem {
             file: file.to_owned(),
-            message: (*path).to_owned(),
+            message: line,
             explanation: Some(explanation),
         };
     }
@@ -924,6 +931,25 @@ fn problem(error: &CoreError, file: &str) -> Problem {
         message: message.to_owned(),
         explanation: explanation.map(str::to_owned),
     }
+}
+
+/// The validator's "clip c1b4 ends at frame 1400, past the end of
+/// take-0003 (1377 frames)" at `path` as X3 reads it: the mono line
+/// `path: 1400 > 1377` and the sentence with the take's length counted.
+fn out_past_take(path: &str, message: &str) -> Option<(String, String)> {
+    let rest = message.strip_prefix("clip ")?;
+    let (clip, rest) = rest.split_once(" ends at frame ")?;
+    let (out, rest) = rest.split_once(", past the end of ")?;
+    let (take, rest) = rest.split_once(" (")?;
+    let frames = rest.strip_suffix(" frames)")?;
+    let (out, frames): (u64, u64) = (out.parse().ok()?, frames.parse().ok()?);
+    Some((
+        format!("{path}: {out} > {frames}"),
+        sentence(&format!(
+            "clip {clip} ends at frame {out}, past the end of {take} ({} frames)",
+            format::count(frames)
+        )),
+    ))
 }
 
 /// `text` as a sentence for people: capitalized, with a full stop, and the
@@ -1386,18 +1412,20 @@ mod tests {
 
     /// X3's box reads the validation's first error: its JSON Pointer in
     /// mono, what it means as a sentence, how many more; the restore
-    /// command from the hint, focused; the entry it restores.
+    /// command from the hint, focused; the entry it restores. A clip past
+    /// the end of its take as X3 draws it: the value and the take's length
+    /// after the pointer, the length counted in the sentence.
     #[test]
     fn x3_shows_the_first_error_and_the_restore() {
         let page = unreadable(&invalid_project_error(), "~/talk/qrec.json");
         let problem = page.problem.expect("a validation box");
         assert_eq!(problem.file, "~/talk/qrec.json");
-        assert_eq!(problem.message, "/timeline/clips/4/out");
+        assert_eq!(problem.message, "/timeline/clips/4/out: 1400 > 1377");
         let explanation = problem.explanation.expect("an explanation");
         assert!(explanation.starts_with("Clip "), "{explanation}");
-        // The take as people name it (X3: "take 3").
+        // The take as people name it (X3: "take 3"), its length counted.
         assert!(
-            explanation.contains(", past the end of take 3 ("),
+            explanation.contains(" ends at frame 1400, past the end of take 3 (1,377 frames)."),
             "{explanation}"
         );
         assert!(explanation.ends_with(" 1 more problem."), "{explanation}");

@@ -184,9 +184,12 @@ impl Palette {
         rows.set_widget_name("palette-rows");
         rows.add_css_class("palette-results");
         // The results fit their rows up to the palette's 560 px (its 1 px
-        // border twice, the 72 px search, the hairline), then scroll.
+        // border twice, the 72 px search, the hairline), then scroll, with
+        // S19b's bar shown (overlay.css): beside the rows, which give it
+        // their right padding while it shows (`.scrolls`).
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
+            .overlay_scrolling(false)
             .propagate_natural_height(true)
             .max_content_height(
                 (f64::from(MAX_HEIGHT - 2 - 72 - 1) * ctx.theme.scale()).round() as i32,
@@ -195,6 +198,17 @@ impl Palette {
             .build();
         scroller.set_widget_name("palette-scroller");
         scroller.set_can_focus(false);
+        let results = rows.clone();
+        scroller.vadjustment().connect_changed(guarded!(
+            "palette: the results scroll",
+            move |adj| {
+                if adj.upper() > adj.page_size() + 0.5 {
+                    results.add_css_class("scrolls");
+                } else {
+                    results.remove_css_class("scrolls");
+                }
+            }
+        ));
         root.append(&scroller);
         // The maximum is in px at 100 %: it follows a live `ui.scale`.
         let (weak, max) = (scroller.downgrade(), MAX_HEIGHT - 2 - 72 - 1);

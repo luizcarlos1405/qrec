@@ -563,9 +563,9 @@ expression: pages
       "title": "qrec.json can't be read"
     },
     "problem": {
-      "explanation": "Clip c1b4 ends at frame 1400, past the end of take 3 (1377 frames). 1 more problem.",
+      "explanation": "Clip c1b4 ends at frame 1400, past the end of take 3 (1,377 frames). 1 more problem.",
       "file": "~/videos/rust-traits-talk/qrec.json",
-      "message": "/timeline/clips/4/out"
+      "message": "/timeline/clips/4/out: 1400 > 1377"
     },
     "restore": {
       "command": "qrec history restore 212 --yes",

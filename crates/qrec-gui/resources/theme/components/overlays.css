@@ -104,11 +104,36 @@
   padding: 0 12px;
 }
 
-/* S19b's scrollbar: a 4 px `border-strong` bar. */
-.qrec-palette scrollbar slider {
+/* S19b's scroll bar, shown while the results scroll (not GTK's overlay
+   indicator, which hides until they move): a 4 px `border-strong` bar 2
+   px in from the palette's right edge, from 4 px under the hairline; the
+   results give it the 8 px of their right padding meanwhile (`.scrolls`),
+   so the rows keep their 622 px. */
+.qrec-palette scrollbar {
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+.qrec-palette scrollbar > range > trough {
   min-width: 4px;
+  margin: 4px 2px;
+  border-radius: 2px;
+  background: none;
+}
+
+.qrec-palette scrollbar > range > trough > slider {
+  min-width: 4px;
+  min-height: 24px;
+  margin: 0;
+  border: none;
   border-radius: 2px;
   background-color: var(--qrec-border-strong);
+}
+
+.qrec-palette .palette-results.scrolls {
+  padding-right: 0;
 }
 
 /* ------------------------------------------- the cheat sheet (S20) */

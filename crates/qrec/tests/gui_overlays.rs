@@ -25,8 +25,8 @@ use std::process::Command;
 use std::time::Duration;
 
 use gui_support::{HeldKeys, Launch, Nested, Options, assert_regions, poll, wait_for_gui_host};
-use qrec_core::ClipId;
 use qrec_core::state::{CanvasMode, UiState};
+use qrec_core::{ClipId, LayerId};
 use qrec_shell::testkit::design::{DesignVariant, design_fixture, write_ui};
 use qrec_shell::testkit::run_tool;
 use serde_json::{Value, json};
@@ -47,6 +47,9 @@ fn fixture(nested: &Nested, name: &str, variant: DesignVariant, ui: &UiState) ->
     write_ui(&dir, ui);
     dir
 }
+
+/// BRIEF's meter levels, as S06's frame reads them (G§8.4).
+const BRIEF_LEVELS: &str = "alsa_input.fake=-22/-16,alsa_output.fake.monitor=-52/-48";
 
 /// S06's preset: Program, c2d0 selected, the playhead at 2437.
 fn s06() -> UiState {
@@ -206,17 +209,31 @@ fn typed_held(nested: &mut Nested, text: &str, hold_ms: u32) -> HeldKeys {
 
 // ------------------------------------------------------------ the palette
 
-/// S19: `Ctrl+K` over S06, "sp": the palette at (480, 96, 640, ·) over
-/// the scrim down to the hint bar, which names the palette's keys; Split
-/// clip first and highlighted; S19's six rows with their caps and CLI
-/// forms; `Esc` closes it and gives the focus back.
+/// S19: `Ctrl+K` over S06 as its frame draws it (Face selected, the
+/// inspector's fields, BRIEF's meter levels), "sp": the palette at (480,
+/// 96, 640, ·) over the scrim down to the hint bar, which names the
+/// palette's keys; Split clip first and highlighted; S19's six rows with
+/// their caps and CLI forms among the twelve, which run past the 560 px
+/// cap: the results scroll, their bar shown as S19b draws it, the rows
+/// 622 wide beside it; `Esc` closes it and gives the focus back.
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s19_the_palette_finds_sp() {
     let mut nested = Nested::start(AREA, "s19", Options::default());
     let scale = nested.opts.scale;
-    let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base, &s06());
-    open(&mut nested, &project, Launch::a11y());
+    let ui = UiState {
+        selected_layer: Some(LayerId::numbered(2)),
+        ..s06()
+    };
+    let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base, &ui);
+    let launch = Launch::a11y().with_env("QREC_GUI_TEST_LEVELS", BRIEF_LEVELS);
+    open(&mut nested, &project, launch);
+    let inspector = nested.window(0).entries("region-panel");
+    assert_eq!(
+        inspector.get("inspector-x").map(String::as_str),
+        Some("1500"),
+        "Face's inspector, as S19's frame: {inspector:?}"
+    );
     ctrl(&mut nested, "k");
     assert_eq!(overlays(&mut nested), ["Palette"]);
     assert_focus_trapped(&mut nested, "the palette's field");
@@ -250,8 +267,19 @@ fn s19_the_palette_finds_sp() {
         &["scrim-palette", "palette-field", "palette-row-clip.split"],
         scale,
     );
-    let [px, py, pw, _] = regions["palette"];
-    assert_eq!([px, py, pw], [480.0, 96.0, 640.0], "{regions:?}");
+    let [px, py, pw, ph] = regions["palette"];
+    assert_eq!([px, py, pw, ph], [480.0, 96.0, 640.0, 560.0], "{regions:?}");
+    // The twelve rows scroll: S19b's 4 px `border-strong` bar 2 px in from
+    // the palette's right edge, from 4 px under the hairline.
+    let bar = nested.opts.rect_px([1113.0, 176.0, 4.0, 120.0]);
+    let strong = gui_support::token_rgb("swamp-night", "border-strong");
+    let drawn = gui_support::count_near(&shot, bar, strong, 3);
+    assert!(
+        drawn * 10 >= (bar[2] * bar[3]) as usize * 9,
+        "the results' scroll bar: {drawn} of {} px",
+        bar[2] * bar[3]
+    );
+    let gui = nested.window(0);
     let labels = gui.labels("palette-rows");
     for want in [
         "Split clip",
@@ -592,6 +620,15 @@ fn s21_appearance_applies_each_pick_at_once() {
         "settings-scale",
         "settings-reduced-motion",
         "settings-sounds",
+        "settings-tabs",
+        "settings-close",
+        "settings-tab-recording",
+        "settings-tab-project",
+        "settings-tab-autocut",
+        "settings-tab-keyboard",
+        "settings-scale-1",
+        "settings-scale-1.25",
+        "settings-scale-1.5",
     ];
     let regions = gui.regions(&names);
     eprintln!("S21 regions: {regions:?}");
@@ -616,6 +653,51 @@ fn s21_appearance_applies_each_pick_at_once() {
     assert!(gaps.iter().all(|g| (g - 18.0).abs() <= 1.0), "{gaps:?}");
     let [_, _, sw, sh] = regions["settings-reduced-motion"];
     assert_eq!([sw, sh], [40.0, 22.0], "C27's switch: {regions:?}");
+    // The header as the frame's: the tabs' C28 (3 px in, 26 px segments 2
+    // apart, the chosen one 2 wider) centered in the header's 24 and 12 px
+    // insets, Close's cap 20 px from the dialog's right edge; Interface
+    // size's C28 the same way (S21's HTML export: the well 594.8 + 422.4,
+    // Close ending at 1207, the segmented 994.9 + 192.1).
+    let near = |name: &str, x: f64, w: f64, slack: f64| {
+        let [rx, _, rw, _] = regions[name];
+        assert!(
+            (rx - x).abs() <= slack && (rw - w).abs() <= slack,
+            "{name} at x {rx} w {rw}, the frame's {x} w {w}: {regions:?}"
+        );
+    };
+    near("settings-tabs", 594.8, 422.4, 1.5);
+    near("settings-scale", 994.9, 192.1, 1.5);
+    let [cx, _, cw, _] = regions["settings-close"];
+    assert!(
+        (cx + cw - 1207.0).abs() <= 1.0,
+        "Close ends at {}: {regions:?}",
+        cx + cw
+    );
+    let [ax, ..] = regions["settings-tab-appearance"];
+    let [tx, ..] = regions["settings-tabs"];
+    assert!(
+        (ax - tx - 3.0).abs() <= 0.5,
+        "the first tab 3 px in: {regions:?}"
+    );
+    let [rx, _, rw, _] = regions["settings-tab-appearance"];
+    let [nx, ..] = regions["settings-tab-recording"];
+    assert!(
+        (nx - (rx + rw) - 2.0).abs() <= 0.5,
+        "the tabs 2 apart: {regions:?}"
+    );
+    // C32: what is in a card sits from its outer edge, its stroke inside:
+    // the preview's ground 8 px in on the chosen card as on the others.
+    for (card, theme) in [
+        ("theme-card-swamp-night", "swamp-night"),
+        ("theme-card-swamp-day", "swamp-day"),
+    ] {
+        let [x, y, _, _] = regions[card];
+        assert!(
+            mostly(&nested, &shot, [x + 8.0, y + 16.0, 1.0, 40.0], theme, "bg"),
+            "{card}: its preview from 8 px in"
+        );
+    }
+    let gui = nested.window(0);
     let labels = gui.labels("settings");
     for want in [
         "Theme",
@@ -781,7 +863,26 @@ fn s22_keyboard_conflicts_captures_and_edits() {
     assert!(!row.iter().any(|l| l == "X" || l == "C"), "no cap: {row:?}");
     key(&mut nested, "Escape");
 
+    // S22's frame is over S02 (Live, the playhead at the end, nothing
+    // selected); the Q5 checks above needed S06's c2d0.
+    for command in [
+        json!({"cmd": "select", "op": "clear"}),
+        json!({"cmd": "setCanvasMode", "mode": "live"}),
+        json!({"cmd": "seek", "to": "end"}),
+    ] {
+        let reply = nested
+            .window(0)
+            .ctl(json!({"op": "dispatch", "command": command}));
+        assert_eq!(reply["ok"], true, "{reply}");
+    }
+    nested.window(0).wait_idle();
     open_settings(&mut nested, "keyboard");
+    let ui = nested.cli_json(&project, &["status"])["data"]["ui"].clone();
+    assert_eq!(
+        (&ui["canvasMode"], &ui["playhead"], &ui["selection"]),
+        (&json!("live"), &json!(7391), &json!([])),
+        "S02 under S22: {ui}"
+    );
     assert_focus_trapped(&mut nested, "the dialog");
     away(&mut nested);
     let shot = nested.screenshot("keyboard");

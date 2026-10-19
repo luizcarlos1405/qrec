@@ -4087,9 +4087,12 @@ same where not named; `tmp/fix12/notes/`, `tmp/icons-art/measure/`,
   widths; S10's ripple arrow 2 px right with its tag's mono; S16b's toast
   icons 16–17 px in (its width, below); the LIVE badge's video icon 12 px
   of ink for 14 over the fake's blue (its edge pixels); S20's search and
-  Close icons 2 px left and S21's Close 5 px left and a pixel high, each
-  with its label's and cap's whole-pixel widths; S21's chosen card's check
-  2 px left and a pixel low; S22's banner warning a pixel taller (18×18
+  Close icons 2 px left, each with its label's and cap's whole-pixel
+  widths (Settings' Close, S18b, S21 and S22, a pixel left and high since
+  2026-10-18: it was 5 px left, the header's right inset 16 for the
+  frames' 12 inside their stroke; S21's chosen card's check is at the
+  frame's place since, it sat 2 px left and low with the card's stroke);
+  S22's banner warning a pixel taller (18×18
   for 18×16, 113 % of its ink). The art, drawn by `gtk::Svg` and compared
   with the pen's PNGs at 1× and 2× (gui_shell's `art` op, over Swamp
   Night's `bg` and over white): the app icon, the quiet swamp, the
@@ -4253,7 +4256,8 @@ same where not named; `tmp/fix12/notes/`, `tmp/icons-art/measure/`,
   fixture has no history), so it is 20 px shorter (y 287–712 where the
   frame's is 277–722) and its list 10 px higher, its scroll bar too (x
   1026–1029 as the frame's, y 430–579 for 440–587).
-- S18b: none since WP9 (the other tabs open, as the frame draws them).
+- S18b: none since WP9 (the other tabs open, as the frame draws them); the
+  tabs and Close as S21's (below) since 2026-10-18.
 - S19 (the palette at (480, 96, 640), its field (497, 113, 606×40),
   Split clip's row (489, 178, 622×40) and the scrim, 1600×968: as drawn):
   "sp" matches every binding the fuzzy match finds, twelve rows (Split
@@ -4264,12 +4268,20 @@ same where not named; `tmp/fix12/notes/`, `tmp/icons-art/measure/`,
   another order (Split clip, Save frame as PNG, Autocut settings and
   preview, Toggle snapping, Select previous clip, Seek to previous edit
   point), so the list runs six rows longer; D-31's labels and CLI forms
-  are the core keymap's, as the frame's.
+  are the core keymap's, as the frame's. The twelve rows run 11 px past
+  the 560 px cap, so the results scroll as S19b's do: the last row cut 3
+  px at the palette's edge, S19b's bar shown beside the rows (2026-10-18:
+  GTK's overlay indicator hid it until the list moved, and the cut row
+  read as a glitch). Under it, S06 as the frame draws it: Face selected
+  with its inspector and BRIEF's meter levels (the case had no layer
+  selected and the fake tone's levels until 2026-10-18).
 - S19b (560 high, Recent first, Record over selection off with "Needs a
   contiguous selection"): Playback's rows follow the keymap's order (Play
   / pause, Shuttle reverse, Shuttle stop, …) where the frame's sample goes
-  on with Seek to previous and next frame; GTK's overlay scroll bar shows
-  only while the list scrolls, where the frame draws its thumb.
+  on with Seek to previous and next frame; the frame's thumb shows (a 4 px
+  `border-strong` bar from y 174, 2 px in from the right edge, the rows
+  622 wide beside it) since 2026-10-18: GTK's overlay scroll bar showed
+  only while the list scrolled.
 - S20 (the sheet (40, 40, 1520×920) over `scrim-strong` as drawn; its
   search 320×32 at y 60, x 1083–1087 for the frame's 1086): it lists
   every binding, so it has two groups the frame doesn't draw, Window
@@ -4286,15 +4298,27 @@ same where not named; `tmp/fix12/notes/`, `tmp/icons-art/measure/`,
   draws "Follows your system setting until you change it here."; the
   dialog's stroke is drawn inside (WP6's), so its content box is 2 px
   wider and the cards' gaps 18–19 px for 18; theme cards draw their hover
-  (a `border-strong` stroke), which the frames don't.
+  (a `border-strong` stroke), which the frames don't. Since 2026-10-18
+  what is in a card sits from its outer edge as the frame's, the stroke
+  inside it (the preview, the name and the check sat 1–2 px further in,
+  the chosen card's by its 2 px stroke), and the tabs and Interface size
+  are C28 as the frame draws it, 3 px in, 26 px segments 2 apart, the
+  chosen one 2 wider (Recording and Autocut a pixel less each side for
+  their whole-pixel labels): the well (594, 191, 423, 32) for the frame's
+  594.8 and 422.4 (it was 597 and 415), Interface size at 996, 192 wide,
+  for 994.9 and 192.1 (1004 and 184), each tab and segment within a pixel
+  of the frame's, and Close ends at 1207 as the frame's (it ended 3 px
+  short, its parts 5 px left).
 - S22 (the banner (412, 248, 776×56) for the frame's 248–303, the search
   (412, 312, 776×32), 40 px rows; x 1 px left and 2 px wider: WP6's inset
-  stroke): the page lists every binding in the keymap's groups (Record
-  first), where the frame draws a sample of four groups from Edit with
-  the capture row in View; the case searches "snapping" for the capture
-  row's shot. The Keyboard tab keeps its focus ring after the case's
-  click (the tab keeps the focus; the frame draws the chosen tab
-  without it).
+  stroke; the tabs and Close as S21's): the page lists every binding in
+  the keymap's groups (Record first), where the frame draws a sample of
+  four groups from Edit with the capture row in View; the case searches
+  "snapping" for the capture row's shot. The Keyboard tab keeps its focus
+  ring after the case's click (the tab keeps the focus; the frame draws
+  the chosen tab without it). Since 2026-10-18 the page is shot over S02
+  as the frame is (Live, the playhead at the end, nothing selected), where
+  the case had it over S06's Program and take 5.
 - Settings › Recording and › Autocut (not drawn) follow S21's patterns:
   the group header, 60 px rows with a caption, 104 px C29 fields, C28's
   segmented encoder, a 260 px device dropdown (Auto, then sysfs's Intel
@@ -4359,10 +4383,12 @@ same where not named; `tmp/fix12/notes/`, `tmp/icons-art/measure/`,
   15:02), each with `folder-open` in the row and Quit focused.
 - X3 (its title (480, 296, 640, 30); the validation box 87 px tall for
   86, so its lines and everything under it a pixel lower): the mono line
-  is the first error's JSON Pointer, "/timeline/clips/4/out", where the
-  frame adds ": 1400 > 1377"; the explanation is the validation's message
-  as a sentence ("Clip c1b4 ends at frame 1400, past the end of take 3
-  (1377 frames).": the frame's "1,377"); the restore note is "Entry 1 is
+  and the explanation as drawn since 2026-10-18 (a clip past its take's
+  end reads "/timeline/clips/4/out: 1400 > 1377" and "Clip c1b4 ends at
+  frame 1400, past the end of take 3 (1,377 frames).", the value and the
+  take's length after the pointer, the length counted; the line was the
+  pointer alone and the count "1377"); other errors keep their pointer
+  alone and the validation's message as a sentence; the restore note is "Entry 1 is
   the last good state." with no label (R31; the frame's "Entry 212 … :
   Split clip c2d0 at 00:01:45:26"). The missing file (not drawn): "qrec.json
   is missing", no box, "Rebuild it from the history:" and its command, or
