@@ -5472,12 +5472,17 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   says it bound one more and is active; the run's own keyboard then joins
   the held one, which the window keeps. The holder goes with the last
   hold (a run's end, `HeldKeys` reaped or dropped), and the run returns
-  once the compositor has no keyboard left and no window is still active,
-  so the seat still has a keyboard only while a run lasts and a click
-  after a key meets an inactive window, as when a run's keyboard went
-  with its keys (check-full's first run of this, at 1.5: a compositor
-  busy with S22's scaled Live picture handled the holder's end late, and
-  the capture a click started meanwhile ended as the focus left). And the
+  once the compositor has no keyboard left and no window is still active
+  or still holds a keyboard (the `keyboard` op's `keyboards`: GTK drops
+  the device after the focus), so the seat still has a keyboard only
+  while a run lasts and a click after a key meets a window past it, as
+  when a run's keyboard went with its keys (check-full's first runs of
+  this, at 1.5: a compositor busy with S22's scaled Live picture handled
+  the holder's end late, and the capture a click started meanwhile ended
+  as the focus left). A click in gui_overlays comes from a pixel aside:
+  wlroots drops a motion to where the pointer already is, and GTK presses
+  what the last motion found (S22's Change again, its row rebuilt under a
+  pointer that hadn't moved, pressed the gone button's parent). And the
   control channel's `dispatch` and `action`.
   The seat has a keyboard only while a `wtype` runs, so the window is
   active only then (round 3 integration audit: `is_active` false before

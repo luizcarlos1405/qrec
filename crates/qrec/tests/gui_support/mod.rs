@@ -1034,12 +1034,14 @@ impl SeatKeyboard {
     }
 
     /// Stops the holder, then waits (a tool's deadline) until the
-    /// compositor has no keyboard left and no window is still active: the
-    /// case goes on with the windows past the keyboard's going, as when a
-    /// run's own keyboard went with its keys. (The holder goes after the
-    /// run, and a compositor busy compositing a scaled Live picture handled
-    /// its end late: a click meanwhile met a window still active, and the
-    /// capture it started ended as the focus left.)
+    /// compositor has no keyboard left and no window is still active or
+    /// holds a keyboard: the case goes on with the windows past the
+    /// keyboard's going, as when a run's own keyboard went with its keys.
+    /// (The holder goes after the run, and a compositor busy compositing a
+    /// scaled Live picture handled its end late: a click meanwhile started
+    /// S22's capture in a window still active, or still holding the
+    /// keyboard GTK drops after the focus, and the capture ended as the
+    /// focus left.)
     fn stop(&self) {
         let Some(mut holder) = self.holder.borrow_mut().take() else {
             return;
@@ -1058,7 +1060,7 @@ impl SeatKeyboard {
                     .windows
                     .borrow()
                     .iter()
-                    .any(|w| keyboard_state(w, 2_000).is_some_and(|k| k.active)))
+                    .any(|w| keyboard_state(w, 2_000).is_some_and(|k| k.active || k.keyboards > 0)))
         {
             thread::sleep(Duration::from_millis(20));
         }
@@ -1089,6 +1091,8 @@ impl Drop for KeyboardHold {
 struct KeyboardState {
     /// The window has the keyboard's focus.
     active: bool,
+    /// The keyboards GTK has bound now.
+    keyboards: u64,
     /// How many keyboards it has bound so far.
     added: u64,
 }
@@ -1118,6 +1122,7 @@ fn keyboard_state(socket: &Path, wait_ms: u64) -> Option<KeyboardState> {
     let reply: Value = serde_json::from_str(line.trim()).ok()?;
     Some(KeyboardState {
         active: reply["active"] == true,
+        keyboards: reply["keyboards"].as_u64()?,
         added: reply["keyboardsAdded"].as_u64()?,
     })
 }

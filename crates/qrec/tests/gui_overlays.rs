@@ -483,7 +483,13 @@ fn rect(nested: &mut Nested, name: &str) -> [f64; 4] {
 /// A click in the middle of the widget named `name`, then the window idle.
 fn click(nested: &mut Nested, name: &str) {
     let [x, y, w, h] = rect(nested, name);
-    nested.pointer().click(x + w / 2.0, y + h / 2.0);
+    // From a pixel aside: GTK presses the widget its last motion found,
+    // and wlroots drops a motion to where the pointer already is, so a
+    // pointer that hasn't moved since its row was rebuilt (S22's Change
+    // shortcut again after an Esc) pressed the gone button's parent.
+    let pointer = nested.pointer();
+    pointer.move_to(x + w / 2.0 + 1.0, y + h / 2.0);
+    pointer.click(x + w / 2.0, y + h / 2.0);
     nested.window(0).wait_idle();
 }
 
