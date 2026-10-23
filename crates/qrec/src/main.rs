@@ -3,10 +3,11 @@
 //! shell ([`shell::Shell`]).
 //!
 //! Order matters (A§8.10): a GPU probe child does its one job and exits;
-//! then the GPU environment (`LIBVA_DRIVER_NAME`, …) and, for the window,
-//! its display (a `GDK_BACKEND` naming no display here goes) are set while
-//! the process still has a single thread; only then does anything start
-//! threads.
+//! then the platform (session, desktop, distribution) is read once from
+//! the environment the process started with; then the GPU environment
+//! (`LIBVA_DRIVER_NAME`, …) and, for the window, its display (a
+//! `GDK_BACKEND` naming no display here goes) are set while the process
+//! still has a single thread; only then does anything start threads.
 
 mod shell;
 
@@ -14,9 +15,13 @@ use std::ffi::OsString;
 use std::process::ExitCode;
 
 use qrec_shell::gpu::{self, GpuInputs};
+use qrec_shell::platform;
 
 fn main() -> ExitCode {
     gpu::run_probe_if_requested();
+    // Detected now, before anything changes the environment; the host and
+    // GUI logs say it (`platform::current()` returns this from now on).
+    platform::current();
     let args: Vec<OsString> = std::env::args_os().collect();
     // `qrec` without a command (global flags allowed) opens the GUI, which
     // also pins EGL and Vulkan. Parsing starts no thread.

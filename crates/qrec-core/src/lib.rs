@@ -31,6 +31,7 @@ pub mod naming;
 pub mod on_event;
 pub mod parse;
 pub mod plans;
+pub mod platform;
 pub mod protocol;
 pub mod query;
 pub mod requantize;
