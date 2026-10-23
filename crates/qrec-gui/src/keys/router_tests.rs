@@ -1310,3 +1310,187 @@ fn a_held_key_repeats_only_what_is_meant_to() {
         assert_eq!(held(&program, "ctrl+z").1, undo);
     }
 }
+
+/// A press of a letter key as `keys/mod.rs` reads it: `keyval` in the
+/// active layout, and the same physical key's keyval in each of the
+/// keyboard's layouts (`layouts[group]`, what `gdk::Display::translate_key`
+/// says), all at the level Shift makes.
+fn press_in(keyval: &str, layouts: &[&str], mods: PressMods) -> Option<KeyChord> {
+    let level = u32::from(mods.shift);
+    press_chord(
+        Some(keyval),
+        Some(level),
+        |group| {
+            layouts
+                .get(usize::from(group))
+                .map(|k| ((*k).to_owned(), level))
+        },
+        mods,
+    )
+}
+
+fn parsed(chord: &str) -> Option<KeyChord> {
+    Some(KeyChord::parse(chord).unwrap())
+}
+
+/// GUI-09: with a Cyrillic (Greek, Hebrew, Arabic) layout active a letter
+/// key's keyval is no key Qrec binds, so the key stands for itself in the
+/// first layout where it binds: `R` still records.
+#[test]
+fn a_non_latin_layout_binds_the_physical_keys() {
+    let none = PressMods::default();
+    let shift = PressMods {
+        shift: true,
+        ..PressMods::default()
+    };
+    let ctrl = PressMods {
+        ctrl: true,
+        ..PressMods::default()
+    };
+    // `us,ru` with the Russian layout active, and `ru,us`.
+    let us_ru = ["r", "Cyrillic_ka"];
+    assert_eq!(press_in("Cyrillic_ka", &us_ru, none), parsed("r"));
+    assert_eq!(
+        press_in("Cyrillic_ka", &["Cyrillic_ka", "r"], none),
+        parsed("r")
+    );
+    // The modifiers stay: Shift is the Latin key's (a letter keeps it, a
+    // character is the one Shift types), Ctrl is a chord's.
+    assert_eq!(
+        press_in("Cyrillic_KA", &["R", "Cyrillic_KA"], shift),
+        parsed("shift+r")
+    );
+    assert_eq!(
+        press_in("Cyrillic_HA", &["braceleft", "Cyrillic_HA"], shift),
+        parsed("braceleft")
+    );
+    assert_eq!(
+        press_in("Greek_zeta", &["z", "Greek_zeta"], ctrl),
+        parsed("ctrl+z")
+    );
+    // A keyval Qrec binds is the press's own: the Russian layout's period
+    // on the US slash key.
+    let own = press_chord(Some("period"), Some(0), |_| unreachable!("no lookup"), none);
+    assert_eq!(own, parsed("period"));
+    // No layout has a key Qrec binds there (a Russian-only keyboard), or
+    // GDK knows no keyval: nothing to bind.
+    assert_eq!(press_in("Cyrillic_ka", &["Cyrillic_ka"], none), None);
+    assert_eq!(press_in("Shift_L", &["Shift_L", "Shift_L"], shift), None);
+    assert_eq!(press_chord(None, Some(0), |_| None, none), None);
+
+    // The router runs the Latin key's binding, and the key caps it shows
+    // stay the bound key's.
+    let scene = Scene::program();
+    let russian_r = KeyInput {
+        chord: press_in("Cyrillic_ka", &us_ru, none),
+        editable: false,
+        activatable: false,
+        repeat: false,
+    };
+    let (decision, calls) = scene.decide_input(&russian_r);
+    assert!(
+        matches!(&decision, KeyDecision::Run { id, .. } if id == "record.toggle"),
+        "{decision:?}"
+    );
+    assert_eq!(calls, scene.calls("r"));
+    let record = scene.keymap.binding("record.toggle").unwrap();
+    assert_eq!(usable_keys(&scene.keymap, record)[0].cap_legends(), ["R"]);
+}
+
+/// An AltGr letter (`registered` from Brazilian `AltGr+R`, `sacute` from
+/// Polish `AltGr+S`) is no key Qrec binds either, and GDK's mask doesn't
+/// carry AltGr, so its key looked up in the layouts is the plain letter at
+/// level 0. That isn't the press's key: it propagates, as it did before
+/// the layouts were looked up, and doesn't record (`r`) or split (`s`).
+#[test]
+fn an_altgr_letter_is_not_the_plain_letter() {
+    let none = PressMods::default();
+    let shift = PressMods {
+        shift: true,
+        ..PressMods::default()
+    };
+    let plain = |name: &'static str, level: u32| move |_: u8| Some((name.to_owned(), level));
+    let altgr_r = press_chord(Some("registered"), Some(2), plain("r", 0), none);
+    assert_eq!(altgr_r, None);
+    assert_eq!(
+        press_chord(Some("sacute"), Some(2), plain("s", 0), none),
+        None
+    );
+    assert_eq!(
+        press_chord(Some("Sacute"), Some(3), plain("S", 1), shift),
+        None
+    );
+    // The press's level unknown: no layout is looked up.
+    assert_eq!(
+        press_chord(Some("Cyrillic_ka"), None, plain("r", 0), none),
+        None
+    );
+    // At the press's level the key binds, as the Russian R does.
+    assert_eq!(
+        press_chord(Some("Cyrillic_ka"), Some(0), plain("r", 0), none),
+        parsed("r")
+    );
+    // A layout with the key at another level is passed over, not the end
+    // of the search.
+    let layouts = [("r", 0), ("R", 1)];
+    let shift_level = press_chord(
+        Some("Cyrillic_KA"),
+        Some(1),
+        |group| {
+            layouts
+                .get(usize::from(group))
+                .map(|(k, l)| ((*k).to_owned(), *l))
+        },
+        shift,
+    );
+    assert_eq!(shift_level, parsed("shift+r"));
+
+    let scene = Scene::program();
+    for repeat in [false, true] {
+        let press = KeyInput {
+            chord: altgr_r.clone(),
+            editable: false,
+            activatable: false,
+            repeat,
+        };
+        assert_eq!(scene.decide_input(&press), (KeyDecision::Propagate, vec![]));
+    }
+}
+
+/// GUI-10: Meta and Hyper are modifiers no chord has, so a press with
+/// either held doesn't run the bare key's binding (`Meta+R` recorded); it
+/// goes to GTK.
+#[test]
+fn meta_and_hyper_chords_propagate() {
+    let meta = PressMods {
+        unmodelled: true,
+        ..PressMods::default()
+    };
+    let ctrl_meta = PressMods {
+        ctrl: true,
+        unmodelled: true,
+        ..PressMods::default()
+    };
+    assert_eq!(press_in("r", &["r"], meta), None);
+    assert_eq!(press_in("z", &["z"], ctrl_meta), None);
+    assert_eq!(press_in("Cyrillic_ka", &["r", "Cyrillic_ka"], meta), None);
+    let scene = Scene::program();
+    for repeat in [false, true] {
+        let meta_r = KeyInput {
+            chord: press_in("r", &["r"], meta),
+            editable: false,
+            activatable: false,
+            repeat,
+        };
+        assert_eq!(
+            scene.decide_input(&meta_r),
+            (KeyDecision::Propagate, vec![])
+        );
+    }
+    // Without them, the same key runs its binding.
+    let r = press_in("r", &["r"], PressMods::default()).unwrap();
+    assert_ne!(
+        scene.decide_input(&KeyInput::chord(r)).0,
+        KeyDecision::Propagate
+    );
+}

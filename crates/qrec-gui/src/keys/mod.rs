@@ -4,6 +4,9 @@
 //! the GUI actions and the player. It follows the releases too, so a press
 //! of a key already down is known as its auto-repeat ([`router::HeldKeys`],
 //! R30); the held keys are forgotten when the window loses the keyboard.
+//! A keyval Qrec doesn't bind (a Russian letter) stands for its physical
+//! key at the same shift level in the first layout where that binds, and
+//! a press with Meta or Hyper held has no chord ([`router::press_chord`]).
 //!
 //! Buttons and menu items that have a binding call
 //! [`KeyRouter::run_binding`], so they get the key's pre-steps (G§3.7).
@@ -33,7 +36,6 @@ use std::rc::Rc;
 
 use gtk::prelude::*;
 use gtk::{gdk, glib};
-use qrec_core::keymap::KeyChord;
 use qrec_core::time::ns_to_frame_floor;
 use qrec_core::view::notices::Notice;
 use qrec_core::{Command, Frame};
@@ -42,7 +44,7 @@ use crate::guarded;
 use crate::media::MediaHub;
 use crate::store::Store;
 use actions::ActionRouter;
-use router::{HeldKeys, KeyDecision, KeyInput, KeySink, RouterState};
+use router::{HeldKeys, KeyDecision, KeyInput, KeySink, PressMods, RouterState};
 
 /// The window's key router. Cheap to clone; main thread only.
 #[derive(Clone)]
@@ -84,12 +86,16 @@ impl KeyRouter {
         controller.set_propagation_phase(gtk::PropagationPhase::Capture);
         let router = self.clone();
         let win = window.as_ref().downgrade();
-        controller.connect_key_pressed(guarded!("keys", move |_, keyval, code, modifiers| {
+        controller.connect_key_pressed(guarded!("keys", move |keys, keyval, code, modifiers| {
             let Some(window) = win.upgrade() else {
                 return glib::Propagation::Proceed;
             };
             let repeat = router.inner.held.borrow_mut().press(code);
-            let input = key_input(&window, keyval, modifiers, repeat);
+            let level = keys
+                .current_event()
+                .and_then(|event| event.downcast::<gdk::KeyEvent>().ok())
+                .map(|event| event.level());
+            let input = key_input(&window, keyval, code, level, modifiers, repeat);
             if router.handle(&input) {
                 glib::Propagation::Stop
             } else {
@@ -248,22 +254,32 @@ impl KeySink for GtkSink<'_> {
     }
 }
 
-/// The router's view of a press in `window` (`repeat`: the key was down).
+/// The router's view of a press of hardware key `code` in `window`, at
+/// shift level `level` of the key (`repeat`: the key was down).
 fn key_input(
     window: &gtk::Window,
     keyval: gdk::Key,
+    code: u32,
+    level: Option<u32>,
     modifiers: gdk::ModifierType,
     repeat: bool,
 ) -> KeyInput {
-    let chord = keyval.name().and_then(|name| {
-        KeyChord::from_gdk(
-            name.as_str(),
-            modifiers.contains(gdk::ModifierType::CONTROL_MASK),
-            modifiers.contains(gdk::ModifierType::ALT_MASK),
-            modifiers.contains(gdk::ModifierType::SHIFT_MASK),
-            modifiers.contains(gdk::ModifierType::SUPER_MASK),
-        )
-    });
+    let mods = PressMods {
+        ctrl: modifiers.contains(gdk::ModifierType::CONTROL_MASK),
+        alt: modifiers.contains(gdk::ModifierType::ALT_MASK),
+        shift: modifiers.contains(gdk::ModifierType::SHIFT_MASK),
+        super_: modifiers.contains(gdk::ModifierType::SUPER_MASK),
+        unmodelled: modifiers
+            .intersects(gdk::ModifierType::META_MASK | gdk::ModifierType::HYPER_MASK),
+    };
+    // The same key in another layout (a Russian letter's Latin one), and
+    // the level it is at there.
+    let display = WidgetExt::display(window);
+    let in_layout = |group: u8| {
+        let (key, _, at, _) = display.translate_key(code, modifiers, i32::from(group))?;
+        Some((key.name()?.to_string(), u32::try_from(at).ok()?))
+    };
+    let chord = router::press_chord(keyval.name().as_deref(), level, in_layout, mods);
     let focus = gtk::prelude::RootExt::focus(window);
     KeyInput {
         chord,
