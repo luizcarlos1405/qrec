@@ -4404,9 +4404,13 @@ fn the_design_fixture_is_the_briefs_sample_project() {
 /// The window prints nothing on stdout: `qrec --json` alone is a usage
 /// error, one object (docs/GUI.md G§3.2). Without `--json`, `qrec` logs to
 /// its project's GUI log (appended per run, one per project) and opens the
-/// window; with no Wayland display (the test env has none, and GDK never
-/// falls back to X11) it says so and exits 1, leaving the empty folder as it
-/// was.
+/// window on Wayland or X11; with no display it says so, naming both
+/// variables, and exits 1, leaving the empty folder as it was. So it does
+/// with only a `GDK_BACKEND` (which used to take the lock ahead of a
+/// doomed `gtk::init`, GUI-19), with a `WAYLAND_DISPLAY` whose socket file
+/// nobody listens on (a compositor that died), and with a `DISPLAY` no X
+/// server answers (only connecting tells, so on X11 the lock waits for
+/// GTK).
 #[test]
 fn qrec_without_a_command() {
     use qrec_shell::paths::UserDirs;
@@ -4424,17 +4428,35 @@ fn qrec_without_a_command() {
     let log_of = |dir: &Path| dirs.gui_log(&fs::canonicalize(dir).unwrap());
     assert!(!log_of(&a).exists(), "--json opened no window");
 
-    for _ in 0..2 {
-        let gui = qrec(&env, &a, &[]);
-        assert_eq!(gui.code, Some(1), "{}", gui.stderr);
+    let dead = dead_x11_display();
+    // Dropping a listener leaves its socket file.
+    drop(
+        std::os::unix::net::UnixListener::bind(env.xdg_runtime_dir().join("wayland-dead")).unwrap(),
+    );
+    let runs: [&[(&str, &OsStr)]; 6] = [
+        &[],
+        &[],
+        &[("GDK_BACKEND", OsStr::new("x11"))],
+        &[("GDK_BACKEND", OsStr::new("wayland"))],
+        &[("WAYLAND_DISPLAY", OsStr::new("wayland-dead"))],
+        &[("DISPLAY", OsStr::new(&dead))],
+    ];
+    for vars in runs {
+        let gui = qrec_with(&env, &a, &[], vars);
+        assert_eq!(gui.code, Some(1), "{vars:?}: {}", gui.stderr);
         assert!(
-            gui.stderr.contains("can't open the window"),
-            "{}",
+            gui.stderr.contains("can't open the window")
+                && gui.stderr.contains("(WAYLAND_DISPLAY)")
+                && gui.stderr.contains("(DISPLAY)"),
+            "{vars:?}: {}",
             gui.stderr
         );
+        let left: Vec<_> = fs::read_dir(&a).unwrap().flatten().collect();
+        assert!(
+            left.is_empty(),
+            "{vars:?}: the folder stays empty: {left:?}"
+        );
     }
-    let left: Vec<_> = fs::read_dir(&a).unwrap().flatten().collect();
-    assert!(left.is_empty(), "the folder stays empty: {left:?}");
     qrec(&env, &b, &["-v"]);
     let headers = |dir: &Path| {
         fs::read_to_string(log_of(dir))
@@ -4443,13 +4465,38 @@ fn qrec_without_a_command() {
             .filter(|l| l.starts_with("=== qrec "))
             .count()
     };
-    assert_eq!((headers(&a), headers(&b)), (2, 1));
+    assert_eq!((headers(&a), headers(&b)), (runs.len(), 1));
     assert_ne!(log_of(&a), log_of(&b));
     let text = fs::read_to_string(log_of(&a)).unwrap();
     assert!(
         text.contains(&format!("{} ===", fs::canonicalize(&a).unwrap().display())),
         "{text}"
     );
+}
+
+/// An X11 display name (`:N`) no server answers at: nothing listens on
+/// its abstract or file socket, nor on its TCP port (libxcb's fallback).
+fn dead_x11_display() -> String {
+    use std::net::{SocketAddr, TcpStream};
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::{SocketAddr as UnixAddr, UnixStream};
+    let answers = |n: u16| {
+        let path = format!("/tmp/.X11-unix/X{n}");
+        let tcp: [SocketAddr; 2] = [
+            ([127, 0, 0, 1], 6000 + n).into(),
+            (std::net::Ipv6Addr::LOCALHOST, 6000 + n).into(),
+        ];
+        UnixAddr::from_abstract_name(&path)
+            .is_ok_and(|addr| UnixStream::connect_addr(&addr).is_ok())
+            || UnixStream::connect(&path).is_ok()
+            || tcp
+                .iter()
+                .any(|addr| TcpStream::connect_timeout(addr, Duration::from_secs(1)).is_ok())
+    };
+    let n = (4242..4342)
+        .find(|&n| !answers(n))
+        .expect("an X11 display number nothing answers at");
+    format!(":{n}")
 }
 
 /// X1 "Stop & open" against a real headless recorder (the fake backend):

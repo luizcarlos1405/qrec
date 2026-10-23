@@ -25,6 +25,7 @@ tracing.workspace = true
 qrec-core = { workspace = true, features = ["testkit"] }
 qrec-shell = { workspace = true, features = ["testkit"] }
 insta.workspace = true
+proptest.workspace = true
 tempfile.workspace = true
 
 [lints]

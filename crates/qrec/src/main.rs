@@ -3,8 +3,9 @@
 //! shell ([`shell::Shell`]).
 //!
 //! Order matters (A§8.10): a GPU probe child does its one job and exits;
-//! then the GPU environment (`LIBVA_DRIVER_NAME`, …) is set while the
-//! process still has a single thread; only then does anything start
+//! then the GPU environment (`LIBVA_DRIVER_NAME`, …) and, for the window,
+//! its display (a `GDK_BACKEND` naming no display here goes) are set while
+//! the process still has a single thread; only then does anything start
 //! threads.
 
 mod shell;
@@ -22,6 +23,9 @@ fn main() -> ExitCode {
     let is_gui = qrec_cli::parse_args(args.iter().cloned()).is_ok_and(|cli| cli.command.is_none());
     let inputs = GpuInputs::discover(&args, is_gui);
     gpu::prepare_gpu_env(&inputs);
+    if is_gui {
+        qrec_gui::prepare_display();
+    }
     let mut backend = shell::Shell::new(&args, inputs);
     qrec_cli::run_process(&mut backend)
 }

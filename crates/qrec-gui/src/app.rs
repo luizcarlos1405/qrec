@@ -3,12 +3,17 @@
 //! exit code.
 //!
 //! - `run`: the signal handlers, startup step 1, then steps 3 and 4 at once
-//!   when a Wayland display is there (the lock and the socket within
-//!   milliseconds of launch; their results wait in the queue), then
-//!   `adw::Application` (`com.rsensato.qrec`, `NON_UNIQUE`) on this thread;
-//!   returns the exit code the app stored before quitting. GDK only uses
-//!   its Wayland backend (no X11 fallback) unless `GDK_BACKEND` says
-//!   otherwise; without a display `run` fails before touching the folder.
+//!   when the window opens on Wayland (the lock and the socket within
+//!   milliseconds of launch; their results wait in the queue), else once
+//!   GTK connected (an X11 display can't be checked without connecting),
+//!   then `adw::Application` (`com.rsensato.qrec`, `NON_UNIQUE`) on this
+//!   thread; returns the exit code the app stored before quitting. GDK uses
+//!   exactly the backend [`display_target`] picks: Wayland when something
+//!   listens on its socket, else X11 when `DISPLAY` names one (a
+//!   `GDK_BACKEND` counts when its backend's display is there;
+//!   [`prepare_display`], called while `main` is still single-threaded,
+//!   after the GPU environment, drops one that names none). Without a
+//!   display `run` fails before touching the folder.
 //! - `activate`: the store, the media hub, the key router, the theme and the
 //!   window; the settings follower (`config.toml` and `keys.toml` live,
 //!   WP10); the X2 or unreadable-folder page; the first drain.
@@ -26,8 +31,10 @@
 //!   never shows holding the project: the app quits with 1 instead.
 
 use std::cell::{Cell, RefCell};
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use adw::prelude::*;
@@ -165,22 +172,43 @@ pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
     // Before any worker: step 3's `gst::init()` registers GStreamer's
     // fundamental types on its thread while GTK registers its own here.
     register_fundamentals();
+    // Where the window opens (Linux: Wayland or X11, nothing else; other
+    // systems have GTK's own backend). No display: nothing is touched.
+    let display = display_choice();
+    let target = if cfg!(target_os = "linux") {
+        display.log();
+        match display.target {
+            Some(target) => Some(target),
+            None => return Err(CoreError::unavailable(NO_DISPLAY)),
+        }
+    } else {
+        None
+    };
     // Steps 3 and 4 now, while GTK starts: the lock and the socket come
-    // first. Not without a Wayland display: nothing is touched then.
-    let gdk_backend = std::env::var_os("GDK_BACKEND");
-    let early = wanted && display_reachable(&DisplayEnv::from_process());
+    // first. Only on Wayland, whose socket answered: the display is there
+    // (should GTK still fail on it, the lock was taken all the same).
+    let early = wanted && target == Some(GdkTarget::Wayland);
     if early {
         start_workers(&startup);
     }
-    // A Wayland app: GDK never falls back to X11 (an X server of the
-    // session, say), unless GDK_BACKEND asks for another backend.
-    if gdk_backend.is_none() {
-        gtk::gdk::set_allowed_backends("wayland");
+    // Exactly that backend: a Wayland session never opens the window on
+    // its X server, an X11 one never tries Wayland.
+    if let Some(target) = target {
+        gtk::gdk::set_allowed_backends(target.backend());
     }
     if let Err(e) = gtk::init() {
-        return Err(CoreError::unavailable(format!(
-            "can't open the window: {e} (is there a Wayland display?)"
+        return Err(CoreError::unavailable(open_failed(
+            target,
+            &display.env,
+            &e.to_string(),
         )));
+    }
+    if let Some(opened) = gtk::gdk::Display::default() {
+        tracing::info!(
+            "the window's display: {} {}",
+            opened.type_().name(),
+            opened.name()
+        );
     }
     if let Err(e) = adw::init() {
         return Err(CoreError::unavailable(format!("libadwaita: {e}")));
@@ -768,13 +796,38 @@ fn log_panics() {
     });
 }
 
-/// What says where the Wayland display is.
+/// The backend GDK opens the window with (Linux).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GdkTarget {
+    Wayland,
+    X11,
+}
+
+impl GdkTarget {
+    /// Wayland first, as in GDK's own order.
+    const ALL: [Self; 2] = [Self::Wayland, Self::X11];
+
+    /// GDK's name for it (`GDK_BACKEND`, `gdk::set_allowed_backends`).
+    pub const fn backend(self) -> &'static str {
+        match self {
+            Self::Wayland => "wayland",
+            Self::X11 => "x11",
+        }
+    }
+}
+
+/// `run`'s error without a display (exit 1).
+const NO_DISPLAY: &str =
+    "can't open the window: no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display";
+
+/// What says where the displays are: the process's variables.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DisplayEnv {
-    pub gdk_backend: Option<std::ffi::OsString>,
-    pub wayland_display: Option<std::ffi::OsString>,
-    pub wayland_socket: Option<std::ffi::OsString>,
-    pub runtime_dir: Option<std::path::PathBuf>,
+    pub gdk_backend: Option<OsString>,
+    pub wayland_display: Option<OsString>,
+    pub wayland_socket: Option<OsString>,
+    pub runtime_dir: Option<PathBuf>,
+    pub display: Option<OsString>,
 }
 
 impl DisplayEnv {
@@ -784,32 +837,244 @@ impl DisplayEnv {
             wayland_display: std::env::var_os("WAYLAND_DISPLAY"),
             wayland_socket: std::env::var_os("WAYLAND_SOCKET"),
             runtime_dir: std::env::var_os("XDG_RUNTIME_DIR").map(Into::into),
+            display: std::env::var_os("DISPLAY"),
+        }
+    }
+
+    /// The Wayland display's name: `WAYLAND_DISPLAY`, else libwayland's
+    /// `wayland-0`.
+    fn wayland_name(&self) -> &OsStr {
+        self.wayland_display
+            .as_deref()
+            .unwrap_or(OsStr::new("wayland-0"))
+    }
+
+    /// Whether a Wayland display is reachable where libwayland looks for
+    /// it: a passed `WAYLAND_SOCKET`, or something listens on the display's
+    /// socket (an absolute path, else in `XDG_RUNTIME_DIR`). Only
+    /// connecting tells: the socket file a compositor that died left
+    /// behind refuses (`ECONNREFUSED`), and GTK would fail on it after the
+    /// lock was taken. The connection closes at once, before a byte of the
+    /// protocol, and never blocks (a full accept backlog still means a
+    /// listener).
+    pub fn wayland_reachable(&self) -> bool {
+        if self.wayland_socket.is_some() {
+            return true;
+        }
+        let name = Path::new(self.wayland_name());
+        let path = if name.is_absolute() {
+            name.to_path_buf()
+        } else {
+            match &self.runtime_dir {
+                Some(dir) => dir.join(name),
+                None => return false,
+            }
+        };
+        match qrec_shell::ipc::peer::connect_nonblocking(&path) {
+            Ok(_connected) => true,
+            Err(e) => e.kind() == std::io::ErrorKind::WouldBlock,
+        }
+    }
+
+    /// Whether `DISPLAY` names an X11 display. Only connecting tells
+    /// whether a server answers there (its socket may be an abstract one).
+    pub fn x11_named(&self) -> bool {
+        self.display.as_ref().is_some_and(|d| !d.is_empty())
+    }
+
+    /// Where `target`'s display is, for the log and the errors.
+    fn describe(&self, target: GdkTarget) -> String {
+        match target {
+            GdkTarget::Wayland if self.wayland_socket.is_some() => {
+                "the Wayland socket passed in WAYLAND_SOCKET".to_owned()
+            }
+            GdkTarget::Wayland => format!(
+                "the Wayland display {:?} (WAYLAND_DISPLAY)",
+                self.wayland_name().to_string_lossy()
+            ),
+            GdkTarget::X11 => format!(
+                "the X11 display {:?} (DISPLAY)",
+                self.display
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+            ),
         }
     }
 }
 
-/// Whether a Wayland display looks reachable (its socket exists), so the
-/// startup workers may take the lock before GTK connects. A chosen
-/// `GDK_BACKEND` or a passed `WAYLAND_SOCKET` counts as yes: GTK decides.
-pub fn display_reachable(env: &DisplayEnv) -> bool {
-    use std::os::unix::fs::FileTypeExt;
-    if env.gdk_backend.is_some() || env.wayland_socket.is_some() {
-        return true;
-    }
-    let name = env
-        .wayland_display
-        .clone()
-        .unwrap_or_else(|| "wayland-0".into());
-    let path = std::path::PathBuf::from(&name);
-    let path = if path.is_absolute() {
-        path
-    } else {
-        match &env.runtime_dir {
-            Some(dir) => dir.join(path),
-            None => return false,
+/// The backend the window opens with: the first one `GDK_BACKEND` names
+/// (GDK's comma-separated list; `*` is any) whose display is there, else
+/// Wayland when something listens on its socket
+/// ([`DisplayEnv::wayland_reachable`]), else X11 when `DISPLAY` names a
+/// display; `None` without either. So `GDK_BACKEND=x11` in a Wayland
+/// session with XWayland opens the window on X11, and a
+/// `GDK_BACKEND=wayland` exported on Xorg, or a dead compositor's socket
+/// left in `XDG_RUNTIME_DIR`, doesn't keep it from opening on X11.
+pub fn display_target(env: &DisplayEnv) -> Option<GdkTarget> {
+    // One connection at most, however often `pick_target` asks.
+    let wayland = std::cell::OnceCell::new();
+    pick_target(env.gdk_backend.as_deref(), |target| match target {
+        GdkTarget::Wayland => *wayland.get_or_init(|| env.wayland_reachable()),
+        GdkTarget::X11 => env.x11_named(),
+    })
+}
+
+/// [`display_target`], given whether each backend's display is there.
+fn pick_target(
+    gdk_backend: Option<&OsStr>,
+    there: impl Fn(GdkTarget) -> bool,
+) -> Option<GdkTarget> {
+    let first_there = || GdkTarget::ALL.into_iter().find(|&target| there(target));
+    for name in backend_names(gdk_backend) {
+        if name == b"*" {
+            return first_there();
         }
+        let named = GdkTarget::ALL
+            .into_iter()
+            .find(|&target| target.backend().as_bytes() == name && there(target));
+        if named.is_some() {
+            return named;
+        }
+    }
+    first_there()
+}
+
+/// `GDK_BACKEND`'s names as GDK splits them: at commas, untrimmed.
+fn backend_names(gdk_backend: Option<&OsStr>) -> impl Iterator<Item = &[u8]> {
+    gdk_backend
+        .into_iter()
+        .flat_map(|list| list.as_encoded_bytes().split(|&b| b == b','))
+}
+
+/// Whether GDK, allowed only `target`, still opens it with this
+/// `GDK_BACKEND`: GDK tries only what the variable names, skipping what
+/// isn't allowed, so it does when the list names `target` or has `*`.
+fn gdk_backend_opens(gdk_backend: &OsStr, target: GdkTarget) -> bool {
+    backend_names(Some(gdk_backend)).any(|name| name == b"*" || name == target.backend().as_bytes())
+}
+
+/// The window's display, as [`prepare_display`] found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayChoice {
+    /// The variables as the process got them.
+    pub env: DisplayEnv,
+    /// [`display_target`] of them.
+    pub target: Option<GdkTarget>,
+    /// `GDK_BACKEND` names no backend whose display is here, so the window
+    /// opens on `target` without it: `Ok` once it's out of the process's
+    /// environment (GDK reads it, and would only try what it names), `Err`
+    /// why it couldn't go.
+    pub ignored_backend: Option<Result<(), String>>,
+}
+
+impl DisplayChoice {
+    /// The choice for `env`, before anything leaves the environment.
+    fn of(env: DisplayEnv) -> Self {
+        let target = display_target(&env);
+        let ignored = match (&env.gdk_backend, target) {
+            (Some(var), Some(target)) => !gdk_backend_opens(var, target),
+            _ => false,
+        };
+        Self {
+            env,
+            target,
+            ignored_backend: ignored.then(|| Err("prepare_display didn't run".to_owned())),
+        }
+    }
+
+    /// Says in the log where the window opens.
+    fn log(&self) {
+        let Some(target) = self.target else {
+            return;
+        };
+        let place = self.env.describe(target);
+        let asked = self.env.gdk_backend.as_deref().map(OsStr::to_string_lossy);
+        match (&self.ignored_backend, asked) {
+            (Some(Ok(())), Some(asked)) => tracing::info!(
+                "GDK_BACKEND={asked:?} names no backend whose display is here: the window \
+                 opens on {place}"
+            ),
+            (Some(Err(why)), Some(asked)) => tracing::warn!(
+                "GDK_BACKEND={asked:?} names no backend whose display is here but stays set \
+                 ({why}): GTK won't open the window on {place}"
+            ),
+            (_, Some(asked)) => {
+                tracing::info!("the window opens on {place}, as GDK_BACKEND={asked:?} says");
+            }
+            (_, None) => tracing::info!("the window opens on {place}"),
+        }
+    }
+}
+
+/// [`prepare_display`]'s choice.
+static PREPARED: OnceLock<DisplayChoice> = OnceLock::new();
+
+/// Works out the window's display ([`display_target`]) and, when an
+/// inherited `GDK_BACKEND` names no backend whose display is here, takes
+/// it out of the environment: GDK reads it as GTK starts and would only
+/// try what it names. Changing the environment is only sound while the
+/// process has a single thread, so `main` calls this while it still has
+/// one, right after it set the GPU variables (A§8.10); once another thread
+/// runs it leaves the variable and `run` says so in the log. Linux only;
+/// once per process.
+pub fn prepare_display() {
+    if cfg!(target_os = "linux") {
+        PREPARED.get_or_init(|| {
+            let mut choice = DisplayChoice::of(DisplayEnv::from_process());
+            if choice.ignored_backend.is_some() {
+                choice.ignored_backend = Some(remove_gdk_backend());
+            }
+            choice
+        });
+    }
+}
+
+/// [`prepare_display`]'s choice, else (it didn't run) the process's now.
+fn display_choice() -> DisplayChoice {
+    PREPARED
+        .get()
+        .cloned()
+        .unwrap_or_else(|| DisplayChoice::of(DisplayEnv::from_process()))
+}
+
+/// Removes `GDK_BACKEND` from the environment while the process has one
+/// thread (`/proc/self/task`).
+fn remove_gdk_backend() -> Result<(), String> {
+    match std::fs::read_dir("/proc/self/task").map(Iterator::count) {
+        Ok(1) => {
+            // SAFETY: the process has exactly one thread (just counted), so
+            // no other thread reads or writes the environment meanwhile.
+            unsafe { std::env::remove_var("GDK_BACKEND") };
+            Ok(())
+        }
+        Ok(threads) => Err(format!("the process already runs {threads} threads")),
+        Err(e) => Err(format!("can't count the process's threads: {e}")),
+    }
+}
+
+/// `run`'s error when GTK can't connect to `target`'s display: where it
+/// tried, and the other display.
+fn open_failed(target: Option<GdkTarget>, env: &DisplayEnv, error: &str) -> String {
+    let Some(target) = target else {
+        return format!("can't open the window: {error}");
     };
-    std::fs::metadata(path).is_ok_and(|m| m.file_type().is_socket())
+    let other = match target {
+        GdkTarget::Wayland if env.x11_named() => format!(
+            "GDK_BACKEND=x11 would open it on {}",
+            env.describe(GdkTarget::X11)
+        ),
+        GdkTarget::Wayland => "there's no X11 display (DISPLAY) either".to_owned(),
+        GdkTarget::X11 if env.wayland_reachable() => format!(
+            "GDK_BACKEND chose it over {}",
+            env.describe(GdkTarget::Wayland)
+        ),
+        GdkTarget::X11 => "there's no Wayland display (WAYLAND_DISPLAY) either".to_owned(),
+    };
+    format!(
+        "can't open the window on {}: {error}; {other}",
+        env.describe(target)
+    )
 }
 
 /// The running export's percent, if one runs.
@@ -864,42 +1129,240 @@ mod tests {
         assert_eq!(exit_after_close(&StartupPhase::Open, 1), 1);
     }
 
-    #[test]
-    fn the_display_is_reachable_only_with_its_socket() {
+    /// A runtime dir with the Wayland socket `wayland-7` (and libwayland's
+    /// default `wayland-0` when `default` says so), `wayland-stale`, the
+    /// socket file a compositor that died leaves (nobody listens), and a
+    /// plain file `wayland-file`; the listeners keep their sockets.
+    fn runtime_dir(default: bool) -> (tempfile::TempDir, Vec<std::os::unix::net::UnixListener>) {
         let tmp = tempfile::tempdir().unwrap();
-        let listener =
-            std::os::unix::net::UnixListener::bind(tmp.path().join("wayland-7")).unwrap();
+        let bind =
+            |name: &str| std::os::unix::net::UnixListener::bind(tmp.path().join(name)).unwrap();
+        // Dropping a listener leaves its file.
+        drop(bind("wayland-stale"));
+        let mut listeners = vec![bind("wayland-7")];
+        if default {
+            listeners.push(bind("wayland-0"));
+        }
         std::fs::write(tmp.path().join("wayland-file"), "not a socket").unwrap();
-        let env = |display: Option<&str>| DisplayEnv {
-            wayland_display: display.map(Into::into),
+        (tmp, listeners)
+    }
+
+    /// Where the window opens: Wayland when something listens on its
+    /// socket, else X11 when `DISPLAY` names a display, else nowhere (the
+    /// folder is never touched then). A `GDK_BACKEND` counts only when its
+    /// backend's display is there; one GDK couldn't open the chosen
+    /// backend with is ignored (taken out of the environment).
+    /// `GDK_BACKEND` alone no longer counts as a display (GUI-19:
+    /// `GDK_BACKEND=x11` without `DISPLAY` took the lock before a doomed
+    /// `gtk::init`), nor does a dead compositor's socket file.
+    #[test]
+    fn the_window_opens_where_a_display_is() {
+        use GdkTarget::{Wayland, X11};
+        let (tmp, _listeners) = runtime_dir(false);
+        let (with_default, _default_listeners) = runtime_dir(true);
+        let absolute = tmp.path().join("wayland-7");
+        let absolute = absolute.to_str().unwrap();
+        let env = |gdk: Option<&str>, wayland: Option<&str>, display: Option<&str>| DisplayEnv {
+            gdk_backend: gdk.map(Into::into),
+            wayland_display: wayland.map(Into::into),
             runtime_dir: Some(tmp.path().to_path_buf()),
+            display: display.map(Into::into),
             ..DisplayEnv::default()
         };
-        assert!(display_reachable(&env(Some("wayland-7"))));
-        let absolute = tmp.path().join("wayland-7");
-        assert!(display_reachable(&env(Some(absolute.to_str().unwrap()))));
-        assert!(
-            !display_reachable(&env(Some("wayland-1"))),
-            "no such socket"
-        );
-        assert!(
-            !display_reachable(&env(Some("wayland-file"))),
-            "not a socket"
-        );
-        assert!(!display_reachable(&env(None)), "wayland-0 isn't there");
-        assert!(!display_reachable(&DisplayEnv {
-            wayland_display: Some("wayland-7".into()),
-            ..DisplayEnv::default()
-        }));
-        // GTK decides when GDK_BACKEND or WAYLAND_SOCKET say where to go.
-        assert!(display_reachable(&DisplayEnv {
-            gdk_backend: Some("x11".into()),
-            ..DisplayEnv::default()
-        }));
-        assert!(display_reachable(&DisplayEnv {
+        let w7 = Some("wayland-7");
+        let x0 = Some(":0");
+        let no_runtime_dir = DisplayEnv {
+            runtime_dir: None,
+            ..env(None, w7, None)
+        };
+        let passed = DisplayEnv {
             wayland_socket: Some("5".into()),
             ..DisplayEnv::default()
-        }));
-        drop(listener);
+        };
+        let default_socket = DisplayEnv {
+            runtime_dir: Some(with_default.path().to_path_buf()),
+            ..DisplayEnv::default()
+        };
+        let stale = Some("wayland-stale");
+        // What, the env, where the window opens, GDK_BACKEND ignored.
+        #[rustfmt::skip]
+        let rows: Vec<(&str, DisplayEnv, Option<GdkTarget>, bool)> = vec![
+            ("WAYLAND_DISPLAY's socket", env(None, w7, None), Some(Wayland), false),
+            ("an absolute WAYLAND_DISPLAY", env(None, Some(absolute), None), Some(Wayland), false),
+            ("no such socket", env(None, Some("wayland-1"), None), None, false),
+            ("not a socket", env(None, Some("wayland-file"), None), None, false),
+            ("a socket nobody listens on", env(None, stale, None), None, false),
+            ("wayland-0 by default", default_socket, Some(Wayland), false),
+            ("wayland-0 isn't there", env(None, None, None), None, false),
+            ("no XDG_RUNTIME_DIR", no_runtime_dir, None, false),
+            ("WAYLAND_SOCKET passed", passed, Some(Wayland), false),
+            ("Xorg: DISPLAY", env(None, None, x0), Some(X11), false),
+            ("Xorg, a stale WAYLAND_DISPLAY", env(None, Some("wayland-1"), x0), Some(X11), false),
+            ("Xorg, a dead compositor's socket", env(None, stale, x0), Some(X11), false),
+            ("wayland,x11, a dead socket", env(Some("wayland,x11"), stale, x0), Some(X11), false),
+            ("an empty DISPLAY names none", env(None, None, Some("")), None, false),
+            ("Wayland with XWayland", env(None, w7, x0), Some(Wayland), false),
+            ("GDK_BACKEND=x11 with XWayland", env(Some("x11"), w7, x0), Some(X11), false),
+            ("GDK_BACKEND=x11 without DISPLAY", env(Some("x11"), w7, None), Some(Wayland), true),
+            ("GDK_BACKEND=wayland on Wayland", env(Some("wayland"), w7, x0), Some(Wayland), false),
+            ("GDK_BACKEND=wayland on Xorg", env(Some("wayland"), None, x0), Some(X11), true),
+            ("GDK_BACKEND=x11, no display", env(Some("x11"), None, None), None, false),
+            ("GDK_BACKEND=wayland, no display", env(Some("wayland"), None, None), None, false),
+            ("x11,wayland, no DISPLAY", env(Some("x11,wayland"), w7, None), Some(Wayland), false),
+            ("x11,wayland with both", env(Some("x11,wayland"), w7, x0), Some(X11), false),
+            ("* is any: Wayland first", env(Some("*"), w7, x0), Some(Wayland), false),
+            ("x11,* without DISPLAY", env(Some("x11,*"), w7, None), Some(Wayland), false),
+            ("a backend Qrec doesn't open", env(Some("broadway"), w7, x0), Some(Wayland), true),
+            ("GDK doesn't trim names", env(Some("x11, wayland"), w7, None), Some(Wayland), true),
+            ("an empty GDK_BACKEND", env(Some(""), None, x0), Some(X11), true),
+        ];
+        for (what, env, target, ignored) in rows {
+            let choice = DisplayChoice::of(env);
+            assert_eq!(choice.target, target, "{what}");
+            assert_eq!(choice.ignored_backend.is_some(), ignored, "{what}");
+        }
+    }
+
+    /// Whether GDK, allowed only `allowed`, opens it with this
+    /// `GDK_BACKEND`, as `gdk_display_manager_open_display` goes: without
+    /// one it tries what's allowed, else the names in order (`*` for any),
+    /// skipping what isn't allowed.
+    fn gdk_opens(gdk_backend: Option<&str>, allowed: &str) -> bool {
+        gdk_backend.is_none_or(|list| {
+            list.split(',')
+                .filter(|name| !name.is_empty())
+                .any(|name| name == "*" || name == allowed)
+        })
+    }
+
+    proptest::proptest! {
+        /// Whatever the variables say: a reachable Wayland socket (one
+        /// something listens on) opens the window on Wayland, unless
+        /// `GDK_BACKEND` names `x11` (before any `wayland` or `*`) and
+        /// `DISPLAY` is set; without `WAYLAND_*` and `DISPLAY` it opens on
+        /// `wayland-0` when that is reachable, else nowhere; it never opens
+        /// on a backend whose display is missing, and GDK (told only that
+        /// backend, and the `GDK_BACKEND` left in the environment) opens
+        /// exactly it.
+        #[test]
+        fn a_reachable_wayland_socket_opens_on_wayland(
+            names in proptest::collection::vec(
+                proptest::sample::select(vec!["wayland", "x11", "*", "broadway", "", " x11"]),
+                0..4,
+            ),
+            gdk_set in proptest::bool::ANY,
+            wayland in proptest::option::of(proptest::sample::select(vec![
+                "wayland-7", "absolute", "wayland-1", "wayland-stale", "wayland-file", "",
+            ])),
+            wayland_socket in proptest::bool::ANY,
+            runtime in proptest::bool::ANY,
+            default_there in proptest::bool::ANY,
+            display in proptest::option::of(proptest::sample::select(vec![":0", ":99", ""])),
+        ) {
+            use GdkTarget::{Wayland, X11};
+            let (tmp, _listeners) = runtime_dir(default_there);
+            let absolute = tmp.path().join("wayland-7");
+            let gdk = gdk_set.then(|| names.join(","));
+            let env = DisplayEnv {
+                gdk_backend: gdk.clone().map(Into::into),
+                wayland_display: wayland.map(|name| match name {
+                    "absolute" => absolute.clone().into_os_string(),
+                    name => name.into(),
+                }),
+                wayland_socket: wayland_socket.then(|| "5".into()),
+                runtime_dir: runtime.then(|| tmp.path().to_path_buf()),
+                display: display.map(Into::into),
+            };
+            let default_reachable = runtime && default_there;
+            let wayland_there = wayland_socket
+                || wayland == Some("absolute")
+                || (runtime && wayland == Some("wayland-7"))
+                || (wayland.is_none() && default_reachable);
+            let x11_there = display.is_some_and(|d| !d.is_empty());
+            let choice = DisplayChoice::of(env);
+            match choice.target {
+                Some(Wayland) => proptest::prop_assert!(wayland_there),
+                Some(X11) => proptest::prop_assert!(x11_there),
+                None => proptest::prop_assert!(!wayland_there && !x11_there),
+            }
+            if wayland_there {
+                let position = |wanted: &[&str]| names.iter().position(|n| wanted.contains(n));
+                let before = |x: usize| position(&["wayland", "*"]).is_none_or(|w| x < w);
+                let x11_first = gdk_set && position(&["x11"]).is_some_and(before);
+                let expected = if x11_first && x11_there { X11 } else { Wayland };
+                proptest::prop_assert_eq!(choice.target, Some(expected));
+            }
+            if !wayland_socket && wayland.is_none() && display.is_none() {
+                proptest::prop_assert_eq!(choice.target, default_reachable.then_some(Wayland));
+            }
+            if let Some(target) = choice.target {
+                // What GDK reads: the variable unless it was ignored (and
+                // only one GDK couldn't open the target with is).
+                let ignored = choice.ignored_backend.is_some();
+                let left = if ignored { None } else { gdk.as_deref() };
+                proptest::prop_assert!(gdk_opens(left, target.backend()));
+                proptest::prop_assert_eq!(ignored, !gdk_opens(gdk.as_deref(), target.backend()));
+            } else {
+                proptest::prop_assert!(choice.ignored_backend.is_none());
+            }
+        }
+    }
+
+    /// GTK couldn't connect: the error says where it tried and what else
+    /// there is, naming both variables when neither works.
+    #[test]
+    fn a_failed_open_says_where_and_what_else() {
+        use GdkTarget::{Wayland, X11};
+        let (tmp, _listeners) = runtime_dir(false);
+        let env = |gdk: Option<&str>, wayland: Option<&str>, display: Option<&str>| DisplayEnv {
+            gdk_backend: gdk.map(Into::into),
+            wayland_display: wayland.map(Into::into),
+            runtime_dir: Some(tmp.path().to_path_buf()),
+            display: display.map(Into::into),
+            ..DisplayEnv::default()
+        };
+        let failed = "Failed to initialize GTK";
+        assert_eq!(
+            open_failed(Some(X11), &env(None, None, Some(":4000")), failed),
+            "can't open the window on the X11 display \":4000\" (DISPLAY): Failed to initialize \
+             GTK; there's no Wayland display (WAYLAND_DISPLAY) either"
+        );
+        assert_eq!(
+            open_failed(
+                Some(X11),
+                &env(Some("x11"), Some("wayland-7"), Some(":0")),
+                failed
+            ),
+            "can't open the window on the X11 display \":0\" (DISPLAY): Failed to initialize GTK; \
+             GDK_BACKEND chose it over the Wayland display \"wayland-7\" (WAYLAND_DISPLAY)"
+        );
+        assert_eq!(
+            open_failed(Some(Wayland), &env(None, Some("wayland-7"), None), failed),
+            "can't open the window on the Wayland display \"wayland-7\" (WAYLAND_DISPLAY): Failed \
+             to initialize GTK; there's no X11 display (DISPLAY) either"
+        );
+        assert_eq!(
+            open_failed(
+                Some(Wayland),
+                &env(None, Some("wayland-7"), Some(":0")),
+                failed
+            ),
+            "can't open the window on the Wayland display \"wayland-7\" (WAYLAND_DISPLAY): Failed \
+             to initialize GTK; GDK_BACKEND=x11 would open it on the X11 display \":0\" (DISPLAY)"
+        );
+        let passed = DisplayEnv {
+            wayland_socket: Some("5".into()),
+            ..DisplayEnv::default()
+        };
+        assert!(
+            open_failed(Some(Wayland), &passed, failed).starts_with(
+                "can't open the window on the Wayland socket passed in WAYLAND_SOCKET:"
+            )
+        );
+        assert_eq!(
+            open_failed(None, &DisplayEnv::default(), failed),
+            "can't open the window: Failed to initialize GTK"
+        );
+        assert!(NO_DISPLAY.contains("WAYLAND_DISPLAY") && NO_DISPLAY.contains("(DISPLAY)"));
     }
 }
