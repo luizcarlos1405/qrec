@@ -30827,7 +30827,8 @@
                               "id": "R5ImxH",
                               "type": "ref",
                               "ref": "p6jwb",
-                              "name": "Hint Space Play · disabled in Live",
+                              "name": "Hint Space Play",
+                              "opacity": 1,
                               "descendants": {
                                 "TaqHt/MiAtO": {
                                   "content": "Space"
@@ -52158,7 +52159,7 @@
                               "id": "kChHA",
                               "name": "Text",
                               "fill": "$text",
-                              "content": "Switch to Program (Tab) to play the timeline",
+                              "content": "Switch to Program (Tab) to step through the timeline",
                               "lineHeight": 1.38,
                               "fontFamily": "$font-ui",
                               "fontSize": 13,
@@ -54693,7 +54694,6 @@
                   "x": 388,
                   "y": 2,
                   "name": "Transport buttons",
-                  "opacity": 0.45,
                   "gap": 4,
                   "alignItems": "center",
                   "children": [
@@ -54703,6 +54703,7 @@
                       "ref": "eLHti",
                       "name": "Previous edit",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "skip-back"
@@ -54715,6 +54716,7 @@
                       "ref": "eLHti",
                       "name": "Previous frame",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "chevron-left"
@@ -54739,6 +54741,7 @@
                       "ref": "eLHti",
                       "name": "Next frame",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "chevron-right"
@@ -54751,6 +54754,7 @@
                       "ref": "eLHti",
                       "name": "Next edit",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "skip-forward"
@@ -56370,7 +56374,6 @@
                   "x": 388,
                   "y": 2,
                   "name": "Transport buttons",
-                  "opacity": 0.45,
                   "gap": 4,
                   "alignItems": "center",
                   "children": [
@@ -56380,6 +56383,7 @@
                       "ref": "eLHti",
                       "name": "Previous edit",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "skip-back"
@@ -56392,6 +56396,7 @@
                       "ref": "eLHti",
                       "name": "Previous frame",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "chevron-left"
@@ -56416,6 +56421,7 @@
                       "ref": "eLHti",
                       "name": "Next frame",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "chevron-right"
@@ -56428,6 +56434,7 @@
                       "ref": "eLHti",
                       "name": "Next edit",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "skip-forward"
@@ -57556,7 +57563,6 @@
                   "x": 388,
                   "y": 2,
                   "name": "Transport buttons",
-                  "opacity": 0.45,
                   "gap": 4,
                   "alignItems": "center",
                   "children": [
@@ -57566,6 +57572,7 @@
                       "ref": "eLHti",
                       "name": "Previous edit",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "skip-back"
@@ -57578,6 +57585,7 @@
                       "ref": "eLHti",
                       "name": "Previous frame",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "chevron-left"
@@ -57602,6 +57610,7 @@
                       "ref": "eLHti",
                       "name": "Next frame",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "chevron-right"
@@ -57614,6 +57623,7 @@
                       "ref": "eLHti",
                       "name": "Next edit",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "skip-forward"
@@ -60417,7 +60427,6 @@
                   "x": 388,
                   "y": 2,
                   "name": "Transport buttons",
-                  "opacity": 0.45,
                   "gap": 4,
                   "alignItems": "center",
                   "children": [
@@ -60427,6 +60436,7 @@
                       "ref": "eLHti",
                       "name": "Previous edit",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "skip-back"
@@ -60439,6 +60449,7 @@
                       "ref": "eLHti",
                       "name": "Previous frame",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "chevron-left"
@@ -60463,6 +60474,7 @@
                       "ref": "eLHti",
                       "name": "Next frame",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "chevron-right"
@@ -60475,6 +60487,7 @@
                       "ref": "eLHti",
                       "name": "Next edit",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "skip-forward"
@@ -78269,7 +78282,6 @@
                   "x": 388,
                   "y": 2,
                   "name": "Transport buttons",
-                  "opacity": 0.45,
                   "gap": "$space-xs",
                   "alignItems": "center",
                   "children": [
@@ -78279,6 +78291,7 @@
                       "ref": "eLHti",
                       "name": "Previous edit",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "skip-back"
@@ -78291,6 +78304,7 @@
                       "ref": "eLHti",
                       "name": "Previous frame",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "chevron-left"
@@ -78315,6 +78329,7 @@
                       "ref": "eLHti",
                       "name": "Next frame",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "chevron-right"
@@ -78327,6 +78342,7 @@
                       "ref": "eLHti",
                       "name": "Next edit",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "skip-forward"
@@ -84185,7 +84201,6 @@
                   "x": 388,
                   "y": 2,
                   "name": "Transport buttons",
-                  "opacity": 0.45,
                   "gap": "$space-xs",
                   "alignItems": "center",
                   "children": [
@@ -84195,6 +84210,7 @@
                       "ref": "eLHti",
                       "name": "Previous edit",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "skip-back"
@@ -84207,6 +84223,7 @@
                       "ref": "eLHti",
                       "name": "Previous frame",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "chevron-left"
@@ -84231,6 +84248,7 @@
                       "ref": "eLHti",
                       "name": "Next frame",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "chevron-right"
@@ -84243,6 +84261,7 @@
                       "ref": "eLHti",
                       "name": "Next edit",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "skip-forward"
@@ -90451,7 +90470,6 @@
                   "x": 388,
                   "y": 2,
                   "name": "Transport buttons",
-                  "opacity": 0.45,
                   "gap": "$space-xs",
                   "alignItems": "center",
                   "children": [
@@ -90461,6 +90479,7 @@
                       "ref": "eLHti",
                       "name": "Previous edit",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "skip-back"
@@ -90473,6 +90492,7 @@
                       "ref": "eLHti",
                       "name": "Previous frame",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "chevron-left"
@@ -90497,6 +90517,7 @@
                       "ref": "eLHti",
                       "name": "Next frame",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "chevron-right"
@@ -90509,6 +90530,7 @@
                       "ref": "eLHti",
                       "name": "Next edit",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "skip-forward"
@@ -101508,7 +101530,6 @@
                   "x": 388,
                   "y": 2,
                   "name": "Transport buttons",
-                  "opacity": 0.45,
                   "gap": 4,
                   "alignItems": "center",
                   "children": [
@@ -101518,6 +101539,7 @@
                       "ref": "eLHti",
                       "name": "Previous edit",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "skip-back"
@@ -101530,6 +101552,7 @@
                       "ref": "eLHti",
                       "name": "Previous frame",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "chevron-left"
@@ -101554,6 +101577,7 @@
                       "ref": "eLHti",
                       "name": "Next frame",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "chevron-right"
@@ -101566,6 +101590,7 @@
                       "ref": "eLHti",
                       "name": "Next edit",
                       "width": 32,
+                      "opacity": 0.45,
                       "descendants": {
                         "CjK9v": {
                           "icon": "skip-forward"
