@@ -553,6 +553,16 @@ fn camera_modes_summary(modes: &[Value]) -> String {
     text.join(", ")
 }
 
+/// A screen's scale in two decimals at most: `2`, `1.5`, `1.25`. Under
+/// fractional scaling it is the ratio of the screen's pixels to its
+/// logical size, and wlroots floors that size (2560 px at 1.5 is 1706), so
+/// the ratio can be 1.5005861664712778: the table shows 1.5, `--json` the
+/// exact ratio.
+fn scale(value: f64) -> String {
+    let text = format!("{value:.2}");
+    text.trim_end_matches('0').trim_end_matches('.').to_owned()
+}
+
 pub(crate) fn sources(inv: &Value) -> Vec<String> {
     let s = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).unwrap_or("").to_owned();
     let n = |v: &Value, key: &str| v.get(key).and_then(Value::as_u64);
@@ -578,7 +588,6 @@ pub(crate) fn sources(inv: &Value) -> Vec<String> {
     let screens = list("screens")
         .iter()
         .map(|sc| {
-            let scale = sc.get("scale").and_then(Value::as_f64).unwrap_or(1.0);
             vec![
                 s(sc, "output"),
                 format!(
@@ -591,7 +600,7 @@ pub(crate) fn sources(inv: &Value) -> Vec<String> {
                     sc.get("x").and_then(Value::as_i64).unwrap_or(0),
                     sc.get("y").and_then(Value::as_i64).unwrap_or(0)
                 ),
-                format!("{scale}"),
+                scale(sc.get("scale").and_then(Value::as_f64).unwrap_or(1.0)),
                 s(sc, "description"),
             ]
         })
@@ -838,6 +847,45 @@ mod tests {
             "640x480@15/2 YUY2"
         );
         assert_eq!(camera_modes_summary(&[]), "");
+    }
+
+    /// A screen's scale reads as the scale that was set, not as the ratio
+    /// to a logical size wlroots floored.
+    #[test]
+    fn screen_scales_show_two_decimals_at_most() {
+        for (exact, shown) in [
+            (1.0, "1"),
+            (2.0, "2"),
+            (1.25, "1.25"),
+            (1.5, "1.5"),
+            (5.0 / 3.0, "1.67"),
+            // Sway: 2560×1440 at 1.5 (1706×960 logical), 1366×768 at 1.25
+            // (1092×614), 1920×1200 at 1.75 turned 270°, 2256×1504 at 1.1
+            // turned flipped-90.
+            (1.5005861664712778, "1.5"),
+            (1.250915750915751, "1.25"),
+            (1.750786518871963, "1.75"),
+            (1.1004878048780489, "1.1"),
+        ] {
+            assert_eq!(scale(exact), shown, "{exact}");
+        }
+        let inv = json!({
+            "screens": [
+                {"output": "HEADLESS-1", "description": "Headless output 1", "x": 0, "y": 0,
+                 "width": 2560, "height": 1440, "scale": 1.5005861664712778},
+                {"output": "HEADLESS-2", "description": "Headless output 2", "x": 1706, "y": 0,
+                 "width": 1366, "height": 768, "scale": 1.250915750915751}
+            ]
+        });
+        assert_eq!(
+            sources(&inv)[..4],
+            [
+                "Screens",
+                "  OUTPUT      SIZE       POSITION  SCALE  DESCRIPTION",
+                "  HEADLESS-1  2560x1440  0,0       1.5    Headless output 1",
+                "  HEADLESS-2  1366x768   1706,0    1.25   Headless output 2",
+            ]
+        );
     }
 
     fn history_row(seq: u64, label: &str, current: bool) -> HistoryRow {
