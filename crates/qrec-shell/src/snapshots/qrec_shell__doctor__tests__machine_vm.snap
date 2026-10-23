@@ -1,0 +1,405 @@
+---
+source: crates/qrec-shell/src/doctor.rs
+expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\": text.lines().collect::<Vec<_>>(),\n    \"report\": report.to_json(),\n})"
+---
+{
+  "exitCode": 0,
+  "report": {
+    "checks": [
+      {
+        "detail": "GStreamer 1.26.11",
+        "hint": null,
+        "id": "gstreamer",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "pipewiresrc (screen capture)",
+        "hint": null,
+        "id": "gst.pipewiresrc",
+        "neededFor": [
+          "screens"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "v4l2src (cameras)",
+        "hint": null,
+        "id": "gst.v4l2src",
+        "neededFor": [
+          "cameras"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "pulsesrc (audio capture)",
+        "hint": null,
+        "id": "gst.pulsesrc",
+        "neededFor": [
+          "audio"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "compositor (live preview)",
+        "hint": null,
+        "id": "gst.compositor",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "videorate (constant frame rate)",
+        "hint": null,
+        "id": "gst.videorate",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "x264enc (H.264 recording)",
+        "hint": null,
+        "id": "gst.x264enc",
+        "neededFor": [
+          "recording"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "h264parse (H.264 recording)",
+        "hint": null,
+        "id": "gst.h264parse",
+        "neededFor": [
+          "recording"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "matroskamux (MKV files)",
+        "hint": null,
+        "id": "gst.matroskamux",
+        "neededFor": [
+          "recording"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "flacenc (lossless audio)",
+        "hint": null,
+        "id": "gst.flacenc",
+        "neededFor": [
+          "recording"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "matroskademux (reading the takes' MKV files)",
+        "hint": null,
+        "id": "gst.matroskademux",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "flacdec (the takes' FLAC audio)",
+        "hint": null,
+        "id": "gst.flacdec",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "gtk4paintablesink (the GUI preview)",
+        "hint": null,
+        "id": "gst.gtk4paintablesink",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "avdec_h264, openh264dec (the editor's preview of the takes)",
+        "hint": null,
+        "id": "gst.h264dec",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "no VA-API H.264 encoder: recordings use x264 on the CPU",
+        "hint": "install gst-plugins-bad with the va plugin and a VA driver (intel-media-driver for Intel, mesa for AMD)",
+        "id": "gst.vah264enc",
+        "neededFor": [],
+        "ok": false,
+        "required": false
+      },
+      {
+        "detail": "GStreamer Editing Services",
+        "hint": null,
+        "id": "ges",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "ffmpeg version 8.1.2 (/nix/bin/ffmpeg)",
+        "hint": null,
+        "id": "ffmpeg",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "ffprobe version 8.1.2 (/nix/bin/ffprobe)",
+        "hint": null,
+        "id": "ffprobe",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "h264 (the takes' video), flac (the takes' audio)",
+        "hint": null,
+        "id": "ffmpeg.decoders",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "matroska (the takes' MKV files)",
+        "hint": null,
+        "id": "ffmpeg.demuxers",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "libx264 (MP4 exports)",
+        "hint": null,
+        "id": "ffmpeg.libx264",
+        "neededFor": [
+          "export.mp4"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "aac (MP4 audio)",
+        "hint": null,
+        "id": "ffmpeg.aac",
+        "neededFor": [
+          "export.mp4"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "pcm_s16le (export segments)",
+        "hint": null,
+        "id": "ffmpeg.pcm_s16le",
+        "neededFor": [
+          "export.mp4",
+          "export.webm",
+          "export.av1"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "libvpx-vp9 (WebM exports)",
+        "hint": null,
+        "id": "ffmpeg.libvpx-vp9",
+        "neededFor": [
+          "export.webm"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "libopus (WebM audio)",
+        "hint": null,
+        "id": "ffmpeg.libopus",
+        "neededFor": [
+          "export.webm",
+          "export.av1"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "libsvtav1 (AV1 WebM exports)",
+        "hint": null,
+        "id": "ffmpeg.libsvtav1",
+        "neededFor": [
+          "export.av1"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "xdg-desktop-portal ScreenCast v5 (monitors, windows, virtual)",
+        "hint": null,
+        "id": "portal.screencast",
+        "neededFor": [
+          "screens"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "host app registry v1",
+        "hint": null,
+        "id": "portal.registry",
+        "neededFor": [],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "pactl 17.0 (/nix/bin/pactl)",
+        "hint": null,
+        "id": "pactl",
+        "neededFor": [
+          "audio"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "PulseAudio (on PipeWire 1.6.6)",
+        "hint": null,
+        "id": "sound.server",
+        "neededFor": [
+          "audio"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "/nix/bin/wl-copy",
+        "hint": null,
+        "id": "wl-copy",
+        "neededFor": [],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "no Intel or AMD render node: recordings and exports use x264 on the CPU",
+        "hint": "Qrec never picks an NVIDIA node by itself; set encoder.vaapi_device in ~/.config/qrec/config.toml to use one",
+        "id": "vaapi",
+        "neededFor": [],
+        "ok": false,
+        "required": false
+      }
+    ],
+    "featuresOff": [],
+    "niriSnippet": "binds {\n    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }\n    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }\n    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }\n}\n",
+    "platform": {
+      "desktop": "kde",
+      "distro": "suse",
+      "nixShell": false,
+      "sandbox": "none",
+      "session": "wayland"
+    },
+    "va": {
+      "device": null,
+      "expectedDriver": null,
+      "ffmpegH264": null,
+      "gstEncoders": [],
+      "gstFactory": null,
+      "libvaDriverName": null,
+      "nodes": [
+        {
+          "driver": null,
+          "path": "/dev/dri/renderD128",
+          "vendor": 6900,
+          "vendorName": "0x1af4"
+        }
+      ],
+      "note": null,
+      "origin": null,
+      "startup": [],
+      "vendor": null
+    }
+  },
+  "text": [
+    "Qrec doctor",
+    "",
+    "  ok        gstreamer              GStreamer 1.26.11",
+    "  ok        gst.pipewiresrc        pipewiresrc (screen capture)",
+    "  ok        gst.v4l2src            v4l2src (cameras)",
+    "  ok        gst.pulsesrc           pulsesrc (audio capture)",
+    "  ok        gst.compositor         compositor (live preview)",
+    "  ok        gst.videorate          videorate (constant frame rate)",
+    "  ok        gst.x264enc            x264enc (H.264 recording)",
+    "  ok        gst.h264parse          h264parse (H.264 recording)",
+    "  ok        gst.matroskamux        matroskamux (MKV files)",
+    "  ok        gst.flacenc            flacenc (lossless audio)",
+    "  ok        gst.matroskademux      matroskademux (reading the takes' MKV files)",
+    "  ok        gst.flacdec            flacdec (the takes' FLAC audio)",
+    "  ok        gst.gtk4paintablesink  gtk4paintablesink (the GUI preview)",
+    "  ok        gst.h264dec            avdec_h264, openh264dec (the editor's preview of the takes)",
+    "  optional  gst.vah264enc          no VA-API H.264 encoder: recordings use x264 on the CPU",
+    "                                   → install gst-plugins-bad with the va plugin and a VA driver (intel-media-driver for Intel, mesa for AMD)",
+    "  ok        ges                    GStreamer Editing Services",
+    "  ok        ffmpeg                 ffmpeg version 8.1.2 (/nix/bin/ffmpeg)",
+    "  ok        ffprobe                ffprobe version 8.1.2 (/nix/bin/ffprobe)",
+    "  ok        ffmpeg.decoders        h264 (the takes' video), flac (the takes' audio)",
+    "  ok        ffmpeg.demuxers        matroska (the takes' MKV files)",
+    "  ok        ffmpeg.libx264         libx264 (MP4 exports)",
+    "  ok        ffmpeg.aac             aac (MP4 audio)",
+    "  ok        ffmpeg.pcm_s16le       pcm_s16le (export segments)",
+    "  ok        ffmpeg.libvpx-vp9      libvpx-vp9 (WebM exports)",
+    "  ok        ffmpeg.libopus         libopus (WebM audio)",
+    "  ok        ffmpeg.libsvtav1       libsvtav1 (AV1 WebM exports)",
+    "  ok        portal.screencast      xdg-desktop-portal ScreenCast v5 (monitors, windows, virtual)",
+    "  ok        portal.registry        host app registry v1",
+    "  ok        pactl                  pactl 17.0 (/nix/bin/pactl)",
+    "  ok        sound.server           PulseAudio (on PipeWire 1.6.6)",
+    "  ok        wl-copy                /nix/bin/wl-copy",
+    "  optional  vaapi                  no Intel or AMD render node: recordings and exports use x264 on the CPU",
+    "                                   → Qrec never picks an NVIDIA node by itself; set encoder.vaapi_device in ~/.config/qrec/config.toml to use one",
+    "",
+    "VA-API render nodes: /dev/dri/renderD128 (0x1af4)",
+    "",
+    "Global shortcuts for niri (paste into ~/.config/niri/config.kdl):",
+    "",
+    "binds {",
+    "    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }",
+    "    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }",
+    "    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }",
+    "}",
+    "",
+    "Everything Qrec needs is here."
+  ]
+}

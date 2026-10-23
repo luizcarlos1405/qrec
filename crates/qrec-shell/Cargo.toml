@@ -42,6 +42,8 @@ futures-lite = { workspace = true, optional = true }
 assert_cmd = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The doctor's snapshots of fake machines.
+insta.workspace = true
 proptest.workspace = true
 
 [features]

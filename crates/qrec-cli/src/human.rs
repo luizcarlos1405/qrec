@@ -653,8 +653,11 @@ pub(crate) fn sources(inv: &Value) -> Vec<String> {
     lines
 }
 
-/// `qrec doctor` from the `DoctorReport` JSON: the lines and whether a
-/// required check failed (exit 5).
+/// `qrec doctor` from the `DoctorReport` JSON: the lines and whether an
+/// app check (`required`) failed (exit 5). A failed check is `MISSING`
+/// when the app needs it, `off` when only features do (`neededFor`) and
+/// optional otherwise; a line per feature that is off (`featuresOff`)
+/// comes before the verdict.
 pub(crate) fn doctor(report: &Value, verbose: u8) -> (Vec<String>, bool) {
     let checks = report
         .get("checks")
@@ -670,11 +673,16 @@ pub(crate) fn doctor(report: &Value, verbose: u8) -> (Vec<String>, bool) {
             .get("required")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let needed = check
+            .get("neededFor")
+            .and_then(Value::as_array)
+            .is_some_and(|features| !features.is_empty());
         failed_required |= required && !ok;
-        let status = match (ok, required) {
-            (true, _) => "ok",
-            (false, true) => "MISSING",
-            (false, false) => "missing (optional)",
+        let status = match (ok, required, needed) {
+            (true, ..) => "ok",
+            (false, true, _) => "MISSING",
+            (false, false, true) => "off",
+            (false, false, false) => "missing (optional)",
         };
         let id = check
             .get("id")
@@ -713,12 +721,26 @@ pub(crate) fn doctor(report: &Value, verbose: u8) -> (Vec<String>, bool) {
         lines.extend(snippet.trim_end().lines().map(str::to_owned));
     }
     lines.push(String::new());
-    lines.push(if failed_required {
-        "Some required pieces are missing: Qrec can't record or export until they are installed."
-            .to_owned()
-    } else {
-        "Everything Qrec needs is here.".to_owned()
-    });
+    let off: Vec<String> = report
+        .get("featuresOff")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|f| f.get("message").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect();
+    let some_off = !off.is_empty();
+    lines.extend(off);
+    lines.push(
+        if failed_required {
+            "Some required pieces are missing: Qrec can't start until they are installed."
+        } else if some_off {
+            "Everything else Qrec needs is here."
+        } else {
+            "Everything Qrec needs is here."
+        }
+        .to_owned(),
+    );
     (lines, failed_required)
 }
 
@@ -1140,9 +1162,10 @@ mod tests {
 
         let report = json!({
             "checks": [
-                {"id": "ffmpeg", "required": true, "ok": true, "detail": "8.1.2", "hint": null},
-                {"id": "wl-copy", "required": false, "ok": false, "detail": "not found", "hint": "install wl-clipboard"}
+                {"id": "ffmpeg", "required": true, "neededFor": ["app"], "ok": true, "detail": "8.1.2", "hint": null},
+                {"id": "wl-copy", "required": false, "neededFor": [], "ok": false, "detail": "not found", "hint": "install wl-clipboard"}
             ],
+            "featuresOff": [],
             "niriSnippet": "binds {\n}\n",
             "va": null
         });
@@ -1156,10 +1179,48 @@ mod tests {
         );
         assert!(lines.contains(&"binds {".to_owned()), "{lines:?}");
         assert_eq!(lines.last().unwrap(), "Everything Qrec needs is here.");
-        let missing = json!({"checks": [{"id": "ffmpeg", "required": true, "ok": false, "detail": "not found"}]});
+        let missing = json!({"checks": [{"id": "ffmpeg", "required": true, "neededFor": ["app"], "ok": false, "detail": "not found"}]});
         let (lines, failed) = doctor(&missing, 0);
         assert!(failed);
         assert!(lines[1].starts_with("MISSING"), "{lines:?}");
+        assert_eq!(
+            lines.last().unwrap(),
+            "Some required pieces are missing: Qrec can't start until they are installed."
+        );
+
+        // Only features off: exit 0, a line each, and no claim that Qrec
+        // can't record or export.
+        let screens_off = json!({
+            "checks": [
+                {"id": "ffmpeg", "required": true, "neededFor": ["app"], "ok": true, "detail": "8.1.2", "hint": null},
+                {"id": "portal.screencast", "required": false, "neededFor": ["screens"], "ok": false,
+                 "detail": "no ScreenCast portal: no session bus", "hint": "install xdg-desktop-portal"}
+            ],
+            "featuresOff": [{"feature": "screens", "checks": ["portal.screencast"],
+                             "message": "Screen capture is off: no ScreenCast portal: no session bus"}],
+            "va": null
+        });
+        let (lines, failed) = doctor(&screens_off, 0);
+        assert!(!failed);
+        assert_eq!(
+            lines[2],
+            "off     portal.screencast  no ScreenCast portal: no session bus"
+        );
+        assert!(
+            lines.contains(&"  portal.screencast: install xdg-desktop-portal".to_owned()),
+            "{lines:?}"
+        );
+        assert_eq!(
+            &lines[lines.len() - 2..],
+            [
+                "Screen capture is off: no ScreenCast portal: no session bus",
+                "Everything else Qrec needs is here."
+            ]
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("can't record")),
+            "{lines:?}"
+        );
     }
 
     #[test]

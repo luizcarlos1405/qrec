@@ -1429,6 +1429,114 @@ fn sources_and_doctor_use_the_fake_inventory() {
     assert!(checks.as_array().is_some_and(|c| !c.is_empty()), "{reply}");
 }
 
+/// A session bus that isn't there: as on a desktop without one, the portal
+/// can't be asked.
+fn no_bus(env: &TestEnv) -> OsString {
+    format!("unix:path={}", env.root().join("no-bus").display()).into()
+}
+
+/// `qrec --json doctor` is one object whatever is missing (A§8.6): each
+/// check says `required` (an app check: exit 5) and what needs it
+/// (`neededFor`), and the report says where Qrec runs and what is off.
+#[test]
+fn doctor_json_is_one_object_with_tiers() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("anywhere");
+    let bus = no_bus(&env);
+    let out = qrec_with(
+        &env,
+        &dir,
+        &["--json", "doctor"],
+        &[("DBUS_SESSION_BUS_ADDRESS", bus.as_os_str())],
+    );
+    let reply = out.only_reply();
+    let report = if reply["ok"] == true {
+        &reply["data"]
+    } else {
+        &reply["error"]["details"]
+    };
+    let checks = report["checks"].as_array().expect("the checks");
+    assert!(!checks.is_empty(), "{reply}");
+    for check in checks {
+        let needed: Vec<&str> = check["neededFor"]
+            .as_array()
+            .unwrap_or_else(|| panic!("neededFor: {check}"))
+            .iter()
+            .map(|f| f.as_str().expect("a feature"))
+            .collect();
+        assert_eq!(check["required"], needed.contains(&"app"), "{check}");
+    }
+    let app_failed = checks
+        .iter()
+        .any(|c| c["required"] == true && c["ok"] == false);
+    assert_eq!(out.code, Some(if app_failed { 5 } else { 0 }), "{reply}");
+    assert!(report["featuresOff"].is_array(), "{report}");
+    assert!(report["platform"]["session"].is_string(), "{report}");
+    // The fake backend needs no portal: its failure turns nothing off.
+    let portal = checks
+        .iter()
+        .find(|c| c["id"] == "portal.screencast")
+        .expect("the portal's check");
+    assert_eq!(
+        (&portal["ok"], &portal["neededFor"]),
+        (&json!(false), &json!([]))
+    );
+}
+
+/// No ScreenCast portal (here no session bus at all, as on many X11
+/// desktops) and no sound server: screen and audio capture are off, a line
+/// each, and nothing else is; exit 0 (issue #9: Qrec still opens projects,
+/// edits and exports). The real backend, with a configured VA device that
+/// is no render node, so no GPU probe runs.
+#[test]
+fn doctor_without_a_portal_turns_screens_off() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("anywhere");
+    let config_dir = env.config_home().join("qrec");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        "[encoder]\nvaapi_device = \"/nonexistent/renderD999\"\n",
+    )
+    .unwrap();
+    let bus = no_bus(&env);
+    let pulse: OsString = format!("unix:{}", env.root().join("no-pulse").display()).into();
+    let vars = [
+        ("QREC_CAPTURE_BACKEND", OsStr::new("real")),
+        ("DBUS_SESSION_BUS_ADDRESS", bus.as_os_str()),
+        ("PULSE_SERVER", pulse.as_os_str()),
+    ];
+    let human = qrec_with(&env, &dir, &["doctor"], &vars);
+    assert_eq!(human.code, Some(0), "{}{}", human.stdout, human.stderr);
+    let out = &human.stdout;
+    assert!(
+        out.contains("\nScreen capture is off: no ScreenCast portal: "),
+        "{out}"
+    );
+    assert!(out.contains("\nAudio capture is off: "), "{out}");
+    assert!(
+        out.ends_with("\nEverything else Qrec needs is here.\n"),
+        "{out}"
+    );
+    assert!(!out.contains("can't record or export"), "{out}");
+    let json = qrec_with(&env, &dir, &["--json", "doctor"], &vars);
+    assert_eq!(json.code, Some(0));
+    let reply = json.only_reply();
+    let off: Vec<&str> = reply["data"]["featuresOff"]
+        .as_array()
+        .expect("featuresOff")
+        .iter()
+        .map(|f| f["feature"].as_str().expect("a feature"))
+        .collect();
+    assert_eq!(off, ["screens", "audio"], "{reply}");
+    let va = &reply["data"]["va"];
+    assert_eq!(
+        (&va["ffmpegH264"], &va["gstFactory"]),
+        (&Value::Null, &Value::Null),
+        "no GPU probe: {va}"
+    );
+}
+
 #[test]
 fn record_start_and_stop_with_the_fake_backend() {
     let env = TestEnv::new();

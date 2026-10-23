@@ -1,7 +1,7 @@
 //! The drafted S23 (the swamp is missing something) and its GStreamer-stuck
 //! variant, as the approved frame draws them (C31 Blocking with art and
 //! rows, under the minimal header `Xba2H`; WP8 after G§0.2): a row per
-//! failed check from the doctor's report (`LocalUi.doctor`, read again
+//! failed app check from the doctor's report (`LocalUi.doctor`, read again
 //! whenever a new report comes: Check again), the others behind the
 //! "✓ N other checks passed" disclosure, then Check again, Copy report and
 //! Quit. The stuck page is the same shape with GStreamer's row and Quit
@@ -646,8 +646,9 @@ impl PageView for MissingDepsView {
 
 #[cfg(test)]
 mod tests {
+    use qrec_core::platform::{PlatformEnv, detect};
     use qrec_core::view::blocking::BlockingAction;
-    use qrec_shell::doctor::Check;
+    use qrec_shell::doctor::{Check, Feature};
 
     use super::*;
 
@@ -659,6 +660,7 @@ mod tests {
                 Check {
                     id: "gst.gtk4paintablesink".into(),
                     required: true,
+                    needed_for: vec![Feature::App],
                     ok: false,
                     detail: "gtk4paintablesink (the GUI preview) isn't in the GStreamer registry"
                         .into(),
@@ -667,11 +669,14 @@ mod tests {
                 Check {
                     id: "wl-copy".into(),
                     required: false,
+                    needed_for: vec![],
                     ok: true,
                     detail: "/run/current-system/sw/bin/wl-copy".into(),
                     hint: None,
                 },
             ],
+            features_off: vec![],
+            platform: detect(&PlatformEnv::default()),
             niri_snippet: String::new(),
             va: None,
         };

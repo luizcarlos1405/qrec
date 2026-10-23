@@ -10,7 +10,7 @@
 //! GStreamer stuck, and the folder or the host failing.
 //!
 //! The drafted pages (WP8, G§0.2 approved them as drawn) give the same
-//! pages the frames' content: S23's rows from the doctor's checks
+//! pages the frames' content: S23's rows from the doctor's failed app checks
 //! ([`missing_deps`], [`CheckView`]) and its GStreamer-stuck variant
 //! ([`gst_stuck`]), X1's modal with its well ([`cli_recording`]) and D-29's
 //! export wait in the same modal ([`export_wait`]), X2 with D-14's line
@@ -32,8 +32,8 @@ use crate::view::format::{self, capitalized};
     rename_all_fields = "camelCase"
 )]
 pub enum BlockKind {
-    /// S23: a required dependency is missing (exit 5). `report` is
-    /// `DoctorReport::to_text` of the failed checks.
+    /// S23: a dependency the app needs is missing (exit 5). `report`
+    /// lists the failed app checks (the GUI's `startup::missing_report`).
     MissingDeps { report: String },
     /// X1: another host records a take (SPEC §4.3). `stopping` once Stop &
     /// open was pressed (D-29).
@@ -434,6 +434,9 @@ pub struct PageHead {
 pub struct CheckView {
     /// The doctor's id: `gst.gtk4paintablesink`, `portal.screencast`, …
     pub id: String,
+    /// The app needs it (the doctor's `required`): only these block, and
+    /// only these are S23's rows. Another failure turns a feature off
+    /// (screens, audio, an export format) and doesn't stop Qrec.
     pub required: bool,
     pub ok: bool,
     pub detail: String,
@@ -441,7 +444,8 @@ pub struct CheckView {
 }
 
 /// A failed check's state: a required one is missing (✕ `record-text`),
-/// an optional one only warns (⚠ `warning-text`, the Optional chip).
+/// an optional one only warns (⚠ `warning-text`, the Optional chip). S23
+/// lists the app checks alone, so its rows are all `Missing`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CheckStatus {
@@ -486,7 +490,7 @@ pub struct PassedCheck {
 #[serde(rename_all = "camelCase")]
 pub struct MissingDepsPage {
     pub head: PageHead,
-    /// The failed checks: the required ones, then the optional ones.
+    /// The failed app checks, in the doctor's order.
     pub rows: Vec<CheckRow>,
     /// The checks that passed, behind the disclosure; none, no disclosure.
     pub passed: Vec<PassedCheck>,
@@ -554,17 +558,17 @@ fn passed_label(n: usize) -> String {
     format!("{} other {noun} passed", format::count(n as u64))
 }
 
-/// S23 from the doctor's checks (G§4.11): a row per failed check, the
-/// required ones first, each group in the doctor's order; the rest behind
+/// S23 from the doctor's checks (G§4.11): a row per failed app check
+/// (`required`), in the doctor's order; the checks that passed behind
 /// "✓ N other checks passed"; Check again (focused), Copy report, Quit.
+/// A failure the app doesn't need (a feature that is off, an optional
+/// tool) is no row: `qrec doctor` and Copy report still say it.
 pub fn missing_deps(checks: &[CheckView]) -> MissingDepsPage {
-    let failed = |required: bool| {
-        checks
-            .iter()
-            .filter(move |c| !c.ok && c.required == required)
-            .map(check_row)
-    };
-    let rows: Vec<CheckRow> = failed(true).chain(failed(false)).collect();
+    let rows: Vec<CheckRow> = checks
+        .iter()
+        .filter(|c| !c.ok && c.required)
+        .map(check_row)
+        .collect();
     let passed: Vec<PassedCheck> = checks
         .iter()
         .filter(|c| c.ok)
@@ -1195,9 +1199,9 @@ mod tests {
         }
     }
 
-    /// BRIEF S23's machine: gtk4paintablesink and the ScreenCast portal
-    /// missing, libsvtav1 optional and missing, 14 other checks fine (in
-    /// the doctor's order: the optional failure comes first there).
+    /// BRIEF S23's machine: gtk4paintablesink (an app check) and the
+    /// ScreenCast portal (screen capture's) missing, libsvtav1 (AV1
+    /// export's) missing, 14 other checks fine, in the doctor's order.
     fn s23_checks() -> Vec<CheckView> {
         let mut checks = vec![
             check("gstreamer", true, true, "1.26.6", None),
@@ -1217,7 +1221,7 @@ mod tests {
             ),
             check(
                 "portal.screencast",
-                true,
+                false,
                 false,
                 "no ScreenCast portal: no reply",
                 Some("install xdg-desktop-portal with a ScreenCast backend"),
@@ -1289,70 +1293,120 @@ mod tests {
         insta::assert_json_snapshot!("drafted_pages", pages);
     }
 
-    /// S23's rows (G§4.11): the failed required checks first, then the
-    /// optional ones, each in the doctor's order; BRIEF's copy by id, the
-    /// doctor's own words for the others; the rest behind the disclosure.
+    /// S23 from a report where the app and some features fail together
+    /// (`doctor::run` on Debian without gst-libav, Xfce on Xorg, ffmpeg
+    /// without libx264, PulseAudio 15): the app's rows alone.
     #[test]
-    fn s23_lists_the_failed_checks_required_first() {
+    fn s23_from_a_mixed_report() {
+        let checks = [
+            check("gstreamer", true, true, "GStreamer 1.26.11", None),
+            check(
+                "gst.h264dec",
+                true,
+                false,
+                "no software H.264 decoder: the editor can't play the takes",
+                Some("install gst-libav (avdec_h264)"),
+            ),
+            check(
+                "ffmpeg.decoders",
+                true,
+                false,
+                "ffmpeg can't decode h264 (the takes' video)",
+                Some("install a full ffmpeg build (NixOS: ffmpeg-full)"),
+            ),
+            check(
+                "ffmpeg.libx264",
+                false,
+                false,
+                "ffmpeg has no libx264 encoder (MP4 exports)",
+                Some("install a full ffmpeg build (NixOS: ffmpeg-full)"),
+            ),
+            check(
+                "portal.screencast",
+                false,
+                false,
+                "no ScreenCast portal: busctl exited with status 1",
+                Some("install xdg-desktop-portal with a ScreenCast backend"),
+            ),
+            check(
+                "pactl",
+                false,
+                false,
+                "pactl 15.0 is too old: Qrec needs pactl 16 or newer (/usr/bin/pactl)",
+                Some("update the PulseAudio client tools to 16 or newer (pulseaudio-utils)"),
+            ),
+            check(
+                "wl-copy",
+                false,
+                false,
+                "not found: saved frames can't be copied to the clipboard",
+                Some("install wl-clipboard"),
+            ),
+            check("ffmpeg", true, true, "ffmpeg version 8.1.2", None),
+        ];
+        let page = missing_deps(&checks);
+        let ids: Vec<&str> = page.rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["gst.h264dec", "ffmpeg.decoders"]);
+        assert_eq!(page.passed_label, "2 other checks passed");
+        insta::assert_json_snapshot!("s23_mixed_report", page);
+    }
+
+    /// S23's rows (G§4.11): the failed app checks alone, in the doctor's
+    /// order; BRIEF's copy by id, the doctor's own words for the others;
+    /// what passed behind the disclosure. A feature that is off (the
+    /// portal, libsvtav1) is no row.
+    #[test]
+    fn s23_lists_only_the_failed_app_checks() {
         let page = missing_deps(&s23_checks());
         let ids: Vec<&str> = page.rows.iter().map(|r| r.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            [
-                "gst.gtk4paintablesink",
-                "portal.screencast",
-                "ffmpeg.libsvtav1"
-            ]
-        );
-        let statuses: Vec<CheckStatus> = page.rows.iter().map(|r| r.status).collect();
-        assert_eq!(
-            statuses,
-            [
-                CheckStatus::Missing,
-                CheckStatus::Missing,
-                CheckStatus::Optional
-            ]
-        );
+        assert_eq!(ids, ["gst.gtk4paintablesink"]);
+        assert_eq!(page.rows[0].status, CheckStatus::Missing);
         assert_eq!(
             page.rows[0].item,
             [ItemPart::Mono("gtk4paintablesink".into())]
         );
         assert_eq!(page.rows[0].command.as_deref(), Some("nix develop"));
+        // BRIEF's copy for the portal's and libsvtav1's rows, should one be listed.
+        let rows: Vec<CheckRow> = s23_checks()
+            .iter()
+            .filter(|c| !c.ok && !c.required)
+            .map(check_row)
+            .collect();
         assert_eq!(
-            page.rows[1].item,
-            [ItemPart::Text("ScreenCast portal backend".into())]
-        );
-        assert_eq!(
-            page.rows[1].command.as_deref(),
-            Some("xdg-desktop-portal-gnome")
-        );
-        assert_eq!(
-            page.rows[2].item,
+            rows[0].item,
             [
                 ItemPart::Mono("libsvtav1".into()),
                 ItemPart::Text("in ffmpeg".into())
             ]
         );
-        assert_eq!(page.rows[2].command, None);
+        assert_eq!(rows[0].command, None);
+        assert_eq!(
+            rows[1].item,
+            [ItemPart::Text("ScreenCast portal backend".into())]
+        );
+        assert_eq!(rows[1].command.as_deref(), Some("xdg-desktop-portal-gnome"));
         assert_eq!(page.passed.len(), 14);
         assert_eq!(page.passed_label, "14 other checks passed");
         assert_eq!(passed_label(1), "1 other check passed");
         // Another id: the id, the doctor's detail, its hint under it.
         let other = missing_deps(&[check(
-            "pactl",
+            "ffmpeg.demuxers",
             true,
             false,
-            "pactl wasn't found (it lists microphones and system audio)",
-            Some("install the PulseAudio client tools (NixOS: pkgs.pulseaudio)"),
+            "ffmpeg can't read matroska (the takes' MKV files)",
+            Some("install a full ffmpeg build (NixOS: ffmpeg-full)"),
         )]);
-        assert_eq!(other.rows[0].item, [ItemPart::Mono("pactl".into())]);
+        assert_eq!(
+            other.rows[0].item,
+            [ItemPart::Mono("ffmpeg.demuxers".into())]
+        );
         assert_eq!(
             other.rows[0].description,
-            "pactl wasn't found (it lists microphones and system audio)"
+            "ffmpeg can't read matroska (the takes' MKV files)"
         );
         assert_eq!(
             other.rows[0].note.as_deref(),
-            Some("install the PulseAudio client tools (NixOS: pkgs.pulseaudio)")
+            Some("install a full ffmpeg build (NixOS: ffmpeg-full)")
         );
         assert!(other.passed.is_empty());
         // Check again has the focus (S23's ring), then Copy report, Quit.

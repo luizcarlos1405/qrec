@@ -1,0 +1,88 @@
+---
+source: crates/qrec-core/src/view/blocking.rs
+expression: page
+---
+{
+  "head": {
+    "title": "The swamp is missing something",
+    "smallTitle": false,
+    "body": [
+      {
+        "line": "text",
+        "text": "Qrec can't start until these are installed."
+      },
+      {
+        "line": "command",
+        "before": "Run",
+        "command": "qrec doctor",
+        "after": "in a terminal for the same report."
+      }
+    ]
+  },
+  "rows": [
+    {
+      "id": "gst.h264dec",
+      "status": "missing",
+      "item": [
+        {
+          "face": "mono",
+          "text": "gst.h264dec"
+        }
+      ],
+      "description": "no software H.264 decoder: the editor can't play the takes",
+      "command": null,
+      "note": "install gst-libav (avdec_h264)"
+    },
+    {
+      "id": "ffmpeg.decoders",
+      "status": "missing",
+      "item": [
+        {
+          "face": "mono",
+          "text": "ffmpeg.decoders"
+        }
+      ],
+      "description": "ffmpeg can't decode h264 (the takes' video)",
+      "command": null,
+      "note": "install a full ffmpeg build (NixOS: ffmpeg-full)"
+    }
+  ],
+  "passed": [
+    {
+      "id": "gstreamer",
+      "detail": "GStreamer 1.26.11"
+    },
+    {
+      "id": "ffmpeg",
+      "detail": "ffmpeg version 8.1.2"
+    }
+  ],
+  "passedLabel": "2 other checks passed",
+  "buttons": [
+    {
+      "label": "Check again",
+      "action": {
+        "flow": "checkAgain"
+      },
+      "kind": "primary",
+      "focused": true,
+      "busy": false
+    },
+    {
+      "label": "Copy report",
+      "action": "copyReport",
+      "kind": "secondary",
+      "focused": false,
+      "busy": false
+    },
+    {
+      "label": "Quit",
+      "action": {
+        "flow": "quit"
+      },
+      "kind": "flat",
+      "focused": false,
+      "busy": false
+    }
+  ]
+}

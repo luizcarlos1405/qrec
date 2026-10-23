@@ -11,7 +11,7 @@
 //! | 3 | `qrec-gst` | `gst_init::init()` (≤ 30 s), `ges_render::init()`; stuck → the stuck page (exit 5) |
 //! | 4 | `qrec-startup` | the lock (or the takeover pages), then `GuiHost::start` |
 //! | 5 | GTK, after 3 | both `gtk4paintablesink`s (`MediaHub::create_sinks`) |
-//! | 6 | `qrec-doctor`, after 3 | `doctor::run`; a required check failed → `GuiHost::fail` and S23 (exit 5) |
+//! | 6 | `qrec-doctor`, after 3 | `doctor::run`; an app check failed → `GuiHost::fail` and S23 (exit 5); a feature that is off (screens, audio, an export format) only logs |
 //! | 7 | once 4, 5 and 6 succeeded | `GuiHost::open(GuiOpener)`: `Opened`, or X3 on a broken `qrec.json` (exit 1) |
 //! | 8 | GTK, on `Opened` | the player and the preview cache; the meter monitor follows |
 //!
@@ -618,7 +618,7 @@ pub fn not_responding(record: Option<&LockRecord>) -> BlockKind {
     }
 }
 
-/// S23's report: each failed required check and its hint.
+/// S23's report: each failed app check and its hint.
 pub fn missing_report(report: &DoctorReport) -> String {
     let missing = report.missing();
     let width = missing.iter().map(|c| c.id.len()).max().unwrap_or(0);
@@ -896,6 +896,10 @@ impl Startup {
         *self.doctor.borrow_mut() = Step::Done(Arc::clone(&report));
         let shared = Arc::clone(&report);
         app.ctx.store.update_local(move |l| l.doctor = Some(shared));
+        // Not blocking: the project opens and the rest works.
+        for off in &report.features_off {
+            tracing::warn!("doctor: {}", off.message);
+        }
         match report.missing_dependency() {
             Some(err) => {
                 tracing::warn!("startup: {err}");
@@ -1216,32 +1220,49 @@ mod tests {
     }
 
     #[test]
-    fn the_missing_report_lists_failed_required_checks() {
-        use qrec_shell::doctor::Check;
+    fn the_missing_report_lists_failed_app_checks() {
+        use qrec_core::platform::{PlatformEnv, detect};
+        use qrec_shell::doctor::{Check, Feature, FeatureOff};
+        let check =
+            |id: &str, needed_for: &[Feature], ok: bool, detail: &str, hint: Option<&str>| Check {
+                id: id.into(),
+                required: needed_for.contains(&Feature::App),
+                needed_for: needed_for.to_vec(),
+                ok,
+                detail: detail.into(),
+                hint: hint.map(Into::into),
+            };
         let report = DoctorReport {
             checks: vec![
-                Check {
-                    id: "ffmpeg".into(),
-                    required: true,
-                    ok: false,
-                    detail: "ffmpeg wasn't found on PATH".into(),
-                    hint: Some("install ffmpeg".into()),
-                },
-                Check {
-                    id: "gstreamer".into(),
-                    required: true,
-                    ok: true,
-                    detail: "1.26".into(),
-                    hint: None,
-                },
-                Check {
-                    id: "wl-copy".into(),
-                    required: false,
-                    ok: false,
-                    detail: "not found".into(),
-                    hint: Some("install wl-clipboard".into()),
-                },
+                check(
+                    "ffmpeg",
+                    &[Feature::App],
+                    false,
+                    "ffmpeg wasn't found on PATH",
+                    Some("install ffmpeg"),
+                ),
+                check("gstreamer", &[Feature::App], true, "1.26", None),
+                check(
+                    "portal.screencast",
+                    &[Feature::Screens],
+                    false,
+                    "no ScreenCast portal: no session bus",
+                    Some("install xdg-desktop-portal"),
+                ),
+                check(
+                    "wl-copy",
+                    &[],
+                    false,
+                    "not found",
+                    Some("install wl-clipboard"),
+                ),
             ],
+            features_off: vec![FeatureOff {
+                feature: Feature::Screens,
+                checks: vec!["portal.screencast".into()],
+                message: "Screen capture is off: no ScreenCast portal: no session bus".into(),
+            }],
+            platform: detect(&PlatformEnv::default()),
             niri_snippet: String::new(),
             va: None,
         };

@@ -1455,7 +1455,9 @@ fn doctor_reports_and_exits_5_when_required_pieces_are_missing() {
     let tmp = Tmp::new();
     let mut fake = Fake::new(&tmp.dir("cfg"));
     fake.doctor = Ok(json!({
-        "checks": [{"id": "ffmpeg", "required": true, "ok": true, "detail": "8.1.2", "hint": null}],
+        "checks": [{"id": "ffmpeg", "required": true, "neededFor": ["app"], "ok": true,
+                    "detail": "8.1.2", "hint": null}],
+        "featuresOff": [],
         "niriSnippet": "binds {\n    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }\n}",
         "va": null
     }));
@@ -1472,14 +1474,39 @@ fn doctor_reports_and_exits_5_when_required_pieces_are_missing() {
         true
     );
 
+    // Only a feature is off: exit 0, its line, and `--json` is the report.
+    fake.doctor = Ok(json!({
+        "checks": [{"id": "gst.x264enc", "required": false, "neededFor": ["recording"], "ok": false,
+                    "detail": "x264enc (H.264 recording) isn't in the GStreamer registry",
+                    "hint": "install gst-plugins-ugly"}],
+        "featuresOff": [{"feature": "recording", "checks": ["gst.x264enc"],
+                         "message": "Recording is off: x264enc (H.264 recording) isn't in the GStreamer registry"}]
+    }));
+    let off = run(&mut fake, &tmp.0, "qrec doctor");
+    assert_eq!(off.code, 0, "{}", off.out);
+    assert!(
+        off.out.contains("\nRecording is off: x264enc (H.264 recording) isn't in the GStreamer registry\nEverything else Qrec needs is here.\n"),
+        "{}",
+        off.out
+    );
+    let json = run(&mut fake, &tmp.0, "qrec doctor --json");
+    assert_eq!(json.code, 0);
+    assert_eq!(
+        json.json()["data"]["featuresOff"][0]["feature"],
+        "recording"
+    );
+
     fake.doctor = Ok(
-        json!({"checks": [{"id": "x264enc", "required": true, "ok": false,
-                                         "detail": "GStreamer element missing", "hint": "install gst-plugins-ugly"}]}),
+        json!({"checks": [{"id": "gst.h264dec", "required": true, "neededFor": ["app"], "ok": false,
+                           "detail": "no software H.264 decoder", "hint": "install gst-libav (avdec_h264)"}],
+               "featuresOff": []}),
     );
     let missing = run(&mut fake, &tmp.0, "qrec doctor");
     assert_eq!(missing.code, 5);
     assert!(
-        missing.out.contains("x264enc: install gst-plugins-ugly"),
+        missing
+            .out
+            .contains("gst.h264dec: install gst-libav (avdec_h264)"),
         "{}",
         missing.out
     );
@@ -1488,7 +1515,7 @@ fn doctor_reports_and_exits_5_when_required_pieces_are_missing() {
     assert_eq!(json.json()["error"]["code"], "missing_dependency");
     assert_eq!(
         json.json()["error"]["details"]["checks"][0]["id"],
-        "x264enc"
+        "gst.h264dec"
     );
 }
 
