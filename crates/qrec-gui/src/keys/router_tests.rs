@@ -176,10 +176,12 @@ fn expected(scene: &Scene, id: &str, ctx: KeyContext) -> Vec<Call> {
                     mode: CanvasMode::Live,
                 }));
             }
-            // D-01: a play or a shuttle from Live switches to Program.
+            // D-01: a play or a shuttle from Live switches to Program,
+            // but `J` at the start, which plays nothing.
             if matches!(id, "play.toggle" | "shuttle.forward" | "shuttle.reverse")
                 && !state.runtime.playing
                 && state.ui.canvas_mode == CanvasMode::Live
+                && !(id == "shuttle.reverse" && state.ui.playhead == 0)
             {
                 calls.push(dispatch(Command::SetCanvasMode {
                     mode: CanvasMode::Program,
@@ -670,6 +672,58 @@ fn play_keys_in_live_say_why_they_cant_and_stay() {
         for chord in ["l", "j"] {
             assert_eq!(scene.press(chord).0, KeyDecision::Propagate, "{chord}");
         }
+    }
+}
+
+/// D-01: from Live a key switches the canvas exactly when its command
+/// plays, as the core's `Play` and `Shuttle` do on their own (A§5.10):
+/// `J` at the start plays nothing backwards, so it leaves Live alone, as
+/// it does nothing in Program (its rate, then the `Shuttle` the core
+/// answers with nothing to play).
+#[test]
+fn the_switch_from_live_comes_only_with_playback() {
+    let ctx = testkit::ctx("2026-10-14T15:00:00Z", 7);
+    let total = qrec_core::timeline::total_frames(&Scene::new().state.project.timeline.clips);
+    for playhead in [0, 1200, total] {
+        let mut live = Scene::new();
+        live.state.ui.playhead = playhead;
+        for chord in ["space", "j", "l"] {
+            let at = format!("{chord} at {playhead}");
+            let KeyDecision::Run { pre, cmd, .. } = live.press(chord).0 else {
+                panic!("{at}: not a command");
+            };
+            let alone = qrec_core::apply::apply(&live.state, &ctx, cmd)
+                .expect(&at)
+                .state;
+            assert_eq!(
+                pre.contains(&PreStep::SetProgram),
+                alone.ui.canvas_mode == CanvasMode::Program,
+                "{at}"
+            );
+            let state = fold(&live, chord);
+            assert_eq!(state.ui.canvas_mode, alone.ui.canvas_mode, "{at}");
+            assert_eq!(state.runtime.playing, alone.runtime.playing, "{at}");
+        }
+    }
+    let mut start = Scene::new();
+    start.state.ui.playhead = 0;
+    assert_eq!(
+        start.calls("j"),
+        [
+            Call::Rate(-1.0),
+            dispatch(Command::Shuttle {
+                dir: ShuttleDir::Reverse
+            })
+        ]
+    );
+    let state = fold(&start, "j");
+    assert_eq!(state.ui.canvas_mode, CanvasMode::Live);
+    assert!(!state.runtime.playing);
+    // `Space` and `L` there play forwards, from Program.
+    for chord in ["space", "l"] {
+        let state = fold(&start, chord);
+        assert_eq!(state.ui.canvas_mode, CanvasMode::Program, "{chord}");
+        assert!(state.runtime.playing, "{chord}");
     }
 }
 

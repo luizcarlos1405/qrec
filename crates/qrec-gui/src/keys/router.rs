@@ -380,7 +380,7 @@ pub fn decide_binding(id: &str, rs: &RouterState<'_>) -> KeyDecision {
             Some(step) => step,
             None => KeyDecision::Run {
                 id: id.to_owned(),
-                pre: pre_steps(id, &cmd, rs),
+                pre: pre_steps(id, &cmd, rs, &state),
                 cmd,
             },
         },
@@ -464,8 +464,9 @@ fn step_while_playing(
     })
 }
 
-/// The pre-steps of binding `id`, whose command is `cmd` (G§3.8).
-fn pre_steps(id: &str, cmd: &Command, rs: &RouterState<'_>) -> Vec<PreStep> {
+/// The pre-steps of binding `id`, whose command is `cmd` (G§3.8);
+/// `effective` is the snapshot with the player's frame as the playhead.
+fn pre_steps(id: &str, cmd: &Command, rs: &RouterState<'_>, effective: &State) -> Vec<PreStep> {
     let state = rs.state;
     let mut pre = Vec::new();
     // While the program plays the core's playhead only moves with the
@@ -487,14 +488,20 @@ fn pre_steps(id: &str, cmd: &Command, rs: &RouterState<'_>) -> Vec<PreStep> {
     }
     // D-01, D-05's mirror: a play or a shuttle from Live (`Space`, `J`,
     // `L`, the transport's Play) switches the canvas to Program first,
-    // with no toast.
-    let starts_playing = matches!(
-        cmd,
+    // with no toast, when it plays: `J` at the start plays nothing
+    // backwards and the core leaves the canvas alone
+    // (`apply::ui::start_playing`), so it does nothing there, as in
+    // Program.
+    let starts_playing = match cmd {
         Command::Play
-            | Command::Shuttle {
-                dir: ShuttleDir::Forward | ShuttleDir::Reverse
-            }
-    );
+        | Command::Shuttle {
+            dir: ShuttleDir::Forward,
+        } => true,
+        Command::Shuttle {
+            dir: ShuttleDir::Reverse,
+        } => effective.ui.playhead > 0,
+        _ => false,
+    };
     if starts_playing && state.ui.canvas_mode == CanvasMode::Live {
         pre.push(PreStep::SetProgram);
     }
