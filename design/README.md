@@ -101,7 +101,7 @@ Both files were generated from the pen.dev variables on 2026-10-14, and every co
 **The slice is approved.** The product owner's answers:
 
 - **Color proposals P1–P8: accepted, with one rule:** "the best contrast, not the highest, but good contrast according to norms and recommendations." Each value is the smallest OKLCH-lightness shift that meets WCAG 2.2 AA with a 0.05 margin on every background the token is drawn on, hover states included. In Swamp Night this changes `record-text` (`#FC6555` → `#FF7868`), `border-strong` (`#6B7D5D` → `#6C7E5E`) and `mud` (`#7E5C3D` → `#7F5D3E`). The final values and the reasons are in [DESIGN.md](../DESIGN.md) → Colors → Decisions.
-- **Product questions Q1–Q11, engineering calls and polishing calls:** accepted as mocked. Q9 (follow GNOME's light/dark) wasn't designed, so v1 keeps the theme a manual choice in Settings, Swamp Night by default.
+- **Product questions Q1–Q11, engineering calls and polishing calls:** accepted as mocked. Q9 (follow GNOME's light/dark) wasn't designed, so v1 keeps the theme a manual choice in Settings, Swamp Night by default. Q2 was changed on 2026-10-23 (issue #12): `Space`, `J` and `L` in Live switch to Program and play, and the transport's Play is enabled there (docs/GUI.md D-01).
 - **Draft screens** (listed under "Later, not in this review" above: S19–S25 and X1–X3): **approved** as drawn, later the same day (docs/GUI.md G§0.2). They are built as drawn (work packages WP8, WP9 and the S24 overlay), not as interim pages.
 - **GUI dependencies:** `gtk4` 0.11.5, `libadwaita` 0.9.2, `pango` 0.22.9 and `rust-version` 1.92 approved, and `gstreamer-allocators` 0.25 (added for the niri screencast bridge) approved after the fact (ARCHITECTURE A§1.2, GUI.md G§0.1).
 

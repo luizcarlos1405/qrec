@@ -4181,6 +4181,11 @@ same where not named; `tmp/fix12/notes/`, `tmp/icons-art/measure/`,
   slider's track ends at x 1003 for 1007. At the fit zoom (every fit
   shot) zoom out is unavailable (G§4.3: px/frame > fit) and drawn dimmed
   (85 % of the frame's ink), where the frames draw it enabled.
+- Every Live shot with clips and no take on its way (S02 and its scale
+  and width runs, S05b and S13 among them; since issue #12, after this
+  re-shoot): the transport's Play is enabled (D-01), where the frames
+  draw it disabled, and in S02 and S05b so is the hint bar's `[Space]
+  Play`.
 - Every fit shot (G§1.3's fit inset: the timeline fits into 8 px less
   than the frames' 1040): clip edges, the playhead and S11's caret sit
   up to 8 px left of the frames' (S11's caret at 403 for 404.9), the end
@@ -5280,8 +5285,10 @@ and the unit tests of the watcher's debounce, event filter and reads
   assertive) and text, in order. The window that never calls GTK's
   `announce` fails it (nothing on the bus).
 - Focus order (G§3.8): `f6_cycles_the_regions_of_s02`/`_s06` and
-  `shift_tab_walks_every_focusable_widget_of_s02`/`_s06` (39 and 54
-  widgets, each landed on once). Every landing wears the focus ring: a shot
+  `shift_tab_walks_every_focusable_widget_of_s02`/`_s06` (40 and 54
+  widgets, each landed on once; S02's 40th is the transport's Play,
+  enabled in Live since issue #12, D-01, where F6 into the transport now
+  lands). Every landing wears the focus ring: a shot
   while the key's `wtype` holds the keyboard (G§8.4: the window is active
   only then), the ring-colored pixels around the widget that the steps
   before and after don't have, at least its perimeter's worth (a scale

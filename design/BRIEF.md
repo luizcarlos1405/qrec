@@ -352,11 +352,11 @@ These are Swamp Night frames unless noted. "Base" names the frame to duplicate. 
 - **Purpose:** the resting state between takes. This is the default screen and the one that proves the theme set.
 - **On screen:** the full anatomy from §2.
   - **Canvas:** Live (the code editor, plus the terminal pane running `cargo test`, plus the face cam), with the `LIVE` badge.
-  - **Transport:** "Live · 1920×1080 · 30 fps"; play/pause enabled (it switches to Program and plays, GUI D-01), the other transport buttons disabled; Save frame enabled.
+  - **Transport:** "Live · 1920×1080 · 30 fps"; play/pause enabled (it switches to Program and plays, GUI D-01; the frame still draws it disabled, as Q2 assumed), the other transport buttons disabled; Save frame enabled.
   - **Panel:** project scene; L2 and L1 unselected; A1 meter at about −22 dBFS with the peak at −16 (room tone and breathing); A2 at about −52; inspector empty-state line.
   - **Timeline:** fit zoom, 10 clips (§3.3), nothing selected, playhead at the end (00:04:06:11).
   - **Toolbar:** Bin `5`, Snap on.
-- **Hint bar:** `[R] Record` · `[D] Discard last take` · `[Space] Play` (drawn disabled, as Q2 assumed; built enabled: it switches to Program and plays, GUI D-01) · `[Tab] Program` · `[C] Autocut all` · `[B] Bin` · `[Ctrl][K] Commands` · `[?] All keys`. This is the default content of the C03 Hint bar component.
+- **Hint bar:** `[R] Record` · `[D] Discard last take` · `[Space] Play` (enabled: it switches to Program and plays, GUI D-01; the frame still draws it disabled, as Q2 assumed) · `[Tab] Program` · `[C] Autocut all` · `[B] Bin` · `[Ctrl][K] Commands` · `[?] All keys`. This is the default content of the C03 Hint bar component.
 - **Visual details:** the Record button is the only red on screen. Take stripes read in order: moss ×2, onion ×5, lily ×2, fairy ×1.
 
 ### S03 · Countdown

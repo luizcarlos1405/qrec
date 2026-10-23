@@ -901,7 +901,7 @@ pub enum TransportLeft {
     Live { text: String },
 }
 
-/// The transport row (C06).
+/// The transport row (BRIEF §2.4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Transport {
@@ -917,7 +917,7 @@ pub struct Transport {
 /// previous and next frame) in Live mode (BRIEF §2.4, D-01).
 pub const TRANSPORT_LIVE_TOOLTIP: &str = "Switch to Program (Tab) to step through the timeline";
 
-/// One of the transport's buttons (C06).
+/// One of the transport's buttons (C01 icon-only, BRIEF §2.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransportButton {
     pub enabled: bool,
