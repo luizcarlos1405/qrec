@@ -3675,6 +3675,7 @@ Two lanes, one compiling worktree each:
 | S23, S23 stuck, X1, D-29 export wait and idle host, X2, X3, D-13, not responding (`gui_blocking`) | WP8 | WP8 and the icons and art lane (their icons, the signpost and the app icon), M5's minimal header fix |
 | S19, S19b, S20, S20b, S21, S22, the Recording and Autocut pages, S25's eleven toasts (`gui_overlays`) | WP9 (the wp9-ui lane) | WP9, the icons and art lane, the integration's S25 #6 from `c` and #8 for real (M5) |
 | a two-digit countdown (`gui_stage`; no frame) | the integration (M5) | M5 |
+| D-01's Live to Program, by `Space` and by the transport's Play (`gui_stage`; no frame) | issue #12 | issue #12 |
 
 For each case whose final set just completed, the integrator runs `cargo
 test -p qrec --test gui_<area> -- --ignored --test-threads=1`, lists the
@@ -5658,6 +5659,7 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
 | S25 #8 (`gui_overlays::s25_a_camera_lost_mid_take`) | Base, Live, `QREC_FAKE_CAMERA_STALL_MS=1000` | `qrec record start --countdown 0`; wait for "Camera disconnected" (take 10 still recording); capture next to S25's card; `qrec record stop`: take 10 lands with L2 missing |
 | S25 #6 from `c` (`s25_autocut_from_the_key`) | Take10Landed, S06's c3e9 selected | `wtype -k c`; wait for "Autocut take 8: removed …" with Undo [Ctrl][Z]; capture next to S25's card; the toast's Undo puts the clips back |
 | A two-digit countdown (`gui_stage::a_two_digit_countdown_fits_its_ring`; no frame) | Base, Live, `recording.countdownSecs` 10 | `qrec record start` in the background; capture on 10: the digits inside the ring's inner edge; `qrec record cancel` |
+| D-01's Live to Program (`gui_stage`'s `space_in_live_switches_to_program_and_plays` and `the_transports_play_in_live_switches_to_program_and_plays`; no frame, issue #12) | Base, Live, playhead 1200 | `wtype -k space`, or a click on the transport row's center (Play); wait for `programPlaying`: the canvas is Program (PROGRAM, the timecode, no live text), the program plays from 1200 and goes on, no toast; `pause`: Program stays |
 
 - **Scale runs**: S02, S06, S09 and S14 at `QREC_TEST_SCALE=2` and 1.5:
   regions scale; the live sink's caps are 1920×1080 at 2; strip textures

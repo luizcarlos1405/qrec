@@ -1853,6 +1853,89 @@ fn a_cli_seek_while_playing_lands_over_the_windows_sync() {
     assert_clean(&mut nested);
 }
 
+// ------------------------------------------------ Live to Program (D-01)
+
+/// D-01 (issue #12): `Space` in Live mode switches the canvas to Program
+/// and plays the timeline from the playhead, with no toast, as `R` in
+/// Program switches to Live and records (D-05).
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn space_in_live_switches_to_program_and_plays() {
+    live_to_program_case("space-in-live", |nested| {
+        nested.keys(&["-k", "space"]);
+    });
+}
+
+/// D-01: the transport's Play in Live mode (the middle of its five
+/// buttons, at the row's center, BRIEF §2.4) does what `Space` does there:
+/// it switches to Program and plays.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_transports_play_in_live_switches_to_program_and_plays() {
+    live_to_program_case("transport-play-in-live", |nested| {
+        let [x, y, w, h] = nested.window(0).regions(&[])["transport"];
+        nested.pointer().click(x + w / 2.0, y + h / 2.0);
+    });
+}
+
+/// The design fixture in Live mode at 1200, no clip selected; `press`
+/// plays: the canvas is Program (PROGRAM, the timecode, no live text), the
+/// program plays from 1200 and goes on, nothing toasts. A pause leaves the
+/// canvas in Program.
+fn live_to_program_case(case: &str, press: impl FnOnce(&mut Nested)) {
+    let mut nested = Nested::start(AREA, case, Options::default());
+    let project = fixture(
+        &nested,
+        DesignVariant::Base,
+        Some(ui(CanvasMode::Live, 1200)),
+    );
+    open(&mut nested, &project, Launch::a11y());
+    let labels = stage_labels(&mut nested);
+    assert_shows(
+        &labels,
+        &["LIVE", "Live \u{b7} 1920\u{d7}1080 \u{b7} 30 fps"],
+    );
+    let toasts = nested.window(0).labels("toast-host");
+    press(&mut nested);
+    gui_support::poll(Duration::from_secs(20), "the program playing", || {
+        (nested.window(0).local()["programPlaying"] == true).then_some(())
+    });
+    let now = status(&nested, &project);
+    assert_eq!(now["ui"]["canvasMode"], "program", "{now}");
+    assert_eq!(now["runtime"]["playing"], true, "{now}");
+    // From the playhead (5 s of slack for a loaded machine), and on.
+    let at = player_ns(&mut nested);
+    assert!(
+        (1200..1350).contains(&frame_of(at)),
+        "plays from {}, not 1200",
+        frame_of(at)
+    );
+    gui_support::poll(Duration::from_secs(10), "the player going on", || {
+        (player_ns(&mut nested) > at).then_some(())
+    });
+    let labels = stage_labels(&mut nested);
+    assert_shows(&labels, &["PROGRAM", " / 00:04:06:11"]);
+    assert_hides(
+        &labels,
+        &["LIVE", "Live \u{b7} 1920\u{d7}1080 \u{b7} 30 fps"],
+    );
+    assert_eq!(
+        nested.window(0).labels("toast-host"),
+        toasts,
+        "the switch toasts nothing"
+    );
+    let pause = nested
+        .window(0)
+        .ctl(json!({"op": "dispatch", "command": {"cmd": "pause"}}));
+    assert_eq!(pause["ok"], true, "{pause}");
+    gui_support::poll(Duration::from_secs(10), "the pause", || {
+        (status(&nested, &project)["runtime"]["playing"] == false).then_some(())
+    });
+    nested.window(0).wait_idle();
+    assert_eq!(status(&nested, &project)["ui"]["canvasMode"], "program");
+    assert_clean(&mut nested);
+}
+
 // ------------------------------------------------- what a pause shows
 
 /// The frame a player position shows at the fixture's 30 fps (as
