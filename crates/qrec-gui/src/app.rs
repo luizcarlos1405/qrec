@@ -28,8 +28,10 @@
 //!   then the host closes (it waits until quiet, ≤ 60 s) and the app is
 //!   held until it stopped; then the window goes and the main loop runs on
 //!   until the player and the meter monitors reached NULL (each within
-//!   5 s; at most [`MEDIA_STOP_WAIT`]: R4). The exit code is the blocking
-//!   page's when one is up then (a session crash's: 1), else the close's.
+//!   5 s) and an image Copy image left on the clipboard was handed on
+//!   (`desktop::keep_copied_image`), at most [`MEDIA_STOP_WAIT`] (R4). The
+//!   exit code is the blocking page's when one is up then (a session
+//!   crash's: 1), else the close's.
 //! - A panic in `activate` (caught, G§3.12) would leave a window that
 //!   never shows holding the project: the app quits with 1 instead.
 
@@ -37,6 +39,7 @@ use std::cell::{Cell, RefCell};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -67,7 +70,8 @@ use crate::{Ctx, GuiArgs, blocking, guard, guarded, testctl};
 pub const APP_ID: &str = "com.rsensato.qrec";
 
 /// The longest the quit waits for the player and the meter monitors to
-/// reach NULL (they bound themselves at 5 s each, R4, R6).
+/// reach NULL (they bound themselves at 5 s each, R4, R6), and for a copied
+/// image to be handed on (`wl-copy`'s run, the clipboard manager's 1 s).
 pub const MEDIA_STOP_WAIT: Duration = Duration::from_secs(6);
 
 thread_local! {
@@ -722,7 +726,9 @@ impl App {
     /// Stops the media pipelines and quits the main loop with `code` (the
     /// first quit wins) once the player and the meter monitors reached NULL
     /// (R4: the main loop runs meanwhile, for `gtk4paintablesink`'s calls
-    /// into it), at most [`MEDIA_STOP_WAIT`] later.
+    /// into it) and an image still on the clipboard was handed on
+    /// ([`crate::desktop::keep_copied_image`]), at most [`MEDIA_STOP_WAIT`]
+    /// later.
     pub fn quit(&self, code: u8) {
         if self.quitting.replace(true) {
             return;
@@ -731,6 +737,8 @@ impl App {
         tracing::info!("quitting with {code}");
         crate::probe::finish();
         self.ctx.media.shutdown();
+        // An image Copy image left on the clipboard outlives the window.
+        let handed = crate::desktop::keep_copied_image(&self.ctx.media);
         // The window goes now; the application lives on until NULL. One
         // that never showed (a panic in `activate`) stays: GTK 4.22
         // crashes taking an unrealized window out of its Wayland session
@@ -741,6 +749,10 @@ impl App {
             self.window.window.destroy();
         }
         let (media, app, asked) = (self.ctx.media.clone(), self.app.clone(), Instant::now());
+        let settled = {
+            let (media, handed) = (media.clone(), Arc::clone(&handed));
+            move || media.stopped() && handed.load(Ordering::Acquire)
+        };
         let done = move || {
             let waited = asked.elapsed();
             if media.stopped() {
@@ -754,20 +766,25 @@ impl App {
                     MEDIA_STOP_WAIT.as_secs()
                 );
             }
+            if !handed.load(Ordering::Acquire) {
+                tracing::warn!(
+                    "the copied image wasn't handed on within {} s; it goes with Qrec",
+                    MEDIA_STOP_WAIT.as_secs()
+                );
+            }
             app.quit();
         };
-        if self.ctx.media.stopped() {
+        if settled() {
             drop(hold);
             return done();
         }
-        let media = self.ctx.media.clone();
         let mut hold = Some(hold);
         let mut done = Some(done);
         guard::timeout_local(
             Duration::from_millis(50),
             "quit: the media's NULL",
             move || {
-                if !media.stopped() && asked.elapsed() < MEDIA_STOP_WAIT {
+                if !settled() && asked.elapsed() < MEDIA_STOP_WAIT {
                     return glib::ControlFlow::Continue;
                 }
                 hold.take();

@@ -24,7 +24,8 @@
 //!   at exit, asynchronously, and [`MediaHub::stopped`] says when the player
 //!   and every meter monitor reached NULL (the app's quit waits for it, R4).
 //! - **`qrec-gui-io`** ([`io`]): one worker thread for blocking jobs of the
-//!   window (bin sizes, silence keys, wl-copy, source discovery):
+//!   window (bin sizes, silence keys, reading a copied image, the quit's
+//!   `wl-copy`, source discovery):
 //!   [`MediaHub::run_io`] and [`MediaHub::run_io_then`], whose results come
 //!   through the queue; a panic in a job ends that job only. The preview
 //!   caches' disk trim runs on the cache's own `qrec-preview-trim`.

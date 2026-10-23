@@ -1,6 +1,7 @@
 //! `qrec-gui-io` (G§3.12): one worker thread for the window's blocking jobs
-//! (bin sizes, silence keys, wl-copy, source discovery). GTK-free, so it is
-//! tested without a display; [`super::MediaHub`] holds the window's.
+//! (bin sizes, silence keys, reading a copied image, the quit's `wl-copy`,
+//! source discovery). GTK-free, so it is tested without a display;
+//! [`super::MediaHub`] holds the window's.
 //!
 //! - **Panics are contained.** Every job runs under `catch_unwind`: a panic
 //!   ends that job only (the worker goes on with the next), and is told on
