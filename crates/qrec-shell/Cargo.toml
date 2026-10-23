@@ -16,6 +16,7 @@ chrono = { workspace = true, features = ["clock"] }
 crossbeam-channel.workspace = true
 notify.workspace = true
 wayland-client.workspace = true
+x11rb.workspace = true
 rustix.workspace = true
 libc.workspace = true
 tempfile.workspace = true
@@ -38,6 +39,9 @@ futures-lite = { workspace = true, optional = true }
 
 # Test helpers for other crates' tests (feature `testkit`).
 assert_cmd = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
 
 [features]
 default = ["gst"]

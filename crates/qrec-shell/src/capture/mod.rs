@@ -78,6 +78,7 @@ use qrec_core::view::{LiveSourceView, LiveSources};
 
 use crate::deps::CaptureEngine;
 use crate::paths::UserDirs;
+use crate::platform::SessionType;
 
 #[cfg(feature = "gst")]
 pub use engine::{FakeFailure, GstCaptureEngine};
@@ -148,6 +149,91 @@ impl Backend {
                 tracing::warn!("unknown {BACKEND_ENV}={other:?}; using the real devices");
                 Backend::Real
             }
+        }
+    }
+}
+
+/// Overrides the screen backend: `portal` or `x11` (when `DISPLAY` is set;
+/// unset, empty or `auto`: the session decides, [`ScreenBackend::select`]).
+pub const SCREEN_BACKEND_ENV: &str = "QREC_SCREEN_BACKEND";
+
+/// Where screens come from (issue #9). Screen discovery
+/// (`sources::discover_screens`) dispatches on it, and so will capture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScreenBackend {
+    /// The compositor's outputs (`wl_output`, then `niri msg`), recorded
+    /// through the ScreenCast portal.
+    Portal,
+    /// The X server at `display` (`DISPLAY`, e.g. `:1`): its RandR
+    /// monitors.
+    X11 { display: String },
+    /// No Wayland or X11 display: no screens.
+    None,
+}
+
+impl ScreenBackend {
+    /// This process's: [`select`](Self::select) of the session
+    /// `platform::current()` detected at startup, `DISPLAY` and
+    /// `QREC_SCREEN_BACKEND`.
+    pub fn from_env() -> Self {
+        let display = std::env::var("DISPLAY").ok();
+        let forced = std::env::var(SCREEN_BACKEND_ENV).ok();
+        Self::select(
+            crate::platform::current().session,
+            display.as_deref(),
+            forced.as_deref(),
+        )
+    }
+
+    /// `forced` (`QREC_SCREEN_BACKEND`) wins: `portal`, or `x11` with a
+    /// non-empty `display`. Else a Wayland session is
+    /// [`Portal`](Self::Portal), whatever `DISPLAY` says (XWayland only
+    /// shows X clients, never the desktop), a non-empty `display` is
+    /// [`X11`](Self::X11), and anything else [`None`](Self::None). A
+    /// `forced` value that is unknown, or `x11` without a `display`, is
+    /// ignored (and logged), so `None` always means there's no display.
+    pub fn select(session: SessionType, display: Option<&str>, forced: Option<&str>) -> Self {
+        let display = display.map(str::trim).filter(|d| !d.is_empty());
+        let x11 = || {
+            display.map_or(ScreenBackend::None, |display| ScreenBackend::X11 {
+                display: display.to_owned(),
+            })
+        };
+        match forced.map(str::trim) {
+            Some("portal") => return ScreenBackend::Portal,
+            Some("x11") if display.is_none() => {
+                tracing::warn!(
+                    "{SCREEN_BACKEND_ENV}=x11, but DISPLAY isn't set; the session decides"
+                );
+            }
+            Some("x11") => {
+                if session == SessionType::Wayland {
+                    tracing::warn!(
+                        "{SCREEN_BACKEND_ENV}=x11 in a Wayland session: \
+                         XWayland only shows X clients"
+                    );
+                }
+                return x11();
+            }
+            None | Some("" | "auto") => {}
+            Some(other) => {
+                tracing::warn!("unknown {SCREEN_BACKEND_ENV}={other:?}; the session decides");
+            }
+        }
+        match session {
+            SessionType::Wayland => ScreenBackend::Portal,
+            SessionType::X11 | SessionType::Unknown => x11(),
+        }
+    }
+}
+
+/// `portal`, `x11 (DISPLAY=:1)` or `none`, for logs.
+impl std::fmt::Display for ScreenBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScreenBackend::Portal => f.write_str("portal"),
+            ScreenBackend::X11 { display } => write!(f, "x11 (DISPLAY={display})"),
+            ScreenBackend::None => f.write_str("none"),
         }
     }
 }
@@ -425,6 +511,9 @@ pub struct EngineOptions {
     /// Plan paths are joined with it.
     pub project_dir: PathBuf,
     pub backend: Backend,
+    /// Where the real backend's screens come from: the session's
+    /// ([`ScreenBackend::from_env`]).
+    pub screen_backend: ScreenBackend,
     /// `<state>/portal-tokens.json`.
     pub portal_tokens: PathBuf,
     /// Screen and camera facts for the real backend.
@@ -449,11 +538,13 @@ impl EngineOptions {
     /// Options with no test hooks, whatever the environment says: code that
     /// runs as the process (the binary's hosts, the GUI's opener) sets
     /// `fake` from [`FakeHooks::from_env`], so an engine a test builds in
-    /// its own process sees only the hooks that test sets (A§11).
+    /// its own process sees only the hooks that test sets (A§11). The
+    /// screen backend is the session's, which is no test hook.
     pub fn new(project_dir: impl Into<PathBuf>, backend: Backend, dirs: &UserDirs) -> Self {
         Self {
             project_dir: project_dir.into(),
             backend,
+            screen_backend: ScreenBackend::from_env(),
             portal_tokens: dirs.portal_tokens(),
             devices: None,
             side: None,
@@ -472,6 +563,7 @@ impl std::fmt::Debug for EngineOptions {
         let mut d = f.debug_struct("EngineOptions");
         d.field("project_dir", &self.project_dir)
             .field("backend", &self.backend)
+            .field("screen_backend", &self.screen_backend)
             .field("portal_tokens", &self.portal_tokens)
             .field("devices", &self.devices.is_some())
             .field("side", &self.side.is_some())
@@ -519,6 +611,52 @@ mod unit_tests {
         assert_eq!(Backend::parse(Some("bogus")), Backend::Real);
     }
 
+    /// The session decides unless `QREC_SCREEN_BACKEND` does; a Wayland
+    /// session never gets X11 on its own (its `DISPLAY` is XWayland's).
+    #[test]
+    fn screen_backend_selection() {
+        use SessionType::{Unknown, Wayland, X11};
+        let x11 = |display: &str| ScreenBackend::X11 {
+            display: display.into(),
+        };
+        let table = [
+            // session, DISPLAY, QREC_SCREEN_BACKEND => backend
+            (Wayland, None, None, ScreenBackend::Portal),
+            (Wayland, Some(":0"), None, ScreenBackend::Portal),
+            (Wayland, Some(":0"), Some("auto"), ScreenBackend::Portal),
+            (X11, Some(":1"), None, x11(":1")),
+            (X11, Some(" :1.0 "), Some(""), x11(":1.0")),
+            (X11, Some("localhost:10.0"), None, x11("localhost:10.0")),
+            (X11, None, None, ScreenBackend::None),
+            (X11, Some(""), None, ScreenBackend::None),
+            (Unknown, None, None, ScreenBackend::None),
+            (Unknown, Some(":2"), None, x11(":2")),
+            // The override.
+            (X11, Some(":1"), Some("portal"), ScreenBackend::Portal),
+            (Unknown, None, Some(" portal "), ScreenBackend::Portal),
+            (Wayland, Some(":0"), Some("x11"), x11(":0")),
+            (X11, Some(":1"), Some(" x11 "), x11(":1")),
+            // x11 without a DISPLAY: the session decides (not a None that
+            // would read "no Wayland or X11 display" under Wayland).
+            (Wayland, None, Some("x11"), ScreenBackend::Portal),
+            (Wayland, Some(" "), Some("x11"), ScreenBackend::Portal),
+            (X11, None, Some("x11"), ScreenBackend::None),
+            (Unknown, Some(""), Some("x11"), ScreenBackend::None),
+            (X11, Some(":1"), Some("bogus"), x11(":1")),
+            (Wayland, Some(":0"), Some("X11"), ScreenBackend::Portal),
+        ];
+        for (session, display, forced, want) in table {
+            assert_eq!(
+                ScreenBackend::select(session, display, forced),
+                want,
+                "{session:?} DISPLAY={display:?} {SCREEN_BACKEND_ENV}={forced:?}"
+            );
+        }
+        assert_eq!(x11(":1").to_string(), "x11 (DISPLAY=:1)");
+        assert_eq!(ScreenBackend::Portal.to_string(), "portal");
+        assert_eq!(ScreenBackend::None.to_string(), "none");
+    }
+
     #[test]
     fn options_point_at_the_state_dir() {
         let env = crate::testkit::TestEnv::new();
@@ -530,6 +668,7 @@ mod unit_tests {
         );
         assert!(opts.register_app_id);
         assert!(format!("{opts:?}").contains("Fake"));
+        assert_eq!(opts.screen_backend, ScreenBackend::from_env());
         // Casts close at once unless a GUI asks for the grace.
         assert_eq!(opts.cast_grace, Duration::ZERO);
         assert_eq!(GUI_CAST_GRACE, Duration::from_secs(60));

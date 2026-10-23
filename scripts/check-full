@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The milestone gate (CLAUDE.md, docs/GUI.md G§8.4): fmt, clippy, the
 # workspace tests (nextest, then the doc-tests), `nix build` (the package;
-# its own sandbox runs the core's tests), every nested suite on gles2 and
+# its own sandbox runs the core's tests), the X11 cases (tests/x11.rs, on a
+# private Xvfb), every nested suite on gles2 and
 # on pixman (many cases at once, each timing-sensitive case alone; the
 # packaged case runs the fresh build), every suite again at scale 1.5 and
 # 2 on pixman, and G§8.6's probes (the frame-time probe and the smoke's
@@ -126,6 +127,8 @@ else
   note "$(printf '%-30s %5s s  FAILED (exit %s): see nix-build.log; the packaged case runs the old result' \
     "nix build" "$((SECONDS - nix_start))" "$rc")"
 fi
+
+step "x11 (private Xvfb)" x11 cargo nextest run -p qrec --no-fail-fast --run-ignored only --test x11
 
 start=$(date +%s)
 matrix "nested, gles2" nested-gles2 QREC_TEST_WLR=gles2

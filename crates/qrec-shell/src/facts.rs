@@ -115,12 +115,13 @@ pub struct SystemSources {
 }
 
 impl SystemSources {
-    /// Screens and cameras through the `sources` module (`wl_output`, then
-    /// `niri msg`; GStreamer's device monitor, then sysfs).
+    /// Screens and cameras through the `sources` module (the session's
+    /// screen backend: `wl_output`, then `niri msg`, or X11's RandR
+    /// monitors; GStreamer's device monitor, then sysfs).
     pub fn new(log_dir: Option<PathBuf>) -> Self {
         Self {
             log_dir,
-            screens: Some(crate::sources::discover_screens),
+            screens: Some(crate::sources::session_screens),
             cameras: Some(crate::sources::discover_cameras),
         }
     }

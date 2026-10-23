@@ -43,6 +43,8 @@ rustix = { version = "1.1.5", features = ["process", "termios"] }
 crossbeam-channel = "0.5.17"
 notify = { version = "8.2.0", default-features = false }
 wayland-client = "0.31.15"
+# X11 screen discovery (RandR): the pure-Rust connection, no libxcb.
+x11rb = { version = "0.14.0", default-features = false, features = ["randr"] }
 tempfile = "3.27.0"
 getrandom = "0.4.3"
 dirs = "7.0.0"

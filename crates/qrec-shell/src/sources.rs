@@ -1,8 +1,11 @@
 //! Source discovery (A§8.12, `SourceInventory`). Owner: media.
 //!
-//! - Screens: `wl_output` v4 `name`/`description` + geometry, current mode
-//!   and scale, read without blocking past a 2 s deadline; fallback
-//!   `niri msg --json outputs` (3 s).
+//! - Screens, from the session's [`ScreenBackend`]: under the portal,
+//!   `wl_output` v4 `name`/`description` + geometry, current mode and
+//!   scale, read without blocking past a 2 s deadline, else `niri msg
+//!   --json outputs` (3 s); on X11, the X server's RandR monitors within
+//!   2 s (`sources/x11.rs`; `niri msg` never runs there); without a
+//!   display, none.
 //! - Cameras: GStreamer's `DeviceMonitor` (`Video/Source`, no capture) under
 //!   the GStreamer init watchdog when the `gst` feature is on; otherwise, or
 //!   when that fails, `/sys/class/video4linux` (names only, no modes).
@@ -28,13 +31,19 @@ use qrec_core::ctx::{AudioDeviceInfo, CameraInfo, CameraMode, ScreenInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::capture::ScreenBackend;
 use crate::media::{ChildSpec, ChildStderr, ChildStdout, run_child};
+
+pub(crate) mod x11;
 
 /// Selects the capture backend: `fake` uses test sources (A§8.11).
 pub const BACKEND_ENV: &str = "QREC_CAPTURE_BACKEND";
 
 /// How long the Wayland output listing may take.
 pub const WAYLAND_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long the X server may take to list its monitors (as Wayland).
+pub const X11_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// `pactl` and `niri msg` (A§8.7).
 pub const TOOL_TIMEOUT: Duration = Duration::from_secs(3);
@@ -107,15 +116,16 @@ pub fn fake_backend() -> bool {
 
 impl SourceInventory {
     /// Discovers what `what` asks for: the fake inventory under
-    /// `QREC_CAPTURE_BACKEND=fake`, else the real devices. Never fails:
-    /// problems become `warnings` and empty lists.
+    /// `QREC_CAPTURE_BACKEND=fake`, else the real devices (the screens of
+    /// the session's [`ScreenBackend`]). Never fails: problems become
+    /// `warnings` and empty lists.
     pub fn discover(what: Discover) -> Self {
         if fake_backend() {
             return Self::fake_of(crate::capture::FakeInventoryKind::from_env()).only(what);
         }
         let mut inventory = SourceInventory::default();
         if what.screens {
-            match discover_screens() {
+            match session_screens() {
                 Ok(screens) => inventory.screens = screens,
                 Err(e) => inventory.warnings.push(format!("screens: {e}")),
             }
@@ -241,7 +251,8 @@ impl crate::capture::DeviceInfo for SourceInventory {
 }
 
 /// The capture engine's device facts, discovered when asked (screens can
-/// come and go between takes); the fake inventory under the fake backend.
+/// come and go between takes) from the session's [`ScreenBackend`]; the
+/// fake inventory under the fake backend.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LiveDevices;
 
@@ -289,21 +300,48 @@ fn run_tool(argv: &[&str], timeout: Duration) -> Result<String, String> {
 
 // -------------------------------------------------------------- screens
 
-/// `wl_output` v4, else `niri msg --json outputs`; sorted left to right.
-pub fn discover_screens() -> Result<Vec<ScreenInfo>, String> {
+/// Why there are no screens without a display.
+pub const NO_DISPLAY: &str = "no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display";
+
+/// The screens `backend` knows, sorted left to right: under the portal,
+/// `wl_output` v4, else `niri msg --json outputs`; on X11, the RandR
+/// monitors of its display (an error says `X11 (DISPLAY=:1): …`); none
+/// without a display ([`NO_DISPLAY`]).
+pub fn discover_screens(backend: &ScreenBackend) -> Result<Vec<ScreenInfo>, String> {
+    let mut screens = match backend {
+        ScreenBackend::Portal => wayland_screens()?,
+        ScreenBackend::X11 { display } => x11::monitors(display, X11_TIMEOUT)
+            .map_err(|e| format!("X11 (DISPLAY={display}): {e}"))?,
+        ScreenBackend::None => return Err(NO_DISPLAY.to_owned()),
+    };
+    sort_screens(&mut screens);
+    Ok(screens)
+}
+
+/// [`discover_screens`] of the session's [`ScreenBackend`] (the facts'
+/// discovery hook).
+pub fn session_screens() -> Result<Vec<ScreenInfo>, String> {
+    discover_screens(&ScreenBackend::from_env())
+}
+
+/// Left to right, then top to bottom, then by name.
+fn sort_screens(screens: &mut [ScreenInfo]) {
+    screens.sort_by(|a, b| (a.x, a.y, &a.output).cmp(&(b.x, b.y, &b.output)));
+}
+
+/// `wl_output` v4, else `niri msg --json outputs`.
+fn wayland_screens() -> Result<Vec<ScreenInfo>, String> {
     let wayland = wayland::outputs(WAYLAND_TIMEOUT);
-    let mut screens = match wayland {
-        Ok(screens) if !screens.is_empty() => screens,
+    match wayland {
+        Ok(screens) if !screens.is_empty() => Ok(screens),
         other => match niri_outputs() {
-            Ok(screens) => screens,
+            Ok(screens) => Ok(screens),
             Err(niri) => match other {
-                Ok(empty) => empty,
-                Err(wayland) => return Err(format!("{wayland}; {niri}")),
+                Ok(empty) => Ok(empty),
+                Err(wayland) => Err(format!("{wayland}; {niri}")),
             },
         },
-    };
-    screens.sort_by(|a, b| (a.x, a.y, &a.output).cmp(&(b.x, b.y, &b.output)));
-    Ok(screens)
+    }
 }
 
 fn niri_outputs() -> Result<Vec<ScreenInfo>, String> {
@@ -1182,13 +1220,26 @@ mod tests {
         );
     }
 
-    /// Lists this machine's real screens (read-only Wayland/niri queries).
-    /// Run by hand: `cargo test -p qrec-shell real_screens -- --ignored --nocapture`.
+    /// Lists this machine's real screens (read-only Wayland/niri or RandR
+    /// queries). Run by hand: `cargo test -p qrec-shell real_screens --
+    /// --ignored --nocapture`.
     #[test]
     #[ignore = "talks to the real compositor"]
     fn real_screens() {
-        println!("{:#?}", wayland::outputs(WAYLAND_TIMEOUT));
-        println!("{:#?}", niri_outputs());
-        println!("{:#?}", discover_screens());
+        let backend = ScreenBackend::from_env();
+        println!("{backend}");
+        if backend == ScreenBackend::Portal {
+            println!("{:#?}", wayland::outputs(WAYLAND_TIMEOUT));
+            println!("{:#?}", niri_outputs());
+        }
+        println!("{:#?}", discover_screens(&backend));
+    }
+
+    #[test]
+    fn no_display_means_no_screens() {
+        assert_eq!(
+            discover_screens(&ScreenBackend::None).unwrap_err(),
+            NO_DISPLAY
+        );
     }
 }

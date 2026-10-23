@@ -38,10 +38,13 @@ if [ "${1:-}" = --plan ]; then
 fi
 
 # The suites a changed file's area has (G§3.16's owners), "all", or none.
+# `x11` isn't nested: its cases run qrec on a private Xvfb.
 suites_for() {
   case "$1" in
     crates/qrec/tests/gui_support/* | crates/qrec/tests/support/*) echo all ;;
-    crates/qrec/tests/gui_*.rs) basename "$1" .rs ;;
+    crates/qrec/tests/gui_*.rs | crates/qrec/tests/x11.rs) basename "$1" .rs ;;
+    crates/qrec-shell/src/sources.rs | crates/qrec-shell/src/sources/* | crates/qrec-shell/src/testkit/x11.rs)
+      echo x11 gui_shell gui_smoke ;;
     crates/qrec-gui/src/timeline/* | */components/timeline.css | crates/qrec-core/src/view/timeline* | crates/qrec-core/src/view/ruler*)
       echo gui_timeline ;;
     crates/qrec-gui/src/stage/* | crates/qrec-gui/src/media/live.rs | crates/qrec-gui/src/media/program.rs | */components/stage.css | crates/qrec-core/src/view/canvas*)

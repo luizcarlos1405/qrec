@@ -9,6 +9,8 @@
 //! - [`design`] (feature `testkit`: it builds on `qrec_core::testkit`): the
 //!   GUI's fixture projects, BRIEF §3's sample among them (docs/GUI.md
 //!   G§8.4).
+//! - [`x11::Xvfb`]: a private X server (RandR, its own cookie), never the
+//!   developer's display.
 //!
 //! Helpers panic with a clear message instead of returning errors: they only
 //! run in tests.
@@ -19,6 +21,7 @@ mod media;
 pub mod process;
 mod project;
 mod tool;
+pub mod x11;
 
 use std::ffi::OsString;
 use std::fs;
