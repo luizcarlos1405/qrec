@@ -148,6 +148,18 @@
             sway
             grim
             wtype
+            # The X11 tests' private server and its tools (G§8.4), pinned
+            # here instead of taken from the host: Xvfb with a private
+            # cookie (xauth), key presses and window geometry (xdotool),
+            # clipboard checks (xclip) and window properties (xprop).
+            # xrandr is for debugging a run's monitors by hand; the tests
+            # set them up through RandR themselves.
+            xvfb
+            xauth
+            xdotool
+            xclip
+            xprop
+            xrandr
             # Faster dev builds (this shell only: the package builds as it
             # did): mold links, sccache keeps the dependencies' builds.
             mold
