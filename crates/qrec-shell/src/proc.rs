@@ -1,6 +1,8 @@
 //! The process runner (A§8.7): one way to run every child process.
 //!
-//! - stdin is `/dev/null` (or a file, e.g. the PNG `wl-copy` reads);
+//! - stdin is `/dev/null`, a file, or bytes the runner puts in an
+//!   in-memory file (the copied PNG the quit's `wl-copy` serves): never a
+//!   pipe to feed;
 //! - the child leads its own process group (`process_group(0)`), so a kill
 //!   reaches everything it started;
 //! - it gets nothing but its stdio: every other descriptor Qrec holds is
@@ -36,7 +38,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::os::fd::RawFd;
+use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -156,6 +158,15 @@ enum StdoutMode {
     Lines(LineHandler),
 }
 
+/// What a child's stdin reads.
+enum Input {
+    Null,
+    /// This file, opened as the child starts.
+    File(PathBuf),
+    /// These bytes, from an in-memory file ([`memory_file`]).
+    Bytes(Vec<u8>),
+}
+
 /// What to run and how. Build with [`Spec::new`], then [`Spec::run`]
 /// (blocking, bounded) or [`Spec::start`] (returns at once).
 pub struct Spec {
@@ -164,7 +175,7 @@ pub struct Spec {
     args: Vec<OsString>,
     env: Vec<(OsString, Option<OsString>)>,
     cwd: Option<PathBuf>,
-    stdin: Option<PathBuf>,
+    stdin: Input,
     stdout: StdoutMode,
     marker: Option<String>,
     stderr: Option<File>,
@@ -197,7 +208,7 @@ impl Spec {
             args: Vec::new(),
             env: Vec::new(),
             cwd: None,
-            stdin: None,
+            stdin: Input::Null,
             stdout: StdoutMode::Null,
             marker: None,
             stderr: None,
@@ -253,7 +264,15 @@ impl Spec {
 
     /// stdin reads this file instead of `/dev/null`.
     pub fn stdin_file(mut self, path: impl Into<PathBuf>) -> Self {
-        self.stdin = Some(path.into());
+        self.stdin = Input::File(path.into());
+        self
+    }
+
+    /// stdin reads `bytes` instead of `/dev/null`, from an in-memory file
+    /// (`memfd_create(2)`) the runner fills before the child starts: no
+    /// pipe to feed, and no file on disk that may change or go meanwhile.
+    pub fn stdin_bytes(mut self, bytes: impl Into<Vec<u8>>) -> Self {
+        self.stdin = Input::Bytes(bytes.into());
         self
     }
 
@@ -331,8 +350,8 @@ impl Spec {
             cmd.current_dir(dir);
         }
         let stdin = match &self.stdin {
-            None => Stdio::Null,
-            Some(path) => match File::open(path) {
+            Input::Null => Stdio::Null,
+            Input::File(path) => match File::open(path) {
                 Ok(file) => Stdio::from(file),
                 Err(source) => {
                     return Err(ProcError::Spawn {
@@ -340,6 +359,18 @@ impl Spec {
                         source: io::Error::new(
                             source.kind(),
                             format!("can't open its input {}: {source}", path.display()),
+                        ),
+                    });
+                }
+            },
+            Input::Bytes(bytes) => match memory_file(bytes) {
+                Ok(file) => Stdio::from(file),
+                Err(source) => {
+                    return Err(ProcError::Spawn {
+                        program: self.label.clone(),
+                        source: io::Error::new(
+                            source.kind(),
+                            format!("can't hold its input in memory: {source}"),
                         ),
                     });
                 }
@@ -536,6 +567,21 @@ fn spawn_reader(
         return rx;
     }
     rx
+}
+
+/// A close-on-exec in-memory file (`memfd_create(2)`) holding `bytes`,
+/// read from its start: a child's stdin ([`Spec::stdin_bytes`]).
+fn memory_file(bytes: &[u8]) -> io::Result<File> {
+    // SAFETY: memfd_create(2) with a NUL-terminated name.
+    let fd = unsafe { libc::memfd_create(c"qrec-stdin".as_ptr(), libc::MFD_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: memfd_create returned a new descriptor nobody else owns.
+    let mut file = File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+    file.write_all(bytes)?;
+    file.rewind()?;
+    Ok(file)
 }
 
 // ----------------------------------------------------------------- running
@@ -1413,6 +1459,33 @@ pub(crate) mod tests {
             .run()
             .unwrap();
         assert!(out.success() && out.stdout.is_empty());
+    }
+
+    /// Bytes reach stdin whole and unchanged (binary, more than a pipe's
+    /// buffer), from an in-memory file: no pipe, nothing on disk.
+    #[test]
+    fn stdin_bytes_come_from_memory() {
+        let bytes: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        let out = Spec::new("cat", Limit::Timeout(Duration::from_secs(10)))
+            .stdin_bytes(bytes.clone())
+            .capture_stdout(bytes.len() + 1)
+            .run()
+            .unwrap();
+        assert!(out.success(), "{out:?}");
+        assert!(out.stdout == bytes, "{} bytes back", out.stdout.len());
+        let out = sh(
+            "readlink /proc/self/fd/0",
+            Limit::Timeout(Duration::from_secs(10)),
+        )
+        .stdin_bytes(*b"x")
+        .capture_stdout(256)
+        .run()
+        .unwrap();
+        assert!(
+            out.stdout_text().starts_with("/memfd:qrec-stdin"),
+            "{}",
+            out.stdout_text()
+        );
     }
 
     #[test]

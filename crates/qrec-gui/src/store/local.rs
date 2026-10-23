@@ -29,7 +29,7 @@ pub use qrec_core::view::settings::SettingsPage;
 pub struct LocalUi {
     /// Where startup is (WP0b).
     pub startup: StartupPhase,
-    /// The last dependency check (WP0b): S23, and whether `wl-copy` works.
+    /// The last dependency check (WP0b): S23's rows.
     pub doctor: Option<Arc<DoctorReport>>,
     /// The region holding the keyboard focus (WP0b, from the window's
     /// focus widget).

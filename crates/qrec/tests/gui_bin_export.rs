@@ -1632,11 +1632,15 @@ fn the_same_toast_thirty_times_is_one() {
 
 /// R53 (its audit's minor gap: nothing clicked a toast's Copy image): `p`
 /// saves the frame at the playhead, and its toast's Copy image puts that
-/// PNG on the clipboard: `wl-copy` reads the file under the project folder
-/// (the core names it relative, `frames/….png`; `desktop::action_path`),
-/// read back here with `wl-paste` on the nested display. From the bare
-/// relative path it read nothing (the window's working folder isn't the
-/// project's).
+/// PNG on the clipboard: the window reads the file under the project
+/// folder (the core names it relative, `frames/….png`;
+/// `desktop::action_path`) and serves its exact bytes itself (GDK's
+/// clipboard), read back here with `wl-paste` on the nested display. From
+/// the bare relative path it read nothing (the window's working folder
+/// isn't the project's). The image outlives the window: the quit hands the
+/// bytes it copied to a detached `wl-copy` (`desktop::keep_copied_image`),
+/// so `wl-paste` still reads them once the window is gone, though the file
+/// moved away meanwhile.
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn a_toasts_copy_image_copies_the_frame() {
@@ -1695,7 +1699,25 @@ fn a_toasts_copy_image_copies_the_frame() {
         "{toasts:?}"
     );
     assert_clean(&mut nested);
+    // Moved away (to ~/Pictures, say) before the quit: the copy is the
+    // bytes copied, not the file.
+    fs::rename(&frames[0], project.with_file_name("moved-away.png")).expect("moved");
     close(&mut nested);
+    let kept = gui_support::poll(Duration::from_secs(15), "the PNG after the quit", || {
+        let out = run_tool(
+            nested
+                .nested_tool("wl-paste")
+                .args(["--no-newline", "--type", "image/png"]),
+            gui_support::TOOL_TIMEOUT,
+        );
+        (out.status.success() && out.stdout.starts_with(b"\x89PNG")).then_some(out.stdout)
+    });
+    assert!(
+        kept == saved,
+        "the clipboard after the quit isn't the saved frame ({} bytes for {})",
+        kept.len(),
+        saved.len()
+    );
 }
 
 /// D-34: `Ctrl+E` on an empty timeline says why ("The timeline is empty",
