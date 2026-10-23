@@ -266,9 +266,11 @@ mod tests {
         // Refused keys (D-34), with the reasons `action_for` gives.
         let mut live = testkit::design_state();
         live.ui.selection.clear();
+        let mut empty = live.clone();
+        empty.project.timeline.clips.clear();
         let mut cases: Vec<(&str, String, State)> = vec![
             ("cancel", reason("cancel", &live), live.clone()),
-            ("play.toggle", reason("play.toggle", &live), live.clone()),
+            ("play.toggle", reason("play.toggle", &empty), empty),
             (
                 "record.toggle",
                 reason("record.toggle", &exporting()),

@@ -137,7 +137,7 @@ expression: all
       },
       {
         "emphasized": false,
-        "enabled": false,
+        "enabled": true,
         "keys": [
           [
             "Space"
@@ -418,7 +418,7 @@ expression: all
       },
       {
         "emphasized": false,
-        "enabled": false,
+        "enabled": true,
         "keys": [
           [
             "Space"

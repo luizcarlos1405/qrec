@@ -740,13 +740,14 @@ mod tests {
             ],
         ));
 
-        // S02: Live, idle, playhead at the end.
+        // S02: Live, idle, playhead at the end. `Space` switches to Program
+        // and plays (D-01): its item is on, where the frame draws it off.
         let mut s02 = testkit::design_state();
         s02.ui.playhead = 7391;
         let live_idle = vec![
             "[R] Record",
             "[D] Discard last take",
-            "[Space] Play (disabled)",
+            "[Space] Play",
             "[Tab] Program",
             "[C] Autocut all",
             "[B] Bin",
@@ -1230,7 +1231,7 @@ mod tests {
             [
                 "[F9] Record",
                 "[D] Discard last take",
-                "[Space] Play (disabled)",
+                "[Space] Play",
                 "[Tab] Program",
                 "[Ctrl][K] Commands",
                 "[?] All keys",

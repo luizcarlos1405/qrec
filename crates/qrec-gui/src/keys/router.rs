@@ -36,10 +36,12 @@
 //!     Clear}`, which changes nothing a snapshot shows from fit).
 //! 11. `keymap::action_for` on the state with the player's frame as the
 //!     playhead while the program plays: a command (after its pre-steps:
-//!     first a seek to the player's frame, R18), a GUI action, or why it
-//!     can't run (D-34). A step (frame, ±1 s, edit) while the program
-//!     plays pauses it first and goes from the frame the player shows: a
-//!     `Pause`, then one absolute seek to where the step lands (D-51).
+//!     first a seek to the player's frame, R18; the canvas switch of a
+//!     record from Program, D-05, and of a play from Live, D-01), a GUI
+//!     action, or why it can't run (D-34). A step (frame, ±1 s, edit)
+//!     while the program plays pauses it first and goes from the frame the
+//!     player shows: a `Pause`, then one absolute seek to where the step
+//!     lands (D-51).
 //!
 //! A held key repeats as presses (`KeyInput::repeat`, from [`HeldKeys`]):
 //! outside an editable a repeat goes on only for what is meant to repeat,
@@ -202,6 +204,9 @@ pub enum PreStep {
     Pause { park: Frame },
     /// Switch the canvas to Live (a recording started in Program, D-05).
     SetLive,
+    /// Switch the canvas to Program (a play or a shuttle started in Live,
+    /// D-01).
+    SetProgram,
     /// Set `LocalUi.playing_rate` (a shuttle, D-44).
     SetRate(f64),
     /// Play at this rate now: the player already plays, and a `Shuttle`
@@ -480,6 +485,19 @@ fn pre_steps(id: &str, cmd: &Command, rs: &RouterState<'_>) -> Vec<PreStep> {
     {
         pre.push(PreStep::SetLive);
     }
+    // D-01, D-05's mirror: a play or a shuttle from Live (`Space`, `J`,
+    // `L`, the transport's Play) switches the canvas to Program first,
+    // with no toast.
+    let starts_playing = matches!(
+        cmd,
+        Command::Play
+            | Command::Shuttle {
+                dir: ShuttleDir::Forward | ShuttleDir::Reverse
+            }
+    );
+    if starts_playing && state.ui.canvas_mode == CanvasMode::Live {
+        pre.push(PreStep::SetProgram);
+    }
     let shuttle = match id {
         "shuttle.forward" => Some(ShuttleDir::Forward),
         "shuttle.reverse" => Some(ShuttleDir::Reverse),
@@ -610,6 +628,9 @@ pub fn apply(decision: &KeyDecision, state: &State, sink: &mut dyn KeySink) -> b
                     }
                     PreStep::SetLive => sink.dispatch(Command::SetCanvasMode {
                         mode: CanvasMode::Live,
+                    }),
+                    PreStep::SetProgram => sink.dispatch(Command::SetCanvasMode {
+                        mode: CanvasMode::Program,
                     }),
                     PreStep::SetRate(rate) => sink.set_playing_rate(*rate),
                     PreStep::PlayerRate(rate) => sink.player_rate(*rate),

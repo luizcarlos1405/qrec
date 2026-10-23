@@ -176,6 +176,15 @@ fn expected(scene: &Scene, id: &str, ctx: KeyContext) -> Vec<Call> {
                     mode: CanvasMode::Live,
                 }));
             }
+            // D-01: a play or a shuttle from Live switches to Program.
+            if matches!(id, "play.toggle" | "shuttle.forward" | "shuttle.reverse")
+                && !state.runtime.playing
+                && state.ui.canvas_mode == CanvasMode::Live
+            {
+                calls.push(dispatch(Command::SetCanvasMode {
+                    mode: CanvasMode::Program,
+                }));
+            }
             match id {
                 "shuttle.forward" => calls.push(Call::Rate(1.0)),
                 "shuttle.reverse" => calls.push(Call::Rate(-1.0)),
@@ -200,32 +209,36 @@ fn every_default_binding_runs_what_its_action_says() {
     let mut checked = 0;
     for binding in &keymap.bindings {
         for ctx in &binding.contexts {
-            let scene = match ctx {
-                KeyContext::Global | KeyContext::Timeline => Scene::program(),
-                KeyContext::Canvas => Scene::canvas(),
-                KeyContext::Recording => Scene::recording(),
-                KeyContext::Overlay => Scene::overlay(),
+            // The timeline's bindings in Program (S06) and in Live (S02).
+            let scenes = match ctx {
+                KeyContext::Global | KeyContext::Timeline => vec![Scene::program(), Scene::new()],
+                KeyContext::Canvas => vec![Scene::canvas()],
+                KeyContext::Recording => vec![Scene::recording()],
+                KeyContext::Overlay => vec![Scene::overlay()],
             };
             let want = match ctx {
                 KeyContext::Global => KeyContext::Timeline,
                 other => *other,
             };
-            if *ctx != KeyContext::Overlay {
-                assert_eq!(context(&scene.rs()), want, "{}", binding.id);
-            }
-            for chord in usable_keys(&keymap, binding) {
-                let (decision, calls) = scene.decide_input(&KeyInput::chord(chord.clone()));
-                assert_eq!(
-                    calls,
-                    expected(&scene, binding.id, *ctx),
-                    "{} on {chord} in {ctx:?}: {decision:?}",
-                    binding.id
-                );
-                checked += 1;
+            for scene in &scenes {
+                if *ctx != KeyContext::Overlay {
+                    assert_eq!(context(&scene.rs()), want, "{}", binding.id);
+                }
+                for chord in usable_keys(&keymap, binding) {
+                    let (decision, calls) = scene.decide_input(&KeyInput::chord(chord.clone()));
+                    assert_eq!(
+                        calls,
+                        expected(scene, binding.id, *ctx),
+                        "{} on {chord} in {ctx:?}, {:?}: {decision:?}",
+                        binding.id,
+                        scene.state.ui.canvas_mode
+                    );
+                    checked += 1;
+                }
             }
         }
     }
-    assert!(checked > 70, "{checked} key presses checked");
+    assert!(checked > 140, "{checked} key presses checked");
 }
 
 #[test]
@@ -551,13 +564,113 @@ fn shuttle_rates() {
     assert_eq!(next_rate(4.0, true, Stop), 1.0);
 }
 
+/// D-01 (issue #12), D-05's mirror: `Space`, `J` and `L` in Live switch
+/// the canvas to Program, then play, in one FIFO and with no toast; the
+/// core plays the timeline there. The transport's Play does what `Space`
+/// does. `K` only stops, and Program plays as ever.
 #[test]
-fn play_keys_say_why_in_live_mode() {
-    // D-01: Space in Live toasts the reason.
+fn play_keys_switch_to_program_in_live_mode() {
+    let live = Scene::new();
+    assert_eq!(live.state.ui.canvas_mode, CanvasMode::Live);
+    let to_program = dispatch(Command::SetCanvasMode {
+        mode: CanvasMode::Program,
+    });
     assert_eq!(
-        Scene::new().calls("space"),
-        [Call::Notice(keymap::PLAY_IN_LIVE.to_owned())]
+        live.calls("space"),
+        [to_program.clone(), dispatch(Command::Play)]
     );
+    assert_eq!(
+        live.calls("l"),
+        [
+            to_program.clone(),
+            Call::Rate(1.0),
+            dispatch(Command::Shuttle {
+                dir: ShuttleDir::Forward
+            })
+        ]
+    );
+    assert_eq!(
+        live.calls("j"),
+        [
+            to_program,
+            Call::Rate(-1.0),
+            dispatch(Command::Shuttle {
+                dir: ShuttleDir::Reverse
+            })
+        ]
+    );
+    assert_eq!(
+        live.calls("k"),
+        [
+            Call::Rate(1.0),
+            dispatch(Command::Shuttle {
+                dir: ShuttleDir::Stop
+            })
+        ]
+    );
+    // Through the core: the Program canvas, playing.
+    for chord in ["space", "l", "j"] {
+        let state = fold(&live, chord);
+        assert_eq!(state.ui.canvas_mode, CanvasMode::Program, "{chord}");
+        assert!(state.runtime.playing, "{chord}");
+    }
+    // The transport's Play runs its binding (G§3.7): the key's decision.
+    let space = live.press("space").0;
+    assert!(
+        matches!(&space, KeyDecision::Run { pre, .. } if pre[..] == [PreStep::SetProgram]),
+        "{space:?}"
+    );
+    assert_eq!(decide_button("play.toggle", &live.rs()), space);
+    // Program: no switch.
+    assert_eq!(Scene::program().calls("space"), [dispatch(Command::Play)]);
+}
+
+/// D-01: the gates keep their order and win in Live, and nothing
+/// switches: an empty timeline says so; a countdown or a recording says
+/// why (`J` and `L` aren't bound while recording: they reach GTK).
+#[test]
+fn play_keys_in_live_say_why_they_cant_and_stay() {
+    let mut empty = Scene::new();
+    empty.state.project.timeline.clips.clear();
+    for chord in ["space", "l", "j"] {
+        assert_eq!(
+            empty.calls(chord),
+            [Call::Notice("The timeline is empty".to_owned())],
+            "{chord}"
+        );
+    }
+    assert_eq!(
+        decide_button("play.toggle", &empty.rs()),
+        KeyDecision::Unavailable {
+            id: "play.toggle".into(),
+            reason: "The timeline is empty".into()
+        }
+    );
+    let mut countdown = Scene::new();
+    countdown.state.runtime.record = RecordPhase::Countdown {
+        remaining: 3,
+        mode: RecordMode::Append,
+        timer: qrec_core::ids::TimerId(1),
+        start_req: None,
+        wait: false,
+    };
+    for (scene, why) in [
+        (countdown, "Not during the countdown"),
+        (Scene::recording(), "Not while recording"),
+    ] {
+        assert_eq!(scene.state.ui.canvas_mode, CanvasMode::Live);
+        assert_eq!(scene.calls("space"), [Call::Notice(why.to_owned())]);
+        assert_eq!(
+            decide_button("play.toggle", &scene.rs()),
+            KeyDecision::Unavailable {
+                id: "play.toggle".into(),
+                reason: why.into()
+            }
+        );
+        for chord in ["l", "j"] {
+            assert_eq!(scene.press(chord).0, KeyDecision::Propagate, "{chord}");
+        }
+    }
 }
 
 #[test]
@@ -1074,12 +1187,21 @@ fn a_held_key_repeats_only_what_is_meant_to() {
         );
         assert_eq!(calls, program.calls(chord), "{chord}");
     }
-    // An unavailable binding said why on its press: Space in Live.
+    // Space in Live switches to Program and plays once (D-01); its
+    // repeats don't pause it again.
+    let live = Scene::new();
+    assert_eq!(live.calls("space").len(), 2, "the switch, then Play");
+    assert_eq!(held(&live, "space"), swallowed);
+    assert_eq!(held(&live, "l"), swallowed);
+    // An unavailable binding said why on its press: Space with nothing
+    // to play.
+    let mut empty = Scene::new();
+    empty.state.project.timeline.clips.clear();
     assert_eq!(
-        Scene::new().calls("space"),
-        [Call::Notice(keymap::PLAY_IN_LIVE.to_owned())]
+        empty.calls("space"),
+        [Call::Notice("The timeline is empty".to_owned())]
     );
-    assert_eq!(held(&Scene::new(), "space"), swallowed);
+    assert_eq!(held(&empty, "space"), swallowed);
     // The canvas: layer nudges repeat, in a nudge burst too (D-33).
     assert_eq!(held(&Scene::canvas(), "Left").1, [gui("layer.nudge-left")]);
     let mut burst = Scene::canvas();

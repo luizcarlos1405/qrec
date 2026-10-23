@@ -2592,11 +2592,11 @@ inward by one frame; with Shift they arrive as `alt+braceleft`/
 `alt+braceright` and trim 10. A chord two bindings share in one context is
 a `Conflict`: `lookup` runs neither of them, there or in any other context
 (Q5: the key `usable_keys` leaves out of their hints, caps and palette
-rows does nothing for them anywhere). In Live mode `play.toggle`,
-`shuttle.reverse` and `shuttle.forward` are `Unavailable` "Switch to
-Program (Tab) to play the timeline" (GUI D-01; an empty timeline or a
-refusing gate says so first; the `Play` command itself still switches,
-A§5.10), and the layer nudges move a layer of `edit_target`'s scene, or are
+rows does nothing for them anywhere). `play.toggle`, `shuttle.reverse`
+and `shuttle.forward` run in either canvas mode: from Live the GUI
+switches to Program first, as the `Play` command itself does (GUI D-01,
+A§5.10; an empty timeline or a refusing gate makes them `Unavailable`, in
+that order). The layer nudges move a layer of `edit_target`'s scene, or are
 `Unavailable` "Select a clip to edit its take layout" (GUI D-06, A§5.10).
 From Idle `record.toggle` and `record.over` are `Unavailable` while a take
 can't start: the capture engine is stuck ("The capture engine is stuck

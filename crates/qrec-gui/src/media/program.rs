@@ -2095,6 +2095,62 @@ mod tests {
         assert_eq!(rig.sync().player, [PlayerCmd::Seek(rig.ns(100))]);
     }
 
+    /// What a key does, kept to run through the core and the sync.
+    #[derive(Default)]
+    struct Keys {
+        sent: Vec<Command>,
+        parks: Vec<Frame>,
+        rates: Vec<f64>,
+    }
+
+    impl crate::keys::router::KeySink for Keys {
+        fn dispatch(&mut self, cmd: Command) {
+            self.sent.push(cmd);
+        }
+        fn gui(&mut self, _: &str) {}
+        fn notice(&mut self, _: Notice) {}
+        fn set_playing_rate(&mut self, rate: f64) {
+            self.rates.push(rate);
+        }
+        fn player_rate(&mut self, _: f64) {}
+        fn key_parks(&mut self, frame: Frame) {
+            self.parks.push(frame);
+        }
+        fn cancel_drag(&mut self) {}
+        fn close_overlay(&mut self) {}
+    }
+
+    /// `chord` pressed in the open window on `state` (the timeline
+    /// focused; the program playing at `player_frame`, if any), through
+    /// the key router.
+    fn press(state: &State, chord: &str, player_frame: Option<Frame>) -> Keys {
+        use crate::keys::router::{self, KeyInput, RouterState};
+        use crate::store::local::{LocalUi, StartupPhase};
+        use qrec_core::keymap::KeyChord;
+        use qrec_core::view::FocusRegion;
+
+        let playing = player_frame.is_some();
+        let local = LocalUi {
+            startup: StartupPhase::Open,
+            focus: FocusRegion::Timeline,
+            playing,
+            program_playing: playing,
+            ..LocalUi::default()
+        };
+        let keymap = qrec_core::keymap::resolve("");
+        let rs = RouterState {
+            state,
+            local: &local,
+            keymap: &keymap,
+            player_frame,
+        };
+        let input = KeyInput::chord(KeyChord::parse(chord).unwrap());
+        let decision = router::decide(&input, &rs);
+        let mut keys = Keys::default();
+        assert!(router::apply(&decision, state, &mut keys), "{chord}");
+        keys
+    }
+
     /// R18's follow-up (D-51), through the key router, the core and the
     /// sync: `→` while the program plays ends on the frame after the one
     /// the picture showed, paused there. Before, the step's seek landed
@@ -2103,55 +2159,12 @@ mod tests {
     /// took the playhead along).
     #[test]
     fn a_frame_step_while_playing_ends_paused_on_the_next_frame() {
-        use crate::keys::router::{self, KeyInput, KeySink, RouterState};
-        use crate::store::local::{LocalUi, StartupPhase};
-        use qrec_core::keymap::KeyChord;
-        use qrec_core::view::FocusRegion;
-
-        /// What the key does, kept to run through the core and the sync.
-        #[derive(Default)]
-        struct Keys {
-            sent: Vec<Command>,
-            parks: Vec<Frame>,
-        }
-        impl KeySink for Keys {
-            fn dispatch(&mut self, cmd: Command) {
-                self.sent.push(cmd);
-            }
-            fn gui(&mut self, _: &str) {}
-            fn notice(&mut self, _: Notice) {}
-            fn set_playing_rate(&mut self, _: f64) {}
-            fn player_rate(&mut self, _: f64) {}
-            fn key_parks(&mut self, frame: Frame) {
-                self.parks.push(frame);
-            }
-            fn cancel_drag(&mut self) {}
-            fn close_overlay(&mut self) {}
-        }
-
         let mut rig = Rig::new(program()).loaded();
         assert_eq!(rig.play().player, [PlayerCmd::Play(1.0)]);
         rig.now += 600;
         rig.position = 2500;
         assert_eq!(rig.sync(), Out::default(), "before the once-a-second seek");
-        let local = LocalUi {
-            startup: StartupPhase::Open,
-            focus: FocusRegion::Timeline,
-            playing: true,
-            program_playing: true,
-            ..LocalUi::default()
-        };
-        let keymap = qrec_core::keymap::resolve("");
-        let rs = RouterState {
-            state: &rig.state,
-            local: &local,
-            keymap: &keymap,
-            player_frame: Some(2500),
-        };
-        let right = KeyInput::chord(KeyChord::parse("Right").unwrap());
-        let decision = router::decide(&right, &rs);
-        let mut keys = Keys::default();
-        assert!(router::apply(&decision, &rig.state, &mut keys));
+        let keys = press(&rig.state, "Right", Some(2500));
         for frame in &keys.parks {
             rig.machine.note_key_park(rig.now, *frame);
         }
@@ -2173,6 +2186,102 @@ mod tests {
             "the picture on it"
         );
         assert_eq!(out.dispatch, [], "no park at the player's frame");
+    }
+
+    /// D-01 (issue #12) through the key router, the core and the sync:
+    /// `Space` in Live switches the canvas to Program, then plays, each its
+    /// own snapshot. The switch's loads the program (Live loaded nothing),
+    /// the play's starts it at the playhead. A plan that changed while
+    /// Live showed (a take landed) loads once its debounce is over, at the
+    /// playing player's position. `J` plays backwards at its rate (D-44).
+    #[test]
+    fn space_in_live_switches_to_program_and_plays() {
+        let ctx = testkit::ctx("2026-10-14T15:00:00Z", 7);
+        // The core's snapshot after each command the key sent.
+        let snapshots = |state: &State, keys: Keys| -> Vec<State> {
+            let mut at = state.clone();
+            keys.sent
+                .into_iter()
+                .map(|cmd| {
+                    at = qrec_core::apply::apply(&at, &ctx, cmd)
+                        .expect("the core runs it")
+                        .state;
+                    at.clone()
+                })
+                .collect()
+        };
+
+        let mut rig = Rig::new(testkit::design_state());
+        assert_eq!(rig.state.ui.canvas_mode, CanvasMode::Live);
+        assert_eq!(rig.sync(), Out::default(), "Live loads nothing");
+        let keys = press(&rig.state, "space", None);
+        let [switched, playing] = &snapshots(&rig.state, keys)[..] else {
+            panic!("two commands: the switch, then Play");
+        };
+        assert_eq!(switched.ui.canvas_mode, CanvasMode::Program);
+        assert!(!switched.runtime.playing);
+        rig.state = switched.clone();
+        assert_eq!(
+            rig.sync().player,
+            [PlayerCmd::Load {
+                plan: rig.plan.clone(),
+                at_ns: rig.ns(2437)
+            }]
+        );
+        assert!(playing.runtime.playing);
+        rig.state = playing.clone();
+        rig.now += 5;
+        let out = rig.sync();
+        assert_eq!(out.player, [PlayerCmd::Play(1.0)], "from 2437");
+        assert_eq!(out.playing, Some(true));
+        assert_eq!(out.program_playing, Some(true));
+
+        // Live again (Tab), a take lands meanwhile, then Space.
+        rig.state.runtime.playing = false;
+        rig.state.ui.canvas_mode = CanvasMode::Live;
+        rig.position = 2500;
+        rig.sync();
+        rig.state.ui.playhead = 2500;
+        rig.state.project.timeline.clips.pop();
+        rig.plan = program_plan(&rig.state);
+        assert_eq!(rig.sync(), Out::default());
+        let keys = press(&rig.state, "space", None);
+        for state in snapshots(&rig.state, keys) {
+            rig.state = state;
+            rig.now += 5;
+            rig.sync();
+        }
+        assert!(rig.machine.told_playing, "it plays");
+        rig.now += RELOAD_DEBOUNCE_MS;
+        rig.position = 2503;
+        let out = rig.sync();
+        assert_eq!(
+            out.player,
+            [PlayerCmd::Load {
+                plan: rig.plan.clone(),
+                at_ns: rig.ns(2503)
+            }],
+            "the new plan, where it plays"
+        );
+
+        // `J` from Live: backwards, at −1 (the rate the router set arms
+        // the next start, D-44).
+        let mut rig = Rig::new(testkit::design_state());
+        rig.sync();
+        let keys = press(&rig.state, "j", None);
+        assert_eq!(keys.rates, [-1.0]);
+        rig.rate = -1.0;
+        rig.machine.arm_rate(rig.now);
+        for state in snapshots(&rig.state, keys) {
+            rig.state = state;
+            rig.now += 5;
+            let out = rig.sync();
+            if rig.state.runtime.playing {
+                assert_eq!(out.player, [PlayerCmd::Play(-1.0)]);
+            }
+        }
+        assert_eq!(rig.state.ui.canvas_mode, CanvasMode::Program);
+        assert!(rig.machine.told_playing);
     }
 
     /// D-51: a step's pause parks nothing at the player's frame (that seek,

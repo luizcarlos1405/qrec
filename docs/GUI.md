@@ -181,7 +181,7 @@ requirement review's numbering; H-n are host and engine calls.
 
 | ID | Decision | WP |
 | --- | --- | --- |
-| D-01 | `Space`, `J`, `L` do nothing in Live mode: `keymap::action_for` returns `Unavailable("Switch to Program (Tab) to play the timeline")` for `play.toggle`, `shuttle.reverse` and `shuttle.forward` when `ui.canvas_mode == Live`, so the hint shows disabled (S02) and the palette says why. CLI `qrec play` still switches to Program (A§5.10 unchanged). | WP0a |
+| D-01 | **PO** `Space`, `J` and `L` in Live mode switch the canvas to Program and play, as `R` in Program switches to Live and records (D-05). It replaced the Live refusal (issue #12, 2026-10-23): `keymap::action_for` returned `Unavailable("Switch to Program (Tab) to play the timeline")` for them, a toast that went nowhere. Now it runs `play.toggle`, `shuttle.reverse` and `shuttle.forward` in either mode, so S02's `[Space] Play` hint is enabled (the frame draws it disabled) and the palette row too; the key router's pre-step `SetCanvasMode{Program}` goes first, then the command, in one FIFO and with no toast (G§3.8). The gates keep their order and still win, and then nothing switches: an empty timeline says "The timeline is empty", a countdown, a recording, a finalizing take or no GUI host says why (`gate_reason`). `K`, `Tab`, the bin preview's own switch (D-17), CLI `qrec play` (A§5.10) and the Live picture are unchanged. | WP0a, WP0b |
 | D-02 | The hint bar comes from a new pure `view::hints` (G§4.3), with `hint_enabled` for ids the GUI handles itself. `keymap::hints` and `HintContext` stay for `qrec keys` and the agent guide. | WP6 |
 | D-03 | Meters stay live in Program mode (S06 draws them). With no capture pipeline (Program, Idle) the GUI runs an audio-only `MeterMonitor` (G§3.9). The capture pipeline is unchanged (SPEC §5.2). | WP1, WP0b |
 | D-04 | **PO** Starting phase: the header shows `■ Stop [R]` (a stop is valid then); the canvas shows the C06 Saving pill reading "Starting take 10…"; no REC badge, timer or ghost until `Recording`. Never a fake "Recording…" (SPEC §5.3.2). | WP4, WP6 |
@@ -859,6 +859,11 @@ Pre-steps:
   played on).
 - `record.toggle` and `record.over` from Idle in Program mode →
   `SetCanvasMode{Live}` first (D-05).
+- A `Play` or a `Shuttle` forward or backwards (`play.toggle`,
+  `shuttle.forward`, `shuttle.reverse`) in Live mode →
+  `SetCanvasMode{Program}` first (`PreStep::SetProgram`, D-01), before a
+  shuttle's rate: `L` is `SetCanvasMode{Program}`, the rate 1, then
+  `Shuttle{Forward}`.
 - `shuttle.*` → set `LocalUi.playing_rate` first; while already playing,
   also `ProgramPlayer::play(rate)` (D-44).
 
@@ -2108,7 +2113,7 @@ with `fn widget(&self) -> gtk::Widget`) and
 | core | `view/{palette,cheatsheet,preferences}.rs` | G§4.11 | WP9 |
 | core | `state.rs`, `protocol/command.rs`, `apply/ui.rs`, `ui_normalize.rs` | `UiState.lane_mute`, `UiPatch.lane_mute` (whole set; ids no scene has are dropped), `Command::ui_only`, `ui_normalize::edit_target` | WP0a |
 | core | `model.rs`, `history/external.rs`, `on_event/record.rs` | `Take.recovered` (G§4.8), set by `recover`, kept from hand edits like the other facts; `pub const EOS_TIMEOUT_REASON` | WP0a |
-| core | `keymap.rs` | `KeyChord::cap_legends`, `pub fn usable_keys`, `pub fn gate_reason`, D-01, D-06 nudges, bindings `region.next`, `region.prev`, `app.quit` (WP0a); D-31 labels, `history.clear`, `set_binding`/`reset_binding` (WP9) | WP0a, WP9 |
+| core | `keymap.rs` | `KeyChord::cap_legends`, `pub fn usable_keys`, `pub fn gate_reason`, D-01 (the Live refusal, WP0a; gone since issue #12), D-06 nudges, bindings `region.next`, `region.prev`, `app.quit` (WP0a); D-31 labels, `history.clear`, `set_binding`/`reset_binding` (WP9) | WP0a, WP9 |
 | core | `on_event/output.rs` | `pub fn export_progress_view`, `pub fn export_readout` (WP0a); the export-done toast copy (WP7) | WP0a, WP7 |
 | core | `on_event/{record,disk}.rs` | toast copy D-21 | WP9 |
 | core | `ctx.rs` | `Ctx::preview(now, config)` | WP0a |
@@ -2434,7 +2439,7 @@ decides, because some ids are handled by the GUI and not by
 | --- | --- |
 | FirstRun | `[Enter]` "Add N sources" (disabled at 0 checked) · `record.toggle` "Record" (disabled) · `canvas.mode` "Program" · `palette.open` "Commands" · `keys.help` "All keys" |
 | Empty | `record.toggle` "Record" · `canvas.mode` "Program" / "Live" · `palette.open` "Commands" · `keys.help` "All keys" |
-| LiveIdle | `record.toggle` "Record" · `take.discard-last` "Discard last take" (emphasized while the cursor entry is a take placement, `cmd` `{"event":"takeFinalized"}`) · `play.toggle` "Play" (disabled, D-01) · `canvas.mode` "Program" · `autocut.run` "Autocut all" · `bin.toggle` "Bin" · `palette.open` "Commands" · `keys.help` "All keys" |
+| LiveIdle | `record.toggle` "Record" · `take.discard-last` "Discard last take" (emphasized while the cursor entry is a take placement, `cmd` `{"event":"takeFinalized"}`) · `play.toggle` "Play" (it switches to Program and plays, D-01; S02 draws it disabled) · `canvas.mode` "Program" · `autocut.run` "Autocut all" · `bin.toggle` "Bin" · `palette.open` "Commands" · `keys.help` "All keys" |
 | ProgramIdle | `play.toggle` "Play" / "Pause" · `select.prev`+`select.next` "Select clip" · `zoom.in` "Zoom in" · `zoom.selection` "Zoom to selection" · `canvas.mode` "Live" · `keys.help` "All keys" |
 | ClipSelected | `clip.split` "Split" · `clip.trim-start`+`clip.trim-end` "Trim to playhead" · `clip.move-left`+`clip.move-right` "Move" · `clip.remove` (prefer `x`) "Remove" · `autocut.run` "Autocut" · `record.over` "Record over" · `zoom.selection` "Zoom to clip" ("Zoom to selection" for ≥ 2) · `keys.help` "All keys" |
 | FrameZoom | `seek.prev-frame`+`seek.next-frame` "Previous / next frame" · `clip.nudge-start`+`clip.nudge-end` "Nudge edge 1 frame" · `clip.split` "Split" · `zoom.out` "Zoom out" · `zoom.fit` "Fit" |
@@ -4477,11 +4482,12 @@ dependency is added.
   return defaults; each owner replaces them); `lane_mute`;
   `Command::ui_only`; `ui_normalize::edit_target`; `Take.recovered` and
   `EOS_TIMEOUT_REASON`; keymap `cap_legends`, `usable_keys`,
-  `gate_reason`, D-01, D-06, `region.next`, `region.prev`, `app.quit`;
-  `export_progress_view` (pub) and `export_readout`; `Ctx::preview`; the
-  GES clip ids; testkit `design_project()`, `design_state()`,
-  `perf_project(n)`; `tests/props_late_errors.rs`, and a toast for any
-  `on_event` path it finds without one.
+  `gate_reason`, D-01 (the Live refusal, gone since issue #12), D-06,
+  `region.next`, `region.prev`, `app.quit`; `export_progress_view` (pub)
+  and `export_readout`; `Ctx::preview`; the GES clip ids; testkit
+  `design_project()`, `design_state()`, `perf_project(n)`;
+  `tests/props_late_errors.rs`, and a toast for any `on_event` path it
+  finds without one.
 - Shell: the observer (H-6), `reply_late` (H-7), D-47, `Msg::RetryLive`
   and `CaptureEngine::retry_live`; `host/gui.rs` (G§3.4.1);
   `host/takeover.rs` complete (G§3.4.3); the `shutdown` refusal;
@@ -4510,7 +4516,10 @@ dependency is added.
   - `format` and `notices` snapshots; `cap_legends` over every default
     chord;
   - D-01: `play.toggle` and `shuttle.*` unavailable in Live, available in
-    Program; `qrec play` still switches (the existing CLI test);
+    Program; `qrec play` still switches (the existing CLI test). Since
+    issue #12 they are available in both
+    (`playback_keys_play_in_either_canvas_mode`; the router's switch to
+    Program, `router_tests`' `play_keys_switch_to_program_in_live_mode`);
   - D-06: `layer.nudge-*` unavailable in Program with no selection, and
     the palette row disabled with the same reason;
   - the `qrec keys` and agent-guide snapshots list `region.next`,
@@ -6143,7 +6152,8 @@ At the M4 review:
    fallback with its numbers (G§0.4); frame-accurate stepping; J/K/L.
 4. Export done and failed; the purge modal; the fps-change modal from
    Settings › Project.
-5. The departures marked PO in G§2: D-04, D-07, D-08, D-17, D-30, D-48,
+5. The departures marked PO in G§2: D-01 (`Space` in Live switches to
+   Program and plays, issue #12), D-04, D-07, D-08, D-17, D-30, D-48,
    D-51 (a step while playing pauses first); and D-03 (meters in Program,
    as drawn).
 6. Fraunces axes: DESIGN's SOFT/WONK against the PNGs' defaults.

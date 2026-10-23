@@ -255,7 +255,8 @@ fn assert_header_parts(nested: &mut Nested) {
 
 /// S02: Live, idle. The header's parts sit where BRIEF §2.3 puts them, the
 /// title over its two-label summary, the hint bar is G§4.3's Live idle
-/// list, the a11y walk is empty.
+/// list (`[Space] Play` on: it switches to Program and plays, D-01), the
+/// a11y walk is empty.
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s02_the_header_at_rest() {
@@ -287,7 +288,7 @@ fn s02_the_header_at_rest() {
         [
             "[R] Record",
             "[D] Discard last take",
-            "[Space] Play (disabled)",
+            "[Space] Play",
             "[Tab] Program",
             "[C] Autocut all",
             "[B] Bin",

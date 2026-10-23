@@ -57,10 +57,10 @@ expression: notices
     null
   ],
   [
-    "unavailable_notice(play.toggle, \"Switch to Program (Tab) to play the timeline\")",
+    "unavailable_notice(play.toggle, \"The timeline is empty\")",
     {
       "level": "info",
-      "title": "Switch to Program (Tab) to play the timeline",
+      "title": "The timeline is empty",
       "body": null,
       "actions": []
     }

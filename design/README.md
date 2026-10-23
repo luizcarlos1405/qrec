@@ -130,7 +130,7 @@ In this slice, `record-text` draws **Cancel [R]** (S03), the Broken chip and **P
 | # | Question | What the mocks assume |
 | --- | --- | --- |
 | Q1 | Should `qrec init` seed the scene (primary screen, default mic, system audio) so R works on first launch? | No seeding: S01a asks which sources to add |
-| Q2 | What does `Space` do in Live mode? | Nothing; its hint is shown disabled (S02). The alternative is switching to Program and playing |
+| Q2 | What does `Space` do in Live mode? | Nothing; its hint is shown disabled (S02). The alternative is switching to Program and playing (decided on 2026-10-23, issue #12: the build does that, docs/GUI.md D-01) |
 | Q3 | Does `Esc` cancel a drag? | Yes, a drag-move or a trim (S10, S11) |
 | Q4 | Should the filmstrip use the topmost visible layer (SPEC §7.2) or the composited frame? | The topmost layer, so the filmstrip shows the face cam |
 | Q5 | What happens with conflicting key bindings? | Both stop working until one changes, with a banner (S22 draft). The alternative: the later entry wins |

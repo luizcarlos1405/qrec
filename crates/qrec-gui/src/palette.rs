@@ -615,7 +615,7 @@ mod tests {
 
     use super::*;
     use crate::host::queue::Queue;
-    use crate::keys::router::{KeySink, apply};
+    use crate::keys::router::{KeySink, PreStep, apply};
     use crate::store::Store;
     use crate::store::local::{LocalUi, Overlay, StartupPhase};
 
@@ -724,8 +724,9 @@ mod tests {
 
     /// The dispatch table (WP9): every row the palette offers runs, as its
     /// key would: a row with a command dispatches `action_for`'s command
-    /// after the key's pre-steps (none here: nothing plays), a row the
-    /// window handles runs its GUI action; none is refused or ignored.
+    /// after the key's pre-steps (here a canvas switch or a shuttle's rate:
+    /// nothing plays), a row the window handles runs its GUI action; none
+    /// is refused or ignored.
     #[test]
     fn every_enabled_row_runs_as_its_key_would() {
         let keymap: Keymap = keymap::resolve("");
@@ -759,10 +760,14 @@ mod tests {
                             "{name}: {}",
                             row.id
                         );
+                        // A record from Program switches to Live (D-05), a
+                        // play from Live to Program (D-01); a shuttle sets
+                        // its rate (D-44).
                         assert!(
                             pre.is_empty()
                                 || row.id.starts_with("record.")
-                                || row.id.starts_with("shuttle."),
+                                || row.id.starts_with("shuttle.")
+                                || (row.id == "play.toggle" && pre[..] == [PreStep::SetProgram]),
                             "{name}: {} {pre:?}",
                             row.id
                         );

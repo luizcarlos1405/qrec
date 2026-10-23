@@ -1413,22 +1413,18 @@ pub fn action_for(id: &str, state: &State) -> Option<Action> {
         "record.over" => record_over(state),
         "take.discard-last" => discard_last(state),
         "cancel" => cancel(state),
+        // In Live mode too: the GUI switches the canvas to Program first
+        // (GUI D-01), as the `Play` command itself does (A§5.10).
         "play.toggle" => play_toggle(state),
-        "shuttle.reverse" => playback(
-            state,
-            Command::Shuttle {
-                dir: ShuttleDir::Reverse,
-            },
-        ),
+        "shuttle.reverse" => needs_clips(state, || Command::Shuttle {
+            dir: ShuttleDir::Reverse,
+        }),
         "shuttle.stop" => run(Command::Shuttle {
             dir: ShuttleDir::Stop,
         }),
-        "shuttle.forward" => playback(
-            state,
-            Command::Shuttle {
-                dir: ShuttleDir::Forward,
-            },
-        ),
+        "shuttle.forward" => needs_clips(state, || Command::Shuttle {
+            dir: ShuttleDir::Forward,
+        }),
         "seek.prev-frame" => seek_by(Sign::Minus, TimeValue::Frames(1)),
         "seek.next-frame" => seek_by(Sign::Plus, TimeValue::Frames(1)),
         "seek.back" => seek_by(Sign::Minus, TimeValue::Seconds(NS_PER_SEC as u64)),
@@ -1563,10 +1559,6 @@ pub fn action_for(id: &str, state: &State) -> Option<Action> {
 fn run(cmd: Command) -> Action {
     Action::Run(cmd)
 }
-
-/// Why `Space`, `J` and `L` don't play in Live mode (GUI D-01): the canvas
-/// shows the live sources there. `qrec play` still switches to Program.
-pub const PLAY_IN_LIVE: &str = "Switch to Program (Tab) to play the timeline";
 
 /// Why the gates `apply` enforces for every command (A§5.3, A§8.5, A§7.7)
 /// would refuse `cmd` in `state`, in words for people: the record phase,
@@ -1711,28 +1703,14 @@ fn cancel(state: &State) -> Action {
     }
 }
 
+/// `Pause` while playing, else `Play`, which needs clips (and then the
+/// gates, as every command: an empty timeline says so first).
 fn play_toggle(state: &State) -> Action {
     if state.runtime.playing {
         run(Command::Pause)
     } else {
-        playback(state, Command::Play)
+        needs_clips(state, || Command::Play)
     }
-}
-
-/// `Play` or a shuttle: needs clips, passes the gates, and only plays on
-/// the Program canvas (D-01). A refusing gate (recording, no GUI host)
-/// says why first: switching to Program wouldn't help then.
-fn playback(state: &State, cmd: Command) -> Action {
-    if state.project.timeline.clips.is_empty() {
-        return Action::Unavailable("The timeline is empty".to_owned());
-    }
-    if let Some(why) = gate_reason(state, &cmd) {
-        return Action::Unavailable(why);
-    }
-    if state.ui.canvas_mode == CanvasMode::Live {
-        return Action::Unavailable(PLAY_IN_LIVE.to_owned());
-    }
-    run(cmd)
 }
 
 /// The selected clips that are on the timeline, in timeline order.
@@ -2815,64 +2793,97 @@ mod tests {
     }
 
     #[test]
-    fn playback_keys_need_the_program_canvas() {
-        // D-01: Space, J and L don't play in Live mode.
+    fn playback_keys_play_in_either_canvas_mode() {
+        // D-01: Space, J and L play in Live mode too (the GUI switches the
+        // canvas to Program first), as in Program; K stops either way.
         let mut state = editing_state();
         assert_eq!(state.ui.canvas_mode, CanvasMode::Live);
-        for id in ["play.toggle", "shuttle.reverse", "shuttle.forward"] {
-            assert_eq!(
-                action_for(id, &state),
-                Some(Action::Unavailable(PLAY_IN_LIVE.into())),
-                "{id}"
-            );
+        let keys = [
+            ("play.toggle", Command::Play),
+            (
+                "shuttle.reverse",
+                Command::Shuttle {
+                    dir: ShuttleDir::Reverse,
+                },
+            ),
+            (
+                "shuttle.stop",
+                Command::Shuttle {
+                    dir: ShuttleDir::Stop,
+                },
+            ),
+            (
+                "shuttle.forward",
+                Command::Shuttle {
+                    dir: ShuttleDir::Forward,
+                },
+            ),
+        ];
+        for mode in [CanvasMode::Live, CanvasMode::Program] {
+            state.ui.canvas_mode = mode;
+            for (id, cmd) in &keys {
+                assert_eq!(
+                    action_for(id, &state),
+                    Some(Action::Run(cmd.clone())),
+                    "{id} in {mode:?}"
+                );
+            }
+            // The palette's row too, with no reason.
+            let rows = palette(&resolve(""), &state);
+            let play = rows.iter().find(|r| r.id == "play.toggle").unwrap();
+            assert!(play.enabled, "{mode:?}");
+            assert_eq!(play.reason, None, "{mode:?}");
         }
-        assert_eq!(PLAY_IN_LIVE, "Switch to Program (Tab) to play the timeline");
-        assert_eq!(
-            command_for("shuttle.stop", &state),
-            Some(Command::Shuttle {
-                dir: ShuttleDir::Stop
-            }),
-            "stopping is harmless"
-        );
-        let rows = palette(&resolve(""), &state);
-        let play = rows.iter().find(|r| r.id == "play.toggle").unwrap();
-        assert!(!play.enabled);
-        assert_eq!(play.reason.as_deref(), Some(PLAY_IN_LIVE));
-
-        state.ui.canvas_mode = CanvasMode::Program;
-        assert_eq!(command_for("play.toggle", &state), Some(Command::Play));
-        assert_eq!(
-            command_for("shuttle.reverse", &state),
-            Some(Command::Shuttle {
-                dir: ShuttleDir::Reverse
-            })
-        );
-        assert_eq!(
-            command_for("shuttle.forward", &state),
-            Some(Command::Shuttle {
-                dir: ShuttleDir::Forward
-            })
-        );
-        // A refusing gate says why first, in either mode.
-        state.runtime.record = RecordPhase::Recording {
+        // A refusing gate says why, in either mode: switching to Program
+        // wouldn't help then.
+        let countdown = RecordPhase::Countdown {
+            remaining: 3,
+            mode: RecordMode::Append,
+            timer: crate::ids::TimerId(1),
+            start_req: None,
+            wait: false,
+        };
+        let recording = RecordPhase::Recording {
             take: TakeId::numbered(3),
             mode: RecordMode::Append,
             elapsed_ns: 0,
             waiters: vec![],
         };
-        for mode in [CanvasMode::Program, CanvasMode::Live] {
-            state.ui.canvas_mode = mode;
-            assert_eq!(
-                action_for("shuttle.forward", &state),
-                Some(Action::Unavailable("Not while recording".into())),
-                "{mode:?}"
-            );
+        for (phase, why) in [
+            (countdown, "Not during the countdown"),
+            (recording, "Not while recording"),
+        ] {
+            state.runtime.record = phase;
+            for mode in [CanvasMode::Program, CanvasMode::Live] {
+                state.ui.canvas_mode = mode;
+                for id in ["play.toggle", "shuttle.reverse", "shuttle.forward"] {
+                    assert_eq!(
+                        action_for(id, &state),
+                        Some(Action::Unavailable(why.into())),
+                        "{id} in {mode:?}"
+                    );
+                }
+            }
         }
-        let empty = testkit::state(ProjectBuilder::new().mic("A1", "mic").build());
+        state.runtime.record = RecordPhase::Idle;
+        state.runtime.host = HostKind::Headless;
         assert_eq!(
-            action_for("play.toggle", &empty),
-            Some(Action::Unavailable("The timeline is empty".into()))
+            action_for("play.toggle", &state),
+            Some(Action::Unavailable("Needs the Qrec window".into()))
         );
+        // An empty timeline says so first, in either mode.
+        let mut empty = testkit::state(ProjectBuilder::new().mic("A1", "mic").build());
+        empty.runtime.host = HostKind::Headless;
+        for mode in [CanvasMode::Live, CanvasMode::Program] {
+            empty.ui.canvas_mode = mode;
+            for id in ["play.toggle", "shuttle.reverse", "shuttle.forward"] {
+                assert_eq!(
+                    action_for(id, &empty),
+                    Some(Action::Unavailable("The timeline is empty".into())),
+                    "{id} in {mode:?}"
+                );
+            }
+        }
     }
 
     #[test]

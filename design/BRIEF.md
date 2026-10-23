@@ -356,7 +356,7 @@ These are Swamp Night frames unless noted. "Base" names the frame to duplicate. 
   - **Panel:** project scene; L2 and L1 unselected; A1 meter at about −22 dBFS with the peak at −16 (room tone and breathing); A2 at about −52; inspector empty-state line.
   - **Timeline:** fit zoom, 10 clips (§3.3), nothing selected, playhead at the end (00:04:06:11).
   - **Toolbar:** Bin `5`, Snap on.
-- **Hint bar:** `[R] Record` · `[D] Discard last take` · `[Space] Play` (disabled: Live has no playback, Q2) · `[Tab] Program` · `[C] Autocut all` · `[B] Bin` · `[Ctrl][K] Commands` · `[?] All keys`. This is the default content of the C03 Hint bar component.
+- **Hint bar:** `[R] Record` · `[D] Discard last take` · `[Space] Play` (drawn disabled, as Q2 assumed; built enabled: it switches to Program and plays, GUI D-01) · `[Tab] Program` · `[C] Autocut all` · `[B] Bin` · `[Ctrl][K] Commands` · `[?] All keys`. This is the default content of the C03 Hint bar component.
 - **Visual details:** the Record button is the only red on screen. Take stripes read in order: moss ×2, onion ×5, lily ×2, fairy ×1.
 
 ### S03 · Countdown
@@ -783,7 +783,7 @@ Swamp Day gets the extra frames because it is the only light theme. Shadows, `fi
 
 **Q1 · First run.** SPEC defines no default scene, so S01a asks which detected sources to add. Should `qrec init` seed the scene with the primary screen, the default mic and system audio, so that R works on first launch?
 
-**Q2 · `Space` in Live mode.** Assumed: it does nothing, the transport is disabled, and a tooltip suggests `Tab`. The alternative is that it switches to Program and plays.
+**Q2 · `Space` in Live mode.** Assumed: it does nothing, the transport is disabled, and a tooltip suggests `Tab`. The alternative is that it switches to Program and plays. **Decided (issue #12, 2026-10-23): the alternative.** `Space`, `J` and `L` in Live switch to Program and play (docs/GUI.md D-01).
 
 **Q3 · `Esc` during a drag.** Assumed: it cancels the drag-move or trim. SPEC lists `Esc` only for countdown, recording, selection and overlays.
 
