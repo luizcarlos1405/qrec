@@ -29,7 +29,7 @@ if [ -z "${QREC_FONT_DIR:-}" ] || ! command -v sway >/dev/null 2>&1; then
   [ -x tmp/dev ] && exec tmp/dev "$self" "$@"
   exec nix develop "git+file://$repo" --command "$self" "$@"
 fi
-unset DISPLAY WAYLAND_DISPLAY WAYLAND_SOCKET
+unset DISPLAY WAYLAND_DISPLAY WAYLAND_SOCKET GDK_BACKEND XAUTHORITY
 threads=${QREC_NESTED_THREADS:-6}
 plan=0
 if [ "${1:-}" = --plan ]; then
