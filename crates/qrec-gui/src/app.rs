@@ -2,8 +2,9 @@
 //! application, `activate`, the queue's drain, the close sequence and the
 //! exit code.
 //!
-//! - `run`: the signal handlers, startup step 1, then steps 3 and 4 at once
-//!   when the window opens on Wayland (the lock and the socket within
+//! - `run`: the program's name (the app id: X11's `WM_CLASS`), the signal
+//!   handlers, startup step 1, then steps 3 and 4 at once when the
+//!   window opens on Wayland (the lock and the socket within
 //!   milliseconds of launch; their results wait in the queue), else once
 //!   GTK connected (an X11 display can't be checked without connecting),
 //!   then `adw::Application` (`com.rsensato.qrec`, `NON_UNIQUE`) on this
@@ -14,9 +15,11 @@
 //!   [`prepare_display`], called while `main` is still single-threaded,
 //!   after the GPU environment, drops one that names none). Without a
 //!   display `run` fails before touching the folder.
-//! - `activate`: the store, the media hub, the key router, the theme and the
-//!   window; the settings follower (`config.toml` and `keys.toml` live,
-//!   WP10); the X2 or unreadable-folder page; the first drain.
+//! - `activate`: the store, the media hub, the key router, the theme, the
+//!   window's icon (the app icon) and the window, sized to the monitors
+//!   (`window::first_size`); the settings follower (`config.toml` and
+//!   `keys.toml` live, WP10); the X2 or unreadable-folder page; the first
+//!   drain.
 //! - The drain: everything the queue holds, in order, on the main thread
 //!   (a thread-local holds the app; before it is up the items wait).
 //! - Closing (window close, `app.quit`, D-12): a countdown is cancelled; a
@@ -147,6 +150,14 @@ pub fn fundamentals_first() -> Option<bool> {
 /// `qrec_gui::run`.
 pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
     log_panics();
+    // The program's name is the app id, before GTK and the workers read
+    // it: GTK's X11 backend makes both parts of the window's WM_CLASS
+    // GLib's prgname, which was the binary's name ("qrec", "qrec"): now
+    // it is the desktop entry's `StartupWMClass`, so docks and taskbars
+    // find the entry and its icon (GUI-08). `run_with_args(&[])` gives
+    // GApplication no argv[0] to take one from. Wayland matches the window
+    // by its app_id, the application's id, which this doesn't change.
+    glib::set_prgname(Some(APP_ID));
     let interrupts = signals::install(&HOST_SIGNALS).unwrap_or_else(|e| {
         tracing::warn!("signals won't be handled gracefully: {e}");
         Interrupts::new()
@@ -319,6 +330,11 @@ fn activate(app: &adw::Application, startup: Startup) {
     }
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::IconTheme::for_display(&display).add_resource_path(ICONS);
+        // The window's icon (X11's `_NET_WM_ICON`, a Wayland compositor's
+        // xdg-toplevel-icon) is the app icon, whose hicolor sizes are in
+        // the GResource too (build.rs): it resolves when Qrec isn't
+        // installed (GUI-08).
+        gtk::Window::set_default_icon_name(APP_ID);
         theme.install(&display);
         tracing::info!(
             "theme {} at scale {} before the first frame",
@@ -448,10 +464,12 @@ fn activate(app: &adw::Application, startup: Startup) {
     the_app.startup.begin(&the_app);
 }
 
-/// Where the custom symbolic icons are in the GResource.
+/// The icon theme's resource path: the custom symbolic icons
+/// (`scalable/actions`) and the app icon's hicolor sizes (`<size>/apps`,
+/// from `data/icons/hicolor`: build.rs).
 pub const ICONS: &str = "/com/rsensato/qrec/icons";
 
-/// Registers the compiled `resources/` (build.rs).
+/// Registers the compiled `resources/` and app icon (build.rs).
 fn register_resources() {
     let bytes =
         glib::Bytes::from_static(include_bytes!(concat!(env!("OUT_DIR"), "/qrec.gresource")));

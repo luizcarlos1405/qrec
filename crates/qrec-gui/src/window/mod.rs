@@ -2,7 +2,8 @@
 //! adaptive modes, the focus regions and the blocking page.
 //!
 //! ```text
-//! adw::ApplicationWindow #qrec  (default 1600×1000, min 800×600)
+//! adw::ApplicationWindow #qrec  (default 1600×1000 within 90 % of the
+//!                                largest monitor, min 800×600)
 //! └ gtk::Overlay  window_layer          ← CheatSheet (scrim-strong over everything)
 //!   └ gtk::Overlay  content_layer       ← Modal, Settings, Palette (scrim to y 968), ExportPanel, ToastHost
 //!     └ Box V
@@ -53,10 +54,62 @@ use crate::toasts::ToastHost;
 use crate::{Ctx, guard, guarded};
 use layers::WindowLayers;
 
-/// The window's default size.
+/// The window's default size, where a monitor holds it ([`first_size`]).
 pub const DEFAULT_SIZE: (i32, i32) = (1600, 1000);
 /// The smallest window (the breakpoints need it).
 pub const MIN_SIZE: (i32, i32) = (800, 600);
+
+/// The share of the monitor the first window may take in each dimension,
+/// in percent: the rest is left to the desktop's panels and docks.
+pub const MONITOR_SHARE: i64 = 90;
+
+/// The size the first window asks for, its default size (GUI-16):
+/// [`DEFAULT_SIZE`], but in each dimension at most [`MONITOR_SHARE`] % of
+/// the largest monitor's geometry (by area; logical px, as GDK gives it:
+/// an X11 output's size over `GDK_SCALE`, a Wayland output's logical
+/// size), so where the window manager lets the window pick its size (a
+/// floating one: GNOME, KDE, Xfce) it opens as a window on a 1366×768
+/// laptop, 1920×1080 at 150 % (1280×720) or a 1024×768 VM console (GTK
+/// only bounds a default size to the monitor: 1600×1000 filled such a
+/// screen edge to edge, a maximized window that isn't one); never below
+/// [`MIN_SIZE`] (a smaller monitor gets MIN_SIZE). A tiling compositor
+/// (sway, Hyprland) sizes the window itself. The largest, not the first:
+/// with a laptop next to a bigger monitor the window keeps the size the
+/// bigger one holds (where the compositor lets the window pick its width,
+/// as niri's `default-column-width {}` does, it opens as wide as before).
+/// Without a monitor of known size (none, or 0×0) it is DEFAULT_SIZE.
+pub fn first_size(monitors: &[(i32, i32)]) -> (i32, i32) {
+    let largest = monitors
+        .iter()
+        .copied()
+        .filter(|&(w, h)| w > 0 && h > 0)
+        .max_by_key(|&(w, h)| i64::from(w) * i64::from(h));
+    let Some((width, height)) = largest else {
+        return DEFAULT_SIZE;
+    };
+    let fit = |default: i32, min: i32, monitor: i32| {
+        let share = i64::from(monitor) * MONITOR_SHARE / 100;
+        // At most `default` (an i32), so the conversion holds.
+        let limit = i32::try_from(share.min(i64::from(default))).unwrap_or(default);
+        limit.max(min)
+    };
+    (
+        fit(DEFAULT_SIZE.0, MIN_SIZE.0, width),
+        fit(DEFAULT_SIZE.1, MIN_SIZE.1, height),
+    )
+}
+
+/// Every monitor's geometry on `display` (logical px), in GDK's order.
+fn monitor_sizes(display: &gtk::gdk::Display) -> Vec<(i32, i32)> {
+    let monitors = display.monitors();
+    (0..monitors.n_items())
+        .filter_map(|i| monitors.item(i).and_downcast::<gtk::gdk::Monitor>())
+        .map(|monitor| {
+            let geometry = monitor.geometry();
+            (geometry.width(), geometry.height())
+        })
+        .collect()
+}
 
 /// The named parts the screenshot checks measure besides `region-*`
 /// (G§8.4); each owner names its widget.
@@ -111,13 +164,24 @@ struct Regions {
 }
 
 impl MainWindow {
-    /// The window and its two overlay layers, empty (G§3.3 step 2).
+    /// The window and its two overlay layers, empty (G§3.3 step 2), asking
+    /// for [`first_size`] for the display's monitors as its default size.
     pub fn new(app: &adw::Application, title: &str) -> Self {
+        let monitors = gtk::gdk::Display::default()
+            .map(|display| monitor_sizes(&display))
+            .unwrap_or_default();
+        let (width, height) = first_size(&monitors);
+        if (width, height) != DEFAULT_SIZE {
+            tracing::info!(
+                "the window asks for {width}×{height} (its default size), to fit the monitors \
+                 {monitors:?}"
+            );
+        }
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title(title)
-            .default_width(DEFAULT_SIZE.0)
-            .default_height(DEFAULT_SIZE.1)
+            .default_width(width)
+            .default_height(height)
             .width_request(MIN_SIZE.0)
             .height_request(MIN_SIZE.1)
             .build();
@@ -648,5 +712,75 @@ mod tests {
             assert_eq!(region_entry(region), region_name(region), "{region:?}");
         }
         assert_eq!(region_entry(FocusRegion::Field), "");
+    }
+
+    /// The first window fits the largest monitor (90 % of it), never
+    /// beyond 1600×1000 nor below 800×600 (GUI-16).
+    #[test]
+    fn the_first_window_fits_the_largest_monitor() {
+        /// What, the monitors, the first window's size.
+        type Row = (&'static str, &'static [(i32, i32)], (i32, i32));
+        #[rustfmt::skip]
+        let rows: [Row; 11] = [
+            ("no monitor", &[], DEFAULT_SIZE),
+            ("a 0×0 monitor", &[(0, 0)], DEFAULT_SIZE),
+            ("1920×1080 holds it", &[(1920, 1080)], (1600, 972)),
+            ("2560×1440 holds it", &[(2560, 1440)], DEFAULT_SIZE),
+            ("a 1366×768 laptop", &[(1366, 768)], (1229, 691)),
+            ("1920×1080 at 150 %", &[(1280, 720)], (1152, 648)),
+            ("a 1024×768 VM console", &[(1024, 768)], (921, 691)),
+            ("800×600: the minimum", &[(800, 600)], MIN_SIZE),
+            ("640×480: still the minimum", &[(640, 480)], MIN_SIZE),
+            ("a laptop next to a bigger monitor", &[(1366, 768), (2560, 1440)], DEFAULT_SIZE),
+            ("the largest by area", &[(1080, 1920), (1920, 1200)], (1600, 1000)),
+        ];
+        for (what, monitors, want) in rows {
+            assert_eq!(first_size(monitors), want, "{what}: {monitors:?}");
+        }
+        // A portrait monitor alone: narrow and as tall as the default.
+        assert_eq!(first_size(&[(1080, 1920)]), (972, 1000));
+    }
+
+    proptest::proptest! {
+        /// Whatever the monitors: the first window is at most the default
+        /// size and at least the minimum, at most 90 % of the largest
+        /// monitor in each dimension unless that is below the minimum,
+        /// and exactly the default when that monitor holds it (or there is
+        /// none of known size).
+        #[test]
+        fn the_first_window_is_within_the_monitor_and_the_minimum(
+            monitors in proptest::collection::vec((-10..10_000i32, -10..10_000i32), 0..4),
+        ) {
+            let (w, h) = first_size(&monitors);
+            proptest::prop_assert!(w <= DEFAULT_SIZE.0 && h <= DEFAULT_SIZE.1);
+            proptest::prop_assert!(w >= MIN_SIZE.0 && h >= MIN_SIZE.1);
+            let largest = monitors
+                .iter()
+                .filter(|&&(mw, mh)| mw > 0 && mh > 0)
+                .max_by_key(|&&(mw, mh)| i64::from(mw) * i64::from(mh));
+            match largest {
+                None => proptest::prop_assert_eq!((w, h), DEFAULT_SIZE),
+                Some(&(mw, mh)) => {
+                    for (size, monitor, default, min) in
+                        [(w, mw, DEFAULT_SIZE.0, MIN_SIZE.0), (h, mh, DEFAULT_SIZE.1, MIN_SIZE.1)]
+                    {
+                        // 90 % of the monitor, in hundredths of a px.
+                        let share = i64::from(monitor) * 90;
+                        let (size, default, min) =
+                            (i64::from(size), i64::from(default), i64::from(min));
+                        if share >= min * 100 {
+                            proptest::prop_assert!(size * 100 <= share, "{size} over 90 % of {monitor}");
+                            // As large as fits: the next px would be over.
+                            proptest::prop_assert!(size == default || (size + 1) * 100 > share);
+                        } else {
+                            proptest::prop_assert_eq!(size, min);
+                        }
+                        if share >= default * 100 {
+                            proptest::prop_assert_eq!(size, default);
+                        }
+                    }
+                }
+            }
+        }
     }
 }

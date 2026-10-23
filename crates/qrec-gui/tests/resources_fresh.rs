@@ -9,11 +9,17 @@
 //! heading a pixel low; found at the play, perf and wp9 lanes'
 //! integration). This holds the bundle the window and the nested suites
 //! run against: every source file in it byte for byte, and nothing else.
+//! The sources are `resources/` and the app icon `build.rs` takes from the
+//! package's hicolor tree (`data/icons/hicolor/<size>/apps/
+//! com.rsensato.qrec.{png,svg}`, bundled as `icons/<size>/apps/…`, the icon
+//! theme's resource path): every size of it, so the window's icon
+//! resolves when Qrec isn't installed (GUI-08).
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use gtk::{gio, glib};
+use qrec_gui::app::APP_ID;
 
 /// The bundle's prefix (`build.rs`, `app::register_resources`).
 const PREFIX: &str = "/com/rsensato/qrec/";
@@ -34,6 +40,29 @@ fn sources(root: &Path, dir: &Path, out: &mut Vec<String>) {
             out.push(parts.join("/"));
         }
     }
+}
+
+/// The app icon's files in the hicolor tree `hicolor`, each with its
+/// path in the bundle (relative to [`PREFIX`]): `<size>/apps/<APP_ID>.png`
+/// (`.svg` for `scalable`) as `icons/<size>/apps/…`.
+fn app_icons(hicolor: &Path) -> Vec<(String, PathBuf)> {
+    let mut sizes: Vec<String> = fs::read_dir(hicolor)
+        .unwrap_or_else(|e| panic!("{}: {e}", hicolor.display()))
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    sizes.sort();
+    for size in ["scalable", "16x16", "48x48", "512x512"] {
+        assert!(sizes.iter().any(|s| s == size), "no {size} in {sizes:?}");
+    }
+    sizes
+        .into_iter()
+        .map(|size| {
+            let ext = if size == "scalable" { "svg" } else { "png" };
+            let file = format!("{size}/apps/{APP_ID}.{ext}");
+            (format!("icons/{file}"), hicolor.join(&file))
+        })
+        .collect()
 }
 
 /// Every file in the bundle under `dir` (a path ending in `/`), relative
@@ -60,14 +89,23 @@ fn the_compiled_resources_are_the_sources() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources");
     let mut files = Vec::new();
     sources(&root, &root, &mut files);
-    files.sort();
     assert!(files.len() > 20, "the resources: {files:?}");
+    let mut paths: Vec<(String, PathBuf)> = files
+        .into_iter()
+        .map(|file| {
+            let path = root.join(&file);
+            (file, path)
+        })
+        .collect();
+    paths.extend(app_icons(&root.join("../../../data/icons/hicolor")));
+    paths.sort();
+    let files: Vec<String> = paths.iter().map(|(file, _)| file.clone()).collect();
     let mut stale = Vec::new();
-    for file in &files {
+    for (file, source) in &paths {
         let path = format!("{PREFIX}{file}");
         match resource.lookup_data(&path, gio::ResourceLookupFlags::NONE) {
             Ok(data) => {
-                let source = fs::read(root.join(file)).expect("read a resource");
+                let source = fs::read(source).expect("read a resource");
                 if data.as_ref() != source.as_slice() {
                     stale.push(format!(
                         "{file}: {} bytes in the bundle, {} in the source",
