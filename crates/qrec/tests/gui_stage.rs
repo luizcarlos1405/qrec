@@ -429,8 +429,9 @@ fn s01b_sources_added() {
 // ------------------------------------------------------------------ Live
 
 /// S02: Live, idle, the playhead at the end: the live picture (the fake
-/// screen and camera), LIVE, "Live · 1920×1080 · 30 fps", the transport
-/// off, Save frame on.
+/// screen and camera), LIVE, "Live · 1920×1080 · 30 fps", the transport's
+/// steps off (Play on: it switches to Program and plays, D-01), Save frame
+/// on.
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s02_live_idle() {

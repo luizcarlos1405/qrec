@@ -107,7 +107,7 @@ This surface is **Operate**: the visitor completes a task. It must read as a ser
   - **Left:** the timecode `00:01:21:07` in `mono` `text`, followed by ` / 00:04:06:11` in `mono` `muted`.
   - **Center:** five icon buttons centered on x 608: previous edit (`↑`), previous frame (`←`), play/pause (`Space`, 40×32), next frame (`→`), next edit (`↓`). Each tooltip shows its key.
   - **Right:** **Save frame**, a flat button at (956, 614): camera icon, the label `Save frame`, key cap `P`. It is always enabled.
-  - **In Live mode,** the left side reads `Live · 1920×1080 · 30 fps` and the transport buttons are disabled (tooltip: "Switch to Program (Tab) to play the timeline").
+  - **In Live mode,** the left side reads `Live · 1920×1080 · 30 fps`; play/pause stays enabled and does what `Space` does there, switch to Program and play (Q2, decided on 2026-10-23: GUI D-01), and the other four buttons are disabled (tooltip: "Switch to Program (Tab) to step through the timeline").
 - **Bin open:** the drawer occupies (0, 48, 352, 608) and pushes the stage. The preview becomes 832×468 at (368, 100) and the transport row stays at y 612.
 
 ### 2.5 Onion layers panel (x 1232–1584 content, 16 px padding)
@@ -352,7 +352,7 @@ These are Swamp Night frames unless noted. "Base" names the frame to duplicate. 
 - **Purpose:** the resting state between takes. This is the default screen and the one that proves the theme set.
 - **On screen:** the full anatomy from §2.
   - **Canvas:** Live (the code editor, plus the terminal pane running `cargo test`, plus the face cam), with the `LIVE` badge.
-  - **Transport:** "Live · 1920×1080 · 30 fps"; transport buttons disabled; Save frame enabled.
+  - **Transport:** "Live · 1920×1080 · 30 fps"; play/pause enabled (it switches to Program and plays, GUI D-01), the other transport buttons disabled; Save frame enabled.
   - **Panel:** project scene; L2 and L1 unselected; A1 meter at about −22 dBFS with the peak at −16 (room tone and breathing); A2 at about −52; inspector empty-state line.
   - **Timeline:** fit zoom, 10 clips (§3.3), nothing selected, playhead at the end (00:04:06:11).
   - **Toolbar:** Bin `5`, Snap on.

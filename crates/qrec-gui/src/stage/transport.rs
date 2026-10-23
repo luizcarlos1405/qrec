@@ -2,11 +2,13 @@
 //! the timecode left (`now` in `text` over ` / total` in `muted`, and the
 //! shuttle speed after it, D-26), or "Live · 1920×1080 · 30 fps" in Live;
 //! five icon buttons centered (previous edit, previous frame, play/pause
-//! 40×32, next frame, next edit), disabled in Live with the tooltip
-//! "Switch to Program (Tab) to play the timeline"; Save frame right.
-//! Every button runs its binding through the key router (G§3.7), so it
-//! does what its key does. While playing the timecode follows the player
-//! on the frame clock.
+//! 40×32, next frame, next edit); Save frame right. In Live Play does what
+//! `Space` does there, switch to Program and play (D-01), and the steps
+//! are disabled with the tooltip "Switch to Program (Tab) to step through
+//! the timeline" (`view::canvas::Transport::button`). Every button runs
+//! its binding through the key router (G§3.7), so it does what its key
+//! does. While playing the timecode follows the player on the frame
+//! clock.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -16,7 +18,7 @@ use gtk::prelude::*;
 use qrec_core::keymap::{Action, Keymap, action_for};
 use qrec_core::time::ns_to_frame_floor;
 use qrec_core::timeline::total_frames;
-use qrec_core::view::canvas::{TRANSPORT_LIVE_TOOLTIP, Transport, TransportLeft};
+use qrec_core::view::canvas::{Transport, TransportLeft};
 use qrec_core::view::{enabled, format};
 use qrec_core::{Frame, State};
 
@@ -255,23 +257,19 @@ impl TransportRow {
                 button.set_icon_name(icon);
                 action = label;
             }
-            let runs = matches!(
-                action_for(spec.binding, state),
-                Some(Action::Run(_) | Action::Gui)
-            );
-            let on = t.enabled && runs;
-            button.set_sensitive(on);
+            // In Live, Play is `Space`'s (D-01) and the steps are off.
+            let view = t.button(spec.binding, state);
+            button.set_sensitive(view.enabled);
             let caps = binding_caps(&keymap, spec.binding);
-            *tip.borrow_mut() = if !t.enabled && matches!(t.left, TransportLeft::Live { .. }) {
-                Tip {
-                    text: TRANSPORT_LIVE_TOOLTIP.to_owned(),
+            *tip.borrow_mut() = match view.tooltip {
+                Some(why) => Tip {
+                    text: why.to_owned(),
                     caps: None,
-                }
-            } else {
-                Tip {
+                },
+                None => Tip {
                     text: action.to_owned(),
                     caps: caps.clone(),
-                }
+                },
             };
             button.update_property(&[gtk::accessible::Property::Label(&accessible_name(
                 action,

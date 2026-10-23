@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ctx::{AudioDeviceInfo, CameraInfo, ScreenInfo};
 use crate::ids::{Frame, LayerId, TakeId};
+use crate::keymap::{Action, action_for};
 use crate::layout::place;
 use crate::model::{AudioRole, Canvas, Crop, Fit, Layer, Project, Scene, VideoSource};
 use crate::protocol::command::{Command, SceneTarget, VideoSourceArg};
@@ -905,18 +906,53 @@ pub enum TransportLeft {
 #[serde(rename_all = "camelCase")]
 pub struct Transport {
     pub left: TransportLeft,
+    /// The row's buttons are on (as far as their bindings run): Program
+    /// with clips. In Live mode only Play can be (D-01, [`Transport::button`]).
     pub enabled: bool,
     /// The shuttle speed after the total: "· 2×", "· −4×" (D-26).
     pub rate: Option<String>,
 }
 
-/// The transport's tooltip for its buttons in Live mode (BRIEF §2.4).
-pub const TRANSPORT_LIVE_TOOLTIP: &str = "Switch to Program (Tab) to play the timeline";
+/// The tooltip of the transport's step buttons (previous and next edit,
+/// previous and next frame) in Live mode (BRIEF §2.4, D-01).
+pub const TRANSPORT_LIVE_TOOLTIP: &str = "Switch to Program (Tab) to step through the timeline";
+
+/// One of the transport's buttons (C06).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransportButton {
+    pub enabled: bool,
+    /// What its tooltip says in place of its action and key: why a step
+    /// button is off in Live mode ([`TRANSPORT_LIVE_TOOLTIP`]).
+    pub tooltip: Option<&'static str>,
+}
+
+impl Transport {
+    /// The button of binding `id` (`seek.prev-edit`, `seek.prev-frame`,
+    /// `play.toggle`, `seek.next-frame`, `seek.next-edit`) in `state`: on
+    /// when the row is and `keymap::action_for` runs it. In Live mode Play
+    /// does what `Space` does there, switch to Program and play (D-01): on
+    /// when that runs, with its own tooltip; the steps are off with
+    /// [`TRANSPORT_LIVE_TOOLTIP`].
+    pub fn button(&self, id: &str, state: &State) -> TransportButton {
+        let live = matches!(self.left, TransportLeft::Live { .. });
+        if live && id != "play.toggle" {
+            return TransportButton {
+                enabled: false,
+                tooltip: Some(TRANSPORT_LIVE_TOOLTIP),
+            };
+        }
+        let runs = matches!(action_for(id, state), Some(Action::Run(_) | Action::Gui));
+        TransportButton {
+            enabled: (self.enabled || live) && runs,
+            tooltip: None,
+        }
+    }
+}
 
 /// The transport row: the player's frame while playing. Live mode reads
-/// "Live · <canvas>" with the buttons disabled; Program shows the playhead
-/// (the player's frame while playing) over the total, and the shuttle
-/// speed while it isn't 1×.
+/// "Live · <canvas>" with the step buttons disabled (Play plays, D-01);
+/// Program shows the playhead (the player's frame while playing) over the
+/// total, and the shuttle speed while it isn't 1×.
 pub fn transport(state: &State, player_frame: Frame, playing: bool, rate: f64) -> Transport {
     let canvas = &state.project.canvas;
     match state.ui.canvas_mode {
@@ -1802,6 +1838,72 @@ mod tests {
             }
         );
         insta::assert_json_snapshot!("transport", rows);
+    }
+
+    /// D-01: in Live mode the transport's Play does what `Space` does
+    /// there (switch to Program and play), so it is on with its own
+    /// tooltip while that runs; the step buttons are off with the Live
+    /// tooltip. In Program every button is on while the timeline has clips
+    /// and its binding runs.
+    #[test]
+    fn the_transport_buttons_in_live_and_program() {
+        const STEPS: [&str; 4] = [
+            "seek.prev-edit",
+            "seek.prev-frame",
+            "seek.next-frame",
+            "seek.next-edit",
+        ];
+        let on = TransportButton {
+            enabled: true,
+            tooltip: None,
+        };
+        let off = TransportButton {
+            enabled: false,
+            tooltip: None,
+        };
+        let live_step = TransportButton {
+            enabled: false,
+            tooltip: Some(TRANSPORT_LIVE_TOOLTIP),
+        };
+        assert_eq!(
+            TRANSPORT_LIVE_TOOLTIP,
+            "Switch to Program (Tab) to step through the timeline"
+        );
+        let buttons = |state: &State| {
+            let t = transport(state, 0, false, 1.0);
+            let play = t.button("play.toggle", state);
+            let steps: Vec<TransportButton> = STEPS.iter().map(|id| t.button(id, state)).collect();
+            (play, steps)
+        };
+
+        let live = testkit::design_state();
+        assert_eq!(buttons(&live), (on, vec![live_step; 4]));
+        // Nothing to play, or a refusing gate: Play is off too, its
+        // tooltip still its own (the key says why when pressed).
+        let mut empty = live.clone();
+        empty.project.timeline.clips.clear();
+        assert_eq!(buttons(&empty), (off, vec![live_step; 4]));
+        let mut recording = live.clone();
+        recording.runtime.record = RecordPhase::Recording {
+            take: TakeId::numbered(10),
+            mode: RecordMode::Append,
+            elapsed_ns: 0,
+            waiters: vec![],
+        };
+        assert_eq!(buttons(&recording), (off, vec![live_step; 4]));
+
+        let mut program = live.clone();
+        program.ui.canvas_mode = CanvasMode::Program;
+        assert_eq!(buttons(&program), (on, vec![on; 4]));
+        // Playing: Play is Pause, still on.
+        program.runtime.playing = true;
+        assert_eq!(buttons(&program).0, on);
+        let mut empty = program.clone();
+        empty.runtime.playing = false;
+        empty.project.timeline.clips.clear();
+        assert_eq!(buttons(&empty), (off, vec![off; 4]));
+        recording.ui.canvas_mode = CanvasMode::Program;
+        assert_eq!(buttons(&recording).0, off);
     }
 
     struct Inventory {

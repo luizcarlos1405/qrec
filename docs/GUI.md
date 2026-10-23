@@ -181,7 +181,7 @@ requirement review's numbering; H-n are host and engine calls.
 
 | ID | Decision | WP |
 | --- | --- | --- |
-| D-01 | **PO** `Space`, `J` and `L` in Live mode switch the canvas to Program and play, as `R` in Program switches to Live and records (D-05). It replaced the Live refusal (issue #12, 2026-10-23): `keymap::action_for` returned `Unavailable("Switch to Program (Tab) to play the timeline")` for them, a toast that went nowhere. Now it runs `play.toggle`, `shuttle.reverse` and `shuttle.forward` in either mode, so S02's `[Space] Play` hint is enabled (the frame draws it disabled) and the palette row too; the key router's pre-step `SetCanvasMode{Program}` goes first, then the command, in one FIFO and with no toast (G§3.8). The gates keep their order and still win, and then nothing switches: an empty timeline says "The timeline is empty", a countdown, a recording, a finalizing take or no GUI host says why (`gate_reason`). `K`, `Tab`, the bin preview's own switch (D-17), CLI `qrec play` (A§5.10) and the Live picture are unchanged. | WP0a, WP0b |
+| D-01 | **PO** `Space`, `J` and `L` in Live mode switch the canvas to Program and play, as `R` in Program switches to Live and records (D-05). It replaced the Live refusal (issue #12, 2026-10-23): `keymap::action_for` returned `Unavailable("Switch to Program (Tab) to play the timeline")` for them, a toast that went nowhere. Now it runs `play.toggle`, `shuttle.reverse` and `shuttle.forward` in either mode, so S02's `[Space] Play` hint is enabled (the frame draws it disabled) and the palette row too; the key router's pre-step `SetCanvasMode{Program}` goes first, then the command, in one FIFO and with no toast (G§3.8). The gates keep their order and still win, and then nothing switches: an empty timeline says "The timeline is empty", a countdown, a recording, a finalizing take or no GUI host says why (`gate_reason`). The transport's Play does what `Space` does there, enabled while it runs and with its own tooltip ("Play" and its key); its step buttons stay disabled in Live, their tooltip now "Switch to Program (Tab) to step through the timeline" (`view::canvas::Transport::button`). `K`, `Tab`, the bin preview's own switch (D-17), CLI `qrec play` (A§5.10) and the Live picture are unchanged. | WP0a, WP0b, WP4 |
 | D-02 | The hint bar comes from a new pure `view::hints` (G§4.3), with `hint_enabled` for ids the GUI handles itself. `keymap::hints` and `HintContext` stay for `qrec keys` and the agent guide. | WP6 |
 | D-03 | Meters stay live in Program mode (S06 draws them). With no capture pipeline (Program, Idle) the GUI runs an audio-only `MeterMonitor` (G§3.9). The capture pipeline is unchanged (SPEC §5.2). | WP1, WP0b |
 | D-04 | **PO** Starting phase: the header shows `■ Stop [R]` (a stop is valid then); the canvas shows the C06 Saving pill reading "Starting take 10…"; no REC badge, timer or ghost until `Recording`. Never a fake "Recording…" (SPEC §5.3.2). | WP4, WP6 |
@@ -2818,7 +2818,10 @@ anchor's frame under the anchor; a move preview's command, applied with
     elapsed_ns }, Saving(take)}`;
   - `transport(&State, player_frame, playing, rate) -> { left:
     Timecode { now, total } | Live("Live · 1920×1080 · 30 fps"), enabled,
-    rate: Option<String> }`;
+    rate: Option<String> }`, and `Transport::button(id, &State) -> {
+    enabled, tooltip }` for each of its buttons: on while the row is and
+    the binding runs; in Live Play is on while `Space` would run (D-01),
+    the steps off with `TRANSPORT_LIVE_TOOLTIP`;
   - `badges(&State, take_preview, proxy) -> [Badge]`: LIVE, PROGRAM,
     `TAKE 4` (D-17), `PROXY` (H-9) 8 px left of the mode badge. The
     PROXY badge never shows yet: the player composites at canvas size
