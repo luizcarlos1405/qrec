@@ -27,7 +27,8 @@
 //!   GUI (`qrec` without a command) logs to its project's GUI log
 //!   (`UserDirs::gui_log`: appended, a header per run, rotated past 8 MiB;
 //!   `info`, `debug` with `-v`), warnings also on stderr (docs/GUI.md
-//!   G§3.2), then runs `qrec_gui::run`.
+//!   G§3.2), then runs `qrec_gui::run`. Both logs name the platform
+//!   `main` detected (`platform: session=wayland desktop=niri …`).
 
 use std::ffi::OsString;
 use std::io::IsTerminal;
@@ -52,6 +53,7 @@ use qrec_shell::host::{
 use qrec_shell::media::FfmpegRunner;
 use qrec_shell::msg::Request;
 use qrec_shell::paths::{self, Env, UserDirs};
+use qrec_shell::platform;
 use qrec_shell::session::{Notifier, Session, SessionConfig, SessionEnv};
 use qrec_shell::sources::{self, Discover, LiveDevices, SourceInventory};
 use qrec_shell::{ShellError, caps, ipc};
@@ -377,6 +379,7 @@ impl Backend for Shell {
 
     fn host(&mut self, project: &Path, args: &HostArgs) -> Result<u8, CoreError> {
         self.init_logging(Role::Host);
+        tracing::info!("platform: {}", platform::current());
         let mut opener = ShellOpener {
             notices: None,
             config: None,
@@ -402,6 +405,7 @@ impl Backend for Shell {
                 "the current folder"
             }
         );
+        tracing::info!("platform: {}", platform::current());
         let (verbose, _) = self.verbosity.unwrap_or((0, false));
         qrec_gui::run(qrec_gui::GuiArgs {
             project: project.to_path_buf(),
