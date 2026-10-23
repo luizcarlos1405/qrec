@@ -32,15 +32,39 @@ pub use media::{AudioSpec, MediaSpec, VideoSpec, detect_silences, ffprobe, fixtu
 pub use project::{fixture_project, write_project};
 pub use tool::{ToolOutput, run_tool};
 
+/// The developer's session variables a [`TestEnv::command`] never passes
+/// on: the displays and what picks or opens one (`GDK_BACKEND`, which
+/// `qrec` takes for a reachable display, and the X11 cookie), what names
+/// the session's kind and desktop, and the compositors' IPC sockets (with
+/// the inherited `NIRI_SOCKET`, `niri msg` lists the developer's real
+/// monitors). A test that needs a display sets its variables after
+/// `command()`, as the GUI harness does.
+pub const SESSION_VARS: [&str; 13] = [
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "WAYLAND_SOCKET",
+    "GDK_BACKEND",
+    "XAUTHORITY",
+    "XDG_SESSION_TYPE",
+    "XDG_CURRENT_DESKTOP",
+    "XDG_SESSION_DESKTOP",
+    "DESKTOP_SESSION",
+    "NIRI_SOCKET",
+    "SWAYSOCK",
+    "I3SOCK",
+    "HYPRLAND_INSTANCE_SIGNATURE",
+];
+
 /// An isolated environment for spawned processes.
 ///
 /// Every [`Command`] built by [`TestEnv::command`] gets `HOME`,
 /// `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR`
 /// and `QREC_RUNTIME_DIR` inside the env's temp dirs and
 /// `QREC_CAPTURE_BACKEND=fake`; other inherited `QREC_*` variables are
-/// removed, and so are `DISPLAY`, `WAYLAND_DISPLAY` and `WAYLAND_SOCKET`
-/// (a window never opens on the developer's display). The runtime dir lives
-/// under `/tmp` so socket paths stay under the 107-byte limit. On drop,
+/// removed, and so are the developer's session variables
+/// ([`SESSION_VARS`]): a window never opens on the developer's display, and
+/// nothing reads their desktop or asks their compositor. The runtime dir
+/// lives under `/tmp` so socket paths stay under the 107-byte limit. On drop,
 /// every process still running in the env is killed (see the `Drop` impl),
 /// then everything is deleted.
 pub struct TestEnv {
@@ -221,9 +245,10 @@ impl TestEnv {
                 command.env_remove(&key);
             }
         }
-        // Never the developer's display: a `qrec` without a command opens
-        // the window (the GUI tests give theirs a nested compositor).
-        for key in ["DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET"] {
+        // Never the developer's session: a `qrec` without a command opens
+        // the window (the GUI tests give theirs a nested compositor), and
+        // what names the desktop or its compositor is theirs.
+        for key in SESSION_VARS {
             command.env_remove(key);
         }
         command.envs(self.vars());
@@ -327,42 +352,85 @@ mod tests {
         assert!(env.runtime_dir().as_os_str().len() + 1 + 64 + ".sock".len() <= 107);
     }
 
-    /// What the env spawns never reaches the developer's display, whatever
-    /// the test process inherited: `qrec` without a command opens the
-    /// window. Checked in a child of this test binary given a display
-    /// (`tmp/dev` unsets the real one, so this process has none to pass
-    /// on); the values point nowhere, in case one ever got through.
+    /// What the env spawns never sees the developer's session, whatever the
+    /// test process inherited: `qrec` without a command opens the window
+    /// (and with `GDK_BACKEND` set takes the folder's lock before GTK even
+    /// connects), and `niri msg` answers with the real monitors. The names
+    /// are written out here too, so trimming [`SESSION_VARS`] fails this
+    /// test (the check scripts unset `GDK_BACKEND`, so
+    /// `qrec_without_a_command` wouldn't notice). Checked in a child of
+    /// this test binary given every one of them (`tmp/dev` unsets the
+    /// displays, so this process may have none to pass on); the values
+    /// point nowhere, in case one ever got through. A variable set after
+    /// `command()` still reaches the process: that's how a test gives one
+    /// its display.
     #[test]
-    fn commands_never_reach_the_developers_display() {
-        const CHILD: &str = "QREC_TESTKIT_DISPLAY_CHILD";
-        const NAME: &str = "testkit::tests::commands_never_reach_the_developers_display";
+    fn commands_never_see_the_developers_session() {
+        const CHILD: &str = "QREC_TESTKIT_SESSION_CHILD";
+        const NAME: &str = "testkit::tests::commands_never_see_the_developers_session";
+        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+        const NEVER_PASSED_ON: [&str; 13] = [
+            "DESKTOP_SESSION",
+            "DISPLAY",
+            "GDK_BACKEND",
+            "HYPRLAND_INSTANCE_SIGNATURE",
+            "I3SOCK",
+            "NIRI_SOCKET",
+            "SWAYSOCK",
+            "WAYLAND_DISPLAY",
+            "WAYLAND_SOCKET",
+            "XAUTHORITY",
+            "XDG_CURRENT_DESKTOP",
+            "XDG_SESSION_DESKTOP",
+            "XDG_SESSION_TYPE",
+        ];
+        let dropped: Vec<&str> = NEVER_PASSED_ON
+            .into_iter()
+            .filter(|key| !SESSION_VARS.contains(key))
+            .collect();
+        assert!(dropped.is_empty(), "SESSION_VARS lost {dropped:?}");
         if std::env::var_os(CHILD).is_some() {
             let env = TestEnv::new();
-            let output = env
-                .command(Path::new("sh"))
-                .args([
-                    "-c",
-                    "printf '%s|%s|%s' \"${DISPLAY-unset}\" \"${WAYLAND_DISPLAY-unset}\" \"${WAYLAND_SOCKET-unset}\"",
-                ])
-                .output()
-                .expect("run sh");
-            assert!(output.status.success());
-            assert_eq!(String::from_utf8_lossy(&output.stdout), "unset|unset|unset");
+            let out = run_tool(env.command(Path::new("env")).arg("-0"), TIMEOUT);
+            assert!(out.status.success(), "{}", out.stderr);
+            let seen: Vec<&str> = out
+                .stdout
+                .split(|&b| b == 0)
+                .filter_map(|var| std::str::from_utf8(var).ok()?.split_once('='))
+                .map(|(key, _)| key)
+                .collect();
+            let leaked: Vec<&str> = SESSION_VARS
+                .into_iter()
+                .filter(|key| seen.contains(key))
+                .collect();
+            assert!(leaked.is_empty(), "passed on: {leaked:?}");
+            let out = run_tool(
+                env.command(Path::new("sh"))
+                    .args(["-c", "printf %s \"$GDK_BACKEND\""])
+                    .env("GDK_BACKEND", "wayland"),
+                TIMEOUT,
+            );
+            assert_eq!(String::from_utf8_lossy(&out.stdout), "wayland");
             return;
         }
-        let out = Command::new(std::env::current_exe().unwrap())
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child
             .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
-            .env(CHILD, "1")
-            .env("DISPLAY", "qrec-test-nowhere.invalid:99")
-            .env("WAYLAND_DISPLAY", "/nonexistent/qrec-test-wayland-0")
-            .env("WAYLAND_SOCKET", "-1")
-            .output()
-            .unwrap();
+            .env(CHILD, "1");
+        for key in SESSION_VARS {
+            let nowhere = match key {
+                "DISPLAY" => "qrec-test-nowhere.invalid:99".to_owned(),
+                "WAYLAND_SOCKET" => "-1".to_owned(),
+                _ => format!("/nonexistent/qrec-test-{}", key.to_lowercase()),
+            };
+            child.env(key, nowhere);
+        }
+        let out = run_tool(&mut child, TIMEOUT);
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             out.status.success() && stdout.contains("1 passed"),
             "{stdout}\n{}",
-            String::from_utf8_lossy(&out.stderr)
+            out.stderr
         );
     }
 

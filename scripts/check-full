@@ -33,7 +33,7 @@ if [ -z "${QREC_FONT_DIR:-}" ] || ! command -v sway >/dev/null 2>&1; then
   [ -x tmp/dev ] && exec tmp/dev "$self" "$@"
   exec nix develop "git+file://$repo" --command "$self" "$@"
 fi
-unset DISPLAY WAYLAND_DISPLAY WAYLAND_SOCKET QREC_TEST_WLR QREC_TEST_SCALE
+unset DISPLAY WAYLAND_DISPLAY WAYLAND_SOCKET GDK_BACKEND XAUTHORITY QREC_TEST_WLR QREC_TEST_SCALE
 threads=${QREC_NESTED_THREADS:-6}
 out="$repo/tmp/check-full/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$out"
