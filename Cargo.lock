@@ -1960,6 +1960,7 @@ dependencies = [
  "insta",
  "libadwaita",
  "pango",
+ "proptest",
  "qrec-core",
  "qrec-shell",
  "serde_json",

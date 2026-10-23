@@ -75,11 +75,26 @@ pub struct GuiArgs {
 /// Startup step 1 runs here, before GTK (G§3.3): the signal handlers, the
 /// folder rule, `config.toml` and `keys.toml`; then steps 3 and 4 start (the
 /// lock and the socket come before the window), and the libadwaita
-/// application runs on this thread; its `activate` builds the window. `Err`
-/// only when no window can open at all (no Wayland display: GDK doesn't
-/// fall back to X11).
+/// application runs on this thread; its `activate` builds the window. The
+/// window opens on Wayland when something listens on its socket, else on
+/// X11 when `DISPLAY` names a display, and on nothing else
+/// ([`app::display_target`]: GDK uses exactly that backend). `Err` only
+/// when no window can open at all: with neither display, before the folder
+/// is touched; or when GTK can't connect to the display chosen (on Wayland
+/// the lock and the socket were already taken by then; on X11 they wait
+/// for GTK).
 pub fn run(args: GuiArgs) -> Result<u8, qrec_core::CoreError> {
     app::run(args)
+}
+
+/// Works out where [`run`]'s window opens and takes an inherited
+/// `GDK_BACKEND` that names no backend whose display is here out of the
+/// environment ([`app::prepare_display`]). Changing the environment is only
+/// sound while the process has a single thread: when `qrec` opens the
+/// window, `main` calls it while it still has one, after the GPU
+/// environment.
+pub fn prepare_display() {
+    app::prepare_display();
 }
 
 /// What every region constructor gets (G§3.6): the shared handles of the
