@@ -15,7 +15,9 @@
 //! talks to it through [`Xvfb::connect`], whose waits end
 //! [`CONNECTION_TIMEOUT`] after it opens, so a server that stops answering
 //! fails the test instead of hanging it (the testkit's own panics quote its
-//! log).
+//! log). [`Xvfb::delete_window`] closes a client's window the way a window
+//! manager does, which a bare server has none of (the GUI harness's X11
+//! session, docs/GUI.md G§8.4).
 
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -29,7 +31,7 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use x11rb::connection::{Connection, RequestConnection};
 use x11rb::protocol::randr::{self, ConnectionExt as _};
-use x11rb::protocol::xproto::ConnectionExt as _;
+use x11rb::protocol::xproto::{ClientMessageEvent, ConnectionExt as _, EventMask};
 use x11rb::reexports::x11rb_protocol::parse_display::ConnectAddress;
 use x11rb::rust_connection::{DefaultStream, RustConnection};
 
@@ -118,6 +120,11 @@ impl Xvfb {
 
     pub fn number(&self) -> u32 {
         self.number
+    }
+
+    /// The server's process id (its process group's).
+    pub fn pid(&self) -> u32 {
+        self.child.id()
     }
 
     /// The `-auth` file, for `XAUTHORITY`.
@@ -281,6 +288,37 @@ impl Xvfb {
             )
         });
     }
+
+    /// Asks the client that owns `window` to close it, as a window
+    /// manager's close button does: a `WM_PROTOCOLS` client message with
+    /// `WM_DELETE_WINDOW` (ICCCM 4.2.8.1), sent to that client only, which
+    /// GTK takes for its close request. Returns once the server has it.
+    /// (`xdotool windowquit` asks the window manager, which a bare server
+    /// lacks, and `windowclose` destroys the window under its client.)
+    pub fn delete_window(&self, window: u32) {
+        let (conn, _) = self.connect();
+        let done = || -> Result<(), Box<dyn std::error::Error>> {
+            let protocols = conn.intern_atom(false, b"WM_PROTOCOLS")?.reply()?.atom;
+            let delete = conn.intern_atom(false, b"WM_DELETE_WINDOW")?.reply()?.atom;
+            let message = ClientMessageEvent::new(
+                32,
+                window,
+                protocols,
+                [delete, x11rb::CURRENT_TIME, 0, 0, 0],
+            );
+            // No event mask: the server sends it to the window's own client.
+            conn.send_event(false, window, EventMask::NO_EVENT, message)?
+                .check()?;
+            Ok(())
+        };
+        done().unwrap_or_else(|e| {
+            panic!(
+                "ask window {window:#x} on {} to close: {e}{}",
+                self.display(),
+                self.log_tail()
+            )
+        });
+    }
 }
 
 impl Drop for Xvfb {
@@ -341,7 +379,7 @@ fn taken(number: u32) -> bool {
 
 /// The display number of a `DISPLAY` value (`:1`, `:1.0`, `host:10.0`,
 /// `unix:2`); `None` if it has none.
-fn display_number(display: &str) -> Option<u32> {
+pub fn display_number(display: &str) -> Option<u32> {
     let (_, rest) = display.rsplit_once(':')?;
     rest.split('.').next()?.parse().ok()
 }
@@ -524,5 +562,58 @@ mod tests {
         // Reaped, and it cleaned up after itself (SIGTERM, not SIGKILL).
         assert!(!Path::new(&format!("/proc/{pid}")).exists());
         assert!(!taken(number), "its lock or socket is left");
+    }
+
+    /// `delete_window` reaches the window's own client the way a window
+    /// manager's close does: `WM_PROTOCOLS` with `WM_DELETE_WINDOW`.
+    #[test]
+    fn delete_window_asks_the_windows_client_to_close_it() {
+        use x11rb::protocol::Event;
+        use x11rb::protocol::xproto::{CreateWindowAux, WindowClass};
+
+        let xvfb = Xvfb::start(320, 240);
+        assert_eq!(xvfb.pid(), xvfb.child.id());
+        let (conn, screen) = xvfb.connect();
+        let root = conn.setup().roots[screen].root;
+        let window = conn.generate_id().expect("a window id");
+        conn.create_window(
+            x11rb::COPY_DEPTH_FROM_PARENT,
+            window,
+            root,
+            0,
+            0,
+            100,
+            100,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            x11rb::COPY_FROM_PARENT,
+            &CreateWindowAux::new(),
+        )
+        .expect("send CreateWindow")
+        .check()
+        .expect("create a window");
+        let atom = |name: &[u8]| {
+            conn.intern_atom(false, name)
+                .expect("send InternAtom")
+                .reply()
+                .expect("an atom")
+                .atom
+        };
+        let (protocols, delete) = (atom(b"WM_PROTOCOLS"), atom(b"WM_DELETE_WINDOW"));
+        xvfb.delete_window(window);
+        // The connection's deadline bounds the wait.
+        match conn
+            .wait_for_event()
+            .expect("the close within the deadline")
+        {
+            Event::ClientMessage(message) => {
+                assert_eq!(
+                    (message.window, message.type_, message.format),
+                    (window, protocols, 32)
+                );
+                assert_eq!(message.data.as_data32()[0], delete);
+            }
+            other => panic!("not the close: {other:?}"),
+        }
     }
 }
