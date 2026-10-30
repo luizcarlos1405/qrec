@@ -15,6 +15,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use qrec_core::error::NOT_MY_SWAMP;
+use qrec_core::keymap::{NIRI_SNIPPET, global_snippet};
+use qrec_core::platform::Desktop;
 use qrec_shell::testkit::{MediaSpec, TestEnv, ffprobe, fixture_project, run_tool};
 use serde_json::{Value, json};
 
@@ -1397,6 +1399,32 @@ fn schema_keys_and_agent_guide() {
     );
     let json = qrec(&env, &dir, &["agent-guide", "--json"]);
     assert!(json.only_reply()["data"].as_str().unwrap().contains("qrec"));
+    // Its global shortcuts are the desktop's: none named here (the env
+    // drops the session's variables), so the generic list; niri's KDL on
+    // niri, GNOME's settings on GNOME.
+    let generic = global_snippet(&Desktop::Unknown);
+    assert!(guide.stdout.contains(&generic.text), "{}", guide.stdout);
+    assert!(!guide.stdout.contains(NIRI_SNIPPET), "{}", guide.stdout);
+    for (name, desktop) in [("niri", Desktop::Niri), ("GNOME", Desktop::Gnome)] {
+        let guide = qrec_with(
+            &env,
+            &dir,
+            &["agent-guide"],
+            &[("XDG_CURRENT_DESKTOP", OsStr::new(name))],
+        );
+        guide.ok();
+        let snippet = global_snippet(&desktop);
+        assert!(
+            guide.stdout.contains(&snippet.text),
+            "{name}: {}",
+            guide.stdout
+        );
+        assert_eq!(
+            guide.stdout.contains(NIRI_SNIPPET),
+            desktop == Desktop::Niri,
+            "{name}"
+        );
+    }
 }
 
 #[test]

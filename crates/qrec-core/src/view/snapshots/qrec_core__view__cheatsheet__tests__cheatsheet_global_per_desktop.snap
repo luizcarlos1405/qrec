@@ -1,0 +1,58 @@
+---
+source: crates/qrec-core/src/view/cheatsheet.rs
+expression: out
+---
+=== niri
+## Global shortcuts
+Record toggle                            [Mod][Shift][R]
+Record over                              [Mod][Shift][O]
+Discard last take                        [Mod][Shift][D]
+Bind these in niri to record while another app has focus. <Copy snippet> Paste into ~/.config/niri/config.kdl
+=== sway
+## Global shortcuts
+Record toggle                            [Mod][Shift][R]
+Record over                              [Mod][Shift][O]
+Discard last take                        [Mod][Shift][D]
+Bind these in sway to record while another app has focus. <Copy snippet> Paste into ~/.config/sway/config
+=== i3
+## Global shortcuts
+Record toggle                            [Mod][Shift][R]
+Record over                              [Mod][Shift][O]
+Discard last take                        [Mod][Shift][D]
+Bind these in i3 to record while another app has focus. <Copy snippet> Paste into ~/.config/i3/config
+=== hyprland
+## Global shortcuts
+Record toggle                            [Super][Shift][R]
+Record over                              [Super][Shift][O]
+Discard last take                        [Super][Shift][D]
+Bind these in Hyprland to record while another app has focus. <Copy snippet> Paste into ~/.config/hypr/hyprland.conf
+=== river
+## Global shortcuts
+Record toggle                            [Super][Shift][R]
+Record over                              [Super][Shift][O]
+Discard last take                        [Super][Shift][D]
+Bind these in river to record while another app has focus. <Copy snippet> Paste into ~/.config/river/init
+=== gnome
+## Global shortcuts
+Record toggle                            [Super][Shift][R]
+Record over                              [Super][Shift][O]
+Discard last take                        [Super][Shift][D]
+Add these as custom shortcuts in GNOME Settings › Keyboard to record while another app has focus. <Copy snippet>
+=== kde
+## Global shortcuts
+Record toggle                            [Meta][Shift][R]
+Record over                              [Meta][Shift][O]
+Discard last take                        [Meta][Shift][D]
+Add these as commands in System Settings › Keyboard › Shortcuts to record while another app has focus. <Copy snippet>
+=== xfce
+## Global shortcuts
+Record toggle                            [Super][Shift][R]
+Record over                              [Super][Shift][O]
+Discard last take                        [Super][Shift][D]
+Bind these commands in your desktop's keyboard settings to record while another app has focus. <Copy snippet>
+=== unknown
+## Global shortcuts
+Record toggle                            [Super][Shift][R]
+Record over                              [Super][Shift][O]
+Discard last take                        [Super][Shift][D]
+Bind these commands in your desktop's keyboard settings to record while another app has focus. <Copy snippet>

@@ -1221,7 +1221,8 @@ mod tests {
 
     #[test]
     fn the_missing_report_lists_failed_app_checks() {
-        use qrec_core::platform::{PlatformEnv, detect};
+        use qrec_core::keymap::global_snippet;
+        use qrec_core::platform::{Desktop, PlatformEnv, detect};
         use qrec_shell::doctor::{Check, Feature, FeatureOff};
         let check =
             |id: &str, needed_for: &[Feature], ok: bool, detail: &str, hint: Option<&str>| Check {
@@ -1264,6 +1265,7 @@ mod tests {
                 message: "Screen capture is off: no ScreenCast portal: no session bus".into(),
             }],
             platform: detect(&PlatformEnv::default()),
+            shortcuts: global_snippet(&Desktop::Unknown),
             niri_snippet: String::new(),
             va: None,
         };

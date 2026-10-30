@@ -12,11 +12,11 @@ Cancel countdown or recording            [Esc]
 ## Output
 Save frame as PNG                        [F]  (default P)
 Export…                                  [Ctrl][E]
-## Global (niri)
+## Global shortcuts
 Record toggle                            [Mod][Shift][R]
 Record over                              [Mod][Shift][O]
 Discard last take                        [Mod][Shift][D]
-Bind these in niri to record while another app has focus. <Copy niri snippet> Paste into ~/.config/niri/config.kdl
+Bind these in niri to record while another app has focus. <Copy snippet> Paste into ~/.config/niri/config.kdl
 ## Window
 Focus next / previous region             [F6] / [Shift][F6]
 Quit                                     [Ctrl][Q]

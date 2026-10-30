@@ -319,13 +319,23 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
       }
     ],
     "featuresOff": [],
-    "niriSnippet": "binds {\n    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }\n    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }\n    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }\n}\n",
+    "niriSnippet": "binds {\n    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }\n    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }\n    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }\n}",
     "platform": {
       "desktop": "niri",
       "distro": "nixos",
       "nixShell": false,
       "sandbox": "none",
       "session": "wayland"
+    },
+    "shortcuts": {
+      "button": "Copy snippet",
+      "desktop": "niri",
+      "file": "~/.config/niri/config.kdl",
+      "heading": "Global shortcuts for niri (paste into ~/.config/niri/config.kdl):",
+      "language": "kdl",
+      "modifier": "Mod",
+      "note": "Bind these in niri to record while another app has focus.",
+      "text": "binds {\n    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }\n    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }\n    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }\n}"
     },
     "va": {
       "device": "/dev/dri/renderD129",

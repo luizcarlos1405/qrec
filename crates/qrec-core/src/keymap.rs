@@ -18,7 +18,9 @@
 //! edit `keys.toml`'s text, one line, the rest of the file as it was (the
 //! Keyboard page, through `qrec_shell::keys_file`). [`KEYLESS`] are the
 //! palette's actions no key runs ("Clear undo history", GUI D-19), which
-//! [`action_for`] knows by id.
+//! [`action_for`] knows by id. [`global_snippet`] binds the
+//! [`GLOBAL_SHORTCUTS`] (SPEC §10.2's keys that work while another app has
+//! focus) on a desktop.
 //!
 //! **Chord grammar** (`keys.toml`, `qrec keys --json`): modifiers `ctrl`,
 //! `alt`, `shift`, `super` joined with `+`, then a GDK keyval name:
@@ -47,11 +49,17 @@
 //! record.over = []                # unbound
 //! ```
 
+mod global;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+
+pub use global::{
+    COPY_SNIPPET, GLOBAL_SHORTCUTS, GlobalShortcut, GlobalSnippet, NIRI_SNIPPET, global_snippet,
+};
 
 use crate::error::CoreError;
 use crate::ids::{ClipId, Frame};
@@ -615,14 +623,6 @@ pub const KEYLESS: &[KeylessAction] = &[KeylessAction {
     cli: Some("qrec history clear --yes"),
     after: "history.redo",
 }];
-
-/// The niri key binds for recording while another app has focus (SPEC
-/// §10.2); `qrec doctor` and the agent guide print it.
-pub const NIRI_SNIPPET: &str = "binds {
-    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }
-    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }
-    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }
-}";
 
 fn default_bindings(errors: &mut Vec<String>) -> Vec<Binding> {
     DEFAULTS

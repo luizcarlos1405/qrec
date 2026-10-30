@@ -28,7 +28,8 @@
 //!   (`UserDirs::gui_log`: appended, a header per run, rotated past 8 MiB;
 //!   `info`, `debug` with `-v`), warnings also on stderr (docs/GUI.md
 //!   G§3.2), then runs `qrec_gui::run`. Both logs name the platform
-//!   `main` detected (`platform: session=wayland desktop=niri …`).
+//!   `main` detected (`platform: session=wayland desktop=niri …`), whose
+//!   desktop's global shortcuts the agent guide gives.
 
 use std::ffi::OsString;
 use std::io::IsTerminal;
@@ -53,7 +54,7 @@ use qrec_shell::host::{
 use qrec_shell::media::FfmpegRunner;
 use qrec_shell::msg::Request;
 use qrec_shell::paths::{self, Env, UserDirs};
-use qrec_shell::platform;
+use qrec_shell::platform::{self, Desktop};
 use qrec_shell::session::{Notifier, Session, SessionConfig, SessionEnv};
 use qrec_shell::sources::{self, Discover, LiveDevices, SourceInventory};
 use qrec_shell::{ShellError, caps, ipc};
@@ -375,6 +376,10 @@ impl Backend for Shell {
     fn sources(&mut self) -> Result<Value, CoreError> {
         self.init_logging(Role::Cli);
         Ok(SourceInventory::discover(Discover::ALL).to_json())
+    }
+
+    fn desktop(&mut self) -> Desktop {
+        platform::current().desktop.clone()
     }
 
     fn host(&mut self, project: &Path, args: &HostArgs) -> Result<u8, CoreError> {

@@ -656,8 +656,9 @@ pub(crate) fn sources(inv: &Value) -> Vec<String> {
 /// `qrec doctor` from the `DoctorReport` JSON: the lines and whether an
 /// app check (`required`) failed (exit 5). A failed check is `MISSING`
 /// when the app needs it, `off` when only features do (`neededFor`) and
-/// optional otherwise; a line per feature that is off (`featuresOff`)
-/// comes before the verdict.
+/// optional otherwise; the global shortcuts for the desktop (`shortcuts`:
+/// its heading, then its text) and a line per feature that is off
+/// (`featuresOff`) come before the verdict.
 pub(crate) fn doctor(report: &Value, verbose: u8) -> (Vec<String>, bool) {
     let checks = report
         .get("checks")
@@ -713,12 +714,13 @@ pub(crate) fn doctor(report: &Value, verbose: u8) -> (Vec<String>, bool) {
             None => {}
         }
     }
-    if let Some(snippet) = report.get("niriSnippet").and_then(Value::as_str) {
+    let shortcuts = report.get("shortcuts");
+    let field = |key: &str| shortcuts.and_then(|s| s.get(key)).and_then(Value::as_str);
+    if let (Some(heading), Some(text)) = (field("heading"), field("text")) {
         lines.push(String::new());
-        lines.push(
-            "Record from any app with these niri key binds (~/.config/niri/config.kdl):".to_owned(),
-        );
-        lines.extend(snippet.trim_end().lines().map(str::to_owned));
+        lines.push(heading.to_owned());
+        lines.push(String::new());
+        lines.extend(text.trim_end().lines().map(str::to_owned));
     }
     lines.push(String::new());
     let off: Vec<String> = report
@@ -1166,7 +1168,9 @@ mod tests {
                 {"id": "wl-copy", "required": false, "neededFor": [], "ok": false, "detail": "not found", "hint": "install wl-clipboard"}
             ],
             "featuresOff": [],
-            "niriSnippet": "binds {\n}\n",
+            "shortcuts": {"heading": "Global shortcuts for sway (paste into ~/.config/sway/config):",
+                          "text": "bindsym $mod+Shift+r exec qrec record toggle\n"},
+            "niriSnippet": "binds {\n}",
             "va": null
         });
         let (lines, failed) = doctor(&report, 0);
@@ -1177,8 +1181,19 @@ mod tests {
             lines.contains(&"  wl-copy: install wl-clipboard".to_owned()),
             "{lines:?}"
         );
-        assert!(lines.contains(&"binds {".to_owned()), "{lines:?}");
-        assert_eq!(lines.last().unwrap(), "Everything Qrec needs is here.");
+        // The desktop's shortcuts, not niri's.
+        assert_eq!(
+            &lines[lines.len() - 6..],
+            [
+                "",
+                "Global shortcuts for sway (paste into ~/.config/sway/config):",
+                "",
+                "bindsym $mod+Shift+r exec qrec record toggle",
+                "",
+                "Everything Qrec needs is here."
+            ]
+        );
+        assert!(!lines.iter().any(|l| l.contains("binds {")), "{lines:?}");
         let missing = json!({"checks": [{"id": "ffmpeg", "required": true, "neededFor": ["app"], "ok": false, "detail": "not found"}]});
         let (lines, failed) = doctor(&missing, 0);
         assert!(failed);

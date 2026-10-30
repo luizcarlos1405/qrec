@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use pretty_assertions::assert_eq;
 use qrec_cli::*;
 use qrec_core::error::NOT_MY_SWAMP;
+use qrec_core::keymap::{NIRI_SNIPPET, global_snippet};
+use qrec_core::platform::Desktop;
 use qrec_core::protocol::{
     HelloInfo, Progress, ProgressPhase, Toast, ToastLevel, UiAction, WireBody,
 };
@@ -75,6 +77,8 @@ struct Fake {
     /// What the window's process exits with.
     gui_exit: u8,
     logging: Option<(u8, bool)>,
+    /// Where Qrec runs.
+    desktop: Desktop,
 }
 
 impl Fake {
@@ -91,6 +95,7 @@ impl Fake {
             guis: vec![],
             gui_exit: 0,
             logging: None,
+            desktop: Desktop::Unknown,
         }
     }
 
@@ -165,6 +170,10 @@ impl Backend for Fake {
 
     fn sources(&mut self) -> Result<Value, CoreError> {
         self.sources.clone()
+    }
+
+    fn desktop(&mut self) -> Desktop {
+        self.desktop.clone()
     }
 
     fn host(&mut self, project: &Path, args: &HostArgs) -> Result<u8, CoreError> {
@@ -1454,21 +1463,27 @@ fn a_full_stdout_fails_the_run() {
 fn doctor_reports_and_exits_5_when_required_pieces_are_missing() {
     let tmp = Tmp::new();
     let mut fake = Fake::new(&tmp.dir("cfg"));
+    // On GNOME: its settings' steps, with the commands, and not niri's binds.
+    let gnome = global_snippet(&Desktop::Gnome);
     fake.doctor = Ok(json!({
         "checks": [{"id": "ffmpeg", "required": true, "neededFor": ["app"], "ok": true,
                     "detail": "8.1.2", "hint": null}],
         "featuresOff": [],
-        "niriSnippet": "binds {\n    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }\n}",
+        "shortcuts": gnome,
+        "niriSnippet": NIRI_SNIPPET,
         "va": null
     }));
     let ok = run(&mut fake, &tmp.0, "qrec doctor");
     assert_eq!(ok.code, 0);
     assert!(
-        ok.out
-            .contains("Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }"),
+        ok.out.contains(&format!(
+            "\nGlobal shortcuts for GNOME:\n\n{}\n\nEverything Qrec needs is here.\n",
+            gnome.text
+        )),
         "{}",
         ok.out
     );
+    assert!(!ok.out.contains("binds {"), "{}", ok.out);
     assert_eq!(
         run(&mut fake, &tmp.0, "qrec doctor --json").json()["ok"],
         true
@@ -1516,6 +1531,46 @@ fn doctor_reports_and_exits_5_when_required_pieces_are_missing() {
     assert_eq!(
         json.json()["error"]["details"]["checks"][0]["id"],
         "gst.h264dec"
+    );
+}
+
+/// The agent guide gives the global shortcuts of the desktop the backend
+/// detected: niri's KDL on niri only.
+#[test]
+fn the_agent_guide_follows_the_desktop() {
+    let tmp = Tmp::new();
+    let mut fake = Fake::new(&tmp.dir("cfg"));
+    fake.desktop = Desktop::Niri;
+    let niri = run(&mut fake, &tmp.0, "qrec agent-guide");
+    assert_eq!(niri.code, 0, "{}", niri.err);
+    assert!(niri.out.contains(NIRI_SNIPPET), "{}", niri.out);
+    fake.desktop = Desktop::Kde;
+    let kde = run(&mut fake, &tmp.0, "qrec agent-guide");
+    assert!(!kde.out.contains(NIRI_SNIPPET), "{}", kde.out);
+    assert!(
+        kde.out.contains(&global_snippet(&Desktop::Kde).text),
+        "{}",
+        kde.out
+    );
+    // A build without the shell knows no desktop: the generic list.
+    let mut standalone = Standalone::default();
+    let env = RunEnv {
+        cwd: Some(tmp.0.clone()),
+        err_tty: false,
+    };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = run_with_backend(
+        ["qrec", "agent-guide"].map(OsString::from),
+        &mut standalone,
+        &env,
+        &mut out,
+        &mut err,
+    );
+    assert_eq!(code, 0);
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains(&global_snippet(&Desktop::Unknown).text),
+        "{out}"
     );
 }
 

@@ -648,6 +648,7 @@ impl PageView for MissingDepsView {
 
 #[cfg(test)]
 mod tests {
+    use qrec_core::keymap::global_snippet;
     use qrec_core::platform::{Need, PlatformEnv, detect, install_hint};
     use qrec_core::view::blocking::BlockingAction;
     use qrec_shell::doctor::{Check, Feature};
@@ -683,6 +684,7 @@ mod tests {
                 },
             ],
             features_off: vec![],
+            shortcuts: global_snippet(&debian.desktop),
             platform: debian,
             niri_snippet: String::new(),
             va: None,

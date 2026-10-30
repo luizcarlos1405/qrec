@@ -324,13 +324,23 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
         "message": "Screen capture is off: no ScreenCast portal: busctl exited with status 1: Failed to get property version on interface org.freedesktop.portal.ScreenCast: No such interface"
       }
     ],
-    "niriSnippet": "binds {\n    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }\n    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }\n    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }\n}\n",
+    "niriSnippet": "binds {\n    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }\n    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }\n    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }\n}",
     "platform": {
       "desktop": "sway",
       "distro": "arch",
       "nixShell": false,
       "sandbox": "none",
       "session": "wayland"
+    },
+    "shortcuts": {
+      "button": "Copy snippet",
+      "desktop": "sway",
+      "file": "~/.config/sway/config",
+      "heading": "Global shortcuts for sway (paste into ~/.config/sway/config):",
+      "language": "swayconfig",
+      "modifier": "Mod",
+      "note": "Bind these in sway to record while another app has focus.",
+      "text": "bindsym $mod+Shift+r exec qrec record toggle\nbindsym $mod+Shift+o exec qrec record start --over-selection\nbindsym $mod+Shift+d exec qrec take discard-last"
     },
     "va": {
       "device": "/dev/dri/renderD128",
@@ -393,13 +403,11 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "",
     "VA-API render nodes: /dev/dri/renderD128 (AMD)",
     "",
-    "Global shortcuts for niri (paste into ~/.config/niri/config.kdl):",
+    "Global shortcuts for sway (paste into ~/.config/sway/config):",
     "",
-    "binds {",
-    "    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }",
-    "    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }",
-    "    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }",
-    "}",
+    "bindsym $mod+Shift+r exec qrec record toggle",
+    "bindsym $mod+Shift+o exec qrec record start --over-selection",
+    "bindsym $mod+Shift+d exec qrec take discard-last",
     "",
     "Screen capture is off: no ScreenCast portal: busctl exited with status 1: Failed to get property version on interface org.freedesktop.portal.ScreenCast: No such interface",
     "Everything else Qrec needs is here."

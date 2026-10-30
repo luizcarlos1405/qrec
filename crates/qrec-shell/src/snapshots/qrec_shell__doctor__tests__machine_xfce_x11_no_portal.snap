@@ -329,13 +329,23 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
         "message": "Screen capture is off: no ScreenCast portal: busctl exited with status 1: Call failed: The name org.freedesktop.portal.Desktop was not provided by any .service files"
       }
     ],
-    "niriSnippet": "binds {\n    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }\n    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }\n    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }\n}\n",
+    "niriSnippet": "binds {\n    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }\n    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }\n    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }\n}",
     "platform": {
       "desktop": "xfce",
       "distro": "debian",
       "nixShell": false,
       "sandbox": "none",
       "session": "x11"
+    },
+    "shortcuts": {
+      "button": "Copy snippet",
+      "desktop": null,
+      "file": null,
+      "heading": "Global shortcuts:",
+      "language": "text",
+      "modifier": "Super",
+      "note": "Bind these commands in your desktop's keyboard settings to record while another app has focus.",
+      "text": "Bind each command to its shortcut in your desktop's keyboard settings.\n\nName               Command                             Shortcut\nRecord toggle      qrec record toggle                  Super+Shift+R\nRecord over        qrec record start --over-selection  Super+Shift+O\nDiscard last take  qrec take discard-last              Super+Shift+D"
     },
     "va": {
       "device": "/dev/dri/renderD128",
@@ -399,13 +409,14 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "",
     "VA-API render nodes: /dev/dri/renderD128 (Intel)",
     "",
-    "Global shortcuts for niri (paste into ~/.config/niri/config.kdl):",
+    "Global shortcuts:",
     "",
-    "binds {",
-    "    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }",
-    "    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }",
-    "    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }",
-    "}",
+    "Bind each command to its shortcut in your desktop's keyboard settings.",
+    "",
+    "Name               Command                             Shortcut",
+    "Record toggle      qrec record toggle                  Super+Shift+R",
+    "Record over        qrec record start --over-selection  Super+Shift+O",
+    "Discard last take  qrec take discard-last              Super+Shift+D",
     "",
     "Screen capture is off: no ScreenCast portal: busctl exited with status 1: Call failed: The name org.freedesktop.portal.Desktop was not provided by any .service files",
     "Everything else Qrec needs is here."

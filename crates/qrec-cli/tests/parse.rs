@@ -1,6 +1,6 @@
 //! The command tree accepts every command line of SPEC §14, the CLI column
-//! of SPEC §10.2 (and its niri snippet) and the A§4.4/A§10 extensions, and
-//! rejects malformed lines as usage errors (exit 2).
+//! of SPEC §10.2 (and its global shortcuts' commands) and the A§4.4/A§10
+//! extensions, and rejects malformed lines as usage errors (exit 2).
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -277,27 +277,28 @@ fn spec_10_2_cli_column_parses() {
 }
 
 #[test]
-fn niri_snippet_parses() {
-    // binds { Mod+Shift+R { spawn "qrec" "record" "toggle"; } … }
+fn global_shortcuts_parse() {
+    // What every desktop's snippet binds (niri's: `spawn "qrec" "record"
+    // "toggle"`, sway's: `exec qrec record toggle`, …).
     let bind = |argv: &[&str]| {
         parse_args(argv.iter().map(OsString::from))
-            .expect("niri bind parses")
+            .expect("a global shortcut's command parses")
             .command
     };
+    let commands: Vec<Option<Cmd>> = qrec_core::keymap::GLOBAL_SHORTCUTS
+        .iter()
+        .map(|shortcut| bind(shortcut.argv))
+        .collect();
     assert_eq!(
-        bind(&["qrec", "record", "toggle"]),
-        Some(Cmd::Record(RecordCmd::Toggle(WaitArgs { wait: false })))
-    );
-    assert_eq!(
-        bind(&["qrec", "record", "start", "--over-selection"]),
-        Some(Cmd::Record(RecordCmd::Start(RecordStartArgs {
-            over_selection: true,
-            ..Default::default()
-        })))
-    );
-    assert_eq!(
-        bind(&["qrec", "take", "discard-last"]),
-        Some(Cmd::Take(TakeCmd::DiscardLast))
+        commands,
+        [
+            Some(Cmd::Record(RecordCmd::Toggle(WaitArgs { wait: false }))),
+            Some(Cmd::Record(RecordCmd::Start(RecordStartArgs {
+                over_selection: true,
+                ..Default::default()
+            }))),
+            Some(Cmd::Take(TakeCmd::DiscardLast)),
+        ]
     );
 }
 

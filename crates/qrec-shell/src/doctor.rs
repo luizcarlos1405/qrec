@@ -20,8 +20,9 @@
 //! app registry and the VA-API report (render nodes, the effective device,
 //! `LIBVA_DRIVER_NAME`, the h264_vaapi export check as a 10 s child
 //! process; NVIDIA nodes are never probed). The report also says where
-//! Qrec runs (`platform::current`) and has the niri bind snippet (SPEC
-//! §10.2).
+//! Qrec runs (`platform::current`) and how to bind the global shortcuts
+//! there (SPEC §10.2, `keymap::global_snippet`: niri's KDL, sway's
+//! `bindsym`, GNOME's custom shortcuts, …).
 //!
 //! Only a failed app check is `missing_dependency` (JSON `required`, exit
 //! 5, and the GUI's "The swamp is missing something" page, which lists
@@ -43,6 +44,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use qrec_core::keymap::{GlobalSnippet, NIRI_SNIPPET, global_snippet};
 use qrec_core::media_argv::vaapi_check_argv;
 use qrec_core::platform::{Hint, Need, VaGpu, install_hint};
 use qrec_core::{CoreError, ErrorCode};
@@ -71,14 +73,6 @@ pub const GSTREAMER_MIN: (u32, u32) = (1, 24);
 /// The oldest `pactl` Qrec reads (`--format=json` came in PulseAudio 16).
 pub const PACTL_MIN: (u32, u32) = (16, 0);
 
-/// The niri snippet for global shortcuts (SPEC §10.2).
-pub const NIRI_SNIPPET: &str = r#"binds {
-    Mod+Shift+R { spawn "qrec" "record" "toggle"; }
-    Mod+Shift+O { spawn "qrec" "record" "start" "--over-selection"; }
-    Mod+Shift+D { spawn "qrec" "take" "discard-last"; }
-}
-"#;
-
 /// What `qrec doctor` found.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -89,6 +83,10 @@ pub struct DoctorReport {
     pub features_off: Vec<FeatureOff>,
     /// Where Qrec runs.
     pub platform: HostPlatform,
+    /// How to bind the global shortcuts on `platform`'s desktop.
+    pub shortcuts: GlobalSnippet,
+    /// SPEC §10.2's niri binds, whatever the desktop: `shortcuts` replaced
+    /// it, and it stays for one release.
     pub niri_snippet: String,
     pub va: Option<VaReport>,
 }
@@ -358,6 +356,7 @@ pub fn run_with(probe: &dyn Probe, opts: &DoctorOptions) -> DoctorReport {
     DoctorReport {
         features_off: features_off(&checks),
         checks,
+        shortcuts: global_snippet(&platform.desktop),
         platform,
         niri_snippet: NIRI_SNIPPET.to_owned(),
         va: Some(va),
@@ -1234,8 +1233,8 @@ impl DoctorReport {
 
     /// The human report: one line per check (`ok`, `MISSING` for an app
     /// check, `off` when features need it, else `optional`), a hint under
-    /// each failure, the VA-API summary, the niri snippet, then a line per
-    /// feature that is off and the verdict.
+    /// each failure, the VA-API summary, the global shortcuts for the
+    /// desktop, then a line per feature that is off and the verdict.
     pub fn to_text(&self) -> String {
         let mut out = String::from("Qrec doctor\n\n");
         let width = self.checks.iter().map(|c| c.id.len()).max().unwrap_or(0);
@@ -1273,8 +1272,8 @@ impl DoctorReport {
         }
         let _ = write!(
             out,
-            "\nGlobal shortcuts for niri (paste into ~/.config/niri/config.kdl):\n\n{}\n",
-            self.niri_snippet
+            "\n{}\n\n{}\n\n",
+            self.shortcuts.heading, self.shortcuts.text
         );
         for off in &self.features_off {
             let _ = writeln!(out, "{}", off.message);
@@ -1648,7 +1647,7 @@ mod gst_impl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::{PlatformEnv, detect};
+    use crate::platform::{Desktop, PlatformEnv, detect};
 
     /// A machine described by data.
     #[derive(Clone)]
@@ -1987,9 +1986,13 @@ mod tests {
             "/dev/dri/renderD129 (Intel, auto) · LIBVA_DRIVER_NAME=iHD · ffmpeg h264_vaapi works"
         );
         assert_eq!(report.niri_snippet, NIRI_SNIPPET);
+        assert_eq!(report.shortcuts, global_snippet(&Desktop::Niri));
         let text = report.to_text();
         assert!(
-            text.contains("Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }"),
+            text.contains(
+                "\nGlobal shortcuts for niri (paste into ~/.config/niri/config.kdl):\n\n\
+                 binds {\n    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }\n"
+            ),
             "{text}"
         );
         assert!(text.ends_with("Everything Qrec needs is here.\n"), "{text}");
@@ -1999,7 +2002,9 @@ mod tests {
         assert_eq!(json["checks"][0]["neededFor"], serde_json::json!(["app"]));
         assert_eq!(json["featuresOff"], serde_json::json!([]));
         assert_eq!(json["platform"]["desktop"], "niri");
-        assert!(json["niriSnippet"].as_str().unwrap().starts_with("binds {"));
+        assert_eq!(json["shortcuts"]["desktop"], "niri");
+        assert_eq!(json["shortcuts"]["text"], NIRI_SNIPPET);
+        assert_eq!(json["niriSnippet"], NIRI_SNIPPET);
         assert_eq!(json["va"]["expectedDriver"], "iHD");
         assert_eq!(json["va"]["gstFactory"], "vah264enc");
         let back: DoctorReport = serde_json::from_value(json).unwrap();
@@ -2790,6 +2795,80 @@ mod tests {
                 ("debian_without_gst_libav", 5, vec![]),
             ]
         );
+    }
+
+    /// The text's global shortcuts on each desktop, from the variables it
+    /// sets: lines for niri's, sway's, i3's, Hyprland's or river's config,
+    /// GNOME's or KDE Plasma's settings, else the generic list; the JSON's
+    /// `shortcuts` says which (null: the generic list), and `niriSnippet`
+    /// stays niri's everywhere.
+    #[test]
+    fn shortcuts_follow_the_desktop() {
+        let wayland = ("WAYLAND_DISPLAY", "wayland-1");
+        let x11 = ("DISPLAY", ":0");
+        // Each case: its variables and the desktop `shortcuts` is for.
+        let desktops = [
+            (
+                "niri",
+                vec![wayland, ("NIRI_SOCKET", "/run/user/1000/niri.sock")],
+                Some("niri"),
+            ),
+            (
+                "sway",
+                vec![wayland, ("SWAYSOCK", "/run/user/1000/sway-ipc.sock")],
+                Some("sway"),
+            ),
+            (
+                "i3",
+                vec![x11, ("I3SOCK", "/run/user/1000/i3/ipc-socket.1")],
+                Some("i3"),
+            ),
+            (
+                "Hyprland",
+                vec![wayland, ("HYPRLAND_INSTANCE_SIGNATURE", "v0.50_1")],
+                Some("hyprland"),
+            ),
+            (
+                "river",
+                vec![wayland, ("XDG_CURRENT_DESKTOP", "river")],
+                Some("river"),
+            ),
+            (
+                "Ubuntu's GNOME",
+                vec![wayland, ("XDG_CURRENT_DESKTOP", "ubuntu:GNOME")],
+                Some("gnome"),
+            ),
+            (
+                "KDE Plasma",
+                vec![wayland, ("XDG_CURRENT_DESKTOP", "KDE")],
+                Some("kde"),
+            ),
+            ("Xfce", vec![x11, ("XDG_CURRENT_DESKTOP", "XFCE")], None),
+            ("a tty", vec![], None),
+        ];
+        let mut out = String::new();
+        for (name, vars, desktop) in desktops {
+            let mut fake = Fake::healthy();
+            fake.platform = platform(&vars, "ID=arch\n");
+            let report = run_with(&fake, &opts());
+            let text = report.to_text();
+            let heading = format!("\n{}\n", report.shortcuts.heading);
+            let start = text
+                .find(&heading)
+                .unwrap_or_else(|| panic!("{name}: {text}"));
+            let end = text
+                .rfind("Everything Qrec needs is here.")
+                .unwrap_or_else(|| panic!("{name}: {text}"));
+            let _ = writeln!(out, "=== {name}\n{}\n", text[start + 1..end].trim_end());
+            let json = report.to_json();
+            assert_eq!(json["shortcuts"]["desktop"].as_str(), desktop, "{name}");
+            assert_eq!(json["niriSnippet"], NIRI_SNIPPET, "{name}");
+            assert_eq!(
+                serde_json::from_value::<DoctorReport>(json).unwrap(),
+                report
+            );
+        }
+        insta::assert_snapshot!("shortcuts_per_desktop", out);
     }
 
     /// The real machine minus GStreamer (whose plugin scan may touch every

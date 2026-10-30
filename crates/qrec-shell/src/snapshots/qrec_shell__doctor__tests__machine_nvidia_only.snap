@@ -328,13 +328,23 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
       }
     ],
     "featuresOff": [],
-    "niriSnippet": "binds {\n    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }\n    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }\n    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }\n}\n",
+    "niriSnippet": "binds {\n    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }\n    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }\n    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }\n}",
     "platform": {
       "desktop": "gnome",
       "distro": "ubuntu",
       "nixShell": false,
       "sandbox": "none",
       "session": "wayland"
+    },
+    "shortcuts": {
+      "button": "Copy snippet",
+      "desktop": "gnome",
+      "file": null,
+      "heading": "Global shortcuts for GNOME:",
+      "language": "text",
+      "modifier": "Super",
+      "note": "Add these as custom shortcuts in GNOME Settings › Keyboard to record while another app has focus.",
+      "text": "In GNOME Settings › Keyboard › View and Customize Shortcuts › Custom Shortcuts,\nfor each line choose Add Shortcut (or +), type its name and command, then set its shortcut.\n\nName               Command                             Shortcut\nRecord toggle      qrec record toggle                  Super+Shift+R\nRecord over        qrec record start --over-selection  Super+Shift+O\nDiscard last take  qrec take discard-last              Super+Shift+D"
     },
     "va": {
       "device": null,
@@ -397,13 +407,15 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "",
     "VA-API render nodes: /dev/dri/renderD128 (NVIDIA)",
     "",
-    "Global shortcuts for niri (paste into ~/.config/niri/config.kdl):",
+    "Global shortcuts for GNOME:",
     "",
-    "binds {",
-    "    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }",
-    "    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }",
-    "    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }",
-    "}",
+    "In GNOME Settings › Keyboard › View and Customize Shortcuts › Custom Shortcuts,",
+    "for each line choose Add Shortcut (or +), type its name and command, then set its shortcut.",
+    "",
+    "Name               Command                             Shortcut",
+    "Record toggle      qrec record toggle                  Super+Shift+R",
+    "Record over        qrec record start --over-selection  Super+Shift+O",
+    "Discard last take  qrec take discard-last              Super+Shift+D",
     "",
     "Everything Qrec needs is here."
   ]
