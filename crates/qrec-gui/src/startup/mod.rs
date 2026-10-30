@@ -1231,6 +1231,7 @@ mod tests {
                 ok,
                 detail: detail.into(),
                 hint: hint.map(Into::into),
+                fix: None,
             };
         let report = DoctorReport {
             checks: vec![

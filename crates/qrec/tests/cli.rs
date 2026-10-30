@@ -1481,6 +1481,19 @@ fn doctor_json_is_one_object_with_tiers() {
         (&portal["ok"], &portal["neededFor"]),
         (&json!(false), &json!([]))
     );
+    // Its hint is the fix for this machine, whole in `fix` (no display
+    // here: xdg-desktop-portal and the desktop's backend); a check that
+    // passed has none.
+    assert_eq!(portal["hint"], portal["fix"]["note"], "{portal}");
+    assert!(
+        portal["fix"]["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("ScreenCast backend")),
+        "{portal}"
+    );
+    for check in checks.iter().filter(|c| c["ok"] == true) {
+        assert!(check.get("fix").is_none(), "{check}");
+    }
 }
 
 /// No ScreenCast portal (here no session bus at all, as on many X11

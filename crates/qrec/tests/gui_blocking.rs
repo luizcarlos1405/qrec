@@ -358,10 +358,11 @@ fn private_registry(nested: &Nested) -> String {
 /// (MP4 and AV1 exports; the fake backend exports MP4 with libx264, never
 /// h264_vaapi) and the nested env's missing ScreenCast portal. A row each,
 /// BRIEF's copy for gtk4paintablesink's, the doctor's words for the
-/// demuxer's, the rest behind "✓ N other checks passed" (it opens: the
-/// passed checks); Check again focused, Copy report copies the doctor's
-/// report (what is off included), a row's Copy its command; the hint bar,
-/// regions and a11y; Ctrl+Q exits 5.
+/// demuxer's, each with the doctor's fix for the frame's machine, the dev
+/// shell (`nix develop`); the rest behind "✓ N other checks passed" (it
+/// opens: the passed checks); Check again focused, Copy report copies the
+/// doctor's report (what is off included), a row's Copy its command; the
+/// hint bar, regions and a11y; Ctrl+Q exits 5.
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s23_missing_dependency() {
@@ -376,6 +377,8 @@ fn s23_missing_dependency() {
                 .with_env("GST_PLUGIN_SYSTEM_PATH_1_0", &plugins_without_gtk4())
                 .with_env("GST_PLUGIN_PATH_1_0", "")
                 .with_env("GST_REGISTRY_1_0", &private_registry(&nested))
+                // The frame's machine: the flake's dev shell.
+                .with_env("IN_NIX_SHELL", "impure")
         },
     );
     let gui = nested.window(0);
@@ -395,6 +398,7 @@ fn s23_missing_dependency() {
             "The flake provides gst-plugins-rs.",
             "ffmpeg.demuxers",
             "ffmpeg can't read matroska (the takes' MKV files)",
+            "The flake provides ffmpeg-full.",
             "Check again",
             "Copy report",
             "Quit",

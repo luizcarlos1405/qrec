@@ -265,7 +265,12 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
       },
       {
         "detail": "no ScreenCast portal: busctl exited with status 1: Call failed: The name org.freedesktop.portal.Desktop was not provided by any .service files",
-        "hint": "install xdg-desktop-portal with a ScreenCast backend (on niri: xdg-desktop-portal-gnome) and make sure it runs in your session",
+        "fix": {
+          "command": null,
+          "note": "an X11 session needs no ScreenCast portal",
+          "packages": []
+        },
+        "hint": "an X11 session needs no ScreenCast portal",
         "id": "portal.screencast",
         "neededFor": [
           "screens"
@@ -295,7 +300,12 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
       },
       {
         "detail": "not found: saved frames can't be copied to the clipboard",
-        "hint": "install wl-clipboard",
+        "fix": {
+          "command": null,
+          "note": "install wl-copy (upstream wl-clipboard) with apt",
+          "packages": []
+        },
+        "hint": "install wl-copy (upstream wl-clipboard) with apt",
         "id": "wl-copy",
         "neededFor": [],
         "ok": false,
@@ -380,11 +390,11 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "  ok        ffmpeg.libopus         libopus (WebM audio)",
     "  ok        ffmpeg.libsvtav1       libsvtav1 (AV1 WebM exports)",
     "  off       portal.screencast      no ScreenCast portal: busctl exited with status 1: Call failed: The name org.freedesktop.portal.Desktop was not provided by any .service files",
-    "                                   → install xdg-desktop-portal with a ScreenCast backend (on niri: xdg-desktop-portal-gnome) and make sure it runs in your session",
+    "                                   → an X11 session needs no ScreenCast portal",
     "  ok        pactl                  pactl 17.0 (/nix/bin/pactl)",
     "  ok        sound.server           PulseAudio (on PipeWire 1.4.2)",
     "  optional  wl-copy                not found: saved frames can't be copied to the clipboard",
-    "                                   → install wl-clipboard",
+    "                                   → install wl-copy (upstream wl-clipboard) with apt",
     "  ok        vaapi                  /dev/dri/renderD128 (Intel, auto) · LIBVA_DRIVER_NAME=iHD · ffmpeg h264_vaapi works",
     "",
     "VA-API render nodes: /dev/dri/renderD128 (Intel)",

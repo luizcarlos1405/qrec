@@ -31,7 +31,7 @@ expression: page
       ],
       "description": "no software H.264 decoder: the editor can't play the takes",
       "command": null,
-      "note": "install gst-libav (avdec_h264)"
+      "note": "Install GStreamer's libav plugin, avdec_h264 (upstream gst-libav) with apt."
     },
     {
       "id": "ffmpeg.decoders",
@@ -44,7 +44,7 @@ expression: page
       ],
       "description": "ffmpeg can't decode h264 (the takes' video)",
       "command": null,
-      "note": "install a full ffmpeg build (NixOS: ffmpeg-full)"
+      "note": "Install a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1) with apt."
     }
   ],
   "passed": [

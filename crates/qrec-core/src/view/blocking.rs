@@ -11,7 +11,8 @@
 //!
 //! The drafted pages (WP8, G§0.2 approved them as drawn) give the same
 //! pages the frames' content: S23's rows from the doctor's failed app checks
-//! ([`missing_deps`], [`CheckView`]) and its GStreamer-stuck variant
+//! ([`missing_deps`], [`CheckView`]), each with the doctor's fix for this
+//! machine (`platform::install_hint`), and its GStreamer-stuck variant
 //! ([`gst_stuck`]), X1's modal with its well ([`cli_recording`]) and D-29's
 //! export wait in the same modal ([`export_wait`]), X2 with D-14's line
 //! ([`not_my_swamp`]) and the two undrawn pages of its shape, D-13's held
@@ -22,6 +23,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, NOT_MY_SWAMP};
+use crate::platform::Hint;
 use crate::view::format::{self, capitalized};
 
 /// Which page, with what it shows.
@@ -441,6 +443,9 @@ pub struct CheckView {
     pub ok: bool,
     pub detail: String,
     pub hint: Option<String>,
+    /// The doctor's fix for this machine (the doctor's `fix`): the row's
+    /// command and its note.
+    pub fix: Option<Hint>,
 }
 
 /// A failed check's state: a required one is missing (✕ `record-text`),
@@ -499,40 +504,59 @@ pub struct MissingDepsPage {
     pub buttons: Vec<PageButton>,
 }
 
-/// `check`'s row with BRIEF S23's copy for its id (the item, what it does,
-/// the command and its note); `None` for the other ids.
+/// `check`'s row with BRIEF S23's copy for its id (the item, what it
+/// does); `None` for the other ids. The fix is the doctor's for this
+/// machine, as for any row ([`fix_parts`]); libsvtav1's row has none, as
+/// drawn.
 fn known_row(check: &CheckView, status: CheckStatus) -> Option<CheckRow> {
     let mono = |s: &str| ItemPart::Mono(s.to_owned());
     let text = |s: &str| ItemPart::Text(s.to_owned());
-    let (item, description, command, note) = match check.id.as_str() {
+    let (item, description, fix) = match check.id.as_str() {
         "gst.gtk4paintablesink" => (
             vec![mono("gtk4paintablesink")],
             "GStreamer GTK 4 video sink (gst-plugins-rs). Qrec draws the preview with it.",
-            Some("nix develop"),
-            Some("The flake provides gst-plugins-rs."),
+            fix_parts(check),
         ),
         "portal.screencast" => (
             vec![text("ScreenCast portal backend")],
-            "Needed to capture screens on Wayland.",
-            Some("xdg-desktop-portal-gnome"),
-            Some("On niri, install it, then log out and back in."),
+            "Needed to capture screens (desktop portal).",
+            fix_parts(check),
         ),
         "ffmpeg.libsvtav1" => (
             vec![mono("libsvtav1"), text("in ffmpeg")],
             "AV1 export will be unavailable. Everything else works.",
-            None,
-            None,
+            (None, None),
         ),
         _ => return None,
     };
+    let (command, note) = fix;
     Some(CheckRow {
         id: check.id.clone(),
         status,
         item,
         description: description.to_owned(),
-        command: command.map(str::to_owned),
-        note: note.map(str::to_owned),
+        command,
+        note,
     })
+}
+
+/// A row's fix: the doctor's command for this machine (the mono box with
+/// Copy: `sudo apt install …`, `nix develop`) and its note under it; a
+/// check without a fix shows its hint as the note.
+fn fix_parts(check: &CheckView) -> (Option<String>, Option<String>) {
+    match &check.fix {
+        Some(fix) => (fix.command.clone(), fix.note.as_deref().map(caption)),
+        None => (None, check.hint.as_deref().map(caption)),
+    }
+}
+
+/// A hint's clause as a caption reads it: capitalized, with a full stop.
+fn caption(text: &str) -> String {
+    let mut out = capitalized(text.trim_end());
+    if !out.ends_with(['.', '!', '?']) {
+        out.push('.');
+    }
+    out
 }
 
 fn check_row(check: &CheckView) -> CheckRow {
@@ -541,14 +565,17 @@ fn check_row(check: &CheckView) -> CheckRow {
     } else {
         CheckStatus::Optional
     };
-    // Other ids: the id and what the doctor found, its hint under it.
-    known_row(check, status).unwrap_or_else(|| CheckRow {
-        id: check.id.clone(),
-        status,
-        item: vec![ItemPart::Mono(check.id.clone())],
-        description: check.detail.clone(),
-        command: None,
-        note: check.hint.clone(),
+    // Other ids: the id and what the doctor found, its fix under it.
+    known_row(check, status).unwrap_or_else(|| {
+        let (command, note) = fix_parts(check);
+        CheckRow {
+            id: check.id.clone(),
+            status,
+            item: vec![ItemPart::Mono(check.id.clone())],
+            description: check.detail.clone(),
+            command,
+            note,
+        }
     })
 }
 
@@ -1051,6 +1078,9 @@ pub fn unreadable(error: &CoreError, file: &str) -> UnreadablePage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::{
+        Desktop, DistroFamily, HostPlatform, Need, Sandbox, SessionType, install_hint,
+    };
 
     fn kinds() -> Vec<BlockKind> {
         vec![
@@ -1196,35 +1226,72 @@ mod tests {
             ok,
             detail: detail.into(),
             hint: hint.map(Into::into),
+            fix: None,
         }
     }
 
-    /// BRIEF S23's machine: gtk4paintablesink (an app check) and the
-    /// ScreenCast portal (screen capture's) missing, libsvtav1 (AV1
-    /// export's) missing, 14 other checks fine, in the doctor's order.
+    fn host(distro: DistroFamily, desktop: Desktop, session: SessionType) -> HostPlatform {
+        HostPlatform {
+            session,
+            desktop,
+            distro,
+            sandbox: Sandbox::None,
+            nix_shell: false,
+        }
+    }
+
+    /// The dev box: niri on NixOS, in the flake's dev shell (S23's frame).
+    fn dev_box() -> HostPlatform {
+        HostPlatform {
+            nix_shell: true,
+            ..host(DistroFamily::NixOs, Desktop::Niri, SessionType::Wayland)
+        }
+    }
+
+    /// A failed check with the fix the doctor gives for `need` on
+    /// `platform` (its hint is the fix's line).
+    fn failed(
+        id: &str,
+        required: bool,
+        detail: &str,
+        need: Need,
+        platform: &HostPlatform,
+    ) -> CheckView {
+        let fix = install_hint(need, platform);
+        CheckView {
+            hint: Some(fix.line()),
+            fix: Some(fix),
+            ..check(id, required, false, detail, None)
+        }
+    }
+
+    /// BRIEF S23's machine, the dev box: gtk4paintablesink (an app check)
+    /// and the ScreenCast portal (screen capture's) missing, libsvtav1
+    /// (AV1 export's) missing, 14 other checks fine, in the doctor's order.
     fn s23_checks() -> Vec<CheckView> {
+        let dev_box = dev_box();
         let mut checks = vec![
             check("gstreamer", true, true, "1.26.6", None),
-            check(
+            failed(
                 "ffmpeg.libsvtav1",
                 false,
-                false,
                 "ffmpeg has no libsvtav1 encoder (AV1 WebM exports)",
-                Some("install a full ffmpeg build (NixOS: ffmpeg-full)"),
+                Need::FullFfmpeg,
+                &dev_box,
             ),
-            check(
+            failed(
                 "gst.gtk4paintablesink",
                 true,
-                false,
                 "gtk4paintablesink (the GUI preview) isn't in the GStreamer registry",
-                Some("install gst-plugins-rs (gtk4)"),
+                Need::GstGtk4,
+                &dev_box,
             ),
-            check(
+            failed(
                 "portal.screencast",
                 false,
-                false,
                 "no ScreenCast portal: no reply",
-                Some("install xdg-desktop-portal with a ScreenCast backend"),
+                Need::ScreenCastPortal,
+                &dev_box,
             ),
         ];
         for n in 0..13 {
@@ -1255,8 +1322,8 @@ mod tests {
         let pages = serde_json::json!({
             "s23": missing_deps(&s23_checks()),
             "s23NoFfmpeg": missing_deps(&[
-                check("ffmpeg", true, false, "ffmpeg wasn't found on PATH",
-                    Some("install ffmpeg (a full build with libx264, libvpx and libopus; NixOS: ffmpeg-full)")),
+                failed("ffmpeg", true, "ffmpeg wasn't found on PATH", Need::Ffmpeg,
+                    &host(DistroFamily::Debian, Desktop::Gnome, SessionType::Wayland)),
                 check("ffprobe", true, true, "ffprobe version 7.1", None),
             ]),
             "gstStuck": gst_stuck(),
@@ -1295,52 +1362,54 @@ mod tests {
 
     /// S23 from a report where the app and some features fail together
     /// (`doctor::run` on Debian without gst-libav, Xfce on Xorg, ffmpeg
-    /// without libx264, PulseAudio 15): the app's rows alone.
+    /// without libx264, PulseAudio 15): the app's rows alone, with
+    /// Debian's fixes.
     #[test]
     fn s23_from_a_mixed_report() {
+        let xfce = host(DistroFamily::Debian, Desktop::Xfce, SessionType::X11);
         let checks = [
             check("gstreamer", true, true, "GStreamer 1.26.11", None),
-            check(
+            failed(
                 "gst.h264dec",
                 true,
-                false,
                 "no software H.264 decoder: the editor can't play the takes",
-                Some("install gst-libav (avdec_h264)"),
+                Need::GstH264Decoder,
+                &xfce,
             ),
-            check(
+            failed(
                 "ffmpeg.decoders",
                 true,
-                false,
                 "ffmpeg can't decode h264 (the takes' video)",
-                Some("install a full ffmpeg build (NixOS: ffmpeg-full)"),
+                Need::FullFfmpeg,
+                &xfce,
             ),
-            check(
+            failed(
                 "ffmpeg.libx264",
                 false,
-                false,
                 "ffmpeg has no libx264 encoder (MP4 exports)",
-                Some("install a full ffmpeg build (NixOS: ffmpeg-full)"),
+                Need::FullFfmpeg,
+                &xfce,
             ),
-            check(
+            failed(
                 "portal.screencast",
                 false,
-                false,
                 "no ScreenCast portal: busctl exited with status 1",
-                Some("install xdg-desktop-portal with a ScreenCast backend"),
+                Need::ScreenCastPortal,
+                &xfce,
             ),
             check(
                 "pactl",
                 false,
                 false,
                 "pactl 15.0 is too old: Qrec needs pactl 16 or newer (/usr/bin/pactl)",
-                Some("update the PulseAudio client tools to 16 or newer (pulseaudio-utils)"),
+                Some("update the PulseAudio client tools (pactl) to 16 or newer"),
             ),
-            check(
+            failed(
                 "wl-copy",
                 false,
-                false,
                 "not found: saved frames can't be copied to the clipboard",
-                Some("install wl-clipboard"),
+                Need::WlClipboard,
+                &xfce,
             ),
             check("ffmpeg", true, true, "ffmpeg version 8.1.2", None),
         ];
@@ -1351,10 +1420,81 @@ mod tests {
         insta::assert_json_snapshot!("s23_mixed_report", page);
     }
 
+    /// S23's rows for the same failed app checks on each distribution
+    /// family: the command to copy where the packages are known (`sudo apt
+    /// install …`, `sudo pacman -S …`, Fedora's RPM Fusion), the generic
+    /// sentence where they aren't, the Nix package on NixOS and `nix
+    /// develop` in the flake's shell (the frame's).
+    #[test]
+    fn s23_per_family() {
+        let platforms = [
+            (
+                "debian",
+                host(DistroFamily::Debian, Desktop::Gnome, SessionType::Wayland),
+            ),
+            (
+                "ubuntu",
+                host(DistroFamily::Ubuntu, Desktop::Gnome, SessionType::Wayland),
+            ),
+            (
+                "fedora",
+                host(DistroFamily::Fedora, Desktop::Gnome, SessionType::Wayland),
+            ),
+            (
+                "arch",
+                host(DistroFamily::Arch, Desktop::Sway, SessionType::Wayland),
+            ),
+            (
+                "suse",
+                host(DistroFamily::Suse, Desktop::Kde, SessionType::Wayland),
+            ),
+            (
+                "nixos",
+                host(DistroFamily::NixOs, Desktop::Niri, SessionType::Wayland),
+            ),
+            ("nixShell", dev_box()),
+            (
+                "unknown",
+                host(DistroFamily::Unknown, Desktop::Unknown, SessionType::X11),
+            ),
+        ];
+        let pages: Vec<serde_json::Value> = platforms
+            .iter()
+            .map(|(name, platform)| {
+                let checks = [
+                    check("gstreamer", true, true, "GStreamer 1.26.11", None),
+                    failed(
+                        "gst.gtk4paintablesink",
+                        true,
+                        "gtk4paintablesink (the GUI preview) isn't in the GStreamer registry",
+                        Need::GstGtk4,
+                        platform,
+                    ),
+                    failed(
+                        "gst.h264dec",
+                        true,
+                        "no software H.264 decoder: the editor can't play the takes",
+                        Need::GstH264Decoder,
+                        platform,
+                    ),
+                    failed(
+                        "ffmpeg.demuxers",
+                        true,
+                        "ffmpeg can't read matroska (the takes' MKV files)",
+                        Need::FullFfmpeg,
+                        platform,
+                    ),
+                ];
+                serde_json::json!({ "platform": name, "rows": missing_deps(&checks).rows })
+            })
+            .collect();
+        insta::assert_json_snapshot!("s23_per_family", pages);
+    }
+
     /// S23's rows (G§4.11): the failed app checks alone, in the doctor's
-    /// order; BRIEF's copy by id, the doctor's own words for the others;
-    /// what passed behind the disclosure. A feature that is off (the
-    /// portal, libsvtav1) is no row.
+    /// order; BRIEF's copy by id, the doctor's own words for the others,
+    /// each with the doctor's fix; what passed behind the disclosure. A
+    /// feature that is off (the portal, libsvtav1) is no row.
     #[test]
     fn s23_lists_only_the_failed_app_checks() {
         let page = missing_deps(&s23_checks());
@@ -1365,7 +1505,12 @@ mod tests {
             page.rows[0].item,
             [ItemPart::Mono("gtk4paintablesink".into())]
         );
+        // The frame's: the dev box in the flake's shell.
         assert_eq!(page.rows[0].command.as_deref(), Some("nix develop"));
+        assert_eq!(
+            page.rows[0].note.as_deref(),
+            Some("The flake provides gst-plugins-rs.")
+        );
         // BRIEF's copy for the portal's and libsvtav1's rows, should one be listed.
         let rows: Vec<CheckRow> = s23_checks()
             .iter()
@@ -1379,22 +1524,31 @@ mod tests {
                 ItemPart::Text("in ffmpeg".into())
             ]
         );
-        assert_eq!(rows[0].command, None);
+        assert_eq!((&rows[0].command, &rows[0].note), (&None, &None));
         assert_eq!(
             rows[1].item,
             [ItemPart::Text("ScreenCast portal backend".into())]
         );
-        assert_eq!(rows[1].command.as_deref(), Some("xdg-desktop-portal-gnome"));
+        assert_eq!(
+            rows[1].description,
+            "Needed to capture screens (desktop portal)."
+        );
+        assert_eq!(rows[1].command, None);
+        assert_eq!(
+            rows[1].note.as_deref(),
+            Some("On niri, install xdg-desktop-portal-gnome, then log out and back in.")
+        );
         assert_eq!(page.passed.len(), 14);
         assert_eq!(page.passed_label, "14 other checks passed");
         assert_eq!(passed_label(1), "1 other check passed");
-        // Another id: the id, the doctor's detail, its hint under it.
-        let other = missing_deps(&[check(
+        // Another id: the id, the doctor's detail, its fix under it (on
+        // Fedora, RPM Fusion's ffmpeg).
+        let other = missing_deps(&[failed(
             "ffmpeg.demuxers",
             true,
-            false,
             "ffmpeg can't read matroska (the takes' MKV files)",
-            Some("install a full ffmpeg build (NixOS: ffmpeg-full)"),
+            Need::FullFfmpeg,
+            &host(DistroFamily::Fedora, Desktop::Gnome, SessionType::Wayland),
         )]);
         assert_eq!(
             other.rows[0].item,
@@ -1405,10 +1559,26 @@ mod tests {
             "ffmpeg can't read matroska (the takes' MKV files)"
         );
         assert_eq!(
+            other.rows[0].command.as_deref(),
+            Some("sudo dnf swap ffmpeg-free ffmpeg --allowerasing")
+        );
+        assert_eq!(
             other.rows[0].note.as_deref(),
-            Some("install a full ffmpeg build (NixOS: ffmpeg-full)")
+            Some("It comes from RPM Fusion: enable that repository first.")
         );
         assert!(other.passed.is_empty());
+        // A hint that installs nothing is the note, as a sentence.
+        let reinstall = check_row(&check(
+            "ffmpeg",
+            true,
+            false,
+            "/usr/bin/ffmpeg doesn't run: exit status 127",
+            Some("reinstall ffmpeg"),
+        ));
+        assert_eq!(
+            (reinstall.command, reinstall.note.as_deref()),
+            (None, Some("Reinstall ffmpeg."))
+        );
         // Check again has the focus (S23's ring), then Copy report, Quit.
         let buttons: Vec<(&str, ButtonKind, bool)> = page
             .buttons

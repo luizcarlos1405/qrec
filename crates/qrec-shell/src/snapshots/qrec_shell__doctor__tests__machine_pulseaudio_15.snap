@@ -283,7 +283,7 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
       },
       {
         "detail": "pactl 15.0 is too old: Qrec needs pactl 16 or newer (/nix/bin/pactl)",
-        "hint": "update the PulseAudio client tools to 16 or newer (pulseaudio-utils)",
+        "hint": "update the PulseAudio client tools (pactl) to 16 or newer",
         "id": "pactl",
         "neededFor": [
           "audio"
@@ -380,7 +380,7 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "  ok        portal.screencast      xdg-desktop-portal ScreenCast v5 (monitors, windows, virtual)",
     "  ok        portal.registry        host app registry v1",
     "  off       pactl                  pactl 15.0 is too old: Qrec needs pactl 16 or newer (/nix/bin/pactl)",
-    "                                   → update the PulseAudio client tools to 16 or newer (pulseaudio-utils)",
+    "                                   → update the PulseAudio client tools (pactl) to 16 or newer",
     "  ok        wl-copy                /nix/bin/wl-copy",
     "  ok        vaapi                  /dev/dri/renderD128 (Intel, auto) · LIBVA_DRIVER_NAME=iHD · ffmpeg h264_vaapi works",
     "",

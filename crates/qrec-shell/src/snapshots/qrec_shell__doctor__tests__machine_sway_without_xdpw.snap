@@ -265,7 +265,12 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
       },
       {
         "detail": "no ScreenCast portal: busctl exited with status 1: Failed to get property version on interface org.freedesktop.portal.ScreenCast: No such interface",
-        "hint": "install xdg-desktop-portal with a ScreenCast backend (on niri: xdg-desktop-portal-gnome) and make sure it runs in your session",
+        "fix": {
+          "command": null,
+          "note": "install xdg-desktop-portal-wlr and a screen chooser it runs (slurp, wofi, rofi or fuzzel; without one it picks any output); choose it in ~/.config/xdg-desktop-portal/portals.conf (org.freedesktop.impl.portal.ScreenCast=wlr under [preferred]); have your compositor run `dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP`; start the portal with XDPW_PERSIST_MODE=permanent so it remembers the screen choice",
+          "packages": []
+        },
+        "hint": "install xdg-desktop-portal-wlr and a screen chooser it runs (slurp, wofi, rofi or fuzzel; without one it picks any output); choose it in ~/.config/xdg-desktop-portal/portals.conf (org.freedesktop.impl.portal.ScreenCast=wlr under [preferred]); have your compositor run `dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP`; start the portal with XDPW_PERSIST_MODE=permanent so it remembers the screen choice",
         "id": "portal.screencast",
         "neededFor": [
           "screens"
@@ -380,7 +385,7 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "  ok        ffmpeg.libopus         libopus (WebM audio)",
     "  ok        ffmpeg.libsvtav1       libsvtav1 (AV1 WebM exports)",
     "  off       portal.screencast      no ScreenCast portal: busctl exited with status 1: Failed to get property version on interface org.freedesktop.portal.ScreenCast: No such interface",
-    "                                   → install xdg-desktop-portal with a ScreenCast backend (on niri: xdg-desktop-portal-gnome) and make sure it runs in your session",
+    "                                   → install xdg-desktop-portal-wlr and a screen chooser it runs (slurp, wofi, rofi or fuzzel; without one it picks any output); choose it in ~/.config/xdg-desktop-portal/portals.conf (org.freedesktop.impl.portal.ScreenCast=wlr under [preferred]); have your compositor run `dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP`; start the portal with XDPW_PERSIST_MODE=permanent so it remembers the screen choice",
     "  ok        pactl                  pactl 17.0 (/nix/bin/pactl)",
     "  ok        sound.server           PulseAudio (on PipeWire 1.6.6)",
     "  ok        wl-copy                /nix/bin/wl-copy",

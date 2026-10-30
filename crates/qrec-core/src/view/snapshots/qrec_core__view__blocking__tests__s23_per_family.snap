@@ -1,0 +1,358 @@
+---
+source: crates/qrec-core/src/view/blocking.rs
+expression: pages
+---
+[
+  {
+    "platform": "debian",
+    "rows": [
+      {
+        "command": "sudo apt install gstreamer1.0-gtk4",
+        "description": "GStreamer GTK 4 video sink (gst-plugins-rs). Qrec draws the preview with it.",
+        "id": "gst.gtk4paintablesink",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gtk4paintablesink"
+          }
+        ],
+        "note": null,
+        "status": "missing"
+      },
+      {
+        "command": null,
+        "description": "no software H.264 decoder: the editor can't play the takes",
+        "id": "gst.h264dec",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gst.h264dec"
+          }
+        ],
+        "note": "Install GStreamer's libav plugin, avdec_h264 (upstream gst-libav) with apt.",
+        "status": "missing"
+      },
+      {
+        "command": null,
+        "description": "ffmpeg can't read matroska (the takes' MKV files)",
+        "id": "ffmpeg.demuxers",
+        "item": [
+          {
+            "face": "mono",
+            "text": "ffmpeg.demuxers"
+          }
+        ],
+        "note": "Install a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1) with apt.",
+        "status": "missing"
+      }
+    ]
+  },
+  {
+    "platform": "ubuntu",
+    "rows": [
+      {
+        "command": "sudo apt install gstreamer1.0-gtk4",
+        "description": "GStreamer GTK 4 video sink (gst-plugins-rs). Qrec draws the preview with it.",
+        "id": "gst.gtk4paintablesink",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gtk4paintablesink"
+          }
+        ],
+        "note": null,
+        "status": "missing"
+      },
+      {
+        "command": null,
+        "description": "no software H.264 decoder: the editor can't play the takes",
+        "id": "gst.h264dec",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gst.h264dec"
+          }
+        ],
+        "note": "Install GStreamer's libav plugin, avdec_h264 (upstream gst-libav) with apt.",
+        "status": "missing"
+      },
+      {
+        "command": null,
+        "description": "ffmpeg can't read matroska (the takes' MKV files)",
+        "id": "ffmpeg.demuxers",
+        "item": [
+          {
+            "face": "mono",
+            "text": "ffmpeg.demuxers"
+          }
+        ],
+        "note": "Install a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1) with apt.",
+        "status": "missing"
+      }
+    ]
+  },
+  {
+    "platform": "fedora",
+    "rows": [
+      {
+        "command": "sudo dnf install gstreamer1-plugin-gtk4",
+        "description": "GStreamer GTK 4 video sink (gst-plugins-rs). Qrec draws the preview with it.",
+        "id": "gst.gtk4paintablesink",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gtk4paintablesink"
+          }
+        ],
+        "note": null,
+        "status": "missing"
+      },
+      {
+        "command": "sudo dnf install gstreamer1-plugin-openh264",
+        "description": "no software H.264 decoder: the editor can't play the takes",
+        "id": "gst.h264dec",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gst.h264dec"
+          }
+        ],
+        "note": "OpenH264 may not decode High-profile takes.",
+        "status": "missing"
+      },
+      {
+        "command": "sudo dnf swap ffmpeg-free ffmpeg --allowerasing",
+        "description": "ffmpeg can't read matroska (the takes' MKV files)",
+        "id": "ffmpeg.demuxers",
+        "item": [
+          {
+            "face": "mono",
+            "text": "ffmpeg.demuxers"
+          }
+        ],
+        "note": "It comes from RPM Fusion: enable that repository first.",
+        "status": "missing"
+      }
+    ]
+  },
+  {
+    "platform": "arch",
+    "rows": [
+      {
+        "command": "sudo pacman -S gst-plugin-gtk4",
+        "description": "GStreamer GTK 4 video sink (gst-plugins-rs). Qrec draws the preview with it.",
+        "id": "gst.gtk4paintablesink",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gtk4paintablesink"
+          }
+        ],
+        "note": null,
+        "status": "missing"
+      },
+      {
+        "command": "sudo pacman -S gst-libav",
+        "description": "no software H.264 decoder: the editor can't play the takes",
+        "id": "gst.h264dec",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gst.h264dec"
+          }
+        ],
+        "note": null,
+        "status": "missing"
+      },
+      {
+        "command": null,
+        "description": "ffmpeg can't read matroska (the takes' MKV files)",
+        "id": "ffmpeg.demuxers",
+        "item": [
+          {
+            "face": "mono",
+            "text": "ffmpeg.demuxers"
+          }
+        ],
+        "note": "Install a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1) with pacman.",
+        "status": "missing"
+      }
+    ]
+  },
+  {
+    "platform": "suse",
+    "rows": [
+      {
+        "command": null,
+        "description": "GStreamer GTK 4 video sink (gst-plugins-rs). Qrec draws the preview with it.",
+        "id": "gst.gtk4paintablesink",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gtk4paintablesink"
+          }
+        ],
+        "note": "Install GStreamer's GTK 4 plugin, gtk4paintablesink (upstream gst-plugins-rs) with zypper.",
+        "status": "missing"
+      },
+      {
+        "command": null,
+        "description": "no software H.264 decoder: the editor can't play the takes",
+        "id": "gst.h264dec",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gst.h264dec"
+          }
+        ],
+        "note": "Install GStreamer's libav plugin, avdec_h264 (upstream gst-libav) with zypper.",
+        "status": "missing"
+      },
+      {
+        "command": null,
+        "description": "ffmpeg can't read matroska (the takes' MKV files)",
+        "id": "ffmpeg.demuxers",
+        "item": [
+          {
+            "face": "mono",
+            "text": "ffmpeg.demuxers"
+          }
+        ],
+        "note": "Install a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1) with zypper.",
+        "status": "missing"
+      }
+    ]
+  },
+  {
+    "platform": "nixos",
+    "rows": [
+      {
+        "command": null,
+        "description": "GStreamer GTK 4 video sink (gst-plugins-rs). Qrec draws the preview with it.",
+        "id": "gst.gtk4paintablesink",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gtk4paintablesink"
+          }
+        ],
+        "note": "Run qrec from its Nix package, which ships gst_all_1.gst-plugins-rs.",
+        "status": "missing"
+      },
+      {
+        "command": null,
+        "description": "no software H.264 decoder: the editor can't play the takes",
+        "id": "gst.h264dec",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gst.h264dec"
+          }
+        ],
+        "note": "Run qrec from its Nix package, which ships gst_all_1.gst-libav.",
+        "status": "missing"
+      },
+      {
+        "command": null,
+        "description": "ffmpeg can't read matroska (the takes' MKV files)",
+        "id": "ffmpeg.demuxers",
+        "item": [
+          {
+            "face": "mono",
+            "text": "ffmpeg.demuxers"
+          }
+        ],
+        "note": "Run qrec from its Nix package, which ships ffmpeg-full.",
+        "status": "missing"
+      }
+    ]
+  },
+  {
+    "platform": "nixShell",
+    "rows": [
+      {
+        "command": "nix develop",
+        "description": "GStreamer GTK 4 video sink (gst-plugins-rs). Qrec draws the preview with it.",
+        "id": "gst.gtk4paintablesink",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gtk4paintablesink"
+          }
+        ],
+        "note": "The flake provides gst-plugins-rs.",
+        "status": "missing"
+      },
+      {
+        "command": "nix develop",
+        "description": "no software H.264 decoder: the editor can't play the takes",
+        "id": "gst.h264dec",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gst.h264dec"
+          }
+        ],
+        "note": "The flake provides gst-libav.",
+        "status": "missing"
+      },
+      {
+        "command": "nix develop",
+        "description": "ffmpeg can't read matroska (the takes' MKV files)",
+        "id": "ffmpeg.demuxers",
+        "item": [
+          {
+            "face": "mono",
+            "text": "ffmpeg.demuxers"
+          }
+        ],
+        "note": "The flake provides ffmpeg-full.",
+        "status": "missing"
+      }
+    ]
+  },
+  {
+    "platform": "unknown",
+    "rows": [
+      {
+        "command": null,
+        "description": "GStreamer GTK 4 video sink (gst-plugins-rs). Qrec draws the preview with it.",
+        "id": "gst.gtk4paintablesink",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gtk4paintablesink"
+          }
+        ],
+        "note": "Install GStreamer's GTK 4 plugin, gtk4paintablesink (upstream gst-plugins-rs) with your distribution's package manager.",
+        "status": "missing"
+      },
+      {
+        "command": null,
+        "description": "no software H.264 decoder: the editor can't play the takes",
+        "id": "gst.h264dec",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gst.h264dec"
+          }
+        ],
+        "note": "Install GStreamer's libav plugin, avdec_h264 (upstream gst-libav) with your distribution's package manager.",
+        "status": "missing"
+      },
+      {
+        "command": null,
+        "description": "ffmpeg can't read matroska (the takes' MKV files)",
+        "id": "ffmpeg.demuxers",
+        "item": [
+          {
+            "face": "mono",
+            "text": "ffmpeg.demuxers"
+          }
+        ],
+        "note": "Install a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1) with your distribution's package manager.",
+        "status": "missing"
+      }
+    ]
+  }
+]

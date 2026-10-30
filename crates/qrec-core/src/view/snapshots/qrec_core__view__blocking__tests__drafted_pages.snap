@@ -371,7 +371,7 @@ expression: pages
     "passedLabel": "1 other check passed",
     "rows": [
       {
-        "command": null,
+        "command": "sudo apt install ffmpeg",
         "description": "ffmpeg wasn't found on PATH",
         "id": "ffmpeg",
         "item": [
@@ -380,7 +380,7 @@ expression: pages
             "text": "ffmpeg"
           }
         ],
-        "note": "install ffmpeg (a full build with libx264, libvpx and libopus; NixOS: ffmpeg-full)",
+        "note": null,
         "status": "missing"
       }
     ]

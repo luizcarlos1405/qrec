@@ -42,7 +42,8 @@ pub fn view(ctx: &Ctx, kind: &BlockKind, on_action: OnAction) -> Option<Box<dyn 
     Some(Box::new(MissingDepsView::new(ctx, stuck, on_action)))
 }
 
-/// The doctor's checks as S23 reads them.
+/// The doctor's checks as S23 reads them, each with its fix for this
+/// machine (a row's command and note).
 pub fn check_views(report: &DoctorReport) -> Vec<CheckView> {
     report
         .checks
@@ -53,6 +54,7 @@ pub fn check_views(report: &DoctorReport) -> Vec<CheckView> {
             ok: c.ok,
             detail: c.detail.clone(),
             hint: c.hint.clone(),
+            fix: c.fix.clone(),
         })
         .collect()
 }
@@ -646,15 +648,18 @@ impl PageView for MissingDepsView {
 
 #[cfg(test)]
 mod tests {
-    use qrec_core::platform::{PlatformEnv, detect};
+    use qrec_core::platform::{Need, PlatformEnv, detect, install_hint};
     use qrec_core::view::blocking::BlockingAction;
     use qrec_shell::doctor::{Check, Feature};
 
     use super::*;
 
-    /// S23 reads every check the doctor made, as it made them.
+    /// S23 reads every check the doctor made, as it made them: a row's
+    /// command is the doctor's fix for this machine.
     #[test]
     fn the_rows_read_the_doctors_checks() {
+        let debian = detect(&PlatformEnv::default().with_os_release("ID=debian\n"));
+        let fix = install_hint(Need::GstGtk4, &debian);
         let report = DoctorReport {
             checks: vec![
                 Check {
@@ -664,7 +669,8 @@ mod tests {
                     ok: false,
                     detail: "gtk4paintablesink (the GUI preview) isn't in the GStreamer registry"
                         .into(),
-                    hint: Some("install gst-plugins-rs (gtk4)".into()),
+                    hint: Some(fix.line()),
+                    fix: Some(fix.clone()),
                 },
                 Check {
                     id: "wl-copy".into(),
@@ -673,10 +679,11 @@ mod tests {
                     ok: true,
                     detail: "/run/current-system/sw/bin/wl-copy".into(),
                     hint: None,
+                    fix: None,
                 },
             ],
             features_off: vec![],
-            platform: detect(&PlatformEnv::default()),
+            platform: debian,
             niri_snippet: String::new(),
             va: None,
         };
@@ -689,7 +696,8 @@ mod tests {
                     required: true,
                     ok: false,
                     detail: report.checks[0].detail.clone(),
-                    hint: Some("install gst-plugins-rs (gtk4)".into()),
+                    hint: Some("sudo apt install gstreamer1.0-gtk4".into()),
+                    fix: Some(fix),
                 },
                 CheckView {
                     id: "wl-copy".into(),
@@ -697,11 +705,16 @@ mod tests {
                     ok: true,
                     detail: "/run/current-system/sw/bin/wl-copy".into(),
                     hint: None,
+                    fix: None,
                 },
             ]
         );
         let page = blocking::missing_deps(&views);
         assert_eq!(page.rows.len(), 1);
+        assert_eq!(
+            page.rows[0].command.as_deref(),
+            Some("sudo apt install gstreamer1.0-gtk4")
+        );
         assert_eq!(page.passed_label, "1 other check passed");
     }
 

@@ -68,7 +68,14 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
       },
       {
         "detail": "x264enc (H.264 recording) isn't in the GStreamer registry: recordings use vah264enc",
-        "hint": "install gst-plugins-ugly",
+        "fix": {
+          "command": "sudo dnf install gstreamer1-plugins-ugly",
+          "note": "it comes from RPM Fusion, since Fedora's own plugins have no x264enc: enable that repository first",
+          "packages": [
+            "gstreamer1-plugins-ugly"
+          ]
+        },
+        "hint": "sudo dnf install gstreamer1-plugins-ugly (it comes from RPM Fusion, since Fedora's own plugins have no x264enc: enable that repository first)",
         "id": "gst.x264enc",
         "neededFor": [],
         "ok": false,
@@ -204,7 +211,14 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
       },
       {
         "detail": "ffmpeg has no libx264 encoder: MP4 exports use h264_vaapi on /dev/dri/renderD128",
-        "hint": "install a full ffmpeg build (NixOS: ffmpeg-full)",
+        "fix": {
+          "command": "sudo dnf swap ffmpeg-free ffmpeg --allowerasing",
+          "note": "it comes from RPM Fusion: enable that repository first",
+          "packages": [
+            "ffmpeg"
+          ]
+        },
+        "hint": "sudo dnf swap ffmpeg-free ffmpeg --allowerasing (it comes from RPM Fusion: enable that repository first)",
         "id": "ffmpeg.libx264",
         "neededFor": [],
         "ok": false,
@@ -360,7 +374,7 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "  ok        gst.compositor         compositor (live preview)",
     "  ok        gst.videorate          videorate (constant frame rate)",
     "  optional  gst.x264enc            x264enc (H.264 recording) isn't in the GStreamer registry: recordings use vah264enc",
-    "                                   → install gst-plugins-ugly",
+    "                                   → sudo dnf install gstreamer1-plugins-ugly (it comes from RPM Fusion, since Fedora's own plugins have no x264enc: enable that repository first)",
     "  ok        gst.h264parse          h264parse (H.264 recording)",
     "  ok        gst.matroskamux        matroskamux (MKV files)",
     "  ok        gst.flacenc            flacenc (lossless audio)",
@@ -375,7 +389,7 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "  ok        ffmpeg.decoders        libopenh264 for h264 (the takes' video), flac (the takes' audio)",
     "  ok        ffmpeg.demuxers        matroska (the takes' MKV files)",
     "  optional  ffmpeg.libx264         ffmpeg has no libx264 encoder: MP4 exports use h264_vaapi on /dev/dri/renderD128",
-    "                                   → install a full ffmpeg build (NixOS: ffmpeg-full)",
+    "                                   → sudo dnf swap ffmpeg-free ffmpeg --allowerasing (it comes from RPM Fusion: enable that repository first)",
     "  ok        ffmpeg.aac             aac (MP4 audio)",
     "  ok        ffmpeg.pcm_s16le       pcm_s16le (export segments)",
     "  ok        ffmpeg.libvpx-vp9      libvpx-vp9 (WebM exports)",

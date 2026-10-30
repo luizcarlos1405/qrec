@@ -148,7 +148,12 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
       },
       {
         "detail": "no VA-API H.264 encoder: recordings use x264 on the CPU",
-        "hint": "install gst-plugins-bad with the va plugin and a VA driver (intel-media-driver for Intel, mesa for AMD)",
+        "fix": {
+          "command": null,
+          "note": "install GStreamer's VA plugin (upstream gst-plugins-bad) with zypper",
+          "packages": []
+        },
+        "hint": "install GStreamer's VA plugin (upstream gst-plugins-bad) with zypper",
         "id": "gst.vah264enc",
         "neededFor": [],
         "ok": false,
@@ -370,7 +375,7 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "  ok        gst.gtk4paintablesink  gtk4paintablesink (the GUI preview)",
     "  ok        gst.h264dec            avdec_h264, openh264dec (the editor's preview of the takes)",
     "  optional  gst.vah264enc          no VA-API H.264 encoder: recordings use x264 on the CPU",
-    "                                   → install gst-plugins-bad with the va plugin and a VA driver (intel-media-driver for Intel, mesa for AMD)",
+    "                                   → install GStreamer's VA plugin (upstream gst-plugins-bad) with zypper",
     "  ok        ges                    GStreamer Editing Services",
     "  ok        ffmpeg                 ffmpeg version 8.1.2 (/nix/bin/ffmpeg)",
     "  ok        ffprobe                ffprobe version 8.1.2 (/nix/bin/ffprobe)",

@@ -29,6 +29,12 @@
 //! a line each in the text): Qrec still opens projects, edits and exports
 //! with what it has.
 //!
+//! A failed check's hint is the fix where Qrec runs, from the core's table
+//! (`platform::install_hint` for the probe's platform): this
+//! distribution's packages and install command, the desktop's ScreenCast
+//! backend, `nix develop` in a Nix shell. The check also carries it as
+//! `fix` (packages, command, note), whose command S23 offers to copy.
+//!
 //! Everything that touches the system goes through [`Probe`], so tests run
 //! against a fake machine.
 
@@ -38,6 +44,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use qrec_core::media_argv::vaapi_check_argv;
+use qrec_core::platform::{Hint, Need, VaGpu, install_hint};
 use qrec_core::{CoreError, ErrorCode};
 use serde::{Deserialize, Serialize};
 
@@ -102,6 +109,12 @@ pub struct Check {
     pub detail: String,
     /// How to fix it; set when the check failed.
     pub hint: Option<String>,
+    /// The fix for this machine when it is something to install or set
+    /// up (`platform::install_hint`, with the check's own advice in its
+    /// note): `hint` is its line, S23 shows its command and note. Absent
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix: Option<Hint>,
 }
 
 impl Check {
@@ -312,42 +325,47 @@ pub fn run(opts: &DoctorOptions) -> DoctorReport {
 
 /// Runs every check against `probe`.
 pub fn run_with(probe: &dyn Probe, opts: &DoctorOptions) -> DoctorReport {
+    let platform = probe.platform();
+    let fix = |need| install_hint(need, &platform);
     let mut checks = Vec::new();
     // Asked only once GStreamer works: a stuck plugin scan isn't waited for twice.
-    let gst_va_encoders = gstreamer_checks(probe, opts, &mut checks);
+    let gst_va_encoders = gstreamer_checks(probe, opts, &fix, &mut checks);
     let va = va_report(probe, opts, gst_va_encoders.clone().unwrap_or_default());
     if gst_va_encoders.is_some() {
-        encoder_checks(&va, opts, &mut checks);
+        encoder_checks(&va, opts, &fix, &mut checks);
         checks.push(match probe.ges() {
             Ok(()) => ok("ges", APP, "GStreamer Editing Services"),
-            Err(e) => fail(
+            Err(e) => fail_fix(
                 "ges",
                 APP,
                 format!("GStreamer Editing Services: {e}"),
-                "install gst-editing-services",
+                fix(Need::Ges),
             ),
         });
     }
-    ffmpeg_checks(probe, &va, opts, &mut checks);
-    desktop_checks(probe, opts, &mut checks);
+    ffmpeg_checks(probe, &va, opts, &fix, &mut checks);
+    desktop_checks(probe, opts, &fix, &mut checks);
     checks.push(match probe.which("wl-copy") {
         Some(path) => ok("wl-copy", NOTHING, path.display().to_string()),
-        None => fail(
+        None => fail_fix(
             "wl-copy",
             NOTHING,
             "not found: saved frames can't be copied to the clipboard",
-            "install wl-clipboard",
+            fix(Need::WlClipboard),
         ),
     });
-    checks.push(va_check(&va));
+    checks.push(va_check(&va, &fix));
     DoctorReport {
         features_off: features_off(&checks),
         checks,
-        platform: probe.platform(),
+        platform,
         niri_snippet: NIRI_SNIPPET.to_owned(),
         va: Some(va),
     }
 }
+
+/// The fix of a [`Need`] where Qrec runs (`run_with`'s platform).
+type Fix<'a> = &'a dyn Fn(Need) -> Hint;
 
 const NOTHING: &[Feature] = &[];
 const APP: &[Feature] = &[Feature::App];
@@ -370,9 +388,11 @@ fn ok(id: &str, needed_for: &[Feature], detail: impl Into<String>) -> Check {
         ok: true,
         detail: detail.into(),
         hint: None,
+        fix: None,
     }
 }
 
+/// A failed check whose hint is advice, not something to install.
 fn fail(
     id: &str,
     needed_for: &[Feature],
@@ -382,6 +402,16 @@ fn fail(
     Check {
         ok: false,
         hint: Some(hint.into()),
+        ..ok(id, needed_for, detail)
+    }
+}
+
+/// A failed check that `fix` fixes (its hint is the fix's line).
+fn fail_fix(id: &str, needed_for: &[Feature], detail: impl Into<String>, fix: Hint) -> Check {
+    Check {
+        ok: false,
+        hint: Some(fix.line()),
+        fix: Some(fix),
         ..ok(id, needed_for, detail)
     }
 }
@@ -422,7 +452,8 @@ pub fn parse_version(text: &str) -> Option<(u32, u32)> {
 struct Element {
     name: &'static str,
     role: &'static str,
-    package: &'static str,
+    /// What provides it.
+    need: Need,
     needed_for: &'static [Feature],
     /// Needed only with the real capture backend (the fake one needs
     /// nothing of it).
@@ -433,35 +464,35 @@ const ELEMENTS: &[Element] = &[
     Element {
         name: "pipewiresrc",
         role: "screen capture",
-        package: "PipeWire's GStreamer plugin (pipewire built with GStreamer support)",
+        need: Need::GstPipewire,
         needed_for: SCREENS,
         real_only: true,
     },
     Element {
         name: "v4l2src",
         role: "cameras",
-        package: "gst-plugins-good",
+        need: Need::GstPluginsGood,
         needed_for: CAMERAS,
         real_only: true,
     },
     Element {
         name: "pulsesrc",
         role: "audio capture",
-        package: "gst-plugins-good",
+        need: Need::GstPluginsGood,
         needed_for: AUDIO,
         real_only: true,
     },
     Element {
         name: "compositor",
         role: "live preview",
-        package: "gst-plugins-base",
+        need: Need::GstPluginsBase,
         needed_for: APP,
         real_only: false,
     },
     Element {
         name: "videorate",
         role: "constant frame rate",
-        package: "gst-plugins-base",
+        need: Need::GstPluginsBase,
         needed_for: APP,
         real_only: false,
     },
@@ -469,49 +500,49 @@ const ELEMENTS: &[Element] = &[
     Element {
         name: "x264enc",
         role: "H.264 recording",
-        package: "gst-plugins-ugly",
+        need: Need::GstX264,
         needed_for: RECORDING,
         real_only: false,
     },
     Element {
         name: "h264parse",
         role: "H.264 recording",
-        package: "gst-plugins-bad",
+        need: Need::GstPluginsBad,
         needed_for: RECORDING,
         real_only: false,
     },
     Element {
         name: "matroskamux",
         role: "MKV files",
-        package: "gst-plugins-good",
+        need: Need::GstPluginsGood,
         needed_for: RECORDING,
         real_only: false,
     },
     Element {
         name: "flacenc",
         role: "lossless audio",
-        package: "gst-plugins-good",
+        need: Need::GstPluginsGood,
         needed_for: RECORDING,
         real_only: false,
     },
     Element {
         name: "matroskademux",
         role: "reading the takes' MKV files",
-        package: "gst-plugins-good",
+        need: Need::GstPluginsGood,
         needed_for: APP,
         real_only: false,
     },
     Element {
         name: "flacdec",
         role: "the takes' FLAC audio",
-        package: "gst-plugins-good",
+        need: Need::GstPluginsGood,
         needed_for: APP,
         real_only: false,
     },
     Element {
         name: "gtk4paintablesink",
         role: "the GUI preview",
-        package: "gst-plugins-rs (gtk4)",
+        need: Need::GstGtk4,
         needed_for: APP,
         real_only: false,
     },
@@ -522,14 +553,14 @@ const FAKE_ELEMENTS: &[Element] = &[
     Element {
         name: "videotestsrc",
         role: "fake screens and cameras",
-        package: "gst-plugins-base",
+        need: Need::GstPluginsBase,
         needed_for: &[Feature::Screens, Feature::Cameras],
         real_only: false,
     },
     Element {
         name: "audiotestsrc",
         role: "fake audio",
-        package: "gst-plugins-base",
+        need: Need::GstPluginsBase,
         needed_for: AUDIO,
         real_only: false,
     },
@@ -541,17 +572,19 @@ const FAKE_ELEMENTS: &[Element] = &[
 fn gstreamer_checks(
     probe: &dyn Probe,
     opts: &DoctorOptions,
+    fix: Fix<'_>,
     checks: &mut Vec<Check>,
 ) -> Option<Vec<String>> {
     let version = match probe.gstreamer() {
         Ok(version) => version,
         Err(e) => {
-            checks.push(fail(
+            checks.push(fail_fix(
                 "gstreamer",
                 APP,
                 e,
-                "install GStreamer ≥ 1.24 (the Qrec Nix package ships it); if it hangs, \
-                 a GPU driver blocks the plugin scan: check the VA-API section",
+                fix(Need::Gstreamer).also(
+                    "if it hangs, a GPU driver blocks the plugin scan: check the VA-API section",
+                ),
             ));
             return None;
         }
@@ -585,24 +618,24 @@ fn gstreamer_checks(
                 format!("{} ({})", element.name, element.role),
             )
         } else {
-            fail(
+            fail_fix(
                 &id,
                 needed_for,
                 format!(
                     "{} ({}) isn't in the GStreamer registry",
                     element.name, element.role
                 ),
-                format!("install {}", element.package),
+                fix(element.need),
             )
         });
     }
     let decoders = probe.gst_h264_decoders();
     checks.push(if decoders.is_empty() {
-        fail(
+        fail_fix(
             "gst.h264dec",
             APP,
             "no software H.264 decoder: the editor can't play the takes",
-            "install gst-libav (avdec_h264)",
+            fix(Need::GstH264Decoder),
         )
     } else if decoders.iter().all(|d| d == "openh264dec") {
         ok(
@@ -652,10 +685,39 @@ fn va_recorder(va: &VaReport, opts: &DoctorOptions) -> Option<String> {
     }
 }
 
+/// The VA-API GPU of a PCI vendor: Intel or AMD (NVIDIA has no VA-API
+/// encoder, A§8.10). The generation isn't known here: Intel's hint names
+/// both drivers.
+fn va_gpu(vendor: Option<u16>) -> Option<VaGpu> {
+    match vendor? {
+        PCI_INTEL => Some(VaGpu::Intel),
+        PCI_AMD => Some(VaGpu::Amd),
+        _ => None,
+    }
+}
+
+/// What gives GStreamer a VA encoder when it lists none. On an Intel or
+/// AMD node it is usually the node's VA driver: GStreamer's VA plugin
+/// registers no encoder for a node whose driver is missing or doesn't
+/// encode H.264 (Fedora's own Mesa), so the hint is the driver's, with
+/// the plugin's after it. Once ffmpeg's h264_vaapi check encoded on that
+/// node, the driver works and the plugin is what's missing (Arch packages
+/// it on its own, gst-plugin-va). Without an Intel or AMD node, the
+/// plugin's hint alone.
+fn no_va_encoder_fix(va: &VaReport, fix: Fix<'_>) -> Hint {
+    match (va_gpu(va.vendor), va.ffmpeg_h264) {
+        (Some(gpu), None | Some(false)) => fix(Need::VaDriver(gpu)).also(&format!(
+            "if GStreamer still has no VA encoder: {}",
+            fix(Need::GstVa).line()
+        )),
+        _ => fix(Need::GstVa),
+    }
+}
+
 /// The recording encoder: `gst.x264enc` isn't needed when a VA encoder
 /// records (its check is already in `checks`), and `gst.vah264enc` says
-/// which VA encoder that is.
-fn encoder_checks(va: &VaReport, opts: &DoctorOptions, checks: &mut Vec<Check>) {
+/// which VA encoder that is, or what gives GStreamer one.
+fn encoder_checks(va: &VaReport, opts: &DoctorOptions, fix: Fix<'_>, checks: &mut Vec<Check>) {
     let recorder = va_recorder(va, opts);
     if let Some(x264) = checks.iter_mut().find(|c| c.id == "gst.x264enc") {
         match (&recorder, x264.ok) {
@@ -675,26 +737,26 @@ fn encoder_checks(va: &VaReport, opts: &DoctorOptions, checks: &mut Vec<Check>) 
     let id = "gst.vah264enc";
     let device = va.device.as_deref().unwrap_or("the render node");
     checks.push(if va.gst_encoders.is_empty() {
-        fail(
+        fail_fix(
             id,
             NOTHING,
             "no VA-API H.264 encoder: recordings use x264 on the CPU",
-            "install gst-plugins-bad with the va plugin and a VA driver \
-             (intel-media-driver for Intel, mesa for AMD)",
+            no_va_encoder_fix(va, fix),
         )
     } else if probes_va_factory(opts, va.vendor, &va.gst_encoders) {
         match &va.gst_factory {
             Some(factory) => ok(id, NOTHING, format!("{factory} records on {device}")),
-            None => fail(
-                id,
-                NOTHING,
-                format!(
+            None => {
+                let detail = format!(
                     "none of {} encodes on {device}: recordings use x264 on the CPU",
                     va.gst_encoders.join(", ")
-                ),
-                "install the VA driver of that node (intel-media-driver for Intel, \
-                 mesa for AMD)",
-            ),
+                );
+                // A probed node is Intel or AMD.
+                match va_gpu(va.vendor) {
+                    Some(gpu) => fail_fix(id, NOTHING, detail, fix(Need::VaDriver(gpu))),
+                    None => fail(id, NOTHING, detail, "install the VA driver of that node"),
+                }
+            }
         }
     } else {
         ok(id, NOTHING, va.gst_encoders.join(", "))
@@ -716,17 +778,21 @@ const ENCODERS: &[(&str, &[Feature], &str)] = &[
 /// takes.
 const DECODERS: &[(&str, &str)] = &[("h264", "the takes' video"), ("flac", "the takes' audio")];
 
-const FULL_FFMPEG: &str = "install a full ffmpeg build (NixOS: ffmpeg-full)";
-
-fn ffmpeg_checks(probe: &dyn Probe, va: &VaReport, opts: &DoctorOptions, checks: &mut Vec<Check>) {
+fn ffmpeg_checks(
+    probe: &dyn Probe,
+    va: &VaReport,
+    opts: &DoctorOptions,
+    fix: Fix<'_>,
+    checks: &mut Vec<Check>,
+) {
     let mut ffmpeg_ok = false;
     for program in ["ffmpeg", "ffprobe"] {
         let check = match probe.which(program) {
-            None => fail(
+            None => fail_fix(
                 program,
                 APP,
                 format!("{program} wasn't found on PATH"),
-                "install ffmpeg (a full build with libx264, libvpx and libopus; NixOS: ffmpeg-full)",
+                fix(Need::Ffmpeg),
             ),
             Some(path) => match probe.version(program) {
                 Ok(version) => {
@@ -747,7 +813,7 @@ fn ffmpeg_checks(probe: &dyn Probe, va: &VaReport, opts: &DoctorOptions, checks:
         return;
     }
     checks.push(match probe.ffmpeg_decoders() {
-        Ok(decoders) => decoders_check(&decoders),
+        Ok(decoders) => decoders_check(&decoders, fix),
         Err(e) => fail(
             "ffmpeg.decoders",
             APP,
@@ -759,11 +825,11 @@ fn ffmpeg_checks(probe: &dyn Probe, va: &VaReport, opts: &DoctorOptions, checks:
         Ok(demuxers) if demuxers.contains("matroska") => {
             ok("ffmpeg.demuxers", APP, "matroska (the takes' MKV files)")
         }
-        Ok(_) => fail(
+        Ok(_) => fail_fix(
             "ffmpeg.demuxers",
             APP,
             "ffmpeg can't read matroska (the takes' MKV files)",
-            FULL_FFMPEG,
+            fix(Need::FullFfmpeg),
         ),
         Err(e) => fail(
             "ffmpeg.demuxers",
@@ -779,11 +845,11 @@ fn ffmpeg_checks(probe: &dyn Probe, va: &VaReport, opts: &DoctorOptions, checks:
                 checks.push(if encoders.contains(*name) {
                     ok(&id, needed_for, format!("{name} ({role})"))
                 } else {
-                    fail(
+                    fail_fix(
                         &id,
                         needed_for,
                         format!("ffmpeg has no {name} encoder ({role})"),
-                        FULL_FFMPEG,
+                        fix(Need::FullFfmpeg),
                     )
                 });
             }
@@ -841,7 +907,7 @@ fn mp4_encoder_check(exporter: Option<&str>, checks: &mut [Check]) {
 /// codecs: ffmpeg's own or an external library's (`libopenh264` on
 /// Fedora's ffmpeg-free); hardware ones (`h264_cuvid`, `h264_qsv`) don't
 /// count.
-fn decoders_check(decoders: &BTreeMap<String, String>) -> Check {
+fn decoders_check(decoders: &BTreeMap<String, String>, fix: Fix<'_>) -> Check {
     let mut found = Vec::new();
     let mut missing = Vec::new();
     for (codec, role) in DECODERS {
@@ -860,16 +926,16 @@ fn decoders_check(decoders: &BTreeMap<String, String>) -> Check {
     if missing.is_empty() {
         ok("ffmpeg.decoders", APP, found.join(", "))
     } else {
-        fail(
+        fail_fix(
             "ffmpeg.decoders",
             APP,
             format!("ffmpeg can't decode {}", missing.join(", ")),
-            FULL_FFMPEG,
+            fix(Need::FullFfmpeg),
         )
     }
 }
 
-fn desktop_checks(probe: &dyn Probe, opts: &DoctorOptions, checks: &mut Vec<Check>) {
+fn desktop_checks(probe: &dyn Probe, opts: &DoctorOptions, fix: Fix<'_>, checks: &mut Vec<Check>) {
     // The fake backend captures test sources: it needs none of these.
     let real = |features: &'static [Feature]| {
         if opts.fake_backend { NOTHING } else { features }
@@ -877,11 +943,12 @@ fn desktop_checks(probe: &dyn Probe, opts: &DoctorOptions, checks: &mut Vec<Chec
     let screens = real(SCREENS);
     let portal = probe.portal();
     checks.push(match &portal {
-        Ok(info) if info.source_types.is_some_and(|t| t & 1 == 0) => fail(
+        // The backend that answers can't: the desktop's own can.
+        Ok(info) if info.source_types.is_some_and(|t| t & 1 == 0) => fail_fix(
             "portal.screencast",
             screens,
             "the ScreenCast portal can't capture monitors",
-            "use a portal backend that captures monitors (on niri: xdg-desktop-portal-gnome)",
+            fix(Need::ScreenCastPortal),
         ),
         Ok(info) if info.screencast_version >= 3 => {
             let mut detail = format!(
@@ -906,12 +973,11 @@ fn desktop_checks(probe: &dyn Probe, opts: &DoctorOptions, checks: &mut Vec<Chec
             ),
             "update xdg-desktop-portal and its backend",
         ),
-        Err(e) => fail(
+        Err(e) => fail_fix(
             "portal.screencast",
             screens,
             format!("no ScreenCast portal: {e}"),
-            "install xdg-desktop-portal with a ScreenCast backend (on niri: \
-             xdg-desktop-portal-gnome) and make sure it runs in your session",
+            fix(Need::ScreenCastPortal),
         ),
     });
     if let Ok(info) = &portal {
@@ -930,22 +996,19 @@ fn desktop_checks(probe: &dyn Probe, opts: &DoctorOptions, checks: &mut Vec<Chec
             ),
         });
     }
-    audio_checks(probe, real(AUDIO), checks);
+    audio_checks(probe, real(AUDIO), fix, checks);
 }
 
 /// `pactl` (its version first: Qrec reads `--format=json`) and, once it
 /// reached the sound server, `sound.server` with the server's name.
-fn audio_checks(probe: &dyn Probe, audio: &[Feature], checks: &mut Vec<Check>) {
+fn audio_checks(probe: &dyn Probe, audio: &[Feature], fix: Fix<'_>, checks: &mut Vec<Check>) {
     let (min_major, _) = PACTL_MIN;
     let Some(path) = probe.which("pactl") else {
-        checks.push(fail(
+        checks.push(fail_fix(
             "pactl",
             audio,
             "pactl wasn't found (it lists microphones and system audio)",
-            format!(
-                "install the PulseAudio client tools, {min_major} or newer \
-                 (pulseaudio-utils; NixOS: pkgs.pulseaudio)"
-            ),
+            fix(Need::Pactl),
         ));
         return;
     };
@@ -969,9 +1032,7 @@ fn audio_checks(probe: &dyn Probe, audio: &[Feature], checks: &mut Vec<Check>) {
                 "{version} is too old: Qrec needs pactl {min_major} or newer ({})",
                 path.display()
             ),
-            format!(
-                "update the PulseAudio client tools to {min_major} or newer (pulseaudio-utils)"
-            ),
+            format!("update the PulseAudio client tools (pactl) to {min_major} or newer"),
         ));
         return;
     }
@@ -984,12 +1045,11 @@ fn audio_checks(probe: &dyn Probe, audio: &[Feature], checks: &mut Vec<Check>) {
             ));
             checks.push(ok("sound.server", audio, name));
         }
-        Err(e) => checks.push(fail(
+        Err(e) => checks.push(fail_fix(
             "pactl",
             audio,
             format!("{} can't reach the sound server: {e}", path.display()),
-            "start the sound server: PipeWire with pipewire-pulse \
-             (NixOS: services.pipewire.pulse.enable = true), or PulseAudio",
+            fix(Need::SoundServer),
         )),
     }
 }
@@ -1081,7 +1141,7 @@ fn va_report(probe: &dyn Probe, opts: &DoctorOptions, gst_encoders: Vec<String>)
     }
 }
 
-fn va_check(va: &VaReport) -> Check {
+fn va_check(va: &VaReport, fix: Fix<'_>) -> Check {
     let Some(device) = &va.device else {
         return fail(
             "vaapi",
@@ -1114,15 +1174,14 @@ fn va_check(va: &VaReport) -> Check {
             format!("unset LIBVA_DRIVER_NAME or set it to {expected} (Qrec sets it at startup)"),
         );
     }
-    match (va.vendor, va.ffmpeg_h264) {
-        (Some(PCI_INTEL | PCI_AMD), Some(false)) => fail(
+    match (va_gpu(va.vendor), va.ffmpeg_h264) {
+        (Some(gpu), Some(false)) => fail_fix(
             "vaapi",
             NOTHING,
             detail,
-            "install the VA driver (intel-media-driver for Intel, mesa for AMD); \
-             exports use libx264 meanwhile",
+            fix(Need::VaDriver(gpu)).also("exports use libx264 meanwhile"),
         ),
-        (Some(PCI_INTEL | PCI_AMD), _) => ok("vaapi", NOTHING, detail),
+        (Some(_), _) => ok("vaapi", NOTHING, detail),
         _ => fail(
             "vaapi",
             NOTHING,
@@ -1992,9 +2051,15 @@ mod tests {
         assert_eq!(report.exit_code(), MISSING_DEPENDENCY_EXIT);
         let missing: Vec<&str> = report.missing().iter().map(|c| c.id.as_str()).collect();
         assert_eq!(missing, ["gst.gtk4paintablesink", "gst.h264dec"]);
+        // The dev box is NixOS: its fix is the Nix package's.
+        let h264dec = check(&report, "gst.h264dec");
         assert_eq!(
-            check(&report, "gst.h264dec").hint.as_deref(),
-            Some("install gst-libav (avdec_h264)")
+            h264dec.hint.as_deref(),
+            Some("run qrec from its Nix package, which ships gst_all_1.gst-libav")
+        );
+        assert_eq!(
+            h264dec.fix.as_ref().map(|f| f.packages.clone()),
+            Some(vec!["gst_all_1.gst-libav".to_owned()])
         );
         let error = report.missing_dependency().unwrap();
         assert_eq!(error.code, ErrorCode::MissingDependency);
@@ -2002,7 +2067,10 @@ mod tests {
         assert_eq!(error.message, "missing: gst.gtk4paintablesink, gst.h264dec");
         let text = report.to_text();
         assert!(text.contains("MISSING   gst.h264dec"), "{text}");
-        assert!(text.contains("→ install gst-libav (avdec_h264)"), "{text}");
+        assert!(
+            text.contains("→ run qrec from its Nix package, which ships gst_all_1.gst-libav"),
+            "{text}"
+        );
         assert!(text.contains("Screen capture is off: "), "{text}");
         assert!(
             text.ends_with(
@@ -2011,6 +2079,24 @@ mod tests {
             ),
             "{text}"
         );
+
+        // In the flake's dev shell, `nix develop` (S23's frame).
+        fake.platform.nix_shell = true;
+        let report = run_with(&fake, &opts());
+        let gtk4 = check(&report, "gst.gtk4paintablesink").fix.clone().unwrap();
+        assert_eq!(gtk4.command.as_deref(), Some("nix develop"));
+        assert_eq!(
+            gtk4.note.as_deref(),
+            Some("the flake provides gst-plugins-rs")
+        );
+        let json = report.to_json();
+        assert_eq!(json["checks"][0]["id"], "gstreamer");
+        assert!(
+            json["checks"][0].get("fix").is_none(),
+            "a passed check has no fix"
+        );
+        let back: DoctorReport = serde_json::from_value(json).unwrap();
+        assert_eq!(back, report);
     }
 
     /// x264enc is needed for recording only when no VA encoder records.
@@ -2079,6 +2165,82 @@ mod tests {
             fake.factory_probed.get() == 3,
             "probed with probe_vaapi only"
         );
+    }
+
+    /// GStreamer lists no VA encoder: on an Intel or AMD node, the node's
+    /// driver first, then GStreamer's VA plugin; the plugin alone once
+    /// ffmpeg's h264_vaapi encoded on the node, or without such a node.
+    #[test]
+    fn no_va_encoder_hints_the_driver_then_the_plugin() {
+        let gnome = |os_release: &str| {
+            platform(
+                &[
+                    ("WAYLAND_DISPLAY", "wayland-0"),
+                    ("XDG_CURRENT_DESKTOP", "GNOME"),
+                ],
+                os_release,
+            )
+        };
+        // Stock Fedora on AMD: its Mesa doesn't encode H.264, so the VA
+        // plugin registers no encoder and h264_vaapi fails.
+        let mut fake = Fake::healthy();
+        fake.platform = gnome("ID=fedora\nVERSION_ID=44\n");
+        fake.nodes = vec![node("/dev/dri/renderD128", PCI_AMD)];
+        fake.env = [("LIBVA_DRIVER_NAME", "radeonsi")].into();
+        fake.startup.clear();
+        fake.va_encoders.clear();
+        fake.vaapi = Err("ffmpeg exited with status 1".to_owned());
+        let report = run_with(&fake, &opts());
+        assert_eq!(report.va.as_ref().unwrap().ffmpeg_h264, Some(false));
+        let va = check(&report, "gst.vah264enc");
+        let fix = va.fix.clone().unwrap();
+        assert_eq!(
+            fix.command.as_deref(),
+            Some("sudo dnf install mesa-va-drivers-freeworld")
+        );
+        assert_eq!(
+            fix.note.as_deref(),
+            Some(
+                "it comes from RPM Fusion, since Fedora's own Mesa doesn't encode H.264: \
+                 enable that repository first; if GStreamer still has no VA encoder: \
+                 install GStreamer's VA plugin (upstream gst-plugins-bad) with dnf"
+            )
+        );
+        assert_eq!(va.hint, Some(fix.line()));
+        // The `vaapi` check names the same driver.
+        let vaapi = check(&report, "vaapi").fix.clone().unwrap();
+        assert_eq!(vaapi.command, fix.command);
+        // Unprobed (the GUI's doctor), the driver isn't known to work: the same.
+        let unprobed = DoctorOptions {
+            probe_vaapi: false,
+            ..opts()
+        };
+        let report = run_with(&fake, &unprobed);
+        assert_eq!(check(&report, "gst.vah264enc").fix, Some(fix));
+
+        // Arch on Intel, whose h264_vaapi encodes: only the plugin is missing.
+        fake.platform = gnome("ID=arch\n");
+        fake.nodes = vec![node("/dev/dri/renderD128", PCI_INTEL)];
+        fake.env = [("LIBVA_DRIVER_NAME", "iHD")].into();
+        fake.vaapi = Ok(());
+        let report = run_with(&fake, &opts());
+        assert_eq!(report.va.as_ref().unwrap().ffmpeg_h264, Some(true));
+        let plugin = Some("sudo pacman -S gst-plugin-va");
+        assert_eq!(check(&report, "gst.vah264enc").hint.as_deref(), plugin);
+        let report = run_with(&fake, &unprobed);
+        assert_eq!(
+            check(&report, "gst.vah264enc").hint.as_deref(),
+            Some(
+                "install Intel's iHD VA-API driver (chips older than Broadwell need the i965 \
+                 one instead) with pacman; if GStreamer still has no VA encoder: \
+                 sudo pacman -S gst-plugin-va"
+            )
+        );
+        // No Intel or AMD node: the plugin.
+        fake.nodes = vec![node("/dev/dri/renderD128", PCI_NVIDIA)];
+        fake.env.clear();
+        let report = run_with(&fake, &opts());
+        assert_eq!(check(&report, "gst.vah264enc").hint.as_deref(), plugin);
     }
 
     /// libx264 is needed for MP4 exports only when h264_vaapi doesn't
@@ -2422,8 +2584,10 @@ mod tests {
                 ("libopenh264", "h264")
             ]
         );
+        // Fedora's fixes: the failed check carries RPM Fusion's ffmpeg.
+        let fedora_fix = |need| install_hint(need, &platform(&[], "ID=fedora\n"));
         assert_eq!(
-            decoders_check(&decoders).detail,
+            decoders_check(&decoders, &fedora_fix).detail,
             "h264 (the takes' video), flac (the takes' audio)"
         );
         // Fedora's ffmpeg-free: only OpenH264 decodes H.264; a hardware
@@ -2434,7 +2598,7 @@ mod tests {
             .map(|(n, c)| (n.clone(), c.clone()))
             .collect();
         assert_eq!(
-            decoders_check(&fedora).detail,
+            decoders_check(&fedora, &fedora_fix).detail,
             "libopenh264 for h264 (the takes' video), flac (the takes' audio)"
         );
         let cuda: BTreeMap<String, String> = decoders
@@ -2442,9 +2606,14 @@ mod tests {
             .filter(|(n, _)| *n == "h264_cuvid" || *n == "flac")
             .map(|(n, c)| (n.clone(), c.clone()))
             .collect();
-        let c = decoders_check(&cuda);
+        let c = decoders_check(&cuda, &fedora_fix);
         assert!(!c.ok && c.required, "{c:?}");
         assert_eq!(c.detail, "ffmpeg can't decode h264 (the takes' video)");
+        assert_eq!(
+            c.fix.as_ref().and_then(|f| f.command.as_deref()),
+            Some("sudo dnf swap ffmpeg-free ffmpeg --allowerasing")
+        );
+        assert_eq!(c.hint.as_deref(), c.fix.as_ref().map(Hint::line).as_deref());
         // `---` (ffmpeg 7+) or `--` (older); a device's flags hold a space.
         let demuxers = parse_demuxers(
             "Formats:\n D.. = Demuxing supported\n ..d = Is a device\n ---\n D   3dostr          \

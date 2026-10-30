@@ -1,0 +1,251 @@
+---
+source: crates/qrec-core/src/platform.rs
+expression: table
+---
+Gstreamer
+  debian    install GStreamer 1.24 or newer with apt
+  ubuntu    install GStreamer 1.24 or newer with apt
+  fedora    install GStreamer 1.24 or newer with dnf
+  arch      install GStreamer 1.24 or newer with pacman
+  suse      install GStreamer 1.24 or newer with zypper
+  nixos     run qrec from its Nix package, which ships gst_all_1.gstreamer · [gst_all_1.gstreamer]
+  alpine    install GStreamer 1.24 or newer with apk
+  void      install GStreamer 1.24 or newer with xbps-install
+  gentoo    install GStreamer 1.24 or newer with emerge
+  unknown   install GStreamer 1.24 or newer with your distribution's package manager
+  nix shell $ nix develop · the flake provides gstreamer
+Ges
+  debian    install GStreamer Editing Services (upstream gst-editing-services) with apt
+  ubuntu    install GStreamer Editing Services (upstream gst-editing-services) with apt
+  fedora    install GStreamer Editing Services (upstream gst-editing-services) with dnf
+  arch      $ sudo pacman -S gst-editing-services · [gst-editing-services]
+  suse      install GStreamer Editing Services (upstream gst-editing-services) with zypper
+  nixos     run qrec from its Nix package, which ships gst_all_1.gst-editing-services · [gst_all_1.gst-editing-services]
+  alpine    install GStreamer Editing Services (upstream gst-editing-services) with apk
+  void      install GStreamer Editing Services (upstream gst-editing-services) with xbps-install
+  gentoo    install GStreamer Editing Services (upstream gst-editing-services) with emerge
+  unknown   install GStreamer Editing Services (upstream gst-editing-services) with your distribution's package manager
+  nix shell $ nix develop · the flake provides gst-editing-services
+GstPluginsBase
+  debian    install GStreamer's base plugins (upstream gst-plugins-base) with apt
+  ubuntu    install GStreamer's base plugins (upstream gst-plugins-base) with apt
+  fedora    install GStreamer's base plugins (upstream gst-plugins-base) with dnf
+  arch      $ sudo pacman -S gst-plugins-base · [gst-plugins-base]
+  suse      install GStreamer's base plugins (upstream gst-plugins-base) with zypper
+  nixos     run qrec from its Nix package, which ships gst_all_1.gst-plugins-base · [gst_all_1.gst-plugins-base]
+  alpine    install GStreamer's base plugins (upstream gst-plugins-base) with apk
+  void      install GStreamer's base plugins (upstream gst-plugins-base) with xbps-install
+  gentoo    install GStreamer's base plugins (upstream gst-plugins-base) with emerge
+  unknown   install GStreamer's base plugins (upstream gst-plugins-base) with your distribution's package manager
+  nix shell $ nix develop · the flake provides gst-plugins-base
+GstPluginsGood
+  debian    install GStreamer's good plugins (upstream gst-plugins-good) with apt
+  ubuntu    install GStreamer's good plugins (upstream gst-plugins-good) with apt
+  fedora    install GStreamer's good plugins (upstream gst-plugins-good) with dnf
+  arch      $ sudo pacman -S gst-plugins-good · [gst-plugins-good]
+  suse      install GStreamer's good plugins (upstream gst-plugins-good) with zypper
+  nixos     run qrec from its Nix package, which ships gst_all_1.gst-plugins-good · [gst_all_1.gst-plugins-good]
+  alpine    install GStreamer's good plugins (upstream gst-plugins-good) with apk
+  void      install GStreamer's good plugins (upstream gst-plugins-good) with xbps-install
+  gentoo    install GStreamer's good plugins (upstream gst-plugins-good) with emerge
+  unknown   install GStreamer's good plugins (upstream gst-plugins-good) with your distribution's package manager
+  nix shell $ nix develop · the flake provides gst-plugins-good
+GstPluginsBad
+  debian    install GStreamer's bad plugins (upstream gst-plugins-bad) with apt
+  ubuntu    install GStreamer's bad plugins (upstream gst-plugins-bad) with apt
+  fedora    install GStreamer's bad plugins (upstream gst-plugins-bad) with dnf
+  arch      $ sudo pacman -S gst-plugins-bad · [gst-plugins-bad]
+  suse      install GStreamer's bad plugins (upstream gst-plugins-bad) with zypper
+  nixos     run qrec from its Nix package, which ships gst_all_1.gst-plugins-bad · [gst_all_1.gst-plugins-bad]
+  alpine    install GStreamer's bad plugins (upstream gst-plugins-bad) with apk
+  void      install GStreamer's bad plugins (upstream gst-plugins-bad) with xbps-install
+  gentoo    install GStreamer's bad plugins (upstream gst-plugins-bad) with emerge
+  unknown   install GStreamer's bad plugins (upstream gst-plugins-bad) with your distribution's package manager
+  nix shell $ nix develop · the flake provides gst-plugins-bad
+GstX264
+  debian    install GStreamer's x264enc (upstream gst-plugins-ugly) with apt
+  ubuntu    install GStreamer's x264enc (upstream gst-plugins-ugly) with apt
+  fedora    $ sudo dnf install gstreamer1-plugins-ugly · it comes from RPM Fusion, since Fedora's own plugins have no x264enc: enable that repository first · [gstreamer1-plugins-ugly]
+  arch      $ sudo pacman -S gst-plugins-ugly · [gst-plugins-ugly]
+  suse      install GStreamer's x264enc (upstream gst-plugins-ugly) with zypper
+  nixos     run qrec from its Nix package, which ships gst_all_1.gst-plugins-ugly · [gst_all_1.gst-plugins-ugly]
+  alpine    install GStreamer's x264enc (upstream gst-plugins-ugly) with apk
+  void      install GStreamer's x264enc (upstream gst-plugins-ugly) with xbps-install
+  gentoo    install GStreamer's x264enc (upstream gst-plugins-ugly) with emerge
+  unknown   install GStreamer's x264enc (upstream gst-plugins-ugly) with your distribution's package manager
+  nix shell $ nix develop · the flake provides gst-plugins-ugly
+GstH264Decoder
+  debian    install GStreamer's libav plugin, avdec_h264 (upstream gst-libav) with apt
+  ubuntu    install GStreamer's libav plugin, avdec_h264 (upstream gst-libav) with apt
+  fedora    $ sudo dnf install gstreamer1-plugin-openh264 · OpenH264 may not decode High-profile takes · [gstreamer1-plugin-openh264]
+  arch      $ sudo pacman -S gst-libav · [gst-libav]
+  suse      install GStreamer's libav plugin, avdec_h264 (upstream gst-libav) with zypper
+  nixos     run qrec from its Nix package, which ships gst_all_1.gst-libav · [gst_all_1.gst-libav]
+  alpine    install GStreamer's libav plugin, avdec_h264 (upstream gst-libav) with apk
+  void      install GStreamer's libav plugin, avdec_h264 (upstream gst-libav) with xbps-install
+  gentoo    install GStreamer's libav plugin, avdec_h264 (upstream gst-libav) with emerge
+  unknown   install GStreamer's libav plugin, avdec_h264 (upstream gst-libav) with your distribution's package manager
+  nix shell $ nix develop · the flake provides gst-libav
+GstGtk4
+  debian    $ sudo apt install gstreamer1.0-gtk4 · [gstreamer1.0-gtk4]
+  ubuntu    $ sudo apt install gstreamer1.0-gtk4 · [gstreamer1.0-gtk4]
+  fedora    $ sudo dnf install gstreamer1-plugin-gtk4 · [gstreamer1-plugin-gtk4]
+  arch      $ sudo pacman -S gst-plugin-gtk4 · [gst-plugin-gtk4]
+  suse      install GStreamer's GTK 4 plugin, gtk4paintablesink (upstream gst-plugins-rs) with zypper
+  nixos     run qrec from its Nix package, which ships gst_all_1.gst-plugins-rs · [gst_all_1.gst-plugins-rs]
+  alpine    install GStreamer's GTK 4 plugin, gtk4paintablesink (upstream gst-plugins-rs) with apk
+  void      install GStreamer's GTK 4 plugin, gtk4paintablesink (upstream gst-plugins-rs) with xbps-install
+  gentoo    install GStreamer's GTK 4 plugin, gtk4paintablesink (upstream gst-plugins-rs) with emerge
+  unknown   install GStreamer's GTK 4 plugin, gtk4paintablesink (upstream gst-plugins-rs) with your distribution's package manager
+  nix shell $ nix develop · the flake provides gst-plugins-rs
+GstPipewire
+  debian    $ sudo apt install gstreamer1.0-pipewire · [gstreamer1.0-pipewire]
+  ubuntu    $ sudo apt install gstreamer1.0-pipewire · [gstreamer1.0-pipewire]
+  fedora    $ sudo dnf install pipewire-gstreamer · [pipewire-gstreamer]
+  arch      $ sudo pacman -S gst-plugin-pipewire · [gst-plugin-pipewire]
+  suse      $ sudo zypper install gstreamer-plugin-pipewire · [gstreamer-plugin-pipewire]
+  nixos     run qrec from its Nix package, which ships pipewire · [pipewire]
+  alpine    install PipeWire's GStreamer plugin (pipewiresrc) with apk
+  void      install PipeWire's GStreamer plugin (pipewiresrc) with xbps-install
+  gentoo    install PipeWire's GStreamer plugin (pipewiresrc) with emerge
+  unknown   install PipeWire's GStreamer plugin (pipewiresrc) with your distribution's package manager
+  nix shell $ nix develop · the flake provides pipewire
+GstVa
+  debian    install GStreamer's VA plugin (upstream gst-plugins-bad) with apt
+  ubuntu    install GStreamer's VA plugin (upstream gst-plugins-bad) with apt
+  fedora    install GStreamer's VA plugin (upstream gst-plugins-bad) with dnf
+  arch      $ sudo pacman -S gst-plugin-va · [gst-plugin-va]
+  suse      install GStreamer's VA plugin (upstream gst-plugins-bad) with zypper
+  nixos     run qrec from its Nix package, which ships gst_all_1.gst-plugins-bad · [gst_all_1.gst-plugins-bad]
+  alpine    install GStreamer's VA plugin (upstream gst-plugins-bad) with apk
+  void      install GStreamer's VA plugin (upstream gst-plugins-bad) with xbps-install
+  gentoo    install GStreamer's VA plugin (upstream gst-plugins-bad) with emerge
+  unknown   install GStreamer's VA plugin (upstream gst-plugins-bad) with your distribution's package manager
+  nix shell $ nix develop · the flake provides gst-plugins-bad
+Ffmpeg
+  debian    $ sudo apt install ffmpeg · [ffmpeg]
+  ubuntu    $ sudo apt install ffmpeg · [ffmpeg]
+  fedora    $ sudo dnf install ffmpeg-free · RPM Fusion's ffmpeg also has libx264 for MP4 exports: sudo dnf swap ffmpeg-free ffmpeg --allowerasing · [ffmpeg-free]
+  arch      $ sudo pacman -S ffmpeg · [ffmpeg]
+  suse      $ sudo zypper install ffmpeg · [ffmpeg]
+  nixos     run qrec from its Nix package, which ships ffmpeg-full · [ffmpeg-full]
+  alpine    install ffmpeg (with ffprobe) with apk
+  void      install ffmpeg (with ffprobe) with xbps-install
+  gentoo    install ffmpeg (with ffprobe) with emerge
+  unknown   install ffmpeg (with ffprobe) with your distribution's package manager
+  nix shell $ nix develop · the flake provides ffmpeg-full
+FullFfmpeg
+  debian    install a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1) with apt
+  ubuntu    install a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1) with apt
+  fedora    $ sudo dnf swap ffmpeg-free ffmpeg --allowerasing · it comes from RPM Fusion: enable that repository first · [ffmpeg]
+  arch      install a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1) with pacman
+  suse      install a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1) with zypper
+  nixos     run qrec from its Nix package, which ships ffmpeg-full · [ffmpeg-full]
+  alpine    install a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1) with apk
+  void      install a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1) with xbps-install
+  gentoo    install a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1) with emerge
+  unknown   install a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1) with your distribution's package manager
+  nix shell $ nix develop · the flake provides ffmpeg-full
+Pactl
+  debian    install the PulseAudio client tools (pactl) 16 or newer with apt
+  ubuntu    install the PulseAudio client tools (pactl) 16 or newer with apt
+  fedora    install the PulseAudio client tools (pactl) 16 or newer with dnf
+  arch      install the PulseAudio client tools (pactl) 16 or newer with pacman
+  suse      install the PulseAudio client tools (pactl) 16 or newer with zypper
+  nixos     run qrec from its Nix package, which ships pulseaudio · [pulseaudio]
+  alpine    install the PulseAudio client tools (pactl) 16 or newer with apk
+  void      install the PulseAudio client tools (pactl) 16 or newer with xbps-install
+  gentoo    install the PulseAudio client tools (pactl) 16 or newer with emerge
+  unknown   install the PulseAudio client tools (pactl) 16 or newer with your distribution's package manager
+  nix shell $ nix develop · the flake provides pulseaudio
+SoundServer
+  debian    start the sound server: PipeWire with pipewire-pulse, or PulseAudio
+  ubuntu    start the sound server: PipeWire with pipewire-pulse, or PulseAudio
+  fedora    start the sound server: PipeWire with pipewire-pulse, or PulseAudio
+  arch      start the sound server: PipeWire with pipewire-pulse, or PulseAudio
+  suse      start the sound server: PipeWire with pipewire-pulse, or PulseAudio
+  nixos     start the sound server: PipeWire with services.pipewire.pulse.enable = true, or PulseAudio
+  alpine    start the sound server: PipeWire with pipewire-pulse, or PulseAudio
+  void      start the sound server: PipeWire with pipewire-pulse, or PulseAudio
+  gentoo    start the sound server: PipeWire with pipewire-pulse, or PulseAudio
+  unknown   start the sound server: PipeWire with pipewire-pulse, or PulseAudio
+  nix shell start the sound server: PipeWire with pipewire-pulse, or PulseAudio
+ScreenCastPortal
+  debian    install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+  ubuntu    install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+  fedora    install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+  arch      install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+  suse      install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+  nixos     install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+  alpine    install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+  void      install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+  gentoo    install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+  unknown   install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+  nix shell install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+VaDriver(Intel)
+  debian    install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with apt
+  ubuntu    install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with apt
+  fedora    $ sudo dnf install intel-media-driver · it comes from RPM Fusion's nonfree repository: enable it first; Intel chips older than Broadwell need the i965 driver instead · [intel-media-driver]
+  arch      install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with pacman
+  suse      install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with zypper
+  nixos     add Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) to your NixOS configuration
+  alpine    install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with apk
+  void      install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with xbps-install
+  gentoo    install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with emerge
+  unknown   install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with your distribution's package manager
+  nix shell install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with apt
+VaDriver(IntelLegacy)
+  debian    install Intel's i965 VA-API driver (for chips older than Broadwell) with apt
+  ubuntu    install Intel's i965 VA-API driver (for chips older than Broadwell) with apt
+  fedora    install Intel's i965 VA-API driver (for chips older than Broadwell) with dnf
+  arch      install Intel's i965 VA-API driver (for chips older than Broadwell) with pacman
+  suse      install Intel's i965 VA-API driver (for chips older than Broadwell) with zypper
+  nixos     add Intel's i965 VA-API driver (for chips older than Broadwell) to your NixOS configuration
+  alpine    install Intel's i965 VA-API driver (for chips older than Broadwell) with apk
+  void      install Intel's i965 VA-API driver (for chips older than Broadwell) with xbps-install
+  gentoo    install Intel's i965 VA-API driver (for chips older than Broadwell) with emerge
+  unknown   install Intel's i965 VA-API driver (for chips older than Broadwell) with your distribution's package manager
+  nix shell install Intel's i965 VA-API driver (for chips older than Broadwell) with apt
+VaDriver(Amd)
+  debian    install Mesa's VA-API driver (radeonsi) with apt
+  ubuntu    install Mesa's VA-API driver (radeonsi) with apt
+  fedora    $ sudo dnf install mesa-va-drivers-freeworld · it comes from RPM Fusion, since Fedora's own Mesa doesn't encode H.264: enable that repository first · [mesa-va-drivers-freeworld]
+  arch      install Mesa's VA-API driver (radeonsi) with pacman
+  suse      install Mesa's VA-API driver (radeonsi) with zypper
+  nixos     add Mesa's VA-API driver (radeonsi) to your NixOS configuration
+  alpine    install Mesa's VA-API driver (radeonsi) with apk
+  void      install Mesa's VA-API driver (radeonsi) with xbps-install
+  gentoo    install Mesa's VA-API driver (radeonsi) with emerge
+  unknown   install Mesa's VA-API driver (radeonsi) with your distribution's package manager
+  nix shell install Mesa's VA-API driver (radeonsi) with apt
+WlClipboard
+  debian    install wl-copy (upstream wl-clipboard) with apt
+  ubuntu    install wl-copy (upstream wl-clipboard) with apt
+  fedora    install wl-copy (upstream wl-clipboard) with dnf
+  arch      install wl-copy (upstream wl-clipboard) with pacman
+  suse      install wl-copy (upstream wl-clipboard) with zypper
+  nixos     run qrec from its Nix package, which ships wl-clipboard · [wl-clipboard]
+  alpine    install wl-copy (upstream wl-clipboard) with apk
+  void      install wl-copy (upstream wl-clipboard) with xbps-install
+  gentoo    install wl-copy (upstream wl-clipboard) with emerge
+  unknown   install wl-copy (upstream wl-clipboard) with your distribution's package manager
+  nix shell $ nix develop · the flake provides wl-clipboard
+ScreenCastPortal by desktop (Wayland)
+  niri      on niri, install xdg-desktop-portal-gnome, then log out and back in
+  gnome     install xdg-desktop-portal-gnome, GNOME's ScreenCast backend, then log out and back in
+  kde       install xdg-desktop-portal-kde, KDE's ScreenCast backend, then log out and back in
+  sway      install xdg-desktop-portal-wlr and a screen chooser it runs (slurp, wofi, rofi or fuzzel; without one it picks any output); choose it in ~/.config/xdg-desktop-portal/portals.conf (org.freedesktop.impl.portal.ScreenCast=wlr under [preferred]); have your compositor run `dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP`; start the portal with XDPW_PERSIST_MODE=permanent so it remembers the screen choice
+  hyprland  install xdg-desktop-portal-hyprland, then log out and back in; in its screen picker, tick the box that allows a restore token so the screen choice is remembered
+  river     install xdg-desktop-portal-wlr and a screen chooser it runs (slurp, wofi, rofi or fuzzel; without one it picks any output); choose it in ~/.config/xdg-desktop-portal/portals.conf (org.freedesktop.impl.portal.ScreenCast=wlr under [preferred]); have your compositor run `dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP`; start the portal with XDPW_PERSIST_MODE=permanent so it remembers the screen choice
+  wayfire   install xdg-desktop-portal-wlr and a screen chooser it runs (slurp, wofi, rofi or fuzzel; without one it picks any output); choose it in ~/.config/xdg-desktop-portal/portals.conf (org.freedesktop.impl.portal.ScreenCast=wlr under [preferred]); have your compositor run `dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP`; start the portal with XDPW_PERSIST_MODE=permanent so it remembers the screen choice
+  labwc     install xdg-desktop-portal-wlr and a screen chooser it runs (slurp, wofi, rofi or fuzzel; without one it picks any output); choose it in ~/.config/xdg-desktop-portal/portals.conf (org.freedesktop.impl.portal.ScreenCast=wlr under [preferred]); have your compositor run `dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP`; start the portal with XDPW_PERSIST_MODE=permanent so it remembers the screen choice
+  cosmic    install xdg-desktop-portal-cosmic, COSMIC's ScreenCast backend, then log out and back in
+  xfce      install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+  mate      install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+  cinnamon  install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+  i3        install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+  lxqt      install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+  unknown   install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+  x11 xfce  an X11 session needs no ScreenCast portal
+  x11 kde   an X11 session needs no ScreenCast portal
+  no display install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in

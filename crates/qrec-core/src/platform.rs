@@ -8,6 +8,11 @@
 //! and whether Qrec's executable lies under `$SNAP`, which the shell reads
 //! once at startup (`qrec_shell::platform`). Nothing here touches a file
 //! or a device.
+//!
+//! [`install_hint`] is the doctor's table of fixes: what a failed check
+//! needs ([`Need`]) as this distribution's packages and install command,
+//! the desktop's ScreenCast backend, or a generic sentence where the
+//! package names aren't known.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -413,6 +418,414 @@ fn unquote(raw: &str) -> String {
     out
 }
 
+// ------------------------------------------------------------ install hints
+
+/// What a failed doctor check needs: a package, the sound server, the
+/// desktop's ScreenCast portal backend or a GPU's VA-API driver.
+/// [`install_hint`] says how to get it where Qrec runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Need {
+    /// GStreamer itself, 1.24 or newer.
+    Gstreamer,
+    /// GStreamer Editing Services.
+    Ges,
+    /// gst-plugins-base: compositor, videorate, the test sources.
+    GstPluginsBase,
+    /// gst-plugins-good: v4l2src, pulsesrc, the Matroska and FLAC elements.
+    GstPluginsGood,
+    /// gst-plugins-bad: h264parse.
+    GstPluginsBad,
+    /// x264enc, from gst-plugins-ugly.
+    GstX264,
+    /// A software H.264 decoder for the editor's preview: gst-libav's
+    /// avdec_h264 (or OpenH264's decoder).
+    GstH264Decoder,
+    /// gtk4paintablesink, gst-plugins-rs's GTK 4 plugin.
+    GstGtk4,
+    /// pipewiresrc, PipeWire's GStreamer plugin.
+    GstPipewire,
+    /// GStreamer's VA plugin (`va*h264enc`).
+    GstVa,
+    /// ffmpeg and ffprobe.
+    Ffmpeg,
+    /// An ffmpeg with the encoders, decoders and demuxer Qrec uses.
+    FullFfmpeg,
+    /// pactl 16 or newer.
+    Pactl,
+    /// A sound server pactl reaches: PipeWire with pipewire-pulse, or
+    /// PulseAudio.
+    SoundServer,
+    /// xdg-desktop-portal with the desktop's ScreenCast backend.
+    ScreenCastPortal,
+    /// A GPU's VA-API driver.
+    VaDriver(VaGpu),
+    /// wl-copy, from wl-clipboard.
+    WlClipboard,
+}
+
+impl Need {
+    /// Every need, in the table's order.
+    pub const ALL: [Need; 19] = [
+        Need::Gstreamer,
+        Need::Ges,
+        Need::GstPluginsBase,
+        Need::GstPluginsGood,
+        Need::GstPluginsBad,
+        Need::GstX264,
+        Need::GstH264Decoder,
+        Need::GstGtk4,
+        Need::GstPipewire,
+        Need::GstVa,
+        Need::Ffmpeg,
+        Need::FullFfmpeg,
+        Need::Pactl,
+        Need::SoundServer,
+        Need::ScreenCastPortal,
+        Need::VaDriver(VaGpu::Intel),
+        Need::VaDriver(VaGpu::IntelLegacy),
+        Need::VaDriver(VaGpu::Amd),
+        Need::WlClipboard,
+    ];
+
+    /// What it is, as the generic sentence names it: upstream's names
+    /// say "upstream", so no one takes them for this distribution's.
+    fn what(self) -> &'static str {
+        match self {
+            Need::Gstreamer => "GStreamer 1.24 or newer",
+            Need::Ges => "GStreamer Editing Services (upstream gst-editing-services)",
+            Need::GstPluginsBase => "GStreamer's base plugins (upstream gst-plugins-base)",
+            Need::GstPluginsGood => "GStreamer's good plugins (upstream gst-plugins-good)",
+            Need::GstPluginsBad => "GStreamer's bad plugins (upstream gst-plugins-bad)",
+            Need::GstX264 => "GStreamer's x264enc (upstream gst-plugins-ugly)",
+            Need::GstH264Decoder => "GStreamer's libav plugin, avdec_h264 (upstream gst-libav)",
+            Need::GstGtk4 => {
+                "GStreamer's GTK 4 plugin, gtk4paintablesink (upstream gst-plugins-rs)"
+            }
+            Need::GstPipewire => "PipeWire's GStreamer plugin (pipewiresrc)",
+            Need::GstVa => "GStreamer's VA plugin (upstream gst-plugins-bad)",
+            Need::Ffmpeg => "ffmpeg (with ffprobe)",
+            Need::FullFfmpeg => "a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1)",
+            Need::Pactl => "the PulseAudio client tools (pactl) 16 or newer",
+            Need::SoundServer => "the sound server: PipeWire with pipewire-pulse, or PulseAudio",
+            Need::ScreenCastPortal => {
+                "xdg-desktop-portal and your desktop's ScreenCast backend \
+                 (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic)"
+            }
+            Need::VaDriver(VaGpu::Intel) => {
+                "Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead)"
+            }
+            Need::VaDriver(VaGpu::IntelLegacy) => {
+                "Intel's i965 VA-API driver (for chips older than Broadwell)"
+            }
+            Need::VaDriver(VaGpu::Amd) => "Mesa's VA-API driver (radeonsi)",
+            Need::WlClipboard => "wl-copy (upstream wl-clipboard)",
+        }
+    }
+
+    /// The attribute of the Nix package set that Qrec's flake ships it as
+    /// (its dev shell and its package); `None` for what the system
+    /// provides (the sound server, the portal, GPU drivers).
+    fn nix_attribute(self) -> Option<&'static str> {
+        Some(match self {
+            Need::Gstreamer => "gst_all_1.gstreamer",
+            Need::Ges => "gst_all_1.gst-editing-services",
+            Need::GstPluginsBase => "gst_all_1.gst-plugins-base",
+            Need::GstPluginsGood => "gst_all_1.gst-plugins-good",
+            Need::GstPluginsBad | Need::GstVa => "gst_all_1.gst-plugins-bad",
+            Need::GstX264 => "gst_all_1.gst-plugins-ugly",
+            Need::GstH264Decoder => "gst_all_1.gst-libav",
+            Need::GstGtk4 => "gst_all_1.gst-plugins-rs",
+            Need::GstPipewire => "pipewire",
+            Need::Ffmpeg | Need::FullFfmpeg => "ffmpeg-full",
+            Need::Pactl => "pulseaudio",
+            Need::WlClipboard => "wl-clipboard",
+            Need::SoundServer | Need::ScreenCastPortal | Need::VaDriver(_) => return None,
+        })
+    }
+}
+
+/// A GPU that encodes H.264 through VA-API, by vendor and generation
+/// (A§8.10: NVIDIA never does).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VaGpu {
+    /// Intel, Broadwell (2014) or newer: the iHD driver. Its hint names the
+    /// older chips' i965 too, for when the generation isn't known.
+    Intel,
+    /// Intel older than Broadwell: the i965 driver.
+    IntelLegacy,
+    /// AMD: Mesa's radeonsi.
+    Amd,
+}
+
+/// How to get a [`Need`] here ([`install_hint`]). JSON: `{"packages":
+/// ["gstreamer1.0-gtk4"], "command": "sudo apt install gstreamer1.0-gtk4",
+/// "note": null}`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Hint {
+    /// This distribution's packages, or the Nix attribute on NixOS; empty
+    /// where Qrec doesn't know their names, or when nothing is installed.
+    pub packages: Vec<String>,
+    /// The command to copy: the family's installer with `packages`
+    /// (`sudo apt install …`), Fedora's `dnf swap`, or `nix develop` in a
+    /// Nix shell; `None` when there is no command to give.
+    pub command: Option<String>,
+    /// What else to know or do, as a clause ("it comes from RPM Fusion:
+    /// enable that repository first"); without a command, the whole hint.
+    pub note: Option<String>,
+}
+
+impl Hint {
+    /// A hint that is only its note: nothing to install or copy.
+    fn advice(note: impl Into<String>) -> Hint {
+        Hint {
+            note: Some(note.into()),
+            ..Hint::default()
+        }
+    }
+
+    /// The hint in one line: the command with the note in parentheses, or
+    /// the note alone (the doctor's `hint`).
+    pub fn line(&self) -> String {
+        match (&self.command, &self.note) {
+            (Some(command), Some(note)) => format!("{command} ({note})"),
+            (Some(command), None) => command.clone(),
+            (None, Some(note)) => note.clone(),
+            (None, None) => self.packages.join(" "),
+        }
+    }
+
+    /// `more` after the note: the doctor's own advice for a check ("if
+    /// it hangs, …").
+    pub fn also(mut self, more: &str) -> Hint {
+        self.note = Some(match self.note.take() {
+            Some(note) => format!("{note}; {more}"),
+            None => more.to_owned(),
+        });
+        self
+    }
+}
+
+/// How to get `need` on `platform`: inside a Nix shell, `nix develop` for
+/// what Qrec's flake ships; on NixOS, its Nix package; elsewhere this
+/// family's packages with its install command (`sudo apt install …`,
+/// `sudo dnf install …`, `sudo pacman -S …`, `sudo zypper install …`)
+/// where their names are known, else a sentence naming what to install and
+/// the family's package manager. The ScreenCast portal follows the session
+/// and the desktop (an X11 session needs none). Package names are the ones
+/// the distributions' repositories list (checked against their package
+/// lists, October 2026); a family whose name for it isn't known gets the
+/// sentence.
+pub fn install_hint(need: Need, platform: &HostPlatform) -> Hint {
+    let family = platform.distro;
+    match need {
+        Need::ScreenCastPortal => return portal_hint(platform),
+        Need::SoundServer => return sound_server_hint(family),
+        _ => {}
+    }
+    if let Some(attribute) = need.nix_attribute() {
+        let name = attribute.trim_start_matches("gst_all_1.");
+        if platform.nix_shell {
+            return Hint {
+                packages: Vec::new(),
+                command: Some("nix develop".to_owned()),
+                note: Some(format!("the flake provides {name}")),
+            };
+        }
+        if family == DistroFamily::NixOs {
+            return Hint {
+                packages: vec![attribute.to_owned()],
+                command: None,
+                note: Some(format!(
+                    "run qrec from its Nix package, which ships {attribute}"
+                )),
+            };
+        }
+    }
+    match known_packages(need, family) {
+        Some(known) => {
+            let command = known
+                .command
+                .map(str::to_owned)
+                .or_else(|| family.install_command(known.packages));
+            Hint {
+                packages: known.packages.iter().map(|p| (*p).to_owned()).collect(),
+                command,
+                note: known.note.map(str::to_owned),
+            }
+        }
+        None => Hint::advice(family.generic_install(need.what())),
+    }
+}
+
+/// A family's packages for a need.
+struct Known {
+    packages: &'static [&'static str],
+    /// The command when it isn't the family's installer with `packages`.
+    command: Option<&'static str>,
+    note: Option<&'static str>,
+}
+
+const RPM_FUSION: &str = "it comes from RPM Fusion: enable that repository first";
+
+/// The packages each family names a need with, where they are known: the
+/// distributions' package lists (Debian 13, Ubuntu 26.04, Fedora 44, Arch,
+/// Tumbleweed) and Fedora's codec situation (RPM Fusion). Every other
+/// pair is `None`: the generic sentence.
+fn known_packages(need: Need, family: DistroFamily) -> Option<Known> {
+    use DistroFamily::{Arch, Debian, Fedora, Suse, Ubuntu};
+    let known = |packages, note| {
+        Some(Known {
+            packages,
+            command: None,
+            note,
+        })
+    };
+    match (need, family) {
+        (Need::GstGtk4, Debian | Ubuntu) => known(&["gstreamer1.0-gtk4"], None),
+        (Need::GstGtk4, Fedora) => known(&["gstreamer1-plugin-gtk4"], None),
+        (Need::GstGtk4, Arch) => known(&["gst-plugin-gtk4"], None),
+        (Need::GstPipewire, Debian | Ubuntu) => known(&["gstreamer1.0-pipewire"], None),
+        (Need::GstPipewire, Fedora) => known(&["pipewire-gstreamer"], None),
+        (Need::GstPipewire, Arch) => known(&["gst-plugin-pipewire"], None),
+        (Need::GstPipewire, Suse) => known(&["gstreamer-plugin-pipewire"], None),
+        (Need::GstX264, Fedora) => known(
+            &["gstreamer1-plugins-ugly"],
+            Some(
+                "it comes from RPM Fusion, since Fedora's own plugins have no x264enc: \
+                 enable that repository first",
+            ),
+        ),
+        (Need::GstX264, Arch) => known(&["gst-plugins-ugly"], None),
+        (Need::GstH264Decoder, Fedora) => known(
+            &["gstreamer1-plugin-openh264"],
+            Some("OpenH264 may not decode High-profile takes"),
+        ),
+        (Need::GstH264Decoder, Arch) => known(&["gst-libav"], None),
+        (Need::GstPluginsBase, Arch) => known(&["gst-plugins-base"], None),
+        (Need::GstPluginsGood, Arch) => known(&["gst-plugins-good"], None),
+        (Need::GstPluginsBad, Arch) => known(&["gst-plugins-bad"], None),
+        (Need::GstVa, Arch) => known(&["gst-plugin-va"], None),
+        (Need::Ges, Arch) => known(&["gst-editing-services"], None),
+        (Need::Ffmpeg, Debian | Ubuntu | Arch | Suse) => known(&["ffmpeg"], None),
+        (Need::Ffmpeg, Fedora) => known(
+            &["ffmpeg-free"],
+            Some(
+                "RPM Fusion's ffmpeg also has libx264 for MP4 exports: \
+                 sudo dnf swap ffmpeg-free ffmpeg --allowerasing",
+            ),
+        ),
+        (Need::FullFfmpeg, Fedora) => Some(Known {
+            packages: &["ffmpeg"],
+            command: Some("sudo dnf swap ffmpeg-free ffmpeg --allowerasing"),
+            note: Some(RPM_FUSION),
+        }),
+        (Need::VaDriver(VaGpu::Intel), Fedora) => known(
+            &["intel-media-driver"],
+            Some(
+                "it comes from RPM Fusion's nonfree repository: enable it first; Intel \
+                 chips older than Broadwell need the i965 driver instead",
+            ),
+        ),
+        (Need::VaDriver(VaGpu::Amd), Fedora) => known(
+            &["mesa-va-drivers-freeworld"],
+            Some(
+                "it comes from RPM Fusion, since Fedora's own Mesa doesn't encode H.264: \
+                 enable that repository first",
+            ),
+        ),
+        _ => None,
+    }
+}
+
+impl DistroFamily {
+    /// The command that installs `packages` here; `None` for a family
+    /// whose installer Qrec doesn't spell out.
+    fn install_command(self, packages: &[&str]) -> Option<String> {
+        let installer = match self {
+            DistroFamily::Debian | DistroFamily::Ubuntu => "sudo apt install",
+            DistroFamily::Fedora => "sudo dnf install",
+            DistroFamily::Arch => "sudo pacman -S",
+            DistroFamily::Suse => "sudo zypper install",
+            DistroFamily::NixOs
+            | DistroFamily::Alpine
+            | DistroFamily::Void
+            | DistroFamily::Gentoo
+            | DistroFamily::Unknown => return None,
+        };
+        Some(format!("{installer} {}", packages.join(" ")))
+    }
+
+    /// The generic sentence: install `what` with this family's package
+    /// manager (NixOS: your configuration).
+    fn generic_install(self, what: &str) -> String {
+        let manager = match self {
+            DistroFamily::Debian | DistroFamily::Ubuntu => "apt",
+            DistroFamily::Fedora => "dnf",
+            DistroFamily::Arch => "pacman",
+            DistroFamily::Suse => "zypper",
+            DistroFamily::Alpine => "apk",
+            DistroFamily::Void => "xbps-install",
+            DistroFamily::Gentoo => "emerge",
+            DistroFamily::NixOs => return format!("add {what} to your NixOS configuration"),
+            DistroFamily::Unknown => "your distribution's package manager",
+        };
+        format!("install {what} with {manager}")
+    }
+}
+
+/// A sound server pactl can't reach is usually one that isn't running:
+/// nothing to install, start one.
+fn sound_server_hint(family: DistroFamily) -> Hint {
+    Hint::advice(match family {
+        DistroFamily::NixOs => "start the sound server: PipeWire with \
+                                services.pipewire.pulse.enable = true, or PulseAudio"
+            .to_owned(),
+        _ => format!("start {}", Need::SoundServer.what()),
+    })
+}
+
+/// The ScreenCast backend of the desktop, and what it needs set up. An X11
+/// session needs none; Qrec doesn't know the backends' package names per
+/// distribution, so the hint names the backend.
+fn portal_hint(platform: &HostPlatform) -> Hint {
+    const RELOGIN: &str = "then log out and back in";
+    if platform.session == SessionType::X11 {
+        return Hint::advice("an X11 session needs no ScreenCast portal");
+    }
+    Hint::advice(match platform.desktop {
+        Desktop::Niri => format!("on niri, install xdg-desktop-portal-gnome, {RELOGIN}"),
+        Desktop::Gnome => {
+            format!("install xdg-desktop-portal-gnome, GNOME's ScreenCast backend, {RELOGIN}")
+        }
+        Desktop::Kde => {
+            format!("install xdg-desktop-portal-kde, KDE's ScreenCast backend, {RELOGIN}")
+        }
+        Desktop::Sway | Desktop::River | Desktop::Wayfire | Desktop::Labwc => {
+            "install xdg-desktop-portal-wlr and a screen chooser it runs (slurp, wofi, rofi or \
+             fuzzel; without one it picks any output); choose it in \
+             ~/.config/xdg-desktop-portal/portals.conf (org.freedesktop.impl.portal.ScreenCast=wlr \
+             under [preferred]); have your compositor run `dbus-update-activation-environment \
+             --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP`; start the portal with \
+             XDPW_PERSIST_MODE=permanent so it remembers the screen choice"
+                .to_owned()
+        }
+        Desktop::Hyprland => format!(
+            "install xdg-desktop-portal-hyprland, {RELOGIN}; in its screen picker, tick the box \
+             that allows a restore token so the screen choice is remembered"
+        ),
+        Desktop::Cosmic => {
+            format!("install xdg-desktop-portal-cosmic, COSMIC's ScreenCast backend, {RELOGIN}")
+        }
+        Desktop::Xfce
+        | Desktop::Mate
+        | Desktop::Cinnamon
+        | Desktop::I3
+        | Desktop::Other(_)
+        | Desktop::Unknown => format!("install {}, {RELOGIN}", Need::ScreenCastPortal.what()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::fmt::Write as _;
@@ -710,6 +1123,331 @@ mod tests {
         ) {
             let e = e.with(key, value);
             prop_assert_eq!(detect(&e).session, SessionType::Wayland);
+        }
+    }
+
+    // ------------------------------------------------------- install hints
+
+    const FAMILIES: [DistroFamily; 10] = [
+        DistroFamily::Debian,
+        DistroFamily::Ubuntu,
+        DistroFamily::Fedora,
+        DistroFamily::Arch,
+        DistroFamily::Suse,
+        DistroFamily::NixOs,
+        DistroFamily::Alpine,
+        DistroFamily::Void,
+        DistroFamily::Gentoo,
+        DistroFamily::Unknown,
+    ];
+
+    fn all_desktops() -> Vec<Desktop> {
+        vec![
+            Desktop::Niri,
+            Desktop::Gnome,
+            Desktop::Kde,
+            Desktop::Sway,
+            Desktop::Hyprland,
+            Desktop::River,
+            Desktop::Wayfire,
+            Desktop::Labwc,
+            Desktop::Cosmic,
+            Desktop::Xfce,
+            Desktop::Mate,
+            Desktop::Cinnamon,
+            Desktop::I3,
+            Desktop::Other("lxqt".into()),
+            Desktop::Unknown,
+        ]
+    }
+
+    fn host(
+        distro: DistroFamily,
+        desktop: Desktop,
+        session: SessionType,
+        nix_shell: bool,
+    ) -> HostPlatform {
+        HostPlatform {
+            session,
+            desktop,
+            distro,
+            sandbox: Sandbox::None,
+            nix_shell,
+        }
+    }
+
+    /// A Wayland session of `distro` on an unknown desktop.
+    fn wayland(distro: DistroFamily) -> HostPlatform {
+        host(distro, Desktop::Unknown, SessionType::Wayland, false)
+    }
+
+    /// One table cell: `$ command`, the note, `[packages]`.
+    fn cell(hint: &Hint) -> String {
+        let mut parts = Vec::new();
+        parts.extend(hint.command.iter().map(|c| format!("$ {c}")));
+        parts.extend(hint.note.clone());
+        if !hint.packages.is_empty() {
+            parts.push(format!("[{}]", hint.packages.join(", ")));
+        }
+        parts.join(" · ")
+    }
+
+    /// The whole table: every need for every family (on an unknown Wayland
+    /// desktop, and inside a Nix shell on Debian), then the ScreenCast
+    /// portal for every desktop and without a Wayland session. The desktop
+    /// only changes the portal's hint and the family never does
+    /// (`hints_follow_their_inputs_only`), so this covers family × desktop.
+    #[test]
+    fn install_hint_table() {
+        let mut table = String::new();
+        for need in Need::ALL {
+            writeln!(table, "{need:?}").unwrap();
+            for family in FAMILIES {
+                let hint = install_hint(need, &wayland(family));
+                writeln!(table, "  {:<9} {}", family.as_str(), cell(&hint)).unwrap();
+            }
+            let in_shell = install_hint(
+                need,
+                &host(
+                    DistroFamily::Debian,
+                    Desktop::Unknown,
+                    SessionType::Wayland,
+                    true,
+                ),
+            );
+            writeln!(table, "  {:<9} {}", "nix shell", cell(&in_shell)).unwrap();
+        }
+        writeln!(table, "ScreenCastPortal by desktop (Wayland)").unwrap();
+        for desktop in all_desktops() {
+            let hint = install_hint(
+                Need::ScreenCastPortal,
+                &host(
+                    DistroFamily::Debian,
+                    desktop.clone(),
+                    SessionType::Wayland,
+                    false,
+                ),
+            );
+            writeln!(table, "  {:<9} {}", desktop.as_str(), cell(&hint)).unwrap();
+        }
+        for (label, desktop, session) in [
+            ("x11 xfce", Desktop::Xfce, SessionType::X11),
+            ("x11 kde", Desktop::Kde, SessionType::X11),
+            ("no display", Desktop::Unknown, SessionType::Unknown),
+        ] {
+            let hint = install_hint(
+                Need::ScreenCastPortal,
+                &host(DistroFamily::Debian, desktop, session, false),
+            );
+            writeln!(table, "  {label:<9} {}", cell(&hint)).unwrap();
+        }
+        insta::assert_snapshot!("install_hints", table);
+    }
+
+    #[test]
+    fn hints_name_this_familys_packages() {
+        let gtk4 = |family| install_hint(Need::GstGtk4, &wayland(family));
+        assert_eq!(
+            gtk4(DistroFamily::Ubuntu).command.as_deref(),
+            Some("sudo apt install gstreamer1.0-gtk4")
+        );
+        assert_eq!(
+            gtk4(DistroFamily::Fedora).packages,
+            ["gstreamer1-plugin-gtk4"]
+        );
+        assert_eq!(
+            gtk4(DistroFamily::Arch).command.as_deref(),
+            Some("sudo pacman -S gst-plugin-gtk4")
+        );
+        // openSUSE's name isn't known: the sentence, with zypper.
+        let suse = gtk4(DistroFamily::Suse);
+        assert!(suse.packages.is_empty() && suse.command.is_none());
+        assert_eq!(
+            suse.line(),
+            "install GStreamer's GTK 4 plugin, gtk4paintablesink (upstream gst-plugins-rs) \
+             with zypper"
+        );
+        // NixOS: the package's attribute, no command; in a Nix shell, the
+        // dev shell (S23's frame).
+        let nixos = gtk4(DistroFamily::NixOs);
+        assert_eq!(nixos.packages, ["gst_all_1.gst-plugins-rs"]);
+        assert_eq!(nixos.command, None);
+        let shell = install_hint(
+            Need::GstGtk4,
+            &host(
+                DistroFamily::NixOs,
+                Desktop::Niri,
+                SessionType::Wayland,
+                true,
+            ),
+        );
+        assert_eq!(
+            shell.line(),
+            "nix develop (the flake provides gst-plugins-rs)"
+        );
+        // Fedora's codecs come from RPM Fusion.
+        let fedora = wayland(DistroFamily::Fedora);
+        assert_eq!(
+            install_hint(Need::FullFfmpeg, &fedora).command.as_deref(),
+            Some("sudo dnf swap ffmpeg-free ffmpeg --allowerasing")
+        );
+        assert!(
+            install_hint(Need::GstX264, &fedora)
+                .note
+                .unwrap()
+                .contains("RPM Fusion")
+        );
+        assert_eq!(
+            install_hint(Need::VaDriver(VaGpu::Amd), &fedora)
+                .command
+                .as_deref(),
+            Some("sudo dnf install mesa-va-drivers-freeworld")
+        );
+    }
+
+    #[test]
+    fn the_portal_follows_the_desktop_and_the_session() {
+        let portal = |desktop, session| {
+            install_hint(
+                Need::ScreenCastPortal,
+                &host(DistroFamily::Arch, desktop, session, false),
+            )
+            .line()
+        };
+        assert_eq!(
+            portal(Desktop::Niri, SessionType::Wayland),
+            "on niri, install xdg-desktop-portal-gnome, then log out and back in"
+        );
+        let wlr = portal(Desktop::Sway, SessionType::Wayland);
+        for part in [
+            "xdg-desktop-portal-wlr",
+            "slurp",
+            "portals.conf",
+            "dbus-update-activation-environment",
+            "XDPW_PERSIST_MODE=permanent",
+        ] {
+            assert!(wlr.contains(part), "{part}: {wlr}");
+        }
+        assert!(portal(Desktop::Hyprland, SessionType::Wayland).contains("restore token"));
+        assert!(
+            portal(Desktop::Cosmic, SessionType::Wayland).contains("xdg-desktop-portal-cosmic")
+        );
+        // KDE on X11 registers a ScreenCast portal that can't capture: on
+        // X11 Qrec needs none.
+        assert_eq!(
+            portal(Desktop::Kde, SessionType::X11),
+            "an X11 session needs no ScreenCast portal"
+        );
+    }
+
+    #[test]
+    fn a_hint_reads_in_one_line() {
+        let hint = Hint {
+            packages: vec!["gstreamer1-plugins-ugly".into()],
+            command: Some("sudo dnf install gstreamer1-plugins-ugly".into()),
+            note: Some("it comes from RPM Fusion".into()),
+        };
+        assert_eq!(
+            hint.line(),
+            "sudo dnf install gstreamer1-plugins-ugly (it comes from RPM Fusion)"
+        );
+        let hint = hint.also("then run qrec doctor again");
+        assert_eq!(
+            hint.note.as_deref(),
+            Some("it comes from RPM Fusion; then run qrec doctor again")
+        );
+        assert_eq!(
+            Hint::advice("start it").also("or not").line(),
+            "start it; or not"
+        );
+        let json = serde_json::to_value(&hint).unwrap();
+        assert_eq!(
+            json["command"], "sudo dnf install gstreamer1-plugins-ugly",
+            "{json}"
+        );
+        assert_eq!(serde_json::from_value::<Hint>(json).unwrap(), hint);
+    }
+
+    /// Any platform the table can be asked about.
+    fn any_host() -> impl Strategy<Value = HostPlatform> {
+        (
+            proptest::sample::select(vec![
+                SessionType::Wayland,
+                SessionType::X11,
+                SessionType::Unknown,
+            ]),
+            proptest::sample::select(all_desktops()),
+            proptest::sample::select(FAMILIES.to_vec()),
+            proptest::sample::select(vec![Sandbox::None, Sandbox::Flatpak, Sandbox::Snap]),
+            any::<bool>(),
+        )
+            .prop_map(
+                |(session, desktop, distro, sandbox, nix_shell)| HostPlatform {
+                    session,
+                    desktop,
+                    distro,
+                    sandbox,
+                    nix_shell,
+                },
+            )
+    }
+
+    proptest! {
+        /// Every hint says something; `nix develop` only inside a Nix
+        /// shell; Nix words only on NixOS or in a Nix shell; a command is
+        /// the family's installer with exactly the hint's packages, or
+        /// `nix develop`, or Fedora's swap.
+        #[test]
+        fn hints_are_for_this_platform(
+            need in proptest::sample::select(Need::ALL.to_vec()),
+            platform in any_host(),
+        ) {
+            let hint = install_hint(need, &platform);
+            let line = hint.line();
+            prop_assert!(!line.trim().is_empty(), "{need:?}: {hint:?}");
+            if !platform.nix_shell {
+                prop_assert!(!line.contains("nix develop"), "{line}");
+                prop_assert!(hint.command.as_deref() != Some("nix develop"));
+            }
+            if !platform.nix_shell && platform.distro != DistroFamily::NixOs {
+                prop_assert!(!line.to_lowercase().contains("nix"), "{line}");
+            }
+            if let Some(command) = &hint.command {
+                let packages: Vec<&str> = hint.packages.iter().map(String::as_str).collect();
+                let expected = platform.distro.install_command(&packages);
+                prop_assert!(
+                    command == "nix develop"
+                        || command.starts_with("sudo dnf swap ")
+                        || Some(command) == expected.as_ref(),
+                    "{command} for {packages:?} on {:?}", platform.distro
+                );
+            }
+        }
+
+        /// The desktop and the session change the portal's hint alone, and
+        /// the family never changes it.
+        #[test]
+        fn hints_follow_their_inputs_only(
+            need in proptest::sample::select(Need::ALL.to_vec()),
+            a in any_host(),
+            b in any_host(),
+        ) {
+            let elsewhere = HostPlatform {
+                distro: a.distro,
+                nix_shell: a.nix_shell,
+                sandbox: a.sandbox,
+                ..b.clone()
+            };
+            if need == Need::ScreenCastPortal {
+                let other_family = HostPlatform {
+                    distro: b.distro,
+                    nix_shell: b.nix_shell,
+                    ..a.clone()
+                };
+                prop_assert_eq!(install_hint(need, &a), install_hint(need, &other_family));
+            } else {
+                prop_assert_eq!(install_hint(need, &a), install_hint(need, &elsewhere));
+            }
         }
     }
 }
