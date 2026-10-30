@@ -43,7 +43,7 @@ suites_for() {
   case "$1" in
     crates/qrec/tests/gui_support/* | crates/qrec/tests/support/*) echo all ;;
     crates/qrec/tests/gui_*.rs | crates/qrec/tests/x11.rs) basename "$1" .rs ;;
-    crates/qrec-shell/src/sources.rs | crates/qrec-shell/src/sources/* | crates/qrec-shell/src/testkit/x11.rs)
+    crates/qrec-shell/src/sources.rs | crates/qrec-shell/src/sources/* | crates/qrec-shell/src/testkit/x11.rs | crates/qrec-shell/src/capture/*)
       echo x11 gui_shell gui_smoke ;;
     crates/qrec-gui/src/timeline/* | */components/timeline.css | crates/qrec-core/src/view/timeline* | crates/qrec-core/src/view/ruler*)
       echo gui_timeline ;;

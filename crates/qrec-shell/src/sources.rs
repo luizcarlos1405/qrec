@@ -310,12 +310,31 @@ pub const NO_DISPLAY: &str = "no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) disp
 pub fn discover_screens(backend: &ScreenBackend) -> Result<Vec<ScreenInfo>, String> {
     let mut screens = match backend {
         ScreenBackend::Portal => wayland_screens()?,
-        ScreenBackend::X11 { display } => x11::monitors(display, X11_TIMEOUT)
-            .map_err(|e| format!("X11 (DISPLAY={display}): {e}"))?,
+        ScreenBackend::X11 { display } => x11_layout(display)?.screens,
         ScreenBackend::None => return Err(NO_DISPLAY.to_owned()),
     };
     sort_screens(&mut screens);
     Ok(screens)
+}
+
+/// An X server's screens and the size of its root window, read together:
+/// the capture engine grabs an X11 screen as its part of the root
+/// (`ximagesrc`, `capture::spec::x11_crop`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct X11Layout {
+    /// The root window's width and height; every screen lies inside it.
+    pub root: (u32, u32),
+    /// As [`discover_screens`] lists them.
+    pub screens: Vec<ScreenInfo>,
+}
+
+/// The X server at `display`: its RandR monitors and its root window,
+/// within [`X11_TIMEOUT`]. An error says `X11 (DISPLAY=:1): …`.
+pub fn x11_layout(display: &str) -> Result<X11Layout, String> {
+    let (root, mut screens) =
+        x11::monitors(display, X11_TIMEOUT).map_err(|e| format!("X11 (DISPLAY={display}): {e}"))?;
+    sort_screens(&mut screens);
+    Ok(X11Layout { root, screens })
 }
 
 /// [`discover_screens`] of the session's [`ScreenBackend`] (the facts'

@@ -206,6 +206,81 @@ impl Xvfb {
             )
         });
     }
+
+    /// Removes the RandR monitor `name` (`xrandr --delmonitor <name>`) and
+    /// waits until the server has done it.
+    pub fn delete_monitor(&self, name: &str) {
+        let (conn, screen) = self.connect();
+        let root = conn.setup().roots[screen].root;
+        let done = || -> Result<(), Box<dyn std::error::Error>> {
+            conn.extension_information(randr::X11_EXTENSION_NAME)?
+                .ok_or("no RandR")?;
+            conn.randr_query_version(1, 5)?.reply()?;
+            let atom = conn.intern_atom(false, name.as_bytes())?.reply()?.atom;
+            conn.randr_delete_monitor(root, atom)?.check()?;
+            Ok(())
+        };
+        done().unwrap_or_else(|e| {
+            panic!(
+                "delete the monitor {name} on {}: {e}{}",
+                self.display(),
+                self.log_tail()
+            )
+        });
+    }
+
+    /// Resizes the screen (its root window) to `width`×`height` pixels and
+    /// `mm` (width, height) millimetres, like `xrandr --fb <w>x<h> --fbmm
+    /// <mm>`, after turning off each CRTC that wouldn't fit (`xrandr
+    /// --output screen --off`: the server won't shrink the screen under
+    /// one), and waits until the server has done it. The RandR monitors
+    /// set on it stay as they were, even outside it.
+    pub fn set_screen_size(&self, width: u16, height: u16, mm: (u32, u32)) {
+        let (conn, screen) = self.connect();
+        let root = conn.setup().roots[screen].root;
+        let done = || -> Result<(), Box<dyn std::error::Error>> {
+            conn.extension_information(randr::X11_EXTENSION_NAME)?
+                .ok_or("no RandR")?;
+            conn.randr_query_version(1, 5)?.reply()?;
+            let resources = conn.randr_get_screen_resources_current(root)?.reply()?;
+            let stamp = resources.config_timestamp;
+            for &crtc in &resources.crtcs {
+                let info = conn.randr_get_crtc_info(crtc, stamp)?.reply()?;
+                let fits = i32::from(info.x) + i32::from(info.width) <= i32::from(width)
+                    && i32::from(info.y) + i32::from(info.height) <= i32::from(height);
+                if info.mode == 0 || fits {
+                    continue;
+                }
+                let off = conn
+                    .randr_set_crtc_config(
+                        crtc,
+                        x11rb::CURRENT_TIME,
+                        stamp,
+                        0,
+                        0,
+                        0,
+                        randr::Rotation::ROTATE0,
+                        &[],
+                    )?
+                    .reply()?;
+                if off.status != randr::SetConfig::SUCCESS {
+                    return Err(format!("turning CRTC {crtc} off: {:?}", off.status).into());
+                }
+            }
+            conn.randr_set_screen_size(root, width, height, mm.0, mm.1)?
+                .check()?;
+            Ok(())
+        };
+        done().unwrap_or_else(|e| {
+            panic!(
+                "resize the screen of {} to {width}x{height} ({}x{} mm): {e}{}",
+                self.display(),
+                mm.0,
+                mm.1,
+                self.log_tail()
+            )
+        });
+    }
 }
 
 impl Drop for Xvfb {
@@ -402,7 +477,7 @@ mod tests {
 
     /// A started server takes connections with its cookie, keeps the
     /// monitors set on it, also for a libX11 client given its variables,
-    /// and is gone once dropped.
+    /// takes a new size, and is gone once dropped.
     #[test]
     fn a_started_xvfb_is_private_and_stops_with_its_handle() {
         let xvfb = Xvfb::start(1280, 720);
@@ -412,6 +487,8 @@ mod tests {
             Some(xvfb.display().as_str())
         );
         xvfb.set_monitor("HALF", 0, 0, 640, 720);
+        xvfb.set_monitor("GONE", 640, 0, 640, 720);
+        xvfb.delete_monitor("GONE");
         let (conn, screen) = xvfb.connect();
         let root = &conn.setup().roots[screen];
         assert_eq!((root.width_in_pixels, root.height_in_pixels), (1280, 720));
@@ -426,7 +503,22 @@ mod tests {
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(out.status.success(), "{text}{}", out.stderr);
         assert!(text.contains("HALF 640/169x720/190+0+0"), "{text}");
+        assert!(!text.contains("GONE"), "{text}");
+        // A new size, in pixels and millimetres, shows in new connections.
+        xvfb.set_screen_size(640, 720, (300, 190));
+        let (resized, screen) = xvfb.connect();
+        let root = &resized.setup().roots[screen];
+        assert_eq!(
+            (
+                root.width_in_pixels,
+                root.height_in_pixels,
+                root.width_in_millimeters,
+                root.height_in_millimeters
+            ),
+            (640, 720, 300, 190)
+        );
         let (pid, number) = (xvfb.child.id(), xvfb.number());
+        drop(resized);
         drop(conn);
         drop(xvfb);
         // Reaped, and it cleaned up after itself (SIGTERM, not SIGKILL).

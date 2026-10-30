@@ -21,10 +21,18 @@
 //! every backend's; the scale is 1 (X11 has no per-monitor scale). It fills
 //! the same `ScreenInfo` as Wayland, so the core and the project schema
 //! don't know which backend found a screen.
+//!
+//! [`watch`] reads them again whenever they change, for the capture
+//! engine, which grabs an X11 screen as a fixed part of the root window:
+//! the root's `ConfigureNotify` (its size, and RandR 1.5 sends one when a
+//! monitor is set or deleted) and RandR's screen, CRTC and output
+//! notifications wake it.
 
 use std::io;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::os::fd::AsRawFd;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use qrec_core::ctx::ScreenInfo;
@@ -37,15 +45,24 @@ use x11rb::reexports::x11rb_protocol::xauth::{Family, get_auth};
 use x11rb::rust_connection::{DefaultStream, PollMode, RustConnection, Stream};
 use x11rb::utils::RawFdContainer;
 
+use super::{X11_TIMEOUT, X11Layout};
+
 /// The name of the root-window fallback.
 const ROOT_NAME: &str = "screen";
 
 /// An EDID's base block, in the 4-byte units `GetOutputProperty` counts.
 const EDID_LONGS: u32 = 128 / 4;
 
-/// The screens of the X server at `display`, within `timeout`. `Err` when
-/// it can't be reached or doesn't answer in time.
-pub(super) fn monitors(display: &str, timeout: Duration) -> Result<Vec<ScreenInfo>, String> {
+/// How often a [`watch`] with nothing to read looks at its stop flag.
+const WATCH_TICK: Duration = Duration::from_millis(200);
+
+/// The size of the root window (width, height) of the X server at
+/// `display`, and its screens, within `timeout`. `Err` when it can't be
+/// reached or doesn't answer in time.
+pub(super) fn monitors(
+    display: &str,
+    timeout: Duration,
+) -> Result<((u32, u32), Vec<ScreenInfo>), String> {
     let deadline = Instant::now() + timeout;
     let (tx, rx) = crossbeam_channel::bounded(1);
     let name = display.to_owned();
@@ -60,6 +77,107 @@ pub(super) fn monitors(display: &str, timeout: Duration) -> Result<Vec<ScreenInf
         .map_err(|e| format!("can't start the X11 discovery thread: {e}"))?;
     rx.recv_timeout(timeout)
         .map_err(|_| format!("the X server didn't answer within {} s", timeout.as_secs()))?
+}
+
+/// Watches the X server at `display` on a thread of its own: `changed`
+/// gets its layout (its root window's size and its screens, read like
+/// [`monitors`] reads them) at once, then again after every change of its
+/// monitors or root window, until it returns `false` or `stop` is set
+/// (seen within [`WATCH_TICK`]). Connecting and each read give up after
+/// [`X11_TIMEOUT`]; that error, or a lost connection, is the last thing
+/// `changed` gets (`X11 (DISPLAY=:1): …`), unless `stop` was set.
+pub(crate) fn watch(
+    display: &str,
+    stop: Arc<AtomicBool>,
+    mut changed: impl FnMut(Result<X11Layout, String>) -> bool + Send + 'static,
+) -> io::Result<()> {
+    let display = display.to_owned();
+    std::thread::Builder::new()
+        .name("qrec-x11-watch".into())
+        .spawn(move || {
+            let watched = connect(&display, Instant::now() + X11_TIMEOUT)
+                .and_then(|(conn, screen)| watch_on(&conn, screen, &stop, &mut changed));
+            if let Err(e) = watched
+                && !stop.load(Ordering::SeqCst)
+            {
+                changed(Err(format!("X11 (DISPLAY={display}): {e}")));
+            }
+        })
+        .map(drop)
+}
+
+/// [`watch`] on an open connection to `screen`'s server, on this thread:
+/// `Ok` once `changed` returns `false` or `stop` is set, `Err` when the
+/// connection fails or a read takes longer than [`X11_TIMEOUT`].
+fn watch_on(
+    conn: &RustConnection<DeadlineStream>,
+    screen: usize,
+    stop: &AtomicBool,
+    changed: &mut dyn FnMut(Result<X11Layout, String>) -> bool,
+) -> Result<(), String> {
+    let window = conn
+        .setup()
+        .roots
+        .get(screen)
+        .ok_or_else(|| format!("the X server has no screen {screen}"))?
+        .root;
+    conn.stream().set_deadline(Instant::now() + X11_TIMEOUT);
+    select_changes(conn, window).map_err(|e| format!("can't watch its monitors: {e}"))?;
+    // Read after asking for the events: a change in between is in this
+    // read or in the events.
+    while !stop.load(Ordering::SeqCst) {
+        conn.stream().set_deadline(Instant::now() + X11_TIMEOUT);
+        let (root, screens) =
+            read_screens(conn, screen).map_err(|e| format!("can't read its monitors: {e}"))?;
+        if !changed(Ok(X11Layout { root, screens })) || !wait_for_change(conn, stop)? {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Asks for the events of a change of the monitors or of the root window:
+/// the root's `ConfigureNotify` (a new size; RandR 1.5 also sends one when
+/// a monitor is set or deleted) and RandR's screen, CRTC and output
+/// notifications (a mode, a position, an output turned on or off).
+fn select_changes(conn: &impl Connection, window: xproto::Window) -> Result<(), ReplyError> {
+    let structure =
+        xproto::ChangeWindowAttributesAux::new().event_mask(xproto::EventMask::STRUCTURE_NOTIFY);
+    conn.change_window_attributes(window, &structure)?.check()?;
+    if randr_version(conn)?.is_some() {
+        let notify = randr::NotifyMask::SCREEN_CHANGE
+            | randr::NotifyMask::CRTC_CHANGE
+            | randr::NotifyMask::OUTPUT_CHANGE;
+        conn.randr_select_input(window, notify)?.check()?;
+    }
+    Ok(())
+}
+
+/// Waits for events (only changes come: [`select_changes`]) and reads them
+/// all: `true`; `false` once `stop` is set.
+fn wait_for_change(
+    conn: &RustConnection<DeadlineStream>,
+    stop: &AtomicBool,
+) -> Result<bool, String> {
+    loop {
+        // Those read along with replies, then those on the socket.
+        let mut seen = false;
+        while conn.poll_for_event().map_err(|e| e.to_string())?.is_some() {
+            seen = true;
+        }
+        if seen {
+            return Ok(true);
+        }
+        if stop.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
+        conn.stream().set_deadline(Instant::now() + WATCH_TICK);
+        match conn.stream().poll(PollMode::Readable) {
+            Err(e) if e.kind() != io::ErrorKind::TimedOut => return Err(e.to_string()),
+            // Readable (or closed: the next read says), or a tick.
+            _ => {}
+        }
+    }
 }
 
 /// Connects to `display` with the cookie `XAUTHORITY` (else
@@ -132,17 +250,30 @@ fn timed_out() -> io::Error {
     )
 }
 
-/// x11rb's stream, whose waits end at `deadline` (then every request
-/// fails with `TimedOut`). The testkit's connections to its Xvfb use it
-/// too (`testkit::x11`).
+/// x11rb's stream, whose waits end at a deadline (then every request
+/// fails with `TimedOut`), which a connection kept open moves for each of
+/// its exchanges ([`Self::set_deadline`]: a [`watch`]'s). The testkit's
+/// connections to its Xvfb use it too (`testkit::x11`).
 pub struct DeadlineStream {
     inner: DefaultStream,
-    deadline: Instant,
+    deadline: Mutex<Instant>,
 }
 
 impl DeadlineStream {
     pub fn new(inner: DefaultStream, deadline: Instant) -> Self {
-        Self { inner, deadline }
+        Self {
+            inner,
+            deadline: Mutex::new(deadline),
+        }
+    }
+
+    /// Waits end at `deadline` from now on.
+    pub fn set_deadline(&self, deadline: Instant) {
+        *self.deadline.lock().unwrap_or_else(PoisonError::into_inner) = deadline;
+    }
+
+    fn deadline(&self) -> Instant {
+        *self.deadline.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -156,7 +287,7 @@ impl Stream for DeadlineStream {
             events |= libc::POLLOUT;
         }
         loop {
-            let left = self.deadline.saturating_duration_since(Instant::now());
+            let left = self.deadline().saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Err(timed_out());
             }
@@ -200,40 +331,50 @@ impl Stream for DeadlineStream {
 
 // ------------------------------------------------------------- requests
 
-/// The screens of `conn`'s `screen`: its monitors, else its lit CRTCs,
-/// else its root window. An X11 error moves on to the next of those; a
-/// connection error (a timeout among them) ends the discovery.
+/// The size of the root window of `conn`'s `screen`, and its screens: its
+/// monitors, else its lit CRTCs, else its root window. An X11 error moves
+/// on to the next of those; a connection error (a timeout among them) ends
+/// the discovery.
 pub(super) fn read_screens(
     conn: &impl Connection,
     screen: usize,
-) -> Result<Vec<ScreenInfo>, String> {
+) -> Result<((u32, u32), Vec<ScreenInfo>), String> {
     let root = conn
         .setup()
         .roots
         .get(screen)
         .ok_or_else(|| format!("the X server has no screen {screen}"))?;
-    let size = Root {
-        width: root.width_in_pixels,
-        height: root.height_in_pixels,
-    };
     let window = root.root;
+    // Its size now: the setup has the one of when the connection opened,
+    // and a watch's connection stays open across changes.
+    let size = match fallback(root_geometry(conn, window), "GetGeometry")? {
+        Some(geometry) => Root {
+            width: geometry.width,
+            height: geometry.height,
+        },
+        None => Root {
+            width: root.width_in_pixels,
+            height: root.height_in_pixels,
+        },
+    };
+    let whole = (u32::from(size.width), u32::from(size.height));
     let version = fallback(randr_version(conn), "QueryVersion")?.flatten();
     if version >= Some((1, 5)) {
         let screens = fallback(monitor_replies(conn, window), "GetMonitors")?
             .map(|monitors| from_monitors(&monitors, size));
         if let Some(screens) = screens.filter(|s| !s.is_empty()) {
-            return Ok(screens);
+            return Ok((whole, screens));
         }
     }
     if version >= Some((1, 3)) {
         let screens = fallback(crtc_replies(conn, window), "GetCrtcInfo")?
             .map(|crtcs| from_crtcs(&crtcs, size));
         if let Some(screens) = screens.filter(|s| !s.is_empty()) {
-            return Ok(screens);
+            return Ok((whole, screens));
         }
     }
     tracing::debug!("X11: no RandR monitor or lit CRTC; the root window is the screen");
-    Ok(root_screen(size))
+    Ok((whole, root_screen(size)))
 }
 
 /// An X11 error is `None` (logged: the next way is tried), a connection
@@ -247,6 +388,14 @@ fn fallback<T>(result: Result<T, ReplyError>, what: &str) -> Result<Option<T>, S
         }
         Err(ReplyError::ConnectionError(e)) => Err(e.to_string()),
     }
+}
+
+/// The root window's geometry: its size now.
+fn root_geometry(
+    conn: &impl Connection,
+    window: xproto::Window,
+) -> Result<xproto::GetGeometryReply, ReplyError> {
+    conn.get_geometry(window)?.reply()
 }
 
 /// The server's RandR version (at most the 1.5 asked for); `None` without
@@ -843,7 +992,8 @@ mod tests {
         xvfb.set_monitor("VIRT-L", 0, 0, 960, 1080);
         xvfb.set_monitor("VIRT-R", 960, 0, 960, 1080);
         let (conn, screen) = xvfb.connect();
-        let screens = read_screens(&conn, screen).unwrap();
+        let (root_size, screens) = read_screens(&conn, screen).unwrap();
+        assert_eq!(root_size, (1920, 1080));
         assert_eq!(
             summary(&screens),
             [
@@ -859,6 +1009,77 @@ mod tests {
             [row("screen", "screen", (0, 0, 1920, 1080))]
         );
         assert_eq!(randr_version(&conn).unwrap(), Some((1, 5)));
+    }
+
+    /// A watch reads the monitors at once, then again after each change: a
+    /// monitor deleted or set (the root's `ConfigureNotify`; this server
+    /// won't set a name it has, so a move is both), the screen shrunk
+    /// under them (RandR's notifications; the read takes the root's size
+    /// now, not the connection setup's). It ends soon after it is told to
+    /// stop.
+    #[test]
+    fn a_watch_reads_the_monitors_again_after_each_change() {
+        let xvfb = crate::testkit::x11::Xvfb::start(1920, 1080);
+        xvfb.set_monitor("VIRT-L", 0, 0, 960, 1080);
+        xvfb.set_monitor("VIRT-R", 960, 0, 960, 1080);
+        let (conn, screen) = xvfb.connect();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let watching = {
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                watch_on(&conn, screen, &stop, &mut |layout| tx.send(layout).is_ok())
+            })
+        };
+        // The next layout `want` takes, within 10 s.
+        let next = |what: &str, want: &dyn Fn(&X11Layout) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let left = deadline.saturating_duration_since(Instant::now());
+                let layout = rx
+                    .recv_timeout(left)
+                    .unwrap_or_else(|_| panic!("no layout with {what}"))
+                    .unwrap();
+                if want(&layout) {
+                    return layout;
+                }
+            }
+        };
+        let first = next("anything", &|_| true);
+        assert_eq!(first.root, (1920, 1080));
+        assert_eq!(
+            summary(&first.screens),
+            [
+                row("VIRT-L", "VIRT-L", (0, 0, 960, 1080)),
+                row("screen", "screen", (0, 0, 1920, 1080)),
+                row("VIRT-R", "VIRT-R", (960, 0, 960, 1080)),
+            ]
+        );
+        let at = |layout: &X11Layout, name: &str| {
+            layout
+                .screens
+                .iter()
+                .find(|s| s.output == name)
+                .map(|s| (s.x, s.y, s.width, s.height))
+        };
+        xvfb.delete_monitor("VIRT-R");
+        xvfb.set_monitor("VIRT-R", 0, 0, 640, 480);
+        next("VIRT-R moved", &|l| {
+            at(l, "VIRT-R") == Some((0, 0, 640, 480))
+        });
+        xvfb.delete_monitor("VIRT-L");
+        next("VIRT-L deleted", &|l| at(l, "VIRT-L").is_none());
+        xvfb.set_screen_size(960, 1080, (254, 286));
+        let shrunk = next("the screen shrunk", &|l| l.root == (960, 1080));
+        // Its output is off; VIRT-R, set inside the new size, stays.
+        assert_eq!(
+            summary(&shrunk.screens),
+            [row("VIRT-R", "VIRT-R", (0, 0, 640, 480))]
+        );
+        let told = Instant::now();
+        stop.store(true, Ordering::SeqCst);
+        watching.join().unwrap().unwrap();
+        assert!(told.elapsed() < WATCH_TICK * 5, "{:?}", told.elapsed());
     }
 
     /// Nothing listens there: an error well within the timeout. (A

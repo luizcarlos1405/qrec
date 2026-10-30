@@ -2,8 +2,9 @@
 //! bins attached at T0 (buffer probes, `videorate skip-to-first`, x264/VA
 //! encoders, matroskamux), first-buffer and health checks, EOS/teardown
 //! timeouts (`EngineWedged`), the ScreenCast portal (ashpd under
-//! `futures_lite::block_on`, restore tokens) and the fake backend
-//! (`QREC_CAPTURE_BACKEND=fake`).
+//! `futures_lite::block_on`, restore tokens), X11 screens grabbed from the
+//! X server (`ximagesrc`, no portal: [`ScreenBackend::X11`]) and the fake
+//! backend (`QREC_CAPTURE_BACKEND=fake`).
 //!
 //! All GStreamer calls happen on one engine thread ([`GstCaptureEngine`]);
 //! the trait methods only queue commands, so the session thread never
@@ -129,7 +130,8 @@ pub const PREVIEW_SINK_SUPPORTED: bool = true;
 /// Which devices the engine records from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
-    /// The portal, `v4l2src` and `pulsesrc`.
+    /// Screens from the [`ScreenBackend`] (the portal, or an X server),
+    /// `v4l2src` and `pulsesrc`.
     Real,
     /// `videotestsrc`/`audiotestsrc`; never touches the portal or devices.
     Fake,
@@ -158,16 +160,24 @@ impl Backend {
 pub const SCREEN_BACKEND_ENV: &str = "QREC_SCREEN_BACKEND";
 
 /// Where screens come from (issue #9). Screen discovery
-/// (`sources::discover_screens`) dispatches on it, and so will capture.
+/// (`sources::discover_screens`) and the real backend's capture dispatch on
+/// it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScreenBackend {
     /// The compositor's outputs (`wl_output`, then `niri msg`), recorded
     /// through the ScreenCast portal.
     Portal,
     /// The X server at `display` (`DISPLAY`, e.g. `:1`): its RandR
-    /// monitors.
+    /// monitors, each recorded as its part of the root window
+    /// (`ximagesrc`) with no portal, dialog or restore token: adding a
+    /// screen layer is the consent. A monitor that goes away, moves or
+    /// changes size (the root shrinking under it among them) loses its
+    /// stream, like a screencast that ends, rather than recording
+    /// whatever that part of the root shows next.
     X11 { display: String },
-    /// No Wayland or X11 display: no screens.
+    /// No Wayland or X11 display: no screens to discover. A screen layer
+    /// a project already has is still asked of the portal (a headless
+    /// session may reach one).
     None,
 }
 

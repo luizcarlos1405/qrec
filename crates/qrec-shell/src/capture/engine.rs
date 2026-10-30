@@ -7,7 +7,8 @@
 //! notifications) and the portal worker only send it `Cmd`s.
 //!
 //! A take moves through
-//! `AwaitingPortal → Starting → Recording → Stopping → (CaptureStopped)`:
+//! `AwaitingPortal → Starting → Recording → Stopping → (CaptureStopped)`
+//! (screens grabbed from an X server never await the portal):
 //!
 //! - **Starting**: record bins are attached at T0 (the running time after
 //!   attaching). `CaptureStarted` is sent once every filesink wrote its
@@ -62,7 +63,7 @@ use qrec_core::protocol::RecordedStream;
 use qrec_core::{Event, Fps, TakeId};
 
 use super::fake::{fake_camera_modes, is_fake_audio, is_fake_camera, is_fake_screen};
-use super::live::{BuildCtx, BuildError, Live, LiveKey, level_reading};
+use super::live::{BuildCtx, BuildError, Live, LiveKey, X11Grab, level_reading};
 use super::portal::{OpenRequest, PortalWorker, ScreenShare};
 use super::record::{RecordBin, attach_audio, attach_video, segment_pushed_line};
 use super::spec::{
@@ -72,7 +73,7 @@ use super::spec::{
 use super::util::{error_text, missing_element, object_path, running_time, set_null_with_deadline};
 use super::{
     Backend, CLOCK_INTERVAL, EngineOptions, FILL_GRACE, LiveControl, LiveSource, LiveSourceState,
-    LiveSourceStatus, LiveTracker, PIPELINE_START_TIMEOUT, STALL_LIMIT, SideEvent,
+    LiveSourceStatus, LiveTracker, PIPELINE_START_TIMEOUT, STALL_LIMIT, ScreenBackend, SideEvent,
     TEARDOWN_TIMEOUT,
 };
 use crate::deps::CaptureEngine;
@@ -1133,19 +1134,22 @@ impl Engine {
             });
         }
         self.generation += 1;
+        let x11 = self.x11_grab(specs, scene);
         let ctx = BuildCtx {
             backend: self.opts.backend,
             generation: self.generation,
             tx: &self.tx,
             side: self.opts.side.as_ref(),
             casts: &self.casts,
+            x11: x11.as_ref(),
             preview: self.opts.preview.as_ref(),
         };
         let mut live = Live::build(specs, scene, &ctx)?;
         // Laid out (and reported) at the size each source will deliver,
-        // until it negotiates.
+        // until it negotiates: the one the build knows (an X11 screen's
+        // part of the root, read just now), else the expected one.
         for branch in live.sources.iter_mut().filter(|b| b.spec.is_video()) {
-            branch.size = self.expected_size(&branch.spec);
+            branch.size = branch.size.or_else(|| self.expected_size(&branch.spec));
         }
         let generation = live.generation;
         let pipeline = live.pipeline.clone();
@@ -1193,6 +1197,43 @@ impl Engine {
             } => Some((mode.width, mode.height)),
             _ => self.sizes.get(spec).copied(),
         }
+    }
+
+    /// Whether the real backend grabs screens from an X server
+    /// ([`ScreenBackend::X11`]) instead of asking the portal: X11 has no
+    /// consent dialog, so adding a screen layer is the consent (the owner's
+    /// decision on issue #9).
+    fn grabs_x11(&self) -> bool {
+        self.opts.backend == Backend::Real
+            && matches!(self.opts.screen_backend, ScreenBackend::X11 { .. })
+    }
+
+    /// How a build of `specs` grabs X11 screens, when it does
+    /// ([`Self::grabs_x11`] and a screen among them): the X server's
+    /// monitors and root window are read now, for each build (monitors
+    /// move, come and go; `sources::X11_TIMEOUT` at most), at the take's
+    /// rate, else the live scene's.
+    fn x11_grab(&self, specs: &[SourceSpec], scene: Option<&LiveScene>) -> Option<X11Grab> {
+        let ScreenBackend::X11 { display } = &self.opts.screen_backend else {
+            return None;
+        };
+        let screens = specs.iter().any(|s| matches!(s, SourceSpec::Screen { .. }));
+        if !self.grabs_x11() || !screens {
+            return None;
+        }
+        let layout = crate::sources::x11_layout(display);
+        if let Err(e) = &layout {
+            tracing::warn!("capture: can't read the X server's monitors: {e}");
+        }
+        Some(X11Grab {
+            display: display.clone(),
+            layout,
+            fps: self
+                .take
+                .as_ref()
+                .map(|run| run.plan.fps)
+                .or_else(|| scene.map(|s| s.canvas.fps)),
+        })
     }
 
     /// Whether the fake backend has this device (the real one tries anything).
@@ -1261,6 +1302,10 @@ impl Engine {
 
     fn teardown_live(&mut self) {
         if let Some(live) = self.live.take() {
+            // Its X11 screens' monitors no longer matter.
+            if let Some(watch) = &live.x11_watch {
+                watch.stop();
+            }
             let ok = set_null_with_deadline(vec![live.pipeline.clone().upcast()], TEARDOWN_TIMEOUT);
             if !ok {
                 self.wedge(
@@ -1300,12 +1345,14 @@ impl Engine {
 
     // ------------------------------------------------------------ portal
 
-    /// Screens of `specs` that need a portal session (real backend; the fake
-    /// one's screens only with `QREC_FAKE_PORTAL`, whose portal refuses them,
-    /// or a test's sharing fake portal).
+    /// Screens of `specs` that need a portal session (real backend, unless
+    /// it grabs them from an X server, [`Self::grabs_x11`]: then nothing
+    /// waits for the portal, a token or a dialog; the fake one's screens
+    /// only with `QREC_FAKE_PORTAL`, whose portal refuses them, or a test's
+    /// sharing fake portal).
     fn missing_casts(&self, specs: &[SourceSpec]) -> Vec<String> {
         let portal = match self.opts.backend {
-            Backend::Real => true,
+            Backend::Real => !self.grabs_x11(),
             Backend::Fake => self.opts.fake.portal.is_some() || self.fake_portal_shares(),
         };
         if !portal {
@@ -2388,6 +2435,7 @@ impl Engine {
             self.end_cast_grace();
         }
         let camera_stall = self.fake_camera_stall();
+        let x11 = self.grabs_x11();
         let Some(run) = &mut self.take else { return };
         match run.phase {
             Phase::New => {}
@@ -2441,7 +2489,7 @@ impl Engine {
                             "no data from {} within {} ms: {}",
                             bin.label,
                             run.plan.first_buffer_ms,
-                            silence_reason(&run.plan, bin.id.as_str())
+                            silence_reason(&run.plan, bin.id.as_str(), x11)
                         ),
                         None => "the recording didn't start".into(),
                     };
@@ -2513,11 +2561,13 @@ impl Engine {
     /// is lost like an unplugged one (SPEC §16). A camera can hang without
     /// an error; its bin would otherwise be filled for as long as the hang
     /// lasted at the stop, more frames than the EOS timeout lets it encode
-    /// (a still screen never gets here: the bridge's keepalive, A§8.11).
+    /// (a still screen never gets here: the bridge's keepalive, A§8.11, or
+    /// on X11 `ximagesrc`'s grab every frame period).
     fn check_stalls(&mut self) {
         let Some(now) = self.live.as_ref().and_then(|l| running_time(&l.pipeline)) else {
             return;
         };
+        let x11 = self.grabs_x11();
         let Some(run) = &self.take else { return };
         let watched: Vec<(Option<u64>, bool)> = run
             .bins
@@ -2535,7 +2585,7 @@ impl Engine {
                     "no frames from {} for {:.1} s: {}",
                     bin.label,
                     silent.as_secs_f64(),
-                    stall_reason(&run.plan, bin.id.as_str())
+                    stall_reason(&run.plan, bin.id.as_str(), x11)
                 );
                 (i, message)
             })
@@ -2638,14 +2688,18 @@ fn stalled(bins: &[(Option<u64>, bool)], now: u64, limit: Duration) -> Vec<(usiz
         .collect()
 }
 
-/// Why a video stream went silent mid-take, for its `StreamLost` message.
-fn stall_reason(plan: &CapturePlan, id: &str) -> &'static str {
+/// Why a video stream went silent mid-take, for its `StreamLost` message
+/// (`x11`: screens are grabbed from an X server, not shared by the portal).
+fn stall_reason(plan: &CapturePlan, id: &str, x11: bool) -> &'static str {
     match plan
         .video
         .iter()
         .find(|v| v.id.as_str() == id)
         .map(|v| &v.source)
     {
+        Some(VideoSource::Screen { .. }) if x11 => {
+            "the screen stopped sending frames; the X server may have stopped answering"
+        }
         Some(VideoSource::Screen { .. }) => "the screen share stopped sending frames",
         _ => {
             "the camera stopped sending frames; it may have been unplugged or hung (unplug and \
@@ -2655,8 +2709,8 @@ fn stall_reason(plan: &CapturePlan, id: &str) -> &'static str {
 }
 
 /// What usually keeps a source silent through the start window (A§5.3), for
-/// the `capture_failed` message.
-fn silence_reason(plan: &CapturePlan, id: &str) -> &'static str {
+/// the `capture_failed` message (`x11`: as [`stall_reason`]'s).
+fn silence_reason(plan: &CapturePlan, id: &str, x11: bool) -> &'static str {
     match plan
         .video
         .iter()
@@ -2666,6 +2720,9 @@ fn silence_reason(plan: &CapturePlan, id: &str) -> &'static str {
         Some(VideoSource::Camera { .. }) => {
             "the camera sent no frames; it may be in use, unplugged or stuck (unplug and replug \
              it; `journalctl -k | grep uvcvideo` shows driver errors), or not support the chosen mode"
+        }
+        Some(VideoSource::Screen { .. }) if x11 => {
+            "the screen sent no frames; the X server may not be answering"
         }
         Some(VideoSource::Screen { .. }) => {
             "the screen share sent no frames; the portal may have stopped it or the output may be off"
@@ -2709,6 +2766,188 @@ mod tests {
             .name(),
             "DP-4"
         );
+    }
+
+    /// An engine that isn't running, with `backend` and `screens`, for its
+    /// decisions; the env holds its folders.
+    fn idle_engine(backend: Backend, screens: ScreenBackend) -> (Engine, crate::testkit::TestEnv) {
+        let env = crate::testkit::TestEnv::new();
+        let dirs = crate::paths::UserDirs::resolve(&env.paths_env()).unwrap();
+        let mut opts = EngineOptions::new(env.root(), backend, &dirs);
+        opts.screen_backend = screens;
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let tracker = Arc::new(LiveTracker::new());
+        (Engine::new(opts, tx, rx, Arc::default(), tracker), env)
+    }
+
+    fn x11_display(display: &str) -> ScreenBackend {
+        ScreenBackend::X11 {
+            display: display.into(),
+        }
+    }
+
+    /// On X11 no screen waits for the portal: no dialog, restore token or
+    /// cast (adding the layer is the consent). Under the portal, and in a
+    /// session without a display (a headless one may still reach the
+    /// portal), every real screen without a cast does, as before; fake
+    /// screens only through the fake portal.
+    #[test]
+    fn x11_screens_need_no_portal_session() {
+        let specs = [
+            SourceSpec::Screen {
+                output: "VIRT-R".into(),
+            },
+            SourceSpec::Camera {
+                device: "/dev/video0".into(),
+                mode: None,
+            },
+            SourceSpec::Audio {
+                device: "alsa_input.mic".into(),
+            },
+        ];
+        let (x11, _env) = idle_engine(Backend::Real, x11_display(":64"));
+        assert!(x11.grabs_x11());
+        assert_eq!(x11.missing_casts(&specs), Vec::<String>::new());
+        for screens in [ScreenBackend::Portal, ScreenBackend::None] {
+            let (portal, _env) = idle_engine(Backend::Real, screens.clone());
+            assert!(!portal.grabs_x11(), "{screens}");
+            assert_eq!(portal.missing_casts(&specs), ["VIRT-R"], "{screens}");
+        }
+        let (fake, _env) = idle_engine(Backend::Fake, x11_display(":64"));
+        assert!(!fake.grabs_x11(), "fake screens are test patterns");
+        assert!(fake.missing_casts(&specs).is_empty());
+    }
+
+    /// A build reads the X server's monitors when it grabs a screen from
+    /// it, and only then, at the take's rate, else the live scene's; a
+    /// server it can't reach is that build's error.
+    #[test]
+    fn a_build_reads_the_x_server_for_its_screens() {
+        let screen = SourceSpec::Screen {
+            output: "VIRT-R".into(),
+        };
+        let mic = SourceSpec::Audio {
+            device: "alsa_input.mic".into(),
+        };
+        let scene = LiveScene {
+            canvas: qrec_core::model::Canvas {
+                width: 1920,
+                height: 1080,
+                fps: Fps::new(60, 1),
+                background: "#000000".parse().unwrap(),
+            },
+            scene: Scene::default(),
+            preview: false,
+        };
+        // Nothing listens on :59000 (no test server takes it).
+        let (mut x11, _env) = idle_engine(Backend::Real, x11_display(":59000"));
+        assert!(
+            x11.x11_grab(std::slice::from_ref(&mic), Some(&scene))
+                .is_none()
+        );
+        let grab = x11
+            .x11_grab(&[mic.clone(), screen.clone()], Some(&scene))
+            .expect("a screen to grab");
+        assert_eq!(grab.display, ":59000");
+        assert_eq!(grab.fps, Some(Fps::new(60, 1)));
+        let err = grab.layout.unwrap_err();
+        assert!(
+            err.starts_with("X11 (DISPLAY=:59000): can't connect"),
+            "{err}"
+        );
+        let plan = CapturePlan {
+            take: TakeId::numbered(1),
+            dir: "takes/take-0001".into(),
+            log: "takes/take-0001/recorder.log".into(),
+            fps: Fps::new(30, 1),
+            health_check_ms: 500,
+            first_buffer_ms: 3000,
+            eos_timeout_ms: 10_000,
+            video: Vec::new(),
+            audio: Vec::new(),
+        };
+        x11.take = Some(TakeRun {
+            plan,
+            tag: 1,
+            log: TakeLog::open(None),
+            phase: Phase::New,
+            t0: 0,
+            t1: None,
+            bins: Vec::new(),
+            cancel: false,
+            hold_until: None,
+            camera_stall_at: None,
+        });
+        let grab = x11.x11_grab(std::slice::from_ref(&screen), Some(&scene));
+        assert_eq!(
+            grab.and_then(|g| g.fps),
+            Some(Fps::new(30, 1)),
+            "the take's"
+        );
+        for (backend, screens) in [
+            (Backend::Real, ScreenBackend::Portal),
+            (Backend::Real, ScreenBackend::None),
+            (Backend::Fake, x11_display(":59000")),
+        ] {
+            let (engine, _env) = idle_engine(backend, screens);
+            assert!(
+                engine
+                    .x11_grab(std::slice::from_ref(&screen), Some(&scene))
+                    .is_none()
+            );
+        }
+    }
+
+    /// A screen that goes silent blames the X server on X11, the portal's
+    /// share otherwise.
+    #[test]
+    fn silent_screens_blame_their_backend() {
+        let record = |id: &str, source: VideoSource| qrec_core::plans::VideoRecord {
+            id: id.parse().unwrap(),
+            source,
+            file: format!("{id}.mkv"),
+            encoder: qrec_core::capture_plan::x264(),
+            key_int_max: 30,
+            camera_mode: None,
+        };
+        let plan = CapturePlan {
+            take: TakeId::numbered(1),
+            dir: "takes/take-0001".into(),
+            log: "takes/take-0001/recorder.log".into(),
+            fps: Fps::new(30, 1),
+            health_check_ms: 500,
+            first_buffer_ms: 3000,
+            eos_timeout_ms: 10_000,
+            video: vec![
+                record(
+                    "L1",
+                    VideoSource::Screen {
+                        output: "VIRT-R".into(),
+                        label: "VIRT-R".into(),
+                    },
+                ),
+                record(
+                    "L2",
+                    VideoSource::Camera {
+                        device: "/dev/video0".into(),
+                        label: "Camera".into(),
+                    },
+                ),
+            ],
+            audio: Vec::new(),
+        };
+        assert!(stall_reason(&plan, "L1", true).contains("the X server"));
+        assert!(silence_reason(&plan, "L1", true).contains("the X server"));
+        assert_eq!(
+            stall_reason(&plan, "L1", false),
+            "the screen share stopped sending frames"
+        );
+        assert!(silence_reason(&plan, "L1", false).contains("the portal may have stopped it"));
+        for x11 in [false, true] {
+            assert!(stall_reason(&plan, "L2", x11).starts_with("the camera"));
+            assert!(silence_reason(&plan, "L2", x11).starts_with("the camera"));
+            assert!(silence_reason(&plan, "A1", x11).starts_with("the audio device"));
+        }
     }
 
     #[test]

@@ -28,7 +28,7 @@ use super::meters::MeterMonitor;
 use super::spec::SourceSpec;
 use super::{
     Backend, EngineOptions, FakeFailure, FakeHooks, FakePortal, GstCaptureEngine, LiveProgress,
-    LiveSourceState, LiveSourceStatus, PreviewOutput, STALL_LIMIT, SideEvent,
+    LiveSourceState, LiveSourceStatus, PreviewOutput, STALL_LIMIT, ScreenBackend, SideEvent,
 };
 use crate::deps::CaptureEngine;
 use crate::gst_init::testing::{assert_quiet_since, problems, serial};
@@ -1713,6 +1713,63 @@ fn live_status_follows_a_refusal() {
         );
         assert_eq!(h.engine.inspect().portal_asks, 2);
     }
+}
+
+/// On X11 the real backend grabs a screen from the X server and never asks
+/// the portal (adding the layer is the consent, issue #9): neither the
+/// live scene nor a take waits for a dialog, a cast or a restore token. An
+/// X server that can't be read (nothing listens on :59000) leaves the
+/// screen dead in the live status, never awaiting, and fails a take naming
+/// the screen. (`tests/x11.rs` records one from a private Xvfb.)
+#[test]
+fn x11_screens_never_wait_for_the_portal() {
+    let _serial = serial();
+    let (side_tx, side_rx) = crossbeam_channel::unbounded();
+    let mut h = Harness::custom(Some(side_tx), |opts| {
+        opts.backend = Backend::Real;
+        opts.screen_backend = ScreenBackend::X11 {
+            display: ":59000".into(),
+        };
+    });
+    let full = Rect::new(0, 0, 320, 180);
+    let scene = live_scene(vec![screen_layer("L1", "VIRT-R", full)], vec![], true);
+    h.engine.set_live(Some(scene), h.inbox.clone());
+    let dead = names(&[("VIRT-R", "dead")]);
+    let seen = statuses_until(&side_rx, "a dead screen", |s| brief(s) == dead);
+    assert_eq!(seen.len(), 1, "it never awaited the portal: {seen:#?}");
+    let LiveSourceState::Dead { message } = &seen[0][0].state else {
+        unreachable!()
+    };
+    assert!(
+        message.starts_with("X11 (DISPLAY=:59000): can't connect"),
+        "{message}"
+    );
+    let info = h.engine.inspect();
+    assert_eq!((info.portal_asks, info.casts.len()), (0, 0), "{info:?}");
+
+    let dir = h.take_dir(1);
+    h.start(&plan(1, &dir, vec![screen("L1", "VIRT-R")], vec![]));
+    let (ev, skipped) = h.wait_for("CaptureFailed", |e| {
+        matches!(e, Event::CaptureFailed { .. })
+    });
+    let Event::CaptureFailed {
+        source,
+        message,
+        missing,
+        ..
+    } = ev
+    else {
+        unreachable!()
+    };
+    assert!(
+        source.as_deref().unwrap().starts_with("L1 screen VIRT-R"),
+        "{source:?} {skipped:?}"
+    );
+    assert!(message.starts_with("X11 (DISPLAY=:59000): "), "{message}");
+    assert_eq!(missing, None);
+    assert_eq!(h.engine.inspect().portal_asks, 0);
+    let tokens = h._env.state_home().join("qrec/portal-tokens.json");
+    assert!(!tokens.exists(), "no restore token was asked for or saved");
 }
 
 /// G§3.9 `LiveStatus` for a source's death (an error, a stream that ends)
