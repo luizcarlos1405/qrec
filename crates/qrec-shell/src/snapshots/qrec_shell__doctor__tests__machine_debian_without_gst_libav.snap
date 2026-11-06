@@ -224,6 +224,14 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
         "required": false
       },
       {
+        "detail": "ffmpeg has no libopenh264 encoder: MP4 exports use h264_vaapi on /dev/dri/renderD128",
+        "hint": null,
+        "id": "ffmpeg.libopenh264",
+        "neededFor": [],
+        "ok": false,
+        "required": false
+      },
+      {
         "detail": "aac (MP4 audio)",
         "hint": null,
         "id": "ffmpeg.aac",
@@ -399,6 +407,7 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "  ok        ffmpeg.decoders        h264 (the takes' video), flac (the takes' audio)",
     "  ok        ffmpeg.demuxers        matroska (the takes' MKV files)",
     "  ok        ffmpeg.libx264         libx264 (MP4 exports)",
+    "  optional  ffmpeg.libopenh264     ffmpeg has no libopenh264 encoder: MP4 exports use h264_vaapi on /dev/dri/renderD128",
     "  ok        ffmpeg.aac             aac (MP4 audio)",
     "  ok        ffmpeg.pcm_s16le       pcm_s16le (export segments)",
     "  ok        ffmpeg.libvpx-vp9      libvpx-vp9 (WebM exports)",

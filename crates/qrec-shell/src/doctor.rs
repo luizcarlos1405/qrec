@@ -14,7 +14,8 @@
 //!   `va*h264lpenc`, bound to the render node, which a probe child finds,
 //!   else x264enc, else openh264enc), h264parse, matroskamux and flacenc;
 //! - each export format: ffmpeg's encoders (for MP4's video, h264_vaapi
-//!   on the render node once the h264_vaapi check passed, else libx264).
+//!   on the render node once the h264_vaapi check passed, else libx264,
+//!   else libopenh264).
 //!
 //! Checks nothing needs only inform: the optional `wl-copy`, the portal's
 //! app registry and the VA-API report (render nodes, the effective device,
@@ -252,7 +253,7 @@ pub struct PortalInfo {
 pub struct DoctorOptions {
     /// `QREC_CAPTURE_BACKEND=fake`: test sources instead of the portal,
     /// cameras and PipeWire, x264enc (else openh264enc) for recordings and
-    /// libx264 for MP4 exports.
+    /// libx264 (else libopenh264) for MP4 exports.
     pub fake_backend: bool,
     /// `recording.vaapiDevice` of the project in scope, if any.
     pub project_vaapi_device: Option<String>,
@@ -354,7 +355,8 @@ pub fn run_with(probe: &dyn Probe, opts: &DoctorOptions) -> DoctorReport {
             fix(Need::WlClipboard),
         ),
     });
-    checks.push(va_check(&va, &fix));
+    let cpu = on_the_cpu(&checks);
+    checks.push(va_check(&va, &fix, cpu));
     DoctorReport {
         features_off: features_off(&checks),
         checks,
@@ -807,8 +809,10 @@ fn encoder_checks(va: &VaReport, opts: &DoctorOptions, fix: Fix<'_>, checks: &mu
 
 /// Encoder name, what needs it, what for.
 const ENCODERS: &[(&str, &[Feature], &str)] = &[
-    // Not needed when h264_vaapi encodes instead (`mp4_encoder_check`).
+    // MP4's video: only the one that encodes it is needed, h264_vaapi
+    // first (`mp4_encoder_checks`).
     ("libx264", MP4, "MP4 exports"),
+    ("libopenh264", MP4, "MP4 exports"),
     ("aac", MP4, "MP4 audio"),
     ("pcm_s16le", EXPORTS, "export segments"),
     ("libvpx-vp9", WEBM, "WebM exports"),
@@ -895,7 +899,7 @@ fn ffmpeg_checks(
                     )
                 });
             }
-            mp4_encoder_check(va_exporter(va, opts, &encoders), checks);
+            mp4_encoder_checks(va_exporter(va, opts, &encoders), checks);
         }
         Err(e) => checks.push(fail(
             "ffmpeg.encoders",
@@ -906,12 +910,12 @@ fn ffmpeg_checks(
     }
 }
 
-/// The render node MP4 exports encode on with h264_vaapi instead of
-/// libx264 (A§9.3 `export_vaapi`), if any, as [`va_recorder`] says for
-/// recordings: the effective node once its h264_vaapi check passed.
-/// Unprobed (the GUI's doctor, whose host runs the check), that node when
-/// it is Intel or AMD and ffmpeg has h264_vaapi. Never with the fake
-/// backend, which exports with libx264.
+/// The render node MP4 exports encode on with h264_vaapi instead of the
+/// software encoders (A§9.3 `export_vaapi`), if any, as [`va_recorder`]
+/// says for recordings: the effective node once its h264_vaapi check
+/// passed. Unprobed (the GUI's doctor, whose host runs the check), that
+/// node when it is Intel or AMD and ffmpeg has h264_vaapi. Never with the
+/// fake backend, which exports with libx264, else libopenh264.
 fn va_exporter<'a>(
     va: &'a VaReport,
     opts: &DoctorOptions,
@@ -927,20 +931,113 @@ fn va_exporter<'a>(
     va.device.as_deref().filter(|_| exports)
 }
 
-/// MP4's video encoder, as [`encoder_checks`] does the recordings': when
-/// h264_vaapi encodes the exports on `exporter` ([`va_exporter`]),
-/// `ffmpeg.libx264` is needed for nothing and MP4 needs only aac and
-/// pcm_s16le.
-fn mp4_encoder_check(exporter: Option<&str>, checks: &mut [Check]) {
-    let Some(device) = exporter else {
-        return;
+/// MP4's video encoder (A§9.3 `plan_export`), as [`encoder_checks`] does
+/// the recordings': h264_vaapi on `exporter` ([`va_exporter`]), else
+/// libx264, else libopenh264. Only that one is needed (with aac and
+/// pcm_s16le): the other ffmpeg encoder's check informs, a missing one
+/// saying what exports instead. A missing libopenh264 has no fix then: it
+/// only stands in for libx264, and the full ffmpeg build the fix names is
+/// libx264's (Debian's, Ubuntu's and Arch's ffmpeg have no libopenh264).
+/// A missing libx264 keeps its fix: it is the better encoder, and the one
+/// an x264 preference exports with. With none, both are needed, since
+/// either one would export. An x264 preference is the export's to name
+/// (the doctor reads no preference).
+fn mp4_encoder_checks(exporter: Option<&str>, checks: &mut [Check]) {
+    let has = |id: &str| checks.iter().any(|c| c.id == id && c.ok);
+    let encoder = match exporter {
+        Some(device) => Some(format!("h264_vaapi on {device}")),
+        None if has("ffmpeg.libx264") => Some("libx264".to_owned()),
+        None if has("ffmpeg.libopenh264") => Some("libopenh264".to_owned()),
+        None => None,
     };
-    if let Some(x264) = checks.iter_mut().find(|c| c.id == "ffmpeg.libx264") {
-        x264.needed_for.clear();
-        x264.required = false;
-        if !x264.ok {
-            x264.detail =
-                format!("ffmpeg has no libx264 encoder: MP4 exports use h264_vaapi on {device}");
+    for (name, other) in [("libx264", "libopenh264"), ("libopenh264", "libx264")] {
+        let id = format!("ffmpeg.{name}");
+        let Some(check) = checks.iter_mut().find(|c| c.id == id) else {
+            continue;
+        };
+        match &encoder {
+            Some(encoder) if encoder == name => {}
+            Some(encoder) => {
+                check.needed_for.clear();
+                check.required = false;
+                if !check.ok {
+                    check.detail =
+                        format!("ffmpeg has no {name} encoder: MP4 exports use {encoder}");
+                    if name == "libopenh264" {
+                        check.hint = None;
+                        check.fix = None;
+                    }
+                }
+            }
+            None => {
+                check.detail = format!(
+                    "ffmpeg has no {name} encoder (MP4 exports), and no h264_vaapi or {other} \
+                     encodes them instead"
+                );
+            }
+        }
+    }
+}
+
+/// What encodes H.264 on the CPU where VA-API doesn't: for recordings
+/// x264enc, else openh264enc ([`encoder_checks`]), for MP4 exports
+/// libx264, else libopenh264 ([`mp4_encoder_checks`]); each `None` when
+/// neither passed.
+#[derive(Debug, Clone, Copy)]
+struct OnTheCpu {
+    records: Option<&'static str>,
+    exports: Option<&'static str>,
+}
+
+fn on_the_cpu(checks: &[Check]) -> OnTheCpu {
+    let has = |id: &str| checks.iter().any(|c| c.id == id && c.ok);
+    OnTheCpu {
+        records: if has("gst.x264enc") {
+            Some("x264")
+        } else if has("gst.openh264enc") {
+            Some("OpenH264")
+        } else {
+            None
+        },
+        exports: if has("ffmpeg.libx264") {
+            Some("libx264")
+        } else if has("ffmpeg.libopenh264") {
+            Some("libopenh264")
+        } else {
+            None
+        },
+    }
+}
+
+impl OnTheCpu {
+    /// "recordings and exports use x264 on the CPU", or what each uses.
+    fn sentence(self) -> String {
+        let family = |encoder: &str| {
+            match encoder {
+                "libx264" => "x264",
+                "libopenh264" => "OpenH264",
+                other => other,
+            }
+            .to_owned()
+        };
+        match (self.records, self.exports.map(family)) {
+            (Some(records), Some(exports)) if records == exports => {
+                format!("recordings and exports use {records} on the CPU")
+            }
+            (Some(records), Some(exports)) => {
+                format!("recordings use {records} and exports {exports} on the CPU")
+            }
+            (Some(records), None) => format!("recordings use {records} on the CPU"),
+            (None, Some(exports)) => format!("exports use {exports} on the CPU"),
+            (None, None) => "nothing encodes H.264 on the CPU either".to_owned(),
+        }
+    }
+
+    /// The software encoder MP4 exports use while h264_vaapi fails.
+    fn meanwhile(self) -> String {
+        match self.exports {
+            Some(encoder) => format!("exports use {encoder} meanwhile"),
+            None => "MP4 exports are off meanwhile".to_owned(),
         }
     }
 }
@@ -1183,12 +1280,14 @@ fn va_report(probe: &dyn Probe, opts: &DoctorOptions, gst_encoders: Vec<String>)
     }
 }
 
-fn va_check(va: &VaReport, fix: Fix<'_>) -> Check {
+/// `vaapi`: the effective node, its driver and the h264_vaapi check; `cpu`
+/// says what encodes without it.
+fn va_check(va: &VaReport, fix: Fix<'_>, cpu: OnTheCpu) -> Check {
     let Some(device) = &va.device else {
         return fail(
             "vaapi",
             NOTHING,
-            "no Intel or AMD render node: recordings and exports use x264 on the CPU",
+            format!("no Intel or AMD render node: {}", cpu.sentence()),
             "Qrec never picks an NVIDIA node by itself; set encoder.vaapi_device in \
              ~/.config/qrec/config.toml to use one",
         );
@@ -1221,7 +1320,7 @@ fn va_check(va: &VaReport, fix: Fix<'_>) -> Check {
             "vaapi",
             NOTHING,
             detail,
-            fix(Need::VaDriver(gpu)).also("exports use libx264 meanwhile"),
+            fix(Need::VaDriver(gpu)).also(&cpu.meanwhile()),
         ),
         (Some(_), _) => ok("vaapi", NOTHING, detail),
         _ => fail(
@@ -1964,6 +2063,7 @@ mod tests {
             "ffmpeg.decoders",
             "ffmpeg.demuxers",
             "ffmpeg.libx264",
+            "ffmpeg.libopenh264",
             "ffmpeg.libvpx-vp9",
             "ffmpeg.libopus",
             "ffmpeg.libsvtav1",
@@ -2003,10 +2103,11 @@ mod tests {
             assert!(needs(id).is_empty(), "{id}");
         }
         // The dev box records and exports MP4 with VA, so x264enc,
-        // openh264enc and libx264 are needed for nothing.
+        // openh264enc, libx264 and libopenh264 are needed for nothing.
         assert!(needs("gst.x264enc").is_empty());
         assert!(needs("gst.openh264enc").is_empty());
         assert!(needs("ffmpeg.libx264").is_empty());
+        assert!(needs("ffmpeg.libopenh264").is_empty());
         assert_eq!(
             check(&report, "gst.vah264enc").detail,
             "vah264enc records on /dev/dri/renderD129"
@@ -2378,10 +2479,12 @@ mod tests {
         assert_eq!(check(&report, "gst.vah264enc").hint.as_deref(), plugin);
     }
 
-    /// libx264 is needed for MP4 exports only when h264_vaapi doesn't
-    /// encode them (the recordings' rule); aac and pcm_s16le always are.
+    /// MP4's video is h264_vaapi's where its check passed, else libx264's,
+    /// else libopenh264's (the export's chain, the recordings' rule): only
+    /// the one that encodes is needed, and with none either software
+    /// encoder turns MP4 export on; aac and pcm_s16le always are.
     #[test]
-    fn mp4_exports_need_vaapi_or_libx264() {
+    fn mp4_exports_need_vaapi_libx264_or_libopenh264() {
         // Stock Fedora's ffmpeg-free on the dev box's Intel node.
         let mut fake = Fake::healthy();
         fake.encoders.remove("libx264");
@@ -2396,6 +2499,9 @@ mod tests {
             x264.detail,
             "ffmpeg has no libx264 encoder: MP4 exports use h264_vaapi on /dev/dri/renderD129"
         );
+        // Its fix stays: the better encoder, the one x264 by name needs.
+        assert!(x264.fix.is_some() && x264.hint.is_some(), "{x264:?}");
+        assert!(check(&report, "ffmpeg.libopenh264").needed_for.is_empty());
         let text = report.to_text();
         assert!(text.contains("optional  ffmpeg.libx264"), "{text}");
         assert!(text.ends_with("Everything Qrec needs is here.\n"), "{text}");
@@ -2407,15 +2513,70 @@ mod tests {
         assert_eq!(report.features_off[0].checks, ["ffmpeg.aac"]);
         fake.encoders.insert("aac".to_owned());
 
-        // The h264_vaapi check failed: libx264 encodes MP4, and it's missing.
+        // The h264_vaapi check failed: libopenh264 encodes MP4, and the VA
+        // check says so.
         fake.vaapi = Err("ffmpeg exited with status 1".to_owned());
         let report = run_with(&fake, &opts());
+        assert!(report.features_off.is_empty(), "{:?}", report.features_off);
+        assert_eq!(
+            check(&report, "ffmpeg.libopenh264").needed_for,
+            [Feature::ExportMp4]
+        );
+        let x264 = check(&report, "ffmpeg.libx264");
+        assert_eq!(
+            x264.detail,
+            "ffmpeg has no libx264 encoder: MP4 exports use libopenh264"
+        );
+        assert!(x264.fix.is_some(), "{x264:?}");
+        let vaapi = check(&report, "vaapi").fix.clone().unwrap();
+        assert!(
+            vaapi
+                .note
+                .as_deref()
+                .is_some_and(|n| n.ends_with("exports use libopenh264 meanwhile")),
+            "{vaapi:?}"
+        );
+
+        // Neither: MP4 export is off, and either one turns it on.
+        fake.encoders.remove("libopenh264");
+        let report = run_with(&fake, &opts());
         assert_eq!(off(&report), [Feature::ExportMp4]);
-        assert_eq!(report.features_off[0].checks, ["ffmpeg.libx264"]);
+        assert_eq!(
+            report.features_off[0].checks,
+            ["ffmpeg.libx264", "ffmpeg.libopenh264"]
+        );
         assert_eq!(
             report.features_off[0].message,
-            "MP4 export is off: ffmpeg has no libx264 encoder (MP4 exports)"
+            "MP4 export is off: ffmpeg has no libx264 encoder (MP4 exports), and no h264_vaapi \
+             or libopenh264 encodes them instead; ffmpeg has no libopenh264 encoder (MP4 \
+             exports), and no h264_vaapi or libx264 encodes them instead"
         );
+        let openh264 = check(&report, "ffmpeg.libopenh264");
+        assert!(openh264.fix.is_some(), "{openh264:?}");
+        assert!(
+            check(&report, "vaapi")
+                .hint
+                .as_deref()
+                .is_some_and(|h| h.contains("MP4 exports are off meanwhile")),
+            "{report:?}"
+        );
+
+        // libx264 alone (Debian's, Ubuntu's and Arch's ffmpeg): libopenh264
+        // is needed for nothing, and has no fix to offer.
+        fake.encoders.insert("libx264".to_owned());
+        let report = run_with(&fake, &opts());
+        assert!(report.features_off.is_empty(), "{:?}", report.features_off);
+        let openh264 = check(&report, "ffmpeg.libopenh264");
+        assert!(
+            !openh264.ok && openh264.needed_for.is_empty(),
+            "{openh264:?}"
+        );
+        assert_eq!((&openh264.hint, &openh264.fix), (&None, &None));
+        assert_eq!(
+            openh264.detail,
+            "ffmpeg has no libopenh264 encoder: MP4 exports use libx264"
+        );
+        fake.encoders.remove("libx264");
 
         // Unprobed (the GUI's doctor, whose host runs the check): an Intel
         // node and an ffmpeg with h264_vaapi do, as for recordings.
@@ -2431,12 +2592,21 @@ mod tests {
         fake.encoders.remove("h264_vaapi");
         assert_eq!(off(&run_with(&fake, &unprobed)), [Feature::ExportMp4]);
         fake.encoders.insert("h264_vaapi".to_owned());
-        // Nor does the fake backend, which exports with libx264.
+        // Nor does the fake backend, which exports in software: libopenh264
+        // would.
         let fake_backend = DoctorOptions {
             fake_backend: true,
             ..unprobed
         };
         assert_eq!(off(&run_with(&fake, &fake_backend)), [Feature::ExportMp4]);
+        fake.encoders.insert("libopenh264".to_owned());
+        let report = run_with(&fake, &fake_backend);
+        assert!(report.features_off.is_empty(), "{:?}", report.features_off);
+        assert_eq!(
+            check(&report, "ffmpeg.libopenh264").needed_for,
+            [Feature::ExportMp4]
+        );
+        fake.encoders.remove("libopenh264");
         // Nor a configured NVIDIA node, which the doctor never probes.
         let nvidia = DoctorOptions {
             config_vaapi_device: Some("/dev/dri/renderD128".to_owned()),
@@ -2451,7 +2621,41 @@ mod tests {
             off(&run_with(&fake, &nvidia_unprobed)),
             [Feature::ExportMp4]
         );
-        assert_eq!(fake.vaapi_probed.get(), 3, "probed with probe_vaapi only");
+        assert_eq!(fake.vaapi_probed.get(), 5, "probed with probe_vaapi only");
+    }
+
+    /// The `vaapi` check without an Intel or AMD node says what encodes on
+    /// the CPU instead: x264 for both, else what each uses.
+    #[test]
+    fn without_a_va_node_the_cpu_encoders_are_named() {
+        let mut fake = Fake::healthy();
+        fake.nodes = vec![node("/dev/dri/renderD128", PCI_NVIDIA)];
+        fake.env.clear();
+        let detail = |fake: &Fake| check(&run_with(fake, &opts()), "vaapi").detail.clone();
+        assert_eq!(
+            detail(&fake),
+            "no Intel or AMD render node: recordings and exports use x264 on the CPU"
+        );
+        fake.encoders.remove("libx264");
+        assert_eq!(
+            detail(&fake),
+            "no Intel or AMD render node: recordings use x264 and exports OpenH264 on the CPU"
+        );
+        fake.elements.remove("x264enc");
+        assert_eq!(
+            detail(&fake),
+            "no Intel or AMD render node: recordings and exports use OpenH264 on the CPU"
+        );
+        fake.encoders.remove("libopenh264");
+        assert_eq!(
+            detail(&fake),
+            "no Intel or AMD render node: recordings use OpenH264 on the CPU"
+        );
+        fake.elements.remove("openh264enc");
+        assert_eq!(
+            detail(&fake),
+            "no Intel or AMD render node: nothing encodes H.264 on the CPU either"
+        );
     }
 
     #[test]
@@ -2792,8 +2996,14 @@ mod tests {
                 os_release,
             )
         };
+        // Debian's, Ubuntu's and Arch's ffmpeg: libx264, no libopenh264.
+        let distro_ffmpeg = |mut fake: Fake| {
+            fake.encoders.remove("libopenh264");
+            fake
+        };
+
         // PulseAudio itself (no PipeWire): Debian with GNOME.
-        let mut pulseaudio_16 = Fake::healthy().intel_only();
+        let mut pulseaudio_16 = distro_ffmpeg(Fake::healthy().intel_only());
         pulseaudio_16.platform = gnome("ID=debian\n");
         pulseaudio_16.pactl = Ok("pactl 16.1".to_owned());
         pulseaudio_16.pulse = Ok("pulseaudio".to_owned());
@@ -2801,7 +3011,7 @@ mod tests {
         pulseaudio_15.pactl = Ok("pactl 15.0".to_owned());
 
         // Xfce on Xorg: no portal on the session bus, no wl-copy.
-        let mut xfce = Fake::healthy().intel_only();
+        let mut xfce = distro_ffmpeg(Fake::healthy().intel_only());
         xfce.platform = platform(
             &[
                 ("DISPLAY", ":0"),
@@ -2835,8 +3045,8 @@ mod tests {
 
         // Stock Fedora on AMD: Fedora's Mesa encodes no H.264, so GStreamer
         // has no VA encoder and ffmpeg's h264_vaapi check fails; with no
-        // x264enc either, openh264enc records. Nothing exports MP4 video
-        // (no libx264 and no working h264_vaapi).
+        // x264enc either, openh264enc records, and with no libx264,
+        // libopenh264 exports MP4.
         let mut fedora_amd = fedora.clone();
         fedora_amd.nodes = vec![node("/dev/dri/renderD128", PCI_AMD)];
         fedora_amd.env = [("LIBVA_DRIVER_NAME", "radeonsi")].into();
@@ -2847,7 +3057,7 @@ mod tests {
 
         // sway without xdg-desktop-portal-wlr: the frontend runs, nothing
         // answers for ScreenCast. AMD graphics.
-        let mut sway = Fake::healthy();
+        let mut sway = distro_ffmpeg(Fake::healthy());
         sway.platform = platform(
             &[
                 ("WAYLAND_DISPLAY", "wayland-1"),
@@ -2867,7 +3077,7 @@ mod tests {
         sway.startup.clear();
 
         // NVIDIA only: no VA node Qrec would pick; x264 records.
-        let mut nvidia = Fake::healthy();
+        let mut nvidia = distro_ffmpeg(Fake::healthy());
         nvidia.platform = gnome("ID=ubuntu\nID_LIKE=debian\n");
         nvidia.nodes = vec![node("/dev/dri/renderD128", PCI_NVIDIA)];
         nvidia.va_encoders.clear();
@@ -2889,7 +3099,7 @@ mod tests {
         vm.startup.clear();
 
         // Debian without gst-libav: no software H.264 decoder (app).
-        let mut debian = Fake::healthy().intel_only();
+        let mut debian = distro_ffmpeg(Fake::healthy().intel_only());
         debian.platform = gnome("ID=debian\nVERSION_ID=\"13\"\n");
         debian.h264_decoders.clear();
 
@@ -2932,14 +3142,15 @@ mod tests {
                 ("pulseaudio_16", 0, vec![]),
                 ("xfce_x11_no_portal", 0, vec![Screens]),
                 ("fedora_stock", 0, vec![]),
-                ("fedora_stock_amd", 0, vec![ExportMp4]),
+                ("fedora_stock_amd", 0, vec![]),
                 ("sway_without_xdpw", 0, vec![Screens]),
                 ("nvidia_only", 0, vec![]),
                 ("vm", 0, vec![]),
                 ("debian_without_gst_libav", 5, vec![]),
             ]
         );
-        // Stock Fedora on AMD records with openh264enc, which is all it needs.
+        // Stock Fedora on AMD records with openh264enc and exports MP4 with
+        // libopenh264, which is all it needs.
         let (_, fedora_amd) = machines()
             .into_iter()
             .find(|(name, _)| *name == "fedora_stock_amd")
@@ -2951,6 +3162,13 @@ mod tests {
         assert!(
             x264.detail.ends_with(": recordings use openh264enc"),
             "{x264:?}"
+        );
+        assert_eq!(check(&report, "ffmpeg.libopenh264").needed_for, [ExportMp4]);
+        let x264 = check(&report, "ffmpeg.libx264");
+        assert!(x264.needed_for.is_empty(), "{x264:?}");
+        assert_eq!(
+            x264.detail,
+            "ffmpeg has no libx264 encoder: MP4 exports use libopenh264"
         );
     }
 

@@ -232,7 +232,7 @@ expression: project_schema()
         },
         {
           "const": "auto",
-          "description": "VA-API when it is verified on the chosen node, else x264 (recordings: OpenH264 without x264enc).",
+          "description": "VA-API when it is verified on the chosen node, else x264, or OpenH264 where x264 isn't installed.",
           "type": "string"
         }
       ]

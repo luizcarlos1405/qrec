@@ -354,9 +354,10 @@ fn private_registry(nested: &Nested) -> String {
 /// S23 as drawn, for the app checks alone: gtk4paintablesink hidden from
 /// GStreamer (its plugin path, with a registry of the case's own) and the
 /// matroska demuxer from ffmpeg (both app checks), and what only turns
-/// features off, which is no row: libx264 and libsvtav1 hidden from ffmpeg
-/// (MP4 and AV1 exports; the fake backend exports MP4 with libx264, never
-/// h264_vaapi) and the nested env's missing ScreenCast portal. A row each,
+/// features off, which is no row: libx264, libopenh264 and libsvtav1 hidden
+/// from ffmpeg (MP4 and AV1 exports; the fake backend exports MP4 with
+/// libx264, else libopenh264, never h264_vaapi) and the nested env's
+/// missing ScreenCast portal. A row each,
 /// BRIEF's copy for gtk4paintablesink's, the doctor's words for the
 /// demuxer's, each with the doctor's fix for the frame's machine, the dev
 /// shell (`nix develop`); the rest behind "✓ N other checks passed" (it
@@ -368,7 +369,10 @@ fn private_registry(nested: &Nested) -> String {
 fn s23_missing_dependency() {
     let mut nested = Nested::start(AREA, "s23", Options::default());
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
-    let path = s23_path(&nested, &["libx264", "libsvtav1", "matroska,webm"]);
+    let path = s23_path(
+        &nested,
+        &["libx264", "libopenh264", "libsvtav1", "matroska,webm"],
+    );
     nested.launch(
         &project,
         Launch {
@@ -408,6 +412,7 @@ fn s23_missing_dependency() {
         "ScreenCast portal backend",
         "libsvtav1",
         "ffmpeg.libx264",
+        "ffmpeg.libopenh264",
         "Optional",
     ] {
         assert!(!labels.iter().any(|l| l.contains(off)), "{off}: {labels:?}");
@@ -490,7 +495,11 @@ fn s23_missing_dependency() {
     let report = wait_clipboard(&nested, |t| t.starts_with("Qrec doctor"));
     assert!(report.contains("gst.gtk4paintablesink"), "{report}");
     assert!(
-        report.contains("\nMP4 export is off: ffmpeg has no libx264 encoder (MP4 exports)\n"),
+        report.contains(
+            "\nMP4 export is off: ffmpeg has no libx264 encoder (MP4 exports), and no \
+             h264_vaapi or libopenh264 encodes them instead; ffmpeg has no libopenh264 encoder \
+             (MP4 exports), and no h264_vaapi or libx264 encodes them instead\n"
+        ),
         "{report}"
     );
     wait_label(nested.window(0), "toast-host", "Report copied", OPEN);

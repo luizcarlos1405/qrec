@@ -29,7 +29,7 @@ use qrec_core::time::NS_PER_SEC;
 use qrec_core::{ClipId, Event, JobId, LayerId, TakeId};
 use serde_json::{Value, json};
 
-use super::{FfmpegRunner, MediaOptions, PART_MARKER, housekeeping};
+use super::{Ctx, FfmpegRunner, MediaOptions, PART_MARKER, housekeeping};
 use crate::deps::MediaRunner;
 use crate::msg::{Inbox, Msg};
 use crate::testkit::{MediaSpec, TestEnv, ffprobe, fixture_project, run_tool, write_project};
@@ -219,6 +219,7 @@ fn export_plan(project: &Project, out: &str, vaapi_device: Option<&str>) -> Expo
         codec: VideoCodec::H264,
         out: out.to_owned(),
         allow_vaapi: vaapi_device.is_some(),
+        x264_only: false,
     };
     plan_export(project, &caps(vaapi_device), &opts).expect("a plan")
 }
@@ -544,15 +545,87 @@ fn a_failed_va_segment_falls_back_to_libx264() {
     };
     assert_eq!(Path::new(path), dir.join("exports/va.mp4"));
     assert_eq!(output_counts(Path::new(path)).0, 30);
-    // The VA render failed and was thrown away; libx264 rendered it again
-    // under another key. Nothing VA-made was cached.
+    // The VA render failed and was thrown away; libx264, which this ffmpeg
+    // lists (`ffmpeg -encoders`, logged), rendered it again under another
+    // key. Nothing VA-made was cached.
     let cached = names_in(&dir.join(SEGMENTS));
     assert_eq!(cached.len(), 1, "{cached:?}");
     assert_ne!(cached[0], format!("{}.mov", plan.segments[0].key));
     assert_eq!(logs_matching(&dir, "-j4-seg0").len(), 2, "VA, then libx264");
+    let listed = logs_matching(&dir, "-j4-encoders");
+    assert_eq!(
+        listed.len(),
+        1,
+        "the fallback asked ffmpeg for its encoders"
+    );
+    let log = fs::read_to_string(dir.join(".qrec/logs").join(&listed[0])).unwrap();
+    assert!(
+        !log.contains("the fallback assumes libx264"),
+        "ffmpeg listed them: {log}"
+    );
+    let seg = logged_argv(&dir, "-j4-seg0");
+    assert!(seg.iter().any(|a| a.contains(" -c:v libx264 ")), "{seg:?}");
     assert_eq!(logs_matching(&dir, "-j4-export").len(), 2);
     assert!(temps_in(&dir.join(SEGMENTS)).is_empty());
     assert!(temps_in(&dir.join("exports")).is_empty());
+}
+
+/// Fedora's ffmpeg-free (libopenh264, no libx264) with a VA chain that
+/// fails at run time: the fallback lists ffmpeg's encoders and renders the
+/// export again with libopenh264. The dev shell's ffmpeg-full lists both;
+/// this listing is the real one without libx264.
+#[test]
+fn a_failed_va_segment_falls_back_to_openh264_without_libx264() {
+    fn ffmpeg_free(ctx: &Ctx, job: JobId) -> BTreeSet<String> {
+        let mut encoders = super::export::ffmpeg_encoders(ctx, job);
+        assert!(encoders.contains("libopenh264"), "{encoders:?}");
+        encoders.remove("libx264");
+        encoders
+    }
+    let env = TestEnv::new();
+    let dir = env.empty_dir("swamp");
+    fixture_project(
+        &dir,
+        &[MediaSpec::video(320, 180, 30, 30).with_audio(48_000, 1, &[(0, 1000)])],
+    );
+    let plan = export_plan(
+        &load(&dir),
+        "exports/va.mp4",
+        Some("/dev/dri/qrec-no-such-node"),
+    );
+    let runner = runner(&dir);
+    let job = JobId(5);
+    let guard = runner.ctx.jobs.enter(job);
+    let (inbox, _rx) = Inbox::channel();
+    let event =
+        super::export::run_listing(&runner.ctx, &guard.ctl, job, &plan, &inbox, ffmpeg_free);
+    drop(guard);
+    let Event::ExportFinished { path, .. } = &event else {
+        panic!("{event:#?}");
+    };
+    assert_eq!(output_counts(Path::new(path)).0, 30);
+    let cached = names_in(&dir.join(SEGMENTS));
+    assert_eq!(cached.len(), 1, "{cached:?}");
+    assert_ne!(cached[0], format!("{}.mov", plan.segments[0].key));
+    let seg = logged_argv(&dir, "-j5-seg0");
+    assert_eq!(seg.len(), 2, "VA, then libopenh264: {seg:?}");
+    assert!(
+        seg.iter()
+            .any(|a| a.contains(" -c:v libopenh264 ") && !a.contains("libx264")),
+        "{seg:?}"
+    );
+    assert!(temps_in(&dir.join(SEGMENTS)).is_empty());
+}
+
+/// The argv each log matching `part` starts with.
+fn logged_argv(dir: &Path, part: &str) -> Vec<String> {
+    logs_matching(dir, part)
+        .iter()
+        .map(|name| {
+            let log = fs::read_to_string(dir.join(".qrec/logs").join(name)).unwrap();
+            log.lines().next().unwrap().to_owned()
+        })
+        .collect()
 }
 
 /// A hand-picked output is replaced only when the plan says the person

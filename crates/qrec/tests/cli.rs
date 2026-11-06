@@ -8,7 +8,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::thread;
@@ -1894,6 +1894,185 @@ fn missing_ffmpeg_or_ffprobe_is_a_missing_dependency() {
         &[("PATH", path.as_os_str())],
     )
     .ok();
+}
+
+/// A `PATH` whose `ffmpeg` (in `<root>/<name>/`) leaves `hidden` out of
+/// `ffmpeg -encoders` and is the real one otherwise, as Fedora's
+/// ffmpeg-free has no libx264. ffprobe stays the real one.
+fn path_hiding_encoders(env: &TestEnv, name: &str, hidden: &[&str]) -> OsString {
+    let bin = env.root().join(name);
+    fs::create_dir_all(&bin).unwrap();
+    let patterns: String = hidden.iter().map(|e| format!(" -e ' {e} '")).collect();
+    let script = format!(
+        "#!/bin/sh\n\
+         # ffmpeg without {hidden:?} in its encoder list.\n\
+         case \" $* \" in\n  \
+           *' -encoders '*)\n    \
+             '{real}' \"$@\" | grep -v -F{patterns}\n    \
+             exit 0 ;;\n\
+         esac\n\
+         exec '{real}' \"$@\"\n",
+        real = ffmpeg_on_path().display(),
+    );
+    let wrapper = bin.join("ffmpeg");
+    fs::write(&wrapper, script).unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path))).unwrap()
+}
+
+/// The checks of a `qrec --json doctor` reply, whatever its exit.
+fn doctor_report(out: &Out) -> Value {
+    let reply = out.only_reply();
+    if reply["ok"] == true {
+        reply["data"].clone()
+    } else {
+        reply["error"]["details"].clone()
+    }
+}
+
+/// Fedora's ffmpeg-free has libopenh264 and no libx264 (the dev shell's
+/// ffmpeg-full has both; the wrapper hides libx264): an MP4 export
+/// encodes with libopenh264 (A§9.3), every frame in Constrained Baseline,
+/// BT.709 limited range, no B-frames, and the doctor says libopenh264
+/// exports MP4. Without libopenh264 either, the export is
+/// `missing_dependency` naming both, before anything renders.
+#[test]
+fn an_mp4_export_without_libx264_encodes_with_openh264() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "openh264", &[video(30), video(30)]);
+    let fedora = path_hiding_encoders(&env, "ffmpeg-free", &["libx264"]);
+    let vars = [("PATH", fedora.as_os_str())];
+    let out = qrec_with(
+        &env,
+        &dir,
+        &["export", "--quality", "draft", "--json"],
+        &vars,
+    );
+    out.ok();
+    let reply = out.reply();
+    assert_eq!(reply["data"]["result"]["frames"], 60);
+    let path = PathBuf::from(reply["data"]["result"]["path"].as_str().unwrap());
+    let probe = ffprobe(&path);
+    let video = probe["streams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["codec_type"] == "video")
+        .unwrap();
+    assert_eq!(
+        (
+            &video["codec_name"],
+            &video["profile"],
+            &video["has_b_frames"]
+        ),
+        (&json!("h264"), &json!("Constrained Baseline"), &json!(0)),
+        "{video}"
+    );
+    assert_eq!(video["nb_read_packets"], "60", "{video}");
+    assert_eq!(
+        [
+            &video["color_range"],
+            &video["color_space"],
+            &video["color_primaries"],
+            &video["color_transfer"]
+        ],
+        [
+            &json!("tv"),
+            &json!("bt709"),
+            &json!("bt709"),
+            &json!("bt709")
+        ],
+        "{video}"
+    );
+    let duration: f64 = probe["format"]["duration"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((duration - 2.0).abs() < 0.05, "duration {duration}");
+    // Each segment's log starts with its argv.
+    let argvs: Vec<String> = fs::read_dir(dir.join(".qrec/logs"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.to_string_lossy().contains("-seg"))
+        .map(|p| {
+            fs::read_to_string(p)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert!(!argvs.is_empty());
+    for argv in &argvs {
+        assert!(
+            argv.contains(" -c:v libopenh264 ") && !argv.contains("libx264"),
+            "{argv}"
+        );
+    }
+
+    // The doctor: libopenh264 exports MP4, libx264 is needed for nothing.
+    let bus = no_bus(&env);
+    let doctor = qrec_with(
+        &env,
+        &dir,
+        &["--json", "doctor"],
+        &[
+            ("PATH", fedora.as_os_str()),
+            ("DBUS_SESSION_BUS_ADDRESS", bus.as_os_str()),
+        ],
+    );
+    let report = doctor_report(&doctor);
+    let check = |id: &str| {
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id)
+            .unwrap_or_else(|| panic!("no {id}: {report}"))
+            .clone()
+    };
+    let x264 = check("ffmpeg.libx264");
+    assert_eq!(
+        (&x264["ok"], &x264["neededFor"]),
+        (&json!(false), &json!([]))
+    );
+    assert_eq!(
+        x264["detail"],
+        "ffmpeg has no libx264 encoder: MP4 exports use libopenh264"
+    );
+    let openh264 = check("ffmpeg.libopenh264");
+    assert_eq!(
+        (&openh264["ok"], &openh264["neededFor"]),
+        (&json!(true), &json!(["export.mp4"]))
+    );
+    let off = report["featuresOff"].as_array().unwrap();
+    assert!(off.iter().all(|f| f["feature"] != "export.mp4"), "{report}");
+
+    // Neither: refused before anything renders.
+    let segments = || {
+        fs::read_dir(dir.join(".qrec/cache/segments"))
+            .unwrap()
+            .count()
+    };
+    let cached = segments();
+    let neither = path_hiding_encoders(&env, "no-h264", &["libx264", "libopenh264"]);
+    let out = qrec_with(
+        &env,
+        &dir,
+        &["--json", "export"],
+        &[("PATH", neither.as_os_str())],
+    );
+    assert_eq!(out.code, Some(5), "{out:?}");
+    let error = &out.only_reply()["error"];
+    assert_eq!(error["code"], "missing_dependency");
+    assert_eq!(
+        error["message"],
+        "ffmpeg has no libx264 or libopenh264 encoder"
+    );
+    assert_eq!(segments(), cached, "nothing was rendered");
 }
 
 /// A GStreamer element that isn't installed is `missing_dependency` (exit

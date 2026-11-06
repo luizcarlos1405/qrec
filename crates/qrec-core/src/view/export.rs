@@ -1,7 +1,7 @@
 //! The export panel (G§4.8, S15a–S17): setup captions, the running
 //! readout, done and failed. Owner: WP7. [`caption`] was built by WP0a: it
-//! names the encoder the export will use, so it shares the export's rule
-//! (`export_plan::export_vaapi`).
+//! names the encoder the export will use, so it shares the export's rules
+//! (`export_plan::export_vaapi`, `export_plan::exports_with_openh264`).
 //!
 //! The running numbers come from `on_event::output::export_readout` (WP0a).
 //! Lines that mix the UI face and the mono face (the summary, the done
@@ -11,7 +11,7 @@ use chrono::{DateTime, FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::config::UserConfig;
-use crate::export_plan::{export_vaapi, render_units};
+use crate::export_plan::{export_vaapi, exports_with_openh264, prefers_x264, render_units};
 use crate::ids::ClipId;
 use crate::naming::export_file_name;
 use crate::on_event::output::{STDERR_TAIL_LINES, clips_done, export_readout};
@@ -54,8 +54,10 @@ pub fn joined(runs: &[Run]) -> String {
 /// kbps · VA-API on renderD129" when the export would encode on that node
 /// (`export_plan::export_vaapi`: the effective encoder isn't x264, the
 /// node is the pinned one, its chain works), else "H.264 + AAC 192 kbps ·
-/// software encode (x264)". WebM: "VP9 + Opus 128 kbps · software
-/// encode", with AV1 "AV1 + Opus 128 kbps · software encode (libsvtav1)".
+/// software encode (x264)", or "(OpenH264)" where ffmpeg has libopenh264
+/// and not libx264 (`export_plan::exports_with_openh264`, unless x264 is
+/// asked for by name). WebM: "VP9 + Opus 128 kbps · software encode", with
+/// AV1 "AV1 + Opus 128 kbps · software encode (libsvtav1)".
 /// `config` is the user config the GUI read at startup (the one it gives
 /// `Ctx::preview`).
 pub fn caption(
@@ -70,10 +72,14 @@ pub fn caption(
         }
         (ExportFormat::Webm, _) => "VP9 + Opus 128 kbps \u{b7} software encode".to_owned(),
         (ExportFormat::Mp4, _) => {
-            match export_vaapi(&state.project, config, &state.runtime.capabilities) {
+            let (project, caps) = (&state.project, &state.runtime.capabilities);
+            match export_vaapi(project, config, caps) {
                 Some(va) => {
                     let node = va.device.rsplit('/').next().unwrap_or(&va.device);
                     format!("H.264 + AAC 192 kbps \u{b7} VA-API on {node}")
+                }
+                None if exports_with_openh264(caps, prefers_x264(project, config)) => {
+                    "H.264 + AAC 192 kbps \u{b7} software encode (OpenH264)".to_owned()
                 }
                 None => "H.264 + AAC 192 kbps \u{b7} software encode (x264)".to_owned(),
             }
@@ -597,6 +603,28 @@ mod tests {
             .unwrap()
             .ffmpeg_h264 = false;
         assert_eq!(mp4(&broken, &config), X264);
+
+        // Fedora's ffmpeg-free: no libx264, so OpenH264 encodes, unless x264
+        // is asked for by name (that export fails, naming libx264).
+        let openh264 = "H.264 + AAC 192 kbps \u{b7} software encode (OpenH264)";
+        let mut fedora = testkit::design_state();
+        let encoders = &mut fedora
+            .runtime
+            .capabilities
+            .ffmpeg
+            .as_mut()
+            .unwrap()
+            .encoders;
+        encoders.remove("libx264");
+        encoders.insert("libopenh264".to_owned());
+        assert_eq!(mp4(&fedora, &config), openh264);
+        assert_eq!(mp4(&fedora, &prefers_x264), X264);
+        fedora.project.recording.encoder = EncoderPref::X264;
+        assert_eq!(mp4(&fedora, &config), X264);
+        fedora.project.recording.encoder = EncoderPref::Auto;
+        // A VA chain that works comes first.
+        fedora.runtime.capabilities.vaapi = va_state().runtime.capabilities.vaapi;
+        assert_eq!(mp4(&fedora, &config), VA);
     }
 
     #[test]

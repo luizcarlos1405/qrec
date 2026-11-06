@@ -13,7 +13,9 @@ use crate::apply::Outcome;
 use crate::apply::history::byte_size;
 use crate::ctx::{Ctx, FileId};
 use crate::error::CoreError;
-use crate::export_plan::{ExportOptions, export_vaapi, plan_export, require_ffmpeg, resolve_codec};
+use crate::export_plan::{
+    ExportOptions, plan_export, prefers_x264, require_ffmpeg, resolve_codec, vaapi_node,
+};
 use crate::frame_plan::{frame_source, plan_frame};
 use crate::ids::{JobId, LayerId};
 use crate::model::Clip;
@@ -62,13 +64,17 @@ pub fn export(
         ),
         Some(path) => checked_out(ctx, &path, "export to")?,
     };
-    let caps = &state.runtime.capabilities;
+    let (caps, config) = (&state.runtime.capabilities, &ctx.facts.config);
+    // VA-API encodes where `allow_vaapi` and not `x264_only`: that is
+    // `export_plan::export_vaapi`, which the GUI's caption asks. Apart, an
+    // x264 export refused for want of libx264 can say what auto would use.
     let opts = ExportOptions {
         format,
         quality,
         codec,
         out,
-        allow_vaapi: export_vaapi(project, &ctx.facts.config, caps).is_some(),
+        allow_vaapi: vaapi_node(project, config, caps).is_some(),
+        x264_only: prefers_x264(project, config),
     };
     let mut plan = plan_export(project, caps, &opts)?;
     plan.replace = replace;
@@ -258,6 +264,7 @@ mod tests {
     use super::*;
     use crate::config::UserConfig;
     use crate::ctx::OutFacts;
+    use crate::export_plan::export_vaapi;
     use crate::ids::{ReqId, TakeId};
     use crate::model::EncoderPref;
     use crate::protocol::command::Command;
@@ -550,7 +557,7 @@ mod tests {
         let encoder = |state: &State, ctx: &Ctx| {
             let out = apply(state, ctx, export_cmd(None)).unwrap();
             let argv = &render_plan(&out).segments[0].argv;
-            ["h264_vaapi", "libx264"]
+            ["h264_vaapi", "libx264", "libopenh264"]
                 .into_iter()
                 .find(|e| argv.iter().any(|a| a == e))
                 .unwrap()
@@ -566,6 +573,34 @@ mod tests {
         assert_eq!(encoder(&state, &ctx), "libx264");
         ctx.facts.config.encoder.preference = EncoderPref::Auto;
         assert_eq!(encoder(&state, &ctx), "h264_vaapi");
+
+        // An ffmpeg without libx264 (Fedora's ffmpeg-free): VA first, then
+        // libopenh264; x264 asked for by name is refused, naming libx264.
+        let encoders = &mut state.runtime.capabilities.ffmpeg.as_mut().unwrap().encoders;
+        encoders.remove("libx264");
+        encoders.insert("libopenh264".to_owned());
+        assert_eq!(encoder(&state, &ctx), "h264_vaapi");
+        state.runtime.capabilities.vaapi = broken.vaapi.clone();
+        assert_eq!(encoder(&state, &ctx), "libopenh264");
+        ctx.facts.config.encoder.preference = EncoderPref::X264;
+        let refused = |state: &State, ctx: &Ctx| {
+            let err = apply(state, ctx, export_cmd(None)).unwrap_err();
+            assert_eq!(err.code, ErrorCode::MissingDependency);
+            assert_eq!(
+                err.message,
+                "the encoder preference is x264, but ffmpeg has no libx264 encoder"
+            );
+            err.hint.unwrap()
+        };
+        // Its hint names what auto would export with: libopenh264 while the
+        // VA chain doesn't work, h264_vaapi on the node once it does, unless
+        // the project pins another node.
+        let auto = |hint: String| hint.split(" to export with ").nth(1).unwrap().to_owned();
+        assert!(auto(refused(&state, &ctx)).starts_with("libopenh264, "));
+        state.runtime.capabilities.vaapi = caps.vaapi.clone();
+        assert!(auto(refused(&state, &ctx)).starts_with("h264_vaapi, "));
+        state.project.recording.vaapi_device = Some("/dev/dri/renderD130".into());
+        assert!(auto(refused(&state, &ctx)).starts_with("libopenh264, "));
     }
 
     #[test]

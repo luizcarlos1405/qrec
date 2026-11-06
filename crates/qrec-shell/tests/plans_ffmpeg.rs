@@ -752,6 +752,7 @@ fn options(format: ExportFormat, codec: VideoCodec, quality: Quality, out: &str)
         codec,
         out: out.to_owned(),
         allow_vaapi: false,
+        x264_only: false,
     }
 }
 

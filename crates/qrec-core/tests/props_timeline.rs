@@ -723,6 +723,7 @@ proptest! {
             codec: VideoCodec::H264,
             out: "/tmp/qrec-props/out.mp4".to_owned(),
             allow_vaapi: false,
+            x264_only: false,
         };
         match (plan_export(&p, &caps, &opts), plan_export(&split, &caps, &opts)) {
             (Ok(a), Ok(b)) => prop_assert_eq!(without_ids(a), without_ids(b)),

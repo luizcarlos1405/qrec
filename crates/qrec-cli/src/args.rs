@@ -945,7 +945,7 @@ impl From<AudioRoleArg> for AudioRole {
 /// Which H.264 encoder records and exports MP4.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum EncoderArg {
-    /// VA-API when it works on the chosen node, else x264 (recordings: OpenH264 without x264enc).
+    /// VA-API when it works on the chosen node, else x264, or OpenH264 where x264 isn't installed.
     Auto,
     /// VA-API hardware encoding.
     Vaapi,

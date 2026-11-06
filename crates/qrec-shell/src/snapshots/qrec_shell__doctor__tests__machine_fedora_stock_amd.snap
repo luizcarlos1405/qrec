@@ -227,7 +227,7 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
         "required": true
       },
       {
-        "detail": "ffmpeg has no libx264 encoder (MP4 exports)",
+        "detail": "ffmpeg has no libx264 encoder: MP4 exports use libopenh264",
         "fix": {
           "command": "sudo dnf swap ffmpeg-free ffmpeg --allowerasing",
           "note": "it comes from RPM Fusion: enable that repository first",
@@ -237,10 +237,18 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
         },
         "hint": "sudo dnf swap ffmpeg-free ffmpeg --allowerasing (it comes from RPM Fusion: enable that repository first)",
         "id": "ffmpeg.libx264",
+        "neededFor": [],
+        "ok": false,
+        "required": false
+      },
+      {
+        "detail": "libopenh264 (MP4 exports)",
+        "hint": null,
+        "id": "ffmpeg.libopenh264",
         "neededFor": [
           "export.mp4"
         ],
-        "ok": false,
+        "ok": true,
         "required": false
       },
       {
@@ -346,27 +354,19 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
         "detail": "/dev/dri/renderD128 (AMD, auto) · LIBVA_DRIVER_NAME=radeonsi · ffmpeg h264_vaapi failed",
         "fix": {
           "command": "sudo dnf install mesa-va-drivers-freeworld",
-          "note": "it comes from RPM Fusion, since Fedora's own Mesa doesn't encode H.264: enable that repository first; exports use libx264 meanwhile",
+          "note": "it comes from RPM Fusion, since Fedora's own Mesa doesn't encode H.264: enable that repository first; exports use libopenh264 meanwhile",
           "packages": [
             "mesa-va-drivers-freeworld"
           ]
         },
-        "hint": "sudo dnf install mesa-va-drivers-freeworld (it comes from RPM Fusion, since Fedora's own Mesa doesn't encode H.264: enable that repository first; exports use libx264 meanwhile)",
+        "hint": "sudo dnf install mesa-va-drivers-freeworld (it comes from RPM Fusion, since Fedora's own Mesa doesn't encode H.264: enable that repository first; exports use libopenh264 meanwhile)",
         "id": "vaapi",
         "neededFor": [],
         "ok": false,
         "required": false
       }
     ],
-    "featuresOff": [
-      {
-        "checks": [
-          "ffmpeg.libx264"
-        ],
-        "feature": "export.mp4",
-        "message": "MP4 export is off: ffmpeg has no libx264 encoder (MP4 exports)"
-      }
-    ],
+    "featuresOff": [],
     "niriSnippet": "binds {\n    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }\n    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }\n    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }\n}",
     "platform": {
       "desktop": "gnome",
@@ -432,8 +432,9 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "  ok        ffprobe                ffprobe version 8.1.2 (/nix/bin/ffprobe)",
     "  ok        ffmpeg.decoders        libopenh264 for h264 (the takes' video), flac (the takes' audio)",
     "  ok        ffmpeg.demuxers        matroska (the takes' MKV files)",
-    "  off       ffmpeg.libx264         ffmpeg has no libx264 encoder (MP4 exports)",
+    "  optional  ffmpeg.libx264         ffmpeg has no libx264 encoder: MP4 exports use libopenh264",
     "                                   → sudo dnf swap ffmpeg-free ffmpeg --allowerasing (it comes from RPM Fusion: enable that repository first)",
+    "  ok        ffmpeg.libopenh264     libopenh264 (MP4 exports)",
     "  ok        ffmpeg.aac             aac (MP4 audio)",
     "  ok        ffmpeg.pcm_s16le       pcm_s16le (export segments)",
     "  ok        ffmpeg.libvpx-vp9      libvpx-vp9 (WebM exports)",
@@ -445,7 +446,7 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "  ok        sound.server           PulseAudio (on PipeWire 1.6.6)",
     "  ok        wl-copy                /usr/bin/wl-copy",
     "  optional  vaapi                  /dev/dri/renderD128 (AMD, auto) · LIBVA_DRIVER_NAME=radeonsi · ffmpeg h264_vaapi failed",
-    "                                   → sudo dnf install mesa-va-drivers-freeworld (it comes from RPM Fusion, since Fedora's own Mesa doesn't encode H.264: enable that repository first; exports use libx264 meanwhile)",
+    "                                   → sudo dnf install mesa-va-drivers-freeworld (it comes from RPM Fusion, since Fedora's own Mesa doesn't encode H.264: enable that repository first; exports use libopenh264 meanwhile)",
     "",
     "VA-API render nodes: /dev/dri/renderD128 (AMD)",
     "  the h264_vaapi check failed: ffmpeg exited with status 1",
@@ -460,7 +461,6 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "Record over        qrec record start --over-selection  Super+Shift+O",
     "Discard last take  qrec take discard-last              Super+Shift+D",
     "",
-    "MP4 export is off: ffmpeg has no libx264 encoder (MP4 exports)",
-    "Everything else Qrec needs is here."
+    "Everything Qrec needs is here."
   ]
 }
