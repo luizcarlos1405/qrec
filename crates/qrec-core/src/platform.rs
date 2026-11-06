@@ -437,6 +437,9 @@ pub enum Need {
     GstPluginsBad,
     /// x264enc, from gst-plugins-ugly.
     GstX264,
+    /// openh264enc, gst-plugins-bad's OpenH264 plugin (the record encoder
+    /// where x264enc isn't packaged).
+    GstOpenH264,
     /// A software H.264 decoder for the editor's preview: gst-libav's
     /// avdec_h264 (or OpenH264's decoder).
     GstH264Decoder,
@@ -444,7 +447,7 @@ pub enum Need {
     GstGtk4,
     /// pipewiresrc, PipeWire's GStreamer plugin.
     GstPipewire,
-    /// GStreamer's VA plugin (`va*h264enc`).
+    /// GStreamer's VA plugin (`va*h264enc`, `va*h264lpenc`).
     GstVa,
     /// ffmpeg and ffprobe.
     Ffmpeg,
@@ -465,13 +468,14 @@ pub enum Need {
 
 impl Need {
     /// Every need, in the table's order.
-    pub const ALL: [Need; 19] = [
+    pub const ALL: [Need; 20] = [
         Need::Gstreamer,
         Need::Ges,
         Need::GstPluginsBase,
         Need::GstPluginsGood,
         Need::GstPluginsBad,
         Need::GstX264,
+        Need::GstOpenH264,
         Need::GstH264Decoder,
         Need::GstGtk4,
         Need::GstPipewire,
@@ -497,6 +501,9 @@ impl Need {
             Need::GstPluginsGood => "GStreamer's good plugins (upstream gst-plugins-good)",
             Need::GstPluginsBad => "GStreamer's bad plugins (upstream gst-plugins-bad)",
             Need::GstX264 => "GStreamer's x264enc (upstream gst-plugins-ugly)",
+            Need::GstOpenH264 => {
+                "GStreamer's openh264enc (upstream gst-plugins-bad, built with OpenH264)"
+            }
             Need::GstH264Decoder => "GStreamer's libav plugin, avdec_h264 (upstream gst-libav)",
             Need::GstGtk4 => {
                 "GStreamer's GTK 4 plugin, gtk4paintablesink (upstream gst-plugins-rs)"
@@ -531,7 +538,7 @@ impl Need {
             Need::Ges => "gst_all_1.gst-editing-services",
             Need::GstPluginsBase => "gst_all_1.gst-plugins-base",
             Need::GstPluginsGood => "gst_all_1.gst-plugins-good",
-            Need::GstPluginsBad | Need::GstVa => "gst_all_1.gst-plugins-bad",
+            Need::GstPluginsBad | Need::GstVa | Need::GstOpenH264 => "gst_all_1.gst-plugins-bad",
             Need::GstX264 => "gst_all_1.gst-plugins-ugly",
             Need::GstH264Decoder => "gst_all_1.gst-libav",
             Need::GstGtk4 => "gst_all_1.gst-plugins-rs",
@@ -697,6 +704,7 @@ fn known_packages(need: Need, family: DistroFamily) -> Option<Known> {
             ),
         ),
         (Need::GstX264, Arch) => known(&["gst-plugins-ugly"], None),
+        (Need::GstOpenH264, Fedora) => known(&["gstreamer1-plugin-openh264"], None),
         (Need::GstH264Decoder, Fedora) => known(
             &["gstreamer1-plugin-openh264"],
             Some("OpenH264 may not decode High-profile takes"),

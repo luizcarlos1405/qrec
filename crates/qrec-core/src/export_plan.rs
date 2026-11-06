@@ -1193,6 +1193,7 @@ pub(crate) mod tests {
             vendor: 0x8086,
             ffmpeg_h264: true,
             gst_h264_factory: Some("vah264enc".into()),
+            gst_h264_lp_factory: None,
         });
         caps
     }

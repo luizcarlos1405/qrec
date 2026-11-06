@@ -29,6 +29,7 @@ pub mod ui;
 
 use serde::{Deserialize, Serialize};
 
+use crate::capture_plan;
 use crate::ctx::{Ctx, FactsNeeded};
 use crate::error::CoreError;
 use crate::history::Committed;
@@ -268,12 +269,12 @@ pub fn facts_needed(state: &State, cmd: &Command) -> FactsNeeded {
             if state.runtime.record.is_idle()
                 && countdown.unwrap_or(state.project.recording.countdown_secs) == 0 =>
         {
-            begin_take_facts(&state.project, &mut need);
+            begin_take_facts(state, &mut need);
         }
         Command::RecordToggle { .. }
             if state.runtime.record.is_idle() && state.project.recording.countdown_secs == 0 =>
         {
-            begin_take_facts(&state.project, &mut need);
+            begin_take_facts(state, &mut need);
         }
         Command::TakePurge { takes } => need.take_files = takes.clone(),
         Command::Export { out: Some(out), .. } | Command::FrameSave { out: Some(out), .. } => {
@@ -291,14 +292,15 @@ pub fn facts_needed(state: &State, cmd: &Command) -> FactsNeeded {
 }
 
 /// Beginning a take allocates its number (`takes/` scan) and, with camera
-/// layers, picks camera modes for the capture plan.
-pub(crate) fn begin_take_facts(project: &Project, need: &mut FactsNeeded) {
+/// layers, picks camera modes for the capture plan. When OpenH264 may
+/// record, the plan checks the screens' sizes too, against the largest
+/// frame it encodes (`capture_plan::OPENH264_MAX_PIXELS`).
+pub(crate) fn begin_take_facts(state: &State, need: &mut FactsNeeded) {
+    let sources = || state.project.scene.layers.iter().map(|l| &l.source);
     need.take_dirs = true;
-    need.video_sources = project
-        .scene
-        .layers
-        .iter()
-        .any(|l| matches!(l.source, VideoSource::Camera { .. }));
+    need.video_sources = sources().any(|s| matches!(s, VideoSource::Camera { .. }));
+    need.screens = capture_plan::may_record_with_openh264(&state.runtime.capabilities)
+        && sources().any(|s| matches!(s, VideoSource::Screen { .. }));
 }
 
 /// The audio files of the takes used by the clips in `scope` (for silence keys).
@@ -332,7 +334,7 @@ mod tests {
     use super::*;
     use crate::ids::{ClipId, TakeId};
     use crate::protocol::command::{AutocutOverrides, MoveTo, SelectOp};
-    use crate::state::RecordMode;
+    use crate::state::{GstH264Caps, RecordMode};
     use crate::testkit::{self, ProjectBuilder};
 
     fn project() -> Project {
@@ -435,6 +437,30 @@ mod tests {
             need.take_dirs && need.video_sources,
             "camera layer ⇒ camera modes"
         );
+        assert!(!need.screens, "no OpenH264: screens aren't checked");
+        // The screens' sizes only when OpenH264 may record, which encodes
+        // at most 9,437,184 pixels a frame; never the cameras for that.
+        let mut screens = testkit::state(ProjectBuilder::new().screen_layer("L1", "DP-1").build());
+        for (gst, sizes) in [
+            (None, false),
+            (Some((true, true)), false),
+            (Some((false, false)), false),
+            (Some((false, true)), true),
+        ] {
+            screens.runtime.capabilities.gst_h264 =
+                gst.map(|(x264, openh264)| GstH264Caps { x264, openh264 });
+            let need = facts_needed(&screens, &start);
+            assert!(need.take_dirs && !need.video_sources);
+            assert_eq!(need.screens, sizes, "{gst:?}");
+        }
+        let mut cameras = testkit::state(
+            ProjectBuilder::new()
+                .camera_layer("L1", "/dev/video0")
+                .build(),
+        );
+        cameras.runtime.capabilities = screens.runtime.capabilities.clone();
+        let need = facts_needed(&cameras, &start);
+        assert!(need.video_sources && !need.screens, "no screen to check");
         let counted = Command::RecordStart {
             mode: Default::default(),
             countdown: Some(3),

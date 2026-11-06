@@ -469,7 +469,23 @@ pub struct Capabilities {
     #[serde(default)]
     pub ffprobe: Option<String>,
     pub vaapi: Option<VaapiCaps>,
+    /// The software H.264 encoders GStreamer has, which the probe child of
+    /// a host that records reports (A§8.10; other hosts read the answer it
+    /// cached); `None` until such a host asked, or when its probe failed:
+    /// capture plans then record with x264 as they always did.
+    #[serde(default)]
+    pub gst_h264: Option<GstH264Caps>,
     pub cores: u32,
+}
+
+/// GStreamer's software H.264 record encoders (A§9.5 `choose_encoder`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GstH264Caps {
+    /// `x264enc` (gst-plugins-ugly).
+    pub x264: bool,
+    /// `openh264enc` (gst-plugins-bad with OpenH264), what stock Fedora has.
+    pub openh264: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -492,6 +508,11 @@ pub struct VaapiCaps {
     pub ffmpeg_h264: bool,
     /// The `va*h264enc` factory whose `device-path` is this node.
     pub gst_h264_factory: Option<String>,
+    /// The low-power `va*h264lpenc` factory whose `device-path` is this
+    /// node (VDENC: Intel Arc, Meteor Lake and newer encode H.264 with
+    /// nothing else).
+    #[serde(default)]
+    pub gst_h264_lp_factory: Option<String>,
 }
 
 // ----------------------------------------------------------------- jobs

@@ -30,8 +30,11 @@
 //! Probes that touch a render node run in a child process with a 10 s
 //! deadline ([`run_probe_child`]): the child is the `qrec` binary itself,
 //! whose `main()` starts with [`run_probe_if_requested`]. Today that is the
-//! VA H.264 encoder lookup for `VaapiCaps.gst_h264_factory`
-//! ([`va_h264_factory_for`], by `device-path`, never by name).
+//! lookup of the H.264 encoders GStreamer records with
+//! ([`Probe::H264Encoders`]): the VA ones bound to a node for
+//! `VaapiCaps.gst_h264_factory` and `gst_h264_lp_factory`
+//! ([`va_h264_factories_for`], by `device-path`, never by name), and
+//! x264enc and openh264enc for `Capabilities.gst_h264`.
 //!
 //! ```ignore
 //! fn main() {
@@ -48,6 +51,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use qrec_core::state::GstH264Caps;
 use serde::Serialize;
 
 /// PCI vendor ids.
@@ -734,26 +738,66 @@ fn thread_count() -> Option<usize> {
         .map(|entries| entries.count())
 }
 
-/// The `va*h264enc` factory whose `device-path` is `device` (A§8.10): VA
-/// elements are registered per render node and the first usable node gets
-/// the plain `vah264enc` name, so the name alone says nothing.
+/// Which VA H.264 encoder an element factory is, by its name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VaH264Kind {
+    /// `va…h264enc` (`vah264enc`, `varenderD129h264enc`): the encode slice
+    /// entrypoint.
+    Full,
+    /// `va…h264lpenc`: the low-power (VDENC) one, the only H.264 encoder of
+    /// Intel Arc, Meteor Lake and newer.
+    LowPower,
+}
+
+/// The [`VaH264Kind`] of a factory name; `None` for anything that isn't a
+/// VA H.264 encoder of GStreamer's VA plugin (`vah264dec`, `vah265enc`,
+/// `x264enc`, `nvh264enc`, gstreamer-vaapi's `vaapih264enc`, which has no
+/// `device-path`).
+pub fn va_h264_kind(name: &str) -> Option<VaH264Kind> {
+    let rest = name.strip_prefix("va")?;
+    if rest.starts_with("api") {
+        None
+    } else if rest.ends_with("h264lpenc") {
+        Some(VaH264Kind::LowPower)
+    } else if rest.ends_with("h264enc") {
+        Some(VaH264Kind::Full)
+    } else {
+        None
+    }
+}
+
+/// The VA H.264 encoders bound to one render node.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VaH264Factories {
+    /// Its `va*h264enc`.
+    pub full: Option<String>,
+    /// Its `va*h264lpenc`.
+    pub low_power: Option<String>,
+}
+
+/// The `va*h264enc` and `va*h264lpenc` factories whose `device-path` is
+/// `device` (A§8.10): VA elements are registered per render node and the
+/// first usable node gets the plain `vah264enc` / `vah264lpenc` names, so
+/// the name alone says nothing.
 ///
 /// Reading `device-path` instantiates each candidate element but doesn't
 /// open its device (the VA display is opened on the NULL→READY change).
 /// Needs GStreamer initialized and `LIBVA_DRIVER_NAME` set first.
 #[cfg(feature = "gst")]
-pub fn va_h264_factory_for(device: &str) -> Option<String> {
+pub fn va_h264_factories_for(device: &str) -> VaH264Factories {
     use gst::prelude::*;
 
     let wanted = fs::canonicalize(device).unwrap_or_else(|_| PathBuf::from(device));
-    let mut names: Vec<String> = gst::Registry::get()
+    let mut names: Vec<(String, VaH264Kind)> = gst::Registry::get()
         .features(gst::ElementFactory::static_type())
         .into_iter()
-        .map(|f| f.name().to_string())
-        .filter(|name| name.starts_with("va") && name.ends_with("h264enc"))
+        .filter_map(|f| {
+            let name = f.name().to_string();
+            va_h264_kind(&name).map(|kind| (name, kind))
+        })
         .collect();
-    names.sort();
-    names.into_iter().find(|name| {
+    names.sort_by(|a, b| a.0.cmp(&b.0));
+    let bound = |name: &str| {
         let Ok(element) = gst::ElementFactory::make(name).build() else {
             return false;
         };
@@ -762,14 +806,37 @@ pub fn va_h264_factory_for(device: &str) -> Option<String> {
         }
         let path: Option<String> = element.property("device-path");
         path.is_some_and(|p| fs::canonicalize(&p).unwrap_or_else(|_| PathBuf::from(&p)) == wanted)
-    })
+    };
+    let find = |want: VaH264Kind| {
+        names
+            .iter()
+            .filter(|(_, kind)| *kind == want)
+            .map(|(name, _)| name)
+            .find(|name| bound(name))
+            .cloned()
+    };
+    VaH264Factories {
+        full: find(VaH264Kind::Full),
+        low_power: find(VaH264Kind::LowPower),
+    }
+}
+
+/// GStreamer's software H.264 record encoders, from the registry (no
+/// plugin is loaded). Needs GStreamer initialized.
+#[cfg(feature = "gst")]
+pub fn software_h264_encoders() -> GstH264Caps {
+    let has = |name| gst::ElementFactory::find(name).is_some();
+    GstH264Caps {
+        x264: has("x264enc"),
+        openh264: has("openh264enc"),
+    }
 }
 
 // ------------------------------------------------------------ probe child
 
 /// Set on a `qrec` child process to make it a GPU probe (A§8.10: probes
 /// that touch a render node run as child processes with a 10 s timeout):
-/// `va-h264-factory:<render node>`.
+/// `h264-encoders:<render node>`, or `h264-encoders` without one.
 pub const PROBE_ENV: &str = "QREC_GPU_PROBE";
 
 /// How long a probe child may run.
@@ -778,24 +845,37 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// A probe a child process runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Probe {
-    /// [`va_h264_factory_for`] the node.
-    VaH264Factory { device: String },
+    /// The H.264 encoders GStreamer records with: [`software_h264_encoders`]
+    /// and, given a node, [`va_h264_factories_for`] it. GStreamer's plugin
+    /// scan, which may run with the init, opens every render node.
+    H264Encoders { device: Option<String> },
 }
 
 impl Probe {
     /// The [`PROBE_ENV`] value.
     pub fn env_value(&self) -> String {
         match self {
-            Probe::VaH264Factory { device } => format!("va-h264-factory:{device}"),
+            Probe::H264Encoders {
+                device: Some(device),
+            } => format!("h264-encoders:{device}"),
+            Probe::H264Encoders { device: None } => "h264-encoders".to_owned(),
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        match value.split_once(':')? {
-            ("va-h264-factory", device) if !device.is_empty() => Some(Probe::VaH264Factory {
-                device: device.to_owned(),
+        match value.split_once(':') {
+            None if value == "h264-encoders" => Some(Probe::H264Encoders { device: None }),
+            Some(("h264-encoders", device)) if !device.is_empty() => Some(Probe::H264Encoders {
+                device: Some(device.to_owned()),
             }),
             _ => None,
+        }
+    }
+
+    /// The render node the probe opens on purpose, if any.
+    fn device(&self) -> Option<&str> {
+        match self {
+            Probe::H264Encoders { device } => device.as_deref(),
         }
     }
 }
@@ -804,8 +884,14 @@ impl Probe {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProbeAnswer {
-    /// The VA H.264 encoder bound to the node, if any.
+    /// The `va*h264enc` bound to the node, if any.
     pub factory: Option<String>,
+    /// The `va*h264lpenc` bound to the node, if any.
+    #[serde(default)]
+    pub lp_factory: Option<String>,
+    /// x264enc and openh264enc; `None` when the probe couldn't tell.
+    #[serde(default)]
+    pub software: Option<GstH264Caps>,
     /// Why the probe couldn't answer.
     pub error: Option<String>,
 }
@@ -813,7 +899,9 @@ pub struct ProbeAnswer {
 /// **Call first thing in `main()`** (before [`prepare_gpu_env`]): when this
 /// process was started as a probe child ([`PROBE_ENV`]), runs the probe,
 /// prints its [`ProbeAnswer`] and exits; otherwise returns at once. The
-/// parent already set the child's `LIBVA_DRIVER_NAME` for the probed node.
+/// parent already gave the child its `LIBVA_DRIVER_NAME`: one that fits
+/// the probed node's vendor, or its own without a node
+/// ([`run_probe_child`]).
 pub fn run_probe_if_requested() {
     let Some(value) = std::env::var_os(PROBE_ENV) else {
         return;
@@ -822,8 +910,8 @@ pub fn run_probe_if_requested() {
         Some(probe) => run_probe(&probe),
         None => (
             ProbeAnswer {
-                factory: None,
                 error: Some(format!("unknown probe {value:?}")),
+                ..ProbeAnswer::default()
             },
             2,
         ),
@@ -835,27 +923,35 @@ pub fn run_probe_if_requested() {
 fn run_probe(probe: &Probe) -> (ProbeAnswer, i32) {
     match probe {
         #[cfg(feature = "gst")]
-        Probe::VaH264Factory { device } => match crate::gst_init::init() {
-            Ok(()) => (
-                ProbeAnswer {
-                    factory: va_h264_factory_for(device),
-                    error: None,
-                },
-                0,
-            ),
+        Probe::H264Encoders { device } => match crate::gst_init::init() {
+            Ok(()) => {
+                let va = device
+                    .as_deref()
+                    .map(va_h264_factories_for)
+                    .unwrap_or_default();
+                (
+                    ProbeAnswer {
+                        factory: va.full,
+                        lp_factory: va.low_power,
+                        software: Some(software_h264_encoders()),
+                        error: None,
+                    },
+                    0,
+                )
+            }
             Err(e) => (
                 ProbeAnswer {
-                    factory: None,
                     error: Some(e.to_string()),
+                    ..ProbeAnswer::default()
                 },
                 crate::gst_init::EXIT_CODE,
             ),
         },
         #[cfg(not(feature = "gst"))]
-        Probe::VaH264Factory { .. } => (
+        Probe::H264Encoders { .. } => (
             ProbeAnswer {
-                factory: None,
                 error: Some("this qrec was built without GStreamer".into()),
+                ..ProbeAnswer::default()
             },
             5,
         ),
@@ -863,11 +959,13 @@ fn run_probe(probe: &Probe) -> (ProbeAnswer, i32) {
 }
 
 /// Runs `probe` in a child `exe` (the `qrec` binary: `std::env::current_exe()`)
-/// that calls [`run_probe_if_requested`], with `LIBVA_DRIVER_NAME` set for
-/// the probed node's vendor. stdin is null, stdout goes to a temp file (no
-/// pipe to stall), stderr to `log` (or nowhere); the child gets its own
-/// process group, which is killed (SIGTERM, then SIGKILL after 2 s) when it
-/// outlives `timeout`. Never waits longer than `timeout` + 4 s.
+/// that calls [`run_probe_if_requested`], with a `LIBVA_DRIVER_NAME` that
+/// fits the probed node's vendor: this process's, which `main()` pinned,
+/// when it does, else the vendor's (`probe_libva_driver`); without a node
+/// the child keeps this process's. stdin is null, stdout goes to a temp
+/// file (no pipe to stall), stderr to `log` (or nowhere); the child gets
+/// its own process group, which is killed (SIGTERM, then SIGKILL after
+/// 2 s) when it outlives `timeout`. Never waits longer than `timeout` + 4 s.
 pub fn run_probe_child(
     exe: &Path,
     probe: &Probe,
@@ -908,13 +1006,15 @@ pub fn run_probe_child(
             Ok(())
         });
     }
-    let Probe::VaH264Factory { device } = probe;
-    let vendor = render_nodes()
-        .into_iter()
-        .find(|n| n.path == *device)
-        .and_then(|n| n.vendor);
-    if let Some(driver) = vendor.and_then(libva_driver_for) {
-        command.env(LIBVA_DRIVER_NAME, driver);
+    if let Some(device) = probe.device() {
+        let vendor = render_nodes()
+            .into_iter()
+            .find(|n| n.path == device)
+            .and_then(|n| n.vendor);
+        let inherited = std::env::var(LIBVA_DRIVER_NAME).ok();
+        if let Some(driver) = vendor.and_then(|v| probe_libva_driver(inherited.as_deref(), v)) {
+            command.env(LIBVA_DRIVER_NAME, driver);
+        }
     }
     let mut child = command
         .spawn()
@@ -941,6 +1041,21 @@ pub fn run_probe_child(
     match answer {
         Some(answer) => Ok(answer),
         None => Err(format!("the GPU probe failed ({status}) without an answer")),
+    }
+}
+
+/// The `LIBVA_DRIVER_NAME` to give a probe child of a `vendor` node, whose
+/// own would be `inherited` (this process's): `None`, keep it, when it
+/// already fits that vendor (`iHD` or `i965` on Intel, `radeonsi` or
+/// `r600` on AMD: [`plan_gpu_env`]'s rule, by which `main()` pinned it),
+/// else the vendor's driver ([`libva_driver_for`]). So the child loads the
+/// driver the host records with, and GStreamer's registry, which notes
+/// the variable for the VA plugin, isn't rescanned and rewritten by the
+/// child and again by the host each time one of them starts.
+fn probe_libva_driver(inherited: Option<&str>, vendor: u16) -> Option<&'static str> {
+    match inherited {
+        Some(driver) if driver_fits_vendor(driver, vendor) => None,
+        _ => libva_driver_for(vendor),
     }
 }
 
@@ -1222,6 +1337,33 @@ mod tests {
         assert!(plan.changes.is_empty());
     }
 
+    /// A probe child keeps the driver `main()` pinned when it fits the
+    /// node's vendor, legacy ones included (the rule above), so the child
+    /// and the host share one GStreamer registry state; otherwise it gets
+    /// the vendor's driver. Nothing is set for NVIDIA.
+    #[test]
+    fn probe_children_keep_a_fitting_libva_driver() {
+        for (inherited, vendor, set) in [
+            (Some("i965"), VENDOR_INTEL, None),
+            (Some("iHD"), VENDOR_INTEL, None),
+            (Some("r600"), VENDOR_AMD, None),
+            (Some("radeonsi"), VENDOR_AMD, None),
+            (None, VENDOR_INTEL, Some("iHD")),
+            (Some(""), VENDOR_INTEL, Some("iHD")),
+            (Some("radeonsi"), VENDOR_INTEL, Some("iHD")),
+            (Some("i965"), VENDOR_AMD, Some("radeonsi")),
+            (None, VENDOR_AMD, Some("radeonsi")),
+            (Some("nvidia"), VENDOR_NVIDIA, None),
+            (None, VENDOR_NVIDIA, None),
+        ] {
+            assert_eq!(
+                probe_libva_driver(inherited, vendor),
+                set,
+                "{inherited:?} on {vendor:#06x}"
+            );
+        }
+    }
+
     /// GUI H-3: the window renders with GSK GL (`GDK_DISABLE=vulkan`) unless
     /// the user chose GTK's renderer; then both variables are left alone and
     /// a note says so (`qrec doctor` prints it).
@@ -1490,27 +1632,81 @@ mod tests {
         path
     }
 
+    /// VA H.264 encoders by name: the full one and the low-power one (the
+    /// only one of Intel Arc and Meteor Lake), per node or plain; nothing
+    /// else, not even their decoders or other codecs' encoders.
+    #[test]
+    fn va_h264_encoders_are_told_apart_by_name() {
+        use VaH264Kind::{Full, LowPower};
+        for (name, kind) in [
+            ("vah264enc", Some(Full)),
+            ("varenderD129h264enc", Some(Full)),
+            ("vah264lpenc", Some(LowPower)),
+            ("varenderD129h264lpenc", Some(LowPower)),
+            ("varenderD130h264lpenc", Some(LowPower)),
+            ("vah264dec", None),
+            ("vah265enc", None),
+            ("vah265lpenc", None),
+            ("vaav1enc", None),
+            ("vajpegenc", None),
+            ("x264enc", None),
+            ("openh264enc", None),
+            ("nvh264enc", None),
+            ("qsvh264enc", None),
+            ("vaapih264enc", None),
+            ("h264enc", None),
+        ] {
+            assert_eq!(va_h264_kind(name), kind, "{name}");
+        }
+    }
+
     #[test]
     fn probes_run_in_a_child_with_a_deadline() {
         let tmp = tempfile::tempdir().unwrap();
         // The probe is a fake node: no real device is ever named.
-        let probe = Probe::VaH264Factory {
-            device: tmp.path().join("renderD999").to_string_lossy().into_owned(),
+        let probe = Probe::H264Encoders {
+            device: Some(tmp.path().join("renderD999").to_string_lossy().into_owned()),
         };
         assert_eq!(Probe::parse(&probe.env_value()), Some(probe.clone()));
-        assert_eq!(Probe::parse("va-h264-factory:"), None);
+        let nodeless = Probe::H264Encoders { device: None };
+        assert_eq!(nodeless.env_value(), "h264-encoders");
+        assert_eq!(Probe::parse("h264-encoders"), Some(nodeless));
+        assert_eq!(Probe::parse("h264-encoders:"), None);
+        assert_eq!(Probe::parse("va-h264-factory:/dev/dri/renderD129"), None);
         assert_eq!(Probe::parse("something-else:/x"), None);
 
         // The child sees the request and answers on stdout.
         let log = tmp.path().join("probe.log");
         let exe = fake_child(
             tmp.path(),
-            r#"echo "probing $QREC_GPU_PROBE" >&2; echo noise; echo '{"factory":"varenderD129h264enc"}'"#,
+            r#"echo "probing $QREC_GPU_PROBE" >&2; echo noise; echo '{"factory":"varenderD129h264enc","lpFactory":"varenderD129h264lpenc","software":{"x264":false,"openh264":true}}'"#,
         );
         let answer = run_probe_child(&exe, &probe, Some(&log), PROBE_TIMEOUT).unwrap();
-        assert_eq!(answer.factory.as_deref(), Some("varenderD129h264enc"));
+        assert_eq!(
+            answer,
+            ProbeAnswer {
+                factory: Some("varenderD129h264enc".into()),
+                lp_factory: Some("varenderD129h264lpenc".into()),
+                software: Some(GstH264Caps {
+                    x264: false,
+                    openh264: true
+                }),
+                error: None,
+            }
+        );
         let logged = fs::read_to_string(&log).unwrap();
-        assert!(logged.contains("probing va-h264-factory:"), "{logged}");
+        assert!(logged.contains("probing h264-encoders:"), "{logged}");
+        // An answer from before the low-power and software encoders.
+        let exe = fake_child(tmp.path(), r#"echo '{"factory":"vah264enc"}'"#);
+        let answer = run_probe_child(&exe, &probe, None, PROBE_TIMEOUT).unwrap();
+        assert_eq!(
+            (
+                answer.factory.as_deref(),
+                answer.lp_factory,
+                answer.software
+            ),
+            (Some("vah264enc"), None, None)
+        );
 
         let exe = fake_child(
             tmp.path(),

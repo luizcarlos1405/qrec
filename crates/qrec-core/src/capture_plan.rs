@@ -3,16 +3,18 @@
 //!
 //! File names: `L1-screen-DP-4.mkv`, `L2-camera-0.mkv`, `A1-mic.mka`,
 //! `A2-system.mka` (sanitized to `[A-Za-z0-9._-]`). Visible and hidden
-//! layers are both recorded (visibility is a layout choice). Encoder: `x264`
-//! ⇒ X264; otherwise Va when `caps.vaapi.gst_h264_factory` is known for the
-//! effective render node; else X264.
+//! layers are both recorded (visibility is a layout choice). Encoder
+//! ([`choose_encoder`]): `x264` ⇒ X264; otherwise Va with the effective
+//! render node's `va*h264enc`, else its `va*h264lpenc`; else X264 unless
+//! GStreamer has only `openh264enc`, then OpenH264, which can't record a
+//! source larger than [`OPENH264_MAX_PIXELS`] (the plan refuses it).
 
 use crate::ctx::{CameraMode, Facts};
-use crate::error::CoreError;
+use crate::error::{CoreError, ErrorCode};
 use crate::ids::TakeId;
 use crate::model::{AudioTrack, EncoderPref, Fps, Layer, Project, Stream, StreamKind, VideoSource};
 use crate::plans::{AudioRecord, CapturePlan, VideoEncoder, VideoRecord};
-use crate::state::Capabilities;
+use crate::state::{Capabilities, GstH264Caps};
 
 /// A record bin that errors within this window aborts the take (SPEC §5.3).
 pub const HEALTH_CHECK_MS: u32 = 500;
@@ -22,6 +24,37 @@ pub const FIRST_BUFFER_MS: u32 = 3_000;
 pub const EOS_TIMEOUT_MS: u32 = 10_000;
 /// Constant quantizer of the record encoders (x264 `quantizer`, VA `qpi/qpp/qpb`).
 pub const RECORD_QP: u32 = 18;
+/// OpenH264's constant QP (`qp-min` = `qp-max`). Measured with OpenH264
+/// 2.6 (GStreamer 1.26) on a 2560×1440 screen clip (still, scrolling, cuts)
+/// and a noisy 1920×1080 camera clip, pinned to 4.6 GHz E-cores: at 22
+/// the screen's text stays as sharp as the source, still and scrolling,
+/// where x264's CRF 18 rings and smears (PSNR-Y 43.5 dB, SSIM 0.995 vs
+/// 36.1 dB, 0.978), in about 4 Mbit/s. QP 18 gains 0.9 dB on the screen but
+/// costs the noisy camera 40 ms of CPU a frame (under 30 fps on one core)
+/// and 52 Mbit/s; 22 halves the CPU and cuts the bitrate to 17.6 Mbit/s.
+pub const OPENH264_QP: u32 = 22;
+/// OpenH264's rate control: a mode that honors `qp-min`/`qp-max` (`off`
+/// ignores them and encodes everything at QP 26).
+pub const OPENH264_RATE_CONTROL: &str = "quality";
+/// OpenH264's bitrate target, bits/s: with the QP pinned it only nudges
+/// the rate control (outputs within 3% from 128 kbit/s to 100 Mbit/s), so
+/// it sits above anything [`OPENH264_QP`] needs.
+pub const OPENH264_BITRATE: u32 = 100_000_000;
+/// OpenH264's `complexity`: medium and high cost 12–18% more time for the
+/// same quality and 2% more bits.
+pub const OPENH264_COMPLEXITY: &str = "low";
+/// OpenH264's encoder threads, one slice each: one thread encodes a
+/// 2560×1440 screen at 45 fps on that core, too close to 30 for slower
+/// ones; four do 76 fps for 13% more CPU a frame and 7% more bits.
+pub const OPENH264_THREADS: u32 = 4;
+/// The largest frame OpenH264 encodes, in pixels: 36,864 macroblocks (the
+/// largest frame of H.264 level 5.2), 4096×2304 in 16:9, whatever the
+/// shape (5120×1440 and 7680×1200 encode; checked with OpenH264 2.6). A
+/// larger frame fails when the stream starts, with a bare not-negotiated
+/// error (OpenH264 logs `ParamValidationExt(), … width * height <=
+/// 9437184`), so [`plan_capture`] refuses a take that would record one
+/// with OpenH264 ([`openh264_too_large`]).
+pub const OPENH264_MAX_PIXELS: u64 = 9_437_184;
 /// Every audio track is resampled to this rate.
 pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
 /// Samples in every FLAC frame (packet) a record bin writes: flacenc's
@@ -44,7 +77,10 @@ pub fn take_dir(take: &TakeId) -> String {
 
 /// The plan for recording `take` with the project scene. Camera modes come
 /// from `facts.cameras`, the encoder preference from the project and
-/// `facts.config` (A§2.1). `Invalid` when the scene has nothing to record.
+/// `facts.config` (A§2.1). `Invalid` when the scene has nothing to record;
+/// `MissingDependency` when OpenH264 would record a layer larger than it
+/// encodes (screens by their size in `facts.screens`, which a take's start
+/// asks for then: `FactsNeeded::screens`).
 pub fn plan_capture(
     project: &Project,
     take: &TakeId,
@@ -59,7 +95,7 @@ pub fn plan_capture(
     let dir = take_dir(take);
     let encoder = choose_encoder(project, caps, facts);
     let key_int_max = key_int_max(fps);
-    let video = scene
+    let video: Vec<VideoRecord> = scene
         .layers
         .iter()
         .map(|layer| VideoRecord {
@@ -78,6 +114,15 @@ pub fn plan_capture(
             },
         })
         .collect();
+    if matches!(encoder, VideoEncoder::OpenH264 { .. }) {
+        for (layer, rec) in scene.layers.iter().zip(&video) {
+            if let Some((width, height)) = frame_size(layer, rec, facts)
+                && u64::from(width) * u64::from(height) > OPENH264_MAX_PIXELS
+            {
+                return Err(openh264_too_large(layer, width, height));
+            }
+        }
+    }
     let audio = scene
         .audio
         .iter()
@@ -105,6 +150,41 @@ pub fn plan_capture(
 pub fn empty_scene() -> CoreError {
     CoreError::invalid("the scene is empty: there is nothing to record").with_hint(
         "add a source first: qrec scene layer add screen --output <name>, or qrec scene audio add mic",
+    )
+}
+
+/// The size of the frames `rec` records, when known: a screen's from
+/// `facts.screens` (the output's current mode), a camera's from the mode
+/// the plan picked.
+fn frame_size(layer: &Layer, rec: &VideoRecord, facts: &Facts) -> Option<(u32, u32)> {
+    match &layer.source {
+        VideoSource::Screen { output, .. } => facts
+            .screens
+            .iter()
+            .find(|s| s.output == *output)
+            .map(|s| (s.width, s.height)),
+        VideoSource::Camera { .. } => rec.camera_mode.as_ref().map(|m| (m.width, m.height)),
+    }
+}
+
+/// The error for recording `layer`, whose frames are `width`×`height`,
+/// with OpenH264, which encodes at most [`OPENH264_MAX_PIXELS`] a frame: a
+/// missing dependency, since x264enc would record it.
+pub fn openh264_too_large(layer: &Layer, width: u32, height: u32) -> CoreError {
+    let source = match &layer.source {
+        VideoSource::Screen { output, .. } => output,
+        VideoSource::Camera { device, .. } => device,
+    };
+    CoreError::new(
+        ErrorCode::MissingDependency,
+        format!(
+            "can't record {} ({source}): its frames are {width}×{height}, and OpenH264, which \
+             records here, encodes at most {OPENH264_MAX_PIXELS} pixels a frame (4096×2304)",
+            layer.id
+        ),
+    )
+    .with_hint(
+        "install x264enc (gst-plugins-ugly), which records frames that large; qrec doctor names this system's packages",
     )
 }
 
@@ -199,39 +279,77 @@ pub fn key_int_max(fps: Fps) -> u32 {
     rounded.clamp(1, u64::from(u32::MAX)) as u32
 }
 
-/// The record encoder (A§2.1, A§9.5): the preference is the project's
-/// `recording.encoder` unless `auto`, else the config's `encoder.preference`.
-/// `x264` ⇒ X264. Otherwise VA when the shell found a `va*h264enc` factory
-/// for the effective render node: the configured node (project, then
-/// config) must be the one the capabilities describe, and an NVIDIA node is
-/// never used unless it was configured. Everything else records with X264.
+/// The record encoder (A§2.1, A§9.5): the preference ([`encoder_pref`])
+/// `x264` ⇒ X264; otherwise [`auto_encoder`].
 pub fn choose_encoder(project: &Project, caps: &Capabilities, facts: &Facts) -> VideoEncoder {
-    let pref = match project.recording.encoder {
-        EncoderPref::Auto => facts.config.encoder.preference,
-        explicit => explicit,
-    };
-    if pref == EncoderPref::X264 {
+    if encoder_pref(project, facts) == EncoderPref::X264 {
         return x264();
     }
+    auto_encoder(project, caps, facts)
+}
+
+/// The encoder preference that applies (A§2.1): the project's
+/// `recording.encoder` unless `auto`, else the config's
+/// `encoder.preference`.
+pub fn encoder_pref(project: &Project, facts: &Facts) -> EncoderPref {
+    match project.recording.encoder {
+        EncoderPref::Auto => facts.config.encoder.preference,
+        explicit => explicit,
+    }
+}
+
+/// What records unless the preference says x264: VA when the shell found
+/// an encoder bound to the effective render node, its `va*h264enc`, else
+/// its low-power `va*h264lpenc`, both CQP ([`va_factory`]). Then the
+/// software encoders GStreamer has (`caps.gst_h264`): x264enc, else
+/// openh264enc. Without that answer, or with neither, X264: a missing
+/// x264enc is then the engine's `CaptureFailed`, which names it
+/// (`missing_dependency`, A§4.8).
+pub fn auto_encoder(project: &Project, caps: &Capabilities, facts: &Facts) -> VideoEncoder {
+    if let Some(factory) = va_factory(project, caps, facts) {
+        return VideoEncoder::Va {
+            factory: factory.to_owned(),
+            qp: RECORD_QP,
+        };
+    }
+    if may_record_with_openh264(caps) {
+        openh264()
+    } else {
+        x264()
+    }
+}
+
+/// Whether OpenH264 may record: GStreamer has it and not x264enc (a VA
+/// encoder bound to the node still comes first, [`auto_encoder`]).
+pub fn may_record_with_openh264(caps: &Capabilities) -> bool {
+    caps.gst_h264
+        == Some(GstH264Caps {
+            x264: false,
+            openh264: true,
+        })
+}
+
+/// The VA encoder recordings may use: the `va*h264enc` bound to the node
+/// the capabilities describe, else its `va*h264lpenc`. That node must be
+/// the configured one (project, then config) when one is, and an NVIDIA
+/// node is never used unless it was configured.
+pub fn va_factory<'a>(project: &Project, caps: &'a Capabilities, facts: &Facts) -> Option<&'a str> {
+    let va = caps.vaapi.as_ref()?;
     let configured = project.recording.vaapi_device.as_deref().or(facts
         .config
         .encoder
         .vaapi_device
         .as_deref());
-    let Some(va) = &caps.vaapi else {
-        return x264();
-    };
     let node_ok = match configured {
         Some(device) => device == va.device,
         None => va.vendor != NVIDIA,
     };
-    match (&va.gst_h264_factory, node_ok) {
-        (Some(factory), true) => VideoEncoder::Va {
-            factory: factory.clone(),
-            qp: RECORD_QP,
-        },
-        _ => x264(),
+    if !node_ok {
+        return None;
     }
+    va.gst_h264_factory
+        .as_deref()
+        .or(va.gst_h264_lp_factory.as_deref())
 }
 
 /// `x264enc pass=qual quantizer=18 speed-preset=veryfast tune=zerolatency`
@@ -242,6 +360,18 @@ pub fn x264() -> VideoEncoder {
         quantizer: RECORD_QP,
         speed_preset: "veryfast".to_owned(),
         tune: "zerolatency".to_owned(),
+    }
+}
+
+/// `openh264enc rate-control=quality qp-min=qp-max=22 bitrate=100000000
+/// complexity=low` on four threads ([`OPENH264_QP`] has the measurement).
+pub fn openh264() -> VideoEncoder {
+    VideoEncoder::OpenH264 {
+        rate_control: OPENH264_RATE_CONTROL.to_owned(),
+        qp: OPENH264_QP,
+        bitrate: OPENH264_BITRATE,
+        complexity: OPENH264_COMPLEXITY.to_owned(),
+        threads: OPENH264_THREADS,
     }
 }
 
@@ -320,9 +450,9 @@ fn is_other_compressed(mode: &CameraMode) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ctx::CameraInfo;
+    use crate::ctx::{CameraInfo, ScreenInfo};
     use crate::model::Fps;
-    use crate::state::VaapiCaps;
+    use crate::state::{GstH264Caps, VaapiCaps};
     use crate::testkit::{self, ProjectBuilder};
 
     fn mode(width: u32, height: u32, fps: Fps, format: &str) -> CameraMode {
@@ -354,7 +484,21 @@ mod tests {
             vendor,
             ffmpeg_h264: true,
             gst_h264_factory: factory.map(str::to_owned),
+            gst_h264_lp_factory: None,
         });
+        caps
+    }
+
+    /// `caps` with GStreamer's software encoders known.
+    fn with_gst(mut caps: Capabilities, x264: bool, openh264: bool) -> Capabilities {
+        caps.gst_h264 = Some(GstH264Caps { x264, openh264 });
+        caps
+    }
+
+    /// `caps` whose VA node has a low-power encoder too (or only, without
+    /// a full one).
+    fn with_lp(mut caps: Capabilities, factory: &str) -> Capabilities {
+        caps.vaapi.as_mut().unwrap().gst_h264_lp_factory = Some(factory.to_owned());
         caps
     }
 
@@ -494,12 +638,59 @@ mod tests {
         // NVIDIA only when configured explicitly.
         let nvidia = va_caps("/dev/dri/renderD128", 0x10de, Some("vah264enc"));
         assert_eq!(choose_encoder(&project, &nvidia, &facts), x264());
-        let mut pinned = project;
+        let mut pinned = project.clone();
         pinned.recording.vaapi_device = Some("/dev/dri/renderD128".into());
         assert!(matches!(
             choose_encoder(&pinned, &nvidia, &facts),
             VideoEncoder::Va { .. }
         ));
+
+        // The node's full encoder before its low-power one, which records
+        // when it is the only one (Intel Arc, Meteor Lake and newer).
+        let va = |factory: &str| VideoEncoder::Va {
+            factory: factory.into(),
+            qp: 18,
+        };
+        let both = with_lp(intel.clone(), "vah264lpenc");
+        assert_eq!(choose_encoder(&project, &both, &facts), va("vah264enc"));
+        let lp_only = with_lp(no_factory.clone(), "vah264lpenc");
+        assert_eq!(
+            choose_encoder(&project, &lp_only, &facts),
+            va("vah264lpenc")
+        );
+        // Under the same node rules: not on an unconfigured NVIDIA node.
+        let nvidia_lp = with_lp(va_caps("/dev/dri/renderD128", 0x10de, None), "vah264lpenc");
+        assert_eq!(choose_encoder(&project, &nvidia_lp, &facts), x264());
+        assert_eq!(choose_encoder(&forced, &lp_only, &facts), x264());
+
+        // Without VA: x264enc, else openh264enc, as GStreamer has them.
+        let software = |x264, openh264| {
+            choose_encoder(
+                &project,
+                &with_gst(no_factory.clone(), x264, openh264),
+                &facts,
+            )
+        };
+        assert_eq!(software(true, true), x264());
+        assert_eq!(software(true, false), x264());
+        assert_eq!(software(false, true), openh264());
+        // Neither: x264, which the engine names as missing.
+        assert_eq!(software(false, false), x264());
+        // VA still comes first, and an explicit x264 stays x264.
+        let fedora = with_gst(intel.clone(), false, true);
+        assert_eq!(choose_encoder(&project, &fedora, &facts), va("vah264enc"));
+        assert_eq!(choose_encoder(&forced, &fedora, &facts), x264());
+        // The project's vaapi on a machine without VA: OpenH264 then.
+        assert_eq!(
+            choose_encoder(&va_pref(&project), &with_gst(none, false, true), &facts),
+            openh264()
+        );
+    }
+
+    fn va_pref(project: &Project) -> Project {
+        let mut va = project.clone();
+        va.recording.encoder = EncoderPref::Vaapi;
+        va
     }
 
     #[test]
@@ -594,5 +785,101 @@ mod tests {
         )
         .unwrap();
         insta::assert_json_snapshot!(plan);
+    }
+
+    /// The encoder chain (A§9.5) on an Intel node: its full VA encoder
+    /// (over its low-power one), its low-power one alone, x264enc alone,
+    /// openh264enc alone (stock Fedora) and nothing, which plans x264 for
+    /// the engine to name as missing.
+    #[test]
+    fn snapshot_encoder_chain() {
+        let project = ProjectBuilder::new()
+            .screen_layer("L1", "DP-4")
+            .mic("A1", "alsa_input.usb-Blue_Yeti")
+            .build();
+        let intel = |factory: Option<&str>| va_caps("/dev/dri/renderD129", 0x8086, factory);
+        let full = with_lp(intel(Some("varenderD129h264enc")), "varenderD129h264lpenc");
+        let cases = [
+            ("va_full", with_gst(full, true, true)),
+            (
+                "va_lp_only",
+                with_gst(with_lp(intel(None), "vah264lpenc"), false, true),
+            ),
+            ("x264_only", with_gst(intel(None), true, false)),
+            ("openh264_only", with_gst(intel(None), false, true)),
+            ("none", with_gst(intel(None), false, false)),
+        ];
+        for (name, caps) in cases {
+            let plan = plan_capture(&project, &TakeId::numbered(3), &caps, &Facts::default());
+            insta::assert_json_snapshot!(format!("snapshot_encoder_{name}"), plan.unwrap());
+        }
+    }
+
+    /// OpenH264 encodes at most 9,437,184 pixels a frame, whatever the
+    /// shape: a take it would record a larger screen or camera mode with
+    /// is refused up front (a missing x264enc), and one whose size isn't
+    /// known goes ahead. Another encoder records any size.
+    #[test]
+    fn openh264_refuses_frames_larger_than_it_encodes() {
+        let project = full_scene();
+        let take = TakeId::numbered(3);
+        let fedora = with_gst(testkit::capabilities(), false, true);
+        let facts = |screen: (u32, u32), camera: (u32, u32)| {
+            let mut facts = camera_facts();
+            facts.screens = vec![ScreenInfo {
+                output: "DP-4".into(),
+                description: "Dell UP2715K".into(),
+                x: 0,
+                y: 0,
+                width: screen.0,
+                height: screen.1,
+                scale: 2.0,
+            }];
+            facts.cameras[0].modes = vec![mode(camera.0, camera.1, Fps::new(30, 1), "NV12")];
+            facts
+        };
+        let refused = |facts: &Facts| plan_capture(&project, &take, &fedora, facts).err();
+
+        // 4096×2304 is the largest 16:9 frame; any shape up to that area passes.
+        for size in [(4096, 2304), (2304, 4096), (5120, 1440), (3840, 2160)] {
+            assert_eq!(refused(&facts(size, (1920, 1080))), None, "{size:?}");
+        }
+        // Nothing known about the sizes: the take goes ahead.
+        assert_eq!(refused(&Facts::default()), None);
+
+        let err = refused(&facts((5120, 2880), (1920, 1080))).unwrap();
+        assert_eq!(err.code, ErrorCode::MissingDependency);
+        assert_eq!(
+            err.message,
+            "can't record L1 (DP-4): its frames are 5120×2880, and OpenH264, which records \
+             here, encodes at most 9437184 pixels a frame (4096×2304)"
+        );
+        let hint = err.hint.unwrap();
+        assert!(
+            hint.starts_with("install x264enc (gst-plugins-ugly)"),
+            "{hint}"
+        );
+        // One pixel row over is too much; a camera mode counts the same.
+        assert!(refused(&facts((4096, 2305), (1920, 1080))).is_some());
+        let err = refused(&facts((2560, 1440), (4656, 3496))).unwrap();
+        assert!(
+            err.message
+                .starts_with("can't record L2 (/dev/video0): its frames are 4656×3496"),
+            "{}",
+            err.message
+        );
+
+        // x264enc or a VA encoder records it.
+        let huge = facts((7680, 4320), (4656, 3496));
+        for caps in [
+            with_gst(testkit::capabilities(), true, true),
+            with_gst(
+                va_caps("/dev/dri/renderD129", 0x8086, Some("vah264enc")),
+                false,
+                true,
+            ),
+        ] {
+            assert!(plan_capture(&project, &take, &caps, &huge).is_ok());
+        }
     }
 }

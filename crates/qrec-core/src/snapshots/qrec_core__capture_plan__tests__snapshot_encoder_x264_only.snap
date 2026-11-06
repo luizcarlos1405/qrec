@@ -1,0 +1,44 @@
+---
+source: crates/qrec-core/src/capture_plan.rs
+expression: plan.unwrap()
+---
+{
+  "take": "take-0003",
+  "dir": "takes/take-0003",
+  "log": "takes/take-0003/recorder.log",
+  "fps": {
+    "num": 30,
+    "den": 1
+  },
+  "healthCheckMs": 500,
+  "firstBufferMs": 3000,
+  "eosTimeoutMs": 10000,
+  "video": [
+    {
+      "id": "L1",
+      "source": {
+        "kind": "screen",
+        "output": "DP-4",
+        "label": "Monitor DP-4"
+      },
+      "file": "takes/take-0003/L1-screen-DP-4.mkv",
+      "encoder": {
+        "kind": "x264",
+        "pass": "qual",
+        "quantizer": 18,
+        "speedPreset": "veryfast",
+        "tune": "zerolatency"
+      },
+      "keyIntMax": 30,
+      "cameraMode": null
+    }
+  ],
+  "audio": [
+    {
+      "id": "A1",
+      "device": "alsa_input.usb-Blue_Yeti",
+      "file": "takes/take-0003/A1-mic.mka",
+      "sampleRate": 48000
+    }
+  ]
+}

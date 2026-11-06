@@ -474,7 +474,7 @@ impl Default for RecordingSettings {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum EncoderPref {
-    /// VA-API when it is verified on the chosen node, x264 otherwise.
+    /// VA-API when it is verified on the chosen node, else x264 (recordings: OpenH264 without x264enc).
     #[default]
     Auto,
     Vaapi,

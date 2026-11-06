@@ -10,9 +10,9 @@
 //!   works with the picker on every take) and pipewiresrc;
 //! - cameras: v4l2src; audio capture: pulsesrc, `pactl` 16 or newer and
 //!   the sound server it reaches (PipeWire or PulseAudio);
-//! - recording: an H.264 encoder (the `va*h264enc` bound to the render
-//!   node, which a probe child finds, else x264enc), h264parse,
-//!   matroskamux and flacenc;
+//! - recording: an H.264 encoder (the `va*h264enc`, else the
+//!   `va*h264lpenc`, bound to the render node, which a probe child finds,
+//!   else x264enc, else openh264enc), h264parse, matroskamux and flacenc;
 //! - each export format: ffmpeg's encoders (for MP4's video, h264_vaapi
 //!   on the render node once the h264_vaapi check passed, else libx264).
 //!
@@ -203,10 +203,11 @@ pub struct VaReport {
     pub libva_driver_name: Option<String>,
     /// The h264_vaapi export chain encoded two frames; `None` = not probed.
     pub ffmpeg_h264: Option<bool>,
-    /// `va*h264enc` GStreamer encoders.
+    /// GStreamer's VA H.264 encoders (`va*h264enc`, `va*h264lpenc`).
     pub gst_encoders: Vec<String>,
-    /// The one of them bound to `device` (the probe child of A§8.10, run
-    /// with the h264_vaapi check); `None` when not probed or none is.
+    /// The one of them recordings use on `device`: its `va*h264enc`, else
+    /// its `va*h264lpenc` (the probe child of A§8.10, run with the
+    /// h264_vaapi check); `None` when not probed or none is bound to it.
     pub gst_factory: Option<String>,
     /// What `main()` changed in the GPU environment at startup (A§8.10).
     pub startup: Vec<String>,
@@ -250,15 +251,15 @@ pub struct PortalInfo {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DoctorOptions {
     /// `QREC_CAPTURE_BACKEND=fake`: test sources instead of the portal,
-    /// cameras and PipeWire, x264 for recordings and libx264 for MP4
-    /// exports.
+    /// cameras and PipeWire, x264enc (else openh264enc) for recordings and
+    /// libx264 for MP4 exports.
     pub fake_backend: bool,
     /// `recording.vaapiDevice` of the project in scope, if any.
     pub project_vaapi_device: Option<String>,
     /// `encoder.vaapi_device` from the user config, if any.
     pub config_vaapi_device: Option<String>,
     /// Run the VA-API child processes on an Intel or AMD node: the
-    /// h264_vaapi export check and the probe for the `va*h264enc` bound to
+    /// h264_vaapi export check and the probe for the VA encoders bound to
     /// it (10 s each).
     pub probe_vaapi: bool,
 }
@@ -280,7 +281,7 @@ pub trait Probe {
     fn gstreamer(&self) -> Result<String, String>;
     /// Whether each element factory exists (GStreamer is initialized).
     fn gst_element(&self, name: &str) -> bool;
-    /// The `va*h264enc` factories.
+    /// The VA H.264 encoder factories (`va*h264enc`, `va*h264lpenc`).
     fn gst_va_encoders(&self) -> Vec<String>;
     /// The software H.264 decoders GStreamer autoplugs: klass
     /// Decoder/Video without Hardware, sink caps `video/x-h264`, rank
@@ -307,8 +308,9 @@ pub trait Probe {
     fn env(&self, key: &str) -> Option<String>;
     /// The h264_vaapi export chain on `device` (two frames to the null muxer).
     fn vaapi_h264(&self, device: &str, driver: Option<&str>) -> Result<(), String>;
-    /// The `va*h264enc` whose `device-path` is `device`, from the probe
-    /// child (A§8.10): `None` when no factory is bound to it.
+    /// The VA encoder recordings use on `device`, from the probe child
+    /// (A§8.10): the `va*h264enc` whose `device-path` it is, else such a
+    /// `va*h264lpenc`; `None` when no factory is bound to it.
     fn gst_va_factory(&self, device: &str) -> Result<Option<String>, String>;
     /// What `gpu::prepare_gpu_env` changed and noted at startup.
     fn gpu_startup(&self) -> Vec<String>;
@@ -503,6 +505,14 @@ const ELEMENTS: &[Element] = &[
         needed_for: RECORDING,
         real_only: false,
     },
+    // Needed only when neither a VA encoder nor x264enc records.
+    Element {
+        name: "openh264enc",
+        role: "H.264 recording",
+        need: Need::GstOpenH264,
+        needed_for: RECORDING,
+        real_only: false,
+    },
     Element {
         name: "h264parse",
         role: "H.264 recording",
@@ -566,7 +576,7 @@ const FAKE_ELEMENTS: &[Element] = &[
 ];
 
 /// The GStreamer checks but the encoders' and GES's: the version, the
-/// elements and the H.264 decoder. Returns the `va*h264enc` encoders when
+/// elements and the H.264 decoder. Returns the VA H.264 encoders when
 /// GStreamer works, `None` when it doesn't.
 fn gstreamer_checks(
     probe: &dyn Probe,
@@ -656,7 +666,7 @@ fn gstreamer_checks(
     Some(probe.gst_va_encoders())
 }
 
-/// Whether the doctor asks the probe child for the `va*h264enc` bound to
+/// Whether the doctor asks the probe child for the VA encoder bound to
 /// the effective node: the real backend, `probe_vaapi`, an Intel or AMD
 /// node (never NVIDIA, as for the h264_vaapi check) and a VA encoder in
 /// GStreamer's registry at all.
@@ -670,15 +680,23 @@ fn probes_va_factory(opts: &DoctorOptions, vendor: Option<u16>, encoders: &[Stri
 /// The VA encoder recordings use instead of x264enc (A§9.5
 /// `choose_encoder`), if any: the one the probe child bound to the
 /// effective node. Unprobed (the GUI's doctor, whose host probes), the
-/// first one GStreamer lists when that node is Intel or AMD. Never with
-/// the fake backend, which records with x264enc.
+/// first full one GStreamer lists, else its first low-power one, when that
+/// node is Intel or AMD. Never with the fake backend, which records with
+/// x264enc (else openh264enc).
 fn va_recorder(va: &VaReport, opts: &DoctorOptions) -> Option<String> {
     if opts.fake_backend {
         None
     } else if probes_va_factory(opts, va.vendor, &va.gst_encoders) {
         va.gst_factory.clone()
     } else if matches!(va.vendor, Some(PCI_INTEL | PCI_AMD)) {
-        va.gst_encoders.first().cloned()
+        let first = |kind| {
+            va.gst_encoders
+                .iter()
+                .find(|name| gpu::va_h264_kind(name) == Some(kind))
+        };
+        first(gpu::VaH264Kind::Full)
+            .or_else(|| first(gpu::VaH264Kind::LowPower))
+            .cloned()
     } else {
         None
     }
@@ -713,24 +731,49 @@ fn no_va_encoder_fix(va: &VaReport, fix: Fix<'_>) -> Hint {
     }
 }
 
-/// The recording encoder: `gst.x264enc` isn't needed when a VA encoder
-/// records (its check is already in `checks`), and `gst.vah264enc` says
-/// which VA encoder that is, or what gives GStreamer one.
+/// The recording encoder (A§9.5 `choose_encoder`): the VA encoder bound
+/// to the node, else x264enc, else openh264enc. Only the first one there
+/// records, so only it is needed: the others' checks (already in
+/// `checks`) inform, a missing one saying what records instead. With none,
+/// both software encoders are needed, since either one would record.
+/// `gst.vah264enc` says which VA encoder records, or what gives GStreamer
+/// one.
 fn encoder_checks(va: &VaReport, opts: &DoctorOptions, fix: Fix<'_>, checks: &mut Vec<Check>) {
-    let recorder = va_recorder(va, opts);
-    if let Some(x264) = checks.iter_mut().find(|c| c.id == "gst.x264enc") {
-        match (&recorder, x264.ok) {
-            (Some(recorder), ok) => {
-                x264.needed_for.clear();
-                x264.required = false;
-                if !ok {
-                    let _ = write!(x264.detail, ": recordings use {recorder}");
+    let has = |id: &str| checks.iter().any(|c| c.id == id && c.ok);
+    let software = if has("gst.x264enc") {
+        Some("x264enc")
+    } else if has("gst.openh264enc") {
+        Some("openh264enc")
+    } else {
+        None
+    };
+    let recorder = va_recorder(va, opts).or_else(|| software.map(str::to_owned));
+    // What records when no VA encoder does.
+    let on_the_cpu = match software {
+        Some("x264enc") => "recordings use x264 on the CPU",
+        Some(_) => "recordings use OpenH264 on the CPU",
+        None => "no software H.264 encoder records either",
+    };
+    for (name, other) in [("x264enc", "openh264enc"), ("openh264enc", "x264enc")] {
+        let id = format!("gst.{name}");
+        let Some(check) = checks.iter_mut().find(|c| c.id == id) else {
+            continue;
+        };
+        match &recorder {
+            Some(recorder) if recorder == name => {}
+            Some(recorder) => {
+                check.needed_for.clear();
+                check.required = false;
+                if !check.ok {
+                    let _ = write!(check.detail, ": recordings use {recorder}");
                 }
             }
-            (None, false) => x264
-                .detail
-                .push_str(" (and no VA-API encoder records instead)"),
-            (None, true) => {}
+            None => {
+                let _ = write!(
+                    check.detail,
+                    " (and no VA-API encoder or {other} records instead)"
+                );
+            }
         }
     }
     let id = "gst.vah264enc";
@@ -739,7 +782,7 @@ fn encoder_checks(va: &VaReport, opts: &DoctorOptions, fix: Fix<'_>, checks: &mu
         fail_fix(
             id,
             NOTHING,
-            "no VA-API H.264 encoder: recordings use x264 on the CPU",
+            format!("no VA-API H.264 encoder: {on_the_cpu}"),
             no_va_encoder_fix(va, fix),
         )
     } else if probes_va_factory(opts, va.vendor, &va.gst_encoders) {
@@ -747,7 +790,7 @@ fn encoder_checks(va: &VaReport, opts: &DoctorOptions, fix: Fix<'_>, checks: &mu
             Some(factory) => ok(id, NOTHING, format!("{factory} records on {device}")),
             None => {
                 let detail = format!(
-                    "none of {} encodes on {device}: recordings use x264 on the CPU",
+                    "none of {} encodes on {device}: {on_the_cpu}",
                     va.gst_encoders.join(", ")
                 );
                 // A probed node is Intel or AMD.
@@ -1428,13 +1471,13 @@ impl Probe for SystemProbe {
     /// `QREC_GPU_PROBE` first), so only the `qrec` binary may call it.
     fn gst_va_factory(&self, device: &str) -> Result<Option<String>, String> {
         let exe = std::env::current_exe().map_err(|e| format!("can't find qrec itself: {e}"))?;
-        let probe = gpu::Probe::VaH264Factory {
-            device: device.to_owned(),
+        let probe = gpu::Probe::H264Encoders {
+            device: Some(device.to_owned()),
         };
         let answer = gpu::run_probe_child(&exe, &probe, None, gpu::PROBE_TIMEOUT)?;
         match answer.error {
             Some(error) => Err(error),
-            None => Ok(answer.factory),
+            None => Ok(answer.factory.or(answer.lp_factory)),
         }
     }
 
@@ -1571,7 +1614,7 @@ mod gst_impl {
         )
         .iter()
         .map(|f| f.name().to_string())
-        .filter(|n| n.starts_with("va") && n.ends_with("h264enc"))
+        .filter(|n| crate::gpu::va_h264_kind(n).is_some())
         .collect();
         names.sort();
         names
@@ -1907,6 +1950,7 @@ mod tests {
             "gst.compositor",
             "gst.videorate",
             "gst.x264enc",
+            "gst.openh264enc",
             "gst.matroskamux",
             "gst.flacenc",
             "gst.matroskademux",
@@ -1958,9 +2002,10 @@ mod tests {
         for id in ["gst.vah264enc", "wl-copy", "vaapi", "portal.registry"] {
             assert!(needs(id).is_empty(), "{id}");
         }
-        // The dev box records and exports MP4 with VA, so x264enc and
-        // libx264 are needed for nothing.
+        // The dev box records and exports MP4 with VA, so x264enc,
+        // openh264enc and libx264 are needed for nothing.
         assert!(needs("gst.x264enc").is_empty());
+        assert!(needs("gst.openh264enc").is_empty());
         assert!(needs("ffmpeg.libx264").is_empty());
         assert_eq!(
             check(&report, "gst.vah264enc").detail,
@@ -2104,31 +2149,61 @@ mod tests {
         assert_eq!(back, report);
     }
 
-    /// x264enc is needed for recording only when no VA encoder records.
+    /// Recordings use the VA encoder bound to the node (its full one, else
+    /// its low-power one), else x264enc, else openh264enc (A§9.5): only the
+    /// one that records is needed, and with none, either software encoder
+    /// would turn recording on.
     #[test]
-    fn recording_needs_va_or_x264() {
+    fn recording_needs_va_or_x264_or_openh264() {
         let mut fake = Fake::healthy();
         fake.elements.remove("x264enc");
         let report = run_with(&fake, &opts());
         let x264 = check(&report, "gst.x264enc");
         assert!(!x264.ok && x264.needed_for.is_empty(), "{x264:?}");
         assert!(x264.detail.ends_with(": recordings use vah264enc"));
+        assert!(check(&report, "gst.openh264enc").needed_for.is_empty());
         assert!(report.features_off.is_empty());
 
-        // The probe found no encoder bound to the node: recording is off.
+        // The probe found no encoder bound to the node: openh264enc records.
         fake.va_factory = Ok(None);
         let report = run_with(&fake, &opts());
-        assert_eq!(off(&report), [Feature::Recording]);
+        assert!(report.features_off.is_empty(), "{:?}", report.features_off);
+        assert!(
+            check(&report, "gst.x264enc")
+                .detail
+                .ends_with(": recordings use openh264enc")
+        );
         assert_eq!(
-            report.features_off[0].message,
-            "Recording is off: x264enc (H.264 recording) isn't in the GStreamer registry \
-             (and no VA-API encoder records instead)"
+            check(&report, "gst.openh264enc").needed_for,
+            [Feature::Recording]
         );
         let va = check(&report, "gst.vah264enc");
         assert!(!va.ok && va.needed_for.is_empty(), "{va:?}");
+        assert_eq!(
+            va.detail,
+            "none of vah264enc encodes on /dev/dri/renderD129: recordings use OpenH264 on the CPU"
+        );
+
+        // Neither software encoder either: recording is off, and either one
+        // turns it on.
+        fake.elements.remove("openh264enc");
+        let report = run_with(&fake, &opts());
+        assert_eq!(off(&report), [Feature::Recording]);
+        assert_eq!(
+            report.features_off[0].checks,
+            ["gst.x264enc", "gst.openh264enc"]
+        );
+        assert_eq!(
+            report.features_off[0].message,
+            "Recording is off: x264enc (H.264 recording) isn't in the GStreamer registry \
+             (and no VA-API encoder or openh264enc records instead); openh264enc (H.264 \
+             recording) isn't in the GStreamer registry (and no VA-API encoder or x264enc \
+             records instead)"
+        );
         assert!(
-            va.detail
-                .starts_with("none of vah264enc encodes on /dev/dri/renderD129")
+            check(&report, "gst.vah264enc")
+                .detail
+                .ends_with(": no software H.264 encoder records either")
         );
 
         // A failed probe: noted, and nothing records either.
@@ -2156,19 +2231,74 @@ mod tests {
         );
         assert!(report.features_off.is_empty(), "{:?}", report.features_off);
         assert_eq!(check(&report, "gst.vah264enc").detail, "vah264enc");
-        // The fake backend records with x264enc whatever the GPU has.
-        let report = run_with(
-            &fake,
-            &DoctorOptions {
-                fake_backend: true,
-                probe_vaapi: false,
-                ..opts()
-            },
+        // The fake backend records with x264enc, else openh264enc, whatever
+        // the GPU has.
+        let fake_backend = DoctorOptions {
+            fake_backend: true,
+            probe_vaapi: false,
+            ..opts()
+        };
+        assert_eq!(off(&run_with(&fake, &fake_backend)), [Feature::Recording]);
+        fake.elements.insert("openh264enc");
+        let report = run_with(&fake, &fake_backend);
+        assert!(report.features_off.is_empty(), "{:?}", report.features_off);
+        assert_eq!(
+            check(&report, "gst.openh264enc").needed_for,
+            [Feature::Recording]
         );
-        assert_eq!(off(&report), [Feature::Recording]);
         assert!(
-            fake.factory_probed.get() == 3,
+            fake.factory_probed.get() == 4,
             "probed with probe_vaapi only"
+        );
+    }
+
+    /// Intel Arc and Meteor Lake have only a low-power VA encoder: it
+    /// records, probed or not, and a full one wins where both exist.
+    #[test]
+    fn a_low_power_va_encoder_records() {
+        let mut fake = Fake::healthy();
+        fake.elements.remove("x264enc");
+        fake.elements.remove("openh264enc");
+        fake.va_encoders = vec!["vah264lpenc".to_owned()];
+        fake.va_factory = Ok(Some("vah264lpenc".to_owned()));
+        let report = run_with(&fake, &opts());
+        assert!(report.features_off.is_empty(), "{:?}", report.features_off);
+        assert_eq!(
+            check(&report, "gst.vah264enc").detail,
+            "vah264lpenc records on /dev/dri/renderD129"
+        );
+        assert!(
+            check(&report, "gst.x264enc")
+                .detail
+                .ends_with(": recordings use vah264lpenc")
+        );
+        assert_eq!(
+            report.va.as_ref().unwrap().gst_factory.as_deref(),
+            Some("vah264lpenc")
+        );
+
+        // Unprobed: the first full encoder GStreamer lists, else the
+        // first low-power one.
+        let unprobed = DoctorOptions {
+            probe_vaapi: false,
+            ..opts()
+        };
+        let report = run_with(&fake, &unprobed);
+        assert!(
+            check(&report, "gst.x264enc")
+                .detail
+                .ends_with(": recordings use vah264lpenc")
+        );
+        fake.va_encoders = vec!["vah264lpenc".to_owned(), "varenderD129h264enc".to_owned()];
+        let report = run_with(&fake, &unprobed);
+        assert!(
+            check(&report, "gst.x264enc")
+                .detail
+                .ends_with(": recordings use varenderD129h264enc")
+        );
+        assert_eq!(
+            check(&report, "gst.vah264enc").detail,
+            "vah264lpenc, varenderD129h264enc"
         );
     }
 
@@ -2703,6 +2833,18 @@ mod tests {
             .insert("libopenh264".to_owned(), "h264".to_owned());
         fedora.programs.insert("wl-copy", "/usr/bin/wl-copy");
 
+        // Stock Fedora on AMD: Fedora's Mesa encodes no H.264, so GStreamer
+        // has no VA encoder and ffmpeg's h264_vaapi check fails; with no
+        // x264enc either, openh264enc records. Nothing exports MP4 video
+        // (no libx264 and no working h264_vaapi).
+        let mut fedora_amd = fedora.clone();
+        fedora_amd.nodes = vec![node("/dev/dri/renderD128", PCI_AMD)];
+        fedora_amd.env = [("LIBVA_DRIVER_NAME", "radeonsi")].into();
+        fedora_amd.startup.clear();
+        fedora_amd.va_encoders.clear();
+        fedora_amd.va_factory = Ok(None);
+        fedora_amd.vaapi = Err("ffmpeg exited with status 1".to_owned());
+
         // sway without xdg-desktop-portal-wlr: the frontend runs, nothing
         // answers for ScreenCast. AMD graphics.
         let mut sway = Fake::healthy();
@@ -2757,6 +2899,7 @@ mod tests {
             ("pulseaudio_16", pulseaudio_16),
             ("xfce_x11_no_portal", xfce),
             ("fedora_stock", fedora),
+            ("fedora_stock_amd", fedora_amd),
             ("sway_without_xdpw", sway),
             ("nvidia_only", nvidia),
             ("vm", vm),
@@ -2789,11 +2932,25 @@ mod tests {
                 ("pulseaudio_16", 0, vec![]),
                 ("xfce_x11_no_portal", 0, vec![Screens]),
                 ("fedora_stock", 0, vec![]),
+                ("fedora_stock_amd", 0, vec![ExportMp4]),
                 ("sway_without_xdpw", 0, vec![Screens]),
                 ("nvidia_only", 0, vec![]),
                 ("vm", 0, vec![]),
                 ("debian_without_gst_libav", 5, vec![]),
             ]
+        );
+        // Stock Fedora on AMD records with openh264enc, which is all it needs.
+        let (_, fedora_amd) = machines()
+            .into_iter()
+            .find(|(name, _)| *name == "fedora_stock_amd")
+            .unwrap();
+        let report = run_with(&fedora_amd, &opts());
+        assert_eq!(check(&report, "gst.openh264enc").needed_for, [Recording]);
+        let x264 = check(&report, "gst.x264enc");
+        assert!(x264.needed_for.is_empty(), "{x264:?}");
+        assert!(
+            x264.detail.ends_with(": recordings use openh264enc"),
+            "{x264:?}"
         );
     }
 

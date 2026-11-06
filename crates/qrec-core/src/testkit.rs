@@ -72,6 +72,7 @@ pub fn capabilities() -> Capabilities {
         }),
         ffprobe: Some("/usr/bin/ffprobe".to_owned()),
         vaapi: None,
+        gst_h264: None,
         cores: 8,
     }
 }

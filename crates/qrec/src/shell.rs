@@ -546,11 +546,12 @@ impl Opener for ShellOpener {
         {
             env.config = config;
         }
-        // Hosts that record find the `va*h264enc` bound to their render node
-        // in a probe child (`main` runs it); never under the fake backend,
-        // which records without a GPU.
-        if matches!(opts.host, HostKind::Gui | HostKind::Headless) && !env.fake_backend {
-            env.caps.gst_factory = Some(caps::gst_factory_probe);
+        // Hosts that record ask a probe child (`main` runs it) for the H.264
+        // encoders GStreamer has: the VA ones bound to their render node
+        // (never under the fake backend, which records without a GPU) and
+        // x264enc and openh264enc.
+        if matches!(opts.host, HostKind::Gui | HostKind::Headless) {
+            env.caps.gst_probe = Some(caps::gst_probe);
         }
         // Only hosts that record get the engine: a CLI command's own host
         // never records (A§8.5), so a recording never runs inside a command

@@ -740,6 +740,7 @@ fn capabilities() -> Capabilities {
         }),
         ffprobe: Some("ffprobe (PATH)".to_owned()),
         vaapi: None,
+        gst_h264: None,
         cores: 4,
     }
 }

@@ -157,6 +157,7 @@ fn va_caps() -> Capabilities {
         vendor: 0x8086,
         ffmpeg_h264: true,
         gst_h264_factory: None,
+        gst_h264_lp_factory: None,
     });
     caps
 }

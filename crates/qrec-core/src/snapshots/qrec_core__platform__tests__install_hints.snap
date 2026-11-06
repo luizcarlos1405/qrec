@@ -74,6 +74,18 @@ GstX264
   gentoo    install GStreamer's x264enc (upstream gst-plugins-ugly) with emerge
   unknown   install GStreamer's x264enc (upstream gst-plugins-ugly) with your distribution's package manager
   nix shell $ nix develop · the flake provides gst-plugins-ugly
+GstOpenH264
+  debian    install GStreamer's openh264enc (upstream gst-plugins-bad, built with OpenH264) with apt
+  ubuntu    install GStreamer's openh264enc (upstream gst-plugins-bad, built with OpenH264) with apt
+  fedora    $ sudo dnf install gstreamer1-plugin-openh264 · [gstreamer1-plugin-openh264]
+  arch      install GStreamer's openh264enc (upstream gst-plugins-bad, built with OpenH264) with pacman
+  suse      install GStreamer's openh264enc (upstream gst-plugins-bad, built with OpenH264) with zypper
+  nixos     run qrec from its Nix package, which ships gst_all_1.gst-plugins-bad · [gst_all_1.gst-plugins-bad]
+  alpine    install GStreamer's openh264enc (upstream gst-plugins-bad, built with OpenH264) with apk
+  void      install GStreamer's openh264enc (upstream gst-plugins-bad, built with OpenH264) with xbps-install
+  gentoo    install GStreamer's openh264enc (upstream gst-plugins-bad, built with OpenH264) with emerge
+  unknown   install GStreamer's openh264enc (upstream gst-plugins-bad, built with OpenH264) with your distribution's package manager
+  nix shell $ nix develop · the flake provides gst-plugins-bad
 GstH264Decoder
   debian    install GStreamer's libav plugin, avdec_h264 (upstream gst-libav) with apt
   ubuntu    install GStreamer's libav plugin, avdec_h264 (upstream gst-libav) with apt

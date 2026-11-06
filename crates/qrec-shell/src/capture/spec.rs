@@ -340,8 +340,14 @@ pub fn record_file_rel(plan_dir: &str, file: &str) -> String {
 
 /// The encoder factory and its properties as `(name, value)` strings
 /// (A§8.11): x264 `pass=qual quantizer=18 speed-preset=veryfast
-/// tune=zerolatency key-int-max=<fps>`; VA `rate-control=cqp qpi=qpp=qpb=<qp>
-/// key-int-max=<fps>`.
+/// tune=zerolatency key-int-max=<fps>`; VA (`va*h264enc` or
+/// `va*h264lpenc`) `rate-control=cqp qpi=qpp=qpb=<qp> key-int-max=<fps>`;
+/// OpenH264 `rate-control=quality qp-min=qp-max=<qp> bitrate=<target>
+/// complexity=low gop-size=<fps>`, its threads one slice each, with
+/// `usage-type=camera` (`screen` is five times slower: one thread encoded
+/// the 2560×1440 screen clip at 12 fps where `camera` did 57) and
+/// `enable-frame-skip=false` (a skipped frame would leave a gap in the CFR
+/// file).
 pub fn encoder_settings(rec: &VideoRecord) -> (String, Vec<(&'static str, String)>) {
     let key_int = rec.key_int_max.max(1).to_string();
     match &rec.encoder {
@@ -370,14 +376,40 @@ pub fn encoder_settings(rec: &VideoRecord) -> (String, Vec<(&'static str, String
                 ("key-int-max", key_int),
             ],
         ),
+        VideoEncoder::OpenH264 {
+            rate_control,
+            qp,
+            bitrate,
+            complexity,
+            threads,
+        } => {
+            let threads = (*threads).max(1).to_string();
+            (
+                "openh264enc".to_owned(),
+                vec![
+                    ("rate-control", rate_control.clone()),
+                    ("qp-min", qp.to_string()),
+                    ("qp-max", qp.to_string()),
+                    ("bitrate", bitrate.to_string()),
+                    ("complexity", complexity.clone()),
+                    ("gop-size", key_int),
+                    ("multi-thread", threads.clone()),
+                    ("slice-mode", "n-slices".to_owned()),
+                    ("num-slices", threads),
+                    ("usage-type", "camera".to_owned()),
+                    ("enable-frame-skip", "false".to_owned()),
+                ],
+            )
+        }
     }
 }
 
-/// The raw format the encoder takes: NV12 for VA, I420 for x264.
+/// The raw format the encoder takes: NV12 for VA, I420 for x264 and
+/// OpenH264 (its only one).
 pub fn encoder_input_format(encoder: &VideoEncoder) -> &'static str {
     match encoder {
         VideoEncoder::Va { .. } => "NV12",
-        VideoEncoder::X264 { .. } => "I420",
+        VideoEncoder::X264 { .. } | VideoEncoder::OpenH264 { .. } => "I420",
     }
 }
 
@@ -752,6 +784,37 @@ mod tests {
         assert_eq!(props[3], ("qpb", "18".to_owned()));
         assert_eq!(encoder_input_format(&va.encoder), "NV12");
         assert_eq!(encoder_input_format(&x264()), "I420");
+        // The low-power VA encoder takes the same CQP settings.
+        va.encoder = VideoEncoder::Va {
+            factory: "varenderD129h264lpenc".into(),
+            qp: 18,
+        };
+        let (factory, lp_props) = encoder_settings(&va);
+        assert_eq!(factory, "varenderD129h264lpenc");
+        assert_eq!(lp_props, props);
+
+        let mut openh264 = screen("L1", "DP-4");
+        openh264.encoder = qrec_core::capture_plan::openh264();
+        let (factory, props) = encoder_settings(&openh264);
+        assert_eq!(factory, "openh264enc");
+        assert_eq!(
+            props,
+            [
+                ("rate-control", "quality"),
+                ("qp-min", "22"),
+                ("qp-max", "22"),
+                ("bitrate", "100000000"),
+                ("complexity", "low"),
+                ("gop-size", "30"),
+                ("multi-thread", "4"),
+                ("slice-mode", "n-slices"),
+                ("num-slices", "4"),
+                ("usage-type", "camera"),
+                ("enable-frame-skip", "false"),
+            ]
+            .map(|(name, value)| (name, value.to_owned()))
+        );
+        assert_eq!(encoder_input_format(&openh264.encoder), "I420");
 
         let tone = FakeTone {
             channels: 1,

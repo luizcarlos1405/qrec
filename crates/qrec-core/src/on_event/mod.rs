@@ -178,7 +178,7 @@ pub fn facts_needed_for_event(state: &State, ev: &Event) -> FactsNeeded {
                 ..
             },
         ) if timer == current && *remaining <= 1 => {
-            begin_take_facts(&state.project, &mut need);
+            begin_take_facts(state, &mut need);
         }
         (
             Event::TakeProbed {
@@ -199,7 +199,7 @@ pub fn facts_needed_for_event(state: &State, ev: &Event) -> FactsNeeded {
 mod tests {
     use super::*;
     use crate::ids::TimerId;
-    use crate::state::{FfmpegCaps, RecordMode};
+    use crate::state::{FfmpegCaps, GstH264Caps, RecordMode};
     use crate::testkit::{self, ProjectBuilder};
 
     #[test]
@@ -214,6 +214,7 @@ mod tests {
             }),
             ffprobe: None,
             vaapi: None,
+            gst_h264: None,
             cores: 16,
         };
         let out = on_event(&state, &ctx, Event::Capabilities(caps.clone()));
@@ -231,9 +232,18 @@ mod tests {
             start_req: None,
             wait: false,
         };
-        assert!(facts_needed_for_event(&state, &Event::TimerFired { timer: TimerId(4) }).take_dirs);
+        let last = Event::TimerFired { timer: TimerId(4) };
+        let need = facts_needed_for_event(&state, &last);
+        assert!(need.take_dirs && !need.video_sources && !need.screens);
         assert!(
             facts_needed_for_event(&state, &Event::TimerFired { timer: TimerId(5) }).is_empty()
         );
+        // OpenH264 may record: the plan checks the screen's size.
+        state.runtime.capabilities.gst_h264 = Some(GstH264Caps {
+            x264: false,
+            openh264: true,
+        });
+        let need = facts_needed_for_event(&state, &last);
+        assert!(need.screens && !need.video_sources);
     }
 }

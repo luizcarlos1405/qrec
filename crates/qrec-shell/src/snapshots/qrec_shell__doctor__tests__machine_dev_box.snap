@@ -75,6 +75,14 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
         "required": false
       },
       {
+        "detail": "openh264enc (H.264 recording)",
+        "hint": null,
+        "id": "gst.openh264enc",
+        "neededFor": [],
+        "ok": true,
+        "required": false
+      },
+      {
         "detail": "h264parse (H.264 recording)",
         "hint": null,
         "id": "gst.h264parse",
@@ -378,6 +386,7 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "  ok        gst.compositor         compositor (live preview)",
     "  ok        gst.videorate          videorate (constant frame rate)",
     "  ok        gst.x264enc            x264enc (H.264 recording)",
+    "  ok        gst.openh264enc        openh264enc (H.264 recording)",
     "  ok        gst.h264parse          h264parse (H.264 recording)",
     "  ok        gst.matroskamux        matroskamux (MKV files)",
     "  ok        gst.flacenc            flacenc (lossless audio)",

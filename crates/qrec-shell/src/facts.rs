@@ -561,11 +561,13 @@ impl FactsGatherer {
                 Err(e) => warnings.push(format!("audio devices: {e}")),
             }
         }
-        if need.video_sources {
+        if need.video_sources || need.screens {
             match self.sources.screens() {
                 Ok(screens) => facts.screens = screens,
                 Err(e) => warnings.push(format!("screens: {e}")),
             }
+        }
+        if need.video_sources {
             match self.sources.cameras() {
                 Ok(cameras) => facts.cameras = cameras,
                 Err(e) => warnings.push(format!("cameras: {e}")),
@@ -1408,11 +1410,20 @@ mod tests {
             none.facts,
             "nothing else is gathered"
         );
+        // The screens alone (their sizes for a plan OpenH264 may record):
+        // the cameras aren't looked for.
+        let screens = gatherer.gather(&FactsNeeded {
+            screens: true,
+            ..FactsNeeded::default()
+        });
+        assert_eq!(screens.facts.screens.len(), 2);
+        assert!(screens.facts.cameras.is_empty());
 
         let all = gatherer.gather(&FactsNeeded {
             folder_name: true,
             audio_devices: true,
             video_sources: true,
+            screens: true,
             out: Some("exports/../x.mp4".into()),
             take_files: vec![TakeId::numbered(2)],
             take_dirs: true,

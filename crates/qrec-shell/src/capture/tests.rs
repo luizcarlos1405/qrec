@@ -247,6 +247,32 @@ fn packet_times(file: &Path) -> Vec<f64> {
     times
 }
 
+/// The packets of a file's video stream that are keyframes, by index.
+fn keyframes(file: &Path) -> Vec<usize> {
+    let out = run_tool(
+        Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "packet=flags",
+            ])
+            .args(["-of", "csv=p=0"])
+            .arg(format!("file:{}", file.display())),
+        Duration::from_secs(30),
+    );
+    assert!(out.status.success(), "{}", out.stderr);
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .enumerate()
+        .filter(|(_, flags)| flags.starts_with('K'))
+        .map(|(i, _)| i)
+        .collect()
+}
+
 /// Checks a recorded video file: H.264, CFR at 30 fps, BT.709 limited
 /// range, starting at 0; returns (frames, duration in s).
 fn check_video(file: &Path, width: u64, height: u64) -> (u64, f64) {
@@ -423,6 +449,75 @@ fn records_screens_cameras_and_audio_in_sync() {
         .and_then(|n| n.parse().ok())
         .unwrap_or_else(|| panic!("{closed}"));
     assert!(filled <= 2, "{closed}");
+}
+
+/// A take recorded with OpenH264, the encoder of a GStreamer without VA
+/// or x264enc (stock Fedora, A§9.5): its files are CFR BT.709 H.264 like
+/// x264's, in Constrained Baseline (which OpenH264's decoder plays), with
+/// a keyframe every second (`gop-size`).
+#[test]
+fn records_with_openh264_in_constrained_baseline() {
+    let _serial = serial();
+    let mut h = Harness::new();
+    let dir = h.take_dir(1);
+    let openh264 = |mut rec: VideoRecord| {
+        rec.encoder = qrec_core::capture_plan::openh264();
+        rec
+    };
+    let plan = plan(
+        1,
+        &dir,
+        vec![
+            openh264(screen("L1", "FAKE-1")),
+            openh264(camera("L2", FAKE_CAMERA)),
+        ],
+        vec![audio("A1", FAKE_MIC, "mic")],
+    );
+    h.start(&plan);
+    let Event::CaptureStarted { take, .. } = h.started() else {
+        unreachable!()
+    };
+    std::thread::sleep(Duration::from_millis(2200));
+    h.engine.stop(&take, false);
+    let (streams, timed_out, skipped) = h.stopped();
+    assert!(!timed_out);
+    assert!(
+        !skipped
+            .iter()
+            .any(|e| matches!(e, Event::StreamLost { .. })),
+        "{skipped:?}"
+    );
+    let ids: Vec<&str> = streams.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(ids, ["L1", "L2", "A1"]);
+    for (stream, (width, height)) in streams.iter().zip([(1280, 720), (640, 480)]) {
+        assert!(stream.eos, "{stream:?}");
+        let file = h.file(&stream.file);
+        let (frames, duration) = check_video(&file, width, height);
+        assert!(
+            (frames as f64 - duration * 30.0).abs() <= 2.0,
+            "{frames} frames in {duration} s"
+        );
+        assert!(frames >= 60, "{frames} frames");
+        let probed = ffprobe(&file);
+        let v = stream_of(&probed);
+        assert_eq!(v["profile"], "Constrained Baseline", "{probed}");
+        assert_eq!(v["has_b_frames"].as_u64(), Some(0), "{probed}");
+        let keys = keyframes(&file);
+        assert_eq!(keys.first(), Some(&0), "{keys:?}");
+        assert!(keys.len() >= 2, "{keys:?} in {frames} frames");
+        for pair in keys.windows(2) {
+            assert!(pair[1] - pair[0] <= 30, "keyframes {keys:?}");
+        }
+        // The core reads it as it reads any take.
+        let info = probe(&h, &stream.file, StreamKind::Video).unwrap();
+        assert_eq!(
+            (info.width, info.height),
+            (Some(width as u32), Some(height as u32))
+        );
+        assert_eq!(info.frames, Some(frames));
+    }
+    let log = fs::read_to_string(h.file("takes/take-0001/recorder.log")).unwrap();
+    assert!(log.contains("EOS written"), "{log}");
 }
 
 #[test]

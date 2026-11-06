@@ -338,19 +338,19 @@ pub(crate) fn begin_take(
     Ok((persisted.state, ordered(effects)))
 }
 
-/// VA-API was asked for explicitly but the plan records with x264.
+/// VA-API was asked for explicitly but the plan records with a software
+/// encoder (x264 or OpenH264).
 fn encoder_warning(state: &State, ctx: &Ctx, plan: &CapturePlan) -> Option<String> {
-    let pref = match state.project.recording.encoder {
-        EncoderPref::Auto => ctx.facts.config.encoder.preference,
-        explicit => explicit,
-    };
-    let x264 = plan
-        .video
-        .first()
-        .is_some_and(|v| matches!(v.encoder, VideoEncoder::X264 { .. }));
-    (pref == EncoderPref::Vaapi && x264).then(|| {
-        "VA-API recording is configured, but no VA H.264 encoder was found for the render node; recording with x264"
-            .to_owned()
+    let pref = capture_plan::encoder_pref(&state.project, &ctx.facts);
+    let software = plan.video.first().and_then(|v| match v.encoder {
+        VideoEncoder::Va { .. } => None,
+        VideoEncoder::X264 { .. } => Some("x264"),
+        VideoEncoder::OpenH264 { .. } => Some("OpenH264"),
+    })?;
+    (pref == EncoderPref::Vaapi).then(|| {
+        format!(
+            "VA-API recording is configured, but no VA H.264 encoder was found for the render node; recording with {software}"
+        )
     })
 }
 

@@ -125,11 +125,9 @@ impl Opener for GuiOpener {
         if self.config.path() == env.config.path() {
             env.config = self.config.clone();
         }
-        // The VA-API encoder is found in a probe child; never under the
-        // fake backend, which records without a GPU.
-        if !env.fake_backend {
-            env.caps.gst_factory = Some(caps::gst_factory_probe);
-        }
+        // The H.264 encoders GStreamer has are found in a probe child: the
+        // VA ones never under the fake backend, which records without a GPU.
+        env.caps.gst_probe = Some(caps::gst_probe);
         let capture = if opts.mutating && opts.host == HostKind::Gui {
             self.engine(dir, &env)
         } else {

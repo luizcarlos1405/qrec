@@ -212,6 +212,7 @@ fn identity_caps(identity: String) -> Capabilities {
         }),
         ffprobe: None,
         vaapi: None,
+        gst_h264: None,
         cores: 0,
     }
 }

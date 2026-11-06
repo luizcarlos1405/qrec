@@ -5,10 +5,10 @@ use std::collections::BTreeMap;
 
 use pretty_assertions::assert_eq;
 use qrec_core::apply::record::ENGINE_STUCK;
-use qrec_core::capture_plan::plan_files;
+use qrec_core::capture_plan::{openh264, plan_files, x264};
 use qrec_core::ctx::Ctx;
 use qrec_core::ids::{ClipId, JobId, ReqId, TakeId, TimerId};
-use qrec_core::model::{Clip, Fps, Project, StreamKind, TakeStatus};
+use qrec_core::model::{Clip, EncoderPref, Fps, Project, StreamKind, TakeStatus};
 use qrec_core::on_event::record::{EOS_TIMEOUT_REASON, recovery_probes, start_recovery};
 use qrec_core::parse::ffprobe::parse_ffprobe;
 use qrec_core::protocol::command::{Command, InsertAt, RecordModeArg};
@@ -18,7 +18,8 @@ use qrec_core::protocol::progress::ProgressPhase;
 use qrec_core::protocol::reply::{CmdResult, RecordStartedView, TakeFinalizedView};
 use qrec_core::protocol::toast::{Toast, ToastLevel, UiAction};
 use qrec_core::state::{
-    CanvasMode, ClipRef, DiscardRequest, HostKind, Job, JobKind, RecordMode, RecordPhase, State,
+    CanvasMode, ClipRef, DiscardRequest, GstH264Caps, HostKind, Job, JobKind, RecordMode,
+    RecordPhase, State, VaapiCaps,
 };
 use qrec_core::testkit::{self, ProjectBuilder};
 use qrec_core::time::frames_to_ns;
@@ -1126,6 +1127,52 @@ fn starting_capture_failed_breaks_the_take() {
     );
 }
 
+/// VA-API asked for on a machine without a VA encoder: the take records
+/// with the software encoder GStreamer has (x264 when nothing said which),
+/// and the log names it.
+#[test]
+fn a_vaapi_preference_without_va_names_the_encoder_that_records() {
+    let mut state = idle();
+    state.project.recording.encoder = EncoderPref::Vaapi;
+    let fedora = GstH264Caps {
+        x264: false,
+        openh264: true,
+    };
+    for (gst, name, encoder) in [
+        (None, "x264", x264()),
+        (Some(fedora), "OpenH264", openh264()),
+    ] {
+        state.runtime.capabilities.gst_h264 = gst;
+        let out = cmd(&state, Some("s1"), append());
+        let warned: Vec<&str> = out
+            .effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::Log {
+                    level: LogLevel::Warn,
+                    message,
+                } => Some(message.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            warned,
+            [format!(
+                "VA-API recording is configured, but no VA H.264 encoder was found for the render node; recording with {name}"
+            )]
+        );
+        let plan = out
+            .effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::StartCapture { plan } => Some(plan),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(plan.video[0].encoder, encoder);
+    }
+}
+
 /// A GStreamer element that isn't installed is a missing dependency (exit
 /// 5, A§4.8) whose hint names it, not `capture_failed`; the take is broken
 /// as for any start failure (SPEC §5.3 writes it before capture starts).
@@ -1155,6 +1202,25 @@ fn a_missing_element_is_a_missing_dependency() {
         "{hint}"
     );
 
+    // GStreamer has no H.264 encoder at all (the plan's x264 is missing):
+    // either software encoder records, so the hint names both.
+    let out = event(
+        &starting(false),
+        Event::CaptureFailed {
+            take: Some(take2()),
+            source: Some("L1".into()),
+            message: "the GStreamer element x264enc is missing (see `qrec doctor`)".into(),
+            missing: Some("x264enc".into()),
+        },
+    );
+    let err = reply_to(&out, "s1").unwrap_err();
+    assert_eq!(err.code, ErrorCode::MissingDependency);
+    let hint = err.hint.unwrap();
+    assert!(
+        hint.contains("x264enc") && hint.contains("openh264enc") && hint.contains("qrec doctor"),
+        "{hint}"
+    );
+
     // The same while a countdown runs (the live pipeline failed).
     let mut headless = idle();
     headless.runtime.host = HostKind::Headless;
@@ -1177,6 +1243,142 @@ fn a_missing_element_is_a_missing_dependency() {
         reply_to(&out, "s1").unwrap_err().code,
         ErrorCode::MissingDependency
     );
+}
+
+/// A missing software H.264 encoder's hint follows the preference and what
+/// GStreamer was found to have (A§9.5): an x264 preference names where to
+/// set auto when something else would record, and either encoder is
+/// offered only when it would record.
+#[test]
+fn a_missing_software_encoder_says_what_would_record() {
+    let fedora = Some(GstH264Caps {
+        x264: false,
+        openh264: true,
+    });
+    let nothing = Some(GstH264Caps {
+        x264: false,
+        openh264: false,
+    });
+    let intel = VaapiCaps {
+        device: "/dev/dri/renderD129".into(),
+        vendor: 0x8086,
+        ffmpeg_h264: true,
+        gst_h264_factory: Some("vah264enc".into()),
+        gst_h264_lp_factory: None,
+    };
+    // (project's encoder, config's preference, GStreamer, VA, missing, hint)
+    let cases = [
+        (
+            EncoderPref::X264,
+            EncoderPref::Auto,
+            fedora,
+            None,
+            "x264enc",
+            "the project's encoder is x264, but GStreamer has no x264enc: qrec project set \
+             --encoder auto to record with openh264enc, or install it (gst-plugins-ugly); qrec \
+             doctor names this system's packages",
+        ),
+        (
+            EncoderPref::Auto,
+            EncoderPref::X264,
+            fedora,
+            None,
+            "x264enc",
+            "the encoder preference is x264, but GStreamer has no x264enc: set it to Auto in \
+             Settings › Recording (qrec config set encoder.preference auto) to record with \
+             openh264enc, or install it (gst-plugins-ugly); qrec doctor names this system's \
+             packages",
+        ),
+        (
+            EncoderPref::X264,
+            EncoderPref::Auto,
+            nothing,
+            Some(intel),
+            "x264enc",
+            "the project's encoder is x264, but GStreamer has no x264enc: qrec project set \
+             --encoder auto to record with vah264enc, or install it (gst-plugins-ugly); qrec \
+             doctor names this system's packages",
+        ),
+        // Nothing else would record (or nobody knows): x264enc it is.
+        (
+            EncoderPref::X264,
+            EncoderPref::Auto,
+            nothing,
+            None,
+            "x264enc",
+            "the project's encoder is x264, but GStreamer has no x264enc: install it \
+             (gst-plugins-ugly); qrec doctor names this system's packages",
+        ),
+        (
+            EncoderPref::Auto,
+            EncoderPref::Auto,
+            nothing,
+            None,
+            "x264enc",
+            "GStreamer has no H.264 encoder to record with: install x264enc (gst-plugins-ugly) \
+             or openh264enc (gst-plugins-bad with OpenH264); qrec doctor names this system's \
+             packages",
+        ),
+        (
+            EncoderPref::Auto,
+            EncoderPref::Auto,
+            fedora,
+            None,
+            "openh264enc",
+            "GStreamer has no H.264 encoder to record with: install x264enc (gst-plugins-ugly) \
+             or openh264enc (gst-plugins-bad with OpenH264); qrec doctor names this system's \
+             packages",
+        ),
+        // The probe didn't answer.
+        (
+            EncoderPref::Vaapi,
+            EncoderPref::Auto,
+            None,
+            None,
+            "x264enc",
+            "GStreamer has no x264enc: install it (gst-plugins-ugly), or openh264enc \
+             (gst-plugins-bad with OpenH264), which records without it; qrec doctor names this \
+             system's packages",
+        ),
+        // x264enc went away since GStreamer had both.
+        (
+            EncoderPref::Auto,
+            EncoderPref::Auto,
+            Some(GstH264Caps {
+                x264: true,
+                openh264: true,
+            }),
+            None,
+            "x264enc",
+            "GStreamer has no x264enc: install it (gst-plugins-ugly); qrec doctor names this \
+             system's packages",
+        ),
+    ];
+    for (project_pref, config_pref, gst, vaapi, missing, hint) in cases {
+        let mut state = starting(false);
+        state.project.recording.encoder = project_pref;
+        state.runtime.capabilities.gst_h264 = gst;
+        state.runtime.capabilities.vaapi = vaapi;
+        let mut ctx = ctx_for(None);
+        ctx.facts.config.encoder.preference = config_pref;
+        let out = on_event(
+            &state,
+            &ctx,
+            Event::CaptureFailed {
+                take: Some(take2()),
+                source: Some("L1".into()),
+                message: format!("the GStreamer element {missing} is missing (see `qrec doctor`)"),
+                missing: Some(missing.into()),
+            },
+        );
+        let err = reply_to(&out, "s1").unwrap_err();
+        assert_eq!(err.code, ErrorCode::MissingDependency);
+        assert_eq!(
+            err.hint.as_deref(),
+            Some(hint),
+            "{project_pref:?} {config_pref:?} {gst:?}"
+        );
+    }
 }
 
 #[test]

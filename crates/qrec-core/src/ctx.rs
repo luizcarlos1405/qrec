@@ -194,6 +194,9 @@ pub struct FactsNeeded {
     pub audio_devices: bool,
     /// Screens and cameras.
     pub video_sources: bool,
+    /// Screens alone, without the cameras' discovery: their sizes, which
+    /// a capture plan checks when OpenH264 may record.
+    pub screens: bool,
     /// Resolve and check this output path.
     pub out: Option<String>,
     pub take_files: Vec<TakeId>,
