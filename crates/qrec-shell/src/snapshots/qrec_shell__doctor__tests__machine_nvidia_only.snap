@@ -155,16 +155,11 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
         "required": true
       },
       {
-        "detail": "no VA-API H.264 encoder: recordings use x264 on the CPU",
-        "fix": {
-          "command": null,
-          "note": "install GStreamer's VA plugin (upstream gst-plugins-bad) with apt",
-          "packages": []
-        },
-        "hint": "install GStreamer's VA plugin (upstream gst-plugins-bad) with apt",
+        "detail": "no Intel or AMD GPU: recordings use x264 on the CPU",
+        "hint": null,
         "id": "gst.vah264enc",
         "neededFor": [],
-        "ok": false,
+        "ok": true,
         "required": false
       },
       {
@@ -337,11 +332,11 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
         "required": false
       },
       {
-        "detail": "no Intel or AMD render node: recordings and exports use x264 on the CPU",
-        "hint": "Qrec never picks an NVIDIA node by itself; set encoder.vaapi_device in ~/.config/qrec/config.toml to use one",
+        "detail": "no Intel or AMD GPU (/dev/dri/renderD128: NVIDIA, which has no VA-API encoder): recordings and exports use x264 on the CPU",
+        "hint": null,
         "id": "vaapi",
         "neededFor": [],
-        "ok": false,
+        "ok": true,
         "required": false
       }
     ],
@@ -368,14 +363,26 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     },
     "va": {
       "device": null,
+      "deviceId": null,
+      "driverDirs": [
+        "/usr/lib/x86_64-linux-gnu/dri"
+      ],
+      "driverFile": null,
       "expectedDriver": null,
+      "exportDriver": null,
       "ffmpegH264": null,
       "gstEncoders": [],
       "gstFactory": null,
+      "installedDrivers": [
+        "i965",
+        "iHD",
+        "radeonsi"
+      ],
       "libvaDriverName": null,
       "nodes": [
         {
-          "driver": null,
+          "deviceId": 11704,
+          "driver": "nvidia",
           "path": "/dev/dri/renderD128",
           "vendor": 4318,
           "vendorName": "NVIDIA"
@@ -407,8 +414,7 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "  ok        gst.flacdec            flacdec (the takes' FLAC audio)",
     "  ok        gst.gtk4paintablesink  gtk4paintablesink (the GUI preview)",
     "  ok        gst.h264dec            avdec_h264, openh264dec (the editor's preview of the takes)",
-    "  optional  gst.vah264enc          no VA-API H.264 encoder: recordings use x264 on the CPU",
-    "                                   → install GStreamer's VA plugin (upstream gst-plugins-bad) with apt",
+    "  ok        gst.vah264enc          no Intel or AMD GPU: recordings use x264 on the CPU",
     "  ok        ges                    GStreamer Editing Services",
     "  ok        ffmpeg                 ffmpeg version 8.1.2 (/nix/bin/ffmpeg)",
     "  ok        ffprobe                ffprobe version 8.1.2 (/nix/bin/ffprobe)",
@@ -426,10 +432,9 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "  ok        portal.registry        host app registry v1",
     "  ok        pactl                  pactl 17.0 (/nix/bin/pactl)",
     "  ok        sound.server           PulseAudio (on PipeWire 1.6.6)",
-    "  optional  vaapi                  no Intel or AMD render node: recordings and exports use x264 on the CPU",
-    "                                   → Qrec never picks an NVIDIA node by itself; set encoder.vaapi_device in ~/.config/qrec/config.toml to use one",
+    "  ok        vaapi                  no Intel or AMD GPU (/dev/dri/renderD128: NVIDIA, which has no VA-API encoder): recordings and exports use x264 on the CPU",
     "",
-    "VA-API render nodes: /dev/dri/renderD128 (NVIDIA)",
+    "VA-API render nodes: /dev/dri/renderD128 (NVIDIA 0x2db8)",
     "",
     "Global shortcuts for GNOME:",
     "",

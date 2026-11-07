@@ -391,14 +391,25 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     },
     "va": {
       "device": "/dev/dri/renderD128",
+      "deviceId": 29663,
+      "driverDirs": [
+        "/usr/lib64/dri"
+      ],
+      "driverFile": "/usr/lib64/dri/radeonsi_drv_video.so",
       "expectedDriver": "radeonsi",
+      "exportDriver": null,
       "ffmpegH264": false,
       "gstEncoders": [],
       "gstFactory": null,
+      "installedDrivers": [
+        "iHD",
+        "radeonsi"
+      ],
       "libvaDriverName": "radeonsi",
       "nodes": [
         {
-          "driver": null,
+          "deviceId": 29663,
+          "driver": "amdgpu",
           "path": "/dev/dri/renderD128",
           "vendor": 4098,
           "vendorName": "AMD"
@@ -454,7 +465,8 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "  optional  vaapi                  /dev/dri/renderD128 (AMD, auto) · LIBVA_DRIVER_NAME=radeonsi · ffmpeg h264_vaapi failed",
     "                                   → sudo dnf install mesa-va-drivers-freeworld (it comes from RPM Fusion, since Fedora's own Mesa doesn't encode H.264: enable that repository first; exports use libopenh264 meanwhile)",
     "",
-    "VA-API render nodes: /dev/dri/renderD128 (AMD)",
+    "VA-API render nodes: /dev/dri/renderD128 (AMD 0x73df)",
+    "  libva driver radeonsi: /usr/lib64/dri/radeonsi_drv_video.so",
     "  the h264_vaapi check failed: ffmpeg exited with status 1",
     "",
     "Global shortcuts for GNOME:",

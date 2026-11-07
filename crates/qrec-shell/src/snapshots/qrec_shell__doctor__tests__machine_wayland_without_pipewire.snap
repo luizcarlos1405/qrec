@@ -372,22 +372,34 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     },
     "va": {
       "device": "/dev/dri/renderD129",
+      "deviceId": 32081,
+      "driverDirs": [
+        "/run/opengl-driver/lib/dri"
+      ],
+      "driverFile": "/run/opengl-driver/lib/dri/iHD_drv_video.so",
       "expectedDriver": "iHD",
+      "exportDriver": null,
       "ffmpegH264": true,
       "gstEncoders": [
         "vah264enc"
       ],
       "gstFactory": "vah264enc",
+      "installedDrivers": [
+        "i965",
+        "iHD"
+      ],
       "libvaDriverName": "iHD",
       "nodes": [
         {
-          "driver": null,
+          "deviceId": 11704,
+          "driver": "nvidia",
           "path": "/dev/dri/renderD128",
           "vendor": 4318,
           "vendorName": "NVIDIA"
         },
         {
-          "driver": null,
+          "deviceId": 32081,
+          "driver": "i915",
           "path": "/dev/dri/renderD129",
           "vendor": 32902,
           "vendorName": "Intel"
@@ -442,7 +454,8 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "  ok        sound.server           pulseaudio",
     "  ok        vaapi                  /dev/dri/renderD129 (Intel, auto) · LIBVA_DRIVER_NAME=iHD · ffmpeg h264_vaapi works",
     "",
-    "VA-API render nodes: /dev/dri/renderD128 (NVIDIA), /dev/dri/renderD129 (Intel)",
+    "VA-API render nodes: /dev/dri/renderD128 (NVIDIA 0x2db8), /dev/dri/renderD129 (Intel 0x7d51)",
+    "  libva driver iHD: /run/opengl-driver/lib/dri/iHD_drv_video.so",
     "  set LIBVA_DRIVER_NAME=iHD (was nvidia)",
     "",
     "Global shortcuts for Hyprland (paste into ~/.config/hypr/hyprland.conf):",

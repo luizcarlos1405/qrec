@@ -8,9 +8,14 @@
 //! 1. resolves the effective VA render node (project `recording.vaapiDevice`
 //!    → config `encoder.vaapi_device` → the first Intel (`0x8086`) or AMD
 //!    (`0x1002`) node; never NVIDIA automatically),
-//! 2. sets `LIBVA_DRIVER_NAME` from that node's PCI vendor (`iHD`,
-//!    `radeonsi`), overriding an inherited mismatching value, and leaves it
-//!    alone only when an NVIDIA node is explicitly configured,
+//! 2. sets `LIBVA_DRIVER_NAME` for that node ([`libva_driver_for`]): AMD's
+//!    `radeonsi`; for Intel `i965` on the chips only it drives (older than
+//!    Broadwell, and Cherry View/Braswell: [`intel_i965_only`]), else `iHD`
+//!    where its file is installed, else `i965` where its is (the files
+//!    libva would load, [`VaDrivers`]: a stat each, never opening a
+//!    device), else `iHD`. It overrides an inherited value of another
+//!    vendor, and leaves the variable alone only when an NVIDIA node is
+//!    explicitly configured,
 //! 3. for the GUI, when an NVIDIA device exists and isn't the chosen one,
 //!    points `__EGL_VENDOR_LIBRARY_FILENAMES` at Mesa and
 //!    `VK_DRIVER_FILES`/`VK_ICD_FILENAMES` at the chosen vendor's Vulkan
@@ -34,7 +39,18 @@
 //! ([`Probe::H264Encoders`]): the VA ones bound to a node for
 //! `VaapiCaps.gst_h264_factory` and `gst_h264_lp_factory`
 //! ([`va_h264_factories_for`], by `device-path`, never by name), and
-//! x264enc and openh264enc for `Capabilities.gst_h264`.
+//! x264enc and openh264enc for `Capabilities.gst_h264`. One child loads the
+//! host's driver ([`child_libva_driver`]), so GStreamer's registry, which
+//! notes `LIBVA_DRIVER_NAME` for the VA plugin, stays the host's. No other
+//! driver is tried: GStreamer's VA plugin registers no encoder with `i965`
+//! (blocklisted unless `GST_VA_ALL_DRIVERS` is set), so on the chips only
+//! `i965` drives, recordings are the CPU's. An NVIDIA node is never probed:
+//! NVIDIA has no VA-API encoder.
+//!
+//! ffmpeg's `h264_vaapi` does encode with `i965`. A VA export loads the
+//! driver its check passed with ([`export_libva_driver_for`]): the node's,
+//! or Intel's other one where capability detection found only that one
+//! encodes there (`capabilities.json` keeps it, [`VaDriverPick`]).
 //!
 //! ```ignore
 //! fn main() {
@@ -45,6 +61,7 @@
 //! }
 //! ```
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -52,12 +69,30 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use qrec_core::state::GstH264Caps;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// PCI vendor ids.
 pub const VENDOR_INTEL: u16 = 0x8086;
 pub const VENDOR_AMD: u16 = 0x1002;
 pub const VENDOR_NVIDIA: u16 = 0x10de;
+/// The virtual machines' GPUs: virtio-gpu (QEMU/KVM), VMware's SVGA and
+/// QXL (Red Hat's QEMU devices).
+pub const VENDOR_VIRTIO: u16 = 0x1af4;
+pub const VENDOR_VMWARE: u16 = 0x15ad;
+pub const VENDOR_QXL: u16 = 0x1b36;
+
+/// Intel's libva drivers: intel-media-driver's (Broadwell and newer) and
+/// intel-vaapi-driver's (older chips, and Cherry View and Braswell; it
+/// drives Intel up to Comet Lake).
+pub const DRIVER_IHD: &str = "iHD";
+pub const DRIVER_I965: &str = "i965";
+/// AMD's libva drivers (Mesa): `radeonsi`, and `r600` for cards older than
+/// GCN, which Qrec keeps when it is inherited.
+pub const DRIVER_RADEONSI: &str = "radeonsi";
+pub const DRIVER_R600: &str = "r600";
+/// The libva drivers Qrec loads or keeps, whose files [`VaDrivers`] looks
+/// for.
+pub const QREC_LIBVA_DRIVERS: [&str; 4] = [DRIVER_IHD, DRIVER_I965, DRIVER_RADEONSI, DRIVER_R600];
 
 /// The variable libva reads to pick its driver.
 pub const LIBVA_DRIVER_NAME: &str = "LIBVA_DRIVER_NAME";
@@ -79,37 +114,287 @@ pub struct RenderNode {
     pub path: String,
     /// PCI vendor id from sysfs; `None` when unreadable.
     pub vendor: Option<u16>,
+    /// PCI device id from sysfs (`0x7d51`), which tells an Intel chip's
+    /// generation; `None` when unreadable (a GPU that isn't on PCI).
+    pub device_id: Option<u16>,
     /// Kernel driver (`i915`, `xe`, `amdgpu`, `nvidia`), from sysfs.
     pub driver: Option<String>,
 }
 
-/// `Intel`, `AMD`, `NVIDIA` or the hex id.
+/// `Intel`, `AMD`, `NVIDIA`, a virtual machine's GPU (`virtio-gpu`,
+/// `VMware`, `QXL`) or the hex id.
 pub fn vendor_name(vendor: u16) -> String {
     match vendor {
         VENDOR_INTEL => "Intel".into(),
         VENDOR_AMD => "AMD".into(),
         VENDOR_NVIDIA => "NVIDIA".into(),
+        VENDOR_VIRTIO => "virtio-gpu".into(),
+        VENDOR_VMWARE => "VMware".into(),
+        VENDOR_QXL => "QXL".into(),
         other => format!("{other:#06x}"),
     }
 }
 
-/// The libva driver for a vendor: `iHD` for Intel, `radeonsi` for AMD.
-pub fn libva_driver_for(vendor: u16) -> Option<&'static str> {
+/// Whether a vendor id is a virtual machine's GPU.
+pub fn is_virtual_gpu(vendor: u16) -> bool {
+    matches!(vendor, VENDOR_VIRTIO | VENDOR_VMWARE | VENDOR_QXL)
+}
+
+/// Whether only Intel's i965 driver drives an Intel GPU, by its PCI device
+/// id: the chips older than Broadwell (G45 to Haswell, Bay Trail
+/// included), where iHD starts, and the Broadwell-generation Atoms Cherry
+/// View and Braswell, which iHD doesn't drive either (intel-vaapi-driver's
+/// own lists of them).
+pub fn intel_i965_only(device_id: u16) -> bool {
+    // Haswell's ids: these low bytes under 0x04, 0x0a, 0x0c and 0x0d.
+    const HASWELL: [u8; 15] = [
+        0x02, 0x06, 0x0a, 0x0b, 0x0e, 0x12, 0x16, 0x1a, 0x1b, 0x1e, 0x22, 0x26, 0x2a, 0x2b, 0x2e,
+    ];
+    let [high, low] = device_id.to_be_bytes();
+    match high {
+        0x04 | 0x0a | 0x0c | 0x0d => HASWELL.contains(&low),
+        _ => matches!(
+            device_id,
+            // G45/G43/G41, GM45, Q45/Q43, B43.
+            0x2a42 | 0x2e02 | 0x2e12 | 0x2e22 | 0x2e32 | 0x2e42 | 0x2e92
+            // Ironlake.
+            | 0x0042 | 0x0046
+            // Sandy Bridge.
+            | 0x0102 | 0x0106 | 0x010a | 0x0112 | 0x0116 | 0x0122 | 0x0126
+            // Ivy Bridge.
+            | 0x0152 | 0x0156 | 0x015a | 0x0162 | 0x0166 | 0x016a
+            // Bay Trail.
+            | 0x0f31 | 0x0f32 | 0x0f33 | 0x0155 | 0x0157
+            // Cherry View and Braswell.
+            | 0x22b0 | 0x22b1 | 0x22b2 | 0x22b3
+        ),
+    }
+}
+
+/// The libva driver a node of `vendor` (and PCI `device_id`) loads, from
+/// the driver files `drivers` found (A§8.10): for Intel `i965` on the chips
+/// only it drives ([`intel_i965_only`]), else `iHD` where its file is, else
+/// `i965` where its is, else `iHD`; for AMD `radeonsi`. `None` for any
+/// other vendor: NVIDIA has no VA-API encoder, and a virtual machine's GPU
+/// isn't one Qrec picks.
+pub fn libva_driver_for(
+    vendor: u16,
+    device_id: Option<u16>,
+    drivers: &VaDrivers,
+) -> Option<&'static str> {
     match vendor {
-        VENDOR_INTEL => Some("iHD"),
-        VENDOR_AMD => Some("radeonsi"),
+        VENDOR_INTEL if device_id.is_some_and(intel_i965_only) => Some(DRIVER_I965),
+        VENDOR_INTEL if !drivers.has(DRIVER_IHD) && drivers.has(DRIVER_I965) => Some(DRIVER_I965),
+        VENDOR_INTEL => Some(DRIVER_IHD),
+        VENDOR_AMD => Some(DRIVER_RADEONSI),
         _ => None,
     }
 }
 
+/// Intel's other libva driver: `i965` for `iHD` and back.
+pub fn other_intel_driver(driver: &str) -> Option<&'static str> {
+    match driver {
+        DRIVER_IHD => Some(DRIVER_I965),
+        DRIVER_I965 => Some(DRIVER_IHD),
+        _ => None,
+    }
+}
+
+/// The driver to run ffmpeg's h264_vaapi check with again where it failed
+/// with `failed` on `node` (`caps::detect`, `qrec doctor`): on an Intel
+/// node, Intel's other driver when its file is installed and it drives the
+/// chip (`iHD` doesn't drive those only `i965` does). Never on another
+/// vendor. Only ffmpeg's check: GStreamer's VA plugin registers no encoder
+/// with `i965`, so its probe is never run again.
+pub fn retry_driver(node: &RenderNode, failed: &str, drivers: &VaDrivers) -> Option<&'static str> {
+    if node.vendor != Some(VENDOR_INTEL) {
+        return None;
+    }
+    let i965_only = node.device_id.is_some_and(intel_i965_only);
+    other_intel_driver(failed)
+        .filter(|other| drivers.has(other))
+        .filter(|other| !(*other == DRIVER_IHD && i965_only))
+}
+
 /// Whether an inherited `LIBVA_DRIVER_NAME` already fits the vendor (the
 /// legacy drivers count: `i965` for old Intel, `r600` for old AMD).
-fn driver_fits_vendor(driver: &str, vendor: u16) -> bool {
+pub fn driver_fits_vendor(driver: &str, vendor: u16) -> bool {
     match vendor {
-        VENDOR_INTEL => matches!(driver, "iHD" | "i965"),
-        VENDOR_AMD => matches!(driver, "radeonsi" | "r600"),
+        VENDOR_INTEL => matches!(driver, DRIVER_IHD | DRIVER_I965),
+        VENDOR_AMD => matches!(driver, DRIVER_RADEONSI | DRIVER_R600),
         _ => false,
     }
+}
+
+/// The libva driver files Qrec's drivers ([`QREC_LIBVA_DRIVERS`]) have on
+/// this machine: `<name>_drv_video.so` in the directories libva loads them
+/// from. Found with a stat each: no driver, and no device, is opened.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VaDrivers {
+    /// The directories libva looks in: `LIBVA_DRIVERS_PATH`'s when it is
+    /// set (libva then looks nowhere else), else the standard ones that
+    /// exist ([`standard_libva_dirs`]).
+    pub dirs: Vec<PathBuf>,
+    /// Each driver found, by name (`iHD`), with its file: the first
+    /// directory's that has one.
+    pub found: BTreeMap<String, PathBuf>,
+}
+
+impl VaDrivers {
+    /// Looks in `LIBVA_DRIVERS_PATH`'s directories (`libva_drivers_path`,
+    /// colon-separated, absolute ones only), else in the standard ones.
+    pub fn new(libva_drivers_path: Option<&str>) -> Self {
+        let dirs = match libva_drivers_path.filter(|p| !p.trim().is_empty()) {
+            Some(path) => path
+                .split(':')
+                .filter(|d| d.starts_with('/'))
+                .map(PathBuf::from)
+                .collect(),
+            None => standard_libva_dirs()
+                .into_iter()
+                .filter(|d| d.is_dir())
+                .collect(),
+        };
+        Self::scan(dirs)
+    }
+
+    /// This process's (`LIBVA_DRIVERS_PATH`).
+    pub fn from_process() -> Self {
+        Self::new(std::env::var("LIBVA_DRIVERS_PATH").ok().as_deref())
+    }
+
+    /// Qrec's driver files in `dirs`.
+    pub fn scan(mut dirs: Vec<PathBuf>) -> Self {
+        dirs.dedup();
+        let found = QREC_LIBVA_DRIVERS
+            .iter()
+            .filter_map(|name| {
+                dirs.iter()
+                    .map(|dir| dir.join(format!("{name}_drv_video.so")))
+                    .find(|file| file.is_file())
+                    .map(|file| ((*name).to_owned(), file))
+            })
+            .collect();
+        Self { dirs, found }
+    }
+
+    /// The file of the driver `name`, when it is installed.
+    pub fn file(&self, name: &str) -> Option<&Path> {
+        self.found.get(name).map(PathBuf::as_path)
+    }
+
+    pub fn has(&self, name: &str) -> bool {
+        self.found.contains_key(name)
+    }
+}
+
+/// Where distributions install libva's drivers, in libva's own order where
+/// it searches several: NixOS's `/run/opengl-driver/lib/dri`; Fedora's
+/// RPM Fusion directories (`dri-nonfree`, `dri-freeworld`), then
+/// `/usr/lib64/dri` (Fedora, openSUSE); Debian's and Ubuntu's
+/// `/usr/lib/<arch>-linux-gnu/dri`; `/usr/lib/dri` (Arch, Alpine, Void);
+/// Gentoo's `va/drivers`; and `/usr/local/lib/dri` (built from source).
+pub fn standard_libva_dirs() -> Vec<PathBuf> {
+    [
+        "/run/opengl-driver/lib/dri".to_owned(),
+        "/usr/lib64/dri-nonfree".to_owned(),
+        "/usr/lib64/dri-freeworld".to_owned(),
+        "/usr/lib64/dri".to_owned(),
+        format!("/usr/lib/{}-linux-gnu/dri", std::env::consts::ARCH),
+        "/usr/lib/dri".to_owned(),
+        "/usr/lib64/va/drivers".to_owned(),
+        "/usr/lib/va/drivers".to_owned(),
+        "/usr/local/lib/dri".to_owned(),
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .collect()
+}
+
+/// The libva driver VA exports load on a node where ffmpeg's h264_vaapi
+/// check failed with the node's own ([`child_libva_driver`]) and passed
+/// with Intel's other one ([`retry_driver`]): `capabilities.json`'s
+/// `exportDriver`, written by `caps::detect`. [`export_libva_driver`] uses
+/// it while the node and its PCI device id are the same and its file is
+/// installed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaDriverPick {
+    /// The render node (`/dev/dri/renderD128`), as sysfs lists it.
+    pub device: String,
+    /// Its PCI device id when it was checked.
+    pub device_id: Option<u16>,
+    /// `i965` or `iHD`.
+    pub driver: String,
+}
+
+impl VaDriverPick {
+    /// It was made for `node`, the same GPU.
+    pub fn is_for(&self, node: &RenderNode) -> bool {
+        self.device == node.path && self.device_id == node.device_id
+    }
+}
+
+/// The `LIBVA_DRIVER_NAME` a child process that opens `node` gets (a GPU
+/// probe, the h264_vaapi check): `inherited`, this process's, when it fits
+/// the node's vendor (`main()` pinned it: [`plan_gpu_env`]), else the
+/// node's ([`libva_driver_for`]). `None` for NVIDIA and other vendors: the
+/// child keeps the inherited value.
+pub fn child_libva_driver(
+    node: &RenderNode,
+    inherited: Option<&str>,
+    drivers: &VaDrivers,
+) -> Option<String> {
+    let vendor = node.vendor?;
+    match inherited {
+        Some(driver) if driver_fits_vendor(driver, vendor) => Some(driver.to_owned()),
+        _ => libva_driver_for(vendor, node.device_id, drivers).map(str::to_owned),
+    }
+}
+
+/// The `LIBVA_DRIVER_NAME` of a VA export on `node`: the one its h264_vaapi
+/// check passed with. That is the node's ([`child_libva_driver`]), unless
+/// capability detection found only Intel's other driver encodes there
+/// (`pick`): then that one, while the pick is for this node and GPU, fits
+/// its vendor and its file is installed. `None` for NVIDIA and other
+/// vendors.
+pub fn export_libva_driver(
+    node: &RenderNode,
+    inherited: Option<&str>,
+    drivers: &VaDrivers,
+    pick: Option<&VaDriverPick>,
+) -> Option<String> {
+    let vendor = node.vendor?;
+    match pick {
+        Some(pick)
+            if pick.is_for(node)
+                && driver_fits_vendor(&pick.driver, vendor)
+                && drivers.has(&pick.driver) =>
+        {
+            Some(pick.driver.clone())
+        }
+        _ => child_libva_driver(node, inherited, drivers),
+    }
+}
+
+/// [`export_libva_driver`] for a device path on this machine: its render
+/// node from sysfs, this process's `LIBVA_DRIVER_NAME`, libva's driver
+/// files and the pick in Qrec's capabilities cache (read now: the session's
+/// detection wrote it before any export). `None` when the path is no
+/// render node of a known vendor.
+pub fn export_libva_driver_for(device: &str) -> Option<String> {
+    let nodes = render_nodes();
+    let node = node_for(device, &nodes)?;
+    let inherited = std::env::var(LIBVA_DRIVER_NAME).ok();
+    let pick = crate::paths::UserDirs::resolve(&crate::paths::Env::from_process())
+        .ok()
+        .and_then(|dirs| crate::caps::read_export_driver(&dirs.capabilities_cache()));
+    export_libva_driver(
+        node,
+        inherited.as_deref(),
+        &VaDrivers::from_process(),
+        pick.as_ref(),
+    )
 }
 
 /// The render nodes listed in `sys_class_drm` (`/sys/class/drm`), as paths
@@ -124,9 +409,11 @@ pub fn scan_render_nodes(sys_class_drm: &Path, dev_dri: &Path) -> Vec<RenderNode
             let name = entry.file_name().into_string().ok()?;
             let number: u32 = name.strip_prefix("renderD")?.parse().ok()?;
             let device = entry.path().join("device");
-            let vendor = fs::read_to_string(device.join("vendor"))
-                .ok()
-                .and_then(|text| parse_hex_u16(text.trim()));
+            let hex = |file: &str| {
+                fs::read_to_string(device.join(file))
+                    .ok()
+                    .and_then(|text| parse_hex_u16(text.trim()))
+            };
             let driver = fs::read_link(device.join("driver"))
                 .ok()
                 .and_then(|link| link.file_name().map(|n| n.to_string_lossy().into_owned()));
@@ -135,7 +422,8 @@ pub fn scan_render_nodes(sys_class_drm: &Path, dev_dri: &Path) -> Vec<RenderNode
                 number,
                 RenderNode {
                     path,
-                    vendor,
+                    vendor: hex("vendor"),
+                    device_id: hex("device"),
                     driver,
                 },
             ))
@@ -215,7 +503,7 @@ pub fn effective_va_device(
 
 /// The node a configured path refers to: the same path, or the same file
 /// after resolving symlinks (`/dev/dri/by-path/…-render`).
-fn node_for<'a>(device: &str, nodes: &'a [RenderNode]) -> Option<&'a RenderNode> {
+pub fn node_for<'a>(device: &str, nodes: &'a [RenderNode]) -> Option<&'a RenderNode> {
     if let Some(node) = nodes.iter().find(|n| n.path == device) {
         return Some(node);
     }
@@ -256,6 +544,9 @@ pub struct GpuEnvInputs<'a> {
     pub mesa_egl_vendor: Option<String>,
     /// The chosen vendor's Vulkan driver manifest, if found.
     pub vulkan_icd: Option<String>,
+    /// The libva driver the chosen node needs ([`libva_driver_for`]: its
+    /// vendor and generation, and the driver files).
+    pub va_driver: Option<&'a str>,
 }
 
 /// Decides which variables to set (pure; A§8.10).
@@ -275,7 +566,7 @@ pub fn plan_gpu_env(inputs: &GpuEnvInputs<'_>) -> GpuEnvPlan {
                 "{} is an NVIDIA node and was configured explicitly; LIBVA_DRIVER_NAME untouched",
                 choice.device
             )),
-            Some(vendor) => match libva_driver_for(vendor) {
+            Some(vendor) => match inputs.va_driver {
                 None => plan.notes.push(format!(
                     "no known libva driver for vendor {} ({}); LIBVA_DRIVER_NAME untouched",
                     vendor_name(vendor),
@@ -283,15 +574,16 @@ pub fn plan_gpu_env(inputs: &GpuEnvInputs<'_>) -> GpuEnvPlan {
                 )),
                 Some(driver) => {
                     let previous = inherited(LIBVA_DRIVER_NAME);
-                    if previous
+                    // An inherited value stays when it is right, or the same
+                    // vendor's other driver (set by the user).
+                    if !previous
                         .as_deref()
                         .is_some_and(|p| driver_fits_vendor(p, vendor))
                     {
-                        // Already right (or a legacy driver of the same vendor).
-                    } else {
                         if let Some(previous) = &previous {
                             plan.notes.push(format!(
-                                "overriding inherited LIBVA_DRIVER_NAME={previous}: {} is {}, so {driver}",
+                                "overriding inherited LIBVA_DRIVER_NAME={previous}: {} is {}, so \
+                                 {driver}",
                                 choice.device,
                                 vendor_name(vendor)
                             ));
@@ -665,6 +957,12 @@ pub fn prepare_gpu_env(inputs: &GpuInputs) -> GpuReport {
     );
     let data_dirs = graphics_data_dirs(std::env::var("XDG_DATA_DIRS").ok().as_deref());
     let chosen_vendor = choice.as_ref().and_then(|c| c.vendor);
+    let va_driver = choice
+        .as_ref()
+        .and_then(|c| node_for(&c.device, &nodes))
+        .and_then(|node| {
+            libva_driver_for(node.vendor?, node.device_id, &VaDrivers::from_process())
+        });
     let env = |key: &str| std::env::var(key).ok();
     let plan = plan_gpu_env(&GpuEnvInputs {
         choice: choice.as_ref(),
@@ -673,6 +971,7 @@ pub fn prepare_gpu_env(inputs: &GpuInputs) -> GpuReport {
         env: &env,
         mesa_egl_vendor: find_mesa_egl_vendor(&data_dirs),
         vulkan_icd: chosen_vendor.and_then(|v| find_vulkan_icd(&data_dirs, v)),
+        va_driver,
     });
     let gst = plan_gst_env(&env);
     let mut changes = plan.changes;
@@ -881,7 +1180,7 @@ impl Probe {
 }
 
 /// What a probe child prints (one JSON line on stdout).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProbeAnswer {
     /// The `va*h264enc` bound to the node, if any.
@@ -899,9 +1198,9 @@ pub struct ProbeAnswer {
 /// **Call first thing in `main()`** (before [`prepare_gpu_env`]): when this
 /// process was started as a probe child ([`PROBE_ENV`]), runs the probe,
 /// prints its [`ProbeAnswer`] and exits; otherwise returns at once. The
-/// parent already gave the child its `LIBVA_DRIVER_NAME`: one that fits
-/// the probed node's vendor, or its own without a node
-/// ([`run_probe_child`]).
+/// parent already gave the child its `LIBVA_DRIVER_NAME`: the probed
+/// node's ([`child_libva_driver`]: the parent's own when it fits), or the
+/// parent's own without a node ([`run_probe_child`]).
 pub fn run_probe_if_requested() {
     let Some(value) = std::env::var_os(PROBE_ENV) else {
         return;
@@ -959,16 +1258,71 @@ fn run_probe(probe: &Probe) -> (ProbeAnswer, i32) {
 }
 
 /// Runs `probe` in a child `exe` (the `qrec` binary: `std::env::current_exe()`)
-/// that calls [`run_probe_if_requested`], with a `LIBVA_DRIVER_NAME` that
-/// fits the probed node's vendor: this process's, which `main()` pinned,
-/// when it does, else the vendor's (`probe_libva_driver`); without a node
-/// the child keeps this process's. stdin is null, stdout goes to a temp
-/// file (no pipe to stall), stderr to `log` (or nowhere); the child gets
-/// its own process group, which is killed (SIGTERM, then SIGKILL after
-/// 2 s) when it outlives `timeout`. Never waits longer than `timeout` + 4 s.
+/// that calls [`run_probe_if_requested`], with the probed node's
+/// `LIBVA_DRIVER_NAME` ([`child_libva_driver`]: this process's, which
+/// `main()` pinned, when it fits the node's vendor, else the node's), so
+/// the child loads the driver the host records with and GStreamer's
+/// registry, which notes the variable for the VA plugin, isn't rescanned
+/// and rewritten by the child and again by the host each time one of them
+/// starts. One child: no other driver is tried, since GStreamer's VA
+/// plugin registers no encoder with `i965` (blocklisted unless
+/// `GST_VA_ALL_DRIVERS` is set) and a second driver would rewrite that
+/// registry. Without a node the child keeps this process's. An NVIDIA node
+/// is refused: NVIDIA has no VA-API encoder (A§8.10).
+///
+/// stdin is null, stdout goes to a temp file (no pipe to stall), stderr to
+/// `log` (or nowhere); the child gets its own process group, which is
+/// killed (SIGTERM, then SIGKILL after 2 s) when it outlives `timeout`.
+/// Never waits longer than `timeout` + 4 s.
 pub fn run_probe_child(
     exe: &Path,
     probe: &Probe,
+    log: Option<&Path>,
+    timeout: Duration,
+) -> Result<ProbeAnswer, String> {
+    let nodes = render_nodes();
+    let node = probe.device().and_then(|device| node_for(device, &nodes));
+    let inherited = std::env::var(LIBVA_DRIVER_NAME).ok();
+    let drivers = VaDrivers::from_process();
+    probe_node(
+        exe,
+        probe,
+        node,
+        inherited.as_deref(),
+        &drivers,
+        log,
+        timeout,
+    )
+}
+
+/// [`run_probe_child`] on `node` (the probe's device as sysfs lists it),
+/// with this process's `LIBVA_DRIVER_NAME` (`inherited`) and libva's
+/// driver files (`drivers`).
+fn probe_node(
+    exe: &Path,
+    probe: &Probe,
+    node: Option<&RenderNode>,
+    inherited: Option<&str>,
+    drivers: &VaDrivers,
+    log: Option<&Path>,
+    timeout: Duration,
+) -> Result<ProbeAnswer, String> {
+    if let Some(node) = node.filter(|n| n.vendor == Some(VENDOR_NVIDIA)) {
+        return Err(format!(
+            "{} is an NVIDIA node, which is never probed: NVIDIA has no VA-API encoder",
+            node.path
+        ));
+    }
+    let driver = node.and_then(|n| child_libva_driver(n, inherited, drivers));
+    spawn_probe(exe, probe, driver.as_deref(), log, timeout)
+}
+
+/// One probe child, given `driver` as its `LIBVA_DRIVER_NAME` (else it
+/// keeps this process's).
+fn spawn_probe(
+    exe: &Path,
+    probe: &Probe,
+    driver: Option<&str>,
     log: Option<&Path>,
     timeout: Duration,
 ) -> Result<ProbeAnswer, String> {
@@ -1006,15 +1360,8 @@ pub fn run_probe_child(
             Ok(())
         });
     }
-    if let Some(device) = probe.device() {
-        let vendor = render_nodes()
-            .into_iter()
-            .find(|n| n.path == device)
-            .and_then(|n| n.vendor);
-        let inherited = std::env::var(LIBVA_DRIVER_NAME).ok();
-        if let Some(driver) = vendor.and_then(|v| probe_libva_driver(inherited.as_deref(), v)) {
-            command.env(LIBVA_DRIVER_NAME, driver);
-        }
+    if let Some(driver) = driver {
+        command.env(LIBVA_DRIVER_NAME, driver);
     }
     let mut child = command
         .spawn()
@@ -1041,21 +1388,6 @@ pub fn run_probe_child(
     match answer {
         Some(answer) => Ok(answer),
         None => Err(format!("the GPU probe failed ({status}) without an answer")),
-    }
-}
-
-/// The `LIBVA_DRIVER_NAME` to give a probe child of a `vendor` node, whose
-/// own would be `inherited` (this process's): `None`, keep it, when it
-/// already fits that vendor (`iHD` or `i965` on Intel, `radeonsi` or
-/// `r600` on AMD: [`plan_gpu_env`]'s rule, by which `main()` pinned it),
-/// else the vendor's driver ([`libva_driver_for`]). So the child loads the
-/// driver the host records with, and GStreamer's registry, which notes
-/// the variable for the VA plugin, isn't rescanned and rewritten by the
-/// child and again by the host each time one of them starts.
-fn probe_libva_driver(inherited: Option<&str>, vendor: u16) -> Option<&'static str> {
-    match inherited {
-        Some(driver) if driver_fits_vendor(driver, vendor) => None,
-        _ => libva_driver_for(vendor),
     }
 }
 
@@ -1105,15 +1437,22 @@ mod tests {
         RenderNode {
             path: format!("/dev/dri/renderD{n}"),
             vendor,
+            device_id: None,
             driver: None,
         }
     }
 
-    fn fake_sysfs(dir: &Path, nodes: &[(&str, &str, &str)]) {
-        for (name, vendor, driver) in nodes {
+    /// Render nodes in a fake `/sys/class/drm`: name, PCI vendor and device
+    /// ids (`-`: no file, as for a GPU that isn't on PCI), kernel driver.
+    fn fake_sysfs(dir: &Path, nodes: &[(&str, &str, &str, &str)]) {
+        for (name, vendor, device_id, driver) in nodes {
             let device = dir.join(name).join("device");
             fs::create_dir_all(&device).unwrap();
-            fs::write(device.join("vendor"), format!("{vendor}\n")).unwrap();
+            for (file, value) in [("vendor", vendor), ("device", device_id)] {
+                if *value != "-" {
+                    fs::write(device.join(file), format!("{value}\n")).unwrap();
+                }
+            }
             let target = dir.join("drivers").join(driver);
             fs::create_dir_all(&target).unwrap();
             std::os::unix::fs::symlink(&target, device.join("driver")).unwrap();
@@ -1123,15 +1462,25 @@ mod tests {
         fs::create_dir_all(dir.join("renderDx")).unwrap();
     }
 
+    /// A libva driver directory holding these drivers' files.
+    fn fake_drivers(dir: &Path, names: &[&str]) -> VaDrivers {
+        let dri = dir.join("dri");
+        fs::create_dir_all(&dri).unwrap();
+        for name in names {
+            fs::write(dri.join(format!("{name}_drv_video.so")), "").unwrap();
+        }
+        VaDrivers::new(Some(&dri.to_string_lossy()))
+    }
+
     #[test]
     fn scans_render_nodes_without_opening_devices() {
         let tmp = tempfile::tempdir().unwrap();
         fake_sysfs(
             tmp.path(),
             &[
-                ("renderD129", "0x8086", "i915"),
-                ("renderD128", "0x10de", "nvidia"),
-                ("renderD130", "garbage", "amdgpu"),
+                ("renderD129", "0x8086", "0x7d51", "i915"),
+                ("renderD128", "0x10de", "0x2db8", "nvidia"),
+                ("renderD130", "garbage", "-", "amdgpu"),
             ],
         );
         let nodes = scan_render_nodes(tmp.path(), Path::new("/dev/dri"));
@@ -1141,21 +1490,328 @@ mod tests {
                 RenderNode {
                     path: "/dev/dri/renderD128".into(),
                     vendor: Some(VENDOR_NVIDIA),
+                    device_id: Some(0x2db8),
                     driver: Some("nvidia".into())
                 },
                 RenderNode {
                     path: "/dev/dri/renderD129".into(),
                     vendor: Some(VENDOR_INTEL),
+                    device_id: Some(0x7d51),
                     driver: Some("i915".into())
                 },
                 RenderNode {
                     path: "/dev/dri/renderD130".into(),
                     vendor: None,
+                    device_id: None,
                     driver: Some("amdgpu".into())
                 },
             ]
         );
         assert!(scan_render_nodes(&tmp.path().join("missing"), Path::new("/dev/dri")).is_empty());
+    }
+
+    /// The machines of issue #9 by their sysfs and libva driver files: the
+    /// node `main()` picks and the `LIBVA_DRIVER_NAME` it sets there (a
+    /// stat of the driver files, never a device opened). Intel gets iHD
+    /// where it is installed, i965 on the chips only it drives (older than
+    /// Broadwell, Cherry View) or where only it is; AMD radeonsi; NVIDIA,
+    /// a virtual machine's GPU or none: nothing picked, nothing set.
+    #[test]
+    fn the_va_driver_follows_the_node_and_its_driver_files() {
+        /// A render node in sysfs: name, vendor, device id, kernel driver.
+        type Node = (&'static str, &'static str, &'static str, &'static str);
+        struct Machine {
+            name: &'static str,
+            sysfs: &'static [Node],
+            /// Its libva driver files.
+            files: &'static [&'static str],
+            /// The node picked and `LIBVA_DRIVER_NAME` set there
+            /// (`renderD128=i965`), or nothing.
+            expected: &'static str,
+        }
+        let machines = [
+            Machine {
+                name: "Haswell with only i965",
+                sysfs: &[("renderD128", "0x8086", "0x0416", "i915")],
+                files: &["i965"],
+                expected: "renderD128=i965",
+            },
+            Machine {
+                // Ubuntu installs both: iHD doesn't drive Haswell.
+                name: "Haswell with both drivers",
+                sysfs: &[("renderD128", "0x8086", "0x0416", "i915")],
+                files: &["iHD", "i965"],
+                expected: "renderD128=i965",
+            },
+            Machine {
+                // A Broadwell-generation Atom iHD doesn't drive.
+                name: "Cherry View with both drivers",
+                sysfs: &[("renderD128", "0x8086", "0x22b0", "i915")],
+                files: &["iHD", "i965"],
+                expected: "renderD128=i965",
+            },
+            Machine {
+                name: "Gen12 with iHD",
+                sysfs: &[("renderD128", "0x8086", "0x9a49", "i915")],
+                files: &["iHD", "i965"],
+                expected: "renderD128=iHD",
+            },
+            Machine {
+                // i965 doesn't drive Gen12 either, but it's what there is.
+                name: "Gen12 with only i965",
+                sysfs: &[("renderD128", "0x8086", "0x9a49", "i915")],
+                files: &["i965"],
+                expected: "renderD128=i965",
+            },
+            Machine {
+                name: "Gen12 without a VA driver",
+                sysfs: &[("renderD128", "0x8086", "0x9a49", "xe")],
+                files: &[],
+                expected: "renderD128=iHD",
+            },
+            Machine {
+                name: "AMD and NVIDIA",
+                sysfs: &[
+                    ("renderD128", "0x10de", "0x2db8", "nvidia"),
+                    ("renderD129", "0x1002", "0x73df", "amdgpu"),
+                ],
+                files: &["radeonsi"],
+                expected: "renderD129=radeonsi",
+            },
+            Machine {
+                name: "NVIDIA only",
+                sysfs: &[("renderD128", "0x10de", "0x2db8", "nvidia")],
+                files: &["iHD"],
+                expected: "",
+            },
+            Machine {
+                name: "virtio-gpu",
+                sysfs: &[("renderD128", "0x1af4", "0x0010", "virtio_gpu")],
+                files: &[],
+                expected: "",
+            },
+            Machine {
+                name: "no GPU",
+                sysfs: &[],
+                files: &[],
+                expected: "",
+            },
+        ];
+        for machine in machines {
+            let name = machine.name;
+            let tmp = tempfile::tempdir().unwrap();
+            let sys = tmp.path().join("sys");
+            fs::create_dir_all(&sys).unwrap();
+            fake_sysfs(&sys, machine.sysfs);
+            let drivers = fake_drivers(tmp.path(), machine.files);
+            let nodes = scan_render_nodes(&sys, Path::new("/dev/dri"));
+            let choice = effective_va_device(None, None, &nodes);
+            let driver = choice
+                .as_ref()
+                .and_then(|c| node_for(&c.device, &nodes))
+                .and_then(|n| libva_driver_for(n.vendor?, n.device_id, &drivers));
+            let plan = plan_for(choice.as_ref(), &nodes, driver, &[]);
+            let set = plan
+                .changes
+                .iter()
+                .find(|c| c.key == LIBVA_DRIVER_NAME)
+                .map(|c| c.value.as_str());
+            let got = choice.as_ref().map_or_else(String::new, |c| {
+                format!(
+                    "{}={}",
+                    c.device.trim_start_matches("/dev/dri/"),
+                    set.unwrap_or("(unset)")
+                )
+            });
+            assert_eq!(got, machine.expected, "{name}: {plan:?}");
+            if machine.expected.is_empty() {
+                assert!(set.is_none(), "{name}: {plan:?}");
+                assert!(plan.notes[0].starts_with("no Intel or AMD render node"));
+            }
+        }
+    }
+
+    /// Where the h264_vaapi check failed with the node's driver, it runs
+    /// again with Intel's other one: installed, and one that drives the
+    /// chip (never iHD on a chip only i965 drives); never on AMD or NVIDIA.
+    #[test]
+    fn the_h264_vaapi_check_is_retried_with_intels_other_driver() {
+        let tmp = tempfile::tempdir().unwrap();
+        let both = fake_drivers(&tmp.path().join("both"), &["iHD", "i965", "radeonsi"]);
+        let only_ihd = fake_drivers(&tmp.path().join("ihd"), &["iHD"]);
+        let gpu = |vendor: u16, device_id: u16| RenderNode {
+            device_id: Some(device_id),
+            ..node(128, Some(vendor))
+        };
+        // Kaby Lake, whose free iHD build has no H.264 encoder: i965.
+        let kaby_lake = gpu(VENDOR_INTEL, 0x5916);
+        assert_eq!(retry_driver(&kaby_lake, "iHD", &both), Some("i965"));
+        assert_eq!(retry_driver(&kaby_lake, "iHD", &only_ihd), None);
+        // An inherited i965 on Tiger Lake, which i965 doesn't drive: iHD.
+        assert_eq!(
+            retry_driver(&gpu(VENDOR_INTEL, 0x9a49), "i965", &both),
+            Some("iHD")
+        );
+        // A Haswell or a Cherry View: iHD doesn't drive them, i965 only
+        // after an inherited iHD.
+        for id in [0x0416, 0x22b0] {
+            let old = gpu(VENDOR_INTEL, id);
+            assert_eq!(retry_driver(&old, "i965", &both), None, "{id:#06x}");
+            assert_eq!(retry_driver(&old, "iHD", &both), Some("i965"), "{id:#06x}");
+        }
+        for (vendor, failed) in [(VENDOR_AMD, "radeonsi"), (VENDOR_NVIDIA, "iHD")] {
+            assert_eq!(retry_driver(&gpu(vendor, 0x73df), failed, &both), None);
+        }
+    }
+
+    /// A VA export loads the driver its h264_vaapi check passed with: the
+    /// node's, or the pick where only Intel's other driver passed, for
+    /// that node and GPU only, while its file is installed. `main()` never
+    /// loads the pick: GStreamer keeps the node's driver.
+    #[test]
+    fn exports_load_the_pick_for_its_node_and_gpu() {
+        let tmp = tempfile::tempdir().unwrap();
+        let drivers = fake_drivers(tmp.path(), &["iHD", "i965"]);
+        let gpu = RenderNode {
+            device_id: Some(0x5916),
+            ..node(128, Some(VENDOR_INTEL))
+        };
+        let pick = VaDriverPick {
+            device: gpu.path.clone(),
+            device_id: gpu.device_id,
+            driver: DRIVER_I965.into(),
+        };
+        assert_eq!(
+            export_libva_driver(&gpu, Some("iHD"), &drivers, Some(&pick)).as_deref(),
+            Some("i965")
+        );
+        assert_eq!(
+            export_libva_driver(&gpu, Some("iHD"), &drivers, None).as_deref(),
+            Some("iHD")
+        );
+        // Another GPU on that node, another node, or no i965 file: the
+        // node's driver.
+        let tmp = tempfile::tempdir().unwrap();
+        let only_ihd = fake_drivers(tmp.path(), &["iHD"]);
+        for (other, drivers) in [
+            (
+                RenderNode {
+                    device_id: Some(0x9a49),
+                    ..gpu.clone()
+                },
+                &drivers,
+            ),
+            (
+                RenderNode {
+                    path: "/dev/dri/renderD129".into(),
+                    ..gpu.clone()
+                },
+                &drivers,
+            ),
+            (gpu.clone(), &only_ihd),
+        ] {
+            assert_eq!(
+                export_libva_driver(&other, None, drivers, Some(&pick)).as_deref(),
+                Some("iHD"),
+                "{other:?}"
+            );
+        }
+        // Never a driver of another vendor, nor anything for NVIDIA.
+        let amd = RenderNode {
+            device_id: gpu.device_id,
+            ..node(128, Some(VENDOR_AMD))
+        };
+        assert_eq!(
+            export_libva_driver(&amd, None, &drivers, Some(&pick)).as_deref(),
+            Some("radeonsi")
+        );
+        let nvidia = node(128, Some(VENDOR_NVIDIA));
+        assert_eq!(
+            export_libva_driver(&nvidia, None, &drivers, Some(&pick)),
+            None
+        );
+        // What main() pins ignores it.
+        let nodes = [gpu.clone()];
+        let choice = effective_va_device(None, None, &nodes).unwrap();
+        let plan = plan_for(
+            Some(&choice),
+            &nodes,
+            libva_driver_for(VENDOR_INTEL, gpu.device_id, &drivers),
+            &[],
+        );
+        assert_eq!(plan.changes[0].value, "iHD");
+    }
+
+    /// Libva's directories: `LIBVA_DRIVERS_PATH`'s alone when it is set
+    /// (absolute ones), else the standard ones that exist; only the drivers
+    /// Qrec loads or keeps (r600, inherited) are looked for, the first
+    /// directory's file winning.
+    #[test]
+    fn libva_driver_files_are_found_where_libva_looks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = (tmp.path().join("a"), tmp.path().join("b"));
+        for (dir, names) in [
+            (&a, &["i965"][..]),
+            (&b, &["iHD", "i965", "nvidia", "r600"][..]),
+        ] {
+            fs::create_dir_all(dir).unwrap();
+            for name in names {
+                fs::write(dir.join(format!("{name}_drv_video.so")), "").unwrap();
+            }
+        }
+        let path = format!("{}:relative:{}", a.display(), b.display());
+        let drivers = VaDrivers::new(Some(&path));
+        assert_eq!(drivers.dirs, [a.clone(), b.clone()]);
+        assert_eq!(
+            drivers.found.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["i965", "iHD", "r600"]
+        );
+        assert_eq!(
+            drivers.file("i965"),
+            Some(a.join("i965_drv_video.so").as_path())
+        );
+        assert_eq!(
+            drivers.file("iHD"),
+            Some(b.join("iHD_drv_video.so").as_path())
+        );
+        assert!(!drivers.has("nvidia") && !drivers.has("radeonsi"));
+        // Unset: the standard directories, those that exist.
+        let standard = VaDrivers::new(None);
+        assert!(standard.dirs.iter().all(|d| d.is_dir()), "{standard:?}");
+        assert!(standard_libva_dirs().contains(&PathBuf::from("/usr/lib/dri")));
+        assert!(standard_libva_dirs().contains(&PathBuf::from("/run/opengl-driver/lib/dri")));
+    }
+
+    #[test]
+    fn intel_generations_by_pci_device_id() {
+        // Haswell, Ivy Bridge, Sandy Bridge, Bay Trail, Ironlake, G45, and
+        // the Cherry View and Braswell Atoms.
+        for id in [
+            0x0416, 0x0a16, 0x0d26, 0x0166, 0x0126, 0x0f31, 0x0046, 0x2e22, 0x22b0, 0x22b1, 0x22b2,
+            0x22b3,
+        ] {
+            assert!(intel_i965_only(id), "{id:#06x}");
+        }
+        // Broadwell, Broxton (0x0a84, a Haswell-like prefix), Skylake,
+        // Apollo Lake, Kaby Lake, Tiger Lake, Alder Lake, Arc, Arrow Lake.
+        for id in [
+            0x1616, 0x0a84, 0x1916, 0x5a85, 0x5916, 0x9a49, 0x46a6, 0x56a0, 0x7d51,
+        ] {
+            assert!(!intel_i965_only(id), "{id:#06x}");
+        }
+        let none = VaDrivers::default();
+        for id in [0x0416, 0x22b0] {
+            assert_eq!(
+                libva_driver_for(VENDOR_INTEL, Some(id), &none),
+                Some("i965")
+            );
+        }
+        assert_eq!(libva_driver_for(VENDOR_INTEL, None, &none), Some("iHD"));
+        assert_eq!(libva_driver_for(VENDOR_NVIDIA, None, &none), None);
+        assert_eq!(libva_driver_for(VENDOR_VIRTIO, None, &none), None);
+        assert_eq!(other_intel_driver("iHD"), Some("i965"));
+        assert_eq!(other_intel_driver("i965"), Some("iHD"));
+        assert_eq!(other_intel_driver("radeonsi"), None);
     }
 
     #[test]
@@ -1201,10 +1857,34 @@ mod tests {
         assert_eq!(unknown.vendor, None);
     }
 
+    /// The plan with the chosen node's default driver (no driver files).
     fn plan_with(
         choice: Option<&VaChoice>,
         nodes: &[RenderNode],
         for_gui: bool,
+        vars: &[(&str, &str)],
+    ) -> GpuEnvPlan {
+        let driver = choice
+            .and_then(|c| node_for(&c.device, nodes))
+            .and_then(|n| libva_driver_for(n.vendor?, n.device_id, &VaDrivers::default()));
+        plan_inputs(choice, nodes, for_gui, driver, vars)
+    }
+
+    /// The CLI's plan with `driver` for the chosen node.
+    fn plan_for(
+        choice: Option<&VaChoice>,
+        nodes: &[RenderNode],
+        driver: Option<&str>,
+        vars: &[(&str, &str)],
+    ) -> GpuEnvPlan {
+        plan_inputs(choice, nodes, false, driver, vars)
+    }
+
+    fn plan_inputs(
+        choice: Option<&VaChoice>,
+        nodes: &[RenderNode],
+        for_gui: bool,
+        va_driver: Option<&str>,
         vars: &[(&str, &str)],
     ) -> GpuEnvPlan {
         let vars: Vec<(String, String)> = vars
@@ -1221,6 +1901,7 @@ mod tests {
                 "/run/opengl-driver/share/glvnd/egl_vendor.d/50_mesa.json".into(),
             ),
             vulkan_icd: Some("/run/opengl-driver/share/vulkan/icd.d/intel_icd.x86_64.json".into()),
+            va_driver,
         })
     }
 
@@ -1337,29 +2018,75 @@ mod tests {
         assert!(plan.changes.is_empty());
     }
 
-    /// A probe child keeps the driver `main()` pinned when it fits the
-    /// node's vendor, legacy ones included (the rule above), so the child
-    /// and the host share one GStreamer registry state; otherwise it gets
-    /// the vendor's driver. Nothing is set for NVIDIA.
+    /// A child that opens a node (a probe, the h264_vaapi check) gets the
+    /// driver `main()` pinned when it fits the node's vendor, legacy ones
+    /// included (the rule above), so the child and the host share one
+    /// GStreamer registry state; otherwise the node's. Nothing for NVIDIA.
     #[test]
-    fn probe_children_keep_a_fitting_libva_driver() {
-        for (inherited, vendor, set) in [
-            (Some("i965"), VENDOR_INTEL, None),
-            (Some("iHD"), VENDOR_INTEL, None),
-            (Some("r600"), VENDOR_AMD, None),
-            (Some("radeonsi"), VENDOR_AMD, None),
-            (None, VENDOR_INTEL, Some("iHD")),
-            (Some(""), VENDOR_INTEL, Some("iHD")),
-            (Some("radeonsi"), VENDOR_INTEL, Some("iHD")),
-            (Some("i965"), VENDOR_AMD, Some("radeonsi")),
-            (None, VENDOR_AMD, Some("radeonsi")),
-            (Some("nvidia"), VENDOR_NVIDIA, None),
-            (None, VENDOR_NVIDIA, None),
+    fn child_processes_keep_a_fitting_libva_driver() {
+        let tmp = tempfile::tempdir().unwrap();
+        let only_i965 = fake_drivers(tmp.path(), &["i965"]);
+        let none = VaDrivers::default();
+        let haswell = RenderNode {
+            device_id: Some(0x0416),
+            ..node(128, Some(VENDOR_INTEL))
+        };
+        for (inherited, gpu, drivers, set) in [
+            (
+                Some("i965"),
+                node(128, Some(VENDOR_INTEL)),
+                &none,
+                Some("i965"),
+            ),
+            (
+                Some("iHD"),
+                node(128, Some(VENDOR_INTEL)),
+                &none,
+                Some("iHD"),
+            ),
+            (Some("iHD"), haswell.clone(), &none, Some("iHD")),
+            (
+                Some("r600"),
+                node(128, Some(VENDOR_AMD)),
+                &none,
+                Some("r600"),
+            ),
+            (
+                Some("radeonsi"),
+                node(128, Some(VENDOR_AMD)),
+                &none,
+                Some("radeonsi"),
+            ),
+            (None, node(128, Some(VENDOR_INTEL)), &none, Some("iHD")),
+            (
+                None,
+                node(128, Some(VENDOR_INTEL)),
+                &only_i965,
+                Some("i965"),
+            ),
+            (None, haswell, &none, Some("i965")),
+            (Some(""), node(128, Some(VENDOR_INTEL)), &none, Some("iHD")),
+            (
+                Some("radeonsi"),
+                node(128, Some(VENDOR_INTEL)),
+                &none,
+                Some("iHD"),
+            ),
+            (
+                Some("i965"),
+                node(128, Some(VENDOR_AMD)),
+                &none,
+                Some("radeonsi"),
+            ),
+            (None, node(128, Some(VENDOR_AMD)), &none, Some("radeonsi")),
+            (Some("nvidia"), node(128, Some(VENDOR_NVIDIA)), &none, None),
+            (None, node(128, Some(VENDOR_NVIDIA)), &none, None),
+            (None, node(128, None), &none, None),
         ] {
             assert_eq!(
-                probe_libva_driver(inherited, vendor),
+                child_libva_driver(&gpu, inherited, drivers).as_deref(),
                 set,
-                "{inherited:?} on {vendor:#06x}"
+                "{inherited:?} on {gpu:?}"
             );
         }
     }
@@ -1617,7 +2344,11 @@ mod tests {
     #[test]
     fn vendor_names() {
         assert_eq!(vendor_name(VENDOR_INTEL), "Intel");
+        assert_eq!(vendor_name(VENDOR_VIRTIO), "virtio-gpu");
+        assert_eq!(vendor_name(VENDOR_VMWARE), "VMware");
+        assert_eq!(vendor_name(VENDOR_QXL), "QXL");
         assert_eq!(vendor_name(0x1234), "0x1234");
+        assert!(is_virtual_gpu(VENDOR_QXL) && !is_virtual_gpu(VENDOR_NVIDIA));
         assert_eq!(parse_hex_u16("0x10de"), Some(VENDOR_NVIDIA));
         assert_eq!(parse_hex_u16("zz"), None);
     }
@@ -1735,5 +2466,92 @@ mod tests {
 
         let missing = run_probe_child(&tmp.path().join("nope"), &probe, None, PROBE_TIMEOUT);
         assert!(missing.unwrap_err().contains("can't start the probe"));
+    }
+
+    /// One probe child, with the host's driver when it fits the node
+    /// (else the node's), whatever it finds: never a second one with
+    /// another driver, whose GStreamer would rescan the VA plugin and
+    /// rewrite the registry the host shares (the plugin notes
+    /// `LIBVA_DRIVER_NAME`), so the capabilities' GStreamer key would
+    /// change at every start. NVIDIA is refused before any child.
+    #[test]
+    fn the_probe_child_runs_once_with_the_hosts_driver() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The fake node's path is a file in the temp dir: no device.
+        let path = tmp.path().join("renderD128");
+        fs::write(&path, "").unwrap();
+        let gpu = |vendor: u16, device_id: u16| RenderNode {
+            path: path.to_string_lossy().into_owned(),
+            vendor: Some(vendor),
+            device_id: Some(device_id),
+            driver: None,
+        };
+        let probe = Probe::H264Encoders {
+            device: Some(path.to_string_lossy().into_owned()),
+        };
+        // GStreamer's registry as the fake child sees it: the driver of the
+        // last scan, rewritten by a child that runs with another one.
+        let registry = tmp.path().join("registry.bin");
+        let log = tmp.path().join("probe.log");
+        let exe = fake_child(
+            tmp.path(),
+            &format!(
+                r#"echo "run $LIBVA_DRIVER_NAME" >&2
+[ "$(cat '{registry}')" = "$LIBVA_DRIVER_NAME" ] || echo "$LIBVA_DRIVER_NAME" > '{registry}'
+echo '{{"factory":null,"software":{{"x264":true,"openh264":false}}}}'"#,
+                registry = registry.display()
+            ),
+        );
+        let both = fake_drivers(&tmp.path().join("both"), &["iHD", "i965", "radeonsi"]);
+        let run = |node: &RenderNode, inherited: Option<&str>| {
+            let _ = fs::remove_file(&log);
+            let answer = probe_node(
+                &exe,
+                &probe,
+                Some(node),
+                inherited,
+                &both,
+                Some(&log),
+                PROBE_TIMEOUT,
+            );
+            let runs: Vec<String> = fs::read_to_string(&log)
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            (answer, runs)
+        };
+
+        // The host's driver, without a VA encoder (Kaby Lake's free iHD,
+        // a Haswell's i965): one run, the registry left as the host wrote it.
+        for (id, host) in [(0x5916, "iHD"), (0x0416, "i965"), (0x22b0, "i965")] {
+            fs::write(&registry, format!("{host}\n")).unwrap();
+            let before = fs::metadata(&registry).unwrap().modified().unwrap();
+            let (answer, runs) = run(&gpu(VENDOR_INTEL, id), Some(host));
+            let answer = answer.unwrap();
+            assert_eq!(
+                (answer.factory, answer.lp_factory, answer.error),
+                (None, None, None)
+            );
+            assert_eq!(runs, [format!("run {host}")], "{id:#06x}");
+            assert_eq!(fs::read_to_string(&registry).unwrap(), format!("{host}\n"));
+            assert_eq!(fs::metadata(&registry).unwrap().modified().unwrap(), before);
+        }
+        // A host driver that doesn't fit: the node's (i965 on a Haswell or
+        // a Cherry View by its PCI id, radeonsi on AMD), once.
+        for (vendor, id, inherited, driver) in [
+            (VENDOR_INTEL, 0x0416, Some("radeonsi"), "i965"),
+            (VENDOR_INTEL, 0x22b0, None, "i965"),
+            (VENDOR_AMD, 0x73df, Some("iHD"), "radeonsi"),
+        ] {
+            let (answer, runs) = run(&gpu(vendor, id), inherited);
+            assert!(answer.is_ok());
+            assert_eq!(runs, [format!("run {driver}")], "{id:#06x}");
+        }
+        // NVIDIA is never probed: no child at all.
+        let (answer, runs) = run(&gpu(VENDOR_NVIDIA, 0x2db8), None);
+        let err = answer.unwrap_err();
+        assert!(err.contains("never probed"), "{err}");
+        assert!(runs.is_empty());
     }
 }

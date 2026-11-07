@@ -373,16 +373,27 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     },
     "va": {
       "device": "/dev/dri/renderD128",
+      "deviceId": 32081,
+      "driverDirs": [
+        "/usr/lib64/dri"
+      ],
+      "driverFile": "/usr/lib64/dri/iHD_drv_video.so",
       "expectedDriver": "iHD",
+      "exportDriver": null,
       "ffmpegH264": true,
       "gstEncoders": [
         "vah264enc"
       ],
       "gstFactory": "vah264enc",
+      "installedDrivers": [
+        "iHD",
+        "radeonsi"
+      ],
       "libvaDriverName": "iHD",
       "nodes": [
         {
-          "driver": null,
+          "deviceId": 32081,
+          "driver": "i915",
           "path": "/dev/dri/renderD128",
           "vendor": 32902,
           "vendorName": "Intel"
@@ -436,7 +447,8 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "  ok        sound.server           PulseAudio (on PipeWire 1.6.6)",
     "  ok        vaapi                  /dev/dri/renderD128 (Intel, auto) · LIBVA_DRIVER_NAME=iHD · ffmpeg h264_vaapi works",
     "",
-    "VA-API render nodes: /dev/dri/renderD128 (Intel)",
+    "VA-API render nodes: /dev/dri/renderD128 (Intel 0x7d51)",
+    "  libva driver iHD: /usr/lib64/dri/iHD_drv_video.so",
     "",
     "Global shortcuts for GNOME:",
     "",

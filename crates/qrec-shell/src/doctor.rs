@@ -24,12 +24,18 @@
 //!
 //! Checks nothing needs only inform: the portal's app registry, an X
 //! server without RandR (its whole screen is one) and the VA-API report
-//! (render nodes, the effective device, `LIBVA_DRIVER_NAME`, the
-//! h264_vaapi export check as a 10 s child process; NVIDIA nodes are never
-//! probed). The report also says where Qrec runs (`platform::current`, and
-//! the screen backend: its session line) and how to bind the global
-//! shortcuts there (SPEC §10.2, `keymap::global_snippet`: niri's KDL,
-//! sway's `bindsym`, GNOME's custom shortcuts, …).
+//! (render nodes, the effective device, `LIBVA_DRIVER_NAME`, the node's
+//! libva driver and its file, the h264_vaapi export check as a 10 s child
+//! process, run again with Intel's other driver where the node's fails, as
+//! capability detection does; NVIDIA nodes are never probed). A machine
+//! without an Intel or AMD GPU (NVIDIA only, a virtual machine's GPU, none)
+//! has nothing to fix there: its VA-API rows say what encodes on the CPU
+//! instead, as information, and so does `gst.vah264enc` on the chips only
+//! i965 drives, which GStreamer's VA plugin doesn't encode with. The report
+//! also says where Qrec runs (`platform::current`, and the screen backend:
+//! its session line) and how to bind the global shortcuts there (SPEC
+//! §10.2, `keymap::global_snippet`: niri's KDL, sway's `bindsym`, GNOME's
+//! custom shortcuts, …).
 //!
 //! Only a failed app check is `missing_dependency` (JSON `required`, exit
 //! 5, and the GUI's "The swamp is missing something" page, which lists
@@ -61,7 +67,7 @@ use serde::{Deserialize, Serialize};
 use crate::capture::ScreenBackend;
 use crate::gpu::{
     self, DeviceOrigin, VENDOR_AMD as PCI_AMD, VENDOR_INTEL as PCI_INTEL,
-    VENDOR_NVIDIA as PCI_NVIDIA, libva_driver_for, vendor_name,
+    VENDOR_NVIDIA as PCI_NVIDIA, vendor_name,
 };
 use crate::platform::{Desktop, HostPlatform, SessionType};
 use crate::sources::{self, X11Server};
@@ -216,11 +222,31 @@ pub struct VaReport {
     /// `project`, `config` or `auto`.
     pub origin: Option<String>,
     pub vendor: Option<u16>,
-    /// The `LIBVA_DRIVER_NAME` the device needs (`iHD`, `radeonsi`).
+    /// The device's PCI device id (an Intel chip's generation).
+    #[serde(default)]
+    pub device_id: Option<u16>,
+    /// The `LIBVA_DRIVER_NAME` the device's children load
+    /// (`gpu::child_libva_driver`): this process's when it fits the
+    /// vendor (main() pinned it), else `radeonsi` for AMD, `i965` for the
+    /// Intel chips only it drives (older than Broadwell, Cherry View and
+    /// Braswell) or where only it is installed, else `iHD`.
     pub expected_driver: Option<String>,
     /// `LIBVA_DRIVER_NAME` in this process (main() sets it at startup).
     pub libva_driver_name: Option<String>,
-    /// The h264_vaapi export chain encoded two frames; `None` = not probed.
+    /// Where libva loads its drivers from: `LIBVA_DRIVERS_PATH`'s
+    /// directories, else the standard ones that exist.
+    #[serde(default)]
+    pub driver_dirs: Vec<String>,
+    /// The expected driver's file there (`iHD_drv_video.so`); `None` when
+    /// it isn't installed.
+    #[serde(default)]
+    pub driver_file: Option<String>,
+    /// The libva drivers Qrec loads or keeps whose files are there (`iHD`,
+    /// `i965`, `radeonsi`, `r600`: `gpu::VaDrivers`).
+    #[serde(default)]
+    pub installed_drivers: Vec<String>,
+    /// The h264_vaapi export chain encoded two frames, with the expected
+    /// driver or else `export_driver`; `None` = not probed.
     pub ffmpeg_h264: Option<bool>,
     /// GStreamer's VA H.264 encoders (`va*h264enc`, `va*h264lpenc`).
     pub gst_encoders: Vec<String>,
@@ -228,6 +254,12 @@ pub struct VaReport {
     /// its `va*h264lpenc` (the probe child of A§8.10, run with the
     /// h264_vaapi check); `None` when not probed or none is bound to it.
     pub gst_factory: Option<String>,
+    /// On an Intel device where the h264_vaapi check failed with the
+    /// expected driver: Intel's other driver, with which it passed
+    /// (`gpu::retry_driver`). Exports load it there (`caps::detect` keeps
+    /// the pick); recordings keep the expected one.
+    #[serde(default)]
+    pub export_driver: Option<String>,
     /// What `main()` changed in the GPU environment at startup (A§8.10).
     pub startup: Vec<String>,
     pub note: Option<String>,
@@ -241,6 +273,9 @@ pub struct RenderNode {
     /// PCI vendor id from sysfs; `None` when unreadable.
     pub vendor: Option<u16>,
     pub vendor_name: Option<String>,
+    /// PCI device id from sysfs.
+    #[serde(default)]
+    pub device_id: Option<u16>,
     /// Kernel driver (`i915`, `xe`, `amdgpu`, `nvidia`).
     pub driver: Option<String>,
 }
@@ -251,6 +286,7 @@ impl From<&gpu::RenderNode> for RenderNode {
             path: node.path.clone(),
             vendor: node.vendor,
             vendor_name: node.vendor.map(vendor_name),
+            device_id: node.device_id,
             driver: node.driver.clone(),
         }
     }
@@ -335,6 +371,8 @@ pub trait Probe {
     fn pulse_server(&self) -> Result<String, String>;
     /// `/sys/class/drm/renderD*` (sysfs only; nodes are never opened).
     fn render_nodes(&self) -> Vec<gpu::RenderNode>;
+    /// Libva's driver files (a stat each; nothing is opened).
+    fn va_drivers(&self) -> gpu::VaDrivers;
     fn env(&self, key: &str) -> Option<String>;
     /// The h264_vaapi export chain on `device` (two frames to the null muxer).
     fn vaapi_h264(&self, device: &str, driver: Option<&str>) -> Result<(), String>;
@@ -346,6 +384,8 @@ pub trait Probe {
     fn gpu_startup(&self) -> Vec<String>;
     /// Where Qrec runs.
     fn platform(&self) -> HostPlatform;
+    /// The user's `config.toml` (`paths::UserDirs`), which hints name.
+    fn config_file(&self) -> Option<PathBuf>;
 }
 
 /// Runs every check against this machine.
@@ -382,7 +422,7 @@ pub fn run_with(probe: &dyn Probe, opts: &DoctorOptions) -> DoctorReport {
     screen_checks(probe, &screens, real(SCREENS), &fix, &mut checks);
     audio_checks(probe, real(AUDIO), &fix, &mut checks);
     let cpu = on_the_cpu(&checks);
-    checks.push(va_check(&va, &fix, cpu));
+    checks.push(va_check(&va, probe.config_file().as_deref(), &fix, cpu));
     DoctorReport {
         features_off: features_off(&checks),
         checks,
@@ -776,32 +816,119 @@ fn va_recorder(va: &VaReport, opts: &DoctorOptions) -> Option<String> {
     }
 }
 
-/// The VA-API GPU of a PCI vendor: Intel or AMD (NVIDIA has no VA-API
-/// encoder, A§8.10). The generation isn't known here: Intel's hint names
-/// both drivers.
-fn va_gpu(vendor: Option<u16>) -> Option<VaGpu> {
-    match vendor? {
+/// The VA-API GPU of the effective node, by its PCI vendor and device id:
+/// Intel (`IntelLegacy` for the chips only i965 drives: older than
+/// Broadwell, Cherry View and Braswell) or AMD. `None` for anything else,
+/// where VA-API doesn't record: NVIDIA (no VA-API encoder, A§8.10), a
+/// virtual machine's GPU, an unknown vendor, a configured path that isn't
+/// a node, or no node at all.
+fn va_gpu(va: &VaReport) -> Option<VaGpu> {
+    match va.vendor? {
+        PCI_INTEL if va.device_id.is_some_and(gpu::intel_i965_only) => Some(VaGpu::IntelLegacy),
         PCI_INTEL => Some(VaGpu::Intel),
         PCI_AMD => Some(VaGpu::Amd),
         _ => None,
     }
 }
 
-/// What gives GStreamer a VA encoder when it lists none. On an Intel or
-/// AMD node it is usually the node's VA driver: GStreamer's VA plugin
-/// registers no encoder for a node whose driver is missing or doesn't
-/// encode H.264 (Fedora's own Mesa), so the hint is the driver's, with
-/// the plugin's after it. Once ffmpeg's h264_vaapi check encoded on that
-/// node, the driver works and the plugin is what's missing (Arch packages
-/// it on its own, gst-plugin-va). Without an Intel or AMD node, the
-/// plugin's hint alone.
-fn no_va_encoder_fix(va: &VaReport, fix: Fix<'_>) -> Hint {
-    match (va_gpu(va.vendor), va.ffmpeg_h264) {
-        (Some(gpu), None | Some(false)) => fix(Need::VaDriver(gpu)).also(&format!(
+/// What gives GStreamer a VA encoder when it lists none on an Intel or AMD
+/// node (`gpu`) whose driver isn't i965 ([`i965_records_nothing`]):
+/// usually the node's VA driver, since GStreamer's VA plugin registers no
+/// encoder for a node whose driver is missing or doesn't encode H.264
+/// (Fedora's own Mesa), so the hint is the driver's, with the plugin's
+/// after it. Once ffmpeg's h264_vaapi check encoded on that node with that
+/// driver, the driver works and the plugin is what's missing (Arch
+/// packages it on its own, gst-plugin-va).
+fn no_va_encoder_fix(gpu: VaGpu, va: &VaReport, fix: Fix<'_>) -> Hint {
+    match (va.ffmpeg_h264, &va.export_driver) {
+        (Some(true), None) => fix(Need::GstVa),
+        _ => fix(Need::VaDriver(gpu)).also(&format!(
             "if GStreamer still has no VA encoder: {}",
             fix(Need::GstVa).line()
         )),
-        _ => fix(Need::GstVa),
+    }
+}
+
+/// `gst.vah264enc` where the node's driver is i965 and no VA encoder is
+/// bound to the node: GStreamer's VA plugin registers none with i965 (it
+/// is blocklisted for encoding unless `GST_VA_ALL_DRIVERS` is set), so no
+/// install of the driver or the plugin helps. On the chips only i965
+/// drives (`IntelLegacy`) recordings stay on the CPU, which the row only
+/// says. On newer ones iHD records: `LIBVA_DRIVER_NAME=i965` came from the
+/// user where iHD is installed (Qrec loads iHD there), else iHD is missing.
+fn i965_records_nothing(gpu: VaGpu, va: &VaReport, fix: Fix<'_>, on_the_cpu: &str) -> Check {
+    let id = "gst.vah264enc";
+    if gpu == VaGpu::IntelLegacy {
+        return ok(
+            id,
+            NOTHING,
+            format!(
+                "GStreamer's VA plugin doesn't encode with i965, the only VA-API driver of this \
+                 Intel GPU: {on_the_cpu}"
+            ),
+        );
+    }
+    let detail = format!("GStreamer's VA plugin doesn't encode with i965: {on_the_cpu}");
+    if va.installed_drivers.iter().any(|d| d == gpu::DRIVER_IHD) {
+        return fail(
+            id,
+            NOTHING,
+            detail,
+            "unset LIBVA_DRIVER_NAME=i965: Qrec then loads iHD, which GStreamer records with",
+        );
+    }
+    let hint = fix(Need::VaDriver(VaGpu::Intel));
+    let hint = if va.gst_encoders.is_empty() {
+        hint.also(&format!(
+            "if GStreamer still has no VA encoder: {}",
+            fix(Need::GstVa).line()
+        ))
+    } else {
+        hint
+    };
+    fail_fix(id, NOTHING, detail, hint)
+}
+
+/// Why no node was chosen for VA-API (the `vaapi` row): no render node at
+/// all (a virtual machine without 3D acceleration, no GPU driver), or none
+/// of Intel's or AMD's, each one named: NVIDIA's (no VA-API encoder), a
+/// virtual machine's GPU, another vendor's, one that isn't on PCI.
+fn no_va_node(nodes: &[RenderNode]) -> String {
+    if nodes.is_empty() {
+        return "no GPU render node (a virtual machine without 3D acceleration, or no GPU \
+                driver)"
+            .to_owned();
+    }
+    let named: Vec<String> = nodes
+        .iter()
+        .map(|node| {
+            let what = match node.vendor {
+                Some(PCI_NVIDIA) => "NVIDIA, which has no VA-API encoder".to_owned(),
+                Some(vendor) if gpu::is_virtual_gpu(vendor) => {
+                    format!("{}, a virtual machine's GPU", vendor_name(vendor))
+                }
+                Some(vendor) => format!("PCI vendor {vendor:#06x}"),
+                None => node.driver.as_deref().map_or_else(
+                    || "an unknown vendor".to_owned(),
+                    |driver| format!("{driver}, not on PCI"),
+                ),
+            };
+            format!("{}: {what}", node.path)
+        })
+        .collect();
+    format!("no Intel or AMD GPU ({})", named.join("; "))
+}
+
+/// Why VA-API doesn't record where the effective node isn't Intel's or
+/// AMD's ([`va_gpu`] is `None`), in a few words (`gst.vah264enc`).
+fn not_a_va_gpu(va: &VaReport) -> String {
+    match (&va.device, va.vendor) {
+        (None, _) => "no Intel or AMD GPU".to_owned(),
+        (Some(device), Some(PCI_NVIDIA)) => {
+            format!("{device} is NVIDIA's, which has no VA-API encoder")
+        }
+        (Some(device), Some(_)) => format!("{device} isn't an Intel or AMD GPU"),
+        (Some(device), None) => format!("{device} isn't a render node of this machine"),
     }
 }
 
@@ -811,7 +938,10 @@ fn no_va_encoder_fix(va: &VaReport, fix: Fix<'_>) -> Hint {
 /// `checks`) inform, a missing one saying what records instead. With none,
 /// both software encoders are needed, since either one would record.
 /// `gst.vah264enc` says which VA encoder records, or what gives GStreamer
-/// one.
+/// one on the node's GPU ([`va_gpu`]: Intel's drivers by generation,
+/// AMD's), never i965, which its VA plugin doesn't encode with
+/// ([`i965_records_nothing`]); without an Intel or AMD node it only says
+/// what records.
 fn encoder_checks(va: &VaReport, opts: &DoctorOptions, fix: Fix<'_>, checks: &mut Vec<Check>) {
     let has = |id: &str| checks.iter().any(|c| c.id == id && c.ok);
     let software = if has("gst.x264enc") {
@@ -852,31 +982,44 @@ fn encoder_checks(va: &VaReport, opts: &DoctorOptions, fix: Fix<'_>, checks: &mu
     }
     let id = "gst.vah264enc";
     let device = va.device.as_deref().unwrap_or("the render node");
-    checks.push(if va.gst_encoders.is_empty() {
-        fail_fix(
+    let Some(gpu) = va_gpu(va) else {
+        // Nothing to install: VA-API doesn't record here.
+        checks.push(ok(
             id,
             NOTHING,
-            format!("no VA-API H.264 encoder: {on_the_cpu}"),
-            no_va_encoder_fix(va, fix),
-        )
-    } else if probes_va_factory(opts, va.vendor, &va.gst_encoders) {
-        match &va.gst_factory {
-            Some(factory) => ok(id, NOTHING, format!("{factory} records on {device}")),
-            None => {
-                let detail = format!(
-                    "none of {} encodes on {device}: {on_the_cpu}",
-                    va.gst_encoders.join(", ")
-                );
-                // A probed node is Intel or AMD.
-                match va_gpu(va.vendor) {
-                    Some(gpu) => fail_fix(id, NOTHING, detail, fix(Need::VaDriver(gpu))),
-                    None => fail(id, NOTHING, detail, "install the VA driver of that node"),
-                }
+            format!("{}: {on_the_cpu}", not_a_va_gpu(va)),
+        ));
+        return;
+    };
+    let probed = probes_va_factory(opts, va.vendor, &va.gst_encoders);
+    let none_bound = va.gst_encoders.is_empty() || (probed && va.gst_factory.is_none());
+    checks.push(
+        if none_bound && va.expected_driver.as_deref() == Some(gpu::DRIVER_I965) {
+            i965_records_nothing(gpu, va, fix, on_the_cpu)
+        } else if va.gst_encoders.is_empty() {
+            fail_fix(
+                id,
+                NOTHING,
+                format!("no VA-API H.264 encoder: {on_the_cpu}"),
+                no_va_encoder_fix(gpu, va, fix),
+            )
+        } else if probed {
+            match &va.gst_factory {
+                Some(factory) => ok(id, NOTHING, format!("{factory} records on {device}")),
+                None => fail_fix(
+                    id,
+                    NOTHING,
+                    format!(
+                        "none of {} encodes on {device}: {on_the_cpu}",
+                        va.gst_encoders.join(", ")
+                    ),
+                    fix(Need::VaDriver(gpu)),
+                ),
             }
-        }
-    } else {
-        ok(id, NOTHING, va.gst_encoders.join(", "))
-    });
+        } else {
+            ok(id, NOTHING, va.gst_encoders.join(", "))
+        },
+    );
 }
 
 /// Encoder name, what needs it, what for.
@@ -1407,6 +1550,8 @@ fn driver_fits(driver: &str, vendor: u16) -> bool {
     }
 }
 
+/// The VA-API report; `gst_encoders` are GStreamer's VA H.264 encoders
+/// (none when GStreamer doesn't work: then no probe child is asked).
 fn va_report(probe: &dyn Probe, opts: &DoctorOptions, gst_encoders: Vec<String>) -> VaReport {
     let nodes = probe.render_nodes();
     // The same resolution as main()'s (A§2.1): project, config, first Intel/AMD.
@@ -1422,20 +1567,60 @@ fn va_report(probe: &dyn Probe, opts: &DoctorOptions, gst_encoders: Vec<String>)
         DeviceOrigin::Auto => "auto",
     });
     let vendor = choice.as_ref().and_then(|c| c.vendor);
-    let expected_driver = vendor.and_then(libva_driver_for).map(str::to_owned);
+    let node = choice
+        .as_ref()
+        .and_then(|c| gpu::node_for(&c.device, &nodes));
+    let drivers = probe.va_drivers();
+    // The driver the node's children load: main()'s pin when it fits.
+    let env_driver = probe.env("LIBVA_DRIVER_NAME");
+    let expected_driver =
+        node.and_then(|n| gpu::child_libva_driver(n, env_driver.as_deref(), &drivers));
+    let driver_file = expected_driver
+        .as_deref()
+        .and_then(|d| drivers.file(d))
+        .map(|f| f.to_string_lossy().into_owned());
     let mut notes = Vec::new();
+    // Intel's other driver, where the check passed with it alone: what
+    // exports load (`caps::detect` runs the same checks).
+    let mut export_driver = None;
     let ffmpeg_h264 = match (&device, vendor) {
         (Some(device), Some(PCI_INTEL | PCI_AMD)) if opts.probe_vaapi => {
             match probe.vaapi_h264(device, expected_driver.as_deref()) {
                 Ok(()) => Some(true),
                 Err(e) => {
-                    notes.push(format!("the h264_vaapi check failed: {e}"));
-                    Some(false)
+                    let retry = node
+                        .zip(expected_driver.as_deref())
+                        .and_then(|(node, first)| {
+                            let other = gpu::retry_driver(node, first, &drivers)?;
+                            Some((first, other, probe.vaapi_h264(device, Some(other))))
+                        });
+                    match retry {
+                        Some((first, other, Ok(()))) => {
+                            notes.push(format!(
+                                "the h264_vaapi check failed with {first}: {e}; it passed with \
+                                 {other}, which exports load"
+                            ));
+                            export_driver = Some(other.to_owned());
+                            Some(true)
+                        }
+                        Some((_, other, Err(again))) => {
+                            notes.push(format!(
+                                "the h264_vaapi check failed: {e}; with {other} too: {again}"
+                            ));
+                            Some(false)
+                        }
+                        None => {
+                            notes.push(format!("the h264_vaapi check failed: {e}"));
+                            Some(false)
+                        }
+                    }
                 }
             }
         }
-        (Some(_), Some(PCI_NVIDIA)) => {
-            notes.push("NVIDIA nodes are never probed: VA-API on them can hang".to_owned());
+        (Some(device), Some(PCI_NVIDIA)) => {
+            notes.push(format!(
+                "{device} isn't probed: NVIDIA has no VA-API encoder (and VA-API on it can hang)"
+            ));
             None
         }
         (Some(device), None) => {
@@ -1461,26 +1646,35 @@ fn va_report(probe: &dyn Probe, opts: &DoctorOptions, gst_encoders: Vec<String>)
         device,
         origin: origin.map(str::to_owned),
         vendor,
+        device_id: node.and_then(|n| n.device_id),
         expected_driver,
-        libva_driver_name: probe.env("LIBVA_DRIVER_NAME"),
+        libva_driver_name: env_driver,
+        driver_dirs: drivers
+            .dirs
+            .iter()
+            .map(|d| d.to_string_lossy().into_owned())
+            .collect(),
+        driver_file,
+        installed_drivers: drivers.found.keys().cloned().collect(),
         ffmpeg_h264,
         gst_encoders,
         gst_factory,
+        export_driver,
         startup: probe.gpu_startup(),
         note: (!notes.is_empty()).then(|| notes.join("; ")),
     }
 }
 
 /// `vaapi`: the effective node, its driver and the h264_vaapi check; `cpu`
-/// says what encodes without it.
-fn va_check(va: &VaReport, fix: Fix<'_>, cpu: OnTheCpu) -> Check {
+/// says what encodes without it. Information without an Intel or AMD GPU
+/// (nothing to install or set); a configured node that isn't one says
+/// where it is configured (the project, or `config_file`).
+fn va_check(va: &VaReport, config_file: Option<&Path>, fix: Fix<'_>, cpu: OnTheCpu) -> Check {
     let Some(device) = &va.device else {
-        return fail(
+        return ok(
             "vaapi",
             NOTHING,
-            format!("no Intel or AMD render node: {}", cpu.sentence()),
-            "Qrec never picks an NVIDIA node by itself; set encoder.vaapi_device in \
-             ~/.config/qrec/config.toml to use one",
+            format!("{}: {}", no_va_node(&va.nodes), cpu.sentence()),
         );
     };
     let mut detail = format!(
@@ -1490,10 +1684,17 @@ fn va_check(va: &VaReport, fix: Fix<'_>, cpu: OnTheCpu) -> Check {
     );
     let env = va.libva_driver_name.as_deref();
     let _ = write!(detail, " · LIBVA_DRIVER_NAME={}", env.unwrap_or("(unset)"));
-    match va.ffmpeg_h264 {
-        Some(true) => detail.push_str(" · ffmpeg h264_vaapi works"),
-        Some(false) => detail.push_str(" · ffmpeg h264_vaapi failed"),
-        None => {}
+    match (va.ffmpeg_h264, &va.export_driver) {
+        (Some(true), Some(other)) => {
+            let first = va.expected_driver.as_deref().unwrap_or("the node's driver");
+            let _ = write!(
+                detail,
+                " · ffmpeg h264_vaapi works with {other}, which exports load ({first} fails)"
+            );
+        }
+        (Some(true), None) => detail.push_str(" · ffmpeg h264_vaapi works"),
+        (Some(false), _) => detail.push_str(" · ffmpeg h264_vaapi failed"),
+        (None, _) => {}
     }
     if let (Some(expected), Some(actual), Some(vendor)) =
         (va.expected_driver.as_deref(), env, va.vendor)
@@ -1506,20 +1707,63 @@ fn va_check(va: &VaReport, fix: Fix<'_>, cpu: OnTheCpu) -> Check {
             format!("unset LIBVA_DRIVER_NAME or set it to {expected} (Qrec sets it at startup)"),
         );
     }
-    match (va_gpu(va.vendor), va.ffmpeg_h264) {
-        (Some(gpu), Some(false)) => fail_fix(
+    let Some(gpu) = va_gpu(va) else {
+        return fail(
+            "vaapi",
+            NOTHING,
+            detail,
+            configured_node_hint(va, config_file),
+        );
+    };
+    // Its driver file, when the check didn't show it works.
+    let missing = va
+        .expected_driver
+        .as_deref()
+        .filter(|_| va.driver_file.is_none() && va.ffmpeg_h264 != Some(true));
+    if let Some(driver) = missing {
+        let _ = write!(detail, " · {driver} isn't installed");
+    }
+    match va.ffmpeg_h264 {
+        Some(false) => fail_fix(
             "vaapi",
             NOTHING,
             detail,
             fix(Need::VaDriver(gpu)).also(&cpu.meanwhile()),
         ),
-        (Some(_), _) => ok("vaapi", NOTHING, detail),
-        _ => fail(
+        // Not probed (the GUI's doctor): the driver file is all there is.
+        None if missing.is_some() => fail_fix(
             "vaapi",
             NOTHING,
             detail,
-            "pick an Intel or AMD render node with encoder.vaapi_device",
+            fix(Need::VaDriver(gpu)).also(&cpu.meanwhile()),
         ),
+        _ => ok("vaapi", NOTHING, detail),
+    }
+}
+
+/// What to do about a configured VA node that isn't an Intel or AMD GPU
+/// (NVIDIA's, which has no VA-API encoder, a virtual machine's, another
+/// vendor's, or no render node): set the configuration that names it to
+/// an Intel or AMD node, or remove it (Qrec then picks the first one).
+fn configured_node_hint(va: &VaReport, config_file: Option<&Path>) -> String {
+    let why = match va.vendor {
+        Some(PCI_NVIDIA) => "NVIDIA has no VA-API encoder: ",
+        _ => "",
+    };
+    let first = "(Qrec then takes the first one)";
+    match va.origin.as_deref() {
+        Some("project") => format!(
+            "{why}set the project's recording.vaapiDevice to an Intel or AMD render node, or to \
+             null {first}"
+        ),
+        _ => {
+            let file = config_file
+                .map_or_else(|| "the user config".to_owned(), |f| f.display().to_string());
+            format!(
+                "{why}set encoder.vaapi_device in {file} to an Intel or AMD render node, or \
+                 remove it {first}"
+            )
+        }
     }
 }
 
@@ -1594,12 +1838,29 @@ impl DoctorReport {
                     .iter()
                     .map(|n| {
                         let vendor = n.vendor_name.as_deref().unwrap_or("unknown vendor");
-                        format!("{} ({vendor})", n.path)
+                        match n.device_id {
+                            Some(id) => format!("{} ({vendor} {id:#06x})", n.path),
+                            None => format!("{} ({vendor})", n.path),
+                        }
                     })
                     .collect();
                 out.push_str(&nodes.join(", "));
             }
             out.push('\n');
+            if let Some(driver) = &va.expected_driver {
+                let _ = match (&va.driver_file, va.driver_dirs.is_empty()) {
+                    (Some(file), _) => writeln!(out, "  libva driver {driver}: {file}"),
+                    (None, false) => writeln!(
+                        out,
+                        "  libva driver {driver}: not installed (libva looks in {})",
+                        va.driver_dirs.join(", ")
+                    ),
+                    (None, true) => writeln!(
+                        out,
+                        "  libva driver {driver}: not installed (no libva driver directory)"
+                    ),
+                };
+            }
             for line in va.startup.iter().chain(&va.note) {
                 let _ = writeln!(out, "  {line}");
             }
@@ -1739,8 +2000,18 @@ impl Probe for SystemProbe {
         gpu::render_nodes()
     }
 
+    fn va_drivers(&self) -> gpu::VaDrivers {
+        gpu::VaDrivers::from_process()
+    }
+
     fn env(&self, key: &str) -> Option<String> {
         std::env::var(key).ok().filter(|v| !v.is_empty())
+    }
+
+    fn config_file(&self) -> Option<PathBuf> {
+        crate::paths::UserDirs::resolve(&crate::paths::Env::from_process())
+            .ok()
+            .map(|dirs| dirs.config_file())
     }
 
     fn gpu_startup(&self) -> Vec<String> {
@@ -2026,12 +2297,19 @@ mod tests {
         pactl: Result<String, String>,
         pulse: Result<String, String>,
         nodes: Vec<gpu::RenderNode>,
+        drivers: gpu::VaDrivers,
         env: BTreeMap<&'static str, &'static str>,
+        /// The h264_vaapi check with the node's driver…
         vaapi: Result<(), String>,
+        /// …and with Intel's other one, where it runs again.
+        vaapi_other: Result<(), String>,
         va_factory: Result<Option<String>, String>,
         startup: Vec<String>,
         platform: HostPlatform,
+        /// The h264_vaapi checks with the node's driver…
         vaapi_probed: Cell<u32>,
+        /// …and with Intel's other one.
+        vaapi_retried: Cell<u32>,
         factory_probed: Cell<u32>,
         portal_asked: Cell<u32>,
         x11_asked: Cell<u32>,
@@ -2041,7 +2319,34 @@ mod tests {
         gpu::RenderNode {
             path: path.to_owned(),
             vendor: Some(vendor),
+            device_id: None,
             driver: None,
+        }
+    }
+
+    /// A node with its PCI device id and kernel driver.
+    fn gpu_node(path: &str, vendor: u16, device_id: u16, driver: &str) -> gpu::RenderNode {
+        gpu::RenderNode {
+            device_id: Some(device_id),
+            driver: Some(driver.to_owned()),
+            ..node(path, vendor)
+        }
+    }
+
+    /// Libva's directory `dir` holding these drivers (as data: nothing on
+    /// disk is looked at).
+    fn drivers_in(dir: &str, names: &[&str]) -> gpu::VaDrivers {
+        gpu::VaDrivers {
+            dirs: vec![PathBuf::from(dir)],
+            found: names
+                .iter()
+                .map(|n| {
+                    (
+                        (*n).to_owned(),
+                        Path::new(dir).join(format!("{n}_drv_video.so")),
+                    )
+                })
+                .collect(),
         }
     }
 
@@ -2131,15 +2436,18 @@ mod tests {
                 pactl: Ok("pactl 17.0".to_owned()),
                 pulse: Ok("PulseAudio (on PipeWire 1.6.6)".to_owned()),
                 nodes: vec![
-                    node("/dev/dri/renderD128", PCI_NVIDIA),
-                    node("/dev/dri/renderD129", PCI_INTEL),
+                    gpu_node("/dev/dri/renderD128", PCI_NVIDIA, 0x2db8, "nvidia"),
+                    gpu_node("/dev/dri/renderD129", PCI_INTEL, 0x7d51, "i915"),
                 ],
+                drivers: drivers_in("/run/opengl-driver/lib/dri", &["iHD", "i965"]),
                 env: [
                     ("LIBVA_DRIVER_NAME", "iHD"),
                     ("XDG_RUNTIME_DIR", "/run/user/1000"),
                 ]
                 .into(),
                 vaapi: Ok(()),
+                // i965 doesn't drive Arrow Lake.
+                vaapi_other: Err("ffmpeg exited with status 1".to_owned()),
                 va_factory: Ok(Some("vah264enc".to_owned())),
                 startup: vec!["set LIBVA_DRIVER_NAME=iHD (was nvidia)".to_owned()],
                 platform: platform(
@@ -2151,6 +2459,7 @@ mod tests {
                     "ID=nixos\n",
                 ),
                 vaapi_probed: Cell::new(0),
+                vaapi_retried: Cell::new(0),
                 factory_probed: Cell::new(0),
                 portal_asked: Cell::new(0),
                 x11_asked: Cell::new(0),
@@ -2172,23 +2481,22 @@ mod tests {
 
         /// One Intel node (renderD128) whose VA encoder is `vah264enc`.
         fn intel_only(mut self) -> Self {
-            self.nodes = vec![node("/dev/dri/renderD128", PCI_INTEL)];
+            self.nodes = vec![gpu_node("/dev/dri/renderD128", PCI_INTEL, 0x7d51, "i915")];
             self.va_factory = Ok(Some("vah264enc".to_owned()));
             self.startup.clear();
             self
         }
 
-        /// The vendor of the node a probe runs on (also through a
-        /// symlink), which is never NVIDIA.
-        fn probed_vendor(&self, device: &str) -> Option<u16> {
-            let real = std::fs::canonicalize(device).ok();
-            let vendor = self
-                .nodes
-                .iter()
-                .find(|n| n.path == device || std::fs::canonicalize(&n.path).ok() == real)
-                .and_then(|n| n.vendor);
-            assert_ne!(vendor, Some(PCI_NVIDIA), "NVIDIA must never be probed");
-            vendor
+        /// The node a probe runs on (also through a symlink), which is
+        /// never NVIDIA.
+        fn probed_node(&self, device: &str) -> Option<&gpu::RenderNode> {
+            let node = gpu::node_for(device, &self.nodes);
+            assert_ne!(
+                node.and_then(|n| n.vendor),
+                Some(PCI_NVIDIA),
+                "NVIDIA must never be probed"
+            );
+            node
         }
     }
 
@@ -2251,17 +2559,32 @@ mod tests {
         fn render_nodes(&self) -> Vec<gpu::RenderNode> {
             self.nodes.clone()
         }
+        fn va_drivers(&self) -> gpu::VaDrivers {
+            self.drivers.clone()
+        }
         fn env(&self, key: &str) -> Option<String> {
             self.env.get(key).map(|v| (*v).to_owned())
         }
+        /// The check loads the node's driver (the pinned one when it
+        /// fits), then, only where that one failed, Intel's other driver.
         fn vaapi_h264(&self, device: &str, driver: Option<&str>) -> Result<(), String> {
-            let vendor = self.probed_vendor(device);
-            assert_eq!(driver, vendor.and_then(libva_driver_for));
-            self.vaapi_probed.set(self.vaapi_probed.get() + 1);
-            self.vaapi.clone()
+            let node = self.probed_node(device).expect("a node of this machine");
+            let pinned = self.env.get("LIBVA_DRIVER_NAME").copied();
+            let first = gpu::child_libva_driver(node, pinned, &self.drivers);
+            if driver == first.as_deref() {
+                self.vaapi_probed.set(self.vaapi_probed.get() + 1);
+                return self.vaapi.clone();
+            }
+            assert!(self.vaapi.is_err(), "a retry after a failure only");
+            assert_eq!(
+                driver,
+                first.and_then(|f| gpu::retry_driver(node, &f, &self.drivers))
+            );
+            self.vaapi_retried.set(self.vaapi_retried.get() + 1);
+            self.vaapi_other.clone()
         }
         fn gst_va_factory(&self, device: &str) -> Result<Option<String>, String> {
-            self.probed_vendor(device);
+            self.probed_node(device);
             self.factory_probed.set(self.factory_probed.get() + 1);
             self.va_factory.clone()
         }
@@ -2270,6 +2593,9 @@ mod tests {
         }
         fn platform(&self) -> HostPlatform {
             self.platform.clone()
+        }
+        fn config_file(&self) -> Option<PathBuf> {
+            Some(PathBuf::from("/home/me/.config/qrec/config.toml"))
         }
     }
 
@@ -2713,7 +3039,8 @@ mod tests {
 
     /// GStreamer lists no VA encoder: on an Intel or AMD node, the node's
     /// driver first, then GStreamer's VA plugin; the plugin alone once
-    /// ffmpeg's h264_vaapi encoded on the node, or without such a node.
+    /// ffmpeg's h264_vaapi encoded on the node. Without such a node,
+    /// nothing to install: the row informs.
     #[test]
     fn no_va_encoder_hints_the_driver_then_the_plugin() {
         let gnome = |os_release: &str| {
@@ -2730,6 +3057,7 @@ mod tests {
         let mut fake = Fake::healthy();
         fake.platform = gnome("ID=fedora\nVERSION_ID=44\n");
         fake.nodes = vec![node("/dev/dri/renderD128", PCI_AMD)];
+        fake.drivers = drivers_in("/usr/lib64/dri", &["radeonsi"]);
         fake.env.insert("LIBVA_DRIVER_NAME", "radeonsi");
         fake.startup.clear();
         fake.va_encoders.clear();
@@ -2765,6 +3093,7 @@ mod tests {
         // Arch on Intel, whose h264_vaapi encodes: only the plugin is missing.
         fake.platform = gnome("ID=arch\n");
         fake.nodes = vec![node("/dev/dri/renderD128", PCI_INTEL)];
+        fake.drivers = drivers_in("/usr/lib/dri", &["iHD"]);
         fake.env.insert("LIBVA_DRIVER_NAME", "iHD");
         fake.vaapi = Ok(());
         let report = run_with(&fake, &opts());
@@ -2780,11 +3109,65 @@ mod tests {
                  sudo pacman -S gst-plugin-va"
             )
         );
-        // No Intel or AMD node: the plugin.
-        fake.nodes = vec![node("/dev/dri/renderD128", PCI_NVIDIA)];
-        fake.env.remove("LIBVA_DRIVER_NAME");
+        // A Haswell, which only i965 drives: GStreamer's VA plugin doesn't
+        // encode with i965, so neither the driver nor the plugin helps and
+        // the row informs, i965 installed (exports encode) or not, probed
+        // or not.
+        fake.nodes = vec![gpu_node("/dev/dri/renderD128", PCI_INTEL, 0x0416, "i915")];
+        fake.va_factory = Ok(None);
+        fake.env.insert("LIBVA_DRIVER_NAME", "i965");
+        for (files, vaapi) in [
+            (&["iHD", "i965"][..], Ok(())),
+            (&["iHD"][..], Err("ffmpeg exited with status 1".to_owned())),
+        ] {
+            fake.drivers = drivers_in("/usr/lib/dri", files);
+            fake.vaapi = vaapi;
+            for options in [opts(), unprobed.clone()] {
+                let va = check(&run_with(&fake, &options), "gst.vah264enc").clone();
+                assert!(va.ok && va.hint.is_none() && va.fix.is_none(), "{va:?}");
+                assert_eq!(
+                    va.detail,
+                    "GStreamer's VA plugin doesn't encode with i965, the only VA-API driver of \
+                     this Intel GPU: recordings use x264 on the CPU"
+                );
+            }
+        }
+        // A Kaby Lake with i965 alone, whose exports it encodes: iHD would
+        // record, then the plugin. With iHD installed too, the i965 is the
+        // user's LIBVA_DRIVER_NAME: unsetting it is the fix.
+        fake.nodes = vec![gpu_node("/dev/dri/renderD128", PCI_INTEL, 0x5916, "i915")];
+        fake.drivers = drivers_in("/usr/lib/dri", &["i965"]);
+        fake.vaapi = Ok(());
         let report = run_with(&fake, &opts());
-        assert_eq!(check(&report, "gst.vah264enc").hint.as_deref(), plugin);
+        assert!(check(&report, "vaapi").ok);
+        assert_eq!(
+            check(&report, "gst.vah264enc").hint.as_deref(),
+            Some(
+                "install Intel's iHD VA-API driver (chips older than Broadwell need the i965 \
+                 one instead) with pacman; if GStreamer still has no VA encoder: \
+                 sudo pacman -S gst-plugin-va"
+            )
+        );
+        fake.drivers = drivers_in("/usr/lib/dri", &["iHD", "i965"]);
+        let va = check(&run_with(&fake, &opts()), "gst.vah264enc").clone();
+        assert!(!va.ok && va.fix.is_none(), "{va:?}");
+        assert_eq!(
+            va.hint.as_deref(),
+            Some("unset LIBVA_DRIVER_NAME=i965: Qrec then loads iHD, which GStreamer records with")
+        );
+        // No Intel or AMD node (NVIDIA only, a virtual machine): the VA
+        // plugin can't help, nothing to install, the row informs.
+        for vendor in [PCI_NVIDIA, gpu::VENDOR_VIRTIO] {
+            fake.nodes = vec![node("/dev/dri/renderD128", vendor)];
+            fake.env.remove("LIBVA_DRIVER_NAME");
+            let report = run_with(&fake, &opts());
+            let va = check(&report, "gst.vah264enc");
+            assert!(va.ok && va.hint.is_none() && va.fix.is_none(), "{va:?}");
+            assert_eq!(
+                va.detail,
+                "no Intel or AMD GPU: recordings use x264 on the CPU"
+            );
+        }
     }
 
     /// MP4's video is h264_vaapi's where its check passed, else libx264's,
@@ -2932,38 +3315,281 @@ mod tests {
         assert_eq!(fake.vaapi_probed.get(), 5, "probed with probe_vaapi only");
     }
 
-    /// The `vaapi` check without an Intel or AMD node says what encodes on
-    /// the CPU instead: x264 for both, else what each uses.
+    /// The `vaapi` check without an Intel or AMD node informs: it names
+    /// what the machine has (no node, NVIDIA's, a virtual machine's GPU)
+    /// and what encodes on the CPU instead, x264 for both, else what each
+    /// uses (stock Fedora: OpenH264 for both). Nothing to install or set.
     #[test]
     fn without_a_va_node_the_cpu_encoders_are_named() {
         let mut fake = Fake::healthy();
         fake.nodes = vec![node("/dev/dri/renderD128", PCI_NVIDIA)];
         fake.env.remove("LIBVA_DRIVER_NAME");
-        let detail = |fake: &Fake| check(&run_with(fake, &opts()), "vaapi").detail.clone();
+        let vaapi = |fake: &Fake| check(&run_with(fake, &opts()), "vaapi").clone();
+        let nvidia = "no Intel or AMD GPU (/dev/dri/renderD128: NVIDIA, which has no VA-API \
+                      encoder)";
+        let c = vaapi(&fake);
+        assert!(c.ok && c.hint.is_none(), "{c:?}");
         assert_eq!(
-            detail(&fake),
-            "no Intel or AMD render node: recordings and exports use x264 on the CPU"
+            c.detail,
+            format!("{nvidia}: recordings and exports use x264 on the CPU")
         );
         fake.encoders.remove("libx264");
         assert_eq!(
-            detail(&fake),
-            "no Intel or AMD render node: recordings use x264 and exports OpenH264 on the CPU"
+            vaapi(&fake).detail,
+            format!("{nvidia}: recordings use x264 and exports OpenH264 on the CPU")
         );
         fake.elements.remove("x264enc");
         assert_eq!(
-            detail(&fake),
-            "no Intel or AMD render node: recordings and exports use OpenH264 on the CPU"
+            vaapi(&fake).detail,
+            format!("{nvidia}: recordings and exports use OpenH264 on the CPU")
         );
         fake.encoders.remove("libopenh264");
         assert_eq!(
-            detail(&fake),
-            "no Intel or AMD render node: recordings use OpenH264 on the CPU"
+            vaapi(&fake).detail,
+            format!("{nvidia}: recordings use OpenH264 on the CPU")
         );
         fake.elements.remove("openh264enc");
         assert_eq!(
-            detail(&fake),
-            "no Intel or AMD render node: nothing encodes H.264 on the CPU either"
+            vaapi(&fake).detail,
+            format!("{nvidia}: nothing encodes H.264 on the CPU either")
         );
+    }
+
+    /// The VA-API rows (`gst.vah264enc`, `vaapi`) and the text's VA-API
+    /// section on the GPUs Qrec meets: the libva driver per node (iHD, i965
+    /// by generation or because only it is installed), whether its file is
+    /// there, GStreamer recording nothing with i965 (information on the
+    /// chips only it drives, iHD's hint on newer ones), Intel's other
+    /// driver where only it passes the h264_vaapi check (exports load it),
+    /// NVIDIA never probed, a configured node that can't encode, and
+    /// machines without an Intel or AMD GPU informing rather than failing.
+    #[test]
+    fn va_rows_per_gpu() {
+        let distro = |os_release: &str| {
+            platform(
+                &[
+                    ("WAYLAND_DISPLAY", "wayland-0"),
+                    ("XDG_CURRENT_DESKTOP", "GNOME"),
+                ],
+                os_release,
+            )
+        };
+        let intel = |id: u16, driver: &str| gpu_node("/dev/dri/renderD128", PCI_INTEL, id, driver);
+        // An Intel node of `id` on `os_release`, these driver files, this
+        // pinned driver: its VA-API works.
+        let machine = |os_release: &str, id: u16, drivers: gpu::VaDrivers, pinned: &'static str| {
+            let mut fake = Fake::healthy();
+            fake.platform = distro(os_release);
+            fake.nodes = vec![intel(id, "i915")];
+            fake.drivers = drivers;
+            fake.env.insert("LIBVA_DRIVER_NAME", pinned);
+            fake.startup.clear();
+            fake
+        };
+        // Its VA-API doesn't: no VA encoder, and the h264_vaapi check fails.
+        let broken = |mut fake: Fake| {
+            fake.vaapi = Err("ffmpeg exited with status 1".to_owned());
+            fake.va_encoders.clear();
+            fake.va_factory = Ok(None);
+            fake
+        };
+        // It loads i965: ffmpeg encodes, GStreamer's VA plugin registers no
+        // encoder (i965 is blocklisted for encoding there).
+        let on_i965 = |mut fake: Fake| {
+            fake.va_encoders.clear();
+            fake.va_factory = Ok(None);
+            fake
+        };
+        let both = |dir: &str| drivers_in(dir, &["iHD", "i965"]);
+        let multiarch = "/usr/lib/x86_64-linux-gnu/dri";
+        let debian = "ID=debian\n";
+        let fedora = "ID=fedora\nVERSION_ID=44\n";
+        let ubuntu = "ID=ubuntu\nID_LIKE=debian\n";
+        let unprobed = DoctorOptions {
+            probe_vaapi: false,
+            ..opts()
+        };
+        let nvidia_config = DoctorOptions {
+            config_vaapi_device: Some("/dev/dri/renderD128".to_owned()),
+            ..opts()
+        };
+
+        let mut cases: Vec<(&str, Fake, DoctorOptions)> = vec![
+            (
+                "dev box: Arrow Lake and NVIDIA, NixOS",
+                Fake::healthy(),
+                opts(),
+            ),
+            (
+                "Haswell with i965, Debian",
+                on_i965(machine(debian, 0x0416, both(multiarch), "i965")),
+                opts(),
+            ),
+            (
+                "Haswell without i965, Fedora",
+                broken(machine(
+                    fedora,
+                    0x0416,
+                    drivers_in("/usr/lib64/dri", &["iHD"]),
+                    "i965",
+                )),
+                opts(),
+            ),
+            (
+                "Tiger Lake without a VA driver, Debian",
+                broken(machine(
+                    debian,
+                    0x9a49,
+                    drivers_in("/usr/lib/x86_64-linux-gnu/dri", &[]),
+                    "iHD",
+                )),
+                opts(),
+            ),
+            (
+                "Tiger Lake without a VA driver, the window's doctor (unprobed)",
+                broken(machine(
+                    debian,
+                    0x9a49,
+                    drivers_in("/usr/lib/x86_64-linux-gnu/dri", &[]),
+                    "iHD",
+                )),
+                unprobed.clone(),
+            ),
+            (
+                "Cherry View, which iHD doesn't drive, Ubuntu",
+                on_i965(machine(ubuntu, 0x22b0, both(multiarch), "i965")),
+                opts(),
+            ),
+            (
+                "Kaby Lake whose free iHD encodes nothing, i965 exports, Ubuntu",
+                {
+                    let mut fake = broken(machine(ubuntu, 0x5916, both(multiarch), "iHD"));
+                    fake.vaapi_other = Ok(());
+                    fake
+                },
+                opts(),
+            ),
+            (
+                "Kaby Lake with only i965, Debian",
+                on_i965(machine(
+                    debian,
+                    0x5916,
+                    drivers_in(multiarch, &["i965"]),
+                    "i965",
+                )),
+                opts(),
+            ),
+            (
+                "Kaby Lake with the user's LIBVA_DRIVER_NAME=i965, Arch",
+                on_i965(machine("ID=arch\n", 0x5916, both("/usr/lib/dri"), "i965")),
+                opts(),
+            ),
+            (
+                "NVIDIA configured on the dev box",
+                Fake::healthy(),
+                nvidia_config,
+            ),
+            (
+                "a configured path that isn't a render node",
+                Fake::healthy(),
+                DoctorOptions {
+                    config_vaapi_device: Some("/nonexistent/renderD999".to_owned()),
+                    ..opts()
+                },
+            ),
+        ];
+        // Machines without an Intel or AMD GPU.
+        for (name, nodes) in [
+            (
+                "NVIDIA only, Ubuntu",
+                vec![gpu_node(
+                    "/dev/dri/renderD128",
+                    PCI_NVIDIA,
+                    0x2db8,
+                    "nvidia",
+                )],
+            ),
+            (
+                "virtio-gpu, a KVM guest",
+                vec![gpu_node(
+                    "/dev/dri/renderD128",
+                    gpu::VENDOR_VIRTIO,
+                    0x0010,
+                    "virtio_gpu",
+                )],
+            ),
+            (
+                "VMware SVGA, a VMware guest",
+                vec![gpu_node(
+                    "/dev/dri/renderD128",
+                    gpu::VENDOR_VMWARE,
+                    0x0405,
+                    "vmwgfx",
+                )],
+            ),
+            (
+                "QXL, a QEMU guest",
+                vec![gpu_node(
+                    "/dev/dri/renderD128",
+                    gpu::VENDOR_QXL,
+                    0x0100,
+                    "qxl",
+                )],
+            ),
+            (
+                "an Arm board's GPU, not on PCI",
+                vec![gpu::RenderNode {
+                    path: "/dev/dri/renderD128".to_owned(),
+                    vendor: None,
+                    device_id: None,
+                    driver: Some("panfrost".to_owned()),
+                }],
+            ),
+            ("no GPU render node", Vec::new()),
+        ] {
+            let mut fake = Fake::healthy();
+            fake.platform = distro(ubuntu);
+            fake.nodes = nodes;
+            fake.drivers = drivers_in(
+                "/usr/lib/x86_64-linux-gnu/dri",
+                &["iHD", "i965", "radeonsi"],
+            );
+            fake.va_encoders.clear();
+            fake.env.remove("LIBVA_DRIVER_NAME");
+            fake.startup.clear();
+            cases.push((name, fake, opts()));
+        }
+
+        let mut out = String::new();
+        for (name, fake, options) in &cases {
+            let report = run_with(fake, options);
+            let _ = writeln!(out, "=== {name}");
+            for id in ["gst.vah264enc", "vaapi"] {
+                let c = check(&report, id);
+                let status = if c.ok { "ok" } else { "optional" };
+                let _ = writeln!(out, "{status} {id}: {}", c.detail);
+                if let Some(hint) = &c.hint {
+                    let _ = writeln!(out, "  → {hint}");
+                }
+                assert!(c.needed_for.is_empty() && !c.required, "{name}: {c:?}");
+            }
+            // The text's VA-API section.
+            let text = report.to_text();
+            let start = text
+                .find("\nVA-API render nodes: ")
+                .expect("the VA-API section");
+            let section = &text[start + 1..];
+            let end = section.find("\n\n").unwrap_or(section.len());
+            let _ = writeln!(out, "{}\n", &section[..end]);
+            assert!(
+                report.features_off.is_empty(),
+                "{name}: {:?}",
+                report.features_off
+            );
+            let back: DoctorReport = serde_json::from_value(report.to_json()).unwrap();
+            assert_eq!(back, report, "{name}");
+        }
+        insta::assert_snapshot!("va_rows_per_gpu", out);
     }
 
     #[test]
@@ -3289,14 +3915,16 @@ mod tests {
 
     #[test]
     fn va_api_never_touches_nvidia() {
-        // Only NVIDIA: nothing is picked automatically.
+        // Only NVIDIA: nothing is picked automatically, and that is no
+        // failure (NVIDIA has no VA-API encoder).
         let mut fake = Fake::healthy();
         fake.nodes = vec![node("/dev/dri/renderD128", PCI_NVIDIA)];
         fake.env.remove("LIBVA_DRIVER_NAME");
         let report = run_with(&fake, &opts());
         let va = report.va.as_ref().unwrap();
         assert_eq!((va.device.as_deref(), va.ffmpeg_h264), (None, None));
-        assert!(!check(&report, "vaapi").ok && report.ok());
+        assert_eq!(va.expected_driver, None);
+        assert!(check(&report, "vaapi").ok && report.ok());
         assert_eq!((fake.vaapi_probed.get(), fake.factory_probed.get()), (0, 0));
         // x264enc records.
         assert_eq!(
@@ -3304,7 +3932,8 @@ mod tests {
             [Feature::Recording]
         );
 
-        // Configured explicitly: reported, still never probed.
+        // Configured explicitly: reported, still never probed, and the hint
+        // names the configuration that picks it.
         let report = run_with(
             &fake,
             &DoctorOptions {
@@ -3315,8 +3944,44 @@ mod tests {
         let va = report.va.as_ref().unwrap();
         assert_eq!(va.origin.as_deref(), Some("config"));
         assert_eq!((va.ffmpeg_h264, va.gst_factory.as_deref()), (None, None));
-        assert!(va.note.as_deref().unwrap().contains("never probed"));
+        assert!(
+            va.note
+                .as_deref()
+                .unwrap()
+                .contains("isn't probed: NVIDIA has no VA-API encoder"),
+            "{va:?}"
+        );
         assert_eq!((fake.vaapi_probed.get(), fake.factory_probed.get()), (0, 0));
+        let c = check(&report, "vaapi");
+        assert!(!c.ok && c.needed_for.is_empty(), "{c:?}");
+        assert_eq!(
+            c.hint.as_deref(),
+            Some(
+                "NVIDIA has no VA-API encoder: set encoder.vaapi_device in \
+                 /home/me/.config/qrec/config.toml to an Intel or AMD render node, or remove it \
+                 (Qrec then takes the first one)"
+            )
+        );
+        assert_eq!(
+            check(&report, "gst.vah264enc").detail,
+            "/dev/dri/renderD128 is NVIDIA's, which has no VA-API encoder: recordings use x264 \
+             on the CPU"
+        );
+        // The project's: its recording.vaapiDevice.
+        let report = run_with(
+            &fake,
+            &DoctorOptions {
+                project_vaapi_device: Some("/dev/dri/renderD128".to_owned()),
+                ..opts()
+            },
+        );
+        assert!(
+            check(&report, "vaapi")
+                .hint
+                .as_deref()
+                .is_some_and(|h| h.contains("set the project's recording.vaapiDevice")),
+            "{report:?}"
+        );
 
         // The project's device wins; a mismatching LIBVA_DRIVER_NAME is reported.
         let mut fake = Fake::healthy();
@@ -3472,10 +4137,13 @@ mod tests {
                  org.freedesktop.portal.Desktop was not provided by any .service files"
                 .to_owned())
         };
+        // Debian's libva drivers (intel-media-va-driver).
+        let debian_drivers = || drivers_in("/usr/lib/x86_64-linux-gnu/dri", &["iHD"]);
 
         // PulseAudio itself (PipeWire only for the portal's screen casts):
         // Debian with GNOME.
         let mut pulseaudio_16 = gnome(distro_ffmpeg(Fake::healthy().intel_only()), "ID=debian\n");
+        pulseaudio_16.drivers = debian_drivers();
         pulseaudio_16.pactl = Ok("pactl 16.1".to_owned());
         pulseaudio_16.pulse = Ok("pulseaudio".to_owned());
         let mut pulseaudio_15 = pulseaudio_16.clone();
@@ -3492,6 +4160,7 @@ mod tests {
             "ID=debian\n",
         );
         xfce.portal = no_portal();
+        xfce.drivers = debian_drivers();
         xfce.pulse = Ok("PulseAudio (on PipeWire 1.4.2)".to_owned());
 
         // KDE Plasma on X11 (Kubuntu): its portal registers ScreenCast and
@@ -3540,6 +4209,7 @@ mod tests {
         // libx264, OpenH264 decodes), VA on Intel, which records and
         // encodes the MP4 exports.
         let mut fedora = gnome(Fake::healthy().intel_only(), "ID=fedora\nVERSION_ID=44\n");
+        fedora.drivers = drivers_in("/usr/lib64/dri", &["iHD", "radeonsi"]);
         fedora.elements.remove("x264enc");
         fedora.h264_decoders = vec!["openh264dec".to_owned()];
         fedora.encoders.remove("libx264");
@@ -3554,7 +4224,7 @@ mod tests {
         // x264enc either, openh264enc records, and with no libx264,
         // libopenh264 exports MP4.
         let mut fedora_amd = fedora.clone();
-        fedora_amd.nodes = vec![node("/dev/dri/renderD128", PCI_AMD)];
+        fedora_amd.nodes = vec![gpu_node("/dev/dri/renderD128", PCI_AMD, 0x73df, "amdgpu")];
         fedora_amd.env.insert("LIBVA_DRIVER_NAME", "radeonsi");
         fedora_amd.startup.clear();
         fedora_amd.va_encoders.clear();
@@ -3576,7 +4246,8 @@ mod tests {
              org.freedesktop.portal.ScreenCast: No such interface"
                 .to_owned(),
         );
-        sway.nodes = vec![node("/dev/dri/renderD128", PCI_AMD)];
+        sway.nodes = vec![gpu_node("/dev/dri/renderD128", PCI_AMD, 0x73df, "amdgpu")];
+        sway.drivers = drivers_in("/usr/lib/dri", &["radeonsi"]);
         sway.env.insert("LIBVA_DRIVER_NAME", "radeonsi");
         sway.va_factory = Ok(Some("vah264enc".to_owned()));
         sway.startup.clear();
@@ -3586,7 +4257,16 @@ mod tests {
             distro_ffmpeg(Fake::healthy()),
             "ID=ubuntu\nID_LIKE=debian\n",
         );
-        nvidia.nodes = vec![node("/dev/dri/renderD128", PCI_NVIDIA)];
+        nvidia.nodes = vec![gpu_node(
+            "/dev/dri/renderD128",
+            PCI_NVIDIA,
+            0x2db8,
+            "nvidia",
+        )];
+        nvidia.drivers = drivers_in(
+            "/usr/lib/x86_64-linux-gnu/dri",
+            &["iHD", "i965", "radeonsi"],
+        );
         nvidia.va_encoders.clear();
         nvidia.env.remove("LIBVA_DRIVER_NAME");
         nvidia.startup.clear();
@@ -3599,7 +4279,13 @@ mod tests {
             ],
             "ID=opensuse-tumbleweed\nID_LIKE=\"opensuse suse\"\n",
         );
-        vm.nodes = vec![node("/dev/dri/renderD128", 0x1af4)];
+        vm.nodes = vec![gpu_node(
+            "/dev/dri/renderD128",
+            gpu::VENDOR_VIRTIO,
+            0x0010,
+            "virtio_gpu",
+        )];
+        vm.drivers = drivers_in("/usr/lib64/dri", &[]);
         vm.va_encoders.clear();
         vm.env.remove("LIBVA_DRIVER_NAME");
         vm.startup.clear();
@@ -3609,6 +4295,7 @@ mod tests {
             distro_ffmpeg(Fake::healthy().intel_only()),
             "ID=debian\nVERSION_ID=\"13\"\n",
         );
+        debian.drivers = debian_drivers();
         debian.h264_decoders.clear();
 
         vec![
@@ -3881,14 +4568,17 @@ mod tests {
         fn render_nodes(&self) -> Vec<gpu::RenderNode> {
             SystemProbe.render_nodes()
         }
+        fn va_drivers(&self) -> gpu::VaDrivers {
+            SystemProbe.va_drivers()
+        }
         fn env(&self, key: &str) -> Option<String> {
             SystemProbe.env(key)
         }
         fn vaapi_h264(&self, device: &str, driver: Option<&str>) -> Result<(), String> {
-            assert!(
-                !device.ends_with("renderD128"),
-                "never probe the NVIDIA node"
-            );
+            let nvidia = gpu::render_nodes()
+                .into_iter()
+                .any(|n| n.path == device && n.vendor == Some(PCI_NVIDIA));
+            assert!(!nvidia, "never probe the NVIDIA node");
             SystemProbe.vaapi_h264(device, driver)
         }
         fn gst_va_factory(&self, _: &str) -> Result<Option<String>, String> {
@@ -3899,6 +4589,9 @@ mod tests {
         }
         fn platform(&self) -> HostPlatform {
             SystemProbe.platform()
+        }
+        fn config_file(&self) -> Option<PathBuf> {
+            SystemProbe.config_file()
         }
     }
 

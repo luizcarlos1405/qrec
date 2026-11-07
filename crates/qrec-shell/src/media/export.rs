@@ -915,20 +915,18 @@ pub(crate) fn check_ffmpeg(done: &Finished, what: &str, log: &LogFile) -> Result
     Ok(())
 }
 
-/// For VA plans (`-init_hw_device vaapi=va:<node>`), the `LIBVA_DRIVER_NAME`
-/// of the node's vendor (A§8.10): Intel `iHD`, AMD `radeonsi`.
-pub(crate) fn vaapi_driver(argv: &[String]) -> Option<&'static str> {
+/// For VA plans (`-init_hw_device vaapi=va:<node>`), the node's
+/// `LIBVA_DRIVER_NAME` (A§8.10), the one its h264_vaapi check passed with
+/// (`gpu::export_libva_driver_for`): this process's when it fits the
+/// node's vendor, else AMD's `radeonsi`, Intel's `i965` (the chips only it
+/// drives, or only it installed) or `iHD`; or Intel's other driver where
+/// capability detection found only that one encodes there.
+pub(crate) fn vaapi_driver(argv: &[String]) -> Option<String> {
     let device = argv
         .windows(2)
         .find(|w| w[0] == "-init_hw_device")
         .and_then(|w| w[1].strip_prefix("vaapi=va:"))?;
-    let node = Path::new(device).file_name()?.to_str()?;
-    let vendor = fs::read_to_string(format!("/sys/class/drm/{node}/device/vendor")).ok()?;
-    match vendor.trim() {
-        "0x8086" => Some("iHD"),
-        "0x1002" => Some("radeonsi"),
-        _ => None,
-    }
+    crate::gpu::export_libva_driver_for(device)
 }
 
 #[cfg(test)]

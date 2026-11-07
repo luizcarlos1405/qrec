@@ -6,18 +6,29 @@
 //! ([`CapsOptions::gst_probe`], e.g. [`gst_probe`] for hosts that record):
 //! the `va*h264enc` and `va*h264lpenc` bound to the node, x264enc and
 //! openh264enc. Cached in `$XDG_CACHE_HOME/qrec/capabilities.json`, keyed by
-//! the ffmpeg binary, the node and the libva environment; GStreamer's
-//! answers also by its plugin paths and registry ([`GstEnv`]), so a plugin
-//! that comes or goes is noticed. The session sends the result as
-//! `Event::Capabilities` before its first dispatch. Owner: session.
+//! the ffmpeg binary, the node and its PCI device id, `LIBVA_DRIVER_NAME`
+//! and Qrec's libva driver files (installing or updating one probes
+//! again); GStreamer's answers also by its plugin paths and registry
+//! ([`GstEnv`]), so a plugin that comes or goes is noticed. The session
+//! sends the result as `Event::Capabilities` before its first dispatch.
+//! Owner: session.
 //!
 //! The VA node is never chosen by VA-API itself (A§2.1, the capture
 //! owner's `gpu::effective_va_device`): the project's
 //! `recording.vaapiDevice`, else the config's `encoder.vaapi_device`, else
-//! the first Intel or AMD render node. NVIDIA is used only when configured
-//! explicitly (its `renderD128` hangs the dev machine).
+//! the first Intel or AMD render node. An NVIDIA node, which only a
+//! configuration names, is never probed (NVIDIA has no VA-API encoder; its
+//! `renderD128` hangs the dev machine): VA-API is off then. The checks load
+//! the node's libva driver (`gpu::child_libva_driver`), the one `main()`
+//! pinned. Where the h264_vaapi check fails with it on an Intel node, it
+//! runs again with Intel's other driver when that one is installed and
+//! drives the chip (`gpu::retry_driver`); when that one passes, exports
+//! load it there, and the file keeps the pick (`exportDriver`,
+//! [`read_export_driver`]) for `gpu::export_libva_driver_for`. GStreamer is
+//! asked once, with the node's driver: its VA plugin registers no encoder
+//! with `i965`, so recordings never switch drivers.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,7 +37,7 @@ use std::time::UNIX_EPOCH;
 use qrec_core::state::{Capabilities, FfmpegCaps, GstH264Caps, VaapiCaps};
 use serde::{Deserialize, Serialize};
 
-use crate::gpu;
+use crate::gpu::{self, VaDriverPick};
 use crate::proc::{self, Limit, PROBE_TIMEOUT, Spec};
 use crate::store::fsx;
 
@@ -121,10 +132,17 @@ pub struct CapsOptions {
     pub gst_probe: Option<GstProbe>,
     /// What the probe's answers depend on (the cache's key for them).
     pub gst_env: GstEnv,
+    /// Libva's driver files: the checks' driver when this process's
+    /// doesn't fit the node, and the retry's (`gpu::retry_driver`).
+    pub va_drivers: gpu::VaDrivers,
+    /// This process's `LIBVA_DRIVER_NAME`, which `main()` pinned: the
+    /// checks' driver when it fits the node (`gpu::child_libva_driver`).
+    pub libva_driver: Option<String>,
 }
 
 impl CapsOptions {
-    /// The machine's ffmpeg and render nodes, cached in `cache_file`.
+    /// The machine's ffmpeg, render nodes and libva drivers, cached in
+    /// `cache_file`.
     pub fn system(cache_file: Option<PathBuf>, log_dir: Option<PathBuf>) -> Self {
         Self {
             ffmpeg: "ffmpeg".into(),
@@ -136,6 +154,10 @@ impl CapsOptions {
             log_dir,
             gst_probe: None,
             gst_env: GstEnv::from_process(),
+            va_drivers: gpu::VaDrivers::from_process(),
+            libva_driver: std::env::var(gpu::LIBVA_DRIVER_NAME)
+                .ok()
+                .filter(|d| !d.is_empty()),
         }
     }
 }
@@ -222,13 +244,36 @@ pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
         };
     };
     let nodes = gpu::scan_render_nodes(&opts.sys_class_drm, &opts.dev_dri);
-    let choice = gpu::effective_va_device(va.project.as_deref(), va.config.as_deref(), &nodes)
-        .map(|choice| (choice.device, choice.vendor));
-    if let Some((device, None)) = &choice {
-        notes.push(format!(
-            "{device} isn't a render node this machine lists; VA-API is off"
-        ));
-    }
+    let choice = gpu::effective_va_device(va.project.as_deref(), va.config.as_deref(), &nodes);
+    let node = choice
+        .as_ref()
+        .and_then(|c| gpu::node_for(&c.device, &nodes))
+        .cloned();
+    // The node the VA checks run on (as configured, which the core compares
+    // with the configuration), its vendor, its sysfs entry: never NVIDIA's.
+    let target = match (&choice, &node) {
+        (Some(choice), _) if choice.vendor.is_none() => {
+            notes.push(format!(
+                "{} isn't a render node this machine lists; VA-API is off",
+                choice.device
+            ));
+            None
+        }
+        (Some(choice), _) if choice.vendor == Some(gpu::VENDOR_NVIDIA) => {
+            notes.push(format!(
+                "{} is an NVIDIA node: NVIDIA has no VA-API encoder, so it isn't probed and \
+                 VA-API is off",
+                choice.device
+            ));
+            None
+        }
+        (Some(choice), Some(node)) => choice.vendor.map(|v| (choice.device.clone(), v, node)),
+        _ => None,
+    };
+    // The libva driver of the checks: the one the node's children load.
+    let driver = target.as_ref().and_then(|(_, _, node)| {
+        gpu::child_libva_driver(node, opts.libva_driver.as_deref(), &opts.va_drivers)
+    });
     let key = CacheKey {
         ffmpeg: ffmpeg.to_string_lossy().into_owned(),
         ffmpeg_len: fs::metadata(&ffmpeg).map_or(0, |m| m.len()),
@@ -237,11 +282,12 @@ pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
             .as_ref()
             .and_then(mtime_ns)
             .unwrap_or(0),
-        va_device: choice.as_ref().map(|(d, _)| d.clone()),
-        va_vendor: choice.as_ref().and_then(|(_, v)| *v),
+        va_device: choice.as_ref().map(|c| c.device.clone()),
+        va_vendor: choice.as_ref().and_then(|c| c.vendor),
+        va_device_id: node.as_ref().and_then(|n| n.device_id),
         probed_va: opts.probe_va,
-        libva_driver: std::env::var("LIBVA_DRIVER_NAME").ok(),
-        libva_drivers_path: std::env::var("LIBVA_DRIVERS_PATH").ok(),
+        libva_driver: opts.libva_driver.clone(),
+        libva_drivers: driver_stamps(&opts.va_drivers),
     };
     let mut log = ProbeLog::new(opts.log_dir.as_deref());
     if let Some(mut cached) = opts.cache_file.as_deref().and_then(|f| read_cache(f, &key)) {
@@ -318,43 +364,66 @@ pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
         encoders,
     };
 
-    let mut vaapi = match choice {
-        Some((device, Some(vendor))) => {
-            let ffmpeg_h264 = if !opts.probe_va {
-                false
-            } else if !ffmpeg_caps.encoders.contains("h264_vaapi") {
-                notes.push("this ffmpeg has no h264_vaapi encoder".to_owned());
-                false
-            } else {
-                let argv = va_probe_args(&device);
-                let args: Vec<&str> = argv.iter().map(String::as_str).collect();
-                // An explicitly chosen NVIDIA node keeps the inherited driver (A§8.10).
-                let env = gpu::libva_driver_for(vendor).map(|d| (gpu::LIBVA_DRIVER_NAME, d));
-                match run(&args, env, &mut log) {
-                    Ok(out) if out.success() => true,
-                    Ok(out) => {
-                        notes.push(format!(
-                            "the h264_vaapi check on {device} failed: {}",
-                            out.describe()
-                        ));
-                        false
-                    }
-                    Err(e) => {
-                        notes.push(format!("the h264_vaapi check on {device} failed: {e}"));
-                        false
+    // Intel's other driver, where the check passed with it alone.
+    let mut export_driver = None;
+    let mut vaapi = target.as_ref().map(|(device, vendor, node)| {
+        let ffmpeg_h264 = if !opts.probe_va {
+            false
+        } else if !ffmpeg_caps.encoders.contains("h264_vaapi") {
+            notes.push("this ffmpeg has no h264_vaapi encoder".to_owned());
+            false
+        } else {
+            let argv = va_probe_args(device);
+            let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+            // A vendor without a known driver keeps the inherited one.
+            let mut check = |driver: Option<&str>| match run(
+                &args,
+                driver.map(|d| (gpu::LIBVA_DRIVER_NAME, d)),
+                &mut log,
+            ) {
+                Ok(out) if out.success() => Ok(()),
+                Ok(out) => Err(out.describe()),
+                Err(e) => Err(e.to_string()),
+            };
+            match check(driver.as_deref()) {
+                Ok(()) => true,
+                Err(why) => {
+                    let retry = driver.as_deref().and_then(|first| {
+                        let other = gpu::retry_driver(node, first, &opts.va_drivers)?;
+                        Some((first, other, check(Some(other))))
+                    });
+                    match retry {
+                        Some((first, other, Ok(()))) => {
+                            notes.push(format!(
+                                "the h264_vaapi check on {device} failed with {first}: {why}; \
+                                 it passed with {other}, which exports load there"
+                            ));
+                            export_driver = Some(other);
+                            true
+                        }
+                        Some((_, other, Err(again))) => {
+                            notes.push(format!(
+                                "the h264_vaapi check on {device} failed: {why}; with {other} \
+                                 too: {again}"
+                            ));
+                            false
+                        }
+                        None => {
+                            notes.push(format!("the h264_vaapi check on {device} failed: {why}"));
+                            false
+                        }
                     }
                 }
-            };
-            Some(VaapiCaps {
-                device,
-                vendor,
-                ffmpeg_h264,
-                gst_h264_factory: None,
-                gst_h264_lp_factory: None,
-            })
+            }
+        };
+        VaapiCaps {
+            device: device.clone(),
+            vendor: *vendor,
+            ffmpeg_h264,
+            gst_h264_factory: None,
+            gst_h264_lp_factory: None,
         }
-        _ => None,
-    };
+    });
     let gst = opts.gst_probe.and_then(|probe| {
         let device = vaapi
             .as_ref()
@@ -363,6 +432,14 @@ pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
         let found = probe(device.as_deref(), log.path());
         remember_gst(&found, vaapi.as_mut(), &opts.gst_env)
     });
+    // What exports load on the node, when it isn't its own driver.
+    let export_driver = export_driver
+        .zip(target.as_ref())
+        .map(|(driver, (_, _, node))| VaDriverPick {
+            device: node.path.clone(),
+            device_id: node.device_id,
+            driver: driver.to_owned(),
+        });
     let gst_h264 = gst.as_ref().map(|gst| gst.h264);
     if let Some(file) = &opts.cache_file {
         write_cache(
@@ -372,6 +449,7 @@ pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
                 ffmpeg: ffmpeg_caps.clone(),
                 vaapi: vaapi.clone(),
                 gst,
+                export_driver,
             },
         );
     }
@@ -386,6 +464,43 @@ pub fn detect(opts: &CapsOptions, va: &VaConfig) -> Detected {
         notes,
         cached: false,
     }
+}
+
+/// The libva driver VA exports load on the node where only Intel's other
+/// driver passed the h264_vaapi check (`capabilities.json`'s
+/// `exportDriver`), whatever the rest of the file says:
+/// `gpu::export_libva_driver_for` reads it when an export starts.
+pub fn read_export_driver(cache_file: &Path) -> Option<VaDriverPick> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Pick {
+        #[serde(default)]
+        export_driver: Option<VaDriverPick>,
+    }
+    // The file is Qrec's own and small: anything bigger isn't read.
+    if fs::metadata(cache_file).ok()?.len() > 1 << 20 {
+        return None;
+    }
+    let bytes = fs::read(cache_file).ok()?;
+    serde_json::from_slice::<Pick>(&bytes).ok()?.export_driver
+}
+
+/// Qrec's libva driver files as the cache key holds them: each one's
+/// resolved path (a NixOS update changes it) and modification time (an
+/// update in place changes that).
+fn driver_stamps(drivers: &gpu::VaDrivers) -> BTreeMap<String, DriverStamp> {
+    drivers
+        .found
+        .iter()
+        .map(|(name, file)| {
+            let path = fs::canonicalize(file).unwrap_or_else(|_| file.clone());
+            let stamp = DriverStamp {
+                mtime_ns: fs::metadata(&path).ok().as_ref().and_then(mtime_ns),
+                path: path.to_string_lossy().into_owned(),
+            };
+            (name.clone(), stamp)
+        })
+        .collect()
 }
 
 /// What a GStreamer probe answered, to keep: its VA factories go into
@@ -492,9 +607,21 @@ struct CacheKey {
     ffmpeg_mtime_ns: u128,
     va_device: Option<String>,
     va_vendor: Option<u16>,
+    /// The node's PCI device id: another GPU behind that node.
+    va_device_id: Option<u16>,
     probed_va: bool,
+    /// This process's `LIBVA_DRIVER_NAME`.
     libva_driver: Option<String>,
-    libva_drivers_path: Option<String>,
+    /// Qrec's libva driver files, by name ([`driver_stamps`]).
+    libva_drivers: BTreeMap<String, DriverStamp>,
+}
+
+/// A libva driver file, as the cache key holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DriverStamp {
+    path: String,
+    mtime_ns: Option<u128>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -507,6 +634,10 @@ struct CacheFile {
     /// that records asked, and in caches from before them.
     #[serde(default)]
     gst: Option<GstCache>,
+    /// The driver exports load on the node where only Intel's other
+    /// driver passed the h264_vaapi check ([`read_export_driver`]).
+    #[serde(default)]
+    export_driver: Option<VaDriverPick>,
 }
 
 /// GStreamer's software H.264 encoders, and the GStreamer they were found
@@ -551,12 +682,14 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
-    use crate::gpu::{VENDOR_AMD, VENDOR_INTEL, VENDOR_NVIDIA};
+    use crate::gpu::{VENDOR_AMD, VENDOR_INTEL};
 
     const ENCODERS: &str = "Encoders:\n V..... = Video\n A..... = Audio\n ------\n V....D libx264              libx264 H.264\n V....D h264_vaapi           H.264/AVC (VAAPI) (codec h264)\n VF...D png                  PNG image\n A....D aac                  AAC\n";
 
     /// A fake ffmpeg: canned `-version`/`-encoders`; the VA check records
-    /// `LIBVA_DRIVER_NAME` and its arguments, and fails when `va-fails` exists.
+    /// `LIBVA_DRIVER_NAME` and its arguments (the last run's in `va-probe`,
+    /// each run's driver in `va-runs`), and fails when `va-fails` exists,
+    /// or `va-fails-<driver>` for its driver.
     fn fake_ffmpeg(dir: &Path) -> PathBuf {
         let script = dir.join("ffmpeg");
         let body = format!(
@@ -565,7 +698,11 @@ echo run >> "{dir}/runs"
 case "$*" in
   *-version*) echo "ffmpeg version 9.9-test Copyright (c) the FFmpeg developers"; echo "built with tests" ;;
   *-encoders*) printf '{encoders}' ;;
-  *h264_vaapi*) echo "$LIBVA_DRIVER_NAME $*" > "{dir}/va-probe"; [ -e "{dir}/va-fails" ] && exit 1; exit 0 ;;
+  *h264_vaapi*)
+    echo "$LIBVA_DRIVER_NAME $*" > "{dir}/va-probe"
+    echo "$LIBVA_DRIVER_NAME" >> "{dir}/va-runs"
+    if [ -e "{dir}/va-fails" ] || [ -e "{dir}/va-fails-$LIBVA_DRIVER_NAME" ]; then exit 1; fi
+    exit 0 ;;
 esac
 "#,
             dir = dir.display(),
@@ -584,6 +721,25 @@ esac
         }
         fs::create_dir_all(sys.join("card0")).unwrap();
         sys
+    }
+
+    /// A node's PCI device id in a fake sysfs.
+    fn fake_device_id(sys: &Path, name: &str, device_id: &str) {
+        fs::write(
+            sys.join(name).join("device/device"),
+            format!("{device_id}\n"),
+        )
+        .unwrap();
+    }
+
+    /// A libva driver directory with these drivers' files.
+    fn fake_drivers(dir: &Path, names: &[&str]) -> gpu::VaDrivers {
+        let dri = dir.join("dri");
+        fs::create_dir_all(&dri).unwrap();
+        for name in names {
+            fs::write(dri.join(format!("{name}_drv_video.so")), "").unwrap();
+        }
+        gpu::VaDrivers::new(Some(&dri.to_string_lossy()))
     }
 
     fn runs(dir: &Path) -> usize {
@@ -609,6 +765,8 @@ esac
             log_dir: Some(dir.join("logs")),
             gst_probe: None,
             gst_env: GstEnv::default(),
+            va_drivers: gpu::VaDrivers::default(),
+            libva_driver: None,
         }
     }
 
@@ -684,21 +842,174 @@ esac
             missing.notes
         );
 
-        // A configured node changes the key and is probed (NVIDIA too, when chosen).
+        // A configured NVIDIA node changes the key but is never probed
+        // (NVIDIA has no VA-API encoder, A§8.10): VA-API is off.
         let nvidia = VaConfig {
             project: None,
             config: Some("/dev/dri/renderD128".into()),
         };
+        let before = runs(tmp.path());
         let chosen = detect(&opts, &nvidia);
-        let va = chosen.caps.vaapi.unwrap();
-        assert_eq!(
-            (va.device.as_str(), va.vendor),
-            ("/dev/dri/renderD128", VENDOR_NVIDIA)
+        assert!(!chosen.cached);
+        assert_eq!(chosen.caps.vaapi, None);
+        assert!(
+            chosen
+                .notes
+                .iter()
+                .any(|n| n.contains("NVIDIA node: NVIDIA has no VA-API encoder")),
+            "{:?}",
+            chosen.notes
         );
-        // An explicitly chosen NVIDIA node keeps the inherited LIBVA_DRIVER_NAME (A§8.10).
-        let inherited = std::env::var("LIBVA_DRIVER_NAME").unwrap_or_default();
+        assert_eq!(runs(tmp.path()), before + 2, "-version and -encoders only");
         let probe = fs::read_to_string(tmp.path().join("va-probe")).unwrap();
-        assert!(probe.starts_with(&format!("{inherited} -")), "{probe}");
+        assert!(probe.contains("renderD129"), "only the Intel node: {probe}");
+        // Nor does GStreamer's probe get it.
+        let mut recording = opts.clone();
+        recording.gst_probe = Some(fedora_probe);
+        let asked = detect(&recording, &nvidia);
+        assert_eq!(asked.caps.vaapi, None);
+        assert_eq!(gst_probes(tmp.path()), ["gst probe None"]);
+    }
+
+    /// The checks load the node's libva driver: this process's when it
+    /// fits the node (main() pinned it), else Intel's i965 on the chips
+    /// only it drives or where only it is installed, else iHD. Installing
+    /// or updating a driver probes again.
+    #[test]
+    fn the_checks_load_the_nodes_libva_driver() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sys = fake_sysfs(tmp.path(), &[("renderD128", "0x8086")]);
+        fake_device_id(&sys, "renderD128", "0x0416");
+        let mut opts = options(tmp.path(), sys.clone());
+        let va_probe = || fs::read_to_string(tmp.path().join("va-probe")).unwrap();
+        // Haswell: i965, whatever is installed.
+        opts.va_drivers = fake_drivers(&tmp.path().join("both"), &["iHD", "i965"]);
+        detect(&opts, &VaConfig::default());
+        assert!(va_probe().starts_with("i965 "), "{}", va_probe());
+        // A chip iHD drives with only i965 installed: i965.
+        fake_device_id(&sys, "renderD128", "0x9a49");
+        opts.va_drivers = fake_drivers(&tmp.path().join("i965"), &["i965"]);
+        let found = detect(&opts, &VaConfig::default());
+        assert!(!found.cached, "another GPU and other driver files");
+        assert!(va_probe().starts_with("i965 "), "{}", va_probe());
+        // iHD installed meanwhile: probed again, with it.
+        fs::write(tmp.path().join("i965/dri/iHD_drv_video.so"), "").unwrap();
+        opts.va_drivers = gpu::VaDrivers::new(Some(&tmp.path().join("i965/dri").to_string_lossy()));
+        assert!(!detect(&opts, &VaConfig::default()).cached);
+        assert!(va_probe().starts_with("iHD "), "{}", va_probe());
+        assert!(detect(&opts, &VaConfig::default()).cached);
+        // This process's i965 (main() pinned it) fits Intel: kept.
+        opts.libva_driver = Some("i965".into());
+        assert!(!detect(&opts, &VaConfig::default()).cached);
+        assert!(va_probe().starts_with("i965 "), "{}", va_probe());
+        // Another vendor's: the node's own.
+        opts.libva_driver = Some("radeonsi".into());
+        detect(&opts, &VaConfig::default());
+        assert!(va_probe().starts_with("iHD "), "{}", va_probe());
+    }
+
+    /// Where the h264_vaapi check fails with the node's driver on an Intel
+    /// node, it runs again with Intel's other one, installed and driving
+    /// the chip; when only that one passes, exports load it there: the
+    /// cache keeps the pick, for that GPU, until a check runs again.
+    /// GStreamer is asked once, with the node's driver (its VA plugin has
+    /// no encoder with i965). Both failing, or the node's passing, leave no
+    /// pick.
+    #[test]
+    fn exports_load_intels_other_driver_where_only_it_encodes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sys = fake_sysfs(tmp.path(), &[("renderD128", "0x8086")]);
+        // Kaby Lake with Ubuntu's free iHD build, which encodes no H.264.
+        fake_device_id(&sys, "renderD128", "0x5916");
+        let mut opts = options(tmp.path(), sys.clone());
+        opts.va_drivers = fake_drivers(tmp.path(), &["iHD", "i965"]);
+        opts.libva_driver = Some("iHD".into());
+        opts.gst_probe = Some(fedora_probe);
+        fs::write(tmp.path().join("va-fails-iHD"), "").unwrap();
+        let file = opts.cache_file.clone().unwrap();
+        let va_runs = || -> Vec<String> {
+            let runs = tmp.path().join("va-runs");
+            let text = fs::read_to_string(&runs).unwrap_or_default();
+            let _ = fs::remove_file(&runs);
+            text.lines().map(str::to_owned).collect()
+        };
+        let noted = |found: &Detected, note: &str| {
+            assert!(
+                found.notes.iter().any(|n| n == note),
+                "{note:?} isn't in {:?}",
+                found.notes
+            );
+        };
+        // The file's key forgotten: the checks run again.
+        let forget_checks = || {
+            let mut json: serde_json::Value =
+                serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+            json.as_object_mut().unwrap().remove("key");
+            fs::write(&file, serde_json::to_vec(&json).unwrap()).unwrap();
+        };
+
+        let found = detect(&opts, &VaConfig::default());
+        assert!(found.caps.vaapi.as_ref().unwrap().ffmpeg_h264);
+        assert_eq!(va_runs(), ["iHD", "i965"]);
+        let pick = VaDriverPick {
+            device: "/dev/dri/renderD128".into(),
+            device_id: Some(0x5916),
+            driver: "i965".into(),
+        };
+        assert_eq!(read_export_driver(&file), Some(pick.clone()));
+        noted(
+            &found,
+            "the h264_vaapi check on /dev/dri/renderD128 failed with iHD: ffmpeg exited with \
+             status 1; it passed with i965, which exports load there",
+        );
+        assert_eq!(
+            gst_probes(tmp.path()),
+            [r#"gst probe Some("/dev/dri/renderD128")"#]
+        );
+        // From the cache: nothing runs again, the pick stays.
+        assert!(detect(&opts, &VaConfig::default()).cached);
+        assert!(va_runs().is_empty());
+        assert_eq!(read_export_driver(&file), Some(pick));
+
+        // Both fail: no pick, both noted.
+        fs::write(tmp.path().join("va-fails"), "").unwrap();
+        forget_checks();
+        let failed = detect(&opts, &VaConfig::default());
+        assert!(!failed.caps.vaapi.as_ref().unwrap().ffmpeg_h264);
+        assert_eq!(va_runs(), ["iHD", "i965"]);
+        assert_eq!(read_export_driver(&file), None);
+        noted(
+            &failed,
+            "the h264_vaapi check on /dev/dri/renderD128 failed: ffmpeg exited with status 1; \
+             with i965 too: ffmpeg exited with status 1",
+        );
+        fs::remove_file(tmp.path().join("va-fails")).unwrap();
+        // iHD encodes after all (the full build): one check, no pick.
+        fs::remove_file(tmp.path().join("va-fails-iHD")).unwrap();
+        forget_checks();
+        assert!(
+            detect(&opts, &VaConfig::default())
+                .caps
+                .vaapi
+                .unwrap()
+                .ffmpeg_h264
+        );
+        assert_eq!(va_runs(), ["iHD"]);
+        assert_eq!(read_export_driver(&file), None);
+
+        // A Haswell, which only i965 drives: never iHD.
+        fake_device_id(&sys, "renderD128", "0x0416");
+        opts.libva_driver = Some("i965".into());
+        fs::write(tmp.path().join("va-fails-i965"), "").unwrap();
+        let haswell = detect(&opts, &VaConfig::default());
+        assert!(!haswell.cached);
+        assert!(!haswell.caps.vaapi.unwrap().ffmpeg_h264);
+        assert_eq!(va_runs(), ["i965"]);
+        assert_eq!(read_export_driver(&file), None);
+
+        // A file that isn't a cache: no pick.
+        fs::write(&file, "{not json").unwrap();
+        assert_eq!(read_export_driver(&file), None);
     }
 
     /// A fake [`GstProbe`]: notes each run (and its node) in the caps log,
