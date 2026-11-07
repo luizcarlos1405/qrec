@@ -344,6 +344,7 @@ fn s02_the_panel_in_live_mode() {
     // menu's and its submenu's too, but the hidden ones of GTK's own
     // widgets. The icons and art lane's lookup audit: the submenu's arrow
     // and its back arrow were libadwaita's `go-next` and `go-previous`.
+    // The window's own icon is the app icon (`APP_ID`, from the GResource).
     let log = std::fs::read_to_string(&nested.window(0).log).expect("the window's log");
     let looked_up: BTreeSet<&str> = log
         .lines()
@@ -357,7 +358,11 @@ fn s02_the_panel_in_live_mode() {
     let foreign: Vec<&str> = looked_up
         .iter()
         .copied()
-        .filter(|name| !name.starts_with("qrec-") && !GTK_HIDDEN_ICONS.contains(name))
+        .filter(|name| {
+            !name.starts_with("qrec-")
+                && *name != qrec_gui::app::APP_ID
+                && !GTK_HIDDEN_ICONS.contains(name)
+        })
         .collect();
     assert!(foreign.is_empty(), "icons that aren't Qrec's: {foreign:?}");
 }
